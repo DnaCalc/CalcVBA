@@ -30,6 +30,13 @@ Every executable bead should identify:
 
 ## Outcome Rule
 
+New plans use exactly one relative complexity label: `size-small`,
+`size-medium`, or `size-large`. These labels describe the amount of coupled
+behavior and review complexity; they do not imply elapsed time. Omit time
+estimates. Historical estimates remain readable by the validator, but are not
+instructions to add estimates to new beads. A large bead must still produce
+one reviewable outcome; split unrelated behaviors into separate beads.
+
 Good:
 - one capability now exists,
 - one audit result now exists,

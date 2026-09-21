@@ -4,6 +4,7 @@ Date: 2026-07-10
 Owner: unassigned
 Status: accepted; active under AutoRun `bd-59co`
 Type: architecture, Windows capability and conformance delivery
+Detailed Windows-hosted delivery plan: [2026-09-21 breakdown](WINDOWS_HOSTED_EXECUTION_PLAN_2026-09-21.md)
 Profiles: `PROFILE-WIN-001`, Windows portion of `PROFILE-TOOL-001`
 Source review: [`../OXVBA_POST_JIT_STATUS_REVIEW_2026-07-10.md`](../OXVBA_POST_JIT_STATUS_REVIEW_2026-07-10.md)
 
@@ -325,6 +326,15 @@ Reconcile system/Windows/JIT/package contracts, current architecture, code, matr
 Close: both internal claim gates and every required delivery epic are green.
 
 ## 8. Dependency graph
+
+The 2026-09-21 detailed plan refines these coarse architectural dependencies
+into exact producer leaves in the bead graph. Development consumers use the
+completed Windows baseline and the specific metadata, image, helper, session
+and transport contracts they need. Certification consumes those delivery
+leaves rather than waiting for capability epics whose completion itself
+requires certification. The full-workset completion requirements below remain
+unchanged; the narrower compatibility report cannot close genuine native
+outputs or the programme's terminal work.
 
 | epic | hard prerequisites |
 |---|---|

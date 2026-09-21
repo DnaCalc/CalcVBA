@@ -45,6 +45,9 @@ try {
     Write-Host "[governance] windows-x64-control-surfaces"
     & "$PSScriptRoot/validate-windows-x64-control-surfaces.ps1"
 
+    Write-Host "[governance] windows-x64-control-mutations"
+    & "$PSScriptRoot/test-windows-x64-control-surfaces.ps1"
+
     Write-Host "[governance] windows-current-stack-residuals"
     & "$PSScriptRoot/validate-windows-current-stack-residuals.ps1"
 
@@ -87,6 +90,9 @@ try {
 
     Write-Host "[governance] workset-rollout"
     & "$PSScriptRoot/validate-workset-rollout.ps1"
+
+    Write-Host "[governance] bead-relative-size"
+    & "$PSScriptRoot/test-ideal-bead-size.ps1"
 
     Write-Host "[governance] ideal-validator-negative-cases"
     & "$PSScriptRoot/test-ideal-program-validator-negative-cases.ps1"

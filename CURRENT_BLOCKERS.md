@@ -1,10 +1,10 @@
 # Current Blockers
 
-Date: 2026-07-14
+Date: 2026-09-21
 Status: current; no all-path blocker
 Authority: blockers only; ordinary unfinished capability work belongs in the three current worksets and canonical matrices
 
-## BLK-BASELINE-001 — Required platform baseline transcripts are pending
+## BLK-BASELINE-001 — Linux baseline and cross-platform reconciliation remain open
 
 Status: open, progress available
 Owner: core workset CORE-1
@@ -14,14 +14,12 @@ Impact:
 - the aggregate Rust baseline is green: format, strict all-target Clippy,
   ordinary workspace tests, parallel/serial differentials, isolated carrier
   balance, current host/JIT diagnostics and governance pass;
-- this support result does not replace the required Windows x64 development
-  transcript or the pinned Linux x64 CI transcript; and
+- the Windows x64 development transcript is complete under
+  `bd-59co.2.2.10`; the pinned Linux x64 CI transcript remains open; and
 - the five CORE-1 canonical rows remain planned until terminal reconciliation.
 
 Unblocking outcome:
 
-- execute and retain the actual Windows x64 development baseline under
-  `bd-59co.2.2.10`;
 - execute and retain the pinned Linux x64 CI baseline under
   `bd-59co.2.2.11`; and
 - reconcile both platform results and the five canonical rows under
@@ -30,6 +28,11 @@ Unblocking outcome:
 This does not block architecture/compiler/package work, but no Core release or
 profile closure can pass until the platform transcripts and terminal
 reconciliation are complete.
+
+The Windows-hosted plan uses the completed Windows baseline and exact shared
+Core producer dependencies for development. It does not execute or certify
+the Linux baseline. Detailed delivery owners are recorded in
+`docs/worksets/WINDOWS_HOSTED_EXECUTION_PLAN_2026-09-21.md` and the bead graph.
 
 ## BLK-COM-EVENT-BYREF-001 — Native COM event writeback requires synchronous reentry
 
@@ -51,6 +54,12 @@ Unblocking outcome:
 - handler mutation copied to raw `VT_BYREF` storage before return;
 - explicit same-thread/cross-apartment/out-of-proc policy and evidence;
 - success/error/reentry/lifecycle cleanup under both backends.
+
+Delivery path: shared VM3 reentry remains `bd-59co.2.7.4`; shared JIT reentry
+is `bd-59co.2.7.7`; Windows apartment/reentry policy is `bd-59co.3.3.9`;
+incoming event execution remains `bd-59co.3.6.2` and `bd-59co.3.6.3`.
+These are open implementation owners, not evidence that synchronous
+native-event parity is already achieved.
 
 ## BLK-WINDOWS-CERT-001 — Mandatory Windows/Office certification environments
 

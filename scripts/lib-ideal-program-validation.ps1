@@ -1,5 +1,28 @@
 Set-StrictMode -Version Latest
 
+function Assert-IdealBeadSize {
+    param(
+        [Parameter(Mandatory = $true)]$Issue,
+        [Parameter(Mandatory = $true)][string]$Owner
+    )
+
+    # New plans describe relative complexity without predicting elapsed time.
+    # Retain compatibility with historical records that already carry estimates.
+    $sizes = @(Get-IdealIssueLabels -Issue $Issue | Where-Object { $_ -like 'size-*' })
+    if ($sizes.Count -gt 0) {
+        if ($sizes.Count -ne 1 -or $sizes[0] -notin @('size-small', 'size-medium', 'size-large')) {
+            throw "validate-workset-rollout: $Owner must carry exactly one size-small/size-medium/size-large label"
+        }
+        return
+    }
+    $estimate = if ($Issue.PSObject.Properties.Name -contains 'estimated_minutes' -and $null -ne $Issue.estimated_minutes) {
+        [int]$Issue.estimated_minutes
+    } else { 0 }
+    if ($estimate -lt 1 -or $estimate -gt 480) {
+        throw "validate-workset-rollout: $Owner requires a relative size label (or a valid historical estimate)"
+    }
+}
+
 function Resolve-IdealRepoPath {
     param(
         [Parameter(Mandatory = $true)]

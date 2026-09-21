@@ -90,13 +90,7 @@ function Assert-ExecutableLeafQuality {
     if ([string]$Issue.issue_type -eq "epic") {
         throw "validate-workset-rollout: $Owner is a leaf but is typed as an epic"
     }
-    $estimate = 0
-    if ($Issue.PSObject.Properties.Name -contains "estimated_minutes" -and $null -ne $Issue.estimated_minutes) {
-        $estimate = [int]$Issue.estimated_minutes
-    }
-    if ($estimate -lt 1 -or $estimate -gt 480) {
-        throw "validate-workset-rollout: $Owner estimate must be 1..480 minutes, found $estimate"
-    }
+    Assert-IdealBeadSize -Issue $Issue -Owner $Owner
 
     Assert-RoutingLabels -Issue $Issue -RequiredLabels $RequiredLabels -Owner $Owner
 
@@ -496,10 +490,7 @@ try {
             -Issue $issue `
             -RequiredLabels @([string]$manifest.program_label, "program-0") `
             -Owner "PROGRAM-0 leaf $id"
-        $estimate = if ($issue.PSObject.Properties.Name -contains "estimated_minutes") { [int]$issue.estimated_minutes } else { 0 }
-        if ($estimate -lt 1 -or $estimate -gt 480) {
-            throw "validate-workset-rollout: PROGRAM-0 leaf $id estimate must be 1..480 minutes, found $estimate"
-        }
+        Assert-IdealBeadSize -Issue $issue -Owner "PROGRAM-0 leaf $id"
         $acceptance = if ($issue.PSObject.Properties.Name -contains "acceptance_criteria") { [string]$issue.acceptance_criteria } else { "" }
         if ([string]::IsNullOrWhiteSpace($acceptance)) {
             throw "validate-workset-rollout: PROGRAM-0 leaf $id has no acceptance criteria"

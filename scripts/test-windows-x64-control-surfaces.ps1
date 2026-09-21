@@ -178,6 +178,25 @@ try {
         param($fixture)
         Update-FixtureMatrixRow -FixtureRoot $fixture -MatrixPath $clientMatrix -RowId "WCC-PLAN-LATE" -Mutation { param($row) $row.residual_owner_bead = "bd-59co.3.1.2" }
     }
+    Invoke-ExpectedFailure -Name "carrier-certification-owner-drift" -MessagePattern "evidence_owner_bead must be" -Mutation {
+        param($fixture)
+        Update-FixtureMatrixRow -FixtureRoot $fixture -MatrixPath "docs/validation/WINDOWS_ABI_CARRIER_MATRIX_V1.csv" -RowId "WAC-CARRIER-EXCEL-ROUNDTRIP" -Mutation {
+            param($row)
+            $row.evidence_owner_bead = "bd-59co.3.15.32"
+        }
+    }
+    Invoke-ExpectedFailure -Name "carrier-certification-parent-drift" -MessagePattern "outside required evidence epic" -Mutation {
+        param($fixture)
+        $issuesPath = Join-Path $fixture ".beads/issues.jsonl"
+        $fixtureIssues = @(Get-Content -LiteralPath $issuesPath | ForEach-Object { $_ | ConvertFrom-Json })
+        $certification = $fixtureIssues | Where-Object { $_.id -eq "bd-59co.3.15.16" }
+        foreach ($dependency in @($certification.dependencies)) {
+            if ($dependency.type -eq "parent-child") {
+                $dependency.depends_on_id = "bd-59co.3.2"
+            }
+        }
+        $fixtureIssues | ForEach-Object { ConvertTo-Json -InputObject $_ -Depth 100 -Compress } | Set-Content -LiteralPath $issuesPath -Encoding UTF8
+    }
     Invoke-ExpectedFailure -Name "authority-route-drift" -MessagePattern "authority route differs" -Mutation {
         param($fixture)
         Update-FixtureMatrixRow -FixtureRoot $fixture -MatrixPath $clientMatrix -RowId "WCC-PLAN-LATE" -Mutation { param($row) $row.authority_refs = "docs/spec/OXVBA_SYSTEM_CONTRACT_V1.md|docs/spec/OXVBA_WINDOWS_INTEROP_ARCHITECTURE_V1.md" }
@@ -191,7 +210,7 @@ try {
         Update-FixtureMatrixRow -FixtureRoot $fixture -MatrixPath $exportMatrix -RowId "WNE-PLAN-NATIVE" -Mutation { param($row) $row.output_class = "WrapperLibrary" }
     }
 
-    Write-Host "test-windows-x64-control-surfaces: ok (positive_aliases=2 negative_cases=12)"
+    Write-Host "test-windows-x64-control-surfaces: ok (positive_aliases=2 negative_cases=14)"
 }
 finally {
     if (Test-Path -LiteralPath $tempBase -PathType Container) {

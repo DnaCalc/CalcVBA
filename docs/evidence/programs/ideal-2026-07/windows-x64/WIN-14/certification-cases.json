@@ -8,27 +8,27 @@
   "source_hashes": [
     {
       "path": "docs/validation/WINDOWS_JIT_COM_CLIENT_MATRIX_V1.csv",
-      "sha256": "sha256:1867f0b0dff2f3bab3c315f4e7f5b8e413d966164ef0c39f798235310561f4da"
+      "sha256": "sha256:2c80808911df78e97a35d9f6b7b8bf12060541d6cbde05dc9dc2b61aa928b92a"
     },
     {
       "path": "docs/validation/WINDOWS_JIT_COM_EVENTS_MATRIX_V1.csv",
-      "sha256": "sha256:420ff6d6b5e7d04b98962a5e2b3c24fde88483bdc6a96739cae6f1ba713fa4c6"
+      "sha256": "sha256:45c27222e00593f7498f979f612d884f9b40b7059392bf42768211ca45490823"
     },
     {
       "path": "docs/validation/WINDOWS_JIT_COM_SERVER_MATRIX_V1.csv",
-      "sha256": "sha256:67350841d1bc998dc440abb3f47729d049cd6921da3a0896be243d1d10e76b65"
+      "sha256": "sha256:28fa564c71e9e82e8c95887c67d4e9272ca914aa1f51399f212d3ea4e5a15f7b"
     },
     {
       "path": "docs/validation/WINDOWS_JIT_NATIVE_IMPORT_MATRIX_V1.csv",
-      "sha256": "sha256:7dd05b5809e69f1ae922b4c3fbfac1e684cac46bcc839d1cd81ae5ea4a54fdd8"
+      "sha256": "sha256:8c0e078e7ac67d967161e36dbf8f0fc91e8ce4e9436884226471922fc5e493b7"
     },
     {
       "path": "docs/validation/WINDOWS_NATIVE_EXPORT_AND_PACKAGING_MATRIX_V1.csv",
-      "sha256": "sha256:f40654f66782b1f48513c3d14cbb52bfa5361b36d6f5f3e0d9afe5a563f3ba00"
+      "sha256": "sha256:57969d04a1029905b1f03d955e3161f4ee88045e72cde1c30d9716276c9b7083"
     },
     {
       "path": "docs/validation/WINDOWS_ABI_CARRIER_MATRIX_V1.csv",
-      "sha256": "sha256:23830d8437c16b2f5e64b9ebfd020d0a109dae5ab65830889a37d4df356b4825"
+      "sha256": "sha256:e8e10bdef1fa0af57c0eb700b79fc7e052fdec539029ee236ca991aa58bc7b5d"
     },
     {
       "path": "docs/validation/IDEAL_WINDOWS_X64_FIXTURE_MANIFEST_V1.csv",

@@ -1,0 +1,25 @@
+{
+  "schema": "oxvba.udf-vartype-validation.v1",
+  "generated_utc": "2026-10-31T10:12:45.890413+00:00",
+  "base_commit": "1f04344a0577a5a098579622913f0749ea3ea2b4",
+  "command": "RUST_TEST_THREADS=1; scripts/meta-check.ps1 -Fast -NoArtifacts",
+  "totals": [
+    3665,
+    0,
+    179
+  ],
+  "source_sha256": {
+    "crates/oxvba-hal/src/traits.rs": "679999f5759c3117005edc5d7fa3fd25f7fbf109977cba6c73e3625b20906a67",
+    "crates/oxvba-lib/src/lib.rs": "fece96a5be09deabe6fb7ae9588c28ae5dea4ad52f4101f521538122d81c27f9",
+    "crates/oxvba-embed/src/spreadsheet.rs": "7e4f713da6f8bedd6acee408c3c52da3496ab7a4bfeae10c19c0ff98cb22506a",
+    "crates/oxvba-embed/tests/udf_embedding.rs": "c828571b091ee00479cfe1fbb5b23c36124cfcf0c336446a12e269ea26da0f38"
+  },
+  "archive_sha256": "88b43f8220da0f3cde183e32cf56450cf46642569dfb4f5bc746087c0e906d09",
+  "log_sha256": {
+    "calcvba3-vartype-meta.log": "3459456070bd03c3ab920af23bd4fce703ae6ee55df5df9cb14f747ce19dad78",
+    "calcvba3-vartype-embed.log": "078433bb70e0df979892084584a932bb980920ec6f387815b7e4a570b56594b4",
+    "calcvba3-vartype-nojit.log": "c9cdce7743bc4f69b895ec1a162bb7c9f226a30ac4ef2b7952780d5b0b598097"
+  },
+  "review": "review_udf_sessions read-only review clean",
+  "formal": "VarType and RefCount Lean models pass installed4.29.1; they do not prove Rust host-default reflection or callback/refcount refinement; native Kani absent."
+}

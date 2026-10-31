@@ -438,6 +438,12 @@ impl ComHal for SpreadsheetHost {
             typelib_cache_key: None,
         }))
     }
+    fn object_default_value(&self, object: ObjectRef) -> HalResult<Option<Variant>> {
+        match self.lookup(&object)? {
+            Object::Range(range, axis) => self.range_member(range, axis, "VALUE2", &[]).map(Some),
+            _ => Ok(None),
+        }
+    }
     fn object_type_name(&self, object: ObjectRef) -> HalResult<Option<String>> {
         Ok(Some(
             match self.lookup(&object)? {

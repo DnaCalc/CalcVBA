@@ -416,6 +416,12 @@ pub trait ComHal: Send + Sync {
     fn object_type_name(&self, _object: ObjectRef) -> HalResult<Option<String>> {
         Ok(None)
     }
+    /// A reflected zero-argument default value, when this adapter supplies one.
+    /// Information built-ins such as VarType inspect its type without replacing the
+    /// original object argument. None leaves an object without this reflection intact.
+    fn object_default_value(&self, _object: ObjectRef) -> HalResult<Option<Variant>> {
+        Ok(None)
+    }
     fn dispatch_invoke_variant(&self, _request: &ComInvokeRequest) -> HalResult<Variant> {
         variant_companion_not_overridden(
             CapabilityId::ComActivationDispatch,

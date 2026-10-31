@@ -562,6 +562,14 @@ End Function
 Public Function ArgType(r)
  ArgType = TypeName(r)
 End Function
+Public Function ArgVarType(r)
+ ArgVarType = VarType(r)
+End Function
+Public Function NothingVarType()
+ Dim r As Variant
+ Set r = Nothing
+ NothingVarType = VarType(r)
+End Function
 "#;
     let module = Module::load_spreadsheet("Grid", source).unwrap();
     let range = Value::Range(Range {
@@ -606,6 +614,36 @@ End Function
                 .call_with_context("ArgType", std::slice::from_ref(&range), 1000, &mut context)
                 .unwrap(),
             Value::Text("Range".into())
+        );
+        assert_eq!(
+            session
+                .call_with_context(
+                    "ArgVarType",
+                    std::slice::from_ref(&range),
+                    1000,
+                    &mut context
+                )
+                .unwrap(),
+            Value::Number(8204.0)
+        );
+        let scalar = Value::Range(Range {
+            sheet: 1,
+            row: 1,
+            column: 1,
+            rows: 1,
+            columns: 1,
+        });
+        assert_eq!(
+            session
+                .call_with_context("ArgVarType", &[scalar], 1000, &mut context)
+                .unwrap(),
+            Value::Number(5.0)
+        );
+        assert_eq!(
+            session
+                .call_with_context("NothingVarType", &[], 1000, &mut context)
+                .unwrap(),
+            Value::Number(9.0)
         );
         assert_eq!(
             session

@@ -395,7 +395,18 @@ pub fn invoke_context_free(
 
         // ── Information ──
         IsArray => pure::is_vtype(args, |t| matches!(t, Vt::ArrayVariant)),
-        VarType => pure::var_type(args),
+        VarType => match args
+            .first()
+            .and_then(Variant::as_object_ref)
+            .filter(|object| !object.is_project_instance())
+        {
+            Some(object) => match host.com().object_default_value(object) {
+                Ok(Some(value)) => pure::var_type(&[value]),
+                Ok(None) => pure::var_type(args),
+                Err(error) => Err(LibError::from(error)),
+            },
+            None => pure::var_type(args),
+        },
         TypeName => {
             if let Some(object) = args.first().and_then(Variant::as_object_ref)
                 && !object.is_project_instance()

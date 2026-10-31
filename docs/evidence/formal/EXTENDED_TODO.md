@@ -167,3 +167,10 @@ Non-blocking formal issues and follow-up items for later ladder profiles.
   Current status (`todo` / `investigating` / `resolved`): investigating
   Reproduction command: `./scripts/run-formal-kani-remote.ps1 -Action Status`
   Suggested next action: keep current run until terminal state, then run `./scripts/run-formal-kani-sync.ps1` to reconcile and restart unresolved lanes against latest head.
+
+- ID: FTODO-UDF-SESSION-20261031
+  Profile: bounded UDF persistent invocation (`bd-59co.2.10.6`, general ownership `bd-59co.2.7.6` and JIT sessions `bd-59co.2.10.2`).
+  Summary: Existing Lean ExecutionBudget/RefCount abstractions pass on installed Lean 4.29.1; they do not prove Rust session-storage isolation, global alias lifetime, callback lifetime or disposal refinement. Native cargo-kani remains unavailable. Execution tests cover independent sessions, retry after failed initialization, As New bindings, private inputs, errors, budget resets and disposal balances; project classes/UDTs/End are refused by this facade.
+  Current status: investigating.
+  Reproduction command: cargo test -p oxvba-embed; use the installed Lean 4.29.1 binary on formal/lean/OxVba/ExecutionBudget.lean and RefCount.lean.
+  Suggested next action: add session-storage/alias/refcount refinement with the shared CORE-5 ownership work; retain the class-disposal and descriptor-lifetime residuals until code and executable evidence establish them.

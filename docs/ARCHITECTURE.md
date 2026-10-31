@@ -155,7 +155,7 @@ Its current primary entry shape is a universal dynamic ABI:
 unsafe extern "C" fn(*mut JitRun, *mut RawExecState) -> i32
 ```
 
-Static calls can invoke local compiled functions, but Variant-backed frames and helpers still materialize much of the call state. Source/manifest invocation recompiles; `prepare_image_session` remains VM3-only. The bounded embedding facade retains compiled code across fresh-state function calls and frees it on disposal; it does not supply persistent project globals/objects.
+Static calls can invoke local compiled functions, but Variant-backed frames and helpers still materialize much of the call state. Source/manifest invocation recompiles; `prepare_image_session` remains VM3-only. The bounded embedding facade retains compiled code and independent VM3/JIT project storage across calls, supports Optional/default/ParamArray arguments and resets storage without recompiling. It still refuses project classes/UDTs and does not complete general package-session ownership.
 
 ### Material gaps against the contract
 
@@ -165,7 +165,7 @@ Static calls can invoke local compiled functions, but Variant-backed frames and 
 - helper registration is not a versioned descriptor catalog;
 - line/Erl, writable Err fields and full dynamic Err.Raise metadata are incomplete;
 - deep source recursion relies on the native stack and is not safely proven;
-- persistent JIT package sessions and product cache do not exist;
+- borrowed JIT sessions retain ExecState for repeated calls; general owned verified-package sessions, descriptor lifetimes and product cache remain open;
 - early COM interfaces, pointer/callback operations and native calls outside the bounded x64 Declare subset cause decline;
 - the implementation is concentrated in a very large single source module;
 - differential evidence is often status/tag based rather than fully structural.

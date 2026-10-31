@@ -162,6 +162,7 @@ impl<'a> Lower<'a> {
         class_name: &str,
     ) -> Result<Option<CoreProc>, BindError> {
         let params = vec![CoreParam {
+            default: None,
             name: "Me".to_string(),
             ty: VarTypeRef::Variant,
             optional: false,

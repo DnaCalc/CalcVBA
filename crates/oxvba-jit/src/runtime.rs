@@ -33,7 +33,7 @@ pub struct CompiledImage<'p> {
 }
 
 impl<'p> CompiledImage<'p> {
-    pub fn run<'a>(&'a self, host: &'a dyn HostServices) -> Result<JitOutcome, JitError> {
+    pub fn run(&self, host: &dyn HostServices) -> Result<JitOutcome, JitError> {
         self.execute(host, None, None)
     }
 
@@ -59,26 +59,95 @@ impl<'p> CompiledImage<'p> {
         self.execute(host, Some((func, args)), Some(steps))
     }
 
+    /// Create independent mutable project storage over this retained compiled image.
+    pub fn start_session<'h>(&self, host: &'h dyn HostServices) -> Result<JitSession<'h>, JitError>
+    where
+        'p: 'h,
+    {
+        oxvba_runtime::reset_pending_terminations();
+        let mut exec = ExecState::new(host);
+        exec.default_error_source = self
+            .programs
+            .last()
+            .ok_or_else(|| JitError::Runtime("compiled image has no programs".into()))?
+            .unit_name
+            .clone();
+        exec.programs = self
+            .programs
+            .iter()
+            .map(|program| build_loaded(program))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(JitSession {
+            exec,
+            initialized: false,
+            initialization_failed: false,
+            as_new_slots: HashMap::new(),
+            next_collection_instance_id: i32::MIN + 1,
+        })
+    }
+
+    /// Invoke without rebuilding global/Static/Err storage or compiled code.
+    pub fn invoke_in_session<'h>(
+        &self,
+        session: &mut JitSession<'h>,
+        func: FuncId,
+        args: &[Variant],
+        steps: u64,
+    ) -> Result<JitOutcome, JitError>
+    where
+        'p: 'h,
+    {
+        let target = self
+            .programs
+            .last()
+            .and_then(|p| p.funcs.get(func.0))
+            .ok_or_else(|| JitError::Runtime("function index out of range".into()))?;
+        if target.param_count != args.len() || target.return_local.is_none() {
+            return Err(JitError::Runtime(
+                "function invocation signature mismatch".into(),
+            ));
+        }
+        self.execute_in_session(session, Some((func, args)), Some(steps))
+    }
+
     fn execute(
         &self,
         host: &dyn HostServices,
         invocation: Option<(FuncId, &[Variant])>,
         steps: Option<u64>,
     ) -> Result<JitOutcome, JitError> {
-        let Some(entry_program_index) = self.programs.len().checked_sub(1) else {
+        let mut session = self.start_session(host)?;
+        self.execute_in_session(&mut session, invocation, steps)
+    }
+
+    fn execute_in_session<'h>(
+        &self,
+        session: &mut JitSession<'h>,
+        invocation: Option<(FuncId, &[Variant])>,
+        steps: Option<u64>,
+    ) -> Result<JitOutcome, JitError>
+    where
+        'p: 'h,
+    {
+        if session.exec.programs.len() != self.programs.len()
+            || session
+                .exec
+                .programs
+                .iter()
+                .zip(&self.programs)
+                .any(|(a, b)| !std::ptr::eq(a.program, *b))
+        {
             return Err(JitError::Runtime(
-                "compiled image has no programs".to_string(),
+                "session belongs to a different image".into(),
             ));
-        };
+        }
+        if session.initialization_failed {
+            *session = self.start_session(session.exec.host)?;
+        }
+        let entry_program_index = self.programs.len() - 1;
         let entry_program = self.programs[entry_program_index];
-        let mut exec = ExecState::new(host);
+        let exec = &mut session.exec;
         exec.remaining_steps = steps;
-        exec.default_error_source = entry_program.unit_name.clone();
-        exec.programs = self
-            .programs
-            .iter()
-            .map(|program| build_loaded(program))
-            .collect::<Result<Vec<_>, _>>()?;
         let mut globals = exec
             .programs
             .iter_mut()
@@ -100,14 +169,14 @@ impl<'p> CompiledImage<'p> {
             frames: Vec::new(),
             explicit_refs: Vec::new(),
             for_each: HashMap::new(),
-            as_new_slots: HashMap::new(),
+            as_new_slots: std::mem::take(&mut session.as_new_slots),
             param_array_aliases: HashMap::new(),
-            next_collection_instance_id: i32::MIN + 1,
+            next_collection_instance_id: session.next_collection_instance_id,
             programs: program_images.as_ptr(),
             program_count: program_images.len(),
         };
         let run_root = &raw mut run;
-        let state = exec_state_as_raw(&mut exec);
+        let state = exec_state_as_raw(exec);
         let mut bridge_ctx = JitProcInvokeCtx {
             run: run_root,
             state,
@@ -128,88 +197,114 @@ impl<'p> CompiledImage<'p> {
         }
         let _proc_invoker_registration = ProcInvokerRegistration { state };
 
-        oxvba_runtime::reset_pending_terminations();
-        for (program_index, program) in self.programs.iter().enumerate() {
-            let Some(init) = program.global_initializer else {
-                continue;
-            };
-            // SAFETY: the current compiled-run boundary owns the live unique state handle;
-            // typed references and owned values remain live and nonaliasing for this call.
-            let status = unsafe { self.invoke_func(program_index, init, &[], run_root, state) }?;
-            if status == oxvba_rt_abi::ST_ABORT {
-                return Err(JitError::BudgetExceeded);
+        let mut result = (|| {
+            let initialize = !session.initialized;
+            session.initialization_failed = initialize;
+            for (program_index, program) in self.programs.iter().enumerate() {
+                let Some(init) = program.global_initializer.filter(|_| initialize) else {
+                    continue;
+                };
+                // SAFETY: the current compiled-run boundary owns the live unique state handle;
+                // typed references and owned values remain live and nonaliasing for this call.
+                let status =
+                    unsafe { self.invoke_func(program_index, init, &[], run_root, state) }?;
+                if status == oxvba_rt_abi::ST_ABORT {
+                    return Err(JitError::BudgetExceeded);
+                }
+                if status == ST_FAULT {
+                    return Ok(JitOutcome {
+                        values: Vec::new(),
+                        err: err_from_exec(exec),
+                        raised: true,
+                    });
+                }
+                if status == ST_HALT {
+                    return Ok(JitOutcome {
+                        values: snapshot_values(exec, &run),
+                        err: err_from_exec(exec),
+                        raised: false,
+                    });
+                }
             }
-            if status == ST_FAULT {
+
+            session.initialized = true;
+            session.initialization_failed = false;
+            if let Some(entry) = invocation.map(|(func, _)| func).or(entry_program.entry) {
+                let args = invocation.map(|(_, args)| args).unwrap_or(&[]);
+                // SAFETY: the current compiled-run boundary owns the live unique state handle;
+                // typed references and owned values remain live and nonaliasing for this call.
+                let status =
+                    unsafe { self.invoke_func(entry_program_index, entry, args, run_root, state) }?;
+                if status == oxvba_rt_abi::ST_ABORT {
+                    return Err(JitError::BudgetExceeded);
+                }
+                if status == ST_FAULT {
+                    return Ok(JitOutcome {
+                        values: Vec::new(),
+                        err: err_from_exec(exec),
+                        raised: true,
+                    });
+                }
+                if status == ST_HALT {
+                    return Ok(JitOutcome {
+                        values: snapshot_values(exec, &run),
+                        err: err_from_exec(exec),
+                        raised: false,
+                    });
+                }
+            }
+
+            // SAFETY: `state` was derived above from the uniquely borrowed, live `exec`
+            // and remains valid for this synchronous runtime call.
+            let drain_status = unsafe { rt_maybe_drain(state) };
+            if drain_status == ST_FAULT {
                 return Ok(JitOutcome {
                     values: Vec::new(),
-                    err: err_from_exec(&exec),
+                    err: err_from_exec(exec),
                     raised: true,
                 });
             }
-            if status == ST_HALT {
-                return Ok(JitOutcome {
-                    values: snapshot_values(&exec, &run),
-                    err: err_from_exec(&exec),
-                    raised: false,
-                });
-            }
-        }
 
-        if let Some(entry) = invocation.map(|(func, _)| func).or(entry_program.entry) {
-            let args = invocation.map(|(_, args)| args).unwrap_or(&[]);
-            // SAFETY: the current compiled-run boundary owns the live unique state handle;
-            // typed references and owned values remain live and nonaliasing for this call.
-            let status =
-                unsafe { self.invoke_func(entry_program_index, entry, args, run_root, state) }?;
-            if status == oxvba_rt_abi::ST_ABORT {
-                return Err(JitError::BudgetExceeded);
-            }
-            if status == ST_FAULT {
-                return Ok(JitOutcome {
+            Ok(JitOutcome {
+                values: if let Some((func, _)) = invocation {
+                    vec![
+                        entry_program.funcs[func.0]
+                            .return_local
+                            .and_then(|id| {
+                                run.frames
+                                    .first()
+                                    .and_then(|frame| frame.locals.get(id.0))
+                                    .cloned()
+                            })
+                            .unwrap_or_else(Variant::empty),
+                    ]
+                } else {
+                    snapshot_values(exec, &run)
+                },
+                err: err_from_exec(exec),
+                raised: false,
+            })
+        })();
+        if invocation.is_some() {
+            // Release call-local owners while the current runtime callback bridge is live.
+            // Project/global owners stay in the retained ExecState.
+            run.frames.clear();
+            run.explicit_refs.clear();
+            run.for_each.clear();
+            run.param_array_aliases.clear();
+            // SAFETY: state and the procedure-invocation bridge remain live for this call.
+            if unsafe { rt_maybe_drain(state) } == ST_FAULT && result.is_ok() {
+                result = Ok(JitOutcome {
                     values: Vec::new(),
-                    err: err_from_exec(&exec),
+                    err: err_from_exec(exec),
                     raised: true,
                 });
             }
-            if status == ST_HALT {
-                return Ok(JitOutcome {
-                    values: snapshot_values(&exec, &run),
-                    err: err_from_exec(&exec),
-                    raised: false,
-                });
-            }
         }
-
-        // SAFETY: `state` was derived above from the uniquely borrowed, live `exec`
-        // and remains valid for this synchronous runtime call.
-        let drain_status = unsafe { rt_maybe_drain(state) };
-        if drain_status == ST_FAULT {
-            return Ok(JitOutcome {
-                values: Vec::new(),
-                err: err_from_exec(&exec),
-                raised: true,
-            });
-        }
-
-        Ok(JitOutcome {
-            values: if let Some((func, _)) = invocation {
-                vec![
-                    entry_program.funcs[func.0]
-                        .return_local
-                        .and_then(|id| {
-                            run.frames
-                                .first()
-                                .and_then(|frame| frame.locals.get(id.0))
-                                .cloned()
-                        })
-                        .unwrap_or_else(Variant::empty),
-                ]
-            } else {
-                snapshot_values(&exec, &run)
-            },
-            err: err_from_exec(&exec),
-            raised: false,
-        })
+        prune_as_new_slots_from_depth(&mut run, 0);
+        session.as_new_slots = std::mem::take(&mut run.as_new_slots);
+        session.next_collection_instance_id = run.next_collection_instance_id;
+        result
     }
 
     // SAFETY CONTRACT: `state` must be null or the exact live, uniquely borrowed,
@@ -277,6 +372,16 @@ impl<'p> CompiledImage<'p> {
             Ok(status)
         }
     }
+}
+
+/// Same-thread mutable execution state. Code and semantic metadata remain owned by
+/// the CompiledImage and its program owners; one state must not enter concurrently.
+pub struct JitSession<'p> {
+    exec: ExecState<'p>,
+    initialized: bool,
+    initialization_failed: bool,
+    as_new_slots: HashMap<SlotAlias, OxAsNew>,
+    next_collection_instance_id: i32,
 }
 
 impl Drop for CompiledImage<'_> {
@@ -648,7 +753,8 @@ pub(crate) fn snapshot_values(exec: &ExecState<'_>, run: &JitRun) -> Vec<Variant
 pub(crate) fn current_frame_slot(run: &JitRun, area: u32, index: u32) -> Option<SlotAlias> {
     match area {
         AREA_GLOBAL => Some(SlotAlias {
-            frame: Some(run.frames.len().checked_sub(1)?),
+            // Global aliases use a stable program index, never a transient frame.
+            frame: Some(run.frames.last()?.program_index),
             area,
             index,
         }),
@@ -730,7 +836,7 @@ pub(crate) fn slot_alias_mut(run: &mut JitRun, alias: SlotAlias) -> Option<&mut 
     let index = alias.index as usize;
     match alias.area {
         AREA_GLOBAL => {
-            let program_index = run.frames.get(alias.frame?)?.program_index;
+            let program_index = alias.frame?;
             if run.globals.is_null() || program_index >= run.global_count {
                 None
             } else {
@@ -756,7 +862,7 @@ pub(crate) fn slot_alias_ref(run: &JitRun, alias: SlotAlias) -> Option<&Variant>
     let index = alias.index as usize;
     match alias.area {
         AREA_GLOBAL => {
-            let program_index = run.frames.get(alias.frame?)?.program_index;
+            let program_index = alias.frame?;
             if run.globals.is_null() || program_index >= run.global_count {
                 None
             } else {
@@ -791,22 +897,21 @@ pub(crate) fn param_array_aliases_for_call_arg(
 
 pub(crate) fn prune_param_array_aliases_from_depth(run: &mut JitRun, depth: usize) {
     run.param_array_aliases.retain(|array, aliases| {
-        array.frame.is_none_or(|frame| frame < depth)
-            && aliases
-                .iter()
-                .flatten()
-                .all(|alias| alias.frame.is_none_or(|frame| frame < depth))
+        (array.area == AREA_GLOBAL || array.frame.is_none_or(|frame| frame < depth))
+            && aliases.iter().flatten().all(|alias| {
+                alias.area == AREA_GLOBAL || alias.frame.is_none_or(|frame| frame < depth)
+            })
     });
 }
 
 pub(crate) fn prune_as_new_slots_from_depth(run: &mut JitRun, depth: usize) {
     run.as_new_slots
-        .retain(|slot, _| slot.frame.is_none_or(|frame| frame < depth));
+        .retain(|slot, _| slot.area == AREA_GLOBAL || slot.frame.is_none_or(|frame| frame < depth));
 }
 
 pub(crate) fn prune_for_each_from_depth(run: &mut JitRun, depth: usize) {
     run.for_each
-        .retain(|iter, _| iter.frame.is_none_or(|frame| frame < depth));
+        .retain(|iter, _| iter.area == AREA_GLOBAL || iter.frame.is_none_or(|frame| frame < depth));
 }
 
 pub(crate) fn is_current_frame_temp_at_or_after(
@@ -1476,7 +1581,11 @@ pub(crate) unsafe fn seed_jit_member_frame_args(
                     return ST_FAULT;
                 }
                 let frame_index = match arg.area as u32 {
-                    AREA_GLOBAL | AREA_LOCAL | AREA_TEMP => Some(caller_frame),
+                    AREA_GLOBAL => run
+                        .frames
+                        .get(caller_frame)
+                        .map(|frame| frame.program_index),
+                    AREA_LOCAL | AREA_TEMP => Some(caller_frame),
                     _ => return ST_FAULT,
                 };
                 let alias = SlotAlias {

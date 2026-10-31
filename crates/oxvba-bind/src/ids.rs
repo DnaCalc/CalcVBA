@@ -412,7 +412,7 @@ impl IdAllocator {
             .unwrap_or(VarTypeRef::Variant);
         let is_class_member = class_name.is_some();
         let Frame {
-            params,
+            mut params,
             locals,
             return_local,
             local_of,
@@ -426,6 +426,16 @@ impl IdAllocator {
             is_class_member,
             type_ctx,
         )?;
+
+        if let Some(symbol) = proc_sym {
+            for (index, parameter) in params
+                .iter_mut()
+                .skip(usize::from(is_class_member))
+                .enumerate()
+            {
+                parameter.default = env.optional_default(symbol, index).cloned();
+            }
+        }
 
         // `Static` locals persist across calls: allocate one zero-initialized
         // bundle global per static local (mangled by proc so display names stay
@@ -588,6 +598,7 @@ fn build_frame(
     // frame slot 0 — exactly where vm2's `run_proc_with_me` binds the receiver.
     let me_local = if is_class_member {
         params.push(CoreParam {
+            default: None,
             name: "Me".into(),
             // The receiver is the enclosing class instance; precise `Object(class)`
             // typing of `Me` is deferred to the object-elaboration sub-section.
@@ -634,6 +645,7 @@ fn build_frame(
                     .map(|p| p.mode == PassingMode::ByRef)
                     .unwrap_or(true);
             params.push(CoreParam {
+                default: None,
                 name: alloc_name(env, sym.name),
                 ty,
                 optional,

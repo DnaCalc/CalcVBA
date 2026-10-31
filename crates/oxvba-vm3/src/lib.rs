@@ -876,6 +876,11 @@ impl<'h> Vm3<'h> {
         Ok(())
     }
 
+    /// Start a new host-call budget while retaining the linked project's state.
+    pub fn set_execution_budget(&mut self, steps: u64) {
+        self.exec.remaining_steps = Some(steps);
+    }
+
     /// Invoke a standard-module function with already coerced value arguments.
     /// No hidden Me slot is inserted and host ByRef arguments are private copies.
     pub fn invoke_function_values(
@@ -5579,6 +5584,7 @@ mod tests {
 
     fn long_param(name: &str) -> CoreParam {
         CoreParam {
+            default: None,
             name: name.into(),
             ty: VarTypeRef::Builtin(BuiltinType::Long),
             optional: false,
@@ -5589,6 +5595,7 @@ mod tests {
 
     fn byval_long_param(name: &str) -> CoreParam {
         CoreParam {
+            default: None,
             name: name.into(),
             ty: VarTypeRef::Builtin(BuiltinType::Long),
             optional: false,
@@ -5599,6 +5606,7 @@ mod tests {
 
     fn optional_long_param(name: &str) -> CoreParam {
         CoreParam {
+            default: None,
             name: name.into(),
             ty: VarTypeRef::Builtin(BuiltinType::Long),
             optional: true,

@@ -92,7 +92,7 @@ mod lowering;
 
 pub use crate::consts::JIT_NOT_IMPLEMENTED_MESSAGE;
 pub use crate::error::{JitError, JitFinalErr, JitOutcome};
-pub use crate::runtime::{CompiledImage, JitEngine};
+pub use crate::runtime::{CompiledImage, JitEngine, JitSession};
 
 pub(crate) use crate::admission::*;
 pub(crate) use crate::consts::*;

@@ -21,6 +21,7 @@ oxvba-symbol.workspace = true
 oxvba-vm3.workspace = true
 oxvba-jit = { workspace = true, optional = true }
 thiserror.workspace = true
+self_cell = "1.2"
 
 [dev-dependencies]
 oxvba-runtime = { workspace = true, features = ["live-counters"] }

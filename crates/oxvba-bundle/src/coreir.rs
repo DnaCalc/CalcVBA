@@ -126,8 +126,10 @@ pub struct CoreProc {
     pub body: Vec<CoreStmt>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CoreParam {
+    /// Compiler-folded explicit Optional default, before declared-type coercion.
+    pub default: Option<CoreConst>,
     pub name: String,
     /// The declared static type of the parameter (see [`CoreGlobal::ty`]).
     pub ty: VarTypeRef,

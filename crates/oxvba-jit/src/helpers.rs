@@ -7819,7 +7819,11 @@ pub(crate) unsafe extern "C" fn rt_jit_direct_enter_proc_i32(
                         return ST_FAULT;
                     }
                     let frame_index = match arg.area as u32 {
-                        AREA_GLOBAL | AREA_LOCAL | AREA_TEMP => Some(caller_frame),
+                        AREA_GLOBAL => run
+                            .frames
+                            .get(caller_frame)
+                            .map(|frame| frame.program_index),
+                        AREA_LOCAL | AREA_TEMP => Some(caller_frame),
                         _ => return ST_FAULT,
                     };
                     let alias = SlotAlias {
@@ -8030,7 +8034,11 @@ pub(crate) unsafe extern "C" fn rt_jit_call_extern_proc_i32(
                             return ST_FAULT;
                         }
                         let frame_index = match arg.area as u32 {
-                            AREA_GLOBAL | AREA_LOCAL | AREA_TEMP => Some(caller_frame),
+                            AREA_GLOBAL => run
+                                .frames
+                                .get(caller_frame)
+                                .map(|frame| frame.program_index),
+                            AREA_LOCAL | AREA_TEMP => Some(caller_frame),
                             _ => return ST_FAULT,
                         };
                         let alias = SlotAlias {
@@ -8303,7 +8311,11 @@ pub(crate) unsafe extern "C" fn rt_jit_call_proc_i32(
                             return ST_FAULT;
                         }
                         let frame_index = match arg.area as u32 {
-                            AREA_GLOBAL | AREA_LOCAL | AREA_TEMP => Some(caller_frame),
+                            AREA_GLOBAL => run
+                                .frames
+                                .get(caller_frame)
+                                .map(|frame| frame.program_index),
+                            AREA_LOCAL | AREA_TEMP => Some(caller_frame),
                             _ => return ST_FAULT,
                         };
                         let alias = SlotAlias {

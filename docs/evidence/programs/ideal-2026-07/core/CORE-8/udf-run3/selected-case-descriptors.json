@@ -1,0 +1,29 @@
+{
+  "schema": "oxvba.excel-vba-oracle-selected-case-sequence.v2",
+  "targeted_probe": true,
+  "contains_diagnostic_case": true,
+  "descriptor_count": 1,
+  "selection_sha256": "sha256:b2c48457f75b5d120e23450b100d0f67d72f2d03191e4cbe76b64f572f218403",
+  "descriptors": [
+    {
+      "schema": "oxvba.excel-vba-oracle-selected-case.v1",
+      "id": "windows-scalar-interop",
+      "purpose": "development UDF optional, ParamArray, range, caller, callback, error and recalculation observation",
+      "module_name": "OracleSelfTest",
+      "module_source": "Option Explicit\r\nPrivate ordinaryCalls As Long\r\nPrivate volatileCalls As Long\r\nPublic Function StateUdf(x) As Long\r\n    ordinaryCalls = ordinaryCalls + 1\r\n    StateUdf = ordinaryCalls\r\nEnd Function\r\nPublic Function VolStateUdf(x) As Long\r\n    Application.Volatile\r\n    volatileCalls = volatileCalls + 1\r\n    VolStateUdf = volatileCalls\r\nEnd Function\r\nPublic Function OptionalProbe(Optional a As Variant, Optional n As Long = 7) As String\r\n    OptionalProbe = CStr(IsMissing(a)) & \":\" & CStr(VarType(a)) & \":\" & CStr(n)\r\nEnd Function\r\nPublic Function PackProbe(ParamArray a() As Variant) As String\r\n    Dim i As Long, text As String\r\n    text = CStr(LBound(a)) & \":\" & CStr(UBound(a))\r\n    For i = LBound(a) To UBound(a)\r\n        text = text & \":\" & CStr(VarType(a(i)))\r\n    Next i\r\n    PackProbe = text\r\nEnd Function\r\nPublic Function RangeProbe(r As Range) As String\r\n    RangeProbe = CStr(r.Count) & \":\" & CStr(r.Cells(1, 1).Value2) & \":\" & Application.Caller.Address\r\nEnd Function\r\nPublic Function WfProbe(r As Range) As Double\r\n    WfProbe = Application.WorksheetFunction.Sum(r)\r\nEnd Function\r\nPublic Function WfFault() As Long\r\n    On Error GoTo Failed\r\n    WfFault = Application.WorksheetFunction.Match(\"missing\", Array(1, 2), 0)\r\n    Exit Function\r\nFailed:\r\n    WfFault = Err.Number\r\nEnd Function\r\nPublic Function FailProbe()\r\n    Err.Raise 5\r\nEnd Function\r\nPublic Function ErrorProbe()\r\n    ErrorProbe = CVErr(2042)\r\nEnd Function\r\nPublic Function HandledFault()\r\n    On Error Resume Next\r\n    Err.Raise 5\r\n    HandledFault = Err.Number\r\nEnd Function\r\nPublic Function ReadErr()\r\n    ReadErr = Err.Number\r\nEnd Function\r\nPublic Function RunProbe() As String\r\n    On Error GoTo RunFailed\r\n    Dim stage As String\r\n    stage = \"start\"\r\n    Dim ws As Worksheet, text As String, i As Long, oldCalc As Long\r\n    Set ws = ThisWorkbook.Worksheets(1)\r\n    stage = \"calculation\"\r\n    oldCalc = Application.Calculation\r\n    Application.Calculation = xlCalculationManual\r\n    stage = \"write inputs\"\r\n    ws.Range(\"A1\").Value2 = 40\r\n    ws.Range(\"B1\").Formula = \"=StateUdf(A1)\"\r\n    ws.Range(\"C1\").Formula = \"=VolStateUdf(A1)\"\r\n    stage = \"calculate\"\r\n    Application.Calculate\r\n    text = \"state=\" & ws.Range(\"B1\").Value2 & \":\" & ws.Range(\"C1\").Value2\r\n    Application.Calculate\r\n    text = text & \",\" & ws.Range(\"B1\").Value2 & \":\" & ws.Range(\"C1\").Value2\r\n    ws.Range(\"A2\").Value2 = 12\r\n    Application.Calculate\r\n    text = text & \",\" & ws.Range(\"B1\").Value2 & \":\" & ws.Range(\"C1\").Value2\r\n    ws.Range(\"A1\").Value2 = 41\r\n    Application.Calculate\r\n    text = text & \",\" & ws.Range(\"B1\").Value2 & \":\" & ws.Range(\"C1\").Value2\r\n    ws.Range(\"B1\").Calculate\r\n    text = text & \",forced=\" & ws.Range(\"B1\").Value2\r\n    Dim formulas As Variant\r\n    formulas = Array(\"=OptionalProbe()\", \"=OptionalProbe(,9)\", \"=OptionalProbe(A3)\", \"=OptionalProbe(2)\", \"=PackProbe()\", \"=PackProbe(1,2,3)\", \"=PackProbe(,2)\", \"=RangeProbe(A1:A2)\", \"=WfProbe(A1:A2)\", \"=WfFault()\", \"=ErrorProbe()\", \"=HandledFault()\", \"=ReadErr()\")\r\n    For i = 0 To UBound(formulas)\r\n        stage = \"formula \" & CStr(i)\r\n        ws.Cells(i + 1, 4).Formula = formulas(i)\r\n        ws.Cells(i + 1, 4).Calculate\r\n        text = text & \"|\" & CStr(ws.Cells(i + 1, 4).Value2)\r\n    Next i\r\n    Application.Calculation = oldCalc\r\n    RunProbe = text\r\n    Exit Function\r\nRunFailed:\r\n    RunProbe = \"fault:\" & CStr(Err.Number) & \":\" & Err.Description & \":\" & stage & \":\" & text\r\nEnd Function\r\n\r\n",
+      "module_sha256": "sha256:d3f60e4fa46719f423b19098b9b40c81143630feff18844dab71a5e63b6ecc04",
+      "expected_compile_status": "ok",
+      "expected_run_status": "ok",
+      "run_procedure": "OracleSelfTest.RunProbe",
+      "diagnostic_only": true,
+      "expected_value": "state=2:2,2:3,2:4,3:5,forced=4|True:10:7|True:10:9|False:0:7|False:5:7|0:-1|0:2:5:5:5|0:1:10:5|2:41:$D$8|53|1004|Error 2042|5|5",
+      "expected_selected_token": null,
+      "expected_expanded_line": null,
+      "macro_probe_target": "OracleSelfTest.RunProbe",
+      "invocation_observation_prefix": null,
+      "evidence_contract": "clean-compile-run-no-dialog-v1",
+      "expected_runtime_err": null,
+      "descriptor_sha256": "sha256:58660027b0dfb3113661d3d8bedafea7700e98082e14e11c311ea5fcda9dda2b"
+    }
+  ]
+}

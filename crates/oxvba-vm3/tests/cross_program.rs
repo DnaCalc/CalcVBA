@@ -42,6 +42,7 @@ fn lib_program() -> CoreProgram {
         kind: ProcedureKind::Function,
         params: vec![
             CoreParam {
+                default: None,
                 name: "a".into(),
                 ty: oxvba_bundle::VarTypeRef::Variant,
                 optional: false,
@@ -49,6 +50,7 @@ fn lib_program() -> CoreProgram {
                 variadic: false,
             },
             CoreParam {
+                default: None,
                 name: "b".into(),
                 ty: oxvba_bundle::VarTypeRef::Variant,
                 optional: false,
@@ -255,6 +257,7 @@ fn lib_apply_program() -> CoreProgram {
         name: "Apply".into(),
         kind: ProcedureKind::Function,
         params: vec![CoreParam {
+            default: None,
             name: "o".into(),
             ty: oxvba_bundle::VarTypeRef::Variant,
             optional: false,
@@ -306,6 +309,7 @@ fn app_with_thing_program() -> CoreProgram {
         name: "GetVal".into(),
         kind: ProcedureKind::Function,
         params: vec![CoreParam {
+            default: None,
             name: "me".into(),
             ty: oxvba_bundle::VarTypeRef::Variant,
             optional: false,
@@ -404,6 +408,7 @@ fn lib_apply_global_arg_program() -> CoreProgram {
         name: "Apply".into(),
         kind: ProcedureKind::Function,
         params: vec![CoreParam {
+            default: None,
             name: "o".into(),
             ty: oxvba_bundle::VarTypeRef::Variant,
             optional: false,
@@ -469,6 +474,7 @@ fn app_echo_program() -> CoreProgram {
         kind: ProcedureKind::Function,
         params: vec![
             CoreParam {
+                default: None,
                 name: "me".into(),
                 ty: oxvba_bundle::VarTypeRef::Variant,
                 optional: false,
@@ -476,6 +482,7 @@ fn app_echo_program() -> CoreProgram {
                 variadic: false,
             },
             CoreParam {
+                default: None,
                 name: "n".into(),
                 ty: oxvba_bundle::VarTypeRef::Variant,
                 optional: false,
@@ -573,6 +580,7 @@ fn lib_widget_program() -> CoreProgram {
         name: "Val".into(),
         kind: ProcedureKind::Function,
         params: vec![CoreParam {
+            default: None,
             name: "me".into(),
             ty: oxvba_bundle::VarTypeRef::Variant,
             optional: false,

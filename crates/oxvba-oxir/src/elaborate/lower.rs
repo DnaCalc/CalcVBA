@@ -3058,6 +3058,7 @@ mod tests {
             name: "UseOptional".to_string(),
             kind: ProcedureKind::Sub,
             params: vec![CoreParam {
+                default: None,
                 name: "count".to_string(),
                 ty: VarTypeRef::Builtin(BuiltinType::Long),
                 optional: true,
@@ -3339,6 +3340,7 @@ mod tests {
                     name: "Value".into(),
                     kind: ProcedureKind::PropertyGet,
                     params: vec![CoreParam {
+                        default: None,
                         name: "Me".into(),
                         ty: VarTypeRef::Variant,
                         optional: false,
@@ -3679,6 +3681,7 @@ mod tests {
             name: "Main".to_string(),
             kind: ProcedureKind::Sub,
             params: vec![CoreParam {
+                default: None,
                 name: "arg".to_string(),
                 ty: VarTypeRef::Udt("MyType".to_string()),
                 optional: false,

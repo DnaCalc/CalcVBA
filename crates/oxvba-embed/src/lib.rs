@@ -1,6 +1,7 @@
 //! Version-one value-call boundary for spreadsheet function hosts.
 //! See `docs/spec/UDF_EMBEDDING_V1.md` for scope, ownership and error mapping.
 
+use oxvba_bundle::coreir::CoreConst;
 use oxvba_bundle::{ExportTarget, ExportToken, ProcedureKind};
 use oxvba_hal::{HostServices, adapters::builder::HostBuilder};
 use oxvba_oxir::{FuncId, OxProgram, OxTy};
@@ -9,12 +10,14 @@ use oxvba_runtime::{
     safe_array::{SafeArray, SafeArrayBound},
 };
 use oxvba_symbol::manifest as sym;
-use std::sync::Arc;
+use std::{cell::RefCell, sync::Arc};
 
 /// Spreadsheet values; array cells are row-major and contain scalar values.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Empty,
+    /// An omitted positional argument, distinct from a blank cell.
+    Missing,
     Number(f64),
     Text(String),
     Boolean(bool),
@@ -80,9 +83,10 @@ pub enum Error {
 
 /// Compiled semantic module, owned by the caller. It neither executes Main nor
 /// registers names in a global registry. Public functions come from compiler exports.
+#[derive(Clone)]
 pub struct Module {
     program: OxProgram,
-    functions: Vec<(Function, FuncId)>,
+    functions: Vec<(Function, FuncId, Vec<Option<CoreConst>>)>,
     host: Arc<dyn HostServices>,
 }
 
@@ -112,6 +116,16 @@ impl Module {
         if !program.classes.is_empty() || !program.record_layouts.is_empty() {
             return Err(Error::UnsupportedSignature(
                 "classes and UDTs require the project-session API".into(),
+            ));
+        }
+        if program.funcs.iter().any(|function| {
+            function
+                .blocks
+                .iter()
+                .any(|block| matches!(block.terminator, oxvba_oxir::OxTerminator::Halt))
+        }) {
+            return Err(Error::UnsupportedSignature(
+                "End requires whole-project reset semantics".into(),
             ));
         }
         let mut functions = Vec::new();
@@ -151,6 +165,11 @@ impl Module {
                         .unwrap_or_default(),
                 },
                 FuncId(index),
+                core.procs[index]
+                    .params
+                    .iter()
+                    .map(|p| p.default.clone())
+                    .collect(),
             ));
         }
         Ok(Self {
@@ -167,19 +186,21 @@ impl Module {
     }
 
     pub fn functions(&self) -> impl ExactSizeIterator<Item = &Function> {
-        self.functions.iter().map(|(function, _)| function)
+        self.functions.iter().map(|(function, _, _)| function)
     }
 
     /// JIT compilation happens here once; unsupported images return an error.
     pub fn prepare(&self, backend: Backend) -> Result<Session<'_>, Error> {
         let executable = match backend {
-            Backend::Interpreter => Executable::Interpreter,
+            Backend::Interpreter => Executable::Interpreter(RefCell::new(None)),
             #[cfg(feature = "jit")]
-            Backend::Jit => Executable::Jit(Box::new(
-                oxvba_jit::JitEngine
+            Backend::Jit => {
+                let image = oxvba_jit::JitEngine
                     .compile_image(&[&self.program])
-                    .map_err(jit_error)?,
-            )),
+                    .map_err(jit_error)?;
+                let state = image.start_session(&*self.host).map_err(jit_error)?;
+                Executable::Jit(Box::new(image), RefCell::new(state))
+            }
             #[cfg(not(feature = "jit"))]
             Backend::Jit => return Err(Error::BackendUnavailable),
         };
@@ -191,61 +212,126 @@ impl Module {
 }
 
 enum Executable<'a> {
-    Interpreter,
+    Interpreter(RefCell<Option<oxvba_vm3::Vm3<'a>>>),
     #[cfg(feature = "jit")]
-    Jit(Box<oxvba_jit::CompiledImage<'a>>),
+    Jit(
+        Box<oxvba_jit::CompiledImage<'a>>,
+        RefCell<oxvba_jit::JitSession<'a>>,
+    ),
     #[cfg(not(feature = "jit"))]
     _Lifetime(std::marker::PhantomData<&'a ()>),
 }
 
 /// Borrows its semantic module and retains compiled code until dropped. Each
-/// invocation uses fresh globals/Err state and private copies of host arguments.
+/// invocation retains project storage and uses private copies of host arguments.
 pub struct Session<'a> {
     module: &'a Module,
     executable: Executable<'a>,
 }
 
-impl Session<'_> {
+impl<'a> Session<'a> {
+    /// Clear project storage without releasing retained compiled code.
+    pub fn reset(&self) -> Result<(), Error> {
+        match &self.executable {
+            Executable::Interpreter(state) => {
+                *state
+                    .try_borrow_mut()
+                    .map_err(|_| Error::Backend("session is already executing".into()))? = None
+            }
+            #[cfg(feature = "jit")]
+            Executable::Jit(image, state) => {
+                *state
+                    .try_borrow_mut()
+                    .map_err(|_| Error::Backend("session is already executing".into()))? =
+                    image.start_session(&*self.module.host).map_err(jit_error)?
+            }
+            #[cfg(not(feature = "jit"))]
+            Executable::_Lifetime(_) => unreachable!(),
+        }
+        Ok(())
+    }
+
     pub fn call(&self, name: &str, args: &[Value], max_steps: u64) -> Result<Value, Error> {
-        let (metadata, id) = self
+        let (metadata, id, defaults) = self
             .module
             .functions
             .iter()
-            .find(|(function, _)| {
+            .find(|(function, _, _)| {
                 function.name.eq_ignore_ascii_case(name)
                     || function.qualified_name.eq_ignore_ascii_case(name)
             })
             .ok_or_else(|| Error::UnknownFunction(name.into()))?;
-        if args.len() != metadata.parameters.len() {
+        let function = &self.module.program.funcs[id.0];
+        let variadic = metadata.parameters.last().is_some_and(|p| p.param_array);
+        let fixed = function.param_count - usize::from(variadic);
+        if (!variadic && args.len() > fixed)
+            || metadata
+                .parameters
+                .iter()
+                .take(fixed)
+                .enumerate()
+                .any(|(i, p)| {
+                    !p.optional && args.get(i).is_none_or(|a| matches!(a, Value::Missing))
+                })
+        {
             return Err(Error::ArgumentCount {
-                expected: metadata.parameters.len(),
+                expected: fixed,
                 received: args.len(),
             });
         }
-        let function = &self.module.program.funcs[id.0];
-        let mut values = Vec::with_capacity(args.len());
-        for (value, local) in args.iter().zip(&function.locals) {
-            if local.param.is_some_and(|param| param.variadic) {
-                return Err(Error::UnsupportedSignature(
-                    "ParamArray packing is not part of v1".into(),
-                ));
-            }
-            values.push(coerce_argument(to_variant(value)?, &local.ty)?);
+        let mut values = Vec::with_capacity(function.param_count);
+        for (index, local) in function.locals.iter().take(fixed).enumerate() {
+            let value = match args.get(index) {
+                Some(value) if !matches!(value, Value::Missing) => to_variant(value)?,
+                _ => match &defaults[index] {
+                    Some(value) => default_variant(value),
+                    None if local.ty == OxTy::Variant => Variant::from_error_code(-2147352572),
+                    None => Variant::empty(),
+                },
+            };
+            values.push(coerce_argument(value, &local.ty)?);
+        }
+        if variadic {
+            let tail = args
+                .iter()
+                .skip(fixed)
+                .map(to_variant)
+                .collect::<Result<Vec<_>, _>>()?;
+            values.push(Variant::from_safearray(SafeArray::from_variants(tail)));
         }
         let value = match &self.executable {
-            Executable::Interpreter => {
-                let mut vm = oxvba_vm3::Vm3::link_with_budget(
-                    &[&self.module.program],
-                    &*self.module.host,
-                    Some(max_steps),
-                )
-                .map_err(vm_error)?;
-                vm.invoke_function_values(*id, values).map_err(vm_error)?
+            Executable::Interpreter(state) => {
+                let mut state = state
+                    .try_borrow_mut()
+                    .map_err(|_| Error::Backend("session is already executing".into()))?;
+                if state.is_none() {
+                    *state = Some(
+                        oxvba_vm3::Vm3::link_with_budget(
+                            &[&self.module.program],
+                            &*self.module.host,
+                            Some(max_steps),
+                        )
+                        .map_err(vm_error)?,
+                    );
+                } else {
+                    state
+                        .as_mut()
+                        .expect("linked session")
+                        .set_execution_budget(max_steps);
+                }
+                state
+                    .as_mut()
+                    .expect("linked session")
+                    .invoke_function_values(*id, values)
+                    .map_err(vm_error)?
             }
             #[cfg(feature = "jit")]
-            Executable::Jit(compiled) => {
+            Executable::Jit(compiled, state) => {
+                let mut state = state
+                    .try_borrow_mut()
+                    .map_err(|_| Error::Backend("session is already executing".into()))?;
                 let mut outcome = compiled
-                    .invoke_function_values(&*self.module.host, *id, &values, max_steps)
+                    .invoke_in_session(&mut state, *id, &values, max_steps)
                     .map_err(jit_error)?;
                 if outcome.raised {
                     return Err(Error::Runtime {
@@ -332,6 +418,7 @@ fn type_name(ty: &OxTy) -> String {
 fn to_variant(value: &Value) -> Result<Variant, Error> {
     Ok(match value {
         Value::Empty => Variant::empty(),
+        Value::Missing => Variant::from_error_code(-2147352572),
         Value::Number(value) => {
             if !value.is_finite() {
                 return Err(Error::ValueConversion(
@@ -453,4 +540,45 @@ fn from_variant(value: &Variant, inside_array: bool) -> Result<Value, Error> {
             )));
         }
     })
+}
+
+self_cell::self_cell! {
+    pub struct OwnedSession {
+        owner: Module,
+        #[not_covariant]
+        dependent: Session,
+    }
+}
+
+impl Module {
+    /// Move this module into an owner that keeps its prepared session alive safely.
+    pub fn into_session(self, backend: Backend) -> Result<OwnedSession, Error> {
+        OwnedSession::try_new(self, |module| module.prepare(backend))
+    }
+}
+
+impl OwnedSession {
+    pub fn reset(&self) -> Result<(), Error> {
+        self.with_dependent(|_, session| session.reset())
+    }
+    pub fn call(&self, name: &str, args: &[Value], max_steps: u64) -> Result<Value, Error> {
+        self.with_dependent(|_, session| session.call(name, args, max_steps))
+    }
+}
+
+fn default_variant(value: &CoreConst) -> Variant {
+    match value {
+        CoreConst::Empty => Variant::empty(),
+        CoreConst::Null => Variant::null(),
+        CoreConst::Nothing => Variant::nothing(),
+        CoreConst::Bool(v) => Variant::from_bool(*v),
+        CoreConst::I16(v) => Variant::from_i16(*v),
+        CoreConst::I32(v) => Variant::from_i32(*v),
+        CoreConst::I64(v) => Variant::from_i64(*v),
+        CoreConst::F64(v) => Variant::from_f64(f64::from_bits(*v)),
+        CoreConst::F32(v) => Variant::from_f32(f32::from_bits(*v)),
+        CoreConst::Currency(v) => Variant::from_currency_scaled_i64(*v),
+        CoreConst::Date(v) => Variant::from_date_f64(f64::from_bits(*v)),
+        CoreConst::Str(v) => Variant::from_string(v.as_str()),
+    }
 }

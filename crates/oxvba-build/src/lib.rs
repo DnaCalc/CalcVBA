@@ -163,6 +163,28 @@ pub fn build_wrapped_com_server(
     })
 }
 
+/// Package a project closure as the current typed executable artifact. This
+/// target emits no wrapper and makes no native DLL/EXE claim.
+pub fn build_oximage(project_path: &Path, out_dir: &Path) -> Result<PathBuf, BuildError> {
+    let closure = oxvba_project::load_project_closure(project_path)?;
+    let root = closure
+        .last()
+        .ok_or_else(|| BuildError::EmptyProjectClosure {
+            path: project_path.display().to_string(),
+        })?;
+    let image = build_artifacts(&closure)?;
+    let bytes = image
+        .to_bytes()
+        .map_err(|err| BuildError::Elaborate(err.to_string()))?;
+    fs::create_dir_all(out_dir).map_err(|source| BuildError::Io {
+        path: out_dir.display().to_string(),
+        source,
+    })?;
+    let path = out_dir.join(format!("{}.oxi", artifact_stem(&root.project_name)));
+    write_bytes(&path, &bytes)?;
+    Ok(path)
+}
+
 fn load_single_project(path: &Path) -> Result<oxvba_project::LoadedProject, BuildError> {
     if path
         .extension()
@@ -191,9 +213,8 @@ fn validate_wrapped_com_server_project(
     Ok(())
 }
 
-/// Bind the closure ONCE, then elaborate to the vm3 `OxImage` (typed OxIR) — the sole runtime
-/// artifact. A project that fails to elaborate cannot run on vm3, so it is surfaced as a build
-/// error (the build commits to vm3 as the runtime).
+/// Bind the closure once, then elaborate the shared typed OxImage artifact.
+/// VM3 and JIT execute this artifact; backend-specific admission happens when run.
 fn build_artifacts(
     closure: &[oxvba_symbol::manifest::SymbolProjectManifest],
 ) -> Result<oxvba_oxir::OxImage, BuildError> {

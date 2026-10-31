@@ -484,7 +484,10 @@ pub fn run_ox_programs(executor: Executor, programs: &[oxvba_oxir::OxProgram]) -
                     Err(oxvba_vm3::Vm3Error::Unimplemented { what }) => {
                         RunOutcome::unsupported(what)
                     }
-                    Err(oxvba_vm3::Vm3Error::Malformed(err)) => RunOutcome {
+                    Err(
+                        err @ (oxvba_vm3::Vm3Error::Malformed(_)
+                        | oxvba_vm3::Vm3Error::BudgetExceeded),
+                    ) => RunOutcome {
                         result: Err(format!("vm3: {err}")),
                         err: FinalErr::default(),
                         raised: false,

@@ -57,7 +57,7 @@ impl<'p> Compiler<'p> {
             .collect::<Vec<_>>();
 
         Ok(CompiledImage {
-            module: compiler.module,
+            module: Some(compiler.module),
             programs: programs.to_vec(),
             functions,
         })
@@ -273,6 +273,10 @@ impl<'a> LowerFunc<'a> {
                 .transpose()?;
             let clif_block = self.clif_block(block.id)?;
             builder.switch_to_block(clif_block);
+            let checkpoint = self.import(builder, module, self.imports.execution_step);
+            let call = builder.ins().call(checkpoint, &[self.state]);
+            let status = builder.inst_results(call)[0];
+            self.return_if_not_ok(builder, status);
             for inst in &block.instrs {
                 self.lower_inst(builder, module, inst)?;
             }
@@ -6459,6 +6463,9 @@ impl<'a> LowerFunc<'a> {
         descriptor_id: u32,
         args: &[OxCallArg],
     ) -> Result<(), JitError> {
+        if !cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+            return Err(JitError::unsupported("native/COM calls start in M4-9"));
+        }
         if let Some(dst) = dst {
             self.ensure_variant_carrier_place(dst)?;
         }
@@ -6604,11 +6611,11 @@ impl<'a> LowerFunc<'a> {
         let shape = match native_impl {
             NativeImplId::Like => "Like(Variant, Variant, compare-const)",
             NativeImplId::MidStmt => "MidStmt(target, start[, count], value)",
-            NativeImplId::CreateObject => "CreateObject(\"OxVba.TestDispatch\")",
+            NativeImplId::CreateObject => "CreateObject",
             NativeImplId::DebugPrint => "Debug.Print(value)",
             _ => {
                 return Err(JitError::unsupported(format!(
-                    "M4-4 CallNative built-in subset currently lowers only Like, MidStmt, fixture-backed CreateObject, and Debug.Print, got {native_impl:?}"
+                    "M4-4 CallNative built-in subset currently lowers only Like, MidStmt, CreateObject, and Debug.Print, got {native_impl:?}"
                 )));
             }
         };
@@ -6670,16 +6677,16 @@ impl<'a> LowerFunc<'a> {
                         args.len()
                     )));
                 }
-                let OxCallArg::Operand(OxOperand::Const(OxConst::Str(prog_id))) = &args[0] else {
+                let OxCallArg::Operand(prog_id) = &args[0] else {
                     return Err(JitError::unsupported(format!(
-                        "M4-4 CallNative {shape} subset requires a literal ProgID"
+                        "CallNative {shape} requires an ordinary ProgID operand"
                     )));
                 };
-                if prog_id.eq_ignore_ascii_case("OxVba.TestDispatch") {
+                if self.is_supported_variant_extern_operand(prog_id)? {
                     Ok(())
                 } else {
                     Err(JitError::unsupported(format!(
-                        "M4-4 CallNative {shape} subset is limited to OxVba.TestDispatch, got {prog_id:?}"
+                        "CallNative {shape} does not support ProgID operand {prog_id:?}"
                     )))
                 }
             }

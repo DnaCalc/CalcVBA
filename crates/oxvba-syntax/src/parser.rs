@@ -1088,13 +1088,9 @@ impl<'a> Parser<'a> {
 
         // End Sub
         self.eat_trivia();
-        if self.at(SyntaxKind::KwEnd) {
-            self.bump();
-            self.eat_whitespace();
-            if self.at(SyntaxKind::KwSub) {
-                self.bump();
-            }
-        }
+        self.expect(SyntaxKind::KwEnd);
+        self.eat_whitespace();
+        self.expect(SyntaxKind::KwSub);
         self.eat_to_eol();
 
         self.finish_node();
@@ -1159,13 +1155,9 @@ impl<'a> Parser<'a> {
 
         // End Function
         self.eat_trivia();
-        if self.at(SyntaxKind::KwEnd) {
-            self.bump();
-            self.eat_whitespace();
-            if self.at(SyntaxKind::KwFunction) {
-                self.bump();
-            }
-        }
+        self.expect(SyntaxKind::KwEnd);
+        self.eat_whitespace();
+        self.expect(SyntaxKind::KwFunction);
         self.eat_to_eol();
 
         self.finish_node();
@@ -1633,7 +1625,7 @@ impl<'a> Parser<'a> {
         }
 
         self.eat_trivia();
-        self.eat(SyntaxKind::RParen);
+        self.expect(SyntaxKind::RParen);
         self.finish_node(); // ParamList
     }
 
@@ -3611,6 +3603,16 @@ mod tests {
     }
 
     #[test]
+    fn parameter_list_requires_its_closing_parenthesis() {
+        for source in ["Function Broken(\n", "Sub Broken(value As Long\nEnd Sub\n"] {
+            assert!(
+                !parse(source).errors().is_empty(),
+                "accepted malformed declaration: {source}"
+            );
+        }
+    }
+
+    #[test]
     fn green_root_clone_preserves_shared_identity() {
         let src = "Sub T()\n    x = 1\nEnd Sub\n";
         let p = parse(src);
@@ -4274,6 +4276,27 @@ mod tests {
         assert_eq!(p.syntax().text(), src);
         let lits = collect_nodes(&p.syntax(), SyntaxKind::LiteralExpr);
         assert!(lits.len() >= 5, "expected special literals, got {:?}", lits);
+    }
+
+    #[test]
+    fn procedure_terminators_are_required_without_losing_source() {
+        for source in [
+            "Function Broken()\n",
+            "Function Broken()\nBroken = 42\n",
+            "Function Broken(): Broken = 42: End Sub\n",
+            "Sub Broken()\n",
+            "Sub Broken(): End Function\n",
+        ] {
+            let parsed = parse(source);
+            assert_eq!(parsed.syntax().text(), source);
+            assert!(!parsed.errors().is_empty(), "admitted {source:?}");
+        }
+        for source in [
+            "Function Answer(): Answer = 42: End Function\n",
+            "Sub Main()\nEnd Sub\n",
+        ] {
+            assert!(parse(source).errors().is_empty(), "rejected {source:?}");
+        }
     }
 }
 

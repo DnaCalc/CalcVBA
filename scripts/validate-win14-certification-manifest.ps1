@@ -232,7 +232,9 @@ try {
         $fixture = $fixtureByKey[$key]
         $residual = $residualByKey[$key]
         $producerSatisfied = $key -ceq "WIN-ABI-CARRIER|WAC-TARGET-DEV-ENV"
-        $expectedCanonicalTruth = if ($producerSatisfied) { "verified" } else { "planned" }
+        $expectedCanonicalTruth = if ($producerSatisfied) { "verified" }
+            elseif ($key -in @("WIN-COM-CLIENT|WCC-PLAN-LATE", "WIN-NATIVE-IMPORT|WNI-PLAN-DECLARE")) { "in-progress" }
+            else { "planned" }
         $expectedProducerState = if ($producerSatisfied) { "satisfied" } else { "pending" }
         $expectedCaseId = "WIN14-$([string]$canonical.row_id)"
         if ([string]$case.case_id -ne $expectedCaseId -or [string]$case.claim_key -ne [string]$canonical.claim_key -or

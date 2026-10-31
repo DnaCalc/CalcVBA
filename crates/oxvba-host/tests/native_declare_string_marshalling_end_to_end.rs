@@ -1,26 +1,38 @@
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 mod windows_native_declare_string_e2e {
     use oxvba_hal::model::HostPolicy;
     use oxvba_host::{DiagnosticPhase, Engine, HostConfig};
     use oxvba_runtime::Variant;
 
-    fn run_windows_host_backed(source: &str, jit_requested: bool) -> Option<Vec<Variant>> {
-        if jit_requested {
+    fn run_windows_host_backed(
+        source: &str,
+        jit_requested: bool,
+        jit_decline: Option<&str>,
+    ) -> Option<Vec<Variant>> {
+        if let (true, Some(expected_decline)) = (jit_requested, jit_decline) {
             let mut engine = Engine::new(HostConfig::jit());
             engine.set_host_policy(HostPolicy::interactive_dev());
             let err = engine
                 .execute_source_with_variant_snapshot_clean(source)
-                .expect_err("native Declare should remain an explicit JIT decline");
+                .expect_err("pointer-helper writeback should remain an explicit JIT decline");
             let diagnostic = err.diagnostic();
             assert_eq!(err.phase(), DiagnosticPhase::Runtime);
             assert_eq!(diagnostic.code.as_str(), "RUN-E-JIT-UNSUPPORTED");
             assert_eq!(diagnostic.phase.as_str(), "runtime");
             assert_eq!(diagnostic.severity.as_str(), "error");
             assert_eq!(diagnostic.vba_error_number, None);
+            assert!(
+                err.message().contains(expected_decline),
+                "unexpected decline: {err}"
+            );
             return None;
         }
 
-        let mut engine = Engine::new(HostConfig::vm3());
+        let mut engine = Engine::new(if jit_requested {
+            HostConfig::jit()
+        } else {
+            HostConfig::vm3()
+        });
         engine.set_host_policy(HostPolicy::interactive_dev());
         Some(
             engine
@@ -42,7 +54,7 @@ mod windows_native_declare_string_e2e {
     }
 
     #[test]
-    fn loadlibrarya_byval_string_marshals_ansi_path_in_vm_and_rejects_jit() {
+    fn loadlibrarya_byval_string_marshals_ansi_path_on_vm3_and_jit() {
         let source = r#"
 Private Declare PtrSafe Function LoadLibrary Lib "kernel32" Alias "LoadLibraryA" (ByVal lpLibFileName As String) As LongPtr
 Private Declare PtrSafe Function FreeLibrary Lib "kernel32" (ByVal hLibModule As LongPtr) As Long
@@ -57,7 +69,7 @@ End Sub
 "#;
 
         for jit_requested in [false, true] {
-            let Some(snapshot) = run_windows_host_backed(source, jit_requested) else {
+            let Some(snapshot) = run_windows_host_backed(source, jit_requested, None) else {
                 continue;
             };
             let handle = snapshot
@@ -90,7 +102,8 @@ End Sub
 "#;
 
         for jit_requested in [false, true] {
-            let Some(snapshot) = run_windows_host_backed(source, jit_requested) else {
+            let Some(snapshot) = run_windows_host_backed(source, jit_requested, Some("Ptr {"))
+            else {
                 continue;
             };
             let handle = snapshot
@@ -121,13 +134,14 @@ Sub Main()
     utf8(3) = 104
     utf8(4) = 97
     utf8(5) = 0
-    resultText = String(5, "*")
+    resultText = String(5, 42)
     written = MultiByteToWideChar(CP_UTF8, 0, VarPtr(utf8(0)), -1, StrPtr(resultText), 6)
 End Sub
 "#;
 
         for jit_requested in [false, true] {
-            let Some(snapshot) = run_windows_host_backed(source, jit_requested) else {
+            let Some(snapshot) = run_windows_host_backed(source, jit_requested, Some("Ptr {"))
+            else {
                 continue;
             };
             assert!(
@@ -154,13 +168,14 @@ Sub Main()
     utf8(3) = 104
     utf8(4) = 97
     utf8(5) = 0
-    resultText = String(5, "*")
+    resultText = String(5, 42)
     written = OxDecodeUtf8Buffer(CP_UTF8, 0, VarPtr(utf8(0)), -1, StrPtr(resultText), 6)
 End Sub
 "#;
 
         for jit_requested in [false, true] {
-            let Some(snapshot) = run_windows_host_backed(source, jit_requested) else {
+            let Some(snapshot) = run_windows_host_backed(source, jit_requested, Some("Ptr {"))
+            else {
                 continue;
             };
             assert!(
@@ -185,7 +200,8 @@ End Sub
 "#;
 
         for jit_requested in [false, true] {
-            let Some(snapshot) = run_windows_host_backed(source, jit_requested) else {
+            let Some(snapshot) = run_windows_host_backed(source, jit_requested, Some("Ptr {"))
+            else {
                 continue;
             };
             assert!(
@@ -217,7 +233,8 @@ End Sub
 "#;
 
         for jit_requested in [false, true] {
-            let Some(snapshot) = run_windows_host_backed(source, jit_requested) else {
+            let Some(snapshot) = run_windows_host_backed(source, jit_requested, Some("Ptr {"))
+            else {
                 continue;
             };
             assert!(
@@ -249,7 +266,8 @@ End Sub
 "#;
 
         for jit_requested in [false, true] {
-            let Some(snapshot) = run_windows_host_backed(source, jit_requested) else {
+            let Some(snapshot) = run_windows_host_backed(source, jit_requested, Some("Ptr {"))
+            else {
                 continue;
             };
             assert!(
@@ -260,7 +278,7 @@ End Sub
     }
 
     #[test]
-    fn msvcrt_sqrt_round_trips_double_value_in_vm_and_rejects_jit() {
+    fn msvcrt_sqrt_round_trips_double_value_on_vm3_and_jit() {
         let source = r#"
 Private Declare PtrSafe Function sqrt Lib "msvcrt" (ByVal x As Double) As Double
 
@@ -271,7 +289,7 @@ End Sub
 "#;
 
         for jit_requested in [false, true] {
-            let Some(snapshot) = run_windows_host_backed(source, jit_requested) else {
+            let Some(snapshot) = run_windows_host_backed(source, jit_requested, None) else {
                 continue;
             };
             assert!(
@@ -282,7 +300,7 @@ End Sub
     }
 
     #[test]
-    fn oleaut32_varcyfromi4_byref_currency_writeback_round_trips_in_vm_and_rejects_jit() {
+    fn oleaut32_varcyfromi4_byref_currency_writeback_round_trips_on_vm3_and_jit() {
         let source = r#"
 Private Declare PtrSafe Function VarCyFromI4 Lib "oleaut32" (ByVal inputValue As Long, ByRef outValue As Currency) As Long
 
@@ -295,7 +313,7 @@ End Sub
 "#;
 
         for jit_requested in [false, true] {
-            let Some(snapshot) = run_windows_host_backed(source, jit_requested) else {
+            let Some(snapshot) = run_windows_host_backed(source, jit_requested, None) else {
                 continue;
             };
             assert!(
@@ -308,7 +326,7 @@ End Sub
     }
 
     #[test]
-    fn oleaut32_varboolfromi4_byref_boolean_writeback_round_trips_in_vm_and_rejects_jit() {
+    fn oleaut32_varboolfromi4_byref_boolean_writeback_round_trips_on_vm3_and_jit() {
         let source = r#"
 Private Declare PtrSafe Function VarBoolFromI4 Lib "oleaut32" (ByVal inputValue As Long, ByRef outValue As Boolean) As Long
 
@@ -320,7 +338,7 @@ End Sub
 "#;
 
         for jit_requested in [false, true] {
-            let Some(snapshot) = run_windows_host_backed(source, jit_requested) else {
+            let Some(snapshot) = run_windows_host_backed(source, jit_requested, None) else {
                 continue;
             };
             assert!(
@@ -331,7 +349,7 @@ End Sub
     }
 
     #[test]
-    fn oleaut32_varr8fromi4_byref_double_writeback_round_trips_in_vm_and_rejects_jit() {
+    fn oleaut32_varr8fromi4_byref_double_writeback_round_trips_on_vm3_and_jit() {
         let source = r#"
 Private Declare PtrSafe Function VarR8FromI4 Lib "oleaut32" (ByVal inputValue As Long, ByRef outValue As Double) As Long
 
@@ -343,7 +361,7 @@ End Sub
 "#;
 
         for jit_requested in [false, true] {
-            let Some(snapshot) = run_windows_host_backed(source, jit_requested) else {
+            let Some(snapshot) = run_windows_host_backed(source, jit_requested, None) else {
                 continue;
             };
             assert!(
@@ -354,7 +372,7 @@ End Sub
     }
 
     #[test]
-    fn oleaut32_varr4fromi4_byref_single_writeback_round_trips_in_vm_and_rejects_jit() {
+    fn oleaut32_varr4fromi4_byref_single_writeback_round_trips_on_vm3_and_jit() {
         let source = r#"
 Private Declare PtrSafe Function VarR4FromI4 Lib "oleaut32" (ByVal inputValue As Long, ByRef outValue As Single) As Long
 
@@ -366,7 +384,7 @@ End Sub
 "#;
 
         for jit_requested in [false, true] {
-            let Some(snapshot) = run_windows_host_backed(source, jit_requested) else {
+            let Some(snapshot) = run_windows_host_backed(source, jit_requested, None) else {
                 continue;
             };
             assert!(
@@ -377,7 +395,7 @@ End Sub
     }
 
     #[test]
-    fn oleaut32_vari2fromi4_byref_integer_writeback_round_trips_in_vm_and_rejects_jit() {
+    fn oleaut32_vari2fromi4_byref_integer_writeback_round_trips_on_vm3_and_jit() {
         let source = r#"
 Private Declare PtrSafe Function VarI2FromI4 Lib "oleaut32" (ByVal inputValue As Long, ByRef outValue As Integer) As Long
 
@@ -389,7 +407,7 @@ End Sub
 "#;
 
         for jit_requested in [false, true] {
-            let Some(snapshot) = run_windows_host_backed(source, jit_requested) else {
+            let Some(snapshot) = run_windows_host_backed(source, jit_requested, None) else {
                 continue;
             };
             assert!(
@@ -414,7 +432,8 @@ End Sub
 "#;
 
         for jit_requested in [false, true] {
-            let Some(snapshot) = run_windows_host_backed(source, jit_requested) else {
+            let Some(snapshot) = run_windows_host_backed(source, jit_requested, Some("Ptr {"))
+            else {
                 continue;
             };
             assert!(
@@ -440,7 +459,8 @@ End Sub
 "#;
 
         for jit_requested in [false, true] {
-            let Some(snapshot) = run_windows_host_backed(source, jit_requested) else {
+            let Some(snapshot) = run_windows_host_backed(source, jit_requested, Some("Ptr {"))
+            else {
                 continue;
             };
             assert!(
@@ -453,14 +473,14 @@ End Sub
     }
 
     #[test]
-    fn lstrcpya_byval_string_buffer_writes_back_in_vm_and_rejects_jit() {
+    fn lstrcpya_byval_string_buffer_writes_back_on_vm3_and_jit() {
         // The VBA pre-sized-buffer idiom: a `ByVal … As String` argument marshals
         // as a system-codepage ANSI copy, and the callee-mutated buffer converts
         // BACK into the variable after the call — `ByVal` notwithstanding.
         // lstrcpyA writes "alpha\0" over the front of the 10-char buffer; the
         // write-back must preserve the buffer's full length (`Len` stays 10, the
-        // "*" tail survives past the embedded NUL), and the VBA code trims at the
-        // C terminator as real callers do.
+        // "*" tail survives past the embedded NUL). Inspect the complete buffer
+        // as well as its known five-character prefix.
         let source = r#"
 Private Declare PtrSafe Function lstrcpyA Lib "kernel32" (ByVal dst As String, ByVal src As String) As LongPtr
 
@@ -469,20 +489,24 @@ Sub Main()
     Dim copied As String
     Dim keptLen As Long
 
-    buffer = String(10, "*")
+    buffer = String(10, 42)
     lstrcpyA buffer, "alpha"
     keptLen = Len(buffer)
-    copied = Left(buffer, InStr(buffer, Chr(0)) - 1)
+    copied = Left(buffer, 5)
 End Sub
 "#;
 
         for jit_requested in [false, true] {
-            let Some(snapshot) = run_windows_host_backed(source, jit_requested) else {
+            let Some(snapshot) = run_windows_host_backed(source, jit_requested, None) else {
                 continue;
             };
             assert!(
                 contains_string(&snapshot, "alpha"),
                 "lstrcpyA should write back through the ByVal String buffer for jit_requested={jit_requested}; snapshot={snapshot:?}"
+            );
+            assert!(
+                contains_string(&snapshot, "alpha\0****"),
+                "full buffer changed: {snapshot:?}"
             );
             assert!(
                 snapshot.iter().any(|value| value.as_i32() == Some(10)),
@@ -492,7 +516,7 @@ End Sub
     }
 
     #[test]
-    fn get_pgmptr_byref_string_reads_replaced_pointer_in_vm_and_rejects_jit() {
+    fn get_pgmptr_byref_string_reads_replaced_pointer_on_vm3_and_jit() {
         // `ByRef … As String` passes an `LPSTR*` cell. `_get_pgmptr` REPLACES the
         // pointer with a CRT-owned copy of the program path, so the read-back must
         // follow the replacement pointer (NUL-terminated ANSI) rather than the
@@ -511,7 +535,7 @@ End Sub
 "#;
 
         for jit_requested in [false, true] {
-            let Some(snapshot) = run_windows_host_backed(source, jit_requested) else {
+            let Some(snapshot) = run_windows_host_backed(source, jit_requested, None) else {
                 continue;
             };
             assert!(
@@ -524,7 +548,7 @@ End Sub
     }
 
     #[test]
-    fn sysallocstringbytelen_string_return_unmarshals_ansi_bstr_in_vm_and_rejects_jit() {
+    fn sysallocstringbytelen_string_return_unmarshals_ansi_bstr_on_vm3_and_jit() {
         // The VB contract for `Declare Function … As String`: the callee returns a
         // BSTR holding ANSI bytes; the runtime decodes it to Unicode and frees it.
         // SysAllocStringByteLen is that contract's own constructor — it copies the
@@ -540,7 +564,7 @@ End Sub
 "#;
 
         for jit_requested in [false, true] {
-            let Some(snapshot) = run_windows_host_backed(source, jit_requested) else {
+            let Some(snapshot) = run_windows_host_backed(source, jit_requested, None) else {
                 continue;
             };
             assert!(
@@ -551,7 +575,7 @@ End Sub
     }
 
     #[test]
-    fn err_lastdllerror_reads_os_error_after_native_declare_in_vm_and_rejects_jit() {
+    fn err_lastdllerror_reads_os_error_after_native_declare_on_vm3_and_jit() {
         // `SetLastError(N)` sets the thread's Win32 last-error to N; the HAL captures
         // `GetLastError` immediately after the native call, and `Err.LastDllError` reads
         // it back — proving the capture is wired end to end (not a constant 0).
@@ -566,7 +590,7 @@ End Sub
 "#;
 
         for jit_requested in [false, true] {
-            let Some(snapshot) = run_windows_host_backed(source, jit_requested) else {
+            let Some(snapshot) = run_windows_host_backed(source, jit_requested, None) else {
                 continue;
             };
             assert!(

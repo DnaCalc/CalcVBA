@@ -283,7 +283,9 @@ try {
             throw "validate-windows-current-stack-residuals: ledger row '$key' is not canonical"
         }
         $canonical = $canonicalByKey[$key]
-        $expectedCanonicalTruth = if ($key -eq "WIN-ABI-CARRIER|WAC-TARGET-DEV-ENV") { "verified" } else { "planned" }
+        $expectedCanonicalTruth = if ($key -eq "WIN-ABI-CARRIER|WAC-TARGET-DEV-ENV") { "verified" }
+            elseif ($key -in @("WIN-COM-CLIENT|WCC-PLAN-LATE", "WIN-NATIVE-IMPORT|WNI-PLAN-DECLARE")) { "in-progress" }
+            else { "planned" }
         if ([string]$canonical.truth_state -ne $expectedCanonicalTruth -or [string]$row.canonical_truth_state -ne $expectedCanonicalTruth) {
             throw "validate-windows-current-stack-residuals: '$key' canonical truth must be '$expectedCanonicalTruth'; support characterization cannot credit another row"
         }
@@ -453,7 +455,7 @@ try {
         }
     }
 
-    Write-Host "validate-windows-current-stack-residuals: ok (56 planned capability/control rows plus 1 verified noncertifying environment control; no capability credit)"
+    Write-Host "validate-windows-current-stack-residuals: ok (54 planned rows, 2 in-progress scalar delivery rows, 1 verified noncertifying environment control; no certification credit)"
 }
 finally {
     Pop-Location

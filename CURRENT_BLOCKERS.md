@@ -4,6 +4,16 @@ Date: 2026-09-21
 Status: current; no all-path blocker
 Authority: blockers only; ordinary unfinished capability work belongs in the three current worksets and canonical matrices
 
+## BLK-EXCEL-COMPILE-20261031 — Negative compile oracle lacks reliable pre-dismiss selection
+
+Status: open; runtime and other delivery work can continue. Owner: `bd-59co.3.15.6`.
+
+The development host starts normal Excel with TestCrashGuard add-in crash/recovery prompts. Explicit `/safe` permits the scalar runtime probe without changing add-ins, Trust Center, macro security or registry settings. `calcvba-scalar-verified-20261031` compiled through VBE command 578 and returned the expected scalar COM/Declare/Add2 result, with owned cleanup.
+
+The deliberately broken-module probe still fails to retain a reliable UIA selected token/full line before dismissal. Some attempts also expose guardian-ledger identity failures. No compile-diagnostic certification is claimed. Raw attempts are under `artifacts/windows-x64/excel-vba-oracle/calcvba-compile-*`; the retained run summary identifies the exact limitation.
+
+Next: repair the PID-scoped VBE selection/guardian path under WIN-14, then run `scripts/run-excel-vba-oracle.ps1 -EnvironmentId win-x64-dev-oracle-2026-07 -NoMatrixUpdate -DiagnosticCaseId compile-failure -SafeMode` and require the modal text, observed token `MissingOracleSymbol`, complete selected source line and owned cleanup. Do not lower the oracle's evidence requirements or modify Office security to obtain a pass. The pinned clean certification environment remains a separate existing prerequisite.
+
 ## BLK-BASELINE-001 — Linux baseline and cross-platform reconciliation remain open
 
 Status: open, progress available

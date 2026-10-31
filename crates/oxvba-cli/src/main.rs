@@ -32,6 +32,7 @@ fn main() {
     match cli_args.first().map(String::as_str) {
         Some("run-project") => run_project(cli_args),
         Some("build") => run_build(cli_args),
+        Some("run-image") => run_execute(cli_args),
         Some("run") | None => run_execute(cli_args),
         Some("help") | Some("--help") | Some("-h") => print_usage(),
         Some(other) => {
@@ -48,6 +49,8 @@ fn print_usage() {
          oxvba run <source.bas> [--dump-values] [--backend vm3|jit] [--jit] [bootstrap options]\n  \
          oxvba run-project [path] [--entry <Module.Procedure>] [--dump-values] [--backend vm3|jit] [--jit] [bootstrap options]\n  \
          oxvba build <project.basproj|project.vbp> --target WrappedComServer --out-dir <dir>\n\n\
+         oxvba build <project.basproj|project.vbp> --target OxImage --out-dir <dir>\n  \
+         oxvba run-image <project.oxi> [--backend vm3|jit] [--dump-values] [bootstrap options]\n\n\
          diagnostics:\n  \
          --diagnostic-format <human|json>\n  \
          --backend <vm3|jit>  (--jit is an alias for --backend jit)\n\n\
@@ -64,7 +67,11 @@ fn print_usage() {
 // run subcommand: execute a single VBA source module on the clean path
 // ---------------------------------------------------------------------------
 
-fn run_execute(cli_args: Vec<String>) {
+fn run_execute(mut cli_args: Vec<String>) {
+    let image_mode = cli_args.first().is_some_and(|arg| arg == "run-image");
+    if image_mode {
+        cli_args[0] = "run".into();
+    }
     let args = if cli_args.is_empty() {
         None
     } else {
@@ -104,7 +111,12 @@ fn run_execute(cli_args: Vec<String>) {
         .unwrap_or_else(|| "Sub Main()\nEnd Sub".to_string());
     let dump_values = args.as_ref().map(|a| a.dump_values).unwrap_or(false);
 
-    match engine.execute_source_with_variant_snapshot_clean(&source) {
+    let outcome = if image_mode {
+        engine.execute_image_bytes_with_variant_snapshot(source.as_bytes())
+    } else {
+        engine.execute_source_with_variant_snapshot_clean(&source)
+    };
+    match outcome {
         Ok(values) => {
             if dump_values {
                 print_values(&values);
@@ -231,10 +243,29 @@ fn run_project(args: Vec<String>) {
 fn run_build(args: Vec<String>) {
     let parsed = parse_build_args_from(args).unwrap_or_else(|| {
         eprintln!(
-            "usage: oxvba build <project.basproj|project.vbp> --target WrappedComServer --out-dir <dir> [--diagnostic-format <human|json>]"
+            "usage: oxvba build <project.basproj|project.vbp> --target <WrappedComServer|OxImage> --out-dir <dir> [--diagnostic-format <human|json>]"
         );
         std::process::exit(2);
     });
+
+    if parsed.oximage {
+        match oxvba_build::build_oximage(&parsed.project_path, &parsed.out_dir) {
+            Ok(path) => println!("OXI:{}", path.display()),
+            Err(err) => {
+                emit_diagnostic(
+                    "oxvba build",
+                    &OxDiagnostic::error(
+                        "BUILD-E-OXIMAGE",
+                        OxDiagnosticPhase::Host,
+                        err.to_string(),
+                    ),
+                    parsed.diagnostic_format,
+                );
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
 
     match oxvba_build::build_wrapped_com_server(&oxvba_build::WrappedComServerBuildOptions {
         project_path: parsed.project_path,
@@ -387,6 +418,7 @@ struct BuildArgs {
     project_path: PathBuf,
     out_dir: PathBuf,
     diagnostic_format: DiagnosticFormat,
+    oximage: bool,
 }
 
 fn parse_run_args_from(args: Vec<String>) -> Option<RunArgs> {
@@ -473,10 +505,9 @@ fn parse_build_args_from(args: Vec<String>) -> Option<BuildArgs> {
         i += 1;
     }
 
-    if !target
-        .as_deref()
-        .is_some_and(|target| target.eq_ignore_ascii_case("WrappedComServer"))
-    {
+    let target = target?;
+    let oximage = target.eq_ignore_ascii_case("OxImage") || target.eq_ignore_ascii_case("Bundle");
+    if !oximage && !target.eq_ignore_ascii_case("WrappedComServer") {
         return None;
     }
 
@@ -484,6 +515,7 @@ fn parse_build_args_from(args: Vec<String>) -> Option<BuildArgs> {
         project_path: project_path?,
         out_dir: out_dir?,
         diagnostic_format,
+        oximage,
     })
 }
 
@@ -928,7 +960,7 @@ mod tests {
     }
 
     #[test]
-    fn reject_build_args_without_wrapped_com_server_target() {
+    fn accept_bundle_compatibility_spelling_as_oximage_target() {
         let args = vec![
             "build".to_string(),
             "demo.basproj".to_string(),
@@ -937,7 +969,11 @@ mod tests {
             "--out-dir".to_string(),
             "target/oxvba-build/demo".to_string(),
         ];
-        assert!(parse_build_args_from(args).is_none());
+        assert!(
+            parse_build_args_from(args)
+                .expect("Bundle is an OxImage target")
+                .oximage
+        );
     }
 
     #[test]

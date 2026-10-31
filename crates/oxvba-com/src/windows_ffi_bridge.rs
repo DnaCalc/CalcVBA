@@ -193,6 +193,7 @@ static DLL_CACHE: Mutex<Option<DllCache>> = Mutex::new(None);
 // WideCharToMultiByte/MultiByteToWideChar code-page converters) exactly.
 unsafe extern "system" {
     fn LoadLibraryW(lp_lib_file_name: *const u16) -> *mut c_void;
+    fn FreeLibrary(h_module: *mut c_void) -> i32;
     fn GetModuleHandleW(lp_module_name: *const u16) -> *mut c_void;
     fn GetProcAddress(h_module: *mut c_void, lp_proc_name: *const u8) -> *mut c_void;
     fn WideCharToMultiByte(
@@ -219,6 +220,40 @@ unsafe extern "system" {
 const CP_ACP: u32 = 0;
 
 // ── Public API (Windows) ──
+
+/// One owned Windows loader reference. Keep it alive while using its exports.
+#[cfg(target_os = "windows")]
+#[derive(Debug)]
+pub struct OwnedLibrary(usize);
+
+#[cfg(target_os = "windows")]
+impl OwnedLibrary {
+    pub fn load(library: &str) -> Result<Self, String> {
+        for candidate in windows_library_candidates(library) {
+            let wide: Vec<u16> = candidate.encode_utf16().chain(std::iter::once(0)).collect();
+            // SAFETY: the terminated UTF-16 name is live for LoadLibraryW. A
+            // successful call acquires one reference, including already loaded DLLs.
+            let handle = unsafe { LoadLibraryW(wide.as_ptr()) };
+            if !handle.is_null() {
+                return Ok(Self(handle as usize));
+            }
+        }
+        Err(format!("LoadLibraryW failed for `{library}`"))
+    }
+
+    pub fn handle(&self) -> usize {
+        self.0
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for OwnedLibrary {
+    fn drop(&mut self) {
+        // SAFETY: this value owns exactly the loader reference acquired by load.
+        // Users keep the owner alive for every call through one of its exports.
+        unsafe { FreeLibrary(self.0 as *mut c_void) };
+    }
+}
 
 /// Loads a DLL by name. Returns an opaque module handle.
 /// The module is cached so subsequent loads of the same DLL are fast.
@@ -369,8 +404,8 @@ pub fn utf16_from_ansi(bytes: &[u8]) -> Vec<u16> {
 #[cfg(target_os = "windows")]
 pub fn get_proc_address(module: usize, name: &str) -> Result<usize, String> {
     let name_bytes: Vec<u8> = name.bytes().chain(std::iter::once(0)).collect();
-    // SAFETY: callers obtain `module` from load_library, whose cache never frees
-    // modules, so the HMODULE stays live for the process lifetime; `name_bytes` is a
+    // SAFETY: callers retain an OwnedLibrary or a process-cached load_library
+    // reference for this lookup and subsequent invocation; `name_bytes` is a
     // NUL-terminated buffer alive across the call that GetProcAddress only reads.
     let addr = unsafe { GetProcAddress(module as *mut c_void, name_bytes.as_ptr()) };
     if addr.is_null() {
@@ -385,8 +420,8 @@ pub fn get_proc_address(module: usize, name: &str) -> Result<usize, String> {
 /// Resolves a function by ordinal from a loaded module.
 #[cfg(target_os = "windows")]
 pub fn get_proc_address_ordinal(module: usize, ordinal: u16) -> Result<usize, String> {
-    // SAFETY: callers obtain `module` from load_library, whose cache never frees
-    // modules, so the HMODULE stays live; a u16 ordinal zero-extended into the
+    // SAFETY: callers retain an OwnedLibrary or process-cached loader reference
+    // for the lookup and invocation; a u16 ordinal zero-extended into the
     // pointer's low word (high bits zero) is the documented GetProcAddress
     // by-ordinal lookup form, so no string is dereferenced.
     let addr = unsafe { GetProcAddress(module as *mut c_void, ordinal as usize as *const u8) };
@@ -418,7 +453,7 @@ pub fn invoke_stdcall(
     #[cfg(target_arch = "x86_64")]
     {
         // SAFETY: `proc_addr` is an export resolved by get_proc_address from a module
-        // load_library keeps loaded; libffi builds the Win64 CIF from each argument's
+        // an OwnedLibrary or the process cache keeps loaded; libffi builds the Win64 CIF from each argument's
         // actual type, and every pointer-bearing argument (AnsiString/String buffers
         // borrowed from `args`, Pointer pins per
         // docs/spec/OXVBA_POINTER_HELPERS_CONTRACT_V1.md) stays alive until this

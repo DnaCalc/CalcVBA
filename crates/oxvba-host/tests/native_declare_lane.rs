@@ -12,7 +12,7 @@
 #![cfg(target_os = "windows")]
 
 use oxvba_hal::model::HostPolicy;
-use oxvba_host::{DiagnosticPhase, Engine, HostConfig};
+use oxvba_host::{Engine, HostConfig};
 use oxvba_runtime::{VarType, Variant};
 
 /// Run a source module on the vm3 backend under the interactive-dev policy (which
@@ -520,10 +520,11 @@ fn riff_shaped_dispcallfunc_vtable_call_writes_variant_result() {
 }
 
 #[test]
-fn native_declare_rejects_jit_without_falling_back() {
+#[cfg(target_arch = "x86_64")]
+fn scalar_native_declare_executes_on_jit_without_falling_back() {
     let mut engine = Engine::new(HostConfig::jit());
     engine.set_host_policy(HostPolicy::interactive_dev());
-    let err = engine
+    let values = engine
         .execute_source_with_variant_snapshot_clean(
             "Private Declare PtrSafe Function NativeSqrt Lib \"msvcrt\" Alias \"sqrt\" (ByVal x As Double) As Double\n\
              Sub Main()\n\
@@ -531,11 +532,6 @@ fn native_declare_rejects_jit_without_falling_back() {
              result = NativeSqrt(4)\n\
              End Sub",
         )
-        .expect_err("native Declare should remain an explicit JIT decline");
-    let diagnostic = err.diagnostic();
-    assert_eq!(err.phase(), DiagnosticPhase::Runtime);
-    assert_eq!(diagnostic.code.as_str(), "RUN-E-JIT-UNSUPPORTED");
-    assert_eq!(diagnostic.phase.as_str(), "runtime");
-    assert_eq!(diagnostic.severity.as_str(), "error");
-    assert_eq!(diagnostic.vba_error_number, None);
+        .expect("scalar native Declare should execute on Windows x64 JIT");
+    assert!(values.iter().any(|value| value.as_f64() == Some(2.0)));
 }

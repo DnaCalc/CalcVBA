@@ -869,6 +869,8 @@ unsafe fn maybe_drain_with_bridge(state: *mut RawExecState) -> Result<(), Fault>
 /// `For Each` cursors, and other engine-private execution mechanics stay in the owning
 /// engine. Cross-engine runtime state lives here.
 pub struct ExecState<'h> {
+    /// Optional host budget in OxIR basic-block entries, shared across calls.
+    pub remaining_steps: Option<u64>,
     pub programs: Vec<LoadedProgram<'h>>,
     pub default_error_source: String,
     pub err_engine: ErrEngine,
@@ -884,6 +886,7 @@ pub struct ExecState<'h> {
 impl<'h> ExecState<'h> {
     pub fn new(host: &'h dyn HostServices) -> Self {
         Self {
+            remaining_steps: None,
             programs: Vec::new(),
             default_error_source: "VBAProject".to_string(),
             err_engine: ErrEngine::default(),
@@ -896,6 +899,19 @@ impl<'h> ExecState<'h> {
             _not_send: PhantomData,
         }
     }
+
+    /// Charge one bounded execution checkpoint. Exhaustion is a host abort,
+    /// never a catchable VBA error, so On Error cannot defeat a host budget.
+    pub fn consume_execution_step(&mut self) -> bool {
+        match &mut self.remaining_steps {
+            None => true,
+            Some(0) => false,
+            Some(remaining) => {
+                *remaining -= 1;
+                true
+            }
+        }
+    }
 }
 
 /// C-ABI status code: operation completed.
@@ -904,6 +920,8 @@ pub const ST_OK: i32 = 0;
 pub const ST_FAULT: i32 = 1;
 /// C-ABI status code: VBA `End`/halt propagation.
 pub const ST_HALT: i32 = 2;
+/// Host execution budget exhausted; bypass VBA fault handlers while unwinding.
+pub const ST_ABORT: i32 = 3;
 
 pub const RT_ARITH_ADD: u32 = 1;
 pub const RT_ARITH_SUB: u32 = 2;
@@ -1021,6 +1039,25 @@ unsafe fn state_from_raw<'a>(state: *mut RawExecState) -> Option<&'a mut ExecSta
         // alignment, same-thread, and exclusivity obligations are imposed on the caller.
         Some(unsafe { &mut *(state as *mut ExecState<'a>) })
     }
+}
+
+/// Charge one OxIR block entry without raising VBA Err.
+///
+/// # Safety
+/// `state` must be null or satisfy the live same-thread unique handle contract
+/// of `exec_state_as_raw` for this synchronous call.
+pub unsafe extern "C" fn rt_execution_step(state: *mut RawExecState) -> i32 {
+    with_status(|| {
+        // SAFETY: the caller supplies the live unique execution-state handle.
+        let Some(exec) = (unsafe { state_from_raw(state) }) else {
+            return ST_FAULT;
+        };
+        if exec.consume_execution_step() {
+            ST_OK
+        } else {
+            ST_ABORT
+        }
+    })
 }
 
 /// Records `fault` in an ABI execution state and returns `ST_FAULT`.
@@ -3294,6 +3331,28 @@ pub fn default_error_help_context(code: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn execution_budget_exhaustion_never_wraps_or_modifies_vba_err() {
+        let host =
+            oxvba_hal::adapters::null::NullHostServices::new(oxvba_hal::HostPolicy::default());
+        for initial in 0..128 {
+            let mut state = ExecState::new(&host);
+            state.remaining_steps = Some(initial);
+            for _ in 0..initial {
+                assert!(state.consume_execution_step());
+            }
+            assert!(!state.consume_execution_step());
+            assert!(!state.consume_execution_step());
+            assert_eq!(state.remaining_steps, Some(0));
+            assert_eq!(state.err_engine.err.number, 0);
+        }
+        let mut state = ExecState::new(&host);
+        state.remaining_steps = Some(u64::MAX);
+        state.err_engine.err.number = 13;
+        assert!(state.consume_execution_step());
+        assert_eq!(state.remaining_steps, Some(u64::MAX - 1));
+        assert_eq!(state.err_engine.err.number, 13);
+    }
     use oxvba_com::{ComCallbackPayload, ComCallbackToken, ComMemberToken, ComObjectDescriptor};
     use oxvba_hal::adapters::null::NullHostServices;
     use oxvba_hal::{

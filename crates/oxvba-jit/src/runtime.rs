@@ -27,13 +27,44 @@ impl JitEngine {
 /// owned by this value.
 pub struct CompiledImage<'p> {
     #[allow(dead_code)]
-    pub(crate) module: JITModule,
+    pub(crate) module: Option<JITModule>,
     pub(crate) programs: Vec<&'p OxProgram>,
     pub(crate) functions: Vec<Vec<JitEntryFn>>,
 }
 
 impl<'p> CompiledImage<'p> {
     pub fn run<'a>(&'a self, host: &'a dyn HostServices) -> Result<JitOutcome, JitError> {
+        self.execute(host, None, None)
+    }
+
+    /// Call a standard-module function using private, already coerced values.
+    /// Code is retained by this image; each call receives fresh project state.
+    pub fn invoke_function_values(
+        &self,
+        host: &dyn HostServices,
+        func: FuncId,
+        args: &[Variant],
+        steps: u64,
+    ) -> Result<JitOutcome, JitError> {
+        let target = self
+            .programs
+            .last()
+            .and_then(|program| program.funcs.get(func.0))
+            .ok_or_else(|| JitError::Runtime("function index out of range".into()))?;
+        if target.param_count != args.len() || target.return_local.is_none() {
+            return Err(JitError::Runtime(
+                "function invocation signature mismatch".into(),
+            ));
+        }
+        self.execute(host, Some((func, args)), Some(steps))
+    }
+
+    fn execute(
+        &self,
+        host: &dyn HostServices,
+        invocation: Option<(FuncId, &[Variant])>,
+        steps: Option<u64>,
+    ) -> Result<JitOutcome, JitError> {
         let Some(entry_program_index) = self.programs.len().checked_sub(1) else {
             return Err(JitError::Runtime(
                 "compiled image has no programs".to_string(),
@@ -41,6 +72,7 @@ impl<'p> CompiledImage<'p> {
         };
         let entry_program = self.programs[entry_program_index];
         let mut exec = ExecState::new(host);
+        exec.remaining_steps = steps;
         exec.default_error_source = entry_program.unit_name.clone();
         exec.programs = self
             .programs
@@ -97,10 +129,16 @@ impl<'p> CompiledImage<'p> {
         let _proc_invoker_registration = ProcInvokerRegistration { state };
 
         oxvba_runtime::reset_pending_terminations();
-        if let Some(init) = entry_program.global_initializer {
+        for (program_index, program) in self.programs.iter().enumerate() {
+            let Some(init) = program.global_initializer else {
+                continue;
+            };
             // SAFETY: the current compiled-run boundary owns the live unique state handle;
             // typed references and owned values remain live and nonaliasing for this call.
-            let status = unsafe { self.invoke_func(entry_program_index, init, run_root, state) }?;
+            let status = unsafe { self.invoke_func(program_index, init, &[], run_root, state) }?;
+            if status == oxvba_rt_abi::ST_ABORT {
+                return Err(JitError::BudgetExceeded);
+            }
             if status == ST_FAULT {
                 return Ok(JitOutcome {
                     values: Vec::new(),
@@ -117,10 +155,15 @@ impl<'p> CompiledImage<'p> {
             }
         }
 
-        if let Some(entry) = entry_program.entry {
+        if let Some(entry) = invocation.map(|(func, _)| func).or(entry_program.entry) {
+            let args = invocation.map(|(_, args)| args).unwrap_or(&[]);
             // SAFETY: the current compiled-run boundary owns the live unique state handle;
             // typed references and owned values remain live and nonaliasing for this call.
-            let status = unsafe { self.invoke_func(entry_program_index, entry, run_root, state) }?;
+            let status =
+                unsafe { self.invoke_func(entry_program_index, entry, args, run_root, state) }?;
+            if status == oxvba_rt_abi::ST_ABORT {
+                return Err(JitError::BudgetExceeded);
+            }
             if status == ST_FAULT {
                 return Ok(JitOutcome {
                     values: Vec::new(),
@@ -149,7 +192,21 @@ impl<'p> CompiledImage<'p> {
         }
 
         Ok(JitOutcome {
-            values: snapshot_values(&exec, &run),
+            values: if let Some((func, _)) = invocation {
+                vec![
+                    entry_program.funcs[func.0]
+                        .return_local
+                        .and_then(|id| {
+                            run.frames
+                                .first()
+                                .and_then(|frame| frame.locals.get(id.0))
+                                .cloned()
+                        })
+                        .unwrap_or_else(Variant::empty),
+                ]
+            } else {
+                snapshot_values(&exec, &run)
+            },
             err: err_from_exec(&exec),
             raised: false,
         })
@@ -163,6 +220,7 @@ impl<'p> CompiledImage<'p> {
         &self,
         program_index: usize,
         func: FuncId,
+        args: &[Variant],
         run: *mut JitRun,
         state: *mut RawExecState,
     ) -> Result<i32, JitError> {
@@ -194,7 +252,10 @@ impl<'p> CompiledImage<'p> {
         if enter_status != ST_OK {
             return Ok(enter_status);
         }
-        let frame = new_jit_frame(program, program_index, f)?;
+        let mut frame = new_jit_frame(program, program_index, f)?;
+        for (slot, value) in frame.locals.iter_mut().zip(args) {
+            *slot = value.clone();
+        }
         {
             // SAFETY: null was rejected and no other typed run borrow is live.
             // Keep this initialization borrow visibly bounded before compiled entry.
@@ -214,6 +275,16 @@ impl<'p> CompiledImage<'p> {
             Ok(restore_status)
         } else {
             Ok(status)
+        }
+    }
+}
+
+impl Drop for CompiledImage<'_> {
+    fn drop(&mut self) {
+        if let Some(module) = self.module.take() {
+            // SAFETY: entries are private and callable only through a borrow of
+            // this image. At drop no invocation or function-pointer borrow exists.
+            unsafe { module.free_memory() };
         }
     }
 }

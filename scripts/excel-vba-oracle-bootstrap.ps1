@@ -3,7 +3,8 @@ Set-StrictMode -Version Latest
 function New-ExcelOracleProcessStartInfo {
     param(
         [Parameter(Mandatory = $true)][string]$ExcelExecutable,
-        [Parameter(Mandatory = $true)]$BootstrapWorkbook
+        [Parameter(Mandatory = $true)]$BootstrapWorkbook,
+        [switch]$SafeMode
     )
     if ([string]::IsNullOrWhiteSpace($ExcelExecutable) -or $null -eq $BootstrapWorkbook -or
         [string]::IsNullOrWhiteSpace([string]$BootstrapWorkbook.path)) {
@@ -14,7 +15,9 @@ function New-ExcelOracleProcessStartInfo {
     $startInfo.UseShellExecute = $false
     $startInfo.ArgumentList.Add("/x")
     $startInfo.ArgumentList.Add([string]$BootstrapWorkbook.path)
-    if ($startInfo.ArgumentList.Count -ne 2 -or $startInfo.ArgumentList[0] -cne "/x" -or
+    if ($SafeMode) { $startInfo.ArgumentList.Add("/safe") }
+    if ((-not $SafeMode -and $startInfo.ArgumentList.Count -ne 2) -or
+        ($SafeMode -and ($startInfo.ArgumentList.Count -ne 3 -or $startInfo.ArgumentList[2] -cne "/safe")) -or $startInfo.ArgumentList[0] -cne "/x" -or
         $startInfo.ArgumentList[1] -cne [string]$BootstrapWorkbook.path -or $startInfo.ArgumentList -contains "/n") {
         throw "excel-vba-oracle-bootstrap: invalid direct Excel launch argv"
     }

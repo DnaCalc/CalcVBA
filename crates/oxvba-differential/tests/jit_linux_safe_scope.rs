@@ -186,6 +186,9 @@ End Sub
 ",
         ),
     ] {
+        if cfg!(target_os = "windows") && label == "unsupported/native_declare" {
+            continue;
+        }
         let outcome = run(Executor::Jit, source);
         rows.push(status(
             label,
@@ -254,5 +257,14 @@ End Function
 
     let actual = format!("{}\n", rows.join("\n"));
     let expected = include_str!("../jit_linux_safe_scope.snap");
+    let expected = if cfg!(target_os = "windows") {
+        expected
+            .lines()
+            .filter(|line| !line.starts_with("unsupported/native_declare\t"))
+            .map(|line| format!("{line}\n"))
+            .collect::<String>()
+    } else {
+        expected.to_string()
+    };
     assert_eq!(actual, expected);
 }

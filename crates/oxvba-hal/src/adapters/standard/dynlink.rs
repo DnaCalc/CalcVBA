@@ -14,6 +14,8 @@ pub(super) struct DynLinkBindingState {
     next_binding: i32,
     pub(super) descriptors: BTreeMap<u32, BindingHandle>,
     pub(super) bindings: BTreeMap<BindingHandle, DynLinkSymbol>,
+    #[cfg(target_os = "windows")]
+    native_modules: BTreeMap<String, Arc<oxvba_com::windows_ffi_bridge::OwnedLibrary>>,
 }
 
 impl DynLinkBindingState {
@@ -414,13 +416,32 @@ fn invoke_m1_native(
     args: &[Variant],
 ) -> HalResult<(Variant, Vec<Variant>)> {
     use oxvba_com::windows_ffi_bridge::{
-        FfiArg, FfiReturnType, get_proc_address, get_proc_address_ordinal, invoke_stdcall,
-        load_library,
+        FfiArg, FfiReturnType, OwnedLibrary, get_proc_address, get_proc_address_ordinal,
+        invoke_stdcall,
     };
 
     let capability = CapabilityId::DynamicLinking;
-    let module = load_library(descriptor.library)
-        .map_err(|msg| HalError::adapter_fault(host.profile, capability, "invoke_symbol", msg))?;
+    let library = {
+        let mut state = host.dynlink_state.lock().map_err(|_| {
+            HalError::adapter_fault(
+                host.profile,
+                capability,
+                "invoke_symbol",
+                "dynlink binding table lock poisoned",
+            )
+        })?;
+        let key = descriptor.library.to_ascii_lowercase();
+        if let Some(library) = state.native_modules.get(&key) {
+            Arc::clone(library)
+        } else {
+            let library = Arc::new(OwnedLibrary::load(descriptor.library).map_err(|msg| {
+                HalError::adapter_fault(host.profile, capability, "invoke_symbol", msg)
+            })?);
+            state.native_modules.insert(key, Arc::clone(&library));
+            library
+        }
+    };
+    let module = library.handle();
 
     let proc_addr = if descriptor.ordinal_alias {
         let ordinal_str = descriptor
@@ -439,7 +460,10 @@ fn invoke_m1_native(
     } else {
         get_proc_address(module, descriptor.alias)
     }
-    .map_err(|msg| HalError::adapter_fault(host.profile, capability, "invoke_symbol", msg))?;
+    .map_err(|msg| {
+        HalError::adapter_fault(host.profile, capability, "invoke_symbol", msg)
+            .with_host_error_code(if descriptor.ordinal_alias { 452 } else { 453 })
+    })?;
 
     let mut byref_cells = Vec::new();
     let ffi_args: Vec<FfiArg> = args

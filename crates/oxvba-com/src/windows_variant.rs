@@ -13,7 +13,9 @@ use oxvba_runtime::{
 use std::ffi::c_void;
 
 #[cfg(target_os = "windows")]
-use windows_sys::Win32::Foundation::{DECIMAL, SysFreeString, SysStringByteLen, VARIANT_BOOL};
+use windows_sys::Win32::Foundation::{
+    DECIMAL, SysAllocStringByteLen, SysFreeString, SysStringByteLen, VARIANT_BOOL,
+};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Com::{CY, SAFEARRAY, SAFEARRAYBOUND};
 #[cfg(target_os = "windows")]
@@ -432,8 +434,15 @@ where
 #[cfg(target_os = "windows")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn alloc_bstr(text: &BStr) -> windows_sys::core::BSTR {
-    text.clone_raw_bstr()
-        .expect("BSTR clone for COM boundary should succeed")
+    // This copy belongs to the native VARIANT and is freed by VariantClear.
+    // Allocating through the runtime counter would leave a false live handle
+    // when OLE frees it. Copy bytes to preserve odd lengths and lone surrogates.
+    let result = SysAllocStringByteLen(text.raw_bstr().cast(), text.byte_len());
+    assert!(
+        !result.is_null(),
+        "BSTR clone for COM boundary should succeed"
+    );
+    result
 }
 
 #[cfg(target_os = "windows")]

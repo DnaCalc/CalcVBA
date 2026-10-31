@@ -4,6 +4,7 @@ use super::*;
 
 #[derive(Clone, Copy)]
 pub(crate) struct Imports {
+    pub(crate) execution_step: ClifFuncId,
     pub(crate) load_i32: ClifFuncId,
     pub(crate) load_i64: ClifFuncId,
     pub(crate) load_f32: ClifFuncId,
@@ -153,6 +154,10 @@ pub(crate) fn jit_builder() -> Result<JITBuilder, JitError> {
 }
 
 pub(crate) fn register_symbols(builder: &mut JITBuilder) {
+    builder.symbol(
+        "rt_execution_step",
+        oxvba_rt_abi::rt_execution_step as *const u8,
+    );
     builder.symbol("rt_jit_load_i32", rt_jit_load_i32 as *const u8);
     builder.symbol("rt_jit_load_i64", rt_jit_load_i64 as *const u8);
     builder.symbol("rt_jit_load_f32", rt_jit_load_f32 as *const u8);
@@ -521,6 +526,12 @@ pub(crate) fn register_symbols(builder: &mut JITBuilder) {
 
 pub(crate) fn declare_imports(module: &mut JITModule) -> Result<Imports, JitError> {
     let ptr_ty = module.target_config().pointer_type();
+    let mut execution_step_sig = module.make_signature();
+    execution_step_sig.params.push(AbiParam::new(ptr_ty));
+    execution_step_sig.returns.push(AbiParam::new(types::I32));
+    let execution_step = module
+        .declare_function("rt_execution_step", Linkage::Import, &execution_step_sig)
+        .map_err(module_err)?;
 
     let mut load_sig = module.make_signature();
     load_sig.params.push(AbiParam::new(ptr_ty));
@@ -2173,6 +2184,7 @@ pub(crate) fn declare_imports(module: &mut JITModule) -> Result<Imports, JitErro
         .map_err(module_err)?;
 
     Ok(Imports {
+        execution_step,
         load_i32,
         load_i64,
         load_f32,

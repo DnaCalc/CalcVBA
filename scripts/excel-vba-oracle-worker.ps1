@@ -7,7 +7,8 @@ param(
     [Parameter(Mandatory = $true)][string]$ContainmentToken,
     [Parameter(Mandatory = $true)][string]$SelectedCaseDescriptorFile,
     [Parameter(Mandatory = $true)][string]$SelectedCaseSelectionDigest,
-    [ValidateRange(5, 600)][int]$CaseTimeoutSeconds = 90
+    [ValidateRange(5, 600)][int]$CaseTimeoutSeconds = 90,
+    [switch]$SafeMode
 )
 
 $ErrorActionPreference = "Stop"
@@ -209,6 +210,23 @@ function Write-ExcelAttachmentDiagnostic {
         last_owned_windows = @($LastWindows)
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $temporary -Encoding utf8NoBOM
     Move-Item -LiteralPath $temporary -Destination $Path -Force
+    if ($Outcome -eq "blocked-owned-window") {
+        # Read only the windows belonging to this directly launched process.
+        Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+        $startupText = @(
+            foreach ($window in @($LastWindows | Where-Object { Test-ExcelStartupBlockingWindow -Window $_ })) {
+                try {
+                    $element = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr][int64]$window.Hwnd)
+                    if ($element.Current.ProcessId -ne [int]$ProcessIdentity.pid) { continue }
+                    $descendants = $element.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+                    foreach ($child in @($descendants | Select-Object -First 128)) {
+                        if ($child.Current.ProcessId -eq [int]$ProcessIdentity.pid) { [string]$child.Current.Name }
+                    }
+                } catch { "UIA capture failed: $($_.Exception.Message)" }
+            }
+        )
+        $startupText | ConvertTo-Json | Set-Content -LiteralPath "$Path.startup-uia.json" -Encoding utf8NoBOM
+    }
 }
 
 function Start-OwnedExcelApplication {
@@ -217,7 +235,7 @@ function Start-OwnedExcelApplication {
         [Parameter(Mandatory = $true)]$BootstrapWorkbook,
         [Parameter(Mandatory = $true)][string]$DiagnosticPath
     )
-    $startInfo = New-ExcelOracleProcessStartInfo -ExcelExecutable $ExcelExecutable -BootstrapWorkbook $BootstrapWorkbook
+    $startInfo = New-ExcelOracleProcessStartInfo -ExcelExecutable $ExcelExecutable -BootstrapWorkbook $BootstrapWorkbook -SafeMode:$SafeMode
     $process = [Diagnostics.Process]::Start($startInfo)
     if ($null -eq $process) { throw "excel-vba-oracle-worker: direct Excel bootstrap launch returned no process" }
     $processIdentity = [ordered]@{
@@ -225,7 +243,7 @@ function Start-OwnedExcelApplication {
         process_start_utc = $process.StartTime.ToUniversalTime().ToString("o")
         process_name = [string]$process.ProcessName
         executable_path = $ExcelExecutable
-        launch_argv = @("/x", [string]$BootstrapWorkbook.path)
+        launch_argv = @($startInfo.ArgumentList)
         bootstrap_workbook = $BootstrapWorkbook
     }
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
@@ -233,6 +251,7 @@ function Start-OwnedExcelApplication {
     $truncatedObservationCount = 0
     $observations = [Collections.Generic.List[object]]::new()
     $lastWindows = @()
+    $startupNoticeAcknowledged = $false
     while ([DateTime]::UtcNow -lt $deadline) {
         $attemptCount++
         if ($process.HasExited) {
@@ -291,6 +310,23 @@ function Start-OwnedExcelApplication {
         }
         if ($blockingWindows.Count -gt 0) {
             Write-ExcelAttachmentDiagnostic -Path $DiagnosticPath -ProcessIdentity $processIdentity -AttemptCount $attemptCount -TruncatedObservationCount $truncatedObservationCount -Observations @($observations) -LastWindows @($lastWindows) -WindowEnumerationTruncated $false -WindowEnumerationSucceeded $true -WindowEnumerationErrorCode 0 -Outcome blocked-owned-window
+            $startupText = @(Get-Content -LiteralPath "$DiagnosticPath.startup-uia.json" -Raw | ConvertFrom-Json)
+            if ($SafeMode -and -not $startupNoticeAcknowledged -and $blockingWindows.Count -eq 1 -and
+                [string]$blockingWindows[0].ClassName -ceq "NUIDialog" -and
+                $startupText -ccontains "Excel has detected that you have recovered files. These files will be opened the next time you start Excel in normal mode.") {
+                # Acknowledge only this informational notice. Recovered files stay
+                # untouched; security, trust and add-in prompts remain blocked.
+                $notice = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr][int64]$blockingWindows[0].Hwnd)
+                if ($notice.Current.ProcessId -ne $process.Id) { throw "startup notice process identity changed" }
+                $button = $notice.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+                    [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, "OK"))
+                if ($null -eq $button -or $button.Current.ProcessId -ne $process.Id) { throw "owned startup notice OK button missing" }
+                ([System.Windows.Automation.InvokePattern]$button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)).Invoke()
+                $startupNoticeAcknowledged = $true
+                [ordered]@{ pid = $process.Id; action = "acknowledge-safe-mode-recovery-notice"; utc = [DateTime]::UtcNow.ToString("o") } |
+                    ConvertTo-Json | Set-Content -LiteralPath "$DiagnosticPath.startup-action.json" -Encoding utf8NoBOM
+                continue
+            }
             $blocked = @($blockingWindows | ForEach-Object { "HWND=$($_.Hwnd) class='$($_.ClassName)' title='$($_.Title)'" }) -join "; "
             throw "excel-vba-oracle-worker: directly launched Excel exposed an owned visible startup/modal window; refusing broad interaction: $blocked; diagnostic '$DiagnosticPath'"
         }
@@ -384,7 +420,7 @@ function Get-GuardianEvents {
         [Parameter(Mandatory = $true)][string]$EventsFile,
         [string]$OperationId
     )
-    $lines = if (Test-Path -LiteralPath $EventsFile) { @(Get-Content -LiteralPath $EventsFile) } else { @() }
+    $lines = @(if (Test-Path -LiteralPath $EventsFile) { Get-Content -LiteralPath $EventsFile })
     $ledger = ConvertFrom-ExcelOracleGuardianEventLedger -Lines $lines -RunId $RunId -ExpectedCaseIds $script:SelectedCaseIds
     if (@($ledger.errors).Count -gt 0) {
         throw "excel-vba-oracle-worker: invalid guardian event ledger: $($ledger.errors -join '; ')"
@@ -677,7 +713,7 @@ function Invoke-HarnessCase {
         $excelNativeWindow = $launchedExcel.native_window
         $excel.Visible = $true
         $excel.DisplayAlerts = $false
-        $excel.AutomationSecurity = 1
+        # Observe the owner's macro security configuration; never change it.
         $excelPid = Get-ExcelPidFromApplication -Application $excel
         if ($excelPid -ne $ownedExcelProcess.Id) {
             throw "excel-vba-oracle-worker: OBJID_NATIVEOM application PID does not match the directly launched contained Excel process"
@@ -688,6 +724,15 @@ function Invoke-HarnessCase {
         $excelOwnershipRecord = Add-OwnershipRecord -Process $ownedExcelProcess -BeforePids $beforePids -CaseId $Descriptor.id
         $preOwnershipFailurePhase = $null
         $excelOwnershipRecord | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $excelIdentityFile -Encoding utf8NoBOM
+        [ordered]@{
+            measured_utc = [DateTime]::UtcNow.ToString("o")
+            pid = $excelPid
+            version = [string]$excel.Version
+            build = [string]$excel.Build
+            operating_system = [string]$excel.OperatingSystem
+            automation_security = [int]$excel.AutomationSecurity
+            safe_mode_requested = [bool]$SafeMode
+        } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $caseDirectory "excel-environment.json") -Encoding utf8NoBOM
 
         $guardianArguments = @(
             "-NoLogo", "-NoProfile", "-NonInteractive", "-STA", "-File", (Join-Path $PSScriptRoot "excel-vba-oracle-guardian.ps1"),
@@ -727,6 +772,7 @@ function Invoke-HarnessCase {
         $injectedSourceSha256 = Get-ExcelOracleSha256 -Text $injectedSource
         $selectedSourceSha256 = Get-ExcelOracleSha256 -Text ([string]$Descriptor.module_source)
         if ($injectedSourceSha256 -cne $selectedSourceSha256) {
+            $injectedSource | Set-Content -LiteralPath (Join-Path $caseDirectory "injected-source-mismatch.bas") -Encoding utf8NoBOM
             throw "excel-vba-oracle-worker: injected module source does not match the selected case before compile authority"
         }
         $compileContext = [pscustomobject]@{

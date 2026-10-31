@@ -374,8 +374,9 @@ function Test-GuardianOwnedWindowEnumerationShape {
     )
     if (-not $match.Success) { return $false }
     $body = $match.Groups['body'].Value
-    return $body -match 'RootElement\.FindAll' -and
-        $body -match 'Condition\]::TrueCondition' -and
+    return $Source -match 'EnumWindows\(' -and $Source -match 'EnumChildWindows\(' -and
+        $Source -match 'pid != expectedPid' -and $Source -match 'childPid != expectedPid' -and
+        $body -match 'ExcelGuardianOwnedWindows\]::Enumerate' -and
         $body -match 'ProcessId\s+-eq\s+\$ExcelPid' -and
         $body -notmatch 'ControlTypeProperty|ControlType\]::Window|AndCondition'
 }
@@ -1153,10 +1154,14 @@ Assert-True ([string]$startInfo.FileName -ceq "C:\Program Files\Microsoft Office
     $startInfo.ArgumentList -notcontains "/n") "pure ProcessStartInfo construction must preserve exact ['/x', bootstrap-path] argv with no /n"
 
 $cases = @(Get-ExcelOracleHarnessCases)
-Assert-Equal 6 $cases.Count "declared harness and bounded diagnostic case count"
-Assert-Equal "success,compile-failure,ambiguous-macro-failure,intrinsic-shadow,runtime-full-err,runtime-unhandled-modal" ($cases.id -join ",") "case identities"
+Assert-Equal (Get-ExcelOracleSha256 -Text "Sub Main()`nEnd Sub") (Get-ExcelOracleSha256 -Text "Sub Main()`r`nEnd Sub`r`n") "VBE final line break must not change source identity"
+Assert-True ((Get-ExcelOracleSha256 -Text "Sub Main()`nEnd Sub") -cne (Get-ExcelOracleSha256 -Text "Sub Main()`nEnd Sub 'changed")) "source identity must preserve actual code changes"
+$safeStart = New-ExcelOracleProcessStartInfo -ExcelExecutable "EXCEL.EXE" -BootstrapWorkbook ([pscustomobject]@{ path = "C:\fixture\oracle.xlsx" }) -SafeMode
+Assert-Equal "/x,C:\fixture\oracle.xlsx,/safe" ($safeStart.ArgumentList -join ",") "safe mode must be an explicit recorded launch argument"
+Assert-Equal 7 $cases.Count "declared harness and bounded diagnostic case count"
+Assert-Equal "success,compile-failure,ambiguous-macro-failure,intrinsic-shadow,runtime-full-err,runtime-unhandled-modal,windows-scalar-interop" ($cases.id -join ",") "case identities"
 Assert-Equal 5 @($cases | Where-Object { -not [bool]$_.diagnostic_only }).Count "default self-test case count"
-Assert-Equal 4 @($cases | Where-Object expected_compile_status -eq "ok").Count "clean-compile case count"
+Assert-Equal 5 @($cases | Where-Object expected_compile_status -eq "ok").Count "clean-compile case count"
 Assert-Equal 2 @($cases | Where-Object expected_compile_status -eq "compile-error").Count "compile-failure case count"
 Assert-True ($cases[1].module_source -match "MissingOracleSymbol") "compile-failure source must contain the missing call target"
 Assert-True ($cases[3].module_source -match "ByVal Fix As Double") "intrinsic-shadow source must retain the shadowing declaration"
@@ -1166,7 +1171,9 @@ Assert-True ($cases[2].module_source -match 'Application\.Run "OracleSelfTest\.M
 Assert-Equal "OracleSelfTest.RunProbe" $cases[2].run_procedure "ambiguous case must invoke the existing harness entry after clean compile"
 Assert-True ($cases[2].module_source -match 'oracle-ambiguous-entry-observed:' -and $cases[2].invocation_observation_prefix -eq 'oracle-ambiguous-entry-observed:') "ambiguous case must emit a case-bound observed-entry sentinel"
 Assert-True ($cases[5].module_source -match 'Err\.Raise 13' -and [bool]$cases[5].diagnostic_only) "unhandled runtime modal must have a real live diagnostic fixture"
-Assert-Equal 6 @($cases.id | Select-Object -Unique).Count "case identities must be unique"
+Assert-Equal 7 @($cases.id | Select-Object -Unique).Count "case identities must be unique"
+Assert-True ($cases[6].module_source -match 'Declare PtrSafe' -and [bool]$cases[6].diagnostic_only) "scalar Windows probe must be a targeted native VBA observation"
+Assert-True ((Get-Content -LiteralPath (Join-Path $PSScriptRoot "excel-vba-oracle-worker.ps1") -Raw) -notmatch '\.AutomationSecurity\s*=') "oracle must not change macro security"
 
 $defaultSelectionDescriptors = @(Get-TestSelectedCaseDescriptors -CaseIds @($cases | Where-Object { -not [bool]$_.diagnostic_only } | ForEach-Object { [string]$_.id }))
 $targetedOrdinaryDescriptors = @(Get-TestSelectedCaseDescriptors -CaseIds @("success"))
@@ -1573,12 +1580,12 @@ Assert-True ($guardianSource -notmatch 'Stop-Process\s+-Id\s+\$ExcelPid') "guard
 Assert-True ($guardianSource -match "observed_process_id") "guardian events must record the observed UIA process ID"
 Assert-True ($guardianSource -match "selected_token" -and $guardianSource -match "expanded_line") "guardian must capture token and expanded line"
 Assert-True ($guardianSource -match "Recognized dialog text is authoritative") "guardian must recognize VBE dialogs even when Office omits modal/class metadata"
-Assert-True (Test-GuardianOwnedWindowEnumerationShape -Source $guardianSource) "guardian must enumerate all desktop children before applying the hard PID boundary"
+Assert-True (Test-GuardianOwnedWindowEnumerationShape -Source $guardianSource) "guardian must enumerate native top-level and nested dialog HWNDs with hard PID checks before UIA access"
 $windowPrefilterMutation = $guardianSource.Replace(
-    '[Windows.Automation.Condition]::TrueCondition',
-    '[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Window)'
+    'childPid != expectedPid',
+    'false'
 )
-Assert-True (-not (Test-GuardianOwnedWindowEnumerationShape -Source $windowPrefilterMutation)) "mutation: ControlType.Window root prefilter must be rejected"
+Assert-True (-not (Test-GuardianOwnedWindowEnumerationShape -Source $windowPrefilterMutation)) "mutation: removing the nested-dialog PID check must be rejected"
 Assert-True (Test-GuardianCaptureBeforeDismissShape -Source $guardianSource) "guardian must durably append the immutable observation before invoking a dismiss button and append a linked result afterward"
 $dismissBeforeCaptureMutation = $guardianSource.Replace(
     'Add-GuardianEvent -Event $observationEvent',

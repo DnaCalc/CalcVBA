@@ -426,6 +426,7 @@ End Property
 }
 
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn unsupported_scope_declines_are_explicit() {
     let source = "\
 Public r As Long

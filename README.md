@@ -35,7 +35,7 @@ The durable destination is defined by the [OxVba System Contract](docs/spec/OXVB
 - bounded WrappedComServer build/host infrastructure;
 - extensive unit, differential and captured Excel/VBA oracle evidence.
 
-Important open areas include verified artifact admission, several compiler/type/reference edges, complete base-library proof, VM3/JIT structural parity, JIT errors/recursion/sessions/cache, real JIT COM/native support, native DLL/EXE output and the clean-stack language service.
+Important open areas include verified artifact admission, several compiler/type/reference edges, complete base-library proof, VM3/JIT structural parity, JIT errors/recursion/sessions/cache, remaining JIT COM/native behavior, native DLL/EXE output and the clean-stack language service.
 
 ## Build from source
 
@@ -83,6 +83,17 @@ cargo run -p oxvba-cli -- run hello.bas --backend jit
 ```
 
 The JIT has a hard whole-program decline boundary and does not silently execute unsupported code through VM3.
+
+Build a source-free project package and run it on either backend:
+
+```powershell
+cargo run -p oxvba-cli -- build project.basproj --target OxImage --out-dir out
+cargo run -p oxvba-cli -- run-image out\ProjectName.oxi --backend jit
+```
+
+This uses the current `.oxi` artifact and supports program-style `OutputType=Exe`, including the top-level statement extension. Genuine native DLL/EXE generation remains unfinished.
+
+For formula-host calls, use [`oxvba-embed`](docs/spec/UDF_EMBEDDING_V1.md): load a module, inspect public function parameters, and call by name with spreadsheet scalars, errors and arrays. VM3, compile-once JIT use and an interpreter-only WebAssembly build have explicit budgets and typed errors. Range objects and persistent globals remain follow-up work.
 
 Useful options:
 

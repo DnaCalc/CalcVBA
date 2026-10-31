@@ -159,6 +159,7 @@ fn jit_not_implemented_diagnostic() -> PhaseDiagnostic {
 
 fn jit_runtime_diagnostic(err: JitError) -> PhaseDiagnostic {
     let (code, message) = match err {
+        JitError::BudgetExceeded => ("RUN-E-BUDGET", "execution budget exhausted".into()),
         JitError::Unsupported(what) => ("RUN-E-JIT-UNSUPPORTED", what),
         JitError::Compile(msg) => ("RUN-E-JIT-COMPILE", msg),
         JitError::Runtime(msg) => ("RUN-E-JIT-RUNTIME", msg),
@@ -189,6 +190,7 @@ fn jit_outcome_to_snapshot(outcome: JitOutcome) -> SnapshotOutcome {
 
 fn vm3_runtime_diagnostic(err: oxvba_vm3::Vm3Error) -> PhaseDiagnostic {
     let code = match &err {
+        oxvba_vm3::Vm3Error::BudgetExceeded => "RUN-E-BUDGET",
         oxvba_vm3::Vm3Error::Unimplemented { .. } => "VM3-E-UNIMPLEMENTED",
         oxvba_vm3::Vm3Error::Fault(_) => "VM3-E-FAULT",
         oxvba_vm3::Vm3Error::Malformed(_) => "VM3-E-MALFORMED",
@@ -648,6 +650,71 @@ impl Engine {
         self.host_services.descriptor()
     }
 
+    /// Execute a serialized typed project closure without source or rebinding.
+    /// The selected backend executes the whole image; JIT declines never fall back.
+    pub fn execute_image_bytes_with_variant_snapshot(
+        &self,
+        bytes: &[u8],
+    ) -> Result<Vec<Variant>, PhaseDiagnostic> {
+        let image = oxvba_oxir::OxImage::from_bytes(bytes).map_err(|err| {
+            PhaseDiagnostic::from_diagnostic(OxDiagnostic::error(
+                "RUN-E-IMAGE",
+                OxDiagnosticPhase::Host,
+                err.to_string(),
+            ))
+        })?;
+        self.execute_image_with_variant_snapshot(&image)
+    }
+
+    /// Run an OxImage and return the entry project's globals. Validate before
+    /// linking and honor its entry index rather than assuming the last program.
+    pub fn execute_image_with_variant_snapshot(
+        &self,
+        image: &oxvba_oxir::OxImage,
+    ) -> Result<Vec<Variant>, PhaseDiagnostic> {
+        image.validate().map_err(|err| {
+            PhaseDiagnostic::from_diagnostic(OxDiagnostic::error(
+                "RUN-E-IMAGE",
+                OxDiagnosticPhase::Host,
+                err.to_string(),
+            ))
+        })?;
+        let mut programs: Vec<_> = image
+            .programs
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != image.entry)
+            .map(|(_, program)| program)
+            .collect();
+        let entry = &image.programs[image.entry];
+        programs.push(entry);
+        if self.config.backend.is_jit() {
+            let compiled = JitEngine
+                .compile_image(&programs)
+                .map_err(jit_runtime_diagnostic)?;
+            let mut outcome = compiled
+                .run(&*self.host_services)
+                .map_err(jit_runtime_diagnostic)?;
+            if outcome.raised {
+                return Err(PhaseDiagnostic::from_diagnostic(OxDiagnostic::error(
+                    "RUN-E-JIT-FAULT",
+                    OxDiagnosticPhase::Runtime,
+                    outcome.err.description,
+                ))
+                .with_vba_code(outcome.err.number));
+            }
+            outcome.values.truncate(entry.globals.len());
+            Ok(outcome.values)
+        } else {
+            let mut vm = oxvba_vm3::Vm3::link(&programs, &*self.host_services)
+                .map_err(vm3_runtime_diagnostic)?;
+            vm.run_entry().map_err(vm3_runtime_diagnostic)?;
+            Ok((0..entry.globals.len())
+                .map(|slot| vm.slot(slot).unwrap_or_else(Variant::empty))
+                .collect())
+        }
+    }
+
     /// Prepare a vm3-backed runtime session from an [`oxvba_oxir::OxImage`] (the `.oxi`) — the
     /// path the in-process COM server uses to run on vm3. The image's programs + the
     /// host-service `Arc` are promoted to `'static` (a loaded in-process COM server is
@@ -1075,6 +1142,9 @@ impl Engine {
                 },
             },
             Err(oxvba_vm3::Vm3Error::Malformed(m)) => SnapshotOutcome::Failed(format!("vm3: {m}")),
+            Err(oxvba_vm3::Vm3Error::BudgetExceeded) => {
+                SnapshotOutcome::Failed("execution budget exhausted".into())
+            }
         }
     }
 

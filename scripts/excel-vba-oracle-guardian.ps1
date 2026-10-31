@@ -75,22 +75,64 @@ if (-not (Test-ExcelOracleProcessIdentity -Record $excelIdentity -Process $initi
     throw "excel-vba-oracle-guardian: Excel PID/start/name/executable identity did not validate"
 }
 
+# Native enumeration also sees owned dialogs nested under the VBE UIA root.
+# UIA desktop children alone omit those on some Office builds.
+Add-Type @"
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class ExcelGuardianOwnedWindows {
+    private delegate bool Visitor(IntPtr hwnd, IntPtr state);
+    [DllImport("user32.dll")] private static extern bool EnumWindows(Visitor callback, IntPtr state);
+    [DllImport("user32.dll")] private static extern bool EnumChildWindows(IntPtr parent, Visitor callback, IntPtr state);
+    [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int size);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, StringBuilder text, int size);
+    public static string[] ChildText(IntPtr parent, uint expectedPid, bool buttons) {
+        uint parentPid; GetWindowThreadProcessId(parent, out parentPid);
+        var values = new List<string>();
+        if (parentPid != expectedPid) return values.ToArray();
+        EnumChildWindows(parent, (child, state) => {
+            uint pid; GetWindowThreadProcessId(child, out pid);
+            if (pid != expectedPid || !IsWindowVisible(child)) return true;
+            var name = new StringBuilder(128); GetClassName(child, name, name.Capacity);
+            if (name.ToString() == (buttons ? "Button" : "Static")) {
+                var text = new StringBuilder(4096); GetWindowText(child, text, text.Capacity);
+                if (text.Length != 0) values.Add(text.ToString().Replace("&", ""));
+            }
+            return true;
+        }, IntPtr.Zero);
+        return values.ToArray();
+    }
+    public static IntPtr[] Enumerate(uint expectedPid) {
+        var handles = new HashSet<IntPtr>();
+        EnumWindows((hwnd, state) => {
+            uint pid; GetWindowThreadProcessId(hwnd, out pid);
+            if (pid != expectedPid) return true;
+            if (IsWindowVisible(hwnd)) handles.Add(hwnd);
+            EnumChildWindows(hwnd, (child, unused) => {
+                uint childPid; GetWindowThreadProcessId(child, out childPid);
+                if (childPid != expectedPid || !IsWindowVisible(child)) return true;
+                var name = new StringBuilder(128); GetClassName(child, name, name.Capacity);
+                if (name.ToString() == "#32770" || name.ToString() == "NUIDialog") handles.Add(child);
+                return true;
+            }, IntPtr.Zero);
+            return true;
+        }, IntPtr.Zero);
+        var result = new IntPtr[handles.Count]; handles.CopyTo(result); return result;
+    }
+}
+"@
+
 function Get-OwnedTopLevelWindows {
-    # Office/VBE top-level HWNDs are not consistently projected as UIA
-    # ControlType.Window. Enumerate every desktop child and then apply the hard
-    # PID boundary, matching the proven oracle probes in this repository.
-    $desktopChildren = [Windows.Automation.AutomationElement]::RootElement.FindAll(
-        [Windows.Automation.TreeScope]::Children,
-        [Windows.Automation.Condition]::TrueCondition
-    )
     $owned = [Collections.Generic.List[Windows.Automation.AutomationElement]]::new()
-    foreach ($window in $desktopChildren) {
+    foreach ($handle in [ExcelGuardianOwnedWindows]::Enumerate([uint32]$ExcelPid)) {
         try {
+            $window = [Windows.Automation.AutomationElement]::FromHandle($handle)
             if ([int]$window.Current.ProcessId -eq $ExcelPid) { $owned.Add($window) }
-        }
-        catch {
-            # Desktop UIA children can disappear between enumeration and read.
-        }
+        } catch { }
     }
     return @($owned)
 }
@@ -105,7 +147,9 @@ function Get-ElementStrings {
         $ControlType
     )
     $values = [Collections.Generic.List[string]]::new()
-    foreach ($element in @($Root.FindAll([Windows.Automation.TreeScope]::Descendants, $condition))) {
+    $elements = $Root.FindAll([Windows.Automation.TreeScope]::Descendants, $condition)
+    for ($elementIndex = 0; $elementIndex -lt $elements.Count; $elementIndex++) {
+        $element = $elements.Item($elementIndex)
         try {
             $name = [string]$element.Current.Name
             if (-not [string]::IsNullOrWhiteSpace($name)) { $values.Add($name.Trim()) }
@@ -114,19 +158,24 @@ function Get-ElementStrings {
             # A stale descendant must not stop the guardian.
         }
     }
+    if ($values.Count -eq 0) {
+        # Some Office Win32 dialogs expose no UIA descendants. Read only their
+        # PID-scoped Static/Button controls as a secondary observation.
+        return @([ExcelGuardianOwnedWindows]::ChildText([IntPtr]$Root.Current.NativeWindowHandle, [uint32]$ExcelPid, $ControlType -eq [Windows.Automation.ControlType]::Button))
+    }
     return @($values | Select-Object -Unique)
 }
 
 function Get-VbeSelection {
     $selection = [ordered]@{ selected_token = $null; expanded_line = $null }
-    $documentCondition = [Windows.Automation.OrCondition]::new(
-        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Document),
-        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Edit)
-    )
+    $documentCondition = [Windows.Automation.Condition]::TrueCondition
     foreach ($window in @(Get-OwnedTopLevelWindows)) {
         try {
             if ([string]$window.Current.Name -notlike "Microsoft Visual Basic for Applications*") { continue }
-            foreach ($document in @($window.FindAll([Windows.Automation.TreeScope]::Descendants, $documentCondition))) {
+            $documents = $window.FindAll([Windows.Automation.TreeScope]::Descendants, $documentCondition)
+            for ($documentIndex = 0; $documentIndex -lt $documents.Count; $documentIndex++) {
+                $document = $documents.Item($documentIndex)
+                try {
                 $pattern = $document.GetCurrentPattern([Windows.Automation.TextPattern]::Pattern)
                 $ranges = @($pattern.GetSelection())
                 if ($ranges.Count -eq 0) { continue }
@@ -139,6 +188,7 @@ function Get-VbeSelection {
                     $selection.expanded_line = $line.Trim("`r", "`n")
                     return [pscustomobject]$selection
                 }
+                } catch { continue }
             }
         }
         catch {
@@ -163,7 +213,8 @@ function Invoke-OwnedDialogButton {
         [Windows.Automation.AutomationElement]::ControlTypeProperty,
         [Windows.Automation.ControlType]::Button
     )
-    $buttons = @($Window.FindAll([Windows.Automation.TreeScope]::Descendants, $buttonCondition))
+    $foundButtons = $Window.FindAll([Windows.Automation.TreeScope]::Descendants, $buttonCondition)
+    $buttons = @(for ($buttonIndex = 0; $buttonIndex -lt $foundButtons.Count; $buttonIndex++) { $foundButtons.Item($buttonIndex) })
     foreach ($preferred in $PreferredButtons) {
         $button = @($buttons | Where-Object { [string]$_.Current.Name -eq $preferred } | Select-Object -First 1)
         if ($button.Count -eq 0) { continue }
@@ -296,18 +347,7 @@ while ([DateTime]::UtcNow -lt $deadline -and -not (Test-Path -LiteralPath $StopF
             observed_utc = [DateTime]::UtcNow.ToString("o")
         })
     }
-    Add-GuardianEvent -Event ([ordered]@{
-        schema = "oxvba.excel-vba-oracle-operation-state.v1"
-        event_type = "guardian-heartbeat"
-        run_id = $RunId
-        case_id = [string]$control.case_id
-        excel_pid = $ExcelPid
-        operation_id = [string]$control.operation_id
-        phase = [string]$control.phase
-        control_sequence = [long]$control.sequence
-        event_sequence = 0L
-        observed_utc = [DateTime]::UtcNow.ToString("o")
-    })
+
 
     foreach ($window in @(Get-OwnedTopLevelWindows)) {
         try {
@@ -321,8 +361,16 @@ while ([DateTime]::UtcNow -lt $deadline -and -not (Test-Path -LiteralPath $StopF
             $windowTitle = [string]$window.Current.Name
             $windowHandle = Get-WindowIdentity $window
             $observedProcessId = [int]$window.Current.ProcessId
-            $texts = @(Get-ElementStrings -Root $window -ControlType ([Windows.Automation.ControlType]::Text))
-            $buttons = @(Get-ElementStrings -Root $window -ControlType ([Windows.Automation.ControlType]::Button))
+            # Walking the entire Excel/VBE application tree can block UIA long
+            # enough to miss the next modal. Their owned dialog HWNDs are
+            # enumerated separately; inspect those, not the ribbon/editor tree.
+            if (-not $isModal -and $className -in @("XLMAIN", "wndclass_desked_gsk")) {
+                $texts = @()
+                $buttons = @()
+            } else {
+                $texts = @(Get-ElementStrings -Root $window -ControlType ([Windows.Automation.ControlType]::Text))
+                $buttons = @(Get-ElementStrings -Root $window -ControlType ([Windows.Automation.ControlType]::Button))
+            }
             $policy = Get-ExcelOracleDialogPolicy -Phase ([string]$control.phase) -WindowTitle $windowTitle -Texts $texts -Buttons $buttons
             # VBE compile dialogs are not consistently exposed as IsModal/#32770 on
             # all Office builds. Recognized dialog text is authoritative. Unknown
@@ -364,7 +412,8 @@ while ([DateTime]::UtcNow -lt $deadline -and -not (Test-Path -LiteralPath $StopF
             # changed. A later crash can therefore never dismiss without capture.
             Add-GuardianEvent -Event $observationEvent
 
-            if ($consideredDialog -and $policy.disposition -eq "capture-then-dismiss" -and [bool]$control.allow_dismiss) {
+            if ($consideredDialog -and $policy.disposition -eq "capture-then-dismiss" -and [bool]$control.allow_dismiss -and
+                ($policy.kind -ne "compile-error" -or (-not [string]::IsNullOrWhiteSpace([string]$vbeSelection.selected_token) -and -not [string]::IsNullOrWhiteSpace([string]$vbeSelection.expanded_line)))) {
                 $dismissedButton = Invoke-OwnedDialogButton -Window $window -PreferredButtons @($policy.preferred_buttons)
                 $dismissalEvent = [ordered]@{
                     schema = "oxvba.excel-vba-oracle-dismissal-result.v1"
@@ -390,6 +439,18 @@ while ([DateTime]::UtcNow -lt $deadline -and -not (Test-Path -LiteralPath $StopF
             # Stale top-level UIA children are expected and nonfatal per element.
         }
     }
+    Add-GuardianEvent -Event ([ordered]@{
+        schema = "oxvba.excel-vba-oracle-operation-state.v1"
+        event_type = "guardian-heartbeat"
+        run_id = $RunId
+        case_id = [string]$control.case_id
+        excel_pid = $ExcelPid
+        operation_id = [string]$control.operation_id
+        phase = [string]$control.phase
+        control_sequence = [long]$control.sequence
+        event_sequence = 0L
+        observed_utc = [DateTime]::UtcNow.ToString("o")
+    })
     Start-Sleep -Milliseconds $PollMilliseconds
 }
 

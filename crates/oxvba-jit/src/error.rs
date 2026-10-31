@@ -21,6 +21,8 @@ pub struct JitOutcome {
 
 #[derive(Debug, Error)]
 pub enum JitError {
+    #[error("execution budget exhausted")]
+    BudgetExceeded,
     #[error("jit: unsupported: {0}")]
     Unsupported(String),
     #[error("jit compile: {0}")]

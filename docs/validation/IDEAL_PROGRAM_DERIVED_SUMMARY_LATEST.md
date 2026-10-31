@@ -11,14 +11,14 @@ This file is generated from the manifest-owned canonical matrices. It is a proje
 | Profile | Matrices | Rows | Planned | In progress | Implemented subset | Implemented full | Verified | Archived |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | core | 5 | 59 | 58 | 0 | 0 | 0 | 1 | 0 |
-| windows-x64 | 6 | 57 | 56 | 0 | 0 | 0 | 1 | 0 |
+| windows-x64 | 6 | 57 | 54 | 2 | 0 | 0 | 1 | 0 |
 | ide | 4 | 77 | 77 | 0 | 0 | 0 | 0 | 0 |
 
 ## Matrix totals
 
 | Matrix | Profile | Role | Owner epic | Rows | Verified | Open | Trace relationships |
 |---|---|---|---|---:|---:|---:|---:|
-| CORE-READINESS | core | primary | bd-59co.2.1 | 24 | 1 | 23 | 109 |
+| CORE-READINESS | core | primary | bd-59co.2.1 | 24 | 1 | 23 | 113 |
 | VBA-LIBRARY | core | primary | bd-59co.2.5 | 7 | 0 | 7 | 7 |
 | OXIR-BACKENDS | core | primary | bd-59co.2.6 | 12 | 0 | 12 | 23 |
 | OXIMAGE-CONTRACT | core | primary | bd-59co.2.6 | 8 | 0 | 8 | 15 |
@@ -96,7 +96,7 @@ This file is generated from the manifest-owned canonical matrices. It is a proje
 | XOR-STATE-LIFECYCLE | EXCEL-ORACLE | state and lifecycle oracle | globals static objects events Err reset reload termination and repeated sessions | planned | remaining-accepted-scope | bd-59co.2.11.4 |
 | XOR-NONDEFAULT-LOCALE | EXCEL-ORACLE | non-default locale and source-encoding oracle | LCID calendar decimal date case codepage and Unicode CRLF | planned | remaining-accepted-scope | bd-59co.2.11.4 |
 | XOR-PORTABLE-ORACLE | EXCEL-ORACLE | portable Core Excel/VBA certification | compiler library OxIR OxImage VM3 JIT sessions cache differential locale and lifecycle; excludes Windows COM native and packaging | planned | remaining-accepted-scope | bd-59co.2.11.4 |
-| WCC-PLAN-LATE | WIN-COM-CLIENT | late-bound COM client | scalar activation invocation and property access | planned | remaining-accepted-scope | bd-59co.3.4 |
+| WCC-PLAN-LATE | WIN-COM-CLIENT | late-bound COM client | scalar activation invocation and property access | in-progress | remaining-accepted-scope | bd-59co.3.4 |
 | WCC-LATE-ARGS | WIN-COM-CLIENT | late-bound COM client | named omitted Optional ParamArray put putref and ByRef arguments | planned | remaining-accepted-scope | bd-59co.3.4 |
 | WCC-LATE-STRUCTURAL | WIN-COM-CLIENT | late-bound COM client | object identity arrays records chaining and enumeration | planned | remaining-accepted-scope | bd-59co.3.4 |
 | WCC-LATE-OUTPROC-ERROR | WIN-COM-CLIENT | late-bound COM client | GetObject out-of-proc locale error and reentry behavior | planned | remaining-accepted-scope | bd-59co.3.4 |
@@ -119,7 +119,7 @@ This file is generated from the manifest-owned canonical matrices. It is a proje
 | WCS-IMPLEMENTS-CUSTOM | WIN-COM-SERVER | early and dual COM serving | imported Implements and custom interface vtables | planned | remaining-accepted-scope | bd-59co.3.8 |
 | WCS-EARLY-OUTPROC | WIN-COM-SERVER | early and dual COM serving | out-of-process early proxy marshalling arrays records interfaces and ByRef | planned | remaining-accepted-scope | bd-59co.3.8 |
 | WCS-SERVER-SAFETY | WIN-COM-SERVER | COM serving lifecycle and deployment | class factories locks registration unload errors and hostile clients | planned | remaining-accepted-scope | bd-59co.3.7 |
-| WNI-PLAN-DECLARE | WIN-NATIVE-IMPORT | VBA7 Declare import | scalar named-symbol x64 call | planned | remaining-accepted-scope | bd-59co.3.10 |
+| WNI-PLAN-DECLARE | WIN-NATIVE-IMPORT | VBA7 Declare import | scalar named-symbol x64 call | in-progress | remaining-accepted-scope | bd-59co.3.10 |
 | WNI-DECLARE-STRINGS | WIN-NATIVE-IMPORT | VBA7 Declare import | ANSI Wide BSTR and mutable string-buffer calls | planned | remaining-accepted-scope | bd-59co.3.10 |
 | WNI-DECLARE-STRUCTURAL | WIN-NATIVE-IMPORT | VBA7 Declare import | arrays UDT As Any aliases and structural ByRef calls | planned | remaining-accepted-scope | bd-59co.3.10 |
 | WNI-DECLARE-LOADER-ERROR | WIN-NATIVE-IMPORT | VBA7 Declare import | ordinal resolution missing library export policy and LastDllError | planned | remaining-accepted-scope | bd-59co.3.10 |

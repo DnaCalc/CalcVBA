@@ -339,6 +339,8 @@ fn runtime_project_interface_descriptor(
 /// A failure to execute an OxIR program on vm3.
 #[derive(Debug, Clone)]
 pub enum Vm3Error {
+    /// A host budget stopped execution; VBA On Error cannot catch it.
+    BudgetExceeded,
     /// An uncaught VBA run-time fault propagated to the top level.
     Fault(Fault),
     /// An OxIR construct vm3 does not yet execute (honest and explicit — never a
@@ -352,6 +354,7 @@ pub enum Vm3Error {
 impl std::fmt::Display for Vm3Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Vm3Error::BudgetExceeded => write!(f, "execution budget exhausted"),
             Vm3Error::Fault(fault) => write!(f, "uncaught error {}: {}", fault.code, fault.message),
             Vm3Error::Unimplemented { what } => write!(f, "vm3 does not yet execute: {what}"),
             Vm3Error::Malformed(m) => write!(f, "malformed OxIR: {m}"),
@@ -675,6 +678,15 @@ impl<'h> Vm3<'h> {
     /// the missing unit. Each program's module-global initializer runs in its own program
     /// context; the entry's `Main` is run later by `run_entry`.
     pub fn link(programs: &[&'h OxProgram], host: &'h dyn HostServices) -> Result<Self, Vm3Error> {
+        Self::link_with_budget(programs, host, None)
+    }
+
+    /// Link with a budget covering initialization and all nested calls.
+    pub fn link_with_budget(
+        programs: &[&'h OxProgram],
+        host: &'h dyn HostServices,
+        steps: Option<u64>,
+    ) -> Result<Self, Vm3Error> {
         if programs.is_empty() {
             return Err(Vm3Error::Malformed(
                 "Vm3::link requires at least one program".into(),
@@ -682,6 +694,7 @@ impl<'h> Vm3<'h> {
         }
         let entry = programs.len() - 1;
         let mut exec = ExecState::new(host);
+        exec.remaining_steps = steps;
         exec.programs = programs.iter().map(|p| Self::build_loaded(p)).collect();
         let mut vm = Vm3 {
             cur: entry,
@@ -862,6 +875,49 @@ impl<'h> Vm3<'h> {
         Ok(())
     }
 
+    /// Invoke a standard-module function with already coerced value arguments.
+    /// No hidden Me slot is inserted and host ByRef arguments are private copies.
+    pub fn invoke_function_values(
+        &mut self,
+        func: FuncId,
+        args: Vec<Variant>,
+    ) -> Result<Variant, Vm3Error> {
+        let target = self
+            .cur_program()
+            .funcs
+            .get(func.0)
+            .ok_or_else(|| Vm3Error::Malformed("function index out of range".into()))?;
+        if target.param_count != args.len() || target.return_local.is_none() {
+            return Err(Vm3Error::Malformed(
+                "function invocation signature mismatch".into(),
+            ));
+        }
+        let base = self.frames.len();
+        let mut frame = self.new_frame(func);
+        for (slot, value) in frame.locals.iter_mut().zip(args) {
+            *slot = value;
+        }
+        let saved = self.exec.err_engine.enter_activation();
+        frame.saved_error_mode = saved.error_mode;
+        frame.saved_active_error = saved.active_error;
+        self.frames.push(frame);
+        let outcome = self.run_loop(base);
+        let value = self
+            .frames
+            .get(base)
+            .and_then(|frame| {
+                frame
+                    .return_local
+                    .and_then(|id| frame.locals.get(id.0).cloned())
+            })
+            .unwrap_or_else(Variant::empty);
+        self.exec.err_engine.restore(saved);
+        self.truncate_frames_with_withevents_cleanup(base);
+        self.prune_param_array_aliases_from_depth(base);
+        self.maybe_drain();
+        outcome.map(|()| value)
+    }
+
     /// The result snapshot slot `i`: module globals occupy `[0, globals.len())`; higher
     /// indices are the entry (`Main`) frame's locals (the same layout vm2 exposes).
     pub fn slot(&self, i: usize) -> Option<Variant> {
@@ -943,6 +999,9 @@ impl<'h> Vm3<'h> {
                 let fr = &self.frames[top];
                 (fr.func, fr.block, fr.ip)
             };
+            if ip == 0 && !self.exec.consume_execution_step() {
+                return Err(Vm3Error::BudgetExceeded);
+            }
             let blk: &OxBlock = program.funcs[func.0]
                 .blocks
                 .get(block.0)
@@ -4986,7 +5045,7 @@ fn subscript_to_long(v: i64) -> Result<i32, Vm3Error> {
 /// itself raises Out of memory (7) for such arrays on ordinary machines, so we
 /// reject clearly-pathological sizes up front. The limit is deliberately far
 /// above any realistic in-memory VBA array (~350M `Variant` slots).
-const MAX_ELEMENTWISE_ARRAY_BYTES: usize = 8 * 1024 * 1024 * 1024;
+const MAX_ELEMENTWISE_ARRAY_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
 /// Build `count` default elements for a (re)dimensioned array. A
 /// `map(..).collect()` reserves capacity infallibly, so a large `ReDim` of a
@@ -4999,7 +5058,7 @@ fn try_build_default_elements(
     element: &ArrayElementType,
     count: usize,
 ) -> Result<Vec<Variant>, Vm3Error> {
-    let bytes = count.saturating_mul(std::mem::size_of::<Variant>());
+    let bytes = (count as u64).saturating_mul(std::mem::size_of::<Variant>() as u64);
     if bytes > MAX_ELEMENTWISE_ARRAY_BYTES {
         return Err(Vm3Error::Fault(Fault::new(7, "Out of memory")));
     }

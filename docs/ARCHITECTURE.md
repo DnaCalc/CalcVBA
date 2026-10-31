@@ -30,7 +30,7 @@ The active production path is:
 
 This is the sole production compiler/execution stack. The legacy compiler, HIR/front-end fallback, source-rewrite compiler, VM2, CoreProgram-to-Bundle linearizer and `.oxb` product execution path have been removed or retired.
 
-The architecture is broad and real but not complete. The compiler/binder is the most mature layer. VM3 and the JIT cover a large platform-neutral language/runtime/library surface. The JIT does not yet implement native COM/Declare/pointer execution, and there is no active clean-stack language-service implementation.
+The architecture is broad and real but not complete. The compiler/binder is the most mature layer. VM3 and the JIT cover a large platform-neutral language/runtime/library surface. The JIT now executes a bounded Windows x64 scalar late-COM/Declare subset; early COM, pointer/callback execution and general Windows parity remain open. There is no active clean-stack language-service implementation.
 
 ## 3. Workspace ownership
 
@@ -62,6 +62,7 @@ The architecture is broad and real but not complete. The compiler/binder is the 
 - `oxvba-build` emits OxImage and wrapper/COM-server artifacts.
 - `oxvba-comhost` is the reusable Windows in-process COM-server host, currently VM3-backed.
 - `oxvba-cli` exposes source/project run and build commands.
+- `oxvba-embed` supplies a bounded public-function catalogue and value-call API for formula hosts, with optional JIT and interpreter-only WebAssembly builds. See [`spec/UDF_EMBEDDING_V1.md`](spec/UDF_EMBEDDING_V1.md).
 
 No active `oxvba-languageservice`, `oxvba-lsp`, `oxvba-debug` or forms-runtime crate exists in the current workspace.
 
@@ -154,7 +155,7 @@ Its current primary entry shape is a universal dynamic ABI:
 unsafe extern "C" fn(*mut JitRun, *mut RawExecState) -> i32
 ```
 
-Static calls can invoke local compiled functions, but Variant-backed frames and helpers still materialize much of the call state. Source/manifest invocation recompiles; `prepare_image_session` remains VM3-only.
+Static calls can invoke local compiled functions, but Variant-backed frames and helpers still materialize much of the call state. Source/manifest invocation recompiles; `prepare_image_session` remains VM3-only. The bounded embedding facade retains compiled code across fresh-state function calls and frees it on disposal; it does not supply persistent project globals/objects.
 
 ### Material gaps against the contract
 
@@ -165,7 +166,7 @@ Static calls can invoke local compiled functions, but Variant-backed frames and 
 - line/Erl, writable Err fields and full dynamic Err.Raise metadata are incomplete;
 - deep source recursion relies on the native stack and is not safely proven;
 - persistent JIT package sessions and product cache do not exist;
-- COM interfaces, external/native calls and pointer operations cause decline;
+- early COM interfaces, pointer/callback operations and native calls outside the bounded x64 Declare subset cause decline;
 - the implementation is concentrated in a very large single source module;
 - differential evidence is often status/tag based rather than fully structural.
 
@@ -175,7 +176,7 @@ The destination is [`spec/OXVBA_JIT_ARCHITECTURE_V1.md`](spec/OXVBA_JIT_ARCHITEC
 
 VM3, HAL, COM, host, build and comhost contain substantial Windows work: typelib loading, late/early bridge scaffolding, Declare execution, wrapper packaging, type-library emission and bounded COM serving.
 
-The JIT currently rejects images containing real external calls or COM interface requirements and does not lower ComCallEarly, Declare/native calls or pointer operations. Project `WithEvents`/`RaiseEvent` proves internal event semantics, not native connection points.
+The JIT lowers scalar late COM through the shared verified interop plan and supports dynamic CreateObject ProgIDs. Native development tests exercise real IDispatch and a test-owned x64 DLL, including Function/Sub, ByRef mutation, LastDllError and unload. General Windows rows remain in progress: ComCallEarly, pointer operations, callbacks and broader argument/carrier/session families are unfinished. Project `WithEvents`/`RaiseEvent` proves internal event semantics, not native connection points.
 
 ### Material gaps against the contract
 
@@ -193,7 +194,7 @@ The destination is [`spec/OXVBA_WINDOWS_INTEROP_ARCHITECTURE_V1.md`](spec/OXVBA_
 
 ## 10. Host sessions, builds and outputs
 
-`oxvba-host` compiles source/project closures for VM3 or one-shot JIT execution. `ProjectRuntimeSession` and `.oxi` session loading are VM3-backed. `oxvba-build` emits `.oxi` plus wrapper/COM metadata; `oxvba-comhost` loads the packaged image through VM3.
+`oxvba-host` compiles source/project closures for VM3 or one-shot JIT execution. CLI `build --target OxImage` emits a source-free project closure; `run-image` executes it on either backend and honors its entry index. Program-style top-level statements are exercised through the packaged JIT path. `ProjectRuntimeSession` remains VM3-backed. `oxvba-build` also emits wrapper/COM metadata; `oxvba-comhost` loads those packages through VM3.
 
 Current wrapped output infrastructure is valuable, but output labels must remain exact:
 

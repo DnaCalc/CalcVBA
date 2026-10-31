@@ -185,6 +185,32 @@ Public Sub RunProbe()
 End Sub
 '@
 
+    $windowsScalarSource = @'
+Option Explicit
+Private Declare PtrSafe Function NativeSqrt Lib "msvcrt" Alias "sqrt" (ByVal value As Double) As Double
+Private Declare PtrSafe Function VarR8FromI4 Lib "oleaut32" (ByVal value As Long, ByRef result As Double) As Long
+Private Declare PtrSafe Sub NativeSetError Lib "kernel32" Alias "SetLastError" (ByVal value As Long)
+
+Public Function Add2(a, b)
+    Add2 = a + b
+End Function
+
+Public Function RunProbe() As String
+    Dim result As Double
+    Dim status As Long
+    Dim savedError As Long
+    Dim obj As Object
+    status = VarR8FromI4(42, result)
+    NativeSetError 1234
+    savedError = Err.LastDllError
+    Set obj = CreateObject("Scripting.Dictionary")
+    obj.Add "answer", 42
+    RunProbe = CStr(CLng(NativeSqrt(1764))) & "|" & CStr(result) & "|" & _
+        CStr(savedError) & "|" & CStr(obj.Item("answer")) & "|" & _
+        CStr(obj.Count) & "|" & CStr(Add2(19, 23))
+End Function
+'@
+
     $cases = @(
         [pscustomobject]@{
             id = "success"
@@ -258,6 +284,18 @@ End Sub
             expected_run_status = "runtime-error-modal"
             expected_value = $null
             diagnostic_only = $true
+        },
+        [pscustomobject]@{
+            id = "windows-scalar-interop"
+            purpose = "development Excel64 scalar Declare, ByRef, LastDllError, late COM and Add2 observation"
+            module_name = "OracleSelfTest"
+            module_source = $windowsScalarSource
+            expected_compile_status = "ok"
+            run_procedure = "OracleSelfTest.RunProbe"
+            target_exists = $true
+            expected_run_status = "ok"
+            expected_value = "42|42|1234|42|1|42"
+            diagnostic_only = $true
         }
     )
     foreach ($case in $cases) {
@@ -305,7 +343,10 @@ function Test-ExcelOracleRuntimeErrFieldEqual {
 function Get-ExcelOracleSha256 {
     param([Parameter(Mandatory = $true)][string]$Text)
 
-    $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($Text -replace "`r`n", "`n"))
+    # VBE AddFromString appends a final line break. Normalize only line endings
+    # and terminal blank lines; all code, comments and interior whitespace remain bound.
+    $canonical = ($Text -replace "`r`n", "`n").TrimEnd("`n")
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($canonical)
     $hash = [Security.Cryptography.SHA256]::HashData($bytes)
     return "sha256:$([Convert]::ToHexString($hash).ToLowerInvariant())"
 }
@@ -449,6 +490,7 @@ function Get-ExcelOracleCaseEvidenceContract {
     param([Parameter(Mandatory = $true)][string]$CaseId)
     switch ($CaseId) {
         "success" { return "clean-compile-run-no-dialog-v1" }
+        "windows-scalar-interop" { return "clean-compile-run-no-dialog-v1" }
         "compile-failure" { return "compile-error-token-line-dismissal-v1" }
         "ambiguous-macro-failure" { return "clean-compile-ambiguous-macro-dismissal-v1" }
         "intrinsic-shadow" { return "compile-error-token-line-dismissal-v1" }
@@ -1574,7 +1616,8 @@ function Resolve-ExcelOraclePostCleanupResult {
                 $case.compile_context.injected_project_file_name -is [string] -and
                 [StringComparer]::OrdinalIgnoreCase.Equals([string]$case.compile_context.injected_project_file_name, $expectedBootstrapPath) -and
                 $case.compile_context.injected_module_name -is [string] -and [string]$case.compile_context.injected_module_name -ceq [string]$case.module_name -and
-                $case.compile_context.injected_source -is [string] -and [string]$case.compile_context.injected_source -ceq [string]$descriptor.module_source -and
+                $case.compile_context.injected_source -is [string] -and
+                (Get-ExcelOracleSha256 -Text ([string]$case.compile_context.injected_source)) -ceq (Get-ExcelOracleSha256 -Text ([string]$descriptor.module_source)) -and
                 [string]$case.compile_context.injected_source_sha256 -ceq [string]$case.module_sha256 -and
                 [string]$case.compile_context.selected_source_sha256 -ceq [string]$case.module_sha256 -and $authorityValid
             if (-not $compileContextValid) { $errors.Add("case result $index compile_context schema or source identity is invalid") }

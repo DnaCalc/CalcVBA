@@ -62,11 +62,14 @@ fn bounded_demo_completes_on_vm_via_native_sqlite() {
 #[test]
 fn bounded_demo_rejects_jit_without_falling_back() {
     let err = run_bounded_demo(true).expect_err(
-        "JIT native/COM lowering is not implemented; it must not silently fall back to VM3",
+        "the SQLite fixture still has unsupported JIT shapes; it must not fall back to VM3",
     );
     assert!(
         err.contains("Declare pointer-helper writebacks remain with bd-59co.3.3.5")
-            || err.contains("native/COM calls start in M4-9"),
+            || err.contains("native/COM calls start in M4-9")
+            || err.contains(
+                "M4-4 lowers only Long/Byte/Integer/Bool places for this operation, got Str"
+            ),
         "unexpected diagnostic: {err}"
     );
 }

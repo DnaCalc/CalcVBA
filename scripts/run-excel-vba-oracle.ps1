@@ -6,7 +6,8 @@ param(
     [string]$RunId = ("excel_vba_oracle_{0}" -f [Guid]::NewGuid().ToString("N")),
     [string]$OutputRoot = "artifacts/windows-x64/excel-vba-oracle",
     [ValidateRange(30, 1800)][int]$TimeoutSeconds = 600,
-    [string]$DiagnosticCaseId = ""
+    [string]$DiagnosticCaseId = "",
+    [switch]$SafeMode
 )
 
 $ErrorActionPreference = "Stop"
@@ -187,6 +188,7 @@ $workerArguments = @(
     "-SelectedCaseSelectionDigest", [string]$selectedCaseDescriptorEnvelope.selection_sha256,
     "-CaseTimeoutSeconds", [string][Math]::Min(120, $TimeoutSeconds)
 )
+if ($SafeMode) { $workerArguments += "-SafeMode" }
 $startedUtc = [DateTime]::UtcNow
 $containedWorker = Start-ExcelOracleContainedProcess -JobName "OxVbaExcelOracle-$PID-$containmentToken" -RunId $RunId -StartProcess {
     Start-Process -FilePath (Join-Path $PSHOME "pwsh.exe") -ArgumentList $workerArguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $workerStdout -RedirectStandardError $workerStderr

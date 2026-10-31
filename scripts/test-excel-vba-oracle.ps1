@@ -597,6 +597,16 @@ try {
     Assert-Equal $bootstrapA.sha256 $bootstrapB.sha256 "controlled OpenXML bootstrap package must be byte deterministic"
     Assert-Equal $true ([bool]$bootstrapA.macro_free) "controlled OpenXML bootstrap must declare macro-free content"
     Assert-True (Test-ExcelOracleBootstrapWorkbook -Descriptor $bootstrapA) "controlled OpenXML bootstrap must pass hash, part, XML, content-type, and OPC relationship closure"
+    $excelLikeHandle = [IO.File]::Open($bootstrapA.path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read)
+    try {
+        Assert-True (Test-ExcelOracleBootstrapWorkbook -Descriptor $bootstrapA) "bootstrap verification must use one exact snapshot while Excel retains a shared write handle"
+        Assert-Equal $bootstrapA.sha256 (Get-ExcelOracleBootstrapSha256 -Path $bootstrapA.path) "post-run bootstrap hash must also tolerate Excel's retained write handle"
+    }
+    finally { $excelLikeHandle.Dispose() }
+    Assert-True (Test-ExcelOracleExpectedValue -ExpectedValue $null -ActualValue 'observed') "null expected value is observation-only"
+    Assert-True (Test-ExcelOracleExpectedValue -ExpectedValue '' -ActualValue '') "empty expected value matches empty output"
+    Assert-True (-not (Test-ExcelOracleExpectedValue -ExpectedValue '' -ActualValue 'nonempty')) "empty expected value must not accept arbitrary successful output"
+    Assert-True (-not (Test-ExcelOracleExpectedValue -ExpectedValue 'exact' -ActualValue 'EXACT')) "worker and supervisor both compare output case-sensitively"
     $archive = [IO.Compression.ZipFile]::OpenRead([string]$bootstrapA.path)
     try {
         $entryNames = @($archive.Entries | ForEach-Object FullName)

@@ -233,7 +233,7 @@ try {
         $residual = $residualByKey[$key]
         $producerSatisfied = $key -ceq "WIN-ABI-CARRIER|WAC-TARGET-DEV-ENV"
         $expectedCanonicalTruth = if ($producerSatisfied) { "verified" }
-            elseif ($key -in @("WIN-COM-CLIENT|WCC-PLAN-LATE", "WIN-COM-CLIENT|WCC-LATE-OUTPROC-ERROR", "WIN-NATIVE-IMPORT|WNI-PLAN-DECLARE")) { "in-progress" }
+            elseif ($key -in @("WIN-COM-CLIENT|WCC-PLAN-LATE", "WIN-COM-CLIENT|WCC-LATE-OUTPROC-ERROR", "WIN-COM-CLIENT|WCC-PLAN-EARLY", "WIN-NATIVE-IMPORT|WNI-PLAN-DECLARE")) { "in-progress" }
             else { "planned" }
         $expectedProducerState = if ($producerSatisfied) { "satisfied" } else { "pending" }
         $expectedCaseId = "WIN14-$([string]$canonical.row_id)"

@@ -50,7 +50,7 @@ impl JitConfiguration {
     /// this is not a persistent on-disk code format.
     pub fn identity(&self) -> String {
         format!(
-            "{}|{}|{}|private-helpers=2|carrier={}:{}|jit={}",
+            "{}|{}|{}|private-helpers=3|carrier={}:{}|jit={}",
             self.isa.triple(),
             self.isa.flags(),
             self.isa

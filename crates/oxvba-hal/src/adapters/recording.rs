@@ -382,6 +382,15 @@ impl ComHal for RecordingHostServices {
         self.inner.com().dispatch_invoke_dynamic_variant(request)
     }
 
+    fn invoke_early_bound(
+        &self,
+        object: ObjectRef,
+        member: &crate::traits::TypeLibMemberMetadata,
+        args: &[oxvba_com::DynamicCallArg],
+    ) -> HalResult<oxvba_runtime::RuntimeCallResult> {
+        self.inner.com().invoke_early_bound(object, member, args)
+    }
+
     fn subscribe_event(
         &self,
         object: ObjectRef,

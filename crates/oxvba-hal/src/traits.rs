@@ -445,6 +445,19 @@ pub trait ComHal: Send + Sync {
     ) -> HalResult<(Variant, Vec<Option<Variant>>)> {
         Ok((self.dispatch_invoke_dynamic_variant(request)?, Vec::new()))
     }
+    /// Invoke the compiler-selected interface member. Native Windows adapters must
+    /// use its IID, slot and wire signature, without name lookup or Invoke fallback
+    /// for dual interfaces. Pure dispinterfaces use an explicit fixed-DISPID call.
+    /// Portable hosts may provide an explicit typed object adapter. Missing support
+    /// is an error; this default deliberately never delegates to dynamic dispatch.
+    fn invoke_early_bound(
+        &self,
+        _object: ObjectRef,
+        _member: &TypeLibMemberMetadata,
+        _args: &[oxvba_com::DynamicCallArg],
+    ) -> HalResult<oxvba_runtime::RuntimeCallResult> {
+        variant_companion_not_overridden(CapabilityId::ComActivationDispatch, "invoke_early_bound")
+    }
     fn subscribe_event(
         &self,
         object: ObjectRef,

@@ -8,7 +8,7 @@
   "source_hashes": [
     {
       "path": "docs/validation/WINDOWS_JIT_COM_CLIENT_MATRIX_V1.csv",
-      "sha256": "sha256:583a3451dce182ec74601fbb1000152ccd4cd8b14f69cf5b9cae14a5cf259ca7"
+      "sha256": "sha256:d3b342411fe3cbd4569e5af5db09ea3c4412e96475bac3de400773dba2ada0b6"
     },
     {
       "path": "docs/validation/WINDOWS_JIT_COM_EVENTS_MATRIX_V1.csv",
@@ -32,11 +32,11 @@
     },
     {
       "path": "docs/validation/IDEAL_WINDOWS_X64_FIXTURE_MANIFEST_V1.csv",
-      "sha256": "sha256:87c973fe472f2dd8af35368a1db9a885c37a1c1f01a49352660bfbfc21fe4423"
+      "sha256": "sha256:afdbba7683996f0b003c94264b086badf396afafcd6e3199d4628ed2ffffe5fd"
     },
     {
       "path": "docs/validation/IDEAL_WINDOWS_CURRENT_STACK_RESIDUAL_V1.csv",
-      "sha256": "sha256:4ea32666d8e9a25374ad36b46eb2c2a684011830af284f2a4785172d66bd7469"
+      "sha256": "sha256:815f6bc7749854bd5d4987806c4cdc0cab83114b0272da10e55f85da3887ddff"
     },
     {
       "path": "docs/validation/IDEAL_ENVIRONMENT_MANIFEST_V1.csv",
@@ -603,7 +603,7 @@
           "bd-59co.3.3"
         ],
         "required_truth_state": "verified",
-        "current_truth_state": "planned",
+        "current_truth_state": "in-progress",
         "state": "pending"
       },
       "roles": {

@@ -2165,11 +2165,8 @@ impl<'h> Vm3<'h> {
             }
 
             // ── Early-bound, descriptor-typed COM dispatch (M3-9) ────────────────────
-            // The typed descriptor gives the dispid (member token) and the call-site accessor;
-            // vm3 dispatches by `TokenNamed{dispid,name}` through the host's COM facet, and the
-            // host's `PreferVtable` strategy slot-calls the live object's vtable (driven by the
-            // object's own typelib, not by the descriptor's slot) — the identical transport vm2's
-            // early-bound (`EarlyCom`→`DispatchIdNamed`) takes, so value + transport counts match.
+            // Preserve the compiler's IID, slot and wire signature through HAL.
+            // Native early calls never rediscover metadata or fall back to Invoke.
             // A receiver that is a project instance (a typed call through an `Implements`
             // interface) dispatches internally by the member's name.
             OxInst::ComCallEarly {
@@ -2184,20 +2181,15 @@ impl<'h> Vm3<'h> {
                 let descriptor = self.cur_program().com_method(*method).ok_or_else(|| {
                     Vm3Error::Malformed(format!("ComCallEarly: unresolved method ref {method:?}"))
                 })?;
-                let dispid = descriptor.token;
+                let descriptor = descriptor.clone();
                 let member_name = descriptor.name.clone();
                 let ret = if object.is_project_instance() {
                     self.dispatch_project_method(object, recv_v, &member_name, *invoke_kind, args)?
                 } else {
-                    self.dispatch_com_method(
-                        object,
-                        DynamicMemberSelector::TokenNamed {
-                            token: dispid,
-                            name: member_name,
-                        },
-                        *invoke_kind,
-                        args,
-                    )?
+                    if descriptor.invoke_kind != *invoke_kind {
+                        return Err(Vm3Error::Malformed("early COM accessor mismatch".into()));
+                    }
+                    self.dispatch_early_com_method(object, &descriptor, args)?
                 };
                 if let Some(dst) = dst {
                     self.store(dst, ret)?;
@@ -4261,6 +4253,59 @@ impl<'h> Vm3<'h> {
             self.store(place, value)
         })?;
         Ok(ret)
+    }
+
+    fn dispatch_early_com_method(
+        &mut self,
+        object: ObjectRef,
+        member: &oxvba_com::TypeLibMemberMetadata,
+        args: &[OxCallArg],
+    ) -> Result<Variant, Vm3Error> {
+        let mut call_args = Vec::with_capacity(args.len());
+        let mut identities = HashMap::new();
+        for (index, arg) in args.iter().enumerate() {
+            let (value, name) = match arg {
+                OxCallArg::Operand(op) => (Some(self.operand(op)?), None),
+                OxCallArg::ByRef(place) => (Some(self.read(place)?), None),
+                OxCallArg::Named { name, value } => {
+                    (Some(self.operand(value)?), Some(name.clone()))
+                }
+                OxCallArg::Omitted => (None, None),
+                OxCallArg::Const(n) => (Some(Variant::from_i32(*n)), None),
+            };
+            call_args.push(DynamicCallArg {
+                value: value.map(DynamicValue::from_variant),
+                name,
+                by_ref: match arg {
+                    OxCallArg::ByRef(place) => Some(RuntimeByRefSlot::new(
+                        *identities
+                            .entry(self.resolve(place))
+                            .or_insert(index as u32),
+                        None,
+                    )),
+                    _ => None,
+                },
+            });
+        }
+        let result = self
+            .exec
+            .host
+            .com()
+            .invoke_early_bound(object, member, &call_args)
+            .map_err(|error| Vm3Error::Fault(Fault::from_hal(error)))?;
+        let mut writebacks = vec![None; args.len()];
+        for writeback in result.writebacks {
+            let slot = writebacks
+                .get_mut(writeback.slot.id as usize)
+                .ok_or_else(|| {
+                    Vm3Error::Malformed("early COM writeback slot out of range".into())
+                })?;
+            *slot = Some(writeback.value);
+        }
+        apply_optional_byref_writebacks(args, &writebacks, |place, value| {
+            self.store(place, value)
+        })?;
+        Ok(result.value.unwrap_or_else(Variant::empty))
     }
 
     /// Invoke a base-library built-in. Most builtins use the shared context-free

@@ -3726,13 +3726,30 @@ struct RawDualVtbl {
     /// slot 38
     mutate_byref_record_safearray:
         unsafe extern "system" fn(this: *mut core::ffi::c_void, value: *mut *mut SAFEARRAY) -> i32,
+    /// slot 39: observes real native aliasing of two Long pointers.
+    alias_longs: unsafe extern "system" fn(
+        this: *mut core::ffi::c_void,
+        lhs: *mut i32,
+        rhs: *mut i32,
+        out: *mut i32,
+    ) -> i32,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug)]
+pub struct DualFixtureObservation {
+    pub references: AtomicU32,
+    pub error_info_references: AtomicU32,
+    pub invoke_calls: AtomicU32,
+    pub name_lookups: AtomicU32,
+    pub type_info_reads: AtomicU32,
 }
 
 #[cfg(target_os = "windows")]
 #[repr(C)]
 struct OxvbaDualObject {
     vtbl: *const RawDualVtbl,
-    ref_count: AtomicU32,
+    observation: std::sync::Arc<DualFixtureObservation>,
     /// Last value stashed by `put_Value`, so the unit test can round-trip it.
     last_put_value: AtomicI32,
 }
@@ -3782,7 +3799,27 @@ static OXVBA_DUAL_VTBL: RawDualVtbl = RawDualVtbl {
     validate_record_safearray_value: oxvba_dual_validate_record_safearray_value,
     mutate_byref_i4_safearray: oxvba_dual_mutate_byref_i4_safearray,
     mutate_byref_record_safearray: oxvba_dual_mutate_byref_record_safearray,
+    alias_longs: oxvba_dual_alias_longs,
 };
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn oxvba_dual_alias_longs(
+    _this: *mut core::ffi::c_void,
+    lhs: *mut i32,
+    rhs: *mut i32,
+    out: *mut i32,
+) -> i32 {
+    if lhs.is_null() || rhs.is_null() || out.is_null() {
+        return COM_E_INVALIDARG;
+    }
+    // SAFETY: fixture ABI requires three live scalar cells; lhs/rhs may alias.
+    unsafe {
+        *lhs = 41;
+        *rhs += 1;
+        *out = *lhs * 100 + *rhs;
+    }
+    COM_S_OK
+}
 
 /// Construct the real custom dual-vtable fixture object. Returns the `this`
 /// pointer (a `*const *const fnptr` whose vtable is [`OXVBA_DUAL_VTBL`]) with one
@@ -3790,12 +3827,29 @@ static OXVBA_DUAL_VTBL: RawDualVtbl = RawDualVtbl {
 /// vtable. The unit test owns the single reference.
 #[cfg(target_os = "windows")]
 pub fn create_oxvba_dual_vtable_object() -> *mut core::ffi::c_void {
+    create_oxvba_dual_vtable_object_observed().0
+}
+
+/// The counter remains readable after object destruction. Holding it does not
+/// retain a COM reference, so zero proves the fixture's final Release occurred.
+#[cfg(target_os = "windows")]
+pub fn create_oxvba_dual_vtable_object_observed() -> (
+    *mut core::ffi::c_void,
+    std::sync::Arc<DualFixtureObservation>,
+) {
+    let count = std::sync::Arc::new(DualFixtureObservation {
+        references: AtomicU32::new(1),
+        error_info_references: AtomicU32::new(0),
+        invoke_calls: AtomicU32::new(0),
+        name_lookups: AtomicU32::new(0),
+        type_info_reads: AtomicU32::new(0),
+    });
     let object = Box::new(OxvbaDualObject {
         vtbl: &OXVBA_DUAL_VTBL,
-        ref_count: AtomicU32::new(1),
+        observation: count.clone(),
         last_put_value: AtomicI32::new(0),
     });
-    Box::into_raw(object).cast::<core::ffi::c_void>()
+    (Box::into_raw(object).cast::<core::ffi::c_void>(), count)
 }
 
 #[cfg(target_os = "windows")]
@@ -3836,14 +3890,16 @@ unsafe extern "system" fn oxvba_dual_query_interface(
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "system" fn oxvba_dual_add_ref(this: *mut core::ffi::c_void) -> u32 {
     let owner = as_oxvba_dual(this);
-    (*owner).ref_count.fetch_add(1, Ordering::AcqRel) + 1
+    let observation = &(*owner).observation;
+    observation.references.fetch_add(1, Ordering::AcqRel) + 1
 }
 
 #[cfg(target_os = "windows")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "system" fn oxvba_dual_release(this: *mut core::ffi::c_void) -> u32 {
     let owner = as_oxvba_dual(this);
-    let remaining = (*owner).ref_count.fetch_sub(1, Ordering::AcqRel) - 1;
+    let observation = &(*owner).observation;
+    let remaining = observation.references.fetch_sub(1, Ordering::AcqRel) - 1;
     if remaining == 0 {
         drop(Box::from_raw(owner));
     }
@@ -3855,9 +3911,11 @@ unsafe extern "system" fn oxvba_dual_release(this: *mut core::ffi::c_void) -> u3
 #[cfg(target_os = "windows")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "system" fn oxvba_dual_get_type_info_count(
-    _this: *mut core::ffi::c_void,
+    this: *mut core::ffi::c_void,
     pctinfo: *mut u32,
 ) -> i32 {
+    let observation = &(*as_oxvba_dual(this)).observation;
+    observation.type_info_reads.fetch_add(1, Ordering::Relaxed);
     if !pctinfo.is_null() {
         *pctinfo = 0;
     }
@@ -3867,11 +3925,13 @@ unsafe extern "system" fn oxvba_dual_get_type_info_count(
 #[cfg(target_os = "windows")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "system" fn oxvba_dual_get_type_info(
-    _this: *mut core::ffi::c_void,
+    this: *mut core::ffi::c_void,
     _itinfo: u32,
     _lcid: u32,
     pptinfo: *mut *mut core::ffi::c_void,
 ) -> i32 {
+    let observation = &(*as_oxvba_dual(this)).observation;
+    observation.type_info_reads.fetch_add(1, Ordering::Relaxed);
     if !pptinfo.is_null() {
         *pptinfo = std::ptr::null_mut();
     }
@@ -3881,20 +3941,22 @@ unsafe extern "system" fn oxvba_dual_get_type_info(
 #[cfg(target_os = "windows")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "system" fn oxvba_dual_get_ids_of_names(
-    _this: *mut core::ffi::c_void,
+    this: *mut core::ffi::c_void,
     _riid: *const windows_sys::core::GUID,
     _names: *mut *mut u16,
     _count: u32,
     _lcid: u32,
     _dispids: *mut i32,
 ) -> i32 {
+    let observation = &(*as_oxvba_dual(this)).observation;
+    observation.name_lookups.fetch_add(1, Ordering::Relaxed);
     COM_DISP_E_UNKNOWNNAME
 }
 
 #[cfg(target_os = "windows")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "system" fn oxvba_dual_invoke(
-    _this: *mut core::ffi::c_void,
+    this: *mut core::ffi::c_void,
     _dispid: i32,
     _riid: *const windows_sys::core::GUID,
     _lcid: u32,
@@ -3904,6 +3966,8 @@ unsafe extern "system" fn oxvba_dual_invoke(
     _excep: *mut EXCEPINFO,
     _arg_err: *mut u32,
 ) -> i32 {
+    let observation = &(*as_oxvba_dual(this)).observation;
+    observation.invoke_calls.fetch_add(1, Ordering::Relaxed);
     // The dual fixture is exercised via its vtable slots, not Invoke.
     COM_DISP_E_MEMBERNOTFOUND
 }
@@ -3990,15 +4054,22 @@ unsafe extern "system" fn oxvba_dual_lookup(
 #[cfg(target_os = "windows")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "system" fn oxvba_dual_raise_error(
-    _this: *mut core::ffi::c_void,
+    this: *mut core::ffi::c_void,
     out: *mut i32,
 ) -> i32 {
     if !out.is_null() {
         *out = 0;
     }
-    let errinfo =
-        create_oxvba_dual_error_info(DUAL_RAISE_ERROR_SOURCE, DUAL_RAISE_ERROR_DESCRIPTION);
+    let observation = &(*as_oxvba_dual(this)).observation;
+    let errinfo = create_oxvba_dual_error_info(
+        DUAL_RAISE_ERROR_SOURCE,
+        DUAL_RAISE_ERROR_DESCRIPTION,
+        observation.clone(),
+    );
     let _ = SetErrorInfo(0, errinfo.cast::<core::ffi::c_void>());
+    // SetErrorInfo retains its own reference; release the creator's reference
+    // exactly as in the documented COM example, including on installation failure.
+    let _ = oxvba_dual_errorinfo_release(errinfo);
     DUAL_RAISE_ERROR_HRESULT
 }
 
@@ -4726,6 +4797,7 @@ struct RawErrorInfoVtbl {
 struct OxvbaDualErrorInfo {
     vtbl: *const RawErrorInfoVtbl,
     ref_count: AtomicU32,
+    observation: std::sync::Arc<DualFixtureObservation>,
     source: Vec<u16>,
     description: Vec<u16>,
 }
@@ -4743,10 +4815,18 @@ static OXVBA_DUAL_ERRORINFO_VTBL: RawErrorInfoVtbl = RawErrorInfoVtbl {
 };
 
 #[cfg(target_os = "windows")]
-fn create_oxvba_dual_error_info(source: &str, description: &str) -> *mut core::ffi::c_void {
+fn create_oxvba_dual_error_info(
+    source: &str,
+    description: &str,
+    observation: std::sync::Arc<DualFixtureObservation>,
+) -> *mut core::ffi::c_void {
+    observation
+        .error_info_references
+        .fetch_add(1, Ordering::AcqRel);
     let object = Box::new(OxvbaDualErrorInfo {
         vtbl: &OXVBA_DUAL_ERRORINFO_VTBL,
         ref_count: AtomicU32::new(1),
+        observation,
         source: source.encode_utf16().chain(std::iter::once(0)).collect(),
         description: description
             .encode_utf16()
@@ -4788,6 +4868,10 @@ unsafe extern "system" fn oxvba_dual_errorinfo_query_interface(
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "system" fn oxvba_dual_errorinfo_add_ref(this: *mut core::ffi::c_void) -> u32 {
     let owner = as_oxvba_dual_error_info(this);
+    let observation = &(*owner).observation;
+    observation
+        .error_info_references
+        .fetch_add(1, Ordering::AcqRel);
     (*owner).ref_count.fetch_add(1, Ordering::AcqRel) + 1
 }
 
@@ -4795,6 +4879,10 @@ unsafe extern "system" fn oxvba_dual_errorinfo_add_ref(this: *mut core::ffi::c_v
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "system" fn oxvba_dual_errorinfo_release(this: *mut core::ffi::c_void) -> u32 {
     let owner = as_oxvba_dual_error_info(this);
+    let observation = &(*owner).observation;
+    observation
+        .error_info_references
+        .fetch_sub(1, Ordering::AcqRel);
     let remaining = (*owner).ref_count.fetch_sub(1, Ordering::AcqRel) - 1;
     if remaining == 0 {
         drop(Box::from_raw(owner));

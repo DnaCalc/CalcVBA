@@ -30,10 +30,28 @@ impl PortableObjectResult {
     }
 }
 
-/// Late-bound dispatch interface for host-registered objects.
+/// A typed portable call returns values/writebacks or transfers a child object
+/// for the host to retain. No raw/native COM pointer is fabricated.
+pub enum PortableTypedCallResult {
+    Value(oxvba_runtime::RuntimeCallResult),
+    Object(PortableObjectResult),
+}
+
+/// Host-registered object with dynamic dispatch and an explicit typed-call option.
 ///
 /// This portable host API carries retained [`Variant`] values.
 pub trait PortableDispatch: Send + Sync {
+    /// Explicit compiler-bound host subset. Implementations select their own
+    /// fixed member identity/signature; no default name-based retry is allowed.
+    /// This is a portable host adapter, not native COM transport evidence.
+    fn invoke_early_bound(
+        &self,
+        _member: &crate::TypeLibMemberMetadata,
+        _args: &[crate::DynamicCallArg],
+    ) -> Result<PortableTypedCallResult, String> {
+        Err("portable object does not implement typed calls".into())
+    }
+
     fn invoke(&self, member: &str, args: &[Variant]) -> Result<Variant, String>;
     fn get(&self, member: &str) -> Result<Variant, String>;
     fn put(&self, member: &str, value: Variant) -> Result<(), String>;

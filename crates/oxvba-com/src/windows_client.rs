@@ -101,6 +101,32 @@ pub struct RawIUnknown {
     pub vtbl: *const RawIUnknownVtbl,
 }
 
+/// One same-apartment COM reference, released on every Rust exit path.
+#[cfg(target_os = "windows")]
+pub(crate) struct OwnedComInterface(*mut core::ffi::c_void);
+
+#[cfg(target_os = "windows")]
+impl OwnedComInterface {
+    /// # Safety
+    /// `pointer` is a live, aligned IUnknown-derived pointer carrying one owned
+    /// reference. This guard must be dropped in that pointer's COM apartment.
+    pub(crate) unsafe fn from_owned(pointer: *mut core::ffi::c_void) -> Self {
+        Self(pointer)
+    }
+    pub(crate) fn as_ptr(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for OwnedComInterface {
+    fn drop(&mut self) {
+        // SAFETY: construction transfers one live same-apartment reference; the
+        // private guard is not Clone/Send/Sync and releases it exactly once.
+        unsafe { release_unknown(self.0) };
+    }
+}
+
 #[cfg(target_os = "windows")]
 #[repr(C)]
 pub struct RawIDispatchVtbl {
@@ -513,6 +539,33 @@ pub unsafe fn query_interface_pointer(
         ));
     }
     Ok(interface)
+}
+
+/// Query an exact early-bound IID without flattening the failure HRESULT.
+///
+/// # Safety
+/// `object` is a live same-apartment IUnknown-derived pointer throughout this call.
+#[cfg(target_os = "windows")]
+pub(crate) unsafe fn query_interface_pointer_hresult(
+    object: *mut core::ffi::c_void,
+    iid: &windows_sys::core::GUID,
+) -> Result<*mut core::ffi::c_void, i32> {
+    if object.is_null() {
+        return Err(COM_E_INVALIDARG);
+    }
+    let mut interface = core::ptr::null_mut();
+    // SAFETY: caller retains the live IUnknown prefix and the out-cell is writable.
+    let hr = unsafe {
+        let unknown = object.cast::<RawIUnknown>();
+        ((*(*unknown).vtbl).query_interface)(object, iid, &mut interface)
+    };
+    if hr < 0 {
+        Err(hr)
+    } else if interface.is_null() {
+        Err(COM_E_NOINTERFACE)
+    } else {
+        Ok(interface)
+    }
 }
 
 #[cfg(target_os = "windows")]

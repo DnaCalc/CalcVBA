@@ -1285,6 +1285,26 @@ impl StandardHostServices {
         // raised before `failure` is consumed by `render()`.
         let vba_error_number = failure.vba_error_number();
         let vba_description = failure.vba_description().map(str::to_string);
+        let mut error_info = failure
+            .excep
+            .as_ref()
+            .map(|info| crate::error::HostErrorInfo {
+                source: info.source.clone(),
+                description: info.description.clone(),
+                help_file: info.help_file.clone(),
+                help_context: info.help_context,
+            });
+        // Standard Automation HRESULTs can carry only a VBA number (Scripting
+        // Dictionary's duplicate-key 457 is one example). VBA then supplies its
+        // default message, not a transport diagnostic. Negative foreign HRESULTs
+        // retain their existing diagnostic until their system-message lane exists.
+        if failure.hr.is_some() && vba_error_number > 0 {
+            let info = error_info.get_or_insert_with(Default::default);
+            if info.description.as_deref().is_none_or(str::is_empty) {
+                info.description =
+                    Some(oxvba_runtime::default_error_message(vba_error_number).into());
+            }
+        }
         let mut suffix = String::new();
         if let Some(hr) = failure.hr {
             suffix.push_str(&format!("hresult=0x{:08X};", hr as u32));
@@ -1312,13 +1332,17 @@ impl StandardHostServices {
             }
             _ => format!("{prefix} {rendered}"),
         };
-        HalError::adapter_fault(
+        let error = HalError::adapter_fault(
             self.profile,
             CapabilityId::ComActivationDispatch,
             "dispatch_invoke",
             message,
         )
-        .with_host_error_code(vba_error_number)
+        .with_host_error_code(vba_error_number);
+        match error_info {
+            Some(info) => error.with_host_error_info(info),
+            None => error,
+        }
     }
 
     fn controlled_dispatch_exception_fault(&self, dispid: i32) -> HalError {

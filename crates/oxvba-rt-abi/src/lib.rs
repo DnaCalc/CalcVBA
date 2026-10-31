@@ -87,12 +87,13 @@ impl Fault {
     /// A HAL fault carries the real VBA `Err.Number` recovered from the host when
     /// available, falling back to error 5.
     pub fn from_hal(e: oxvba_hal::HalError) -> Self {
+        let info = e.host_error_info.unwrap_or_default();
         Self {
             code: e.host_error_code.unwrap_or(5),
-            message: e.message,
-            source: None,
-            help_file: None,
-            help_context: None,
+            message: info.description.unwrap_or(e.message),
+            source: info.source,
+            help_file: info.help_file,
+            help_context: info.help_context.map(|value| value as i32),
         }
     }
 }
@@ -3331,6 +3332,29 @@ pub fn default_error_help_context(code: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn host_error_fields_remain_separate_from_transport_diagnostics() {
+        let error = oxvba_hal::HalError::adapter_fault(
+            oxvba_hal::model::HalProfileId::Windows,
+            oxvba_hal::model::CapabilityId::ComActivationDispatch,
+            "invoke_early_bound",
+            "transport detail: HRESULT 0x800A000D",
+        )
+        .with_host_error_code(13)
+        .with_host_error_info(oxvba_hal::error::HostErrorInfo {
+            source: Some("Host.Library".into()),
+            description: Some("exact server text".into()),
+            help_file: Some("host-help.chm".into()),
+            help_context: Some(0x8000_0001),
+        });
+        assert!(error.to_diagnostic().message.contains("HRESULT"));
+        let fault = Fault::from_hal(error);
+        assert_eq!(fault.code, 13);
+        assert_eq!(fault.message, "exact server text");
+        assert_eq!(fault.source.as_deref(), Some("Host.Library"));
+        assert_eq!(fault.help_file.as_deref(), Some("host-help.chm"));
+        assert_eq!(fault.help_context, Some(0x8000_0001u32 as i32));
+    }
     #[test]
     fn execution_budget_exhaustion_never_wraps_or_modifies_vba_err() {
         let host =

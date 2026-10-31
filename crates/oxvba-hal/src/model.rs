@@ -121,6 +121,9 @@ pub enum UnsupportedFeatureMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Transport preference for dynamic COM calls. A compiler-bound dual member
+/// always uses its declared vtable; this preference never erases static binding.
+/// Capability denial remains controlled by allow_com_activation/profile support.
 pub enum ComInvocationStrategy {
     DispatchOnly,
     PreferVtable,

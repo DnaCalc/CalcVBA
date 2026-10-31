@@ -1,5 +1,12 @@
 Set-StrictMode -Version Latest
 
+function Test-ExcelOracleExpectedValue {
+    param([AllowNull()]$ExpectedValue, [AllowNull()]$ActualValue)
+    # Null means observation-only. Empty is an actual expected result, and the
+    # worker and supervisor must make the same case-sensitive comparison.
+    return $null -eq $ExpectedValue -or [string]$ActualValue -ceq [string]$ExpectedValue
+}
+
 function Get-ExcelOracleIntrinsicShadowNames {
     return @("Fix", "Date", "Time", "Name", "Error", "Left", "Right", "Len", "Val", "Format")
 }
@@ -1888,7 +1895,7 @@ function Resolve-ExcelOraclePostCleanupResult {
 
         $behaviorPassed = $null -ne $descriptor -and $derivedCompileStatus -ceq [string]$descriptor.expected_compile_status -and
             $derivedRunStatus -ceq [string]$descriptor.expected_run_status
-        if ($behaviorPassed -and $null -ne $descriptor.expected_value) { $behaviorPassed = [string]$case.run_value -ceq [string]$descriptor.expected_value }
+        if ($behaviorPassed) { $behaviorPassed = Test-ExcelOracleExpectedValue -ExpectedValue $descriptor.expected_value -ActualValue $case.run_value }
         if ($behaviorPassed -and $null -ne $descriptor.expected_runtime_err) {
             $behaviorPassed = $runtimeErrValid -and $null -ne $case.runtime_err
             foreach ($field in @("number", "source", "description", "help_file", "help_context", "erl")) {

@@ -225,6 +225,38 @@ struct RecordingApplication {
 }
 
 impl PortableDispatch for RecordingApplication {
+    fn invoke_early_bound(
+        &self,
+        member: &oxvba_com::TypeLibMemberMetadata,
+        args: &[oxvba_com::DynamicCallArg],
+    ) -> Result<oxvba_com::platform::portable::PortableTypedCallResult, String> {
+        use oxvba_com::platform::portable::PortableTypedCallResult;
+        let (label, value) = match (member.token, member.invoke_kind) {
+            (10, TypeLibMemberInvokeKind::Method) => ("Run", Variant::from_i32(42)),
+            (11, TypeLibMemberInvokeKind::Method) => ("OnTime", Variant::empty()),
+            (20, TypeLibMemberInvokeKind::PropertyGet) if args.is_empty() => {
+                self.calls
+                    .lock()
+                    .map_err(|_| "call log poisoned")?
+                    .push("Application.Workbooks:get-object".into());
+                return Ok(PortableTypedCallResult::Object(PortableObjectResult::new(
+                    "Excel.Workbooks",
+                    Box::new(RecordingWorkbooks {
+                        calls: self.calls.clone(),
+                    }),
+                )));
+            }
+            _ => return Err("unknown typed Application fixture member".into()),
+        };
+        self.calls
+            .lock()
+            .map_err(|_| "call log poisoned")?
+            .push(format!("{label}:{}", args.len()));
+        Ok(PortableTypedCallResult::Value(
+            oxvba_runtime::RuntimeCallResult::value(value),
+        ))
+    }
+
     fn invoke(&self, member: &str, args: &[Variant]) -> Result<Variant, String> {
         self.calls
             .lock()
@@ -272,6 +304,30 @@ struct RecordingWorkbooks {
 }
 
 impl PortableDispatch for RecordingWorkbooks {
+    fn invoke_early_bound(
+        &self,
+        member: &oxvba_com::TypeLibMemberMetadata,
+        args: &[oxvba_com::DynamicCallArg],
+    ) -> Result<oxvba_com::platform::portable::PortableTypedCallResult, String> {
+        if member.invoke_kind != TypeLibMemberInvokeKind::PropertyGet || !args.is_empty() {
+            return Err("unsupported typed Workbooks fixture accessor".into());
+        }
+        let (label, value) = match member.token {
+            21 => ("Count", 42),
+            0 => ("Item", 1),
+            _ => return Err("unknown typed Workbooks fixture member".into()),
+        };
+        self.calls
+            .lock()
+            .map_err(|_| "call log poisoned")?
+            .push(format!("Workbooks.{label}:get"));
+        Ok(
+            oxvba_com::platform::portable::PortableTypedCallResult::Value(
+                oxvba_runtime::RuntimeCallResult::value(Variant::from_i32(value)),
+            ),
+        )
+    }
+
     fn invoke(&self, member: &str, args: &[Variant]) -> Result<Variant, String> {
         Err(format!(
             "unexpected Workbooks invoke `{member}` with {} args",

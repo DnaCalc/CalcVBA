@@ -1,0 +1,395 @@
+{
+  "schema": "oxvba.run5.excel-evidence.v1",
+  "date_utc": "2026-10-31",
+  "authority": "Windows x64 development observations; no certification credit",
+  "passing_runs": [
+    "calcvba5-hosting-public-ok2",
+    "calcvba5-hosting-private-ok",
+    "calcvba5-early-dictionary-ok"
+  ],
+  "failed_dialog_observation": "calcvba5-hosting-public-2: aborted after owned runtime dialog; no worksheet exception mapping claim",
+  "archive": "run5-excel-observations.zip",
+  "archive_sha256": "b46be1e7a5ed09c058ede57b8857d1f608b06cf2ed220c8bbaf90cf5c0337af7",
+  "entries": [
+    {
+      "path": "calcvba5-hosting-public-ok2/containment-ready.json",
+      "sha256": "296e0ed869db92c41c8079ca45cbc438c803adf351ea3f6f3c5b49523d291623",
+      "bytes": 430
+    },
+    {
+      "path": "calcvba5-hosting-public-ok2/owned-helper-processes.jsonl",
+      "sha256": "a300ffc9535d02fe5df5d35cc418f5bab89b62a98306f6ecc76b784728e2057b",
+      "bytes": 374
+    },
+    {
+      "path": "calcvba5-hosting-public-ok2/owned-processes.jsonl",
+      "sha256": "4bdfa84c9a7453a41475edc4e62a10810075ee7e6170018bf9fb1d64ecb4af3c",
+      "bytes": 403
+    },
+    {
+      "path": "calcvba5-hosting-public-ok2/plan.json",
+      "sha256": "15b75160e30584e49c95f635c22a455272acd9937fc13e5d19a062cfc6420141",
+      "bytes": 1599
+    },
+    {
+      "path": "calcvba5-hosting-public-ok2/results.json",
+      "sha256": "029ec81c43f703f42bf9ac02400e0f69138fc60a3d53d6d72208694bb4e1a527",
+      "bytes": 18296
+    },
+    {
+      "path": "calcvba5-hosting-public-ok2/selected-case-descriptors.json",
+      "sha256": "607dee567ccd6385d18e245f8de85b1eefc72a19e5ca84720594b956ed01f211",
+      "bytes": 4309
+    },
+    {
+      "path": "calcvba5-hosting-public-ok2/summary.md",
+      "sha256": "0138701ac7be979082675b3d8e1d3eca2031672fc3746b77a371a811bc21a9f9",
+      "bytes": 1007
+    },
+    {
+      "path": "calcvba5-hosting-public-ok2/transcript.json",
+      "sha256": "b2909d00b2fb49dd9d386460d4f390d5c15e2455786c8d54651cc4af071c97c8",
+      "bytes": 846
+    },
+    {
+      "path": "calcvba5-hosting-public-ok2/windows-scalar-interop/excel-attachment-diagnostic.json",
+      "sha256": "07fd723c1353635d8bc1f445c8893303ecc9289cdff1eb17ab89fdedf692419c",
+      "bytes": 63069
+    },
+    {
+      "path": "calcvba5-hosting-public-ok2/windows-scalar-interop/excel-attachment-diagnostic.json.startup-action.json",
+      "sha256": "d415fd1e592e2b513b654ed0df2bdae662cb3d81210af37fa396d8b4f6d42614",
+      "bytes": 118
+    },
+    {
+      "path": "calcvba5-hosting-public-ok2/windows-scalar-interop/excel-attachment-diagnostic.json.startup-uia.json",
+      "sha256": "a10cf7fb5aac9201adcff1943eb2000f056cbb6235a8606b2d58c4d77af5a9b4",
+      "bytes": 172
+    },
+    {
+      "path": "calcvba5-hosting-public-ok2/windows-scalar-interop/excel-environment.json",
+      "sha256": "86fb10f90056eb0def3cb145c6a06d92f570416bdaf5ab622d0a68162d98cc83",
+      "bytes": 229
+    },
+    {
+      "path": "calcvba5-hosting-public-ok2/windows-scalar-interop/excel-process-identity.json",
+      "sha256": "244b3d443506ac48e406204f4b3b4707fee0c3ffba89e1d35b9693a39dcf8e54",
+      "bytes": 465
+    },
+    {
+      "path": "calcvba5-hosting-public-ok2/windows-scalar-interop/guardian-control.json",
+      "sha256": "8cd25b50e9fd09bc7bf892dff57f49a5f6c6bddd8d507acff3bad3fe0b3df6a5",
+      "bytes": 310
+    },
+    {
+      "path": "calcvba5-hosting-public-ok2/windows-scalar-interop/guardian-events.jsonl",
+      "sha256": "1cef5fed09cb0b3a785b06af6ed54cc13ecd2301ec194fdb40517cfeaf2c6f4c",
+      "bytes": 6012
+    },
+    {
+      "path": "calcvba5-hosting-public-ok2/windows-scalar-interop/guardian-ready.json",
+      "sha256": "7fd9f77098f0317ae2d0d6f82cfb1e49e2dcfab5745194650989dfbda68b4c6f",
+      "bytes": 527
+    },
+    {
+      "path": "calcvba5-hosting-public-ok2/windows-scalar-interop/guardian-stop",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "calcvba5-hosting-public-ok2/windows-scalar-interop/guardian.stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "calcvba5-hosting-public-ok2/windows-scalar-interop/guardian.stdout.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "calcvba5-hosting-public-ok2/windows-scalar-interop/oracle-bootstrap.xlsx",
+      "sha256": "52f2d374197f9f89ad60868c2e150a5a15639b48ad623a43a442ecc79a221945",
+      "bytes": 2182
+    },
+    {
+      "path": "calcvba5-hosting-public-ok2/windows-scalar-interop/OracleSelfTest.bas",
+      "sha256": "c527367b224c19ee51d6e8ff4f7c8c50e977c07d17ad1fe7813681e41af1502b",
+      "bytes": 2648
+    },
+    {
+      "path": "calcvba5-hosting-public-ok2/worker.stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "calcvba5-hosting-public-ok2/worker.stdout.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "calcvba5-hosting-private-ok/containment-ready.json",
+      "sha256": "3dd816bca604991fda24e1306ac7acc545c439838a9f8b8969addebb7d20c457",
+      "bytes": 430
+    },
+    {
+      "path": "calcvba5-hosting-private-ok/owned-helper-processes.jsonl",
+      "sha256": "c8dfd741040e272ae0e5c91142dd10bddeb34edeb744c77848b2973f31e88352",
+      "bytes": 374
+    },
+    {
+      "path": "calcvba5-hosting-private-ok/owned-processes.jsonl",
+      "sha256": "326a0d4e3901259ece3604745d73f0701dba2d707d087af7debac1a9992f4518",
+      "bytes": 403
+    },
+    {
+      "path": "calcvba5-hosting-private-ok/plan.json",
+      "sha256": "fe26b0ab1b1c6a6f9278059a19543c2db875fd5e40b04e20e24187528ea132c2",
+      "bytes": 1599
+    },
+    {
+      "path": "calcvba5-hosting-private-ok/results.json",
+      "sha256": "adb63a41f6f83c002fa4270dffc95dd3d2b65ddf0c930021008d677a3a75e853",
+      "bytes": 18813
+    },
+    {
+      "path": "calcvba5-hosting-private-ok/selected-case-descriptors.json",
+      "sha256": "6f1bdfe4889480426438b5cee984d6e57e1855533bff78ba3fb97b2e6b1c9fb2",
+      "bytes": 4332
+    },
+    {
+      "path": "calcvba5-hosting-private-ok/summary.md",
+      "sha256": "79870d1c16198b12b989ac322d3ce0acd00f3657c177a9a4e15e46174f0374e1",
+      "bytes": 1007
+    },
+    {
+      "path": "calcvba5-hosting-private-ok/transcript.json",
+      "sha256": "6ecef000ba8b85f52ecbfa8dd2b4c00a89f88b72259706a6ef043ba32489e699",
+      "bytes": 844
+    },
+    {
+      "path": "calcvba5-hosting-private-ok/windows-scalar-interop/excel-attachment-diagnostic.json",
+      "sha256": "27ce27c33244d5ebfce45b2fdd6fa04b6e719a5c34b1b9bbd256a48ebfb46f08",
+      "bytes": 62292
+    },
+    {
+      "path": "calcvba5-hosting-private-ok/windows-scalar-interop/excel-attachment-diagnostic.json.startup-action.json",
+      "sha256": "69f05d2d518d38d06dd8a1255427a4851fcb8234811c878487367d4e2a7ca7f4",
+      "bytes": 118
+    },
+    {
+      "path": "calcvba5-hosting-private-ok/windows-scalar-interop/excel-attachment-diagnostic.json.startup-uia.json",
+      "sha256": "a10cf7fb5aac9201adcff1943eb2000f056cbb6235a8606b2d58c4d77af5a9b4",
+      "bytes": 172
+    },
+    {
+      "path": "calcvba5-hosting-private-ok/windows-scalar-interop/excel-environment.json",
+      "sha256": "13f4d502de18fe39d93c144421b6e1e0c8df824ad7c058d9af65e5effc8e9faa",
+      "bytes": 229
+    },
+    {
+      "path": "calcvba5-hosting-private-ok/windows-scalar-interop/excel-process-identity.json",
+      "sha256": "145513302d4f57a99f9c81497e4620fc332153c4f971da5e6ceb32fb4bf9d547",
+      "bytes": 465
+    },
+    {
+      "path": "calcvba5-hosting-private-ok/windows-scalar-interop/guardian-control.json",
+      "sha256": "2a34ea700a41bf54e83f4471c8e7c867770a47db43cea1a7a315439bd72bdec5",
+      "bytes": 310
+    },
+    {
+      "path": "calcvba5-hosting-private-ok/windows-scalar-interop/guardian-events.jsonl",
+      "sha256": "e7267620a85ed86b30a029723a7d263275b4cd13e490b7019ce46ac86af75ea4",
+      "bytes": 6354
+    },
+    {
+      "path": "calcvba5-hosting-private-ok/windows-scalar-interop/guardian-ready.json",
+      "sha256": "5e20112967af3d85a292596c1dcfff3de3ead4e89a81ca3cc5abe5e8a2373f69",
+      "bytes": 527
+    },
+    {
+      "path": "calcvba5-hosting-private-ok/windows-scalar-interop/guardian-stop",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "calcvba5-hosting-private-ok/windows-scalar-interop/guardian.stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "calcvba5-hosting-private-ok/windows-scalar-interop/guardian.stdout.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "calcvba5-hosting-private-ok/windows-scalar-interop/oracle-bootstrap.xlsx",
+      "sha256": "52f2d374197f9f89ad60868c2e150a5a15639b48ad623a43a442ecc79a221945",
+      "bytes": 2182
+    },
+    {
+      "path": "calcvba5-hosting-private-ok/windows-scalar-interop/OracleSelfTest.bas",
+      "sha256": "a5a426e29148fcb207036cb10df7432726bc0f6b2eb7db86c8c7192afe3e0c18",
+      "bytes": 2670
+    },
+    {
+      "path": "calcvba5-hosting-private-ok/worker.stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "calcvba5-hosting-private-ok/worker.stdout.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "calcvba5-early-dictionary-ok/containment-ready.json",
+      "sha256": "458299f1ab2a823ddd7c62de7bab09809f48f4a8cf8c8b45aeca392a8ae6abda",
+      "bytes": 431
+    },
+    {
+      "path": "calcvba5-early-dictionary-ok/owned-helper-processes.jsonl",
+      "sha256": "0652a7488569930f39547f9e5b60c84470bc6b776e6ace7276b6c53fcd7923c3",
+      "bytes": 375
+    },
+    {
+      "path": "calcvba5-early-dictionary-ok/owned-processes.jsonl",
+      "sha256": "5c82aa0f9892a5110d4e3c96133260fa67a7ba564ef07744c9e2704b4b5f1d9d",
+      "bytes": 404
+    },
+    {
+      "path": "calcvba5-early-dictionary-ok/plan.json",
+      "sha256": "b59e4461266d56fc8acbab0ea038d31ba63831912b3a8aa25db212d07c53b55c",
+      "bytes": 1600
+    },
+    {
+      "path": "calcvba5-early-dictionary-ok/results.json",
+      "sha256": "96f57e2c0b331bd468abe9119a976b6a984d3dbd4bb61711e4f0681dbe4fc32d",
+      "bytes": 15725
+    },
+    {
+      "path": "calcvba5-early-dictionary-ok/selected-case-descriptors.json",
+      "sha256": "f452d587a1e8a0594007bc5656f2815656d57af95a2448aef4e5e1694e0e4827",
+      "bytes": 2275
+    },
+    {
+      "path": "calcvba5-early-dictionary-ok/summary.md",
+      "sha256": "0aecc695941fe3b9ce4a22036e0f8ab3dcb896935c044f91791f1752c7c052ef",
+      "bytes": 1008
+    },
+    {
+      "path": "calcvba5-early-dictionary-ok/transcript.json",
+      "sha256": "f8be56a742c9b942b1179993d51b00f9b23f259b1e3a83ae3105ad317148f5b9",
+      "bytes": 847
+    },
+    {
+      "path": "calcvba5-early-dictionary-ok/windows-scalar-interop/excel-attachment-diagnostic.json",
+      "sha256": "562afa018df81ef824d99d562348c75bdf09acf45e1f9c6a0b0ab66dab3daf7a",
+      "bytes": 62958
+    },
+    {
+      "path": "calcvba5-early-dictionary-ok/windows-scalar-interop/excel-attachment-diagnostic.json.startup-action.json",
+      "sha256": "0fd69440b3bdf487aabbbcf662aefe18dbf21290e9ec763b6e9062a71ea19824",
+      "bytes": 118
+    },
+    {
+      "path": "calcvba5-early-dictionary-ok/windows-scalar-interop/excel-attachment-diagnostic.json.startup-uia.json",
+      "sha256": "a10cf7fb5aac9201adcff1943eb2000f056cbb6235a8606b2d58c4d77af5a9b4",
+      "bytes": 172
+    },
+    {
+      "path": "calcvba5-early-dictionary-ok/windows-scalar-interop/excel-environment.json",
+      "sha256": "9be94e013201b5f277c26c14a55c8962dc8ba07bc7f119b91ff7d764ef4db96c",
+      "bytes": 229
+    },
+    {
+      "path": "calcvba5-early-dictionary-ok/windows-scalar-interop/excel-process-identity.json",
+      "sha256": "5f3d3f0b0a77d19c0b5c893e3c4e94bdd16220aa2c3fa3de404b6b47277190df",
+      "bytes": 466
+    },
+    {
+      "path": "calcvba5-early-dictionary-ok/windows-scalar-interop/guardian-control.json",
+      "sha256": "23d5e78ed6311a80c20fcf5cb9baa7b0c92abcc793cab6b8c5c87ef59e379a81",
+      "bytes": 311
+    },
+    {
+      "path": "calcvba5-early-dictionary-ok/windows-scalar-interop/guardian-events.jsonl",
+      "sha256": "aa29d198587bb8e9046f8eb6480063bc6ad30719375c3cd651898226fb6247d8",
+      "bytes": 5703
+    },
+    {
+      "path": "calcvba5-early-dictionary-ok/windows-scalar-interop/guardian-ready.json",
+      "sha256": "f8a14df961398878541d6ecababc133ed41d979fea49482532d6d84dc0e18b85",
+      "bytes": 528
+    },
+    {
+      "path": "calcvba5-early-dictionary-ok/windows-scalar-interop/guardian-stop",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "calcvba5-early-dictionary-ok/windows-scalar-interop/guardian.stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "calcvba5-early-dictionary-ok/windows-scalar-interop/guardian.stdout.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "calcvba5-early-dictionary-ok/windows-scalar-interop/oracle-bootstrap.xlsx",
+      "sha256": "52f2d374197f9f89ad60868c2e150a5a15639b48ad623a43a442ecc79a221945",
+      "bytes": 2182
+    },
+    {
+      "path": "calcvba5-early-dictionary-ok/windows-scalar-interop/OracleSelfTest.bas",
+      "sha256": "39f63bfbeb39e8a7944745a37c7bc58435fe8a171557f4669959fb55cf913ad2",
+      "bytes": 817
+    },
+    {
+      "path": "calcvba5-early-dictionary-ok/worker.stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "calcvba5-early-dictionary-ok/worker.stdout.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "calcvba5-hosting-public-2/plan.json",
+      "sha256": "e598ca0c4fecff38f66d8a5bcb144ab9965c692d46e4d2406f555a745583323f",
+      "bytes": 1597
+    },
+    {
+      "path": "calcvba5-hosting-public-2/results.json",
+      "sha256": "d4da7868cb2a821909b2cb451cf8959f26e7b73b9c4910debce9032af43ded58",
+      "bytes": 20307
+    },
+    {
+      "path": "calcvba5-hosting-public-2/selected-case-descriptors.json",
+      "sha256": "8d16c647aab066288a702be85d60d56aab3ee56817b1af89f4f58d88fe901765",
+      "bytes": 3806
+    },
+    {
+      "path": "calcvba5-hosting-public-2/windows-scalar-interop/guardian-events.jsonl",
+      "sha256": "1715ebd416be3d80aa39685b7702a36c347af50d37e9a02114647ff778a2e8ce",
+      "bytes": 7657
+    },
+    {
+      "path": "calcvba5-hosting-public-2/windows-scalar-interop/OracleSelfTest.bas",
+      "sha256": "ab66f4013a2ae0a20d464dd20013009bb67139ce3005504d7c273bebbc16e55a",
+      "bytes": 2406
+    },
+    {
+      "path": "calcvba5-hosting-public-2/worker.stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "calcvba5-hosting-public-2/worker.stdout.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    }
+  ]
+}

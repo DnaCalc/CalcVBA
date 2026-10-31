@@ -212,6 +212,14 @@ enum ByRefCell {
     Record(RuntimeByRefSlot, ComRecord),
 }
 
+/// An alias borrows the cell owned by one InboundOwned entry. It never frees it.
+struct ByRefAlias {
+    param_type: TypeLibParamType,
+    wire_type: Option<TypeLibWireType>,
+    iid: Option<crate::ComInterfaceIid>,
+    pointer: *mut c_void,
+}
+
 pub(crate) struct VtableInvokeResult {
     pub(crate) value: Variant,
     pub(crate) writebacks: Vec<RuntimeByRefWriteback>,
@@ -402,6 +410,8 @@ where
     // marshalled params, then (if any) the trailing [out,retval] pointer.
     let mut ffi_args: Vec<FfiArg> = Vec::with_capacity(args.len() + 2);
     let mut inbound_owned: Vec<InboundOwned> = Vec::with_capacity(args.len());
+    let mut byref_aliases: std::collections::HashMap<u32, ByRefAlias> =
+        std::collections::HashMap::new();
     ffi_args.push(FfiArg::Pointer(this));
 
     for (i, (param_type, arg)) in plan.parameter_types.iter().zip(args.iter()).enumerate() {
@@ -411,6 +421,23 @@ where
         let param_iid = plan.parameter_iids.get(i).copied().flatten();
         let wire_type = plan.parameter_wire_types.get(i);
         let byref_slot = plan.parameter_byref_slots.get(i).copied().flatten();
+        if let Some(slot) = byref_slot
+            && let Some(previous) = byref_aliases.get(&slot.id)
+        {
+            if previous.param_type != *param_type
+                || previous.wire_type.as_ref() != wire_type
+                || previous.iid != param_iid
+            {
+                free_inbound(&mut inbound_owned);
+                return Err(validation_failure(
+                    plan.label,
+                    dispid,
+                    "aliased ByRef arguments have incompatible wire signatures",
+                ));
+            }
+            ffi_args.push(FfiArg::Pointer(previous.pointer));
+            continue;
+        }
         match marshal_inbound_param(
             *param_type,
             wire_type,
@@ -420,6 +447,19 @@ where
             resolve_object,
         ) {
             Ok((ffi_arg, owned)) => {
+                if let Some(slot) = byref_slot
+                    && let FfiArg::Pointer(pointer) = &ffi_arg
+                {
+                    byref_aliases.insert(
+                        slot.id,
+                        ByRefAlias {
+                            param_type: *param_type,
+                            wire_type: wire_type.cloned(),
+                            iid: param_iid,
+                            pointer: *pointer,
+                        },
+                    );
+                }
                 ffi_args.push(ffi_arg);
                 inbound_owned.push(owned);
             }
@@ -455,8 +495,12 @@ where
     let hr = unsafe { call_via_libffi(fnptr as usize, &ffi_args, FfiReturnType::Long) } as i32;
 
     if hr < 0 {
+        // Read immediately: releasing interface arguments can replace the thread's
+        // IErrorInfo, just as calling another COM method can.
+        let error_info = take_error_info();
         // We own inbound cells even on failure; release them before surfacing the
-        // COM error. Writebacks are not valid on a failing HRESULT.
+        // COM error. Preserving VBA-visible ByRef writes on this failure edge
+        // remains an explicit WIN-4 parity gap; this path currently discards them.
         free_inbound(&mut inbound_owned);
         // Drop any retval cell payload the callee may have written before the
         // failure (defensive: most servers leave it zeroed on failure).
@@ -466,7 +510,7 @@ where
             dispid,
             hr: Some(hr),
             arg_err: None,
-            excep: take_error_info(),
+            excep: error_info,
             detail: None,
         });
     }

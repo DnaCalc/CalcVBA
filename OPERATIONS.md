@@ -255,6 +255,7 @@ Minimum expectations before merge:
 Recommended routine:
 - Fast local lane: `cargo test` for impacted crates.
 - Full lane (CI): formatter/lints/tests plus heavier checks.
+- When the owner prohibits registry changes, use `./scripts/meta-check.ps1 -Fast -NoArtifacts -NoRegistry`. It explicitly filters four COM record tests that register temporary type libraries; the excluded tests receive no passing evidence. Other checks remain active.
 - For long-running Kani/profile formal steps, prefer async execution with repo scripts and log/state tracking, then merge results back into formal evidence artifacts.
 - Run governance checks early for doc/spec/conformance changes:
   - `./scripts/check-governance.ps1`

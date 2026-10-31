@@ -144,6 +144,7 @@ pub(crate) fn project_not_found(
         operation,
         message: format!("project `{project_name}` was not found"),
         host_error_code: None,
+        host_error_info: None,
     }
 }
 
@@ -159,6 +160,7 @@ pub(crate) fn project_reference_unresolved(
         operation: "resolve_reference",
         message: format!("reference `{referenced_name}` could not be resolved"),
         host_error_code: None,
+        host_error_info: None,
     }
 }
 

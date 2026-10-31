@@ -1,5 +1,12 @@
 Set-StrictMode -Version Latest
 
+function Get-ExcelOracleBootstrapSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    try { return "sha256:$([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream)).ToLowerInvariant())" }
+    finally { $stream.Dispose() }
+}
+
 function New-ExcelOracleProcessStartInfo {
     param(
         [Parameter(Mandatory = $true)][string]$ExcelExecutable,
@@ -80,13 +87,27 @@ function Test-ExcelOracleBootstrapWorkbook {
         @($Descriptor.package_parts).Count -ne 5) {
         return $false
     }
-    $actualHash = "sha256:$((Get-FileHash -LiteralPath ([string]$Descriptor.path) -Algorithm SHA256).Hash.ToLowerInvariant())"
+    # Excel can retain a write handle while we validate its read-only bootstrap.
+    # Take one shared-read snapshot and use those exact bytes for hash and ZIP
+    # checks; Get-FileHash / ZipFile.OpenRead otherwise race Excel's open handle.
+    try {
+        $bootstrapStream = [IO.File]::Open([string]$Descriptor.path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        try {
+            $snapshotStream = [IO.MemoryStream]::new()
+            try { $bootstrapStream.CopyTo($snapshotStream); $snapshotBytes = $snapshotStream.ToArray() }
+            finally { $snapshotStream.Dispose() }
+        }
+        finally { $bootstrapStream.Dispose() }
+    }
+    catch { return $false }
+    $actualHash = "sha256:$([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($snapshotBytes)).ToLowerInvariant())"
     if ($actualHash -cne [string]$Descriptor.sha256) { return $false }
 
     $expectedParts = @("[Content_Types].xml", "_rels/.rels", "xl/workbook.xml", "xl/_rels/workbook.xml.rels", "xl/worksheets/sheet1.xml")
     if ((@($Descriptor.package_parts) -join "`n") -cne ($expectedParts -join "`n")) { return $false }
     try {
-        $archive = [IO.Compression.ZipFile]::OpenRead([string]$Descriptor.path)
+        $snapshotStream = [IO.MemoryStream]::new($snapshotBytes, $false)
+        $archive = [IO.Compression.ZipArchive]::new($snapshotStream, [IO.Compression.ZipArchiveMode]::Read)
         try {
             $entryNames = @($archive.Entries | ForEach-Object FullName)
             if (($entryNames -join "`n") -cne ($expectedParts -join "`n") -or

@@ -164,10 +164,12 @@ impl ComInvokeFailure {
     }
 
     pub fn render(&self) -> String {
-        let mut message = format!(
-            "IDispatch::Invoke({} dispid={}) failed",
-            self.label, self.dispid
-        );
+        let transport = if self.label.starts_with("vtable-") || self.label == "early-vtable" {
+            "COM vtable call"
+        } else {
+            "IDispatch::Invoke"
+        };
+        let mut message = format!("{transport}({} dispid={}) failed", self.label, self.dispid);
         if let Some(hr) = self.hr {
             message.push_str(&format!(" with HRESULT {:#010X}", hr as u32));
         }
@@ -3190,23 +3192,68 @@ pub unsafe fn try_vtable_member_spec_invoke_result_with_shared_state(
     if !prefer_vtable {
         return Ok(None);
     }
+    // SAFETY: the caller retains the live dispatch and same-apartment state.
+    match unsafe {
+        invoke_vtable_member_spec_result_with_shared_state(dispatch, dispid, spec, args, com_state)
+    } {
+        Ok(result) => Ok(Some(result)),
+        Err(failure)
+            if failure
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.starts_with("COM-E-EARLY-QI:")) =>
+        {
+            Ok(None)
+        }
+        Err(failure) if failure.hr.is_some() => Err(failure),
+        Err(_) => Ok(None),
+    }
+}
+
+/// Strict descriptor-driven call shared by VM3 and JIT. Failure never retries
+/// through IDispatch or resolves metadata from the live receiver.
+///
+/// # Safety
+/// `dispatch` is a live retained interface in the caller's COM apartment; the
+/// shared bindings state retains all native argument/result object identities.
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[allow(clippy::result_large_err)]
+pub(crate) unsafe fn invoke_vtable_member_spec_result_with_shared_state(
+    dispatch: *mut core::ffi::c_void,
+    dispid: i32,
+    spec: &crate::ComMemberSpec,
+    args: &[ComInvokeArg],
+    com_state: &std::sync::Arc<std::sync::Mutex<crate::WindowsComClientState>>,
+) -> Result<RuntimeCallResult, ComInvokeFailure> {
     if dispatch.is_null()
         || !(dispatch as usize).is_multiple_of(std::mem::align_of::<*const core::ffi::c_void>())
     {
-        return Ok(None);
+        return Err(validation_failure(
+            "early-vtable",
+            dispid,
+            "COM-E-EARLY-UNSUPPORTED: invalid pointer, named/omitted argument shape or unsafe proxy",
+        ));
     }
     if args.iter().any(|arg| arg.name.is_some()) {
-        return Ok(None);
+        return Err(validation_failure(
+            "early-vtable",
+            dispid,
+            "COM-E-EARLY-UNSUPPORTED: invalid pointer, named/omitted argument shape or unsafe proxy",
+        ));
     }
     let supplied_count = args.iter().take_while(|arg| arg.value.is_some()).count();
     if args[supplied_count..].iter().any(|arg| arg.value.is_some()) {
-        return Ok(None);
+        return Err(validation_failure(
+            "early-vtable",
+            dispid,
+            "COM-E-EARLY-UNSUPPORTED: invalid pointer, named/omitted argument shape or unsafe proxy",
+        ));
     }
     let (label, return_type) = match spec.invoke_kind {
-        crate::TypeLibMemberInvokeKind::PropertyGet => ("property-get", spec.return_type),
-        crate::TypeLibMemberInvokeKind::Method => ("method", spec.return_type),
-        crate::TypeLibMemberInvokeKind::PropertyPut => ("property-put", None),
-        crate::TypeLibMemberInvokeKind::PropertyPutRef => ("property-putref", None),
+        crate::TypeLibMemberInvokeKind::PropertyGet => ("vtable-property-get", spec.return_type),
+        crate::TypeLibMemberInvokeKind::Method => ("vtable-method", spec.return_type),
+        crate::TypeLibMemberInvokeKind::PropertyPut => ("vtable-property-put", None),
+        crate::TypeLibMemberInvokeKind::PropertyPutRef => ("vtable-property-putref", None),
     };
     let supplied_byref_slots: Vec<Option<RuntimeByRefSlot>> = args[..supplied_count]
         .iter()
@@ -3217,7 +3264,11 @@ pub unsafe fn try_vtable_member_spec_invoke_result_with_shared_state(
         .filter_map(|arg| arg.value.as_ref().map(|v| v.variant().clone()))
         .collect();
     if variant_args.len() != supplied_count {
-        return Ok(None);
+        return Err(validation_failure(
+            "early-vtable",
+            dispid,
+            "COM-E-EARLY-UNSUPPORTED: invalid pointer, named/omitted argument shape or unsafe proxy",
+        ));
     }
     let plan = match build_vtable_invocation_plan_with_byrefs(
         spec,
@@ -3228,12 +3279,24 @@ pub unsafe fn try_vtable_member_spec_invoke_result_with_shared_state(
         label,
     ) {
         Ok(plan) => plan,
-        Err(_) => return Ok(None),
+        Err(reason) => {
+            return Err(validation_failure(
+                "early-vtable",
+                dispid,
+                format!("COM-E-EARLY-UNSUPPORTED: {reason:?}"),
+            ));
+        }
     };
     if supplied_count < spec.parameter_types.len() {
         match synthesize_trailing_optional_args(spec, supplied_count) {
             Some(extra) => variant_args.extend(extra),
-            None => return Ok(None),
+            None => {
+                return Err(validation_failure(
+                    "early-vtable",
+                    dispid,
+                    "COM-E-EARLY-UNSUPPORTED: optional argument cannot be synthesized",
+                ));
+            }
         }
     }
 
@@ -3262,30 +3325,55 @@ pub unsafe fn try_vtable_member_spec_invoke_result_with_shared_state(
     if unsafe { dispatch_is_marshaling_proxy(dispatch) }
         && !proxy_interface_is_vtable_safe(interface_iid, com_state)
     {
-        return Ok(None);
+        return Err(validation_failure(
+            "early-vtable",
+            dispid,
+            "COM-E-EARLY-UNSUPPORTED: invalid pointer, named/omitted argument shape or unsafe proxy",
+        ));
     }
     // SAFETY: `dispatch` is the live, retained interface pointer for this bound
     // object; QueryInterface returns one owned reference on success.
-    let interface = match unsafe { crate::query_interface_pointer(dispatch, &iid) } {
-        Ok(interface) => interface,
-        Err(_) => return Ok(None),
-    };
+    let interface =
+        match unsafe { crate::windows_client::query_interface_pointer_hresult(dispatch, &iid) } {
+            Ok(interface) => interface,
+            Err(hr) => {
+                return Err(ComInvokeFailure {
+                    label: "early-vtable",
+                    dispid,
+                    hr: Some(hr),
+                    arg_err: None,
+                    excep: None,
+                    detail: Some(
+                        "COM-E-EARLY-QI: receiver does not expose the declared interface".into(),
+                    ),
+                });
+            }
+        };
     if interface.is_null()
         || !(interface as usize).is_multiple_of(std::mem::align_of::<*const core::ffi::c_void>())
     {
-        return Ok(None);
+        return Err(validation_failure(
+            "early-vtable",
+            dispid,
+            "COM-E-EARLY-UNSUPPORTED: invalid pointer, named/omitted argument shape or unsafe proxy",
+        ));
     }
+    // SAFETY: successful QI transferred one aligned, live same-apartment
+    // reference. The guard releases it even if marshalling unwinds.
+    let interface = unsafe { crate::windows_client::OwnedComInterface::from_owned(interface) };
     if plan.slot >= plan.slot_bound {
-        // SAFETY: `interface` is the single owned QI reference from above.
-        unsafe { crate::release_unknown(interface) };
-        return Ok(None);
+        return Err(validation_failure(
+            "early-vtable",
+            dispid,
+            "COM-E-EARLY-UNSUPPORTED: invalid pointer, named/omitted argument shape or unsafe proxy",
+        ));
     }
 
     // SAFETY: the plan gate proved the slot, call convention, wire shape, and
     // writeback slots; `interface` is the QI'd pointer for that interface.
     let result = unsafe {
         crate::windows_vtable::vtable_invoke_with_writebacks(
-            interface,
+            interface.as_ptr(),
             &plan,
             &variant_args,
             dispid,
@@ -3293,20 +3381,13 @@ pub unsafe fn try_vtable_member_spec_invoke_result_with_shared_state(
             &mut bind_dispatch_result,
         )
     };
-    // SAFETY: `interface` is the single owned QI reference from above, released
-    // exactly once after the vtable attempt.
-    unsafe {
-        crate::release_unknown(interface);
-    }
-
     match result {
         Ok(result) => {
             let mut call_result = RuntimeCallResult::value(result.value);
             call_result.writebacks = result.writebacks;
-            Ok(Some(call_result))
+            Ok(call_result)
         }
-        Err(failure) if failure.hr.is_some() => Err(failure),
-        Err(_unsupported) => Ok(None),
+        Err(failure) => Err(failure),
     }
 }
 

@@ -30,12 +30,11 @@ pub struct WindowsComBridge {
     state: Arc<Mutex<WindowsComClientState>>,
     typelib_state: Arc<Mutex<TypeLibMetadataCacheState>>,
     force_registered_test_dispatch: bool,
-    /// Count of early-bound member calls that dispatched through the COM vtable
-    /// slot (the `prefer_vtable` fast path). Mirrors the `last_dll_error` atomic
-    /// pattern so a host test can observe which transport carried a member.
+    /// Successful native vtable calls, including strict compiler-bound calls
+    /// and the legacy dynamic PreferVtable candidate path.
     vtable_call_count: Arc<AtomicU64>,
-    /// Count of early-bound member calls that dispatched through
-    /// `IDispatch::Invoke` (the default path and the vtable fallback).
+    /// Successful IDispatch calls, including explicit pure-dispinterface plans
+    /// and genuinely dynamic dispatch. Strict dual calls never use this path.
     idispatch_call_count: Arc<AtomicU64>,
 }
 
@@ -69,15 +68,12 @@ impl WindowsComBridge {
         }
     }
 
-    /// Number of early-bound member calls dispatched through the COM vtable slot
-    /// so far (the `prefer_vtable` fast path). A host test reads this to prove a
-    /// supported member went through the vtable.
+    /// Successful native vtable calls so far; failed attempts are not counted.
     pub fn vtable_call_count(&self) -> u64 {
         self.vtable_call_count.load(Ordering::Relaxed)
     }
 
-    /// Number of early-bound member calls dispatched through `IDispatch::Invoke`
-    /// so far (the default path and the vtable fallback).
+    /// Successful IDispatch calls so far; failed attempts are not counted.
     pub fn idispatch_call_count(&self) -> u64 {
         self.idispatch_call_count.load(Ordering::Relaxed)
     }
@@ -88,6 +84,181 @@ impl WindowsComBridge {
 
     pub fn shared_typelib_state(&self) -> &Arc<Mutex<TypeLibMetadataCacheState>> {
         &self.typelib_state
+    }
+
+    /// Execute compiler-owned metadata directly. No live type-info lookup,
+    /// GetIDsOfNames or ProgID member resolution is used. Dual members require
+    /// vtables; a declared pure dispinterface uses its fixed DISPID explicitly.
+    #[cfg(target_arch = "x86_64")]
+    pub fn invoke_early_bound(
+        &self,
+        object: ObjectRef,
+        member: &crate::TypeLibMemberMetadata,
+        args: &[crate::DynamicCallArg],
+    ) -> Result<RuntimeCallResult, WindowsComBridgeDispatchError> {
+        let spec = crate::map_member_metadata_to_spec(member);
+        let caller_slots: std::collections::HashSet<u32> = args
+            .iter()
+            .filter_map(|arg| arg.by_ref.map(|slot| slot.id))
+            .collect();
+        let args: Vec<ComInvokeArg> = args.iter().cloned().map(Into::into).collect();
+        let mut args = crate::canonicalize_member_known_args(&spec, &args)
+            .map_err(WindowsComBridgeDispatchError::Message)?;
+        let mut temporary_id = u32::MAX;
+        for (index, arg) in args.iter_mut().enumerate() {
+            // Named arguments have already been put into declaration order. A
+            // non-lvalue ByRef argument gets private temporary storage; only an
+            // actual caller alias receives the resulting writeback.
+            if arg.name.is_some()
+                && spec
+                    .parameter_types
+                    .get(index)
+                    .is_some_and(|ty| ty.is_by_ref())
+            {
+                return Err(WindowsComBridgeDispatchError::Message(
+                    "COM-E-EARLY-UNSUPPORTED: named ByRef arguments require compiler alias mapping"
+                        .into(),
+                ));
+            }
+            arg.name = None;
+            if spec
+                .parameter_types
+                .get(index)
+                .is_some_and(|ty| ty.is_by_ref())
+                && arg.by_ref.is_none()
+            {
+                while caller_slots.contains(&temporary_id) {
+                    temporary_id = temporary_id.checked_sub(1).ok_or_else(|| {
+                        WindowsComBridgeDispatchError::Message(
+                            "COM-E-EARLY-UNSUPPORTED: temporary slot exhaustion".into(),
+                        )
+                    })?;
+                }
+                arg.by_ref = Some(oxvba_runtime::RuntimeByRefSlot::new(temporary_id, None));
+                temporary_id = temporary_id.saturating_sub(1);
+            }
+        }
+        let dispatch = {
+            let state = self
+                .lock_state("invoke_early_bound")
+                .map_err(WindowsComBridgeDispatchError::Message)?;
+            let binding = state
+                .bindings
+                .get(&ComObjectToken::new(object.raw()))
+                .ok_or_else(|| {
+                    WindowsComBridgeDispatchError::Message(
+                        "COM-E-EARLY-OBJECT: unbound native object".into(),
+                    )
+                })?;
+            if binding.native_dispatch == 0 {
+                return Err(WindowsComBridgeDispatchError::Message(
+                    "COM-E-EARLY-OBJECT: object has no native interface".into(),
+                ));
+            }
+            let pointer = binding.native_dispatch as *mut crate::RawIDispatch;
+            // SAFETY: the locked binding owns a live same-apartment IDispatch.
+            // Retain it before unlocking so object release cannot invalidate
+            // this synchronous invocation's receiver.
+            unsafe {
+                crate::add_ref_dispatch(pointer);
+                crate::windows_client::OwnedComInterface::from_owned(pointer.cast())
+            }
+        };
+        // SAFETY: the bindings map owns the native reference and the caller holds
+        // the receiver throughout this synchronous same-apartment call. No state
+        // lock spans the foreign call. The shared marshaller validates the exact
+        // descriptor and QIs the declared IID before reading its bounded slot.
+        let mut result = if !member.is_dual
+            && member.source_typekind == Some(crate::SourceTypeKind::Dispatch)
+            && member.vtable_slot.is_none()
+        {
+            self.invoke_static_dispinterface(&dispatch, member, &spec, &args)?
+        } else {
+            // SAFETY: the retained receiver and immutable compiler metadata meet
+            // the shared marshaller's same-apartment lifetime contract.
+            let result = unsafe {
+                crate::windows_invoke::invoke_vtable_member_spec_result_with_shared_state(
+                    dispatch.as_ptr(),
+                    member.token,
+                    &spec,
+                    &args,
+                    &self.state,
+                )
+            }
+            .map_err(WindowsComBridgeDispatchError::InvokeFailure)?;
+            self.vtable_call_count.fetch_add(1, Ordering::Relaxed);
+            result
+        };
+        result
+            .writebacks
+            .retain(|writeback| caller_slots.contains(&writeback.slot.id));
+        Ok(result)
+    }
+
+    /// A pure dispinterface has no custom slots. Its compile-time binding is a
+    /// declared IID + fixed DISPID/accessor, never a runtime member-name search.
+    #[cfg(target_arch = "x86_64")]
+    fn invoke_static_dispinterface(
+        &self,
+        dispatch: &crate::windows_client::OwnedComInterface,
+        member: &crate::TypeLibMemberMetadata,
+        spec: &crate::ComMemberSpec,
+        args: &[ComInvokeArg],
+    ) -> Result<RuntimeCallResult, WindowsComBridgeDispatchError> {
+        let iid = member
+            .interface_iid
+            .filter(|iid| !iid.is_null())
+            .ok_or_else(|| {
+                WindowsComBridgeDispatchError::Message(
+                    "COM-E-EARLY-UNSUPPORTED: dispinterface IID is missing".into(),
+                )
+            })?;
+        if args.len() > spec.parameter_types.len() {
+            return Err(WindowsComBridgeDispatchError::Message(
+                "COM-E-EARLY-UNSUPPORTED: excess dispinterface arguments".into(),
+            ));
+        }
+        // SAFETY: invoke_early_bound retains this live same-apartment receiver.
+        let interface = unsafe {
+            crate::windows_client::query_interface_pointer_hresult(
+                dispatch.as_ptr(),
+                &iid.to_guid(),
+            )
+        }
+        .map_err(|hr| {
+            WindowsComBridgeDispatchError::InvokeFailure(crate::ComInvokeFailure {
+                label: "typed-dispatch",
+                dispid: member.token,
+                hr: Some(hr),
+                arg_err: None,
+                excep: None,
+                detail: Some("declared dispinterface QI failed".into()),
+            })
+        })?;
+        if !(interface as usize).is_multiple_of(std::mem::align_of::<*const core::ffi::c_void>()) {
+            return Err(WindowsComBridgeDispatchError::Message(
+                "COM-E-EARLY-UNSUPPORTED: invalid dispinterface pointer".into(),
+            ));
+        }
+        // SAFETY: successful QI transferred a live aligned reference to the
+        // declared dispinterface, whose vtable has the IDispatch prefix.
+        let interface = unsafe { crate::windows_client::OwnedComInterface::from_owned(interface) };
+        // SAFETY: the guard retains the exact declared dispinterface. Argument
+        // names were resolved from compiler metadata and removed before entry,
+        // so this fixed-DISPID call performs no GetIDsOfNames/type-info lookup.
+        let result = unsafe {
+            crate::windows_invoke::invoke_member_spec_call_result_with_shared_state(
+                interface.as_ptr(),
+                member.token,
+                spec,
+                args,
+                &member.name,
+                &self.state,
+            )
+        }
+        .map_err(WindowsComBridgeDispatchError::InvokeFailure)?;
+        self.idispatch_call_count.fetch_add(1, Ordering::Relaxed);
+        Ok(result)
     }
 
     pub fn lock_state(

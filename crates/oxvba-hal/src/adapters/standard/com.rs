@@ -19,7 +19,7 @@ use oxvba_com::{
     ComObjectTransportKind, ComSubscriptionToken, DynamicCallKind, DynamicCallRequest,
     DynamicMemberSelector, known_typelib_identity_for_prog_id_name,
     legacy_runtime_arg_values as com_legacy_runtime_arg_values,
-    platform::portable::{PortableDispatch, PortableObjectResult},
+    platform::portable::{PortableDispatch, PortableObjectResult, PortableTypedCallResult},
 };
 #[cfg(not(target_os = "windows"))]
 use oxvba_com::{
@@ -892,6 +892,58 @@ impl ComHal for StandardHostServices {
             "dispatch_invoke",
             "COM-E-BYREF-WRITEBACK-UNSUPPORTED: dynamic COM ByRef calls require a writeback-capable native COM dispatch path",
         ))
+    }
+
+    fn invoke_early_bound(
+        &self,
+        object: ObjectRef,
+        member: &crate::traits::TypeLibMemberMetadata,
+        args: &[oxvba_com::DynamicCallArg],
+    ) -> HalResult<oxvba_runtime::RuntimeCallResult> {
+        let capability = CapabilityId::ComActivationDispatch;
+        if !self.policy.allow_com_activation {
+            return Err(self.denied(capability, "invoke_early_bound"));
+        }
+        if let Some(dispatch) = portable_dispatch_for_object(self, &object)? {
+            let result = dispatch
+                .invoke_early_bound(member, args)
+                .map_err(|message| {
+                    HalError::adapter_fault(
+                        self.profile,
+                        capability,
+                        "invoke_early_bound",
+                        format!("COM-E-PORTABLE-EARLY-FAILED: {message}"),
+                    )
+                })?;
+            return match result {
+                PortableTypedCallResult::Value(result) => Ok(result),
+                PortableTypedCallResult::Object(object) => {
+                    portable_object_result_variant(self, object)
+                        .map(oxvba_runtime::RuntimeCallResult::value)
+                }
+            };
+        }
+        if !self.supports(capability) {
+            return Err(self.unsupported(capability, "invoke_early_bound"));
+        }
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        if self.native_com_enabled() {
+            self.ensure_thread_com_apartment("invoke_early_bound")?;
+            return self
+                .com_bridge
+                .invoke_early_bound(object, member, args)
+                .map_err(|error| match error {
+                    WindowsComBridgeDispatchError::Message(message) => {
+                        self.com_dispatch_adapter_fault(message)
+                    }
+                    WindowsComBridgeDispatchError::InvokeFailure(failure) => {
+                        self.com_dispatch_invoke_fault(failure)
+                    }
+                });
+        }
+        #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+        let _ = (object, member, args);
+        Err(self.unsupported(capability, "invoke_early_bound"))
     }
 
     fn subscribe_event(

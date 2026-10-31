@@ -224,7 +224,7 @@ pub(crate) struct ProjectClassTarget {
 pub(crate) struct ProjectMemberCallInputs<'a> {
     pub(crate) recv: &'a OxOperand,
     pub(crate) name: &'a str,
-    pub(crate) token: Option<i32>,
+    pub(crate) early_member: Option<&'a oxvba_com::TypeLibMemberMetadata>,
     pub(crate) default_member: bool,
     pub(crate) invoke_kind: TypeLibMemberInvokeKind,
     pub(crate) args: &'a [OxCallArg],
@@ -512,7 +512,7 @@ impl<'a> LowerFunc<'a> {
                     ProjectMemberCallInputs {
                         recv,
                         name: &member.name,
-                        token: Some(member.token),
+                        early_member: Some(member),
                         default_member: false,
                         invoke_kind: *invoke_kind,
                         args,
@@ -533,7 +533,7 @@ impl<'a> LowerFunc<'a> {
                 ProjectMemberCallInputs {
                     recv,
                     name,
-                    token: None,
+                    early_member: None,
                     default_member: *default_member,
                     invoke_kind: *invoke_kind,
                     args,
@@ -3314,7 +3314,7 @@ impl<'a> LowerFunc<'a> {
         let ProjectMemberCallInputs {
             recv,
             name,
-            token,
+            early_member,
             default_member,
             invoke_kind,
             args,
@@ -3336,10 +3336,14 @@ impl<'a> LowerFunc<'a> {
         let name_len = i32::try_from(member_name.len())
             .map_err(|_| JitError::unsupported("JIT project member name is too long"))?;
         let name_len = builder.ins().iconst(types::I32, i64::from(name_len));
-        // All i32 DISPIDs are valid; the out-of-range i64 value tags a name-only call.
-        let token = builder
-            .ins()
-            .iconst(types::I64, token.map(i64::from).unwrap_or(i64::MIN));
+        // The owning CompiledImage retains this immutable program metadata for
+        // every session. A null pointer denotes a genuinely dynamic call.
+        let early_member = builder.ins().iconst(
+            ptr_ty,
+            early_member
+                .map(|member| member as *const _ as i64)
+                .unwrap_or(0),
+        );
         let invoke_kind = builder
             .ins()
             .iconst(types::I32, i64::from(raw_member_invoke_kind(invoke_kind)));
@@ -3364,7 +3368,7 @@ impl<'a> LowerFunc<'a> {
                 recv_ptr,
                 name_ptr,
                 name_len,
-                token,
+                early_member,
                 invoke_kind,
                 argc,
                 args_ptr,

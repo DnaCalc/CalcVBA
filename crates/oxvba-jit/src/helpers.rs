@@ -925,7 +925,7 @@ pub(crate) fn declare_imports(module: &mut JITModule) -> Result<Imports, JitErro
         ptr_ty,
         ptr_ty,
         types::I32,
-        types::I64,
+        ptr_ty,
         types::I32,
         types::I32,
         ptr_ty,
@@ -3639,7 +3639,7 @@ pub(crate) fn project_member_kind_from_raw(raw: i32) -> Option<ProjectMemberKind
 
 pub(crate) struct ProjectMemberInvocation<'a> {
     pub(crate) name: &'a str,
-    pub(crate) token: Option<i32>,
+    pub(crate) early_member: Option<&'a oxvba_com::TypeLibMemberMetadata>,
     pub(crate) kind: ProjectMemberKind,
     pub(crate) args: &'a [JitCallArgDesc],
     pub(crate) names: &'a [JitCallArgNameDesc],
@@ -3914,7 +3914,7 @@ pub(crate) unsafe extern "C" fn rt_jit_project_member_get_to_slot(
     recv: *const JitVariantOperandDesc,
     name_ptr: *const u8,
     name_len: i32,
-    token: i64,
+    early_member: *const oxvba_com::TypeLibMemberMetadata,
     invoke_kind: i32,
     argc: i32,
     args: *const JitCallArgDesc,
@@ -3982,7 +3982,8 @@ pub(crate) unsafe extern "C" fn rt_jit_project_member_get_to_slot(
                 recv_value,
                 ProjectMemberInvocation {
                     name,
-                    token: i32::try_from(token).ok(),
+                    // SAFETY: compiled metadata is immutable and retained by the live CompiledImage.
+                    early_member: early_member.as_ref(),
                     kind,
                     args,
                     names,
@@ -4005,7 +4006,7 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
 ) -> i32 {
     let ProjectMemberInvocation {
         name,
-        token,
+        early_member,
         kind,
         args,
         names,
@@ -4030,7 +4031,7 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
                 object,
                 ProjectMemberInvocation {
                     name,
-                    token,
+                    early_member,
                     kind,
                     args,
                     names,
@@ -4217,6 +4218,15 @@ pub(crate) fn project_member_kind_to_dynamic(kind: ProjectMemberKind) -> Dynamic
     }
 }
 
+fn interop_invoke_kind_from_com(kind: TypeLibMemberInvokeKind) -> InteropInvokeKind {
+    match kind {
+        TypeLibMemberInvokeKind::Method => InteropInvokeKind::Method,
+        TypeLibMemberInvokeKind::PropertyGet => InteropInvokeKind::PropertyGet,
+        TypeLibMemberInvokeKind::PropertyPut => InteropInvokeKind::PropertyPut,
+        TypeLibMemberInvokeKind::PropertyPutRef => InteropInvokeKind::PropertyPutRef,
+    }
+}
+
 fn interop_invoke_kind_from_project(kind: ProjectMemberKind) -> InteropInvokeKind {
     match kind {
         ProjectMemberKind::Method => InteropInvokeKind::Method,
@@ -4319,7 +4329,7 @@ pub(crate) unsafe fn invoke_foreign_member_to_slot_for_jit(
 ) -> i32 {
     let ProjectMemberInvocation {
         name,
-        token,
+        early_member,
         kind,
         args,
         names,
@@ -4332,6 +4342,7 @@ pub(crate) unsafe fn invoke_foreign_member_to_slot_for_jit(
     {
         // SAFETY: this read-only preparation borrow ends before the host call.
         let run_ref = unsafe { &*run };
+        let mut identities = std::collections::BTreeMap::new();
         for (index, (arg, name)) in args.iter().copied().zip(names.iter().copied()).enumerate() {
             let value = if arg.kind == JIT_CALL_ARG_OMITTED {
                 None
@@ -4346,28 +4357,33 @@ pub(crate) unsafe fn invoke_foreign_member_to_slot_for_jit(
                 Ok(name) => name,
                 Err(status) => return status,
             };
+            let by_ref = if arg.kind == JIT_CALL_ARG_BYREF_ALIAS {
+                if arg.area < 0 || arg.index < 0 {
+                    return ST_FAULT;
+                }
+                let Some(slot) = slot_ref(run_ref, arg.area as u32, arg.index as u32) else {
+                    return ST_FAULT;
+                };
+                // Only an identity key during operand preparation; no pointer or
+                // borrow escapes to the host. Resolved caller aliases share it.
+                let id = if early_member.is_some() {
+                    *identities
+                        .entry(slot as *const Variant as usize)
+                        .or_insert(index as u32)
+                } else {
+                    index as u32
+                };
+                Some(RuntimeByRefSlot::new(id, None))
+            } else {
+                None
+            };
             call_args.push(DynamicCallArg {
                 value,
                 name,
-                by_ref: (arg.kind == JIT_CALL_ARG_BYREF_ALIAS)
-                    .then(|| RuntimeByRefSlot::new(index as u32, None)),
+                by_ref,
             });
         }
     }
-    if let Err(message) = verified_late_dispatch_plan_for_jit(name, kind, args, names) {
-        return raise_plan_error(state, run, message);
-    }
-    let request = DynamicCallRequest {
-        object,
-        member: token
-            .map(|token| DynamicMemberSelector::TokenNamed {
-                token,
-                name: name.to_string(),
-            })
-            .unwrap_or_else(|| foreign_member_selector_for_jit(name)),
-        args: call_args,
-        call_kind_hint: Some(project_member_kind_to_dynamic(kind)),
-    };
     let host = {
         // SAFETY: JIT helpers receive pointers produced by `exec_state_as_raw` for a
         // live `ExecState`. Copying the host reference ends this typed state borrow
@@ -4378,10 +4394,45 @@ pub(crate) unsafe fn invoke_foreign_member_to_slot_for_jit(
         };
         exec.host
     };
-    let (value, writebacks) = match host
-        .com()
-        .dispatch_invoke_dynamic_variant_with_writebacks(&request)
-    {
+    let result = if let Some(member) = early_member {
+        if interop_invoke_kind_from_project(kind)
+            != interop_invoke_kind_from_com(member.invoke_kind)
+        {
+            return raise_plan_error(state, run, "early COM accessor mismatch".into());
+        }
+        host.com()
+            .invoke_early_bound(object, member, &call_args)
+            .and_then(|result| {
+                let mut writebacks = vec![None; args.len()];
+                for writeback in result.writebacks {
+                    let slot = writebacks
+                        .get_mut(writeback.slot.id as usize)
+                        .ok_or_else(|| {
+                            oxvba_hal::HalError::adapter_fault(
+                                host.profile(),
+                                oxvba_hal::model::CapabilityId::ComActivationDispatch,
+                                "invoke_early_bound",
+                                "early COM writeback slot out of range",
+                            )
+                        })?;
+                    *slot = Some(writeback.value);
+                }
+                Ok((result.value.unwrap_or_else(Variant::empty), writebacks))
+            })
+    } else {
+        if let Err(message) = verified_late_dispatch_plan_for_jit(name, kind, args, names) {
+            return raise_plan_error(state, run, message);
+        }
+        let request = DynamicCallRequest {
+            object,
+            member: foreign_member_selector_for_jit(name),
+            args: call_args,
+            call_kind_hint: Some(project_member_kind_to_dynamic(kind)),
+        };
+        host.com()
+            .dispatch_invoke_dynamic_variant_with_writebacks(&request)
+    };
+    let (value, writebacks) = match result {
         Ok(result) => result,
         Err(err) => {
             // SAFETY: the host call returned, so no callback-owned state borrow
@@ -4719,7 +4770,7 @@ pub(crate) unsafe extern "C" fn rt_jit_call_by_name_to_slot(
                 object,
                 ProjectMemberInvocation {
                     name: &member_name,
-                    token: None,
+                    early_member: None,
                     kind,
                     args,
                     names,

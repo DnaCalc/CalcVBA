@@ -30,7 +30,7 @@ The active production path is:
 
 This is the sole production compiler/execution stack. The legacy compiler, HIR/front-end fallback, source-rewrite compiler, VM2, CoreProgram-to-Bundle linearizer and `.oxb` product execution path have been removed or retired.
 
-The architecture is broad and real but not complete. The compiler/binder is the most mature layer. VM3 and the JIT cover a large platform-neutral language/runtime/library surface. The JIT now executes a bounded Windows x64 scalar late-COM/Declare subset; early COM, pointer/callback execution and general Windows parity remain open. There is no active clean-stack language-service implementation.
+The architecture is broad and real but not complete. The compiler/binder is the most mature layer. VM3 and the JIT cover a large platform-neutral language/runtime/library surface. The JIT now executes bounded Windows x64 scalar early/late-COM and Declare subsets. Early dual calls preserve compiler metadata through native vtable transport on both runtimes; general early COM, pointer/callback execution and Windows parity remain open. There is no active clean-stack language-service implementation.
 
 ## 3. Workspace ownership
 
@@ -62,7 +62,7 @@ The architecture is broad and real but not complete. The compiler/binder is the 
 - `oxvba-build` emits OxImage and wrapper/COM-server artifacts.
 - `oxvba-comhost` is the reusable Windows in-process COM-server host, currently VM3-backed.
 - `oxvba-cli` exposes source/project run and build commands.
-- `oxvba-embed` supplies a public-function catalogue, persistent invocation, bounded live spreadsheet objects and a same-thread immutable-code cache for formula hosts, with optional JIT and interpreter-only WebAssembly builds. See [`spec/UDF_EMBEDDING_V1.md`](spec/UDF_EMBEDDING_V1.md).
+- `oxvba-embed` currently supplies a function catalogue, persistent invocation and immutable-code cache, but also legacy spreadsheet-specific objects. The owner requires extraction of those objects into host glue and neutral bound procedure handles; see [`spec/HOSTING_AND_EARLY_BINDING.md`](spec/HOSTING_AND_EARLY_BINDING.md). [`spec/UDF_EMBEDDING_V1.md`](spec/UDF_EMBEDDING_V1.md) records the legacy consumer API.
 
 No active `oxvba-languageservice`, `oxvba-lsp`, `oxvba-debug` or forms-runtime crate exists in the current workspace.
 
@@ -166,7 +166,7 @@ Static calls can invoke local compiled functions, but Variant-backed frames and 
 - line/Erl, writable Err fields and full dynamic Err.Raise metadata are incomplete;
 - deep source recursion relies on the native stack and is not safely proven;
 - borrowed JIT sessions retain ExecState for repeated calls; general owned verified-package sessions, descriptor lifetimes and product cache remain open;
-- early COM interfaces, pointer/callback operations and native calls outside the bounded x64 Declare subset cause decline;
+- general early COM signatures/proxies, pointer/callback operations and native calls outside bounded x64 subsets remain incomplete; scalar dual calls now use the same preserved-descriptor native route on both backends;
 - the implementation is concentrated in a very large single source module;
 - differential evidence is often status/tag based rather than fully structural.
 
@@ -176,7 +176,7 @@ The destination is [`spec/OXVBA_JIT_ARCHITECTURE_V1.md`](spec/OXVBA_JIT_ARCHITEC
 
 VM3, HAL, COM, host, build and comhost contain substantial Windows work: typelib loading, late/early bridge scaffolding, Declare execution, wrapper packaging, type-library emission and bounded COM serving.
 
-The JIT lowers scalar late COM through the shared verified interop plan and supports dynamic CreateObject ProgIDs and positional GetObject forms. An explicitly owned Excel workbook probe exercises native IDispatch properties, scalar writes and mixed two-dimensional Range.Value2 arrays on both backends. The Windows VARIANT adapter maps standard error numbers to/from the Automation 0x800A0000 prefix while preserving other HRESULTs. Native development tests also exercise a test-owned x64 DLL, including Function/Sub, ByRef mutation, LastDllError and unload. General Windows rows remain in progress: ComCallEarly, pointer operations, callbacks and broader argument/carrier/session families are unfinished. Project `WithEvents`/`RaiseEvent` proves internal event semantics, not native connection points.
+The JIT lowers scalar late COM through the shared verified interop plan and supports dynamic CreateObject ProgIDs and positional GetObject forms. An explicitly owned Excel workbook probe exercises native IDispatch properties, scalar writes and mixed two-dimensional Range.Value2 arrays on both backends. The Windows VARIANT adapter maps standard error numbers to/from the Automation 0x800A0000 prefix while preserving other HRESULTs. Native development tests also exercise a test-owned x64 DLL, including Function/Sub, ByRef mutation, LastDllError and unload. General Windows rows remain in progress: ComCallEarly now carries compiler-owned IID/slot/signature metadata through a strict native-vtable HAL entry on both backends, while general signatures/proxies, pointer operations, callbacks and broader carrier/session families remain unfinished. Its typed route never retries through IDispatch. Native ByRef cells preserve repeated scalar aliases and private argument temporaries; IErrorInfo crosses HAL as separate VBA Err fields. See the [hosting stock-take](spec/HOSTING_AND_EARLY_BINDING.md) and [bounded evidence](evidence/programs/ideal-2026-07/windows-x64/WIN-4/early_scalar.md). Project `WithEvents`/`RaiseEvent` proves internal event semantics, not native connection points.
 
 Native scalar calls carry canonical caller-storage IDs in `RuntimeCallArgument`.
 VM3 resolves frame/global aliases; JIT derives call-local IDs from resolved slots.
@@ -190,8 +190,8 @@ initializer-failure error-state capture remain open under the broader owners.
 ### Material gaps against the contract
 
 - authoritative registry/file typelib selection is not yet one stable metadata service for all consumers;
-- VM3/JIT do not consume one verified backend-neutral interop call plan;
-- scalar late COM executes through IDispatch; broader late calls and early COM remain incomplete;
+- scalar early COM consumes one shared descriptor-driven COM marshalling plan; a total sealed backend-neutral plan covering every Windows transport remains open;
+- scalar late COM executes through IDispatch and the bounded early dual subset uses native vtables; broader late/early signatures and pure-dispinterface static binding remain incomplete;
 - synchronous COM-event ByRef writeback is absent;
 - JIT-backed COM serving/vtable generation is absent;
 - exact nominal interface arrays and broad VT_RECORD shapes are incomplete;

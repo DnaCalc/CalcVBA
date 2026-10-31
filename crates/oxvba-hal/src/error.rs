@@ -14,6 +14,16 @@ pub enum HalErrorKind {
     UnsupportedProfile,
 }
 
+/// VBA-visible fields supplied by a host error object. Diagnostic transport
+/// detail remains in HalError::message instead of contaminating Err.Description.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HostErrorInfo {
+    pub source: Option<String>,
+    pub description: Option<String>,
+    pub help_file: Option<String>,
+    pub help_context: Option<u32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error(
     "{kind:?} [{stable_code}] profile={profile:?} capability={capability:?} op={operation}: {message}"
@@ -34,6 +44,7 @@ pub struct HalError {
     /// host-specific number, in which case the VM falls back to VBA error 5
     /// ("invalid procedure call or argument").
     pub host_error_code: Option<i32>,
+    pub host_error_info: Option<Box<HostErrorInfo>>,
 }
 
 impl HalError {
@@ -50,6 +61,7 @@ impl HalError {
             operation,
             message: "capability is not supported by active HAL profile".to_string(),
             host_error_code: None,
+            host_error_info: None,
         }
     }
 
@@ -66,6 +78,7 @@ impl HalError {
             operation,
             message: "operation blocked by host policy".to_string(),
             host_error_code: None,
+            host_error_info: None,
         }
     }
 
@@ -83,6 +96,7 @@ impl HalError {
             operation,
             message: message.into(),
             host_error_code: None,
+            host_error_info: None,
         }
     }
 
@@ -91,6 +105,12 @@ impl HalError {
     #[must_use]
     pub fn with_host_error_code(mut self, code: i32) -> Self {
         self.host_error_code = Some(code);
+        self
+    }
+
+    #[must_use]
+    pub fn with_host_error_info(mut self, info: HostErrorInfo) -> Self {
+        self.host_error_info = Some(Box::new(info));
         self
     }
 
@@ -107,6 +127,7 @@ impl HalError {
             operation,
             message: "operation is not implemented for the active profile".to_string(),
             host_error_code: None,
+            host_error_info: None,
         }
     }
 

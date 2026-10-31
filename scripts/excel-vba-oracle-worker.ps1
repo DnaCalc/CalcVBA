@@ -927,7 +927,7 @@ function Invoke-HarnessCase {
         $ambiguousMacroEvidence = Test-AmbiguousMacroEvidence -Events $runEvents
         $runtimeErrorEvidence = Test-RuntimeErrorEvidence -Events $runEvents
         $behaviorPassed = $compileStatus -eq $Descriptor.expected_compile_status -and $runStatus -eq $Descriptor.expected_run_status
-        if ($behaviorPassed -and $Descriptor.expected_value) { $behaviorPassed = [string]$runValue -eq [string]$Descriptor.expected_value }
+        if ($behaviorPassed) { $behaviorPassed = Test-ExcelOracleExpectedValue -ExpectedValue $Descriptor.expected_value -ActualValue $runValue }
         if ($behaviorPassed -and $Descriptor.id -eq "runtime-full-err") {
             $expectedErr = Get-ExcelOracleExpectedRuntimeErr
             foreach ($field in @("number", "source", "description", "help_file", "help_context", "erl")) {
@@ -1052,7 +1052,7 @@ function Invoke-HarnessCase {
                 $cleanupAuthorityErrors.Add("controlled bootstrap workbook is missing, modified, or has invalid OPC relationship closure after close-without-save")
             }
             elseif (Test-Path -LiteralPath $bootstrapWorkbook.path) {
-                $bootstrapSha256After = "sha256:$((Get-FileHash -LiteralPath $bootstrapWorkbook.path -Algorithm SHA256).Hash.ToLowerInvariant())"
+                $bootstrapSha256After = Get-ExcelOracleBootstrapSha256 -Path $bootstrapWorkbook.path
             }
         }
         if ($cleanupAuthorityErrors.Count -gt 0) {

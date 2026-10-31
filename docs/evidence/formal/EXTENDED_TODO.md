@@ -1,5 +1,12 @@
 # Formal Extended Todo
 
+- ID: FTODO-EARLY-COM-20261031
+  Profile: preserved-descriptor dual COM calls (`bd-59co.3.5.6`; broader WIN-4 ownership `.3.5.2/.3`).
+  Summary: installed Lean 4.29.1 VarType/Coerce/Arithmetic/RefCount/ExecutionBudget abstractions pass. They do not prove Rust descriptor provenance, call-local COM/QI ownership, native ByRef alias cells, private temporaries, error-edge cleanup or actual transport. Native cargo-kani is unavailable; no toolchain was installed.
+  Current status (`todo` / `investigating` / `resolved`): investigating
+  Reproduction command: `cargo test -p oxvba-differential --test jit_windows_vm3_parity early_com -- --test-threads=1`; compile VarType.lean first to an output OxVba/VarType.olean and set LEAN_PATH to that output before the dependent models.
+  Suggested next action: refine shared native-call ownership and alias/error outcomes under WIN-4/CORE-5; prove success/failure cleanup and retain broader callback/apartment/verified-image obligations. Registry-writing record fixtures are excluded when using meta-check -NoRegistry and receive no passing evidence from that run.
+
 Non-blocking formal issues and follow-up items for later ladder profiles.
 
 ## Template

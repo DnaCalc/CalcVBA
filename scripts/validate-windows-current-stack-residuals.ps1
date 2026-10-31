@@ -284,7 +284,7 @@ try {
         }
         $canonical = $canonicalByKey[$key]
         $expectedCanonicalTruth = if ($key -eq "WIN-ABI-CARRIER|WAC-TARGET-DEV-ENV") { "verified" }
-            elseif ($key -in @("WIN-COM-CLIENT|WCC-PLAN-LATE", "WIN-COM-CLIENT|WCC-LATE-OUTPROC-ERROR", "WIN-NATIVE-IMPORT|WNI-PLAN-DECLARE")) { "in-progress" }
+            elseif ($key -in @("WIN-COM-CLIENT|WCC-PLAN-LATE", "WIN-COM-CLIENT|WCC-LATE-OUTPROC-ERROR", "WIN-COM-CLIENT|WCC-PLAN-EARLY", "WIN-NATIVE-IMPORT|WNI-PLAN-DECLARE")) { "in-progress" }
             else { "planned" }
         if ([string]$canonical.truth_state -ne $expectedCanonicalTruth -or [string]$row.canonical_truth_state -ne $expectedCanonicalTruth) {
             throw "validate-windows-current-stack-residuals: '$key' canonical truth must be '$expectedCanonicalTruth'; support characterization cannot credit another row"

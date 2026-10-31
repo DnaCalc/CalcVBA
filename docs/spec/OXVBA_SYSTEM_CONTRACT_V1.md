@@ -190,6 +190,14 @@ Host policy may deny a capability, but denial produces a stable VBA-compatible o
 
 Hosts consume a backend-neutral project runtime session: load a verified image, select a backend, initialize, invoke, retain project state, reset/reload and dispose. Globals, class singletons, live objects, events, Err state, host policy and apartment/thread rules have explicit session lifetimes.
 
+The engine enumerates module procedures with exact signatures and visibility,
+and binds session-owned callable handles. Hosts invoke typed JIT entries directly;
+module procedures do not acquire invented COM object identity. Host object libraries
+use their own type libraries and early-bound native interfaces. Spreadsheet function
+registration, Range/Application/WorksheetFunction models, scheduling and formula
+error conversion belong to the host's glue, not the engine. See
+[`HOSTING_AND_EARLY_BINDING.md`](HOSTING_AND_EARLY_BINDING.md).
+
 VM3 and JIT sessions expose equivalent behavior. Compiled code, metadata and runtime state are session-owned or safely shared; repeated create/use/drop cycles do not leak process-lifetime allocations.
 
 ## 8. VM3 contract

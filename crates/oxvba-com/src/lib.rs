@@ -168,6 +168,7 @@ pub use windows_test_dispatch::{
     DUAL_SLOT_RAISE_ERROR, DUAL_SLOT_VALIDATE_ALL_INPUTS, DUAL_SLOT_VALIDATE_I4_SAFEARRAY_VALUE,
     DUAL_SLOT_VALIDATE_RECORD_SAFEARRAY_VALUE, DUAL_TEXT_VALUE, DUAL_VARIANT_VALUE,
     IID_OXVBA_DUAL_FIXTURE, create_oxvba_dual_vtable_object,
+    create_oxvba_dual_vtable_object_observed,
 };
 #[cfg(all(target_os = "windows", any(test, feature = "fixture-typelibs")))]
 pub use windows_test_dispatch::{

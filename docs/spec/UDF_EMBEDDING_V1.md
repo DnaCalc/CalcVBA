@@ -1,6 +1,13 @@
 # UDF value-call contract v1
 
-2026-10-31. Bounded API delivered by `oxvba-embed`; DNA OneCalc value calls are delivered by DnaCalc `dc-snz.3` at `379d51f`. Wider integration remains in progress under OxVba `bd-59co.2.10.6` and DnaCalc `dc-snz.5`. API owner: `bd-59co.2.10.4`. Clauses: `HOST-SESSION-001`, `SYS-DUAL-001`, `SEC-BOUNDARY-001`. Consumers should pin a reviewed revision. The later CalcVba rename is deferred.
+Legacy consumer contract. The owner now requires a host-neutral engine boundary:
+see [HOSTING_AND_EARLY_BINDING.md](HOSTING_AND_EARLY_BINDING.md). Spreadsheet
+values, synthetic Excel types, object callbacks and formula policy below must move
+to DNA Calc's glue library. They are not the engine architecture. Existing APIs
+remain pending that extraction; native early COM uses the preserved descriptor
+contract, while this legacy portable projection has its own explicit adapter.
+
+2026-10-31. Bounded API delivered by `oxvba-embed`; DNA OneCalc value calls are delivered by DnaCalc `dc-snz.3` at `379d51f`. Legacy extension `bd-59co.2.10.6` is deferred after the owner changed direction; neutral procedure handles and glue extraction are open under `bd-59co.2.10.7`. DnaCalc consumer work `dc-snz.5` needs separate authorization. API owner: `bd-59co.2.10.4`. Clauses: `HOST-SESSION-001`, `SYS-DUAL-001`, `SEC-BOUNDARY-001`. Consumers should pin a reviewed revision. The later CalcVba rename is deferred.
 
 ```rust
 use oxvba_embed::{Backend, Module, Value};
@@ -13,7 +20,7 @@ assert_eq!(session.call("Math.Add2", &[Value::Number(19.0), Value::Number(23.0)]
 # Ok::<(), oxvba_embed::Error>(())
 ```
 
-Load uses the existing compiler and OxIR verifier. The catalogue comes from compiler public exports, excluding Private functions and Subs. Calls accept bare or module-qualified names with ASCII case folding; broader VBA locale-sensitive name matching remains follow-up work under `bd-59co.2.10.6`. Calls are positional. Omitted Optional arguments use compiler-folded defaults, typed zero values, or the VBA Missing sentinel for Variant. `Value::Missing` explicitly omits a positional slot; it differs from `Empty`. A trailing ParamArray packs remaining arguments into a private zero-based Variant SAFEARRAY, including the empty 0..-1 case. Scalar types and Variant-array parameters are admitted; unsupported signatures return typed errors.
+Load uses the existing compiler and OxIR verifier. The catalogue comes from compiler public exports, excluding Private functions and Subs. Calls accept bare or module-qualified names with ASCII case folding; broader VBA locale-sensitive name matching remains a residual for the neutral catalogue replacement `bd-59co.2.10.7`. Calls are positional. Omitted Optional arguments use compiler-folded defaults, typed zero values, or the VBA Missing sentinel for Variant. `Value::Missing` explicitly omits a positional slot; it differs from `Empty`. A trailing ParamArray packs remaining arguments into a private zero-based Variant SAFEARRAY, including the empty 0..-1 case. Scalar types and Variant-array parameters are admitted; unsupported signatures return typed errors.
 
 The caller owns Module; Session borrows it and retains JIT code until disposal. `CodeCache` shares verified immutable metadata/code among owned sessions on one thread; it never shares VBA state or host-object tables. **Calls in one session retain globals, Static storage and the runtime Err object.** `Module::into_session` uses a safe owning cell for hosts that need an owned session. Separate sessions isolate their mutable storage. `reset` clears state while retaining JIT code; unloading or replacing a module disposes its session. VM3 links lazily on the first bounded call; JIT retains common ExecState storage and initializes once, within the first call budget. Failed initialization is discarded and retried with a fresh budget on the next call, on both backends. `End` remains explicitly refused until whole-project termination/reset is supported. Classes/UDTs remain explicitly refused by this bounded facade. ByRef arguments receive private copies. Loading/calling a function never runs Main. The default Null HAL supplies no external services; `with_host` accepts explicit host-owned capabilities.
 

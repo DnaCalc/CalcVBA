@@ -8,6 +8,9 @@ use oxvba_runtime::{Variant, current_thread_live_handle_counts};
 use oxvba_symbol::manifest as sym;
 use std::{path::PathBuf, process::Command};
 
+#[path = "support/early_com.rs"]
+mod early_com;
+
 #[derive(Debug, PartialEq)]
 struct Observation {
     values: Vec<Canon>,
@@ -17,6 +20,10 @@ struct Observation {
 }
 
 fn run(source: &str, jit: bool) -> Observation {
+    run_referenced(source, jit, Vec::new())
+}
+
+fn run_referenced(source: &str, jit: bool, references: Vec<sym::ProjectReference>) -> Observation {
     let before = current_thread_live_handle_counts();
     let observation = {
         let mut engine = Engine::new(if jit {
@@ -37,7 +44,7 @@ fn run(source: &str, jit: bool) -> Observation {
                 attributes: sym::ModuleAttributes::named("Main"),
                 source: source.into(),
             }],
-            references: vec![],
+            references,
             reference_projects: vec![],
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),

@@ -397,6 +397,27 @@ struct RecordingApplication {
 }
 
 impl PortableDispatch for RecordingApplication {
+    fn invoke_early_bound(
+        &self,
+        member: &oxvba_com::TypeLibMemberMetadata,
+        args: &[oxvba_com::DynamicCallArg],
+    ) -> Result<oxvba_com::platform::portable::PortableTypedCallResult, String> {
+        let (label, value) = match (member.token, member.invoke_kind) {
+            (10, TypeLibMemberInvokeKind::Method) => ("Run", Variant::from_i32(42)),
+            (11, TypeLibMemberInvokeKind::Method) => ("OnTime", Variant::empty()),
+            _ => return Err("unknown typed Application fixture member".into()),
+        };
+        self.calls
+            .lock()
+            .map_err(|_| "call log poisoned")?
+            .push(format!("{label}:{}", args.len()));
+        Ok(
+            oxvba_com::platform::portable::PortableTypedCallResult::Value(
+                oxvba_runtime::RuntimeCallResult::value(value),
+            ),
+        )
+    }
+
     fn invoke(&self, member: &str, args: &[Variant]) -> Result<Variant, String> {
         self.calls
             .lock()

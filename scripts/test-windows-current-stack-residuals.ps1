@@ -56,6 +56,13 @@ try {
     }
     Assert-ValidatorFailure -Name "characterization advances capability truth" -Arguments @{ LedgerPath = $truthCredit }
 
+    $earlyTruthCredit = Write-MutatedLedger -Name "early-truth-credit" -Mutation {
+        param($rows)
+        ($rows | Where-Object row_id -eq "WCC-PLAN-EARLY").canonical_truth_state = "verified"
+        $rows
+    }
+    Assert-ValidatorFailure -Name "bounded early delivery cannot certify its row" -Arguments @{ LedgerPath = $earlyTruthCredit }
+
     $targetResidual = Write-MutatedLedger -Name "target-residual" -Mutation {
         param($rows)
         ($rows | Where-Object row_id -eq "WAC-TARGET-DEV-ENV").live_residual_owner_bead = "bd-59co.3.1.7"
@@ -125,7 +132,7 @@ try {
     $migrationRows | Export-Csv -LiteralPath $migrationPath -NoTypeInformation -UseQuotes Always
     Assert-ValidatorFailure -Name "imported callback route closed" -Arguments @{ LegacyMigrationPath = $migrationPath }
 
-    Write-Host "test-windows-current-stack-residuals: ok (positive case plus 11 fail-closed mutations)"
+    Write-Host "test-windows-current-stack-residuals: ok (positive case plus 12 fail-closed mutations)"
 }
 finally {
     if (Test-Path -LiteralPath $tempDirectory) {

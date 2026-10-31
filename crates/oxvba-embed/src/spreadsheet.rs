@@ -366,6 +366,58 @@ impl SpreadsheetHost {
             _ => self.unsupported("a read-only Range member outside the supported host surface"),
         }
     }
+
+    /// Shared legacy projection execution; member selection happens at the caller.
+    fn invoke_projected_member(
+        &self,
+        object: Object,
+        name: &str,
+        args: &[Variant],
+    ) -> HalResult<Variant> {
+        match object {
+            Object::Application => match name {
+                "CALLER" if args.is_empty() => {
+                    match self.context(|context| Ok(context.caller()))? {
+                        Some(range) => self.object(Object::Range(range, Axis::Cells)),
+                        None => Ok(Variant::from_error_code(2023)),
+                    }
+                }
+                "WORKSHEETFUNCTION" if args.is_empty() => self.object(Object::Functions),
+                "VOLATILE" => {
+                    let enabled = match args {
+                        [] => true,
+                        [one] if one.as_error_code() == Some(-2147352572) => true,
+                        [one] => oxvba_eval::arith::coerce_numeric(
+                            one,
+                            oxvba_bundle::NumericCoerceTarget::Boolean,
+                        )
+                        .map_err(|e| fault(e.code, e.message))?
+                        .as_bool()
+                        .expect("Boolean coercion"),
+                        _ => return Err(fault(450, "wrong Volatile argument count")),
+                    };
+                    self.context(|context| context.set_volatile(enabled))?;
+                    Ok(Variant::empty())
+                }
+                _ => self.unsupported("an Application member outside the supported host surface"),
+            },
+            Object::Functions => {
+                let args = args
+                    .iter()
+                    .map(|arg| self.argument(arg))
+                    .collect::<HalResult<Vec<_>>>()?;
+                let value = self.context(|context| context.worksheet_function(name, &args))?;
+                if matches!(value, Value::Error(_)) {
+                    return Err(fault(
+                        1004,
+                        format!("WorksheetFunction.{name} could not calculate"),
+                    ));
+                }
+                to_variant(&value).map_err(|e| fault(13, e.to_string()))
+            }
+            Object::Range(range, axis) => self.range_member(range, axis, name, args),
+        }
+    }
 }
 
 impl HostServices for SpreadsheetHost {
@@ -414,6 +466,49 @@ impl HostServices for SpreadsheetHost {
 }
 
 impl ComHal for SpreadsheetHost {
+    fn invoke_early_bound(
+        &self,
+        object: ObjectRef,
+        member: &TypeLibMemberMetadata,
+        args: &[oxvba_com::DynamicCallArg],
+    ) -> HalResult<oxvba_runtime::RuntimeCallResult> {
+        // Preserve only the existing portable projection until extraction to host
+        // glue. Compiler-bound calls use its fixed tokens, never dynamic names.
+        // This is not native COM/vtable compatibility evidence.
+        let object = self.lookup(&object)?;
+        let name = match (object, member.token, member.invoke_kind) {
+            (Object::Application, 1, TypeLibMemberInvokeKind::PropertyGet) => "CALLER",
+            (Object::Application, 2, TypeLibMemberInvokeKind::PropertyGet) => "WORKSHEETFUNCTION",
+            (Object::Application, 3, TypeLibMemberInvokeKind::Method) => "VOLATILE",
+            (Object::Range(..), token, TypeLibMemberInvokeKind::PropertyGet) => match token {
+                1 => "VALUE2",
+                2 => "COUNT",
+                3 => "ROW",
+                4 => "COLUMN",
+                5 => "ADDRESS",
+                6 => "ROWS",
+                7 => "COLUMNS",
+                8 => "CELLS",
+                _ => return Err(fault(438, "unknown typed projection member")),
+            },
+            _ => return Err(fault(438, "unsupported typed projection member/accessor")),
+        };
+        if args.iter().any(|arg| arg.name.is_some()) {
+            return self.unsupported("named host arguments are not supported");
+        }
+        let args = args
+            .iter()
+            .map(|arg| {
+                arg.value
+                    .as_ref()
+                    .map(|v| v.variant().clone())
+                    .unwrap_or_else(|| Variant::from_error_code(-2147352572))
+            })
+            .collect::<Vec<_>>();
+        self.invoke_projected_member(object, name, &args)
+            .map(oxvba_runtime::RuntimeCallResult::value)
+    }
+
     fn create_object_variant(&self, name: Variant) -> HalResult<Variant> {
         if name
             .as_bstr()
@@ -482,49 +577,7 @@ impl ComHal for SpreadsheetHost {
                     .unwrap_or_else(|| Variant::from_error_code(-2147352572))
             })
             .collect::<Vec<_>>();
-        match self.lookup(&request.object)? {
-            Object::Application => match name.as_str() {
-                "CALLER" if args.is_empty() => {
-                    match self.context(|context| Ok(context.caller()))? {
-                        Some(range) => self.object(Object::Range(range, Axis::Cells)),
-                        None => Ok(Variant::from_error_code(2023)),
-                    }
-                }
-                "WORKSHEETFUNCTION" if args.is_empty() => self.object(Object::Functions),
-                "VOLATILE" => {
-                    let enabled = match args.as_slice() {
-                        [] => true,
-                        [one] if one.as_error_code() == Some(-2147352572) => true,
-                        [one] => oxvba_eval::arith::coerce_numeric(
-                            one,
-                            oxvba_bundle::NumericCoerceTarget::Boolean,
-                        )
-                        .map_err(|e| fault(e.code, e.message))?
-                        .as_bool()
-                        .expect("Boolean coercion"),
-                        _ => return Err(fault(450, "wrong Volatile argument count")),
-                    };
-                    self.context(|context| context.set_volatile(enabled))?;
-                    Ok(Variant::empty())
-                }
-                _ => self.unsupported("an Application member outside the supported host surface"),
-            },
-            Object::Functions => {
-                let args = args
-                    .iter()
-                    .map(|arg| self.argument(arg))
-                    .collect::<HalResult<Vec<_>>>()?;
-                let value = self.context(|context| context.worksheet_function(&name, &args))?;
-                if matches!(value, Value::Error(_)) {
-                    return Err(fault(
-                        1004,
-                        format!("WorksheetFunction.{name} could not calculate"),
-                    ));
-                }
-                to_variant(&value).map_err(|e| fault(13, e.to_string()))
-            }
-            Object::Range(range, axis) => self.range_member(range, axis, &name, &args),
-        }
+        self.invoke_projected_member(self.lookup(&request.object)?, &name, &args)
     }
     fn subscribe_event(&self, _: ObjectRef, _: ComMemberToken) -> HalResult<ComSubscriptionToken> {
         Err(fault(438, "events are unavailable"))
@@ -631,5 +684,52 @@ impl oxvba_symbol::TypeLibResolver for SpreadsheetTypes {
             events: vec![],
             coclass_names: vec![class.into()],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxvba_symbol::TypeLibResolver;
+
+    #[test]
+    fn legacy_typed_projection_uses_fixed_token_and_refuses_unknown_token() {
+        let host = SpreadsheetHost::new();
+        let value = host
+            .range_variant(Range {
+                sheet: 1,
+                row: 1,
+                column: 1,
+                rows: 2,
+                columns: 3,
+            })
+            .unwrap();
+        let object = value.as_object_ref().unwrap();
+        let metadata = SpreadsheetTypes
+            .resolve(&TypeLibResolveRequest {
+                reference_name: "Excel".into(),
+                requested_coclass: Some("Range".into()),
+                importlib_hint: None,
+                libid_hint: None,
+                major_version_hint: None,
+                minor_version_hint: None,
+                lcid_hint: None,
+            })
+            .unwrap();
+        let mut member = metadata.members.into_iter().find(|m| m.token == 2).unwrap();
+        member.name = "not-a-host-member".into();
+        let result = host
+            .invoke_early_bound(object.clone(), &member, &[])
+            .unwrap();
+        assert_eq!(result.value, Some(Variant::from_i32(6)));
+        member.name = "Count".into();
+        member.token = 999;
+        assert_eq!(
+            host.invoke_early_bound(object, &member, &[])
+                .unwrap_err()
+                .host_error_code,
+            Some(438),
+            "a recognizable name cannot recover an unbound typed member"
+        );
     }
 }

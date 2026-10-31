@@ -5,6 +5,7 @@ param(
     [switch]$Formal,
     [switch]$SkipPathStability,
     [switch]$NoArtifacts,
+    [switch]$NoRegistry,
     [string]$RunId = ""
 )
 
@@ -63,7 +64,16 @@ try {
     cargo clippy --workspace --all-targets -- -D warnings
 
     Write-Host "[oxvba] cargo test"
-    cargo test --workspace
+    if ($NoRegistry) {
+        # These four COM record fixtures call RegisterTypeLibForUser and
+        # UnRegisterTypeLibForUser. Keep this restriction explicit in output;
+        # filtered tests receive no passing evidence or certification credit.
+        Write-Host "[oxvba] no-registry mode: excluding four registry-writing COM record fixtures"
+        cargo test --workspace -- --skip windows_vtable::tests::record_safearray_parameter_lowers_with_record_element_vartype --skip windows_vtable::tests::descriptor_backed_empty_record_safearray_parameter_lowers_with_record_element_vartype --skip windows_vtable::tests::record_return_allocates_descriptor_backed_record_cell --skip windows_vtable::tests::typed_byref_record_safearray_returns_record_writeback
+    }
+    else {
+        cargo test --workspace
+    }
 
     if (-not $Fast) {
         Write-Host "[oxvba] cargo check"

@@ -11,6 +11,12 @@ Non-blocking formal issues and follow-up items for later ladder profiles.
 - Suggested next action:
 
 ## Active Items
+- ID: FTODO-UDF-BUDGET-20261031
+  Profile: CORE-8 value embedding (`bd-59co.2.10.6`)
+  Summary: The new abstract ExecutionBudget Lean model proves sticky zero, exact decrement and monotonicity (all five Lean modules passed with installed Lean 4.29.1; pinned 4.19 was absent and unchanged). Refinement to the Rust u64 counter and VM3/JIT noncatchable abort propagation remain unproved; executable coverage includes u64 boundaries, loops and recursion. Native `cargo kani --version` reports no such command on this Windows host.
+  Current status (`todo` / `investigating` / `resolved`): todo
+  Reproduction command: `cargo test -p oxvba-rt-abi execution_budget_exhaustion`; `cargo test -p oxvba-embed budget`
+  Suggested next action: connect the abstract step proof to the implementation and model noncatchable abort propagation, then run a nonempty proof lane on the existing approved formal runner. Keep native-call preemption and unbounded native recursion outside the cooperative guarantee. Do not count retired-crate or zero-selected harness runs as evidence.
 - ID: FTODO-M4-1-001
   Profile: M4-1 JIT IR-prep
   Summary: The non-blocking formal runner could not start in the current Linux environment because neither `pwsh` nor `powershell` is available on `PATH`.

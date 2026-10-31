@@ -1,0 +1,13 @@
+{
+  "schema": "oxvba.excel-vba-oracle-guardian-ready.v1",
+  "run_id": "calcvba-scalar-final-20261031",
+  "excel_pid": 43700,
+  "excel_process_start_utc": "2026-10-30T23:24:59.1033010Z",
+  "excel_executable_path": "C:\\Program Files\\Microsoft Office\\Root\\Office16\\EXCEL.EXE",
+  "guardian_pid": 38420,
+  "pid": 38420,
+  "process_name": "pwsh",
+  "process_start_utc": "2026-10-30T23:25:03.3250157Z",
+  "executable_path": "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+  "ready_utc": "2026-10-30T23:25:04.9667857Z"
+}

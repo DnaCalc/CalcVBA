@@ -530,7 +530,7 @@ fn invoke_m1_native(
             .unwrap_or("Long");
         let by_ref = descriptor.param_by_ref.get(i).copied().unwrap_or(false);
         let alias = aliases.get(i).copied().flatten().filter(|_| by_ref);
-        let kind = native_scalar_alias_type(param_type);
+        let kind = native_alias_storage_type(param_type, value);
         if let Some((cell, original_arg, prior_kind)) =
             alias.and_then(|id| alias_cells.get(&id).copied())
         {
@@ -539,7 +539,7 @@ fn invoke_m1_native(
                     host.profile,
                     capability,
                     "invoke_symbol",
-                    "repeated native ByRef aliases require compatible scalar storage; broader shapes remain under WIN-9",
+                    "repeated native ByRef aliases require compatible supported storage; broader shapes remain under WIN-9",
                 ));
             }
             // Reuse the original raw pointer. A new mutable projection of its
@@ -600,7 +600,9 @@ fn invoke_m1_native(
 }
 
 #[cfg(target_os = "windows")]
-fn native_scalar_alias_type(param_type: &str) -> Option<&'static str> {
+fn native_alias_storage_type(param_type: &str, value: &Variant) -> Option<&'static str> {
+    use oxvba_runtime::VarType;
+
     Some(match param_type {
         "Long" => "Long",
         "Integer" => "Integer",
@@ -611,6 +613,18 @@ fn native_scalar_alias_type(param_type: &str) -> Option<&'static str> {
         "LongLong" | "LongPtr" => "LongLong",
         "Currency" => "Currency",
         "Date" => "Date",
+        // One boxed VARIANT, including its owned BSTR, must be shared just as
+        // scalar cells are. Reuse the first raw pointer and read/clear the owner
+        // once. Array/object/record/procedure carriers still need their own
+        // ownership and alias evidence before this boundary admits them.
+        "Variant"
+            if !matches!(
+                value.vtype(),
+                VarType::ArrayVariant | VarType::Object | VarType::Record | VarType::ProcRef
+            ) =>
+        {
+            "Variant"
+        }
         _ => return None,
     })
 }

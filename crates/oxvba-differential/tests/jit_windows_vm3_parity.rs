@@ -468,6 +468,158 @@ End Sub
 }
 
 #[test]
+fn native_variant_alias_cells_preserve_payload_changes_and_copy_boundaries() {
+    let fixture = NativeFixture::build();
+    let path = fixture.path().display().to_string();
+    for (initial, call, expected) in [
+        ("Empty", "Probe(value, value)", 42),
+        ("Null", "Probe(value, value)", 42),
+        ("CInt(7)", "Probe(value, value)", 42),
+        ("CLng(7)", "Probe(value, value)", 42),
+        ("CByte(7)", "Probe(value, value)", 42),
+        ("CSng(7.5)", "Probe(value, value)", 42),
+        ("42.5", "Probe(value, value)", 42),
+        ("True", "Probe(value, value)", 42),
+        ("CCur(7)", "Probe(value, value)", 42),
+        ("CDate(45123.5)", "Probe(value, value)", 42),
+        ("CDec(7)", "Probe(value, value)", 42),
+        ("CLngLng(7)", "Probe(value, value)", 42),
+        ("CVErr(2042)", "Probe(value, value)", 42),
+        ("\"owned string\"", "Probe(value, value)", 42),
+        ("\"alpha\" & Chr(0) & \"beta\"", "Probe(value, value)", 42),
+        ("\"owned string\"", "Forward(value, value)", 42),
+        ("\"owned string\"", "Probe((value), value)", -1),
+    ] {
+        let observed = compare(&format!(
+            r#"
+Public result As String
+Public calls As Long
+Declare PtrSafe Function Probe Lib "{path}" Alias "AliasVariant" (ByRef first As Variant, ByRef second As Variant) As Long
+Declare PtrSafe Function NativeCount Lib "{path}" Alias "AliasCallCount" () As Long
+Private Function Forward(ByRef first As Variant, ByRef second As Variant) As Long
+    Forward = Probe(first, second)
+End Function
+Sub Main()
+    Dim value As Variant
+    Dim answer As Long, savedError As Long, beforeCalls As Long
+    value = {initial}
+    beforeCalls = NativeCount()
+    answer = {call}
+    savedError = Err.LastDllError
+    calls = NativeCount() - beforeCalls
+    result = CStr(answer) & "|" & TypeName(value) & "|" & CStr(value = 42.5) & "|" & CStr(savedError)
+End Sub
+"#
+        ));
+        assert!(!observed.raised, "{initial}: {observed:?}");
+        assert_eq!(
+            observed.values[0],
+            canon(&Variant::from_string(format!(
+                "{expected}|Double|True|4321"
+            )))
+        );
+        assert_eq!(observed.values[1], canon(&Variant::from_i32(1)));
+        assert_eq!(
+            observed.err,
+            FinalErr {
+                last_dll_error: 4321,
+                ..Default::default()
+            }
+        );
+    }
+}
+
+#[test]
+fn native_variant_alias_readback_owns_returned_bstr_bytes_and_distinct_cells() {
+    let fixture = NativeFixture::build();
+    let path = fixture.path().display().to_string();
+    for (second, expected) in [
+        ("first", "42|13|final:payload|4321"),
+        ("second", "-1|13|final:payload|4321"),
+    ] {
+        let observed = compare(&format!(
+            r#"
+Public result As String
+Public firstValue As Variant
+Declare PtrSafe Function Probe Lib "{path}" Alias "AliasVariantString" (ByRef first As Variant, ByRef second As Variant) As Long
+Sub Main()
+    Dim first As Variant, second As Variant
+    Dim answer As Long, savedError As Long
+    first = "old owned string"
+    second = first
+    answer = Probe(first, {second})
+    savedError = Err.LastDllError
+    firstValue = first
+    result = CStr(answer) & "|" & CStr(Len({second})) & "|" & Replace({second}, Chr(0), ":") & "|" & CStr(savedError)
+End Sub
+"#
+        ));
+        assert!(!observed.raised, "{observed:?}");
+        assert_eq!(observed.values[0], canon(&Variant::from_string(expected)));
+        let expected_first = if second == "first" {
+            "final\0payload"
+        } else {
+            "first"
+        };
+        assert_eq!(
+            observed.values[1],
+            canon(&Variant::from_string(expected_first))
+        );
+        assert_eq!(
+            observed.err,
+            FinalErr {
+                last_dll_error: 4321,
+                ..Default::default()
+            }
+        );
+    }
+}
+
+#[test]
+fn native_variant_unproved_shapes_still_refuse_aliases_before_callee_execution() {
+    let fixture = NativeFixture::build();
+    let path = fixture.path().display().to_string();
+    // These are explicit remaining gaps, not VBA compatibility expectations.
+    for (initial, first_decl, second_decl) in [
+        ("value = Array(1, 2)", "Variant", "Variant"),
+        (
+            "Set value = CreateObject(\"Scripting.Dictionary\")",
+            "Variant",
+            "Variant",
+        ),
+        ("value = CInt(7)", "Variant", "Any"),
+        ("value = CInt(7)", "Any", "Variant"),
+        ("value = CInt(7)", "Any", "Any"),
+        ("value = \"owned string\"", "Variant", "Any"),
+    ] {
+        let observed = compare(&format!(
+            r#"
+Public result As Long
+Public observedError As Long
+Public calls As Long
+Declare PtrSafe Function Probe Lib "{path}" Alias "PointerProbe" (ByRef first As {first_decl}, ByRef second As {second_decl}) As Long
+Declare PtrSafe Function NativeCount Lib "{path}" Alias "AliasCallCount" () As Long
+Sub Main()
+    Dim value As Variant, beforeCalls As Long
+    {initial}
+    beforeCalls = NativeCount()
+    On Error Resume Next
+    result = Probe(value, value)
+    observedError = Err.Number
+    Err.Clear
+    calls = NativeCount() - beforeCalls
+End Sub
+"#
+        ));
+        assert!(!observed.raised);
+        assert_eq!(
+            &observed.values[..3],
+            &[0, 5, 0].map(|value| canon(&Variant::from_i32(value)))
+        );
+    }
+}
+
+#[test]
 fn getobject_empty_path_activates_a_registered_class_on_both_backends() {
     let observed = compare(
         r#"

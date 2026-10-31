@@ -12,11 +12,11 @@ Non-blocking formal issues and follow-up items for later ladder profiles.
 
 ## Active Items
 - ID: FTODO-NATIVE-ALIAS-20261031
-  Profile: WIN-9 scalar ABI (`bd-59co.3.10.5`)
-  Summary: Controlled native and Excel fixtures cover scalar ABI classes, caller-variable aliases and cleanup. No existing formal model proves these native paths. Native cargo-kani is unavailable. Fresh-eyes review removed a second mutable projection of shared boxed cells and derives pointers after storing owners; executable tests alone do not prove pointer provenance.
+  Profile: WIN-9 scalar ABI and Variant cells (`bd-59co.3.10.5`, `bd-59co.3.10.9`)
+  Summary: Controlled native and Excel fixtures cover scalar ABI classes, caller-variable aliases, scalar/BSTR Variant cells and cleanup. The Variant route shares one existing boxed VARIANT, clones its BSTR readback once and clears one native owner. Runtime handle counters do not count OLE copied-BSTR allocations. No existing formal model proves these native paths. Native cargo-kani is unavailable. Fresh-eyes review removed a second mutable projection of shared boxed cells and derives pointers after storing owners; executable tests alone do not prove pointer provenance.
   Current status (`todo` / `investigating` / `resolved`): todo
   Reproduction command: `cargo test -p oxvba-differential --test jit_windows_vm3_parity`; `cargo test -p oxvba-hal legacy_adapter_declines_repeated_aliases_before_execution`
-  Suggested next action: extract a portable scalar-cell ownership/alias harness for Miri on the existing approved runner, then connect caller identity, one-cell ownership and positional copyback to the implementation. Keep structural aliases, noncanonical Boolean payloads and reentry under their existing delivery owners.
+  Suggested next action: extract a portable scalar-cell ownership/alias harness for Miri on the existing approved runner, then connect caller identity, one-cell ownership and positional copyback to the implementation. Keep array/object/record/procedure-reference Variant aliases, native String/As Any aliases, noncanonical Boolean payloads and reentry under their existing delivery owners.
 - ID: FTODO-UDF-BUDGET-20261031
   Profile: CORE-8 value embedding (`bd-59co.2.10.6`)
   Summary: The new abstract ExecutionBudget Lean model proves sticky zero, exact decrement and monotonicity (all five Lean modules passed with installed Lean 4.29.1; pinned 4.19 was absent and unchanged). Refinement to the Rust u64 counter and VM3/JIT noncatchable abort propagation remain unproved; executable coverage includes u64 boundaries, loops and recursion. Native `cargo kani --version` reports no such command on this Windows host.

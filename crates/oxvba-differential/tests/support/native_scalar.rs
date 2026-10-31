@@ -129,3 +129,105 @@ pub extern "system" fn Mixed(
     }
     42
 }
+
+/// Windows x64 VARIANT layout used by the independent alias fixture.
+#[repr(C)]
+pub struct NativeVariant {
+    vt: u16,
+    reserved: [u16; 3],
+    data: NativeVariantData,
+}
+#[repr(C)]
+pub union NativeVariantData {
+    words: [u64; 2],
+    bstr: *mut u16,
+}
+const _: () = assert!(std::mem::size_of::<NativeVariant>() == 24);
+#[link(name = "oleaut32")]
+unsafe extern "system" {
+    fn VariantClear(value: *mut NativeVariant) -> i32;
+    fn SysAllocStringLen(text: *const u16, length: u32) -> *mut u16;
+    fn SysStringLen(text: *const u16) -> u32;
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn AliasVariant(
+    first: *mut NativeVariant,
+    second: *mut NativeVariant,
+) -> i32 {
+    // SAFETY: both pointers refer to live initialized writable Windows VARIANTs.
+    // Raw access deliberately permits aliasing. VariantClear releases the old
+    // owned payload before each replacement; no pointer escapes this call.
+    unsafe {
+        if VariantClear(first) < 0 {
+            return -1001;
+        }
+        first.write(NativeVariant {
+            vt: 3,
+            reserved: [0; 3],
+            data: NativeVariantData { words: [19, 0] },
+        });
+        let shared = first == second && (*second).vt == 3 && (*second).data.words[0] == 19;
+        if VariantClear(second) < 0 {
+            return -1002;
+        }
+        second.write(NativeVariant {
+            vt: 5,
+            reserved: [0; 3],
+            data: NativeVariantData {
+                words: [42.5_f64.to_bits(), 0],
+            },
+        });
+        ALIAS_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        SetLastError(4321);
+        if shared { 42 } else { -1 }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn AliasVariantString(
+    first: *mut NativeVariant,
+    second: *mut NativeVariant,
+) -> i32 {
+    // SAFETY: caller supplies live initialized writable VARIANT cells, which
+    // may alias. Release the previous OLE-owned payload before each write;
+    // fresh BSTR ownership transfers to the caller in the resulting VARIANT.
+    unsafe {
+        if VariantClear(first) < 0 {
+            return -1001;
+        }
+        let a = [102_u16, 105, 114, 115, 116];
+        let a_ptr = SysAllocStringLen(a.as_ptr(), a.len() as u32);
+        if a_ptr.is_null() {
+            return -1003;
+        }
+        let mut a_value = NativeVariant {
+            vt: 8,
+            reserved: [0; 3],
+            data: NativeVariantData { words: [0; 2] },
+        };
+        a_value.data.bstr = a_ptr;
+        first.write(a_value);
+        let shared = first == second && (*second).vt == 8 && SysStringLen((*second).data.bstr) == 5;
+        if VariantClear(second) < 0 {
+            return -1002;
+        }
+        let b = [
+            102_u16, 105, 110, 97, 108, 0, 112, 97, 121, 108, 111, 97, 100,
+        ];
+        let b_ptr = SysAllocStringLen(b.as_ptr(), b.len() as u32);
+        if b_ptr.is_null() {
+            return -1004;
+        }
+        let mut b_value = NativeVariant {
+            vt: 8,
+            reserved: [0; 3],
+            data: NativeVariantData { words: [0; 2] },
+        };
+        b_value.data.bstr = b_ptr;
+        second.write(b_value);
+        ALIAS_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        SetLastError(4321);
+        if shared { 42 } else { -1 }
+    }
+}

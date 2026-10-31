@@ -1,0 +1,13 @@
+{
+  "schema": "oxvba.excel-vba-oracle-guardian-ready.v1",
+  "run_id": "calcvba-getobject-3-20261031",
+  "excel_pid": 416,
+  "excel_process_start_utc": "2026-10-31T01:35:03.7661433Z",
+  "excel_executable_path": "C:\\Program Files\\Microsoft Office\\Root\\Office16\\EXCEL.EXE",
+  "guardian_pid": 30188,
+  "pid": 30188,
+  "process_name": "pwsh",
+  "process_start_utc": "2026-10-31T01:35:07.5625028Z",
+  "executable_path": "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+  "ready_utc": "2026-10-31T01:35:08.9573110Z"
+}

@@ -1,0 +1,10 @@
+{
+  "schema": "oxvba.excel-vba-oracle-guardian-control.v2",
+  "run_id": "calcvba-getobject-3-20261031",
+  "case_id": "windows-scalar-interop",
+  "operation_id": "windows-scalar-interop-run",
+  "sequence": 2,
+  "phase": "run",
+  "allow_dismiss": true,
+  "written_utc": "2026-10-31T01:35:10.7115019Z"
+}

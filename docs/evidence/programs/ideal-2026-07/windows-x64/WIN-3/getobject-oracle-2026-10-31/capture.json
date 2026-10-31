@@ -1,0 +1,15 @@
+{
+  "original_directory": "C:\\Work\\DnaCalc\\codex-runs\\calcvba-excel-object-probe",
+  "run_id": "calcvba-getobject-3-20261031",
+  "source_sha256": "17e8e9301ca7d0397f0d6332668a9373600771e0e61bcd4aea4b4ea351019fb4",
+  "controller_sha256": "2b8d567a8c8e696daad8a63cd423fe5471cfada7494a8dffa1faacea6c2551e7",
+  "engine_test_sha256": "74c8a782f0d03b4f5650cfbec5e4f11d29af6175fcca14ad4c8248c4b5a32243",
+  "normalization": "Text copies use LF; copied OracleSelfTest.bas and engine logs use one final LF. Exact injected source and canonical hashes remain in result JSON.",
+  "engine_test_result": "one ignored-by-default live test passed, both backends; no fallback",
+  "matrix_credit": false,
+  "security_settings_changed": false,
+  "final_pid_checked_run_id": "calcvba-getobject-4-20261031",
+  "final_engine_test_sha256": "6859b517e05d4e8f6c937138d69200918de650132cd8a7b0d7cd666ed74201f8",
+  "engine_test_source_sha256": "9cbe9c470adbe178c6eba7675f5d60fb4050f6514b701cd107d5c4a4ab15124d",
+  "stale_window_probe_expected_result": "refused before GetObject; the retained FAILED test transcript is an expected negative probe"
+}

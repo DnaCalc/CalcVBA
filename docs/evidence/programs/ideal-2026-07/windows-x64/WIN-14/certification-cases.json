@@ -8,7 +8,7 @@
   "source_hashes": [
     {
       "path": "docs/validation/WINDOWS_JIT_COM_CLIENT_MATRIX_V1.csv",
-      "sha256": "sha256:da9e8b90d0f62b8b0d12603792694794d4f008b702bcae2f3e87808fa933b920"
+      "sha256": "sha256:583a3451dce182ec74601fbb1000152ccd4cd8b14f69cf5b9cae14a5cf259ca7"
     },
     {
       "path": "docs/validation/WINDOWS_JIT_COM_EVENTS_MATRIX_V1.csv",
@@ -36,7 +36,7 @@
     },
     {
       "path": "docs/validation/IDEAL_WINDOWS_CURRENT_STACK_RESIDUAL_V1.csv",
-      "sha256": "sha256:4f45c62fb84184db5338e53b330bd015579bc22bd17e4581971758dd2e4b37cd"
+      "sha256": "sha256:4ea32666d8e9a25374ad36b46eb2c2a684011830af284f2a4785172d66bd7469"
     },
     {
       "path": "docs/validation/IDEAL_ENVIRONMENT_MANIFEST_V1.csv",
@@ -482,7 +482,7 @@
           "bd-59co.3.3"
         ],
         "required_truth_state": "verified",
-        "current_truth_state": "planned",
+        "current_truth_state": "in-progress",
         "state": "pending"
       },
       "roles": {

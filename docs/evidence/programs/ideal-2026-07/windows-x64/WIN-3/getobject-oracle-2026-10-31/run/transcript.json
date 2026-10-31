@@ -1,0 +1,26 @@
+{
+  "schema": "oxvba.excel-vba-oracle-transcript.v2",
+  "run_id": "calcvba-getobject-3-20261031",
+  "environment_id": "win-x64-dev-oracle-2026-07",
+  "started_utc": "2026-10-31T01:35:02.0373271Z",
+  "completed_utc": "2026-10-31T01:35:26.6673748Z",
+  "duration_seconds": 24.63,
+  "supervisor_pid": 49456,
+  "worker_pid": 38424,
+  "containment_token": "c8ced527-bb59-48e5-8e97-69dcbdc0cff9",
+  "job_terminated_before_residual_audit": true,
+  "baseline_excel_pids": [
+    3144
+  ],
+  "timeout": false,
+  "no_matrix_update": true,
+  "certifying": false,
+  "targeted_probe": true,
+  "contains_diagnostic_case": true,
+  "selected_case_selection_digest": "sha256:4012d4183509778c235b45f10e1a9612055fa40b55a7430a21293a3fe8c972f1",
+  "selected_case_ids": [
+    "windows-scalar-interop"
+  ],
+  "passed": true,
+  "case_count": 1
+}

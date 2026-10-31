@@ -1,0 +1,21 @@
+   Compiling oxvba-differential v0.1.2 (C:\Work\DnaCalc\OxVba\crates\oxvba-differential)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.95s
+     Running tests\jit_windows_vm3_parity.rs (target\debug\deps\jit_windows_vm3_parity-d329a3a73f6aec8c.exe)
+
+running 1 test
+
+thread 'getobject_reads_owned_excel_workbook_values_on_both_backends' (14076) panicked at crates\oxvba-differential\tests\jit_windows_vm3_parity.rs:520:5:
+assertion `left != right` failed: owned window must be live before GetObject
+  left: 0
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test getobject_reads_owned_excel_workbook_values_on_both_backends ... FAILED
+
+failures:
+
+failures:
+    getobject_reads_owned_excel_workbook_values_on_both_backends
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p oxvba-differential --test jit_windows_vm3_parity`

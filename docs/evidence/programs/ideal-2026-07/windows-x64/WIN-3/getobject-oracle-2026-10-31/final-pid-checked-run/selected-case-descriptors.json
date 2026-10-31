@@ -1,0 +1,29 @@
+{
+  "schema": "oxvba.excel-vba-oracle-selected-case-sequence.v2",
+  "targeted_probe": true,
+  "contains_diagnostic_case": true,
+  "descriptor_count": 1,
+  "selection_sha256": "sha256:4012d4183509778c235b45f10e1a9612055fa40b55a7430a21293a3fe8c972f1",
+  "descriptors": [
+    {
+      "schema": "oxvba.excel-vba-oracle-selected-case.v1",
+      "id": "windows-scalar-interop",
+      "purpose": "development owned Excel workbook and scalar object-model reader",
+      "module_name": "OracleSelfTest",
+      "module_source": "Option Explicit\nPublic Function RunProbe() As String\n    Dim cell As Object\n    Dim matrix As Variant\n    Dim started As Date\n    Dim readyNumber As Integer\n    Set cell = ThisWorkbook.Worksheets(1).Range(\"A1\")\n    cell.Value2 = 42\n    ThisWorkbook.Worksheets(1).Range(\"B1\").Value2 = \"alpha\"\n    ThisWorkbook.Worksheets(1).Range(\"A2\").Value2 = True\n    ThisWorkbook.Worksheets(1).Range(\"B2\").Value2 = CVErr(2042)\n    readyNumber = FreeFile\n    Open \"C:\\Work\\DnaCalc\\codex-runs\\calcvba-excel-object-probe\\ready.txt\" For Output As #readyNumber\n    Print #readyNumber, ThisWorkbook.FullName\n    Print #readyNumber, Application.Hwnd\n    Close #readyNumber\n    started = Now\n    Do While Dir(\"C:\\Work\\DnaCalc\\codex-runs\\calcvba-excel-object-probe\\release.txt\") = \"\"\n        DoEvents\n        If DateDiff(\"s\", started, Now) > 150 Then Err.Raise 5, \"OwnedProbe\", \"External reader did not finish\"\n    Loop\n    matrix = ThisWorkbook.Worksheets(1).Range(\"A1:B2\").Value2\n    RunProbe = CStr(cell.Value2) & \"|\" & cell.Address(False, False) & \"|\" & CStr(ThisWorkbook.Worksheets.Count) & \"|\" & CStr(matrix(1, 2)) & \"|\" & CStr(matrix(2, 1)) & \"|\" & CStr(matrix(2, 2)) & \"|\" & CStr(LBound(matrix, 1)) & \"|\" & CStr(UBound(matrix, 1)) & \"|\" & CStr(LBound(matrix, 2)) & \"|\" & CStr(UBound(matrix, 2))\nEnd Function\n",
+      "module_sha256": "sha256:f46d520b31be79c94f4d1bab2eab404565861e370e5ce2e3b50d306394aa1fb7",
+      "expected_compile_status": "ok",
+      "expected_run_status": "ok",
+      "run_procedure": "OracleSelfTest.RunProbe",
+      "diagnostic_only": true,
+      "expected_value": "42|A1|1|alpha|True|Error 2042|1|2|1|2",
+      "expected_selected_token": null,
+      "expected_expanded_line": null,
+      "macro_probe_target": "OracleSelfTest.RunProbe",
+      "invocation_observation_prefix": null,
+      "evidence_contract": "clean-compile-run-no-dialog-v1",
+      "expected_runtime_err": null,
+      "descriptor_sha256": "sha256:4d9db316597dbf0011a7acb969336df48571dc5effbb4fffadac59470b1837a3"
+    }
+  ]
+}

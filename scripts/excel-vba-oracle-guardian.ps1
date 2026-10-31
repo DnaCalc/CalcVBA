@@ -87,6 +87,10 @@ public static class ExcelGuardianOwnedWindows {
     [DllImport("user32.dll")] private static extern bool EnumWindows(Visitor callback, IntPtr state);
     [DllImport("user32.dll")] private static extern bool EnumChildWindows(IntPtr parent, Visitor callback, IntPtr state);
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern bool IsWindowEnabled(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern bool IsChild(IntPtr parent, IntPtr child);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern IntPtr SendMessageTimeout(IntPtr hwnd, uint message, IntPtr wparam, IntPtr lparam, uint flags, uint timeout, out UIntPtr result);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int size);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, StringBuilder text, int size);
@@ -105,6 +109,62 @@ public static class ExcelGuardianOwnedWindows {
             return true;
         }, IntPtr.Zero);
         return values.ToArray();
+    }
+    private static string WindowText(IntPtr hwnd) {
+        var text = new StringBuilder(4096); GetWindowText(hwnd, text, text.Capacity); return text.ToString();
+    }
+    private static string WindowClass(IntPtr hwnd) {
+        var text = new StringBuilder(128); GetClassName(hwnd, text, text.Capacity); return text.ToString();
+    }
+    private static string Normalize(string value) {
+        return System.Text.RegularExpressions.Regex.Replace((value ?? "").Replace("&", ""), @"\s+", " ").Trim();
+    }
+    public static bool IsOwnedVisibleDialog(IntPtr hwnd, uint expectedPid) {
+        uint pid; GetWindowThreadProcessId(hwnd, out pid);
+        string kind = WindowClass(hwnd);
+        return hwnd != IntPtr.Zero && IsWindow(hwnd) && IsWindowVisible(hwnd) && pid == expectedPid &&
+            (kind == "#32770" || kind == "NUIDialog");
+    }
+    public static bool DialogGone(IntPtr hwnd, uint expectedPid) {
+        uint pid; GetWindowThreadProcessId(hwnd, out pid);
+        return !IsWindow(hwnd) || !IsWindowVisible(hwnd) || pid != expectedPid;
+    }
+    public static bool MatchesObservation(IntPtr parent, uint expectedPid, string title, string[] texts) {
+        if (!IsOwnedVisibleDialog(parent, expectedPid) || WindowText(parent) != title || texts == null || texts.Length == 0) return false;
+        foreach (string text in texts) if (String.IsNullOrWhiteSpace(text)) return false;
+        string actual = Normalize(String.Join("\n", ChildText(parent, expectedPid, false)));
+        return actual.Length != 0 && actual == Normalize(String.Join("\n", texts));
+    }
+    public static bool IsMatchingButton(IntPtr parent, IntPtr button, uint expectedPid, string label) {
+        uint pid; GetWindowThreadProcessId(button, out pid);
+        return pid == expectedPid && IsChild(parent, button) && IsWindowVisible(button) && IsWindowEnabled(button) &&
+            WindowClass(button) == "Button" && String.Equals(Normalize(WindowText(button)), Normalize(label), StringComparison.OrdinalIgnoreCase);
+    }
+    public static IntPtr FindUniqueButton(IntPtr parent, uint expectedPid, string label) {
+        var buttons = new List<IntPtr>();
+        EnumChildWindows(parent, (child, state) => {
+            if (IsMatchingButton(parent, child, expectedPid, label)) buttons.Add(child);
+            return true;
+        }, IntPtr.Zero);
+        return buttons.Count == 1 ? buttons[0] : IntPtr.Zero;
+    }
+    // No desktop-wide button search or keyboard input: exactly one visible enabled Button
+    // under the captured owned dialog, with unchanged title/message, must match the policy.
+    public static string TryClickObservedButton(IntPtr parent, uint expectedPid, string title, string[] texts, string[] preferred) {
+        if (!MatchesObservation(parent, expectedPid, title, texts)) return null;
+        foreach (string label in preferred) {
+            IntPtr button = FindUniqueButton(parent, expectedPid, label);
+            if (button == IntPtr.Zero) continue;
+            if (!MatchesObservation(parent, expectedPid, title, texts) || !IsMatchingButton(parent, button, expectedPid, label)) return null;
+            UIntPtr result;
+            if (SendMessageTimeout(button, 0x00F5, IntPtr.Zero, IntPtr.Zero, 2, 1000, out result) == IntPtr.Zero) return null;
+            for (int i = 0; i < 40; i++) {
+                if (DialogGone(parent, expectedPid)) return label;
+                System.Threading.Thread.Sleep(25);
+            }
+            return null;
+        }
+        return null;
     }
     public static IntPtr[] Enumerate(uint expectedPid) {
         var handles = new HashSet<IntPtr>();
@@ -207,27 +267,46 @@ function Get-WindowIdentity {
 function Invoke-OwnedDialogButton {
     param(
         [Parameter(Mandatory = $true)][Windows.Automation.AutomationElement]$Window,
-        [Parameter(Mandatory = $true)][string[]]$PreferredButtons
+        [Parameter(Mandatory = $true)][string[]]$PreferredButtons,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ObservedTitle,
+        [Parameter(Mandatory = $true)][string[]]$ObservedTexts
     )
+    $script:lastDismissalMethod = $null
+    $handle = [IntPtr]$Window.Current.NativeWindowHandle
+    if (-not [ExcelGuardianOwnedWindows]::MatchesObservation($handle, [uint32]$ExcelPid, $ObservedTitle, $ObservedTexts)) { return $null }
     $buttonCondition = [Windows.Automation.PropertyCondition]::new(
         [Windows.Automation.AutomationElement]::ControlTypeProperty,
         [Windows.Automation.ControlType]::Button
     )
-    $foundButtons = $Window.FindAll([Windows.Automation.TreeScope]::Descendants, $buttonCondition)
-    $buttons = @(for ($buttonIndex = 0; $buttonIndex -lt $foundButtons.Count; $buttonIndex++) { $foundButtons.Item($buttonIndex) })
+    $buttons = @()
+    try {
+        $foundButtons = $Window.FindAll([Windows.Automation.TreeScope]::Descendants, $buttonCondition)
+        $buttons = @(for ($buttonIndex = 0; $buttonIndex -lt $foundButtons.Count; $buttonIndex++) { $foundButtons.Item($buttonIndex) })
+    }
+    catch { }
     foreach ($preferred in $PreferredButtons) {
-        $button = @($buttons | Where-Object { [string]$_.Current.Name -eq $preferred } | Select-Object -First 1)
-        if ($button.Count -eq 0) { continue }
+        $nativeButton = [ExcelGuardianOwnedWindows]::FindUniqueButton($handle, [uint32]$ExcelPid, $preferred)
+        if ($nativeButton -eq [IntPtr]::Zero) { continue }
+        $button = @($buttons | Where-Object { [IntPtr]$_.Current.NativeWindowHandle -eq $nativeButton })
+        if ($button.Count -ne 1) { continue }
         try {
             $invoke = $button[0].GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern)
+            if (-not [ExcelGuardianOwnedWindows]::MatchesObservation($handle, [uint32]$ExcelPid, $ObservedTitle, $ObservedTexts) -or
+                -not [ExcelGuardianOwnedWindows]::IsMatchingButton($handle, $nativeButton, [uint32]$ExcelPid, $preferred)) { return $null }
             $invoke.Invoke()
-            return $preferred
+            for ($attempt = 0; $attempt -lt 40; $attempt++) {
+                if ([ExcelGuardianOwnedWindows]::DialogGone($handle, [uint32]$ExcelPid)) {
+                    $script:lastDismissalMethod = "uia-invoke"
+                    return $preferred
+                }
+                Start-Sleep -Milliseconds 25
+            }
         }
-        catch {
-            return $null
-        }
+        catch { }
     }
-    return $null
+    $native = [ExcelGuardianOwnedWindows]::TryClickObservedButton($handle, [uint32]$ExcelPid, $ObservedTitle, $ObservedTexts, $PreferredButtons)
+    if (-not [string]::IsNullOrWhiteSpace($native)) { $script:lastDismissalMethod = "native-owned-button" }
+    return $native
 }
 
 function Add-GuardianEvent {
@@ -282,7 +361,11 @@ while ([DateTime]::UtcNow -lt $deadline -and -not (Test-Path -LiteralPath $StopF
     if (-not $currentExcelProcess -or -not (Test-ExcelOracleProcessIdentity -Record $excelIdentity -Process $currentExcelProcess -ExpectedProcessName "EXCEL" -RunId $RunId)) { break }
     $control = $null
     if (Test-Path -LiteralPath $ControlFile) {
-        $controlJson = Get-Content -Raw -LiteralPath $ControlFile
+        # Permit atomic replacement while retaining this exact file instance.
+        $controlStream = [IO.FileStream]::new($ControlFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        $controlReader = [IO.StreamReader]::new($controlStream)
+        try { $controlJson = $controlReader.ReadToEnd() }
+        finally { $controlReader.Dispose() }
         $controlHash = Get-ExcelOracleSha256 -Text $controlJson
         $parsedControl = ConvertFrom-ExcelOracleGuardianControl -Json $controlJson -RunId $RunId
         if (@($parsedControl.errors).Count -gt 0) {
@@ -414,7 +497,7 @@ while ([DateTime]::UtcNow -lt $deadline -and -not (Test-Path -LiteralPath $StopF
 
             if ($consideredDialog -and $policy.disposition -eq "capture-then-dismiss" -and [bool]$control.allow_dismiss -and
                 ($policy.kind -ne "compile-error" -or (-not [string]::IsNullOrWhiteSpace([string]$vbeSelection.selected_token) -and -not [string]::IsNullOrWhiteSpace([string]$vbeSelection.expanded_line)))) {
-                $dismissedButton = Invoke-OwnedDialogButton -Window $window -PreferredButtons @($policy.preferred_buttons)
+                $dismissedButton = Invoke-OwnedDialogButton -Window $window -PreferredButtons @($policy.preferred_buttons) -ObservedTitle $windowTitle -ObservedTexts $texts
                 $dismissalEvent = [ordered]@{
                     schema = "oxvba.excel-vba-oracle-dismissal-result.v1"
                     event_type = "dismissal-result"
@@ -430,6 +513,7 @@ while ([DateTime]::UtcNow -lt $deadline -and -not (Test-Path -LiteralPath $StopF
                     attempted_utc = [DateTime]::UtcNow.ToString("o")
                     requested_buttons = @($policy.preferred_buttons)
                     dismissed_button = $dismissedButton
+                    dismissal_method = $script:lastDismissalMethod
                     succeeded = -not [string]::IsNullOrWhiteSpace([string]$dismissedButton)
                 }
                 Add-GuardianEvent -Event $dismissalEvent

@@ -375,6 +375,17 @@ function Add-HelperOwnershipRecord {
         [Parameter(Mandatory = $true)][Diagnostics.Process]$Process,
         [Parameter(Mandatory = $true)][string]$CaseId
     )
+    # Start-Process can return before the image path is readable. Never publish
+    # an incomplete identity and try to repair it from a later guardian record.
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        $Process.Refresh()
+        if ($Process.HasExited) { throw "excel-vba-oracle-worker: guardian exited before identity capture" }
+        $observedPath = [string]$Process.Path
+        if (-not [string]::IsNullOrWhiteSpace($observedPath)) { break }
+        Start-Sleep -Milliseconds 25
+    } while ([DateTime]::UtcNow -lt $deadline)
+    if ([string]::IsNullOrWhiteSpace($observedPath)) { throw "excel-vba-oracle-worker: guardian executable path was not observable" }
     $record = [ordered]@{
         schema = "oxvba.excel-vba-oracle-owned-helper.v1"
         run_id = $RunId
@@ -383,7 +394,7 @@ function Add-HelperOwnershipRecord {
         pid = $Process.Id
         process_name = [string]$Process.ProcessName
         process_start_utc = $Process.StartTime.ToUniversalTime().ToString("o")
-        executable_path = [string]$Process.Path
+        executable_path = $observedPath
         ownership = "owned-helper-process"
         acquired_utc = [DateTime]::UtcNow.ToString("o")
     }
@@ -411,7 +422,8 @@ function Set-GuardianControl {
         allow_dismiss = $AllowDismiss
         written_utc = [DateTime]::UtcNow.ToString("o")
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $temporary -Encoding utf8NoBOM
-    Move-Item -Force -LiteralPath $temporary -Destination $Path
+    if ([IO.File]::Exists($Path)) { [IO.File]::Replace($temporary, $Path, [NullString]::Value) }
+    else { [IO.File]::Move($temporary, $Path) }
     return [pscustomobject]@{ case_id = $CaseId; operation_id = $OperationId; phase = $Phase; sequence = $script:GuardianControlSequence }
 }
 
@@ -476,15 +488,20 @@ function Wait-GuardianEventFlush {
         [Parameter(Mandatory = $true)][string]$EventsFile,
         [Parameter(Mandatory = $true)][string]$OperationId,
         [Parameter(Mandatory = $true)]$ArmRecord,
-        [Parameter(Mandatory = $true)][DateTime]$InvocationCompletedUtc
+        [Parameter(Mandatory = $true)][DateTime]$InvocationCompletedUtc,
+        [AllowNull()]$CompileControl = $null
     )
     $deadline = [DateTime]::UtcNow.AddMilliseconds(2500)
     do {
         $events = @(Get-GuardianEvents -EventsFile $EventsFile -OperationId $OperationId)
-        if (Test-ExcelOracleGuardianOperationCoverage -Events $events -OperationId $OperationId -ControlSequence ([long]$ArmRecord.control_sequence) -InvocationCompletedUtc $InvocationCompletedUtc) { return $events }
+        $covered = Test-ExcelOracleGuardianOperationCoverage -Events $events -OperationId $OperationId -ControlSequence ([long]$ArmRecord.control_sequence) -InvocationCompletedUtc $InvocationCompletedUtc
+        # Execute can return before Excel creates the compile-error modal. A
+        # heartbeat alone cannot finish that asynchronous compile operation.
+        if ($covered -and ($null -eq $CompileControl -or
+            (Test-ExcelOracleCompileFlushReady -Events $events -CompileCommandEnabled ([bool]$CompileControl.Enabled)))) { return $events }
         Start-Sleep -Milliseconds 50
     } while ([DateTime]::UtcNow -lt $deadline)
-    throw "excel-vba-oracle-worker: guardian heartbeat did not span operation '$OperationId' through evidence flush"
+    throw "excel-vba-oracle-worker: guardian heartbeat or compile outcome did not complete operation '$OperationId' through evidence flush"
 }
 
 function Wait-GuardianOperationArmed {
@@ -816,7 +833,7 @@ function Invoke-HarnessCase {
         }
         $compileInvocationCompletedUtc = [DateTime]::UtcNow
         $compileContext.authority_after_execute = Get-CompileAuthoritySnapshot -Vbe $excel.VBE -Project $project -Component $component -ExpectedSourceSha256 $selectedSourceSha256 -Stage "immediately-after-execute"
-        $compileEvents = @(Wait-GuardianEventFlush -EventsFile $eventsFile -OperationId $compileOperation -ArmRecord $compileArm -InvocationCompletedUtc $compileInvocationCompletedUtc)
+        $compileEvents = @(Wait-GuardianEventFlush -EventsFile $eventsFile -OperationId $compileOperation -ArmRecord $compileArm -InvocationCompletedUtc $compileInvocationCompletedUtc -CompileControl $compileControl)
         $compileDialogs = @($compileEvents | Where-Object { [string]$_.event_type -eq "dialog-observation" })
         # Post-dismiss COM state is diagnostic only. It can never repair or satisfy
         # the immutable guardian observation that authorized dismissal.

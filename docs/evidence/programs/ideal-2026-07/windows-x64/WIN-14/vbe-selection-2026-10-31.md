@@ -1,8 +1,6 @@
 # VBE selection diagnostic
 
-2026-10-31. Support owner `bd-59co.3.15.6` remains **in-progress**.
-BLK-EXCEL-COMPILE-20261031 remains open. No Windows capability or certification
-credit is granted.
+2026-10-31 historical failed-run evidence. The later [owned supervisor repair](oracle-supervisor-2026-10-31/README.md) resolves BLK-EXCEL-COMPILE-20261031 on the development host and supersedes the remaining-work statements below. This earlier attempt remains rejected. No Windows capability or certification credit is granted.
 
 The guardian called ExpandToEnclosingUnit with a nonexistent type,
 `Windows.Automation.TextUnit`. Its catch path discarded the observed selection.

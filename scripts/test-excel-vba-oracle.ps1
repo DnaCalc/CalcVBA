@@ -1532,6 +1532,17 @@ $earlyHeartbeat = [pscustomobject]@{ event_type = "guardian-heartbeat"; operatio
 Assert-True (-not (Test-ExcelOracleGuardianOperationCoverage -Events @($arm, $earlyHeartbeat) -OperationId "op" -ControlSequence 1 -InvocationCompletedUtc ([DateTime]"2026-07-14T00:00:03Z"))) "ready plus benign heartbeat followed by hang must not cover invocation"
 $lateHeartbeat = [pscustomobject]@{ event_type = "guardian-heartbeat"; operation_id = "op"; control_sequence = 1; event_sequence = 3; observed_utc = "2026-07-14T00:00:04Z" }
 Assert-True (Test-ExcelOracleGuardianOperationCoverage -Events @($arm, $earlyHeartbeat, $lateHeartbeat) -OperationId "op" -ControlSequence 1 -InvocationCompletedUtc ([DateTime]"2026-07-14T00:00:03Z")) "post-invocation heartbeat must close operation coverage"
+Assert-True (-not (Test-ExcelOracleCompileFlushReady -Events @($arm, $lateHeartbeat) -CompileCommandEnabled $true)) "heartbeat with an enabled compile command must await the asynchronous compile outcome"
+Assert-True (Test-ExcelOracleCompileFlushReady -Events @($arm, $lateHeartbeat) -CompileCommandEnabled $false) "disabled compile command with no modal is a completed compile outcome"
+$compileFlushDialog = [pscustomobject]@{ event_type = "dialog-observation"; observation_id = "flush"; classification = "compile-error"; event_sequence = 4 }
+$compileFlushDismissal = [pscustomobject]@{ event_type = "dismissal-result"; observation_id = "flush"; succeeded = $true; event_sequence = 5 }
+$compileFlushHeartbeat = [pscustomobject]@{ event_type = "guardian-heartbeat"; event_sequence = 6 }
+Assert-True (-not (Test-ExcelOracleCompileFlushReady -Events @($arm, $lateHeartbeat, $compileFlushDialog) -CompileCommandEnabled $true)) "observed compile modal still requires linked dismissal"
+Assert-True (-not (Test-ExcelOracleCompileFlushReady -Events @($arm, $lateHeartbeat, $compileFlushDialog, $compileFlushDismissal) -CompileCommandEnabled $true)) "compile dismissal still requires a following guardian heartbeat"
+Assert-True (Test-ExcelOracleCompileFlushReady -Events @($arm, $lateHeartbeat, $compileFlushDialog, $compileFlushDismissal, $compileFlushHeartbeat) -CompileCommandEnabled $true) "compile modal plus linked dismissal and later heartbeat completes the outcome"
+$failedCompileFlushDismissal = $compileFlushDismissal | Select-Object *
+$failedCompileFlushDismissal.succeeded = $false
+Assert-True (-not (Test-ExcelOracleCompileFlushReady -Events @($arm, $compileFlushDialog, $failedCompileFlushDismissal, $compileFlushHeartbeat) -CompileCommandEnabled $true)) "failed dismissal must not complete a compile operation"
 $wrongLifecycleSchema = [ordered]@{ schema = "attacker.v1"; event_type = "guardian-heartbeat"; run_id = "run-a"; case_id = "success"; operation_id = "op"; phase = "compile"; control_sequence = 1; event_sequence = 1; observed_utc = "2026-07-14T00:00:04Z" } | ConvertTo-Json -Compress
 Assert-True (@((ConvertFrom-ExcelOracleGuardianEventLedger -Lines @($wrongLifecycleSchema) -RunId "run-a").errors).Count -gt 0) "lifecycle event with wrong schema must fail closed"
 
@@ -1602,6 +1613,7 @@ if ($IsWindows) {
     $badUiaNamespace = $guardianSource.Replace('[System.Windows.Automation.Text.TextUnit]', '[System.Windows.Automation.TextUnit]')
     Assert-True ($badUiaNamespace -cne $guardianSource) "UIA namespace mutation must change the source"
     Assert-True (-not (Test-GuardianUiaTypeReferences -Source $badUiaNamespace)) "mutation: an invalid UIA enum namespace must fail before a live oracle run"
+    & (Join-Path $PSScriptRoot "test-excel-vba-oracle-owned-buttons.ps1")
 }
 Assert-True ($guardianSource -notmatch 'Stop-Process\s+-Id\s+\$ExcelPid') "guardian must never terminate Excel"
 Assert-True ($guardianSource -match "observed_process_id") "guardian events must record the observed UIA process ID"
@@ -1637,6 +1649,35 @@ Assert-True ($guardianSource -match 'oxvba\.excel-vba-oracle-final-state\.v1' -a
     $guardianSource -match 'excel_identity_live_at_stop' -and $guardianSource -match 'if \(\$exitReason -ne "controlled-stop"\) \{ exit 2 \}') "guardian must append its own fail-closed final health record after observing the controlled stop"
 
 $workerSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot "excel-vba-oracle-worker.ps1")
+$workerAst = [Management.Automation.Language.Parser]::ParseInput($workerSource, [ref]$null, [ref]$null)
+$publishControl = $workerAst.Find({ param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq "Set-GuardianControl"
+}, $true)
+Assert-True ($null -ne $publishControl) "production control publisher must be present"
+. ([scriptblock]::Create($publishControl.Extent.Text))
+$controlTestRoot = Join-Path ([IO.Path]::GetTempPath()) "oxvba-oracle-control-$([Guid]::NewGuid().ToString('N'))"
+[void][IO.Directory]::CreateDirectory($controlTestRoot)
+$controlTestPath = Join-Path $controlTestRoot "control.json"
+$RunId = "atomic-control-test"
+$script:GuardianControlSequence = 0L
+$heldControl = $null
+try {
+    [void](Set-GuardianControl -Path $controlTestPath -CaseId success -OperationId compile -Phase compile -AllowDismiss $true)
+    $heldControl = [IO.FileStream]::new($controlTestPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    [void](Set-GuardianControl -Path $controlTestPath -CaseId success -OperationId run -Phase run -AllowDismiss $true)
+    $heldReader = [IO.StreamReader]::new($heldControl)
+    try { $oldControl = $heldReader.ReadToEnd() | ConvertFrom-Json }
+    finally { $heldReader.Dispose(); $heldControl = $null }
+    $newControl = [IO.File]::ReadAllText($controlTestPath) | ConvertFrom-Json
+    Assert-True ($oldControl.sequence -eq 1 -and $oldControl.phase -ceq "compile") "reader holding the old control must retain complete unchanged bytes during publication"
+    Assert-True ($newControl.sequence -eq 2 -and $newControl.phase -ceq "run") "new readers must receive the complete replacement control"
+}
+finally {
+    if ($null -ne $heldControl) { $heldControl.Dispose() }
+    [IO.File]::Delete($controlTestPath)
+    [IO.File]::Delete("$controlTestPath.$PID.tmp")
+    [IO.Directory]::Delete($controlTestRoot)
+}
 $contractSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot "excel-vba-oracle-contract.ps1")
 $bootstrapSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot "excel-vba-oracle-bootstrap.ps1")
 $attachmentSource = "$workerSource`n$contractSource`n$bootstrapSource"

@@ -251,7 +251,7 @@ End Function
         },
         [pscustomobject]@{
             id = "intrinsic-shadow"
-            purpose = "Fix parameter shadowing surfaces at the call site while the declaration remains the defect candidate"
+            purpose = "reserved intrinsic Fix parameter is rejected at its declaration"
             module_name = "OracleSelfTest"
             module_source = $intrinsicShadowSource
             expected_compile_status = "compile-error"
@@ -260,7 +260,7 @@ End Function
             expected_run_status = "not-run"
             expected_value = $null
             expected_selected_token = "Fix"
-            expected_expanded_line = "Shadowed = Fix(Fix)"
+            expected_expanded_line = "Public Function Shadowed(ByVal Fix As Double) As Double"
         },
         [pscustomobject]@{
             id = "runtime-full-err"
@@ -859,6 +859,28 @@ function Test-ExcelOracleGuardianOperationCoverage {
         [long]$_.control_sequence -eq $ControlSequence -and [long]$_.event_sequence -gt [long]$armed[0].event_sequence -and
         [DateTime]::Parse([string]$_.observed_utc).ToUniversalTime() -ge $InvocationCompletedUtc.ToUniversalTime()
     }).Count -gt 0
+}
+
+function Test-ExcelOracleCompileFlushReady {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Events,
+        [Parameter(Mandatory = $true)][bool]$CompileCommandEnabled
+    )
+    $dialogs = @($Events | Where-Object { [string]$_.event_type -eq "dialog-observation" })
+    if ($dialogs.Count -eq 0) { return -not $CompileCommandEnabled }
+    foreach ($dialog in $dialogs) {
+        if ([string]$dialog.classification -in @("security-or-trust", "unrecognized-modal")) { return $true }
+        $dismissal = @($Events | Where-Object {
+            [string]$_.event_type -eq "dismissal-result" -and
+            [string]$_.observation_id -ceq [string]$dialog.observation_id -and [bool]$_.succeeded
+        })
+        if ($dismissal.Count -ne 1) { return $false }
+        if (@($Events | Where-Object {
+            [string]$_.event_type -eq "guardian-heartbeat" -and
+            [long]$_.event_sequence -gt [long]$dismissal[0].event_sequence
+        }).Count -eq 0) { return $false }
+    }
+    return $true
 }
 
 function Test-ExcelOracleOwnedProcessRecord {

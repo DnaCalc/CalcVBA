@@ -1,6 +1,6 @@
 # UDF value-call contract v1
 
-2026-10-31. Bounded API delivered by `oxvba-embed`; wider integration remains in progress. OxVba owner: `bd-59co.2.10.4`; DnaCalc consumer: `dc-snz.3`. Clauses: `HOST-SESSION-001`, `SYS-DUAL-001`, `SEC-BOUNDARY-001`. Consumers should pin a reviewed revision. The later CalcVba rename is deferred.
+2026-10-31. Bounded API delivered by `oxvba-embed`; DNA OneCalc value calls are delivered by DnaCalc `dc-snz.3` at `379d51f`. Wider integration remains in progress under OxVba `bd-59co.2.10.6` and DnaCalc `dc-snz.5`. API owner: `bd-59co.2.10.4`. Clauses: `HOST-SESSION-001`, `SYS-DUAL-001`, `SEC-BOUNDARY-001`. Consumers should pin a reviewed revision. The later CalcVba rename is deferred.
 
 ```rust
 use oxvba_embed::{Backend, Module, Value};
@@ -44,4 +44,6 @@ cargo build -p oxvba-embed --no-default-features --example browser_probe --targe
 node scripts/test-udf-wasm.mjs
 ```
 
-The same API runs Add2, a mixed matrix and a noncatchable budget in V8 WebAssembly without imports. This proves the portable engine path, not completed OneCalc integration. Range/Caller/WorksheetFunction objects, browser time services, persistent globals, Optional/ParamArray invocation, volatility/thread-safety metadata and actual CalcFunc/CalcFml registration remain under `bd-59co.2.10.6` and DnaCalc `dc-snz.3`.
+The same API runs Add2, a mixed matrix and a noncatchable budget in V8 WebAssembly without imports. DnaCalc `379d51f` now adds the caller-owned CalcFunc registry, CalcFml invocation and separate `calc-vba` adapter pinned to OxVba `74beca5d5bea0370103be3584f18825640eeb5c3`, with default features disabled. Native OneCalc controller/CLI and Chrome/Firefox execute `=Add2(A1,2)`; mounted UI tests, portable adapter tests and bundled browser smoke pass. Calls start with fresh state and exhaustion becomes a worksheet error with a diagnostic. The desktop GUI shell remains DnaCalc `dc-snz.1`.
+
+Range/Caller/WorksheetFunction objects, browser time services, persistent globals, Optional/ParamArray invocation, locale-sensitive names and richer effects/thread-safety metadata remain under `bd-59co.2.10.6` and DnaCalc `dc-snz.5`. Value-call delivery does not close those wider capabilities.

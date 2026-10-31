@@ -6,7 +6,9 @@ Profile: Windows x64 development/oracle host
 
 Bead: `bd-59co.3.15.6`
 
-Status: current harness implementation evidence; noncertifying
+Status: historical harness implementation evidence; noncertifying
+
+Latest development result: [2026-10-31 owned supervisor](oracle-supervisor-2026-10-31/README.md) passes the default five cases and unhandled-runtime modal diagnostic after exact owned dismissal and asynchronous publication repairs. That owner-authorized run supersedes the historical stopped/no-retry and residual-live-work instructions below. Pinned certification and capability rows remain open.
 
 ## Scope and credit
 

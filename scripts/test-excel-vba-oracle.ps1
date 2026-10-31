@@ -1576,6 +1576,33 @@ catch { $pendingCertRejected = $_.Exception.Message -match "planned-blocking" }
 Assert-True $pendingCertRejected "pending certification VM must not be runnable"
 
 $guardianSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot "excel-vba-oracle-guardian.ps1")
+if ($IsWindows) {
+    Add-Type -AssemblyName UIAutomationClient
+    Add-Type -AssemblyName UIAutomationTypes
+    function Test-GuardianUiaTypeReferences {
+        param([string]$Source)
+        $parseTokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseInput($Source, [ref]$parseTokens, [ref]$parseErrors)
+        if ($parseErrors.Count -gt 0) { return $false }
+        $references = @($ast.FindAll({
+            param($node)
+            ($node -is [Management.Automation.Language.TypeExpressionAst] -or
+                $node -is [Management.Automation.Language.TypeConstraintAst]) -and
+                $node.TypeName.FullName -match '^(System\.)?Windows\.Automation\.'
+        }, $true))
+        if ($references.Count -eq 0) { return $false }
+        foreach ($reference in $references) {
+            try { if ($null -eq $reference.TypeName.GetReflectionType()) { return $false } }
+            catch { return $false }
+        }
+        return $true
+    }
+    Assert-True (Test-GuardianUiaTypeReferences -Source $guardianSource) "guardian UIA type literals must resolve against the installed Windows assemblies"
+    $badUiaNamespace = $guardianSource.Replace('[System.Windows.Automation.Text.TextUnit]', '[System.Windows.Automation.TextUnit]')
+    Assert-True ($badUiaNamespace -cne $guardianSource) "UIA namespace mutation must change the source"
+    Assert-True (-not (Test-GuardianUiaTypeReferences -Source $badUiaNamespace)) "mutation: an invalid UIA enum namespace must fail before a live oracle run"
+}
 Assert-True ($guardianSource -notmatch 'Stop-Process\s+-Id\s+\$ExcelPid') "guardian must never terminate Excel"
 Assert-True ($guardianSource -match "observed_process_id") "guardian events must record the observed UIA process ID"
 Assert-True ($guardianSource -match "selected_token" -and $guardianSource -match "expanded_line") "guardian must capture token and expanded line"

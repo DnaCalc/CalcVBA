@@ -181,7 +181,7 @@ function Get-VbeSelection {
                 if ($ranges.Count -eq 0) { continue }
                 $token = [string]$ranges[0].GetText(-1)
                 $lineRange = $ranges[0].Clone()
-                $lineRange.ExpandToEnclosingUnit([Windows.Automation.TextUnit]::Line)
+                $lineRange.ExpandToEnclosingUnit([System.Windows.Automation.Text.TextUnit]::Line)
                 $line = [string]$lineRange.GetText(-1)
                 if (-not [string]::IsNullOrWhiteSpace($token) -or -not [string]::IsNullOrWhiteSpace($line)) {
                     $selection.selected_token = $token.Trim("`r", "`n")

@@ -18,7 +18,7 @@ This file is generated from the manifest-owned canonical matrices. It is a proje
 
 | Matrix | Profile | Role | Owner epic | Rows | Verified | Open | Trace relationships |
 |---|---|---|---|---:|---:|---:|---:|
-| CORE-READINESS | core | primary | bd-59co.2.1 | 24 | 1 | 23 | 113 |
+| CORE-READINESS | core | primary | bd-59co.2.1 | 24 | 1 | 23 | 114 |
 | VBA-LIBRARY | core | primary | bd-59co.2.5 | 7 | 0 | 7 | 7 |
 | OXIR-BACKENDS | core | primary | bd-59co.2.6 | 12 | 0 | 12 | 23 |
 | OXIMAGE-CONTRACT | core | primary | bd-59co.2.6 | 8 | 0 | 8 | 15 |
@@ -26,7 +26,7 @@ This file is generated from the manifest-owned canonical matrices. It is a proje
 | WIN-COM-CLIENT | windows-x64 | primary | bd-59co.3.4 | 9 | 0 | 9 | 41 |
 | WIN-COM-EVENTS | windows-x64 | primary | bd-59co.3.6 | 7 | 0 | 7 | 33 |
 | WIN-COM-SERVER | windows-x64 | primary | bd-59co.3.7 | 7 | 0 | 7 | 29 |
-| WIN-NATIVE-IMPORT | windows-x64 | primary | bd-59co.3.10 | 8 | 0 | 8 | 36 |
+| WIN-NATIVE-IMPORT | windows-x64 | primary | bd-59co.3.10 | 8 | 0 | 8 | 37 |
 | WIN-NATIVE-EXPORT | windows-x64 | primary | bd-59co.3.13 | 8 | 0 | 8 | 27 |
 | WIN-ABI-CARRIER | windows-x64 | quality | bd-59co.3.2 | 18 | 1 | 17 | 103 |
 | LS-BASELINE | ide | primary | bd-59co.4.1 | 29 | 0 | 29 | 31 |

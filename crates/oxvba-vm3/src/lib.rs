@@ -59,8 +59,9 @@ use oxvba_runtime::object_ref::{
 use oxvba_runtime::safe_array::{SafeArray, SafeArrayBound};
 use oxvba_runtime::variant::VarType;
 use oxvba_runtime::{
-    CallbackExecutor, CallbackRegistration, InteropInvokeKind, RuntimeByRefSlot, Variant,
-    VbaRecord, VerifiedInteropPlan, pointer_helpers, register_callback,
+    CallbackExecutor, CallbackRegistration, InteropInvokeKind, RuntimeByRefSlot,
+    RuntimeCallArgument, Variant, VbaRecord, VerifiedInteropPlan, pointer_helpers,
+    register_callback,
 };
 
 /// `DISP_E_PARAMNOTFOUND` — the sentinel an omitted optional argument carries into a
@@ -4399,11 +4400,31 @@ impl<'h> Vm3<'h> {
         // call returns and any write-back has read them back, keeping the registry bounded
         // across looping `Declare`s.
         let pin_addrs: Vec<i64> = arg_variants.iter().filter_map(Variant::as_i64).collect();
+        let mut identities = HashMap::new();
+        let call_arguments = arg_variants
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let by_ref = match args.get(index) {
+                    Some(OxCallArg::ByRef(place)) => {
+                        let id = *identities
+                            .entry(self.resolve(place))
+                            .or_insert(index as u32);
+                        Some(RuntimeByRefSlot::new(id, None))
+                    }
+                    _ => None,
+                };
+                RuntimeCallArgument {
+                    value: value.clone(),
+                    by_ref,
+                }
+            })
+            .collect::<Vec<_>>();
         let invoke = self
             .exec
             .host
             .dynlink()
-            .invoke_descriptor_variants(&view, &arg_variants);
+            .invoke_descriptor_arguments(&view, &call_arguments);
         // VBA refreshes `Err.LastDllError` after every `Declare` call (the OS last-error the
         // HAL captured immediately after the native call); non-native lanes report 0.
         self.exec.err_engine.last_dll_error = self.exec.host.dynlink().last_dll_error();

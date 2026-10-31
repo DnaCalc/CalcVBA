@@ -1091,10 +1091,8 @@ impl Engine {
 
     /// Like [`Self::execute_manifest_with_variant_snapshot_vm3`], but also surfaces the final
     /// `Err` object and distinguishes an uncaught VBA error from a vm3 defect — the observable
-    /// the differential error-state axis needs. On the uncaught path vm3 returns the `Fault`
-    /// (not the VM), so the residual `Err` is reconstructed from it, defaulting an omitted
-    /// `Source` to the project `unit_name` (the VBA default), matching what vm3's own `Err`
-    /// object would hold.
+    /// the differential error-state axis needs. Keep the VM alive through entry
+    /// execution to capture LastDllError even when an uncaught Fault is returned.
     pub fn execute_manifest_snapshot_with_err_vm3(
         &self,
         manifest: &oxvba_symbol::manifest::SymbolProjectManifest,
@@ -1111,7 +1109,16 @@ impl Engine {
             }
             Err(e) => return SnapshotOutcome::Failed(format!("elaborate: {e}")),
         };
-        match oxvba_vm3::Vm3::run(&oxp, &*self.host_services) {
+        let (result, fault_last_dll_error) =
+            match oxvba_vm3::Vm3::link(&[&oxp], &*self.host_services) {
+                Ok(mut vm) => {
+                    let result = vm.run_entry();
+                    let last_error = vm.last_dll_error();
+                    (result.map(|()| vm), last_error)
+                }
+                Err(error) => (Err(error), 0),
+            };
+        match result {
             Ok(vm) => {
                 let err = FinalErr {
                     number: vm.err_number(),
@@ -1138,7 +1145,7 @@ impl Engine {
                     number: fault.code,
                     source: fault.source.unwrap_or_else(|| oxp.unit_name.clone()),
                     description: fault.message,
-                    last_dll_error: 0,
+                    last_dll_error: fault_last_dll_error,
                 },
             },
             Err(oxvba_vm3::Vm3Error::Malformed(m)) => SnapshotOutcome::Failed(format!("vm3: {m}")),

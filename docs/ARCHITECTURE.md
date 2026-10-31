@@ -178,15 +178,24 @@ VM3, HAL, COM, host, build and comhost contain substantial Windows work: typelib
 
 The JIT lowers scalar late COM through the shared verified interop plan and supports dynamic CreateObject ProgIDs. Native development tests exercise real IDispatch and a test-owned x64 DLL, including Function/Sub, ByRef mutation, LastDllError and unload. General Windows rows remain in progress: ComCallEarly, pointer operations, callbacks and broader argument/carrier/session families are unfinished. Project `WithEvents`/`RaiseEvent` proves internal event semantics, not native connection points.
 
+Native scalar calls carry canonical caller-storage IDs in `RuntimeCallArgument`.
+VM3 resolves frame/global aliases; JIT derives call-local IDs from resolved slots.
+The shared HAL reuses one native scalar cell for repeated aliases and copies its
+final value back to each argument. Equal-valued distinct variables stay separate.
+Currency uses scaled i64 ABI storage, Date uses f64, and Byte keeps its runtime tag.
+Win64 LastError is captured before libffi cleanup, and entry-fault snapshots retain
+it. General field/element aliases, noncanonical foreign Boolean payloads and
+initializer-failure error-state capture remain open under the broader owners.
+
 ### Material gaps against the contract
 
 - authoritative registry/file typelib selection is not yet one stable metadata service for all consumers;
 - VM3/JIT do not consume one verified backend-neutral interop call plan;
-- real late/early COM JIT calls are absent;
+- scalar late COM executes through IDispatch; broader late calls and early COM remain incomplete;
 - synchronous COM-event ByRef writeback is absent;
 - JIT-backed COM serving/vtable generation is absent;
 - exact nominal interface arrays and broad VT_RECORD shapes are incomplete;
-- JIT Declare, pointer helpers and AddressOf callbacks are absent;
+- bounded scalar JIT Declare works; pointer helpers and AddressOf callbacks remain unfinished;
 - x64 artifact and 64-bit Office certification is incomplete;
 - JIT wrapper sessions and genuine native DLL/EXE exports do not exist.
 

@@ -179,3 +179,33 @@ Conformance planning companion:
 1. Whether `bind_descriptor` should become mandatory (non-default) once non-token marshaling lanes are enabled.
 2. Profile-level default calling-convention policy when declaration omits explicit convention.
 3. Canonical typed boundary for non-token marshaling lanes and how it coexists with current `ValueToken = i32`.
+
+## 11. Windows x64 scalar caller identities (2026-10-31)
+
+`DynamicLinkHal::invoke_descriptor_arguments` accepts the existing
+`RuntimeCallArgument` carrier. A ByRef slot ID names one resolved caller storage
+location for this synchronous invocation, independently of its current value.
+Repeated native ByRef IDs share one compatible native scalar cell; distinct IDs
+and arguments supplied as private copies remain separate. LongPtr and LongLong
+share the Win64 i64 representation. Writebacks remain positional. Native ByVal
+parameters retain their own marshaling behavior, including ANSI buffer handling.
+
+The standard Windows adapter supports scalar variable aliases for Byte, Integer,
+Long, Boolean, Single, Double, LongLong/LongPtr, Currency and Date. Unsupported
+repeated String/Variant/record/array carriers are refused before invoking the
+resolved procedure; loading its library can still run DLL initialization. Older
+adapters may delegate distinct slots to the existing value-only
+method; the default method refuses repeated native ByRef IDs before delegation.
+This does not establish field/element alias identity or general callback reentry.
+
+Currency arguments/returns use scaled i64 storage; Date uses f64; Byte results and
+writebacks retain their Byte tag. The x64 libffi bridge snapshots GetLastError
+before its CIF/argument cleanup. Failed entry resolution preserves the prior
+captured DLL error. Named lookup raises 453; absent valid ordinal lookup raises
+452. Their descriptions match the measured VBA wording without module addresses.
+
+Native Boolean 0/-1 is covered. Foreign payload 1 is still normalized incorrectly
+by OxVba (`CLng` returns -1 versus Excel's 1); `bd-59co.3.10.5` and the carrier
+producer retain that gap. Ordinal `#65535` produced an owned Excel compile error
+while OxVba admits it; strict declaration legality remains `bd-59co.2.4.5`.
+Development evidence: `docs/evidence/programs/ideal-2026-07/windows-x64/WIN-9/scalar-abi-variable-alias.md`.

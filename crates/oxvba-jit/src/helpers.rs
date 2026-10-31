@@ -4472,13 +4472,31 @@ pub(crate) unsafe extern "C" fn rt_jit_declare_call_to_slot(
         if let Err(message) = verified_declare_plan_for_jit(&descriptor) {
             return raise_plan_error(state, run, message);
         }
-        let arg_variants = {
+        let call_arguments = {
             // SAFETY: this operand-read borrow is bounded before the host call.
             let run_ref = unsafe { &*run };
             let mut values = Vec::with_capacity(argc);
-            for arg in args {
+            let mut identities = std::collections::BTreeMap::new();
+            for (index, arg) in args.iter().enumerate() {
+                let by_ref = if arg.kind == JIT_CALL_ARG_BYREF_ALIAS {
+                    if arg.area < 0 || arg.index < 0 {
+                        return ST_FAULT;
+                    }
+                    let Some(slot) = slot_ref(run_ref, arg.area as u32, arg.index as u32) else {
+                        return ST_FAULT;
+                    };
+                    // This address is only an identity key for this synchronous
+                    // call; no pointer or typed borrow escapes to the host.
+                    let identity = std::ptr::from_ref(slot) as usize;
+                    let id = *identities.entry(identity).or_insert(index as u32);
+                    Some(oxvba_runtime::RuntimeByRefSlot::new(id, None))
+                } else {
+                    None
+                };
                 match call_arg_variant_value(run_ref, *arg) {
-                    Some(value) => values.push(value),
+                    Some(value) => {
+                        values.push(oxvba_runtime::RuntimeCallArgument { value, by_ref })
+                    }
                     None => return ST_FAULT,
                 }
             }
@@ -4518,7 +4536,7 @@ pub(crate) unsafe extern "C" fn rt_jit_declare_call_to_slot(
         };
         let invoke = host
             .dynlink()
-            .invoke_descriptor_variants(&view, &arg_variants);
+            .invoke_descriptor_arguments(&view, &call_arguments);
         let last_dll_error = host.dynlink().last_dll_error();
         {
             // SAFETY: the host call returned, so the live execution state may be borrowed again.

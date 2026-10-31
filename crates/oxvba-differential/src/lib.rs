@@ -264,6 +264,14 @@ pub fn run(executor: Executor, source: &str) -> RunOutcome {
 /// `unit_name`, which is what `Err.Source` defaults to — so the oracle corpus runs under
 /// `"VBAProject"` (Excel's default VBProject name) to mirror the captured oracle exactly.
 pub fn run_with_project(executor: Executor, source: &str, project_name: &str) -> RunOutcome {
+    let _balance_guard = balance_measurement_lock()
+        .lock()
+        .expect("balance measurement lock poisoned");
+    run_with_project_locked(executor, source, project_name)
+}
+
+/// Caller holds the shared fixture lock for the whole run.
+fn run_with_project_locked(executor: Executor, source: &str, project_name: &str) -> RunOutcome {
     use oxvba_symbol::manifest as sym;
     let manifest = sym::SymbolProjectManifest {
         project_name: project_name.to_string(),
@@ -279,9 +287,6 @@ pub fn run_with_project(executor: Executor, source: &str, project_name: &str) ->
         conditional_constants: std::collections::BTreeMap::new(),
         conditional_compilation_target: Default::default(),
     };
-    let _balance_guard = balance_measurement_lock()
-        .lock()
-        .expect("balance measurement lock poisoned");
     let before = current_thread_live_handle_counts();
     let engine = vm3_oracle_engine();
     let outcome = match executor {
@@ -557,7 +562,9 @@ pub fn run_ox_programs(executor: Executor, programs: &[oxvba_oxir::OxProgram]) -
 }
 
 /// Run `source` under `executor` (as project `project_name`) on a worker thread with a
-/// wall-clock timeout; returns `None` if it does not finish in `dur`.
+/// wall-clock execution timeout; returns `None` if it does not finish in `dur`.
+/// Waiting for the serialized fixture lock has a separate queue watchdog and
+/// never becomes a semantic TIMEOUT in a golden result.
 ///
 /// This guards the gates against an executor spinning on a program that terminates under
 /// correct semantics. vm3 must never time out on an in-scope program (that would be a vm3
@@ -572,15 +579,59 @@ pub fn run_with_timeout(
     let src = source.to_string();
     let proj = project_name.to_string();
     let (tx, rx) = std::sync::mpsc::channel();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(run_with_project(executor, &src, &proj));
+        let _guard = balance_measurement_lock()
+            .lock()
+            .expect("balance measurement lock poisoned");
+        if started_tx.send(()).is_err() {
+            return;
+        }
+        let _ = tx.send(run_with_project_locked(executor, &src, &proj));
     });
-    rx.recv_timeout(dur).ok()
+    started_rx
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("differential fixture queue stalled before execution (not a semantic TIMEOUT)");
+    match rx.recv_timeout(dur) {
+        Ok(outcome) => Some(outcome),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("differential executor worker disconnected or panicked")
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execution_timeout_excludes_fixture_lock_queueing() {
+        let guard = balance_measurement_lock().lock().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let caller = std::thread::spawn(move || {
+            let result = run_with_timeout(
+                Executor::Vm3,
+                "Sub Main()\nEnd Sub\n",
+                "QueueProbe",
+                std::time::Duration::from_millis(100),
+            );
+            tx.send(result).unwrap();
+        });
+        // Exceed the entire execution allowance while the worker is queued.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(matches!(
+            rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        drop(guard);
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap()
+                .is_some()
+        );
+        caller.join().unwrap();
+    }
 
     #[test]
     fn differential_balance_detects_an_outstanding_same_thread_handle() {

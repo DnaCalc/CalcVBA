@@ -141,6 +141,16 @@ pub(crate) unsafe fn call_via_libffi(
     args: &[FfiArg],
     return_type: FfiReturnType,
 ) -> i64 {
+    // SAFETY: forwarded ABI and argument-lifetime contract above.
+    unsafe { call_via_libffi_with_last_error(proc_addr, args, return_type) }.0
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+unsafe fn call_via_libffi_with_last_error(
+    proc_addr: usize,
+    args: &[FfiArg],
+    return_type: FfiReturnType,
+) -> (i64, u32) {
     let prepared_args: Vec<PreparedX64Arg> =
         args.iter().map(PreparedX64Arg::from_ffi_arg).collect();
     let cif = LibffiCif::new(
@@ -150,7 +160,7 @@ pub(crate) unsafe fn call_via_libffi(
     let ffi_args: Vec<LibffiArg<'_>> = prepared_args.iter().map(PreparedX64Arg::as_arg).collect();
     let code_ptr = LibffiCodePtr::from_ptr(proc_addr as *const c_void);
 
-    match return_type {
+    let result = match return_type {
         FfiReturnType::Void => {
             cif.call::<()>(code_ptr, &ffi_args);
             0
@@ -163,7 +173,11 @@ pub(crate) unsafe fn call_via_libffi(
         FfiReturnType::Single => cif.call::<f32>(code_ptr, &ffi_args).to_bits() as i64,
         FfiReturnType::LongLong => cif.call::<i64>(code_ptr, &ffi_args),
         FfiReturnType::LongPtr => cif.call::<*mut c_void>(code_ptr, &ffi_args) as isize as i64,
-    }
+    };
+    // SAFETY: GetLastError reads this thread's OS error state. Capture before
+    // CIF/argument cleanup, whose allocator calls may change that state.
+    let last_error = unsafe { GetLastError() };
+    (result, last_error)
 }
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -192,6 +206,7 @@ static DLL_CACHE: Mutex<Option<DllCache>> = Mutex::new(None);
 // kernel32 exports (LoadLibraryW/GetModuleHandleW/GetProcAddress and the
 // WideCharToMultiByte/MultiByteToWideChar code-page converters) exactly.
 unsafe extern "system" {
+    fn GetLastError() -> u32;
     fn LoadLibraryW(lp_lib_file_name: *const u16) -> *mut c_void;
     fn FreeLibrary(h_module: *mut c_void) -> i32;
     fn GetModuleHandleW(lp_module_name: *const u16) -> *mut c_void;
@@ -434,8 +449,35 @@ pub fn get_proc_address_ordinal(module: usize, ordinal: u16) -> Result<usize, St
     Ok(addr as usize)
 }
 
-/// Invokes a stdcall function pointer with the given arguments.
-/// Returns the raw i64 return value (caller interprets based on return type).
+/// Invokes a stdcall function and returns (raw value, Win32 LastError).
+/// The x64 path snapshots the error before CIF and argument cleanup.
+#[cfg(target_os = "windows")]
+pub fn invoke_stdcall_with_last_error(
+    proc_addr: usize,
+    args: &[FfiArg],
+    return_type: FfiReturnType,
+) -> Result<(i64, u32), String> {
+    if args.len() > 32 {
+        return Err(format!(
+            "too many arguments for stdcall invocation: {}",
+            args.len()
+        ));
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: the same resolved-export, true signature and live argument
+        // storage contract as invoke_stdcall; cleanup follows the OS snapshot.
+        Ok(unsafe { call_via_libffi_with_last_error(proc_addr, args, return_type) })
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let result = invoke_stdcall(proc_addr, args, return_type)?;
+        // SAFETY: reads only this thread's OS error state on the older raw path.
+        Ok((result, unsafe { GetLastError() }))
+    }
+}
+
+/// Invoke while discarding the captured OS error, for callers without VBA Err.
 #[cfg(target_os = "windows")]
 pub fn invoke_stdcall(
     proc_addr: usize,

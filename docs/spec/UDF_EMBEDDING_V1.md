@@ -13,7 +13,7 @@ assert_eq!(session.call("Math.Add2", &[Value::Number(19.0), Value::Number(23.0)]
 # Ok::<(), oxvba_embed::Error>(())
 ```
 
-Load uses the existing compiler and OxIR verifier. The catalogue comes from compiler public exports, excluding Private functions and Subs. Calls accept bare or module-qualified names, case insensitively. Every declared argument must be supplied positionally. Optional flags are exposed; omitted defaults and ParamArray packing remain follow-up work. Scalar types and Variant-array parameters are admitted; unsupported signatures return typed errors.
+Load uses the existing compiler and OxIR verifier. The catalogue comes from compiler public exports, excluding Private functions and Subs. Calls accept bare or module-qualified names with ASCII case folding; broader VBA locale-sensitive name matching remains follow-up work under `bd-59co.2.10.6`. Every declared argument must be supplied positionally. Optional flags are exposed; omitted defaults and ParamArray packing remain follow-up work. Scalar types and Variant-array parameters are admitted; unsupported signatures return typed errors.
 
 The caller owns Module; Session borrows it and retains JIT code until disposal. **Each call starts with fresh globals, Static storage and Err state.** This facade does not provide persistent VBA project state. ByRef arguments receive private copies. Loading/calling a function never runs Main. The default Null HAL supplies no external services; `with_host` accepts explicit host-owned capabilities.
 

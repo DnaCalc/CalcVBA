@@ -3,7 +3,9 @@ use crate::{
     model::{CapabilityId, HalProfileId},
     traits::{DynLinkDescriptorView, DynamicLinkHal},
 };
-use oxvba_runtime::{BindingHandle, DynLinkSymbol, Variant, VbaRecord, VbaRecordLayout};
+use oxvba_runtime::{
+    BindingHandle, DynLinkSymbol, RuntimeCallArgument, Variant, VbaRecord, VbaRecordLayout,
+};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -79,6 +81,13 @@ fn variant_i64(value: &Variant) -> i64 {
         .or_else(|| value.as_u8().map(i64::from))
         .or_else(|| value.as_bool().map(i64::from))
         .unwrap_or_else(|| i64::from(variant_i32(value)))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn variant_currency_raw(value: &Variant) -> Result<i64, String> {
+    oxvba_runtime::coerce::coerce_to(value, oxvba_runtime::VarType::Currency)?
+        .as_currency_scaled_i64()
+        .ok_or_else(|| "Currency coercion did not produce scaled storage".into())
 }
 
 impl DynamicLinkHal for StandardHostServices {
@@ -314,53 +323,20 @@ impl DynamicLinkHal for StandardHostServices {
         descriptor: &DynLinkDescriptorView<'_>,
         args: &[Variant],
     ) -> HalResult<(Variant, Vec<Variant>)> {
-        // Gate BOTH lanes before any dispatch: the m1-native-ffi branch reaches
-        // LoadLibrary + a real native call, and `allow_dynamic_link` is
-        // independent of `deterministic_mode` (a live host may forbid
-        // arbitrary DLLs). The deterministic fallback re-checks inside
-        // `bind_descriptor`; this is the single guard for the native lane.
-        let capability = CapabilityId::DynamicLinking;
-        if !self.supports(capability) {
-            return Err(self.unsupported(capability, "invoke_descriptor_variants"));
-        }
-        if !self.policy.allow_dynamic_link {
-            return Err(self.denied(capability, "invoke_descriptor_variants"));
-        }
-        if descriptor.marshal_lane != "m1-native-ffi" || !self.native_mode_enabled() {
-            let _binding = self.bind_descriptor(descriptor)?;
-            let arg = args
-                .first()
-                .cloned()
-                .unwrap_or_else(|| Variant::from_i32(0));
-            let arg =
-                self.variant_to_i32(&arg, CapabilityId::DynamicLinking, "invoke_symbol", "arg")?;
-            if self.native_mode_enabled()
-                && matches!(self.profile, HalProfileId::Windows | HalProfileId::Linux)
-            {
-                return match descriptor.symbol.raw() {
-                    s if s == external_symbol_token("host", "ping", "hostping") => {
-                        Ok((Variant::from_i32(arg.saturating_add(1)), Vec::new()))
-                    }
-                    s if s == external_symbol_token("host", "double", "hostdouble") => {
-                        Ok((Variant::from_i32(arg.saturating_mul(2)), Vec::new()))
-                    }
-                    _ => Err(HalError::adapter_fault(
-                        self.profile,
-                        CapabilityId::DynamicLinking,
-                        "invoke_symbol",
-                        format!(
-                            "descriptor {} resolved to unsupported symbol token {} in host-backed lane",
-                            descriptor.descriptor_id, descriptor.symbol
-                        ),
-                    )),
-                };
-            }
-            return Ok((
-                Variant::from_i32(descriptor.symbol.raw().saturating_add(arg)),
-                Vec::new(),
-            ));
-        }
-        invoke_m1_native_variants(self, descriptor, args)
+        invoke_descriptor_values(self, descriptor, args, &[])
+    }
+
+    fn invoke_descriptor_arguments(
+        &self,
+        descriptor: &DynLinkDescriptorView<'_>,
+        args: &[RuntimeCallArgument],
+    ) -> HalResult<(Variant, Vec<Variant>)> {
+        let values = args.iter().map(|arg| arg.value.clone()).collect::<Vec<_>>();
+        let aliases = args
+            .iter()
+            .map(|arg| arg.by_ref.map(|slot| slot.id))
+            .collect::<Vec<_>>();
+        invoke_descriptor_values(self, descriptor, &values, &aliases)
     }
 
     fn invoke_symbol_variant(&self, symbol: DynLinkSymbol, arg: &Variant) -> HalResult<Variant> {
@@ -401,12 +377,68 @@ impl DynamicLinkHal for StandardHostServices {
 
 // ── m1-native-ffi invocation ──
 
+fn invoke_descriptor_values(
+    host: &StandardHostServices,
+    descriptor: &DynLinkDescriptorView<'_>,
+    args: &[Variant],
+    aliases: &[Option<u32>],
+) -> HalResult<(Variant, Vec<Variant>)> {
+    // Gate BOTH lanes before any dispatch: the m1-native-ffi branch reaches
+    // LoadLibrary + a real native call, and `allow_dynamic_link` is
+    // independent of `deterministic_mode` (a live host may forbid
+    // arbitrary DLLs). The deterministic fallback re-checks inside
+    // `bind_descriptor`; this is the single guard for the native lane.
+    let capability = CapabilityId::DynamicLinking;
+    if !host.supports(capability) {
+        return Err(host.unsupported(capability, "invoke_descriptor_variants"));
+    }
+    if !host.policy.allow_dynamic_link {
+        return Err(host.denied(capability, "invoke_descriptor_variants"));
+    }
+    if descriptor.marshal_lane != "m1-native-ffi" || !host.native_mode_enabled() {
+        let _binding = host.bind_descriptor(descriptor)?;
+        let arg = args
+            .first()
+            .cloned()
+            .unwrap_or_else(|| Variant::from_i32(0));
+        let arg =
+            host.variant_to_i32(&arg, CapabilityId::DynamicLinking, "invoke_symbol", "arg")?;
+        if host.native_mode_enabled()
+            && matches!(host.profile, HalProfileId::Windows | HalProfileId::Linux)
+        {
+            return match descriptor.symbol.raw() {
+                s if s == external_symbol_token("host", "ping", "hostping") => {
+                    Ok((Variant::from_i32(arg.saturating_add(1)), Vec::new()))
+                }
+                s if s == external_symbol_token("host", "double", "hostdouble") => {
+                    Ok((Variant::from_i32(arg.saturating_mul(2)), Vec::new()))
+                }
+                _ => Err(HalError::adapter_fault(
+                    host.profile,
+                    CapabilityId::DynamicLinking,
+                    "invoke_symbol",
+                    format!(
+                        "descriptor {} resolved to unsupported symbol token {} in host-backed lane",
+                        descriptor.descriptor_id, descriptor.symbol
+                    ),
+                )),
+            };
+        }
+        return Ok((
+            Variant::from_i32(descriptor.symbol.raw().saturating_add(arg)),
+            Vec::new(),
+        ));
+    }
+    invoke_m1_native_variants(host, descriptor, args, aliases)
+}
+
 fn invoke_m1_native_variants(
     host: &StandardHostServices,
     descriptor: &DynLinkDescriptorView<'_>,
     args: &[Variant],
+    aliases: &[Option<u32>],
 ) -> HalResult<(Variant, Vec<Variant>)> {
-    invoke_m1_native(host, descriptor, args)
+    invoke_m1_native(host, descriptor, args, aliases)
 }
 
 #[cfg(target_os = "windows")]
@@ -414,13 +446,22 @@ fn invoke_m1_native(
     host: &StandardHostServices,
     descriptor: &DynLinkDescriptorView<'_>,
     args: &[Variant],
+    aliases: &[Option<u32>],
 ) -> HalResult<(Variant, Vec<Variant>)> {
     use oxvba_com::windows_ffi_bridge::{
         FfiArg, FfiReturnType, OwnedLibrary, get_proc_address, get_proc_address_ordinal,
-        invoke_stdcall,
+        invoke_stdcall_with_last_error,
     };
 
     let capability = CapabilityId::DynamicLinking;
+    if args.len() != descriptor.param_count {
+        return Err(HalError::adapter_fault(
+            host.profile,
+            capability,
+            "invoke_symbol",
+            "native argument count differs from descriptor",
+        ));
+    }
     let library = {
         let mut state = host.dynlink_state.lock().map_err(|_| {
             HalError::adapter_fault(
@@ -460,25 +501,66 @@ fn invoke_m1_native(
     } else {
         get_proc_address(module, descriptor.alias)
     }
-    .map_err(|msg| {
-        HalError::adapter_fault(host.profile, capability, "invoke_symbol", msg)
+    .map_err(|_msg| {
+        let entry = if descriptor.ordinal_alias {
+            descriptor
+                .alias
+                .strip_prefix('#')
+                .unwrap_or(descriptor.alias)
+        } else {
+            descriptor.alias
+        };
+        let description = format!(
+            "Can't find DLL entry point {entry} in {}",
+            descriptor.library
+        );
+        HalError::adapter_fault(host.profile, capability, "invoke_symbol", description)
             .with_host_error_code(if descriptor.ordinal_alias { 452 } else { 453 })
     })?;
 
-    let mut byref_cells = Vec::new();
-    let ffi_args: Vec<FfiArg> = args
-        .iter()
-        .enumerate()
-        .map(|(i, value)| {
-            let param_type = descriptor
-                .param_types
-                .get(i)
-                .map(|s| s.as_str())
-                .unwrap_or("Long");
-            let by_ref = descriptor.param_by_ref.get(i).copied().unwrap_or(false);
-            marshal_variant_to_ffi(host.profile, value, param_type, by_ref, i, &mut byref_cells)
-        })
-        .collect::<Result<_, _>>()?;
+    let mut byref_cells: Vec<NativeByRefCell> = Vec::new();
+    let mut alias_cells = BTreeMap::<u32, (usize, usize, Option<&'static str>)>::new();
+    let mut alias_writebacks = Vec::new();
+    let mut ffi_args: Vec<FfiArg> = Vec::with_capacity(args.len());
+    for (i, value) in args.iter().enumerate() {
+        let param_type = descriptor
+            .param_types
+            .get(i)
+            .map(|s| s.as_str())
+            .unwrap_or("Long");
+        let by_ref = descriptor.param_by_ref.get(i).copied().unwrap_or(false);
+        let alias = aliases.get(i).copied().flatten().filter(|_| by_ref);
+        let kind = native_scalar_alias_type(param_type);
+        if let Some((cell, original_arg, prior_kind)) =
+            alias.and_then(|id| alias_cells.get(&id).copied())
+        {
+            if kind.is_none() || prior_kind != kind {
+                return Err(HalError::adapter_fault(
+                    host.profile,
+                    capability,
+                    "invoke_symbol",
+                    "repeated native ByRef aliases require compatible scalar storage; broader shapes remain under WIN-9",
+                ));
+            }
+            // Reuse the original raw pointer. A new mutable projection of its
+            // boxed storage could invalidate the first pointer's provenance.
+            ffi_args.push(ffi_args[original_arg].clone());
+            alias_writebacks.push((i, cell));
+            continue;
+        }
+        let cell_index = byref_cells.len();
+        ffi_args.push(marshal_variant_to_ffi(
+            host.profile,
+            value,
+            param_type,
+            by_ref,
+            i,
+            &mut byref_cells,
+        )?);
+        if let Some(id) = alias {
+            alias_cells.insert(id, (cell_index, i, kind));
+        }
+    }
 
     let return_type = match descriptor.return_type.as_deref() {
         None => FfiReturnType::Void,
@@ -486,9 +568,9 @@ fn invoke_m1_native(
         Some("Integer") => FfiReturnType::Integer,
         Some("Byte") => FfiReturnType::Byte,
         Some("Boolean") => FfiReturnType::Boolean,
-        Some("Double") => FfiReturnType::Double,
+        Some("Double" | "Date") => FfiReturnType::Double,
         Some("Single") => FfiReturnType::Single,
-        Some("LongLong") => FfiReturnType::LongLong,
+        Some("LongLong" | "Currency") => FfiReturnType::LongLong,
         Some("LongPtr") => FfiReturnType::LongPtr,
         // A `String` return is a BSTR — pointer-sized in the return register;
         // `unmarshal_ffi_to_variant` decodes and frees it.
@@ -496,16 +578,13 @@ fn invoke_m1_native(
         Some(_) => FfiReturnType::Long,
     };
 
-    let raw_result = invoke_stdcall(proc_addr, &ffi_args, return_type)
-        .map_err(|msg| HalError::adapter_fault(host.profile, capability, "invoke_symbol", msg))?;
-    // Capture `GetLastError` immediately — nothing between the native call and here
-    // touches the OS last-error (the x64 thunk returns straight to `invoke_stdcall`,
-    // and the Ok-path `map_err`/`?` make no syscall). This is what `Err.LastDllError`
-    // reads. `last_os_error()` is `GetLastError` on Windows.
-    host.last_dll_error.store(
-        std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
-        std::sync::atomic::Ordering::Relaxed,
-    );
+    let (raw_result, last_error) =
+        invoke_stdcall_with_last_error(proc_addr, &ffi_args, return_type).map_err(|msg| {
+            HalError::adapter_fault(host.profile, capability, "invoke_symbol", msg)
+        })?;
+    // The bridge captured the OS state before its CIF and argument cleanup.
+    host.last_dll_error
+        .store(last_error as i32, std::sync::atomic::Ordering::Relaxed);
 
     let result = unmarshal_ffi_to_variant(raw_result, descriptor.return_type.as_deref());
     let mut writeback_values = args.to_vec();
@@ -514,7 +593,26 @@ fn invoke_m1_native(
             HalError::adapter_fault(host.profile, capability, "invoke_symbol", msg)
         })?;
     }
+    for (index, cell) in alias_writebacks {
+        writeback_values[index] = writeback_values[byref_cells[cell].index].clone();
+    }
     Ok((result, writeback_values))
+}
+
+#[cfg(target_os = "windows")]
+fn native_scalar_alias_type(param_type: &str) -> Option<&'static str> {
+    Some(match param_type {
+        "Long" => "Long",
+        "Integer" => "Integer",
+        "Byte" => "Byte",
+        "Boolean" => "Boolean",
+        "Double" => "Double",
+        "Single" => "Single",
+        "LongLong" | "LongPtr" => "LongLong",
+        "Currency" => "Currency",
+        "Date" => "Date",
+        _ => return None,
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -522,6 +620,7 @@ fn invoke_m1_native(
     host: &StandardHostServices,
     _descriptor: &DynLinkDescriptorView<'_>,
     _args: &[Variant],
+    _aliases: &[Option<u32>],
 ) -> HalResult<(Variant, Vec<Variant>)> {
     Err(HalError::adapter_fault(
         host.profile,
@@ -536,6 +635,7 @@ fn invoke_m1_native(
     host: &StandardHostServices,
     descriptor: &DynLinkDescriptorView<'_>,
     args: &[Variant],
+    _aliases: &[Option<u32>],
 ) -> HalResult<(Variant, Vec<Variant>)> {
     use oxvba_com::windows_ffi_bridge::{
         FfiArg, FfiReturnType, get_proc_address, invoke_stdcall, load_library,
@@ -580,7 +680,8 @@ fn invoke_m1_native(
                 .unwrap_or("Long");
             marshal_variant_to_ffi_unix(value, param_type)
         })
-        .collect();
+        .collect::<Result<_, _>>()
+        .map_err(|msg| HalError::adapter_fault(host.profile, capability, "invoke_symbol", msg))?;
 
     let return_type = match descriptor.return_type.as_deref() {
         None => FfiReturnType::Void,
@@ -588,9 +689,9 @@ fn invoke_m1_native(
         Some("Integer") => FfiReturnType::Integer,
         Some("Byte") => FfiReturnType::Byte,
         Some("Boolean") => FfiReturnType::Boolean,
-        Some("Double") => FfiReturnType::Double,
+        Some("Double" | "Date") => FfiReturnType::Double,
         Some("Single") => FfiReturnType::Single,
-        Some("LongLong") => FfiReturnType::LongLong,
+        Some("LongLong" | "Currency") => FfiReturnType::LongLong,
         Some("LongPtr") => FfiReturnType::LongPtr,
         // The `String` return contract is BSTR-based (OLE) — Windows-only.
         Some("String") => {
@@ -723,15 +824,7 @@ impl NativeByRefStorage {
                 let raw = value.as_i64().unwrap_or_else(|| variant_i64(value));
                 Self::I64(Box::new(raw))
             }
-            "Currency" => {
-                let raw = value
-                    .as_currency_scaled_i64()
-                    .or_else(|| value.as_i64())
-                    .unwrap_or_else(|| {
-                        i64::from(variant_i32(value)) * oxvba_runtime::CurrencyValue::SCALE
-                    });
-                Self::Currency(Box::new(raw))
-            }
+            "Currency" => Self::Currency(Box::new(variant_currency_raw(value)?)),
             "Date" => {
                 let raw = value
                     .as_f64()
@@ -789,7 +882,7 @@ impl NativeByRefStorage {
         Ok(match self {
             Self::I32(value) => Variant::from_i32(**value),
             Self::I16(value) => Variant::from_i16(**value),
-            Self::U8(value) => Variant::from_i32(**value as i32),
+            Self::U8(value) => Variant::from_u8(**value),
             Self::Bool(value) => Variant::from_bool(**value != 0),
             Self::F32(value) => Variant::from_f32(**value),
             Self::F64(value) => Variant::from_f64(**value),
@@ -943,10 +1036,10 @@ fn vba_record_storage_from_variant(value: &Variant) -> Result<NativeByRefStorage
 fn marshal_variant_to_ffi_unix(
     value: &Variant,
     param_type: &str,
-) -> oxvba_com::windows_ffi_bridge::FfiArg {
+) -> Result<oxvba_com::windows_ffi_bridge::FfiArg, String> {
     use oxvba_com::windows_ffi_bridge::FfiArg;
 
-    match param_type {
+    Ok(match param_type {
         "Long" => FfiArg::Long(variant_i32(value)),
         "Integer" => FfiArg::Integer(variant_i32(value) as i16),
         "Byte" => FfiArg::Byte(variant_i32(value) as u8),
@@ -955,6 +1048,8 @@ fn marshal_variant_to_ffi_unix(
             let f = value.as_f64().unwrap_or_else(|| variant_f64(value));
             FfiArg::Double(f)
         }
+        "Date" => FfiArg::Double(variant_f64(value)),
+        "Currency" => FfiArg::LongLong(variant_currency_raw(value)?),
         "Single" => {
             let f = value.as_f64().unwrap_or_else(|| variant_f64(value)) as f32;
             FfiArg::Single(f)
@@ -979,7 +1074,7 @@ fn marshal_variant_to_ffi_unix(
             FfiArg::String(wide)
         }
         _ => FfiArg::Long(variant_i32(value)),
-    }
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -994,15 +1089,15 @@ fn marshal_variant_to_ffi(
     use oxvba_com::windows_ffi_bridge::FfiArg;
 
     if by_ref {
-        let mut storage = NativeByRefStorage::from_variant(value, param_type).map_err(|msg| {
+        let storage = NativeByRefStorage::from_variant(value, param_type).map_err(|msg| {
             HalError::adapter_fault(profile, CapabilityId::DynamicLinking, "invoke_symbol", msg)
         })?;
-        let ffi_arg = storage.as_ffi_arg();
+        let cell = byref_cells.len();
         byref_cells.push(NativeByRefCell {
             index: arg_index,
             storage,
         });
-        return Ok(ffi_arg);
+        return Ok(byref_cells[cell].storage.as_ffi_arg());
     }
 
     match param_type {
@@ -1017,6 +1112,12 @@ fn marshal_variant_to_ffi(
         "Double" => Ok(FfiArg::Double(
             value.as_f64().unwrap_or_else(|| variant_f64(value)),
         )),
+        "Date" => Ok(FfiArg::Double(variant_f64(value))),
+        "Currency" => Ok(FfiArg::LongLong(variant_currency_raw(value).map_err(
+            |msg| {
+                HalError::adapter_fault(profile, CapabilityId::DynamicLinking, "invoke_symbol", msg)
+            },
+        )?)),
         "Single" => Ok(FfiArg::Single(
             value.as_f64().unwrap_or_else(|| variant_f64(value)) as f32,
         )),
@@ -1038,14 +1139,14 @@ fn marshal_variant_to_ffi(
                 .as_bstr()
                 .map(|text| text.as_str())
                 .unwrap_or_default();
-            let mut storage =
+            let storage =
                 NativeByRefStorage::AnsiBuffer(oxvba_com::windows_ffi_bridge::ansi_c_string(&text));
-            let ffi_arg = storage.as_ffi_arg();
+            let cell = byref_cells.len();
             byref_cells.push(NativeByRefCell {
                 index: arg_index,
                 storage,
             });
-            Ok(ffi_arg)
+            Ok(byref_cells[cell].storage.as_ffi_arg())
         }
         _ => Ok(FfiArg::Long(variant_i32(value))),
     }
@@ -1056,9 +1157,11 @@ fn unmarshal_ffi_to_variant(raw: i64, return_type: Option<&str>) -> Variant {
         None => Variant::empty(),
         Some("Long") => Variant::from_i32(raw as i32),
         Some("Integer") => Variant::from_i16(raw as i16),
-        Some("Byte") => Variant::from_i32(raw as u8 as i32),
+        Some("Byte") => Variant::from_u8(raw as u8),
         Some("Boolean") => Variant::from_bool(raw != 0),
         Some("Double") => Variant::from_f64(f64::from_bits(raw as u64)),
+        Some("Date") => Variant::from_date_f64(f64::from_bits(raw as u64)),
+        Some("Currency") => Variant::from_currency_scaled_i64(raw),
         Some("Single") => Variant::from_f32(f32::from_bits(raw as u32)),
         Some("LongLong") | Some("LongPtr") => Variant::from_i64(raw),
         Some("String") => {

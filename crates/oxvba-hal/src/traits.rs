@@ -25,7 +25,7 @@ pub use oxvba_com::{
     TypeLibMemberMetadata, TypeLibMetadataBlob, TypeLibParamType, TypeLibResolveRequest,
     TypeLibResolvedIdentity,
 };
-use oxvba_runtime::{BindingHandle, DynLinkSymbol, ObjectRef, Variant};
+use oxvba_runtime::{BindingHandle, DynLinkSymbol, ObjectRef, RuntimeCallArgument, Variant};
 use std::borrow::Cow;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -532,6 +532,31 @@ pub trait DynamicLinkHal: Send + Sync {
         variant_companion_not_overridden(CapabilityId::DynamicLinking, "invoke_descriptor_variants")
     }
 
+    /// Values plus canonical caller-storage identities. Repeated native ByRef
+    /// slots must share storage; equal values alone never establish aliasing.
+    /// Older adapters remain usable for distinct slots, and decline repeated
+    /// aliases before execution rather than silently copying them independently.
+    fn invoke_descriptor_arguments(
+        &self,
+        descriptor: &DynLinkDescriptorView<'_>,
+        args: &[RuntimeCallArgument],
+    ) -> HalResult<(Variant, Vec<Variant>)> {
+        let mut slots = std::collections::BTreeSet::new();
+        for (index, arg) in args.iter().enumerate() {
+            if descriptor.param_by_ref.get(index) == Some(&true)
+                && let Some(slot) = arg.by_ref
+                && !slots.insert(slot.id)
+            {
+                return variant_companion_not_overridden(
+                    CapabilityId::DynamicLinking,
+                    "invoke_descriptor_arguments with repeated ByRef aliases",
+                );
+            }
+        }
+        let values = args.iter().map(|arg| arg.value.clone()).collect::<Vec<_>>();
+        self.invoke_descriptor_variants(descriptor, &values)
+    }
+
     /// Variant-native symbol-token invoke path retained for no-descriptor
     /// VM/JIT external call sites.
     fn invoke_symbol_variant(&self, _symbol: DynLinkSymbol, _arg: &Variant) -> HalResult<Variant> {
@@ -571,6 +596,59 @@ pub trait ProjectReferenceHal: Send + Sync {
 
 pub trait ProjectMutationHal: Send + Sync {
     fn attach_host_extension_module(&self, change: &HostExtensionModuleChange) -> HalResult<()>;
+}
+
+#[cfg(test)]
+mod native_argument_tests {
+    use super::*;
+    use oxvba_runtime::RuntimeByRefSlot;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct LegacyAdapter(AtomicUsize);
+    impl DynamicLinkHal for LegacyAdapter {
+        fn invoke_descriptor_variants(
+            &self,
+            _: &DynLinkDescriptorView<'_>,
+            args: &[Variant],
+        ) -> HalResult<(Variant, Vec<Variant>)> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Ok((args[0].clone(), args.to_vec()))
+        }
+    }
+
+    #[test]
+    fn legacy_adapter_declines_repeated_aliases_before_execution() {
+        let adapter = LegacyAdapter(AtomicUsize::new(0));
+        let descriptor = DynLinkDescriptorView {
+            descriptor_id: 1,
+            declared_name: "Probe",
+            library: "unused.dll",
+            alias: "Probe",
+            ordinal_alias: false,
+            symbol: 1.into(),
+            marshal_lane: "m1-native-ffi",
+            calling_convention: "platform-default",
+            selection_policy: "case-insensitive-canonical",
+            param_count: 2,
+            param_types: &["Long".into(), "Long".into()],
+            param_by_ref: &[true, true],
+            return_type: None,
+        };
+        let arg =
+            |id| RuntimeCallArgument::by_ref(Variant::from_i32(1), RuntimeByRefSlot::new(id, None));
+        assert!(
+            adapter
+                .invoke_descriptor_arguments(&descriptor, &[arg(0), arg(0)])
+                .is_err()
+        );
+        assert_eq!(adapter.0.load(Ordering::Relaxed), 0);
+        assert!(
+            adapter
+                .invoke_descriptor_arguments(&descriptor, &[arg(0), arg(1)])
+                .is_ok()
+        );
+        assert_eq!(adapter.0.load(Ordering::Relaxed), 1);
+    }
 }
 
 #[allow(unexpected_cfgs)]

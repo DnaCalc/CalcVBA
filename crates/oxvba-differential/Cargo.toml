@@ -30,6 +30,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_System_Ole",
     "Win32_System_Variant",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [[bench]]

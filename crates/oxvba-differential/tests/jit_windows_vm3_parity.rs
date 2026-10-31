@@ -464,3 +464,130 @@ End Sub
         }
     );
 }
+
+#[test]
+fn getobject_empty_path_activates_a_registered_class_on_both_backends() {
+    let observed = compare(
+        r#"
+Public result As Long
+Public count As Long
+Sub Main()
+    Dim className As String, obj As Object
+    className = "Scripting.Dictionary"
+    Set obj = GetObject("", className)
+    obj.Add "answer", 42
+    result = obj.Item("answer")
+    count = obj.Count
+End Sub
+"#,
+    );
+    assert_eq!(
+        &observed.values[..2],
+        &[42, 1].map(|value| canon(&Variant::from_i32(value)))
+    );
+    assert!(!observed.raised);
+    assert_eq!(observed.err, FinalErr::default());
+    assert_eq!(observed.transport, (0, 3));
+}
+
+/// The caller supplies a workbook held by the PID-scoped oracle supervisor.
+/// A live owned PID/HWND is required before binding, and checked again in VBA
+/// before writes. The supervisor must hold that workbook until this test ends.
+#[test]
+#[ignore = "requires OXVBA_OWNED_EXCEL_WORKBOOK, OXVBA_OWNED_EXCEL_HWND and OXVBA_OWNED_EXCEL_PID from a live owned oracle run"]
+fn getobject_reads_owned_excel_workbook_values_on_both_backends() {
+    let path = std::env::var("OXVBA_OWNED_EXCEL_WORKBOOK")
+        .expect("explicitly owned workbook path is required");
+    assert!(std::path::Path::new(&path).is_file());
+    let hwnd: i32 = std::env::var("OXVBA_OWNED_EXCEL_HWND")
+        .expect("owned Excel HWND is required")
+        .parse()
+        .expect("owned Excel HWND must be a VBA Long");
+    assert_ne!(hwnd, 0);
+    let expected_pid: u32 = std::env::var("OXVBA_OWNED_EXCEL_PID")
+        .expect("live supervisor-owned Excel PID is required")
+        .parse()
+        .expect("owned Excel PID must be numeric");
+    assert_ne!(expected_pid, 0);
+    let mut actual_pid = 0;
+    // SAFETY: the HWND is only queried; actual_pid is a live writable out-slot.
+    let window_thread = unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
+            hwnd as u32 as usize as _,
+            &mut actual_pid,
+        )
+    };
+    assert_ne!(
+        window_thread, 0,
+        "owned window must be live before GetObject"
+    );
+    assert_eq!(actual_pid, expected_pid, "owned window PID changed");
+    let path = path.replace('"', "\"\"");
+    let observed = compare(&format!(
+        r#"
+Public initialValue As Variant
+Public changedValue As Variant
+Public textValue As Variant
+Public truthValue As Variant
+Public errorValue As Variant
+Public rowLower As Long
+Public rowUpper As Long
+Public columnLower As Long
+Public columnUpper As Long
+Public address As String
+Public version As String
+Public nativeWindow As Long
+Sub Main()
+    Dim wb As Object, app As Object, sheet As Object, cell As Object
+    Dim matrix As Variant
+    Set wb = GetObject("{path}")
+    Set app = wb.Application
+    nativeWindow = app.Hwnd
+    If nativeWindow <> {hwnd} Then Err.Raise 5
+    Set sheet = wb.Worksheets.Item(1)
+    Set cell = sheet.Range("A1")
+    initialValue = cell.Value2
+    cell.Value2 = 19
+    changedValue = cell.Value2
+    cell.Value2 = 42
+    address = cell.Address(False, False)
+    Set cell = sheet.Range("A1:B2")
+    matrix = cell.Value2
+    textValue = matrix(1, 2)
+    truthValue = matrix(2, 1)
+    errorValue = matrix(2, 2)
+    Set cell = sheet.Range("B2")
+    cell.Value2 = errorValue
+    errorValue = cell.Value2
+    rowLower = LBound(matrix, 1): rowUpper = UBound(matrix, 1)
+    columnLower = LBound(matrix, 2): columnUpper = UBound(matrix, 2)
+    version = app.Version
+End Sub
+"#
+    ));
+    let expected = [
+        Variant::from_f64(42.0),
+        Variant::from_f64(19.0),
+        Variant::from_string("alpha"),
+        Variant::from_bool(true),
+        Variant::from_error_code(2042),
+        Variant::from_i32(1),
+        Variant::from_i32(2),
+        Variant::from_i32(1),
+        Variant::from_i32(2),
+        Variant::from_string("A1"),
+        Variant::from_string("16.0"),
+        Variant::from_i32(hwnd),
+    ];
+    assert_eq!(
+        &observed.values[..expected.len()],
+        &expected.iter().map(canon).collect::<Vec<_>>()
+    );
+    assert!(!observed.raised);
+    assert_eq!(observed.err, FinalErr::default());
+    assert_eq!(observed.transport.0, 0);
+    assert!(
+        observed.transport.1 >= 13,
+        "actual IDispatch calls required"
+    );
+}

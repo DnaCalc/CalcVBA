@@ -14,6 +14,25 @@
 
 use oxvba_differential::{Executor, RunOutcome, run};
 
+#[test]
+fn getobject_positional_modes_execute_on_both_backends() {
+    for call in [
+        "GetObject(, \"Missing.OxVba.GetObject.Probe\")",
+        "GetObject(\"C:\\does\\not\\exist.doc\")",
+        "GetObject(\"\")",
+        "GetObject(\"\", \"Scripting.Dictionary\")",
+    ] {
+        let source = format!("Sub Main()\nDim obj As Object\nSet obj = {call}\nEnd Sub\n");
+        let vm = run(Executor::Vm3, &source);
+        let jit = run(Executor::Jit, &source);
+        assert!(jit.unsupported.is_none(), "{call}: {:?}", jit.unsupported);
+        assert_eq!(jit.result, vm.result, "{call}");
+        assert_eq!(jit.err, vm.err, "{call}");
+        assert_eq!(jit.raised, vm.raised, "{call}");
+        assert_eq!(jit.handle_balance, vm.handle_balance, "{call}");
+    }
+}
+
 fn run_main(body: &str) -> RunOutcome {
     let source = format!("Sub Main()\n    Dim x As Object\n{body}\nEnd Sub\n");
     run(Executor::Vm3, &source)

@@ -176,7 +176,7 @@ The destination is [`spec/OXVBA_JIT_ARCHITECTURE_V1.md`](spec/OXVBA_JIT_ARCHITEC
 
 VM3, HAL, COM, host, build and comhost contain substantial Windows work: typelib loading, late/early bridge scaffolding, Declare execution, wrapper packaging, type-library emission and bounded COM serving.
 
-The JIT lowers scalar late COM through the shared verified interop plan and supports dynamic CreateObject ProgIDs. Native development tests exercise real IDispatch and a test-owned x64 DLL, including Function/Sub, ByRef mutation, LastDllError and unload. General Windows rows remain in progress: ComCallEarly, pointer operations, callbacks and broader argument/carrier/session families are unfinished. Project `WithEvents`/`RaiseEvent` proves internal event semantics, not native connection points.
+The JIT lowers scalar late COM through the shared verified interop plan and supports dynamic CreateObject ProgIDs and positional GetObject forms. An explicitly owned Excel workbook probe exercises native IDispatch properties, scalar writes and mixed two-dimensional Range.Value2 arrays on both backends. The Windows VARIANT adapter maps standard error numbers to/from the Automation 0x800A0000 prefix while preserving other HRESULTs. Native development tests also exercise a test-owned x64 DLL, including Function/Sub, ByRef mutation, LastDllError and unload. General Windows rows remain in progress: ComCallEarly, pointer operations, callbacks and broader argument/carrier/session families are unfinished. Project `WithEvents`/`RaiseEvent` proves internal event semantics, not native connection points.
 
 Native scalar calls carry canonical caller-storage IDs in `RuntimeCallArgument`.
 VM3 resolves frame/global aliases; JIT derives call-local IDs from resolved slots.

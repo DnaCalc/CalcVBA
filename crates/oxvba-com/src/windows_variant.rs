@@ -2103,7 +2103,17 @@ pub unsafe fn variant_to_com_value(variant: &VARIANT) -> Result<ComValue, String
         }
         VT_RECORD_VALUE => ComValue::Record(com_record_from_variant(variant)?),
         VT_NULL => ComValue::Null,
-        VT_ERROR => ComValue::ErrorCode(variant.Anonymous.Anonymous.Anonymous.scode),
+        VT_ERROR => {
+            let code = variant.Anonymous.Anonymous.Anonymous.scode;
+            // VBA standard errors use FACILITY_CONTROL on the Automation wire.
+            // Preserve other HRESULTs, including DISP_E_PARAMNOTFOUND.
+            let code = if (code as u32) & 0xffff_0000 == 0x800a_0000 {
+                code & 0xffff
+            } else {
+                code
+            };
+            ComValue::ErrorCode(code)
+        }
         vt => {
             return Err(format!("unsupported VARIANT return type vt={vt}"));
         }
@@ -2286,7 +2296,11 @@ where
         }
         ComValue::ErrorCode(code) => {
             (*variant).Anonymous.Anonymous.vt = VT_ERROR;
-            (*variant).Anonymous.Anonymous.Anonymous.scode = *code;
+            (*variant).Anonymous.Anonymous.Anonymous.scode = if (0..=65535).contains(code) {
+                (0x800a_0000u32 | *code as u32) as i32
+            } else {
+                *code
+            };
         }
         ComValue::Bool(value) => {
             (*variant).Anonymous.Anonymous.vt = VT_BOOL;
@@ -2443,13 +2457,53 @@ mod tests {
         SafeArrayCreateEx, SafeArrayCreateVector, SafeArrayPutElement,
     };
     use windows_sys::Win32::System::Variant::{
-        VARIANT, VT_ARRAY, VT_BSTR, VT_BYREF, VT_DECIMAL, VT_DISPATCH, VT_I2, VT_I4, VT_I8, VT_UI8,
-        VT_UNKNOWN, VT_VARIANT, VariantClear,
+        VARIANT, VT_ARRAY, VT_BSTR, VT_BYREF, VT_DECIMAL, VT_DISPATCH, VT_ERROR, VT_I2, VT_I4,
+        VT_I8, VT_UI8, VT_UNKNOWN, VT_VARIANT, VariantClear,
     };
     use windows_sys::Win32::{
         Foundation::{DECIMAL, SysAllocString, SysFreeString},
         System::Com::CY,
     };
+
+    #[test]
+    fn standard_error_numbers_use_automation_scode_without_losing_other_hresult_values() {
+        let vectors = [
+            (0, 0x800a_0000u32),
+            (7, 0x800a_0007),
+            (2000, 0x800a_07d0),
+            (2007, 0x800a_07d7),
+            (2015, 0x800a_07df),
+            (2023, 0x800a_07e7),
+            (2029, 0x800a_07ed),
+            (2036, 0x800a_07f4),
+            (2042, 0x800a_07fa),
+            (65535, 0x800a_ffff),
+            (0x8002_0004u32 as i32, 0x8002_0004), // Missing optional argument.
+            (0x8000_4005u32 as i32, 0x8000_4005), // E_FAIL remains unmapped.
+            (0x8007_0005u32 as i32, 0x8007_0005), // Win32 access denied.
+            (65536, 65536),
+            (-1, u32::MAX),
+        ];
+        for (number, wire) in vectors {
+            let mut variant: VARIANT = unsafe { std::mem::zeroed() };
+            unsafe {
+                set_variant_from_com_value(
+                    &mut variant,
+                    &ComValue::ErrorCode(number),
+                    &mut |_| panic!("error values cannot resolve objects"),
+                    &mut |_| panic!("error values cannot retain dispatch"),
+                )
+                .unwrap();
+                assert_eq!(variant.Anonymous.Anonymous.vt, VT_ERROR);
+                assert_eq!(variant.Anonymous.Anonymous.Anonymous.scode as u32, wire);
+                assert_eq!(
+                    variant_to_com_value(&variant).unwrap(),
+                    ComValue::ErrorCode(number)
+                );
+                assert_eq!(VariantClear(&mut variant), 0);
+            }
+        }
+    }
 
     fn record_descriptor_with_layout(layout: TypeLibRecordLayout) -> TypeLibRecordInfo {
         TypeLibRecordInfo {

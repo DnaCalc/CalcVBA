@@ -78,6 +78,8 @@ pub enum ComInvokeKind {
 pub enum ComValue {
     Empty,
     Null,
+    /// Standard VBA error number (0..=65535), or an unmapped HRESULT.
+    /// The native VARIANT boundary handles the 0x800A0000 wire prefix.
     ErrorCode(i32),
     Bool(bool),
     I32(i32),

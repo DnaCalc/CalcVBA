@@ -2189,6 +2189,9 @@ impl<'a> LowerFunc<'a> {
     ) -> Result<LoweredVariantOperand, JitError> {
         match arg {
             OxCallArg::Operand(operand) => self.lower_variant_operand(builder, operand),
+            OxCallArg::Omitted => {
+                self.lower_variant_operand(builder, &OxOperand::Const(OxConst::Empty))
+            }
             OxCallArg::Const(value) => {
                 self.lower_variant_operand(builder, &OxOperand::Const(OxConst::I32(*value)))
             }
@@ -6612,10 +6615,11 @@ impl<'a> LowerFunc<'a> {
             NativeImplId::Like => "Like(Variant, Variant, compare-const)",
             NativeImplId::MidStmt => "MidStmt(target, start[, count], value)",
             NativeImplId::CreateObject => "CreateObject",
+            NativeImplId::GetObject => "GetObject",
             NativeImplId::DebugPrint => "Debug.Print(value)",
             _ => {
                 return Err(JitError::unsupported(format!(
-                    "M4-4 CallNative built-in subset currently lowers only Like, MidStmt, CreateObject, and Debug.Print, got {native_impl:?}"
+                    "M4-4 CallNative built-in subset currently lowers only Like, MidStmt, CreateObject, GetObject, and Debug.Print, got {native_impl:?}"
                 )));
             }
         };
@@ -6689,6 +6693,27 @@ impl<'a> LowerFunc<'a> {
                         "CallNative {shape} does not support ProgID operand {prog_id:?}"
                     )))
                 }
+            }
+            NativeImplId::GetObject => {
+                self.validate_call_extern_variant_destination(dst, shape)?;
+                if !(1..=2).contains(&args.len()) {
+                    return Err(JitError::unsupported(
+                        "CallNative GetObject requires one or two positional arguments",
+                    ));
+                }
+                for arg in args {
+                    match arg {
+                        OxCallArg::Omitted => {}
+                        OxCallArg::Operand(operand)
+                            if self.is_supported_variant_extern_operand(operand)? => {}
+                        _ => {
+                            return Err(JitError::unsupported(format!(
+                                "CallNative GetObject requires supported Variant operands or omitted arguments, got {arg:?}"
+                            )));
+                        }
+                    }
+                }
+                Ok(())
             }
             NativeImplId::DebugPrint => {
                 if dst.is_some() {

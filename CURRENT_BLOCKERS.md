@@ -14,6 +14,16 @@ The final default five-case self-test and the separate unhandled-runtime modal d
 
 Evidence: `docs/evidence/programs/ideal-2026-07/windows-x64/WIN-14/oracle-supervisor-2026-10-31/README.md`, byte-preserving raw archive and hash manifest. The earlier `vbe-selection-2026-10-31.md` remains historical failed-run evidence. Pinned clean certification is still open under WIN-14 and receives no capability, matrix or release credit from this development observation.
 
+## BLK-ORDINAL-SELECTION-20261031 — VBE ordinal compile errors expose no selected token
+
+Status: open for negative ordinal oracle authority; compiler work can continue from public MS-VBAL authority. Owner: `bd-59co.2.4.5`, with the next supervisor contract extension described below.
+
+The repaired default supervisor passes its five scoped cases and the separate runtime modal. Fresh source-specific ordinal probes show a distinct shape: `#32768`, `#65535`, `#65536` and `#1x` display Invalid ordinal with the full declaration line but an empty UIA selection. The token-required ledger correctly rejects them and never dismisses them on an invented selection. Exact raw attempts remain rejected in `docs/evidence/programs/ideal-2026-07/core/CORE-3/declare-ordinals-2026-10-31/`. A separate `#01` probe is rewritten to `#1` during injection and fails the exact-source precheck.
+
+MS-VBAL 5.2.3.5 independently specifies ordinal integer literals in 0..32767, so the source validator can enforce that rule without promoting these rejected attempts. Accepted fresh positive boundaries and malformed-token failures are listed in `core/CORE-3/c_decl.md`.
+
+Next: capture and prove a genuinely empty selection, its exact caret/line/source identity and an explicit case expectation in a separate compile-error evidence contract; add hostile missing/stale/foreign selection tests. Preserve immutable capture-before-dismiss, exact owned buttons and the existing nonempty-token contract. Do not infer a token from the Alias text or use a post-dismiss snapshot as authority. Broader declaration and pinned certification work remains open; no user setting change is needed.
+
 ## BLK-BASELINE-001 — Linux baseline and cross-platform reconciliation remain open
 
 Status: open, progress available

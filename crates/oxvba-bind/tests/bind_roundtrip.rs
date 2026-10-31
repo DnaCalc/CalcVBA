@@ -18,6 +18,38 @@ use oxvba_symbol::manifest::{
 use oxvba_symbol::provider::TypeLibResolver;
 
 struct NullTypeLibs;
+
+#[test]
+fn declare_ordinal_literals_produce_canonical_native_descriptors() {
+    for alias in ["#32767", "#00032767", "#&H7FFF", "#&O77777", "#&77777"] {
+        let source = format!(
+            "Private Declare PtrSafe Function NativeOrdinal Lib \"kernel32\" Alias \"{alias}\" () As Long\nSub Main()\nEnd Sub\n"
+        );
+        let program = bind_program(&manifest(&source), &NullTypeLibs).unwrap();
+        assert_eq!(program.external_calls.len(), 1);
+        let call = &program.external_calls[0];
+        assert_eq!(call.alias, "#32767", "{alias}");
+        assert!(call.ordinal_alias);
+        assert_eq!(call.selection_policy, "ordinal-literal-canonical");
+    }
+}
+
+#[test]
+fn invalid_declare_ordinals_fail_before_an_external_call_plan_is_built() {
+    for alias in ["#32768", "#65535", "#-1", "#1.0", "#1&"] {
+        let source = format!(
+            "Private Declare PtrSafe Function NativeOrdinal Lib \"kernel32\" Alias \"{alias}\" () As Long\nSub Main()\nDim value As Long\nvalue = NativeOrdinal()\nEnd Sub\n"
+        );
+        let err = bind_program(&manifest(&source), &NullTypeLibs).unwrap_err();
+        let diagnostic = err.to_diagnostic();
+        assert_eq!(diagnostic.code.as_str(), "SYM-E-INVALID-DECLARE-ORDINAL");
+        let span = diagnostic.source.unwrap().span.unwrap();
+        assert_eq!(
+            &source[span.start as usize..span.end as usize],
+            format!("\"{alias}\"")
+        );
+    }
+}
 impl TypeLibResolver for NullTypeLibs {
     fn resolve(
         &self,

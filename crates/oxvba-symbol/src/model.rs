@@ -248,6 +248,12 @@ pub enum SymbolModelError {
     PublicTypeNotValidInObjectModule { name: String },
     #[error("public Declare `{name}` is not valid in object modules")]
     PublicDeclareNotValidInObjectModule { name: String },
+    #[error("Invalid ordinal `{alias}` in Declare `{name}`")]
+    InvalidDeclareOrdinal {
+        name: String,
+        alias: String,
+        provenance: SourceProvenance,
+    },
     #[error("public {member} `{name}` is not valid in object modules")]
     PublicObjectModuleDataMemberNotValid { name: String, member: &'static str },
     #[error("invalid fixed-length string length for `{name}`: {length}")]
@@ -449,6 +455,17 @@ impl SymbolModelError {
                 format!("public Declare `{name}` is not valid in object modules"),
             )
             .with_help("Declare external procedures in class, document, form, and extension modules as Private."),
+            SymbolModelError::InvalidDeclareOrdinal { name, alias, provenance } => Diagnostic::error(
+                "SYM-E-INVALID-DECLARE-ORDINAL",
+                DiagnosticPhase::Symbol,
+                format!("Invalid ordinal `{alias}` in Declare `{name}`"),
+            )
+            .with_source(oxvba_diagnostics::DiagnosticSource {
+                module: provenance.module_name.clone(),
+                span: provenance.span.map(|span| oxvba_diagnostics::SourceSpan::new(span.start, span.end)),
+                ..oxvba_diagnostics::DiagnosticSource::new()
+            })
+            .with_help("Use an ordinal integer literal with a value from 0 through 32,767; signs, type suffixes and floating-point forms are not valid."),
             SymbolModelError::PublicObjectModuleDataMemberNotValid { name, member } => {
                 Diagnostic::error(
                     "SYM-E-PUBLIC-OBJECT-MODULE-DATA-NOT-VALID",

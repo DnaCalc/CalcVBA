@@ -492,7 +492,9 @@ fn build_external_calls(env: &ResolutionEnvironment) -> Vec<ExternalCallDescript
             descriptor_id: d.descriptor_id,
             declared_name: d.declared_name.clone(),
             library: d.library.clone(),
-            alias: d.alias.clone(),
+            alias: d
+                .ordinal_value
+                .map_or_else(|| d.alias.clone(), |ordinal| format!("#{ordinal}")),
             ordinal_alias: d.ordinal_alias,
             symbol: DynLinkSymbol::new(d.descriptor_id as i32),
             marshal_lane: marshal_lane.to_string(),

@@ -1653,6 +1653,147 @@ fn public_declare_is_not_valid_in_object_modules() {
 }
 
 #[test]
+fn declare_ordinals_follow_integer_literal_grammar_and_preserve_source_spelling() {
+    for (alias, expected) in [
+        ("#0", 0),
+        ("#1", 1),
+        ("#32767", 32767),
+        ("#00032767", 32767),
+        ("#&H7FFF", 32767),
+        ("#&h001", 1),
+        ("#&O77777", 32767),
+        ("#&o01", 1),
+        ("#&77777", 32767),
+    ] {
+        let src = format!(
+            "Private Declare PtrSafe Function NativeOrdinal Lib \"kernel32\" Alias \"{alias}\" () As Long\n"
+        );
+        let env = build_resolution_environment(
+            &manifest("Proj", vec![module("Mod1", &src)]),
+            &NullTypeLibs,
+        )
+        .unwrap();
+        let declaration = env
+            .symbols
+            .symbols()
+            .iter()
+            .find_map(|symbol| match &symbol.imp {
+                SymbolImpl::Declare(declaration) => Some(declaration),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(declaration.alias, alias);
+        assert!(declaration.ordinal_alias);
+        assert_eq!(declaration.ordinal_value, Some(expected), "{alias}");
+    }
+}
+
+#[test]
+fn quoted_named_aliases_are_not_reclassified_as_ordinals() {
+    for alias in ["\"#1\"", "\"#oops\"", "a\"b"] {
+        let escaped = alias.replace('"', "\"\"");
+        let src = format!(
+            "Private Declare PtrSafe Sub NativeName Lib \"a\"\"b\" Alias \"{escaped}\" ()\n"
+        );
+        let env = build_resolution_environment(
+            &manifest("Proj", vec![module("Mod1", &src)]),
+            &NullTypeLibs,
+        )
+        .unwrap();
+        let declaration = env
+            .symbols
+            .symbols()
+            .iter()
+            .find_map(|symbol| match &symbol.imp {
+                SymbolImpl::Declare(declaration) => Some(declaration),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(declaration.library, "a\"b");
+        assert_eq!(declaration.alias, alias);
+        assert!(!declaration.ordinal_alias);
+        assert_eq!(declaration.ordinal_value, None);
+    }
+}
+
+#[test]
+fn invalid_declare_ordinals_report_the_exact_alias_token_under_lf_and_crlf() {
+    for alias in [
+        "#",
+        "#-1",
+        "#+1",
+        "#32768",
+        "#65535",
+        "#65536",
+        "#99999999999999999999999999999999999999",
+        "#1.0",
+        "#1e0",
+        "#1x",
+        "#1%",
+        "#1&",
+        "#1^",
+        "# 1",
+        "#1 ",
+        "#&H8000",
+        "#&HFFFF",
+        "#&O100000",
+        "#&8",
+        "#&H",
+        "#&O",
+        "#١",
+    ] {
+        for newline in ["\n", "\r\n"] {
+            let src = format!(
+                "' π🙂 before the declaration{newline}Private Declare PtrSafe Function NativeOrdinal Lib \"kernel32\" Alias \"{alias}\" () As Long{newline}"
+            );
+            let err = build_resolution_environment(
+                &manifest("Proj", vec![module("Mod1", &src)]),
+                &NullTypeLibs,
+            )
+            .err()
+            .expect("invalid ordinal must reject");
+            assert!(
+                matches!(&err, SymbolModelError::InvalidDeclareOrdinal { name, alias: actual, .. } if name == "NativeOrdinal" && actual == alias),
+                "{err:?}"
+            );
+            let diagnostic = err.to_diagnostic();
+            assert_eq!(diagnostic.code.as_str(), "SYM-E-INVALID-DECLARE-ORDINAL");
+            let source = diagnostic.source.unwrap();
+            assert_eq!(source.module.as_deref(), Some("Mod1"));
+            let span = source.span.unwrap();
+            let quoted = format!("\"{alias}\"");
+            assert_eq!(span.start as usize, src.find(&quoted).unwrap());
+            assert_eq!(&src[span.start as usize..span.end as usize], quoted);
+        }
+    }
+}
+
+#[test]
+fn declare_ordinal_validation_uses_only_active_conditional_source() {
+    let inactive = "#If False Then\nPrivate Declare PtrSafe Sub Bad Lib \"kernel32\" Alias \"#65535\" ()\n#Else\nPrivate Declare PtrSafe Sub Good Lib \"kernel32\" Alias \"#32767\" ()\n#End If\n";
+    build_resolution_environment(
+        &manifest("Proj", vec![module("Mod1", inactive)]),
+        &NullTypeLibs,
+    )
+    .expect("inactive invalid ordinal must not reject the module");
+    for newline in ["\n", "\r\n"] {
+        let active = inactive.replace("False", "True").replace('\n', newline);
+        let err = build_resolution_environment(
+            &manifest("Proj", vec![module("Mod1", &active)]),
+            &NullTypeLibs,
+        )
+        .err()
+        .expect("invalid ordinal must reject");
+        let span = err.to_diagnostic().source.unwrap().span.unwrap();
+        assert_eq!(span.start as usize, active.find("\"#65535\"").unwrap());
+        assert_eq!(
+            &active[span.start as usize..span.end as usize],
+            "\"#65535\""
+        );
+    }
+}
+
+#[test]
 fn public_object_module_data_members_are_rejected() {
     for (src, name, member) in [
         ("Public Const K As Long = 1\r\n", "K", "constant"),

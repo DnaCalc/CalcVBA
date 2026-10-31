@@ -259,9 +259,10 @@ End Sub
         "resolution failure preserves the last invoked DLL error"
     );
 
-    let ordinal = compare(&format!(
-        r##"
-Declare PtrSafe Function AbsentOrdinal Lib "{path}" Alias "#32767" () As Long
+    for alias in ["#32767", "#00032767", "#&H7FFF", "#&O77777", "#&77777"] {
+        let ordinal = compare(&format!(
+            r##"
+Declare PtrSafe Function AbsentOrdinal Lib "{path}" Alias "{alias}" () As Long
 Declare PtrSafe Sub NativeSetError Lib "kernel32" Alias "SetLastError" (ByVal value As Long)
 Sub Main()
     Dim value As Long
@@ -269,14 +270,15 @@ Sub Main()
     value = AbsentOrdinal()
 End Sub
 "##
-    ));
-    assert!(ordinal.raised);
-    assert_eq!(ordinal.err.number, 452);
-    assert_eq!(
-        ordinal.err.description,
-        format!("Can't find DLL entry point 32767 in {path}")
-    );
-    assert_eq!(ordinal.err.last_dll_error, 1234);
+        ));
+        assert!(ordinal.raised);
+        assert_eq!(ordinal.err.number, 452);
+        assert_eq!(
+            ordinal.err.description,
+            format!("Can't find DLL entry point 32767 in {path}")
+        );
+        assert_eq!(ordinal.err.last_dll_error, 1234);
+    }
 }
 
 #[test]

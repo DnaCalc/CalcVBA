@@ -21,6 +21,8 @@ pub struct DeclareSymbol {
     pub alias: String,
     /// True when `alias` is an ordinal (`Alias "#123"`).
     pub ordinal_alias: bool,
+    /// Statically checked ordinal value, retaining the original spelling in `alias`.
+    pub ordinal_value: Option<u16>,
     pub calling_convention: CallConv,
     /// `Declare Function` (has a return) vs `Declare Sub`.
     pub is_function: bool,

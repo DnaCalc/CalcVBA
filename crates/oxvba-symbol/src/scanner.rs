@@ -23,6 +23,27 @@ use crate::signature::{
 
 const MAX_FIXED_STRING_LEN: u32 = 65_526;
 
+/// MS-VBAL 5.2.3.5 uses integer-literal (not the suffixed INTEGER token),
+/// with a value in 0..=32767. Preserve the source spelling separately from
+/// the decimal ordinal consumed by the native loader.
+fn declare_ordinal_value(literal: &str) -> Option<u16> {
+    let (digits, radix) = if let Some(tail) = literal.strip_prefix('&') {
+        if let Some(digits) = tail.strip_prefix(['H', 'h']) {
+            (digits, 16)
+        } else {
+            (tail.strip_prefix(['O', 'o']).unwrap_or(tail), 8)
+        }
+    } else {
+        (literal, 10)
+    };
+    if digits.is_empty() || !digits.chars().all(|ch| ch.is_digit(radix)) {
+        return None;
+    }
+    u16::from_str_radix(digits, radix)
+        .ok()
+        .filter(|value| *value <= i16::MAX as u16)
+}
+
 /// One module's declared surface, for the project index.
 #[derive(Debug, Clone)]
 pub struct ModuleScan {
@@ -862,12 +883,29 @@ impl ScanCtx<'_> {
         self.validate_parameter_declaration(node, &declared_name)?;
         let library = node.lib_string().unwrap_or_default();
         let alias_raw = node.alias_string();
-        let (alias, ordinal_alias) = match alias_raw {
-            Some(value) => {
-                let ordinal = value.starts_with('#');
-                (value, ordinal)
+        let (alias, ordinal_alias, ordinal_value) = match alias_raw {
+            Some(value) if value.starts_with('#') => {
+                let ordinal = declare_ordinal_value(&value[1..]).ok_or_else(|| {
+                    // alias_string obtains its value from this same CST token.
+                    let token = node
+                        .child_node(SyntaxKind::AliasClause)
+                        .and_then(|clause| {
+                            clause
+                                .child_tokens()
+                                .into_iter()
+                                .find(|token| token.kind == SyntaxKind::StringLiteral)
+                        })
+                        .expect("Alias string has a StringLiteral token");
+                    SymbolModelError::InvalidDeclareOrdinal {
+                        name: declared_name.clone(),
+                        alias: value.clone(),
+                        provenance: provenance(self.module_name, token),
+                    }
+                })?;
+                (value, true, Some(ordinal))
             }
-            None => (declared_name.clone(), false),
+            Some(value) => (value, false, None),
+            None => (declared_name.clone(), false, None),
         };
 
         let mut param_names = Vec::new();
@@ -907,6 +945,7 @@ impl ScanCtx<'_> {
             library,
             alias,
             ordinal_alias,
+            ordinal_value,
             calling_convention: CallConv::Stdcall,
             is_function,
             param_names,

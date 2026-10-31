@@ -305,13 +305,17 @@ impl<'a> SyntaxNode<'a> {
         self.child_node(SyntaxKind::FileNumber)
     }
 
-    /// The string literal of a `Lib`/`Alias` clause on a `DeclareStmt` (quotes trimmed).
+    /// The string value of a `Lib`/`Alias` clause on a `DeclareStmt`.
     pub fn clause_string(&self, clause: SyntaxKind) -> Option<String> {
         self.child_node(clause).and_then(|n| {
             n.child_tokens()
                 .into_iter()
                 .find(|t| t.kind == SyntaxKind::StringLiteral)
-                .map(|t| t.text.trim_matches('"').to_string())
+                .map(|t| {
+                    let inner = t.text.strip_prefix('"').unwrap_or(t.text);
+                    let inner = inner.strip_suffix('"').unwrap_or(inner);
+                    inner.replace("\"\"", "\"")
+                })
         })
     }
 

@@ -1,0 +1,10 @@
+{
+  "schema": "oxvba.excel-vba-oracle-containment-ready.v1",
+  "run_id": "calcvba-compile-enum-fixed-20261031",
+  "containment_token": "794d27f8-3cbb-42f9-9c53-81781b8c6858",
+  "worker_pid": 17100,
+  "worker_process_start_utc": "2026-10-31T02:03:17.3377236Z",
+  "worker_executable_path": "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+  "worker_job_membership_verified": true,
+  "published_utc": "2026-10-31T02:03:17.3677022Z"
+}

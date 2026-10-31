@@ -1,0 +1,29 @@
+{
+  "schema": "oxvba.excel-vba-oracle-selected-case-sequence.v2",
+  "targeted_probe": true,
+  "contains_diagnostic_case": false,
+  "descriptor_count": 1,
+  "selection_sha256": "sha256:29cad66b93961b8baea29d8ccb4afdaea6239bab1e873e0b1006f50e58f2fe30",
+  "descriptors": [
+    {
+      "schema": "oxvba.excel-vba-oracle-selected-case.v1",
+      "id": "compile-failure",
+      "purpose": "forced VBE compile error with selected token and expanded source line",
+      "module_name": "OracleSelfTest",
+      "module_source": "Option Explicit\n\nPublic Function RunProbe() As String\n    RunProbe = MissingOracleSymbol(1)\nEnd Function",
+      "module_sha256": "sha256:27ff04112c5958e4dcc7d24a25171d852f202b0d999685f2129f62a5e8935711",
+      "expected_compile_status": "compile-error",
+      "expected_run_status": "not-run",
+      "run_procedure": null,
+      "diagnostic_only": false,
+      "expected_value": null,
+      "expected_selected_token": "MissingOracleSymbol",
+      "expected_expanded_line": "RunProbe = MissingOracleSymbol(1)",
+      "macro_probe_target": null,
+      "invocation_observation_prefix": null,
+      "evidence_contract": "compile-error-token-line-dismissal-v1",
+      "expected_runtime_err": null,
+      "descriptor_sha256": "sha256:95407a0fcb94f2484c28320dbb234b3376ae6fe6385e8c400e6f81cba7e93100"
+    }
+  ]
+}

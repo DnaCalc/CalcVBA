@@ -1,0 +1,35 @@
+[package]
+name = "oxvba-spreadsheet-compat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Bounded, value-oriented VBA function embedding for formula hosts"
+
+[features]
+default = ["jit"]
+jit = ["dep:oxvba-jit", "oxvba-embed/jit"]
+
+[dependencies]
+oxvba-embed = { path = "../../crates/oxvba-embed", default-features = false }
+oxvba-bundle.workspace = true
+oxvba-hal.workspace = true
+oxvba-oxir.workspace = true
+oxvba-runtime.workspace = true
+oxvba-symbol.workspace = true
+oxvba-jit = { workspace = true, optional = true }
+thiserror.workspace = true
+scoped-tls-hkt = "0.1.5"
+oxvba-com.workspace = true
+oxvba-eval.workspace = true
+
+[dev-dependencies]
+oxvba-runtime = { workspace = true, features = ["live-counters"] }
+
+[lints]
+workspace = true
+
+[[example]]
+name = "browser_probe"
+crate-type = ["cdylib"]

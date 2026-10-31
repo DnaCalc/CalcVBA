@@ -1,0 +1,66 @@
+param(
+    [string]$RunId = ('worksheet_errors_{0:yyyyMMddTHHmmssZ}' -f [DateTime]::UtcNow),
+    [string]$OutputRoot = 'artifacts/windows-x64/worksheet-errors'
+)
+$ErrorActionPreference = 'Stop'
+# Reuse the exact process containment, compile authority and armed UIA guardian.
+# Replace only the runtime action: no VBA macro is active during recalculation.
+$script:worksheetSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../docs/evidence/programs/ideal-2026-07/windows-x64/WIN-4/worksheet-errors.bas')
+$supervisor = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'run-excel-vba-oracle.ps1')
+$anchor = '. (Join-Path $PSScriptRoot "excel-vba-oracle-bootstrap.ps1")'
+$override = @'
+$script:worksheetDescriptor = @(Get-ExcelOracleHarnessCases | Where-Object id -eq 'windows-scalar-interop')[0]
+$script:worksheetDescriptor.module_source = $script:worksheetSource
+$script:worksheetDescriptor.expected_value = 'raise=#VALUE!|divide=#VALUE!|range-plus=42|literal-plus=42|range-times=82|identity=Range:5|text-plus=4|blank-plus=1|bad-plus=#VALUE!|multi-plus=#VALUE!|overflow-code=6|overflow-compare=6:True:True:7FF0000000000000'
+$script:worksheetDescriptor.purpose = 'Idle worksheet unhandled errors and default-member arithmetic; development observation only'
+$script:worksheetDescriptor.invocation_observation_prefix = $null
+function Get-ExcelOracleHarnessCases { return @($script:worksheetDescriptor) }
+'@
+if (-not $supervisor.Contains($anchor)) { throw 'Supervisor import anchor changed' }
+$supervisor = $supervisor.Replace($anchor, $anchor + "`n" + $override)
+$worker = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'excel-vba-oracle-worker.ps1')
+$runAnchor = '                $runValue = $excel.Run($qualifiedName)'
+$runtime = @'
+                $excel.VBE.MainWindow.Visible = $false
+                $excel.Calculation = -4135
+                $sheet = $workbook.Worksheets.Item(1)
+                $sheet.Range('A1').Value2 = 41.0
+                $sheet.Range('A2').NumberFormat = '@'
+                $sheet.Range('A2').Value2 = '3'
+                [void]$sheet.Range('A3').ClearContents()
+                $sheet.Range('A4').Value2 = 'bad'
+                $inputs = @()
+                foreach ($address in @('A1','A2','A3','A4')) {
+                    $inputCell = $sheet.Range($address)
+                    $inputValue = $inputCell.Value2
+                    $inputs += [ordered]@{ address = $address; value = $inputValue; managed_type = if ($null -eq $inputValue) { $null } else { $inputValue.GetType().FullName }; number_format = [string]$inputCell.NumberFormat }
+                }
+                if ($sheet.Range('A2').Value2 -isnot [string]) { throw 'A2 must remain numeric text' }
+                if ($null -ne $sheet.Range('A3').Value2) { throw 'A3 must remain blank' }
+                $formulas = @('=RaiseMismatch()', '=DivideByZero(0)', '=UntypedPlus(A1)', '=UntypedPlus(41)', '=UntypedTimes(A1)', '=UntypedIdentity(A1)', '=UntypedPlus(A2)', '=UntypedPlus(A3)', '=UntypedPlus(A4)', '=UntypedPlus(A1:A2)', '=DoubleOverflowCode()', '=DoubleOverflowCompare()')
+                $labels = @('raise','divide','range-plus','literal-plus','range-times','identity','text-plus','blank-plus','bad-plus','multi-plus','overflow-code','overflow-compare')
+                for ($index = 0; $index -lt $formulas.Count; $index++) { $sheet.Cells.Item($index + 1, 3).Formula = $formulas[$index] }
+                $excel.CalculateFullRebuild()
+                $observations = @()
+                $parts = @()
+                for ($index = 0; $index -lt $formulas.Count; $index++) {
+                    $cell = $sheet.Cells.Item($index + 1, 3)
+                    $text = [string]$cell.Text
+                    $raw = $cell.Value2
+                    $observations += [ordered]@{ label = $labels[$index]; formula = $formulas[$index]; text = $text; value = [string]$raw; managed_type = if ($null -eq $raw) { $null } else { $raw.GetType().FullName } }
+                    $parts += $labels[$index] + '=' + $text
+                }
+                [ordered]@{ schema = 'oxvba.worksheet-observations.v1'; calculation = 'COM CalculateFullRebuild while VBA idle'; vbe_visible_during_run = $false; inputs = $inputs; observations = $observations } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $caseDirectory 'worksheet-observations.json') -Encoding utf8NoBOM
+                $runValue = $parts -join '|'
+'@
+if (-not $worker.Contains($runAnchor)) { throw 'Worker runtime anchor changed' }
+$worker = $worker.Replace($runAnchor, $runtime)
+$worker = $worker.Replace('$PSScriptRoot', ("'" + $PSScriptRoot.Replace("'", "''") + "'"))
+$workerPath = Join-Path ([IO.Path]::GetTempPath()) ("oxvba-worksheet-oracle-$([Guid]::NewGuid().ToString('N')).ps1")
+[IO.File]::WriteAllText($workerPath, $worker, [Text.UTF8Encoding]::new($false))
+$supervisor = $supervisor.Replace('(Join-Path $PSScriptRoot "excel-vba-oracle-worker.ps1")', ("'" + $workerPath.Replace("'", "''") + "'"))
+$supervisor = $supervisor.Replace('$PSScriptRoot', ("'" + $PSScriptRoot.Replace("'", "''") + "'"))
+try {
+    & ([scriptblock]::Create($supervisor)) -EnvironmentId 'win-x64-dev-oracle-2026-07' -NoMatrixUpdate -SafeMode -DiagnosticCaseId 'windows-scalar-interop' -RunId $RunId -OutputRoot $OutputRoot -TimeoutSeconds 180
+}
+finally { Remove-Item -LiteralPath $workerPath -Force }

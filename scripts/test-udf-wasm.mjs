@@ -1,4 +1,4 @@
-// Build first: cargo build -p oxvba-embed --no-default-features --example browser_probe --target wasm32-unknown-unknown
+// Build first: cargo build -p oxvba-spreadsheet-compat --no-default-features --example browser_probe --target wasm32-unknown-unknown
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 const bytes = readFileSync(process.argv[2] ?? 'target/wasm32-unknown-unknown/debug/examples/browser_probe.wasm');

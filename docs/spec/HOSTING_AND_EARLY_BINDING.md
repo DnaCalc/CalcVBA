@@ -41,9 +41,10 @@ Portable registered objects can explicitly implement `PortableDispatch::invoke_e
 the default refuses typed calls. Legacy synthetic token arithmetic is not an early-binding target.
 Unregistered headless projections still synthesize object/member numbers for dynamic
 calls; replace that legacy path with explicit host services under `bd-59co.2.10.7`.
-The JIT still uses Variant-backed execution frames/helpers; typed primary procedure entries
-and a public, lifetime-safe native host-call ABI remain missing. Native transport alone
-does not establish the required worksheet-to-JIT invocation cost or performance parity.
+General JIT bodies still use Variant frames/helpers. A run-6 scalar typed primary
+family now bypasses those frames on both runtimes; its safe Rust host API checks
+owner/generation before entry. A general native host ABI remains open. Native COM
+transport alone does not establish worksheet-to-JIT cost or performance parity.
 
 ## What public Office contracts establish
 
@@ -109,20 +110,86 @@ This mirrors COM's typed metadata, stable callable identity, HRESULT/error and o
 discipline without pretending module procedures are COM objects. Excel's private glue ABI
 is unknown; reproducing undocumented internals is unnecessary.
 
-## oxvba-embed and UDF_EMBEDDING_V1 migration
+## Run-6 neutral source-module API
 
-`oxvba-embed` currently owns a useful function catalogue, persistent VM3/JIT sessions and
-immutable-code cache, but also `Value::Range`, grid limits, SpreadsheetContext, a fake Excel
-typelib and Application/Range/WorksheetFunction callbacks. Those are architectural debt.
-Move all spreadsheet types/providers/readers/callbacks and formula error conversion into
-DNA Calc's glue library. Replace the narrowed Function-only catalogue and name lookup with
-the neutral procedure/signature/bound-callable API above, preserving the existing shared
-session/compiler owners. Expose exact VBA/OLE values rather than a spreadsheet value enum.
-Use DNA Calc's real dual typelib/native objects on Windows and an explicitly typed portable
-host subset elsewhere. Do not build another late-bound spreadsheet object model here.
+`Module::load_project` consumes the compiler manifest plus the host's typelib resolver;
+`with_host` retains explicit HAL services/root ownership. `procedures()` publishes
+compiler-owned project/module/name, Function/Sub/accessor kind, visibility, Option
+Private Module, exact OxTy/array layout, passing mode, Optional/default and ParamArray.
+COM interface IDs refer to the retained compiler interface table. Private procedures
+are listed for inspection but cannot bind as public host entries. This catalogue is
+separate from the cross-project export list, which excludes Option Private Module.
 
-`UDF_EMBEDDING_V1.md` is a legacy consumer contract pending that extraction, not engine
-architecture. Its scheduling/Range/Excel-error claims must move with the glue; portable
-engine loading, metadata, session/callable lifetime and ABI belong in this document and
-the shared hosting contract. Typed JIT entries remain CORE-7; cache/reentry remain CORE-8/CORE-5;
-native COM residuals remain WIN-4. Broader work stays in-progress with explicit delivery beads.
+`bind(module, name, kind)` resolves once. `call_bound` uses its numeric procedure ID
+with exact, fully prepared VBA Variant arguments/results and no per-call name search.
+It checks argument count and carrier tags. Host ByRef inputs are private copies;
+typed native ByRef and complete nominal array validation remain open. Null, CVErr and
+unpaired UTF-16 stay exact engine values; no formula conversion occurs in this API.
+Host-provided COM objects can be arguments: both runtimes use the preserved IID/slot
+plan, with no Invoke/name/type-info recovery in the controlled native host test.
+
+`bind_typed::<(f64, f64), f64>("Math", "Add2")` selects a native primary JIT entry or
+the matching VM3 scalar interpreter. The current family accepts zero to four required
+ByVal Long/i32 or Double/f64 arguments/results, numeric locals, add/subtract/multiply,
+division, comparisons, truthiness and branches. Long operands/literals promote
+to Double when a Double operand proves that numeric lane. Physical admission records exact
+slots and proven Double-only Variant temporaries; it refuses user Variant locals,
+ByRef, Optional, ParamArray, strings, objects, arrays, globals/Static, calls, handlers,
+line/Erl operations and other instructions. It bounds physical slots at 128. Host Double inputs must be finite; non-finite values return error 6. No
+unsupported typed call silently falls back to a dynamic backend or Variant frame.
+
+Typed native convention v1 is `(TypedContext*, typed arguments..., R*) -> i32` using
+the target C ABI. Context owns a cooperative block budget; 0 means success, -1 host
+budget interruption, positive statuses are VBA error numbers. Results are written
+only on success. Both universal value routes adapt admitted scalar procedures to the same primary
+entries; the dynamic JIT thunk boxes/unboxes around its native entry;
+image run-entry diagnostic snapshots keep their original body. Warm typed calls use
+no heap storage. This is a bounded Rust-facing family, not the final general C ABI.
+
+Source-module programs have no implicit run entry; hosts select bound procedures.
+A session initializes storage before publishing handles, never runs Main, and uses
+a separate 1,000,000-block initialization budget. Calls are synchronous/same-thread;
+reentry is refused. Handles retain an opaque owner identity and checked u64 generation,
+never a public address. Reload prepares replacement code/state first; failure keeps
+old handles valid, success changes generation before old code can be freed. Counter
+exhaustion refuses reload. Reset retains code/handles and reinitializes VBA storage.
+The shared bounded LRU holds code/metadata while each session owns globals/Static/Err
+and HAL; eviction cannot invalidate a live session. The scalar host ABI does not
+preempt native calls or prove general recursion/reentry/apartment safety.
+
+## Spreadsheet extraction and DNA Calc glue handoff
+
+All `Value::Range`, SpreadsheetContext, grid limits, synthetic Excel types,
+Application/Range/WorksheetFunction callbacks and spreadsheet value/error conversions
+have moved out of oxvba-embed to `adapters/spreadsheet-compat`. This explicitly legacy
+adapter reuses the neutral compiler/session/cache owners. It preserves the earlier
+bounded tests and browser example; it is not a new engine object library. The
+DnaCalc ProgID belongs only to that adapter. No DnaCalc repository files were edited.
+Existing DnaCalc consumers must pin their prior engine revision until their separately
+authorized glue migration uses the new API or the compatibility package.
+
+DNA Calc glue will need:
+
+- its real typelib and host-owned native objects (and declared typed portable subset);
+- its procedure exposure/registration policy, names, conflicts and workbook identity;
+- bind-once registration records tied to the engine generation and reload lifecycle;
+- exact signature-based argument preparation, default/Missing/ParamArray rules and
+  the remaining typed carrier families as CORE-7 delivers them;
+- Range identity/default-member behavior, caller context, dependency reads, volatility,
+  scheduling and worksheet-function callbacks owned by its object library;
+- runtime-error to cell-error conversion distinct from returned CVErr values;
+- thread/apartment, reentry, budgets, host-object disposal and cache ownership policy;
+- consumer migration, C/native ABI review and integration/call-cost measurements.
+
+Idle Excel evidence now establishes unhandled error13 and division-by-zero -> cell
+#VALUE! with no runtime dialog, while an untyped single-cell Range uses its default
+value in arithmetic. Numeric text and blanks coerce; bad text/multi-cell arithmetic
+produce #VALUE!. Generic object default-value resolution in arithmetic remains
+engine work under bd-59co.2.4.3; glue must supply the real default member without
+erasing the object argument at entry. See [worksheet observations](../evidence/programs/ideal-2026-07/windows-x64/WIN-4/worksheet-errors.md).
+
+`UDF_EMBEDDING_V1.md` remains the compatibility adapter's consumer contract. CORE-7
+bd-59co.2.9.9 and CORE-8 bd-59co.2.10.7 remain open for the in-progress capabilities: the scalar family does not
+complete general typed procedure bodies/carriers, source-free verified sessions,
+full cache/reentry ownership or removal of StandardHost synthetic dynamic projections.
+Native COM residuals stay with WIN-4. See the [bounded delivery/evidence](../evidence/programs/ideal-2026-07/core/CORE-7/typed-host-entries.md).

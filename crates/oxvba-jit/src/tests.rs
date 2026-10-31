@@ -11,6 +11,51 @@ use oxvba_oxir::{
     OxInst, OxLocal, OxParamInfo, RecordLayoutId, TempId, verify_program,
 };
 
+#[test]
+fn stale_typed_address_cannot_execute_after_its_image_is_freed() {
+    let program = OxProgram {
+        funcs: vec![OxFunc {
+            name: "Answer".into(),
+            kind: ProcedureKind::Function,
+            locals: vec![OxLocal {
+                name: "Answer".into(),
+                ty: OxTy::Long,
+                array_element: None,
+                param: None,
+                escaped: false,
+            }],
+            temps: vec![],
+            param_count: 0,
+            return_local: Some(LocalId(0)),
+            entry: BlockId(0),
+            blocks: vec![OxBlock {
+                id: BlockId(0),
+                fault_target: None,
+                instrs: vec![OxInst::Assign {
+                    dst: OxPlace::Local(LocalId(0)),
+                    value: OxOperand::Const(OxConst::I32(42)),
+                }],
+                terminator: OxTerminator::Return,
+            }],
+        }],
+        unit_name: "TypedOwner".into(),
+        ..OxProgram::empty()
+    };
+    let first = JitEngine.compile_image(&[&program]).unwrap();
+    let handle = first.bind_typed::<(), i32>(FuncId(0)).unwrap();
+    assert_eq!(handle.invoke(&first, (), 100), Ok(42));
+    drop(first);
+    let replacement = JitEngine.compile_image(&[&program]).unwrap();
+    assert_eq!(handle.invoke(&replacement, (), 100), Err(5));
+    assert_eq!(
+        replacement
+            .bind_typed::<(), i32>(FuncId(0))
+            .unwrap()
+            .invoke(&replacement, (), 100),
+        Ok(42)
+    );
+}
+
 fn straight_line_program() -> OxProgram {
     let n = LocalId(0);
     let t0 = TempId(0);

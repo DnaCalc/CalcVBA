@@ -89,6 +89,8 @@ mod error;
 mod runtime;
 mod helpers;
 mod lowering;
+mod typed;
+pub use typed::TypedEntry;
 
 pub use crate::consts::JIT_NOT_IMPLEMENTED_MESSAGE;
 pub use crate::error::{JitError, JitFinalErr, JitOutcome};

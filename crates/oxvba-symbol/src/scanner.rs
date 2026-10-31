@@ -1456,7 +1456,7 @@ fn set_accessor(group: &mut PropertyGroup, accessor: PropertyAccessor, sig: Sign
 /// `Public`/`Private`/`Friend` modifier token wins; otherwise `default` (the VBA
 /// default for that declaration kind). The modifier is a direct child token of
 /// the decl node — read the same way [`property_accessor`] reads Get/Let/Set.
-pub(crate) fn decl_visibility(node: SyntaxNode<'_>, default: Visibility) -> Visibility {
+pub fn decl_visibility(node: SyntaxNode<'_>, default: Visibility) -> Visibility {
     for t in node.child_tokens() {
         match t.kind {
             SyntaxKind::KwPublic => return Visibility::Public,
@@ -1484,7 +1484,7 @@ fn member_attributes_with_user_mem_id(root: SyntaxNode<'_>, id: i32) -> BTreeSet
     attrs
 }
 
-fn option_private_module(root: SyntaxNode<'_>) -> bool {
+pub fn option_private_module(root: SyntaxNode<'_>) -> bool {
     root.child_nodes().into_iter().any(|node| {
         if node.kind() != SyntaxKind::OptionStmt {
             return false;

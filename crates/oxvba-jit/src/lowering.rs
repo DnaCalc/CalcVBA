@@ -7,6 +7,10 @@ pub(crate) struct Compiler<'p> {
     pub(crate) imports: Imports,
     pub(crate) programs: Vec<&'p OxProgram>,
     pub(crate) clif_ids: Vec<Vec<ClifFuncId>>,
+    scalar_entries: crate::typed::ScalarDefinitions,
+    scalar_start: ClifFuncId,
+    scalar_finish: ClifFuncId,
+    snapshot_ids: Vec<Option<ClifFuncId>>,
 }
 
 /// Own unpublished generated memory across all fallible compilation steps.
@@ -56,8 +60,30 @@ impl<'p> Compiler<'p> {
         }
 
         register_symbols(&mut builder);
+        builder.symbol(
+            "ox_typed_context_start",
+            oxvba_rt_abi::host_entry::typed_context_start as *const u8,
+        );
+        builder.symbol(
+            "ox_typed_context_finish",
+            oxvba_rt_abi::host_entry::typed_context_finish as *const u8,
+        );
         let mut module = UnpublishedModule(Some(JITModule::new(builder)));
         let imports = declare_imports(&mut module)?;
+        let scalar_entries = crate::typed::compile_scalar_entries(&mut module, programs)?;
+        let ptr = module.target_config().pointer_type();
+        let mut signature = module.make_signature();
+        signature.params = vec![AbiParam::new(ptr), AbiParam::new(ptr)];
+        signature.returns.push(AbiParam::new(types::I32));
+        let scalar_start = module
+            .declare_function("ox_typed_context_start", Linkage::Import, &signature)
+            .map_err(module_err)?;
+        signature.params.push(AbiParam::new(types::I32));
+        signature.params.push(AbiParam::new(ptr));
+        signature.params.push(AbiParam::new(ptr));
+        let scalar_finish = module
+            .declare_function("ox_typed_context_finish", Linkage::Import, &signature)
+            .map_err(module_err)?;
         let clif_ids = programs
             .iter()
             .enumerate()
@@ -70,9 +96,28 @@ impl<'p> Compiler<'p> {
             imports,
             programs: programs.to_vec(),
             clif_ids,
+            scalar_entries,
+            scalar_start,
+            scalar_finish,
+            snapshot_ids: vec![None; programs.len()],
         };
         compiler.define_program_functions()?;
         compiler.module.finalize_definitions().map_err(module_err)?;
+        let typed_functions = compiler
+            .scalar_entries
+            .into_iter()
+            .map(|functions| {
+                functions
+                    .into_iter()
+                    .map(|entry| {
+                        entry.map(|(id, layout)| crate::typed::ScalarEntry {
+                            pointer: compiler.module.get_finalized_function(id),
+                            layout,
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
 
         let functions = compiler
             .clif_ids
@@ -89,11 +134,25 @@ impl<'p> Compiler<'p> {
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
+        let snapshot_entries = compiler
+            .snapshot_ids
+            .iter()
+            .map(|id| {
+                id.map(|id| {
+                    let pointer = compiler.module.get_finalized_function(id);
+                    // SAFETY: diagnostic bodies use the identical universal entry ABI.
+                    unsafe { std::mem::transmute::<*const u8, JitEntryFn>(pointer) }
+                })
+            })
+            .collect();
 
         Ok(CompiledImage {
             module: compiler.module.0.take(),
             programs: programs.to_vec(),
             functions,
+            typed_functions,
+            typed_identity: std::sync::Arc::new(()),
+            snapshot_entries,
         })
     }
 
@@ -102,11 +161,141 @@ impl<'p> Compiler<'p> {
         let mut func_ctx = FunctionBuilderContext::new();
         for program_index in 0..self.programs.len() {
             for index in 0..self.programs[program_index].funcs.len() {
-                self.define_function(program_index, index, &mut ctx, &mut func_ctx)?;
+                if self.scalar_entries[program_index][index].is_some() {
+                    self.define_scalar_thunk(program_index, index, &mut ctx, &mut func_ctx)?;
+                    self.module.clear_context(&mut ctx);
+                    if self.programs[program_index].entry == Some(FuncId(index)) {
+                        let signature = entry_signature(&mut self.module);
+                        let id = self
+                            .module
+                            .declare_function(
+                                &format!("ox$snapshot$p{program_index}"),
+                                Linkage::Local,
+                                &signature,
+                            )
+                            .map_err(module_err)?;
+                        let primary = self.clif_ids[program_index][index];
+                        self.clif_ids[program_index][index] = id;
+                        self.define_function(program_index, index, &mut ctx, &mut func_ctx)?;
+                        self.clif_ids[program_index][index] = primary;
+                        self.snapshot_ids[program_index] = Some(id);
+                    }
+                } else {
+                    self.define_function(program_index, index, &mut ctx, &mut func_ctx)?;
+                }
                 self.module.clear_context(&mut ctx);
             }
         }
         Ok(())
+    }
+
+    fn define_scalar_thunk(
+        &mut self,
+        program_index: usize,
+        index: usize,
+        ctx: &mut cranelift_codegen::Context,
+        func_ctx: &mut FunctionBuilderContext,
+    ) -> Result<(), JitError> {
+        use oxvba_rt_abi::host_entry::ScalarType;
+        let (typed_id, layout) = self.scalar_entries[program_index][index]
+            .as_ref()
+            .expect("scalar entry");
+        let program = self.programs[program_index];
+        let func = &program.funcs[index];
+        ctx.func.signature = entry_signature(&mut self.module);
+        ctx.func.name = UserFuncName::user(
+            program_index as u32,
+            self.clif_ids[program_index][index].as_u32(),
+        );
+        {
+            let mut builder = FunctionBuilder::new(&mut ctx.func, func_ctx);
+            let entry = builder.create_block();
+            builder.switch_to_block(entry);
+            builder.append_block_params_for_function_params(entry);
+            let run = builder.block_params(entry)[0];
+            let state = builder.block_params(entry)[1];
+            let lower = LowerFunc {
+                programs: &self.programs,
+                program_index,
+                program,
+                func,
+                imports: self.imports,
+                clif_ids: &self.clif_ids[program_index],
+                blocks: HashMap::new(),
+                static_proc_refs: HashMap::new(),
+                has_label_error_handler: false,
+                run,
+                state,
+                current_fault_target: None,
+            };
+            let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                8,
+                3,
+            ));
+            let result = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                8,
+                3,
+            ));
+            let ptr = self.module.target_config().pointer_type();
+            let context_ptr = builder.ins().stack_addr(ptr, slot, 0);
+            let result_ptr = builder.ins().stack_addr(ptr, result, 0);
+            let start = self
+                .module
+                .declare_func_in_func(self.scalar_start, builder.func);
+            let call = builder.ins().call(start, &[state, context_ptr]);
+            let status = builder.inst_results(call)[0];
+            lower.return_if_not_ok(&mut builder, status);
+            let mut args = vec![context_ptr];
+            for (i, ty) in layout.parameters.iter().enumerate() {
+                let operand = OxOperand::local(oxvba_oxir::LocalId(i));
+                args.push(match ty {
+                    ScalarType::Double => {
+                        lower.lower_operand_f64(&mut builder, &mut self.module, &operand)?
+                    }
+                    ScalarType::Long => {
+                        lower.lower_operand_i32(&mut builder, &mut self.module, &operand)?
+                    }
+                    ScalarType::Boolean => unreachable!("scalar parameter admission"),
+                });
+            }
+            args.push(result_ptr);
+            let native = self.module.declare_func_in_func(*typed_id, builder.func);
+            let call = builder.ins().call(native, &args);
+            let status = builder.inst_results(call)[0];
+            let finish = self
+                .module
+                .declare_func_in_func(self.scalar_finish, builder.func);
+            let source = builder
+                .ins()
+                .iconst(ptr, program.unit_name.as_ptr() as usize as i64);
+            let source_len = builder.ins().iconst(ptr, program.unit_name.len() as i64);
+            let call = builder
+                .ins()
+                .call(finish, &[state, context_ptr, status, source, source_len]);
+            let status = builder.inst_results(call)[0];
+            lower.return_if_not_ok(&mut builder, status);
+            let dst = OxPlace::Local(func.return_local.expect("typed return"));
+            match layout.result {
+                ScalarType::Double => {
+                    let value = builder.ins().stack_load(types::F64, result, 0);
+                    lower.emit_store_f64(&mut builder, &mut self.module, dst, value)?;
+                }
+                ScalarType::Long => {
+                    let value = builder.ins().stack_load(types::I32, result, 0);
+                    lower.emit_store_i32(&mut builder, &mut self.module, dst, value)?;
+                }
+                ScalarType::Boolean => unreachable!("scalar result admission"),
+            }
+            let status = builder.ins().iconst(types::I32, i64::from(ST_OK));
+            builder.ins().return_(&[status]);
+            builder.seal_all_blocks();
+            builder.finalize();
+        }
+        self.module
+            .define_function(self.clif_ids[program_index][index], ctx)
+            .map_err(module_err)
     }
 
     fn define_function(
@@ -1024,10 +1213,9 @@ impl<'a> LowerFunc<'a> {
                         ArithOp::Mul => builder.ins().fmul(lhs, rhs),
                         _ => unreachable!("checked Double op above"),
                     };
-                    // NB: unlike Single, vm3 does NOT raise Overflow on a
-                    // non-finite Double result (it yields ±Inf), so the JIT must
-                    // match that for parity — no finite check here. (vm3's Double
-                    // overflow conformance vs VBA is tracked separately.)
+                    // Generic Double overflow fault/store ordering remains a
+                    // recorded VBA gap under CORE-3; admitted primary entries
+                    // have their own unhandled scalar-fault convention.
                     self.emit_store_f64(builder, module, *dst, value)
                 }
                 ty => Err(JitError::unsupported(format!(

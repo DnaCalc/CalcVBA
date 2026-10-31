@@ -18,6 +18,13 @@ Non-blocking formal issues and follow-up items for later ladder profiles.
 - Suggested next action:
 
 ## Active Items
+
+- ID: FTODO-TYPED-HOST-20261031
+  Profile: bounded typed host entries and neutral session handles (`bd-59co.2.9.11`, `bd-59co.2.10.8`; broader CORE-7/8 remain open).
+  Summary: installed Lean 4.29.1 passes VarType, Coerce, Arithmetic, RefCount, ExecutionBudget and new ProcedureHandles abstractions. The new model proves stale-generation, different-owner and unloaded rejection plus reload invalidation in an abstract model. Rust/native ABI signature correctness, physical-slot specialization, pointer provenance/code lifetime, generation-identity refinement and error/budget adapter refinement remain unproved. Native Kani is unavailable. The pinned Lean launcher attempted a download; it was canceled, and automatic approval review blocked removal of its uninstalled temporary folder.
+  Current status (`todo` / `investigating` / `resolved`): investigating
+  Reproduction command: run the installed Lean 4.29.1 binary directly for formal/lean/OxVba/ProcedureHandles.lean; run `cargo test -p oxvba-embed` and `cargo test -p oxvba-jit stale_typed_address`.
+  Suggested next action: refine owner/generation and finite-block budget models to the Rust checks, verify generated argument/result signatures and publish nonempty Rust/native proofs on an already approved runner. Keep general carriers, ByRef, recursion, reentry and verified image ownership with existing owners; executable tests and abstraction proofs do not certify native memory safety.
 - ID: FTODO-NATIVE-ALIAS-20261031
   Profile: WIN-9 scalar ABI and Variant cells (`bd-59co.3.10.5`, `bd-59co.3.10.9`)
   Summary: Controlled native and Excel fixtures cover scalar ABI classes, caller-variable aliases, scalar/BSTR Variant cells, per-argument ANSI String temporaries and cleanup. The Variant route shares one existing boxed VARIANT, clones its BSTR readback once and clears one native owner. Runtime handle counters do not count OLE copied-BSTR allocations. No existing formal model proves these native paths. Native cargo-kani is unavailable. Fresh-eyes review removed a second mutable projection of shared boxed cells and derives pointers after storing owners; executable tests alone do not prove pointer provenance.

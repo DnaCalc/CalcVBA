@@ -1,6 +1,6 @@
 //! Minimal WebAssembly export proving the interpreter-only embedding path.
 //! The product API remains the Rust Module/Session interface.
-use oxvba_embed::{Backend, Error, Module, Value};
+use oxvba_spreadsheet_compat::{Backend, Error, Module, Value};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn oxvba_add2_probe(a: f64, b: f64) -> f64 {

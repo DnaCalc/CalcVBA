@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Bounded, value-oriented VBA function embedding for formula hosts"
+description = "Host-neutral procedure metadata and generation-checked typed calls"
 
 [features]
 default = ["jit"]
@@ -22,17 +22,12 @@ oxvba-vm3.workspace = true
 oxvba-jit = { workspace = true, optional = true }
 thiserror.workspace = true
 self_cell = "1.2"
-scoped-tls-hkt = "0.1.5"
-oxvba-com.workspace = true
-oxvba-eval.workspace = true
+oxvba-rt-abi.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
 oxvba-runtime = { workspace = true, features = ["live-counters"] }
+oxvba-com = { workspace = true, features = ["fixture-typelibs"] }
 
 [lints]
 workspace = true
-
-[[example]]
-name = "browser_probe"
-crate-type = ["cdylib"]

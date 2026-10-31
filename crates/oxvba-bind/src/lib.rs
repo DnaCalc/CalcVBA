@@ -81,6 +81,59 @@ pub fn bind_program(
     bind_one(&env, manifest)
 }
 
+/// Compiler-owned procedure identity for hosting. Includes project-private
+/// modules and private declarations; hosts choose their exposure policy.
+#[derive(Debug, Clone)]
+pub struct ModuleProcedure {
+    pub index: usize,
+    pub module: String,
+    pub name: String,
+    pub visibility: oxvba_symbol::model::Visibility,
+    pub option_private_module: bool,
+}
+
+/// Bind once and publish module-procedure facts from the very same resolved CST.
+/// Unlike cross-project exports, this catalogue retains Option Private Module.
+pub fn bind_program_with_procedures(
+    manifest: &SymbolProjectManifest,
+    typelibs: &dyn TypeLibResolver,
+) -> Result<(CoreProgram, Vec<ModuleProcedure>), BindError> {
+    use oxvba_symbol::{
+        model::Visibility,
+        scanner::{decl_visibility, option_private_module},
+    };
+    let env = build_resolution_environment(manifest, typelibs)?;
+    let core = bind_one(&env, manifest)?;
+    let mut procedures = Vec::new();
+    let mut index = 0;
+    for module in env.modules() {
+        let private_module = option_private_module(module.syntax)
+            || manifest
+                .modules
+                .iter()
+                .find(|m| m.module_name.eq_ignore_ascii_case(module.module_name))
+                .is_some_and(|m| m.attributes.option_private_module);
+        for declaration in module.syntax.child_nodes().into_iter().filter(|node| {
+            matches!(
+                node.kind(),
+                SyntaxKind::SubDecl | SyntaxKind::FunctionDecl | SyntaxKind::PropertyDecl
+            ) && node.proc_name_token().is_some()
+        }) {
+            if module.module_kind == ModuleKind::Procedural {
+                procedures.push(ModuleProcedure {
+                    index,
+                    module: module.module_name.into(),
+                    name: core.procs[index].name.clone(),
+                    visibility: decl_visibility(declaration, Visibility::Public),
+                    option_private_module: private_module,
+                });
+            }
+            index += 1;
+        }
+    }
+    Ok((core, procedures))
+}
+
 /// Bind one source project against already-compiled referenced project
 /// surfaces. The supplied surfaces are the source-less equivalent of
 /// `manifest.reference_projects`: they publish names, callable signatures, and

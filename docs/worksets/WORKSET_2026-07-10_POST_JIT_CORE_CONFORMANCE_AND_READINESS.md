@@ -460,3 +460,20 @@ The clause lists in the epic sections state each outcome's primary contract. The
 - CORE-10: `CONF-DONE-001|DOC-AUTH-001|DOC-TRACE-001|PORT-CORE-001|PROFILE-CORE-001`
 
 The canonical disposition and trace ledgers remain machine authority for these routes; any change updates this appendix, the epic contract and those ledgers together.
+
+## 2026-10-31 directed run 6
+
+CORE-7 delivery `bd-59co.2.9.11` advances the bounded required ByVal Long/Double
+primary host-entry family and matching unboxed VM3 entry, with warm call-cost and
+allocation evidence. CORE-8 delivery `bd-59co.2.10.8` consumes it for neutral
+source-module procedure metadata/bound handles, generation-safe reload, shared
+code/session/cache ownership and spreadsheet adapter extraction. The legacy
+adapter now lives outside the engine in `adapters/spreadsheet-compat`.
+
+Canonical CORE-JIT-LOWERING and CORE-JIT-CACHE-OBJECT remain in-progress. Broad
+`bd-59co.2.9.9` and `bd-59co.2.10.7` stay open behind their full prerequisites;
+no general typed carriers/bodies, verified packages, reentry, native ABI or DNA
+Calc integration is claimed. Idle Excel error/Range observations and the glue
+handoff are retained with the [bounded evidence](../evidence/programs/ideal-2026-07/core/CORE-7/typed-host-entries.md).
+Generic object-default arithmetic remains in the NumericMode/coercion owner
+`bd-59co.2.4.3`, without introducing spreadsheet names into the engine.

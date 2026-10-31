@@ -1,6 +1,6 @@
-use oxvba_embed::{Backend, Module, Value};
+use oxvba_spreadsheet_compat::{Backend, Module, Value};
 
-fn main() -> Result<(), oxvba_embed::Error> {
+fn main() -> Result<(), oxvba_spreadsheet_compat::Error> {
     let module = Module::load("Math", "Function Add2(a, b): Add2 = a + b: End Function\n")?;
     for function in module.functions() {
         println!("{}: {:?}", function.qualified_name, function.parameters);

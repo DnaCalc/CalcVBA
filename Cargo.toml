@@ -21,6 +21,7 @@ members = [
     "crates/oxvba-vm3",
     "crates/oxvba-differential",
     "crates/oxvba-embed",
+    "adapters/spreadsheet-compat",
 ]
 resolver = "2"
 

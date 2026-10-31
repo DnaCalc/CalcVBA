@@ -444,6 +444,7 @@ struct Frame {
 
 /// The vm3 interpreter over one or more typed OxIR programs.
 pub struct Vm3<'h> {
+    typed_entries: Vec<Vec<Option<typed::TypedInterpreter<'h>>>>,
     /// Index into `programs` of the executing program (`0` for single-project activation).
     cur: usize,
     /// Shared runtime state below vm3 and the JIT.
@@ -694,10 +695,27 @@ impl<'h> Vm3<'h> {
             ));
         }
         let entry = programs.len() - 1;
+        let allow_typed = programs
+            .iter()
+            .all(|p| p.classes.is_empty() && p.record_layouts.is_empty());
+        let typed_entries = programs
+            .iter()
+            .map(|p| {
+                p.funcs
+                    .iter()
+                    .map(|f| {
+                        allow_typed
+                            .then(|| typed::TypedInterpreter::bind(f).ok())
+                            .flatten()
+                    })
+                    .collect()
+            })
+            .collect();
         let mut exec = ExecState::new(host);
         exec.remaining_steps = steps;
         exec.programs = programs.iter().map(|p| Self::build_loaded(p)).collect();
         let mut vm = Vm3 {
+            typed_entries,
             cur: entry,
             exec,
             frames: Vec::new(),
@@ -881,6 +899,14 @@ impl<'h> Vm3<'h> {
         self.exec.remaining_steps = Some(steps);
     }
 
+    /// Seat an unhandled typed host-entry fault in this session's shared Err.
+    pub fn record_typed_entry_error(&mut self, number: i32) {
+        self.exec.err_engine.raise(
+            Fault::new(number, oxvba_rt_abi::default_error_message(number)),
+            self.exec.default_error_source.clone(),
+        );
+    }
+
     /// Invoke a standard-module function with already coerced value arguments.
     /// No hidden Me slot is inserted and host ByRef arguments are private copies.
     pub fn invoke_function_values(
@@ -893,10 +919,13 @@ impl<'h> Vm3<'h> {
             .funcs
             .get(func.0)
             .ok_or_else(|| Vm3Error::Malformed("function index out of range".into()))?;
-        if target.param_count != args.len() || target.return_local.is_none() {
+        if target.param_count != args.len() {
             return Err(Vm3Error::Malformed(
                 "function invocation signature mismatch".into(),
             ));
+        }
+        if let Some(result) = self.invoke_scalar_values(self.cur, func, &args) {
+            return result;
         }
         let base = self.frames.len();
         let mut frame = self.new_frame(func);
@@ -922,6 +951,54 @@ impl<'h> Vm3<'h> {
         self.prune_param_array_aliases_from_depth(base);
         self.maybe_drain();
         outcome.map(|()| value)
+    }
+
+    /// The universal value route adapts exact scalar values to the same unboxed
+    /// primary interpreter used by typed hosts. No source/name reconstruction.
+    fn invoke_scalar_values(
+        &mut self,
+        program: usize,
+        func: FuncId,
+        args: &[Variant],
+    ) -> Option<Result<Variant, Vm3Error>> {
+        use oxvba_rt_abi::host_entry::{MAX_TYPED_ARGS, ScalarBits, ScalarType, TypedContext};
+        let entry = self.typed_entries.get(program)?.get(func.0)?.as_ref()?;
+        if args.len() != entry.layout().parameters.len() {
+            return None;
+        }
+        let mut bits = [ScalarBits(0); MAX_TYPED_ARGS];
+        for (i, (value, ty)) in args.iter().zip(&entry.layout().parameters).enumerate() {
+            bits[i] = match ty {
+                ScalarType::Long => ScalarBits::long(value.as_i32()?),
+                ScalarType::Double => ScalarBits::double(value.as_f64()?),
+                ScalarType::Boolean => return None,
+            };
+        }
+        let result_ty = entry.layout().result;
+        let source = &self.exec.programs[program].program.unit_name;
+        let mut context = TypedContext {
+            remaining_blocks: self.exec.remaining_steps.unwrap_or(u64::MAX),
+        };
+        let saved = self.exec.err_engine.enter_activation();
+        let result = entry.invoke(&bits[..args.len()], &mut context);
+        self.exec.err_engine.restore(saved);
+        if self.exec.remaining_steps.is_some() {
+            self.exec.remaining_steps = Some(context.remaining_blocks);
+        }
+        Some(match result {
+            Ok(value) => Ok(match result_ty {
+                ScalarType::Long => Variant::from_i32(value.as_long()),
+                ScalarType::Double => Variant::from_f64(value.as_double()),
+                ScalarType::Boolean => unreachable!("admitted scalar result"),
+            }),
+            Err(-1) => Err(Vm3Error::BudgetExceeded),
+            Err(number) => {
+                let mut fault = Fault::new(number, oxvba_rt_abi::default_error_message(number));
+                fault.source = Some(source.clone());
+                self.exec.err_engine.raise(fault.clone(), source.clone());
+                Err(Vm3Error::Fault(fault))
+            }
+        })
     }
 
     /// The result snapshot slot `i`: module globals occupy `[0, globals.len())`; higher
@@ -2279,6 +2356,31 @@ impl<'h> Vm3<'h> {
             .ok_or_else(|| Vm3Error::Malformed(format!("call to unknown proc {}", proc.0)))?;
         // Resolve the destination + ByRef backings in the caller, before pushing.
         let dst_loc = dst.map(|p| self.resolve(&p));
+        if self.typed_entries[target_prog][proc.0].is_some()
+            && args.len() == callee.param_count
+            && args.iter().all(|arg| matches!(arg, OxArg::ByVal(_)))
+        {
+            self.guard_call_depth()?;
+            let mut values =
+                std::array::from_fn::<_, { oxvba_rt_abi::host_entry::MAX_TYPED_ARGS }, _>(|_| {
+                    Variant::empty()
+                });
+            for (i, arg) in args.iter().enumerate() {
+                let OxArg::ByVal(operand) = arg else {
+                    unreachable!("checked ByVal")
+                };
+                values[i] = self.operand(operand)?;
+            }
+            if let Some(result) =
+                self.invoke_scalar_values(target_prog, proc, &values[..args.len()])
+            {
+                let value = result?;
+                if let Some(dst) = dst_loc {
+                    self.write_loc(dst, value)?;
+                }
+                return Ok(());
+            }
+        }
         let mut locals: Vec<Variant> = callee
             .locals
             .iter()
@@ -7850,3 +7952,4 @@ mod tests {
         assert_eq!(s, "BA");
     }
 }
+pub mod typed;

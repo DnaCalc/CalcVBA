@@ -10,7 +10,7 @@ This file is generated from the manifest-owned canonical matrices. It is a proje
 
 | Profile | Matrices | Rows | Planned | In progress | Implemented subset | Implemented full | Verified | Archived |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| core | 5 | 59 | 58 | 0 | 0 | 0 | 1 | 0 |
+| core | 5 | 59 | 56 | 2 | 0 | 0 | 1 | 0 |
 | windows-x64 | 6 | 57 | 52 | 4 | 0 | 0 | 1 | 0 |
 | ide | 4 | 77 | 77 | 0 | 0 | 0 | 0 | 0 |
 
@@ -18,7 +18,7 @@ This file is generated from the manifest-owned canonical matrices. It is a proje
 
 | Matrix | Profile | Role | Owner epic | Rows | Verified | Open | Trace relationships |
 |---|---|---|---|---:|---:|---:|---:|
-| CORE-READINESS | core | primary | bd-59co.2.1 | 24 | 1 | 23 | 115 |
+| CORE-READINESS | core | primary | bd-59co.2.1 | 24 | 1 | 23 | 117 |
 | VBA-LIBRARY | core | primary | bd-59co.2.5 | 7 | 0 | 7 | 7 |
 | OXIR-BACKENDS | core | primary | bd-59co.2.6 | 12 | 0 | 12 | 23 |
 | OXIMAGE-CONTRACT | core | primary | bd-59co.2.6 | 8 | 0 | 8 | 15 |
@@ -52,8 +52,8 @@ This file is generated from the manifest-owned canonical matrices. It is a proje
 | CORE-BASELINE-CROSS-PLATFORM-GATES | CORE-READINESS | versioned Windows and Linux ordinary gate baseline | pinned environments canonical runner strict checks parallel and serial differentials | planned | remaining-accepted-scope | bd-59co.2.2.12 |
 | CORE-RUNTIME-HELPER-SESSION | CORE-READINESS | owned runtime helper ABI and project sessions | versioned descriptors typed wrappers lifecycle error and reset | planned | remaining-accepted-scope | bd-59co.2.7.1 |
 | CORE-VM3-REFERENCE | CORE-READINESS | complete VM3 reference interpreter | all admitted verified Core and OxIR vocabulary plus entries links errors recursion and sessions | planned | remaining-accepted-scope | bd-59co.2.8.1 |
-| CORE-JIT-LOWERING | CORE-READINESS | ideal JIT lowering and call architecture | inspectable lowering plan typed entries direct calls universal thunk ByRef errors and recursion | planned | remaining-accepted-scope | bd-59co.2.9.9 |
-| CORE-JIT-CACHE-OBJECT | CORE-READINESS | JIT session cache and native continuity | source-free verified image sessions deterministic key bounded cache persistent objects and object blobs | planned | remaining-accepted-scope | bd-59co.2.10.1 |
+| CORE-JIT-LOWERING | CORE-READINESS | ideal JIT lowering and call architecture | inspectable lowering plan typed entries direct calls universal thunk ByRef errors and recursion | in-progress | remaining-accepted-scope | bd-59co.2.9.9 |
+| CORE-JIT-CACHE-OBJECT | CORE-READINESS | JIT session cache and native continuity | source-free verified image sessions deterministic key bounded cache persistent objects and object blobs | in-progress | remaining-accepted-scope | bd-59co.2.10.1 |
 | CORE-DIFF-SEMANTICS-FUZZ | CORE-READINESS | structural VM3 JIT differential fuzzing | scalar Variant control-flow call and error hazards | planned | remaining-accepted-scope | bd-59co.2.11.3 |
 | CORE-DIFF-STRUCTURAL | CORE-READINESS | full differential observable | arrays records objects ProcRefs identities errors effects lifecycle and balance | planned | remaining-accepted-scope | bd-59co.2.11.4 |
 | CORE-PORTABLE-CERT | CORE-READINESS | portable Core implementation and oracle certification | compiler library OxIR OxImage VM3 JIT sessions cache differential locale lifecycle and current VBA authority | planned | remaining-accepted-scope | bd-59co.2.11.4 |

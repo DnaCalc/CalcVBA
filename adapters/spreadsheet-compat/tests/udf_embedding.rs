@@ -1,4 +1,4 @@
-use oxvba_embed::{Backend, Error, Module, Value};
+use oxvba_spreadsheet_compat::{Backend, Error, Module, Value};
 
 fn backends() -> Vec<Backend> {
     let mut backends = vec![Backend::Interpreter];
@@ -437,7 +437,7 @@ fn worksheet_doubles_use_checked_vba_parameter_coercion() {
 
 #[test]
 fn spreadsheet_objects_read_live_ranges_caller_and_host_functions_on_both_backends() {
-    use oxvba_embed::{Range, SpreadsheetContext};
+    use oxvba_spreadsheet_compat::{Range, SpreadsheetContext};
     use std::cell::Cell;
     struct Context {
         first: Cell<f64>,
@@ -739,7 +739,7 @@ End Function
 
 #[test]
 fn bounded_cache_shares_code_without_sharing_vba_state_and_live_sessions_survive_eviction() {
-    use oxvba_embed::CodeCache;
+    use oxvba_spreadsheet_compat::CodeCache;
     let before = oxvba_runtime::current_thread_live_handle_counts();
     let source = "Private n As Long\nPublic Function CountIt() As Long\n n = n + 1\n CountIt = n\nEnd Function\nPublic Function Defaults(Optional x As Long = 7) As Long\n Defaults = x\nEnd Function\n";
     for backend in backends() {
@@ -800,8 +800,8 @@ fn bounded_cache_shares_code_without_sharing_vba_state_and_live_sessions_survive
 
 #[test]
 fn cache_limits_bypass_oversized_entries_and_do_not_retain_session_hosts() {
-    use oxvba_embed::CodeCache;
     use oxvba_hal::adapters::builder::HostBuilder;
+    use oxvba_spreadsheet_compat::CodeCache;
     use std::sync::Arc;
     for backend in backends() {
         let host = HostBuilder::new().build();
@@ -834,9 +834,9 @@ fn cache_limits_bypass_oversized_entries_and_do_not_retain_session_hosts() {
 #[cfg(feature = "jit")]
 #[test]
 fn cache_uses_the_compiled_configuration_and_host_capability_profile() {
-    use oxvba_embed::CodeCache;
     use oxvba_hal::{adapters::builder::HostBuilder, model::HostPolicy};
     use oxvba_jit::JitConfiguration;
+    use oxvba_spreadsheet_compat::CodeCache;
     let source = "Function F(): F = 42: End Function\n";
     let fast = JitConfiguration::native_with_optimization(true).unwrap();
     let plain = JitConfiguration::native_with_optimization(false).unwrap();

@@ -7,6 +7,11 @@ is claimed. The DnaCalc tree was read for context and was not edited.
 
 Code checkpoint: `0113e7ee9d2675393cb2e88b551eb91171a66507`.
 
+Run-6 note: the spreadsheet API/tests/browser example described below have moved
+to `adapters/spreadsheet-compat`. The historical commands remain tied to this
+checkpoint; current commands use `-p oxvba-spreadsheet-compat`. Current neutral
+hosting and measurements are in [typed-host-entries.md](../CORE-7/typed-host-entries.md).
+
 The contract is `docs/spec/UDF_EMBEDDING_V1.md`. Tests cover compiler-derived
 public function/parameter metadata, the requested one-line Add2, scalar values,
 worksheet errors versus runtime failures, mixed two-dimensional arrays,

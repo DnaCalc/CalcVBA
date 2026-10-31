@@ -50,7 +50,7 @@ impl JitConfiguration {
     /// this is not a persistent on-disk code format.
     pub fn identity(&self) -> String {
         format!(
-            "{}|{}|{}|private-helpers=3|carrier={}:{}|jit={}",
+            "{}|{}|{}|private-helpers=4|typed=1|carrier={}:{}|jit={}",
             self.isa.triple(),
             self.isa.flags(),
             self.isa
@@ -76,6 +76,9 @@ pub struct CompiledImage<'p> {
     pub(crate) module: Option<JITModule>,
     pub(crate) programs: Vec<&'p OxProgram>,
     pub(crate) functions: Vec<Vec<JitEntryFn>>,
+    pub(crate) typed_functions: Vec<Vec<Option<crate::typed::ScalarEntry>>>,
+    pub(crate) typed_identity: std::sync::Arc<()>,
+    pub(crate) snapshot_entries: Vec<Option<JitEntryFn>>,
 }
 
 impl<'p> CompiledImage<'p> {
@@ -97,7 +100,7 @@ impl<'p> CompiledImage<'p> {
             .last()
             .and_then(|program| program.funcs.get(func.0))
             .ok_or_else(|| JitError::Runtime("function index out of range".into()))?;
-        if target.param_count != args.len() || target.return_local.is_none() {
+        if target.param_count != args.len() {
             return Err(JitError::Runtime(
                 "function invocation signature mismatch".into(),
             ));
@@ -148,7 +151,7 @@ impl<'p> CompiledImage<'p> {
             .last()
             .and_then(|p| p.funcs.get(func.0))
             .ok_or_else(|| JitError::Runtime("function index out of range".into()))?;
-        if target.param_count != args.len() || target.return_local.is_none() {
+        if target.param_count != args.len() {
             return Err(JitError::Runtime(
                 "function invocation signature mismatch".into(),
             ));
@@ -171,6 +174,31 @@ impl<'p> CompiledImage<'p> {
         session: &mut JitSession<'h>,
         invocation: Option<(FuncId, &[Variant])>,
         steps: Option<u64>,
+    ) -> Result<JitOutcome, JitError>
+    where
+        'p: 'h,
+    {
+        self.execute_session_mode(session, invocation, steps, false)
+    }
+
+    /// Run project initialization without executing Main or any public procedure.
+    pub fn initialize_session<'h>(
+        &self,
+        session: &mut JitSession<'h>,
+        steps: u64,
+    ) -> Result<JitOutcome, JitError>
+    where
+        'p: 'h,
+    {
+        self.execute_session_mode(session, None, Some(steps), true)
+    }
+
+    fn execute_session_mode<'h>(
+        &self,
+        session: &mut JitSession<'h>,
+        invocation: Option<(FuncId, &[Variant])>,
+        steps: Option<u64>,
+        initialize_only: bool,
     ) -> Result<JitOutcome, JitError>
     where
         'p: 'h,
@@ -253,7 +281,7 @@ impl<'p> CompiledImage<'p> {
                 // SAFETY: the current compiled-run boundary owns the live unique state handle;
                 // typed references and owned values remain live and nonaliasing for this call.
                 let status =
-                    unsafe { self.invoke_func(program_index, init, &[], run_root, state) }?;
+                    unsafe { self.invoke_func(program_index, init, &[], run_root, state, None) }?;
                 if status == oxvba_rt_abi::ST_ABORT {
                     return Err(JitError::BudgetExceeded);
                 }
@@ -275,12 +303,22 @@ impl<'p> CompiledImage<'p> {
 
             session.initialized = true;
             session.initialization_failed = false;
-            if let Some(entry) = invocation.map(|(func, _)| func).or(entry_program.entry) {
+            if let Some(entry) = invocation
+                .map(|(func, _)| func)
+                .or(entry_program.entry)
+                .filter(|_| !initialize_only)
+            {
                 let args = invocation.map(|(_, args)| args).unwrap_or(&[]);
-                // SAFETY: the current compiled-run boundary owns the live unique state handle;
-                // typed references and owned values remain live and nonaliasing for this call.
-                let status =
-                    unsafe { self.invoke_func(entry_program_index, entry, args, run_root, state) }?;
+                let snapshot = if invocation.is_none() {
+                    self.snapshot_entries[entry_program_index]
+                } else {
+                    None
+                };
+                // SAFETY: this compiled-run boundary owns the unique live state;
+                // the selected entry belongs to this image and all borrows survive the call.
+                let status = unsafe {
+                    self.invoke_func(entry_program_index, entry, args, run_root, state, snapshot)
+                }?;
                 if status == oxvba_rt_abi::ST_ABORT {
                     return Err(JitError::BudgetExceeded);
                 }
@@ -364,6 +402,7 @@ impl<'p> CompiledImage<'p> {
         args: &[Variant],
         run: *mut JitRun,
         state: *mut RawExecState,
+        snapshot_entry: Option<JitEntryFn>,
     ) -> Result<i32, JitError> {
         let program = self
             .programs
@@ -386,6 +425,7 @@ impl<'p> CompiledImage<'p> {
                     func.0, program_index
                 ))
             })?;
+        let entry = snapshot_entry.unwrap_or(entry);
         let mut saved_err = RtSavedErrState::default();
         // SAFETY: `state` is the live execution state for this invocation and
         // `saved_err` is initialized, uniquely borrowed output storage.
@@ -428,6 +468,16 @@ pub struct JitSession<'p> {
     initialization_failed: bool,
     as_new_slots: HashMap<SlotAlias, OxAsNew>,
     next_collection_instance_id: i32,
+}
+
+impl JitSession<'_> {
+    /// Seat an unhandled typed host-entry fault in the same Err used by thunks.
+    pub fn record_typed_entry_error(&mut self, number: i32) {
+        self.exec.err_engine.raise(
+            Fault::new(number, oxvba_rt_abi::default_error_message(number)),
+            self.exec.default_error_source.clone(),
+        );
+    }
 }
 
 impl Drop for CompiledImage<'_> {

@@ -1,6 +1,5 @@
-//! Checked Single/Double add/sub/mul must overflow to VBA error 6 in the JIT
-//! exactly as in vm3. The JIT's f32/f64 fast paths used raw fadd/fsub/fmul and
-//! stored ±Inf silently; vm3 rejects a non-finite result (error 6).
+//! Floating arithmetic regressions and scoped typed-callee error transport.
+//! Generic Double fault/store ordering remains CORE-3 bd-59co.2.4.3.
 
 use oxvba_differential::{Executor, run};
 
@@ -62,18 +61,15 @@ fn jit_single_overflow_matches_vm3() {
 
 #[test]
 fn jit_double_overflow_matches_vm3() {
-    // vm3 does NOT raise on Double overflow (it yields ±Inf); the JIT must match
-    // that, not raise. (Whether VBA should raise here is a separate vm3 gap.)
+    // This compares the existing generic route only. Excel raises error 6 and
+    // preserves the overflowed assignment under Resume Next; the full store/
+    // fault-order correction remains CORE-3 bd-59co.2.4.3. The admitted typed
+    // scalar family separately proves unhandled overflow on both backends.
     for src in [
         double("    a = 1E308\n    b = a + a\n"),
         double("    a = 1E308\n    b = a * 10\n"),
     ] {
         assert_jit_matches_vm3(&src);
-        let outcome = run(Executor::Vm3, &src);
-        assert!(
-            !outcome.raised,
-            "vm3 unexpectedly raised on Double overflow"
-        );
     }
 }
 
@@ -84,4 +80,18 @@ fn jit_finite_float_arithmetic_still_matches_vm3() {
     assert_jit_matches_vm3(&single("    a = 100\n    b = a * 3\n"));
     assert_jit_matches_vm3(&double("    a = 1E100\n    b = a + a\n"));
     assert_jit_matches_vm3(&double("    a = 12.5\n    b = a - 4.5\n"));
+}
+
+#[test]
+fn admitted_scalar_callee_overflow_reaches_caller_handler() {
+    let source = "Public r As Variant\nFunction Multiply(ByVal a As Double, ByVal b As Double) As Double\nMultiply = a * b\nEnd Function\nSub Main()\nOn Error Resume Next\nr = Multiply(1E308, 2#)\nr = Err.Number\nEnd Sub\n";
+    assert_jit_matches_vm3(source);
+    for executor in [Executor::Vm3, Executor::Jit] {
+        let outcome = run(executor, source);
+        assert!(!outcome.raised, "caller must handle overflow: {outcome:?}");
+        assert_eq!(
+            outcome.err.number, 6,
+            "{executor:?} must retain callee error"
+        );
+    }
 }

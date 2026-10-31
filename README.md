@@ -93,7 +93,7 @@ cargo run -p oxvba-cli -- run-image out\ProjectName.oxi --backend jit
 
 This uses the current `.oxi` artifact and supports program-style `OutputType=Exe`, including the top-level statement extension. Genuine native DLL/EXE generation remains unfinished.
 
-For formula-host calls, use [`oxvba-embed`](docs/spec/UDF_EMBEDDING_V1.md): load a module, inspect public function parameters, and call by name with spreadsheet scalars, errors and arrays. VM3, compile-once JIT use and an interpreter-only WebAssembly build have explicit budgets and typed errors. Range objects and persistent globals remain follow-up work.
+For host calls, use neutral [`oxvba-embed`](docs/spec/HOSTING_AND_EARLY_BINDING.md): enumerate compiler-owned procedure signatures, bind once, and invoke generation-checked VM3/JIT handles. The bounded Long/Double typed route uses unboxed storage with no per-call name lookup or heap frame. The earlier spreadsheet value/Range API now lives in [`oxvba-spreadsheet-compat`](adapters/spreadsheet-compat/README.md); DNA Calc glue migration remains external.
 
 Useful options:
 

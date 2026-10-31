@@ -62,7 +62,7 @@ The architecture is broad and real but not complete. The compiler/binder is the 
 - `oxvba-build` emits OxImage and wrapper/COM-server artifacts.
 - `oxvba-comhost` is the reusable Windows in-process COM-server host, currently VM3-backed.
 - `oxvba-cli` exposes source/project run and build commands.
-- `oxvba-embed` currently supplies a function catalogue, persistent invocation and immutable-code cache, but also legacy spreadsheet-specific objects. The owner requires extraction of those objects into host glue and neutral bound procedure handles; see [`spec/HOSTING_AND_EARLY_BINDING.md`](spec/HOSTING_AND_EARLY_BINDING.md). [`spec/UDF_EMBEDDING_V1.md`](spec/UDF_EMBEDDING_V1.md) records the legacy consumer API.
+- `oxvba-embed` supplies compiler-owned module-procedure signatures, generation-checked bound VM3/JIT calls and the shared immutable-code cache. Its bounded typed scalar entries use unboxed storage. The legacy spreadsheet types, conversions and object model now live in `adapters/spreadsheet-compat`, which delegates compiler/session/cache ownership to the neutral engine. DNA Calc migration remains external; see [`spec/HOSTING_AND_EARLY_BINDING.md`](spec/HOSTING_AND_EARLY_BINDING.md).
 
 No active `oxvba-languageservice`, `oxvba-lsp`, `oxvba-debug` or forms-runtime crate exists in the current workspace.
 
@@ -130,7 +130,7 @@ The exact layout doctrine remains [`spec/OXVBA_REPRESENTATION_LAYOUT_DOCTRINE_V1
 
 ## 7. VM3 realization
 
-VM3 interprets typed OxIR with heap-owned frames, typed places, ByRef aliases, error/Resume routing, class lifecycle, project events and broad library/runtime support. It is the sole product interpreter and the JIT reference backend.
+VM3 is the sole product interpreter and the JIT reference backend. It interprets typed OxIR with heap-owned frames, typed places, ByRef aliases, error/Resume routing, class lifecycle, project events and broad library/runtime support. Its admitted scalar entry reads the same OxFunc through unboxed stack storage without a Variant frame; universal scalar calls adapt to that entry.
 
 Focused VM/runtime suites are broad, and the VM3 golden contains hundreds of value/error rows. This is useful regression evidence, not automatic VBA authority.
 
@@ -149,19 +149,27 @@ VM3 destination behavior is specified with OxIR/OxImage in [`spec/OXVBA_OXIR_AND
 
 The JIT is a real Cranelift backend. It directly lowers linked OxProgram blocks, compiles whole accepted program sets without VM fallback and supports broad control flow, calls, values, arrays, records, project classes, lifecycle and project events.
 
-Its current primary entry shape is a universal dynamic ABI:
+A bounded typed primary family now accepts zero to four required ByVal Long/Double
+arguments, a runtime budget context and a typed result pointer, returning an explicit
+status. Admitted pure numeric bodies use unboxed physical slots; successful warm
+host calls allocate no heap storage. VM3 has a matching unboxed interpreter route.
+The dynamic JIT entry adapts its Variant frame to that primary family where admitted;
+image run-entry bodies retain their existing diagnostic local snapshots.
 
-```text
-unsafe extern "C" fn(*mut JitRun, *mut RawExecState) -> i32
-```
-
-Static calls can invoke local compiled functions, but Variant-backed frames and helpers still materialize much of the call state. Source/manifest invocation recompiles; `prepare_image_session` remains VM3-only. The bounded embedding facade retains compiled code and independent VM3/JIT project storage across calls, supports Optional/default/ParamArray arguments and resets storage without recompiling. It still refuses project classes/UDTs and does not complete general package-session ownership.
+The neutral embedding API binds handles once, checks owner identity and generation
+on each call, initializes without running Main, and retains independent project
+state over shared cached code. Reload prepares a replacement before invalidating
+old generations; a handle never publishes an executable address. The source-module
+facade still refuses project classes/UDTs and does not replace general package
+sessions. Unsupported typed bodies/signatures return an explicit refusal; they do
+not silently use the dynamic frame path. See the bounded
+[typed-host evidence](evidence/programs/ideal-2026-07/core/CORE-7/typed-host-entries.md).
 
 ### Material gaps against the contract
 
 - the public compiler does not require sealed verified image/program input;
 - no inspectable procedure-lowering plan currently separates semantic OxIR from physical/codegen decisions;
-- there is no typed-primary-entry family with a universal thunk as the dynamic adapter;
+- the typed family remains bounded to required ByVal Long/Double, pure local numeric bodies and no more than four arguments/128 physical slots; general carriers, ByRef, Optional/ParamArray, globals/Static, external calls, handlers, direct typed internal calls and native recursion remain open;
 - helper registration is not a versioned descriptor catalog;
 - line/Erl, writable Err fields and full dynamic Err.Raise metadata are incomplete;
 - deep source recursion relies on the native stack and is not safely proven;

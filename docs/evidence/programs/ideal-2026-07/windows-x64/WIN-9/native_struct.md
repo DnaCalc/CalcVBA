@@ -40,7 +40,9 @@ Eight source-specific probes froze expectations before starting owned Excel:
 The colon replaces the embedded NUL only in the printable VBA report. Raw value
 bytes are also checked by the native regression. Earlier fixture versions remain
 separate; their measurements do not claim to execute the later refactored file.
-The final fixture source is exactly the checked-in `tests/support/native_scalar.rs`.
+The Variant checkpoint `5933403c` contains that exact fixture source. The later
+String characterization adds exports to the same file without changing the
+Variant bodies.
 
 All eight probes pass the unchanged owned supervisor contract: visible VBE
 Compile command 578, exact module/source authority, guardian before invocation,
@@ -66,7 +68,9 @@ returned BSTR bytes, distinct cells, VARTYPE changes and LastDllError agree acro
 VM3 and JIT. Runtime owned-handle balance returns to its initial value after each
 engine is dropped. Array/object Variant payloads, mixed Variant/Any declarations
 in either order and repeated Any retain explicit refusal tests with native call
-delta zero. The existing repeated native String refusal also remains covered.
+delta zero. At the Variant checkpoint, repeated native String calls were still refused.
+The later [String temporary repair](native_strings.md) follows their different
+per-argument conversion rules.
 These protective refusals are open compatibility gaps, not VBA target behavior.
 
 The complete Windows parity suite passes 11 tests with the opt-in owned-workbook

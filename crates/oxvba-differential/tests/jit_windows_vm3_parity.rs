@@ -440,7 +440,7 @@ fn unsupported_alias_carriers_fail_before_entering_native_code() {
 Public result As Long
 Public observedError As Long
 Public calls As Long
-Declare PtrSafe Function Probe Lib "{path}" Alias "PointerProbe" (ByRef a As String, ByRef b As String) As Long
+Declare PtrSafe Function Probe Lib "{path}" Alias "PointerProbe" (ByRef a As Any, ByRef b As Any) As Long
 Declare PtrSafe Function NativeCount Lib "{path}" Alias "AliasCallCount" () As Long
 Sub Main()
     Dim text As String
@@ -744,4 +744,136 @@ End Sub
         observed.transport.1 >= 13,
         "actual IDispatch calls required"
     );
+}
+
+#[test]
+fn native_string_aliases_use_argument_temporaries_and_ordered_copyback() {
+    let fixture = NativeFixture::build();
+    let path = fixture.path().display().to_string();
+    for (mode, export, call) in [
+        ("ByRef", "ObserveAnsiRef", "Probe(value, value)"),
+        ("ByRef", "ObserveAnsiRef", "Probe((value), value)"),
+        ("ByRef", "ObserveAnsiRef", "Forward(value, value)"),
+        ("ByVal", "ObserveAnsiVal", "Probe(value, value)"),
+    ] {
+        let observed = compare(&format!(
+            r#"
+Public result As String
+Declare PtrSafe Function Probe Lib "{path}" Alias "{export}" ({mode} first As String, {mode} second As String) As Long
+Private Function Forward(ByRef first As String, ByRef second As String) As Long
+    Forward = Probe(first, second)
+End Function
+Sub Main()
+    Dim value As String
+    Dim answer As Long, savedError As Long
+    value = "abcd"
+    answer = {call}
+    savedError = Err.LastDllError
+    result = CStr(answer) & "|" & value & "|" & CStr(savedError)
+End Sub
+"#
+        ));
+        assert!(!observed.raised, "{mode}/{call}: {observed:?}");
+        assert_eq!(
+            observed.values[0],
+            canon(&Variant::from_string("0|aYcd|4321"))
+        );
+        assert_eq!(
+            observed.err,
+            FinalErr {
+                last_dll_error: 4321,
+                ..Default::default()
+            }
+        );
+    }
+}
+
+#[test]
+fn native_string_alias_copyback_preserves_distinct_values_and_embedded_nul() {
+    let fixture = NativeFixture::build();
+    let path = fixture.path().display().to_string();
+    for (body, expected, raw_expected) in [
+        (
+            r#"
+    first = "abcd"
+    second = first
+    answer = Probe(first, second)
+    savedError = Err.LastDllError
+    bytesValue = second
+    result = CStr(answer) & "|" & first & "|" & second & "|" & CStr(savedError)
+"#,
+            "0|Xbcd|aYcd|4321",
+            "aYcd",
+        ),
+        (
+            r#"
+    value = "ab" & Chr(0) & "d"
+    answer = Probe(value, value)
+    savedError = Err.LastDllError
+    bytesValue = value
+    result = CStr(answer) & "|" & CStr(Len(value)) & "|" & Replace(value, Chr(0), ":") & "|" & CStr(savedError)
+"#,
+            "0|4|aY:d|4321",
+            "aY\0d",
+        ),
+    ] {
+        let observed = compare(&format!(
+            r#"
+Public result As String
+Public bytesValue As String
+Declare PtrSafe Function Probe Lib "{path}" Alias "ObserveAnsiRef" (ByRef first As String, ByRef second As String) As Long
+Sub Main()
+    Dim first As String, second As String, value As String
+    Dim answer As Long, savedError As Long
+    {body}
+End Sub
+"#
+        ));
+        assert!(!observed.raised, "{observed:?}");
+        assert_eq!(observed.values[0], canon(&Variant::from_string(expected)));
+        assert_eq!(
+            observed.values[1],
+            canon(&Variant::from_string(raw_expected))
+        );
+        assert_eq!(
+            observed.err,
+            FinalErr {
+                last_dll_error: 4321,
+                ..Default::default()
+            }
+        );
+    }
+}
+
+#[test]
+fn mixed_native_string_any_aliases_still_refuse_before_entry() {
+    let fixture = NativeFixture::build();
+    let path = fixture.path().display().to_string();
+    // Protective refusals remain compatibility gaps with explicit owners.
+    for (first_decl, second_decl) in [("String", "Any"), ("Any", "String")] {
+        let observed = compare(&format!(
+            r#"
+Public result As Long
+Public observedError As Long
+Public calls As Long
+Declare PtrSafe Function Probe Lib "{path}" Alias "PointerProbe" (ByRef first As {first_decl}, ByRef second As {second_decl}) As Long
+Declare PtrSafe Function NativeCount Lib "{path}" Alias "AliasCallCount" () As Long
+Sub Main()
+    Dim value As String, beforeCalls As Long
+    value = "abcd"
+    beforeCalls = NativeCount()
+    On Error Resume Next
+    result = Probe(value, value)
+    observedError = Err.Number
+    Err.Clear
+    calls = NativeCount() - beforeCalls
+End Sub
+"#
+        ));
+        assert!(!observed.raised);
+        assert_eq!(
+            &observed.values[..3],
+            &[0, 5, 0].map(|value| canon(&Variant::from_i32(value)))
+        );
+    }
 }

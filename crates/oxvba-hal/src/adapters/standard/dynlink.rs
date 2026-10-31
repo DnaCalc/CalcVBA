@@ -542,11 +542,16 @@ fn invoke_m1_native(
                     "repeated native ByRef aliases require compatible supported storage; broader shapes remain under WIN-9",
                 ));
             }
-            // Reuse the original raw pointer. A new mutable projection of its
-            // boxed storage could invalidate the first pointer's provenance.
-            ffi_args.push(ffi_args[original_arg].clone());
-            alias_writebacks.push((i, cell));
-            continue;
+            if kind != Some("StringTemporary") {
+                // Reuse the original raw pointer. A new mutable projection of its
+                // boxed storage could invalidate the first pointer's provenance.
+                ffi_args.push(ffi_args[original_arg].clone());
+                alias_writebacks.push((i, cell));
+                continue;
+            }
+            // VBA stages each native String argument in a separate ANSI
+            // temporary, even for one repeated caller variable. Keep the class
+            // check above for mixed declarations, then marshal a fresh cell.
         }
         let cell_index = byref_cells.len();
         ffi_args.push(marshal_variant_to_ffi(
@@ -613,6 +618,7 @@ fn native_alias_storage_type(param_type: &str, value: &Variant) -> Option<&'stat
         "LongLong" | "LongPtr" => "LongLong",
         "Currency" => "Currency",
         "Date" => "Date",
+        "String" if value.vtype() == VarType::String => "StringTemporary",
         // One boxed VARIANT, including its owned BSTR, must be shared just as
         // scalar cells are. Reuse the first raw pointer and read/clear the owner
         // once. Array/object/record/procedure carriers still need their own

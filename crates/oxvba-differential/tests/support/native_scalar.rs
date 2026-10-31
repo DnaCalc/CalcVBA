@@ -231,3 +231,40 @@ pub unsafe extern "system" fn AliasVariantString(
         if shared { 42 } else { -1 }
     }
 }
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn ObserveAnsiRef(first: *mut *mut u8, second: *mut *mut u8) -> i32 {
+    // SAFETY: both arguments point at live writable LPSTR cells, each holding
+    // a buffer with at least four payload bytes. Raw accesses allow aliases.
+    // Buffer contents change; no pointer or allocation ownership changes.
+    unsafe {
+        let a = first.read();
+        let b = second.read();
+        let mut observed = if first == second { 1 } else { 0 };
+        if a == b {
+            observed |= 2;
+        }
+        a.write(b'X');
+        if b.read() == b'X' {
+            observed |= 4;
+        }
+        b.add(1).write(b'Y');
+        SetLastError(4321);
+        observed
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn ObserveAnsiVal(first: *mut u8, second: *mut u8) -> i32 {
+    // SAFETY: both arguments are live writable ANSI buffers with at least
+    // four payload bytes. Raw accesses allow aliases; pointers never escape.
+    unsafe {
+        let mut observed = if first == second { 2 } else { 0 };
+        first.write(b'X');
+        if second.read() == b'X' {
+            observed |= 4;
+        }
+        second.add(1).write(b'Y');
+        SetLastError(4321);
+        observed
+    }
+}

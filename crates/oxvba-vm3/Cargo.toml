@@ -8,6 +8,7 @@ repository.workspace = true
 description = "vm3: the typed-CFG interpreter of OxIR — the IR's executable specification and the JIT's differential oracle."
 
 [dependencies]
+calcvba-host-api.workspace = true
 oxvba-oxir.workspace = true
 oxvba-bundle.workspace = true
 oxvba-com.workspace = true

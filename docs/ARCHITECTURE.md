@@ -62,7 +62,7 @@ The architecture is broad and real but not complete. The compiler/binder is the 
 - `oxvba-build` emits OxImage and wrapper/COM-server artifacts.
 - `oxvba-comhost` is the reusable Windows in-process COM-server host, currently VM3-backed.
 - `oxvba-cli` exposes source/project run and build commands.
-- `oxvba-embed` supplies compiler-owned module-procedure signatures, generation-checked bound VM3/JIT calls and the shared immutable-code cache. Its bounded typed scalar entries use unboxed storage. The legacy spreadsheet types, conversions and object model now live in `adapters/spreadsheet-compat`, which delegates compiler/session/cache ownership to the neutral engine. DNA Calc migration remains external; see [`spec/HOSTING_AND_EARLY_BINDING.md`](spec/HOSTING_AND_EARLY_BINDING.md).
+- `calcvba-host-api` owns the small host contract: source modules and ordered references, signatures, opaque generation-checked handles, typed slots, host-object tables and the runtime-provider interface. It depends on exact runtime carriers and links no compiler, HAL, VM3, JIT or libffi. `oxvba-embed::provider::Provider` is the application's composition edge to those implementations. `oxvba-embed` retains compiler/session/cache ownership. The legacy spreadsheet model stays in `adapters/spreadsheet-compat`; no members were added there. DNA Calc migration remains external; see [`spec/HOSTING_AND_EARLY_BINDING.md`](spec/HOSTING_AND_EARLY_BINDING.md).
 
 No active `oxvba-languageservice`, `oxvba-lsp`, `oxvba-debug` or forms-runtime crate exists in the current workspace.
 
@@ -153,6 +153,14 @@ A bounded typed primary family now accepts zero to four required ByVal Long/Doub
 arguments, a runtime budget context and a typed result pointer, returning an explicit
 status. Admitted pure numeric bodies use unboxed physical slots; successful warm
 host calls allocate no heap storage. VM3 has a matching unboxed interpreter route.
+The run-7 family additionally accepts borrowed host objects and compiler-bound
+Double-returning slots with zero arguments or one required ByVal Long. JIT emits
+an exact typed indirect call; VM3 calls the matching checked native signature.
+Neither route constructs Variant arguments or uses libffi. These are explicit
+portable host tables with a runtime IUnknown prefix, separate from native COM's
+Automation vtables. Same-session typed callback reentry requires the active
+context, shares its budget and has a 64-activation limit across sessions on the
+thread. Dynamic/stateful same-session reentry remains refused.
 The dynamic JIT entry adapts its Variant frame to that primary family where admitted;
 image run-entry bodies retain their existing diagnostic local snapshots.
 
@@ -164,12 +172,15 @@ facade still refuses project classes/UDTs and does not replace general package
 sessions. Unsupported typed bodies/signatures return an explicit refusal; they do
 not silently use the dynamic frame path. See the bounded
 [typed-host evidence](evidence/programs/ideal-2026-07/core/CORE-7/typed-host-entries.md).
+Run-7 [callback evidence](evidence/programs/ideal-2026-07/core/CORE-7/typed-host-callbacks.md)
+also covers generic arithmetic default-member resolution while preserving the
+original object argument. Spreadsheet names and conversions remain host-owned.
 
 ### Material gaps against the contract
 
 - the public compiler does not require sealed verified image/program input;
 - no inspectable procedure-lowering plan currently separates semantic OxIR from physical/codegen decisions;
-- the typed family remains bounded to required ByVal Long/Double, pure local numeric bodies and no more than four arguments/128 physical slots; general carriers, ByRef, Optional/ParamArray, globals/Static, external calls, handlers, direct typed internal calls and native recursion remain open;
+- the typed family remains bounded to required ByVal Long/Double/borrowed host objects, local numeric bodies and the declared numeric host slots, with four arguments/128 physical slots; general owning carriers, object results, ByRef, Optional/ParamArray, globals/Static, other external calls, handlers, direct typed internal calls and native recursion remain open;
 - helper registration is not a versioned descriptor catalog;
 - line/Erl, writable Err fields and full dynamic Err.Raise metadata are incomplete;
 - deep source recursion relies on the native stack and is not safely proven;

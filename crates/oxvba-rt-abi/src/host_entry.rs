@@ -6,41 +6,18 @@ use oxvba_oxir::{
     ArithOp, OxCoerceTarget, OxConst, OxFunc, OxInst, OxOperand, OxPlace, OxTerminator, OxTy,
 };
 
-pub const TYPED_ENTRY_ABI: u32 = 1;
+pub use calcvba_host_api::{
+    Arguments, MAX_TYPED_ARGS, Scalar, ScalarBits, ScalarType, TYPED_ENTRY_ABI, TypedContext,
+};
 pub const MAX_TYPED_SLOTS: usize = 128;
-pub const MAX_TYPED_ARGS: usize = 4;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScalarType {
-    Long,
-    Double,
-    Boolean,
-}
-impl ScalarType {
-    pub fn of(ty: &OxTy) -> Option<Self> {
-        match ty {
-            OxTy::Long => Some(Self::Long),
-            OxTy::Double => Some(Self::Double),
-            OxTy::Bool => Some(Self::Boolean),
-            _ => None,
-        }
-    }
-}
-
-/// Context is borrowed only during entry. Status 0 is success, -1 is an
-/// uncatchable host budget interruption, positive values are VBA error numbers.
-/// Generated code never unwinds or retains pointers into this structure.
-#[repr(C)]
-pub struct TypedContext {
-    pub remaining_blocks: u64,
-}
-impl TypedContext {
-    pub fn step(&mut self) -> Result<(), i32> {
-        if self.remaining_blocks == 0 {
-            return Err(-1);
-        }
-        self.remaining_blocks -= 1;
-        Ok(())
+fn scalar_type(ty: &OxTy) -> Option<ScalarType> {
+    match ty {
+        OxTy::Long => Some(ScalarType::Long),
+        OxTy::Double => Some(ScalarType::Double),
+        OxTy::Bool => Some(ScalarType::Boolean),
+        OxTy::Object(_) => Some(ScalarType::HostObject),
+        _ => None,
     }
 }
 
@@ -120,103 +97,6 @@ pub unsafe extern "C" fn typed_context_finish(
     })
 }
 
-/// Bits are local physical storage, never a Variant, COM value, or public wire type.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ScalarBits(pub u64);
-impl ScalarBits {
-    pub fn long(value: i32) -> Self {
-        Self(value as u32 as u64)
-    }
-    pub fn double(value: f64) -> Self {
-        Self(value.to_bits())
-    }
-    pub fn as_long(self) -> i32 {
-        self.0 as i32
-    }
-    pub fn as_double(self) -> f64 {
-        f64::from_bits(self.0)
-    }
-}
-
-mod sealed {
-    pub trait Sealed {}
-}
-/// Only engine-defined primitives can participate in generated native signatures.
-pub trait Scalar: sealed::Sealed + Copy + Default {
-    const TYPE: ScalarType;
-    fn bits(self) -> ScalarBits;
-    fn from_bits(value: ScalarBits) -> Self;
-    fn is_valid(self) -> bool {
-        true
-    }
-}
-impl sealed::Sealed for i32 {}
-impl Scalar for i32 {
-    const TYPE: ScalarType = ScalarType::Long;
-    fn bits(self) -> ScalarBits {
-        ScalarBits::long(self)
-    }
-    fn from_bits(value: ScalarBits) -> Self {
-        value.as_long()
-    }
-}
-impl sealed::Sealed for f64 {}
-impl Scalar for f64 {
-    const TYPE: ScalarType = ScalarType::Double;
-    fn bits(self) -> ScalarBits {
-        ScalarBits::double(self)
-    }
-    fn from_bits(value: ScalarBits) -> Self {
-        value.as_double()
-    }
-    fn is_valid(self) -> bool {
-        self.is_finite()
-    }
-}
-
-pub trait Arguments: sealed::Sealed + Copy {
-    fn types() -> Vec<ScalarType>;
-    fn bits(self) -> [ScalarBits; MAX_TYPED_ARGS];
-    fn is_valid(self) -> bool;
-    /// # Safety
-    /// Entry must be live and have this exact platform C signature: context,
-    /// each primitive argument, pointer to R, returning i32 status. The caller
-    /// must retain code, check the signature and serialize session execution.
-    unsafe fn invoke<R: Scalar>(
-        self,
-        entry: *const u8,
-        context: &mut TypedContext,
-        result: &mut R,
-    ) -> i32;
-}
-macro_rules! arguments {
-    ($($ty:ident:$idx:tt),*) => {
-        impl<$($ty: Scalar),*> sealed::Sealed for ($($ty,)*) {}
-        impl<$($ty: Scalar),*> Arguments for ($($ty,)*) {
-            fn types() -> Vec<ScalarType> { vec![$($ty::TYPE),*] }
-            fn is_valid(self) -> bool { true $(&& self.$idx.is_valid())* }
-            fn bits(self) -> [ScalarBits; MAX_TYPED_ARGS] {
-                #[allow(unused_mut)]
-                let mut bits = [ScalarBits(0); MAX_TYPED_ARGS];
-                $(bits[$idx] = self.$idx.bits();)*
-                bits
-            }
-            unsafe fn invoke<R: Scalar>(self, entry: *const u8, context: &mut TypedContext, result: &mut R) -> i32 {
-                // SAFETY: caller proves the exact signature; sealed Scalar permits
-                // only i32/f64, whose platform C ABI matches generated parameters.
-                let entry: unsafe extern "C" fn(*mut TypedContext, $($ty,)* *mut R) -> i32 = unsafe { std::mem::transmute(entry) };
-                // SAFETY: the context/output borrows and code owner survive entry.
-                unsafe { entry(context, $(self.$idx,)* result) }
-            }
-        }
-    }
-}
-arguments!();
-arguments!(A:0);
-arguments!(A:0, B:1);
-arguments!(A:0, B:1, C:2);
-arguments!(A:0, B:1, C:2, D:3);
-
 /// Inspectable physical layout for a scalar entry. Construction checks every
 /// instruction, including unreachable blocks. Unsupported bodies are refused.
 #[derive(Debug, Clone)]
@@ -227,11 +107,81 @@ pub struct ScalarLayout {
     pub result: ScalarType,
     pub return_slot: usize,
     pub specialized_variant_temps: Vec<usize>,
+    pub host_calls: std::collections::HashMap<oxvba_oxir::ComMethodRef, HostCallPlan>,
+}
+#[derive(Debug, Clone)]
+pub struct HostCallPlan {
+    pub iid: [u8; 16],
+    pub slot: usize,
+    pub long_argument: bool,
 }
 impl ScalarLayout {
     pub fn new(func: &OxFunc) -> Result<Self, String> {
+        Self::with_interfaces(func, &[])
+    }
+    pub fn with_interfaces(
+        func: &OxFunc,
+        interfaces: &[oxvba_oxir::ComInterface],
+    ) -> Result<Self, String> {
+        use oxvba_com::{TypeLibParamType as P, TypeLibWireType};
+        let mut host_calls = std::collections::HashMap::new();
+        for block in &func.blocks {
+            for inst in &block.instrs {
+                let OxInst::ComCallEarly {
+                    method,
+                    invoke_kind,
+                    ..
+                } = inst
+                else {
+                    continue;
+                };
+                let descriptor = interfaces
+                    .get(method.iface.0)
+                    .and_then(|i| i.com_members())
+                    .and_then(|m| m.get(method.member))
+                    .ok_or("typed host call has no retained interface descriptor")?;
+                if descriptor.invoke_kind != *invoke_kind
+                    || !matches!(descriptor.parameter_types.as_slice(), [] | [P::Long])
+                    || descriptor.return_type != Some(P::Double)
+                    || descriptor.parameter_optional.iter().any(|p| *p)
+                    || descriptor
+                        .parameter_wire_types
+                        .iter()
+                        .any(|w| *w != TypeLibWireType::Automation(P::Long))
+                    || descriptor
+                        .return_wire_type
+                        .as_ref()
+                        .is_some_and(|w| *w != TypeLibWireType::Automation(P::Double))
+                {
+                    return Err("typed host slot requires Double result and zero or one required ByVal Long".into());
+                }
+                let iid = descriptor
+                    .interface_iid
+                    .ok_or("typed host slot requires interface identity")?;
+                let mut bytes = [0u8; 16];
+                bytes[..4].copy_from_slice(&iid.data1.to_le_bytes());
+                bytes[4..6].copy_from_slice(&iid.data2.to_le_bytes());
+                bytes[6..8].copy_from_slice(&iid.data3.to_le_bytes());
+                bytes[8..].copy_from_slice(&iid.data4);
+                let slot = usize::from(descriptor.vtable_slot.ok_or("typed host slot is missing")?);
+                if descriptor
+                    .vtable_slot_bound
+                    .is_none_or(|bound| slot >= usize::from(bound))
+                {
+                    return Err("typed host slot exceeds declared table".into());
+                }
+                host_calls.insert(
+                    *method,
+                    HostCallPlan {
+                        iid: bytes,
+                        slot,
+                        long_argument: !descriptor.parameter_types.is_empty(),
+                    },
+                );
+            }
+        }
         let scalar = |ty: &OxTy| {
-            ScalarType::of(ty).ok_or_else(|| format!("typed entry carrier {ty:?} is not supported"))
+            scalar_type(ty).ok_or_else(|| format!("typed entry carrier {ty:?} is not supported"))
         };
         if func.param_count > MAX_TYPED_ARGS
             || func.param_count > func.locals.len()
@@ -247,7 +197,7 @@ impl ScalarLayout {
             .iter()
             .map(|l| scalar(&l.ty).map(Some))
             .collect::<Result<Vec<_>, _>>()?;
-        physical.extend(func.temps.iter().map(ScalarType::of));
+        physical.extend(func.temps.iter().map(scalar_type));
         // Widening arithmetic is semantically Variant, but numeric operands
         // with at least one Double prove a Double payload. Specialize only compiler temporaries whose writers
         // prove Double; never a user-declared Variant or Long-only widening.
@@ -255,6 +205,24 @@ impl ScalarLayout {
             let mut changed = false;
             for block in &func.blocks {
                 for inst in &block.instrs {
+                    if let OxInst::ComCallEarly {
+                        dst: Some(OxPlace::Temp(id)),
+                        method,
+                        ..
+                    } = inst
+                        && host_calls.contains_key(method)
+                    {
+                        let index = func
+                            .locals
+                            .len()
+                            .checked_add(id.0)
+                            .ok_or("invalid temp index")?;
+                        let slot = physical.get_mut(index).ok_or("invalid temp index")?;
+                        if slot.is_none() {
+                            *slot = Some(ScalarType::Double);
+                            changed = true;
+                        }
+                    }
                     if let OxInst::Arith {
                         dst: OxPlace::Temp(id),
                         lhs,
@@ -337,9 +305,10 @@ impl ScalarLayout {
             parameters,
             return_slot: result.0,
             specialized_variant_temps,
+            host_calls,
         };
-        if layout.result == ScalarType::Boolean {
-            return Err("typed Boolean result ABI remains open".into());
+        if matches!(layout.result, ScalarType::Boolean | ScalarType::HostObject) {
+            return Err("typed Boolean/object result ABI remains open".into());
         }
         let ids = func
             .blocks
@@ -396,6 +365,9 @@ impl ScalarLayout {
     pub fn comparison_type(&self, lhs: &OxOperand, rhs: &OxOperand) -> Result<ScalarType, String> {
         let left = self.operand_type(lhs)?;
         let right = self.operand_type(rhs)?;
+        if left == ScalarType::HostObject || right == ScalarType::HostObject {
+            return Err("typed object value comparison requires default-member semantics".into());
+        }
         if left == right {
             return Ok(left);
         }
@@ -422,6 +394,32 @@ impl ScalarLayout {
     }
     fn check(&self, inst: &OxInst) -> Result<(), String> {
         match inst {
+            OxInst::ComCallEarly {
+                dst: Some(dst),
+                method,
+                recv,
+                args,
+                ..
+            } => {
+                let plan = self.host_calls.get(method).ok_or("unplanned host slot")?;
+                if self.slots[self.slot(*dst)?] != ScalarType::Double
+                    || self.operand_type(recv)? != ScalarType::HostObject
+                    || args.len() != usize::from(plan.long_argument)
+                {
+                    return Err("typed host call signature mismatch".into());
+                }
+                if let Some(arg) = args.first() {
+                    match arg {
+                        oxvba_oxir::OxCallArg::Operand(op)
+                            if self.operand_type(op)? == ScalarType::Long => {}
+                        oxvba_oxir::OxCallArg::ByRef(place)
+                            if self.slots[self.slot(*place)?] == ScalarType::Long => {}
+                        oxvba_oxir::OxCallArg::Const(_) => {}
+                        _ => return Err("typed host argument requires a Long value".into()),
+                    }
+                }
+                Ok(())
+            }
             OxInst::StmtBoundary {
                 clear_temps_from, ..
             } if *clear_temps_from <= self.slots.len() - self.local_count => Ok(()),
@@ -482,7 +480,11 @@ impl ScalarLayout {
                 self.comparison_type(lhs, rhs).map(|_| ())
             }
             OxInst::Truthy { dst, src } if self.slots[self.slot(*dst)?] == ScalarType::Boolean => {
-                self.operand_type(src).map(|_| ())
+                if self.operand_type(src)? == ScalarType::HostObject {
+                    Err("typed object condition requires default-member semantics".into())
+                } else {
+                    Ok(())
+                }
             }
             _ => Err(format!(
                 "typed instruction {inst:?} requires the dynamic runtime"
@@ -495,7 +497,9 @@ impl ScalarLayout {
                 let slot = self.slot(*place).expect("admitted slot");
                 (slots[slot], self.slots[slot])
             }
-            OxOperand::Const(OxConst::F64(bits)) => (ScalarBits(*bits), ScalarType::Double),
+            OxOperand::Const(OxConst::F64(bits)) => {
+                (ScalarBits::from_bits(*bits), ScalarType::Double)
+            }
             OxOperand::Const(OxConst::I16(value)) => {
                 (ScalarBits::long(i32::from(*value)), ScalarType::Long)
             }
@@ -607,6 +611,31 @@ mod tests {
             dst: OxPlace::Temp(TempId(0)),
             value: OxOperand::Const(OxConst::I32(3)),
         });
+        assert!(ScalarLayout::new(&func).is_err());
+
+        // Object value comparisons/conditions require default-value dispatch,
+        // never integer truth/comparison of the physical object pointer.
+        func.locals.push(OxLocal {
+            name: "ObjectValue".into(),
+            ty: OxTy::Object(oxvba_oxir::ObjClass::Untyped),
+            array_element: None,
+            param: None,
+            escaped: false,
+        });
+        func.temps = vec![OxTy::Bool];
+        let object = OxOperand::Use(OxPlace::Local(LocalId(1)));
+        func.blocks[0].instrs = vec![OxInst::Truthy {
+            dst: OxPlace::Temp(TempId(0)),
+            src: object.clone(),
+        }];
+        assert!(ScalarLayout::new(&func).is_err());
+        func.blocks[0].instrs = vec![OxInst::Compare {
+            dst: OxPlace::Temp(TempId(0)),
+            op: oxvba_oxir::CmpOp::Eq,
+            lhs: object.clone(),
+            rhs: object,
+            mode: oxvba_bundle::StringCompareMode::Binary,
+        }];
         assert!(ScalarLayout::new(&func).is_err());
     }
 }

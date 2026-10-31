@@ -6660,6 +6660,70 @@ pub(crate) unsafe extern "C" fn rt_jit_unbox_to_slot(
     })
 }
 
+/// Resolve object defaults before borrowing any destination slot or mutable run
+/// state. No Rust reference into a frame spans a callback-capable member call.
+/// # Safety
+/// State/run are the matching live execution roots; value owns its carrier.
+unsafe fn arithmetic_value_for_jit(
+    state: *mut RawExecState,
+    run: *mut JitRun,
+    mut value: Variant,
+) -> Result<Variant, i32> {
+    for _ in 0..64 {
+        if value.vtype() != VarType::Object {
+            return Ok(value);
+        }
+        let Some(object) = value.as_object_ref() else {
+            // SAFETY: inherited live state contract; no state borrow is retained.
+            return Err(unsafe { rt_raise_runtime_error_number(state, 91) });
+        };
+        value = if object.is_project_instance() {
+            // SAFETY: owning value and live roots span the synchronous call;
+            // no run/frame/state borrow crosses project member entry.
+            unsafe {
+                invoke_project_default_member_values(
+                    run,
+                    state,
+                    value,
+                    ProjectMemberKind::PropertyGet,
+                    &[],
+                )
+            }?
+        } else {
+            let host = {
+                // SAFETY: bounded state borrow ends before host member entry.
+                let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
+                    return Err(ST_FAULT);
+                };
+                exec.host
+            };
+            let request = DynamicCallRequest {
+                object,
+                member: DynamicMemberSelector::DefaultMember,
+                args: Vec::new(),
+                call_kind_hint: Some(DynamicCallKind::PropertyGet),
+            };
+            match host
+                .com()
+                .dispatch_invoke_dynamic_variant_with_writebacks(&request)
+            {
+                Ok((result, _)) => result,
+                Err(error) => {
+                    // SAFETY: host callback returned; reacquire state only now.
+                    let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
+                        return Err(ST_FAULT);
+                    };
+                    exec.err_engine
+                        .raise(Fault::from_hal(error), current_unit_source(run));
+                    return Err(ST_FAULT);
+                }
+            }
+        };
+    }
+    // SAFETY: inherited live root contract and no outstanding typed borrow.
+    Err(unsafe { rt_raise_runtime_error_number(state, 28) })
+}
+
 pub(crate) unsafe extern "C" fn rt_jit_arith_v_to_slot(
     state: *mut RawExecState,
     run: *mut JitRun,
@@ -6684,6 +6748,17 @@ pub(crate) unsafe extern "C" fn rt_jit_arith_v_to_slot(
         };
         let Some(rhs) = variant_operand_value_from_compiled_desc!(run_ref, operands[1]) else {
             return ST_FAULT;
+        };
+        // SAFETY: operand clones own their carriers; the shared run_ref borrow
+        // has ended before either default member can invoke VBA or host code.
+        let lhs = match unsafe { arithmetic_value_for_jit(state, run, lhs) } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        // SAFETY: same live roots, with no borrow carried over the preceding call.
+        let rhs = match unsafe { arithmetic_value_for_jit(state, run, rhs) } {
+            Ok(v) => v,
+            Err(s) => return s,
         };
         // SAFETY: null was rejected and operand clones no longer borrow from `run`.
         let run = unsafe { &mut *run };
@@ -6758,6 +6833,12 @@ pub(crate) unsafe extern "C" fn rt_jit_neg_v_to_slot(
         let run_ref = unsafe { &*run };
         let Some(src) = variant_operand_value_from_compiled_desc!(run_ref, operands[0]) else {
             return ST_FAULT;
+        };
+        // SAFETY: cloned source owns its carrier; no frame/state reference
+        // remains live across a possible default-member callback.
+        let src = match unsafe { arithmetic_value_for_jit(state, run, src) } {
+            Ok(v) => v,
+            Err(s) => return s,
         };
         // SAFETY: null was rejected and the source clone no longer borrows from `run`.
         let run = unsafe { &mut *run };

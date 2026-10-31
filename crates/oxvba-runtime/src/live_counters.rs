@@ -51,6 +51,7 @@ mod imp {
     static LIVE_RECORD_BUFFERS: AtomicIsize = AtomicIsize::new(0);
 
     std::thread_local! {
+        static VARIANT_CONSTRUCTIONS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
         static THREAD_LIVE: core::cell::Cell<LiveHandleCounts> = const {
             core::cell::Cell::new(LiveHandleCounts {
                 bstrs: 0,
@@ -59,6 +60,16 @@ mod imp {
                 record_buffers: 0,
             })
         };
+    }
+    pub(crate) fn variant_constructed() {
+        let _ = VARIANT_CONSTRUCTIONS.try_with(|n| n.set(n.get().saturating_add(1)));
+    }
+    /// Cumulative owning Variant constructor calls on this thread. Unlike live
+    /// handle balance, this also exposes scalar boxing that allocates no heap.
+    pub fn current_thread_variant_constructions() -> u64 {
+        VARIANT_CONSTRUCTIONS
+            .try_with(core::cell::Cell::get)
+            .unwrap_or(0)
     }
 
     fn update_thread(mut update: impl FnMut(&mut LiveHandleCounts)) {
@@ -167,7 +178,11 @@ mod imp {
 
 #[cfg(any(test, feature = "live-counters"))]
 pub use imp::current_thread_live_handle_counts;
+#[cfg(any(test, feature = "live-counters"))]
+pub use imp::current_thread_variant_constructions;
 pub use imp::live_handle_counts;
+#[cfg(any(test, feature = "live-counters"))]
+pub(crate) use imp::variant_constructed;
 pub(crate) use imp::{
     bstr_allocated, bstr_freed, object_box_allocated, object_box_freed, record_buffer_allocated,
     record_buffer_freed, safearray_allocated, safearray_freed,

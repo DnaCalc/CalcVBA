@@ -144,6 +144,33 @@ impl OwnedSession {
     pub fn reset(&self) -> Result<(), Error> {
         self.cell.with_dependent(|_, s| s.reset())
     }
+    pub fn bind_slots(
+        &self,
+        bound: &BoundProcedure,
+        arguments: &[ScalarType],
+        result: ScalarType,
+    ) -> Result<(), Error> {
+        self.cell
+            .with_dependent(|_, s| s.bind_slots(bound, arguments, result))
+    }
+    pub fn call_slots(
+        &self,
+        bound: &BoundProcedure,
+        args: &[calcvba_host_api::Slot<'_>],
+        context: &mut calcvba_host_api::TypedContext,
+    ) -> Result<calcvba_host_api::ScalarBits, Error> {
+        self.cell
+            .with_dependent(|_, s| s.call_slots(bound, args, context))
+    }
+    pub fn call_typed_in_context<A: Arguments, R: Scalar>(
+        &self,
+        handle: &TypedProcedure<A, R>,
+        args: A,
+        context: &mut calcvba_host_api::TypedContext,
+    ) -> Result<R, Error> {
+        self.cell
+            .with_dependent(|_, s| s.call_typed_in_context(handle, args, context))
+    }
     /// Build replacement first. On success invalidate generations before old code
     /// can be released. Failed preparation preserves current code and handles.
     pub fn reload(&mut self, module: Module) -> Result<(), Error> {

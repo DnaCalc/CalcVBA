@@ -5,13 +5,19 @@ use oxvba_hal::{HostServices, adapters::builder::HostBuilder};
 use oxvba_oxir::{FuncId, OxProgram, OxTy};
 use oxvba_runtime::Variant;
 use oxvba_symbol::{TypeLibResolver, manifest as sym};
-use std::{cell::RefCell, marker::PhantomData, rc::Rc, sync::Arc};
+use std::{
+    cell::{Cell, Ref, RefCell},
+    marker::PhantomData,
+    rc::Rc,
+    sync::Arc,
+};
 mod cache;
 use cache::PreparedCode;
 pub use cache::{CacheStats, CodeCache, OwnedSession};
 pub use oxvba_bundle::ProcedureKind;
 pub use oxvba_rt_abi::host_entry::{Arguments, Scalar, ScalarType, TYPED_ENTRY_ABI};
 pub use oxvba_symbol::model::Visibility;
+pub mod provider;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
@@ -202,7 +208,7 @@ pub struct TypedProcedure<A, R> {
     bound: BoundProcedure,
     #[cfg(feature = "jit")]
     native: Option<oxvba_jit::TypedEntry<A, R>>,
-    signature: PhantomData<fn(A) -> R>,
+    signature: PhantomData<fn() -> (A, R)>,
 }
 
 enum Executable<'a> {
@@ -222,6 +228,27 @@ pub struct Session<'a> {
     owner: Rc<()>,
     generation: u64,
     executing: RefCell<()>,
+    typed_depth: Cell<u32>,
+    typed_context: Cell<*mut calcvba_host_api::TypedContext>,
+}
+struct TypedActivation<'a> {
+    _executing: Ref<'a, ()>,
+    depth: &'a Cell<u32>,
+    context: &'a Cell<*mut calcvba_host_api::TypedContext>,
+}
+thread_local! {
+    // Bound the whole synchronous engine stack, including callbacks that cross
+    // multiple independent sessions on the same host thread.
+    static TYPED_CALL_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+impl Drop for TypedActivation<'_> {
+    fn drop(&mut self) {
+        TYPED_CALL_DEPTH.with(|depth| depth.set(depth.get() - 1));
+        self.depth.set(self.depth.get() - 1);
+        if self.depth.get() == 0 {
+            self.context.set(std::ptr::null_mut());
+        }
+    }
 }
 const INITIALIZATION_BUDGET: u64 = 1_000_000;
 impl<'a> Session<'a> {
@@ -262,7 +289,12 @@ impl<'a> Session<'a> {
             .program
             .funcs
             .iter()
-            .map(oxvba_vm3::typed::TypedInterpreter::bind)
+            .map(|func| {
+                oxvba_vm3::typed::TypedInterpreter::bind_with_interfaces(
+                    func,
+                    &module.program.com_interfaces,
+                )
+            })
             .collect();
         Ok(Self {
             module,
@@ -272,6 +304,8 @@ impl<'a> Session<'a> {
             owner: Rc::new(()),
             generation: 1,
             executing: RefCell::new(()),
+            typed_depth: Cell::new(0),
+            typed_context: Cell::new(std::ptr::null_mut()),
         })
     }
     /// Reinitialize globals/Static/Err using retained code. Bound handles stay valid.
@@ -395,11 +429,22 @@ impl<'a> Session<'a> {
         args: A,
         max_blocks: u64,
     ) -> Result<R, Error> {
+        self.call_typed_in_context(
+            handle,
+            args,
+            &mut calcvba_host_api::TypedContext {
+                remaining_blocks: max_blocks,
+            },
+        )
+    }
+    pub fn call_typed_in_context<A: Arguments, R: Scalar>(
+        &self,
+        handle: &TypedProcedure<A, R>,
+        args: A,
+        context: &mut calcvba_host_api::TypedContext,
+    ) -> Result<R, Error> {
         self.validate(&handle.bound)?;
-        let _executing = self
-            .executing
-            .try_borrow_mut()
-            .map_err(|_| Error::Reentry)?;
+        let _activation = self.enter_typed(context)?;
         let result = if !args.is_valid() {
             Err(6)
         } else {
@@ -408,12 +453,9 @@ impl<'a> Session<'a> {
                     let typed = self.typed[handle.bound.id.0]
                         .as_ref()
                         .expect("bound typed interpreter");
-                    let args = args.bits();
-                    let mut context = oxvba_rt_abi::host_entry::TypedContext {
-                        remaining_blocks: max_blocks,
-                    };
+                    let slots = args.slots();
                     typed
-                        .invoke(&args[..typed.layout().parameters.len()], &mut context)
+                        .invoke_slots(&slots[..A::COUNT], context)
                         .map(R::from_bits)
                 }
                 #[cfg(feature = "jit")]
@@ -421,29 +463,94 @@ impl<'a> Session<'a> {
                     .native
                     .as_ref()
                     .expect("bound native entry")
-                    .invoke(image, args, max_blocks),
+                    .invoke_in_context(image, args, context),
             }
         };
-        result.map_err(|number| {
-            if number == -1 {
-                Error::BudgetExceeded
+        result.map_err(|number| self.typed_error(number))
+    }
+    fn enter_typed(
+        &self,
+        context: &mut calcvba_host_api::TypedContext,
+    ) -> Result<TypedActivation<'_>, Error> {
+        let executing = self.executing.try_borrow().map_err(|_| Error::Reentry)?;
+        let pointer = context as *mut _;
+        if self.typed_depth.get() != 0 && self.typed_context.get() != pointer {
+            return Err(Error::Reentry);
+        }
+        if !TYPED_CALL_DEPTH.with(|depth| {
+            if depth.get() >= 64 {
+                false
             } else {
-                match &self.executable {
-                    Executable::Interpreter(state) => {
-                        state.borrow_mut().record_typed_entry_error(number)
-                    }
-                    #[cfg(feature = "jit")]
-                    Executable::Jit(_, state) => {
-                        state.borrow_mut().record_typed_entry_error(number)
-                    }
-                }
-                Error::Runtime {
-                    number,
-                    description: oxvba_runtime::default_error_message(number).into(),
-                    vba_source: self.module.program.unit_name.clone(),
-                }
+                depth.set(depth.get() + 1);
+                true
             }
+        }) {
+            return Err(self.typed_error(28));
+        }
+        self.typed_context.set(pointer);
+        self.typed_depth.set(self.typed_depth.get() + 1);
+        Ok(TypedActivation {
+            _executing: executing,
+            depth: &self.typed_depth,
+            context: &self.typed_context,
         })
+    }
+    fn typed_error(&self, number: i32) -> Error {
+        if number == -1 {
+            return Error::BudgetExceeded;
+        }
+        match &self.executable {
+            Executable::Interpreter(state) => state.borrow_mut().record_typed_entry_error(number),
+            #[cfg(feature = "jit")]
+            Executable::Jit(_, state) => state.borrow_mut().record_typed_entry_error(number),
+        }
+        Error::Runtime {
+            number,
+            description: oxvba_runtime::default_error_message(number).into(),
+            vba_source: self.module.program.unit_name.clone(),
+        }
+    }
+    pub fn bind_slots(
+        &self,
+        bound: &BoundProcedure,
+        arguments: &[ScalarType],
+        result: ScalarType,
+    ) -> Result<(), Error> {
+        self.validate(bound)?;
+        let layout = self.typed[bound.id.0]
+            .as_ref()
+            .map_err(|e| Error::UnsupportedSignature(e.clone()))?
+            .layout();
+        if layout.parameters != arguments || layout.result != result {
+            return Err(Error::ArgumentMismatch);
+        }
+        Ok(())
+    }
+    pub fn call_slots(
+        &self,
+        bound: &BoundProcedure,
+        args: &[calcvba_host_api::Slot<'_>],
+        context: &mut calcvba_host_api::TypedContext,
+    ) -> Result<calcvba_host_api::ScalarBits, Error> {
+        self.validate(bound)?;
+        let _activation = self.enter_typed(context)?;
+        let typed = self.typed[bound.id.0]
+            .as_ref()
+            .map_err(|e| Error::UnsupportedSignature(e.clone()))?;
+        if args.len() != typed.layout().parameters.len()
+            || args
+                .iter()
+                .zip(&typed.layout().parameters)
+                .any(|(a, t)| a.ty() != *t)
+        {
+            return Err(Error::ArgumentMismatch);
+        }
+        let result = match &self.executable {
+            Executable::Interpreter(_) => typed.invoke_slots(args, context),
+            #[cfg(feature = "jit")]
+            Executable::Jit(image, _) => image.invoke_typed_slots(bound.id, args, context),
+        };
+        result.map_err(|number| self.typed_error(number))
     }
     /// Explicit dynamic adapter: exact-arity arguments already prepared by host.
     pub fn call_bound(

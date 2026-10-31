@@ -12,6 +12,8 @@ default = ["jit"]
 jit = ["dep:oxvba-jit"]
 
 [dependencies]
+calcvba-host-api.workspace = true
+oxvba-com.workspace = true
 oxvba-bind.workspace = true
 oxvba-bundle.workspace = true
 oxvba-hal.workspace = true
@@ -31,3 +33,6 @@ oxvba-com = { workspace = true, features = ["fixture-typelibs"] }
 
 [lints]
 workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging"] }

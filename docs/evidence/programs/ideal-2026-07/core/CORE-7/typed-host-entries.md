@@ -1,5 +1,10 @@
 # Typed host entries and neutral hosting — run 6
 
+Run-7 [host API/callback evidence](typed-host-callbacks.md) extends this historical
+numeric-only scope with borrowed host-object slots and bounded typed reentry.
+Its current contract uses typed-entry ABI 2. The measurements below remain run-6
+results and are not performance claims for the added callback path.
+
 2026-10-31. Windows x64 development evidence. Bounded deliveries: CORE-7 `bd-59co.2.9.11`, CORE-8 `bd-59co.2.10.8`. Broader CORE-7/8 capabilities remain
 **in-progress**; residual beads `bd-59co.2.9.9` and `bd-59co.2.10.7` stay open. This is a bounded scalar family,
 not full typed calling, general package ownership or Windows certification.

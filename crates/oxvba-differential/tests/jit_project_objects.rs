@@ -650,6 +650,29 @@ fn jit_project_object_default_member_get_let_matches_vm3_without_fallback() {
 }
 
 #[test]
+fn untyped_project_default_arithmetic_preserves_identity_and_caller_frame() {
+    let modules = [
+        (
+            "Main",
+            Procedural,
+            "Public r As Long\nSub Main()\nDim x As Variant\nSet x = New Widget\nr = Plus(x)\nEnd Sub\nFunction Plus(x) As Long\nDim saved As Object\nSet saved=x\nPlus=x+1\nIf Not IsObject(x) Then Err.Raise 13\nIf Not (saved Is x) Then Err.Raise 13\nEnd Function\n",
+        ),
+        (
+            "Widget",
+            Class,
+            "Public Property Get Value() As Long\nValue=41\nEnd Property\nAttribute Value.VB_UserMemId = 0\n",
+        ),
+    ];
+    for executor in [Executor::Vm3, Executor::Jit] {
+        assert_completed_with_i32(
+            "project default arithmetic",
+            run_modules(executor, &modules, "VBAProject"),
+            42,
+        );
+    }
+}
+
+#[test]
 fn jit_project_variant_default_member_get_let_matches_vm3_without_fallback() {
     let modules = [
         (

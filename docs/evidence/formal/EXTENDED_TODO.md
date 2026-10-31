@@ -1,5 +1,12 @@
 # Formal Extended Todo
 
+- ID: FTODO-TYPED-HOST-20261031-R7
+  Profile: bounded host API/typed slots/reentry (`bd-59co.2.10.9`, `bd-59co.2.9.12`, `bd-59co.2.4.9`).
+  Summary: Lean TypedReentry models context/depth admission and shared finite budget; existing scalar/handle/refcount abstractions remain applicable. Installed nightly strict-provenance Miri checks the host object's complete-allocation IUnknown retain/QI/release path and bounded VM3 callbacks/reentry/active-view resolution. It found an invalid cached pointer into moved Box storage; immutable Rc table storage and provenance-preserving union slots correct it. These bounded executions do not prove general Rust session aliasing, native function signatures, generated slot loads/call_indirect, all callback destruction paths or general object-default coercion.
+  Current status (`todo` / `investigating` / `resolved`): investigating
+  Reproduction command: installed Lean 4.29.1 on formal/lean/OxVba/TypedReentry.lean; `cargo +nightly miri test -p calcvba-host-api native_unknown_prefix_retains_the_exact_object_until_last_release`; `cargo test -p oxvba-embed --test typed_host_callbacks`.
+  Suggested next action: refine the ABI, code/object leases and callback alias model under CORE-5/CORE-7/CORE-8 before general owning carriers, stateful synchronous callbacks or COM-event reentry claims. Broad owners remain bd-59co.2.7.4, bd-59co.2.9.9, bd-59co.2.10.7 and bd-59co.2.4.3.
+
 - ID: FTODO-EARLY-COM-20261031
   Profile: preserved-descriptor dual COM calls (`bd-59co.3.5.6`; broader WIN-4 ownership `.3.5.2/.3`).
   Summary: installed Lean 4.29.1 VarType/Coerce/Arithmetic/RefCount/ExecutionBudget abstractions pass. They do not prove Rust descriptor provenance, call-local COM/QI ownership, native ByRef alias cells, private temporaries, error-edge cleanup or actual transport. Native cargo-kani is unavailable; no toolchain was installed.

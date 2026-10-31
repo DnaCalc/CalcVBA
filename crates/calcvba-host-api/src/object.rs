@@ -1,0 +1,346 @@
+//! Same-thread host-owned object tables. This ABI is independent of native COM.
+use crate::{ScalarBits, Slot, TypedContext};
+use oxvba_runtime::{
+    RUNTIME_GUID_IUNKNOWN, RawRuntimeIUnknown, RawRuntimeIUnknownVtbl, RuntimeGuid,
+};
+use std::{
+    marker::PhantomData,
+    panic::{AssertUnwindSafe, catch_unwind},
+    rc::Rc,
+};
+
+pub type InterfaceId = [u8; 16];
+pub const SLOT_DOUBLE_0: u32 = 1;
+pub const SLOT_DOUBLE_LONG: u32 = 2;
+
+/// Data and entry are retained by HostObject; callers check signature before entry.
+#[repr(C)]
+pub struct NativeSlot {
+    pub entry: *const u8,
+    pub data: *const (),
+    pub signature: u32,
+}
+#[repr(C)]
+pub struct ObjectHeader {
+    /// Exact runtime IUnknown prefix; the typed table is a separate, versioned
+    /// host ABI and never masquerades as an Automation/dual COM vtable.
+    pub unknown: RawRuntimeIUnknown,
+    pub iid: InterfaceId,
+    pub slots: *const NativeSlot,
+    pub slot_count: usize,
+}
+
+type Double0 = dyn Fn(&mut TypedContext) -> Result<f64, i32>;
+type DoubleLong = dyn Fn(&mut TypedContext, i32) -> Result<f64, i32>;
+enum Callback {
+    Double0(Box<Double0>),
+    DoubleLong(Box<DoubleLong>),
+}
+pub struct HostSlot {
+    callback: Box<Callback>,
+}
+impl HostSlot {
+    pub fn double(callback: impl Fn(&mut TypedContext) -> Result<f64, i32> + 'static) -> Self {
+        Self {
+            callback: Box::new(Callback::Double0(Box::new(callback))),
+        }
+    }
+    pub fn double_long(
+        callback: impl Fn(&mut TypedContext, i32) -> Result<f64, i32> + 'static,
+    ) -> Self {
+        Self {
+            callback: Box::new(Callback::DoubleLong(Box::new(callback))),
+        }
+    }
+    fn native(&self) -> NativeSlot {
+        let (entry, signature) = match &*self.callback {
+            Callback::Double0(_) => (double0 as *const u8, SLOT_DOUBLE_0),
+            Callback::DoubleLong(_) => (double_long as *const u8, SLOT_DOUBLE_LONG),
+        };
+        NativeSlot {
+            entry,
+            data: &*self.callback as *const Callback as *const (),
+            signature,
+        }
+    }
+}
+
+#[repr(C)]
+struct ObjectStorage {
+    header: ObjectHeader,
+    _native: Rc<[NativeSlot]>,
+    _owners: Vec<HostSlot>,
+}
+/// Clone retains the table and callback captures. Drop releases them on this thread.
+/// Objects contain no borrowed invocation pointers and can outlive any one call.
+#[derive(Clone)]
+pub struct HostObject {
+    storage: Rc<ObjectStorage>,
+}
+impl HostObject {
+    pub fn new(iid: InterfaceId, slots: Vec<HostSlot>) -> Self {
+        // Derive raw table pointers only after immutable Rc allocation. Moving
+        // a Box after taking as_ptr would invalidate that pointer's borrow tag.
+        let native: Rc<[_]> = slots.iter().map(HostSlot::native).collect();
+        Self {
+            storage: Rc::new(ObjectStorage {
+                header: ObjectHeader {
+                    unknown: RawRuntimeIUnknown {
+                        vtbl: &UNKNOWN_VTABLE,
+                    },
+                    iid,
+                    slots: native.as_ptr(),
+                    slot_count: native.len(),
+                },
+                _native: native,
+                _owners: slots,
+            }),
+        }
+    }
+    pub fn header(&self) -> &ObjectHeader {
+        &self.storage.header
+    }
+    pub fn argument(&self) -> ObjectArg<'_> {
+        ObjectArg {
+            // Preserve complete-allocation provenance for the IUnknown prefix.
+            header: Rc::as_ptr(&self.storage).cast::<ObjectHeader>(),
+            _owner: PhantomData,
+        }
+    }
+    pub fn borrow_slot(&self) -> Slot<'_> {
+        Slot::Object(self.argument())
+    }
+}
+
+/// The native argument is a lifetime-bound header pointer, never a forgeable address.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct ObjectArg<'a> {
+    header: *const ObjectHeader,
+    _owner: PhantomData<(&'a HostObject, Rc<()>)>,
+}
+impl ObjectArg<'_> {
+    pub fn header(&self) -> &ObjectHeader {
+        // SAFETY: private construction ties the live Rc owner to this borrow.
+        unsafe { &*self.header }
+    }
+    pub fn as_ptr(self) -> *const ObjectHeader {
+        self.header
+    }
+}
+
+static UNKNOWN_VTABLE: RawRuntimeIUnknownVtbl = RawRuntimeIUnknownVtbl {
+    query_interface: query_unknown,
+    add_ref,
+    release,
+};
+// SAFETY CONTRACT: this is the complete-allocation pointer minted by the
+// HostObject factory; native references remain on its creating thread.
+unsafe extern "C" fn query_unknown(
+    this: *mut core::ffi::c_void,
+    iid: RuntimeGuid,
+    output: *mut *mut core::ffi::c_void,
+) -> i32 {
+    if output.is_null() {
+        return 0x8000_4003u32 as i32;
+    }
+    // SAFETY: native caller supplies one aligned writable pointer cell.
+    unsafe {
+        output.write(std::ptr::null_mut());
+    }
+    if this.is_null() || iid != RUNTIME_GUID_IUNKNOWN {
+        return 0x8000_4002u32 as i32;
+    }
+    // SAFETY: inherited retained same-thread allocation contract.
+    unsafe {
+        add_ref(this);
+        output.write(this);
+    }
+    0
+}
+// SAFETY CONTRACT: this is a live complete ObjectStorage allocation from Rc;
+// the native caller owns a reference and all operations stay on this thread.
+unsafe extern "C" fn add_ref(this: *mut core::ffi::c_void) -> u32 {
+    let pointer = this.cast::<ObjectStorage>();
+    // SAFETY: pointer was obtained from Rc::as_ptr and a strong owner is live.
+    unsafe {
+        Rc::increment_strong_count(pointer);
+    }
+    // SAFETY: inspect the newly retained reference without consuming it.
+    let owner = std::mem::ManuallyDrop::new(unsafe { Rc::from_raw(pointer) });
+    Rc::strong_count(&owner).min(u32::MAX as usize) as u32
+}
+// SAFETY CONTRACT: consume exactly one retained native reference, on the owner
+// thread, using the complete pointer supplied by this object's IUnknown.
+unsafe extern "C" fn release(this: *mut core::ffi::c_void) -> u32 {
+    // SAFETY: caller transfers one native strong reference back into Rc.
+    let owner = unsafe { Rc::from_raw(this.cast::<ObjectStorage>()) };
+    let remaining = Rc::strong_count(&owner) - 1;
+    // No host destructor panic may unwind through the native ABI.
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(owner))) {
+        discard_panic(payload);
+    }
+    remaining.min(u32::MAX as usize) as u32
+}
+
+/// # Safety
+/// Data is one live Callback of the advertised signature; context and output
+/// are nonaliasing live objects, and the retained HostObject spans the call.
+unsafe extern "C" fn double0(data: *const (), context: *mut TypedContext, output: *mut f64) -> i32 {
+    // SAFETY: table construction paired these exact pointers and signature.
+    let Callback::Double0(call) = (unsafe { &*data.cast::<Callback>() }) else {
+        return 5;
+    };
+    // SAFETY: entry contract provides a unique context for synchronous reborrowing.
+    let result = catch_unwind(AssertUnwindSafe(|| call(unsafe { &mut *context })));
+    finish(result, output)
+}
+/// # Safety
+/// Same contract as double0, with one native Long argument.
+unsafe extern "C" fn double_long(
+    data: *const (),
+    context: *mut TypedContext,
+    arg: i32,
+    output: *mut f64,
+) -> i32 {
+    // SAFETY: table construction paired these exact pointers and signature.
+    let Callback::DoubleLong(call) = (unsafe { &*data.cast::<Callback>() }) else {
+        return 5;
+    };
+    // SAFETY: entry contract provides unique context for synchronous reborrowing.
+    let result = catch_unwind(AssertUnwindSafe(|| call(unsafe { &mut *context }, arg)));
+    finish(result, output)
+}
+fn finish(
+    result: Result<Result<f64, i32>, Box<dyn std::any::Any + Send>>,
+    output: *mut f64,
+) -> i32 {
+    match result {
+        Ok(Ok(value)) if value.is_finite() => {
+            // SAFETY: private callers inherit the live aligned output contract.
+            unsafe {
+                output.write(value);
+            }
+            0
+        }
+        Ok(Ok(_)) => 6,
+        Ok(Err(status)) if status == -1 || status > 0 => status,
+        Ok(Err(_)) => 5,
+        Err(payload) => {
+            discard_panic(payload);
+            5
+        }
+    }
+}
+fn discard_panic(payload: Box<dyn std::any::Any + Send>) {
+    // A custom panic payload can itself panic when dropped. Free ordinary
+    // payloads and keep even that secondary unwind inside the native boundary.
+    if let Err(secondary) = catch_unwind(AssertUnwindSafe(|| drop(payload))) {
+        std::mem::forget(secondary);
+    }
+}
+
+/// Checked interpreter transport; generated JIT code emits the equivalent loads
+/// and a call_indirect of the exact native signature instead of calling this helper.
+/// # Safety
+/// Header is null or a live retained HostObject header. Context is unique. The
+/// object borrow and provider's admission proof must span the complete call.
+pub unsafe fn invoke_double_slot(
+    header: *const ObjectHeader,
+    iid: InterfaceId,
+    slot: usize,
+    argument: Option<i32>,
+    context: &mut TypedContext,
+) -> Result<ScalarBits, i32> {
+    // SAFETY: caller proves live header or null.
+    let header = unsafe { header.as_ref() }.ok_or(91)?;
+    if header.iid != iid || slot >= header.slot_count {
+        return Err(438);
+    }
+    // SAFETY: HostObject retains slot_count initialized native slots.
+    let native = unsafe { &*header.slots.add(slot) };
+    let signature = if argument.is_some() {
+        SLOT_DOUBLE_LONG
+    } else {
+        SLOT_DOUBLE_0
+    };
+    if native.signature != signature {
+        return Err(13);
+    }
+    let mut output = 0.0;
+    let status = if let Some(arg) = argument {
+        // SAFETY: checked signature identifies this C ABI; data/code retained.
+        let entry: unsafe extern "C" fn(*const (), *mut TypedContext, i32, *mut f64) -> i32 =
+            unsafe { std::mem::transmute(native.entry) };
+        // SAFETY: all borrows survive entry; only context/output are writable.
+        unsafe { entry(native.data, context, arg, &mut output) }
+    } else {
+        // SAFETY: checked signature identifies this C ABI; data/code retained.
+        let entry: unsafe extern "C" fn(*const (), *mut TypedContext, *mut f64) -> i32 =
+            unsafe { std::mem::transmute(native.entry) };
+        // SAFETY: all borrows survive entry; only context/output are writable.
+        unsafe { entry(native.data, context, &mut output) }
+    };
+    if status == 0 {
+        Ok(ScalarBits::double(output))
+    } else {
+        Err(status)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn native_unknown_prefix_retains_the_exact_object_until_last_release() {
+        assert_eq!(std::mem::offset_of!(ObjectHeader, unknown), 0);
+        assert_eq!(std::mem::offset_of!(ObjectStorage, header), 0);
+        let capture = Rc::new(());
+        let weak = Rc::downgrade(&capture);
+        let object = HostObject::new(
+            [1; 16],
+            vec![HostSlot::double(move |_| {
+                let _keep = &capture;
+                Ok(41.0)
+            })],
+        );
+        let raw = object.argument().as_ptr();
+        // SAFETY: argument preserves full Rc allocation provenance and the
+        // creating-thread owner remains live while the native reference is taken.
+        let table = unsafe { &*(*raw).unknown.vtbl };
+        // SAFETY: one live same-thread retained object, native call retains one.
+        assert_eq!(unsafe { (table.add_ref)(raw.cast_mut().cast()) }, 2);
+        drop(object);
+        assert!(weak.upgrade().is_some());
+        let mut identity = std::ptr::null_mut();
+        // SAFETY: the explicit native reference owns the live full allocation;
+        // identity is a nonaliasing writable pointer cell.
+        assert_eq!(
+            // SAFETY: retained native owner and initialized output cell span QI.
+            unsafe {
+                (table.query_interface)(raw.cast_mut().cast(), RUNTIME_GUID_IUNKNOWN, &mut identity)
+            },
+            0
+        );
+        assert_eq!(identity, raw.cast_mut().cast());
+        // SAFETY: release exactly the QI reference, leaving the explicit owner.
+        assert_eq!(unsafe { (table.release)(identity) }, 1);
+        identity = raw.cast_mut().cast();
+        // SAFETY: live explicit native owner and writable pointer output.
+        assert_ne!(
+            // SAFETY: explicit native owner is live; output cell is writable.
+            unsafe {
+                (table.query_interface)(
+                    raw.cast_mut().cast(),
+                    RuntimeGuid::new(9, 0, 0, [0; 8]),
+                    &mut identity,
+                )
+            },
+            0
+        );
+        assert!(identity.is_null());
+        // SAFETY: consume the last explicit native reference; raw is unused after.
+        assert_eq!(unsafe { (table.release)(raw.cast_mut().cast()) }, 0);
+        assert!(weak.upgrade().is_none());
+    }
+}

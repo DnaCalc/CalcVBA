@@ -427,6 +427,8 @@ pub struct Variant {
 
 impl Variant {
     fn from_core(core: VariantCore) -> Self {
+        #[cfg(any(test, feature = "live-counters"))]
+        crate::live_counters::variant_constructed();
         Self { core }
     }
 

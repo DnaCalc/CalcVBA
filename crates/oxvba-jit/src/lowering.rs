@@ -1,6 +1,7 @@
 //! Cranelift procedure lowering and compile-time call planning.
 
 use super::*;
+use oxvba_rt_abi::host_entry::ScalarType;
 
 pub(crate) struct Compiler<'p> {
     pub(crate) module: UnpublishedModule,
@@ -110,8 +111,9 @@ impl<'p> Compiler<'p> {
                 functions
                     .into_iter()
                     .map(|entry| {
-                        entry.map(|(id, layout)| crate::typed::ScalarEntry {
+                        entry.map(|(id, layout, slots_id)| crate::typed::ScalarEntry {
                             pointer: compiler.module.get_finalized_function(id),
+                            slots_pointer: compiler.module.get_finalized_function(slots_id),
                             layout,
                         })
                     })
@@ -161,7 +163,13 @@ impl<'p> Compiler<'p> {
         let mut func_ctx = FunctionBuilderContext::new();
         for program_index in 0..self.programs.len() {
             for index in 0..self.programs[program_index].funcs.len() {
-                if self.scalar_entries[program_index][index].is_some() {
+                if self.scalar_entries[program_index][index]
+                    .as_ref()
+                    .is_some_and(|(_, layout, _)| {
+                        !layout.parameters.contains(&ScalarType::HostObject)
+                            && layout.host_calls.is_empty()
+                    })
+                {
                     self.define_scalar_thunk(program_index, index, &mut ctx, &mut func_ctx)?;
                     self.module.clear_context(&mut ctx);
                     if self.programs[program_index].entry == Some(FuncId(index)) {
@@ -197,7 +205,7 @@ impl<'p> Compiler<'p> {
         func_ctx: &mut FunctionBuilderContext,
     ) -> Result<(), JitError> {
         use oxvba_rt_abi::host_entry::ScalarType;
-        let (typed_id, layout) = self.scalar_entries[program_index][index]
+        let (typed_id, layout, _) = self.scalar_entries[program_index][index]
             .as_ref()
             .expect("scalar entry");
         let program = self.programs[program_index];
@@ -257,7 +265,9 @@ impl<'p> Compiler<'p> {
                     ScalarType::Long => {
                         lower.lower_operand_i32(&mut builder, &mut self.module, &operand)?
                     }
-                    ScalarType::Boolean => unreachable!("scalar parameter admission"),
+                    ScalarType::Boolean | ScalarType::HostObject => {
+                        unreachable!("scalar parameter admission")
+                    }
                 });
             }
             args.push(result_ptr);
@@ -286,7 +296,9 @@ impl<'p> Compiler<'p> {
                     let value = builder.ins().stack_load(types::I32, result, 0);
                     lower.emit_store_i32(&mut builder, &mut self.module, dst, value)?;
                 }
-                ScalarType::Boolean => unreachable!("scalar result admission"),
+                ScalarType::Boolean | ScalarType::HostObject => {
+                    unreachable!("scalar result admission")
+                }
             }
             let status = builder.ins().iconst(types::I32, i64::from(ST_OK));
             builder.ins().return_(&[status]);

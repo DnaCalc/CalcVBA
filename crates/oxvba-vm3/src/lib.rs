@@ -966,12 +966,12 @@ impl<'h> Vm3<'h> {
         if args.len() != entry.layout().parameters.len() {
             return None;
         }
-        let mut bits = [ScalarBits(0); MAX_TYPED_ARGS];
+        let mut bits = [ScalarBits::ZERO; MAX_TYPED_ARGS];
         for (i, (value, ty)) in args.iter().zip(&entry.layout().parameters).enumerate() {
             bits[i] = match ty {
                 ScalarType::Long => ScalarBits::long(value.as_i32()?),
                 ScalarType::Double => ScalarBits::double(value.as_f64()?),
-                ScalarType::Boolean => return None,
+                ScalarType::Boolean | ScalarType::HostObject => return None,
             };
         }
         let result_ty = entry.layout().result;
@@ -989,7 +989,9 @@ impl<'h> Vm3<'h> {
             Ok(value) => Ok(match result_ty {
                 ScalarType::Long => Variant::from_i32(value.as_long()),
                 ScalarType::Double => Variant::from_f64(value.as_double()),
-                ScalarType::Boolean => unreachable!("admitted scalar result"),
+                ScalarType::Boolean | ScalarType::HostObject => {
+                    unreachable!("admitted scalar result")
+                }
             }),
             Err(-1) => Err(Vm3Error::BudgetExceeded),
             Err(number) => {
@@ -1410,8 +1412,10 @@ impl<'h> Vm3<'h> {
                 rhs,
                 mode,
             } => {
-                let l = self.operand(lhs)?;
-                let r = self.operand(rhs)?;
+                let left = self.operand(lhs)?;
+                let right = self.operand(rhs)?;
+                let l = self.arithmetic_value(left)?;
+                let r = self.arithmetic_value(right)?;
                 let out = match op {
                     ArithOp::Add => arith::add(&l, &r, *mode),
                     ArithOp::Sub => arith::sub(&l, &r, *mode),
@@ -1422,17 +1426,22 @@ impl<'h> Vm3<'h> {
                 self.store_arith(dst, out)?;
             }
             OxInst::Div { dst, lhs, rhs } => {
-                let l = self.operand(lhs)?;
-                let r = self.operand(rhs)?;
+                let left = self.operand(lhs)?;
+                let right = self.operand(rhs)?;
+                let l = self.arithmetic_value(left)?;
+                let r = self.arithmetic_value(right)?;
                 self.store_arith(dst, arith::div(&l, &r))?;
             }
             OxInst::Pow { dst, lhs, rhs } => {
-                let l = self.operand(lhs)?;
-                let r = self.operand(rhs)?;
+                let left = self.operand(lhs)?;
+                let right = self.operand(rhs)?;
+                let l = self.arithmetic_value(left)?;
+                let r = self.arithmetic_value(right)?;
                 self.store_arith(dst, arith::pow(&l, &r))?;
             }
             OxInst::Neg { dst, src, mode } => {
-                let v = self.operand(src)?;
+                let value = self.operand(src)?;
+                let v = self.arithmetic_value(value)?;
                 self.store_arith(dst, arith::neg(&v, *mode))?;
             }
             OxInst::Concat { dst, lhs, rhs } => {
@@ -4204,10 +4213,28 @@ impl<'h> Vm3<'h> {
         }
     }
 
-    /// Late-bound by-name member dispatch shared by `ComCallLate` and `CallByName`: a
-    /// project-instance receiver dispatches internally ([`Self::dispatch_project_method`]);
-    /// a genuine `Object`/`Variant` (COM/foreign) receiver goes to the host's COM facet
-    /// ([`Self::dispatch_com_method`]).
+    /// Resolve an arithmetic value while retaining the caller's owning object.
+    fn arithmetic_value(&mut self, mut value: Variant) -> Result<Variant, Vm3Error> {
+        // Resolve a value-context default without replacing the owning object
+        // stored in the caller's argument/local. Project and foreign objects
+        // use exactly the normal default-member dispatch routes.
+        for _ in 0..64 {
+            if value.vtype() != VarType::Object {
+                return Ok(value);
+            }
+            value = self.dispatch_default_member_values(
+                value,
+                TypeLibMemberInvokeKind::PropertyGet,
+                Vec::new(),
+            )?;
+        }
+        Err(Vm3Error::Fault(Fault::new(
+            28,
+            "Out of stack space resolving object default value",
+        )))
+    }
+
+    /// Dispatch the default member through the ordinary project/foreign routes.
     fn dispatch_default_member(
         &mut self,
         recv_v: Variant,

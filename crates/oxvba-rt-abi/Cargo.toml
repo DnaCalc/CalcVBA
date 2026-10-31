@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Shared runtime ABI substrate for vm3 and the Cranelift JIT."
 
 [dependencies]
+calcvba-host-api.workspace = true
 oxvba-bundle.workspace = true
 oxvba-com.workspace = true
 oxvba-eval.workspace = true

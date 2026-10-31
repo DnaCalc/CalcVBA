@@ -11,7 +11,13 @@ pub struct TypedInterpreter<'p> {
 }
 impl<'p> TypedInterpreter<'p> {
     pub fn bind(func: &'p OxFunc) -> Result<Self, String> {
-        let layout = ScalarLayout::new(func)?;
+        Self::bind_with_interfaces(func, &[])
+    }
+    pub fn bind_with_interfaces(
+        func: &'p OxFunc,
+        interfaces: &[oxvba_oxir::ComInterface],
+    ) -> Result<Self, String> {
+        let layout = ScalarLayout::with_interfaces(func, interfaces)?;
         let blocks = func
             .blocks
             .iter()
@@ -32,10 +38,46 @@ impl<'p> TypedInterpreter<'p> {
         args: &[ScalarBits],
         context: &mut TypedContext,
     ) -> Result<ScalarBits, i32> {
+        if self.layout.parameters.contains(&ScalarType::HostObject) {
+            return Err(13);
+        }
+        // SAFETY: numeric arguments cannot inject object pointers. Object locals
+        // start null and admission forbids assigning numeric bits to them.
+        unsafe { self.invoke_bits(args, context) }
+    }
+    pub fn invoke_slots(
+        &self,
+        args: &[calcvba_host_api::Slot<'_>],
+        context: &mut TypedContext,
+    ) -> Result<ScalarBits, i32> {
+        if args.len() != self.layout.parameters.len()
+            || args
+                .iter()
+                .zip(&self.layout.parameters)
+                .any(|(a, t)| a.ty() != *t)
+        {
+            return Err(13);
+        }
+        if args.iter().any(|a| !a.is_valid()) {
+            return Err(6);
+        }
+        let mut bits = [ScalarBits::ZERO; calcvba_host_api::MAX_TYPED_ARGS];
+        for (i, arg) in args.iter().enumerate() {
+            bits[i] = arg.bits();
+        }
+        // SAFETY: safe slots retain every host-object borrow and header. The
+        // checked layout permits no arbitrary pointer creation or escape.
+        unsafe { self.invoke_bits(&bits[..args.len()], context) }
+    }
+    unsafe fn invoke_bits(
+        &self,
+        args: &[ScalarBits],
+        context: &mut TypedContext,
+    ) -> Result<ScalarBits, i32> {
         if args.len() != self.layout.parameters.len() {
             return Err(13);
         }
-        let mut slots = [ScalarBits(0); MAX_TYPED_SLOTS];
+        let mut slots = [ScalarBits::ZERO; MAX_TYPED_SLOTS];
         slots[..args.len()].copy_from_slice(args);
         let mut block = self.func.entry;
         loop {
@@ -44,11 +86,43 @@ impl<'p> TypedInterpreter<'p> {
             let current = &self.func.blocks[block_index];
             for inst in &current.instrs {
                 match inst {
+                    OxInst::ComCallEarly {
+                        dst: Some(dst),
+                        method,
+                        recv,
+                        args,
+                        ..
+                    } => {
+                        let plan = &self.layout.host_calls[method];
+                        let header = self
+                            .layout
+                            .read(&slots, recv, ScalarType::HostObject)
+                            .as_object();
+                        let arg = args.first().map(|arg| match arg {
+                            oxvba_oxir::OxCallArg::Operand(op) => {
+                                self.layout.read(&slots, op, ScalarType::Long).as_long()
+                            }
+                            oxvba_oxir::OxCallArg::ByRef(place) => {
+                                slots[self.layout.slot(*place).expect("admitted place")].as_long()
+                            }
+                            oxvba_oxir::OxCallArg::Const(value) => *value,
+                            _ => unreachable!("admitted host argument"),
+                        });
+                        // SAFETY: invoke_slots retained the header borrow; object
+                        // copies stay inside this activation. Transport checks
+                        // IID, bounds and exact native signature before entry.
+                        let value = unsafe {
+                            calcvba_host_api::object::invoke_double_slot(
+                                header, plan.iid, plan.slot, arg, context,
+                            )
+                        }?;
+                        slots[self.layout.slot(*dst).expect("admitted destination")] = value;
+                    }
                     OxInst::StmtBoundary {
                         clear_temps_from, ..
                     } => {
                         slots[self.layout.local_count + clear_temps_from..self.layout.slots.len()]
-                            .fill(ScalarBits(0));
+                            .fill(ScalarBits::ZERO);
                     }
                     OxInst::DrainTerminations => {}
                     OxInst::Assign { dst, value }

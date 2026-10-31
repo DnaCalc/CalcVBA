@@ -134,11 +134,11 @@ ByVal Long/i32 or Double/f64 arguments/results, numeric locals, add/subtract/mul
 division, comparisons, truthiness and branches. Long operands/literals promote
 to Double when a Double operand proves that numeric lane. Physical admission records exact
 slots and proven Double-only Variant temporaries; it refuses user Variant locals,
-ByRef, Optional, ParamArray, strings, objects, arrays, globals/Static, calls, handlers,
+ByRef, Optional, ParamArray, strings, arrays, globals/Static, general calls, handlers,
 line/Erl operations and other instructions. It bounds physical slots at 128. Host Double inputs must be finite; non-finite values return error 6. No
 unsupported typed call silently falls back to a dynamic backend or Variant frame.
 
-Typed native convention v1 is `(TypedContext*, typed arguments..., R*) -> i32` using
+Typed native convention v2 is `(TypedContext*, typed arguments..., R*) -> i32` using
 the target C ABI. Context owns a cooperative block budget; 0 means success, -1 host
 budget interruption, positive statuses are VBA error numbers. Results are written
 only on success. Both universal value routes adapt admitted scalar procedures to the same primary
@@ -149,13 +149,76 @@ no heap storage. This is a bounded Rust-facing family, not the final general C A
 Source-module programs have no implicit run entry; hosts select bound procedures.
 A session initializes storage before publishing handles, never runs Main, and uses
 a separate 1,000,000-block initialization budget. Calls are synchronous/same-thread;
-reentry is refused. Handles retain an opaque owner identity and checked u64 generation,
+dynamic/stateful same-session reentry is refused. The run-7 typed subset below permits
+bounded callback reentry with the active context. Handles retain an opaque owner identity and checked u64 generation,
 never a public address. Reload prepares replacement code/state first; failure keeps
 old handles valid, success changes generation before old code can be freed. Counter
 exhaustion refuses reload. Reset retains code/handles and reinitializes VBA storage.
 The shared bounded LRU holds code/metadata while each session owns globals/Static/Err
 and HAL; eviction cannot invalidate a live session. The scalar host ABI does not
 preempt native calls or prove general recursion/reentry/apartment safety.
+
+## Run-7 host contract and typed object calls
+
+`calcvba-host-api` is the host library dependency. It contains source/project and
+ordered reference descriptions, compiler signature projections, exact runtime
+Variants for the explicit dynamic adapter, opaque handles and typed-slot contracts.
+It links neither compiler nor execution backend nor libffi. Applications compose
+`oxvba-embed::provider::Provider`, optionally supplying HAL services and their
+existing TypeLibResolver. `RuntimeProvider::info` declares API ABI 1, typed entry
+ABI 2 and JIT availability. An incompatible requested API version refuses before
+compilation. This is a linked Rust interface: Box/Rc/code/object allocations are
+released by their originating owners through Rust drop/vtables. It is not a stable
+separately loaded C/plugin ABI.
+
+`Session` lists signatures including accessors/Sub, visibility/Option Private,
+scalar/array element/rank metadata, passing modes and defaults. It binds once and
+validates the original engine owner/generation on every call. Failed reload keeps
+the old module; successful reload invalidates its handles before releasing code.
+Hosts can type a bound Property Get with `bind_typed_handle`. Native host objects
+still use preserved typelib IID/slots through the existing ComHal boundary; the
+API facade does not substitute its portable table for native COM metadata/pointers.
+
+Portable `ObjectLibrary` descriptors name interfaces and fixed slot signatures.
+`HostObject` owns immutable callback tables/captures and a runtime IUnknown prefix.
+Its typed table has its own C ABI, separate from IDispatch/dual vtables. Current
+slots return Double and accept zero arguments or one required ByVal Long. Function
+entries additionally accept borrowed ObjectArg alongside the existing Long/Double
+arguments. Objects are retained through same-thread Rc and their IUnknown prefix;
+ObjectArg borrows cannot outlive the owner. A kept object may outlive an invocation,
+but its callback must resolve any sheet/backend context against the active host
+call. The engine stores no invocation pointer. Typed object results, persistent
+VBA owning object storage and broader signatures remain outside this subset.
+No object-count limit of 4,096 is introduced.
+
+Shared physical admission consumes the original OxFunc and retained descriptor,
+proves Double-producing host temporaries, and refuses conflicting writers or
+unsupported shapes. Both backends check IID, table bounds and native slot
+signature. JIT emits call_indirect with native arguments and typed output storage;
+VM3 uses the same native signature with unboxed local slots. No Variant argument
+vector/frame, runtime member lookup, Invoke retry or libffi occurs on this path.
+The API's uniform slot adapter calls that same primary JIT entry directly.
+
+Callbacks may call `call_typed_in_context`/`call_slots` with the borrowed active
+context. Nested calls consume the outer budget. A fresh context cannot reenter the
+same executing session; dynamic calls and reset also refuse during that activation.
+The thread permits at most 64 typed activations across its sessions (error 28).
+Guards restore depth/context on success, faults and budget interruption. Host
+callback panics become error 5 at the C boundary; failed calls do not read unwritten
+results. This proves a declared synchronous typed subset, not arbitrary COM event,
+ByRef, general VBA recursion or stateful VM/JIT callback safety.
+Reload requires exclusive `&mut Session`; a safe caller cannot acquire it while
+the shared session/code borrow spans an activation or callback. Dynamic reset
+additionally checks the active execution borrow. Object comparisons/conditions
+are refused by typed admission until their value-context semantics are supported;
+the object pointer is never treated as a scalar condition or comparison value.
+
+Generic numeric arithmetic now resolves each object's default member through the
+existing project/foreign dispatch before entering the pure arithmetic kernel.
+The original object remains in its argument/local; no spreadsheet-aware entry
+conversion occurs. Default chains are bounded at 64; broader context-specific
+coercion and exact deep-chain behavior remain in CORE-3. See the
+[run-7 proof and limits](../evidence/programs/ideal-2026-07/core/CORE-7/typed-host-callbacks.md).
 
 ## Spreadsheet extraction and DNA Calc glue handoff
 
@@ -184,8 +247,8 @@ DNA Calc glue will need:
 Idle Excel evidence now establishes unhandled error13 and division-by-zero -> cell
 #VALUE! with no runtime dialog, while an untyped single-cell Range uses its default
 value in arithmetic. Numeric text and blanks coerce; bad text/multi-cell arithmetic
-produce #VALUE!. Generic object default-value resolution in arithmetic remains
-engine work under bd-59co.2.4.3; glue must supply the real default member without
+produce #VALUE!. The run-7 generic object default-value arithmetic subset is delivered
+under bd-59co.2.4.9; broader coercion families remain under bd-59co.2.4.3. Glue supplies the real default member without
 erasing the object argument at entry. See [worksheet observations](../evidence/programs/ideal-2026-07/windows-x64/WIN-4/worksheet-errors.md).
 
 `UDF_EMBEDDING_V1.md` remains the compatibility adapter's consumer contract. CORE-7

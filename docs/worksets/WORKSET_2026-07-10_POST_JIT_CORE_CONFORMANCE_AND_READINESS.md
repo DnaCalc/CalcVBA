@@ -477,3 +477,25 @@ Calc integration is claimed. Idle Excel error/Range observations and the glue
 handoff are retained with the [bounded evidence](../evidence/programs/ideal-2026-07/core/CORE-7/typed-host-entries.md).
 Generic object-default arithmetic remains in the NumericMode/coercion owner
 `bd-59co.2.4.3`, without introducing spreadsheet names into the engine.
+
+## 2026-10-31 directed run 7
+
+The owner accepts bounded V1/V2/V3 work in OxVba on master: CORE-8
+`bd-59co.2.10.9` supplies the independent `calcvba-host-api` contract and runtime
+composition facade; CORE-7 `bd-59co.2.9.12` extends the existing typed primary
+family for a Range-like numeric host callback on VM3/JIT, with ownership and
+bounded synchronous typed reentry; CORE-3 `bd-59co.2.4.9` supplies generic default
+member arithmetic without replacing the untyped object parameter.
+
+No DnaCalc source changes, repository rename or new spreadsheet-compat members
+are authorized. Broader CORE-JIT-LOWERING/CORE-JIT-CACHE-OBJECT remain in-progress
+under `bd-59co.2.9.9`/`bd-59co.2.10.7`: general owning carriers, object results,
+ByRef/general bodies, source-free verified sessions and stateful/COM-event reentry
+remain open. `bd-59co.2.4.3` retains the broader coercions/deep default chains and
+Double fault/store ordering. See [run-7 evidence](../evidence/programs/ideal-2026-07/core/CORE-7/typed-host-callbacks.md).
+
+The scoped run-7 delivery leaves close after the 3,705-test repository check,
+strict-provenance Miri and final owned-Excel receipt. General typed owning object
+globals/Static/results have delivery-ready successor `bd-59co.2.10.10`.
+Object-typed/global TypeName operands exposed by the retention probe remain
+`bd-59co.2.9.13`; its accepted Variant object copy preserves native Range identity.

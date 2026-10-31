@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/calcvba-host-api",
     "crates/oxvba-diagnostics",
     "crates/oxvba-hal",
     "crates/oxvba-syntax",
@@ -51,6 +52,7 @@ undocumented_unsafe_blocks = "deny"
 unwrap_used = "allow"
 
 [workspace.dependencies]
+calcvba-host-api = { path = "crates/calcvba-host-api" }
 oxvba-syntax = { path = "crates/oxvba-syntax" }
 oxvba-diagnostics = { path = "crates/oxvba-diagnostics" }
 oxvba-hal = { path = "crates/oxvba-hal" }

@@ -514,8 +514,8 @@ impl WindowsComBridge {
     /// `Excel.Application` → `"Application"`) and is reliable, so it is the
     /// baseline. We then consult the live object's own short type name via
     /// `IDispatch::GetTypeInfo(0)` / `GetDocumentation` and PREFER it only when it
-    /// matches that trailing segment — this keeps the answer authoritative when
-    /// the typeinfo agrees, while avoiding the `IFoo`-dual-interface-name divergence
+    /// matches that trailing segment, or the binding is a returned-object
+    /// diagnostic lineage rather than a ProgID. This avoids the `IFoo` divergence
     /// (a typeinfo named `"IDictionary"` would otherwise regress `"Dictionary"`).
     /// `None` when there is no binding to name.
     pub fn object_type_name(&self, object: ObjectRef) -> Result<Option<String>, String> {
@@ -526,25 +526,36 @@ impl WindowsComBridge {
                 None => return Ok(None),
             }
         };
-        let trailing = prog_id_name
-            .rsplit('.')
-            .next()
-            .filter(|segment| !segment.is_empty())
-            .map(str::to_string);
-        if dispatch != 0 {
+        let native = if dispatch != 0 {
             // SAFETY: the bindings map owns one retained `IDispatch` reference for
             // this handle (W1-com-009) and bindings are released only from the VM
             // thread that is currently inside this call, so the pointer stays live
             // for the GetTypeInfo lookup.
-            let typeinfo_name =
-                unsafe { crate::live_object_typeinfo_name(dispatch as *mut RawIDispatch) };
-            if let (Some(typeinfo_name), Some(trailing)) = (&typeinfo_name, &trailing)
-                && typeinfo_name.eq_ignore_ascii_case(trailing)
-            {
-                return Ok(Some(typeinfo_name.clone()));
-            }
+            unsafe { crate::live_object_typeinfo_name(dispatch as *mut RawIDispatch) }
+        } else {
+            None
+        };
+        Ok(Self::type_name_for_binding(&prog_id_name, native))
+    }
+
+    fn type_name_for_binding(label: &str, native: Option<String>) -> Option<String> {
+        let trailing = label
+            .rsplit('.')
+            .next()
+            .filter(|segment| !segment.is_empty())
+            .map(str::to_string);
+        if let Some(native) = native.filter(|name| !name.is_empty())
+            && (label.contains("::<")
+                || trailing
+                    .as_ref()
+                    .is_some_and(|name| native.eq_ignore_ascii_case(name)))
+        {
+            // Returned-object diagnostic labels contain no class identity.
+            // An activatable ProgID, however, may name the class while native
+            // type information names its default interface (e.g. IDictionary).
+            return Some(native);
         }
-        Ok(trailing)
+        trailing
     }
 
     /// # Safety
@@ -1121,6 +1132,26 @@ impl WindowsComBridge {
 mod tests {
     use super::*;
     use crate::dynamic_object::DynamicCallArg;
+
+    #[test]
+    fn returned_object_type_name_uses_native_identity_without_regressing_class_names() {
+        for (label, native, expected) in [
+            ("Scripting.Dictionary", "IDictionary", "Dictionary"),
+            ("Excel.Application", "_Application", "Application"),
+            ("ExcelWindow::<invoke-result>::42", "Range", "Range"),
+            (
+                "ExcelWindow::<invoke-result>::42",
+                "",
+                "ExcelWindow::<invoke-result>::42",
+            ),
+        ] {
+            assert_eq!(
+                WindowsComBridge::type_name_for_binding(label, Some(native.into())),
+                Some(expected.into()),
+                "binding {label} with native type {native}"
+            );
+        }
+    }
 
     /// Insert a native binding (carrying one retained reference on `native_ptr`)
     /// at a fixed handle, with a single member spec keyed by `member_token`, a

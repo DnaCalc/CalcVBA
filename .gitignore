@@ -8,6 +8,8 @@ temp/
 tools/**/bin/
 tools/**/obj/
 dist/
+artifacts/calcvba7/
+artifacts/windows-x64/worksheet-errors/
 
 # bv (beads viewer) local config and caches
 .bv/

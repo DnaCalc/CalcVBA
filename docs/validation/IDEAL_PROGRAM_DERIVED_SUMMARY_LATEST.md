@@ -10,7 +10,7 @@ This file is generated from the manifest-owned canonical matrices. It is a proje
 
 | Profile | Matrices | Rows | Planned | In progress | Implemented subset | Implemented full | Verified | Archived |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| core | 5 | 59 | 56 | 2 | 0 | 0 | 1 | 0 |
+| core | 5 | 59 | 55 | 3 | 0 | 0 | 1 | 0 |
 | windows-x64 | 6 | 57 | 52 | 4 | 0 | 0 | 1 | 0 |
 | ide | 4 | 77 | 77 | 0 | 0 | 0 | 0 | 0 |
 
@@ -18,7 +18,7 @@ This file is generated from the manifest-owned canonical matrices. It is a proje
 
 | Matrix | Profile | Role | Owner epic | Rows | Verified | Open | Trace relationships |
 |---|---|---|---|---:|---:|---:|---:|
-| CORE-READINESS | core | primary | bd-59co.2.1 | 24 | 1 | 23 | 117 |
+| CORE-READINESS | core | primary | bd-59co.2.1 | 24 | 1 | 23 | 122 |
 | VBA-LIBRARY | core | primary | bd-59co.2.5 | 7 | 0 | 7 | 7 |
 | OXIR-BACKENDS | core | primary | bd-59co.2.6 | 12 | 0 | 12 | 23 |
 | OXIMAGE-CONTRACT | core | primary | bd-59co.2.6 | 8 | 0 | 8 | 15 |
@@ -44,7 +44,7 @@ This file is generated from the manifest-owned canonical matrices. It is a proje
 | CORE-ANALYSIS-FACTS | CORE-READINESS | versioned AnalysisResultV1 identities syntax and scopes | immutable syntax declarations uses types calls arguments diagnostics provenance and optional program | planned | remaining-accepted-scope | bd-59co.2.4.1 |
 | CORE-ANALYSIS-STRICT-EDITOR | CORE-READINESS | strict and editor analysis equivalence | valid source produces identical identities types calls and diagnostics in both modes | planned | remaining-accepted-scope | bd-59co.2.4.1 |
 | CORE-TYPED-BINDING | CORE-READINESS | typed calls arguments references and providers | ByVal ByRef Optional named omitted ParamArray returns arrays UDTs and objects | planned | remaining-accepted-scope | bd-59co.2.4.1 |
-| CORE-COMP-NUMERIC-MODE | CORE-READINESS | VBA-compatible NumericMode selection | provable fixed numeric lanes and overflow coercion | planned | remaining-accepted-scope | bd-59co.2.4.3 |
+| CORE-COMP-NUMERIC-MODE | CORE-READINESS | VBA-compatible NumericMode selection | provable fixed numeric lanes and overflow coercion | in-progress | remaining-accepted-scope | bd-59co.2.4.3 |
 | CORE-BASELINE-UNSAFE-CLIPPY | CORE-READINESS | strict clean-build unsafe audit | SafeArray VBA record and current HAL strict-warning sites | planned | remaining-accepted-scope | bd-59co.2.2.12 |
 | CORE-BASELINE-EOL-SNAPSHOT | CORE-READINESS | cross-platform line ending and snapshot determinism | source and golden artifacts remain semantically and byte stable across LF and CRLF checkouts | planned | remaining-accepted-scope | bd-59co.2.2.12 |
 | CORE-BASELINE-BALANCE-LIFECYCLE | CORE-READINESS | fixture-isolated carrier balance and policy-error cleanup | named subprocess fixtures report exact BSTR object SAFEARRAY record and related carrier deltas | planned | remaining-accepted-scope | bd-59co.2.2.12 |

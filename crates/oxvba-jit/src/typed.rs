@@ -6,6 +6,7 @@ use std::marker::PhantomData;
 
 pub(crate) struct ScalarEntry {
     pub(crate) pointer: *const u8,
+    pub(crate) slots_pointer: *const u8,
     pub(crate) layout: ScalarLayout,
 }
 
@@ -14,7 +15,7 @@ pub(crate) struct ScalarEntry {
 pub struct TypedEntry<A, R> {
     pointer: *const u8,
     owner: std::sync::Arc<()>,
-    signature: PhantomData<fn(A) -> R>,
+    signature: PhantomData<fn() -> (A, R)>,
 }
 impl<A, R> Clone for TypedEntry<A, R> {
     fn clone(&self) -> Self {
@@ -27,6 +28,20 @@ impl<A, R> Clone for TypedEntry<A, R> {
 }
 impl<A: Arguments, R: Scalar> TypedEntry<A, R> {
     pub fn invoke(&self, image: &CompiledImage<'_>, args: A, blocks: u64) -> Result<R, i32> {
+        self.invoke_in_context(
+            image,
+            args,
+            &mut TypedContext {
+                remaining_blocks: blocks,
+            },
+        )
+    }
+    pub fn invoke_in_context(
+        &self,
+        image: &CompiledImage<'_>,
+        args: A,
+        context: &mut TypedContext,
+    ) -> Result<R, i32> {
         if !std::sync::Arc::ptr_eq(&self.owner, &image.typed_identity) {
             return Err(5);
         }
@@ -34,16 +49,53 @@ impl<A: Arguments, R: Scalar> TypedEntry<A, R> {
             return Err(6);
         }
         let mut result = R::default();
-        let mut context = TypedContext {
-            remaining_blocks: blocks,
-        };
         // SAFETY: bind checked A/R against the compiler's exact typed signature;
         // image identity proves the original executable owner is still live.
-        let status = unsafe { args.invoke(self.pointer, &mut context, &mut result) };
+        let status = unsafe { args.invoke(self.pointer, context, &mut result) };
         if status == 0 { Ok(result) } else { Err(status) }
     }
 }
 impl CompiledImage<'_> {
+    /// Slot ABI adapter into the same native primary entry, with no Variant frame.
+    pub fn invoke_typed_slots(
+        &self,
+        func: FuncId,
+        args: &[calcvba_host_api::Slot<'_>],
+        context: &mut TypedContext,
+    ) -> Result<calcvba_host_api::ScalarBits, i32> {
+        let entry = self
+            .typed_functions
+            .last()
+            .and_then(|p| p.get(func.0))
+            .and_then(Option::as_ref)
+            .ok_or(5)?;
+        if args.len() != entry.layout.parameters.len()
+            || args
+                .iter()
+                .zip(&entry.layout.parameters)
+                .any(|(a, t)| a.ty() != *t)
+        {
+            return Err(13);
+        }
+        if args.iter().any(|a| !a.is_valid()) {
+            return Err(6);
+        }
+        let mut bits = [calcvba_host_api::ScalarBits::ZERO; calcvba_host_api::MAX_TYPED_ARGS];
+        for (i, arg) in args.iter().enumerate() {
+            bits[i] = arg.bits();
+        }
+        let mut result = calcvba_host_api::ScalarBits::ZERO;
+        // SAFETY: generated slots thunk has this exact signature and remains
+        // owned by self. Safe Slot borrows retain every referenced host object.
+        let call: unsafe extern "C" fn(
+            *mut TypedContext,
+            *const calcvba_host_api::ScalarBits,
+            *mut calcvba_host_api::ScalarBits,
+        ) -> i32 = unsafe { std::mem::transmute(entry.slots_pointer) };
+        // SAFETY: context, initialized slots and nonaliasing output span entry.
+        let status = unsafe { call(context, bits.as_ptr(), &mut result) };
+        if status == 0 { Ok(result) } else { Err(status) }
+    }
     pub fn bind_typed<A: Arguments, R: Scalar>(
         &self,
         func: FuncId,
@@ -69,10 +121,54 @@ fn machine_type(ty: ScalarType) -> ir::Type {
     match ty {
         ScalarType::Double => types::F64,
         ScalarType::Long | ScalarType::Boolean => types::I32,
+        ScalarType::HostObject => types::I64,
     }
 }
 
-pub(crate) type ScalarDefinitions = Vec<Vec<Option<(ClifFuncId, ScalarLayout)>>>;
+pub(crate) type ScalarDefinitions = Vec<Vec<Option<(ClifFuncId, ScalarLayout, ClifFuncId)>>>;
+fn compile_slots_thunk(
+    module: &mut JITModule,
+    p: usize,
+    f: usize,
+    native: ClifFuncId,
+    layout: &ScalarLayout,
+) -> Result<ClifFuncId, JitError> {
+    let ptr = module.target_config().pointer_type();
+    let mut signature = module.make_signature();
+    signature.params = vec![AbiParam::new(ptr); 3];
+    signature.returns.push(AbiParam::new(types::I32));
+    let id = module
+        .declare_function(&format!("ox$slots$p{p}$f{f}"), Linkage::Local, &signature)
+        .map_err(module_err)?;
+    let mut ctx = module.make_context();
+    ctx.func.signature = signature;
+    let mut function_context = FunctionBuilderContext::new();
+    {
+        let mut b = FunctionBuilder::new(&mut ctx.func, &mut function_context);
+        let block = b.create_block();
+        b.switch_to_block(block);
+        b.append_block_params_for_function_params(block);
+        let params = b.block_params(block).to_vec();
+        let mut args = vec![params[0]];
+        for (i, ty) in layout.parameters.iter().enumerate() {
+            args.push(b.ins().load(
+                machine_type(*ty),
+                ir::MemFlagsData::new(),
+                params[1],
+                (i * 8) as i32,
+            ));
+        }
+        args.push(params[2]);
+        let native = module.declare_func_in_func(native, b.func);
+        let call = b.ins().call(native, &args);
+        let status = b.inst_results(call)[0];
+        b.ins().return_(&[status]);
+        b.seal_all_blocks();
+        b.finalize();
+    }
+    module.define_function(id, &mut ctx).map_err(module_err)?;
+    Ok(id)
+}
 pub(crate) fn compile_scalar_entries(
     module: &mut JITModule,
     programs: &[&OxProgram],
@@ -88,7 +184,7 @@ pub(crate) fn compile_scalar_entries(
                 functions.push(None);
                 continue;
             }
-            let Ok(layout) = ScalarLayout::new(func) else {
+            let Ok(layout) = ScalarLayout::with_interfaces(func, &program.com_interfaces) else {
                 functions.push(None);
                 continue;
             };
@@ -129,7 +225,7 @@ pub(crate) fn compile_scalar_entries(
                     } else if *ty == ScalarType::Double {
                         b.ins().f64const(0.0)
                     } else {
-                        b.ins().iconst(types::I32, 0)
+                        b.ins().iconst(machine_type(*ty), 0)
                     };
                     b.ins().stack_store(value, slots, (index * 8) as i32);
                 }
@@ -142,6 +238,8 @@ pub(crate) fn compile_scalar_entries(
                 let lower = ScalarLower {
                     layout: &layout,
                     slots,
+                    runtime,
+                    call_conv: module.target_config().default_call_conv,
                 };
                 for block in &func.blocks {
                     b.switch_to_block(blocks[&block.id]);
@@ -191,7 +289,8 @@ pub(crate) fn compile_scalar_entries(
             module
                 .define_function(id, &mut context)
                 .map_err(module_err)?;
-            functions.push(Some((id, layout)));
+            let slots_id = compile_slots_thunk(module, p, f, id, &layout)?;
+            functions.push(Some((id, layout, slots_id)));
         }
         entries.push(functions);
     }
@@ -201,6 +300,8 @@ pub(crate) fn compile_scalar_entries(
 struct ScalarLower<'a> {
     layout: &'a ScalarLayout,
     slots: ir::StackSlot,
+    runtime: Value,
+    call_conv: cranelift_codegen::isa::CallConv,
 }
 impl ScalarLower<'_> {
     fn fail_if(&self, b: &mut FunctionBuilder<'_>, condition: Value, number: i32) {
@@ -245,6 +346,124 @@ impl ScalarLower<'_> {
     }
     fn instruction(&self, b: &mut FunctionBuilder<'_>, inst: &OxInst) {
         let (dst, value) = match inst {
+            OxInst::ComCallEarly {
+                dst: Some(dst),
+                method,
+                recv,
+                args,
+                ..
+            } => {
+                use calcvba_host_api::object::{
+                    NativeSlot, ObjectHeader, SLOT_DOUBLE_0, SLOT_DOUBLE_LONG,
+                };
+                let plan = &self.layout.host_calls[method];
+                let header = self.operand(b, recv, ScalarType::HostObject);
+                let null = b.ins().icmp_imm(ir::condcodes::IntCC::Equal, header, 0);
+                self.fail_if(b, null, 91);
+                for (offset, chunk) in plan.iid.chunks_exact(8).enumerate() {
+                    let expected = i64::from_le_bytes(chunk.try_into().expect("IID chunk"));
+                    let actual = b.ins().load(
+                        types::I64,
+                        ir::MemFlagsData::new(),
+                        header,
+                        (std::mem::offset_of!(ObjectHeader, iid) + offset * 8) as i32,
+                    );
+                    let wrong = b
+                        .ins()
+                        .icmp_imm(ir::condcodes::IntCC::NotEqual, actual, expected);
+                    self.fail_if(b, wrong, 438);
+                }
+                let count = b.ins().load(
+                    types::I64,
+                    ir::MemFlagsData::new(),
+                    header,
+                    std::mem::offset_of!(ObjectHeader, slot_count) as i32,
+                );
+                let out_of_bounds = b.ins().icmp_imm(
+                    ir::condcodes::IntCC::UnsignedLessThanOrEqual,
+                    count,
+                    plan.slot as i64,
+                );
+                self.fail_if(b, out_of_bounds, 438);
+                let table = b.ins().load(
+                    types::I64,
+                    ir::MemFlagsData::new(),
+                    header,
+                    std::mem::offset_of!(ObjectHeader, slots) as i32,
+                );
+                let native = b.ins().iadd_imm(
+                    table,
+                    (plan.slot * std::mem::size_of::<NativeSlot>()) as i64,
+                );
+                let signature = b.ins().load(
+                    types::I32,
+                    ir::MemFlagsData::new(),
+                    native,
+                    std::mem::offset_of!(NativeSlot, signature) as i32,
+                );
+                let expected = if plan.long_argument {
+                    SLOT_DOUBLE_LONG
+                } else {
+                    SLOT_DOUBLE_0
+                };
+                let wrong = b.ins().icmp_imm(
+                    ir::condcodes::IntCC::NotEqual,
+                    signature,
+                    i64::from(expected),
+                );
+                self.fail_if(b, wrong, 13);
+                let entry = b.ins().load(
+                    types::I64,
+                    ir::MemFlagsData::new(),
+                    native,
+                    std::mem::offset_of!(NativeSlot, entry) as i32,
+                );
+                let data = b.ins().load(
+                    types::I64,
+                    ir::MemFlagsData::new(),
+                    native,
+                    std::mem::offset_of!(NativeSlot, data) as i32,
+                );
+                let result = b.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    8,
+                    3,
+                ));
+                let result_ptr = b.ins().stack_addr(types::I64, result, 0);
+                let mut call_args = vec![data, self.runtime];
+                let mut call_sig = ir::Signature::new(self.call_conv);
+                call_sig.params = vec![AbiParam::new(types::I64); 2];
+                if let Some(arg) = args.first() {
+                    let value = match arg {
+                        oxvba_oxir::OxCallArg::Operand(op) => self.operand(b, op, ScalarType::Long),
+                        oxvba_oxir::OxCallArg::ByRef(place) => {
+                            self.operand(b, &OxOperand::Use(*place), ScalarType::Long)
+                        }
+                        oxvba_oxir::OxCallArg::Const(value) => {
+                            b.ins().iconst(types::I32, i64::from(*value))
+                        }
+                        _ => unreachable!("admitted host argument"),
+                    };
+                    call_args.push(value);
+                    call_sig.params.push(AbiParam::new(types::I32));
+                }
+                call_args.push(result_ptr);
+                call_sig.params.push(AbiParam::new(types::I64));
+                call_sig.returns.push(AbiParam::new(types::I32));
+                let sig = b.import_signature(call_sig);
+                let call = b.ins().call_indirect(sig, entry, &call_args);
+                let status = b.inst_results(call)[0];
+                let failed = b.ins().icmp_imm(ir::condcodes::IntCC::NotEqual, status, 0);
+                let fail = b.create_block();
+                let success = b.create_block();
+                b.ins().brif(failed, fail, &[], success, &[]);
+                b.switch_to_block(fail);
+                b.ins().return_(&[status]);
+                b.switch_to_block(success);
+                let value = b.ins().stack_load(types::F64, result, 0);
+                self.finite(b, value);
+                (*dst, value)
+            }
             OxInst::StmtBoundary {
                 clear_temps_from, ..
             } => {
@@ -252,7 +471,7 @@ impl ScalarLower<'_> {
                     let value = if self.layout.slots[i] == ScalarType::Double {
                         b.ins().f64const(0.0)
                     } else {
-                        b.ins().iconst(types::I32, 0)
+                        b.ins().iconst(machine_type(self.layout.slots[i]), 0)
                     };
                     b.ins().stack_store(value, self.slots, (i * 8) as i32);
                 }

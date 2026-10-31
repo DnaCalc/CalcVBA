@@ -42,8 +42,9 @@ separate.
 The argument remains a Range object (TypeName), while arithmetic obtains its
 default value. DNA Calc glue/object-library work should provide that default
 member/coercion route and map unhandled runtime errors separately from CVErr.
-Both generic object-default arithmetic resolution and Double Resume Next
-fault/store ordering remain engine gaps tracked by
+Run 7 delivers a bounded generic object-default numeric arithmetic path on VM3/JIT
+under `bd-59co.2.4.9`; the original object is preserved. Broader coercion and
+Double Resume Next fault/store ordering remain tracked by
 `bd-59co.2.4.3`; replacing the object with a scalar at entry would lose TypeName
 and IsObject behavior. No DNA Calc implementation was changed and no general Excel object-model claim
 is made. Exact error information for other hosts and broader Range shapes remain
@@ -58,3 +59,5 @@ failures receive no passing credit. The reused worker label
 `qualified-entry-returned` describes the substituted COM worksheet action in
 this runner; no RunProbe macro executes. Raw accepted receipts/source hashes
 are retained in the run-6 archive linked from the CORE-7 evidence.
+The [run-7 evidence](../../core/CORE-7/typed-host-callbacks.md) records the engine
+tests and the separately supervised real-Range integration result.

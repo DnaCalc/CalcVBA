@@ -1,8 +1,15 @@
 param(
     [string]$RunId = ('worksheet_errors_{0:yyyyMMddTHHmmssZ}' -f [DateTime]::UtcNow),
-    [string]$OutputRoot = 'artifacts/windows-x64/worksheet-errors'
+    [string]$OutputRoot = 'artifacts/windows-x64/worksheet-errors',
+    [string]$RuntimeTestExecutable = '',
+    [ValidateSet('getobject_reads_owned_excel_workbook_values_on_both_backends', 'host_injected_owned_excel_range_uses_default_without_losing_identity')]
+    [string]$RuntimeTestName = 'getobject_reads_owned_excel_workbook_values_on_both_backends'
 )
 $ErrorActionPreference = 'Stop'
+if ($RuntimeTestExecutable) {
+    $RuntimeTestExecutable = (Resolve-Path -LiteralPath $RuntimeTestExecutable).Path
+    if (-not [IO.Path]::IsPathFullyQualified($RuntimeTestExecutable) -or -not (Test-Path -LiteralPath $RuntimeTestExecutable -PathType Leaf)) { throw 'Runtime test executable must be an existing absolute file' }
+}
 # Reuse the exact process containment, compile authority and armed UIA guardian.
 # Replace only the runtime action: no VBA macro is active during recalculation.
 $script:worksheetSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../docs/evidence/programs/ideal-2026-07/windows-x64/WIN-4/worksheet-errors.bas')
@@ -53,6 +60,32 @@ $runtime = @'
                 [ordered]@{ schema = 'oxvba.worksheet-observations.v1'; calculation = 'COM CalculateFullRebuild while VBA idle'; vbe_visible_during_run = $false; inputs = $inputs; observations = $observations } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $caseDirectory 'worksheet-observations.json') -Encoding utf8NoBOM
                 $runValue = $parts -join '|'
 '@
+if ($RuntimeTestExecutable) {
+    # Reuse the live PID/HWND/workbook proof of the existing native integration
+    # test. Run only its exact ignored case while this supervisor owns Excel.
+    $runtimeProbe = @'
+                $sheet.Range('A1').Value2 = 42.0
+                $sheet.Range('B1').Value2 = 'alpha'
+                $sheet.Range('A2').NumberFormat = 'General'
+                $sheet.Range('A2').Value2 = $true
+                $sheet.Range('B2').Formula = '=NA()'
+                $excel.CalculateFullRebuild()
+                $env:OXVBA_OWNED_EXCEL_WORKBOOK = [string]$workbook.FullName
+                $env:OXVBA_OWNED_EXCEL_HWND = [string]$excel.Hwnd
+                $env:OXVBA_OWNED_EXCEL_PID = [string]$ownedExcelProcess.Id
+                $engineExecutable = '__ENGINE_EXECUTABLE__'
+                $engineHash = (Get-FileHash -LiteralPath $engineExecutable -Algorithm SHA256).Hash.ToLowerInvariant()
+                & $engineExecutable --ignored --exact __ENGINE_TEST_NAME__ --nocapture *> (Join-Path $caseDirectory 'engine-range-test.log')
+                $engineExit = $LASTEXITCODE
+                [ordered]@{ executable = $engineExecutable; sha256 = $engineHash; exit_code = $engineExit; excel_pid = $ownedExcelProcess.Id; hwnd = [string]$excel.Hwnd; workbook = [string]$workbook.FullName; test = '__ENGINE_TEST_NAME__' } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $caseDirectory 'engine-range-test.json') -Encoding utf8NoBOM
+                if ($engineExit -ne 0) { throw "Runtime Range test failed: $engineExit" }
+'@
+    $runtimeProbe = $runtimeProbe.Replace('__ENGINE_EXECUTABLE__', $RuntimeTestExecutable.Replace("'", "''"))
+    $runtimeProbe = $runtimeProbe.Replace('__ENGINE_TEST_NAME__', $RuntimeTestName)
+    $finishAnchor = "                `$runValue = `$parts -join '|'"
+    if (-not $runtime.Contains($finishAnchor)) { throw 'Worksheet result anchor changed' }
+    $runtime = $runtime.Replace($finishAnchor, $runtimeProbe + "`n" + $finishAnchor)
+}
 if (-not $worker.Contains($runAnchor)) { throw 'Worker runtime anchor changed' }
 $worker = $worker.Replace($runAnchor, $runtime)
 $worker = $worker.Replace('$PSScriptRoot', ("'" + $PSScriptRoot.Replace("'", "''") + "'"))

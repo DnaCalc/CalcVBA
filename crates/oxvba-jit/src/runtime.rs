@@ -21,6 +21,52 @@ impl JitEngine {
     ) -> Result<CompiledImage<'p>, JitError> {
         Compiler::compile_image(programs)
     }
+
+    pub fn compile_image_with_configuration<'p>(
+        &self,
+        programs: &[&'p OxProgram],
+        configuration: &JitConfiguration,
+    ) -> Result<CompiledImage<'p>, JitError> {
+        Compiler::compile_image_with_configuration(programs, configuration)
+    }
+}
+
+/// The exact ISA, CPU features and compiler flags used by a compilation. A cache
+/// computes identity and compiles from the same snapshot, avoiding environment races.
+#[derive(Clone)]
+pub struct JitConfiguration {
+    pub(crate) isa: std::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>,
+}
+impl JitConfiguration {
+    pub fn native() -> Result<Self, JitError> {
+        Self::native_with_optimization(std::env::var_os("OXVBA_JIT_DEBUG_OPT_NONE").is_none())
+    }
+    pub fn native_with_optimization(optimize: bool) -> Result<Self, JitError> {
+        Ok(Self {
+            isa: native_isa(if optimize { "speed" } else { "none" })?,
+        })
+    }
+    /// Process-local code identity. It includes private helper/carrier revision;
+    /// this is not a persistent on-disk code format.
+    pub fn identity(&self) -> String {
+        format!(
+            "{}|{}|{}|private-helpers=2|carrier={}:{}|jit={}",
+            self.isa.triple(),
+            self.isa.flags(),
+            self.isa
+                .isa_flags()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+            std::mem::size_of::<Variant>(),
+            std::mem::align_of::<Variant>(),
+            env!("CARGO_PKG_VERSION")
+        )
+    }
+    pub(crate) fn builder(&self) -> JITBuilder {
+        JITBuilder::with_isa(self.isa.clone(), default_libcall_names())
+    }
 }
 
 /// A compiled single-program image. Function pointers stay valid because the JITModule is

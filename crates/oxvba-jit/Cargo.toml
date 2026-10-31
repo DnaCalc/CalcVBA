@@ -25,3 +25,6 @@ thiserror.workspace = true
 default = []
 [lints]
 workspace = true
+
+[dev-dependencies]
+region = "3"

@@ -2,21 +2,7 @@
 
 use super::*;
 
-pub(crate) fn program_lowers_native_or_com(program: &OxProgram) -> bool {
-    program.funcs.iter().any(|func| {
-        func.blocks.iter().any(|block| {
-            block
-                .instrs
-                .iter()
-                .any(|inst| matches!(inst, OxInst::ComCallEarly { .. }))
-        })
-    })
-}
-
 pub(crate) fn validate_program_shape(program: &OxProgram) -> Result<(), JitError> {
-    if program_lowers_native_or_com(program) {
-        return Err(JitError::unsupported("native/COM calls start in M4-9"));
-    }
     for global in &program.globals {
         if !is_m4_4_slot_ty(&global.ty) {
             return Err(JitError::unsupported(format!(
@@ -147,15 +133,6 @@ pub(crate) fn validate_scalar_call_arg_against_param(
             "M4-4 omitted arguments cannot satisfy ByRef parameters, got {}.{}",
             callee_name, param.name
         ))),
-    }
-}
-
-pub(crate) fn unsupported_project_object_inst_message(inst: &OxInst) -> Option<&'static str> {
-    match inst {
-        OxInst::ComCallEarly { .. } => Some(
-            "JIT COM object dispatch instruction ComCallEarly is unsupported: typed COM invocation remains VM3-only",
-        ),
-        _ => None,
     }
 }
 

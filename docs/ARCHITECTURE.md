@@ -62,7 +62,7 @@ The architecture is broad and real but not complete. The compiler/binder is the 
 - `oxvba-build` emits OxImage and wrapper/COM-server artifacts.
 - `oxvba-comhost` is the reusable Windows in-process COM-server host, currently VM3-backed.
 - `oxvba-cli` exposes source/project run and build commands.
-- `oxvba-embed` supplies a bounded public-function catalogue and value-call API for formula hosts, with optional JIT and interpreter-only WebAssembly builds. See [`spec/UDF_EMBEDDING_V1.md`](spec/UDF_EMBEDDING_V1.md).
+- `oxvba-embed` supplies a public-function catalogue, persistent invocation, bounded live spreadsheet objects and a same-thread immutable-code cache for formula hosts, with optional JIT and interpreter-only WebAssembly builds. See [`spec/UDF_EMBEDDING_V1.md`](spec/UDF_EMBEDDING_V1.md).
 
 No active `oxvba-languageservice`, `oxvba-lsp`, `oxvba-debug` or forms-runtime crate exists in the current workspace.
 

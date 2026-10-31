@@ -1,0 +1,9 @@
+{
+  "measured_utc": "2026-10-31T08:16:18.3780162Z",
+  "pid": 27900,
+  "version": "16.0",
+  "build": "20527",
+  "operating_system": "Windows (64-bit) NT 10.00",
+  "automation_security": 1,
+  "safe_mode_requested": true
+}

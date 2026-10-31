@@ -127,12 +127,9 @@ pub(crate) struct Imports {
     pub(crate) mul_currency_slot: ClifFuncId,
 }
 
-pub(crate) fn jit_builder() -> Result<JITBuilder, JitError> {
-    let opt_level = if std::env::var_os("OXVBA_JIT_DEBUG_OPT_NONE").is_some() {
-        "none"
-    } else {
-        "speed"
-    };
+pub(crate) fn native_isa(
+    opt_level: &str,
+) -> Result<std::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>, JitError> {
     let flags = [
         ("opt_level", opt_level),
         ("enable_verifier", "true"),
@@ -150,7 +147,7 @@ pub(crate) fn jit_builder() -> Result<JITBuilder, JitError> {
     let isa = isa_builder
         .finish(settings::Flags::new(flag_builder))
         .map_err(|err| JitError::Compile(err.to_string()))?;
-    Ok(JITBuilder::with_isa(isa, default_libcall_names()))
+    Ok(isa)
 }
 
 pub(crate) fn register_symbols(builder: &mut JITBuilder) {
@@ -928,6 +925,7 @@ pub(crate) fn declare_imports(module: &mut JITModule) -> Result<Imports, JitErro
         ptr_ty,
         ptr_ty,
         types::I32,
+        types::I64,
         types::I32,
         types::I32,
         ptr_ty,
@@ -3641,6 +3639,7 @@ pub(crate) fn project_member_kind_from_raw(raw: i32) -> Option<ProjectMemberKind
 
 pub(crate) struct ProjectMemberInvocation<'a> {
     pub(crate) name: &'a str,
+    pub(crate) token: Option<i32>,
     pub(crate) kind: ProjectMemberKind,
     pub(crate) args: &'a [JitCallArgDesc],
     pub(crate) names: &'a [JitCallArgNameDesc],
@@ -3915,6 +3914,7 @@ pub(crate) unsafe extern "C" fn rt_jit_project_member_get_to_slot(
     recv: *const JitVariantOperandDesc,
     name_ptr: *const u8,
     name_len: i32,
+    token: i64,
     invoke_kind: i32,
     argc: i32,
     args: *const JitCallArgDesc,
@@ -3982,6 +3982,7 @@ pub(crate) unsafe extern "C" fn rt_jit_project_member_get_to_slot(
                 recv_value,
                 ProjectMemberInvocation {
                     name,
+                    token: i32::try_from(token).ok(),
                     kind,
                     args,
                     names,
@@ -4004,6 +4005,7 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
 ) -> i32 {
     let ProjectMemberInvocation {
         name,
+        token,
         kind,
         args,
         names,
@@ -4028,6 +4030,7 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
                 object,
                 ProjectMemberInvocation {
                     name,
+                    token,
                     kind,
                     args,
                     names,
@@ -4316,6 +4319,7 @@ pub(crate) unsafe fn invoke_foreign_member_to_slot_for_jit(
 ) -> i32 {
     let ProjectMemberInvocation {
         name,
+        token,
         kind,
         args,
         names,
@@ -4355,7 +4359,12 @@ pub(crate) unsafe fn invoke_foreign_member_to_slot_for_jit(
     }
     let request = DynamicCallRequest {
         object,
-        member: foreign_member_selector_for_jit(name),
+        member: token
+            .map(|token| DynamicMemberSelector::TokenNamed {
+                token,
+                name: name.to_string(),
+            })
+            .unwrap_or_else(|| foreign_member_selector_for_jit(name)),
         args: call_args,
         call_kind_hint: Some(project_member_kind_to_dynamic(kind)),
     };
@@ -4710,6 +4719,7 @@ pub(crate) unsafe extern "C" fn rt_jit_call_by_name_to_slot(
                 object,
                 ProjectMemberInvocation {
                     name: &member_name,
+                    token: None,
                     kind,
                     args,
                     names,

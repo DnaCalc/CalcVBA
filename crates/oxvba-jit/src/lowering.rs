@@ -3,14 +3,49 @@
 use super::*;
 
 pub(crate) struct Compiler<'p> {
-    pub(crate) module: JITModule,
+    pub(crate) module: UnpublishedModule,
     pub(crate) imports: Imports,
     pub(crate) programs: Vec<&'p OxProgram>,
     pub(crate) clif_ids: Vec<Vec<ClifFuncId>>,
 }
 
+/// Own unpublished generated memory across all fallible compilation steps.
+pub(crate) struct UnpublishedModule(Option<JITModule>);
+impl std::ops::Deref for UnpublishedModule {
+    type Target = JITModule;
+    fn deref(&self) -> &JITModule {
+        self.0.as_ref().expect("unpublished JIT module")
+    }
+}
+impl std::ops::DerefMut for UnpublishedModule {
+    fn deref_mut(&mut self) -> &mut JITModule {
+        self.0.as_mut().expect("unpublished JIT module")
+    }
+}
+impl Drop for UnpublishedModule {
+    fn drop(&mut self) {
+        if let Some(module) = self.0.take() {
+            // SAFETY: no function pointer is published until this owner is disarmed
+            // into CompiledImage. No generated code can be executing on an error/unwind.
+            unsafe { module.free_memory() };
+        }
+    }
+}
+
 impl<'p> Compiler<'p> {
     pub(crate) fn compile_image(programs: &[&'p OxProgram]) -> Result<CompiledImage<'p>, JitError> {
+        Self::compile_image_with_configuration(programs, &JitConfiguration::native()?)
+    }
+    pub(crate) fn compile_image_with_configuration(
+        programs: &[&'p OxProgram],
+        configuration: &JitConfiguration,
+    ) -> Result<CompiledImage<'p>, JitError> {
+        Self::compile_image_with_builder(programs, configuration.builder())
+    }
+    pub(crate) fn compile_image_with_builder(
+        programs: &[&'p OxProgram],
+        mut builder: JITBuilder,
+    ) -> Result<CompiledImage<'p>, JitError> {
         if programs.is_empty() {
             return Err(JitError::unsupported(
                 "JIT compile_image requires at least one OxProgram",
@@ -20,9 +55,8 @@ impl<'p> Compiler<'p> {
             validate_program_shape(program)?;
         }
 
-        let mut builder = jit_builder()?;
         register_symbols(&mut builder);
-        let mut module = JITModule::new(builder);
+        let mut module = UnpublishedModule(Some(JITModule::new(builder)));
         let imports = declare_imports(&mut module)?;
         let clif_ids = programs
             .iter()
@@ -57,7 +91,7 @@ impl<'p> Compiler<'p> {
             .collect::<Vec<_>>();
 
         Ok(CompiledImage {
-            module: Some(compiler.module),
+            module: compiler.module.0.take(),
             programs: programs.to_vec(),
             functions,
         })
@@ -190,6 +224,7 @@ pub(crate) struct ProjectClassTarget {
 pub(crate) struct ProjectMemberCallInputs<'a> {
     pub(crate) recv: &'a OxOperand,
     pub(crate) name: &'a str,
+    pub(crate) token: Option<i32>,
     pub(crate) default_member: bool,
     pub(crate) invoke_kind: TypeLibMemberInvokeKind,
     pub(crate) args: &'a [OxCallArg],
@@ -299,9 +334,6 @@ impl<'a> LowerFunc<'a> {
         module: &mut JITModule,
         inst: &OxInst,
     ) -> Result<(), JitError> {
-        if let Some(message) = unsupported_project_object_inst_message(inst) {
-            return Err(JitError::unsupported(message));
-        }
         match inst {
             OxInst::StmtBoundary {
                 clear_temps_from, ..
@@ -462,6 +494,31 @@ impl<'a> LowerFunc<'a> {
                 event,
                 args,
             } => self.emit_raise_event(builder, module, source, *event, args),
+            OxInst::ComCallEarly {
+                dst,
+                method,
+                invoke_kind,
+                recv,
+                args,
+            } => {
+                let member = self
+                    .program
+                    .com_method(*method)
+                    .ok_or_else(|| JitError::Compile("unresolved typed COM member".into()))?;
+                self.emit_project_member_call_to_slot(
+                    builder,
+                    module,
+                    *dst,
+                    ProjectMemberCallInputs {
+                        recv,
+                        name: &member.name,
+                        token: Some(member.token),
+                        default_member: false,
+                        invoke_kind: *invoke_kind,
+                        args,
+                    },
+                )
+            }
             OxInst::ComCallLate {
                 dst,
                 recv,
@@ -476,6 +533,7 @@ impl<'a> LowerFunc<'a> {
                 ProjectMemberCallInputs {
                     recv,
                     name,
+                    token: None,
                     default_member: *default_member,
                     invoke_kind: *invoke_kind,
                     args,
@@ -3256,6 +3314,7 @@ impl<'a> LowerFunc<'a> {
         let ProjectMemberCallInputs {
             recv,
             name,
+            token,
             default_member,
             invoke_kind,
             args,
@@ -3277,6 +3336,10 @@ impl<'a> LowerFunc<'a> {
         let name_len = i32::try_from(member_name.len())
             .map_err(|_| JitError::unsupported("JIT project member name is too long"))?;
         let name_len = builder.ins().iconst(types::I32, i64::from(name_len));
+        // All i32 DISPIDs are valid; the out-of-range i64 value tags a name-only call.
+        let token = builder
+            .ins()
+            .iconst(types::I64, token.map(i64::from).unwrap_or(i64::MIN));
         let invoke_kind = builder
             .ins()
             .iconst(types::I32, i64::from(raw_member_invoke_kind(invoke_kind)));
@@ -3301,6 +3364,7 @@ impl<'a> LowerFunc<'a> {
                 recv_ptr,
                 name_ptr,
                 name_len,
+                token,
                 invoke_kind,
                 argc,
                 args_ptr,
@@ -9019,5 +9083,76 @@ pub(crate) fn float_compare_cc(op: CmpOp) -> ir::condcodes::FloatCC {
         CmpOp::Le => ir::condcodes::FloatCC::LessThanOrEqual,
         CmpOp::Gt => ir::condcodes::FloatCC::GreaterThan,
         CmpOp::Ge => ir::condcodes::FloatCC::GreaterThanOrEqual,
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod ownership_tests {
+    use super::*;
+    /// Native-only: observe Windows virtual-memory mappings in an isolated test process.
+    #[test]
+    fn unpublished_code_is_freed_on_error_and_unwind() {
+        if std::env::var_os("OXVBA_TEST_UNPUBLISHED_MEMORY").is_none() {
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "lowering::ownership_tests::unpublished_code_is_freed_on_error_and_unwind",
+                    "--nocapture",
+                ])
+                .env("OXVBA_TEST_UNPUBLISHED_MEMORY", "1")
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            return;
+        }
+        for unwind in [false, true] {
+            let mut owner = UnpublishedModule(Some(JITModule::new(
+                JitConfiguration::native().unwrap().builder(),
+            )));
+            let mut context = owner.make_context();
+            context
+                .func
+                .signature
+                .returns
+                .push(AbiParam::new(types::I32));
+            let id = owner
+                .declare_function("UnpublishedProbe", Linkage::Local, &context.func.signature)
+                .unwrap();
+            let mut function_context = FunctionBuilderContext::new();
+            {
+                let mut function = FunctionBuilder::new(&mut context.func, &mut function_context);
+                let block = function.create_block();
+                function.switch_to_block(block);
+                function.seal_all_blocks();
+                let value = function.ins().iconst(types::I32, 42);
+                function.ins().return_(&[value]);
+                function.finalize();
+            }
+            owner.define_function(id, &mut context).unwrap();
+            owner.finalize_definitions().unwrap();
+            let pointer = owner.get_finalized_function(id);
+            assert!(region::query(pointer).unwrap().is_executable());
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _owned = owner;
+                if unwind {
+                    panic!("deliberate compiler-unwind probe");
+                }
+                Err::<(), _>(JitError::unsupported("deliberate late decline"))
+            }));
+            if unwind {
+                assert!(outcome.is_err());
+            } else {
+                assert!(outcome.unwrap().is_err());
+            }
+            assert!(
+                !region::query(pointer).is_ok_and(|region| region.is_committed()),
+                "unpublished generated memory remained mapped"
+            );
+        }
     }
 }

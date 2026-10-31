@@ -402,3 +402,425 @@ fn end_is_declined_instead_of_retaining_state_after_project_termination() {
         matches!(Module::load("Ender", "Public Function StopIt()\n End\nEnd Function\n"), Err(Error::UnsupportedSignature(reason)) if reason.contains("reset"))
     );
 }
+
+#[test]
+fn worksheet_doubles_use_checked_vba_parameter_coercion() {
+    let module = Module::load(
+        "Coercion",
+        "Public Function Typed(x As Long) As Long\n Typed = x\nEnd Function\n",
+    )
+    .unwrap();
+    for backend in backends() {
+        let session = module.prepare(backend).unwrap();
+        for (input, output) in [(2.5, 2.0), (3.5, 4.0), (-1.5, -2.0)] {
+            assert_eq!(
+                session.call("Typed", &[Value::Number(input)], 100).unwrap(),
+                Value::Number(output)
+            );
+        }
+        assert_eq!(
+            session
+                .call("Typed", &[Value::Text("12".into())], 100)
+                .unwrap(),
+            Value::Number(12.0)
+        );
+        assert_eq!(
+            session.call("Typed", &[Value::Boolean(true)], 100).unwrap(),
+            Value::Number(-1.0)
+        );
+        assert!(matches!(
+            session.call("Typed", &[Value::Number(2147483648.0)], 100),
+            Err(Error::Runtime { number: 6, .. })
+        ));
+    }
+}
+
+#[test]
+fn spreadsheet_objects_read_live_ranges_caller_and_host_functions_on_both_backends() {
+    use oxvba_embed::{Range, SpreadsheetContext};
+    use std::cell::Cell;
+    struct Context {
+        first: Cell<f64>,
+        callbacks: Cell<u32>,
+        volatile: Cell<bool>,
+        invalid_caller: Cell<bool>,
+    }
+    impl SpreadsheetContext for Context {
+        fn caller(&self) -> Option<Range> {
+            Some(Range {
+                sheet: 1,
+                row: if self.invalid_caller.get() { 0 } else { 1 },
+                column: 8,
+                rows: 1,
+                columns: 1,
+            })
+        }
+        fn read_range(&self, range: Range) -> Result<Value, String> {
+            if range.sheet != 1 || range.column != 1 || range.columns != 1 {
+                return Err("missing host input".into());
+            }
+            let cells = (0..range.rows)
+                .map(|i| {
+                    Value::Number(if range.row + i == 1 {
+                        self.first.get()
+                    } else {
+                        2.0
+                    })
+                })
+                .collect::<Vec<_>>();
+            if cells.len() == 1 {
+                Ok(cells[0].clone())
+            } else {
+                Ok(Value::Array {
+                    rows: range.rows,
+                    columns: 1,
+                    cells,
+                })
+            }
+        }
+        fn worksheet_function(&self, name: &str, args: &[Value]) -> Result<Value, String> {
+            self.callbacks.set(self.callbacks.get() + 1);
+            if name == "MATCH" {
+                return Ok(Value::Error(2042));
+            }
+            if name != "SUM" {
+                return Err("unknown host function".into());
+            }
+            let mut sum = 0.0;
+            for arg in args {
+                let value = match arg {
+                    Value::Range(range) => self.read_range(*range)?,
+                    value => value.clone(),
+                };
+                match value {
+                    Value::Number(n) => sum += n,
+                    Value::Array { cells, .. } => {
+                        for cell in cells {
+                            if let Value::Number(n) = cell {
+                                sum += n;
+                            }
+                        }
+                    }
+                    _ => return Err("invalid sum argument".into()),
+                }
+            }
+            Ok(Value::Number(sum))
+        }
+        fn set_volatile(&self, value: bool) -> Result<(), String> {
+            self.volatile.set(value);
+            Ok(())
+        }
+    }
+    let source = r#"Private saved As Object
+Public Function RangeInfo(r As Range) As String
+ RangeInfo = CStr(r.Count) & ":" & CStr(r.Cells(1, 1).Value2) & ":" & Application.Caller.Address
+End Function
+Public Function WfSum(r As Range) As Double
+ WfSum = Application.WorksheetFunction.Sum(r)
+End Function
+Public Function SaveRange(r As Range)
+ Set saved = r
+ SaveRange = 1
+End Function
+Public Function SavedValue()
+ SavedValue = saved.Cells(1, 1).Value2
+End Function
+Public Function WfError()
+ On Error GoTo Failed
+ WfError = Application.WorksheetFunction.Match(1, Array(2, 3), 0)
+ Exit Function
+Failed:
+ WfError = Err.Number
+End Function
+Public Function Vol()
+ Application.Volatile
+ Vol = 42
+End Function
+Public Function NumericVol()
+ Application.Volatile 1
+ NumericVol = 42
+End Function
+Public Function DoubleIndex(r As Range, i As Double)
+ DoubleIndex = r.Cells(i, 1).Row
+End Function
+Public Function CallerOnly()
+ CallerOnly = Application.Caller.Address
+End Function
+Public Function CatchOffset(r As Object)
+ On Error Resume Next
+ CatchOffset = r.Offset(1, 0).Value2
+ CatchOffset = 7
+End Function
+Public Function CatchRead(r As Range)
+ On Error Resume Next
+ CatchRead = r.Value2
+ CatchRead = 7
+End Function
+Public Function Echo(r)
+ Echo = r
+End Function
+Public Function ArgType(r)
+ ArgType = TypeName(r)
+End Function
+"#;
+    let module = Module::load_spreadsheet("Grid", source).unwrap();
+    let range = Value::Range(Range {
+        sheet: 1,
+        row: 1,
+        column: 1,
+        rows: 2,
+        columns: 1,
+    });
+    for backend in backends() {
+        let session = module.prepare(backend).unwrap();
+        assert!(matches!(
+            session.call("CallerOnly", &[], 1000),
+            Err(Error::HostRefused(_))
+        ));
+        let mut context = Context {
+            first: Cell::new(40.0),
+            callbacks: Cell::new(0),
+            volatile: Cell::new(false),
+            invalid_caller: Cell::new(false),
+        };
+        assert_eq!(
+            session
+                .call_with_context(
+                    "RangeInfo",
+                    std::slice::from_ref(&range),
+                    1000,
+                    &mut context
+                )
+                .unwrap(),
+            Value::Text("2:40:$H$1".into())
+        );
+        assert_eq!(
+            session
+                .call_with_context("WfSum", std::slice::from_ref(&range), 1000, &mut context)
+                .unwrap(),
+            Value::Number(42.0)
+        );
+        assert_eq!(context.callbacks.get(), 1);
+        assert_eq!(
+            session
+                .call_with_context("ArgType", std::slice::from_ref(&range), 1000, &mut context)
+                .unwrap(),
+            Value::Text("Range".into())
+        );
+        assert_eq!(
+            session
+                .call_with_context(
+                    "SaveRange",
+                    std::slice::from_ref(&range),
+                    1000,
+                    &mut context
+                )
+                .unwrap(),
+            Value::Number(1.0)
+        );
+        context.first.set(41.0);
+        assert_eq!(
+            session
+                .call_with_context("SavedValue", &[], 1000, &mut context)
+                .unwrap(),
+            Value::Number(41.0)
+        );
+        assert_eq!(
+            session
+                .call_with_context("WfError", &[], 1000, &mut context)
+                .unwrap(),
+            Value::Number(1004.0)
+        );
+        assert_eq!(
+            session
+                .call_with_context("Vol", &[], 1000, &mut context)
+                .unwrap(),
+            Value::Number(42.0)
+        );
+        assert!(context.volatile.get());
+        context.volatile.set(false);
+        assert_eq!(
+            session
+                .call_with_context("NumericVol", &[], 1000, &mut context)
+                .unwrap(),
+            Value::Number(42.0)
+        );
+        assert!(context.volatile.get());
+        for index in [1.5, 2.5] {
+            assert_eq!(
+                session
+                    .call_with_context(
+                        "DoubleIndex",
+                        &[range.clone(), Value::Number(index)],
+                        1000,
+                        &mut context
+                    )
+                    .unwrap(),
+                Value::Number(2.0)
+            );
+        }
+        assert!(matches!(
+            session.call_with_context(
+                "CatchOffset",
+                std::slice::from_ref(&range),
+                1000,
+                &mut context
+            ),
+            Err(Error::HostRefused(_))
+        ));
+        context.invalid_caller.set(true);
+        assert!(matches!(
+            session.call_with_context("CallerOnly", &[], 1000, &mut context),
+            Err(Error::Runtime { number: 1004, .. })
+        ));
+        context.invalid_caller.set(false);
+        let missing = Value::Range(Range {
+            sheet: 99,
+            row: 1,
+            column: 1,
+            rows: 1,
+            columns: 1,
+        });
+        assert!(matches!(
+            session.call_with_context("CatchRead", &[missing], 1000, &mut context),
+            Err(Error::HostRefused(_))
+        ));
+
+        assert_eq!(
+            session
+                .call_with_context("Echo", std::slice::from_ref(&range), 1000, &mut context)
+                .unwrap(),
+            Value::Array {
+                rows: 2,
+                columns: 1,
+                cells: vec![Value::Number(41.0), Value::Number(2.0)]
+            }
+        );
+    }
+}
+
+#[test]
+fn bounded_cache_shares_code_without_sharing_vba_state_and_live_sessions_survive_eviction() {
+    use oxvba_embed::CodeCache;
+    let before = oxvba_runtime::current_thread_live_handle_counts();
+    let source = "Private n As Long\nPublic Function CountIt() As Long\n n = n + 1\n CountIt = n\nEnd Function\nPublic Function Defaults(Optional x As Long = 7) As Long\n Defaults = x\nEnd Function\n";
+    for backend in backends() {
+        let mut cache = CodeCache::new(1, 1024 * 1024);
+        let first = cache
+            .prepare(Module::load("State", source).unwrap(), backend)
+            .unwrap();
+        let warm = cache
+            .prepare(Module::load("State", source).unwrap(), backend)
+            .unwrap();
+        assert_eq!(first.backend(), backend);
+        assert_eq!(first.code_identity(), warm.code_identity());
+        assert_eq!(first.call("CountIt", &[], 100).unwrap(), Value::Number(1.0));
+        assert_eq!(first.call("CountIt", &[], 100).unwrap(), Value::Number(2.0));
+        assert_eq!(warm.call("CountIt", &[], 100).unwrap(), Value::Number(1.0));
+        let changed = cache
+            .prepare(
+                Module::load("State", &source.replace("= 7)", "= 8)")).unwrap(),
+                backend,
+            )
+            .unwrap();
+        assert_ne!(changed.code_identity(), first.code_identity());
+        assert_eq!(
+            changed.call("Defaults", &[], 100).unwrap(),
+            Value::Number(8.0)
+        );
+        assert_eq!(
+            first.call("Defaults", &[], 100).unwrap(),
+            Value::Number(7.0)
+        );
+        assert_eq!(first.call("CountIt", &[], 100).unwrap(), Value::Number(3.0));
+        let cold_again = cache
+            .prepare(Module::load("State", source).unwrap(), backend)
+            .unwrap();
+        assert_ne!(first.code_identity(), cold_again.code_identity());
+        assert_eq!(
+            cold_again.call("CountIt", &[], 100).unwrap(),
+            Value::Number(1.0)
+        );
+        assert_eq!(cache.stats().hits, 1);
+        assert_eq!(cache.stats().misses, 3);
+        assert_eq!(cache.stats().entries, 1);
+        assert_eq!(
+            cache.stats().compilations,
+            if backend == Backend::Jit { 3 } else { 0 }
+        );
+        cache.clear();
+        assert_eq!(first.call("CountIt", &[], 100).unwrap(), Value::Number(4.0));
+        first.reset().unwrap();
+        assert_eq!(first.call("CountIt", &[], 100).unwrap(), Value::Number(1.0));
+    }
+    assert!(
+        before
+            .balance_to(oxvba_runtime::current_thread_live_handle_counts())
+            .is_zero()
+    );
+}
+
+#[test]
+fn cache_limits_bypass_oversized_entries_and_do_not_retain_session_hosts() {
+    use oxvba_embed::CodeCache;
+    use oxvba_hal::adapters::builder::HostBuilder;
+    use std::sync::Arc;
+    for backend in backends() {
+        let host = HostBuilder::new().build();
+        let weak = Arc::downgrade(&host);
+        let module = Module::load("Pure", "Function F(): F = 42: End Function\n")
+            .unwrap()
+            .with_host(host);
+        let mut cache = CodeCache::new(2, 1024 * 1024);
+        let session = cache.prepare(module, backend).unwrap();
+        assert!(weak.upgrade().is_some());
+        drop(session);
+        assert!(
+            weak.upgrade().is_none(),
+            "cached code must not own a disposed session's HAL"
+        );
+        assert_eq!(cache.stats().entries, 1);
+        let mut tiny = CodeCache::new(1, 1);
+        let session = tiny
+            .prepare(
+                Module::load("Pure", "Function F(): F = 42: End Function\n").unwrap(),
+                backend,
+            )
+            .unwrap();
+        assert_eq!(tiny.stats().entries, 0);
+        assert_eq!(tiny.stats().bypasses, 1);
+        assert_eq!(session.call("F", &[], 100).unwrap(), Value::Number(42.0));
+    }
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn cache_uses_the_compiled_configuration_and_host_capability_profile() {
+    use oxvba_embed::CodeCache;
+    use oxvba_hal::{adapters::builder::HostBuilder, model::HostPolicy};
+    use oxvba_jit::JitConfiguration;
+    let source = "Function F(): F = 42: End Function\n";
+    let fast = JitConfiguration::native_with_optimization(true).unwrap();
+    let plain = JitConfiguration::native_with_optimization(false).unwrap();
+    assert_ne!(fast.identity(), plain.identity());
+    let mut cache = CodeCache::new(4, 1024 * 1024);
+    let first = cache
+        .prepare_with_configuration(Module::load("Pure", source).unwrap(), &fast)
+        .unwrap();
+    let other = cache
+        .prepare_with_configuration(Module::load("Pure", source).unwrap(), &plain)
+        .unwrap();
+    assert_ne!(first.code_identity(), other.code_identity());
+    let denied = HostBuilder::new().policy(HostPolicy::strict_ci()).build();
+    let policy = cache
+        .prepare_with_configuration(
+            Module::load("Pure", source).unwrap().with_host(denied),
+            &fast,
+        )
+        .unwrap();
+    assert_ne!(first.code_identity(), policy.code_identity());
+    assert_eq!(cache.stats().compilations, 3);
+    for session in [&first, &other, &policy] {
+        assert_eq!(session.call("F", &[], 100).unwrap(), Value::Number(42.0));
+    }
+}

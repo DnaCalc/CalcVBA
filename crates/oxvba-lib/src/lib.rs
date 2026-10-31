@@ -396,7 +396,15 @@ pub fn invoke_context_free(
         // ── Information ──
         IsArray => pure::is_vtype(args, |t| matches!(t, Vt::ArrayVariant)),
         VarType => pure::var_type(args),
-        TypeName => pure::type_name(args),
+        TypeName => {
+            if let Some(object) = args.first().and_then(Variant::as_object_ref)
+                && !object.is_project_instance()
+                && let Ok(Some(name)) = host.com().object_type_name(object)
+            {
+                return Ok(Variant::from_string(name));
+            }
+            pure::type_name(args)
+        }
         IsNumeric => pure::is_numeric(args),
         IsError => pure::is_vtype(args, |t| matches!(t, Vt::Error)),
         IsDate => pure::is_date(args),

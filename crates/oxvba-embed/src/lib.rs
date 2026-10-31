@@ -2,6 +2,11 @@
 //! See `docs/spec/UDF_EMBEDDING_V1.md` for scope, ownership and error mapping.
 
 use oxvba_bundle::coreir::CoreConst;
+mod cache;
+mod spreadsheet;
+pub use cache::{CacheStats, CodeCache, OwnedSession};
+pub use spreadsheet::{Range, SpreadsheetContext};
+
 use oxvba_bundle::{ExportTarget, ExportToken, ProcedureKind};
 use oxvba_hal::{HostServices, adapters::builder::HostBuilder};
 use oxvba_oxir::{FuncId, OxProgram, OxTy};
@@ -10,7 +15,7 @@ use oxvba_runtime::{
     safe_array::{SafeArray, SafeArrayBound},
 };
 use oxvba_symbol::manifest as sym;
-use std::{cell::RefCell, sync::Arc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 /// Spreadsheet values; array cells are row-major and contain scalar values.
 #[derive(Debug, Clone, PartialEq)]
@@ -18,6 +23,8 @@ pub enum Value {
     Empty,
     /// An omitted positional argument, distinct from a blank cell.
     Missing,
+    /// A live read-only reference in the host's sheet namespace.
+    Range(Range),
     Number(f64),
     Text(String),
     Boolean(bool),
@@ -65,6 +72,8 @@ pub enum Error {
     UnsupportedSignature(String),
     #[error("value conversion: {0}")]
     ValueConversion(String),
+    #[error("spreadsheet host refused the call: {0}")]
+    HostRefused(String),
     #[error("execution budget exhausted")]
     BudgetExceeded,
     #[error("JIT backend is not enabled in this build")]
@@ -88,10 +97,24 @@ pub struct Module {
     program: OxProgram,
     functions: Vec<(Function, FuncId, Vec<Option<CoreConst>>)>,
     host: Arc<dyn HostServices>,
+    spreadsheet: Option<Arc<spreadsheet::SpreadsheetHost>>,
 }
 
 impl Module {
     pub fn load(module_name: &str, source: &str) -> Result<Self, Error> {
+        Self::load_inner(module_name, source, false)
+    }
+
+    /// Compile against the bounded, host-supplied read-only Application/Range surface.
+    pub fn load_spreadsheet(module_name: &str, source: &str) -> Result<Self, Error> {
+        Self::load_inner(module_name, source, true)
+    }
+
+    fn load_inner(
+        module_name: &str,
+        source: &str,
+        spreadsheet_objects: bool,
+    ) -> Result<Self, Error> {
         let manifest = sym::SymbolProjectManifest {
             project_name: "UdfProject".into(),
             project_kind: sym::ProjectKind::Library,
@@ -101,12 +124,33 @@ impl Module {
                 attributes: sym::ModuleAttributes::named(module_name),
                 source: source.into(),
             }],
-            references: vec![],
+            references: if spreadsheet_objects {
+                vec![
+                    sym::ProjectReference::HostInjected {
+                        referenced_project_name: "DnaCalc.Application".into(),
+                    },
+                    sym::ProjectReference::TypeLibrary {
+                        name: "Excel".into(),
+                        guid: None,
+                        version_major: None,
+                        version_minor: None,
+                        lcid: None,
+                        import_lib: None,
+                    },
+                ]
+            } else {
+                vec![]
+            },
             reference_projects: vec![],
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
         };
-        let core = oxvba_bind::bind_program(&manifest, &oxvba_symbol::CatalogTypeLibResolver)
+        let resolver: &dyn oxvba_symbol::TypeLibResolver = if spreadsheet_objects {
+            &spreadsheet::SpreadsheetTypes
+        } else {
+            &oxvba_symbol::CatalogTypeLibResolver
+        };
+        let core = oxvba_bind::bind_program(&manifest, resolver)
             .map_err(|err| Error::Compile(err.to_string()))?;
         let program = oxvba_oxir::elaborate::elaborate(&core)
             .map_err(|err| Error::Compile(err.to_string()))?;
@@ -172,16 +216,24 @@ impl Module {
                     .collect(),
             ));
         }
+        let spreadsheet =
+            spreadsheet_objects.then(|| Arc::new(spreadsheet::SpreadsheetHost::new()));
+        let host: Arc<dyn HostServices> = match &spreadsheet {
+            Some(host) => host.clone(),
+            None => HostBuilder::new().build(),
+        };
         Ok(Self {
             program,
             functions,
-            host: HostBuilder::new().build(),
+            host,
+            spreadsheet,
         })
     }
 
     /// Replace the default Null HAL with explicit host-owned capabilities.
     pub fn with_host(mut self, host: Arc<dyn HostServices>) -> Self {
         self.host = host;
+        self.spreadsheet = None;
         self
     }
 
@@ -189,33 +241,76 @@ impl Module {
         self.functions.iter().map(|(function, _, _)| function)
     }
 
-    /// JIT compilation happens here once; unsupported images return an error.
+    /// JIT compilation happens once; unsupported images return an error.
     pub fn prepare(&self, backend: Backend) -> Result<Session<'_>, Error> {
-        let executable = match backend {
-            Backend::Interpreter => Executable::Interpreter(RefCell::new(None)),
+        PreparedCode::compile(self, backend, None)?
+            .into_session(&*self.host, self.spreadsheet.as_deref())
+    }
+}
+
+#[derive(Clone)]
+enum PreparedCode<'a> {
+    Interpreter(&'a Module),
+    #[cfg(feature = "jit")]
+    Jit(&'a Module, Rc<oxvba_jit::CompiledImage<'a>>),
+}
+impl<'a> PreparedCode<'a> {
+    fn compile(
+        module: &'a Module,
+        backend: Backend,
+        configuration: Option<&JitConfiguration>,
+    ) -> Result<Self, Error> {
+        match backend {
+            Backend::Interpreter => Ok(Self::Interpreter(module)),
             #[cfg(feature = "jit")]
             Backend::Jit => {
-                let image = oxvba_jit::JitEngine
-                    .compile_image(&[&self.program])
-                    .map_err(jit_error)?;
-                let state = image.start_session(&*self.host).map_err(jit_error)?;
-                Executable::Jit(Box::new(image), RefCell::new(state))
+                let image = match configuration {
+                    Some(configuration) => oxvba_jit::JitEngine
+                        .compile_image_with_configuration(&[&module.program], configuration),
+                    None => oxvba_jit::JitEngine.compile_image(&[&module.program]),
+                }
+                .map_err(jit_error)?;
+                Ok(Self::Jit(module, Rc::new(image)))
             }
             #[cfg(not(feature = "jit"))]
-            Backend::Jit => return Err(Error::BackendUnavailable),
+            Backend::Jit => {
+                let _ = configuration;
+                Err(Error::BackendUnavailable)
+            }
+        }
+    }
+    fn into_session(
+        self,
+        host: &'a dyn HostServices,
+        spreadsheet: Option<&'a spreadsheet::SpreadsheetHost>,
+    ) -> Result<Session<'a>, Error> {
+        let (module, executable) = match self {
+            Self::Interpreter(module) => (module, Executable::Interpreter(RefCell::new(None))),
+            #[cfg(feature = "jit")]
+            Self::Jit(module, image) => {
+                let state = image.start_session(host).map_err(jit_error)?;
+                (module, Executable::Jit(image, RefCell::new(state)))
+            }
         };
         Ok(Session {
-            module: self,
+            module,
+            host,
+            spreadsheet,
             executable,
         })
     }
 }
 
+#[cfg(feature = "jit")]
+use oxvba_jit::JitConfiguration;
+#[cfg(not(feature = "jit"))]
+struct JitConfiguration;
+
 enum Executable<'a> {
     Interpreter(RefCell<Option<oxvba_vm3::Vm3<'a>>>),
     #[cfg(feature = "jit")]
     Jit(
-        Box<oxvba_jit::CompiledImage<'a>>,
+        Rc<oxvba_jit::CompiledImage<'a>>,
         RefCell<oxvba_jit::JitSession<'a>>,
     ),
     #[cfg(not(feature = "jit"))]
@@ -226,10 +321,44 @@ enum Executable<'a> {
 /// invocation retains project storage and uses private copies of host arguments.
 pub struct Session<'a> {
     module: &'a Module,
+    host: &'a dyn HostServices,
+    spreadsheet: Option<&'a spreadsheet::SpreadsheetHost>,
     executable: Executable<'a>,
 }
 
 impl<'a> Session<'a> {
+    pub fn backend(&self) -> Backend {
+        match &self.executable {
+            Executable::Interpreter(_) => Backend::Interpreter,
+            #[cfg(feature = "jit")]
+            Executable::Jit(..) => Backend::Jit,
+            #[cfg(not(feature = "jit"))]
+            Executable::_Lifetime(_) => unreachable!(),
+        }
+    }
+
+    pub fn call_with_context(
+        &self,
+        name: &str,
+        args: &[Value],
+        max_steps: u64,
+        context: &mut dyn SpreadsheetContext,
+    ) -> Result<Value, Error> {
+        spreadsheet::with_context(context, || self.call_inner(name, args, max_steps))
+    }
+
+    fn argument(&self, value: &Value) -> Result<Variant, Error> {
+        match value {
+            Value::Range(range) => self
+                .spreadsheet
+                .ok_or_else(|| {
+                    Error::UnsupportedSignature("Range requires spreadsheet host objects".into())
+                })?
+                .range_variant(*range),
+            value => to_variant(value),
+        }
+    }
+
     /// Clear project storage without releasing retained compiled code.
     pub fn reset(&self) -> Result<(), Error> {
         match &self.executable {
@@ -243,7 +372,7 @@ impl<'a> Session<'a> {
                 *state
                     .try_borrow_mut()
                     .map_err(|_| Error::Backend("session is already executing".into()))? =
-                    image.start_session(&*self.module.host).map_err(jit_error)?
+                    image.start_session(self.host).map_err(jit_error)?
             }
             #[cfg(not(feature = "jit"))]
             Executable::_Lifetime(_) => unreachable!(),
@@ -252,6 +381,14 @@ impl<'a> Session<'a> {
     }
 
     pub fn call(&self, name: &str, args: &[Value], max_steps: u64) -> Result<Value, Error> {
+        if self.spreadsheet.is_some() {
+            spreadsheet::without_context(|| self.call_inner(name, args, max_steps))
+        } else {
+            self.call_inner(name, args, max_steps)
+        }
+    }
+
+    fn call_inner(&self, name: &str, args: &[Value], max_steps: u64) -> Result<Value, Error> {
         let (metadata, id, defaults) = self
             .module
             .functions
@@ -282,10 +419,24 @@ impl<'a> Session<'a> {
         let mut values = Vec::with_capacity(function.param_count);
         for (index, local) in function.locals.iter().take(fixed).enumerate() {
             let value = match args.get(index) {
-                Some(value) if !matches!(value, Value::Missing) => to_variant(value)?,
+                Some(Value::Range(range))
+                    if !matches!(local.ty, OxTy::Variant | OxTy::Object(_)) =>
+                {
+                    let value = self
+                        .spreadsheet
+                        .ok_or_else(|| {
+                            Error::UnsupportedSignature(
+                                "Range requires spreadsheet host objects".into(),
+                            )
+                        })?
+                        .read_range(*range)?;
+                    to_variant(&value)?
+                }
+                Some(value) if !matches!(value, Value::Missing) => self.argument(value)?,
                 _ => match &defaults[index] {
                     Some(value) => default_variant(value),
                     None if local.ty == OxTy::Variant => Variant::from_error_code(-2147352572),
+                    None if matches!(local.ty, OxTy::Object(_)) => Variant::nothing(),
                     None => Variant::empty(),
                 },
             };
@@ -295,7 +446,7 @@ impl<'a> Session<'a> {
             let tail = args
                 .iter()
                 .skip(fixed)
-                .map(to_variant)
+                .map(|value| self.argument(value))
                 .collect::<Result<Vec<_>, _>>()?;
             values.push(Variant::from_safearray(SafeArray::from_variants(tail)));
         }
@@ -308,7 +459,7 @@ impl<'a> Session<'a> {
                     *state = Some(
                         oxvba_vm3::Vm3::link_with_budget(
                             &[&self.module.program],
-                            &*self.module.host,
+                            self.host,
                             Some(max_steps),
                         )
                         .map_err(vm_error)?,
@@ -345,7 +496,10 @@ impl<'a> Session<'a> {
             #[cfg(not(feature = "jit"))]
             Executable::_Lifetime(_) => unreachable!(),
         };
-        from_variant(&value, false)
+        match self.spreadsheet {
+            Some(host) => host.result(&value),
+            None => from_variant(&value, false),
+        }
     }
 }
 
@@ -370,30 +524,40 @@ fn jit_error(error: oxvba_jit::JitError) -> Error {
 }
 
 fn coerce_argument(value: Variant, ty: &OxTy) -> Result<Variant, Error> {
+    use oxvba_bundle::NumericCoerceTarget as Target;
     let target = match ty {
         OxTy::Variant => return Ok(value),
+        OxTy::Object(_) if value.vtype() == VarType::Object => return Ok(value),
         OxTy::Array(element, _)
             if **element == OxTy::Variant && value.vtype() == VarType::ArrayVariant =>
         {
             return Ok(value);
         }
-        OxTy::Bool => VarType::Boolean,
-        OxTy::Byte => VarType::Byte,
-        OxTy::Integer => VarType::Integer,
-        OxTy::Long => VarType::Long,
-        OxTy::LongLong => VarType::LongLong,
-        OxTy::Single => VarType::Single,
-        OxTy::Double => VarType::Double,
-        OxTy::Currency => VarType::Currency,
-        OxTy::Date => VarType::Date,
-        OxTy::Str => VarType::String,
+        OxTy::Str => return oxvba_eval::arith::coerce_string(&value).map_err(argument_error),
+        OxTy::Bool => Target::Boolean,
+        OxTy::Byte => Target::Byte,
+        OxTy::Integer => Target::Integer,
+        OxTy::Long => Target::Long,
+        OxTy::LongLong => Target::LongLong,
+        OxTy::Single => Target::Single,
+        OxTy::Double => Target::Double,
+        OxTy::Currency => Target::Currency,
+        OxTy::Date => Target::Date,
         other => {
             return Err(Error::UnsupportedSignature(format!(
                 "parameter type {other:?}"
             )));
         }
     };
-    oxvba_runtime::coerce::coerce_to(&value, target).map_err(Error::ValueConversion)
+    oxvba_eval::arith::coerce_numeric(&value, target).map_err(argument_error)
+}
+
+fn argument_error(error: oxvba_eval::arith::ArithError) -> Error {
+    Error::Runtime {
+        number: error.code,
+        description: error.message,
+        vba_source: "UdfProject".into(),
+    }
 }
 
 fn type_name(ty: &OxTy) -> String {
@@ -409,6 +573,7 @@ fn type_name(ty: &OxTy) -> String {
         OxTy::Date => "Date",
         OxTy::Str => "String",
         OxTy::Variant => "Variant",
+        OxTy::Object(_) => "Object",
         OxTy::Array(element, _) => return format!("{}()", type_name(element)),
         other => return format!("Unsupported({other:?})"),
     }
@@ -417,6 +582,11 @@ fn type_name(ty: &OxTy) -> String {
 
 fn to_variant(value: &Value) -> Result<Variant, Error> {
     Ok(match value {
+        Value::Range(_) => {
+            return Err(Error::ValueConversion(
+                "Range requires a live spreadsheet invocation".into(),
+            ));
+        }
         Value::Empty => Variant::empty(),
         Value::Missing => Variant::from_error_code(-2147352572),
         Value::Number(value) => {
@@ -540,30 +710,6 @@ fn from_variant(value: &Variant, inside_array: bool) -> Result<Value, Error> {
             )));
         }
     })
-}
-
-self_cell::self_cell! {
-    pub struct OwnedSession {
-        owner: Module,
-        #[not_covariant]
-        dependent: Session,
-    }
-}
-
-impl Module {
-    /// Move this module into an owner that keeps its prepared session alive safely.
-    pub fn into_session(self, backend: Backend) -> Result<OwnedSession, Error> {
-        OwnedSession::try_new(self, |module| module.prepare(backend))
-    }
-}
-
-impl OwnedSession {
-    pub fn reset(&self) -> Result<(), Error> {
-        self.with_dependent(|_, session| session.reset())
-    }
-    pub fn call(&self, name: &str, args: &[Value], max_steps: u64) -> Result<Value, Error> {
-        self.with_dependent(|_, session| session.call(name, args, max_steps))
-    }
 }
 
 fn default_variant(value: &CoreConst) -> Variant {

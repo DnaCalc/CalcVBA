@@ -20,7 +20,7 @@
     },
     {
       "path": "docs/validation/WINDOWS_JIT_NATIVE_IMPORT_MATRIX_V1.csv",
-      "sha256": "sha256:3ecbf10a624f6fb6f7408869e66e3943280c45ff84526e6fce1560bd6c8ba184"
+      "sha256": "sha256:b526efaec3655ce15bad71d85955d99a9db6ed17bf91bb8f329897d655cb9cfc"
     },
     {
       "path": "docs/validation/WINDOWS_NATIVE_EXPORT_AND_PACKAGING_MATRIX_V1.csv",
@@ -36,7 +36,7 @@
     },
     {
       "path": "docs/validation/IDEAL_WINDOWS_CURRENT_STACK_RESIDUAL_V1.csv",
-      "sha256": "sha256:33b30fa18bdd552467e3dd556791a302285cbfae8097d270d04e7bb9e07dfd33"
+      "sha256": "sha256:4f45c62fb84184db5338e53b330bd015579bc22bd17e4581971758dd2e4b37cd"
     },
     {
       "path": "docs/validation/IDEAL_ENVIRONMENT_MANIFEST_V1.csv",

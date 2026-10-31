@@ -1,0 +1,32 @@
+{
+  "schema": "oxvba.excel-vba-oracle-plan.v2",
+  "suite": "HarnessSelfTest",
+  "run_id": "calcvba-native-types-20261031",
+  "environment_id": "win-x64-dev-oracle-2026-07",
+  "environment_role": "dev-oracle",
+  "evidence_state": "characterized-noncertifying",
+  "certifying": false,
+  "matrix_update": false,
+  "release_credit": false,
+  "capability_credit": false,
+  "targeted_probe": true,
+  "contains_diagnostic_case": true,
+  "ownership_policy": "assign the waiting worker to a kill-on-close job before publishing mutation authority; launch Excel directly inside that containment; record PID+process-start+name+executable for Excel and guardian processes; validate classified identity before fallback cleanup",
+  "modal_policy": "start PID-scoped UIA guardian before command-ID-578 compile and runtime invocation; capture first; never auto-enable security/trust prompts",
+  "compile_policy": "VBE Debug -> Compile VBAProject command ID 578; Application.Run is never a compile check",
+  "cases": [
+    {
+      "id": "windows-scalar-interop",
+      "expected_compile_status": "ok",
+      "expected_run_status": "ok",
+      "module_sha256": "sha256:3f611e3358c44aa928bc51ed819a5cd5062bdbbce67cb4d2b9eeca64b1b748ee",
+      "descriptor_sha256": "sha256:9dd1e60bcbbcc4fa35e32339692c77dba1992e4fab40a7a7143ffd9aeb407d73",
+      "intrinsic_diagnostic_case": true
+    }
+  ],
+  "selected_case_count": 1,
+  "selected_case_ids": [
+    "windows-scalar-interop"
+  ],
+  "selected_case_selection_digest": "sha256:24355b5c43497108bd15f38000720075b3477615306088a016a1f63a1afcddb9"
+}

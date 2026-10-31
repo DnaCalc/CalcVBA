@@ -1,0 +1,29 @@
+{
+  "schema": "oxvba.excel-vba-oracle-selected-case-sequence.v2",
+  "targeted_probe": true,
+  "contains_diagnostic_case": true,
+  "descriptor_count": 1,
+  "selection_sha256": "sha256:25f25df6eb68012381ad124ded599369c23a3f76da04941d20358ffbbbf6f8b6",
+  "descriptors": [
+    {
+      "schema": "oxvba.excel-vba-oracle-selected-case.v1",
+      "id": "windows-scalar-interop",
+      "purpose": "development observation of missing native export Err description and LastDllError preservation",
+      "module_name": "OracleSelfTest",
+      "module_source": "Private Declare PtrSafe Function NativeMissing Lib \"C:\\Work\\DnaCalc\\codex-runs\\calcvba-exact-native-probe\\scalar.dll\" Alias \"Absent\" () As Long\nPrivate Declare PtrSafe Sub NativeSetError Lib \"kernel32\" Alias \"SetLastError\" (ByVal value As Long)\nPublic Function RunProbe() As String\n    Dim value As Long, prior As Long\n    NativeSetError 1234\n    prior = Err.LastDllError\n    On Error Resume Next\n    value = NativeMissing()\n    RunProbe = CStr(Err.Number) & \"|\" & Err.Description & \"|\" & Err.Source & \"|\" & CStr(prior) & \"|\" & CStr(Err.LastDllError)\nEnd Function\r\n",
+      "module_sha256": "sha256:270ed2354958c0f43bd6c5448cf81aeb61727b92c422308dfd51aa83df9837dd",
+      "expected_compile_status": "ok",
+      "expected_run_status": "ok",
+      "run_procedure": "OracleSelfTest.RunProbe",
+      "diagnostic_only": true,
+      "expected_value": null,
+      "expected_selected_token": null,
+      "expected_expanded_line": null,
+      "macro_probe_target": "OracleSelfTest.RunProbe",
+      "invocation_observation_prefix": null,
+      "evidence_contract": "clean-compile-run-no-dialog-v1",
+      "expected_runtime_err": null,
+      "descriptor_sha256": "sha256:0f7c3ad715b7135f33a6abed8d4dcec34194f466776f511ce57aa8c7b578ad0c"
+    }
+  ]
+}

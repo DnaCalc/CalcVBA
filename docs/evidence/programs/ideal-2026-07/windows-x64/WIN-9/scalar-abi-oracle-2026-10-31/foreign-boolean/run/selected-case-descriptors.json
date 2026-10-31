@@ -1,0 +1,29 @@
+{
+  "schema": "oxvba.excel-vba-oracle-selected-case-sequence.v2",
+  "targeted_probe": true,
+  "contains_diagnostic_case": true,
+  "descriptor_count": 1,
+  "selection_sha256": "sha256:24355b5c43497108bd15f38000720075b3477615306088a016a1f63a1afcddb9",
+  "descriptors": [
+    {
+      "schema": "oxvba.excel-vba-oracle-selected-case.v1",
+      "id": "windows-scalar-interop",
+      "purpose": "development native scalar ABI returns and mixed register/stack arguments",
+      "module_name": "OracleSelfTest",
+      "module_source": "Private Declare PtrSafe Function CurrencyValue Lib \"C:\\Work\\DnaCalc\\codex-runs\\calcvba-native-scalar-probe\\scalar.dll\" () As Currency\nPrivate Declare PtrSafe Function DateValue Lib \"C:\\Work\\DnaCalc\\codex-runs\\calcvba-native-scalar-probe\\scalar.dll\" () As Date\nPrivate Declare PtrSafe Function ByteValue Lib \"C:\\Work\\DnaCalc\\codex-runs\\calcvba-native-scalar-probe\\scalar.dll\" () As Byte\nPrivate Declare PtrSafe Function BoolOne Lib \"C:\\Work\\DnaCalc\\codex-runs\\calcvba-native-scalar-probe\\scalar.dll\" () As Boolean\nPrivate Declare PtrSafe Function Mixed Lib \"C:\\Work\\DnaCalc\\codex-runs\\calcvba-native-scalar-probe\\scalar.dll\" (ByVal a As Long, ByVal b As Double, ByVal c As Single, ByVal d As Currency, ByVal e As Integer, ByVal f As Date, ByVal g As LongPtr, ByVal h As Boolean, ByVal i As Byte, ByVal j As LongLong) As Long\nPublic Function RunProbe() As String\n    Dim d As Date, c As Currency, p As LongPtr, ll As LongLong\n    d = CDate(45123.75): c = 1234.5@: p = CLngPtr(\"4294967338\"): ll = CLngLng(\"-9876543210987\")\n    RunProbe = CStr(CurrencyValue() = 123456789.0123@) & \"|\" & CStr(CDbl(DateValue()) = 45123.75) & \"|\" & TypeName(ByteValue()) & \"|\" & CStr(CLng(BoolOne())) & \"|\" & CStr(Mixed(19, 23.5, 12.5!, c, -2, d, p, True, 251, ll))\nEnd Function\r\n",
+      "module_sha256": "sha256:3f611e3358c44aa928bc51ed819a5cd5062bdbbce67cb4d2b9eeca64b1b748ee",
+      "expected_compile_status": "ok",
+      "expected_run_status": "ok",
+      "run_procedure": "OracleSelfTest.RunProbe",
+      "diagnostic_only": true,
+      "expected_value": "True|True|Byte|1|42",
+      "expected_selected_token": null,
+      "expected_expanded_line": null,
+      "macro_probe_target": "OracleSelfTest.RunProbe",
+      "invocation_observation_prefix": null,
+      "evidence_contract": "clean-compile-run-no-dialog-v1",
+      "expected_runtime_err": null,
+      "descriptor_sha256": "sha256:9dd1e60bcbbcc4fa35e32339692c77dba1992e4fab40a7a7143ffd9aeb407d73"
+    }
+  ]
+}

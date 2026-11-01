@@ -874,7 +874,9 @@ pub struct ExecState<'h> {
     pub remaining_steps: Option<u64>,
     pub programs: Vec<LoadedProgram<'h>>,
     pub default_error_source: String,
-    pub err_engine: ErrEngine,
+    /// Heap-stable canonical Err state. Typed continuations retain its raw
+    /// authority across short borrows of the enclosing session during reentry.
+    pub err_engine: Box<ErrEngine>,
     pub events: EventFabric<'h>,
     pub lib: LibContext,
     pub host: &'h dyn HostServices,
@@ -890,7 +892,7 @@ impl<'h> ExecState<'h> {
             remaining_steps: None,
             programs: Vec::new(),
             default_error_source: "VBAProject".to_string(),
-            err_engine: ErrEngine::default(),
+            err_engine: Box::default(),
             events: EventFabric::default(),
             lib: LibContext::default(),
             host,

@@ -483,6 +483,10 @@ impl JitSession<'_> {
             .globals;
         (globals.as_mut_ptr(), globals.len())
     }
+    /// Stable same-thread Err storage under the typed activation's session lease.
+    pub fn typed_error_raw(&mut self) -> *mut oxvba_rt_abi::ErrEngine {
+        &raw mut *self.exec.err_engine
+    }
     /// Seat an unhandled typed host-entry fault in the same Err used by thunks.
     pub fn record_typed_entry_error(&mut self, number: i32) {
         self.exec.err_engine.raise(

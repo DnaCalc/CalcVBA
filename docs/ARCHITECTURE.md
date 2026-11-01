@@ -186,12 +186,17 @@ on paused state refuse; bounded typed callback reentry shares the active context
 Object-typed/global inspection preserves project and native object identity.
 See [the bounded continuation contract](spec/HOSTING_AND_EARLY_BINDING.md) and
 [evidence](evidence/programs/ideal-2026-07/core/CORE-7/typed-host-continuations.md).
+Run 9 adds a retained heap call stack, immediate scalar/object/global ByRef aliases
+and handler/Resume continuations. JIT body operations remain native; call/error
+transitions use common stack mechanics and the canonical ErrEngine. Entire typed
+call graphs are checked before body effects. The bounded proof is
+[typed-host-calls-run9](evidence/programs/ideal-2026-07/core/CORE-7/typed-host-calls-run9.md).
 
 ### Material gaps against the contract
 
 - the public compiler does not require sealed verified image/program input;
 - no inspectable procedure-lowering plan currently separates semantic OxIR from physical/codegen decisions;
-- the direct native primary family remains bounded to required ByVal Long/Double/borrowed host objects and numeric slots; the additional owning frame supports portable typed object globals/Static/results and instruction-boundary continuation with four arguments/128 physical slots. General string/array/record carriers, ByRef, Optional/ParamArray, other external calls, handlers, typed internal call stacks and native recursion remain open;
+- the direct native primary family remains bounded to required ByVal Long/Double/borrowed host objects and numeric slots; the additional owning frame supports portable typed object globals/Static/results and instruction-boundary continuation with four arguments/128 physical slots. The run-9 owning family additionally retains bounded internal calls, live ByRef aliases and Err/Resume continuations through shared stack mechanics on both backends. General string/array/record carriers, Optional/ParamArray, cross-project calls, other external calls and native recursion remain open;
 - helper registration is not a versioned descriptor catalog;
 - line/Erl, writable Err fields and full dynamic Err.Raise metadata are incomplete;
 - deep source recursion relies on the native stack and is not safely proven;

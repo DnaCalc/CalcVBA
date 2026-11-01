@@ -13,6 +13,7 @@ use std::{
 };
 mod cache;
 mod invocation;
+mod typed_stack;
 use cache::PreparedCode;
 pub use cache::{CacheStats, CodeCache, OwnedSession};
 pub use oxvba_bundle::ProcedureKind;
@@ -548,6 +549,11 @@ impl<'a> Session<'a> {
             .or(self.owning_typed[bound.id.0].as_ref())
             .map_err(|e| Error::UnsupportedSignature(e.clone()))?
             .layout();
+        if !layout.has_result {
+            return Err(Error::UnsupportedSignature(
+                "typed host Sub entry requires an explicit void carrier".into(),
+            ));
+        }
         if layout.parameters != arguments || layout.result != result {
             return Err(Error::ArgumentMismatch);
         }
@@ -584,7 +590,7 @@ impl<'a> Session<'a> {
             if status != 0 {
                 return Err(Error::Backend("unexpected finite-slice suspension".into()));
             }
-            return Ok(frame.raw().slots[typed.layout().return_slot]);
+            return Ok(frame.raw_result());
         }
         let result = match &self.executable {
             Executable::Interpreter(_) => self.typed[bound.id.0]
@@ -600,7 +606,22 @@ impl<'a> Session<'a> {
         &self,
         bound: &BoundProcedure,
         args: &[calcvba_host_api::Slot<'_>],
-    ) -> Result<oxvba_rt_abi::host_entry::activation::Activation<'static>, Error> {
+    ) -> Result<typed_stack::TypedStack, Error> {
+        // Reject the complete reachable typed call graph before any body effect.
+        let mut pending = vec![bound.id];
+        let mut visited = std::collections::HashSet::new();
+        while let Some(id) = pending.pop() {
+            if !visited.insert(id) {
+                continue;
+            }
+            let entry = self
+                .owning_typed
+                .get(id.0)
+                .ok_or_else(|| Error::UnsupportedSignature("invalid typed callee".into()))?
+                .as_ref()
+                .map_err(|e| Error::UnsupportedSignature(e.clone()))?;
+            pending.extend(entry.layout().calls.keys().copied());
+        }
         let typed = self.owning_typed[bound.id.0]
             .as_ref()
             .map_err(|e| Error::UnsupportedSignature(e.clone()))?;
@@ -612,20 +633,22 @@ impl<'a> Session<'a> {
         {
             return Err(Error::ArgumentMismatch);
         }
-        let (pointer, len) = match &self.executable {
+        let (pointer, len, error) = match &self.executable {
             Executable::Interpreter(state) => {
                 let mut state = state.try_borrow_mut().map_err(|_| Error::Reentry)?;
-                state.typed_globals_raw()
+                let (pointer, len) = state.typed_globals_raw();
+                (pointer, len, state.typed_error_raw())
             }
             #[cfg(feature = "jit")]
             Executable::Jit(_, state) => {
                 let mut state = state.try_borrow_mut().map_err(|_| Error::Reentry)?;
-                state.typed_globals_raw()
+                let (pointer, len) = state.typed_globals_raw();
+                (pointer, len, state.typed_error_raw())
             }
         };
         // SAFETY: the owning SessionCell lease retains this canonical store;
         // executing/suspended guards exclude reset and unrelated execution.
-        unsafe {
+        let activation = unsafe {
             oxvba_rt_abi::host_entry::activation::Activation::new(
                 typed.layout(),
                 args,
@@ -634,12 +657,15 @@ impl<'a> Session<'a> {
                 typed.entry_pc(),
             )
         }
-        .map_err(|number| self.typed_error(number))
+        .map_err(|number| self.typed_error(number))?;
+        // SAFETY: the same SessionCell/execution guard leases Err and globals;
+        // this stack is always dropped before the retaining session cell.
+        Ok(unsafe { typed_stack::TypedStack::new(activation, bound.id, error) })
     }
     fn resume_frame(
         &self,
         bound: &BoundProcedure,
-        frame: &mut oxvba_rt_abi::host_entry::activation::Activation<'_>,
+        frame: &mut typed_stack::TypedStack,
         context: &mut TypedContext,
         operations: u64,
         resuming: bool,
@@ -650,24 +676,30 @@ impl<'a> Session<'a> {
     }
     fn execute_frame(
         &self,
-        bound: &BoundProcedure,
-        frame: &mut oxvba_rt_abi::host_entry::activation::Activation<'_>,
+        _bound: &BoundProcedure,
+        frame: &mut typed_stack::TypedStack,
         context: &mut TypedContext,
         operations: u64,
     ) -> Result<i32, Error> {
-        let result = match &self.executable {
-            Executable::Interpreter(_) => self.owning_typed[bound.id.0]
-                .as_ref()
-                .expect("bound owning entry")
-                .resume(frame, context, operations),
-            #[cfg(feature = "jit")]
-            Executable::Jit(image, _) => {
-                // SAFETY: frame was built from this exact checked function and
-                // the same leased canonical store; active guards span entry.
-                unsafe { image.resume_activation(bound.id, frame, context, operations) }
-            }
-        };
-        result.map_err(|number| self.typed_error(number))
+        let result = frame.resume(
+            &self.module.program,
+            &self.owning_typed,
+            context,
+            operations,
+            |id, frame, context, operations| match &self.executable {
+                Executable::Interpreter(_) => self.owning_typed[id.0]
+                    .as_ref()
+                    .expect("bound owning entry")
+                    .resume(frame, context, operations),
+                #[cfg(feature = "jit")]
+                Executable::Jit(image, _) => {
+                    // SAFETY: frame was built from this exact checked function and
+                    // the same leased canonical store; active guards span entry.
+                    unsafe { image.resume_activation(id, frame, context, operations) }
+                }
+            },
+        );
+        result.map_err(|number| frame.error(number, &self.module.program.unit_name))
     }
     /// Explicit dynamic adapter: exact-arity arguments already prepared by host.
     pub fn call_bound(

@@ -88,6 +88,484 @@ fn object(value: api::OwnedValue) -> Option<api::HostObject> {
     }
 }
 
+fn calls_project() -> api::Project {
+    let mut project = project();
+    project.modules[0].source.push_str(r#"
+Private Sub AliasLeaf(ByVal root As HostObjects.Range, ByRef a As Double, ByRef b As Double)
+    a = a + root.Read(1)
+    b = b + a
+End Sub
+Private Sub AliasMiddle(ByVal root As HostObjects.Range, ByRef value As Double)
+    AliasLeaf root, value, value
+End Sub
+Public Function NestedAliases(ByVal root As HostObjects.Range) As Double
+    Dim value As Double
+    entries = entries + 1
+    value = root.Read(0)
+    AliasMiddle root, value
+    NestedAliases = value + root.Read(2) + entries
+End Function
+Private Sub FailingLeaf(ByVal root As HostObjects.Range, ByRef value As Double)
+    value = value + 3#
+    value = value + root.Read(7)
+    value = value + 1000#
+End Sub
+Public Function CatchNested(ByVal root As HostObjects.Range) As Double
+    Dim value As Double
+    On Error GoTo Handler
+    value = root.Read(0)
+    FailingLeaf root, value
+    CatchNested = value + root.Read(2)
+    Exit Function
+Handler:
+    value = value + Err.Number
+    value = value + root.Read(8)
+    Resume Next
+End Function
+Public Function RetryStatement(ByVal root As HostObjects.Range) As Double
+    Dim value As Double
+    On Error GoTo Handler
+    entries = entries + 1
+    value = root.Read(7)
+    RetryStatement = value + entries
+    Exit Function
+Handler:
+    value = root.Read(8)
+    Resume
+End Function
+Public Function SkipStatement(ByVal root As HostObjects.Range) As Double
+    Dim value As Double
+    On Error Resume Next
+    value = root.Read(7)
+    value = Err.Number
+    SkipStatement = value + root.Read(2)
+End Function
+Private Function Recursive(ByVal root As HostObjects.Range, ByVal depth As Long) As Double
+    If depth = 0 Then
+        Recursive = root.Read(0)
+    Else
+        Recursive = Recursive(root, depth - 1)
+    End If
+End Function
+Public Function RecursiveEntry(ByVal root As HostObjects.Range) As Double
+    RecursiveEntry = Recursive(root, 5)
+End Function
+Private Sub RebindObject(ByRef first As HostObjects.Range, ByRef second As HostObjects.Range, ByVal replacement As HostObjects.Range)
+    Set first = replacement
+    Set second = first
+End Sub
+Public Function ObjectAliases(ByVal original As HostObjects.Range, ByVal replacement As HostObjects.Range) As Double
+    RebindObject original, original, replacement
+    ObjectAliases = original.NumericValue
+End Function
+Private Sub AddGlobal(ByRef left As Double, ByRef right As Double)
+    left = left + 2#
+    right = right + left
+End Sub
+Private shared As Double
+Public Function GlobalAlias() As Double
+    shared = 1#
+    AddGlobal shared, shared
+    GlobalAlias = shared
+End Function
+Private Function TooDeep(ByVal level As Long) As Double
+    TooDeep = TooDeep(level + 1)
+End Function
+Public Function CatchStackLimit() As Double
+    On Error GoTo Handler
+    CatchStackLimit = TooDeep(0)
+    Exit Function
+Handler:
+    CatchStackLimit = Err.Number
+End Function
+Private Sub NestedHandler(ByVal root As HostObjects.Range)
+    On Error GoTo Handler
+    Err.Raise 5, "inner", "first"
+    Exit Sub
+Handler:
+    Err.Raise 9, "nested", "second"
+End Sub
+Public Function ActiveHandlerPropagates(ByVal root As HostObjects.Range) As Double
+    On Error GoTo Handler
+    NestedHandler root
+    ActiveHandlerPropagates = 1000#
+    Exit Function
+Handler:
+    ActiveHandlerPropagates = root.Read(9) + Err.Number
+End Function
+Private Sub BadText()
+    Dim text As String
+    text = "unsupported"
+End Sub
+Public Function RejectBeforeEffects(ByVal root As HostObjects.Range) As Double
+    RejectBeforeEffects = root.Read(0)
+    BadText
+End Function
+"#);
+    project
+}
+
+#[test]
+fn nested_subs_and_repeated_byref_aliases_resume_without_replaying_effects() {
+    for backend in support::backends() {
+        for slice in [1, 2, 3, 7, u64::MAX] {
+            let mut session = Provider::default()
+                .load(&calls_project(), backend, api::HOST_API_ABI)
+                .unwrap();
+            let log = Rc::new(std::cell::RefCell::new(Vec::new()));
+            let calls = log.clone();
+            let table = api::HostObject::new(
+                support::IID,
+                vec![
+                    api::HostSlot::double_long(move |_, n| {
+                        let frame = api::active_invocation().unwrap();
+                        assert_eq!(frame.id, 91);
+                        assert_eq!(frame.read_view.downcast_ref::<u64>(), Some(&41));
+                        calls.borrow_mut().push(n);
+                        Ok(f64::from(n + 1))
+                    }),
+                    api::HostSlot::double(|_| Ok(0.0)),
+                ],
+            );
+            let bound = session
+                .bind_slots(
+                    "Api",
+                    "NestedAliases",
+                    &[api::ScalarType::HostObject],
+                    api::ScalarType::Double,
+                )
+                .unwrap();
+            let mut call = session
+                .begin_invocation(&bound, &[table.borrow_slot()], frame(91, 41), 10000)
+                .unwrap();
+            assert!(matches!(
+                call.resume(0).unwrap(),
+                api::InvocationProgress::Suspended
+            ));
+            assert!(log.borrow().is_empty());
+            if slice == 1 {
+                // Suspend in a descendant, then publish unrelated code/state.
+                while log.borrow().len() < 2 {
+                    assert!(matches!(
+                        call.resume(1).unwrap(),
+                        api::InvocationProgress::Suspended
+                    ));
+                }
+                session.reload(&api::Project::module("Api", "Public Function NestedAliases(ByVal s As String) As String\nNestedAliases = s\nEnd Function")).unwrap();
+            }
+            assert!(matches!(
+                finish(&mut *call, slice),
+                api::OwnedValue::Double(10.0)
+            ));
+            assert_eq!(&*log.borrow(), &[0, 1, 2]);
+        }
+    }
+}
+
+#[test]
+fn nested_faults_preserve_live_byref_updates_and_resume_the_callers_next_statement() {
+    for backend in support::backends() {
+        for slice in [1, 5, u64::MAX] {
+            let mut session = Provider::default()
+                .load(&calls_project(), backend, api::HOST_API_ABI)
+                .unwrap();
+            let log = Rc::new(std::cell::RefCell::new(Vec::new()));
+            let calls = log.clone();
+            let table = api::HostObject::new(
+                support::IID,
+                vec![
+                    api::HostSlot::double_long(move |_, n| {
+                        calls.borrow_mut().push(n);
+                        if n == 7 {
+                            Err(11)
+                        } else {
+                            Ok(f64::from(n + 1))
+                        }
+                    }),
+                    api::HostSlot::double(|_| Ok(0.0)),
+                ],
+            );
+            let bound = session
+                .bind_slots(
+                    "Api",
+                    "CatchNested",
+                    &[api::ScalarType::HostObject],
+                    api::ScalarType::Double,
+                )
+                .unwrap();
+            let mut call = session
+                .begin_invocation(&bound, &[table.borrow_slot()], frame(1, 41), 10000)
+                .unwrap();
+            if slice == 1 {
+                // Preserve an active handler and the discarded child's ByRef
+                // updates while reload publishes a different root signature.
+                while log.borrow().len() < 3 {
+                    assert!(matches!(
+                        call.resume(1).unwrap(),
+                        api::InvocationProgress::Suspended
+                    ));
+                }
+                session.reload(&api::Project::module("Api", "Public Function CatchNested(ByVal text As String) As String\nCatchNested = text\nEnd Function")).unwrap();
+            }
+            assert!(matches!(
+                finish(&mut *call, slice),
+                api::OwnedValue::Double(27.0)
+            ));
+            assert_eq!(&*log.borrow(), &[0, 7, 8, 2]);
+        }
+    }
+}
+
+#[test]
+fn resume_retries_only_the_explicit_statement_and_resume_next_keeps_err() {
+    for backend in support::backends() {
+        for (name, expected, sequence) in [
+            ("RetryStatement", 43.0, vec![7, 8, 7]),
+            ("SkipStatement", 14.0, vec![7, 2]),
+        ] {
+            let session = Provider::default()
+                .load(&calls_project(), backend, api::HOST_API_ABI)
+                .unwrap();
+            let log = Rc::new(std::cell::RefCell::new(Vec::new()));
+            let calls = log.clone();
+            let table = api::HostObject::new(
+                support::IID,
+                vec![
+                    api::HostSlot::double_long(move |_, n| {
+                        let failed_before = calls.borrow().contains(&7);
+                        calls.borrow_mut().push(n);
+                        if n == 7 && !failed_before {
+                            Err(11)
+                        } else if n == 7 {
+                            Ok(42.0)
+                        } else {
+                            Ok(f64::from(n + 1))
+                        }
+                    }),
+                    api::HostSlot::double(|_| Ok(0.0)),
+                ],
+            );
+            let bound = session
+                .bind_slots(
+                    "Api",
+                    name,
+                    &[api::ScalarType::HostObject],
+                    api::ScalarType::Double,
+                )
+                .unwrap();
+            let mut call = session
+                .begin_invocation(&bound, &[table.borrow_slot()], frame(1, 41), 10000)
+                .unwrap();
+            assert!(matches!(finish(&mut *call, 1), api::OwnedValue::Double(v) if v == expected));
+            assert_eq!(&*log.borrow(), &sequence);
+        }
+    }
+}
+
+#[test]
+fn recursive_typed_calls_keep_a_heap_stack_and_return_through_both_backends() {
+    for backend in support::backends() {
+        let session = Provider::default()
+            .load(&calls_project(), backend, api::HOST_API_ABI)
+            .unwrap();
+        let table = api::HostObject::new(
+            support::IID,
+            vec![
+                api::HostSlot::double_long(|_, _| Ok(42.0)),
+                api::HostSlot::double(|_| Ok(0.0)),
+            ],
+        );
+        assert!(matches!(
+            owned(
+                &*session,
+                "RecursiveEntry",
+                &[table.borrow_slot()],
+                api::ScalarType::Double
+            ),
+            api::OwnedValue::Double(42.0)
+        ));
+    }
+}
+
+#[test]
+fn byref_global_and_object_aliases_share_one_cell_and_preserve_ownership() {
+    for backend in support::backends() {
+        let session = Provider::default()
+            .load(&calls_project(), backend, api::HOST_API_ABI)
+            .unwrap();
+        let first = api::HostObject::new(
+            support::IID,
+            vec![
+                api::HostSlot::double_long(|_, _| Ok(1.0)),
+                api::HostSlot::double(|_| Ok(1.0)),
+            ],
+        );
+        let second = api::HostObject::new(
+            support::IID,
+            vec![
+                api::HostSlot::double_long(|_, _| Ok(42.0)),
+                api::HostSlot::double(|_| Ok(42.0)),
+            ],
+        );
+        assert!(matches!(
+            owned(
+                &*session,
+                "ObjectAliases",
+                &[first.borrow_slot(), second.borrow_slot()],
+                api::ScalarType::Double
+            ),
+            api::OwnedValue::Double(42.0)
+        ));
+        assert!(matches!(
+            owned(&*session, "GlobalAlias", &[], api::ScalarType::Double),
+            api::OwnedValue::Double(6.0)
+        ));
+        assert!(matches!(
+            owned(&*session, "CatchStackLimit", &[], api::ScalarType::Double),
+            api::OwnedValue::Double(28.0)
+        ));
+        assert!(matches!(
+            owned(
+                &*session,
+                "ActiveHandlerPropagates",
+                &[first.borrow_slot()],
+                api::ScalarType::Double
+            ),
+            api::OwnedValue::Double(10.0)
+        ));
+    }
+}
+
+#[test]
+fn unsupported_descendant_is_refused_before_the_first_host_effect() {
+    for backend in support::backends() {
+        let session = Provider::default()
+            .load(&calls_project(), backend, api::HOST_API_ABI)
+            .unwrap();
+        let calls = Rc::new(Cell::new(0));
+        let effects = calls.clone();
+        let table = api::HostObject::new(
+            support::IID,
+            vec![
+                api::HostSlot::double_long(move |_, _| {
+                    effects.set(effects.get() + 1);
+                    Ok(1.0)
+                }),
+                api::HostSlot::double(|_| Ok(1.0)),
+            ],
+        );
+        let bound = session
+            .bind_slots(
+                "Api",
+                "RejectBeforeEffects",
+                &[api::ScalarType::HostObject],
+                api::ScalarType::Double,
+            )
+            .unwrap();
+        assert!(matches!(
+            session.begin_invocation(&bound, &[table.borrow_slot()], frame(1, 41), 10000),
+            Err(api::Error::UnsupportedSignature(_))
+        ));
+        assert_eq!(calls.get(), 0);
+    }
+}
+
+#[test]
+fn minimal_byref_aliases_retain_ancestor_authority_across_slices() {
+    for backend in support::backends() {
+        let source = api::Project::module(
+            "Api",
+            r#"
+Private Sub Leaf(ByRef a As Double, ByRef b As Double)
+    a = a + 2#
+    b = b + a
+End Sub
+Private Sub Middle(ByRef a As Double)
+    Leaf a, a
+End Sub
+Public Function Entry() As Double
+    Dim value As Double
+    value = 1#
+    Middle value
+    Entry = value
+End Function
+"#,
+        );
+        let session = Provider::default()
+            .load(&source, backend, api::HOST_API_ABI)
+            .unwrap();
+        assert!(matches!(
+            owned(&*session, "Entry", &[], api::ScalarType::Double),
+            api::OwnedValue::Double(6.0)
+        ));
+    }
+}
+
+#[test]
+fn minimal_handler_state_survives_same_context_callback_reentry() {
+    for backend in support::backends() {
+        let mut project = support::project();
+        project.modules[0].source = r#"
+Public Function Entry(ByVal root As HostObjects.Range) As Double
+    On Error GoTo Handler
+    Entry = root.NumericValue
+    Exit Function
+Handler:
+    Entry = Err.Number
+End Function
+Public Function Nested() As Double
+    On Error Resume Next
+    Nested = 42#
+End Function
+Public Function CallbackFault() As Double
+    CallbackFault = 1# / 0#
+End Function
+"#
+        .into();
+        let session: Rc<Box<dyn api::Session>> = Rc::new(
+            Provider::default()
+                .load(&project, backend, api::HOST_API_ABI)
+                .unwrap(),
+        );
+        let nested = session.bind_typed::<(), f64>("Api", "Nested").unwrap();
+        let fault = session
+            .bind_typed::<(), f64>("Api", "CallbackFault")
+            .unwrap();
+        let weak = Rc::downgrade(&session);
+        let table = api::HostObject::new(
+            support::IID,
+            vec![
+                api::HostSlot::double_long(|_, _| Ok(0.0)),
+                api::HostSlot::double(move |context| {
+                    assert!(matches!(
+                        weak.upgrade()
+                            .unwrap()
+                            .call_typed_in_context(&fault, (), context),
+                        Err(api::Error::Runtime { number: 11, .. })
+                    ));
+                    assert_eq!(
+                        weak.upgrade()
+                            .unwrap()
+                            .call_typed_in_context(&nested, (), context)
+                            .unwrap(),
+                        42.0
+                    );
+                    Err(11)
+                }),
+            ],
+        );
+        assert!(matches!(
+            owned(
+                &**session,
+                "Entry",
+                &[table.borrow_slot()],
+                api::ScalarType::Double
+            ),
+            api::OwnedValue::Double(11.0)
+        ));
+    }
+}
+
 #[test]
 fn module_static_and_results_retain_exact_owners_and_reset_releases_them() {
     for backend in support::backends() {

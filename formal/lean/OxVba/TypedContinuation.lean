@@ -67,4 +67,42 @@ def reload (replacement : Lease) (old : Frame) : Lease × Frame := (replacement,
 theorem reload_preserves_suspended_activation (next : Lease) (old : Frame) :
     (reload next old).2 = old := rfl
 
+-- A retained activation stack uses canonical locations for ByRef parameters.
+-- Two aliases of the same cell observe each write immediately, including writes
+-- made before a child faults. Copy-out at a later return is not this model.
+abbrev Store := Nat → Nat
+def write (s : Store) (location value : Nat) : Store :=
+  fun other => if other = location then value else s other
+
+theorem aliases_observe_write (s : Store) (first second value : Nat)
+    (same : first = second) : write s first value second = value := by
+  simp [write, same]
+
+theorem distinct_cells_survive_write (s : Store) (first second value : Nat)
+    (different : second ≠ first) : write s first value second = s second := by
+  simp [write, different]
+
+structure Activation where
+  next : Nat
+  handler : Nat
+  activeError : Option Nat
+  lease : Lease
+  deriving DecidableEq
+
+-- A child returns to the saved next operation. Pushing or discarding the child
+-- never reconstructs a parent from the source entry or a replacement program.
+theorem child_pop_keeps_parent (parent child : Activation) (ancestors : List Activation) :
+    (child :: parent :: ancestors).tail = parent :: ancestors := rfl
+
+theorem suspended_stack_reload_keeps_all_activations (replacement : Lease)
+    (stack : List Activation) : (replacement, stack).2 = stack := rfl
+
+-- Fault unwinding changes the stack, while completed ByRef writes and the
+-- effect journal survive. The concrete Rust ErrEngine/CFG routing is excluded.
+def unwind (stack : List Activation) (store : Store) (journal : List Nat) :=
+  (stack.tail, store, journal)
+theorem unwinding_keeps_writes_and_effects (stack : List Activation)
+    (store : Store) (journal : List Nat) :
+    (unwind stack store journal).2 = (store, journal) := rfl
+
 end OxVba.TypedContinuation

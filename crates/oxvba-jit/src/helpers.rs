@@ -4309,6 +4309,92 @@ fn raise_plan_error(state: *mut RawExecState, run: *mut JitRun, message: String)
     ST_FAULT
 }
 
+// SAFETY CONTRACT: state/run are the live same-thread compiled invocation.
+// operands names five initialized retained descriptors; mask distinguishes
+// omitted fields from explicitly supplied Empty. No borrow spans evaluation.
+pub(crate) unsafe extern "C" fn raise_values(
+    state: *mut RawExecState,
+    run: *mut JitRun,
+    operands: *const JitVariantOperandDesc,
+    mask: u32,
+    inherit: u32,
+) -> i32 {
+    status_guard(|| {
+        if operands.is_null() {
+            return ST_FAULT;
+        }
+        // SAFETY: generated caller supplies exactly five initialized descriptors.
+        let operands = unsafe { std::slice::from_raw_parts(operands, 5) };
+        let mut values = Vec::with_capacity(5);
+        for (i, operand) in operands.iter().enumerate() {
+            if mask & (1 << i) == 0 {
+                values.push(None);
+                continue;
+            }
+            // SAFETY: caller retains the compiled operand metadata and state.
+            match unsafe { variant_operand_value_with_as_new(run, state, *operand) } {
+                Ok(value) => values.push(Some(value)),
+                Err(status) => return status,
+            }
+        }
+        // SAFETY: all operand evaluation has finished; no state borrow overlaps it.
+        let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
+            return ST_FAULT;
+        };
+        let Some(number) = values[0].as_ref() else {
+            return ST_FAULT;
+        };
+        let code = match oxvba_eval::arith::coerce_numeric(
+            number,
+            oxvba_bundle::NumericCoerceTarget::Long,
+        ) {
+            Ok(value) => value.as_i32().unwrap_or(0),
+            Err(error) => {
+                exec.err_engine
+                    .raise(Fault::from_arith(error), current_unit_source(run));
+                return ST_FAULT;
+            }
+        };
+        let inherit = inherit != 0 && exec.err_engine.err.inherit_fields;
+        let text = |index: usize| {
+            values[index].as_ref().map(|value| {
+                oxvba_runtime::variant_to_vba_string(value)
+                    .map(|s| s.as_str())
+                    .unwrap_or_default()
+            })
+        };
+        let help_context = match values[4].as_ref() {
+            Some(value) => match oxvba_eval::arith::coerce_numeric(
+                value,
+                oxvba_bundle::NumericCoerceTarget::Long,
+            ) {
+                Ok(value) => Some(value.as_i32().unwrap_or(0)),
+                Err(error) => {
+                    exec.err_engine
+                        .raise(Fault::from_arith(error), current_unit_source(run));
+                    return ST_FAULT;
+                }
+            },
+            None => inherit.then_some(exec.err_engine.err.help_context),
+        };
+        let fault = Fault {
+            code,
+            message: text(2).unwrap_or_else(|| {
+                if inherit {
+                    exec.err_engine.err.description.clone()
+                } else {
+                    oxvba_rt_abi::default_error_message(code)
+                }
+            }),
+            source: text(1).or_else(|| inherit.then(|| exec.err_engine.err.source.clone())),
+            help_file: text(3).or_else(|| inherit.then(|| exec.err_engine.err.help_file.clone())),
+            help_context,
+        };
+        exec.err_engine.raise(fault, current_unit_source(run));
+        ST_FAULT
+    })
+}
+
 pub(crate) fn foreign_member_selector_for_jit(name: &str) -> DynamicMemberSelector {
     if name.is_empty() {
         DynamicMemberSelector::DefaultMember

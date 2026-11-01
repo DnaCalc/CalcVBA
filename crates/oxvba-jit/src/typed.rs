@@ -2,7 +2,7 @@
 //! slots/registers and an explicit status/result convention, never JitFrame.
 use super::*;
 use oxvba_rt_abi::host_entry::activation::{
-    self, Activation, FINISHED_PC, RawActivation, SUSPENDED,
+    self, Activation, CONTROL, FINISHED_PC, RawActivation, SUSPENDED,
 };
 use oxvba_rt_abi::host_entry::{Arguments, Scalar, ScalarLayout, ScalarType, TypedContext};
 use std::marker::PhantomData;
@@ -85,7 +85,7 @@ impl CompiledImage<'_> {
         // SAFETY: caller proves admitted slots, unique frame and live storage.
         let status = unsafe { call(context, frame.raw_mut(), operations) };
         frame.clear_scratch();
-        if status == 0 || status == SUSPENDED {
+        if status == 0 || status == SUSPENDED || status == CONTROL {
             Ok(status)
         } else {
             Err(status)
@@ -186,6 +186,12 @@ pub(crate) fn compile_resumable_entries(
                 let params = b.block_params(entry).to_vec();
                 let runtime = params[0];
                 let frame = params[1];
+                b.ins().store(
+                    ir::MemFlagsData::new(),
+                    params[2],
+                    frame,
+                    std::mem::offset_of!(RawActivation, remaining_operations) as i32,
+                );
                 let slice = b.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot,
                     8,
@@ -244,6 +250,12 @@ pub(crate) fn compile_resumable_entries(
                     lower.fail_if(&mut b, exhausted, SUSPENDED);
                     let left = b.ins().iadd_imm(left, -1);
                     b.ins().stack_store(left, slice, 0);
+                    b.ins().store(
+                        ir::MemFlagsData::new(),
+                        left,
+                        frame,
+                        std::mem::offset_of!(RawActivation, remaining_operations) as i32,
+                    );
                     let mut next_pc = None;
                     if offset == 0 {
                         let remaining =
@@ -255,8 +267,18 @@ pub(crate) fn compile_resumable_entries(
                         b.ins()
                             .store(ir::MemFlagsData::new(), remaining, runtime, 0);
                     } else if let Some(inst) = block.instrs.get(offset - 1) {
+                        if oxvba_rt_abi::host_entry::stack_instruction(inst) {
+                            let status = b.ins().iconst(types::I32, i64::from(CONTROL));
+                            b.ins().return_(&[status]);
+                            continue;
+                        }
                         lower.instruction(&mut b, inst);
                     } else {
+                        if oxvba_rt_abi::host_entry::stack_terminator(&block.terminator) {
+                            let status = b.ins().iconst(types::I32, i64::from(CONTROL));
+                            b.ins().return_(&[status]);
+                            continue;
+                        }
                         match &block.terminator {
                             OxTerminator::Jump(target) => {
                                 next_pc =
@@ -524,12 +546,22 @@ impl ScalarLower<'_> {
                 b.ins()
                     .stack_load(machine_type(ty), slots, (index * 8) as i32)
             }
-            PhysicalSlots::Frame(frame) if index < self.layout.global_base => b.ins().load(
-                machine_type(ty),
-                ir::MemFlagsData::new(),
-                frame,
-                (std::mem::offset_of!(RawActivation, slots) + index * 8) as i32,
-            ),
+            PhysicalSlots::Frame(frame)
+                if index < self.layout.global_base
+                    && !self
+                        .layout
+                        .by_ref_parameters
+                        .get(index)
+                        .copied()
+                        .unwrap_or(false) =>
+            {
+                b.ins().load(
+                    machine_type(ty),
+                    ir::MemFlagsData::new(),
+                    frame,
+                    (std::mem::offset_of!(RawActivation, slots) + index * 8) as i32,
+                )
+            }
             PhysicalSlots::Frame(frame) => {
                 let output = b.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot,
@@ -537,13 +569,11 @@ impl ScalarLower<'_> {
                     3,
                 ));
                 let ptr = b.ins().stack_addr(types::I64, output, 0);
-                let global = b
-                    .ins()
-                    .iconst(types::I64, (index - self.layout.global_base) as i64);
+                let global = b.ins().iconst(types::I64, index as i64);
                 let kind = b.ins().iconst(types::I32, i64::from(activation::kind(ty)));
                 self.helper(
                     b,
-                    activation::global_read as *const u8,
+                    activation::slot_read as *const u8,
                     &[frame, global, kind, ptr],
                     &[types::I64, types::I64, types::I32, types::I64],
                 );
@@ -602,7 +632,14 @@ impl ScalarLower<'_> {
                 b.ins().stack_store(value, slots, (index * 8) as i32);
             }
             PhysicalSlots::Frame(frame)
-                if index < self.layout.global_base && ty != ScalarType::HostObject =>
+                if index < self.layout.global_base
+                    && ty != ScalarType::HostObject
+                    && !self
+                        .layout
+                        .by_ref_parameters
+                        .get(index)
+                        .copied()
+                        .unwrap_or(false) =>
             {
                 b.ins().store(
                     ir::MemFlagsData::new(),

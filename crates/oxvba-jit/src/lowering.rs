@@ -8253,37 +8253,40 @@ impl<'a> LowerFunc<'a> {
                 help_context,
                 inherit,
             } => {
-                if source.is_some()
-                    || description.is_some()
-                    || help_file.is_some()
-                    || help_context.is_some()
-                {
-                    return Err(JitError::unsupported(format!(
-                        "M4-4 lowers only bare Err.Raise/Error with a constant number, got {term:?}"
-                    )));
-                }
-                let number = match number {
-                    OxOperand::Const(OxConst::I16(value)) => i32::from(*value),
-                    OxOperand::Const(OxConst::I32(value)) => *value,
-                    other => {
-                        return Err(JitError::unsupported(format!(
-                            "M4-4 lowers only bare Err.Raise with a constant Integer/Long number, got {other:?}"
-                        )));
+                let empty = OxOperand::Const(OxConst::Empty);
+                let fields = [
+                    Some(number),
+                    source.as_ref(),
+                    description.as_ref(),
+                    help_file.as_ref(),
+                    help_context.as_ref(),
+                ];
+                let mut mask = 0u32;
+                let mut operands = Vec::with_capacity(fields.len());
+                for (i, operand) in fields.into_iter().enumerate() {
+                    if operand.is_some() {
+                        mask |= 1 << i;
                     }
-                };
-                let callee = self.import(builder, module, self.imports.raise_error_number);
-                let number = builder.ins().iconst(types::I32, i64::from(number));
-                let inherit = builder.ins().iconst(types::I32, i64::from(*inherit as i32));
-                let source_ptr = i64::try_from(self.program.unit_name.as_ptr() as usize)
-                    .map_err(|_| JitError::unsupported("M4-4 unit name pointer exceeds i64"))?;
-                let source_len = i32::try_from(self.program.unit_name.len())
-                    .map_err(|_| JitError::unsupported("M4-4 unit name length exceeds i32"))?;
+                    operands.push(self.lower_variant_operand(builder, operand.unwrap_or(&empty))?);
+                }
+                let operands = self.emit_variant_operand_descriptors(builder, module, &operands)?;
                 let ptr_ty = module.target_config().pointer_type();
-                let source_ptr = builder.ins().iconst(ptr_ty, source_ptr);
-                let source_len = builder.ins().iconst(types::I32, i64::from(source_len));
-                let call = builder.ins().call(
-                    callee,
-                    &[self.state, number, inherit, source_ptr, source_len],
+                let mut signature = module.make_signature();
+                signature.params = vec![AbiParam::new(ptr_ty); 3];
+                signature.params.extend([AbiParam::new(types::I32); 2]);
+                signature.returns.push(AbiParam::new(types::I32));
+                let signature = builder.import_signature(signature);
+                let address = builder
+                    .ins()
+                    .iconst(ptr_ty, helpers::raise_values as *const u8 as i64);
+                let mask = builder.ins().iconst(types::I32, i64::from(mask));
+                let inherit = builder
+                    .ins()
+                    .iconst(types::I32, i64::from(u8::from(*inherit)));
+                let call = builder.ins().call_indirect(
+                    signature,
+                    address,
+                    &[self.state, self.run, operands, mask, inherit],
                 );
                 let status = builder.inst_results(call)[0];
                 self.return_if_not_ok(builder, status);

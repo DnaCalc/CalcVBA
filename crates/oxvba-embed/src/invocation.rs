@@ -1,6 +1,6 @@
 use super::*;
 use calcvba_host_api::{self as api, InvocationProgress};
-use oxvba_rt_abi::host_entry::activation::{Activation, SUSPENDED};
+use oxvba_rt_abi::host_entry::activation::SUSPENDED;
 
 impl OwnedSession {
     pub fn begin_invocation(
@@ -38,7 +38,7 @@ struct Continuation {
     // Activation drops before the cell, even if the host cancels by dropping it.
     cell: Option<Rc<cache::SessionCell>>,
     bound: BoundProcedure,
-    activation: Option<Activation<'static>>,
+    activation: Option<typed_stack::TypedStack>,
     frame: Rc<api::InvocationFrame>,
     context: TypedContext,
 }

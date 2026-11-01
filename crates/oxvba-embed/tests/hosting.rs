@@ -11,6 +11,42 @@ fn backends() -> Vec<Backend> {
 const ADD: &str = "Public Function Add2(ByVal x As Double, ByVal y As Double) As Double\nAdd2 = x + y\nEnd Function\n";
 
 #[test]
+fn dynamic_raise_preserves_runtime_number_and_explicit_text_and_help_fields() {
+    let source = r#"
+Public Function DescribeFault(ByVal code As Long) As String
+    On Error GoTo Handler
+    Err.Raise code, "host-source", "host-description", "host-help", 73
+    Exit Function
+Handler:
+    DescribeFault = CStr(Err.Number) & "|" & Err.Source & "|" & Err.Description & "|" & Err.HelpFile & "|" & CStr(Err.HelpContext)
+End Function
+Public Function UnhandledFault(ByVal code As Long) As Long
+    Err.Raise code, "callee", "explicit message"
+End Function
+"#;
+    for backend in backends() {
+        let module = Module::load("Api", source).unwrap();
+        let session = module.prepare(backend).unwrap();
+        let handled = session
+            .bind("Api", "DescribeFault", ProcedureKind::Function)
+            .unwrap();
+        let result = session
+            .call_bound(&handled, &[Variant::from_i32(9)], 1000)
+            .unwrap();
+        assert_eq!(
+            result.as_bstr().unwrap().as_str(),
+            "9|host-source|host-description|host-help|73"
+        );
+        let unhandled = session
+            .bind("Api", "UnhandledFault", ProcedureKind::Function)
+            .unwrap();
+        assert!(
+            matches!(session.call_bound(&unhandled, &[Variant::from_i32(11)], 1000), Err(Error::Runtime { number: 11, description, vba_source }) if description == "explicit message" && vba_source == "callee")
+        );
+    }
+}
+
+#[test]
 fn typed_and_dynamic_numeric_calls_match() {
     for backend in backends() {
         let module = Module::load("Math", ADD).unwrap();
@@ -313,7 +349,7 @@ fn failed_jit_reload_preserves_the_old_generation() {
         .unwrap();
     let unsupported = Module::load(
         "Bad",
-        "Public Function F()\nErr.Raise 13, \"source\", \"description\"\nEnd Function\n",
+        "Public Function F()\nDim value As Long\nF = VarPtr(value)\nEnd Function\n",
     )
     .unwrap();
     assert!(matches!(

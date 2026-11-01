@@ -5,6 +5,8 @@ use calcvba_host_api::{HostObject, OwnedValue, Slot, object::ObjectHeader};
 use oxvba_runtime::Variant;
 
 pub const SUSPENDED: i32 = -2;
+/// Return to the shared activation-stack driver for a call/error-state operation.
+pub const CONTROL: i32 = -3;
 pub const FINISHED_PC: u32 = u32::MAX;
 /// Private generated-code ABI. Every nonnull object slot owns one reference.
 #[repr(C)]
@@ -12,10 +14,23 @@ pub struct RawActivation {
     pub slots: [ScalarBits; MAX_TYPED_SLOTS],
     pub pc: u32,
     pub global_base: usize,
+    pub remaining_operations: u64,
+    aliases: [Alias; calcvba_host_api::MAX_TYPED_ARGS],
     globals: *mut Variant,
     global_len: usize,
     scratch: [*const ObjectHeader; 4],
     scratch_len: usize,
+}
+#[derive(Clone, Copy)]
+struct Alias {
+    frame: *mut RawActivation,
+    index: usize,
+}
+impl Alias {
+    const NONE: Self = Self {
+        frame: std::ptr::null_mut(),
+        index: 0,
+    };
 }
 pub struct Activation<'a> {
     raw: RawActivation,
@@ -126,6 +141,8 @@ impl<'a> Activation<'a> {
                 slots: [ScalarBits::ZERO; MAX_TYPED_SLOTS],
                 pc: entry_pc,
                 global_base: layout.global_base,
+                remaining_operations: 0,
+                aliases: [Alias::NONE; calcvba_host_api::MAX_TYPED_ARGS],
                 globals,
                 global_len,
                 scratch: [std::ptr::null(); 4],
@@ -161,6 +178,9 @@ impl<'a> Activation<'a> {
         self.raw.pc = pc;
     }
     pub fn result(&self) -> OwnedValue {
+        if !self.layout.has_result {
+            return OwnedValue::Long(0);
+        }
         let bits = self.raw.slots[self.layout.return_slot];
         match self.layout.result {
             ScalarType::Long => OwnedValue::Long(bits.as_long()),
@@ -180,12 +200,18 @@ impl<'a> Activation<'a> {
         operand: &oxvba_oxir::OxOperand,
         to: ScalarType,
     ) -> Result<ScalarBits, i32> {
-        use oxvba_oxir::{OxOperand, OxPlace};
+        use oxvba_oxir::OxOperand;
         let from = self.layout.operand_type(operand).expect("admitted operand");
-        let bits = if let OxOperand::Use(OxPlace::Global(id)) = operand {
+        let bits = if let OxOperand::Use(place) = operand {
             // SAFETY: owning session lease spans the activation; no reference
             // into the global store survives this bounded read.
-            unsafe { read_global(&mut self.raw, id.0, from)? }
+            unsafe {
+                read_slot(
+                    &mut self.raw,
+                    self.layout.slot(*place).expect("admitted place"),
+                    from,
+                )?
+            }
         } else {
             self.layout.read(&self.raw.slots, operand, from)
         };
@@ -218,6 +244,78 @@ impl<'a> Activation<'a> {
                     .expect("frame slot");
             }
         }
+    }
+    /// # Safety
+    /// parent has a stable address and outlives this child and all descendants.
+    /// The caller keeps the entire stack exclusively running on this thread.
+    pub unsafe fn child(
+        parent: &mut Activation<'_>,
+        layout: &ScalarLayout,
+        args: &[oxvba_oxir::OxArg],
+        entry_pc: u32,
+    ) -> Result<Activation<'static>, i32> {
+        use oxvba_oxir::{OxArg, OxOperand};
+        let mut bits = Vec::with_capacity(args.len());
+        let mut owners = Vec::with_capacity(args.len());
+        for (arg, ty) in args.iter().zip(&layout.parameters) {
+            let operand = match arg {
+                OxArg::ByVal(op) => op.clone(),
+                OxArg::ByRef(p) => OxOperand::Use(*p),
+                _ => return Err(13),
+            };
+            let value = parent.read(&operand, *ty)?;
+            let owner = if *ty == ScalarType::HostObject && !value.as_object().is_null() {
+                // SAFETY: parent/read scratch retains this exact factory object.
+                Some(unsafe { HostObject::retain_header(value.as_object()) })
+            } else {
+                None
+            };
+            bits.push(value);
+            owners.push(owner);
+        }
+        let slots: Vec<_> = bits
+            .iter()
+            .zip(&layout.parameters)
+            .zip(&owners)
+            .map(|((bits, ty), owner)| match ty {
+                ScalarType::Long => Slot::Long(bits.as_long()),
+                ScalarType::Double => Slot::Double(bits.as_double()),
+                ScalarType::HostObject => owner
+                    .as_ref()
+                    .map_or(Slot::Nothing, HostObject::borrow_slot),
+                ScalarType::Boolean => unreachable!("Boolean parameters refused"),
+            })
+            .collect();
+        // SAFETY: the child shares the parent's retained canonical-store lease.
+        let mut child = unsafe {
+            Activation::new(
+                layout,
+                &slots,
+                parent.raw.globals,
+                parent.raw.global_len,
+                entry_pc,
+            )
+        }?;
+        parent.clear_scratch();
+        // Mint one ancestor authority after the last mutable parent method.
+        // Multiple aliases must reuse it rather than retagging the ancestor.
+        let parent_raw = std::ptr::addr_of_mut!(parent.raw);
+        for (i, arg) in args.iter().enumerate() {
+            if let OxArg::ByRef(place) = arg {
+                if !layout.by_ref_parameters[i] {
+                    return Err(13);
+                }
+                // Release the private copy before replacing it with a nonowning alias.
+                // SAFETY: exact initialized parameter carrier.
+                unsafe { write_slot(&mut child.raw, i, layout.parameters[i], &ScalarBits::ZERO) }?;
+                let index = parent.layout.slot(*place).map_err(|_| 5)?;
+                child.raw.aliases[i] = Alias {
+                    frame: parent_raw,
+                    index,
+                };
+            }
+        }
+        Ok(child)
     }
 }
 impl Drop for Activation<'_> {
@@ -301,6 +399,13 @@ pub unsafe fn write_slot(
     ty: ScalarType,
     bits: *const ScalarBits,
 ) -> Result<(), i32> {
+    // SAFETY: aliases point only to live, stable ancestor frames and carry the
+    // same admitted type. No Rust reference into an ancestor spans recursion.
+    let alias = unsafe { (&*raw).aliases.get(index).copied() }.unwrap_or(Alias::NONE);
+    if !alias.frame.is_null() {
+        // SAFETY: the stack owner retains the ancestor until this frame drops.
+        return unsafe { write_slot(alias.frame, alias.index, ty, bits) };
+    }
     // SAFETY: caller provides one initialized readable physical carrier.
     let bits = unsafe { *bits };
     let (base, globals, len) = {
@@ -355,6 +460,70 @@ pub unsafe fn write_slot(
         }
     }
     Ok(())
+}
+
+/// # Safety
+/// Same stable stack/slot contract as write_slot. Aliases refer to ancestors only.
+pub unsafe fn read_slot(
+    raw: *mut RawActivation,
+    index: usize,
+    ty: ScalarType,
+) -> Result<ScalarBits, i32> {
+    let mut target = raw;
+    let mut index = index;
+    loop {
+        // SAFETY: each alias moves strictly toward a retained stable ancestor.
+        let (base, alias) = unsafe {
+            (
+                (*target).global_base,
+                (&*target)
+                    .aliases
+                    .get(index)
+                    .copied()
+                    .unwrap_or(Alias::NONE),
+            )
+        };
+        if !alias.frame.is_null() {
+            target = alias.frame;
+            index = alias.index;
+            continue;
+        }
+        return if index >= base {
+            // All frames share the canonical store. Retain transient global
+            // receivers on the requesting frame, which clears them per operation.
+            // SAFETY: same leased store and exact global carrier.
+            unsafe { read_global(raw, index - base, ty) }
+        } else if index < MAX_TYPED_SLOTS {
+            // SAFETY: initialized ancestor slot with its admitted carrier.
+            Ok(unsafe { (*target).slots[index] })
+        } else {
+            Err(5)
+        };
+    }
+}
+
+/// # Safety
+/// Generated caller supplies a leased stable frame and exact slot kind/output.
+pub unsafe extern "C" fn slot_read(
+    raw: *mut RawActivation,
+    index: usize,
+    kind: u32,
+    out: *mut ScalarBits,
+) -> i32 {
+    let Some(ty) = decode_kind(kind) else {
+        return 5;
+    };
+    // SAFETY: inherited checked native-entry contract.
+    match unsafe { read_slot(raw, index, ty) } {
+        Ok(bits) => {
+            // SAFETY: caller supplies one aligned writable output cell.
+            unsafe {
+                out.write(bits);
+            }
+            0
+        }
+        Err(error) => error,
+    }
 }
 
 /// # Safety

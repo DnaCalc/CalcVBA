@@ -248,13 +248,20 @@ cancels it and releases locals/leases; hard budget exhaustion and runtime errors
 are terminal. A returned or faulted invocation refuses another resume. A distinct
 semantic invocation starts afresh and may repeat effects, as Excel re-entry does.
 
-The admitted owning family is required ByVal Long/Double/portable host-object
-Functions/Property Gets, numeric control flow and the existing numeric host slots,
-with 4 arguments and 128 physical slots including project globals.
-Strings, arrays, ByRef, Subs, handlers, internal call-stack continuations and
-suspension within native/COM calls remain outside this frame's admission under
-`bd-59co.2.9.9`/`bd-59co.2.10.7`. There is no general preemption or asynchronous
-COM-event claim. Source-free verified packages and DNA Calc glue remain open.
+The run-9 owning family adds internal Function/Property Get/Sub calls, required
+ByRef parameters, live repeated aliases and handler/Resume continuations to the
+Long/Double/portable-object family. It retains at most 64 boxed VBA frames (error
+28 at the bound); each frame keeps the existing four-argument/128-slot bound.
+Both backends return call/error transitions to the same retained stack mechanics;
+JIT body operations and callbacks remain generated native code. Admission checks
+the entire reachable call graph before any body effect. Public typed Sub entry
+still needs an explicit void result carrier; dynamic Sub calls remain available.
+Root ByRef inputs are private host copies. Arrays/strings/records, Optional,
+ParamArray, cross-project calls and suspension within native/COM callbacks remain
+outside this family under `bd-59co.2.9.9`/`bd-59co.2.10.7`.
+A synchronous callback finishes before suspension. Source-free verified packages
+and DNA Calc glue remain open. See the
+[run-9 call-stack proof](../evidence/programs/ideal-2026-07/core/CORE-7/typed-host-calls-run9.md).
 The unchanged native primary ABI remains 2; owning-frame layout is private to the
 linked provider. API version 1 refuses before compilation. See the
 [run-8 proof and limits](../evidence/programs/ideal-2026-07/core/CORE-7/typed-host-continuations.md).

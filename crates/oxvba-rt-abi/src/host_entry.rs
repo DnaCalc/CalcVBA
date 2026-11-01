@@ -12,6 +12,30 @@ pub use calcvba_host_api::{
 pub const MAX_TYPED_SLOTS: usize = 128;
 pub mod activation;
 
+/// Shared operations whose mechanics belong to the retained call/error stack.
+/// Arithmetic and host callbacks still execute in the selected backend.
+pub fn stack_instruction(inst: &OxInst) -> bool {
+    matches!(
+        inst,
+        OxInst::CallProc { .. }
+            | OxInst::SetErrorHandler(_)
+            | OxInst::ClearErr
+            | OxInst::ErrFieldGet { .. }
+            | OxInst::ErlGet { .. }
+            | OxInst::SetLineNumber { .. }
+    )
+}
+pub fn stack_terminator(term: &OxTerminator) -> bool {
+    matches!(
+        term,
+        OxTerminator::FaultDispatch { .. }
+            | OxTerminator::Resume
+            | OxTerminator::ResumeNext
+            | OxTerminator::ResumeLabel(_)
+            | OxTerminator::Raise { .. }
+    )
+}
+
 fn scalar_type(ty: &OxTy) -> Option<ScalarType> {
     match ty {
         OxTy::Long => Some(ScalarType::Long),
@@ -107,6 +131,9 @@ pub struct ScalarLayout {
     pub parameters: Vec<ScalarType>,
     /// Required nominal identity for each object parameter (None for Object).
     pub parameter_iids: Vec<Option<[u8; 16]>>,
+    pub by_ref_parameters: Vec<bool>,
+    pub has_result: bool,
+    pub calls: std::collections::HashMap<oxvba_oxir::FuncId, CallSignature>,
     pub result: ScalarType,
     pub return_slot: usize,
     pub specialized_variant_temps: Vec<usize>,
@@ -115,6 +142,13 @@ pub struct ScalarLayout {
     pub global_base: usize,
     pub assignment_iids: std::collections::HashMap<String, Option<[u8; 16]>>,
     unsupported_globals: std::collections::HashSet<usize>,
+    owning: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallSignature {
+    pub parameters: Vec<ScalarType>,
+    pub by_ref: Vec<bool>,
+    pub result: Option<ScalarType>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostCallPlan {
@@ -130,16 +164,23 @@ impl ScalarLayout {
         func: &OxFunc,
         interfaces: &[oxvba_oxir::ComInterface],
     ) -> Result<Self, String> {
-        Self::with_storage(func, interfaces, &[], false)
+        Self::with_storage(func, interfaces, &[], false, &[])
     }
     pub fn with_program(func: &OxFunc, program: &oxvba_oxir::OxProgram) -> Result<Self, String> {
-        Self::with_storage(func, &program.com_interfaces, &program.globals, true)
+        Self::with_storage(
+            func,
+            &program.com_interfaces,
+            &program.globals,
+            true,
+            &program.funcs,
+        )
     }
     fn with_storage(
         func: &OxFunc,
         interfaces: &[oxvba_oxir::ComInterface],
         globals: &[oxvba_oxir::OxGlobal],
         owning: bool,
+        functions: &[OxFunc],
     ) -> Result<Self, String> {
         use oxvba_com::{TypeLibParamType as P, TypeLibWireType};
         let mut host_calls = std::collections::HashMap::new();
@@ -212,9 +253,47 @@ impl ScalarLayout {
         {
             return Err("typed entry exceeds argument/slot bounds".into());
         }
-        let result = func
-            .return_local
-            .ok_or("typed scalar entries require a Function/Property Get result")?;
+        let result = func.return_local;
+        if result.is_none() && !owning {
+            return Err("typed scalar entries require a Function/Property Get result".into());
+        }
+        let mut calls = std::collections::HashMap::new();
+        for inst in func.blocks.iter().flat_map(|b| &b.instrs) {
+            if let OxInst::CallProc { proc, .. } = inst {
+                let callee = functions.get(proc.0).ok_or("invalid typed callee")?;
+                if callee.param_count > MAX_TYPED_ARGS || callee.param_count > callee.locals.len() {
+                    return Err("typed callee exceeds argument bounds".into());
+                }
+                let mut by_ref = Vec::new();
+                let mut parameters = Vec::new();
+                for local in &callee.locals[..callee.param_count] {
+                    let p = local.param.ok_or("missing callee parameter metadata")?;
+                    if p.optional || p.variadic {
+                        return Err("optional/variadic typed calls remain open".into());
+                    }
+                    by_ref.push(p.by_ref);
+                    parameters.push(scalar(&local.ty)?);
+                }
+                let result = callee
+                    .return_local
+                    .map(|id| {
+                        callee
+                            .locals
+                            .get(id.0)
+                            .ok_or_else(|| "invalid callee result".to_string())
+                            .and_then(|l| scalar(&l.ty))
+                    })
+                    .transpose()?;
+                calls.insert(
+                    *proc,
+                    CallSignature {
+                        parameters,
+                        by_ref,
+                        result,
+                    },
+                );
+            }
+        }
         let mut physical = func
             .locals
             .iter()
@@ -242,6 +321,23 @@ impl ScalarLayout {
             let mut changed = false;
             for block in &func.blocks {
                 for inst in &block.instrs {
+                    if let OxInst::CallProc {
+                        dst: Some(OxPlace::Temp(id)),
+                        proc,
+                        ..
+                    } = inst
+                    {
+                        let index = func
+                            .locals
+                            .len()
+                            .checked_add(id.0)
+                            .ok_or("invalid temp index")?;
+                        let slot = physical.get_mut(index).ok_or("invalid temp index")?;
+                        if slot.is_none() {
+                            *slot = calls.get(proc).and_then(|c| c.result);
+                            changed |= slot.is_some();
+                        }
+                    }
                     if let OxInst::ComCallEarly {
                         dst: Some(OxPlace::Temp(id)),
                         method,
@@ -350,7 +446,7 @@ impl ScalarLayout {
         }
         for local in func.locals.iter().take(func.param_count) {
             let p = local.param.ok_or("missing parameter metadata")?;
-            if p.by_ref || p.optional || p.variadic {
+            if (p.by_ref && !owning) || p.optional || p.variadic {
                 return Err("typed entry requires required ByVal parameters".into());
             }
         }
@@ -414,17 +510,27 @@ impl ScalarLayout {
             }
         }
         let layout = Self {
-            result: *slots.get(result.0).ok_or("invalid return slot")?,
+            result: result
+                .map(|id| slots.get(id.0).copied().ok_or("invalid return slot"))
+                .transpose()?
+                .unwrap_or(ScalarType::Long),
+            has_result: result.is_some(),
+            by_ref_parameters: func.locals[..func.param_count]
+                .iter()
+                .map(|l| l.param.is_some_and(|p| p.by_ref))
+                .collect(),
+            calls,
             slots,
             local_count: func.locals.len(),
             parameters,
             parameter_iids,
-            return_slot: result.0,
+            return_slot: result.map_or(usize::MAX, |id| id.0),
             specialized_variant_temps,
             host_calls,
             global_base,
             assignment_iids,
             unsupported_globals,
+            owning,
         };
         if layout.result == ScalarType::Boolean
             || (!owning && layout.result == ScalarType::HostObject)
@@ -455,6 +561,30 @@ impl ScalarLayout {
                 | OxTerminator::Return
                 | OxTerminator::FaultDispatch { .. }
                 | OxTerminator::Unreachable => {}
+                OxTerminator::Resume | OxTerminator::ResumeNext | OxTerminator::ResumeLabel(_)
+                    if owning => {}
+                OxTerminator::Raise {
+                    number,
+                    source,
+                    description,
+                    help_file,
+                    help_context,
+                    ..
+                } if owning => {
+                    if layout.operand_type(number)? != ScalarType::Long
+                        || help_context
+                            .as_ref()
+                            .is_some_and(|o| layout.operand_type(o) != Ok(ScalarType::Long))
+                        || [source, description, help_file].iter().any(|o| {
+                            o.as_ref()
+                                .is_some_and(|o| !matches!(o, OxOperand::Const(OxConst::Str(_))))
+                        })
+                    {
+                        return Err(
+                            "typed Raise requires Long number/help and constant text".into()
+                        );
+                    }
+                }
                 OxTerminator::Branch { cond, .. }
                     if layout.operand_type(cond)? == ScalarType::Boolean => {}
                 _ => return Err("typed entry terminator requires the dynamic runtime".into()),
@@ -520,6 +650,45 @@ impl ScalarLayout {
     }
     fn check(&self, inst: &OxInst) -> Result<(), String> {
         match inst {
+            OxInst::CallProc { dst, proc, args } => {
+                let call = self.calls.get(proc).ok_or("unplanned typed call")?;
+                if args.len() != call.parameters.len() {
+                    return Err("typed call arity mismatch".into());
+                }
+                for ((arg, ty), by_ref) in args.iter().zip(&call.parameters).zip(&call.by_ref) {
+                    let (from, alias) = match arg {
+                        oxvba_oxir::OxArg::ByVal(op) => (self.operand_type(op)?, false),
+                        oxvba_oxir::OxArg::ByRef(p) => (self.slots[self.slot(*p)?], true),
+                        _ => return Err("omitted typed arguments remain open".into()),
+                    };
+                    if from != *ty || (alias && !by_ref) {
+                        return Err("typed call carrier/passing mismatch".into());
+                    }
+                }
+                if let Some(dst) = dst
+                    && Some(self.slots[self.slot(*dst)?]) != call.result
+                {
+                    return Err("typed call result mismatch".into());
+                }
+                Ok(())
+            }
+            OxInst::SetErrorHandler(_) | OxInst::ClearErr | OxInst::SetLineNumber { .. }
+                if self.owning =>
+            {
+                Ok(())
+            }
+            OxInst::ErrFieldGet {
+                dst,
+                field:
+                    oxvba_oxir::ErrField::Number
+                    | oxvba_oxir::ErrField::HelpContext
+                    | oxvba_oxir::ErrField::LastDllError,
+            }
+            | OxInst::ErlGet { dst }
+                if self.owning && self.slots[self.slot(*dst)?] == ScalarType::Long =>
+            {
+                Ok(())
+            }
             OxInst::ComCallEarly {
                 dst: Some(dst),
                 method,

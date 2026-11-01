@@ -919,6 +919,11 @@ impl<'h> Vm3<'h> {
         // invalidate a parked activation's existing raw storage authority.
         (globals.as_mut_ptr(), globals.len())
     }
+    /// Stable same-thread Err storage; retaining callers must lease this session
+    /// and exclude reset and unrelated execution, as for typed_globals_raw.
+    pub fn typed_error_raw(&mut self) -> *mut oxvba_rt_abi::ErrEngine {
+        &raw mut *self.exec.err_engine
+    }
 
     /// Invoke a standard-module function with already coerced value arguments.
     /// No hidden Me slot is inserted and host ByRef arguments are private copies.

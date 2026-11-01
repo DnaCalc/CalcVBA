@@ -2,7 +2,7 @@
 use oxvba_oxir::{ArithOp, CmpOp, OxFunc, OxInst, OxOperand, OxTerminator};
 use oxvba_rt_abi::host_entry::{
     ScalarBits, ScalarLayout, ScalarType, TypedContext,
-    activation::{Activation, FINISHED_PC, SUSPENDED},
+    activation::{Activation, CONTROL, FINISHED_PC, SUSPENDED},
 };
 
 pub struct TypedInterpreter<'p> {
@@ -123,7 +123,15 @@ impl<'p> TypedInterpreter<'p> {
         if !std::ptr::eq(&self.layout, frame.layout()) && self.layout != *frame.layout() {
             return Err(5);
         }
+        // SAFETY: this interpreter uniquely owns the admitted frame while running.
+        unsafe {
+            frame.raw_mut().remaining_operations = operations;
+        }
         for _ in 0..operations {
+            // SAFETY: unique frame; one physical operation is about to execute.
+            unsafe {
+                frame.raw_mut().remaining_operations -= 1;
+            }
             if frame.pc() == FINISHED_PC {
                 return Err(5);
             }
@@ -140,9 +148,15 @@ impl<'p> TypedInterpreter<'p> {
                 context.step()?;
                 frame.set_pc(frame.pc() + 1);
             } else if let Some(inst) = block.instrs.get(offset - 1) {
+                if oxvba_rt_abi::host_entry::stack_instruction(inst) {
+                    return Ok(CONTROL);
+                }
                 self.instruction(frame, context, inst)?;
                 frame.set_pc(frame.pc() + 1);
             } else if offset == block.instrs.len() + 1 {
+                if oxvba_rt_abi::host_entry::stack_terminator(&block.terminator) {
+                    return Ok(CONTROL);
+                }
                 let next_pc = match &block.terminator {
                     OxTerminator::Jump(next) => self.target(*next),
                     OxTerminator::Branch {

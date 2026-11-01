@@ -1,5 +1,12 @@
 # Formal Extended Todo
 
+- ID: FTODO-TYPED-STACK-20261101-R9
+  Profile: retained typed calls/ByRef/handler continuations (`bd-59co.2.10.12`).
+  Summary: installed Lean 4.29.1 passes all eight abstractions; TypedContinuation now covers alias visibility, distinct-cell preservation, retained parents and effect/write preservation during unwind. Two focused minimal cases pass nightly strict-provenance Miri: ancestor aliases across slices, and same-context callback reentry through success and fault while the outer handler survives. An earlier Miri run found invalidation of inline canonical Err storage by the reentrant session borrow; canonical Err now has stable heap storage. The rejected trace is retained without credit. Concrete CFG/error routing, all canonical-carrier provenance, native signatures and generated machine code remain unproved; Miri does not execute JIT code.
+  Current status: investigating.
+  Reproduction command: installed Lean 4.29.1 on formal/lean/OxVba/TypedContinuation.lean; MIRIFLAGS=-Zmiri-strict-provenance cargo +nightly miri test -p oxvba-embed --no-default-features --test suspended_invocation minimal_.
+  Suggested next action: refine the concrete stack, fault pads, alias lifetime and native lowering model under CORE-5/CORE-7/CORE-8; retain the run-8 canonical Variant exposed-provenance limitation. No broad formal or Windows certification credit follows from these bounded checks.
+
 - ID: FTODO-TYPED-CONTINUATION-20261101-R8
   Profile: owning typed state/results and retained invocation frames (`bd-59co.2.10.10`, `bd-59co.2.10.11`).
   Summary: installed Lean 4.29.1 passes the eight current abstractions, including deterministic slice composition, effect-journal prefix/counts and immutable code/state/view leases. Final default-mode Miri passes all eleven ownership/reentry/resume cases; separate strict-provenance object-only and argument/Nothing cases pass. Strict-provenance execution of the larger invocation fixture refuses the existing canonical Variant byte carrier at variant.rs bytes_to_raw_iunknown, which uses with_exposed_provenance; this is an unsupported strict-provenance operation, not a passing strict proof. The failure and default-mode warning are retained without suppressing them. Concrete CFG lowering, generated machine code, native signatures, Rust aliases and canonical exposed-pointer recovery remain unproved.

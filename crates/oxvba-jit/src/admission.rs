@@ -124,13 +124,13 @@ pub(crate) fn validate_scalar_call_arg_against_param(
             "M4-4 call subset cannot alias ByVal scalar parameter {}.{}",
             callee_name, param.name
         ))),
-        (OxArg::Omitted, false) if matches!(param.ty, OxTy::Variant) => Ok(()),
+        (OxArg::Omitted, _) if param_info.optional && matches!(param.ty, OxTy::Variant) => Ok(()),
         (OxArg::Omitted, false) => Err(JitError::unsupported(format!(
-            "M4-4 omitted arguments are currently limited to Optional ByVal Variant parameters, got {}.{}",
+            "M4-4 omitted arguments require Optional Variant parameters, got {}.{}",
             callee_name, param.name
         ))),
         (OxArg::Omitted, true) => Err(JitError::unsupported(format!(
-            "M4-4 omitted arguments cannot satisfy ByRef parameters, got {}.{}",
+            "M4-4 omitted ByRef arguments require Optional Variant parameters, got {}.{}",
             callee_name, param.name
         ))),
     }

@@ -3,6 +3,7 @@
 use oxvba_bundle::{ArrayElementType, coreir::CoreConst};
 use oxvba_hal::{HostServices, adapters::builder::HostBuilder};
 use oxvba_oxir::{FuncId, OxProgram, OxTy};
+use oxvba_rt_abi::host_entry::LinkedTarget;
 use oxvba_runtime::Variant;
 use oxvba_symbol::{TypeLibResolver, manifest as sym};
 use std::{
@@ -20,6 +21,7 @@ pub use calcvba_host_api::ScalarType;
 pub use oxvba_bundle::ProcedureKind;
 pub use oxvba_rt_abi::host_entry::{Arguments, Scalar, TYPED_ENTRY_ABI, TypedContext};
 pub use oxvba_symbol::model::Visibility;
+mod project_graph;
 pub mod provider;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +87,7 @@ pub enum Error {
 #[derive(Clone)]
 pub struct Module {
     program: OxProgram,
+    reference_programs: Vec<OxProgram>,
     procedures: Vec<Procedure>,
     host: Arc<dyn HostServices>,
 }
@@ -169,9 +172,31 @@ impl Module {
             .collect();
         Ok(Self {
             program,
+            reference_programs: vec![],
             procedures,
             host: HostBuilder::new().build(),
         })
+    }
+    /// Compile leaf-first units, retaining independent canonical stores.
+    pub fn load_project_graph(
+        manifests: &[sym::SymbolProjectManifest],
+        resolver: &dyn TypeLibResolver,
+    ) -> Result<Self, Error> {
+        let mut modules = manifests
+            .iter()
+            .map(|m| Self::load_project(m, resolver))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut root = modules
+            .pop()
+            .ok_or_else(|| Error::Compile("empty project closure".into()))?;
+        root.reference_programs = modules.into_iter().map(|m| m.program).collect();
+        Ok(root)
+    }
+    fn programs(&self) -> Vec<&OxProgram> {
+        self.reference_programs
+            .iter()
+            .chain(std::iter::once(&self.program))
+            .collect()
     }
     pub fn with_host(mut self, host: Arc<dyn HostServices>) -> Self {
         self.host = host;
@@ -225,10 +250,11 @@ enum Executable<'a> {
 
 pub struct Session<'a> {
     module: &'a Module,
+    programs: Vec<&'a OxProgram>,
     host: &'a dyn HostServices,
     executable: Executable<'a>,
     typed: Vec<Result<oxvba_vm3::typed::TypedInterpreter<'a>, String>>,
-    owning_typed: Vec<Result<oxvba_vm3::typed::TypedInterpreter<'a>, String>>,
+    owning_typed: Vec<Vec<Result<oxvba_vm3::typed::TypedInterpreter<'a>, String>>>,
     owner: Rc<()>,
     generation: u64,
     executing: RefCell<()>,
@@ -268,7 +294,7 @@ impl<'a> Session<'a> {
         let executable = match code {
             PreparedCode::Interpreter(_) => Executable::Interpreter(RefCell::new(
                 oxvba_vm3::Vm3::link_with_budget(
-                    &[&module.program],
+                    &module.programs(),
                     host,
                     Some(INITIALIZATION_BUDGET),
                 )
@@ -301,16 +327,24 @@ impl<'a> Session<'a> {
                 )
             })
             .collect();
-        let owning_typed = module
-            .program
-            .funcs
+        let programs = module.programs();
+        let owning_typed = programs
             .iter()
-            .map(|func| {
-                oxvba_vm3::typed::TypedInterpreter::bind_with_program(func, &module.program)
+            .map(|program| {
+                program
+                    .funcs
+                    .iter()
+                    .map(|func| {
+                        oxvba_vm3::typed::TypedInterpreter::bind_with_programs(
+                            func, program, &programs,
+                        )
+                    })
+                    .collect()
             })
             .collect();
         Ok(Self {
             module,
+            programs,
             host,
             executable,
             typed,
@@ -335,7 +369,7 @@ impl<'a> Session<'a> {
         match &self.executable {
             Executable::Interpreter(state) => {
                 let next = oxvba_vm3::Vm3::link_with_budget(
-                    &[&self.module.program],
+                    &self.module.programs(),
                     self.host,
                     Some(INITIALIZATION_BUDGET),
                 )
@@ -547,7 +581,7 @@ impl<'a> Session<'a> {
         self.validate(bound)?;
         let layout = self.typed[bound.id.0]
             .as_ref()
-            .or(self.owning_typed[bound.id.0].as_ref())
+            .or(self.owning_typed.last().expect("root entries")[bound.id.0].as_ref())
             .map_err(|e| Error::UnsupportedSignature(e.clone()))?
             .layout();
         if !layout.has_result
@@ -560,7 +594,13 @@ impl<'a> Session<'a> {
                 "typed host Sub entry requires an explicit void carrier".into(),
             ));
         }
-        if layout.parameters != arguments || layout.result != result {
+        if arguments.len() > layout.parameters.len()
+            || layout.parameters[..arguments.len()] != *arguments
+            || layout.optional_parameters[arguments.len()..]
+                .iter()
+                .any(|p| !*p)
+            || layout.result != result
+        {
             return Err(Error::ArgumentMismatch);
         }
         Ok(())
@@ -575,9 +615,12 @@ impl<'a> Session<'a> {
         let _activation = self.enter_typed(context)?;
         let typed = self.typed[bound.id.0]
             .as_ref()
-            .or(self.owning_typed[bound.id.0].as_ref())
+            .or(self.owning_typed.last().expect("root entries")[bound.id.0].as_ref())
             .map_err(|e| Error::UnsupportedSignature(e.clone()))?;
-        if args.len() != typed.layout().parameters.len()
+        if args.len() > typed.layout().parameters.len()
+            || typed.layout().optional_parameters[args.len()..]
+                .iter()
+                .any(|p| !p)
             || args
                 .iter()
                 .zip(&typed.layout().parameters)
@@ -618,7 +661,7 @@ impl<'a> Session<'a> {
         result: calcvba_host_api::ValueType,
     ) -> Result<(), Error> {
         self.validate(bound)?;
-        let layout = self.owning_typed[bound.id.0]
+        let layout = self.owning_typed.last().expect("root entries")[bound.id.0]
             .as_ref()
             .map_err(|e| Error::UnsupportedSignature(e.clone()))?
             .layout();
@@ -649,7 +692,13 @@ impl<'a> Session<'a> {
             }
         }
         let arguments: Vec<_> = arguments.iter().map(|ty| ty.carrier()).collect();
-        if layout.parameters != arguments || layout.result != result.carrier() {
+        if arguments.len() > layout.parameters.len()
+            || layout.parameters[..arguments.len()] != arguments
+            || layout.optional_parameters[arguments.len()..]
+                .iter()
+                .any(|p| !p)
+            || layout.result != result.carrier()
+        {
             return Err(Error::ArgumentMismatch);
         }
         Ok(())
@@ -688,24 +737,41 @@ impl<'a> Session<'a> {
         args: &[calcvba_host_api::ValueSlot<'_>],
     ) -> Result<typed_stack::TypedStack, Error> {
         // Reject the complete reachable typed call graph before any body effect.
-        let mut pending = vec![bound.id];
+        let root = self.module.reference_programs.len();
+        let mut pending = vec![(root, bound.id)];
         let mut visited = std::collections::HashSet::new();
-        while let Some(id) = pending.pop() {
-            if !visited.insert(id) {
+        while let Some((unit, id)) = pending.pop() {
+            if !visited.insert((unit, id)) {
                 continue;
             }
             let entry = self
                 .owning_typed
-                .get(id.0)
+                .get(unit)
+                .and_then(|p| p.get(id.0))
                 .ok_or_else(|| Error::UnsupportedSignature("invalid typed callee".into()))?
                 .as_ref()
                 .map_err(|e| Error::UnsupportedSignature(e.clone()))?;
-            pending.extend(entry.layout().calls.keys().copied());
+            pending.extend(entry.layout().calls.keys().map(|id| (unit, *id)));
+            pending.extend(
+                entry
+                    .layout()
+                    .extern_calls
+                    .values()
+                    .filter_map(|c| match c.target {
+                        LinkedTarget::Procedure { program, procedure } => {
+                            Some((program, procedure))
+                        }
+                        LinkedTarget::Builtin(_) => None,
+                    }),
+            );
         }
-        let typed = self.owning_typed[bound.id.0]
+        let typed = self.owning_typed.last().expect("root entries")[bound.id.0]
             .as_ref()
             .map_err(|e| Error::UnsupportedSignature(e.clone()))?;
-        if args.len() != typed.layout().parameters.len()
+        if args.len() > typed.layout().parameters.len()
+            || typed.layout().optional_parameters[args.len()..]
+                .iter()
+                .any(|p| !p)
             || args
                 .iter()
                 .zip(&typed.layout().parameters)
@@ -713,17 +779,50 @@ impl<'a> Session<'a> {
         {
             return Err(Error::ArgumentMismatch);
         }
-        let (pointer, len, error) = match &self.executable {
+        let defaults = self.module.procedures[bound.metadata]
+            .parameters
+            .iter()
+            .enumerate()
+            .skip(args.len())
+            .map(|(i, p)| {
+                let value = p
+                    .default
+                    .as_ref()
+                    .map(provider::default_value)
+                    .unwrap_or_else(|| {
+                        if typed.layout().parameters[i] == calcvba_host_api::ValueType::Variant {
+                            Variant::from_error_code(0x8002_0004u32 as i32)
+                        } else if typed.layout().parameters[i] == ScalarType::HostObject {
+                            Variant::nothing()
+                        } else {
+                            Variant::empty()
+                        }
+                    });
+                oxvba_rt_abi::host_entry::value::from_variant(typed.layout().parameters[i], value)
+                    .map_err(|_| Error::ArgumentMismatch)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut prepared = args.to_vec();
+        prepared.extend(
+            defaults
+                .iter()
+                .map(|v| v.borrow_slot().expect("admitted optional carrier")),
+        );
+        let (stores, error) = match &self.executable {
             Executable::Interpreter(state) => {
                 let mut state = state.try_borrow_mut().map_err(|_| Error::Reentry)?;
-                let (pointer, len) = state.typed_globals_raw();
-                (pointer, len, state.typed_error_raw())
+                let stores = (0..=root)
+                    .map(|unit| state.typed_globals_raw_at(unit))
+                    .collect::<Vec<_>>();
+                (stores, state.typed_error_raw())
             }
             #[cfg(feature = "jit")]
             Executable::Jit(_, state) => {
                 let mut state = state.try_borrow_mut().map_err(|_| Error::Reentry)?;
-                let (pointer, len) = state.typed_globals_raw();
-                (pointer, len, state.typed_error_raw())
+                let stores = (0..=root)
+                    .map(|unit| state.typed_globals_raw_at(unit))
+                    .collect::<Vec<_>>();
+                (stores, state.typed_error_raw())
             }
         };
         // SAFETY: the owning SessionCell lease retains this canonical store;
@@ -731,16 +830,16 @@ impl<'a> Session<'a> {
         let activation = unsafe {
             oxvba_rt_abi::host_entry::activation::Activation::new_values(
                 typed.layout(),
-                args,
-                pointer,
-                len,
+                &prepared,
+                stores[root].0,
+                stores[root].1,
                 typed.entry_pc(),
             )
         }
         .map_err(|number| self.typed_error(number))?;
         // SAFETY: the same SessionCell/execution guard leases Err and globals;
         // this stack is always dropped before the retaining session cell.
-        Ok(unsafe { typed_stack::TypedStack::new(activation, bound.id, error) })
+        Ok(unsafe { typed_stack::TypedStack::new(activation, root, bound.id, stores, error) })
     }
     fn resume_frame(
         &self,
@@ -762,12 +861,12 @@ impl<'a> Session<'a> {
         operations: u64,
     ) -> Result<i32, Error> {
         let result = frame.resume(
-            &self.module.program,
+            &self.programs,
             &self.owning_typed,
             context,
             operations,
-            |id, frame, context, operations| match &self.executable {
-                Executable::Interpreter(_) => self.owning_typed[id.0]
+            |unit, id, frame, context, operations| match &self.executable {
+                Executable::Interpreter(_) => self.owning_typed[unit][id.0]
                     .as_ref()
                     .expect("bound owning entry")
                     .resume(frame, context, operations),
@@ -775,7 +874,7 @@ impl<'a> Session<'a> {
                 Executable::Jit(image, _) => {
                     // SAFETY: frame was built from this exact checked function and
                     // the same leased canonical store; active guards span entry.
-                    unsafe { image.resume_activation(id, frame, context, operations) }
+                    unsafe { image.resume_activation_in(unit, id, frame, context, operations) }
                 }
             },
         );

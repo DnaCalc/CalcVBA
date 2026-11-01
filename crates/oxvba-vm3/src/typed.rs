@@ -26,6 +26,13 @@ impl<'p> TypedInterpreter<'p> {
     ) -> Result<Self, String> {
         Self::with_layout(func, ScalarLayout::with_program(func, program)?)
     }
+    pub fn bind_with_programs(
+        func: &'p OxFunc,
+        program: &oxvba_oxir::OxProgram,
+        programs: &[&oxvba_oxir::OxProgram],
+    ) -> Result<Self, String> {
+        Self::with_layout(func, ScalarLayout::with_programs(func, program, programs)?)
+    }
     fn with_layout(func: &'p OxFunc, layout: ScalarLayout) -> Result<Self, String> {
         let mut pc = 0u32;
         let mut blocks = Vec::new();

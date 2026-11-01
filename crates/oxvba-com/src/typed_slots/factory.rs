@@ -1,0 +1,179 @@
+//! Same-apartment ownership and immutable type-library plans for native tables.
+use super::library::{NativeLibrary, NativeMemberPlan};
+use super::*;
+use crate::{
+    ComObjectToken, TypeLibInterfaceMetadata, WindowsComBridge, windows_client::OwnedComInterface,
+};
+use calcvba_host_api::{HostObject, HostSlot};
+use std::{ffi::c_void, rc::Rc};
+
+pub(super) struct NativeReceiver {
+    pub pointer: Rc<OwnedComInterface>,
+    pub library: Rc<NativeLibrary>,
+    pub bridge: WindowsComBridge,
+}
+impl WindowsComBridge {
+    /// # Safety
+    /// All accepted descriptors are unchanged trusted compiler/type-library ABI
+    /// metadata for their exact IIDs. Result identities are resolved before entry.
+    pub unsafe fn prepare_typed_object_with_interfaces(
+        &self,
+        object: oxvba_runtime::ObjectRef,
+        members: &[TypeLibMemberMetadata],
+        interfaces: &[TypeLibInterfaceMetadata],
+    ) -> Result<HostObject, String> {
+        let first = members.first().ok_or("typed COM member list is empty")?;
+        let iid = first.interface_iid.ok_or("typed COM IID is missing")?;
+        for member in members {
+            if member.interface_iid != Some(iid) || !plan::validate(member) {
+                return Err("unsupported typed COM member signature or mixed interfaces".into());
+            }
+        }
+        let (library, root_index) = NativeLibrary::new(interfaces.to_vec(), members)?;
+        let library = Rc::new(library);
+        let selected: Vec<_> = members
+            .iter()
+            .map(|member| {
+                library.plans[root_index]
+                    .iter()
+                    .find(|p| p.member == *member)
+                    .cloned()
+                    .ok_or_else(|| {
+                        format!(
+                            "native member {} lacks a retained result/interface plan",
+                            member.name
+                        )
+                    })
+            })
+            .collect::<Result<_, _>>()?;
+        let dispatch = {
+            let state = self
+                .shared_state()
+                .lock()
+                .map_err(|_| "COM state lock poisoned")?;
+            let binding = state
+                .bindings
+                .get(&ComObjectToken::new(object.raw()))
+                .ok_or("unbound typed COM receiver")?;
+            if binding.native_owner_thread != std::thread::current().id() {
+                return Err("typed COM receiver belongs to a different thread/apartment".into());
+            }
+            let pointer = binding.native_dispatch as *mut crate::RawIDispatch;
+            if pointer.is_null() {
+                return Err("typed COM receiver has no native dispatch".into());
+            }
+            // SAFETY: locked binding owns this same-apartment native reference.
+            unsafe {
+                crate::add_ref_dispatch(pointer);
+                OwnedComInterface::from_owned(pointer.cast())
+            }
+        };
+        // SAFETY: retained same-apartment dispatch and validated selected members.
+        unsafe { build(self.clone(), dispatch.as_ptr(), iid, &selected, library) }
+    }
+}
+/// # Safety
+/// pointer borrows a live same-apartment native object. The optional interface
+/// index was resolved at preparation; no names/type information are read here.
+pub(super) unsafe fn make_native_object(
+    bridge: WindowsComBridge,
+    pointer: *mut c_void,
+    interface: Option<usize>,
+    library: Rc<NativeLibrary>,
+) -> Result<HostObject, String> {
+    if let Some(index) = interface {
+        let iid = library
+            .metadata
+            .get(index)
+            .and_then(|m| m.iid)
+            .ok_or("native result IID is missing")?;
+        let members = library
+            .plans
+            .get(index)
+            .ok_or("native result plan is missing")?;
+        // SAFETY: exact retained interface metadata; build retains its own QI.
+        unsafe { build(bridge, pointer, iid, members, library.clone()) }
+    } else {
+        // Opaque Variant objects retain native ownership/round-trip only. No
+        // guessed default/interface/member plan is created for an unknown IID.
+        let iid = crate::ComInterfaceIid::from_guid(&crate::windows_client::IID_IDISPATCH);
+        // SAFETY: decoder supplied IDispatch; no custom member is exposed.
+        unsafe { build(bridge, pointer, iid, &[], library) }
+    }
+}
+unsafe fn build(
+    bridge: WindowsComBridge,
+    pointer: *mut c_void,
+    iid: crate::ComInterfaceIid,
+    members: &[NativeMemberPlan],
+    library: Rc<NativeLibrary>,
+) -> Result<HostObject, String> {
+    if !members.is_empty() {
+        // SAFETY: input borrows a retained same-apartment native dual interface.
+        let proxy = unsafe { crate::windows_invoke::dispatch_is_marshaling_proxy(pointer) };
+        if proxy
+            && !crate::windows_invoke::proxy_interface_is_vtable_safe(iid, bridge.shared_state())
+        {
+            return Err("typed COM receiver proxy is not typelib-aligned".into());
+        }
+    }
+    // SAFETY: exact imported IID; successful QI transfers one owned reference.
+    let raw = unsafe { crate::query_interface_pointer(pointer, &iid.to_guid()) }?;
+    let receiver = Rc::new(NativeReceiver {
+        // SAFETY: consume exactly the reference returned by QI above.
+        pointer: Rc::new(unsafe { OwnedComInterface::from_owned(raw) }),
+        library,
+        bridge,
+    });
+    let bound = members
+        .iter()
+        .filter_map(|m| m.member.vtable_slot)
+        .max()
+        .map_or(0, |slot| usize::from(slot) + 1);
+    let mut slots = Vec::with_capacity(bound);
+    for index in 0..bound {
+        let mut candidates = members
+            .iter()
+            .filter(|m| m.member.vtable_slot == Some(index as u16));
+        let Some(plan) = candidates.next() else {
+            slots.push(
+                HostSlot::typed(vec![], T::Void, |_, _| Err(438)).map_err(|e| e.to_string())?,
+            );
+            continue;
+        };
+        if candidates.next().is_some() {
+            return Err("duplicate native typed slot".into());
+        }
+        let member = &plan.member;
+        let owner = receiver.clone();
+        if let Some((parameters, result)) = scalar_signature(member) {
+            let lcid = member.parameter_optional_defaults.last() == Some(&D::Lcid);
+            slots.push(
+                HostSlot::typed(parameters, result, move |context, args| {
+                    crate::windows_vtable::clear_thread_error_info();
+                    // SAFETY: retained QI'd receiver and exact checked scalar ABI.
+                    let value = unsafe {
+                        super::native::invoke(owner.pointer.as_ptr(), index, result, lcid, args)
+                    }
+                    .map_err(|e| e.publish(context))?;
+                    owner.bridge.record_typed_vtable_call();
+                    Ok(value)
+                })
+                .map_err(|e| e.to_string())?,
+            );
+        } else {
+            let plan = plan.clone();
+            slots.push(HostSlot::planned(move |context, args| {
+                // SAFETY: retained QI'd receiver and immutable admitted descriptor.
+                unsafe { super::native_values::invoke(&owner, &plan, args) }
+                    .map_err(|e| e.publish(context))
+            }));
+        }
+    }
+    let mut bytes = [0; 16];
+    bytes[..4].copy_from_slice(&iid.data1.to_le_bytes());
+    bytes[4..6].copy_from_slice(&iid.data2.to_le_bytes());
+    bytes[6..8].copy_from_slice(&iid.data3.to_le_bytes());
+    bytes[8..].copy_from_slice(&iid.data4);
+    Ok(HostObject::new_with_payload(bytes, slots, receiver))
+}

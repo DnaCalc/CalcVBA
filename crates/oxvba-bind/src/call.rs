@@ -641,11 +641,24 @@ impl<'a> ProcLower<'a> {
                     }
                     if pos < fixed_count {
                         let param_index = visible[pos];
-                        slots[pos] = Some(self.bind_com_one(
-                            expr,
-                            member.parameter_types.get(param_index),
-                            passing,
-                        )?);
+                        slots[pos] =
+                            Some(self.bind_com_one(
+                                expr,
+                                if member.parameter_wire_types.get(param_index).is_some_and(
+                                    |wire| {
+                                        matches!(
+                                            wire,
+                                            TypeLibWireType::ByRefSafeArray { .. }
+                                                | TypeLibWireType::ByRefSafeArrayVariant
+                                        )
+                                    },
+                                ) {
+                                    Some(&TypeLibParamType::ByRefVariant)
+                                } else {
+                                    member.parameter_types.get(param_index)
+                                },
+                                passing,
+                            )?);
                     } else if variadic_slot.is_some() {
                         variadic_tail.push(self.bind_com_one(
                             expr,
@@ -706,11 +719,26 @@ impl<'a> ProcLower<'a> {
                         )));
                     }
                     let param_index = visible[slot_index];
-                    slots[slot_index] = Some(self.bind_com_one(
-                        value,
-                        member.parameter_types.get(param_index),
-                        CallSitePassing::Default,
-                    )?);
+                    slots[slot_index] =
+                        Some(
+                            self.bind_com_one(
+                                value,
+                                if member.parameter_wire_types.get(param_index).is_some_and(
+                                    |wire| {
+                                        matches!(
+                                            wire,
+                                            TypeLibWireType::ByRefSafeArray { .. }
+                                                | TypeLibWireType::ByRefSafeArrayVariant
+                                        )
+                                    },
+                                ) {
+                                    Some(&TypeLibParamType::ByRefVariant)
+                                } else {
+                                    member.parameter_types.get(param_index)
+                                },
+                                CallSitePassing::Default,
+                            )?,
+                        );
                 }
             }
         }

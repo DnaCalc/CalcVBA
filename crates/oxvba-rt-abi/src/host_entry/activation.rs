@@ -366,9 +366,45 @@ impl<'a> Activation<'a> {
         args: &[oxvba_oxir::OxArg],
         entry_pc: u32,
     ) -> Result<Activation<'static>, i32> {
+        // SAFETY: share the parent's leased unit store for an internal call.
+        unsafe {
+            Self::child_with_globals(
+                parent,
+                layout,
+                args,
+                entry_pc,
+                parent.raw.globals,
+                parent.raw.global_len,
+            )
+        }
+    }
+    /// # Safety
+    /// Parent and canonical target unit store stay leased through all descendants.
+    /// The boxed parent remains stable and uniquely runs under the stack guards.
+    pub unsafe fn child_with_globals(
+        parent: &mut Activation<'_>,
+        layout: &ScalarLayout,
+        args: &[oxvba_oxir::OxArg],
+        entry_pc: u32,
+        globals: *mut Variant,
+        global_len: usize,
+    ) -> Result<Activation<'static>, i32> {
         use oxvba_oxir::{OxArg, OxOperand};
+        if args.len() > layout.parameters.len() {
+            return Err(13);
+        }
         let mut owners = Vec::with_capacity(args.len());
-        for (arg, ty) in args.iter().zip(&layout.parameters) {
+        for (i, ty) in layout.parameters.iter().enumerate() {
+            let arg = args.get(i).unwrap_or(&OxArg::Omitted);
+            if matches!(arg, OxArg::Omitted)
+                && layout.optional_parameters[i]
+                && *ty == ScalarType::Variant
+            {
+                owners.push(Value::Variant(Variant::from_error_code(
+                    0x8002_0004u32 as i32,
+                )));
+                continue;
+            }
             let operand = match arg {
                 OxArg::ByVal(op) => op.clone(),
                 OxArg::ByRef(p) => OxOperand::Use(*p),
@@ -383,15 +419,8 @@ impl<'a> Activation<'a> {
             .map(|value| value.borrow_slot().ok_or(13))
             .collect::<Result<Vec<_>, _>>()?;
         // SAFETY: the child shares the parent's retained canonical-store lease.
-        let mut child = unsafe {
-            Activation::new_values(
-                layout,
-                &slots,
-                parent.raw.globals,
-                parent.raw.global_len,
-                entry_pc,
-            )
-        }?;
+        let mut child =
+            unsafe { Activation::new_values(layout, &slots, globals, global_len, entry_pc) }?;
         parent.clear_scratch();
         // Mint one ancestor authority after the last mutable parent method.
         // Multiple aliases must reuse it rather than retagging the ancestor.
@@ -463,10 +492,23 @@ pub(super) unsafe fn pin_value(raw: *mut RawActivation, value: Value) -> Result<
                 }
                 Value::String(value) => ScalarBits::object(value.into_raw_bstr().cast()),
                 Value::Variant(value) => {
-                    // SAFETY: admission allocated initialized stable Variant scratch cells.
-                    let cells = unsafe { (*raw).variants };
+                    // Literal Empty/Null arguments can require Variant scratch
+                    // even when the caller declares no Variant physical slots.
+                    // Allocate only when such a value actually needs pinning;
+                    // existing physical Variant cells are never moved.
+                    // SAFETY: this uniquely executing frame owns these fields.
+                    let mut cells = unsafe { (*raw).variants };
                     if cells.is_null() {
-                        return Err(5);
+                        let storage = (0..SCRATCH_CAPACITY)
+                            .map(|_| Variant::empty())
+                            .collect::<Vec<_>>()
+                            .into_boxed_slice();
+                        cells = Box::into_raw(storage).cast::<Variant>();
+                        // SAFETY: publish one initialized allocation to its owner.
+                        unsafe {
+                            (*raw).variants = cells;
+                            (*raw).variant_len = SCRATCH_CAPACITY;
+                        }
                     }
                     // SAFETY: fixed scratch index is inside the retained allocation.
                     let cell = unsafe { cells.add((*raw).variant_len - SCRATCH_CAPACITY + index) };
@@ -564,6 +606,32 @@ pub unsafe fn read_global(
     };
     // SAFETY: move the snapshot into stable frame scratch before any callback.
     unsafe { pin_value(raw, value) }
+}
+/// # Safety
+/// raw follows the retained activation lease; index is an admitted slot. The
+/// returned address is an identity only and grants no dereference authority.
+pub(super) unsafe fn slot_identity(raw: *mut RawActivation, index: usize) -> Result<usize, i32> {
+    // SAFETY: brief read of the admitted frame; aliases retain live ancestors.
+    let frame = unsafe { &*raw };
+    if let Some(alias) = frame.aliases.get(index)
+        && !alias.frame.is_null()
+    {
+        // SAFETY: boxed ancestor activations outlive descendants.
+        return unsafe { slot_identity(alias.frame, alias.index) };
+    }
+    if index >= frame.global_base {
+        let index = index - frame.global_base;
+        if index >= frame.global_len || frame.globals.is_null() {
+            return Err(5);
+        }
+        // SAFETY: in-bounds canonical storage, used only for identity comparison.
+        return Ok(unsafe { frame.globals.add(index) }.addr());
+    }
+    frame
+        .slots
+        .get(index)
+        .map(|slot| std::ptr::from_ref(slot).addr())
+        .ok_or(5)
 }
 /// # Safety
 /// raw follows Activation::new; index/ty are checked physical layout facts;

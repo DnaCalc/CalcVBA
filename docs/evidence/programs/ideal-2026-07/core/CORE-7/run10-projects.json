@@ -1,0 +1,80 @@
+{
+  "schema": "oxvba.run10.typed-source-projects.development-evidence.v1",
+  "base_commit": "541a812610eae15fecb5f338a30034e9cc7f994a",
+  "archive": "../../windows-x64/WIN-4/run10-native.zip",
+  "archive_sha256": "260ba98f0ba0592abcbad558c51661783d004e3212af056cd5c9d6186e62e9df",
+  "source_sha256": {
+    "Cargo.toml": "847d85416b6740b58d3af73d831aa980cd60503209b487f046325d88d88041b0",
+    "Cargo.lock": "92a2de67a2126a181f89cc35809b8119481e04f53b9cd7927d4d8c0315ef51af",
+    ".cargo/config.toml": "cfa214117c08dc4d1a1b500db4c445d999dc7555f7eff7e8d251d28b3afb4ee3",
+    "crates/calcvba-host-api/src/lib.rs": "d4e37e54b980ad5cb5308ba3a4e1f9433263b6503bbb227917b5edd701beda96",
+    "crates/calcvba-host-api/src/object.rs": "e40b1daf2a9171e4735c79fdf3c81dfb222ba5e8a986b048c5b77cd0b7896473",
+    "crates/calcvba-host-api/src/object/planned_slots.rs": "fcb62d551226bc6ff7cd3e0e659d998d5806369c553d4f7c5dc6046d3693001c",
+    "crates/calcvba-host-api/src/project_graph.rs": "9840e8407f418dce305d5118a1d950355e6d1c47d8a6b7cc680e088b1add8520",
+    "crates/oxvba-bind/src/call.rs": "c191f500b7376037724b4bb40e4a3bf66f40b4a5314b9e44735c7a7c6dbcf42e",
+    "crates/oxvba-com/src/fixtures/windows_test_dispatch.rs": "1d99331c74653e01a3fa83b057ac9f70472700292f653acc9c4459f4b12546e3",
+    "crates/oxvba-com/src/typed_slots.rs": "c2a937ec2cc095a2d3fe21eddaa22fb93b82205d220f4b94b936ebd35ac8ca6c",
+    "crates/oxvba-com/src/typed_slots/factory.rs": "eaad094f0d149c2d51df119da720c0b2d862312da5730f30a9522b13e0edf533",
+    "crates/oxvba-com/src/typed_slots/library.rs": "34cf3a717f2662bfc3549fdccbaeb394beb5b7dfc9ac4299d9316493254c1ff8",
+    "crates/oxvba-com/src/typed_slots/native_values.rs": "249a04a76440404d48adf54dee296090ecb6f8345ced436c859f3512efc07e69",
+    "crates/oxvba-com/src/typed_slots/plan.rs": "56624ba1634cdaf303148cf4e111c36af8990c6643d0dc03dbbcdabfe61a513a",
+    "crates/oxvba-embed/src/cache.rs": "66f21e049e90a431eabb3fbedd819617cdf0745e5601167d78c452cf4dcdb2b5",
+    "crates/oxvba-embed/src/invocation.rs": "ff2bef1e183d608007cb66791299ccd0a33c402a70f7d3e2ff5c28d349f625bd",
+    "crates/oxvba-embed/src/lib.rs": "6b8f405339ae463b670932a80787f84e9b314b6ac019bf145a1078903a38ef9b",
+    "crates/oxvba-embed/src/project_graph.rs": "73fdcc7fc9c31b95ae12277b10a76c63b1362868dc4d5aac68a8c40081dc15e5",
+    "crates/oxvba-embed/src/provider.rs": "519e8b015dc4ba0714c646a8dca6e0d453ae21c5100953a0127601bf142215e9",
+    "crates/oxvba-embed/src/typed_stack.rs": "babee0ebdb2d70ea0282c04df72a9b02bfeebe40b5828a7e5b4867a4a25fb753",
+    "crates/oxvba-embed/tests/typed_native_com.rs": "49db7692990813301608014a8a408c59e3374e6f513c6ae5613a81ce4b93cabb",
+    "crates/oxvba-embed/tests/typed_project_calls.rs": "566ee265046a98cbddb5091fb21e230184cb166aadad609532c8e66fda76a9d8",
+    "crates/oxvba-hal/src/adapters/standard/com.rs": "c5a269194beb6d2fa939e93208d2207e0a45fcff9d8130338edfbaab016f35bd",
+    "crates/oxvba-hal/src/traits.rs": "753a1a0f951bf22de0deb9217fdc80a00549aea619ee2f23e593394a66390c24",
+    "crates/oxvba-jit/src/admission.rs": "a28e2b42cd707aab5c2d620b1e5d81e1c7d5d2635f7b0de6a94a1dc1651a010a",
+    "crates/oxvba-jit/src/helpers.rs": "0151a9e5fddba953997e20dfc128b1039d9733eb5ff34463154ff4d65a18a6fd",
+    "crates/oxvba-jit/src/lowering.rs": "f095a33d47032df2e4c13f2b857d8d2aa3c3503cf3e3d9f6dd987a5946f67a30",
+    "crates/oxvba-jit/src/runtime.rs": "ab46785b808895a4f3ab4b8595341bbbb7d248db8e512b4724c1325e6944095f",
+    "crates/oxvba-jit/src/tests.rs": "8c13f001d9b487c132fe0df15af32e5418e95cfec0185cb5cf3a9d615d3dab73",
+    "crates/oxvba-jit/src/typed.rs": "b15bade008cd49d07387dc6fe843ee35fa134c86e00ee8095372e6fbb03e440c",
+    "crates/oxvba-rt-abi/src/host_entry.rs": "8006007ebf85d9ff5edea9b5df46c3846edc7897d6caf0eb953e5f05db6a5da7",
+    "crates/oxvba-rt-abi/src/host_entry/activation.rs": "acc318a60883ad7ac1adfdc7e7754d77b793efb70323eb33ace44e65db9398ab",
+    "crates/oxvba-rt-abi/src/host_entry/member.rs": "49a43a838996e51326bc3d492dd9c6cdc4a86b8283839d98109131689b8abb43",
+    "crates/oxvba-rt-abi/src/host_entry/value.rs": "5659a84da053800b42512615b2ae470c55f7894ef81e9b66764c300c51fca748",
+    "crates/oxvba-vm3/src/lib.rs": "669f48e9c4f00c11532c1c17af60d62151d324ddbde91d69448ed38ee7c1fcbd",
+    "crates/oxvba-vm3/src/typed.rs": "a316a55c8aa342ddbce73346941c69feebf21506c50f8c0d2d48c247f143af5a",
+    "scripts/run-worksheet-errors-oracle.ps1": "5351636fab037b74c31570aa5bba79f33ee25f2c2c6eba587cdb83aecf61f5ab",
+    "scripts/run-excel-vba-oracle.ps1": "fdbe2ad4f9e949b1c9e786d819f7bb47ee1a7282178cd889f69799b3971446d9",
+    "scripts/excel-vba-oracle-bootstrap.ps1": "ef647eac363549180b85988a984f45a2aa57a81b2a636f4f09fa01d30581e83b",
+    "scripts/run-typed-optional-oracle.ps1": "bcf85fcc71d146ae9b32869d8d1d419fa2652fa9844c033870863d4f16879234",
+    "docs/evidence/programs/ideal-2026-07/windows-x64/WIN-4/typed-optional-run10.bas": "5918990b6055596e6912eec1bed8dd0ce50fd72632ca03b7ac1625abd96abd99"
+  },
+  "repository_check": {
+    "passed": 3747,
+    "suites": 198,
+    "ignored": 181,
+    "registry_writers_excluded_without_credit": 4
+  },
+  "successful_oracle": {
+    "run": "calcvba10-native-publish",
+    "owned_excel_pid": 19144,
+    "cleanup": "owned-process-zero",
+    "scope": "Native Application getters and nominal WorksheetFunction interface result on both backends; zero Invoke delta"
+  },
+  "optional_oracle": {
+    "run": "calcvba10-optional-final",
+    "owned_excel_pid": 47652,
+    "cleanup": "owned-process-zero",
+    "scope": "Explicit VBE compile and exact defaults/aliases/Missing/named-call output"
+  },
+  "unsuccessful_oracles": [
+    {
+      "run": "calcvba10-native-excel-initial",
+      "pid": 27992
+    },
+    {
+      "run": "calcvba10-native-excel-range",
+      "pid": 22248
+    }
+  ],
+  "blocker": "Installed Excel Range and WorksheetFunction are pure dispinterfaces with no custom vtable slots; Value/Sum not executed under zero Invoke. BLK-WORKSHEETFUNCTION-VTABLE-20261101.",
+  "scope": "Owning Optional/default/Missing and procedural source graphs only; independent globals, ordered/diamond references, retained imports, aliases/errors, nominal host arguments/results, cache identity and old continuation leases. Broader owners remain open.",
+  "formal": "Existing Lean abstractions do not model this native boundary; Miri unavailable with matching dependency/sysroot. No native formal passing credit."
+}

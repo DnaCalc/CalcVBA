@@ -24,8 +24,8 @@ impl<'a> PreparedCode<'a> {
             Backend::Jit => {
                 let image = match configuration {
                     Some(configuration) => oxvba_jit::JitEngine
-                        .compile_image_with_configuration(&[&module.program], configuration),
-                    None => oxvba_jit::JitEngine.compile_image(&[&module.program]),
+                        .compile_image_with_configuration(&module.programs(), configuration),
+                    None => oxvba_jit::JitEngine.compile_image(&module.programs()),
                 }
                 .map_err(jit_error)?;
                 Ok(Self::Jit(module, Rc::new(image)))
@@ -301,7 +301,7 @@ impl CodeCache {
             )
         };
         let key = Key {
-            image: serde_json::to_vec(&module.program)
+            image: serde_json::to_vec(&module.programs())
                 .map_err(|e| Error::Compile(e.to_string()))?,
             signature: format!("{:?}", module.procedures),
             target,

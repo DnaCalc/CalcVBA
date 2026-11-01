@@ -12,6 +12,7 @@ pub use calcvba_host_api::{
 pub const MAX_TYPED_SLOTS: usize = 128;
 pub use calcvba_host_api::ValueType as ScalarType;
 pub mod activation;
+mod member;
 pub mod value;
 
 /// Shared operations whose mechanics belong to the retained call/error stack.
@@ -20,6 +21,7 @@ pub fn stack_instruction(inst: &OxInst) -> bool {
     matches!(
         inst,
         OxInst::CallProc { .. }
+            | OxInst::CallExtern { .. }
             | OxInst::SetErrorHandler(_)
             | OxInst::ClearErr
             | OxInst::ErrFieldGet { .. }
@@ -136,8 +138,10 @@ pub struct ScalarLayout {
     /// Required nominal identity for each object parameter (None for Object).
     pub parameter_iids: Vec<Option<[u8; 16]>>,
     pub by_ref_parameters: Vec<bool>,
+    pub optional_parameters: Vec<bool>,
     pub has_result: bool,
     pub calls: std::collections::HashMap<oxvba_oxir::FuncId, CallSignature>,
+    pub extern_calls: std::collections::HashMap<oxvba_oxir::ImportId, LinkedCall>,
     pub result: ScalarType,
     pub return_slot: usize,
     pub specialized_variant_temps: Vec<usize>,
@@ -155,10 +159,25 @@ pub struct ScalarLayout {
 pub struct CallSignature {
     pub parameters: Vec<ScalarType>,
     pub by_ref: Vec<bool>,
+    pub optional: Vec<bool>,
     pub result: Option<ScalarType>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedCall {
+    pub target: LinkedTarget,
+    pub signature: CallSignature,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkedTarget {
+    Procedure {
+        program: usize,
+        procedure: oxvba_oxir::FuncId,
+    },
+    Builtin(oxvba_bundle::NativeImplId),
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostCallPlan {
+    pub native: Option<oxvba_com::TypeLibMemberMetadata>,
     pub iid: [u8; 16],
     pub slot: usize,
     pub long_argument: bool,
@@ -174,15 +193,89 @@ impl ScalarLayout {
         func: &OxFunc,
         interfaces: &[oxvba_oxir::ComInterface],
     ) -> Result<Self, String> {
-        Self::with_storage(func, interfaces, &[], false, &[])
+        Self::with_storage(func, interfaces, &[], false, &[], Default::default())
     }
     pub fn with_program(func: &OxFunc, program: &oxvba_oxir::OxProgram) -> Result<Self, String> {
+        Self::with_programs(func, program, &[program])
+    }
+    pub fn with_programs(
+        func: &OxFunc,
+        program: &oxvba_oxir::OxProgram,
+        programs: &[&oxvba_oxir::OxProgram],
+    ) -> Result<Self, String> {
+        let mut external = std::collections::HashMap::new();
+        for inst in func.blocks.iter().flat_map(|b| &b.instrs) {
+            if let OxInst::CallExtern { import, .. } = inst {
+                let request = program
+                    .imports
+                    .get(import.0)
+                    .ok_or("invalid typed import")?;
+                if request.unit.eq_ignore_ascii_case("VBA")
+                    && !programs
+                        .iter()
+                        .any(|p| p.unit_name.eq_ignore_ascii_case("VBA"))
+                {
+                    let native = oxvba_bundle::NativeImplId::IsMissing;
+                    let (module, member) = native
+                        .library_member()
+                        .ok_or("missing builtin descriptor")?;
+                    let token = oxvba_bundle::ExportToken::ModuleFunc {
+                        module: module.into(),
+                        member: member.into(),
+                        kind: oxvba_bundle::ProjectMemberKind::Method,
+                    };
+                    if request.token.matches(&token) {
+                        external.insert(
+                            *import,
+                            LinkedCall {
+                                target: LinkedTarget::Builtin(native),
+                                signature: CallSignature {
+                                    parameters: vec![ScalarType::Variant],
+                                    by_ref: vec![true],
+                                    optional: vec![false],
+                                    result: Some(ScalarType::Variant),
+                                },
+                            },
+                        );
+                        continue;
+                    }
+                }
+                let (unit, target) = programs
+                    .iter()
+                    .enumerate()
+                    .find(|(_, p)| p.unit_name.eq_ignore_ascii_case(&request.unit))
+                    .ok_or("unlinked typed source project")?;
+                let export = target
+                    .exports
+                    .iter()
+                    .find(|e| e.token.matches(&request.token))
+                    .ok_or("unresolved typed source export")?;
+                let oxvba_bundle::ExportTarget::Proc(id) = export.target else {
+                    return Err("typed class import remains open".into());
+                };
+                let callee = target
+                    .funcs
+                    .get(id)
+                    .ok_or("invalid typed exported procedure")?;
+                external.insert(
+                    *import,
+                    LinkedCall {
+                        target: LinkedTarget::Procedure {
+                            program: unit,
+                            procedure: oxvba_oxir::FuncId(id),
+                        },
+                        signature: call_signature(callee)?,
+                    },
+                );
+            }
+        }
         Self::with_storage(
             func,
             &program.com_interfaces,
             &program.globals,
             true,
             &program.funcs,
+            external,
         )
     }
     fn with_storage(
@@ -191,6 +284,7 @@ impl ScalarLayout {
         globals: &[oxvba_oxir::OxGlobal],
         owning: bool,
         functions: &[OxFunc],
+        extern_calls: std::collections::HashMap<oxvba_oxir::ImportId, LinkedCall>,
     ) -> Result<Self, String> {
         use oxvba_com::{TypeLibParamType as P, TypeLibWireType};
         let mut host_calls = std::collections::HashMap::new();
@@ -199,6 +293,7 @@ impl ScalarLayout {
                 let OxInst::ComCallEarly {
                     method,
                     invoke_kind,
+                    args,
                     ..
                 } = inst
                 else {
@@ -217,7 +312,7 @@ impl ScalarLayout {
                         return Err("native typed COM requires an owning activation".into());
                     }
                     Some(
-                        oxvba_com::typed_slots::signature(descriptor)
+                        oxvba_com::typed_slots::plan::visible_signature(descriptor, args.len())
                             .ok_or("unsupported native typed COM signature")?,
                     )
                 } else {
@@ -232,38 +327,47 @@ impl ScalarLayout {
                     P::Object => Some(ScalarType::HostObject),
                     _ => None,
                 };
-                let parameters = descriptor
-                    .parameter_types
-                    .iter()
-                    .copied()
-                    .enumerate()
-                    .map(|(i, ty)| {
-                        let ty = from_param(ty).ok_or("unsupported typed host argument carrier")?;
-                        Ok(if let Some(Some(iid)) = descriptor.parameter_iids.get(i) {
-                            ScalarType::Interface(iid_bytes(*iid))
-                        } else {
-                            ty
+                let parameters = if let Some((parameters, _)) = &native_signature {
+                    parameters.clone()
+                } else {
+                    descriptor
+                        .parameter_types
+                        .iter()
+                        .copied()
+                        .enumerate()
+                        .map(|(i, ty)| {
+                            let ty =
+                                from_param(ty).ok_or("unsupported typed host argument carrier")?;
+                            Ok(if let Some(Some(iid)) = descriptor.parameter_iids.get(i) {
+                                ScalarType::Interface(iid_bytes(*iid))
+                            } else {
+                                ty
+                            })
                         })
-                    })
-                    .collect::<Result<Vec<_>, &str>>()?;
-                let parameters = native_signature
-                    .as_ref()
-                    .map_or(parameters, |(params, _)| params.clone());
-                let result = match descriptor.return_type {
-                    Some(ty) => from_param(ty).ok_or("unsupported typed host result carrier")?,
-                    None => ScalarType::Void,
+                        .collect::<Result<Vec<_>, &str>>()?
+                };
+                let result = if let Some((_, result)) = &native_signature {
+                    *result
+                } else {
+                    match descriptor.return_type {
+                        Some(ty) => {
+                            from_param(ty).ok_or("unsupported typed host result carrier")?
+                        }
+                        None => ScalarType::Void,
+                    }
                 };
                 if descriptor.invoke_kind != *invoke_kind
                     || parameters.len() > MAX_TYPED_ARGS
                     || (!native && descriptor.parameter_optional.iter().any(|p| *p))
-                    || descriptor
-                        .parameter_wire_types
-                        .iter()
-                        .zip(&descriptor.parameter_types)
-                        .any(|(wire, ty)| {
-                            !matches!(wire, TypeLibWireType::Automation(p) if p == ty)
-                                && !matches!(wire, TypeLibWireType::InterfacePointer { .. })
-                        })
+                    || (!native
+                        && descriptor
+                            .parameter_wire_types
+                            .iter()
+                            .zip(&descriptor.parameter_types)
+                            .any(|(wire, ty)| {
+                                !matches!(wire, TypeLibWireType::Automation(p) if p == ty)
+                                    && !matches!(wire, TypeLibWireType::InterfacePointer { .. })
+                            }))
                 {
                     return Err("invalid typed host member signature".into());
                 }
@@ -307,18 +411,25 @@ impl ScalarLayout {
                 {
                     return Err("typed host slot exceeds declared table".into());
                 }
-                host_calls.insert(
-                    *method,
-                    HostCallPlan {
-                        iid: bytes,
-                        slot,
-                        long_argument: parameters == [ScalarType::Long]
-                            && result == ScalarType::Double,
-                        parameters,
-                        result,
-                        result_iid,
-                    },
-                );
+                let plan = HostCallPlan {
+                    native: (native
+                        && oxvba_com::typed_slots::scalar_signature(descriptor).is_none())
+                    .then(|| descriptor.clone()),
+                    iid: bytes,
+                    slot,
+                    long_argument: parameters == [ScalarType::Long] && result == ScalarType::Double,
+                    parameters,
+                    result,
+                    result_iid,
+                };
+                if let Some(old) = host_calls.get_mut(method) {
+                    let old: &mut HostCallPlan = old;
+                    if old.parameters.len() < plan.parameters.len() {
+                        old.parameters = plan.parameters;
+                    }
+                } else {
+                    host_calls.insert(*method, plan);
+                }
             }
         }
         let mut default_calls = std::collections::HashMap::new();
@@ -329,20 +440,41 @@ impl ScalarLayout {
                     m.is_default_member
                         && m.invoke_kind == oxvba_com::TypeLibMemberInvokeKind::PropertyGet
                 }) {
-                    if !member.parameter_types.is_empty() {
-                        if let Some(iid) = member.interface_iid.map(iid_bytes) {
+                    let native = member.callconv_is_stdcall
+                        || member.is_dual
+                        || member.source_typekind.is_some();
+                    let native_signature = native
+                        .then(|| oxvba_com::typed_slots::plan::visible_signature(member, 0))
+                        .flatten();
+                    if (!native && !member.parameter_types.is_empty())
+                        || (native && native_signature.is_none())
+                    {
+                        if (!native
+                            || (oxvba_com::typed_slots::plan::validate(member)
+                                && oxvba_com::typed_slots::plan::visible_indices(member)
+                                    .iter()
+                                    .any(|&i| {
+                                        oxvba_com::typed_slots::plan::default_value(member, i)
+                                            .is_none()
+                                    })))
+                            && let Some(iid) = member.interface_iid.map(iid_bytes)
+                        {
                             default_faults.insert(iid, 450);
                         }
                         continue;
                     }
-                    let result = match member.return_type {
-                        Some(P::Long) => ScalarType::Long,
-                        Some(P::Double) => ScalarType::Double,
-                        Some(P::Boolean) => ScalarType::Boolean,
-                        Some(P::String) => ScalarType::String,
-                        Some(P::Variant) => ScalarType::Variant,
-                        Some(P::Object) => ScalarType::HostObject,
-                        _ => continue,
+                    let result = if let Some((_, result)) = &native_signature {
+                        *result
+                    } else {
+                        match member.return_type {
+                            Some(P::Long) => ScalarType::Long,
+                            Some(P::Double) => ScalarType::Double,
+                            Some(P::Boolean) => ScalarType::Boolean,
+                            Some(P::String) => ScalarType::String,
+                            Some(P::Variant) => ScalarType::Variant,
+                            Some(P::Object) => ScalarType::HostObject,
+                            _ => continue,
+                        }
                     };
                     let Some(iid) = member.interface_iid.map(iid_bytes) else {
                         continue;
@@ -353,13 +485,10 @@ impl ScalarLayout {
                     if member.vtable_slot_bound.is_none_or(|bound| slot >= bound) {
                         continue;
                     }
-                    let native = member.callconv_is_stdcall
-                        || member.is_dual
-                        || member.source_typekind.is_some();
-                    if native && oxvba_com::typed_slots::signature(member).is_none() {
-                        continue;
-                    }
                     let plan = HostCallPlan {
+                        native: (native
+                            && oxvba_com::typed_slots::scalar_signature(member).is_none())
+                        .then(|| member.clone()),
                         iid,
                         slot: usize::from(slot),
                         long_argument: false,
@@ -403,13 +532,15 @@ impl ScalarLayout {
                     return Err("typed callee exceeds argument bounds".into());
                 }
                 let mut by_ref = Vec::new();
+                let mut optional = Vec::new();
                 let mut parameters = Vec::new();
                 for local in &callee.locals[..callee.param_count] {
                     let p = local.param.ok_or("missing callee parameter metadata")?;
-                    if p.optional || p.variadic {
-                        return Err("optional/variadic typed calls remain open".into());
+                    if p.variadic {
+                        return Err("variadic typed calls remain open".into());
                     }
                     by_ref.push(p.by_ref);
+                    optional.push(p.optional);
                     parameters.push(scalar(&local.ty)?);
                 }
                 let result = callee
@@ -427,6 +558,7 @@ impl ScalarLayout {
                     CallSignature {
                         parameters,
                         by_ref,
+                        optional,
                         result,
                     },
                 );
@@ -465,12 +597,23 @@ impl ScalarLayout {
             let mut changed = false;
             for block in &func.blocks {
                 for inst in &block.instrs {
-                    if let OxInst::CallProc {
-                        dst: Some(OxPlace::Temp(id)),
-                        proc,
-                        ..
-                    } = inst
-                    {
+                    let source_result = match inst {
+                        OxInst::CallProc {
+                            dst: Some(OxPlace::Temp(id)),
+                            proc,
+                            ..
+                        } => Some((*id, calls.get(proc).and_then(|c| c.result))),
+                        OxInst::CallExtern {
+                            dst: Some(OxPlace::Temp(id)),
+                            import,
+                            ..
+                        } => Some((
+                            *id,
+                            extern_calls.get(import).and_then(|c| c.signature.result),
+                        )),
+                        _ => None,
+                    };
+                    if let Some((id, next)) = source_result {
                         let index = func
                             .locals
                             .len()
@@ -478,7 +621,6 @@ impl ScalarLayout {
                             .ok_or("invalid temp index")?;
                         let slot = physical.get_mut(index).ok_or("invalid temp index")?;
                         if slot.is_none() || *slot == Some(ScalarType::Variant) {
-                            let next = calls.get(proc).and_then(|c| c.result);
                             changed |= next.is_some() && next != *slot;
                             *slot = next;
                         }
@@ -592,7 +734,7 @@ impl ScalarLayout {
         }
         for local in func.locals.iter().take(func.param_count) {
             let p = local.param.ok_or("missing parameter metadata")?;
-            if (p.by_ref && !owning) || p.optional || p.variadic {
+            if ((p.by_ref || p.optional) && !owning) || p.variadic {
                 return Err("typed entry requires required ByVal parameters".into());
             }
         }
@@ -667,7 +809,12 @@ impl ScalarLayout {
                 .iter()
                 .map(|l| l.param.is_some_and(|p| p.by_ref))
                 .collect(),
+            optional_parameters: func.locals[..func.param_count]
+                .iter()
+                .map(|l| l.param.is_some_and(|p| p.optional))
+                .collect(),
             calls,
+            extern_calls,
             slots,
             local_count: func.locals.len(),
             parameters,
@@ -819,12 +966,35 @@ impl ScalarLayout {
     }
     fn check(&self, inst: &OxInst) -> Result<(), String> {
         match inst {
-            OxInst::CallProc { dst, proc, args } => {
-                let call = self.calls.get(proc).ok_or("unplanned typed call")?;
-                if args.len() != call.parameters.len() {
+            OxInst::CallProc { dst, args, .. } | OxInst::CallExtern { dst, args, .. } => {
+                let call = match inst {
+                    OxInst::CallProc { proc, .. } => self.calls.get(proc),
+                    OxInst::CallExtern { import, .. } => {
+                        self.extern_calls.get(import).map(|c| &c.signature)
+                    }
+                    _ => None,
+                }
+                .ok_or("unplanned typed call")?;
+                if args.len() > call.parameters.len()
+                    || call.parameters[args.len()..]
+                        .iter()
+                        .zip(&call.optional[args.len()..])
+                        .any(|(ty, opt)| !*opt || *ty != ScalarType::Variant)
+                {
                     return Err("typed call arity mismatch".into());
                 }
-                for ((arg, ty), by_ref) in args.iter().zip(&call.parameters).zip(&call.by_ref) {
+                for (i, ((arg, ty), by_ref)) in args
+                    .iter()
+                    .zip(&call.parameters)
+                    .zip(&call.by_ref)
+                    .enumerate()
+                {
+                    if matches!(arg, oxvba_oxir::OxArg::Omitted)
+                        && call.optional[i]
+                        && *ty == ScalarType::Variant
+                    {
+                        continue;
+                    }
                     let (from, alias) = match arg {
                         oxvba_oxir::OxArg::ByVal(op) => (self.operand_type(op)?, false),
                         oxvba_oxir::OxArg::ByRef(p) => (self.slots[self.slot(*p)?], true),
@@ -840,6 +1010,33 @@ impl ScalarLayout {
                     return Err("typed call result mismatch".into());
                 }
                 Ok(())
+            }
+            OxInst::CallNative {
+                dst: Some(dst),
+                callee: oxvba_oxir::OxNativeCallee::Builtin(oxvba_bundle::NativeImplId::IsMissing),
+                args,
+            } if self.owning => {
+                if args.len() != 1
+                    || !matches!(
+                        self.slots[self.slot(*dst)?],
+                        ScalarType::Boolean | ScalarType::Variant
+                    )
+                {
+                    return Err("invalid typed IsMissing signature".into());
+                }
+                match &args[0] {
+                    oxvba_oxir::OxCallArg::Operand(op)
+                        if self.operand_type(op)? == ScalarType::Variant =>
+                    {
+                        Ok(())
+                    }
+                    oxvba_oxir::OxCallArg::ByRef(p)
+                        if self.slots[self.slot(*p)?] == ScalarType::Variant =>
+                    {
+                        Ok(())
+                    }
+                    _ => Err("IsMissing requires a retained Variant".into()),
+                }
             }
             OxInst::SetErrorHandler(_) | OxInst::ClearErr | OxInst::SetLineNumber { .. }
                 if self.owning =>
@@ -873,9 +1070,13 @@ impl ScalarLayout {
                 ..
             } => {
                 let plan = self.host_calls.get(method).ok_or("unplanned host slot")?;
-                if self.operand_type(recv)? != ScalarType::HostObject
-                    || args.len() != plan.parameters.len()
-                {
+                let arity = if let Some(native) = &plan.native {
+                    oxvba_com::typed_slots::plan::visible_signature(native, args.len()).is_some()
+                        && args.len() <= plan.parameters.len()
+                } else {
+                    args.len() == plan.parameters.len()
+                };
+                if self.operand_type(recv)? != ScalarType::HostObject || !arity {
                     return Err("typed host call signature mismatch".into());
                 }
                 match dst {
@@ -883,11 +1084,20 @@ impl ScalarLayout {
                     None => {}
                     _ => return Err("typed host result destination mismatch".into()),
                 }
-                for (arg, ty) in args.iter().zip(&plan.parameters) {
+                for (index, (arg, ty)) in args.iter().zip(&plan.parameters).enumerate() {
                     let from = match arg {
                         oxvba_oxir::OxCallArg::Operand(op) => self.operand_type(op)?,
                         oxvba_oxir::OxCallArg::ByRef(p) => self.slots[self.slot(*p)?],
                         oxvba_oxir::OxCallArg::Const(_) => ScalarType::Long,
+                        oxvba_oxir::OxCallArg::Omitted
+                            if plan.native.as_ref().is_some_and(|member| {
+                                let indices = oxvba_com::typed_slots::plan::visible_indices(member);
+                                oxvba_com::typed_slots::plan::default_value(member, indices[index])
+                                    .is_some()
+                            }) =>
+                        {
+                            ty.carrier()
+                        }
                         _ => {
                             return Err(
                                 "typed host argument is not a required positional value".into()
@@ -922,7 +1132,9 @@ impl ScalarLayout {
                 self.operand_type(src).map(|_| ())
             }
             OxInst::Unbox { dst, src, .. }
-                if self.owning && self.operand_type(src)? == ScalarType::Variant =>
+                if self.owning
+                    && (self.operand_type(src)? == ScalarType::Variant
+                        || self.operand_type(src)? == self.slots[self.slot(*dst)?]) =>
             {
                 self.slot(*dst).map(|_| ())
             }
@@ -1076,6 +1288,40 @@ fn iid_bytes(iid: oxvba_com::ComInterfaceIid) -> [u8; 16] {
     bytes[6..8].copy_from_slice(&iid.data3.to_le_bytes());
     bytes[8..].copy_from_slice(&iid.data4);
     bytes
+}
+
+fn call_signature(callee: &OxFunc) -> Result<CallSignature, String> {
+    if callee.param_count > MAX_TYPED_ARGS || callee.param_count > callee.locals.len() {
+        return Err("typed imported argument bound".into());
+    }
+    let mut parameters = Vec::new();
+    let mut by_ref = Vec::new();
+    let mut optional = Vec::new();
+    for local in &callee.locals[..callee.param_count] {
+        let p = local.param.ok_or("missing imported parameter metadata")?;
+        if p.variadic {
+            return Err("typed imported ParamArray remains open".into());
+        }
+        parameters.push(scalar_type(&local.ty).ok_or("unsupported imported carrier")?);
+        by_ref.push(p.by_ref);
+        optional.push(p.optional);
+    }
+    let result = callee
+        .return_local
+        .map(|id| {
+            callee
+                .locals
+                .get(id.0)
+                .and_then(|l| scalar_type(&l.ty))
+                .ok_or("unsupported imported result")
+        })
+        .transpose()?;
+    Ok(CallSignature {
+        parameters,
+        by_ref,
+        optional,
+        result,
+    })
 }
 
 #[cfg(test)]

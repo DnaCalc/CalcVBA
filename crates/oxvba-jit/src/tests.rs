@@ -14937,7 +14937,8 @@ fn jit_call_helper_installs_missing_for_omitted_variant_arg() {
             ty: OxTy::Variant,
             array_element: None,
             param: Some(OxParamInfo {
-                optional: false,
+                // Only a declared Optional parameter can be omitted.
+                optional: true,
                 by_ref: false,
                 variadic: false,
             }),

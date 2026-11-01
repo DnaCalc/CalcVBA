@@ -255,8 +255,9 @@ Long/Double/portable-object family. It retains at most 64 boxed VBA frames (erro
 Both backends return call/error transitions to the same retained stack mechanics;
 JIT body operations and callbacks remain generated native code. Admission checks
 the entire reachable call graph before any body effect. The additive value API supplies Void for public typed Sub entry.
-Root ByRef inputs are private host copies. Arrays/records, Optional,
-ParamArray, cross-project calls and suspension within native/COM callbacks remain
+Root ByRef inputs are private host copies. Run 10 extends this family with Optional
+parameters and procedural source-project calls, as described below. Arrays/records,
+ParamArray and suspension within native/COM callbacks remain
 outside this family under `bd-59co.2.9.9`/`bd-59co.2.10.7`.
 A synchronous callback finishes before suspension. Source-free verified packages
 and DNA Calc glue remain open. See the
@@ -275,9 +276,8 @@ results. This proves a declared synchronous typed subset, not arbitrary COM even
 ByRef, general VBA recursion or stateful VM/JIT callback safety.
 Reload requires exclusive `&mut Session`; a safe caller cannot acquire it while
 the shared session/code borrow spans an activation or callback. Dynamic reset
-additionally checks the active execution borrow. Object comparisons/conditions
-are refused by typed admission until their value-context semantics are supported;
-the object pointer is never treated as a scalar condition or comparison value.
+additionally checks the active execution borrow. Owning Object comparisons/conditions
+use retained default-member plans; scalar entries refuse unsupported object contexts.
 
 Generic numeric arithmetic now resolves each object's default member through the
 existing project/foreign dispatch before entering the pure arithmetic kernel.
@@ -308,8 +308,8 @@ keep their original ABI. No native COM pointer is a portable ObjectHeader.
 The fixture covers Value/Value2, Cells, Address and Rows/Columns.Count on VM3/native
 JIT. DNA Calc supplies their actual meanings and its Application/WorksheetFunction
 library; none of those names is an engine intrinsic. The current four-argument,
-128-slot and 64-frame bounds remain. Full typed array/record/Optional/ParamArray,
-cross-project and native callback suspension remain open. See the
+128-slot and 64-frame bounds remain. Full typed array/record/ParamArray and native
+callback suspension remain open. See the
 [typed value proof](../evidence/programs/ideal-2026-07/core/CORE-7/typed-value-slots-run9.md).
 
 Run 10 adds runtime object-default coercion in owning value kernels on VM3/native
@@ -320,6 +320,42 @@ the active typed context and owned results; boxing/Set/Variant copies retain ide
 Default chains are bounded at 64; broader coercion/native signature coverage remains
 under bd-59co.2.9.9 and WIN-4. Static lowered default calls are separate. See
 [default coercion evidence](../evidence/programs/ideal-2026-07/core/CORE-7/typed-defaults-run10.md).
+
+## Optional and source-project calls
+
+Run 10 admits Optional parameters in the owning value family on VM3/native JIT.
+`bind_values`/`bind_slots` accept a supplied argument prefix when every remaining
+parameter is optional. The provider prepares the declared defaults once per
+invocation; source-level named arguments and interior omissions are bound by the
+compiler. Omitted Variant parameters without defaults carry DISP_E_PARAMNOTFOUND;
+`IsMissing` reads that carrier without object-default coercion. Omitted ByRef
+parameters have private writable cells. Actual ByRef lvalues retain live aliases;
+parenthesized arguments remain private copies. The direct numeric entry ABI still
+uses its existing required-parameter signature family.
+
+`RuntimeProvider::load_graph` accepts an explicit `ProjectGraph` of `ProjectNode`s.
+Each node contains its existing `Project` descriptor and ordered `ProjectReference`
+entries (`Source` or `TypeLibrary`). A nonempty node reference list requires an
+empty `Project.references`; otherwise that older type-library list is used.
+Supply typed object libraries separately to `load_graph`; graph nodes refuse
+legacy `Project.libraries`. These shared host libraries follow explicit references.
+The compiler builds the reachable closure leaf-first, deduplicates diamonds and
+rejects missing/cyclic/duplicate identities before publishing a session. Ordinary
+visibility and Option Private Module rules apply across project boundaries.
+
+Each unit retains its own original OxProgram and canonical globals. Source import
+tokens resolve to unit/procedure indices during preparation; calls execute the
+same retained stack and selected backend with no runtime name lookup or dynamic
+fallback. Preflight checks all reachable callees before any body effect. Code-cache
+identity includes every linked program. `reload_graph` prepares a replacement
+closure before publication; suspended invocations retain all old code/stores.
+`reload(project)` replaces the root descriptor while preserving graph references.
+Reset reinitializes every unit and refuses while an invocation is suspended.
+
+The current four-parameter/128-slot/64-frame bounds apply. Source-free graph
+publication, classes/records, ParamArray and general native callback suspension
+remain open under bd-59co.2.9.9/bd-59co.2.10.7. See
+[the run-10 project-call evidence](../evidence/programs/ideal-2026-07/core/CORE-7/typed-project-calls-run10.md).
 
 ## Imported native members on typed slots
 
@@ -333,15 +369,31 @@ value API invokes that table on either backend. Native pointers remain separate
 from portable host headers. This is an additive HAL composition facility; no
 server implementation enters calcvba-host-api.
 
-The first native family is HRESULT scalar/BSTR getters, void methods and one-Long
-methods/setters with scalar/BSTR/void results, optionally with trailing hidden LCID=0. Native Variant/ByRef,
-interface, array, record and general optional signatures remain outside this typed
-family; broader canonical native transport remains available. Rich synchronous
+The original native family is HRESULT scalar/BSTR getters, void methods and one-Long
+methods/setters with scalar/BSTR/void results, optionally with trailing hidden LCID=0.
+Run 10 adds descriptor-planned Variant inputs/results, repeated ByRef outputs,
+nominal interface results and intrinsic SAFEARRAY arguments/results. The additive
+unsafe `prepare_typed_object_with_interfaces` retains the compiler's interface table
+and resolves result identities before publication. Native out-cell aliases and
+mutations survive HRESULT faults before handler continuation. Only source arguments
+occupy the bounded typed frame; omitted native optionals/LCIDs are prepared at the
+COM boundary, including long optional tails. Records, custom IUnknown-only results,
+nominal interface arrays and callback reentry remain open. See
+[run-10 native value evidence](../evidence/programs/ideal-2026-07/windows-x64/WIN-4/typed-native-values-run10.md).
+Rich synchronous
 callbacks may publish TypedFault with their returned number; the owning stack
 consumes exact Description/Source/HelpFile/HelpContext before the next operation.
 Native IErrorInfo is captured immediately after failure, before receiver cleanup.
 Scripting.Dictionary and supervised real Excel development cases are recorded in
 the [native typed-slot proof](../evidence/programs/ideal-2026-07/windows-x64/WIN-4/typed-native-slots-run9.md).
+
+The installed Excel Range and WorksheetFunction interfaces are pure dispinterfaces
+with seven IDispatch slots and no custom slot for Value or Sum. This owning native
+family refuses them under the run-10 zero-Invoke constraint. Application's native
+WorksheetFunction getter does return a retained nominal object without Invoke;
+that does not create a native Sum slot. An explicitly prebound Invoke transport
+would be needed for those pure interfaces, with no name/type-info lookup or dual
+fallback. See CURRENT_BLOCKERS.md BLK-WORKSHEETFUNCTION-VTABLE-20261101.
 
 ## Spreadsheet extraction and DNA Calc glue handoff
 

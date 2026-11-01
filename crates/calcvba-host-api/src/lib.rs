@@ -1,5 +1,7 @@
 //! Host contracts only. Supply an implementation from the application's runtime
 //! composition; this crate links neither compiler, interpreter nor JIT.
+mod project_graph;
+pub use project_graph::*;
 mod invocation;
 pub mod object;
 pub use invocation::*;
@@ -238,6 +240,18 @@ pub struct ProviderInfo {
     pub allocator: &'static str,
 }
 pub trait RuntimeProvider {
+    /// Compile an explicit, ordered closure of procedural source projects.
+    fn load_graph(
+        &self,
+        _graph: &ProjectGraph,
+        _libraries: &[TypedObjectLibrary],
+        _backend: Backend,
+        _requested_abi: u32,
+    ) -> Result<Box<dyn Session>, Error> {
+        Err(Error::UnsupportedSignature(
+            "provider has no source-project graph API".into(),
+        ))
+    }
     /// Additive value-slot capability; the original scalar API remains ABI 2.
     fn value_abi(&self) -> Option<u32> {
         None
@@ -268,6 +282,11 @@ pub trait RuntimeProvider {
 /// Same-thread session owner. Rust object borrows and opaque call handles never
 /// authorize concurrent access. Reload prepares replacement before invalidation.
 pub trait Session {
+    fn reload_graph(&mut self, _graph: &ProjectGraph) -> Result<(), Error> {
+        Err(Error::UnsupportedSignature(
+            "provider has no source-project graph API".into(),
+        ))
+    }
     fn bind_values(
         &self,
         _module: &str,

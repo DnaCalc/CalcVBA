@@ -6601,7 +6601,7 @@ impl<'a> LowerFunc<'a> {
                 )));
             }
         }
-        if args.len() != callee.param_count {
+        if args.len() > callee.param_count {
             return Err(JitError::unsupported(format!(
                 "cross-project CallExtern argument count {} does not match callee param_count {} for {}",
                 args.len(),
@@ -6609,6 +6609,12 @@ impl<'a> LowerFunc<'a> {
                 callee.name
             )));
         }
+        // The binder can trim trailing Missing markers on imported calls.
+        // Retain one checked native descriptor per formal parameter, including
+        // private omitted ByRef Variant cells.
+        let mut prepared_args = args.to_vec();
+        prepared_args.resize(callee.param_count, OxArg::Omitted);
+        let args = prepared_args.as_slice();
         for (index, arg) in args.iter().enumerate() {
             validate_static_scalar_call_arg(callee, index, arg)?;
         }

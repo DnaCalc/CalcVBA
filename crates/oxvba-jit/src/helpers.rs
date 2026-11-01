@@ -8030,7 +8030,9 @@ pub(crate) unsafe extern "C" fn rt_jit_direct_enter_proc_i32(
                         pending_param_array_aliases.push((index, aliases));
                     }
                 }
-                JIT_CALL_ARG_OMITTED if !param_info.by_ref && matches!(param.ty, OxTy::Variant) => {
+                JIT_CALL_ARG_OMITTED
+                    if param_info.optional && matches!(param.ty, OxTy::Variant) =>
+                {
                     let Some(value) = call_arg_variant_value(run, arg) else {
                         return ST_FAULT;
                     };
@@ -8244,7 +8246,7 @@ pub(crate) unsafe extern "C" fn rt_jit_call_extern_proc_i32(
                         }
                     }
                     JIT_CALL_ARG_OMITTED
-                        if !param_info.by_ref && matches!(param.ty, OxTy::Variant) =>
+                        if param_info.optional && matches!(param.ty, OxTy::Variant) =>
                     {
                         let Some(value) = call_arg_variant_value(run, arg) else {
                             return ST_FAULT;
@@ -8521,7 +8523,7 @@ pub(crate) unsafe extern "C" fn rt_jit_call_proc_i32(
                         }
                     }
                     JIT_CALL_ARG_OMITTED
-                        if !param_info.by_ref && matches!(param.ty, OxTy::Variant) =>
+                        if param_info.optional && matches!(param.ty, OxTy::Variant) =>
                     {
                         let Some(value) = call_arg_variant_value(run, arg) else {
                             return ST_FAULT;

@@ -12,7 +12,7 @@ impl OwnedSession {
     ) -> Result<Box<dyn api::Invocation>, Error> {
         let activation = self.cell.with_dependent(|_, session| {
             session.validate(bound)?;
-            let result = session.owning_typed[bound.id.0]
+            let result = session.owning_typed.last().expect("root entries")[bound.id.0]
                 .as_ref()
                 .map_err(|e| Error::UnsupportedSignature(e.clone()))?
                 .layout()

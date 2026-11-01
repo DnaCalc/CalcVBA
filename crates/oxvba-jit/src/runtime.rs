@@ -475,11 +475,15 @@ impl JitSession<'_> {
     /// Canonical storage; callers retaining a pointer must lease this session
     /// and exclude reset/replacement until their activation drops.
     pub fn typed_globals_raw(&mut self) -> (*mut Variant, usize) {
+        self.typed_globals_raw_at(self.exec.programs.len() - 1)
+    }
+    /// Canonical storage for one retained linked unit under the same lease.
+    pub fn typed_globals_raw_at(&mut self, unit: usize) -> (*mut Variant, usize) {
         let globals = &mut self
             .exec
             .programs
-            .last_mut()
-            .expect("linked session")
+            .get_mut(unit)
+            .expect("linked session unit")
             .globals;
         (globals.as_mut_ptr(), globals.len())
     }
@@ -1663,10 +1667,12 @@ pub(crate) unsafe fn seed_jit_member_frame_args(
                     pending_param_array_aliases.push((param_index, aliases));
                 }
             }
-            JIT_CALL_ARG_OMITTED if !param_info.by_ref && matches!(param.ty, OxTy::Variant) => {
+            JIT_CALL_ARG_OMITTED if param_info.optional && matches!(param.ty, OxTy::Variant) => {
                 let Some(value) = call_arg_variant_value(run, arg) else {
                     return ST_FAULT;
                 };
+                // An omitted ByRef optional gets a private Missing cell, with
+                // no caller alias or copy-out destination.
                 frame.locals[param_index] = value;
             }
             JIT_CALL_ARG_BYREF_COPY if param_info.by_ref => {

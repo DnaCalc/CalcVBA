@@ -20,7 +20,7 @@ pub(super) fn to_variant(value: Value) -> Variant {
         Value::Object(None) => Variant::nothing(),
     }
 }
-pub(super) fn from_variant(ty: ScalarType, value: Variant) -> Result<Value, i32> {
+pub fn from_variant(ty: ScalarType, value: Variant) -> Result<Value, i32> {
     use oxvba_bundle::NumericCoerceTarget as N;
     Ok(match ty {
         ScalarType::Variant => Value::Variant(value),
@@ -124,6 +124,14 @@ pub fn needs_helper(inst: &OxInst, layout: &ScalarLayout) -> bool {
         )
     };
     match inst {
+        OxInst::CallNative {
+            callee: oxvba_oxir::OxNativeCallee::Builtin(oxvba_bundle::NativeImplId::IsMissing),
+            ..
+        } => true,
+        OxInst::ComCallEarly { method, .. } => layout
+            .host_calls
+            .get(method)
+            .is_some_and(|p| p.native.is_some()),
         OxInst::Box { .. }
         | OxInst::Unbox { .. }
         | OxInst::Concat { .. }
@@ -175,6 +183,11 @@ pub unsafe extern "C" fn evaluate(
         let layout = unsafe { &*(*raw).layout };
         // SAFETY: caller retains the original instruction allocation.
         let inst = unsafe { &*inst };
+        if let OxInst::ComCallEarly { .. } = inst {
+            // SAFETY: same leased frame/original instruction and unique context.
+            return unsafe { super::member::invoke(raw, inst, &mut *context) }
+                .map_or_else(|e| e, |()| 0);
+        }
         // SAFETY: short operand reads retain their carriers in stable scratch.
         let read = |op: &OxOperand| unsafe { operand_value(raw, layout, op) };
         // SAFETY: the backend retains exclusive synchronous execution authority
@@ -183,6 +196,26 @@ pub unsafe extern "C" fn evaluate(
             |op: &OxOperand| resolve_default(read(op)?, layout, unsafe { &mut *context });
         let result = (|| -> Result<(OxPlace, Value), i32> {
             let (dst, result) = match inst {
+                OxInst::CallNative {
+                    dst: Some(dst),
+                    callee:
+                        oxvba_oxir::OxNativeCallee::Builtin(oxvba_bundle::NativeImplId::IsMissing),
+                    args,
+                } => {
+                    let operand = match &args[0] {
+                        oxvba_oxir::OxCallArg::Operand(op) => op.clone(),
+                        oxvba_oxir::OxCallArg::ByRef(p) => OxOperand::Use(*p),
+                        _ => return Err(5),
+                    };
+                    let value = read(&operand)?;
+                    (
+                        *dst,
+                        Variant::from_bool(
+                            value.vtype() == VarType::Error
+                                && value.as_error_code() == Some(0x8002_0004u32 as i32),
+                        ),
+                    )
+                }
                 OxInst::Box { dst, src, .. } => (*dst, read(src)?),
                 OxInst::Unbox {
                     dst, src, checked, ..
@@ -317,16 +350,35 @@ fn resolve_default(
             })?;
         // SAFETY: the retained factory object and compiler-selected getter plan
         // supply the exact signature. The owned value survives the callback.
-        let result = unsafe {
-            calcvba_host_api::object::value_slots::invoke_value_slot(
-                object.argument().header(),
-                plan.iid,
-                plan.slot,
-                &plan.parameters,
-                plan.result,
-                &[],
-                context,
-            )
+        let result = if plan.native.is_some() {
+            let mut values = [];
+            let mut arguments =
+                calcvba_host_api::object::planned_slots::MemberArguments::new(&mut values, &[])?;
+            // SAFETY: retained factory object and exact compiler-selected plan;
+            // the callback supplies only metadata-declared optional arguments.
+            unsafe {
+                calcvba_host_api::object::planned_slots::invoke_planned_member(
+                    object.argument().as_ptr(),
+                    plan.iid,
+                    plan.slot,
+                    plan.result,
+                    &mut arguments,
+                    context,
+                )
+            }
+        } else {
+            // SAFETY: retained factory object and exact checked getter signature.
+            unsafe {
+                calcvba_host_api::object::value_slots::invoke_value_slot(
+                    object.argument().header(),
+                    plan.iid,
+                    plan.slot,
+                    &plan.parameters,
+                    plan.result,
+                    &[],
+                    context,
+                )
+            }
         }?;
         value = to_variant(result);
     }

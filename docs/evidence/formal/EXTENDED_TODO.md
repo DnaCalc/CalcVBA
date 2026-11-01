@@ -1,5 +1,12 @@
 # Formal Extended Todo
 
+- ID: FTODO-NATIVE-TYPED-20261101-R10
+  Profile: descriptor-planned native values and outputs (bd-59co.3.5.8).
+  Summary: shared native aliases, fault-edge writeback, declared native Variant/array cells, nominal interface results and teardown have VM3/native-JIT fixture and owned Application evidence. The eight Lean abstractions checked this run do not prove native Windows ABI, Rust cell-pointer provenance, COM apartments or generated code. Miri cannot execute native Windows COM; available offline dependency/sysroot caches also prevented the portable run. No additional formal credit.
+  Current status: investigating.
+  Reproduction command: cargo test -p oxvba-embed --test typed_native_com; owned ignored case via scripts/run-worksheet-errors-oracle.ps1.
+  Suggested next action: model concrete member-cell/alias ownership and callback reentry with CORE-5/WIN-4; retain the open exact-layout and nominal interface array producers.
+
 - ID: FTODO-NATIVE-TYPED-20261101-R9
   Profile: imported dual-interface scalar/BSTR typed slots (`bd-59co.3.5.7`).
   Summary: real Dictionary and owned Excel exercise exact native signatures and hidden LCID on both backends. Metadata/QI/thread/proxy refusal and retained native ownership have executable development evidence; installed Lean abstractions do not model Windows ABI, native apartments, proxy slots, IErrorInfo or generated machine code.
@@ -230,3 +237,10 @@ Non-blocking formal issues and follow-up items for later ladder profiles.
   Current status: investigating.
   Reproduction command: cargo +nightly miri test -p oxvba-embed --no-default-features --test typed_defaults; raw rejected attempts in the run-10 evidence archive.
   Suggested next action: provide matching offline dependencies/sysroot and rerun Miri; add default-dispatch ownership refinement under CORE-5/CORE-7. Native/JIT formal proof remains open.
+
+- ID: FTODO-TYPED-SOURCE-GRAPHS-20261101
+  Profile: Optional and retained source-project calls (bd-59co.2.9.16; broader CORE-5/CORE-7/CORE-8).
+  Summary: Execution checks cover independent project stores, shared diamond dependencies, ordered import resolution, Missing/private ByRef cells, errors, aliases, cache identity and old code/store leases. Existing Lean abstractions do not refine these concrete linked-unit or optional-cell mechanics. The run-10 Miri dependency/sysroot blocker remains; no Miri/native formal passing credit.
+  Current status: investigating.
+  Reproduction command: cargo test -p oxvba-embed --test typed_project_calls --test suspended_invocation; installed Lean 4.29.1 checks the existing abstractions only.
+  Suggested next action: model retained unit/procedure targets and per-unit global authorities, then refine optional-cell/alias ownership and cross-project fault restoration with the CORE-5 ownership work.

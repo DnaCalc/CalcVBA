@@ -909,11 +909,15 @@ impl<'h> Vm3<'h> {
     /// Canonical storage for a retained typed activation. The caller must keep
     /// the session leased and exclude reset/replacement while retaining pointers.
     pub fn typed_globals_raw(&mut self) -> (*mut Variant, usize) {
+        self.typed_globals_raw_at(self.exec.programs.len() - 1)
+    }
+    /// Canonical storage for one retained linked unit under the same lease.
+    pub fn typed_globals_raw_at(&mut self, unit: usize) -> (*mut Variant, usize) {
         let globals = &mut self
             .exec
             .programs
-            .last_mut()
-            .expect("linked session")
+            .get_mut(unit)
+            .expect("linked session unit")
             .globals;
         // Vec's raw accessor does not materialize an exclusive slice that would
         // invalidate a parked activation's existing raw storage authority.
@@ -2437,6 +2441,17 @@ impl<'h> Vm3<'h> {
                         *slot = Variant::from_error_code(MISSING_ARG);
                     }
                 }
+            }
+        }
+        for (i, parameter) in callee
+            .locals
+            .iter()
+            .take(callee.param_count)
+            .enumerate()
+            .skip(args.len())
+        {
+            if parameter.param.is_some_and(|p| p.optional) && parameter.ty == OxTy::Variant {
+                locals[i] = Variant::from_error_code(MISSING_ARG);
             }
         }
         let return_local = callee.return_local;

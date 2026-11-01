@@ -503,6 +503,37 @@ impl ComHal for StandardHostServices {
         Err(self.unsupported(capability, "prepare_typed_object"))
     }
 
+    unsafe fn prepare_typed_object_with_interfaces(
+        &self,
+        object: ObjectRef,
+        members: &[crate::traits::TypeLibMemberMetadata],
+        interfaces: &[oxvba_com::TypeLibInterfaceMetadata],
+    ) -> HalResult<calcvba_host_api::HostObject> {
+        let capability = CapabilityId::ComActivationDispatch;
+        let operation = "prepare_typed_object_with_interfaces";
+        if !self.supports(capability) {
+            return Err(self.unsupported(capability, operation));
+        }
+        if !self.policy.allow_com_activation {
+            return Err(self.denied(capability, operation));
+        }
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        if self.native_com_enabled() {
+            self.ensure_thread_com_apartment(operation)?;
+            // SAFETY: forward the caller's exact trusted descriptor contract;
+            // the bridge validates ownership, slot bounds, QI and proxy alignment.
+            return unsafe {
+                self.com_bridge
+                    .prepare_typed_object_with_interfaces(object, members, interfaces)
+            }
+            .map_err(|message| {
+                HalError::adapter_fault(self.profile, capability, operation, message)
+            });
+        }
+        let _ = (object, members, interfaces);
+        Err(self.unsupported(capability, operation))
+    }
+
     fn release_object_variant(&self, object: ObjectRef) -> HalResult<Variant> {
         let capability = CapabilityId::ComActivationDispatch;
         if !self.supports(capability) {

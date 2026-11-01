@@ -4,6 +4,7 @@ use calcvba_host_api::{ScalarBits, TypedContext, Value, ValueType as ScalarType}
 use oxvba_oxir::{
     BlockId, ErrField, FuncId, OxConst, OxInst, OxOperand, OxPlace, OxProgram, OxTerminator,
 };
+use oxvba_rt_abi::host_entry::LinkedTarget;
 use oxvba_rt_abi::host_entry::activation::{Activation, CONTROL, SUSPENDED};
 use oxvba_rt_abi::{ErrEngine, Fault, FaultAction, ResumeTarget, SavedErrState};
 use oxvba_vm3::typed::TypedInterpreter;
@@ -12,6 +13,7 @@ struct Frame {
     // Box keeps ancestor alias targets stable as the stack grows.
     activation: Box<Activation<'static>>,
     procedure: FuncId,
+    program: usize,
     destination: Option<OxPlace>,
     saved_error: SavedErrState,
     line: i32,
@@ -19,6 +21,7 @@ struct Frame {
 pub(crate) struct TypedStack {
     frames: Vec<Frame>,
     error: *mut ErrEngine,
+    stores: Vec<(*mut oxvba_runtime::Variant, usize)>,
 }
 impl TypedStack {
     pub(crate) fn error(&mut self, number: i32, source: &str) -> crate::Error {
@@ -46,7 +49,9 @@ impl TypedStack {
     /// may use that state except synchronous guarded callback reentry.
     pub(crate) unsafe fn new(
         activation: Activation<'static>,
+        program: usize,
         procedure: FuncId,
+        stores: Vec<(*mut oxvba_runtime::Variant, usize)>,
         error: *mut ErrEngine,
     ) -> Self {
         // SAFETY: caller retains unique session execution authority.
@@ -55,11 +60,13 @@ impl TypedStack {
             frames: vec![Frame {
                 activation: Box::new(activation),
                 procedure,
+                program,
                 destination: None,
                 saved_error,
                 line: 0,
             }],
             error,
+            stores,
         }
     }
     pub(crate) fn result(&mut self) -> Value {
@@ -83,9 +90,9 @@ impl TypedStack {
         self.err().restore(frame.saved_error);
         frame
     }
-    fn goto(&mut self, program: &OxProgram, target: BlockId) -> Result<(), i32> {
+    fn goto(&mut self, programs: &[&OxProgram], target: BlockId) -> Result<(), i32> {
         let frame = self.frames.last_mut().ok_or(5)?;
-        let func = &program.funcs[frame.procedure.0];
+        let func = &programs[frame.program].funcs[frame.procedure.0];
         let mut pc = 0u32;
         for block in &func.blocks {
             if block.id == target {
@@ -98,10 +105,14 @@ impl TypedStack {
         }
         Err(5)
     }
-    fn position(&self, program: &OxProgram) -> Result<(usize, usize), i32> {
+    fn position(&self, programs: &[&OxProgram]) -> Result<(usize, usize), i32> {
         let frame = self.frames.last().ok_or(5)?;
         let mut start = 0u32;
-        for (i, block) in program.funcs[frame.procedure.0].blocks.iter().enumerate() {
+        for (i, block) in programs[frame.program].funcs[frame.procedure.0]
+            .blocks
+            .iter()
+            .enumerate()
+        {
             let end = start
                 .checked_add(u32::try_from(block.instrs.len()).map_err(|_| 5)? + 2)
                 .ok_or(5)?;
@@ -112,26 +123,39 @@ impl TypedStack {
         }
         Err(5)
     }
-    fn route(&mut self, program: &OxProgram, fault: Fault) -> Result<(), i32> {
-        let (block, _) = self.position(program)?;
+    fn route(&mut self, programs: &[&OxProgram], fault: Fault) -> Result<(), i32> {
+        let (block, _) = self.position(programs)?;
         let frame = self.frames.last().ok_or(5)?;
+        let program = programs[frame.program];
         let pad = program.funcs[frame.procedure.0].blocks[block]
             .fault_target
             .ok_or(fault.code)?;
         self.err().raise(fault, program.unit_name.clone());
-        self.goto(program, pad)
+        self.goto(programs, pad)
     }
     pub(crate) fn resume(
         &mut self,
-        program: &OxProgram,
-        entries: &[Result<TypedInterpreter<'_>, String>],
+        programs: &[&OxProgram],
+        entries: &[Vec<Result<TypedInterpreter<'_>, String>>],
         context: &mut TypedContext,
         mut operations: u64,
-        mut execute: impl FnMut(FuncId, &mut Activation<'_>, &mut TypedContext, u64) -> Result<i32, i32>,
+        mut execute: impl FnMut(
+            usize,
+            FuncId,
+            &mut Activation<'_>,
+            &mut TypedContext,
+            u64,
+        ) -> Result<i32, i32>,
     ) -> Result<i32, i32> {
         while operations != 0 {
             let frame = self.frames.last_mut().ok_or(5)?;
-            let result = execute(frame.procedure, &mut frame.activation, context, operations);
+            let result = execute(
+                frame.program,
+                frame.procedure,
+                &mut frame.activation,
+                context,
+                operations,
+            );
             operations = frame.activation.raw().remaining_operations;
             // Ancestors remain parked while descendants hold their aliases.
             // Global alias reads retain scratch on the executing frame itself.
@@ -153,9 +177,9 @@ impl TypedStack {
                     parent.set_pc(parent.pc() + 1);
                 }
                 Ok(CONTROL) => {
-                    if let Err(number) = self.control(program, entries) {
+                    if let Err(number) = self.control(programs, entries) {
                         self.route(
-                            program,
+                            programs,
                             Fault::new(number, oxvba_rt_abi::default_error_message(number)),
                         )?;
                     }
@@ -172,7 +196,7 @@ impl TypedStack {
                             help_context: fault.help_context,
                         },
                     );
-                    self.route(program, fault)?;
+                    self.route(programs, fault)?;
                 }
                 _ => return Err(5),
             }
@@ -181,33 +205,83 @@ impl TypedStack {
     }
     fn control(
         &mut self,
-        program: &OxProgram,
-        entries: &[Result<TypedInterpreter<'_>, String>],
+        programs: &[&OxProgram],
+        entries: &[Vec<Result<TypedInterpreter<'_>, String>>],
     ) -> Result<(), i32> {
-        let (block_id, offset) = self.position(program)?;
+        let (block_id, offset) = self.position(programs)?;
+        let current = self.frames.last().ok_or(5)?.program;
+        let program = programs[current];
         let procedure = self.frames.last().ok_or(5)?.procedure;
         let block = &program.funcs[procedure.0].blocks[block_id];
         if let Some(inst) = offset.checked_sub(1).and_then(|i| block.instrs.get(i)) {
             match inst {
-                OxInst::CallProc { proc, args, dst } => {
+                OxInst::CallProc { args, dst, .. } | OxInst::CallExtern { args, dst, .. } => {
+                    let (unit, proc) = match inst {
+                        OxInst::CallProc { proc, .. } => (current, *proc),
+                        OxInst::CallExtern { import, .. } => {
+                            let parent = entries[current][procedure.0].as_ref().map_err(|_| 5)?;
+                            let target = parent.layout().extern_calls.get(import).ok_or(5)?;
+                            if target.target
+                                == LinkedTarget::Builtin(oxvba_bundle::NativeImplId::IsMissing)
+                            {
+                                let frame = &mut self.frames.last_mut().ok_or(5)?.activation;
+                                let operand = match &args[0] {
+                                    oxvba_oxir::OxArg::ByVal(op) => op.clone(),
+                                    oxvba_oxir::OxArg::ByRef(p) => OxOperand::Use(*p),
+                                    _ => return Err(13),
+                                };
+                                let bits = frame.read(&operand, ScalarType::Variant)?;
+                                // SAFETY: the executing frame retains this exact Variant cell.
+                                let Value::Variant(value) = (unsafe {
+                                    calcvba_host_api::value::retain_bits(ScalarType::Variant, bits)
+                                })?
+                                else {
+                                    return Err(13);
+                                };
+                                let missing = value.vtype() == oxvba_runtime::VarType::Error
+                                    && value.as_error_code() == Some(0x8002_0004u32 as i32);
+                                if let Some(dst) = dst {
+                                    frame.write_owned_value(
+                                        *dst,
+                                        Value::Variant(oxvba_runtime::Variant::from_bool(missing)),
+                                    )?;
+                                }
+                                frame.set_pc(frame.pc() + 1);
+                                return Ok(());
+                            }
+                            let LinkedTarget::Procedure { program, procedure } = target.target
+                            else {
+                                return Err(5);
+                            };
+                            (program, procedure)
+                        }
+                        _ => return Err(5),
+                    };
                     if self.frames.len() >= 64 {
                         return Err(28);
                     }
-                    let typed = entries.get(proc.0).and_then(|e| e.as_ref().ok()).ok_or(5)?;
+                    let typed = entries
+                        .get(unit)
+                        .and_then(|p| p.get(proc.0))
+                        .and_then(|e| e.as_ref().ok())
+                        .ok_or(5)?;
                     // SAFETY: all ancestor activations are boxed at stable addresses;
                     // children are popped before parents on return, fault and cancel.
                     let activation = unsafe {
-                        Activation::child(
+                        Activation::child_with_globals(
                             &mut self.frames.last_mut().ok_or(5)?.activation,
                             typed.layout(),
                             args,
                             typed.entry_pc(),
+                            self.stores[unit].0,
+                            self.stores[unit].1,
                         )
                     }?;
                     let saved_error = self.err().enter_activation();
                     self.frames.push(Frame {
                         activation: Box::new(activation),
-                        procedure: *proc,
+                        procedure: proc,
+                        program: unit,
                         destination: *dst,
                         saved_error,
                         line: 0,
@@ -262,14 +336,14 @@ impl TypedStack {
                     .map_err(|_| 5)?
                 {
                     FaultAction::Handle(target) | FaultAction::ResumeNext(target) => {
-                        self.goto(program, target)
+                        self.goto(programs, target)
                     }
                     FaultAction::Propagate(fault) => {
                         if self.frames.len() == 1 {
                             return Err(fault.code);
                         }
                         drop(self.pop());
-                        self.route(program, fault)
+                        self.route(programs, fault)
                     }
                 }
             }
@@ -281,8 +355,8 @@ impl TypedStack {
                     _ => unreachable!(),
                 };
                 match self.err().resume(target) {
-                    Ok(target) => self.goto(program, target),
-                    Err(fault) => self.route(program, fault),
+                    Ok(target) => self.goto(programs, target),
+                    Err(fault) => self.route(programs, fault),
                 }
             }
             OxTerminator::Raise {
@@ -320,7 +394,7 @@ impl TypedStack {
                         .or_else(|| inherit.then(|| err.err.help_file.clone())),
                     help_context: help.or_else(|| inherit.then_some(err.err.help_context)),
                 };
-                self.route(program, fault)
+                self.route(programs, fault)
             }
             _ => Err(5),
         }

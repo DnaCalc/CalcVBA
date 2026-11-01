@@ -73,9 +73,30 @@ impl CompiledImage<'_> {
         context: &mut TypedContext,
         operations: u64,
     ) -> Result<i32, i32> {
+        // SAFETY: forwards this exact admitted frame to the root unit.
+        unsafe {
+            self.resume_activation_in(
+                self.resumable_functions.len() - 1,
+                func,
+                frame,
+                context,
+                operations,
+            )
+        }
+    }
+    /// # Safety
+    /// Same frame/store contract as resume_activation, for exactly this unit.
+    pub unsafe fn resume_activation_in(
+        &self,
+        unit: usize,
+        func: FuncId,
+        frame: &mut Activation<'_>,
+        context: &mut TypedContext,
+        operations: u64,
+    ) -> Result<i32, i32> {
         let entry = self
             .resumable_functions
-            .last()
+            .get(unit)
             .and_then(|p| p.get(func.0))
             .and_then(Option::as_ref)
             .ok_or(5)?;
@@ -161,7 +182,7 @@ pub(crate) fn compile_resumable_entries(
     for (p, program) in programs.iter().enumerate() {
         let mut functions = Vec::new();
         for (f, func) in program.funcs.iter().enumerate() {
-            let Ok(layout) = ScalarLayout::with_program(func, program) else {
+            let Ok(layout) = ScalarLayout::with_programs(func, program, programs) else {
                 functions.push(None);
                 continue;
             };

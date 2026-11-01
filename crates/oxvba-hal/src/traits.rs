@@ -413,6 +413,20 @@ pub trait ComHal: Send + Sync {
             "release_object_variant",
         )
     }
+    /// # Safety
+    /// Selected members and interfaces are unchanged trusted compiler-retained
+    /// native ABI metadata. All objects remain in the creating COM apartment.
+    unsafe fn prepare_typed_object_with_interfaces(
+        &self,
+        _object: ObjectRef,
+        _members: &[TypeLibMemberMetadata],
+        _interfaces: &[oxvba_com::TypeLibInterfaceMetadata],
+    ) -> HalResult<calcvba_host_api::HostObject> {
+        variant_companion_not_overridden(
+            CapabilityId::ComActivationDispatch,
+            "prepare_typed_object_with_interfaces",
+        )
+    }
     fn describe_object(&self, object: ObjectRef) -> HalResult<Option<ComObjectDescriptor>>;
     /// Snapshot a foreign COM collection's elements via `IEnumVARIANT` (VBA
     /// `For Each`). Collecting every element up front is intentional: the

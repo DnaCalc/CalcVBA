@@ -35,6 +35,58 @@ impl Provider {
         self
     }
     /// Prepare compiler-owned metadata without publishing any callable address.
+    pub fn compile_graph(&self, graph: &api::ProjectGraph) -> Result<Module, api::Error> {
+        let mut manifests = crate::project_graph::manifests(graph)?;
+        if graph
+            .projects
+            .iter()
+            .any(|node| !node.project.libraries.is_empty())
+        {
+            return Err(api::Error::UnsupportedSignature(
+                "source graph requires the explicit typed object-library catalogue".into(),
+            ));
+        }
+        validate_typed_libraries(&self.object_libraries)?;
+        for manifest in &mut manifests {
+            for library in &self.object_libraries {
+                if manifest.references.iter().any(|r| match r {
+                    sym::ProjectReference::TypeLibrary { name, .. } => {
+                        name.eq_ignore_ascii_case(&library.name)
+                    }
+                    sym::ProjectReference::Project {
+                        referenced_project_name,
+                    } => referenced_project_name.eq_ignore_ascii_case(&library.name),
+                    _ => false,
+                }) {
+                    return Err(api::Error::Compile(
+                        "duplicate graph library reference".into(),
+                    ));
+                }
+                manifest
+                    .references
+                    .push(sym::ProjectReference::TypeLibrary {
+                        name: library.name.clone(),
+                        guid: None,
+                        version_major: Some(1),
+                        version_minor: Some(0),
+                        lcid: None,
+                        import_lib: None,
+                    });
+            }
+        }
+        let resolver = Libraries(&self.object_libraries, &*self.resolver);
+        let mut module = Module::load_project_graph(&manifests, &resolver).map_err(error)?;
+        // Reuse the normal compiler retention pass for every unit, including
+        // untyped Object/Variant defaults absent from source declarations.
+        for program in module
+            .reference_programs
+            .iter_mut()
+            .chain(std::iter::once(&mut module.program))
+        {
+            retain_interfaces(program, &self.object_libraries, &resolver)?;
+        }
+        Ok(module.with_host(self.host.clone()))
+    }
     pub fn compile(&self, project: &api::Project) -> Result<Module, api::Error> {
         validate_libraries(&project.libraries)?;
         let libraries: Vec<_> = project
@@ -103,43 +155,86 @@ impl Provider {
         // An untyped Object/Variant can arrive from any explicitly supplied
         // host interface, even when no source declaration mentions that type.
         // Retain its authoritative default plan before publishing code/handles.
-        for library in &libraries {
-            for interface in &library.interfaces {
-                let iid = com_iid(interface.iid);
-                if module.program.com_interfaces.iter().any(|i| {
-                    matches!(i,
-                    oxvba_oxir::ComInterface::Com(meta) if meta.iid == Some(iid))
-                }) {
-                    continue;
-                }
-                let request = oxvba_com::TypeLibResolveRequest {
-                    reference_name: library.name.clone(),
-                    requested_coclass: Some(interface.name.clone()),
-                    importlib_hint: None,
-                    libid_hint: None,
-                    major_version_hint: Some(1),
-                    minor_version_hint: Some(0),
-                    lcid_hint: None,
-                };
-                let blob = resolver.resolve(&request).ok_or_else(|| {
-                    api::Error::Compile("host interface metadata unavailable".into())
-                })?;
-                module
-                    .program
-                    .com_interfaces
-                    .push(oxvba_oxir::ComInterface::Com(
-                        oxvba_com::TypeLibInterfaceMetadata {
-                            name: format!("{}.{}", library.name, interface.name),
-                            iid: Some(iid),
-                            members: blob.members,
-                        },
-                    ));
-            }
-        }
+        retain_interfaces(&mut module.program, &libraries, &resolver)?;
         Ok(module.with_host(self.host.clone()))
     }
 }
+fn retain_interfaces(
+    program: &mut oxvba_oxir::OxProgram,
+    libraries: &[api::TypedObjectLibrary],
+    resolver: &dyn TypeLibResolver,
+) -> Result<(), api::Error> {
+    for library in libraries {
+        for interface in &library.interfaces {
+            let iid = com_iid(interface.iid);
+            if program.com_interfaces.iter().any(|i| {
+                matches!(i,
+                    oxvba_oxir::ComInterface::Com(meta) if meta.iid == Some(iid))
+            }) {
+                continue;
+            }
+            let request = oxvba_com::TypeLibResolveRequest {
+                reference_name: library.name.clone(),
+                requested_coclass: Some(interface.name.clone()),
+                importlib_hint: None,
+                libid_hint: None,
+                major_version_hint: Some(1),
+                minor_version_hint: Some(0),
+                lcid_hint: None,
+            };
+            let blob = resolver
+                .resolve(&request)
+                .ok_or_else(|| api::Error::Compile("host interface metadata unavailable".into()))?;
+            program.com_interfaces.push(oxvba_oxir::ComInterface::Com(
+                oxvba_com::TypeLibInterfaceMetadata {
+                    name: format!("{}.{}", library.name, interface.name),
+                    iid: Some(iid),
+                    members: blob.members,
+                },
+            ));
+        }
+    }
+    Ok(())
+}
 impl api::RuntimeProvider for Provider {
+    fn load_graph(
+        &self,
+        graph: &api::ProjectGraph,
+        libraries: &[api::TypedObjectLibrary],
+        backend: api::Backend,
+        requested_abi: u32,
+    ) -> Result<Box<dyn api::Session>, api::Error> {
+        if requested_abi != api::HOST_API_ABI {
+            return Err(api::Error::AbiMismatch {
+                requested: requested_abi,
+                provided: api::HOST_API_ABI,
+            });
+        }
+        let provider = Self {
+            host: self.host.clone(),
+            resolver: self.resolver.clone(),
+            object_libraries: self
+                .object_libraries
+                .iter()
+                .chain(libraries)
+                .cloned()
+                .collect(),
+        };
+        let module = provider.compile_graph(graph)?;
+        let session = module
+            .into_session(match backend {
+                api::Backend::Interpreter => crate::Backend::Interpreter,
+                api::Backend::Jit => crate::Backend::Jit,
+            })
+            .map_err(error)?;
+        let procedures = catalogue(&session);
+        Ok(Box::new(Session {
+            session,
+            procedures,
+            provider,
+            graph: Some(graph.clone()),
+        }))
+    }
     fn value_abi(&self) -> Option<u32> {
         Some(api::TYPED_VALUE_ABI)
     }
@@ -193,6 +288,7 @@ impl api::RuntimeProvider for Provider {
         Ok(Box::new(Session {
             session,
             procedures,
+            graph: None,
             provider: Self {
                 host: self.host.clone(),
                 resolver: self.resolver.clone(),
@@ -203,6 +299,7 @@ impl api::RuntimeProvider for Provider {
 }
 struct Session {
     session: OwnedSession,
+    graph: Option<api::ProjectGraph>,
     procedures: Vec<api::Procedure>,
     provider: Provider,
 }
@@ -226,6 +323,13 @@ fn dynamic_bound(handle: &api::BoundProcedure) -> Result<&crate::BoundProcedure,
     Ok(bound)
 }
 impl api::Session for Session {
+    fn reload_graph(&mut self, graph: &api::ProjectGraph) -> Result<(), api::Error> {
+        let module = self.provider.compile_graph(graph)?;
+        self.session.reload(module).map_err(error)?;
+        self.procedures = catalogue(&self.session);
+        self.graph = Some(graph.clone());
+        Ok(())
+    }
     fn bind_values(
         &self,
         module: &str,
@@ -378,6 +482,20 @@ impl api::Session for Session {
         self.session.reset().map_err(error)
     }
     fn reload(&mut self, project: &api::Project) -> Result<(), api::Error> {
+        if let Some(mut graph) = self.graph.clone() {
+            let root = graph
+                .projects
+                .iter_mut()
+                .find(|n| n.project.name.eq_ignore_ascii_case(&graph.root))
+                .ok_or_else(|| api::Error::Compile("missing graph root".into()))?;
+            if !root.project.name.eq_ignore_ascii_case(&project.name) {
+                return Err(api::Error::Compile(
+                    "reload changes source graph root identity".into(),
+                ));
+            }
+            root.project = project.clone();
+            return api::Session::reload_graph(self, &graph);
+        }
         let module = self.provider.compile(project)?;
         self.session.reload(module).map_err(error)?;
         self.procedures = catalogue(&self.session);
@@ -522,7 +640,7 @@ fn array_element(value: &oxvba_bundle::ArrayElementType) -> api::ArrayElement {
     };
     A::Scalar(scalar)
 }
-fn default_value(value: &oxvba_bundle::coreir::CoreConst) -> api::Variant {
+pub(super) fn default_value(value: &oxvba_bundle::coreir::CoreConst) -> api::Variant {
     use {api::Variant as V, oxvba_bundle::coreir::CoreConst as C};
     match value {
         C::Empty => V::empty(),

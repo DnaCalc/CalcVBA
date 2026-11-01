@@ -240,7 +240,24 @@ initializer-failure error-state capture remain open under the broader owners.
 
 The destination is [`spec/OXVBA_WINDOWS_INTEROP_ARCHITECTURE_V1.md`](spec/OXVBA_WINDOWS_INTEROP_ARCHITECTURE_V1.md).
 
+Run 10's bounded native owning member path adds Variant, aliased output cells,
+nominal interface results and intrinsic SAFEARRAY transport using retained metadata.
+Dictionary Add/Exists/Item and registration-free output/error/cleanup cases run on
+both backends. Native Application interface results have owned Excel development
+evidence. Excel Range.Value and WorksheetFunction.Sum are pure dispinterfaces and
+remain blocked under the directed zero-Invoke constraint; no vtable is invented.
+See [the scoped evidence](evidence/programs/ideal-2026-07/windows-x64/WIN-4/typed-native-values-run10.md).
+
 ## 10. Host sessions, builds and outputs
+
+The neutral linked provider now accepts explicit procedural source closures via
+`ProjectGraph`/`load_graph`, retaining separate OxPrograms, canonical stores and
+prepared import indices on VM3/native JIT. Owning Optional calls support declared
+defaults, private omitted ByRef cells and Missing/IsMissing; source-level names
+are resolved before execution. Graph-wide cache identity and suspended code/store
+leases survive replacement. This bounded source API does not close verified
+source-free sessions, classes/records, ParamArray or the broader CORE-7/CORE-8 work.
+See [the project-call proof](evidence/programs/ideal-2026-07/core/CORE-7/typed-project-calls-run10.md).
 
 `oxvba-host` compiles source/project closures for VM3 or one-shot JIT execution. CLI `build --target OxImage` emits a source-free project closure; `run-image` executes it on either backend and honors its entry index. Program-style top-level statements are exercised through the packaged JIT path. `ProjectRuntimeSession` remains VM3-backed. `oxvba-build` also emits wrapper/COM metadata; `oxvba-comhost` loads those packages through VM3.
 
@@ -285,10 +302,10 @@ The dated review and these three accepted worksets are the current umbrella-prog
 
 The current hierarchy is:
 
-1. `CHARTER.md` — mission and scope;
-2. `OPERATIONS.md` — execution and evidence doctrine;
-3. `docs/spec/OXVBA_SYSTEM_CONTRACT_V1.md` — destination architecture and capability clauses;
-4. this document — current realization and gaps;
+1. `CHARTER.md` â€” mission and scope;
+2. `OPERATIONS.md` â€” execution and evidence doctrine;
+3. `docs/spec/OXVBA_SYSTEM_CONTRACT_V1.md` â€” destination architecture and capability clauses;
+4. this document â€” current realization and gaps;
 5. current subsystem specifications;
 6. accepted active worksets and canonical validation/evidence artifacts.
 

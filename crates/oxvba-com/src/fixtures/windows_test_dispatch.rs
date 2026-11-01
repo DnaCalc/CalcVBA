@@ -3733,6 +3733,18 @@ struct RawDualVtbl {
         rhs: *mut i32,
         out: *mut i32,
     ) -> i32,
+    /// slot 40: aliases are observable before a rich HRESULT failure.
+    alias_variants_and_fail: unsafe extern "system" fn(
+        this: *mut core::ffi::c_void,
+        lhs: *mut VARIANT,
+        rhs: *mut VARIANT,
+        out: *mut i32,
+    ) -> i32,
+    /// slot 41: a nominal result retains this exact dual interface.
+    get_self: unsafe extern "system" fn(
+        this: *mut core::ffi::c_void,
+        out: *mut *mut core::ffi::c_void,
+    ) -> i32,
 }
 
 #[cfg(target_os = "windows")]
@@ -3800,7 +3812,52 @@ static OXVBA_DUAL_VTBL: RawDualVtbl = RawDualVtbl {
     mutate_byref_i4_safearray: oxvba_dual_mutate_byref_i4_safearray,
     mutate_byref_record_safearray: oxvba_dual_mutate_byref_record_safearray,
     alias_longs: oxvba_dual_alias_longs,
+    alias_variants_and_fail: oxvba_dual_alias_variants_and_fail,
+    get_self: oxvba_dual_get_self,
 };
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn oxvba_dual_get_self(
+    this: *mut core::ffi::c_void,
+    out: *mut *mut core::ffi::c_void,
+) -> i32 {
+    if out.is_null() {
+        return COM_E_INVALIDARG;
+    }
+    // SAFETY: exact fixture receiver and initialized writable retval cell.
+    unsafe {
+        oxvba_dual_add_ref(this);
+        out.write(this);
+    }
+    COM_S_OK
+}
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn oxvba_dual_alias_variants_and_fail(
+    this: *mut core::ffi::c_void,
+    lhs: *mut VARIANT,
+    rhs: *mut VARIANT,
+    out: *mut i32,
+) -> i32 {
+    if lhs.is_null()
+        || rhs.is_null()
+        || !(lhs as usize).is_multiple_of(16)
+        || !(rhs as usize).is_multiple_of(16)
+    {
+        return COM_E_INVALIDARG;
+    }
+    // SAFETY: the declared in/out native VARIANT cells own their payloads. Read
+    // the second before clearing it, so repeated pointers observe the first write.
+    unsafe {
+        VariantClear(lhs);
+        (*lhs).Anonymous.Anonymous.vt = VT_I4;
+        (*lhs).Anonymous.Anonymous.Anonymous.lVal = 41;
+        let previous = variant_i32_value(rhs).unwrap_or(1);
+        VariantClear(rhs);
+        (*rhs).Anonymous.Anonymous.vt = VT_I4;
+        (*rhs).Anonymous.Anonymous.Anonymous.lVal = previous + 1;
+        oxvba_dual_raise_error(this, out)
+    }
+}
 
 #[cfg(target_os = "windows")]
 unsafe extern "system" fn oxvba_dual_alias_longs(

@@ -8,6 +8,7 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     rc::Rc,
 };
+pub mod planned_slots;
 pub mod value_slots;
 
 pub type InterfaceId = [u8; 16];
@@ -37,6 +38,7 @@ enum Callback {
     Double0(Box<Double0>),
     DoubleLong(Box<DoubleLong>),
     Typed(value_slots::TypedSlot),
+    Planned(Box<planned_slots::PlannedCallback>),
 }
 pub struct HostSlot {
     callback: Box<Callback>,
@@ -59,6 +61,10 @@ impl HostSlot {
             Callback::Double0(_) => (double0 as *const u8, SLOT_DOUBLE_0),
             Callback::DoubleLong(_) => (double_long as *const u8, SLOT_DOUBLE_LONG),
             Callback::Typed(slot) => slot.native(),
+            Callback::Planned(_) => (
+                planned_slots::planned_entry as *const u8,
+                planned_slots::SLOT_PLANNED_MEMBER,
+            ),
         };
         NativeSlot {
             entry,
@@ -73,6 +79,7 @@ struct ObjectStorage {
     header: ObjectHeader,
     _native: Rc<[NativeSlot]>,
     _owners: Vec<HostSlot>,
+    payload: Option<Rc<dyn std::any::Any>>,
 }
 /// Clone retains the table and callback captures. Drop releases them on this thread.
 /// Objects contain no borrowed invocation pointers and can outlive any one call.
@@ -140,6 +147,25 @@ impl HostObject {
         }
     }
     pub fn new(iid: InterfaceId, slots: Vec<HostSlot>) -> Self {
+        Self::build(iid, slots, None)
+    }
+    /// Attach a same-thread host owner without exposing native pointers in the
+    /// portable header. Boundary crates may recover only their own payload type.
+    pub fn new_with_payload(
+        iid: InterfaceId,
+        slots: Vec<HostSlot>,
+        payload: Rc<dyn std::any::Any>,
+    ) -> Self {
+        Self::build(iid, slots, Some(payload))
+    }
+    pub fn payload(&self) -> Option<&dyn std::any::Any> {
+        self.storage.payload.as_deref()
+    }
+    fn build(
+        iid: InterfaceId,
+        slots: Vec<HostSlot>,
+        payload: Option<Rc<dyn std::any::Any>>,
+    ) -> Self {
         // Derive raw table pointers only after immutable Rc allocation. Moving
         // a Box after taking as_ptr would invalidate that pointer's borrow tag.
         let native: Rc<[_]> = slots.iter().map(HostSlot::native).collect();
@@ -155,6 +181,7 @@ impl HostObject {
                 },
                 _native: native,
                 _owners: slots,
+                payload,
             }),
         }
     }

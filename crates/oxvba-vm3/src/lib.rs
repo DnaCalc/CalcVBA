@@ -989,7 +989,7 @@ impl<'h> Vm3<'h> {
             bits[i] = match ty {
                 ScalarType::Long => ScalarBits::long(value.as_i32()?),
                 ScalarType::Double => ScalarBits::double(value.as_f64()?),
-                ScalarType::Boolean | ScalarType::HostObject => return None,
+                _ => return None,
             };
         }
         let result_ty = entry.layout().result;
@@ -1007,7 +1007,7 @@ impl<'h> Vm3<'h> {
             Ok(value) => Ok(match result_ty {
                 ScalarType::Long => Variant::from_i32(value.as_long()),
                 ScalarType::Double => Variant::from_f64(value.as_double()),
-                ScalarType::Boolean | ScalarType::HostObject => {
+                _ => {
                     unreachable!("admitted scalar result")
                 }
             }),

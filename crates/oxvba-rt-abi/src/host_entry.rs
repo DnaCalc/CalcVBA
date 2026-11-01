@@ -7,10 +7,12 @@ use oxvba_oxir::{
 };
 
 pub use calcvba_host_api::{
-    Arguments, MAX_TYPED_ARGS, Scalar, ScalarBits, ScalarType, TYPED_ENTRY_ABI, TypedContext,
+    Arguments, MAX_TYPED_ARGS, Scalar, ScalarBits, TYPED_ENTRY_ABI, TypedContext,
 };
 pub const MAX_TYPED_SLOTS: usize = 128;
+pub use calcvba_host_api::ValueType as ScalarType;
 pub mod activation;
+pub mod value;
 
 /// Shared operations whose mechanics belong to the retained call/error stack.
 /// Arithmetic and host callbacks still execute in the selected backend.
@@ -41,6 +43,8 @@ fn scalar_type(ty: &OxTy) -> Option<ScalarType> {
         OxTy::Long => Some(ScalarType::Long),
         OxTy::Double => Some(ScalarType::Double),
         OxTy::Bool => Some(ScalarType::Boolean),
+        OxTy::Str => Some(ScalarType::String),
+        OxTy::Variant => Some(ScalarType::Variant),
         OxTy::Object(_) => Some(ScalarType::HostObject),
         _ => None,
     }
@@ -155,6 +159,9 @@ pub struct HostCallPlan {
     pub iid: [u8; 16],
     pub slot: usize,
     pub long_argument: bool,
+    pub parameters: Vec<ScalarType>,
+    pub result: ScalarType,
+    pub result_iid: Option<[u8; 16]>,
 }
 impl ScalarLayout {
     pub fn new(func: &OxFunc) -> Result<Self, String> {
@@ -199,20 +206,88 @@ impl ScalarLayout {
                     .and_then(|i| i.com_members())
                     .and_then(|m| m.get(method.member))
                     .ok_or("typed host call has no retained interface descriptor")?;
+                let native = descriptor.callconv_is_stdcall
+                    || descriptor.is_dual
+                    || descriptor.source_typekind.is_some();
+                let native_signature = if native {
+                    if !owning {
+                        return Err("native typed COM requires an owning activation".into());
+                    }
+                    Some(
+                        oxvba_com::typed_slots::signature(descriptor)
+                            .ok_or("unsupported native typed COM signature")?,
+                    )
+                } else {
+                    None
+                };
+                let from_param = |ty| match ty {
+                    P::Long => Some(ScalarType::Long),
+                    P::Double => Some(ScalarType::Double),
+                    P::Boolean => Some(ScalarType::Boolean),
+                    P::String => Some(ScalarType::String),
+                    P::Variant => Some(ScalarType::Variant),
+                    P::Object => Some(ScalarType::HostObject),
+                    _ => None,
+                };
+                let parameters = descriptor
+                    .parameter_types
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(i, ty)| {
+                        let ty = from_param(ty).ok_or("unsupported typed host argument carrier")?;
+                        Ok(if let Some(Some(iid)) = descriptor.parameter_iids.get(i) {
+                            ScalarType::Interface(iid_bytes(*iid))
+                        } else {
+                            ty
+                        })
+                    })
+                    .collect::<Result<Vec<_>, &str>>()?;
+                let parameters = native_signature
+                    .as_ref()
+                    .map_or(parameters, |(params, _)| params.clone());
+                let result = match descriptor.return_type {
+                    Some(ty) => from_param(ty).ok_or("unsupported typed host result carrier")?,
+                    None => ScalarType::Void,
+                };
                 if descriptor.invoke_kind != *invoke_kind
-                    || !matches!(descriptor.parameter_types.as_slice(), [] | [P::Long])
-                    || descriptor.return_type != Some(P::Double)
-                    || descriptor.parameter_optional.iter().any(|p| *p)
+                    || parameters.len() > MAX_TYPED_ARGS
+                    || (!native && descriptor.parameter_optional.iter().any(|p| *p))
                     || descriptor
                         .parameter_wire_types
                         .iter()
-                        .any(|w| *w != TypeLibWireType::Automation(P::Long))
-                    || descriptor
-                        .return_wire_type
-                        .as_ref()
-                        .is_some_and(|w| *w != TypeLibWireType::Automation(P::Double))
+                        .zip(&descriptor.parameter_types)
+                        .any(|(wire, ty)| {
+                            !matches!(wire, TypeLibWireType::Automation(p) if p == ty)
+                                && !matches!(wire, TypeLibWireType::InterfacePointer { .. })
+                        })
                 {
-                    return Err("typed host slot requires Double result and zero or one required ByVal Long".into());
+                    return Err("invalid typed host member signature".into());
+                }
+                let result_iid = match &descriptor.return_wire_type {
+                    Some(TypeLibWireType::InterfacePointer { name }) => Some(
+                        interfaces
+                            .iter()
+                            .find(|i| i.name().eq_ignore_ascii_case(name))
+                            .and_then(|i| match i {
+                                oxvba_oxir::ComInterface::Com(meta) => meta.iid,
+                                _ => None,
+                            })
+                            .map(iid_bytes)
+                            .ok_or("host result has no retained nominal interface")?,
+                    ),
+                    Some(TypeLibWireType::Automation(p)) if Some(*p) != descriptor.return_type => {
+                        return Err("typed host result wire mismatch".into());
+                    }
+                    _ => None,
+                };
+                if !owning
+                    && matches!(
+                        result,
+                        ScalarType::HostObject | ScalarType::String | ScalarType::Variant
+                    )
+                {
+                    return Err("owning member results require an owning frame".into());
                 }
                 let iid = descriptor
                     .interface_iid
@@ -234,13 +309,19 @@ impl ScalarLayout {
                     HostCallPlan {
                         iid: bytes,
                         slot,
-                        long_argument: !descriptor.parameter_types.is_empty(),
+                        long_argument: parameters == [ScalarType::Long]
+                            && result == ScalarType::Double,
+                        parameters,
+                        result,
+                        result_iid,
                     },
                 );
             }
         }
         let scalar = |ty: &OxTy| {
-            scalar_type(ty).ok_or_else(|| format!("typed entry carrier {ty:?} is not supported"))
+            scalar_type(ty)
+                .filter(|ty| owning || !matches!(ty, ScalarType::String | ScalarType::Variant))
+                .ok_or_else(|| format!("typed entry carrier {ty:?} is not supported"))
         };
         if func.param_count > MAX_TYPED_ARGS
             || func.param_count > func.locals.len()
@@ -299,12 +380,18 @@ impl ScalarLayout {
             .iter()
             .map(|l| scalar(&l.ty).map(Some))
             .collect::<Result<Vec<_>, _>>()?;
-        physical.extend(func.temps.iter().map(scalar_type));
+        physical.extend(func.temps.iter().map(|ty| {
+            if !owning && *ty == OxTy::Variant {
+                None
+            } else {
+                scalar_type(ty)
+            }
+        }));
         let global_base = physical.len();
         let unsupported_globals = globals
             .iter()
             .enumerate()
-            .filter(|(_, g)| matches!(scalar_type(&g.ty), None | Some(ScalarType::Boolean)))
+            .filter(|(_, g)| scalar_type(&g.ty).is_none())
             .map(|(i, _)| i)
             .collect();
         // Unused globals need not share the current frame's carrier family.
@@ -333,9 +420,10 @@ impl ScalarLayout {
                             .checked_add(id.0)
                             .ok_or("invalid temp index")?;
                         let slot = physical.get_mut(index).ok_or("invalid temp index")?;
-                        if slot.is_none() {
-                            *slot = calls.get(proc).and_then(|c| c.result);
-                            changed |= slot.is_some();
+                        if slot.is_none() || *slot == Some(ScalarType::Variant) {
+                            let next = calls.get(proc).and_then(|c| c.result);
+                            changed |= next.is_some() && next != *slot;
+                            *slot = next;
                         }
                     }
                     if let OxInst::ComCallEarly {
@@ -351,8 +439,9 @@ impl ScalarLayout {
                             .checked_add(id.0)
                             .ok_or("invalid temp index")?;
                         let slot = physical.get_mut(index).ok_or("invalid temp index")?;
-                        if slot.is_none() {
-                            *slot = Some(ScalarType::Double);
+                        let next = Some(host_calls[method].result);
+                        if (slot.is_none() || *slot == Some(ScalarType::Variant)) && next != *slot {
+                            *slot = next;
                             changed = true;
                         }
                     }
@@ -372,7 +461,7 @@ impl ScalarLayout {
                         let Some(slot) = physical.get(index) else {
                             return Err("invalid temp index".into());
                         };
-                        if slot.is_some() {
+                        if slot.is_some() && *slot != Some(ScalarType::Variant) {
                             continue;
                         }
                         let ty = |o: &OxOperand| match o {
@@ -441,7 +530,7 @@ impl ScalarLayout {
                 _ => Ok(None),
             })
             .collect::<Result<Vec<_>, _>>()?;
-        if parameters.contains(&ScalarType::Boolean) {
+        if !owning && parameters.contains(&ScalarType::Boolean) {
             return Err("typed Boolean parameter ABI remains open".into());
         }
         for local in func.locals.iter().take(func.param_count) {
@@ -454,7 +543,9 @@ impl ScalarLayout {
             .temps
             .iter()
             .enumerate()
-            .filter(|(_, ty)| **ty == OxTy::Variant)
+            .filter(|(i, ty)| {
+                **ty == OxTy::Variant && slots[func.locals.len() + i] != ScalarType::Variant
+            })
             .map(|(i, _)| func.locals.len() + i)
             .collect();
         let mut assignment_iids = std::collections::HashMap::new();
@@ -513,7 +604,7 @@ impl ScalarLayout {
             result: result
                 .map(|id| slots.get(id.0).copied().ok_or("invalid return slot"))
                 .transpose()?
-                .unwrap_or(ScalarType::Long),
+                .unwrap_or(ScalarType::Void),
             has_result: result.is_some(),
             by_ref_parameters: func.locals[..func.param_count]
                 .iter()
@@ -532,8 +623,15 @@ impl ScalarLayout {
             unsupported_globals,
             owning,
         };
-        if layout.result == ScalarType::Boolean
-            || (!owning && layout.result == ScalarType::HostObject)
+        if !owning
+            && matches!(
+                layout.result,
+                ScalarType::Boolean
+                    | ScalarType::HostObject
+                    | ScalarType::String
+                    | ScalarType::Variant
+                    | ScalarType::Void
+            )
         {
             return Err("typed Boolean/object result ABI remains open".into());
         }
@@ -615,6 +713,10 @@ impl ScalarLayout {
             OxOperand::Const(OxConst::I16(_) | OxConst::I32(_)) => Ok(ScalarType::Long),
             OxOperand::Const(OxConst::Bool(_)) => Ok(ScalarType::Boolean),
             OxOperand::Const(OxConst::Nothing) => Ok(ScalarType::HostObject),
+            OxOperand::Const(OxConst::Str(_)) if self.owning => Ok(ScalarType::String),
+            OxOperand::Const(OxConst::Empty | OxConst::Null) if self.owning => {
+                Ok(ScalarType::Variant)
+            }
             _ => Err("typed operand requires the dynamic runtime".into()),
         }
     }
@@ -639,7 +741,7 @@ impl ScalarLayout {
         let slot = self.slot(dst)?;
         let to = self.slots[slot];
         let from = self.operand_type(src)?;
-        if self.specialized_variant_temps.contains(&slot) && from != ScalarType::Double {
+        if self.specialized_variant_temps.contains(&slot) && from != to {
             return Err("specialized temporary needs a proven Double writer".into());
         }
         if to == from || (to == ScalarType::Double && from == ScalarType::Long) {
@@ -689,28 +791,44 @@ impl ScalarLayout {
             {
                 Ok(())
             }
+            OxInst::ErrFieldGet {
+                dst,
+                field:
+                    oxvba_oxir::ErrField::Description
+                    | oxvba_oxir::ErrField::Source
+                    | oxvba_oxir::ErrField::HelpFile,
+            } if self.owning && self.slots[self.slot(*dst)?] == ScalarType::String => Ok(()),
             OxInst::ComCallEarly {
-                dst: Some(dst),
+                dst,
                 method,
                 recv,
                 args,
                 ..
             } => {
                 let plan = self.host_calls.get(method).ok_or("unplanned host slot")?;
-                if self.slots[self.slot(*dst)?] != ScalarType::Double
-                    || self.operand_type(recv)? != ScalarType::HostObject
-                    || args.len() != usize::from(plan.long_argument)
+                if self.operand_type(recv)? != ScalarType::HostObject
+                    || args.len() != plan.parameters.len()
                 {
                     return Err("typed host call signature mismatch".into());
                 }
-                if let Some(arg) = args.first() {
-                    match arg {
-                        oxvba_oxir::OxCallArg::Operand(op)
-                            if self.operand_type(op)? == ScalarType::Long => {}
-                        oxvba_oxir::OxCallArg::ByRef(place)
-                            if self.slots[self.slot(*place)?] == ScalarType::Long => {}
-                        oxvba_oxir::OxCallArg::Const(_) => {}
-                        _ => return Err("typed host argument requires a Long value".into()),
+                match dst {
+                    Some(dst) if self.slots[self.slot(*dst)?] == plan.result => {}
+                    None => {}
+                    _ => return Err("typed host result destination mismatch".into()),
+                }
+                for (arg, ty) in args.iter().zip(&plan.parameters) {
+                    let from = match arg {
+                        oxvba_oxir::OxCallArg::Operand(op) => self.operand_type(op)?,
+                        oxvba_oxir::OxCallArg::ByRef(p) => self.slots[self.slot(*p)?],
+                        oxvba_oxir::OxCallArg::Const(_) => ScalarType::Long,
+                        _ => {
+                            return Err(
+                                "typed host argument is not a required positional value".into()
+                            );
+                        }
+                    };
+                    if from != ty.carrier() {
+                        return Err("typed host argument carrier mismatch".into());
                     }
                 }
                 Ok(())
@@ -731,6 +849,37 @@ impl ScalarLayout {
             }
             OxInst::DrainTerminations => Ok(()),
             OxInst::Assign { dst, value } => self.accepts(*dst, value),
+            OxInst::Box { dst, src, .. }
+                if self.owning && self.slots[self.slot(*dst)?] == ScalarType::Variant =>
+            {
+                self.operand_type(src).map(|_| ())
+            }
+            OxInst::Unbox { dst, src, .. }
+                if self.owning && self.operand_type(src)? == ScalarType::Variant =>
+            {
+                self.slot(*dst).map(|_| ())
+            }
+            OxInst::Coerce { dst, src, target }
+                if self.owning
+                    && matches!(
+                        target,
+                        OxCoerceTarget::Numeric(N::Long | N::Double | N::Boolean)
+                            | OxCoerceTarget::Str
+                            | OxCoerceTarget::ImplicitVariant
+                    ) =>
+            {
+                self.slot(*dst)?;
+                self.operand_type(src)?;
+                Ok(())
+            }
+            OxInst::Concat { dst, lhs, rhs }
+                if self.owning
+                    && self.slots[self.slot(*dst)?] == ScalarType::String
+                    && self.operand_type(lhs)? != ScalarType::Variant
+                    && self.operand_type(rhs)? != ScalarType::Variant =>
+            {
+                Ok(())
+            }
             OxInst::Coerce {
                 dst,
                 src,
@@ -749,6 +898,15 @@ impl ScalarLayout {
                 op,
             } => {
                 let ty = self.slots[self.slot(*dst)?];
+                if self.owning
+                    && ty == ScalarType::Variant
+                    && *mode == NumericMode::Widening
+                    && matches!(op, ArithOp::Add | ArithOp::Sub | ArithOp::Mul)
+                    && ![self.operand_type(lhs)?, self.operand_type(rhs)?]
+                        .contains(&ScalarType::HostObject)
+                {
+                    return Ok(());
+                }
                 if !matches!(
                     (ty, mode),
                     (ScalarType::Long, NumericMode::Checked(N::Long))
@@ -784,6 +942,17 @@ impl ScalarLayout {
                 if self.slots[self.slot(*dst)?] == ScalarType::Boolean =>
             {
                 self.comparison_type(lhs, rhs).map(|_| ())
+            }
+            OxInst::Neg { dst, src, mode }
+                if self.owning
+                    && matches!(
+                        (self.slots[self.slot(*dst)?], mode),
+                        (ScalarType::Long, NumericMode::Checked(N::Long))
+                            | (ScalarType::Double, NumericMode::Checked(N::Double))
+                            | (ScalarType::Variant, NumericMode::Widening)
+                    ) =>
+            {
+                self.accepts(*dst, src)
             }
             OxInst::Truthy { dst, src } if self.slots[self.slot(*dst)?] == ScalarType::Boolean => {
                 if self.operand_type(src)? == ScalarType::HostObject {
@@ -825,6 +994,15 @@ impl ScalarLayout {
             bits
         }
     }
+}
+
+fn iid_bytes(iid: oxvba_com::ComInterfaceIid) -> [u8; 16] {
+    let mut bytes = [0; 16];
+    bytes[..4].copy_from_slice(&iid.data1.to_le_bytes());
+    bytes[4..6].copy_from_slice(&iid.data2.to_le_bytes());
+    bytes[6..8].copy_from_slice(&iid.data3.to_le_bytes());
+    bytes[8..].copy_from_slice(&iid.data4);
+    bytes
 }
 
 #[cfg(test)]

@@ -4,10 +4,12 @@ mod invocation;
 pub mod object;
 pub use invocation::*;
 mod scalar;
+pub mod value;
 pub use object::{HostObject, HostSlot, InterfaceId, ObjectArg};
 pub use oxvba_runtime::Variant;
 pub use scalar::*;
 use std::{any::Any, marker::PhantomData, rc::Rc};
+pub use value::*;
 
 pub const HOST_API_ABI: u32 = 2;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,6 +238,25 @@ pub struct ProviderInfo {
     pub allocator: &'static str,
 }
 pub trait RuntimeProvider {
+    /// Additive value-slot capability; the original scalar API remains ABI 2.
+    fn value_abi(&self) -> Option<u32> {
+        None
+    }
+    fn load_with_object_libraries(
+        &self,
+        project: &Project,
+        libraries: &[TypedObjectLibrary],
+        backend: Backend,
+        requested_abi: u32,
+    ) -> Result<Box<dyn Session>, Error> {
+        if libraries.is_empty() {
+            self.load(project, backend, requested_abi)
+        } else {
+            Err(Error::UnsupportedSignature(
+                "provider has no extended typed object-library API".into(),
+            ))
+        }
+    }
     fn info(&self) -> ProviderInfo;
     fn load(
         &self,
@@ -247,6 +268,48 @@ pub trait RuntimeProvider {
 /// Same-thread session owner. Rust object borrows and opaque call handles never
 /// authorize concurrent access. Reload prepares replacement before invalidation.
 pub trait Session {
+    fn bind_values(
+        &self,
+        _module: &str,
+        _name: &str,
+        _arguments: &[ValueType],
+        _result: ValueType,
+    ) -> Result<BoundProcedure, Error> {
+        Err(Error::UnsupportedSignature(
+            "provider has no extended value-slot API".into(),
+        ))
+    }
+    fn type_bound_values(
+        &self,
+        _handle: &BoundProcedure,
+        _arguments: &[ValueType],
+        _result: ValueType,
+    ) -> Result<BoundProcedure, Error> {
+        Err(Error::UnsupportedSignature(
+            "provider has no extended value-slot API".into(),
+        ))
+    }
+    fn call_values(
+        &self,
+        _handle: &BoundProcedure,
+        _args: &[ValueSlot<'_>],
+        _context: &mut TypedContext,
+    ) -> Result<Value, Error> {
+        Err(Error::UnsupportedSignature(
+            "provider has no extended value-slot API".into(),
+        ))
+    }
+    fn begin_values(
+        &self,
+        _handle: &BoundProcedure,
+        _args: &[ValueSlot<'_>],
+        _frame: InvocationFrame,
+        _max_blocks: u64,
+    ) -> Result<Box<dyn ValueInvocation>, Error> {
+        Err(Error::UnsupportedSignature(
+            "provider has no extended value-slot API".into(),
+        ))
+    }
     fn procedures(&self) -> &[Procedure];
     fn bind(&self, module: &str, name: &str, kind: ProcedureKind) -> Result<BoundProcedure, Error>;
     fn call_bound(

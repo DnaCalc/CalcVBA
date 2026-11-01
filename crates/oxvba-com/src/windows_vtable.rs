@@ -86,7 +86,7 @@ unsafe extern "system" {
 /// Clear any pending thread error info so a stale `IErrorInfo` from an earlier
 /// call cannot be mis-attributed to this one (mirrors what the COM runtime does
 /// before a server entry point).
-fn clear_thread_error_info() {
+pub(crate) fn clear_thread_error_info() {
     // SAFETY: SetErrorInfo(0, NULL) is the documented form that clears the
     // thread's current error object; it dereferences no pointer.
     unsafe {
@@ -98,7 +98,7 @@ fn clear_thread_error_info() {
 /// any, and project it into the shared [`ComInvokeExceptionInfo`]. The
 /// `IErrorInfo` is Released here; its Source/Description/HelpFile BSTRs are
 /// transferred to us and freed via [`bstr_to_string_and_free`].
-fn take_error_info() -> Option<ComInvokeExceptionInfo> {
+pub(crate) fn take_error_info() -> Option<ComInvokeExceptionInfo> {
     let mut perrinfo: *mut c_void = std::ptr::null_mut();
     // SAFETY: `perrinfo` is a valid out-pointer; GetErrorInfo writes either null
     // (no pending error, returns S_FALSE) or a single owned IErrorInfo reference.

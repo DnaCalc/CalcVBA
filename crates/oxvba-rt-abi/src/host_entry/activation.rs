@@ -1,13 +1,15 @@
 //! Owning physical storage and exact continuation position for typed execution.
 //! Global storage is the session's canonical Variant store; there is no mirror.
 use super::{MAX_TYPED_SLOTS, ScalarBits, ScalarLayout, ScalarType};
-use calcvba_host_api::{HostObject, OwnedValue, Slot, object::ObjectHeader};
+use calcvba_host_api::{HostObject, Slot, Value, ValueSlot};
 use oxvba_runtime::Variant;
+use std::{ops::Deref, rc::Rc};
 
 pub const SUSPENDED: i32 = -2;
 /// Return to the shared activation-stack driver for a call/error-state operation.
 pub const CONTROL: i32 = -3;
 pub const FINISHED_PC: u32 = u32::MAX;
+const SCRATCH_CAPACITY: usize = 16;
 /// Private generated-code ABI. Every nonnull object slot owns one reference.
 #[repr(C)]
 pub struct RawActivation {
@@ -18,7 +20,10 @@ pub struct RawActivation {
     aliases: [Alias; calcvba_host_api::MAX_TYPED_ARGS],
     globals: *mut Variant,
     global_len: usize,
-    scratch: [*const ObjectHeader; 4],
+    pub(crate) layout: *const ScalarLayout,
+    variants: *mut Variant,
+    variant_len: usize,
+    scratch: [Scratch; SCRATCH_CAPACITY],
     scratch_len: usize,
 }
 #[derive(Clone, Copy)]
@@ -34,7 +39,31 @@ impl Alias {
 }
 pub struct Activation<'a> {
     raw: RawActivation,
-    layout: std::borrow::Cow<'a, ScalarLayout>,
+    layout: FrameLayout<'a>,
+}
+enum FrameLayout<'a> {
+    Borrowed(&'a ScalarLayout),
+    Owned(Rc<ScalarLayout>),
+}
+impl Deref for FrameLayout<'_> {
+    type Target = ScalarLayout;
+    fn deref(&self) -> &ScalarLayout {
+        match self {
+            Self::Borrowed(layout) => layout,
+            Self::Owned(layout) => layout,
+        }
+    }
+}
+#[derive(Clone, Copy)]
+struct Scratch {
+    ty: ScalarType,
+    bits: ScalarBits,
+}
+impl Scratch {
+    const EMPTY: Self = Self {
+        ty: ScalarType::Void,
+        bits: ScalarBits::ZERO,
+    };
 }
 impl<'a> Activation<'a> {
     /// # Safety
@@ -104,6 +133,27 @@ impl<'a> Activation<'a> {
             )
         }
     }
+    /// # Safety
+    /// Same retained canonical-store contract as new, with extended typed values.
+    pub unsafe fn new_values(
+        layout: &ScalarLayout,
+        args: &[ValueSlot<'_>],
+        globals: *mut Variant,
+        global_len: usize,
+        entry_pc: u32,
+    ) -> Result<Activation<'static>, i32> {
+        // SAFETY: forwards the complete owning frame contract.
+        unsafe {
+            Activation::build_values(
+                std::borrow::Cow::Owned(layout.clone()),
+                args,
+                globals,
+                global_len,
+                entry_pc,
+                true,
+            )
+        }
+    }
     unsafe fn build(
         layout: std::borrow::Cow<'a, ScalarLayout>,
         args: &[Slot<'_>],
@@ -112,6 +162,37 @@ impl<'a> Activation<'a> {
         entry_pc: u32,
         finite_inputs: bool,
     ) -> Result<Self, i32> {
+        if args.len() > calcvba_host_api::MAX_TYPED_ARGS {
+            return Err(13);
+        }
+        let mut values = [ValueSlot::Long(0); calcvba_host_api::MAX_TYPED_ARGS];
+        for (i, arg) in args.iter().enumerate() {
+            values[i] = (*arg).into();
+        }
+        // SAFETY: converted slots borrow the same retained caller arguments.
+        unsafe {
+            Self::build_values(
+                layout,
+                &values[..args.len()],
+                globals,
+                global_len,
+                entry_pc,
+                finite_inputs,
+            )
+        }
+    }
+    unsafe fn build_values(
+        layout: std::borrow::Cow<'a, ScalarLayout>,
+        args: &[ValueSlot<'_>],
+        globals: *mut Variant,
+        global_len: usize,
+        entry_pc: u32,
+        finite_inputs: bool,
+    ) -> Result<Self, i32> {
+        let layout = match layout {
+            std::borrow::Cow::Borrowed(layout) => FrameLayout::Borrowed(layout),
+            std::borrow::Cow::Owned(layout) => FrameLayout::Owned(Rc::new(layout)),
+        };
         if args.len() != layout.parameters.len()
             || args
                 .iter()
@@ -136,6 +217,21 @@ impl<'a> Activation<'a> {
         if layout.slots.len() - layout.global_base > global_len {
             return Err(5);
         }
+        let (variants, variant_len) = if layout.slots.contains(&ScalarType::Variant) {
+            let count = layout.slots[..layout.global_base]
+                .iter()
+                .filter(|ty| **ty == ScalarType::Variant)
+                .count();
+            let cells = (0..count + SCRATCH_CAPACITY)
+                .map(|_| Variant::empty())
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+            let len = cells.len();
+            (Box::into_raw(cells).cast::<Variant>(), len)
+        } else {
+            (std::ptr::null_mut(), 0)
+        };
+        let layout_pointer: *const ScalarLayout = &*layout;
         let mut frame = Self {
             raw: RawActivation {
                 slots: [ScalarBits::ZERO; MAX_TYPED_SLOTS],
@@ -145,11 +241,23 @@ impl<'a> Activation<'a> {
                 aliases: [Alias::NONE; calcvba_host_api::MAX_TYPED_ARGS],
                 globals,
                 global_len,
-                scratch: [std::ptr::null(); 4],
+                layout: layout_pointer,
+                variants,
+                variant_len,
+                scratch: [Scratch::EMPTY; SCRATCH_CAPACITY],
                 scratch_len: 0,
             },
             layout,
         };
+        let mut variant_index = 0;
+        for i in 0..frame.layout.global_base {
+            if frame.layout.slots[i] == ScalarType::Variant {
+                // SAFETY: the frame owns initialized stable cells for every index.
+                frame.raw.slots[i] =
+                    ScalarBits::object(unsafe { variants.add(variant_index) }.cast());
+                variant_index += 1;
+            }
+        }
         for (i, arg) in args.iter().enumerate() {
             let bits = arg.bits();
             // SAFETY: args retain all object borrows and this frame owns storage.
@@ -177,49 +285,54 @@ impl<'a> Activation<'a> {
     pub fn set_pc(&mut self, pc: u32) {
         self.raw.pc = pc;
     }
-    pub fn result(&self) -> OwnedValue {
+    pub fn result(&self) -> Value {
         if !self.layout.has_result {
-            return OwnedValue::Long(0);
+            return Value::Empty;
         }
         let bits = self.raw.slots[self.layout.return_slot];
-        match self.layout.result {
-            ScalarType::Long => OwnedValue::Long(bits.as_long()),
-            ScalarType::Double => OwnedValue::Double(bits.as_double()),
-            ScalarType::HostObject => {
-                let pointer = bits.as_object();
-                // SAFETY: this admitted slot is null or owns a live table.
-                OwnedValue::Object(
-                    (!pointer.is_null()).then(|| unsafe { HostObject::retain_header(pointer) }),
-                )
-            }
-            ScalarType::Boolean => unreachable!("Boolean result ABI is refused"),
+        // SAFETY: this admitted result cell retains the exact carrier.
+        unsafe { calcvba_host_api::value::retain_bits(self.layout.result, bits) }
+            .expect("admitted result")
+    }
+    pub fn take_result(&mut self) -> Value {
+        if !self.layout.has_result {
+            return Value::Empty;
         }
+        let index = self.layout.return_slot;
+        let ty = self.layout.result;
+        if ty == ScalarType::Variant {
+            let cell = self.raw.slots[index]
+                .as_object()
+                .cast_mut()
+                .cast::<Variant>();
+            // SAFETY: this exact initialized cell belongs to the returning frame.
+            return Value::Variant(unsafe { cell.replace(Variant::empty()) });
+        }
+        let mut bits = std::mem::replace(&mut self.raw.slots[index], ScalarBits::ZERO);
+        // SAFETY: the result slot transfers its exact owned native carrier.
+        unsafe { calcvba_host_api::value::take_result(ty, &mut bits) }.expect("admitted result")
     }
     pub fn read(
         &mut self,
         operand: &oxvba_oxir::OxOperand,
         to: ScalarType,
     ) -> Result<ScalarBits, i32> {
-        use oxvba_oxir::OxOperand;
-        let from = self.layout.operand_type(operand).expect("admitted operand");
-        let bits = if let OxOperand::Use(place) = operand {
-            // SAFETY: owning session lease spans the activation; no reference
-            // into the global store survives this bounded read.
-            unsafe {
-                read_slot(
-                    &mut self.raw,
-                    self.layout.slot(*place).expect("admitted place"),
-                    from,
-                )?
-            }
-        } else {
-            self.layout.read(&self.raw.slots, operand, from)
-        };
-        Ok(if from == ScalarType::Long && to == ScalarType::Double {
-            ScalarBits::double(f64::from(bits.as_long()))
-        } else {
-            bits
-        })
+        // SAFETY: this method uniquely owns the admitted frame during the read.
+        unsafe { super::value::read_operand(&mut self.raw, &self.layout, operand, to) }
+    }
+    pub fn write_value(&mut self, dst: oxvba_oxir::OxPlace, value: &Value) -> Result<(), i32> {
+        let index = self.layout.slot(dst).map_err(|_| 5)?;
+        if self.layout.slots[index] != value.ty() {
+            return Err(13);
+        }
+        let bits = value.borrow_slot().ok_or(13)?.bits();
+        // SAFETY: the owned input value retains the exact admitted carrier.
+        unsafe { write_slot(&mut self.raw, index, self.layout.slots[index], &bits) }
+    }
+    pub fn write_owned_value(&mut self, dst: oxvba_oxir::OxPlace, value: Value) -> Result<(), i32> {
+        let index = self.layout.slot(dst).map_err(|_| 5)?;
+        // SAFETY: the owned value spans this exact admitted destination transfer.
+        unsafe { write_owned(&mut self.raw, index, self.layout.slots[index], value) }
     }
     /// # Safety
     /// value has the admitted destination carrier; object pointers are null or
@@ -240,8 +353,7 @@ impl<'a> Activation<'a> {
         for i in self.layout.local_count + from..self.layout.global_base {
             // SAFETY: initialized admitted local slots, with no overlapping entry.
             unsafe {
-                write_slot(&mut self.raw, i, self.layout.slots[i], &ScalarBits::ZERO)
-                    .expect("frame slot");
+                clear_slot(&mut self.raw, i, self.layout.slots[i]).expect("frame slot");
             }
         }
     }
@@ -255,7 +367,6 @@ impl<'a> Activation<'a> {
         entry_pc: u32,
     ) -> Result<Activation<'static>, i32> {
         use oxvba_oxir::{OxArg, OxOperand};
-        let mut bits = Vec::with_capacity(args.len());
         let mut owners = Vec::with_capacity(args.len());
         for (arg, ty) in args.iter().zip(&layout.parameters) {
             let operand = match arg {
@@ -263,32 +374,17 @@ impl<'a> Activation<'a> {
                 OxArg::ByRef(p) => OxOperand::Use(*p),
                 _ => return Err(13),
             };
-            let value = parent.read(&operand, *ty)?;
-            let owner = if *ty == ScalarType::HostObject && !value.as_object().is_null() {
-                // SAFETY: parent/read scratch retains this exact factory object.
-                Some(unsafe { HostObject::retain_header(value.as_object()) })
-            } else {
-                None
-            };
-            bits.push(value);
-            owners.push(owner);
+            let bits = parent.read(&operand, *ty)?;
+            // SAFETY: the parent retains every exact source carrier through cloning.
+            owners.push(unsafe { calcvba_host_api::value::retain_bits(*ty, bits) }?);
         }
-        let slots: Vec<_> = bits
+        let slots = owners
             .iter()
-            .zip(&layout.parameters)
-            .zip(&owners)
-            .map(|((bits, ty), owner)| match ty {
-                ScalarType::Long => Slot::Long(bits.as_long()),
-                ScalarType::Double => Slot::Double(bits.as_double()),
-                ScalarType::HostObject => owner
-                    .as_ref()
-                    .map_or(Slot::Nothing, HostObject::borrow_slot),
-                ScalarType::Boolean => unreachable!("Boolean parameters refused"),
-            })
-            .collect();
+            .map(|value| value.borrow_slot().ok_or(13))
+            .collect::<Result<Vec<_>, _>>()?;
         // SAFETY: the child shares the parent's retained canonical-store lease.
         let mut child = unsafe {
-            Activation::new(
+            Activation::new_values(
                 layout,
                 &slots,
                 parent.raw.globals,
@@ -307,7 +403,7 @@ impl<'a> Activation<'a> {
                 }
                 // Release the private copy before replacing it with a nonowning alias.
                 // SAFETY: exact initialized parameter carrier.
-                unsafe { write_slot(&mut child.raw, i, layout.parameters[i], &ScalarBits::ZERO) }?;
+                unsafe { clear_slot(&mut child.raw, i, layout.parameters[i]) }?;
                 let index = parent.layout.slot(*place).map_err(|_| 5)?;
                 child.raw.aliases[i] = Alias {
                     frame: parent_raw,
@@ -322,34 +418,107 @@ impl Drop for Activation<'_> {
     fn drop(&mut self) {
         self.clear_scratch();
         for i in 0..self.layout.global_base {
-            if self.layout.slots[i] == ScalarType::HostObject {
-                let old = std::mem::replace(&mut self.raw.slots[i], ScalarBits::ZERO);
-                // SAFETY: each admitted object slot transfers its one reference.
-                unsafe {
-                    HostObject::release_header(old.as_object());
+            let bits = self.raw.slots[i];
+            match self.layout.slots[i] {
+                ScalarType::HostObject => {
+                    // SAFETY: transfer this slot's one retained reference.
+                    unsafe {
+                        HostObject::release_header(bits.as_object());
+                    }
                 }
+                ScalarType::String => {
+                    // SAFETY: transfer this slot's one owned raw BSTR.
+                    drop(unsafe {
+                        calcvba_host_api::BStr::from_raw_bstr(bits.as_object().cast_mut().cast())
+                    });
+                }
+                _ => {}
             }
+        }
+        if !self.raw.variants.is_null() {
+            let slice = std::ptr::slice_from_raw_parts_mut(self.raw.variants, self.raw.variant_len);
+            // SAFETY: consume the exact boxed initialized Variant-cell allocation.
+            drop(unsafe { Box::from_raw(slice) });
         }
     }
 }
 /// # Safety
+/// raw is the unique retained frame; value transfers an exact typed carrier.
+pub(super) unsafe fn pin_value(raw: *mut RawActivation, value: Value) -> Result<ScalarBits, i32> {
+    let ty = value.ty();
+    let bits = match value {
+        Value::Long(v) => return Ok(ScalarBits::long(v)),
+        Value::Double(v) => return Ok(ScalarBits::double(v)),
+        Value::Boolean(v) => return Ok(ScalarBits::long(if v { -1 } else { 0 })),
+        Value::Empty => return Ok(ScalarBits::ZERO),
+        value => {
+            // SAFETY: short field access; no borrow spans a host callback.
+            let index = unsafe { (*raw).scratch_len };
+            if index >= SCRATCH_CAPACITY {
+                return Err(5);
+            }
+            match value {
+                Value::Object(value) => {
+                    ScalarBits::object(value.map_or(std::ptr::null(), HostObject::into_header))
+                }
+                Value::String(value) => ScalarBits::object(value.into_raw_bstr().cast()),
+                Value::Variant(value) => {
+                    // SAFETY: admission allocated initialized stable Variant scratch cells.
+                    let cells = unsafe { (*raw).variants };
+                    if cells.is_null() {
+                        return Err(5);
+                    }
+                    // SAFETY: fixed scratch index is inside the retained allocation.
+                    let cell = unsafe { cells.add((*raw).variant_len - SCRATCH_CAPACITY + index) };
+                    // SAFETY: install before dropping the previous owner.
+                    drop(unsafe { cell.replace(value) });
+                    ScalarBits::object(cell.cast())
+                }
+                _ => unreachable!(),
+            }
+        }
+    };
+    // SAFETY: unique frame and checked initialized scratch extent.
+    unsafe {
+        (*raw).scratch[(*raw).scratch_len] = Scratch { ty, bits };
+        (*raw).scratch_len += 1;
+    }
+    Ok(bits)
+}
+/// # Safety
 /// raw follows Activation::new's lease and exclusive running contract.
 pub unsafe fn clear_scratch(raw: *mut RawActivation) {
-    // Release after removing each pointer, so a host destructor cannot observe
-    // a still-owned reference or an exclusive Rust borrow into this frame.
     loop {
-        let pointer = {
-            // SAFETY: the running owner supplies the unique frame pointer.
-            let frame = unsafe { &mut *raw };
-            if frame.scratch_len == 0 {
+        // SAFETY: brief access ends before releasing any removed owner.
+        let entry = unsafe {
+            if (*raw).scratch_len == 0 {
                 break;
             }
-            frame.scratch_len -= 1;
-            std::mem::replace(&mut frame.scratch[frame.scratch_len], std::ptr::null())
+            (*raw).scratch_len -= 1;
+            std::ptr::replace(
+                std::ptr::addr_of_mut!((*raw).scratch[(*raw).scratch_len]),
+                Scratch::EMPTY,
+            )
         };
-        // SAFETY: removed exactly one retained factory reference.
-        unsafe {
-            HostObject::release_header(pointer);
+        match entry.ty {
+            ScalarType::HostObject => {
+                // SAFETY: transfer one removed scratch reference.
+                unsafe {
+                    HostObject::release_header(entry.bits.as_object());
+                }
+            }
+            ScalarType::String => {
+                // SAFETY: transfer one removed scratch BSTR.
+                drop(unsafe {
+                    calcvba_host_api::BStr::from_raw_bstr(entry.bits.as_object().cast_mut().cast())
+                });
+            }
+            ScalarType::Variant => {
+                let cell = entry.bits.as_object().cast_mut().cast::<Variant>();
+                // SAFETY: clear the initialized owned inline scratch cell.
+                drop(unsafe { cell.replace(Variant::empty()) });
+            }
+            _ => {}
         }
     }
 }
@@ -360,35 +529,41 @@ pub unsafe fn read_global(
     index: usize,
     ty: ScalarType,
 ) -> Result<ScalarBits, i32> {
-    // SAFETY: this non-callback read temporarily borrows the owned frame.
-    let frame = unsafe { &mut *raw };
-    if index >= frame.global_len || frame.globals.is_null() {
+    // SAFETY: read-only pointers under the retained canonical-store lease.
+    let (globals, len) = unsafe { ((*raw).globals, (*raw).global_len) };
+    if index >= len || globals.is_null() {
         return Err(5);
     }
-    // SAFETY: checked cell extent; only clone/scalar access occurs in this scope.
-    let value = unsafe { &*frame.globals.add(index) };
-    match ty {
-        ScalarType::Long => value.as_i32().map(ScalarBits::long).ok_or(13),
-        ScalarType::Double => value.as_f64().map(ScalarBits::double).ok_or(13),
-        ScalarType::HostObject => {
-            let Some(object) = value.as_object_ref() else {
-                return if value.vtype() == oxvba_runtime::VarType::Object {
-                    Ok(ScalarBits::ZERO)
-                } else {
-                    Err(13)
-                };
-            };
-            let object = HostObject::from_object_ref(&object).ok_or(13)?;
-            if frame.scratch_len == frame.scratch.len() {
-                return Err(5);
+    let value = {
+        // SAFETY: no reference into canonical storage survives this scope.
+        let value = unsafe { &*globals.add(index) };
+        match ty {
+            ScalarType::Long => return value.as_i32().map(ScalarBits::long).ok_or(13),
+            ScalarType::Double => return value.as_f64().map(ScalarBits::double).ok_or(13),
+            ScalarType::Boolean => {
+                return value
+                    .as_bool()
+                    .map(|v| ScalarBits::long(if v { -1 } else { 0 }))
+                    .ok_or(13);
             }
-            let pointer = object.into_header();
-            frame.scratch[frame.scratch_len] = pointer;
-            frame.scratch_len += 1;
-            Ok(ScalarBits::object(pointer))
+            ScalarType::String => Value::String(value.as_bstr().ok_or(13)?),
+            ScalarType::Variant => Value::Variant(value.clone()),
+            ScalarType::HostObject => {
+                let object = value.as_object_ref();
+                if object.is_none() && value.vtype() != oxvba_runtime::VarType::Object {
+                    return Err(13);
+                }
+                Value::Object(
+                    object
+                        .map(|object| HostObject::from_object_ref(&object).ok_or(13))
+                        .transpose()?,
+                )
+            }
+            _ => return Err(13),
         }
-        ScalarType::Boolean => Err(13),
-    }
+    };
+    // SAFETY: move the snapshot into stable frame scratch before any callback.
+    unsafe { pin_value(raw, value) }
 }
 /// # Safety
 /// raw follows Activation::new; index/ty are checked physical layout facts;
@@ -432,7 +607,12 @@ pub unsafe fn write_slot(
                     )
                 }
             }
-            ScalarType::Boolean => return Err(13),
+            ScalarType::Boolean => Variant::from_bool(bits.as_long() != 0),
+            ScalarType::String | ScalarType::Variant => {
+                // SAFETY: the input owner spans this retaining store.
+                super::value::to_variant(unsafe { calcvba_host_api::value::retain_bits(ty, bits) }?)
+            }
+            _ => return Err(13),
         };
         // SAFETY: canonical cell is live; install before dropping the old owner.
         let old = unsafe { std::ptr::replace(globals.add(index), value) };
@@ -441,7 +621,32 @@ pub unsafe fn write_slot(
         if index >= MAX_TYPED_SLOTS {
             return Err(5);
         }
-        let next = if ty == ScalarType::HostObject && !bits.as_object().is_null() {
+        if ty == ScalarType::Variant {
+            // SAFETY: every Variant physical slot points into initialized owned storage.
+            let cell = unsafe { (*raw).slots[index] }
+                .as_object()
+                .cast_mut()
+                .cast::<Variant>();
+            if cell.is_null() {
+                return Err(5);
+            }
+            // SAFETY: clone before replacing, including self-assignment.
+            let Value::Variant(value) = unsafe { calcvba_host_api::value::retain_bits(ty, bits) }?
+            else {
+                return Err(13);
+            };
+            // SAFETY: cell belongs to this frame and retains its initialized extent.
+            drop(unsafe { cell.replace(value) });
+            return Ok(());
+        }
+        let next = if ty == ScalarType::String {
+            // SAFETY: clone the exact borrowed BSTR before releasing the old cell.
+            let clone = unsafe {
+                calcvba_host_api::BStr::clone_from_raw_bstr(bits.as_object().cast_mut().cast())
+            }
+            .map_err(|_| 7)?;
+            ScalarBits::object(clone.into_raw_bstr().cast())
+        } else if ty == ScalarType::HostObject && !bits.as_object().is_null() {
             // SAFETY: retain before releasing the destination, including self-assignment.
             ScalarBits::object(unsafe { HostObject::retain_header(bits.as_object()) }.into_header())
         } else {
@@ -452,12 +657,91 @@ pub unsafe fn write_slot(
             let frame = unsafe { &mut *raw };
             std::mem::replace(&mut frame.slots[index], next)
         };
+        if ty == ScalarType::String {
+            // SAFETY: the previous String cell transfers its raw BSTR allocation.
+            drop(unsafe {
+                calcvba_host_api::BStr::from_raw_bstr(old.as_object().cast_mut().cast())
+            });
+        }
         if ty == ScalarType::HostObject {
             // SAFETY: the previous cell transfers its one retained reference.
             unsafe {
                 HostObject::release_header(old.as_object());
             }
         }
+    }
+    Ok(())
+}
+
+/// # Safety
+/// Same canonical-store/stable-alias contract as write_slot. value transfers its
+/// exact carrier; install occurs before releasing the destination's old owner.
+pub unsafe fn write_owned(
+    raw: *mut RawActivation,
+    index: usize,
+    ty: ScalarType,
+    value: Value,
+) -> Result<(), i32> {
+    if value.ty() != ty {
+        return Err(13);
+    }
+    // SAFETY: aliases name retained stable ancestors with the same checked type.
+    let alias = unsafe { (&*raw).aliases.get(index).copied() }.unwrap_or(Alias::NONE);
+    if !alias.frame.is_null() {
+        // SAFETY: the complete ancestor chain is retained.
+        return unsafe { write_owned(alias.frame, alias.index, ty, value) };
+    }
+    // SAFETY: short field reads; no reference spans dropping a replaced owner.
+    let (base, globals, len) = unsafe { ((*raw).global_base, (*raw).globals, (*raw).global_len) };
+    if index >= base {
+        let index = index - base;
+        if index >= len || globals.is_null() {
+            return Err(5);
+        }
+        let value = super::value::to_variant(value);
+        // SAFETY: the retained canonical global cell transfers its old owner.
+        drop(unsafe { globals.add(index).replace(value) });
+        return Ok(());
+    }
+    if index >= MAX_TYPED_SLOTS {
+        return Err(5);
+    }
+    if let Value::Variant(value) = value {
+        // SAFETY: each Variant slot points into initialized frame-owned storage.
+        let cell = unsafe { (*raw).slots[index] }
+            .as_object()
+            .cast_mut()
+            .cast::<Variant>();
+        if cell.is_null() {
+            return Err(5);
+        }
+        // SAFETY: cell is the checked, initialized destination owned by this frame.
+        drop(unsafe { cell.replace(value) });
+        return Ok(());
+    }
+    let bits = match value {
+        Value::Object(value) => {
+            ScalarBits::object(value.map_or(std::ptr::null(), HostObject::into_header))
+        }
+        Value::String(value) => ScalarBits::object(value.into_raw_bstr().cast()),
+        value => value.borrow_slot().ok_or(13)?.bits(),
+    };
+    // SAFETY: exact initialized physical slot; retain moved owner before release.
+    let old = unsafe { std::ptr::replace(std::ptr::addr_of_mut!((*raw).slots[index]), bits) };
+    match ty {
+        ScalarType::HostObject => {
+            // SAFETY: transfer one replaced factory owner.
+            unsafe {
+                HostObject::release_header(old.as_object());
+            }
+        }
+        ScalarType::String => {
+            // SAFETY: transfer one replaced raw BSTR owner.
+            drop(unsafe {
+                calcvba_host_api::BStr::from_raw_bstr(old.as_object().cast_mut().cast())
+            });
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -571,12 +855,33 @@ pub unsafe extern "C" fn scratch_clear(raw: *mut RawActivation) {
         clear_scratch(raw);
     }
 }
+/// # Safety
+/// raw/index name a live initialized slot of this exact physical carrier.
+unsafe fn clear_slot(raw: *mut RawActivation, index: usize, ty: ScalarType) -> Result<(), i32> {
+    if ty == ScalarType::Variant {
+        // SAFETY: retain the actual cell's pointer while replacing its owned value.
+        unsafe { write_owned(raw, index, ty, Value::Variant(Variant::empty())) }
+    } else {
+        // SAFETY: zero is the empty/null primitive, BSTR or object carrier.
+        unsafe { write_slot(raw, index, ty, &ScalarBits::ZERO) }
+    }
+}
+/// # Safety
+/// raw/index name a retained initialized actual Variant slot; no entry overlaps.
+pub unsafe extern "C" fn clear_variant(raw: *mut RawActivation, index: usize) -> i32 {
+    // SAFETY: generated caller supplies the checked slot's exact carrier.
+    unsafe { clear_slot(raw, index, ScalarType::Variant) }.map_or_else(|e| e, |()| 0)
+}
 pub fn kind(ty: ScalarType) -> u32 {
     match ty {
         ScalarType::Long => 1,
         ScalarType::Double => 2,
         ScalarType::HostObject => 3,
         ScalarType::Boolean => 4,
+        ScalarType::String => 5,
+        ScalarType::Variant => 6,
+        ScalarType::Void => 7,
+        ScalarType::Interface(_) => 3,
     }
 }
 fn decode_kind(kind: u32) -> Option<ScalarType> {
@@ -585,6 +890,139 @@ fn decode_kind(kind: u32) -> Option<ScalarType> {
         2 => Some(ScalarType::Double),
         3 => Some(ScalarType::HostObject),
         4 => Some(ScalarType::Boolean),
+        5 => Some(ScalarType::String),
+        6 => Some(ScalarType::Variant),
+        7 => Some(ScalarType::Void),
         _ => None,
+    }
+}
+
+/// # Safety
+/// Generated caller transfers a successful typed native result at output. Its
+/// exact extent is determined by kind; raw/index are an admitted destination.
+pub unsafe extern "C" fn result_write(
+    raw: *mut RawActivation,
+    index: usize,
+    kind: u32,
+    output: *mut ScalarBits,
+) -> i32 {
+    let Some(ty) = decode_kind(kind) else {
+        return 5;
+    };
+    // SAFETY: success initialized the advertised native output carrier.
+    let value = match unsafe { calcvba_host_api::value::take_result(ty, output) } {
+        Ok(value) => value,
+        Err(e) => return e,
+    };
+    if ty == ScalarType::Void {
+        return 0;
+    }
+    // SAFETY: the successful exact result transfers into this admitted slot.
+    unsafe { write_owned(raw, index, ty, value) }.map_or_else(|e| e, |()| 0)
+}
+/// # Safety
+/// Same result-transfer contract as result_write; the IID words are a checked
+/// nominal return constraint (all zero means no constraint). Failure still
+/// consumes and releases the successful native result exactly once.
+pub unsafe extern "C" fn result_write_checked(
+    raw: *mut RawActivation,
+    index: usize,
+    kind: u32,
+    output: *mut ScalarBits,
+    iid_low: u64,
+    iid_high: u64,
+) -> i32 {
+    let Some(ty) = decode_kind(kind) else {
+        return 5;
+    };
+    // SAFETY: generated success initialized this exact output carrier.
+    let value = match unsafe { calcvba_host_api::value::take_result(ty, output) } {
+        Ok(value) => value,
+        Err(e) => return e,
+    };
+    if iid_low != 0 || iid_high != 0 {
+        let mut iid = [0u8; 16];
+        iid[..8].copy_from_slice(&iid_low.to_le_bytes());
+        iid[8..].copy_from_slice(&iid_high.to_le_bytes());
+        if let Value::Object(Some(object)) = &value
+            && object.header().iid != iid
+        {
+            return 13;
+        }
+    }
+    if ty == ScalarType::Void {
+        return 0;
+    }
+    // SAFETY: this exact checked result transfers into the admitted destination.
+    unsafe { write_owned(raw, index, ty, value) }.map_or_else(|e| e, |()| 0)
+}
+
+/// Release an owned native slot result when VBA ignores a Function's value.
+/// # Safety
+/// output transfers one initialized owner of the exact successful result kind.
+pub unsafe extern "C" fn result_drop(kind: u32, output: *mut ScalarBits) -> i32 {
+    crate::with_status(|| {
+        let Some(ty) = decode_kind(kind) else {
+            return 5;
+        };
+        // SAFETY: the generated caller transfers the successful slot result once.
+        match unsafe { calcvba_host_api::value::take_result(ty, output) } {
+            Ok(value) => {
+                drop(value);
+                0
+            }
+            Err(error) => error,
+        }
+    })
+}
+
+/// # Safety
+/// raw is a retained unique frame; bytes is a live UTF-8 literal and output is
+/// one aligned writable carrier. The original OxFunc retains the literal.
+pub unsafe extern "C" fn literal_string(
+    raw: *mut RawActivation,
+    bytes: *const u8,
+    length: usize,
+    output: *mut ScalarBits,
+) -> i32 {
+    // SAFETY: generated caller retains the complete original literal allocation.
+    let text = match std::str::from_utf8(unsafe { std::slice::from_raw_parts(bytes, length) }) {
+        Ok(text) => text,
+        Err(_) => return 5,
+    };
+    // SAFETY: frame owns the new BSTR until the instruction completes.
+    match unsafe { pin_value(raw, Value::String(text.into())) } {
+        Ok(bits) => {
+            // SAFETY: checked output extent.
+            unsafe {
+                output.write(bits);
+            }
+            0
+        }
+        Err(e) => e,
+    }
+}
+/// # Safety
+/// raw retains Variant scratch storage; output is one aligned writable carrier.
+pub unsafe extern "C" fn constant_variant(
+    raw: *mut RawActivation,
+    null: u32,
+    output: *mut ScalarBits,
+) -> i32 {
+    let value = if null != 0 {
+        Variant::null()
+    } else {
+        Variant::empty()
+    };
+    // SAFETY: frame owns the actual inline Variant until instruction completion.
+    match unsafe { pin_value(raw, Value::Variant(value)) } {
+        Ok(bits) => {
+            // SAFETY: checked output extent.
+            unsafe {
+                output.write(bits);
+            }
+            0
+        }
+        Err(e) => e,
     }
 }

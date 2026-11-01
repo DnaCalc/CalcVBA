@@ -1,5 +1,19 @@
 # Formal Extended Todo
 
+- ID: FTODO-NATIVE-TYPED-20261101-R9
+  Profile: imported dual-interface scalar/BSTR typed slots (`bd-59co.3.5.7`).
+  Summary: real Dictionary and owned Excel exercise exact native signatures and hidden LCID on both backends. Metadata/QI/thread/proxy refusal and retained native ownership have executable development evidence; installed Lean abstractions do not model Windows ABI, native apartments, proxy slots, IErrorInfo or generated machine code.
+  Current status: investigating.
+  Reproduction command: cargo test -p oxvba-embed --test typed_native_com; supervised ignored Excel case through scripts/run-worksheet-errors-oracle.ps1.
+  Suggested next action: extend native signature/ownership models and independently check complex carrier and proxy families under WIN-4; grant no formal or certification credit from these development executions.
+
+- ID: FTODO-TYPED-VALUES-20261101-R9
+  Profile: exact typed BSTR/Boolean/Variant/interface slots (`bd-59co.2.9.14`).
+  Summary: minimal BSTR and actual inline Variant storage/reload plus repeated Variant alias/fault execution pass nightly strict-provenance Miri in interpreter-only mode. An earlier run refused canonical Variant exposed-pointer recovery during redundant String identity coercion; identity now retains the direct BSTR carrier. Larger canonical String/Object provenance, concrete carrier cleanup, native slot signatures and generated JIT code remain unproved. A separate rich callback-fault handler case passes default-mode Miri with the retained canonical Variant exposed-provenance warning. Existing Lean abstractions grant no additional concrete ABI credit.
+  Current status: investigating.
+  Reproduction command: MIRIFLAGS=-Zmiri-strict-provenance cargo +nightly miri test -p oxvba-embed --no-default-features --test typed_value_slots minimal_bstr_and_variant_slots_own_their_exact_storage.
+  Suggested next action: model concrete BSTR/Variant scratch ownership and native result transfers under CORE-7; retain the canonical Variant provenance limitation and broaden ownership checks independently of JIT execution.
+
 - ID: FTODO-TYPED-STACK-20261101-R9
   Profile: retained typed calls/ByRef/handler continuations (`bd-59co.2.10.12`).
   Summary: installed Lean 4.29.1 passes all eight abstractions; TypedContinuation now covers alias visibility, distinct-cell preservation, retained parents and effect/write preservation during unwind. Two focused minimal cases pass nightly strict-provenance Miri: ancestor aliases across slices, and same-context callback reentry through success and fault while the outer handler survives. An earlier Miri run found invalidation of inline canonical Err storage by the reentrant session borrow; canonical Err now has stable heap storage. The rejected trace is retained without credit. Concrete CFG/error routing, all canonical-carrier provenance, native signatures and generated machine code remain unproved; Miri does not execute JIT code.

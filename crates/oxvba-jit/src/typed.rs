@@ -347,7 +347,11 @@ fn machine_type(ty: ScalarType) -> ir::Type {
     match ty {
         ScalarType::Double => types::F64,
         ScalarType::Long | ScalarType::Boolean => types::I32,
-        ScalarType::HostObject => types::I64,
+        ScalarType::HostObject
+        | ScalarType::String
+        | ScalarType::Variant
+        | ScalarType::Void
+        | ScalarType::Interface(_) => types::I64,
     }
 }
 
@@ -633,7 +637,10 @@ impl ScalarLower<'_> {
             }
             PhysicalSlots::Frame(frame)
                 if index < self.layout.global_base
-                    && ty != ScalarType::HostObject
+                    && matches!(
+                        ty,
+                        ScalarType::Long | ScalarType::Double | ScalarType::Boolean
+                    )
                     && !self
                         .layout
                         .by_ref_parameters
@@ -691,6 +698,48 @@ impl ScalarLower<'_> {
                 b.ins().iconst(types::I32, if *value { -1 } else { 0 })
             }
             OxOperand::Const(OxConst::Nothing) => b.ins().iconst(types::I64, 0),
+            OxOperand::Const(OxConst::Str(text)) => {
+                let PhysicalSlots::Frame(frame) = self.slots else {
+                    unreachable!("owning string literal");
+                };
+                let output = b.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    8,
+                    3,
+                ));
+                let out = b.ins().stack_addr(types::I64, output, 0);
+                let bytes = b.ins().iconst(types::I64, text.as_ptr() as i64);
+                let length = b.ins().iconst(types::I64, text.len() as i64);
+                self.helper(
+                    b,
+                    activation::literal_string as *const u8,
+                    &[frame, bytes, length, out],
+                    &[types::I64; 4],
+                );
+                b.ins().stack_load(types::I64, output, 0)
+            }
+            OxOperand::Const(OxConst::Empty | OxConst::Null) => {
+                let PhysicalSlots::Frame(frame) = self.slots else {
+                    unreachable!("owning Variant literal");
+                };
+                let output = b.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    8,
+                    3,
+                ));
+                let out = b.ins().stack_addr(types::I64, output, 0);
+                let null = b.ins().iconst(
+                    types::I32,
+                    i64::from(u8::from(matches!(operand, OxOperand::Const(OxConst::Null)))),
+                );
+                self.helper(
+                    b,
+                    activation::constant_variant as *const u8,
+                    &[frame, null, out],
+                    &[types::I64, types::I32, types::I64],
+                );
+                b.ins().stack_load(types::I64, output, 0)
+            }
             _ => unreachable!("admitted operand"),
         };
         if from == ScalarType::Long && to == ScalarType::Double {
@@ -708,7 +757,206 @@ impl ScalarLower<'_> {
         let bad = b.ins().icmp_imm(ir::condcodes::IntCC::Equal, finite, 0);
         self.fail_if(b, bad, 6);
     }
+    fn host_values(
+        &self,
+        b: &mut FunctionBuilder<'_>,
+        plan: &oxvba_rt_abi::host_entry::HostCallPlan,
+        dst: Option<OxPlace>,
+        recv: &OxOperand,
+        args: &[oxvba_oxir::OxCallArg],
+    ) {
+        use calcvba_host_api::object::{NativeSlot, ObjectHeader};
+        let header = self.operand(b, recv, ScalarType::HostObject);
+        let null = b.ins().icmp_imm(ir::condcodes::IntCC::Equal, header, 0);
+        self.fail_if(b, null, 91);
+        for (offset, chunk) in plan.iid.chunks_exact(8).enumerate() {
+            let actual = b.ins().load(
+                types::I64,
+                ir::MemFlagsData::new(),
+                header,
+                (std::mem::offset_of!(ObjectHeader, iid) + offset * 8) as i32,
+            );
+            let wrong = b.ins().icmp_imm(
+                ir::condcodes::IntCC::NotEqual,
+                actual,
+                i64::from_le_bytes(chunk.try_into().expect("IID")),
+            );
+            self.fail_if(b, wrong, 438);
+        }
+        let count = b.ins().load(
+            types::I64,
+            ir::MemFlagsData::new(),
+            header,
+            std::mem::offset_of!(ObjectHeader, slot_count) as i32,
+        );
+        let invalid = b.ins().icmp_imm(
+            ir::condcodes::IntCC::UnsignedLessThanOrEqual,
+            count,
+            plan.slot as i64,
+        );
+        self.fail_if(b, invalid, 438);
+        let table = b.ins().load(
+            types::I64,
+            ir::MemFlagsData::new(),
+            header,
+            std::mem::offset_of!(ObjectHeader, slots) as i32,
+        );
+        let slot = b.ins().iadd_imm(
+            table,
+            (plan.slot * std::mem::size_of::<NativeSlot>()) as i64,
+        );
+        let actual = b.ins().load(
+            types::I32,
+            ir::MemFlagsData::new(),
+            slot,
+            std::mem::offset_of!(NativeSlot, signature) as i32,
+        );
+        let expected = calcvba_host_api::value_slot_signature(&plan.parameters, plan.result)
+            .expect("admitted host signature");
+        let wrong = b
+            .ins()
+            .icmp_imm(ir::condcodes::IntCC::NotEqual, actual, i64::from(expected));
+        self.fail_if(b, wrong, 13);
+        let entry = b.ins().load(
+            types::I64,
+            ir::MemFlagsData::new(),
+            slot,
+            std::mem::offset_of!(NativeSlot, entry) as i32,
+        );
+        let data = b.ins().load(
+            types::I64,
+            ir::MemFlagsData::new(),
+            slot,
+            std::mem::offset_of!(NativeSlot, data) as i32,
+        );
+        let input = b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            (args.len().max(1) * 8) as u32,
+            3,
+        ));
+        for (i, (arg, ty)) in args.iter().zip(&plan.parameters).enumerate() {
+            let value = match arg {
+                oxvba_oxir::OxCallArg::Operand(op) => self.operand(b, op, ty.carrier()),
+                oxvba_oxir::OxCallArg::ByRef(place) => {
+                    self.operand(b, &OxOperand::Use(*place), ty.carrier())
+                }
+                oxvba_oxir::OxCallArg::Const(value) => {
+                    b.ins().iconst(types::I32, i64::from(*value))
+                }
+                _ => unreachable!("admitted host argument"),
+            };
+            if let Some(iid) = ty.interface() {
+                self.check_interface(b, value, iid);
+            }
+            let zero = b.ins().iconst(types::I64, 0);
+            b.ins().stack_store(zero, input, (i * 8) as i32);
+            b.ins().stack_store(value, input, (i * 8) as i32);
+        }
+        let args = b.ins().stack_addr(types::I64, input, 0);
+        let output = b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            std::mem::size_of::<Variant>().max(8) as u32,
+            3,
+        ));
+        let out = b.ins().stack_addr(types::I64, output, 0);
+        let mut signature = ir::Signature::new(self.call_conv);
+        signature.params = vec![AbiParam::new(types::I64); 4];
+        signature.returns.push(AbiParam::new(types::I32));
+        let signature = b.import_signature(signature);
+        let call = b
+            .ins()
+            .call_indirect(signature, entry, &[data, self.runtime, args, out]);
+        let status = b.inst_results(call)[0];
+        let failed = b.ins().icmp_imm(ir::condcodes::IntCC::NotEqual, status, 0);
+        let fail = b.create_block();
+        let success = b.create_block();
+        b.ins().brif(failed, fail, &[], success, &[]);
+        b.switch_to_block(fail);
+        b.ins().return_(&[status]);
+        b.switch_to_block(success);
+        let Some(dst) = dst else {
+            if matches!(
+                plan.result,
+                ScalarType::String | ScalarType::Variant | ScalarType::HostObject
+            ) {
+                let kind = b
+                    .ins()
+                    .iconst(types::I32, i64::from(activation::kind(plan.result)));
+                self.helper(
+                    b,
+                    activation::result_drop as *const u8,
+                    &[kind, out],
+                    &[types::I32, types::I64],
+                );
+            }
+            return;
+        };
+        let index = self.layout.slot(dst).expect("admitted destination");
+        match self.slots {
+            PhysicalSlots::Stack(_) => {
+                let value = b.ins().stack_load(machine_type(plan.result), output, 0);
+                self.store_slot(b, index, plan.result, value);
+            }
+            PhysicalSlots::Frame(frame) => {
+                let index = b.ins().iconst(types::I64, index as i64);
+                let kind = b
+                    .ins()
+                    .iconst(types::I32, i64::from(activation::kind(plan.result)));
+                let iid = plan.result_iid.unwrap_or([0; 16]);
+                let low = b.ins().iconst(
+                    types::I64,
+                    i64::from_le_bytes(iid[..8].try_into().expect("IID")),
+                );
+                let high = b.ins().iconst(
+                    types::I64,
+                    i64::from_le_bytes(iid[8..].try_into().expect("IID")),
+                );
+                self.helper(
+                    b,
+                    activation::result_write_checked as *const u8,
+                    &[frame, index, kind, out, low, high],
+                    &[
+                        types::I64,
+                        types::I64,
+                        types::I32,
+                        types::I64,
+                        types::I64,
+                        types::I64,
+                    ],
+                );
+            }
+        }
+    }
     fn instruction(&self, b: &mut FunctionBuilder<'_>, inst: &OxInst) {
+        if oxvba_rt_abi::host_entry::value::needs_helper(inst, self.layout) {
+            let PhysicalSlots::Frame(frame) = self.slots else {
+                unreachable!("admitted owning value operation");
+            };
+            let descriptor = b.ins().iconst(types::I64, inst as *const OxInst as i64);
+            self.helper(
+                b,
+                oxvba_rt_abi::host_entry::value::evaluate as *const u8,
+                &[frame, descriptor],
+                &[types::I64; 2],
+            );
+            return;
+        }
+        if let OxInst::ComCallEarly {
+            method,
+            dst,
+            recv,
+            args,
+            ..
+        } = inst
+        {
+            let plan = &self.layout.host_calls[method];
+            if plan.result != ScalarType::Double
+                || !matches!(plan.parameters.as_slice(), [] | [ScalarType::Long])
+            {
+                self.host_values(b, plan, *dst, recv, args);
+                return;
+            }
+        }
         let (dst, value) = match inst {
             OxInst::ComCallEarly {
                 dst: Some(dst),
@@ -832,6 +1080,19 @@ impl ScalarLower<'_> {
                 clear_temps_from, ..
             } => {
                 for i in self.layout.local_count + clear_temps_from..self.layout.global_base {
+                    if self.layout.slots[i] == ScalarType::Variant {
+                        let PhysicalSlots::Frame(frame) = self.slots else {
+                            unreachable!("actual Variant requires owning storage");
+                        };
+                        let index = b.ins().iconst(types::I64, i as i64);
+                        self.helper(
+                            b,
+                            activation::clear_variant as *const u8,
+                            &[frame, index],
+                            &[types::I64; 2],
+                        );
+                        continue;
+                    }
                     let value = if self.layout.slots[i] == ScalarType::Double {
                         b.ins().f64const(0.0)
                     } else {
@@ -904,6 +1165,20 @@ impl ScalarLower<'_> {
                 self.fail_if(b, bad, 11);
                 let value = b.ins().fdiv(a, c);
                 self.finite(b, value);
+                (*dst, value)
+            }
+            OxInst::Neg { dst, src, .. } => {
+                let ty = self.layout.slots[self.layout.slot(*dst).expect("admitted destination")];
+                let value = self.operand(b, src, ty);
+                let value = if ty == ScalarType::Double {
+                    b.ins().fneg(value)
+                } else {
+                    let overflow =
+                        b.ins()
+                            .icmp_imm(ir::condcodes::IntCC::Equal, value, i64::from(i32::MIN));
+                    self.fail_if(b, overflow, 6);
+                    b.ins().ineg(value)
+                };
                 (*dst, value)
             }
             OxInst::Compare {

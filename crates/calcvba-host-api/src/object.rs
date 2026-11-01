@@ -8,6 +8,7 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     rc::Rc,
 };
+pub mod value_slots;
 
 pub type InterfaceId = [u8; 16];
 pub const SLOT_DOUBLE_0: u32 = 1;
@@ -35,6 +36,7 @@ type DoubleLong = dyn Fn(&mut TypedContext, i32) -> Result<f64, i32>;
 enum Callback {
     Double0(Box<Double0>),
     DoubleLong(Box<DoubleLong>),
+    Typed(value_slots::TypedSlot),
 }
 pub struct HostSlot {
     callback: Box<Callback>,
@@ -56,6 +58,7 @@ impl HostSlot {
         let (entry, signature) = match &*self.callback {
             Callback::Double0(_) => (double0 as *const u8, SLOT_DOUBLE_0),
             Callback::DoubleLong(_) => (double_long as *const u8, SLOT_DOUBLE_LONG),
+            Callback::Typed(slot) => slot.native(),
         };
         NativeSlot {
             entry,
@@ -78,6 +81,14 @@ struct ObjectStorage {
 #[derive(Clone)]
 pub struct HostObject {
     storage: Rc<ObjectStorage>,
+}
+impl std::fmt::Debug for HostObject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostObject")
+            .field("iid", &self.header().iid)
+            .field("pointer", &self.argument().as_ptr())
+            .finish()
+    }
 }
 impl HostObject {
     /// Retain this exact portable host table in the canonical IUnknown carrier.

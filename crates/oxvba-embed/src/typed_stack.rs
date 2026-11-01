@@ -1,6 +1,6 @@
 //! Retained call/ByRef/error mechanics shared by the two typed backends.
 //! Each backend still executes its original OxFunc arithmetic and host calls.
-use calcvba_host_api::{OwnedValue, ScalarBits, ScalarType, TypedContext};
+use calcvba_host_api::{ScalarBits, TypedContext, Value, ValueType as ScalarType};
 use oxvba_oxir::{
     BlockId, ErrField, FuncId, OxConst, OxInst, OxOperand, OxPlace, OxProgram, OxTerminator,
 };
@@ -62,8 +62,8 @@ impl TypedStack {
             error,
         }
     }
-    pub(crate) fn result(&self) -> OwnedValue {
-        self.frames[0].activation.result()
+    pub(crate) fn result(&mut self) -> Value {
+        self.frames[0].activation.take_result()
     }
     pub(crate) fn raw_result(&self) -> ScalarBits {
         let frame = &self.frames[0].activation;
@@ -140,13 +140,14 @@ impl TypedStack {
                 Ok(SUSPENDED) => return Ok(SUSPENDED),
                 Ok(0) if self.frames.len() == 1 => return Ok(0),
                 Ok(0) => {
-                    let callee = self.pop();
+                    let mut callee = self.pop();
                     if let Some(dst) = callee.destination {
-                        let bits =
-                            callee.activation.raw().slots[callee.activation.layout().return_slot];
-                        // SAFETY: admission proves identical result/destination carriers;
-                        // callee retains an object result until after this assignment.
-                        unsafe { self.frames.last_mut().ok_or(5)?.activation.write(dst, bits) }?;
+                        let value = callee.activation.take_result();
+                        self.frames
+                            .last_mut()
+                            .ok_or(5)?
+                            .activation
+                            .write_owned_value(dst, value)?;
                     }
                     let parent = &mut self.frames.last_mut().ok_or(5)?.activation;
                     parent.set_pc(parent.pc() + 1);
@@ -160,10 +161,19 @@ impl TypedStack {
                     }
                 }
                 Err(-1) => return Err(-1),
-                Err(number) => self.route(
-                    program,
-                    Fault::new(number, oxvba_rt_abi::default_error_message(number)),
-                )?,
+                Err(number) => {
+                    let fault = calcvba_host_api::take_typed_fault(context, number).map_or_else(
+                        || Fault::new(number, oxvba_rt_abi::default_error_message(number)),
+                        |fault| Fault {
+                            code: fault.number,
+                            message: fault.description,
+                            source: fault.source,
+                            help_file: fault.help_file,
+                            help_context: fault.help_context,
+                        },
+                    );
+                    self.route(program, fault)?;
+                }
                 _ => return Err(5),
             }
         }
@@ -210,19 +220,18 @@ impl TypedStack {
                 OxInst::ErrFieldGet { dst, field } => {
                     let err = self.err();
                     let value = match field {
-                        ErrField::Number => err.err.number,
-                        ErrField::HelpContext => err.err.help_context,
-                        ErrField::LastDllError => err.last_dll_error,
-                        _ => return Err(5),
+                        ErrField::Number => Value::Long(err.err.number),
+                        ErrField::HelpContext => Value::Long(err.err.help_context),
+                        ErrField::LastDllError => Value::Long(err.last_dll_error),
+                        ErrField::Description => Value::String(err.err.description.as_str().into()),
+                        ErrField::Source => Value::String(err.err.source.as_str().into()),
+                        ErrField::HelpFile => Value::String(err.err.help_file.as_str().into()),
                     };
-                    // SAFETY: numeric Err fields have admitted Long destinations.
-                    unsafe {
-                        self.frames
-                            .last_mut()
-                            .ok_or(5)?
-                            .activation
-                            .write(*dst, ScalarBits::long(value))
-                    }?;
+                    self.frames
+                        .last_mut()
+                        .ok_or(5)?
+                        .activation
+                        .write_owned_value(*dst, value)?;
                 }
                 OxInst::ErlGet { dst } => {
                     let value = self.err().erl_line;

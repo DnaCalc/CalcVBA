@@ -8,7 +8,7 @@
   "source_hashes": [
     {
       "path": "docs/validation/WINDOWS_JIT_COM_CLIENT_MATRIX_V1.csv",
-      "sha256": "sha256:d3b342411fe3cbd4569e5af5db09ea3c4412e96475bac3de400773dba2ada0b6"
+      "sha256": "sha256:c730cee02e1ec02434e8590fbeb580a7260a76e733127af602682bbb75d7102c"
     },
     {
       "path": "docs/validation/WINDOWS_JIT_COM_EVENTS_MATRIX_V1.csv",
@@ -32,7 +32,7 @@
     },
     {
       "path": "docs/validation/IDEAL_WINDOWS_X64_FIXTURE_MANIFEST_V1.csv",
-      "sha256": "sha256:fc3448a93139ea2d948be7bc264eab45b95fdc3c4ce1e6e7a34112a08bc68202"
+      "sha256": "sha256:71192abab93503e8c23114969840d57322eaaa976841c72bdf47aa9920490f24"
     },
     {
       "path": "docs/validation/IDEAL_WINDOWS_CURRENT_STACK_RESIDUAL_V1.csv",

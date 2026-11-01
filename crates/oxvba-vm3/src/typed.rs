@@ -189,6 +189,13 @@ impl<'p> TypedInterpreter<'p> {
         context: &mut TypedContext,
         inst: &OxInst,
     ) -> Result<(), i32> {
+        if oxvba_rt_abi::host_entry::value::needs_helper(inst, &self.layout) {
+            // SAFETY: frame and original instruction share this checked layout;
+            // the helper executes one selected value kernel, never a CFG/call.
+            let status =
+                unsafe { oxvba_rt_abi::host_entry::value::evaluate(frame.raw_mut(), inst) };
+            return if status == 0 { Ok(()) } else { Err(status) };
+        }
         let (dst, value) = match inst {
             OxInst::StmtBoundary {
                 clear_temps_from, ..
@@ -226,7 +233,7 @@ impl<'p> TypedInterpreter<'p> {
                 (*dst, bits)
             }
             OxInst::ComCallEarly {
-                dst: Some(dst),
+                dst,
                 method,
                 recv,
                 args,
@@ -234,27 +241,40 @@ impl<'p> TypedInterpreter<'p> {
             } => {
                 let plan = &self.layout.host_calls[method];
                 let header = frame.read(recv, ScalarType::HostObject)?.as_object();
-                let arg = match args.first() {
-                    Some(oxvba_oxir::OxCallArg::Operand(op)) => {
-                        Some(frame.read(op, ScalarType::Long)?.as_long())
-                    }
-                    Some(oxvba_oxir::OxCallArg::ByRef(place)) => Some(
-                        frame
-                            .read(&OxOperand::Use(*place), ScalarType::Long)?
-                            .as_long(),
-                    ),
-                    Some(oxvba_oxir::OxCallArg::Const(value)) => Some(*value),
-                    None => None,
-                    _ => unreachable!("admitted argument"),
-                };
+                let mut values = [ScalarBits::ZERO; calcvba_host_api::MAX_TYPED_ARGS];
+                for (i, (arg, ty)) in args.iter().zip(&plan.parameters).enumerate() {
+                    values[i] = match arg {
+                        oxvba_oxir::OxCallArg::Operand(op) => frame.read(op, ty.carrier())?,
+                        oxvba_oxir::OxCallArg::ByRef(place) => {
+                            frame.read(&OxOperand::Use(*place), ty.carrier())?
+                        }
+                        oxvba_oxir::OxCallArg::Const(value) => ScalarBits::long(*value),
+                        _ => unreachable!("admitted argument"),
+                    };
+                }
                 // SAFETY: the frame or its scratch owner retains the receiver;
                 // no borrow into globals spans the synchronous host callback.
                 let value = unsafe {
-                    calcvba_host_api::object::invoke_double_slot(
-                        header, plan.iid, plan.slot, arg, context,
+                    calcvba_host_api::object::value_slots::invoke_value_slot(
+                        header,
+                        plan.iid,
+                        plan.slot,
+                        &plan.parameters,
+                        plan.result,
+                        &values[..args.len()],
+                        context,
                     )
                 }?;
-                (*dst, value)
+                if let Some(iid) = plan.result_iid
+                    && let calcvba_host_api::Value::Object(Some(object)) = &value
+                    && object.header().iid != iid
+                {
+                    return Err(13);
+                }
+                if let Some(dst) = dst {
+                    frame.write_owned_value(*dst, value)?;
+                }
+                return Ok(());
             }
             OxInst::Arith {
                 dst, op, lhs, rhs, ..
@@ -299,6 +319,18 @@ impl<'p> TypedInterpreter<'p> {
                     return Err(6);
                 }
                 (*dst, ScalarBits::double(value))
+            }
+            OxInst::Neg { dst, src, .. } => {
+                let ty = self.layout.slots[self.layout.slot(*dst).expect("admitted place")];
+                let bits = frame.read(src, ty)?;
+                (
+                    *dst,
+                    if ty == ScalarType::Double {
+                        ScalarBits::double(-bits.as_double())
+                    } else {
+                        ScalarBits::long(bits.as_long().checked_neg().ok_or(6)?)
+                    },
+                )
             }
             OxInst::Compare {
                 dst, op, lhs, rhs, ..

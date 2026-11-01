@@ -16,8 +16,9 @@ mod invocation;
 mod typed_stack;
 use cache::PreparedCode;
 pub use cache::{CacheStats, CodeCache, OwnedSession};
+pub use calcvba_host_api::ScalarType;
 pub use oxvba_bundle::ProcedureKind;
-pub use oxvba_rt_abi::host_entry::{Arguments, Scalar, ScalarType, TYPED_ENTRY_ABI, TypedContext};
+pub use oxvba_rt_abi::host_entry::{Arguments, Scalar, TYPED_ENTRY_ABI, TypedContext};
 pub use oxvba_symbol::model::Visibility;
 pub mod provider;
 
@@ -549,7 +550,12 @@ impl<'a> Session<'a> {
             .or(self.owning_typed[bound.id.0].as_ref())
             .map_err(|e| Error::UnsupportedSignature(e.clone()))?
             .layout();
-        if !layout.has_result {
+        if !layout.has_result
+            || !matches!(
+                layout.result.legacy(),
+                Some(ScalarType::Long | ScalarType::Double | ScalarType::HostObject)
+            )
+        {
             return Err(Error::UnsupportedSignature(
                 "typed host Sub entry requires an explicit void carrier".into(),
             ));
@@ -579,7 +585,10 @@ impl<'a> Session<'a> {
         {
             return Err(Error::ArgumentMismatch);
         }
-        if typed.layout().result == ScalarType::HostObject {
+        if !matches!(
+            typed.layout().result.legacy(),
+            Some(ScalarType::Long | ScalarType::Double)
+        ) {
             return Err(Error::UnsupportedSignature(
                 "owning object results require begin_invocation".into(),
             ));
@@ -602,10 +611,81 @@ impl<'a> Session<'a> {
         };
         result.map_err(|number| self.typed_error(number))
     }
+    fn bind_values(
+        &self,
+        bound: &BoundProcedure,
+        arguments: &[calcvba_host_api::ValueType],
+        result: calcvba_host_api::ValueType,
+    ) -> Result<(), Error> {
+        self.validate(bound)?;
+        let layout = self.owning_typed[bound.id.0]
+            .as_ref()
+            .map_err(|e| Error::UnsupportedSignature(e.clone()))?
+            .layout();
+        for (index, argument) in arguments.iter().enumerate() {
+            if let Some(iid) = argument.interface()
+                && layout.parameter_iids.get(index) != Some(&Some(iid))
+            {
+                return Err(Error::ArgumentMismatch);
+            }
+        }
+        if let Some(iid) = result.interface() {
+            let nominal = self.module.procedures[bound.metadata]
+                .return_type
+                .as_ref()
+                .and_then(|ty| {
+                    let OxTy::Object(oxvba_oxir::ObjClass::ComIface(id)) = ty else {
+                        return None;
+                    };
+                    let oxvba_oxir::ComInterface::Com(meta) =
+                        self.module.program.com_interfaces.get(id.0)?
+                    else {
+                        return None;
+                    };
+                    meta.iid.map(provider::interface_id)
+                });
+            if nominal != Some(iid) {
+                return Err(Error::ArgumentMismatch);
+            }
+        }
+        let arguments: Vec<_> = arguments.iter().map(|ty| ty.carrier()).collect();
+        if layout.parameters != arguments || layout.result != result.carrier() {
+            return Err(Error::ArgumentMismatch);
+        }
+        Ok(())
+    }
+    fn call_values(
+        &self,
+        bound: &BoundProcedure,
+        args: &[calcvba_host_api::ValueSlot<'_>],
+        context: &mut TypedContext,
+    ) -> Result<calcvba_host_api::Value, Error> {
+        self.validate(bound)?;
+        let _activation = self.enter_typed(context)?;
+        let mut frame = self.new_value_activation(bound, args)?;
+        if self.execute_frame(bound, &mut frame, context, u64::MAX)? != 0 {
+            return Err(Error::Backend("unexpected synchronous suspension".into()));
+        }
+        Ok(frame.result())
+    }
     fn new_activation(
         &self,
         bound: &BoundProcedure,
         args: &[calcvba_host_api::Slot<'_>],
+    ) -> Result<typed_stack::TypedStack, Error> {
+        if args.len() > calcvba_host_api::MAX_TYPED_ARGS {
+            return Err(Error::ArgumentMismatch);
+        }
+        let mut values = [calcvba_host_api::ValueSlot::Long(0); calcvba_host_api::MAX_TYPED_ARGS];
+        for (i, arg) in args.iter().enumerate() {
+            values[i] = (*arg).into();
+        }
+        self.new_value_activation(bound, &values[..args.len()])
+    }
+    fn new_value_activation(
+        &self,
+        bound: &BoundProcedure,
+        args: &[calcvba_host_api::ValueSlot<'_>],
     ) -> Result<typed_stack::TypedStack, Error> {
         // Reject the complete reachable typed call graph before any body effect.
         let mut pending = vec![bound.id];
@@ -649,7 +729,7 @@ impl<'a> Session<'a> {
         // SAFETY: the owning SessionCell lease retains this canonical store;
         // executing/suspended guards exclude reset and unrelated execution.
         let activation = unsafe {
-            oxvba_rt_abi::host_entry::activation::Activation::new(
+            oxvba_rt_abi::host_entry::activation::Activation::new_values(
                 typed.layout(),
                 args,
                 pointer,

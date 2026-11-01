@@ -254,9 +254,8 @@ Long/Double/portable-object family. It retains at most 64 boxed VBA frames (erro
 28 at the bound); each frame keeps the existing four-argument/128-slot bound.
 Both backends return call/error transitions to the same retained stack mechanics;
 JIT body operations and callbacks remain generated native code. Admission checks
-the entire reachable call graph before any body effect. Public typed Sub entry
-still needs an explicit void result carrier; dynamic Sub calls remain available.
-Root ByRef inputs are private host copies. Arrays/strings/records, Optional,
+the entire reachable call graph before any body effect. The additive value API supplies Void for public typed Sub entry.
+Root ByRef inputs are private host copies. Arrays/records, Optional,
 ParamArray, cross-project calls and suspension within native/COM callbacks remain
 outside this family under `bd-59co.2.9.9`/`bd-59co.2.10.7`.
 A synchronous callback finishes before suspension. Source-free verified packages
@@ -286,6 +285,60 @@ The original object remains in its argument/local; no spreadsheet-aware entry
 conversion occurs. Default chains are bounded at 64; broader context-specific
 coercion and exact deep-chain behavior remain in CORE-3. See the
 [run-7 proof and limits](../evidence/programs/ideal-2026-07/core/CORE-7/typed-host-callbacks.md).
+
+## Additional owning value capability
+
+The original scalar API remains unchanged. Providers may advertise
+`value_abi() == Some(TYPED_VALUE_ABI)` (currently 1). The additive
+`load_with_object_libraries` accepts `TypedObjectLibrary`/`TypedObjectInterface`/
+`TypedObjectMember` metadata; existing Project and scalar descriptor types retain
+all their fields and variants. Use `bind_values` and `begin_values` for retained
+invocations, or `call_values` for synchronous calls sharing an active TypedContext.
+Default provider/session methods refuse this capability rather than guessing.
+
+`ValueType`, borrowed `ValueSlot` and owned `Value` carry Long, Double, Boolean,
+exact BSTR, actual Variant and portable HostObject. `Void` describes a Sub result;
+`Interface(IID)` describes nominal metadata over the object carrier. A declared
+Variant is stored inline only where required, with no universal Variant frame or
+heap-boxed callback result. HostSlot::typed supplies checked required positional
+slots; return String/Object/Variant ownership transfers into the retained frame.
+Nothing, Null, CVErr and invocation faults remain distinct. Numeric legacy slots
+keep their original ABI. No native COM pointer is a portable ObjectHeader.
+
+The fixture covers Value/Value2, Cells, Address and Rows/Columns.Count on VM3/native
+JIT. DNA Calc supplies their actual meanings and its Application/WorksheetFunction
+library; none of those names is an engine intrinsic. The current four-argument,
+128-slot and 64-frame bounds remain. Full typed array/record/Optional/ParamArray,
+cross-project and native callback suspension remain open. See the
+[typed value proof](../evidence/programs/ideal-2026-07/core/CORE-7/typed-value-slots-run9.md).
+
+Runtime object-default coercion in the owning typed value kernels remains under
+bd-59co.2.9.9. An Object reaching a pure numeric/string kernel can currently yield
+error 13 instead of invoking its default member. This is a compatibility gap;
+retained generic default-member dispatch is required before promoting that scope.
+Static default calls already lowered to planned member operations are separate.
+
+## Imported native members on typed slots
+
+A Windows host can pass the compiler-retained selected member descriptors and its
+bound native ObjectRef to unsafe `ComHal::prepare_typed_object`. Accepted descriptors
+must come unchanged from trusted compiler-retained type information; arbitrary
+in-bounds slot/signature combinations cannot be verified by header checks. HAL checks policy; COM
+validates source type/convention/IID/slot bound, creating thread, QI and proxy
+alignment, then retains the receiver in a same-thread HostObject table. The owning
+value API invokes that table on either backend. Native pointers remain separate
+from portable host headers. This is an additive HAL composition facility; no
+server implementation enters calcvba-host-api.
+
+The first native family is HRESULT scalar/BSTR getters, void methods and one-Long
+methods/setters with scalar/BSTR/void results, optionally with trailing hidden LCID=0. Native Variant/ByRef,
+interface, array, record and general optional signatures remain outside this typed
+family; broader canonical native transport remains available. Rich synchronous
+callbacks may publish TypedFault with their returned number; the owning stack
+consumes exact Description/Source/HelpFile/HelpContext before the next operation.
+Native IErrorInfo is captured immediately after failure, before receiver cleanup.
+Scripting.Dictionary and supervised real Excel development cases are recorded in
+the [native typed-slot proof](../evidence/programs/ideal-2026-07/windows-x64/WIN-4/typed-native-slots-run9.md).
 
 ## Spreadsheet extraction and DNA Calc glue handoff
 

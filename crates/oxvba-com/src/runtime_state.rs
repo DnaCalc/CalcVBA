@@ -14,6 +14,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 pub struct ComBinding {
     pub prog_id_name: String,
     pub native_dispatch: usize,
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    pub(crate) native_owner_thread: std::thread::ThreadId,
     pub native_unknown: usize,
     pub runtime_object: Option<i32>,
     pub runtime_class_descriptor: Option<&'static RuntimeClassDescriptor>,
@@ -38,6 +40,8 @@ impl ComBinding {
         Self {
             prog_id_name,
             native_dispatch,
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            native_owner_thread: std::thread::current().id(),
             native_unknown: 0,
             runtime_object: None,
             runtime_class_descriptor: None,

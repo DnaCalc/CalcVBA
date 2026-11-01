@@ -134,11 +134,22 @@ impl BStr {
             .unwrap_or(core::ptr::null_mut())
     }
 
-    pub(crate) fn into_raw_bstr(mut self) -> *mut u16 {
+    pub fn into_raw_bstr(mut self) -> *mut u16 {
         self.raw
             .take()
             .map(NonNull::as_ptr)
             .unwrap_or(core::ptr::null_mut())
+    }
+
+    /// Clone a borrowed raw BSTR without ever constructing a destructor-bearing
+    /// owner over the source allocation.
+    /// # Safety
+    /// raw is null or a live BSTR allocation that remains owned through this call.
+    pub unsafe fn clone_from_raw_bstr(raw: *mut u16) -> Result<Self, String> {
+        // SAFETY: the caller retains the source; this produces a fresh allocation.
+        let copy = unsafe { clone_raw_bstr(raw) }?;
+        // SAFETY: consume exactly the fresh allocation returned by the clone.
+        Ok(unsafe { Self::from_raw_bstr(copy) })
     }
 
     pub fn clone_raw_bstr(&self) -> Result<*mut u16, String> {

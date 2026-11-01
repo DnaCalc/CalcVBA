@@ -193,13 +193,13 @@ Public Function ActiveHandlerPropagates(ByVal root As HostObjects.Range) As Doub
 Handler:
     ActiveHandlerPropagates = root.Read(9) + Err.Number
 End Function
-Private Sub BadText()
-    Dim text As String
-    text = "unsupported"
+Private Sub UnsupportedChild()
+    Dim values() As Double
+    ReDim values(0 To 1)
 End Sub
 Public Function RejectBeforeEffects(ByVal root As HostObjects.Range) As Double
     RejectBeforeEffects = root.Read(0)
-    BadText
+    UnsupportedChild
 End Function
 "#);
     project

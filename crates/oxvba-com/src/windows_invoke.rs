@@ -2913,7 +2913,7 @@ pub unsafe fn dispatch_is_marshaling_proxy(object: *mut core::ffi::c_void) -> bo
 /// fallback). The PSOA/non-PSOA verdict is cached per-IID in the shared state so
 /// the (pure, AV-free) registry probe runs once per interface IID, not per call.
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-fn proxy_interface_is_vtable_safe(
+pub(crate) fn proxy_interface_is_vtable_safe(
     iid: crate::ComInterfaceIid,
     com_state: &std::sync::Arc<std::sync::Mutex<crate::WindowsComClientState>>,
 ) -> bool {
@@ -3620,6 +3620,7 @@ where
     }
     let dispatch = binding.native_dispatch as *mut crate::RawIDispatch;
     let has_byref_args = request.args.iter().any(|arg| arg.by_ref.is_some());
+    let requires_writebacks = std::cell::Cell::new(has_byref_args);
     let mut resolve_member_dispid =
         |member: i32,
          intended_kind: crate::TypeLibMemberInvokeKind,
@@ -3643,6 +3644,34 @@ where
         };
     let mut invoke_member_spec =
         |dispid: i32, spec: &crate::ComMemberSpec, invoke_args: &[ComInvokeArg], prog_id: &str| {
+            // A VBA lvalue does not make a typelib-declared ByVal parameter
+            // writable. Only actual native ByRef carriers require copyback.
+            let native_byref = |i: usize| {
+                spec.parameter_types.get(i).is_none_or(|ty| ty.is_by_ref())
+                    || spec
+                        .parameter_wire_types
+                        .get(i)
+                        .is_some_and(crate::TypeLibWireType::is_byref_safearray_wire)
+            };
+            let values = invoke_args
+                .iter()
+                .enumerate()
+                .any(|(i, arg)| arg.by_ref.is_some() && !native_byref(i))
+                .then(|| {
+                    invoke_args
+                        .iter()
+                        .cloned()
+                        .enumerate()
+                        .map(|(i, mut arg)| {
+                            if !native_byref(i) {
+                                arg.by_ref = None;
+                            }
+                            arg
+                        })
+                        .collect::<Vec<_>>()
+                });
+            let invoke_args = values.as_deref().unwrap_or(invoke_args);
+            requires_writebacks.set(invoke_args.iter().any(|arg| arg.by_ref.is_some()));
             // SAFETY: `dispatch` is the live bindings-map-retained dispatch pointer
             // for this bound object; the helper performs the vtable gate before any
             // slot access.
@@ -3763,7 +3792,7 @@ where
         request.member,
         request.args.as_slice(),
     )?;
-    if has_byref_args && result.writebacks.is_empty() {
+    if requires_writebacks.get() && result.writebacks.is_empty() {
         return Err(
             "COM-E-BYREF-WRITEBACK-MISSING: ByRef runtime call completed without writebacks"
                 .to_string(),

@@ -283,7 +283,7 @@ impl<'p> Compiler<'p> {
                     ScalarType::Long => {
                         lower.lower_operand_i32(&mut builder, &mut self.module, &operand)?
                     }
-                    ScalarType::Boolean | ScalarType::HostObject => {
+                    _ => {
                         unreachable!("scalar parameter admission")
                     }
                 });
@@ -314,7 +314,7 @@ impl<'p> Compiler<'p> {
                     let value = builder.ins().stack_load(types::I32, result, 0);
                     lower.emit_store_i32(&mut builder, &mut self.module, dst, value)?;
                 }
-                ScalarType::Boolean | ScalarType::HostObject => {
+                _ => {
                     unreachable!("scalar result admission")
                 }
             }

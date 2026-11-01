@@ -30,7 +30,7 @@ The active production path is:
 
 This is the sole production compiler/execution stack. The legacy compiler, HIR/front-end fallback, source-rewrite compiler, VM2, CoreProgram-to-Bundle linearizer and `.oxb` product execution path have been removed or retired.
 
-The architecture is broad and real but not complete. The compiler/binder is the most mature layer. VM3 and the JIT cover a large platform-neutral language/runtime/library surface. The JIT now executes bounded Windows x64 scalar early/late-COM and Declare subsets. Early dual calls preserve compiler metadata through native vtable transport on both runtimes; general early COM, pointer/callback execution and Windows parity remain open. There is no active clean-stack language-service implementation.
+The architecture is broad and real but not complete. The compiler/binder is the most mature layer. VM3 and the JIT cover a large platform-neutral language/runtime/library surface. The JIT now executes bounded Windows x64 scalar early/late-COM and Declare subsets. Early dual calls preserve compiler metadata through native vtable transport on both runtimes; the owning typed-slot path additionally supports a bounded imported scalar/BSTR native family with policy, IID, apartment and proxy checks; general early COM, pointer/callback execution and Windows parity remain open. There is no active clean-stack language-service implementation.
 
 ## 3. Workspace ownership
 
@@ -196,7 +196,7 @@ call graphs are checked before body effects. The bounded proof is
 
 - the public compiler does not require sealed verified image/program input;
 - no inspectable procedure-lowering plan currently separates semantic OxIR from physical/codegen decisions;
-- the direct native primary family remains bounded to required ByVal Long/Double/borrowed host objects and numeric slots; the additional owning frame supports portable typed object globals/Static/results and instruction-boundary continuation with four arguments/128 physical slots. The run-9 owning family additionally retains bounded internal calls, live ByRef aliases and Err/Resume continuations through shared stack mechanics on both backends. General string/array/record carriers, Optional/ParamArray, cross-project calls, other external calls and native recursion remain open;
+- the direct native primary family remains bounded to required ByVal Long/Double/borrowed host objects and numeric slots; the additional owning frame supports portable typed object globals/Static/results and instruction-boundary continuation with four arguments/128 physical slots. The run-9 owning family additionally retains bounded internal calls, live ByRef aliases and Err/Resume continuations through shared stack mechanics on both backends. The additive value API now carries exact BSTR/Boolean/Variant and nominal interface results in required portable member slots without a universal Variant frame; typed arrays/records, Optional/ParamArray, cross-project calls, other external calls and native recursion remain open;
 - helper registration is not a versioned descriptor catalog;
 - line/Erl, writable Err fields and full dynamic Err.Raise metadata are incomplete;
 - deep source recursion relies on the native stack and is not safely proven;

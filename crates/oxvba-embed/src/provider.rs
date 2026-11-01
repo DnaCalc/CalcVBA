@@ -12,12 +12,14 @@ use std::{rc::Rc, sync::Arc};
 pub struct Provider {
     host: Arc<dyn oxvba_hal::HostServices>,
     resolver: Rc<dyn TypeLibResolver>,
+    object_libraries: Vec<api::TypedObjectLibrary>,
 }
 impl Default for Provider {
     fn default() -> Self {
         Self {
             host: oxvba_hal::adapters::builder::HostBuilder::new().build(),
             resolver: Rc::new(oxvba_symbol::CatalogTypeLibResolver),
+            object_libraries: vec![],
         }
     }
 }
@@ -35,12 +37,19 @@ impl Provider {
     /// Prepare compiler-owned metadata without publishing any callable address.
     pub fn compile(&self, project: &api::Project) -> Result<Module, api::Error> {
         validate_libraries(&project.libraries)?;
+        let libraries: Vec<_> = project
+            .libraries
+            .iter()
+            .map(legacy_library)
+            .chain(self.object_libraries.iter().cloned())
+            .collect();
+        validate_typed_libraries(&libraries)?;
         let mut references = std::collections::HashSet::new();
         for name in project
             .references
             .iter()
             .map(|r| &r.name)
-            .chain(project.libraries.iter().map(|l| &l.name))
+            .chain(libraries.iter().map(|l| &l.name))
         {
             if name.trim().is_empty() || !references.insert(name.to_ascii_lowercase()) {
                 return Err(api::Error::UnsupportedSignature(
@@ -73,8 +82,7 @@ impl Provider {
                     import_lib: r.import_library.clone(),
                 })
                 .chain(
-                    project
-                        .libraries
+                    libraries
                         .iter()
                         .map(|l| sym::ProjectReference::TypeLibrary {
                             name: l.name.clone(),
@@ -90,12 +98,34 @@ impl Provider {
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
         };
-        Module::load_project(&manifest, &Libraries(&project.libraries, &*self.resolver))
+        Module::load_project(&manifest, &Libraries(&libraries, &*self.resolver))
             .map(|m| m.with_host(self.host.clone()))
             .map_err(error)
     }
 }
 impl api::RuntimeProvider for Provider {
+    fn value_abi(&self) -> Option<u32> {
+        Some(api::TYPED_VALUE_ABI)
+    }
+    fn load_with_object_libraries(
+        &self,
+        project: &api::Project,
+        libraries: &[api::TypedObjectLibrary],
+        backend: api::Backend,
+        requested_abi: u32,
+    ) -> Result<Box<dyn api::Session>, api::Error> {
+        let provider = Self {
+            host: self.host.clone(),
+            resolver: self.resolver.clone(),
+            object_libraries: self
+                .object_libraries
+                .iter()
+                .chain(libraries)
+                .cloned()
+                .collect(),
+        };
+        provider.load(project, backend, requested_abi)
+    }
     fn info(&self) -> api::ProviderInfo {
         api::ProviderInfo {
             host_api_abi: api::HOST_API_ABI,
@@ -130,6 +160,7 @@ impl api::RuntimeProvider for Provider {
             provider: Self {
                 host: self.host.clone(),
                 resolver: self.resolver.clone(),
+                object_libraries: self.object_libraries.clone(),
             },
         }))
     }
@@ -159,6 +190,64 @@ fn dynamic_bound(handle: &api::BoundProcedure) -> Result<&crate::BoundProcedure,
     Ok(bound)
 }
 impl api::Session for Session {
+    fn bind_values(
+        &self,
+        module: &str,
+        name: &str,
+        arguments: &[api::ValueType],
+        result: api::ValueType,
+    ) -> Result<api::BoundProcedure, api::Error> {
+        let kind = if result == api::ValueType::Void {
+            crate::ProcedureKind::Sub
+        } else {
+            crate::ProcedureKind::Function
+        };
+        let handle = self.session.bind(module, name, kind).map_err(error)?;
+        self.session
+            .bind_values(&handle, arguments, result)
+            .map_err(error)?;
+        let generation = handle.generation();
+        Ok(api::BoundProcedure::from_provider(
+            TypedBound(handle),
+            generation,
+        ))
+    }
+    fn type_bound_values(
+        &self,
+        handle: &api::BoundProcedure,
+        arguments: &[api::ValueType],
+        result: api::ValueType,
+    ) -> Result<api::BoundProcedure, api::Error> {
+        let handle = dynamic_bound(handle)?;
+        self.session
+            .bind_values(handle, arguments, result)
+            .map_err(error)?;
+        Ok(api::BoundProcedure::from_provider(
+            TypedBound(handle.clone()),
+            handle.generation(),
+        ))
+    }
+    fn call_values(
+        &self,
+        handle: &api::BoundProcedure,
+        args: &[api::ValueSlot<'_>],
+        context: &mut api::TypedContext,
+    ) -> Result<api::Value, api::Error> {
+        self.session
+            .call_values(typed_bound(handle)?, args, context)
+            .map_err(error)
+    }
+    fn begin_values(
+        &self,
+        handle: &api::BoundProcedure,
+        args: &[api::ValueSlot<'_>],
+        frame: api::InvocationFrame,
+        max_blocks: u64,
+    ) -> Result<Box<dyn api::ValueInvocation>, api::Error> {
+        self.session
+            .begin_values(typed_bound(handle)?, args, frame, max_blocks)
+            .map_err(error)
+    }
     fn begin_invocation(
         &self,
         handle: &api::BoundProcedure,
@@ -414,7 +503,7 @@ fn default_value(value: &oxvba_bundle::coreir::CoreConst) -> api::Variant {
         C::Str(s) => V::from_string(s.clone()),
     }
 }
-fn interface_id(iid: ComInterfaceIid) -> api::InterfaceId {
+pub(crate) fn interface_id(iid: ComInterfaceIid) -> api::InterfaceId {
     let mut bytes = [0; 16];
     bytes[..4].copy_from_slice(&iid.data1.to_le_bytes());
     bytes[4..6].copy_from_slice(&iid.data2.to_le_bytes());
@@ -422,7 +511,7 @@ fn interface_id(iid: ComInterfaceIid) -> api::InterfaceId {
     bytes[8..].copy_from_slice(&iid.data4);
     bytes
 }
-struct Libraries<'a>(&'a [api::ObjectLibrary], &'a dyn TypeLibResolver);
+struct Libraries<'a>(&'a [api::TypedObjectLibrary], &'a dyn TypeLibResolver);
 impl TypeLibResolver for Libraries<'_> {
     fn interface_iid(
         &self,
@@ -489,22 +578,31 @@ impl TypeLibResolver for Libraries<'_> {
                 vtable_slot: Some(m.slot as u16),
                 requires_argument: !m.parameters.is_empty(),
                 invoke_kind: match m.kind {
-                    api::MemberKind::Method => oxvba_com::TypeLibMemberInvokeKind::Method,
-                    api::MemberKind::PropertyGet => oxvba_com::TypeLibMemberInvokeKind::PropertyGet,
+                    api::TypedMemberKind::Method => oxvba_com::TypeLibMemberInvokeKind::Method,
+                    api::TypedMemberKind::PropertyGet => {
+                        oxvba_com::TypeLibMemberInvokeKind::PropertyGet
+                    }
+                    api::TypedMemberKind::PropertyLet => {
+                        oxvba_com::TypeLibMemberInvokeKind::PropertyPut
+                    }
+                    api::TypedMemberKind::PropertySet => {
+                        oxvba_com::TypeLibMemberInvokeKind::PropertyPutRef
+                    }
                 },
                 parameter_names: (0..m.parameters.len()).map(|i| format!("arg{i}")).collect(),
                 parameter_optional: vec![false; m.parameters.len()],
                 parameter_optional_defaults: vec![],
                 is_default_member: m.is_default,
                 parameter_types: m.parameters.iter().map(|p| param_type(*p)).collect(),
-                parameter_wire_types: m
+                parameter_wire_types: m.parameters.iter().map(|p| self.wire_type(*p)).collect(),
+                parameter_iids: m
                     .parameters
                     .iter()
-                    .map(|p| W::Automation(param_type(*p)))
+                    .map(|p| p.interface().map(com_iid))
                     .collect(),
-                parameter_iids: vec![None; m.parameters.len()],
-                return_type: Some(param_type(m.result)),
-                return_wire_type: Some(W::Automation(param_type(m.result))),
+                return_type: (m.result != api::ValueType::Void).then(|| param_type(m.result)),
+                return_wire_type: (m.result != api::ValueType::Void)
+                    .then(|| self.wire_type(m.result)),
                 callconv_is_stdcall: false,
                 is_dual: false,
                 interface_iid: Some(iid),
@@ -531,13 +629,121 @@ impl TypeLibResolver for Libraries<'_> {
         })
     }
 }
-fn param_type(t: api::ScalarType) -> P {
-    match t {
-        api::ScalarType::Long => P::Long,
-        api::ScalarType::Double => P::Double,
-        api::ScalarType::Boolean => P::Boolean,
-        api::ScalarType::HostObject => P::Object,
+fn com_iid(iid: api::InterfaceId) -> ComInterfaceIid {
+    ComInterfaceIid {
+        data1: u32::from_le_bytes(iid[..4].try_into().expect("IID")),
+        data2: u16::from_le_bytes(iid[4..6].try_into().expect("IID")),
+        data3: u16::from_le_bytes(iid[6..8].try_into().expect("IID")),
+        data4: iid[8..].try_into().expect("IID"),
     }
+}
+impl Libraries<'_> {
+    fn wire_type(&self, ty: api::ValueType) -> W {
+        if let api::ValueType::Interface(iid) = ty {
+            for library in self.0 {
+                if let Some(interface) = library.interfaces.iter().find(|i| i.iid == iid) {
+                    return W::InterfacePointer {
+                        name: format!("{}.{}", library.name, interface.name),
+                    };
+                }
+            }
+        }
+        W::Automation(param_type(ty))
+    }
+}
+fn param_type(t: api::ValueType) -> P {
+    match t.carrier() {
+        api::ValueType::Long => P::Long,
+        api::ValueType::Double => P::Double,
+        api::ValueType::Boolean => P::Boolean,
+        api::ValueType::String => P::String,
+        api::ValueType::Variant => P::Variant,
+        api::ValueType::HostObject => P::Object,
+        _ => P::Variant,
+    }
+}
+fn legacy_library(library: &api::ObjectLibrary) -> api::TypedObjectLibrary {
+    api::TypedObjectLibrary {
+        name: library.name.clone(),
+        interfaces: library
+            .interfaces
+            .iter()
+            .map(|interface| api::TypedObjectInterface {
+                name: interface.name.clone(),
+                iid: interface.iid,
+                members: interface
+                    .members
+                    .iter()
+                    .map(|m| api::TypedObjectMember {
+                        name: m.name.clone(),
+                        slot: m.slot,
+                        kind: match m.kind {
+                            api::MemberKind::Method => api::TypedMemberKind::Method,
+                            api::MemberKind::PropertyGet => api::TypedMemberKind::PropertyGet,
+                        },
+                        parameters: m.parameters.iter().copied().map(Into::into).collect(),
+                        result: m.result.into(),
+                        is_default: m.is_default,
+                    })
+                    .collect(),
+            })
+            .collect(),
+    }
+}
+fn validate_typed_libraries(libraries: &[api::TypedObjectLibrary]) -> Result<(), api::Error> {
+    let invalid = |why: &str| api::Error::UnsupportedSignature(why.into());
+    let mut names = std::collections::HashSet::new();
+    let mut iids = std::collections::HashSet::new();
+    for library in libraries {
+        if library.name.trim().is_empty() || !names.insert(library.name.to_ascii_lowercase()) {
+            return Err(invalid("duplicate/empty typed host library"));
+        }
+        let mut interfaces = std::collections::HashSet::new();
+        for interface in &library.interfaces {
+            if interface.name.trim().is_empty()
+                || !interfaces.insert(interface.name.to_ascii_lowercase())
+                || interface.iid == [0; 16]
+                || !iids.insert(interface.iid)
+            {
+                return Err(invalid("duplicate/empty typed host interface or IID"));
+            }
+            let mut slots = std::collections::HashSet::new();
+            let mut members = std::collections::HashSet::new();
+            let mut default = None;
+            for member in &interface.members {
+                let name = member.name.to_ascii_lowercase();
+                if member.slot >= u16::MAX as usize
+                    || !slots.insert(member.slot)
+                    || name.trim().is_empty()
+                    || !members.insert((name.clone(), member.kind as u8))
+                    || api::value_slot_signature(&member.parameters, member.result).is_none()
+                {
+                    return Err(invalid("invalid typed host slot/signature"));
+                }
+                if member.is_default {
+                    if default.as_ref().is_some_and(|old| *old != name) {
+                        return Err(invalid("ambiguous typed default member"));
+                    }
+                    default = Some(name);
+                }
+            }
+        }
+    }
+    for ty in libraries
+        .iter()
+        .flat_map(|l| &l.interfaces)
+        .flat_map(|i| &i.members)
+        .flat_map(|m| m.parameters.iter().chain(std::iter::once(&m.result)))
+    {
+        if let Some(iid) = ty.interface()
+            && !iids.contains(&iid)
+        {
+            return Err(invalid(
+                "typed member refers to an undeclared interface IID",
+            ));
+        }
+    }
+    Ok(())
 }
 fn validate_libraries(libraries: &[api::ObjectLibrary]) -> Result<(), api::Error> {
     let invalid = |why: &str| api::Error::UnsupportedSignature(why.into());

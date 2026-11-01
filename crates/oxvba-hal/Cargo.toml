@@ -11,6 +11,7 @@ default = []
 hal_contract_checks = []
 
 [dependencies]
+calcvba-host-api.workspace = true
 oxvba-diagnostics.workspace = true
 oxvba-com.workspace = true
 oxvba-runtime.workspace = true

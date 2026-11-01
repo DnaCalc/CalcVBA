@@ -15,6 +15,7 @@ pub mod platform;
 pub mod refcount;
 pub mod runtime_state;
 pub mod stub_bridge;
+pub mod typed_slots;
 pub mod typelib;
 pub mod typelib_cache;
 pub mod typelib_catalog;

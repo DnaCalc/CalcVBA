@@ -392,6 +392,21 @@ pub trait ComHal: Send + Sync {
             "bind_native_dispatch_object_variant",
         )
     }
+    /// Prepare selected authoritative dual-interface members for typed host slots.
+    /// The returned owner retains a QI'd native receiver in the current apartment.
+    /// # Safety
+    /// Each accepted descriptor whose IID the receiver supports must name its
+    /// actual slot ABI, obtained from trusted compiler-retained type information.
+    unsafe fn prepare_typed_object(
+        &self,
+        _object: ObjectRef,
+        _members: &[TypeLibMemberMetadata],
+    ) -> HalResult<calcvba_host_api::HostObject> {
+        variant_companion_not_overridden(
+            CapabilityId::ComActivationDispatch,
+            "prepare_typed_object",
+        )
+    }
     fn release_object_variant(&self, _object: ObjectRef) -> HalResult<Variant> {
         variant_companion_not_overridden(
             CapabilityId::ComActivationDispatch,

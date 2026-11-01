@@ -3,7 +3,7 @@ param(
     [string]$OutputRoot = 'artifacts/windows-x64/worksheet-errors',
     [string]$RuntimeTestExecutable = '',
     [switch]$OwningObjectProbe,
-    [ValidateSet('getobject_reads_owned_excel_workbook_values_on_both_backends', 'host_injected_owned_excel_range_uses_default_without_losing_identity')]
+    [ValidateSet('getobject_reads_owned_excel_workbook_values_on_both_backends', 'host_injected_owned_excel_range_uses_default_without_losing_identity', 'owned_excel_imported_version_and_build_use_typed_slots')]
     [string]$RuntimeTestName = 'getobject_reads_owned_excel_workbook_values_on_both_backends'
 )
 $ErrorActionPreference = 'Stop'

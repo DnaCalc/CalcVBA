@@ -31,6 +31,73 @@ unsafe impl GlobalAlloc for CountAlloc {
 }
 #[global_allocator]
 static ALLOCATOR: CountAlloc = CountAlloc;
+
+#[test]
+fn declared_variant_host_result_uses_inline_storage_without_per_callback_heap_boxing() {
+    use calcvba_host_api::{self as api, RuntimeProvider};
+    use std::rc::Rc;
+    for backend in typed_host::backends() {
+        let iid = [44; 16];
+        let library = api::TypedObjectLibrary {
+            name: "Values".into(),
+            interfaces: vec![api::TypedObjectInterface {
+                name: "Object".into(),
+                iid,
+                members: vec![api::TypedObjectMember {
+                    name: "Value2".into(),
+                    slot: 0,
+                    kind: api::TypedMemberKind::PropertyGet,
+                    parameters: vec![],
+                    result: api::ValueType::Variant,
+                    is_default: false,
+                }],
+            }],
+        };
+        let project = api::Project::module(
+            "Api",
+            "Public Function Read(ByVal root As Values.Object) As Double\nRead = root.Value2\nEnd Function\n",
+        );
+        let session = oxvba_embed::provider::Provider::default()
+            .load_with_object_libraries(&project, &[library], backend, api::HOST_API_ABI)
+            .unwrap();
+        let object = api::HostObject::new(
+            iid,
+            vec![
+                api::HostSlot::typed(vec![], api::ValueType::Variant, |_, _| {
+                    Ok(api::Value::Variant(api::Variant::from_f64(42.0)))
+                })
+                .unwrap(),
+            ],
+        );
+        let bound = session
+            .bind_values(
+                "Api",
+                "Read",
+                &[api::ValueType::HostObject],
+                api::ValueType::Double,
+            )
+            .unwrap();
+        let mut call = session
+            .begin_values(
+                &bound,
+                &[api::ValueSlot::Object(object.argument())],
+                api::InvocationFrame::new(1, None, Rc::new(())),
+                1000,
+            )
+            .unwrap();
+        ALLOCATIONS.with(|n| n.set(Some(0)));
+        let result = call.resume(u64::MAX).unwrap();
+        let allocations = ALLOCATIONS.with(|n| n.replace(None).unwrap());
+        assert!(matches!(
+            result,
+            api::ValueProgress::Returned(api::Value::Double(42.0))
+        ));
+        assert_eq!(
+            allocations, 0,
+            "{backend:?} declared Variant output must use its actual carrier, without a heap box"
+        );
+    }
+}
 #[path = "support/typed_host.rs"]
 mod typed_host;
 

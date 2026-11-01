@@ -80,6 +80,7 @@ struct ObjectStorage {
     _native: Rc<[NativeSlot]>,
     _owners: Vec<HostSlot>,
     payload: Option<Rc<dyn std::any::Any>>,
+    identity: *const (),
 }
 /// Clone retains the table and callback captures. Drop releases them on this thread.
 /// Objects contain no borrowed invocation pointers and can outlive any one call.
@@ -147,7 +148,7 @@ impl HostObject {
         }
     }
     pub fn new(iid: InterfaceId, slots: Vec<HostSlot>) -> Self {
-        Self::build(iid, slots, None)
+        Self::build(iid, slots, None, std::ptr::null())
     }
     /// Attach a same-thread host owner without exposing native pointers in the
     /// portable header. Boundary crates may recover only their own payload type.
@@ -156,7 +157,32 @@ impl HostObject {
         slots: Vec<HostSlot>,
         payload: Rc<dyn std::any::Any>,
     ) -> Self {
-        Self::build(iid, slots, Some(payload))
+        Self::build(iid, slots, Some(payload), std::ptr::null())
+    }
+    /// Construct a boundary table with an independently retained object identity.
+    /// # Safety
+    /// identity is a nonnull canonical identity pointer, unique among live objects
+    /// on this thread (native COM uses QI(IID_IUnknown)). payload must retain that
+    /// exact identity until this table and every clone have been released.
+    pub unsafe fn new_with_payload_and_identity(
+        iid: InterfaceId,
+        slots: Vec<HostSlot>,
+        payload: Rc<dyn std::any::Any>,
+        identity: *const (),
+    ) -> Self {
+        assert!(!identity.is_null());
+        Self::build(iid, slots, Some(payload), identity)
+    }
+    /// Compare retained identities without calling a member or QueryInterface.
+    pub fn same_identity(&self, other: &Self) -> bool {
+        self.identity() == other.identity()
+    }
+    fn identity(&self) -> *const () {
+        if self.storage.identity.is_null() {
+            Rc::as_ptr(&self.storage).cast()
+        } else {
+            self.storage.identity
+        }
     }
     pub fn payload(&self) -> Option<&dyn std::any::Any> {
         self.storage.payload.as_deref()
@@ -165,6 +191,7 @@ impl HostObject {
         iid: InterfaceId,
         slots: Vec<HostSlot>,
         payload: Option<Rc<dyn std::any::Any>>,
+        identity: *const (),
     ) -> Self {
         // Derive raw table pointers only after immutable Rc allocation. Moving
         // a Box after taking as_ptr would invalidate that pointer's borrow tag.
@@ -182,6 +209,7 @@ impl HostObject {
                 _native: native,
                 _owners: slots,
                 payload,
+                identity,
             }),
         }
     }

@@ -133,6 +133,7 @@ pub fn needs_helper(inst: &OxInst, layout: &ScalarLayout) -> bool {
             .get(method)
             .is_some_and(|p| p.native.is_some()),
         OxInst::Box { .. }
+        | OxInst::CompareObjectIs { .. }
         | OxInst::Unbox { .. }
         | OxInst::Concat { .. }
         | OxInst::VariantChanged { .. } => true,
@@ -217,6 +218,34 @@ pub unsafe extern "C" fn evaluate(
                     )
                 }
                 OxInst::Box { dst, src, .. } => (*dst, read(src)?),
+                OxInst::CompareObjectIs { dst, lhs, rhs } => {
+                    // Is never resolves an object's default member. Check both
+                    // tags before reading identity; non-object Variants raise 424.
+                    let left = read(lhs)?;
+                    let right = read(rhs)?;
+                    if left.vtype() != VarType::Object || right.vtype() != VarType::Object {
+                        return Err(424);
+                    }
+                    let same = match (left.as_object_ref(), right.as_object_ref()) {
+                        (None, None) => true,
+                        (Some(left), Some(right)) => {
+                            match (
+                                calcvba_host_api::HostObject::from_object_ref(&left),
+                                calcvba_host_api::HostObject::from_object_ref(&right),
+                            ) {
+                                (Some(left), Some(right)) => left.same_identity(&right),
+                                // Runtime-owned and foreign runtime IUnknown
+                                // carriers compare their retained pointer. Native
+                                // COM interfaces enter through prepared tables,
+                                // which retain canonical QI identity above.
+                                (None, None) => left.raw_iunknown() == right.raw_iunknown(),
+                                _ => false,
+                            }
+                        }
+                        _ => false,
+                    };
+                    (*dst, Variant::from_bool(same))
+                }
                 OxInst::Unbox {
                     dst, src, checked, ..
                 } => {

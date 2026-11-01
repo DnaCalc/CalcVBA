@@ -1222,6 +1222,13 @@ impl ScalarLayout {
                 self.accepts(*dst, lhs)?;
                 self.accepts(*dst, rhs)
             }
+            OxInst::CompareObjectIs { dst, lhs, rhs }
+                if self.owning && self.slots[self.slot(*dst)?] == ScalarType::Boolean =>
+            {
+                self.operand_type(lhs)?;
+                self.operand_type(rhs)?;
+                Ok(())
+            }
             OxInst::Compare { dst, lhs, rhs, .. }
                 if self.slots[self.slot(*dst)?] == ScalarType::Boolean
                     || (self.owning && self.slots[self.slot(*dst)?] == ScalarType::Variant) =>

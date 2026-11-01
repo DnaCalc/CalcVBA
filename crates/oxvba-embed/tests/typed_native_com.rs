@@ -7,6 +7,80 @@ use oxvba_hal::{
     model::{HalProfileId, HostPolicy},
 };
 use std::{rc::Rc, sync::Arc};
+#[path = "support/native_identity.rs"]
+mod native_identity;
+
+#[test]
+fn distinct_native_interfaces_share_retained_identity_and_failed_qi_does_not_leak() {
+    use oxvba_symbol::TypeLibResolver;
+    for backend in backends() {
+        let host = host();
+        let (pointer, observed) = native_identity::create();
+        {
+            // SAFETY: create transfers one owned same-apartment IDispatch ref.
+            let raw = unsafe {
+                host.com()
+                    .bind_native_dispatch_object_variant("Owned.Identity", pointer.cast())
+            }
+            .unwrap();
+            let metadata = FixtureTypes
+                .resolve(&oxvba_com::TypeLibResolveRequest {
+                    reference_name: "NativeFixture".into(),
+                    requested_coclass: Some("Calculator".into()),
+                    importlib_hint: None,
+                    libid_hint: None,
+                    major_version_hint: None,
+                    minor_version_hint: None,
+                    lcid_hint: None,
+                })
+                .unwrap();
+            let mut member = metadata.members[0].clone();
+            member.vtable_slot_bound = Some(8);
+            let first = prepare(
+                host.as_ref(),
+                raw.as_object_ref().unwrap(),
+                &[member.clone()],
+            )
+            .unwrap();
+            member.interface_iid = Some(native_identity::OTHER_IID);
+            let second = prepare(
+                host.as_ref(),
+                raw.as_object_ref().unwrap(),
+                &[member.clone()],
+            )
+            .unwrap();
+            assert_ne!(first.argument().as_ptr(), second.argument().as_ptr());
+            assert!(first.same_identity(&second));
+            observed.refuse_identity.set(true);
+            let before = observed.references.get();
+            assert!(prepare(host.as_ref(), raw.as_object_ref().unwrap(), &[member]).is_err());
+            assert_eq!(observed.references.get(), before);
+            observed.refuse_identity.set(false);
+            host.com()
+                .release_object_variant(raw.as_object_ref().unwrap())
+                .unwrap();
+            let module = Provider::default().compile(&api::Project::module("Api", "Public Function Same(ByVal a As Object, ByVal b As Object) As Boolean\nSame = a Is b\nEnd Function\n")).unwrap();
+            let session = module.into_session(backend).unwrap();
+            let queries = observed.queries.get();
+            assert!(matches!(
+                call_values_sliced(
+                    &session,
+                    "Same",
+                    &[
+                        api::ValueSlot::Object(first.argument()),
+                        api::ValueSlot::Object(second.argument())
+                    ],
+                    api::ValueType::Boolean
+                ),
+                api::Value::Boolean(true)
+            ));
+            assert_eq!(observed.queries.get(), queries, "Is must not query COM");
+            assert_eq!(observed.calls.get(), 0);
+            assert_eq!(observed.dynamic.get(), 0);
+        }
+        assert_eq!(observed.references.get(), 0);
+    }
+}
 fn backends() -> Vec<Backend> {
     let mut values = vec![Backend::Interpreter];
     if cfg!(feature = "jit") {
@@ -148,6 +222,9 @@ Public Function Duplicate(ByVal d As Scripting.Dictionary, ByVal key As Variant)
     Exit Function
 Failed:
     Duplicate = Err.Description
+End Function
+Public Function Same(ByVal left As Variant, ByVal right As Variant) As Boolean
+    Same = left Is right
 End Function
 "#,
             ))
@@ -292,6 +369,23 @@ End Function
             assert!(
                 matches!(&result, api::Value::Variant(value) if value.as_object_ref().is_some())
             );
+            let api::Value::Variant(returned) = &result else {
+                unreachable!()
+            };
+            let before = host.com().com_dispatch_transport_counts();
+            assert!(matches!(
+                call_values_sliced(
+                    &session,
+                    "Same",
+                    &[
+                        api::ValueSlot::Variant(&payload),
+                        api::ValueSlot::Variant(returned)
+                    ],
+                    api::ValueType::Boolean
+                ),
+                api::Value::Boolean(true)
+            ));
+            assert_eq!(host.com().com_dispatch_transport_counts(), before);
             call_values_sliced(&session, "ClearValues", &[args[0]], api::ValueType::Void);
             assert!(
                 observed
@@ -997,6 +1091,12 @@ End Function
 Public Function ReturnChild(ByVal root As NativeFixture.Calculator) As NativeFixture.Calculator
     Set ReturnChild = root.SelfValue
 End Function
+Public Function Same(ByVal left As Object, ByVal right As Object) As Boolean
+    Same = left Is right
+End Function
+Public Function SameResult(ByVal root As NativeFixture.Calculator) As Boolean
+    SameResult = root Is root.SelfValue
+End Function
 Public Function ArrayValues(ByVal root As NativeFixture.Calculator) As Variant
     ArrayValues = root.Values
 End Function
@@ -1080,7 +1180,25 @@ End Function
             assert!(
                 matches!(&child,api::Value::Object(Some(value)) if value.header().iid==object.header().iid)
             );
-            assert_eq!(observed.references.load(Ordering::SeqCst), 2);
+            assert_eq!(observed.references.load(Ordering::SeqCst), 4);
+            let api::Value::Object(Some(child_object)) = &child else {
+                panic!("object expected")
+            };
+            let before = host.com().com_dispatch_transport_counts();
+            assert!(matches!(
+                call_values_sliced(
+                    &session,
+                    "Same",
+                    &[args[0], api::ValueSlot::Object(child_object.argument())],
+                    api::ValueType::Boolean
+                ),
+                api::Value::Boolean(true)
+            ));
+            assert_eq!(host.com().com_dispatch_transport_counts(), before);
+            assert!(matches!(
+                call_values_sliced(&session, "SameResult", &args, api::ValueType::Boolean),
+                api::Value::Boolean(true)
+            ));
             drop(child);
             let api::Value::Variant(array) =
                 call_values_sliced(&session, "ArrayValues", &args, api::ValueType::Variant)
@@ -1124,7 +1242,7 @@ End Function
                 changed.as_safearray().unwrap().variant_elements().unwrap(),
                 vec![api::Variant::from_i32(144), api::Variant::from_i32(233)]
             );
-            assert_eq!(observed.references.load(Ordering::SeqCst), 1);
+            assert_eq!(observed.references.load(Ordering::SeqCst), 2);
             let bound = session
                 .bind("Api", "CheckArray", ProcedureKind::Function)
                 .unwrap();
@@ -1247,7 +1365,7 @@ End Function
             host.com()
                 .release_object_variant(raw.as_object_ref().unwrap())
                 .unwrap();
-            assert_eq!(observed.references.load(Ordering::SeqCst), 1);
+            assert_eq!(observed.references.load(Ordering::SeqCst), 2);
             let session = module.into_session(backend).unwrap();
             let bound = session
                 .bind("Api", "Describe", ProcedureKind::Function)
@@ -1299,7 +1417,7 @@ End Function
                 api::ValueProgress::Suspended
             ));
             drop(cancelled);
-            assert_eq!(observed.references.load(Ordering::SeqCst), 1);
+            assert_eq!(observed.references.load(Ordering::SeqCst), 2);
             let mut call = session
                 .begin_values(
                     &bound,

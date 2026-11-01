@@ -9,6 +9,7 @@ use std::{ffi::c_void, rc::Rc};
 
 pub(super) struct NativeReceiver {
     pub pointer: Rc<OwnedComInterface>,
+    _identity: OwnedComInterface,
     pub library: Rc<NativeLibrary>,
     pub bridge: WindowsComBridge,
 }
@@ -119,9 +120,19 @@ unsafe fn build(
     }
     // SAFETY: exact imported IID; successful QI transfers one owned reference.
     let raw = unsafe { crate::query_interface_pointer(pointer, &iid.to_guid()) }?;
+    // SAFETY: successful QI above transferred one reference; retain it before
+    // the next fallible operation so failed identity QI cannot leak it.
+    let pointer = Rc::new(unsafe { OwnedComInterface::from_owned(raw) });
+    // SAFETY: this same-apartment interface is live. COM identity is the exact
+    // pointer returned by QI(IID_IUnknown), never an arbitrary interface address.
+    let identity = unsafe {
+        crate::query_interface_pointer(pointer.as_ptr(), &crate::windows_client::IID_IUNKNOWN)
+    }?;
+    // SAFETY: successful QI transfers exactly one retained identity reference.
+    let identity_owner = unsafe { OwnedComInterface::from_owned(identity) };
     let receiver = Rc::new(NativeReceiver {
-        // SAFETY: consume exactly the reference returned by QI above.
-        pointer: Rc::new(unsafe { OwnedComInterface::from_owned(raw) }),
+        pointer,
+        _identity: identity_owner,
         library,
         bridge,
     });
@@ -175,5 +186,9 @@ unsafe fn build(
     bytes[4..6].copy_from_slice(&iid.data2.to_le_bytes());
     bytes[6..8].copy_from_slice(&iid.data3.to_le_bytes());
     bytes[8..].copy_from_slice(&iid.data4);
-    Ok(HostObject::new_with_payload(bytes, slots, receiver))
+    // SAFETY: receiver retains the canonical native IUnknown until every table
+    // and callback capture is released, including opaque Variant result tables.
+    Ok(unsafe {
+        HostObject::new_with_payload_and_identity(bytes, slots, receiver, identity.cast())
+    })
 }

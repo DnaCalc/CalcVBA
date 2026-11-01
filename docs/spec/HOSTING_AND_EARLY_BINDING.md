@@ -323,6 +323,14 @@ under bd-59co.2.9.9 and WIN-4. Static lowered default calls are separate. See
 
 ## Optional and source-project calls
 
+Run 11 adds owning `Is` expressions on both typed backends. Native tables retain
+canonical `QI(IID_IUnknown)` identity before publication, including nominal and
+Variant result wrappers. `Is` compares that retained identity without defaults,
+QI, Invoke or member lookup. Nothing and non-object Variant behavior is checked
+against owned Excel VBA. Foreign runtime IUnknown carriers use retained pointer
+identity; native interfaces require native preparation. See
+[identity evidence](../evidence/programs/ideal-2026-07/core/CORE-7/typed-identity-run11.md).
+
 Run 10 admits Optional parameters in the owning value family on VM3/native JIT.
 `bind_values`/`bind_slots` accept a supplied argument prefix when every remaining
 parameter is optional. The provider prepares the declared defaults once per

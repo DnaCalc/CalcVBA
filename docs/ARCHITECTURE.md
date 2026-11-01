@@ -250,6 +250,11 @@ See [the scoped evidence](evidence/programs/ideal-2026-07/windows-x64/WIN-4/type
 
 ## 10. Host sessions, builds and outputs
 
+The owning typed family now executes `Is` on VM3/native JIT. Native interface and
+Variant wrappers retain canonical IUnknown identity before publication; comparison
+calls no default getter or COM transport. An owned Excel probe checks Nothing and
+non-object errors. See [the scoped proof](evidence/programs/ideal-2026-07/core/CORE-7/typed-identity-run11.md).
+
 The neutral linked provider now accepts explicit procedural source closures via
 `ProjectGraph`/`load_graph`, retaining separate OxPrograms, canonical stores and
 prepared import indices on VM3/native JIT. Owning Optional calls support declared

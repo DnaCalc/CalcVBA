@@ -8,7 +8,7 @@
   "source_hashes": [
     {
       "path": "docs/validation/WINDOWS_JIT_COM_CLIENT_MATRIX_V1.csv",
-      "sha256": "sha256:2314a3df376a63d6edd80679cd9b5d2523a55588dd042163ce5d23937a681507"
+      "sha256": "sha256:fe38e3501366bf76c65bf9c21a6883c6b940b9dc283dfa35e50daa98dbc0af2b"
     },
     {
       "path": "docs/validation/WINDOWS_JIT_COM_EVENTS_MATRIX_V1.csv",

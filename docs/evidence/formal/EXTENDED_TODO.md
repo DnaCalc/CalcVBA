@@ -244,3 +244,10 @@ Non-blocking formal issues and follow-up items for later ladder profiles.
   Current status: investigating.
   Reproduction command: cargo test -p oxvba-embed --test typed_project_calls --test suspended_invocation; installed Lean 4.29.1 checks the existing abstractions only.
   Suggested next action: model retained unit/procedure targets and per-unit global authorities, then refine optional-cell/alias ownership and cross-project fault restoration with the CORE-5 ownership work.
+
+- ID: FTODO-TYPED-IDENTITY-20261101
+  Profile: owning Is and retained native identity (bd-59co.2.9.17; broader CORE-5/CORE-7/WIN-4).
+  Summary: Installed Lean 4.29.1 RefCount, TypedContinuation, TypedReentry and ProcedureHandles abstractions pass; none refines native QI identity, retained wrapper allocations or generated helper accesses. Native tests cover distinct interface pointers, failed identity QI, interface/Variant results and zero reference balance. Existing Miri dependency/sysroot blocker remains; no native formal passing credit.
+  Current status: investigating.
+  Reproduction command: cargo test -p oxvba-embed --test typed_identity --test typed_native_com; elan run leanprover/lean4:v4.29.1 lean formal/lean/OxVba/RefCount.lean.
+  Suggested next action: refine native identity-owner acquisition/release and factory-table provenance with CORE-5/WIN-4, then rerun Miri when matching offline dependencies/sysroot are available.

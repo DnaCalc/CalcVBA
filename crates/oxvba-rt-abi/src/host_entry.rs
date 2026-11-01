@@ -142,6 +142,9 @@ pub struct ScalarLayout {
     pub return_slot: usize,
     pub specialized_variant_temps: Vec<usize>,
     pub host_calls: std::collections::HashMap<oxvba_oxir::ComMethodRef, HostCallPlan>,
+    /// Runtime value coercion selects only compiler-retained default getters.
+    pub default_calls: std::collections::HashMap<[u8; 16], HostCallPlan>,
+    pub default_faults: std::collections::HashMap<[u8; 16], i32>,
     /// Globals have virtual physical indices after the actual frame slots.
     pub global_base: usize,
     pub assignment_iids: std::collections::HashMap<String, Option<[u8; 16]>>,
@@ -316,6 +319,60 @@ impl ScalarLayout {
                         result_iid,
                     },
                 );
+            }
+        }
+        let mut default_calls = std::collections::HashMap::new();
+        let mut default_faults = std::collections::HashMap::new();
+        if owning {
+            for interface in interfaces {
+                for member in interface.com_members().into_iter().flatten().filter(|m| {
+                    m.is_default_member
+                        && m.invoke_kind == oxvba_com::TypeLibMemberInvokeKind::PropertyGet
+                }) {
+                    if !member.parameter_types.is_empty() {
+                        if let Some(iid) = member.interface_iid.map(iid_bytes) {
+                            default_faults.insert(iid, 450);
+                        }
+                        continue;
+                    }
+                    let result = match member.return_type {
+                        Some(P::Long) => ScalarType::Long,
+                        Some(P::Double) => ScalarType::Double,
+                        Some(P::Boolean) => ScalarType::Boolean,
+                        Some(P::String) => ScalarType::String,
+                        Some(P::Variant) => ScalarType::Variant,
+                        Some(P::Object) => ScalarType::HostObject,
+                        _ => continue,
+                    };
+                    let Some(iid) = member.interface_iid.map(iid_bytes) else {
+                        continue;
+                    };
+                    let Some(slot) = member.vtable_slot else {
+                        continue;
+                    };
+                    if member.vtable_slot_bound.is_none_or(|bound| slot >= bound) {
+                        continue;
+                    }
+                    let native = member.callconv_is_stdcall
+                        || member.is_dual
+                        || member.source_typekind.is_some();
+                    if native && oxvba_com::typed_slots::signature(member).is_none() {
+                        continue;
+                    }
+                    let plan = HostCallPlan {
+                        iid,
+                        slot: usize::from(slot),
+                        long_argument: false,
+                        parameters: vec![],
+                        result,
+                        result_iid: None,
+                    };
+                    if let Some(old) = default_calls.insert(iid, plan.clone())
+                        && old != plan
+                    {
+                        return Err("ambiguous runtime default member".into());
+                    }
+                }
             }
         }
         let scalar = |ty: &OxTy| {
@@ -618,6 +675,8 @@ impl ScalarLayout {
             return_slot: result.map_or(usize::MAX, |id| id.0),
             specialized_variant_temps,
             host_calls,
+            default_calls,
+            default_faults,
             global_base,
             assignment_iids,
             unsupported_globals,
@@ -723,6 +782,14 @@ impl ScalarLayout {
     pub fn comparison_type(&self, lhs: &OxOperand, rhs: &OxOperand) -> Result<ScalarType, String> {
         let left = self.operand_type(lhs)?;
         let right = self.operand_type(rhs)?;
+        if self.owning
+            && (left == ScalarType::HostObject
+                || right == ScalarType::HostObject
+                || left == ScalarType::Variant
+                || right == ScalarType::Variant)
+        {
+            return Ok(ScalarType::Variant);
+        }
         if left == ScalarType::HostObject || right == ScalarType::HostObject {
             return Err("typed object value comparison requires default-member semantics".into());
         }
@@ -875,8 +942,8 @@ impl ScalarLayout {
             OxInst::Concat { dst, lhs, rhs }
                 if self.owning
                     && self.slots[self.slot(*dst)?] == ScalarType::String
-                    && self.operand_type(lhs)? != ScalarType::Variant
-                    && self.operand_type(rhs)? != ScalarType::Variant =>
+                    && self.operand_type(lhs).is_ok()
+                    && self.operand_type(rhs).is_ok() =>
             {
                 Ok(())
             }
@@ -902,8 +969,8 @@ impl ScalarLayout {
                     && ty == ScalarType::Variant
                     && *mode == NumericMode::Widening
                     && matches!(op, ArithOp::Add | ArithOp::Sub | ArithOp::Mul)
-                    && ![self.operand_type(lhs)?, self.operand_type(rhs)?]
-                        .contains(&ScalarType::HostObject)
+                    && self.operand_type(lhs).is_ok()
+                    && self.operand_type(rhs).is_ok()
                 {
                     return Ok(());
                 }
@@ -935,11 +1002,17 @@ impl ScalarLayout {
                 Ok(())
             }
             OxInst::Div { dst, lhs, rhs } if self.slots[self.slot(*dst)?] == ScalarType::Double => {
+                if self.owning {
+                    self.operand_type(lhs)?;
+                    self.operand_type(rhs)?;
+                    return Ok(());
+                }
                 self.accepts(*dst, lhs)?;
                 self.accepts(*dst, rhs)
             }
             OxInst::Compare { dst, lhs, rhs, .. }
-                if self.slots[self.slot(*dst)?] == ScalarType::Boolean =>
+                if self.slots[self.slot(*dst)?] == ScalarType::Boolean
+                    || (self.owning && self.slots[self.slot(*dst)?] == ScalarType::Variant) =>
             {
                 self.comparison_type(lhs, rhs).map(|_| ())
             }
@@ -952,10 +1025,10 @@ impl ScalarLayout {
                             | (ScalarType::Variant, NumericMode::Widening)
                     ) =>
             {
-                self.accepts(*dst, src)
+                self.operand_type(src).map(|_| ())
             }
             OxInst::Truthy { dst, src } if self.slots[self.slot(*dst)?] == ScalarType::Boolean => {
-                if self.operand_type(src)? == ScalarType::HostObject {
+                if !self.owning && self.operand_type(src)? == ScalarType::HostObject {
                     Err("typed object condition requires default-member semantics".into())
                 } else {
                     Ok(())

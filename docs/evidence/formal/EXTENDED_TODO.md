@@ -223,3 +223,10 @@ Non-blocking formal issues and follow-up items for later ladder profiles.
   Current status: investigating.
   Reproduction command: cargo test -p oxvba-embed; use the installed Lean 4.29.1 binary on formal/lean/OxVba/ExecutionBudget.lean and RefCount.lean.
   Suggested next action: add session-storage/alias/refcount refinement with the shared CORE-5 ownership work; retain the class-disposal and descriptor-lifetime residuals until code and executable evidence establish them.
+
+- ID: FTODO-TYPED-DEFAULTS-20261101
+  Profile: owning runtime default dispatch (bd-59co.2.9.15; broader bd-59co.2.9.9).
+  Summary: Eight existing Lean abstractions pass on installed Lean 4.29.1. They do not model default callback dispatch, Rust storage provenance or native JIT instructions. Targeted Miri could not execute: the WSL vendor cache differs from Cargo.lock; using the Windows dependency cache then found the cached Miri sysroot lacks the target core library, and offline sysroot construction lacks wasip1. No Miri passing credit. The pinned Windows Lean 4.19 launcher attempted a toolchain download and was interrupted; installed 4.29.1 was used directly instead.
+  Current status: investigating.
+  Reproduction command: cargo +nightly miri test -p oxvba-embed --no-default-features --test typed_defaults; raw rejected attempts in the run-10 evidence archive.
+  Suggested next action: provide matching offline dependencies/sysroot and rerun Miri; add default-dispatch ownership refinement under CORE-5/CORE-7. Native/JIT formal proof remains open.

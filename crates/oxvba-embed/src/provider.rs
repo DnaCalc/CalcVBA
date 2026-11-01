@@ -98,9 +98,45 @@ impl Provider {
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
         };
-        Module::load_project(&manifest, &Libraries(&libraries, &*self.resolver))
-            .map(|m| m.with_host(self.host.clone()))
-            .map_err(error)
+        let resolver = Libraries(&libraries, &*self.resolver);
+        let mut module = Module::load_project(&manifest, &resolver).map_err(error)?;
+        // An untyped Object/Variant can arrive from any explicitly supplied
+        // host interface, even when no source declaration mentions that type.
+        // Retain its authoritative default plan before publishing code/handles.
+        for library in &libraries {
+            for interface in &library.interfaces {
+                let iid = com_iid(interface.iid);
+                if module.program.com_interfaces.iter().any(|i| {
+                    matches!(i,
+                    oxvba_oxir::ComInterface::Com(meta) if meta.iid == Some(iid))
+                }) {
+                    continue;
+                }
+                let request = oxvba_com::TypeLibResolveRequest {
+                    reference_name: library.name.clone(),
+                    requested_coclass: Some(interface.name.clone()),
+                    importlib_hint: None,
+                    libid_hint: None,
+                    major_version_hint: Some(1),
+                    minor_version_hint: Some(0),
+                    lcid_hint: None,
+                };
+                let blob = resolver.resolve(&request).ok_or_else(|| {
+                    api::Error::Compile("host interface metadata unavailable".into())
+                })?;
+                module
+                    .program
+                    .com_interfaces
+                    .push(oxvba_oxir::ComInterface::Com(
+                        oxvba_com::TypeLibInterfaceMetadata {
+                            name: format!("{}.{}", library.name, interface.name),
+                            iid: Some(iid),
+                            members: blob.members,
+                        },
+                    ));
+            }
+        }
+        Ok(module.with_host(self.host.clone()))
     }
 }
 impl api::RuntimeProvider for Provider {

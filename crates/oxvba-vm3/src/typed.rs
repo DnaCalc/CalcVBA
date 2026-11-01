@@ -192,8 +192,9 @@ impl<'p> TypedInterpreter<'p> {
         if oxvba_rt_abi::host_entry::value::needs_helper(inst, &self.layout) {
             // SAFETY: frame and original instruction share this checked layout;
             // the helper executes one selected value kernel, never a CFG/call.
-            let status =
-                unsafe { oxvba_rt_abi::host_entry::value::evaluate(frame.raw_mut(), inst) };
+            let status = unsafe {
+                oxvba_rt_abi::host_entry::value::evaluate(frame.raw_mut(), inst, context)
+            };
             return if status == 0 { Ok(()) } else { Err(status) };
         }
         let (dst, value) = match inst {

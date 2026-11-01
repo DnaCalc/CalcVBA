@@ -312,11 +312,14 @@ library; none of those names is an engine intrinsic. The current four-argument,
 cross-project and native callback suspension remain open. See the
 [typed value proof](../evidence/programs/ideal-2026-07/core/CORE-7/typed-value-slots-run9.md).
 
-Runtime object-default coercion in the owning typed value kernels remains under
-bd-59co.2.9.9. An Object reaching a pure numeric/string kernel can currently yield
-error 13 instead of invoking its default member. This is a compatibility gap;
-retained generic default-member dispatch is required before promoting that scope.
-Static default calls already lowered to planned member operations are separate.
+Run 10 adds runtime object-default coercion in owning value kernels on VM3/native
+JIT, including Object payloads retained in Variant. Explicitly supplied host
+libraries retain IID/default-getter plans even without a nominal source declaration.
+Arithmetic, numeric/string coercion, concatenation, comparison and conditions use
+the active typed context and owned results; boxing/Set/Variant copies retain identity.
+Default chains are bounded at 64; broader coercion/native signature coverage remains
+under bd-59co.2.9.9 and WIN-4. Static lowered default calls are separate. See
+[default coercion evidence](../evidence/programs/ideal-2026-07/core/CORE-7/typed-defaults-run10.md).
 
 ## Imported native members on typed slots
 

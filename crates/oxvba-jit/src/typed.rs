@@ -936,8 +936,8 @@ impl ScalarLower<'_> {
             self.helper(
                 b,
                 oxvba_rt_abi::host_entry::value::evaluate as *const u8,
-                &[frame, descriptor],
-                &[types::I64; 2],
+                &[frame, descriptor, self.runtime],
+                &[types::I64; 3],
             );
             return;
         }

@@ -1,5 +1,6 @@
 //! Shared value kernels for the additional owning typed carriers. This module
-//! executes no CFG, procedure call or host dispatch and never calls VM3.
+//! executes no CFG or procedure call and never calls VM3. Value coercions may
+//! invoke compiler-retained default getters with the active typed context.
 use super::activation::{RawActivation, pin_value, read_slot, write_slot};
 use super::{ScalarBits, ScalarLayout, ScalarType};
 use calcvba_host_api::{Value, value};
@@ -119,7 +120,7 @@ pub fn needs_helper(inst: &OxInst, layout: &ScalarLayout) -> bool {
     let extended = |op: &OxOperand| {
         matches!(
             layout.operand_type(op),
-            Ok(ScalarType::String | ScalarType::Variant)
+            Ok(ScalarType::String | ScalarType::Variant | ScalarType::HostObject)
         )
     };
     match inst {
@@ -133,14 +134,27 @@ pub fn needs_helper(inst: &OxInst, layout: &ScalarLayout) -> bool {
                     && !(from == ScalarType::Long && layout.slots[i] == ScalarType::Double)
             })
         }),
-        OxInst::Arith { dst, lhs, rhs, .. } | OxInst::Compare { dst, lhs, rhs, .. } => {
+        OxInst::Arith { dst, lhs, rhs, .. }
+        | OxInst::Compare { dst, lhs, rhs, .. }
+        | OxInst::Div { dst, lhs, rhs } => {
             extended(lhs)
                 || extended(rhs)
                 || layout
                     .slot(*dst)
                     .is_ok_and(|i| layout.slots[i] == ScalarType::Variant)
         }
-        OxInst::Truthy { src, .. } | OxInst::Neg { src, .. } => extended(src),
+        OxInst::Truthy { src, .. } => extended(src),
+        OxInst::Neg { dst, src, .. } => {
+            extended(src)
+                || layout.slot(*dst).is_ok_and(|i| {
+                    layout.slots[i] == ScalarType::Variant
+                        || layout.operand_type(src).is_ok_and(|from| {
+                            from != layout.slots[i]
+                                && !(from == ScalarType::Long
+                                    && layout.slots[i] == ScalarType::Double)
+                        })
+                })
+        }
         _ => false,
     }
 }
@@ -148,8 +162,14 @@ pub fn needs_helper(inst: &OxInst, layout: &ScalarLayout) -> bool {
 /// # Safety
 /// raw is this instruction's leased, uniquely executing physical frame. inst
 /// points into its retained original OxFunc, whose complete admission was checked.
+/// context is the aligned, uniquely executing TypedContext for this activation;
+/// no competing reference may be used while a default callback runs.
 /// This helper handles selected value operations only, with no execution loop.
-pub unsafe extern "C" fn evaluate(raw: *mut RawActivation, inst: *const OxInst) -> i32 {
+pub unsafe extern "C" fn evaluate(
+    raw: *mut RawActivation,
+    inst: *const OxInst,
+    context: *mut super::TypedContext,
+) -> i32 {
     crate::with_status(|| {
         // SAFETY: the generated entry retains both immutable descriptors.
         let layout = unsafe { &*(*raw).layout };
@@ -157,6 +177,10 @@ pub unsafe extern "C" fn evaluate(raw: *mut RawActivation, inst: *const OxInst) 
         let inst = unsafe { &*inst };
         // SAFETY: short operand reads retain their carriers in stable scratch.
         let read = |op: &OxOperand| unsafe { operand_value(raw, layout, op) };
+        // SAFETY: the backend retains exclusive synchronous execution authority
+        // over this context. No frame/global borrow spans a default callback.
+        let read_value =
+            |op: &OxOperand| resolve_default(read(op)?, layout, unsafe { &mut *context });
         let result = (|| -> Result<(OxPlace, Value), i32> {
             let (dst, result) = match inst {
                 OxInst::Box { dst, src, .. } => (*dst, read(src)?),
@@ -171,7 +195,11 @@ pub unsafe extern "C" fn evaluate(raw: *mut RawActivation, inst: *const OxInst) 
                     (*dst, result)
                 }
                 OxInst::Coerce { dst, src, target } => {
-                    let src = read(src)?;
+                    let src = if matches!(target, oxvba_oxir::OxCoerceTarget::ImplicitVariant) {
+                        read(src)?
+                    } else {
+                        read_value(src)?
+                    };
                     let result = match target {
                         oxvba_oxir::OxCoerceTarget::Numeric(target) => {
                             arith::coerce_numeric(&src, *target)
@@ -190,8 +218,8 @@ pub unsafe extern "C" fn evaluate(raw: *mut RawActivation, inst: *const OxInst) 
                     op,
                     mode,
                 } => {
-                    let lhs = read(lhs)?;
-                    let rhs = read(rhs)?;
+                    let lhs = read_value(lhs)?;
+                    let rhs = read_value(rhs)?;
                     let result = match op {
                         oxvba_oxir::ArithOp::Add => arith::add(&lhs, &rhs, *mode),
                         oxvba_oxir::ArithOp::Sub => arith::sub(&lhs, &rhs, *mode),
@@ -203,14 +231,19 @@ pub unsafe extern "C" fn evaluate(raw: *mut RawActivation, inst: *const OxInst) 
                 }
                 OxInst::Concat { dst, lhs, rhs } => (
                     *dst,
-                    arith::concat(&read(lhs)?, &read(rhs)?).map_err(|e| e.code)?,
+                    arith::concat(&read_value(lhs)?, &read_value(rhs)?).map_err(|e| e.code)?,
                 ),
-                OxInst::Neg { dst, src, mode } => {
-                    (*dst, arith::neg(&read(src)?, *mode).map_err(|e| e.code)?)
-                }
+                OxInst::Div { dst, lhs, rhs } => (
+                    *dst,
+                    arith::div(&read_value(lhs)?, &read_value(rhs)?).map_err(|e| e.code)?,
+                ),
+                OxInst::Neg { dst, src, mode } => (
+                    *dst,
+                    arith::neg(&read_value(src)?, *mode).map_err(|e| e.code)?,
+                ),
                 OxInst::Truthy { dst, src } => (
                     *dst,
-                    Variant::from_bool(arith::is_truthy(&read(src)?).map_err(|e| e.code)?),
+                    Variant::from_bool(arith::is_truthy(&read_value(src)?).map_err(|e| e.code)?),
                 ),
                 OxInst::Compare {
                     dst,
@@ -229,7 +262,8 @@ pub unsafe extern "C" fn evaluate(raw: *mut RawActivation, inst: *const OxInst) 
                     };
                     (
                         *dst,
-                        arith::compare(&read(lhs)?, &read(rhs)?, *mode, op).map_err(|e| e.code)?,
+                        arith::compare(&read_value(lhs)?, &read_value(rhs)?, *mode, op)
+                            .map_err(|e| e.code)?,
                     )
                 }
                 _ => return Err(5),
@@ -259,6 +293,48 @@ pub unsafe extern "C" fn evaluate(raw: *mut RawActivation, inst: *const OxInst) 
             Err(error) => error,
         }
     })
+}
+fn resolve_default(
+    mut value: Variant,
+    layout: &ScalarLayout,
+    context: &mut super::TypedContext,
+) -> Result<Variant, i32> {
+    for _ in 0..64 {
+        if value.vtype() != VarType::Object {
+            return Ok(value);
+        }
+        let reference = value.as_object_ref().ok_or(91)?;
+        let object = calcvba_host_api::HostObject::from_object_ref(&reference).ok_or(13)?;
+        let plan = layout
+            .default_calls
+            .get(&object.header().iid)
+            .ok_or_else(|| {
+                layout
+                    .default_faults
+                    .get(&object.header().iid)
+                    .copied()
+                    .unwrap_or(438)
+            })?;
+        // SAFETY: the retained factory object and compiler-selected getter plan
+        // supply the exact signature. The owned value survives the callback.
+        let result = unsafe {
+            calcvba_host_api::object::value_slots::invoke_value_slot(
+                object.argument().header(),
+                plan.iid,
+                plan.slot,
+                &plan.parameters,
+                plan.result,
+                &[],
+                context,
+            )
+        }?;
+        value = to_variant(result);
+    }
+    if value.vtype() == VarType::Object {
+        Err(28)
+    } else {
+        Ok(value)
+    }
 }
 fn matches_type(value: &Variant, ty: ScalarType) -> bool {
     match ty {

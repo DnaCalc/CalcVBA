@@ -1,0 +1,29 @@
+{
+  "schema": "oxvba.run10.defaults.development-evidence.v1",
+  "base_commit": "2af90be65695cc3be97742c61cec3e0e20b4070e",
+  "archive": "run10-defaults.zip",
+  "archive_sha256": "04d097a888b9262b0127dc85f7e83e17e6c8197ef5a25eb9dfcc52bf3b6b8a78",
+  "source_sha256": {
+    "Cargo.toml": "847d85416b6740b58d3af73d831aa980cd60503209b487f046325d88d88041b0",
+    "Cargo.lock": "92a2de67a2126a181f89cc35809b8119481e04f53b9cd7927d4d8c0315ef51af",
+    ".cargo/config.toml": "cfa214117c08dc4d1a1b500db4c445d999dc7555f7eff7e8d251d28b3afb4ee3",
+    "crates/oxvba-embed/src/provider.rs": "c19212b281f9e6a1f39db981deb01bcf11b4c654eeadbeba1e5082bba618bc87",
+    "crates/oxvba-jit/src/typed.rs": "e35a4b584b701561db5d16278a5fc9f9d985e336dc7b07614cc2d9c67b5fbaa0",
+    "crates/oxvba-rt-abi/src/host_entry.rs": "675b8ab710b354df8aad31f0106ddab945541e6a273d8561e8e5e371545fee6b",
+    "crates/oxvba-rt-abi/src/host_entry/value.rs": "de14378aca441c80f07d7dc4c0d65f2d24898926f66440f3cbb4b64c6a949756",
+    "crates/oxvba-vm3/src/typed.rs": "ecf6dad396a63351490bdfaf958f5ff7e8392aa144cfce8ba5c4980ab5c99fc3",
+    "crates/oxvba-embed/tests/typed_defaults.rs": "a1a4b1032ea134748603b8e33c8a913a9f548d960c5b79b241eca9ebe89c8eb0",
+    "scripts/run-typed-defaults-oracle.ps1": "2f9fa892b0fae3204cc8c78d4fb28c03a3f8295296e7c25438123f1d65717317",
+    "docs/evidence/programs/ideal-2026-07/windows-x64/WIN-4/typed-defaults-run10.bas": "c8dffbcffa37f142e843b732fffdf600860d2feffbfc02a97e7d853fe396b04f"
+  },
+  "repository_check": {
+    "passed": 3739,
+    "suites": 197,
+    "ignored": 181,
+    "registry_writers_excluded_without_credit": 4
+  },
+  "oracle_run": "calcvba10-defaults-initial",
+  "owned_excel_pid": 4360,
+  "formal": "Eight existing Lean abstractions pass on installed 4.29.1. Miri unavailable with matching offline dependencies/sysroot; no passing credit.",
+  "scope": "Runtime default dispatch for admitted owning value operations only; broader CORE-7/native signatures and certification remain open."
+}

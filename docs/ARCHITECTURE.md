@@ -191,6 +191,10 @@ and handler/Resume continuations. JIT body operations remain native; call/error
 transitions use common stack mechanics and the canonical ErrEngine. Entire typed
 call graphs are checked before body effects. The bounded proof is
 [typed-host-calls-run9](evidence/programs/ideal-2026-07/core/CORE-7/typed-host-calls-run9.md).
+Run 10 adds retained runtime default-getter dispatch for host Objects and object
+payloads in Variant during owning value operations, with the active typed context
+and owned intermediate results on both backends. Boxing and object copies preserve
+identity. See [the scoped proof](evidence/programs/ideal-2026-07/core/CORE-7/typed-defaults-run10.md).
 
 ### Material gaps against the contract
 

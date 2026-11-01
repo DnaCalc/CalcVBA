@@ -4800,13 +4800,10 @@ pub(crate) unsafe extern "C" fn rt_jit_project_type_name_to_slot(
             Ok(value) => value,
             Err(status) => return status,
         };
-        let name = if value.as_object_ref().is_none()
-            && matches!(
-                value.vtype(),
-                VarType::Object | VarType::Empty | VarType::Null
-            ) {
-            "Nothing".to_string()
-        } else {
+        let out = if value
+            .as_object_ref()
+            .is_some_and(|o| o.is_project_instance())
+        {
             // SAFETY: the current compiled-run boundary owns the live unique state handle;
             // typed references and owned values remain live and nonaliasing for this call.
             let object = match unsafe { variant_to_project_object_for_jit(state, &value) } {
@@ -4816,14 +4813,30 @@ pub(crate) unsafe extern "C" fn rt_jit_project_type_name_to_slot(
             if !object.is_project_instance() {
                 return ST_FAULT;
             }
-            object.class_descriptor().name.to_string()
+            Variant::from_string(object.class_descriptor().name)
+        } else {
+            // Ordinary host objects and nonobjects keep the shared library's
+            // TypeName semantics, including Empty, Null, Nothing and arrays.
+            let mut out = Variant::empty();
+            let native_id = match native_impl_index(NativeImplId::TypeName) {
+                Ok(id) => id,
+                Err(_) => return ST_FAULT,
+            };
+            // SAFETY: value/out are initialized nonaliasing local carriers;
+            // no run or execution-state borrow spans host-capable dispatch.
+            let status =
+                unsafe { rt_lib_invoke_with_policy(state, native_id, &value, 1, 0, &mut out) };
+            if status != ST_OK {
+                return status;
+            }
+            out
         };
         // SAFETY: callback-capable lookup returned and no typed run borrow is live.
         let run = unsafe { &mut *run };
         let Some(slot) = slot_mut(run, dst_area as u32, dst_index as u32) else {
             return ST_FAULT;
         };
-        *slot = Variant::from_string(name);
+        *slot = out;
         ST_OK
     })
 }

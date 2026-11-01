@@ -50,7 +50,7 @@ impl JitConfiguration {
     /// this is not a persistent on-disk code format.
     pub fn identity(&self) -> String {
         format!(
-            "{}|{}|{}|private-helpers=4|typed=1|carrier={}:{}|jit={}",
+            "{}|{}|{}|private-helpers=5|typed=2|activation=1|carrier={}:{}|jit={}",
             self.isa.triple(),
             self.isa.flags(),
             self.isa
@@ -77,6 +77,7 @@ pub struct CompiledImage<'p> {
     pub(crate) programs: Vec<&'p OxProgram>,
     pub(crate) functions: Vec<Vec<JitEntryFn>>,
     pub(crate) typed_functions: Vec<Vec<Option<crate::typed::ScalarEntry>>>,
+    pub(crate) resumable_functions: Vec<Vec<Option<crate::typed::ResumableEntry>>>,
     pub(crate) typed_identity: std::sync::Arc<()>,
     pub(crate) snapshot_entries: Vec<Option<JitEntryFn>>,
 }
@@ -471,6 +472,17 @@ pub struct JitSession<'p> {
 }
 
 impl JitSession<'_> {
+    /// Canonical storage; callers retaining a pointer must lease this session
+    /// and exclude reset/replacement until their activation drops.
+    pub fn typed_globals_raw(&mut self) -> (*mut Variant, usize) {
+        let globals = &mut self
+            .exec
+            .programs
+            .last_mut()
+            .expect("linked session")
+            .globals;
+        (globals.as_mut_ptr(), globals.len())
+    }
     /// Seat an unhandled typed host-entry fault in the same Err used by thunks.
     pub fn record_typed_entry_error(&mut self, number: i32) {
         self.exec.err_engine.raise(

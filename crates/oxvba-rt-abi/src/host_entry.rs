@@ -10,6 +10,7 @@ pub use calcvba_host_api::{
     Arguments, MAX_TYPED_ARGS, Scalar, ScalarBits, ScalarType, TYPED_ENTRY_ABI, TypedContext,
 };
 pub const MAX_TYPED_SLOTS: usize = 128;
+pub mod activation;
 
 fn scalar_type(ty: &OxTy) -> Option<ScalarType> {
     match ty {
@@ -99,17 +100,23 @@ pub unsafe extern "C" fn typed_context_finish(
 
 /// Inspectable physical layout for a scalar entry. Construction checks every
 /// instruction, including unreachable blocks. Unsupported bodies are refused.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScalarLayout {
     pub slots: Vec<ScalarType>,
     pub local_count: usize,
     pub parameters: Vec<ScalarType>,
+    /// Required nominal identity for each object parameter (None for Object).
+    pub parameter_iids: Vec<Option<[u8; 16]>>,
     pub result: ScalarType,
     pub return_slot: usize,
     pub specialized_variant_temps: Vec<usize>,
     pub host_calls: std::collections::HashMap<oxvba_oxir::ComMethodRef, HostCallPlan>,
+    /// Globals have virtual physical indices after the actual frame slots.
+    pub global_base: usize,
+    pub assignment_iids: std::collections::HashMap<String, Option<[u8; 16]>>,
+    unsupported_globals: std::collections::HashSet<usize>,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostCallPlan {
     pub iid: [u8; 16],
     pub slot: usize,
@@ -122,6 +129,17 @@ impl ScalarLayout {
     pub fn with_interfaces(
         func: &OxFunc,
         interfaces: &[oxvba_oxir::ComInterface],
+    ) -> Result<Self, String> {
+        Self::with_storage(func, interfaces, &[], false)
+    }
+    pub fn with_program(func: &OxFunc, program: &oxvba_oxir::OxProgram) -> Result<Self, String> {
+        Self::with_storage(func, &program.com_interfaces, &program.globals, true)
+    }
+    fn with_storage(
+        func: &OxFunc,
+        interfaces: &[oxvba_oxir::ComInterface],
+        globals: &[oxvba_oxir::OxGlobal],
+        owning: bool,
     ) -> Result<Self, String> {
         use oxvba_com::{TypeLibParamType as P, TypeLibWireType};
         let mut host_calls = std::collections::HashMap::new();
@@ -185,7 +203,12 @@ impl ScalarLayout {
         };
         if func.param_count > MAX_TYPED_ARGS
             || func.param_count > func.locals.len()
-            || func.locals.len().saturating_add(func.temps.len()) > MAX_TYPED_SLOTS
+            || func
+                .locals
+                .len()
+                .saturating_add(func.temps.len())
+                .saturating_add(globals.len())
+                > MAX_TYPED_SLOTS
         {
             return Err("typed entry exceeds argument/slot bounds".into());
         }
@@ -198,6 +221,20 @@ impl ScalarLayout {
             .map(|l| scalar(&l.ty).map(Some))
             .collect::<Result<Vec<_>, _>>()?;
         physical.extend(func.temps.iter().map(scalar_type));
+        let global_base = physical.len();
+        let unsupported_globals = globals
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| matches!(scalar_type(&g.ty), None | Some(ScalarType::Boolean)))
+            .map(|(i, _)| i)
+            .collect();
+        // Unused globals need not share the current frame's carrier family.
+        // Access to these placeholders is refused by slot() before execution.
+        physical.extend(
+            globals
+                .iter()
+                .map(|g| Some(scalar_type(&g.ty).unwrap_or(ScalarType::Long))),
+        );
         // Widening arithmetic is semantically Variant, but numeric operands
         // with at least one Double prove a Double payload. Specialize only compiler temporaries whose writers
         // prove Double; never a user-declared Variant or Long-only widening.
@@ -253,6 +290,9 @@ impl ScalarLayout {
                                 .and_then(|i| physical.get(i))
                                 .copied()
                                 .flatten(),
+                            OxOperand::Use(OxPlace::Global(i)) => {
+                                physical.get(global_base + i.0).copied().flatten()
+                            }
                             OxOperand::Const(OxConst::F64(_)) => Some(ScalarType::Double),
                             OxOperand::Const(OxConst::I16(_) | OxConst::I32(_)) => {
                                 Some(ScalarType::Long)
@@ -282,6 +322,29 @@ impl ScalarLayout {
             .collect::<Option<Vec<_>>>()
             .ok_or("typed entry has an unproven carrier")?;
         let parameters = slots[..func.param_count].to_vec();
+        let parameter_iids = func.locals[..func.param_count]
+            .iter()
+            .map(|local| match local.ty {
+                OxTy::Object(oxvba_oxir::ObjClass::ComIface(id)) => {
+                    let Some(oxvba_oxir::ComInterface::Com(meta)) = interfaces.get(id.0) else {
+                        return Err("typed object parameter has no interface descriptor");
+                    };
+                    let iid = meta
+                        .iid
+                        .ok_or("typed object parameter has no interface identity")?;
+                    let mut bytes = [0; 16];
+                    bytes[..4].copy_from_slice(&iid.data1.to_le_bytes());
+                    bytes[4..6].copy_from_slice(&iid.data2.to_le_bytes());
+                    bytes[6..8].copy_from_slice(&iid.data3.to_le_bytes());
+                    bytes[8..].copy_from_slice(&iid.data4);
+                    Ok(Some(bytes))
+                }
+                OxTy::Object(oxvba_oxir::ObjClass::Class(_) | oxvba_oxir::ObjClass::Iface(_)) => {
+                    Err("typed project-object parameter ABI remains open")
+                }
+                _ => Ok(None),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         if parameters.contains(&ScalarType::Boolean) {
             return Err("typed Boolean parameter ABI remains open".into());
         }
@@ -298,16 +361,74 @@ impl ScalarLayout {
             .filter(|(_, ty)| **ty == OxTy::Variant)
             .map(|(i, _)| func.locals.len() + i)
             .collect();
+        let mut assignment_iids = std::collections::HashMap::new();
+        if owning {
+            for inst in func.blocks.iter().flat_map(|b| &b.instrs) {
+                if let OxInst::ValidateAssignment {
+                    target_type_name, ..
+                } = inst
+                {
+                    let bare = target_type_name
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or(target_type_name);
+                    let iid = if bare.is_empty() || bare.eq_ignore_ascii_case("Object") {
+                        None
+                    } else {
+                        let exact = interfaces
+                            .iter()
+                            .any(|i| i.name().eq_ignore_ascii_case(target_type_name));
+                        let candidates: Vec<_> = interfaces
+                            .iter()
+                            .filter(|i| {
+                                if exact {
+                                    i.name().eq_ignore_ascii_case(target_type_name)
+                                } else {
+                                    !target_type_name.contains('.')
+                                        && i.name()
+                                            .rsplit('.')
+                                            .next()
+                                            .is_some_and(|n| n.eq_ignore_ascii_case(bare))
+                                }
+                            })
+                            .filter_map(|i| match i {
+                                oxvba_oxir::ComInterface::Com(meta) => meta.iid,
+                                _ => None,
+                            })
+                            .collect();
+                        let first = *candidates
+                            .first()
+                            .ok_or("owning assignment has no interface identity")?;
+                        if candidates.iter().any(|iid| *iid != first) {
+                            return Err("ambiguous owning assignment interface".into());
+                        }
+                        let mut bytes = [0; 16];
+                        bytes[..4].copy_from_slice(&first.data1.to_le_bytes());
+                        bytes[4..6].copy_from_slice(&first.data2.to_le_bytes());
+                        bytes[6..8].copy_from_slice(&first.data3.to_le_bytes());
+                        bytes[8..].copy_from_slice(&first.data4);
+                        Some(bytes)
+                    };
+                    assignment_iids.insert(target_type_name.clone(), iid);
+                }
+            }
+        }
         let layout = Self {
             result: *slots.get(result.0).ok_or("invalid return slot")?,
             slots,
             local_count: func.locals.len(),
             parameters,
+            parameter_iids,
             return_slot: result.0,
             specialized_variant_temps,
             host_calls,
+            global_base,
+            assignment_iids,
+            unsupported_globals,
         };
-        if matches!(layout.result, ScalarType::Boolean | ScalarType::HostObject) {
+        if layout.result == ScalarType::Boolean
+            || (!owning && layout.result == ScalarType::HostObject)
+        {
             return Err("typed Boolean/object result ABI remains open".into());
         }
         let ids = func
@@ -348,6 +469,10 @@ impl ScalarLayout {
                 .local_count
                 .checked_add(id.0)
                 .ok_or("typed slot overflow")?,
+            OxPlace::Global(id) if !self.unsupported_globals.contains(&id.0) => self
+                .global_base
+                .checked_add(id.0)
+                .ok_or("typed global overflow")?,
             _ => return Err("typed entry cannot access project storage".into()),
         };
         self.slots.get(index).ok_or("typed slot out of bounds")?;
@@ -359,6 +484,7 @@ impl ScalarLayout {
             OxOperand::Const(OxConst::F64(_)) => Ok(ScalarType::Double),
             OxOperand::Const(OxConst::I16(_) | OxConst::I32(_)) => Ok(ScalarType::Long),
             OxOperand::Const(OxConst::Bool(_)) => Ok(ScalarType::Boolean),
+            OxOperand::Const(OxConst::Nothing) => Ok(ScalarType::HostObject),
             _ => Err("typed operand requires the dynamic runtime".into()),
         }
     }
@@ -422,7 +548,18 @@ impl ScalarLayout {
             }
             OxInst::StmtBoundary {
                 clear_temps_from, ..
-            } if *clear_temps_from <= self.slots.len() - self.local_count => Ok(()),
+            } if *clear_temps_from <= self.global_base - self.local_count => Ok(()),
+            OxInst::ValidateAssignment {
+                src,
+                intent: oxvba_bundle::AssignmentIntent::Set,
+                target_kind: oxvba_bundle::AssignmentTargetKind::Object,
+                target_type_name,
+                ..
+            } if self.assignment_iids.contains_key(target_type_name)
+                && self.operand_type(src)? == ScalarType::HostObject =>
+            {
+                Ok(())
+            }
             OxInst::DrainTerminations => Ok(()),
             OxInst::Assign { dst, value } => self.accepts(*dst, value),
             OxInst::Coerce {
@@ -508,6 +645,9 @@ impl ScalarLayout {
                 ScalarBits::long(if *value { -1 } else { 0 }),
                 ScalarType::Boolean,
             ),
+            OxOperand::Const(OxConst::Nothing) => {
+                (ScalarBits::object(std::ptr::null()), ScalarType::HostObject)
+            }
             _ => unreachable!("admitted operand"),
         };
         if to == ScalarType::Double && from == ScalarType::Long {

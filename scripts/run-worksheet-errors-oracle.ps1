@@ -2,6 +2,7 @@ param(
     [string]$RunId = ('worksheet_errors_{0:yyyyMMddTHHmmssZ}' -f [DateTime]::UtcNow),
     [string]$OutputRoot = 'artifacts/windows-x64/worksheet-errors',
     [string]$RuntimeTestExecutable = '',
+    [switch]$OwningObjectProbe,
     [ValidateSet('getobject_reads_owned_excel_workbook_values_on_both_backends', 'host_injected_owned_excel_range_uses_default_without_losing_identity')]
     [string]$RuntimeTestName = 'getobject_reads_owned_excel_workbook_values_on_both_backends'
 )
@@ -13,12 +14,14 @@ if ($RuntimeTestExecutable) {
 # Reuse the exact process containment, compile authority and armed UIA guardian.
 # Replace only the runtime action: no VBA macro is active during recalculation.
 $script:worksheetSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../docs/evidence/programs/ideal-2026-07/windows-x64/WIN-4/worksheet-errors.bas')
+$script:worksheetOwningObjectProbe = [bool]$OwningObjectProbe
 $supervisor = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'run-excel-vba-oracle.ps1')
 $anchor = '. (Join-Path $PSScriptRoot "excel-vba-oracle-bootstrap.ps1")'
 $override = @'
 $script:worksheetDescriptor = @(Get-ExcelOracleHarnessCases | Where-Object id -eq 'windows-scalar-interop')[0]
 $script:worksheetDescriptor.module_source = $script:worksheetSource
 $script:worksheetDescriptor.expected_value = 'raise=#VALUE!|divide=#VALUE!|range-plus=42|literal-plus=42|range-times=82|identity=Range:5|text-plus=4|blank-plus=1|bad-plus=#VALUE!|multi-plus=#VALUE!|overflow-code=6|overflow-compare=6:True:True:7FF0000000000000'
+if ($script:worksheetOwningObjectProbe) { $script:worksheetDescriptor.expected_value += '|object-owner=Range|Range|True|True|43|Range|True|13|7|7' }
 $script:worksheetDescriptor.purpose = 'Idle worksheet unhandled errors and default-member arithmetic; development observation only'
 $script:worksheetDescriptor.invocation_observation_prefix = $null
 function Get-ExcelOracleHarnessCases { return @($script:worksheetDescriptor) }
@@ -85,6 +88,17 @@ if ($RuntimeTestExecutable) {
     $finishAnchor = "                `$runValue = `$parts -join '|'"
     if (-not $runtime.Contains($finishAnchor)) { throw 'Worksheet result anchor changed' }
     $runtime = $runtime.Replace($finishAnchor, $runtimeProbe + "`n" + $finishAnchor)
+}
+if ($OwningObjectProbe) {
+    $ownerProbe = @'
+                $owningName = "'" + $workbook.Name.Replace("'", "''") + "'!OwningObjectProbe"
+                $owningValue = [string]$excel.Run($owningName)
+                [ordered]@{ schema = 'oxvba.owning-object-observation.v1'; value = $owningValue; compile_authority = 'VBE command 578 before runtime' } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $caseDirectory 'owning-object-observation.json') -Encoding utf8NoBOM
+                $parts += 'object-owner=' + $owningValue
+'@
+    $finishAnchor = "                `$runValue = `$parts -join '|'"
+    if (-not $runtime.Contains($finishAnchor)) { throw 'Worksheet result anchor changed' }
+    $runtime = $runtime.Replace($finishAnchor, $ownerProbe + "`n" + $finishAnchor)
 }
 if (-not $worker.Contains($runAnchor)) { throw 'Worker runtime anchor changed' }
 $worker = $worker.Replace($runAnchor, $runtime)

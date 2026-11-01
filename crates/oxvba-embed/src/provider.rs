@@ -140,6 +140,15 @@ struct Session {
     provider: Provider,
 }
 struct TypedBound(crate::BoundProcedure);
+fn typed_bound(handle: &api::BoundProcedure) -> Result<&crate::BoundProcedure, api::Error> {
+    let bound = handle
+        .provider_payload::<TypedBound>()
+        .ok_or(api::Error::StaleHandle)?;
+    if handle.generation() != bound.0.generation() {
+        return Err(api::Error::StaleHandle);
+    }
+    Ok(&bound.0)
+}
 fn dynamic_bound(handle: &api::BoundProcedure) -> Result<&crate::BoundProcedure, api::Error> {
     let bound = handle
         .provider_payload::<crate::BoundProcedure>()
@@ -150,6 +159,18 @@ fn dynamic_bound(handle: &api::BoundProcedure) -> Result<&crate::BoundProcedure,
     Ok(bound)
 }
 impl api::Session for Session {
+    fn begin_invocation(
+        &self,
+        handle: &api::BoundProcedure,
+        args: &[api::Slot<'_>],
+        frame: api::InvocationFrame,
+        max_blocks: u64,
+    ) -> Result<Box<dyn api::Invocation>, api::Error> {
+        let bound = typed_bound(handle)?;
+        self.session
+            .begin_invocation(bound, args, frame, max_blocks)
+            .map_err(error)
+    }
     fn procedures(&self) -> &[api::Procedure] {
         &self.procedures
     }
@@ -238,7 +259,7 @@ impl api::Session for Session {
         Ok(())
     }
 }
-fn error(value: crate::Error) -> api::Error {
+pub(crate) fn error(value: crate::Error) -> api::Error {
     match value {
         crate::Error::Compile(v) => api::Error::Compile(v),
         crate::Error::UnknownProcedure(v) => api::Error::UnknownProcedure(v),
@@ -403,6 +424,32 @@ fn interface_id(iid: ComInterfaceIid) -> api::InterfaceId {
 }
 struct Libraries<'a>(&'a [api::ObjectLibrary], &'a dyn TypeLibResolver);
 impl TypeLibResolver for Libraries<'_> {
+    fn interface_iid(
+        &self,
+        request: &oxvba_com::TypeLibResolveRequest,
+        blob: &oxvba_com::TypeLibMetadataBlob,
+    ) -> Option<ComInterfaceIid> {
+        let Some(library) = self
+            .0
+            .iter()
+            .find(|l| l.name.eq_ignore_ascii_case(&request.reference_name))
+        else {
+            return self.1.interface_iid(request, blob);
+        };
+        let interface = match &request.requested_coclass {
+            Some(name) => library
+                .interfaces
+                .iter()
+                .find(|i| i.name.eq_ignore_ascii_case(name))?,
+            None => library.interfaces.first()?,
+        };
+        Some(ComInterfaceIid {
+            data1: u32::from_le_bytes(interface.iid[..4].try_into().ok()?),
+            data2: u16::from_le_bytes(interface.iid[4..6].try_into().ok()?),
+            data3: u16::from_le_bytes(interface.iid[6..8].try_into().ok()?),
+            data4: interface.iid[8..].try_into().ok()?,
+        })
+    }
     fn resolve(
         &self,
         request: &oxvba_com::TypeLibResolveRequest,

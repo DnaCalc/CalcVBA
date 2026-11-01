@@ -9,6 +9,7 @@ pub(crate) struct Compiler<'p> {
     pub(crate) programs: Vec<&'p OxProgram>,
     pub(crate) clif_ids: Vec<Vec<ClifFuncId>>,
     scalar_entries: crate::typed::ScalarDefinitions,
+    resumable_entries: crate::typed::ResumableDefinitions,
     scalar_start: ClifFuncId,
     scalar_finish: ClifFuncId,
     snapshot_ids: Vec<Option<ClifFuncId>>,
@@ -72,6 +73,7 @@ impl<'p> Compiler<'p> {
         let mut module = UnpublishedModule(Some(JITModule::new(builder)));
         let imports = declare_imports(&mut module)?;
         let scalar_entries = crate::typed::compile_scalar_entries(&mut module, programs)?;
+        let resumable_entries = crate::typed::compile_resumable_entries(&mut module, programs)?;
         let ptr = module.target_config().pointer_type();
         let mut signature = module.make_signature();
         signature.params = vec![AbiParam::new(ptr), AbiParam::new(ptr)];
@@ -98,6 +100,7 @@ impl<'p> Compiler<'p> {
             programs: programs.to_vec(),
             clif_ids,
             scalar_entries,
+            resumable_entries,
             scalar_start,
             scalar_finish,
             snapshot_ids: vec![None; programs.len()],
@@ -136,6 +139,20 @@ impl<'p> Compiler<'p> {
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
+        let resumable_functions = compiler
+            .resumable_entries
+            .into_iter()
+            .map(|functions| {
+                functions
+                    .into_iter()
+                    .map(|id| {
+                        id.map(|id| crate::typed::ResumableEntry {
+                            pointer: compiler.module.get_finalized_function(id),
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
         let snapshot_entries = compiler
             .snapshot_ids
             .iter()
@@ -153,6 +170,7 @@ impl<'p> Compiler<'p> {
             programs: programs.to_vec(),
             functions,
             typed_functions,
+            resumable_functions,
             typed_identity: std::sync::Arc::new(()),
             snapshot_entries,
         })
@@ -3664,8 +3682,9 @@ impl<'a> LowerFunc<'a> {
 
     fn should_route_project_type_name(&self, object: &OxOperand) -> Result<bool, JitError> {
         let ty = operand_static_ty(self.program, self.func, object)?;
-        Ok(is_project_object_static_ty(&ty)
-            || (self.programs.len() > 1 && matches!(ty, OxTy::Object(_))))
+        // The runtime object may be a project instance even when its declared
+        // place is Object or Variant. Preserve that identity through dispatch.
+        Ok(matches!(ty, OxTy::Object(_) | OxTy::Variant))
     }
 
     fn emit_validate_assignment(
@@ -7742,7 +7761,9 @@ impl<'a> LowerFunc<'a> {
             | NativeImplId::IsNull
             | NativeImplId::IsEmpty
             | NativeImplId::IsError
-            | NativeImplId::IsMissing => self.is_supported_information_extern_operand(operand),
+            | NativeImplId::IsMissing => {
+                self.is_supported_information_extern_operand(operand, native_impl)
+            }
             NativeImplId::CStr
             | NativeImplId::CDate
             | NativeImplId::CBool
@@ -8031,17 +8052,19 @@ impl<'a> LowerFunc<'a> {
     fn is_supported_information_extern_operand(
         &self,
         operand: &OxOperand,
+        native_impl: NativeImplId,
     ) -> Result<bool, JitError> {
         if self.is_supported_conversion_extern_operand(operand, NativeImplId::CVar)? {
             return Ok(true);
         }
         match operand {
             OxOperand::Const(OxConst::Str(value)) => Ok(i32::try_from(value.len()).is_ok()),
-            OxOperand::Use(place) => Ok(is_m4_4_fixed_variant_array_ty(place_ty(
-                self.program,
-                self.func,
-                *place,
-            )?)),
+            OxOperand::Use(place) => {
+                let ty = place_ty(self.program, self.func, *place)?;
+                Ok((matches!(ty, OxTy::Object(_))
+                    && matches!(native_impl, NativeImplId::TypeName | NativeImplId::IsObject))
+                    || is_m4_4_fixed_variant_array_ty(ty))
+            }
             _ => Ok(false),
         }
     }

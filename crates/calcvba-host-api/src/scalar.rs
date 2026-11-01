@@ -97,13 +97,15 @@ pub enum Slot<'a> {
     Long(i32),
     Double(f64),
     Object(ObjectArg<'a>),
+    /// A null object reference, with no borrowed owner.
+    Nothing,
 }
 impl Slot<'_> {
     pub fn ty(self) -> ScalarType {
         match self {
             Self::Long(_) => ScalarType::Long,
             Self::Double(_) => ScalarType::Double,
-            Self::Object(_) => ScalarType::HostObject,
+            Self::Object(_) | Self::Nothing => ScalarType::HostObject,
         }
     }
     pub fn bits(self) -> ScalarBits {
@@ -111,6 +113,7 @@ impl Slot<'_> {
             Self::Long(v) => ScalarBits::long(v),
             Self::Double(v) => ScalarBits::double(v),
             Self::Object(v) => ScalarBits::object(v.as_ptr()),
+            Self::Nothing => ScalarBits::object(std::ptr::null()),
         }
     }
     pub fn is_valid(self) -> bool {

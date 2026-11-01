@@ -136,6 +136,46 @@ fn assert_completed_prefix_i32(label: &str, outcome: RunOutcome, expected: &[i32
 }
 
 #[test]
+fn object_and_variant_global_inspection_preserves_project_identity() {
+    let modules = [
+        (
+            "Main",
+            Procedural,
+            r#"
+Public r As Long
+Private kept As Object
+Private boxed As Variant
+Sub Main()
+    Dim local As Object
+    Set kept = New Widget
+    Set local = kept
+    Set boxed = kept
+    If TypeName(kept) = "Widget" Then r = r + 1
+    If TypeName(local) = "Widget" Then r = r + 2
+    If TypeName(boxed) = "Widget" Then r = r + 4
+    If IsObject(kept) And IsObject(local) And IsObject(boxed) Then r = r + 8
+    If kept Is local Then r = r + 16
+    If IsArray(boxed) = False Then r = r + 32
+    Set kept = Nothing
+    If TypeName(kept) = "Nothing" Then r = r + 64
+    If IsObject(kept) Then r = r + 128
+    Set local = Nothing
+    Set boxed = Nothing
+End Sub
+"#,
+        ),
+        ("Widget", Class, "' object with no default member\n"),
+    ];
+    for executor in [Executor::Vm3, Executor::Jit] {
+        assert_completed_with_i32(
+            "Object and global Variant inspection",
+            run_modules(executor, &modules, "VBAProject"),
+            255,
+        );
+    }
+}
+
+#[test]
 fn jit_project_class_new_property_get_matches_vm3_without_fallback() {
     let modules = [
         (

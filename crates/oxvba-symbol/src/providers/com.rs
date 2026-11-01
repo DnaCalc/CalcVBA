@@ -20,10 +20,22 @@ pub struct ComTypeLibProvider {
     /// library-wide blob knows every coclass type name, but its flat member list
     /// must not make one coclass see another coclass's members.
     member_type_names: Vec<String>,
+    interface_iid: Option<oxvba_com::ComInterfaceIid>,
 }
 
 impl ComTypeLibProvider {
     pub fn new(blob: TypeLibMetadataBlob) -> Self {
+        let iid = blob
+            .members
+            .first()
+            .and_then(|m| m.interface_iid)
+            .filter(|iid| blob.members.iter().all(|m| m.interface_iid == Some(*iid)));
+        Self::with_interface_iid(blob, iid)
+    }
+    pub fn with_interface_iid(
+        blob: TypeLibMetadataBlob,
+        interface_iid: Option<oxvba_com::ComInterfaceIid>,
+    ) -> Self {
         let reference = fold_identifier(&blob.identity.reference_name);
         let mut type_names = vec![reference.clone()];
         let mut member_type_names = vec![reference.clone()];
@@ -52,6 +64,7 @@ impl ComTypeLibProvider {
             blob,
             type_names,
             member_type_names,
+            interface_iid,
         }
     }
 
@@ -196,6 +209,17 @@ impl ComTypeLibProvider {
 }
 
 impl Provider for ComTypeLibProvider {
+    fn object_interface(&self, type_name: &str) -> Option<oxvba_com::TypeLibInterfaceMetadata> {
+        if !self.owns_members(type_name) {
+            return None;
+        }
+        let iid = self.interface_iid?;
+        Some(oxvba_com::TypeLibInterfaceMetadata {
+            name: type_name.to_string(),
+            iid: Some(iid),
+            members: self.blob.members.clone(),
+        })
+    }
     fn resolve_member(
         &self,
         recv: &VarTypeRef,

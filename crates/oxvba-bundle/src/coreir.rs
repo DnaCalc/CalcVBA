@@ -60,6 +60,9 @@ pub struct CoreProgram {
     pub procs: Vec<CoreProc>,
     /// Project classes; index == [`ClassId`].
     pub classes: Vec<CoreClass>,
+    /// Compiler-resolved declared object interfaces, retained independently of
+    /// whether any procedure happens to call one of their members.
+    pub object_interfaces: Vec<oxvba_com::TypeLibInterfaceMetadata>,
     /// WithEvents event routes (already resolved; copied verbatim to the bundle).
     pub event_routes: Vec<EventRoute>,
     /// `Declare Lib` external-call descriptors (copied verbatim).

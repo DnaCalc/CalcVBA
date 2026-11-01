@@ -12,9 +12,9 @@
 //! keeping only a `(dispid, name)` selector and re-resolving the live object at run
 //! time; the Core IR now carries the descriptor on `CoreCallee::EarlyCom` and the
 //! elaboration interns it here, so an early-bound call is fully typed with no typelib
-//! re-resolution. (The typed *receiver* identity — typing a `Dim r As Excel.Range` local
-//! as [`crate::ty::ObjClass::ComIface`] rather than `Untyped` — is a later refinement;
-//! each call already names its own typed descriptor.)
+//! re-resolution. Declared interface snapshots retained by the compiler also
+//! give receivers and storage a ComIface identity independently of member calls;
+//! missing authoritative type identity still remains an explicit gap.
 //!
 //! The only structure OxIR **adds** is the [`crate::ty::IfaceId`]-indexed table
 //! ([`ComInterface`]) — which has no upstream equivalent because it unifies referenced/

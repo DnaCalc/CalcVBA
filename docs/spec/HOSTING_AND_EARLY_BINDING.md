@@ -1,6 +1,6 @@
 # Hosting and early binding
 
-2026-10-31. Owner direction; current code and bounded evidence, not full Windows parity.
+2026-11-01. Owner direction; current code and bounded evidence, not full Windows parity.
 Authority: `CHARTER.md`, `OXVBA_SYSTEM_CONTRACT_V1.md` HOST-SESSION-001,
 COMP-BIND-001, COM-CLIENT-001 and JIT-CORE-001. Names remain OxVba; master only.
 
@@ -149,7 +149,7 @@ no heap storage. This is a bounded Rust-facing family, not the final general C A
 Source-module programs have no implicit run entry; hosts select bound procedures.
 A session initializes storage before publishing handles, never runs Main, and uses
 a separate 1,000,000-block initialization budget. Calls are synchronous/same-thread;
-dynamic/stateful same-session reentry is refused. The run-7 typed subset below permits
+dynamic and general COM-event same-session reentry is refused. The typed subsets below permit
 bounded callback reentry with the active context. Handles retain an opaque owner identity and checked u64 generation,
 never a public address. Reload prepares replacement code/state first; failure keeps
 old handles valid, success changes generation before old code can be freed. Counter
@@ -165,7 +165,7 @@ ordered reference descriptions, compiler signature projections, exact runtime
 Variants for the explicit dynamic adapter, opaque handles and typed-slot contracts.
 It links neither compiler nor execution backend nor libffi. Applications compose
 `oxvba-embed::provider::Provider`, optionally supplying HAL services and their
-existing TypeLibResolver. `RuntimeProvider::info` declares API ABI 1, typed entry
+existing TypeLibResolver. `RuntimeProvider::info` declares API ABI 2, typed entry
 ABI 2 and JIT availability. An incompatible requested API version refuses before
 compilation. This is a linked Rust interface: Box/Rc/code/object allocations are
 released by their originating owners through Rust drop/vtables. It is not a stable
@@ -187,8 +187,8 @@ entries additionally accept borrowed ObjectArg alongside the existing Long/Doubl
 arguments. Objects are retained through same-thread Rc and their IUnknown prefix;
 ObjectArg borrows cannot outlive the owner. A kept object may outlive an invocation,
 but its callback must resolve any sheet/backend context against the active host
-call. The engine stores no invocation pointer. Typed object results, persistent
-VBA owning object storage and broader signatures remain outside this subset.
+call. The engine stores no borrowed invocation pointer. The run-8 owning frame
+below extends this subset to persistent typed object storage and object results.
 No object-count limit of 4,096 is introduced.
 
 Shared physical admission consumes the original OxFunc and retained descriptor,
@@ -198,6 +198,66 @@ signature. JIT emits call_indirect with native arguments and typed output storag
 VM3 uses the same native signature with unboxed local slots. No Variant argument
 vector/frame, runtime member lookup, Invoke retry or libffi occurs on this path.
 The API's uniform slot adapter calls that same primary JIT entry directly.
+
+## Owning typed invocations and continuation contract
+
+`Session::begin_invocation` accepts a typed bound handle, borrowed input slots,
+an `InvocationFrame` and a total block budget. It copies scalars and retains
+object arguments before returning an owning, same-thread `Invocation`. Its frame
+keeps unboxed local/temporary slots, the exact next physical operation, the host's
+invocation id/parent/read-view object, and leases on the original code and project
+state. `active_invocation` exposes the retained metadata to synchronous host
+callbacks only while that frame is executing; nested typed calls inherit it.
+The host supplies an immutable snapshot when its read policy requires one. The
+engine neither interprets spreadsheet reads nor converts a cached read into a
+fresh demand. P01/P03/P10 measured by DNA Calc on 2026-11-01 inform this boundary.
+
+Required interface-typed arguments check their retained nominal IID before body
+entry, including unused parameters. An incompatible portable table returns VBA
+error 13 without entering the function. An untyped `Object` parameter accepts any
+portable table. The slot API represents a null reference with `Slot::Nothing`;
+binding Nothing is valid, and dereferencing it raises error 91. The original
+native primary entry checks the same identities before executing its first block.
+
+`resume(operations)` runs at most that many physical operations, pausing only
+between completed instructions or control transfers. Zero performs no work.
+`Suspended` retains the next operation and owning locals. Host callbacks finish
+before control returns; a callback is never resumed in its middle. Both VM3 and
+native JIT execute the original OxFunc using the same checked physical admission.
+The JIT emits a native switch over saved positions and actual native arithmetic,
+loads, stores and typed indirect callbacks; it does not use the interpreter.
+This frame is an execution layout, not a second language IR or a Variant frame.
+
+Module and compiler-lowered Static storage use the session's existing canonical
+global cells, shared with dynamic calls. Object stores AddRef before releasing
+the old value. Local slots, temporary global receivers and object results have
+explicit owners; a receiver survives a callback that replaces its last global
+reference. The retained portable table is checked before projecting it from the
+canonical IUnknown carrier. An arbitrary native COM object is never reinterpreted
+as this portable table. Object results use `OwnedValue::Object`; the raw scalar
+slot adapter refuses them so a borrowed pointer cannot escape a completed frame.
+
+A suspended activation excludes reset, unrelated calls and a second activation
+on that same state. A synchronous callback may reenter a supported typed function
+with its active context, sharing budget and the existing depth limit. Reload
+prepares and publishes fresh code/state without touching the paused activation's
+leases. Old bound handles refuse on the new generation, while the old activation
+can finish against its original globals and signature, even after the current
+session is dropped. Failed preparation preserves both. Dropping an invocation
+cancels it and releases locals/leases; hard budget exhaustion and runtime errors
+are terminal. A returned or faulted invocation refuses another resume. A distinct
+semantic invocation starts afresh and may repeat effects, as Excel re-entry does.
+
+The admitted owning family is required ByVal Long/Double/portable host-object
+Functions/Property Gets, numeric control flow and the existing numeric host slots,
+with 4 arguments and 128 physical slots including project globals.
+Strings, arrays, ByRef, Subs, handlers, internal call-stack continuations and
+suspension within native/COM calls remain outside this frame's admission under
+`bd-59co.2.9.9`/`bd-59co.2.10.7`. There is no general preemption or asynchronous
+COM-event claim. Source-free verified packages and DNA Calc glue remain open.
+The unchanged native primary ABI remains 2; owning-frame layout is private to the
+linked provider. API version 1 refuses before compilation. See the
+[run-8 proof and limits](../evidence/programs/ideal-2026-07/core/CORE-7/typed-host-continuations.md).
 
 Callbacks may call `call_typed_in_context`/`call_slots` with the borrowed active
 context. Nested calls consume the outer budget. A fresh context cannot reenter the

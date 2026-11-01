@@ -258,11 +258,49 @@ fn bind_one(
     let exports = build_exports(env, &ids);
     let imports = lower.imports.into_inner().imports;
 
+    let mut object_names = std::collections::BTreeSet::new();
+    fn collect_object_names(
+        ty: &oxvba_bundle::VarTypeRef,
+        names: &mut std::collections::BTreeSet<String>,
+    ) {
+        use oxvba_bundle::VarTypeRef;
+        match ty {
+            VarTypeRef::Object(name) => {
+                names.insert(name.clone());
+            }
+            VarTypeRef::Array(element) | VarTypeRef::FixedArray { element, .. } => {
+                collect_object_names(element, names)
+            }
+            _ => {}
+        }
+    }
+    for global in &ids.globals {
+        collect_object_names(&global.ty, &mut object_names);
+    }
+    for proc in &procs {
+        for param in &proc.params {
+            collect_object_names(&param.ty, &mut object_names);
+        }
+        for local in &proc.locals {
+            collect_object_names(&local.ty, &mut object_names);
+        }
+    }
+    for class in &classes {
+        for field in &class.fields {
+            collect_object_names(&field.ty, &mut object_names);
+        }
+    }
+    let object_interfaces = object_names
+        .iter()
+        .filter_map(|name| env.object_interface(name))
+        .collect();
+
     Ok(CoreProgram {
         long_ptr_width: core_long_ptr_width(manifest.conditional_compilation_target),
         globals: ids.globals.clone(),
         procs,
         classes,
+        object_interfaces,
         event_routes: build_event_routes(env, &ids)?,
         external_calls: build_external_calls(env),
         com_class_exports: build_com_class_exports(manifest),

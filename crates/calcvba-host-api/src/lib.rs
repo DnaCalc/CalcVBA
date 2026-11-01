@@ -1,13 +1,15 @@
 //! Host contracts only. Supply an implementation from the application's runtime
 //! composition; this crate links neither compiler, interpreter nor JIT.
+mod invocation;
 pub mod object;
+pub use invocation::*;
 mod scalar;
 pub use object::{HostObject, HostSlot, InterfaceId, ObjectArg};
 pub use oxvba_runtime::Variant;
 pub use scalar::*;
 use std::{any::Any, marker::PhantomData, rc::Rc};
 
-pub const HOST_API_ABI: u32 = 1;
+pub const HOST_API_ABI: u32 = 2;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
     Interpreter,
@@ -97,6 +99,8 @@ pub enum Error {
     UnsupportedSignature(String),
     #[error("stale procedure handle or handle from another session")]
     StaleHandle,
+    #[error("invocation has returned, faulted, or been cancelled")]
+    InvocationFinished,
     #[error("procedure argument count/type mismatch")]
     ArgumentMismatch,
     #[error("execution budget exhausted")]
@@ -270,6 +274,15 @@ pub trait Session {
         args: &[Slot<'_>],
         context: &mut TypedContext,
     ) -> Result<ScalarBits, Error>;
+    /// Copy/retain arguments into an owning frame bound to this code/state
+    /// generation. A later reload cannot retarget this activation.
+    fn begin_invocation(
+        &self,
+        handle: &BoundProcedure,
+        args: &[Slot<'_>],
+        frame: InvocationFrame,
+        max_blocks: u64,
+    ) -> Result<Box<dyn Invocation>, Error>;
     fn reset(&self) -> Result<(), Error>;
     fn reload(&mut self, project: &Project) -> Result<(), Error>;
 }

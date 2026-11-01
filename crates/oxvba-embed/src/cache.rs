@@ -49,7 +49,7 @@ impl<'a> PreparedCode<'a> {
 self_cell::self_cell! {
     struct PreparedModule { owner: Module, #[covariant] dependent: PreparedCode, }
 }
-struct SessionOwner {
+pub(crate) struct SessionOwner {
     prepared: Rc<PreparedModule>,
     host: Arc<dyn HostServices>,
 }
@@ -59,11 +59,11 @@ impl SessionOwner {
     }
 }
 self_cell::self_cell! {
-    struct SessionCell { owner: SessionOwner, #[not_covariant] dependent: Session, }
+    pub(crate) struct SessionCell { owner: SessionOwner, #[not_covariant] dependent: Session, }
 }
 
 pub struct OwnedSession {
-    cell: SessionCell,
+    pub(crate) cell: Rc<SessionCell>,
 }
 impl OwnedSession {
     pub(crate) fn new(mut module: Module, backend: Backend) -> Result<Self, Error> {
@@ -78,8 +78,11 @@ impl OwnedSession {
         prepared: Rc<PreparedModule>,
         host: Arc<dyn HostServices>,
     ) -> Result<Self, Error> {
-        SessionCell::try_new(SessionOwner { prepared, host }, SessionOwner::start)
-            .map(|cell| Self { cell })
+        SessionCell::try_new(SessionOwner { prepared, host }, SessionOwner::start).map(|cell| {
+            Self {
+                cell: Rc::new(cell),
+            }
+        })
     }
     pub fn backend(&self) -> Backend {
         self.cell.with_dependent(|_, s| s.backend())
@@ -184,10 +187,12 @@ impl OwnedSession {
         });
         let generation = generation?;
         let mut next = Self::new(module, self.backend())?;
-        next.cell.with_dependent_mut(|_, s| {
-            s.owner = owner;
-            s.generation = generation;
-        });
+        Rc::get_mut(&mut next.cell)
+            .expect("unpublished replacement")
+            .with_dependent_mut(|_, s| {
+                s.owner = owner;
+                s.generation = generation;
+            });
         std::mem::swap(self, &mut next);
         Ok(())
     }
@@ -350,8 +355,8 @@ mod tests {
         )
         .unwrap();
         let mut session = module.clone().into_session(Backend::Interpreter).unwrap();
-        session
-            .cell
+        Rc::get_mut(&mut session.cell)
+            .expect("unshared session")
             .with_dependent_mut(|_, s| s.generation = u64::MAX);
         let handle = session.bind_typed::<(), i32>("Math", "Answer").unwrap();
         assert!(

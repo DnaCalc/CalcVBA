@@ -1,5 +1,12 @@
 # Formal Extended Todo
 
+- ID: FTODO-TYPED-CONTINUATION-20261101-R8
+  Profile: owning typed state/results and retained invocation frames (`bd-59co.2.10.10`, `bd-59co.2.10.11`).
+  Summary: installed Lean 4.29.1 passes the eight current abstractions, including deterministic slice composition, effect-journal prefix/counts and immutable code/state/view leases. Final default-mode Miri passes all eleven ownership/reentry/resume cases; separate strict-provenance object-only and argument/Nothing cases pass. Strict-provenance execution of the larger invocation fixture refuses the existing canonical Variant byte carrier at variant.rs bytes_to_raw_iunknown, which uses with_exposed_provenance; this is an unsupported strict-provenance operation, not a passing strict proof. The failure and default-mode warning are retained without suppressing them. Concrete CFG lowering, generated machine code, native signatures, Rust aliases and canonical exposed-pointer recovery remain unproved.
+  Current status (`todo` / `investigating` / `resolved`): investigating
+  Reproduction command: installed Lean 4.29.1 on formal/lean/OxVba/TypedContinuation.lean; `cargo +nightly miri test -p oxvba-embed --no-default-features --test suspended_invocation`; add MIRIFLAGS=-Zmiri-strict-provenance for the recorded strict limitation.
+  Suggested next action: refine canonical object-carrier provenance and the owning-frame CFG/native model under CORE-5/CORE-7/CORE-8. General stack/ByRef/handler continuation delivery remains bd-59co.2.10.12. No JIT machine-code proof or Windows certification follows from these abstractions.
+
 - ID: FTODO-TYPED-HOST-20261031-R7
   Profile: bounded host API/typed slots/reentry (`bd-59co.2.10.9`, `bd-59co.2.9.12`, `bd-59co.2.4.9`).
   Summary: Lean TypedReentry models context/depth admission and shared finite budget; existing scalar/handle/refcount abstractions remain applicable. Installed nightly strict-provenance Miri checks the host object's complete-allocation IUnknown retain/QI/release path and bounded VM3 callbacks/reentry/active-view resolution. It found an invalid cached pointer into moved Box storage; immutable Rc table storage and provenance-preserving union slots correct it. These bounded executions do not prove general Rust session aliasing, native function signatures, generated slot loads/call_indirect, all callback destruction paths or general object-default coercion.

@@ -73,11 +73,61 @@ struct ObjectStorage {
 }
 /// Clone retains the table and callback captures. Drop releases them on this thread.
 /// Objects contain no borrowed invocation pointers and can outlive any one call.
+/// Captures stored by their own session should use weak session handles; the host
+/// is responsible for breaking any strong reference cycle it creates.
 #[derive(Clone)]
 pub struct HostObject {
     storage: Rc<ObjectStorage>,
 }
 impl HostObject {
+    /// Retain this exact portable host table in the canonical IUnknown carrier.
+    pub fn object_ref(&self) -> oxvba_runtime::object_ref::ObjectRef {
+        // SAFETY: argument() preserves complete-allocation provenance and this
+        // owner spans the AddRef; the carrier releases on the creating thread.
+        unsafe {
+            oxvba_runtime::object_ref::ObjectRef::from_raw_iunknown_addref(
+                self.argument().as_ptr().cast_mut().cast(),
+            )
+        }
+        .expect("host object is nonnull")
+    }
+    /// Recover only a table created by this ABI, never an arbitrary COM object.
+    pub fn from_object_ref(object: &oxvba_runtime::object_ref::ObjectRef) -> Option<Self> {
+        let raw = object.raw_iunknown();
+        // SAFETY: ObjectRef owns a valid IUnknown prefix. The private vtable
+        // identity proves the complete allocation came from this factory.
+        if !std::ptr::eq(unsafe { (*raw).vtbl }, &UNKNOWN_VTABLE) {
+            return None;
+        }
+        // SAFETY: object retains a factory-created allocation on this thread.
+        Some(unsafe { Self::retain_header(raw.cast()) })
+    }
+    /// # Safety
+    /// pointer is a live complete-allocation HostObject pointer on this thread.
+    pub unsafe fn retain_header(pointer: *const ObjectHeader) -> Self {
+        let raw = pointer.cast::<ObjectStorage>();
+        // SAFETY: inherited factory allocation contract; mint one owned Rc.
+        unsafe {
+            Rc::increment_strong_count(raw);
+        }
+        Self {
+            // SAFETY: consume exactly the strong reference just minted above.
+            storage: unsafe { Rc::from_raw(raw) },
+        }
+    }
+    pub fn into_header(self) -> *const ObjectHeader {
+        Rc::into_raw(self.storage).cast()
+    }
+    /// # Safety
+    /// pointer transfers exactly one native HostObject reference on this thread.
+    pub unsafe fn release_header(pointer: *const ObjectHeader) {
+        if !pointer.is_null() {
+            // SAFETY: consume the one transferred reference; contain drop panics.
+            unsafe {
+                release(pointer.cast_mut().cast());
+            }
+        }
+    }
     pub fn new(iid: InterfaceId, slots: Vec<HostSlot>) -> Self {
         // Derive raw table pointers only after immutable Rc allocation. Moving
         // a Box after taking as_ptr would invalidate that pointer's borrow tag.

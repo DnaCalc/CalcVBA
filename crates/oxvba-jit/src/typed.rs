@@ -1,8 +1,15 @@
 //! Native typed scalar primary entries. Eligible bodies use physical stack
 //! slots/registers and an explicit status/result convention, never JitFrame.
 use super::*;
+use oxvba_rt_abi::host_entry::activation::{
+    self, Activation, FINISHED_PC, RawActivation, SUSPENDED,
+};
 use oxvba_rt_abi::host_entry::{Arguments, Scalar, ScalarLayout, ScalarType, TypedContext};
 use std::marker::PhantomData;
+
+pub(crate) struct ResumableEntry {
+    pub(crate) pointer: *const u8,
+}
 
 pub(crate) struct ScalarEntry {
     pub(crate) pointer: *const u8,
@@ -56,6 +63,34 @@ impl<A: Arguments, R: Scalar> TypedEntry<A, R> {
     }
 }
 impl CompiledImage<'_> {
+    /// # Safety
+    /// frame was admitted and initialized for exactly func in this image; its
+    /// canonical global store and factory-object owners remain leased.
+    pub unsafe fn resume_activation(
+        &self,
+        func: FuncId,
+        frame: &mut Activation<'_>,
+        context: &mut TypedContext,
+        operations: u64,
+    ) -> Result<i32, i32> {
+        let entry = self
+            .resumable_functions
+            .last()
+            .and_then(|p| p.get(func.0))
+            .and_then(Option::as_ref)
+            .ok_or(5)?;
+        // SAFETY: this exact signature is emitted below; self retains its code.
+        let call: unsafe extern "C" fn(*mut TypedContext, *mut RawActivation, u64) -> i32 =
+            unsafe { std::mem::transmute(entry.pointer) };
+        // SAFETY: caller proves admitted slots, unique frame and live storage.
+        let status = unsafe { call(context, frame.raw_mut(), operations) };
+        frame.clear_scratch();
+        if status == 0 || status == SUSPENDED {
+            Ok(status)
+        } else {
+            Err(status)
+        }
+    }
     /// Slot ABI adapter into the same native primary entry, with no Variant frame.
     pub fn invoke_typed_slots(
         &self,
@@ -115,6 +150,175 @@ impl CompiledImage<'_> {
             signature: PhantomData,
         })
     }
+}
+
+pub(crate) type ResumableDefinitions = Vec<Vec<Option<ClifFuncId>>>;
+pub(crate) fn compile_resumable_entries(
+    module: &mut JITModule,
+    programs: &[&OxProgram],
+) -> Result<ResumableDefinitions, JitError> {
+    let mut entries = Vec::new();
+    for (p, program) in programs.iter().enumerate() {
+        let mut functions = Vec::new();
+        for (f, func) in program.funcs.iter().enumerate() {
+            let Ok(layout) = ScalarLayout::with_program(func, program) else {
+                functions.push(None);
+                continue;
+            };
+            if !program.classes.is_empty() || !program.record_layouts.is_empty() {
+                functions.push(None);
+                continue;
+            }
+            let mut signature = module.make_signature();
+            signature.params = vec![AbiParam::new(types::I64); 3];
+            signature.returns.push(AbiParam::new(types::I32));
+            let id = module
+                .declare_function(&format!("ox$resume$p{p}$f{f}"), Linkage::Local, &signature)
+                .map_err(module_err)?;
+            let mut context = module.make_context();
+            context.func.signature = signature;
+            let mut function_context = FunctionBuilderContext::new();
+            {
+                let mut b = FunctionBuilder::new(&mut context.func, &mut function_context);
+                let entry = b.create_block();
+                b.switch_to_block(entry);
+                b.append_block_params_for_function_params(entry);
+                let params = b.block_params(entry).to_vec();
+                let runtime = params[0];
+                let frame = params[1];
+                let slice = b.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    8,
+                    3,
+                ));
+                b.ins().stack_store(params[2], slice, 0);
+                let dispatch = b.create_block();
+                b.ins().jump(dispatch, &[]);
+                let mut starts = HashMap::new();
+                let mut operations = Vec::new();
+                let mut pc = 0u32;
+                for block in &func.blocks {
+                    starts.insert(block.id, pc);
+                    let count = u32::try_from(block.instrs.len())
+                        .map_err(|_| JitError::unsupported("typed PC overflow"))?
+                        .checked_add(2)
+                        .ok_or_else(|| JitError::unsupported("typed PC overflow"))?;
+                    let end = pc
+                        .checked_add(count)
+                        .filter(|end| *end != FINISHED_PC)
+                        .ok_or_else(|| JitError::unsupported("typed PC overflow"))?;
+                    for offset in 0..count {
+                        operations.push((pc + offset, block, offset as usize, b.create_block()));
+                    }
+                    pc = end;
+                }
+                if pc == FINISHED_PC {
+                    return Err(JitError::unsupported("typed PC overflow"));
+                }
+                let lower = ScalarLower {
+                    layout: &layout,
+                    slots: PhysicalSlots::Frame(frame),
+                    runtime,
+                    call_conv: module.target_config().default_call_conv,
+                };
+                b.switch_to_block(dispatch);
+                let current = b.ins().load(
+                    types::I32,
+                    ir::MemFlagsData::new(),
+                    frame,
+                    std::mem::offset_of!(RawActivation, pc) as i32,
+                );
+                let mut switch = cranelift_frontend::Switch::new();
+                for (pc, _, _, block) in &operations {
+                    switch.set_entry(u128::from(*pc), *block);
+                }
+                let invalid = b.create_block();
+                switch.emit(&mut b, current, invalid);
+                b.switch_to_block(invalid);
+                let status = b.ins().iconst(types::I32, 5);
+                b.ins().return_(&[status]);
+                for (pc, block, offset, native) in operations {
+                    b.switch_to_block(native);
+                    let left = b.ins().stack_load(types::I64, slice, 0);
+                    let exhausted = b.ins().icmp_imm(ir::condcodes::IntCC::Equal, left, 0);
+                    lower.fail_if(&mut b, exhausted, SUSPENDED);
+                    let left = b.ins().iadd_imm(left, -1);
+                    b.ins().stack_store(left, slice, 0);
+                    let mut next_pc = None;
+                    if offset == 0 {
+                        let remaining =
+                            b.ins()
+                                .load(types::I64, ir::MemFlagsData::new(), runtime, 0);
+                        let exhausted = b.ins().icmp_imm(ir::condcodes::IntCC::Equal, remaining, 0);
+                        lower.fail_if(&mut b, exhausted, -1);
+                        let remaining = b.ins().iadd_imm(remaining, -1);
+                        b.ins()
+                            .store(ir::MemFlagsData::new(), remaining, runtime, 0);
+                    } else if let Some(inst) = block.instrs.get(offset - 1) {
+                        lower.instruction(&mut b, inst);
+                    } else {
+                        match &block.terminator {
+                            OxTerminator::Jump(target) => {
+                                next_pc =
+                                    Some(b.ins().iconst(types::I32, i64::from(starts[target])));
+                            }
+                            OxTerminator::Branch {
+                                cond,
+                                then_blk,
+                                else_blk,
+                            } => {
+                                let test = lower.operand(&mut b, cond, ScalarType::Boolean);
+                                let yes = b.ins().iconst(types::I32, i64::from(starts[then_blk]));
+                                let no = b.ins().iconst(types::I32, i64::from(starts[else_blk]));
+                                next_pc = Some(b.ins().select(test, yes, no));
+                            }
+                            OxTerminator::Return => {
+                                next_pc = Some(b.ins().iconst(types::I32, i64::from(FINISHED_PC)));
+                            }
+                            _ => {
+                                let status = b.ins().iconst(types::I32, 5);
+                                b.ins().return_(&[status]);
+                                continue;
+                            }
+                        }
+                    }
+                    // Release transient global receiver borrows after completing
+                    // the instruction, before its continuation can be published.
+                    let mut clear = ir::Signature::new(module.target_config().default_call_conv);
+                    clear.params.push(AbiParam::new(types::I64));
+                    let sig = b.import_signature(clear);
+                    let address = b
+                        .ins()
+                        .iconst(types::I64, activation::scratch_clear as *const u8 as i64);
+                    b.ins().call_indirect(sig, address, &[frame]);
+                    let next =
+                        next_pc.unwrap_or_else(|| b.ins().iconst(types::I32, i64::from(pc + 1)));
+                    b.ins().store(
+                        ir::MemFlagsData::new(),
+                        next,
+                        frame,
+                        std::mem::offset_of!(RawActivation, pc) as i32,
+                    );
+                    if offset == block.instrs.len() + 1
+                        && matches!(block.terminator, OxTerminator::Return)
+                    {
+                        let status = b.ins().iconst(types::I32, 0);
+                        b.ins().return_(&[status]);
+                    } else {
+                        b.ins().jump(dispatch, &[]);
+                    }
+                }
+                b.seal_all_blocks();
+                b.finalize();
+            }
+            module
+                .define_function(id, &mut context)
+                .map_err(module_err)?;
+            functions.push(Some(id));
+        }
+        entries.push(functions);
+    }
+    Ok(entries)
 }
 
 fn machine_type(ty: ScalarType) -> ir::Type {
@@ -234,13 +438,18 @@ pub(crate) fn compile_scalar_entries(
                     .iter()
                     .map(|block| (block.id, b.create_block()))
                     .collect::<HashMap<_, _>>();
-                b.ins().jump(blocks[&func.entry], &[]);
                 let lower = ScalarLower {
                     layout: &layout,
-                    slots,
+                    slots: PhysicalSlots::Stack(slots),
                     runtime,
                     call_conv: module.target_config().default_call_conv,
                 };
+                for (index, iid) in layout.parameter_iids.iter().enumerate() {
+                    if let Some(iid) = iid {
+                        lower.check_interface(&mut b, params[index + 1], *iid);
+                    }
+                }
+                b.ins().jump(blocks[&func.entry], &[]);
                 for block in &func.blocks {
                     b.switch_to_block(blocks[&block.id]);
                     let remaining = b
@@ -299,11 +508,130 @@ pub(crate) fn compile_scalar_entries(
 
 struct ScalarLower<'a> {
     layout: &'a ScalarLayout,
-    slots: ir::StackSlot,
+    slots: PhysicalSlots,
     runtime: Value,
     call_conv: cranelift_codegen::isa::CallConv,
 }
+#[derive(Clone, Copy)]
+enum PhysicalSlots {
+    Stack(ir::StackSlot),
+    Frame(Value),
+}
 impl ScalarLower<'_> {
+    fn load_slot(&self, b: &mut FunctionBuilder<'_>, index: usize, ty: ScalarType) -> Value {
+        match self.slots {
+            PhysicalSlots::Stack(slots) => {
+                b.ins()
+                    .stack_load(machine_type(ty), slots, (index * 8) as i32)
+            }
+            PhysicalSlots::Frame(frame) if index < self.layout.global_base => b.ins().load(
+                machine_type(ty),
+                ir::MemFlagsData::new(),
+                frame,
+                (std::mem::offset_of!(RawActivation, slots) + index * 8) as i32,
+            ),
+            PhysicalSlots::Frame(frame) => {
+                let output = b.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    8,
+                    3,
+                ));
+                let ptr = b.ins().stack_addr(types::I64, output, 0);
+                let global = b
+                    .ins()
+                    .iconst(types::I64, (index - self.layout.global_base) as i64);
+                let kind = b.ins().iconst(types::I32, i64::from(activation::kind(ty)));
+                self.helper(
+                    b,
+                    activation::global_read as *const u8,
+                    &[frame, global, kind, ptr],
+                    &[types::I64, types::I64, types::I32, types::I64],
+                );
+                b.ins().stack_load(machine_type(ty), output, 0)
+            }
+        }
+    }
+    fn check_interface(&self, b: &mut FunctionBuilder<'_>, pointer: Value, iid: [u8; 16]) {
+        let present = b.ins().icmp_imm(ir::condcodes::IntCC::NotEqual, pointer, 0);
+        let inspect = b.create_block();
+        let done = b.create_block();
+        b.ins().brif(present, inspect, &[], done, &[]);
+        b.switch_to_block(inspect);
+        for (offset, chunk) in iid.chunks_exact(8).enumerate() {
+            let actual = b.ins().load(
+                types::I64,
+                ir::MemFlagsData::new(),
+                pointer,
+                (std::mem::offset_of!(calcvba_host_api::object::ObjectHeader, iid) + offset * 8)
+                    as i32,
+            );
+            let expected = i64::from_le_bytes(chunk.try_into().expect("IID chunk"));
+            let wrong = b
+                .ins()
+                .icmp_imm(ir::condcodes::IntCC::NotEqual, actual, expected);
+            self.fail_if(b, wrong, 13);
+        }
+        b.ins().jump(done, &[]);
+        b.switch_to_block(done);
+    }
+    fn helper(
+        &self,
+        b: &mut FunctionBuilder<'_>,
+        pointer: *const u8,
+        args: &[Value],
+        types: &[ir::Type],
+    ) {
+        let mut signature = ir::Signature::new(self.call_conv);
+        signature.params = types.iter().copied().map(AbiParam::new).collect();
+        signature.returns.push(AbiParam::new(types::I32));
+        let sig = b.import_signature(signature);
+        let address = b.ins().iconst(ir::types::I64, pointer as i64);
+        let call = b.ins().call_indirect(sig, address, args);
+        let status = b.inst_results(call)[0];
+        let failed = b.ins().icmp_imm(ir::condcodes::IntCC::NotEqual, status, 0);
+        let fail = b.create_block();
+        let next = b.create_block();
+        b.ins().brif(failed, fail, &[], next, &[]);
+        b.switch_to_block(fail);
+        b.ins().return_(&[status]);
+        b.switch_to_block(next);
+    }
+    fn store_slot(&self, b: &mut FunctionBuilder<'_>, index: usize, ty: ScalarType, value: Value) {
+        match self.slots {
+            PhysicalSlots::Stack(slots) => {
+                b.ins().stack_store(value, slots, (index * 8) as i32);
+            }
+            PhysicalSlots::Frame(frame)
+                if index < self.layout.global_base && ty != ScalarType::HostObject =>
+            {
+                b.ins().store(
+                    ir::MemFlagsData::new(),
+                    value,
+                    frame,
+                    (std::mem::offset_of!(RawActivation, slots) + index * 8) as i32,
+                );
+            }
+            PhysicalSlots::Frame(frame) => {
+                let input = b.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    8,
+                    3,
+                ));
+                let zero = b.ins().iconst(types::I64, 0);
+                b.ins().stack_store(zero, input, 0);
+                b.ins().stack_store(value, input, 0);
+                let ptr = b.ins().stack_addr(types::I64, input, 0);
+                let index = b.ins().iconst(types::I64, index as i64);
+                let kind = b.ins().iconst(types::I32, i64::from(activation::kind(ty)));
+                self.helper(
+                    b,
+                    activation::slot_write as *const u8,
+                    &[frame, index, kind, ptr],
+                    &[types::I64, types::I64, types::I32, types::I64],
+                );
+            }
+        }
+    }
     fn fail_if(&self, b: &mut FunctionBuilder<'_>, condition: Value, number: i32) {
         let fail = b.create_block();
         let next = b.create_block();
@@ -316,17 +644,16 @@ impl ScalarLower<'_> {
     fn operand(&self, b: &mut FunctionBuilder<'_>, operand: &OxOperand, to: ScalarType) -> Value {
         let from = self.layout.operand_type(operand).expect("admitted operand");
         let value = match operand {
-            OxOperand::Use(place) => b.ins().stack_load(
-                machine_type(from),
-                self.slots,
-                (self.layout.slot(*place).expect("admitted slot") * 8) as i32,
-            ),
+            OxOperand::Use(place) => {
+                self.load_slot(b, self.layout.slot(*place).expect("admitted slot"), from)
+            }
             OxOperand::Const(OxConst::F64(bits)) => b.ins().f64const(Ieee64::with_bits(*bits)),
             OxOperand::Const(OxConst::I16(value)) => b.ins().iconst(types::I32, i64::from(*value)),
             OxOperand::Const(OxConst::I32(value)) => b.ins().iconst(types::I32, i64::from(*value)),
             OxOperand::Const(OxConst::Bool(value)) => {
                 b.ins().iconst(types::I32, if *value { -1 } else { 0 })
             }
+            OxOperand::Const(OxConst::Nothing) => b.ins().iconst(types::I64, 0),
             _ => unreachable!("admitted operand"),
         };
         if from == ScalarType::Long && to == ScalarType::Double {
@@ -467,17 +794,28 @@ impl ScalarLower<'_> {
             OxInst::StmtBoundary {
                 clear_temps_from, ..
             } => {
-                for i in self.layout.local_count + clear_temps_from..self.layout.slots.len() {
+                for i in self.layout.local_count + clear_temps_from..self.layout.global_base {
                     let value = if self.layout.slots[i] == ScalarType::Double {
                         b.ins().f64const(0.0)
                     } else {
                         b.ins().iconst(machine_type(self.layout.slots[i]), 0)
                     };
-                    b.ins().stack_store(value, self.slots, (i * 8) as i32);
+                    self.store_slot(b, i, self.layout.slots[i], value);
                 }
                 return;
             }
             OxInst::DrainTerminations => return,
+            OxInst::ValidateAssignment {
+                src,
+                target_type_name,
+                ..
+            } => {
+                if let Some(iid) = self.layout.assignment_iids[target_type_name] {
+                    let pointer = self.operand(b, src, ScalarType::HostObject);
+                    self.check_interface(b, pointer, iid);
+                }
+                return;
+            }
             OxInst::Assign { dst, value }
             | OxInst::Coerce {
                 dst, src: value, ..
@@ -565,6 +903,6 @@ impl ScalarLower<'_> {
             _ => unreachable!("admitted instruction"),
         };
         let slot = self.layout.slot(dst).expect("admitted destination");
-        b.ins().stack_store(value, self.slots, (slot * 8) as i32);
+        self.store_slot(b, slot, self.layout.slots[slot], value);
     }
 }

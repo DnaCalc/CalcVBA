@@ -121,6 +121,11 @@ pub trait Provider {
         let _ = type_name;
         false
     }
+    /// Retain the resolved nominal interface even when no member is called.
+    fn object_interface(&self, type_name: &str) -> Option<oxvba_com::TypeLibInterfaceMetadata> {
+        let _ = type_name;
+        None
+    }
     /// If `name` is a creatable coclass published by a *referenced project*, return
     /// its `(unit, class)` names so `New Lib.Widget` (or bare `New Widget`) lowers
     /// to a cross-bundle `NewExtern` against that project's bundle.
@@ -145,6 +150,19 @@ pub trait TypeLibResolver {
         &self,
         request: &oxvba_com::TypeLibResolveRequest,
     ) -> Option<oxvba_com::TypeLibMetadataBlob>;
+    /// Nominal identity from the same resolved metadata snapshot. Providers
+    /// with an explicit type descriptor can retain even a memberless interface.
+    fn interface_iid(
+        &self,
+        _request: &oxvba_com::TypeLibResolveRequest,
+        blob: &oxvba_com::TypeLibMetadataBlob,
+    ) -> Option<oxvba_com::ComInterfaceIid> {
+        let iid = blob.members.first()?.interface_iid?;
+        blob.members
+            .iter()
+            .all(|member| member.interface_iid == Some(iid))
+            .then_some(iid)
+    }
 }
 
 /// The default resolver: drive the real `oxvba-com` typelib catalog.
@@ -271,6 +289,11 @@ impl ResolutionEnvironment {
         self.providers
             .iter()
             .any(|provider| provider.is_known_object_type(type_name))
+    }
+    pub fn object_interface(&self, type_name: &str) -> Option<oxvba_com::TypeLibInterfaceMetadata> {
+        self.providers
+            .iter()
+            .find_map(|provider| provider.object_interface(type_name))
     }
 
     /// The `(unit, class)` of a creatable coclass published by a referenced project
@@ -611,7 +634,7 @@ fn resolve_typelib_provider_closure(
     typelibs: &dyn TypeLibResolver,
     request: oxvba_com::TypeLibResolveRequest,
     used_type_names: &HashSet<String>,
-) -> Vec<oxvba_com::TypeLibMetadataBlob> {
+) -> Vec<ComTypeLibProvider> {
     // VBA sees a referenced typelib's returned interfaces as part of the same
     // referenced library. Follow named object-return descriptors so a chain like
     // `Application.Workbooks.Count` does not need a second synthetic reference.
@@ -673,7 +696,8 @@ fn resolve_typelib_provider_closure(
             });
         }
 
-        blobs.push(blob);
+        let iid = typelibs.interface_iid(&request, &blob);
+        blobs.push(ComTypeLibProvider::with_interface_iid(blob, iid));
     }
 
     blobs
@@ -1540,14 +1564,14 @@ pub fn build_resolution_environment_with_project_surfaces(
         ProjectProvider::build(&manifest.project_name, &symbols, &active_scans, &[]);
 
     let mut com_providers: Vec<ComTypeLibProvider> = Vec::new();
-    let mut host_blobs: Vec<oxvba_com::TypeLibMetadataBlob> = Vec::new();
+    let mut host_blobs: Vec<ComTypeLibProvider> = Vec::new();
     for reference in &manifest.references {
         if let Some(request) = request_from(reference) {
-            com_providers.extend(
-                resolve_typelib_provider_closure(typelibs, request, &used_type_names)
-                    .into_iter()
-                    .map(ComTypeLibProvider::new),
-            );
+            com_providers.extend(resolve_typelib_provider_closure(
+                typelibs,
+                request,
+                &used_type_names,
+            ));
         }
         if let ProjectReference::HostInjected {
             referenced_project_name,
@@ -1588,7 +1612,7 @@ pub fn build_resolution_environment_with_project_surfaces(
         providers.push(Box::new(SurfaceProvider::new(surface.clone())));
     }
     providers.push(Box::new(VbaLibraryProvider));
-    providers.push(Box::new(HostProvider::new(host_blobs)));
+    providers.push(Box::new(HostProvider::from_providers(host_blobs)));
     for com in com_providers {
         providers.push(Box::new(com));
     }

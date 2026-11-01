@@ -12,10 +12,11 @@ use std::{
     sync::Arc,
 };
 mod cache;
+mod invocation;
 use cache::PreparedCode;
 pub use cache::{CacheStats, CodeCache, OwnedSession};
 pub use oxvba_bundle::ProcedureKind;
-pub use oxvba_rt_abi::host_entry::{Arguments, Scalar, ScalarType, TYPED_ENTRY_ABI};
+pub use oxvba_rt_abi::host_entry::{Arguments, Scalar, ScalarType, TYPED_ENTRY_ABI, TypedContext};
 pub use oxvba_symbol::model::Visibility;
 pub mod provider;
 
@@ -225,11 +226,13 @@ pub struct Session<'a> {
     host: &'a dyn HostServices,
     executable: Executable<'a>,
     typed: Vec<Result<oxvba_vm3::typed::TypedInterpreter<'a>, String>>,
+    owning_typed: Vec<Result<oxvba_vm3::typed::TypedInterpreter<'a>, String>>,
     owner: Rc<()>,
     generation: u64,
     executing: RefCell<()>,
     typed_depth: Cell<u32>,
     typed_context: Cell<*mut calcvba_host_api::TypedContext>,
+    suspended: Cell<u32>,
 }
 struct TypedActivation<'a> {
     _executing: Ref<'a, ()>,
@@ -296,20 +299,33 @@ impl<'a> Session<'a> {
                 )
             })
             .collect();
+        let owning_typed = module
+            .program
+            .funcs
+            .iter()
+            .map(|func| {
+                oxvba_vm3::typed::TypedInterpreter::bind_with_program(func, &module.program)
+            })
+            .collect();
         Ok(Self {
             module,
             host,
             executable,
             typed,
+            owning_typed,
             owner: Rc::new(()),
             generation: 1,
             executing: RefCell::new(()),
             typed_depth: Cell::new(0),
             typed_context: Cell::new(std::ptr::null_mut()),
+            suspended: Cell::new(0),
         })
     }
     /// Reinitialize globals/Static/Err using retained code. Bound handles stay valid.
     pub fn reset(&self) -> Result<(), Error> {
+        if self.suspended.get() != 0 {
+            return Err(Error::Reentry);
+        }
         let _executing = self
             .executing
             .try_borrow_mut()
@@ -472,6 +488,16 @@ impl<'a> Session<'a> {
         &self,
         context: &mut calcvba_host_api::TypedContext,
     ) -> Result<TypedActivation<'_>, Error> {
+        self.enter_activation(context, false)
+    }
+    fn enter_activation(
+        &self,
+        context: &mut calcvba_host_api::TypedContext,
+        resuming: bool,
+    ) -> Result<TypedActivation<'_>, Error> {
+        if self.suspended.get() != 0 && self.typed_depth.get() == 0 && !resuming {
+            return Err(Error::Reentry);
+        }
         let executing = self.executing.try_borrow().map_err(|_| Error::Reentry)?;
         let pointer = context as *mut _;
         if self.typed_depth.get() != 0 && self.typed_context.get() != pointer {
@@ -519,6 +545,7 @@ impl<'a> Session<'a> {
         self.validate(bound)?;
         let layout = self.typed[bound.id.0]
             .as_ref()
+            .or(self.owning_typed[bound.id.0].as_ref())
             .map_err(|e| Error::UnsupportedSignature(e.clone()))?
             .layout();
         if layout.parameters != arguments || layout.result != result {
@@ -536,6 +563,7 @@ impl<'a> Session<'a> {
         let _activation = self.enter_typed(context)?;
         let typed = self.typed[bound.id.0]
             .as_ref()
+            .or(self.owning_typed[bound.id.0].as_ref())
             .map_err(|e| Error::UnsupportedSignature(e.clone()))?;
         if args.len() != typed.layout().parameters.len()
             || args
@@ -545,10 +573,99 @@ impl<'a> Session<'a> {
         {
             return Err(Error::ArgumentMismatch);
         }
+        if typed.layout().result == ScalarType::HostObject {
+            return Err(Error::UnsupportedSignature(
+                "owning object results require begin_invocation".into(),
+            ));
+        }
+        if self.typed[bound.id.0].is_err() {
+            let mut frame = self.new_activation(bound, args)?;
+            let status = self.execute_frame(bound, &mut frame, context, u64::MAX)?;
+            if status != 0 {
+                return Err(Error::Backend("unexpected finite-slice suspension".into()));
+            }
+            return Ok(frame.raw().slots[typed.layout().return_slot]);
+        }
         let result = match &self.executable {
-            Executable::Interpreter(_) => typed.invoke_slots(args, context),
+            Executable::Interpreter(_) => self.typed[bound.id.0]
+                .as_ref()
+                .expect("pure typed entry")
+                .invoke_slots(args, context),
             #[cfg(feature = "jit")]
             Executable::Jit(image, _) => image.invoke_typed_slots(bound.id, args, context),
+        };
+        result.map_err(|number| self.typed_error(number))
+    }
+    fn new_activation(
+        &self,
+        bound: &BoundProcedure,
+        args: &[calcvba_host_api::Slot<'_>],
+    ) -> Result<oxvba_rt_abi::host_entry::activation::Activation<'static>, Error> {
+        let typed = self.owning_typed[bound.id.0]
+            .as_ref()
+            .map_err(|e| Error::UnsupportedSignature(e.clone()))?;
+        if args.len() != typed.layout().parameters.len()
+            || args
+                .iter()
+                .zip(&typed.layout().parameters)
+                .any(|(arg, ty)| arg.ty() != *ty)
+        {
+            return Err(Error::ArgumentMismatch);
+        }
+        let (pointer, len) = match &self.executable {
+            Executable::Interpreter(state) => {
+                let mut state = state.try_borrow_mut().map_err(|_| Error::Reentry)?;
+                state.typed_globals_raw()
+            }
+            #[cfg(feature = "jit")]
+            Executable::Jit(_, state) => {
+                let mut state = state.try_borrow_mut().map_err(|_| Error::Reentry)?;
+                state.typed_globals_raw()
+            }
+        };
+        // SAFETY: the owning SessionCell lease retains this canonical store;
+        // executing/suspended guards exclude reset and unrelated execution.
+        unsafe {
+            oxvba_rt_abi::host_entry::activation::Activation::new(
+                typed.layout(),
+                args,
+                pointer,
+                len,
+                typed.entry_pc(),
+            )
+        }
+        .map_err(|number| self.typed_error(number))
+    }
+    fn resume_frame(
+        &self,
+        bound: &BoundProcedure,
+        frame: &mut oxvba_rt_abi::host_entry::activation::Activation<'_>,
+        context: &mut TypedContext,
+        operations: u64,
+        resuming: bool,
+    ) -> Result<i32, Error> {
+        self.validate(bound)?;
+        let _activation = self.enter_activation(context, resuming)?;
+        self.execute_frame(bound, frame, context, operations)
+    }
+    fn execute_frame(
+        &self,
+        bound: &BoundProcedure,
+        frame: &mut oxvba_rt_abi::host_entry::activation::Activation<'_>,
+        context: &mut TypedContext,
+        operations: u64,
+    ) -> Result<i32, Error> {
+        let result = match &self.executable {
+            Executable::Interpreter(_) => self.owning_typed[bound.id.0]
+                .as_ref()
+                .expect("bound owning entry")
+                .resume(frame, context, operations),
+            #[cfg(feature = "jit")]
+            Executable::Jit(image, _) => {
+                // SAFETY: frame was built from this exact checked function and
+                // the same leased canonical store; active guards span entry.
+                unsafe { image.resume_activation(bound.id, frame, context, operations) }
+            }
         };
         result.map_err(|number| self.typed_error(number))
     }
@@ -560,6 +677,9 @@ impl<'a> Session<'a> {
         max_steps: u64,
     ) -> Result<Variant, Error> {
         self.validate(handle)?;
+        if self.suspended.get() != 0 {
+            return Err(Error::Reentry);
+        }
         let _executing = self
             .executing
             .try_borrow_mut()

@@ -117,7 +117,8 @@ fn host_slots_refuse_wrong_interface_bounds_and_native_signature() {
                         panic!("wrong IID must not enter")
                     })],
                 ),
-                438,
+                // Nominal argument binding fails before any member lookup.
+                13,
             ),
             (api::HostObject::new(support::IID, vec![]), 438),
             (

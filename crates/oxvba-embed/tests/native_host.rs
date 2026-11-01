@@ -233,9 +233,12 @@ Private Function CapturedError(x) As Long
     CapturedError=Err.Number
 End Function
 Public Function WriteKept(ByVal value As Double) As String
-    Dim current As Variant
+    Dim current As Object
     Set current=kept
     kept.Value2=value
+    If Not IsObject(kept) Then Err.Raise 13
+    If Not (current Is kept) Then Err.Raise 13
+    If TypeName(kept) <> "Range" Then Err.Raise 13
     WriteKept=TypeName(current)
     Err.Clear
 End Function

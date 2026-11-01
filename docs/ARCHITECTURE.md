@@ -160,7 +160,7 @@ Neither route constructs Variant arguments or uses libffi. These are explicit
 portable host tables with a runtime IUnknown prefix, separate from native COM's
 Automation vtables. Same-session typed callback reentry requires the active
 context, shares its budget and has a 64-activation limit across sessions on the
-thread. Dynamic/stateful same-session reentry remains refused.
+thread. Dynamic and general COM-event same-session reentry remain refused.
 The dynamic JIT entry adapts its Variant frame to that primary family where admitted;
 image run-entry bodies retain their existing diagnostic local snapshots.
 
@@ -176,11 +176,22 @@ Run-7 [callback evidence](evidence/programs/ideal-2026-07/core/CORE-7/typed-host
 also covers generic arithmetic default-member resolution while preserving the
 original object argument. Spreadsheet names and conversions remain host-owned.
 
+The run-8 owning typed frame retains portable host objects in module/Static state
+and typed object results. It uses canonical session globals and unboxed local
+slots, with a saved next-operation position for finite VM3/native-JIT slices.
+Completed effects do not replay on resume. Invocation metadata retains a
+host-supplied read view; code and project-state leases let an old activation
+finish after reload publishes a new signature/state. Reset and unrelated calls
+on paused state refuse; bounded typed callback reentry shares the active context.
+Object-typed/global inspection preserves project and native object identity.
+See [the bounded continuation contract](spec/HOSTING_AND_EARLY_BINDING.md) and
+[evidence](evidence/programs/ideal-2026-07/core/CORE-7/typed-host-continuations.md).
+
 ### Material gaps against the contract
 
 - the public compiler does not require sealed verified image/program input;
 - no inspectable procedure-lowering plan currently separates semantic OxIR from physical/codegen decisions;
-- the typed family remains bounded to required ByVal Long/Double/borrowed host objects, local numeric bodies and the declared numeric host slots, with four arguments/128 physical slots; general owning carriers, object results, ByRef, Optional/ParamArray, globals/Static, other external calls, handlers, direct typed internal calls and native recursion remain open;
+- the direct native primary family remains bounded to required ByVal Long/Double/borrowed host objects and numeric slots; the additional owning frame supports portable typed object globals/Static/results and instruction-boundary continuation with four arguments/128 physical slots. General string/array/record carriers, ByRef, Optional/ParamArray, other external calls, handlers, typed internal call stacks and native recursion remain open;
 - helper registration is not a versioned descriptor catalog;
 - line/Erl, writable Err fields and full dynamic Err.Raise metadata are incomplete;
 - deep source recursion relies on the native stack and is not safely proven;

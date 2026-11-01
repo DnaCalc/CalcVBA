@@ -1,13 +1,14 @@
-//! Bounded unboxed scalar interpreter entry. No Variant frame or per-call heap allocation.
-use oxvba_oxir::{ArithOp, CmpOp, OxFunc, OxInst, OxTerminator};
+//! Typed execution of the original OxFunc with unboxed owning physical slots.
+use oxvba_oxir::{ArithOp, CmpOp, OxFunc, OxInst, OxOperand, OxTerminator};
 use oxvba_rt_abi::host_entry::{
-    MAX_TYPED_SLOTS, ScalarBits, ScalarLayout, ScalarType, TypedContext,
+    ScalarBits, ScalarLayout, ScalarType, TypedContext,
+    activation::{Activation, FINISHED_PC, SUSPENDED},
 };
 
 pub struct TypedInterpreter<'p> {
     func: &'p OxFunc,
     layout: ScalarLayout,
-    blocks: Vec<(oxvba_oxir::BlockId, usize)>,
+    blocks: Vec<(oxvba_oxir::BlockId, usize, u32)>,
 }
 impl<'p> TypedInterpreter<'p> {
     pub fn bind(func: &'p OxFunc) -> Result<Self, String> {
@@ -17,13 +18,31 @@ impl<'p> TypedInterpreter<'p> {
         func: &'p OxFunc,
         interfaces: &[oxvba_oxir::ComInterface],
     ) -> Result<Self, String> {
-        let layout = ScalarLayout::with_interfaces(func, interfaces)?;
-        let blocks = func
-            .blocks
-            .iter()
-            .enumerate()
-            .map(|(i, b)| (b.id, i))
-            .collect();
+        Self::with_layout(func, ScalarLayout::with_interfaces(func, interfaces)?)
+    }
+    pub fn bind_with_program(
+        func: &'p OxFunc,
+        program: &oxvba_oxir::OxProgram,
+    ) -> Result<Self, String> {
+        Self::with_layout(func, ScalarLayout::with_program(func, program)?)
+    }
+    fn with_layout(func: &'p OxFunc, layout: ScalarLayout) -> Result<Self, String> {
+        let mut pc = 0u32;
+        let mut blocks = Vec::new();
+        for (i, block) in func.blocks.iter().enumerate() {
+            blocks.push((block.id, i, pc));
+            pc = pc
+                .checked_add(
+                    u32::try_from(block.instrs.len())
+                        .map_err(|_| "typed PC overflow")?
+                        .checked_add(2)
+                        .ok_or("typed PC overflow")?,
+                )
+                .ok_or("typed PC overflow")?;
+        }
+        if pc == FINISHED_PC {
+            return Err("typed PC overflow".into());
+        }
         Ok(Self {
             func,
             layout,
@@ -33,43 +52,17 @@ impl<'p> TypedInterpreter<'p> {
     pub fn layout(&self) -> &ScalarLayout {
         &self.layout
     }
+    pub fn entry_pc(&self) -> u32 {
+        self.target(self.func.entry)
+    }
+    fn target(&self, block: oxvba_oxir::BlockId) -> u32 {
+        self.blocks
+            .iter()
+            .find(|(id, _, _)| *id == block)
+            .expect("admitted block")
+            .2
+    }
     pub fn invoke(
-        &self,
-        args: &[ScalarBits],
-        context: &mut TypedContext,
-    ) -> Result<ScalarBits, i32> {
-        if self.layout.parameters.contains(&ScalarType::HostObject) {
-            return Err(13);
-        }
-        // SAFETY: numeric arguments cannot inject object pointers. Object locals
-        // start null and admission forbids assigning numeric bits to them.
-        unsafe { self.invoke_bits(args, context) }
-    }
-    pub fn invoke_slots(
-        &self,
-        args: &[calcvba_host_api::Slot<'_>],
-        context: &mut TypedContext,
-    ) -> Result<ScalarBits, i32> {
-        if args.len() != self.layout.parameters.len()
-            || args
-                .iter()
-                .zip(&self.layout.parameters)
-                .any(|(a, t)| a.ty() != *t)
-        {
-            return Err(13);
-        }
-        if args.iter().any(|a| !a.is_valid()) {
-            return Err(6);
-        }
-        let mut bits = [ScalarBits::ZERO; calcvba_host_api::MAX_TYPED_ARGS];
-        for (i, arg) in args.iter().enumerate() {
-            bits[i] = arg.bits();
-        }
-        // SAFETY: safe slots retain every host-object borrow and header. The
-        // checked layout permits no arbitrary pointer creation or escape.
-        unsafe { self.invoke_bits(&bits[..args.len()], context) }
-    }
-    unsafe fn invoke_bits(
         &self,
         args: &[ScalarBits],
         context: &mut TypedContext,
@@ -77,185 +70,264 @@ impl<'p> TypedInterpreter<'p> {
         if args.len() != self.layout.parameters.len() {
             return Err(13);
         }
-        let mut slots = [ScalarBits::ZERO; MAX_TYPED_SLOTS];
-        slots[..args.len()].copy_from_slice(args);
-        let mut block = self.func.entry;
-        loop {
-            context.step()?;
-            let block_index = self.blocks.iter().find(|(id, _)| *id == block).ok_or(5)?.1;
-            let current = &self.func.blocks[block_index];
-            for inst in &current.instrs {
-                match inst {
-                    OxInst::ComCallEarly {
-                        dst: Some(dst),
-                        method,
-                        recv,
-                        args,
-                        ..
-                    } => {
-                        let plan = &self.layout.host_calls[method];
-                        let header = self
-                            .layout
-                            .read(&slots, recv, ScalarType::HostObject)
-                            .as_object();
-                        let arg = args.first().map(|arg| match arg {
-                            oxvba_oxir::OxCallArg::Operand(op) => {
-                                self.layout.read(&slots, op, ScalarType::Long).as_long()
-                            }
-                            oxvba_oxir::OxCallArg::ByRef(place) => {
-                                slots[self.layout.slot(*place).expect("admitted place")].as_long()
-                            }
-                            oxvba_oxir::OxCallArg::Const(value) => *value,
-                            _ => unreachable!("admitted host argument"),
-                        });
-                        // SAFETY: invoke_slots retained the header borrow; object
-                        // copies stay inside this activation. Transport checks
-                        // IID, bounds and exact native signature before entry.
-                        let value = unsafe {
-                            calcvba_host_api::object::invoke_double_slot(
-                                header, plan.iid, plan.slot, arg, context,
-                            )
-                        }?;
-                        slots[self.layout.slot(*dst).expect("admitted destination")] = value;
-                    }
-                    OxInst::StmtBoundary {
-                        clear_temps_from, ..
-                    } => {
-                        slots[self.layout.local_count + clear_temps_from..self.layout.slots.len()]
-                            .fill(ScalarBits::ZERO);
-                    }
-                    OxInst::DrainTerminations => {}
-                    OxInst::Assign { dst, value }
-                    | OxInst::Coerce {
-                        dst, src: value, ..
-                    } => {
-                        let slot = self.layout.slot(*dst).expect("admitted destination");
-                        slots[slot] = self.layout.read(&slots, value, self.layout.slots[slot]);
-                        if matches!(inst, OxInst::Coerce { .. })
-                            && self.layout.slots[slot] == ScalarType::Double
-                            && !slots[slot].as_double().is_finite()
-                        {
-                            return Err(6);
-                        }
-                    }
-                    OxInst::Arith {
-                        dst, op, lhs, rhs, ..
-                    } => {
-                        let slot = self.layout.slot(*dst).expect("admitted destination");
-                        let ty = self.layout.slots[slot];
-                        let lhs = self.layout.read(&slots, lhs, ty);
-                        let rhs = self.layout.read(&slots, rhs, ty);
-                        slots[slot] = match ty {
-                            ScalarType::Double => {
-                                let (a, b) = (lhs.as_double(), rhs.as_double());
-                                let value = match op {
-                                    ArithOp::Add => a + b,
-                                    ArithOp::Sub => a - b,
-                                    ArithOp::Mul => a * b,
-                                    _ => unreachable!("admitted arithmetic"),
-                                };
-                                if !value.is_finite() {
-                                    return Err(6);
-                                }
-                                ScalarBits::double(value)
-                            }
-                            ScalarType::Long => {
-                                let (a, b) = (lhs.as_long(), rhs.as_long());
-                                let value = match op {
-                                    ArithOp::Add => a.checked_add(b),
-                                    ArithOp::Sub => a.checked_sub(b),
-                                    ArithOp::Mul => a.checked_mul(b),
-                                    _ => unreachable!("admitted arithmetic"),
-                                }
-                                .ok_or(6)?;
-                                ScalarBits::long(value)
-                            }
-                            _ => unreachable!("admitted numeric type"),
-                        };
-                    }
-                    OxInst::Div { dst, lhs, rhs } => {
-                        let a = self
-                            .layout
-                            .read(&slots, lhs, ScalarType::Double)
-                            .as_double();
-                        let b = self
-                            .layout
-                            .read(&slots, rhs, ScalarType::Double)
-                            .as_double();
-                        if b == 0.0 {
-                            return Err(11);
-                        }
-                        let value = a / b;
-                        if !value.is_finite() {
-                            return Err(6);
-                        }
-                        slots[self.layout.slot(*dst).expect("admitted destination")] =
-                            ScalarBits::double(value);
-                    }
-                    OxInst::Compare {
-                        dst, op, lhs, rhs, ..
-                    } => {
-                        let ty = self
-                            .layout
-                            .comparison_type(lhs, rhs)
-                            .expect("admitted comparison");
-                        let a = self.layout.read(&slots, lhs, ty);
-                        let b = self.layout.read(&slots, rhs, ty);
-                        macro_rules! compare {
-                            ($a:expr, $b:expr) => {
-                                match op {
-                                    CmpOp::Eq => $a == $b,
-                                    CmpOp::Ne => $a != $b,
-                                    CmpOp::Lt => $a < $b,
-                                    CmpOp::Le => $a <= $b,
-                                    CmpOp::Gt => $a > $b,
-                                    CmpOp::Ge => $a >= $b,
-                                }
-                            };
-                        }
-                        let value = if ty == ScalarType::Double {
-                            compare!(a.as_double(), b.as_double())
-                        } else {
-                            compare!(a.as_long(), b.as_long())
-                        };
-                        slots[self.layout.slot(*dst).expect("admitted destination")] =
-                            ScalarBits::long(if value { -1 } else { 0 });
-                    }
-                    OxInst::Truthy { dst, src } => {
-                        let ty = self.layout.operand_type(src).expect("admitted operand");
-                        let value = self.layout.read(&slots, src, ty);
-                        let truth = if ty == ScalarType::Double {
-                            value.as_double() != 0.0
-                        } else {
-                            value.as_long() != 0
-                        };
-                        slots[self.layout.slot(*dst).expect("admitted destination")] =
-                            ScalarBits::long(if truth { -1 } else { 0 });
-                    }
-                    _ => unreachable!("admitted instruction"),
-                }
+        let mut slots = [calcvba_host_api::Slot::Long(0); calcvba_host_api::MAX_TYPED_ARGS];
+        for (i, (bits, ty)) in args.iter().zip(&self.layout.parameters).enumerate() {
+            slots[i] = match ty {
+                ScalarType::Long => calcvba_host_api::Slot::Long(bits.as_long()),
+                ScalarType::Double => calcvba_host_api::Slot::Double(bits.as_double()),
+                _ => return Err(13),
+            };
+        }
+        self.invoke_slots_inner(&slots[..args.len()], context, false)
+    }
+    pub fn invoke_slots(
+        &self,
+        args: &[calcvba_host_api::Slot<'_>],
+        context: &mut TypedContext,
+    ) -> Result<ScalarBits, i32> {
+        self.invoke_slots_inner(args, context, true)
+    }
+    fn invoke_slots_inner(
+        &self,
+        args: &[calcvba_host_api::Slot<'_>],
+        context: &mut TypedContext,
+        finite_inputs: bool,
+    ) -> Result<ScalarBits, i32> {
+        if self.layout.result == ScalarType::HostObject
+            || self.layout.slots.len() != self.layout.global_base
+        {
+            return Err(13);
+        }
+        // SAFETY: this synchronous local-only frame retains its arguments and
+        // borrows the checked layout; no global pointer is dereferenced.
+        let mut frame = unsafe {
+            if finite_inputs {
+                Activation::borrowed(&self.layout, args, std::ptr::null_mut(), 0, self.entry_pc())
+            } else {
+                Activation::borrowed_exact(&self.layout, args, self.entry_pc())
             }
-            block = match &current.terminator {
-                OxTerminator::Jump(next) => *next,
-                OxTerminator::Branch {
-                    cond,
-                    then_blk,
-                    else_blk,
-                } => {
-                    if self
-                        .layout
-                        .read(&slots, cond, ScalarType::Boolean)
-                        .as_long()
-                        != 0
-                    {
+        }?;
+        if self.resume(&mut frame, context, u64::MAX)? != 0 {
+            return Err(5);
+        }
+        Ok(frame.raw().slots[self.layout.return_slot])
+    }
+    /// Execute at most operations completed physical operations. A paused PC
+    /// always names the next operation, so effects before it are never repeated.
+    pub fn resume(
+        &self,
+        frame: &mut Activation<'_>,
+        context: &mut TypedContext,
+        operations: u64,
+    ) -> Result<i32, i32> {
+        if !std::ptr::eq(&self.layout, frame.layout()) && self.layout != *frame.layout() {
+            return Err(5);
+        }
+        for _ in 0..operations {
+            if frame.pc() == FINISHED_PC {
+                return Err(5);
+            }
+            frame.clear_scratch();
+            let (_, index, start) = self
+                .blocks
+                .iter()
+                .rev()
+                .find(|(_, _, start)| *start <= frame.pc())
+                .ok_or(5)?;
+            let block = &self.func.blocks[*index];
+            let offset = (frame.pc() - *start) as usize;
+            if offset == 0 {
+                context.step()?;
+                frame.set_pc(frame.pc() + 1);
+            } else if let Some(inst) = block.instrs.get(offset - 1) {
+                self.instruction(frame, context, inst)?;
+                frame.set_pc(frame.pc() + 1);
+            } else if offset == block.instrs.len() + 1 {
+                let next_pc = match &block.terminator {
+                    OxTerminator::Jump(next) => self.target(*next),
+                    OxTerminator::Branch {
+                        cond,
+                        then_blk,
+                        else_blk,
+                    } => self.target(if frame.read(cond, ScalarType::Boolean)?.as_long() != 0 {
                         *then_blk
                     } else {
                         *else_blk
+                    }),
+                    OxTerminator::Return => {
+                        frame.set_pc(FINISHED_PC);
+                        frame.clear_scratch();
+                        return Ok(0);
+                    }
+                    _ => return Err(5),
+                };
+                frame.set_pc(next_pc);
+            } else {
+                return Err(5);
+            }
+        }
+        frame.clear_scratch();
+        Ok(SUSPENDED)
+    }
+    fn instruction(
+        &self,
+        frame: &mut Activation<'_>,
+        context: &mut TypedContext,
+        inst: &OxInst,
+    ) -> Result<(), i32> {
+        let (dst, value) = match inst {
+            OxInst::StmtBoundary {
+                clear_temps_from, ..
+            } => {
+                frame.clear_temps(*clear_temps_from);
+                return Ok(());
+            }
+            OxInst::DrainTerminations => return Ok(()),
+            OxInst::ValidateAssignment {
+                src,
+                target_type_name,
+                ..
+            } => {
+                let pointer = frame.read(src, ScalarType::HostObject)?.as_object();
+                if let Some(iid) = self.layout.assignment_iids[target_type_name] {
+                    // SAFETY: admitted object reads retain factory tables.
+                    if !pointer.is_null() && unsafe { (*pointer).iid } != iid {
+                        return Err(13);
                     }
                 }
-                OxTerminator::Return => return Ok(slots[self.layout.return_slot]),
-                _ => return Err(5),
-            };
-        }
+                return Ok(());
+            }
+            OxInst::Assign { dst, value }
+            | OxInst::Coerce {
+                dst, src: value, ..
+            } => {
+                let ty = self.layout.slots[self.layout.slot(*dst).expect("admitted place")];
+                let bits = frame.read(value, ty)?;
+                if matches!(inst, OxInst::Coerce { .. })
+                    && ty == ScalarType::Double
+                    && !bits.as_double().is_finite()
+                {
+                    return Err(6);
+                }
+                (*dst, bits)
+            }
+            OxInst::ComCallEarly {
+                dst: Some(dst),
+                method,
+                recv,
+                args,
+                ..
+            } => {
+                let plan = &self.layout.host_calls[method];
+                let header = frame.read(recv, ScalarType::HostObject)?.as_object();
+                let arg = match args.first() {
+                    Some(oxvba_oxir::OxCallArg::Operand(op)) => {
+                        Some(frame.read(op, ScalarType::Long)?.as_long())
+                    }
+                    Some(oxvba_oxir::OxCallArg::ByRef(place)) => Some(
+                        frame
+                            .read(&OxOperand::Use(*place), ScalarType::Long)?
+                            .as_long(),
+                    ),
+                    Some(oxvba_oxir::OxCallArg::Const(value)) => Some(*value),
+                    None => None,
+                    _ => unreachable!("admitted argument"),
+                };
+                // SAFETY: the frame or its scratch owner retains the receiver;
+                // no borrow into globals spans the synchronous host callback.
+                let value = unsafe {
+                    calcvba_host_api::object::invoke_double_slot(
+                        header, plan.iid, plan.slot, arg, context,
+                    )
+                }?;
+                (*dst, value)
+            }
+            OxInst::Arith {
+                dst, op, lhs, rhs, ..
+            } => {
+                let ty = self.layout.slots[self.layout.slot(*dst).expect("admitted place")];
+                let a = frame.read(lhs, ty)?;
+                let b = frame.read(rhs, ty)?;
+                let value = if ty == ScalarType::Double {
+                    let (a, b) = (a.as_double(), b.as_double());
+                    let value = match op {
+                        ArithOp::Add => a + b,
+                        ArithOp::Sub => a - b,
+                        ArithOp::Mul => a * b,
+                        _ => unreachable!("admitted arithmetic"),
+                    };
+                    if !value.is_finite() {
+                        return Err(6);
+                    }
+                    ScalarBits::double(value)
+                } else {
+                    let (a, b) = (a.as_long(), b.as_long());
+                    ScalarBits::long(
+                        match op {
+                            ArithOp::Add => a.checked_add(b),
+                            ArithOp::Sub => a.checked_sub(b),
+                            ArithOp::Mul => a.checked_mul(b),
+                            _ => unreachable!("admitted arithmetic"),
+                        }
+                        .ok_or(6)?,
+                    )
+                };
+                (*dst, value)
+            }
+            OxInst::Div { dst, lhs, rhs } => {
+                let a = frame.read(lhs, ScalarType::Double)?.as_double();
+                let b = frame.read(rhs, ScalarType::Double)?.as_double();
+                if b == 0.0 {
+                    return Err(11);
+                }
+                let value = a / b;
+                if !value.is_finite() {
+                    return Err(6);
+                }
+                (*dst, ScalarBits::double(value))
+            }
+            OxInst::Compare {
+                dst, op, lhs, rhs, ..
+            } => {
+                let ty = self
+                    .layout
+                    .comparison_type(lhs, rhs)
+                    .expect("admitted comparison");
+                let a = frame.read(lhs, ty)?;
+                let b = frame.read(rhs, ty)?;
+                macro_rules! compare {
+                    ($a:expr,$b:expr) => {
+                        match op {
+                            CmpOp::Eq => $a == $b,
+                            CmpOp::Ne => $a != $b,
+                            CmpOp::Lt => $a < $b,
+                            CmpOp::Le => $a <= $b,
+                            CmpOp::Gt => $a > $b,
+                            CmpOp::Ge => $a >= $b,
+                        }
+                    };
+                }
+                let result = if ty == ScalarType::Double {
+                    compare!(a.as_double(), b.as_double())
+                } else {
+                    compare!(a.as_long(), b.as_long())
+                };
+                (*dst, ScalarBits::long(if result { -1 } else { 0 }))
+            }
+            OxInst::Truthy { dst, src } => {
+                let ty = self.layout.operand_type(src).expect("admitted operand");
+                let bits = frame.read(src, ty)?;
+                let truth = if ty == ScalarType::Double {
+                    bits.as_double() != 0.0
+                } else {
+                    bits.as_long() != 0
+                };
+                (*dst, ScalarBits::long(if truth { -1 } else { 0 }))
+            }
+            _ => unreachable!("admitted instruction"),
+        };
+        // SAFETY: the admitted instruction produced the exact carrier and
+        // frame/scratch owners retain every object through this store.
+        unsafe { frame.write(dst, value) }
     }
 }

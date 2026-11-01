@@ -1,6 +1,44 @@
 Option Explicit
 
 Private Declare PtrSafe Sub CopyProbeBytes Lib "kernel32" Alias "RtlMoveMemory" (ByRef destination As Any, ByRef source As Any, ByVal length As LongPtr)
+Private objectKept As Range
+
+Private Function KeepStaticObject(ByVal value As Range, ByVal replace As Boolean) As Range
+    Static saved As Range
+    If replace Then Set saved = value
+    Set KeepStaticObject = saved
+End Function
+
+Public Function OwningObjectProbe() As String
+    Dim original As Range, returned As Range, current As Object, cleared As Range
+    Set original = ThisWorkbook.Worksheets(1).Range("D1")
+    original.Value2 = 41
+    Set objectKept = original
+    Set current = objectKept
+    Set returned = KeepStaticObject(original, True)
+    Set original = Nothing
+    Set objectKept = Nothing
+    returned.Value2 = 43
+    Set objectKept = KeepStaticObject(Nothing, False)
+    OwningObjectProbe = TypeName(objectKept) & "|" & TypeName(current) & "|" & _
+        CStr(IsObject(objectKept)) & "|" & CStr(objectKept Is current) & "|" & CStr(objectKept.Value2)
+    Set cleared = KeepStaticObject(Nothing, True)
+    Set objectKept = Nothing
+    OwningObjectProbe = OwningObjectProbe & "|" & TypeName(returned) & "|" & CStr(returned Is current)
+    Dim wrong As Object, unused As Double, parameterError As Long
+    Set wrong = ThisWorkbook.Worksheets(1)
+    On Error Resume Next
+    Err.Clear
+    unused = UnusedTypedObject(wrong)
+    parameterError = Err.Number
+    On Error GoTo 0
+    OwningObjectProbe = OwningObjectProbe & "|" & CStr(parameterError) & "|" & _
+        CStr(UnusedTypedObject(Nothing)) & "|" & CStr(UnusedTypedObject(returned))
+End Function
+
+Private Function UnusedTypedObject(ByVal value As Range) As Double
+    UnusedTypedObject = 7
+End Function
 
 Public Function RaiseMismatch() As Variant
     Err.Raise 13

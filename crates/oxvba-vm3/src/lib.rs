@@ -906,6 +906,19 @@ impl<'h> Vm3<'h> {
             self.exec.default_error_source.clone(),
         );
     }
+    /// Canonical storage for a retained typed activation. The caller must keep
+    /// the session leased and exclude reset/replacement while retaining pointers.
+    pub fn typed_globals_raw(&mut self) -> (*mut Variant, usize) {
+        let globals = &mut self
+            .exec
+            .programs
+            .last_mut()
+            .expect("linked session")
+            .globals;
+        // Vec's raw accessor does not materialize an exclusive slice that would
+        // invalidate a parked activation's existing raw storage authority.
+        (globals.as_mut_ptr(), globals.len())
+    }
 
     /// Invoke a standard-module function with already coerced value arguments.
     /// No hidden Me slot is inserted and host ByRef arguments are private copies.

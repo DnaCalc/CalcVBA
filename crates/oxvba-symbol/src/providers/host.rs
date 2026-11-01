@@ -17,6 +17,9 @@ pub struct HostProvider {
 }
 
 impl HostProvider {
+    pub(crate) fn from_providers(blobs: Vec<ComTypeLibProvider>) -> Self {
+        Self { blobs }
+    }
     pub fn new(blobs: Vec<TypeLibMetadataBlob>) -> Self {
         Self {
             blobs: blobs.into_iter().map(ComTypeLibProvider::new).collect(),
@@ -25,6 +28,11 @@ impl HostProvider {
 }
 
 impl Provider for HostProvider {
+    fn object_interface(&self, type_name: &str) -> Option<oxvba_com::TypeLibInterfaceMetadata> {
+        self.blobs
+            .iter()
+            .find_map(|blob| blob.object_interface(type_name))
+    }
     fn resolve(&self, name: &str) -> Option<Binding> {
         self.blobs
             .iter()

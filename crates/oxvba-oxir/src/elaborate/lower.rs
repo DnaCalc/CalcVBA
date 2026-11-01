@@ -24,9 +24,9 @@
 //! resolved member descriptor into the typed interface table ([`OxProgram::com_interfaces`])
 //! and lowers to a descriptor-keyed [`OxInst::ComCallEarly`]; a late-bound call
 //! ([`coreir::CoreCallee::LateDispatch`]) lowers to the dynamic by-name
-//! [`OxInst::ComCallLate`]. (Precise typed-COM *receiver* identity — typing a
-//! `Dim r As Excel.Range` local as `Object(ComIface(_))` rather than `Untyped` — is a
-//! later refinement; each call already carries its own typed descriptor.)
+//! [`OxInst::ComCallLate`]. Compiler-retained declared interface snapshots also
+//! resolve receiver/storage types to `Object(ComIface(_))` independently of calls.
+//! A type without such an authoritative snapshot remains explicitly untyped.
 //!
 //! # Fault model (per-statement landing pads)
 //!
@@ -123,10 +123,10 @@ pub fn elaborate(program: &CoreProgram) -> Result<OxProgram> {
         .map(|global| global.ty.clone())
         .collect::<Vec<_>>();
 
-    // The typed COM interface table is built as early-bound calls are lowered: each
-    // call's resolved member is interned into it, and the call names the member by a
-    // stable `ComMethodRef`.
-    let mut com = ComInterner::default();
+    // Declared interface identities and members are retained first. Early-bound
+    // calls then reuse/intern descriptors in that same table and name each member
+    // by a stable ComMethodRef, including memberless object-only procedures.
+    let mut com = ComInterner::from_declared(&program.object_interfaces);
     let proc_return_types: Vec<Option<OxTy>> = program
         .procs
         .iter()
@@ -261,14 +261,16 @@ fn lower_as_new(binding: &CoreAsNew) -> OxAsNew {
 /// A [`NameResolver`] built from a [`CoreProgram`]: a declared type name that matches a
 /// project class (case-insensitively, by full name) is a typed `Class` instance;
 /// UDT records resolve to descriptor-backed [`OxTy::Record`] identities harvested from
-/// declarations and record initializers. Referenced COM coclasses and unresolved names stay
-/// conservative [`ResolvedTypeName::Untyped`] values (a cross-project-qualified class name
+/// declarations and record initializers. Declared COM interfaces resolve from
+/// retained provider metadata. Other unresolved names stay conservative
+/// [`ResolvedTypeName::Untyped`] values (a cross-project-qualified class name
 /// like `Lib.Widget` is correctly *not* a class of this unit and stays untyped here,
 /// dispatched through the cross-bundle import path).
 struct ProgramResolver {
     classes: HashMap<String, ClassId>,
     records: HashMap<String, RecordLayoutId>,
     record_layouts: Vec<Vec<ArrayElementType>>,
+    com_interfaces: HashMap<String, IfaceId>,
 }
 
 impl ProgramResolver {
@@ -283,6 +285,12 @@ impl ProgramResolver {
             classes,
             records: HashMap::new(),
             record_layouts: Vec::new(),
+            com_interfaces: program
+                .object_interfaces
+                .iter()
+                .enumerate()
+                .map(|(i, interface)| (interface.name.to_ascii_lowercase(), IfaceId(i)))
+                .collect(),
         };
         for global in &program.globals {
             this.harvest_record_layout_from_decl(&global.ty, global.array_element.as_ref());
@@ -395,16 +403,22 @@ impl NameResolver for ProgramResolver {
             Some(&id) => ResolvedTypeName::Class(id),
             None => match self.records.get(&folded) {
                 Some(&id) => ResolvedTypeName::Record(id),
-                None => ResolvedTypeName::Untyped,
+                None => self
+                    .com_interfaces
+                    .get(&folded)
+                    .map_or(ResolvedTypeName::Untyped, |id| {
+                        ResolvedTypeName::ComIface(*id)
+                    }),
             },
         }
     }
 }
 
 /// Builds the program's typed COM interface table ([`OxProgram::com_interfaces`]) as
-/// early-bound calls are lowered. Every call's resolved member descriptor is interned —
-/// deduplicated within its declared receiver interface — so the table holds each used
-/// member exactly once and the call site names it by a stable [`ComMethodRef`].
+/// early-bound calls are lowered, seeded with retained declared interfaces.
+/// Every call's resolved member descriptor is interned within its receiver
+/// interface so each member has one stable ComMethodRef, whether first retained
+/// through a declaration or encountered at a call site.
 /// Interfaces are grouped by the declared receiver type name (case-insensitively, e.g.
 /// `Excel.Range`); a member is identified within its interface by its dispid + accessor,
 /// so a get and a put that share a dispid are distinct entries. (Grouping by the
@@ -418,6 +432,25 @@ struct ComInterner {
 }
 
 impl ComInterner {
+    fn from_declared(interfaces: &[TypeLibInterfaceMetadata]) -> Self {
+        let mut this = Self::default();
+        for interface in interfaces {
+            let name = interface.name.to_ascii_lowercase();
+            let index = this.interfaces.len();
+            this.iface_of.insert(name.clone(), index);
+            for (member, descriptor) in interface.members.iter().enumerate() {
+                this.method_of.insert(
+                    (name.clone(), descriptor.token, descriptor.invoke_kind),
+                    ComMethodRef {
+                        iface: IfaceId(index),
+                        member,
+                    },
+                );
+            }
+            this.interfaces.push(ComInterface::Com(interface.clone()));
+        }
+        this
+    }
     fn intern(&mut self, interface_name: &str, member: &TypeLibMemberMetadata) -> ComMethodRef {
         let folded = interface_name.to_ascii_lowercase();
         let key = (folded.clone(), member.token, member.invoke_kind);

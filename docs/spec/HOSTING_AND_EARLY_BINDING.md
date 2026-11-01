@@ -458,3 +458,27 @@ inputs. Source-class object results require begin_values, not the older result A
 Cancellation releases frames and permits reset; it does not promise completion of
 a cancelled VBA finalizer. Richer class/array/native ABI behavior remains open.
 See [the bounded proof](../evidence/programs/ideal-2026-07/core/CORE-7/typed-aggregates-classes-run11.md).
+
+
+## Run 11 synchronous native callbacks
+
+Prepared scalar and descriptor-planned native COM calls establish an active
+with_native_call scope. A host callback or native event sink can use
+with_native_callback_context and call_typed_in_context/call_values to execute a
+bound VBA procedure against that same budget. The scope is same-thread, rejects
+overlapping borrows and restores on failure/unwinding. Session generation and
+reentry checks remain in force. A callback completes before the native call
+returns; suspension inside the foreign call remains unsupported.
+
+Hosts own event subscriptions, target lifetime and native HRESULT/error mapping.
+A native connection-point/IDispatch scalar sink now has dual-runtime development
+proof, including stale-handler rejection and Unadvise. VBA WithEvents, incoming
+ByRef cancellation and broader native event policy remain with bd-59co.3.6.4.
+See [native callback evidence](../evidence/programs/ideal-2026-07/core/CORE-7/typed-native-callbacks-run11.md).
+
+
+Native ByRef alias visibility during a callback remains open under bd-59co.2.9.20.
+The owned VBA exact-Long callback probe produces 13:13, while both typed backends
+currently observe 3:12 when the native ByRef argument aliases the callback's
+global. Native-private-cell copyback before caller resume is insufficient for
+that interleaving. General native ByRef/reentry parity is not claimed.

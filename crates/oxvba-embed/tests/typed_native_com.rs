@@ -1601,3 +1601,503 @@ End Sub
         drop(input);
     }
 }
+
+#[test]
+fn native_callback_into_typed_vba_shares_context_globals_view_and_error_routing() {
+    use api::{RuntimeProvider, SessionExt};
+    use oxvba_symbol::TypeLibResolver;
+    use std::{cell::Cell, ffi::c_void, rc::Weak};
+    struct CallbackTypes;
+    impl oxvba_symbol::TypeLibResolver for CallbackTypes {
+        fn resolve(
+            &self,
+            request: &oxvba_com::TypeLibResolveRequest,
+        ) -> Option<oxvba_com::TypeLibMetadataBlob> {
+            let mut blob = FixtureTypes.resolve(request)?;
+            blob.members.truncate(1);
+            blob.members[0].vtable_slot_bound = Some(9);
+            let mut member = blob.members[0].clone();
+            member.name = "CountByRef".into();
+            member.token = 7008;
+            member.vtable_slot = Some(8);
+            member.invoke_kind = oxvba_com::TypeLibMemberInvokeKind::Method;
+            member.requires_argument = true;
+            member.parameter_names = vec!["amount".into()];
+            member.parameter_optional = vec![false];
+            member.parameter_optional_defaults = vec![oxvba_com::OptionalParamDefault::Required];
+            member.parameter_iids = vec![None];
+            member.parameter_types = vec![oxvba_com::TypeLibParamType::ByRefLong];
+            member.parameter_wire_types = vec![oxvba_com::TypeLibWireType::Automation(
+                oxvba_com::TypeLibParamType::ByRefLong,
+            )];
+            blob.members.push(member);
+            blob.member_name_to_token = blob
+                .members
+                .iter()
+                .map(|m| (m.name.clone(), m.token))
+                .collect();
+            Some(blob)
+        }
+    }
+    struct CallbackState {
+        session: Weak<Box<dyn api::Session>>,
+        tick: api::TypedProcedure<(i32,), i32>,
+        fail: api::TypedProcedure<(), i32>,
+        fail_next: Cell<bool>,
+        callbacks: Cell<u32>,
+    }
+    // SAFETY CONTRACT: the registration below pins this exact state and output
+    // for the synchronous native call, and disarms before either owner drops.
+    unsafe extern "system" fn callback(context: *mut c_void, out: *mut i32) -> i32 {
+        if context.is_null() || out.is_null() {
+            return 0x80004003u32 as i32;
+        }
+        // SAFETY: the live registration retains this stable CallbackState.
+        let state = unsafe { &*context.cast::<CallbackState>() };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            api::with_native_callback_context(|context| {
+                let session = state.session.upgrade().ok_or(api::Error::StaleHandle)?;
+                let view = api::active_invocation().unwrap();
+                assert_eq!(view.id, 71);
+                assert_eq!(view.read_view.downcast_ref::<i32>(), Some(&83));
+                assert!(matches!(session.reset(), Err(api::Error::Reentry)));
+                assert!(matches!(
+                    session.call_typed(&state.tick, (1,), 1000),
+                    Err(api::Error::Reentry)
+                ));
+                state.callbacks.set(state.callbacks.get() + 1);
+                let before = context.remaining_blocks;
+                let result = if state.fail_next.replace(false) {
+                    session.call_typed_in_context(&state.fail, (), context)
+                } else {
+                    session.call_typed_in_context(&state.tick, (1,), context)
+                };
+                assert!(
+                    context.remaining_blocks < before,
+                    "callback must consume the outer budget"
+                );
+                result
+            })
+            .and_then(|result| result)
+        }));
+        match result {
+            Ok(Ok(value)) => {
+                // SAFETY: the native Count caller supplies one writable LONG.
+                unsafe {
+                    out.write(value);
+                }
+                0
+            }
+            Ok(Err(api::Error::Runtime { number: 13, .. })) => 0x80020005u32 as i32,
+            _ => 0x80004005u32 as i32,
+        }
+    }
+    struct Registration(Rc<native_identity::Observation>);
+    impl Drop for Registration {
+        fn drop(&mut self) {
+            self.0.callback.set(None);
+            self.0.callback_context.set(std::ptr::null_mut());
+        }
+    }
+    let source = r#"
+Public total As Long
+Public Function OnTick(ByVal amount As Long) As Long
+    total = total + amount
+    OnTick = total
+End Function
+Public Function RaiseTick() As Long
+    total = total + 1
+    Err.Raise 13
+End Function
+Public Function Trigger(ByVal value As NativeFixture.Calculator) As Long
+    total = 40
+    Trigger = value.Count + total
+End Function
+Public Function Handled(ByVal value As NativeFixture.Calculator) As Long
+    On Error Resume Next
+    total = 40
+    Handled = value.Count
+    Handled = Err.Number
+End Function
+Public Function TriggerByRef(ByVal value As NativeFixture.Calculator) As Long
+    Dim amount As Long
+    total = 40
+    amount = 2
+    TriggerByRef = value.CountByRef(amount)
+    TriggerByRef = TriggerByRef + amount + total
+End Function
+Public Function HandledByRef(ByVal value As NativeFixture.Calculator) As Long
+    Dim amount As Long
+    On Error Resume Next
+    total = 40
+    amount = 2
+    HandledByRef = value.CountByRef(amount)
+    HandledByRef = Err.Number + amount + total
+End Function
+Public Function ReadTotal() As Long
+    ReadTotal = total
+End Function
+"#;
+    for backend in backends() {
+        let host = host();
+        let (pointer, observed) = native_identity::create();
+        {
+            // SAFETY: create transfers the owned same-thread fixture dispatch reference.
+            let raw = unsafe {
+                host.com()
+                    .bind_native_dispatch_object_variant("Owned.Callback", pointer.cast())
+            }
+            .unwrap();
+            let members = CallbackTypes
+                .resolve(&oxvba_com::TypeLibResolveRequest {
+                    reference_name: "NativeFixture".into(),
+                    requested_coclass: Some("Calculator".into()),
+                    importlib_hint: None,
+                    libid_hint: None,
+                    major_version_hint: None,
+                    minor_version_hint: None,
+                    lcid_hint: None,
+                })
+                .unwrap()
+                .members;
+            let object = prepare(host.as_ref(), raw.as_object_ref().unwrap(), &members).unwrap();
+            let mut project = api::Project::module("Api", source);
+            project
+                .references
+                .push(api::TypeLibraryReference::named("NativeFixture"));
+            let session: Rc<Box<dyn api::Session>> = Rc::new(
+                Provider::with_host(host.clone())
+                    .with_type_libraries(Rc::new(CallbackTypes))
+                    .load(
+                        &project,
+                        match backend {
+                            Backend::Interpreter => api::Backend::Interpreter,
+                            Backend::Jit => api::Backend::Jit,
+                        },
+                        api::HOST_API_ABI,
+                    )
+                    .unwrap(),
+            );
+            let state = Box::new(CallbackState {
+                session: Rc::downgrade(&session),
+                tick: session.bind_typed("Api", "OnTick").unwrap(),
+                fail: session.bind_typed("Api", "RaiseTick").unwrap(),
+                fail_next: Cell::new(false),
+                callbacks: Cell::new(0),
+            });
+            observed
+                .callback_context
+                .set((&*state as *const CallbackState).cast_mut().cast());
+            observed.callback.set(Some(callback));
+            let registration = Registration(observed.clone());
+            let queries = observed.queries.get();
+            for (name, expected, fail) in [
+                ("Trigger", 82, false),
+                ("Handled", 13, true),
+                ("TriggerByRef", 94, false),
+                ("HandledByRef", 66, true),
+                ("Trigger", 82, false),
+            ] {
+                state.fail_next.set(fail);
+                let bound = session
+                    .bind_values(
+                        "Api",
+                        name,
+                        &[api::ValueType::HostObject],
+                        api::ValueType::Long,
+                    )
+                    .unwrap();
+                let mut call = session
+                    .begin_values(
+                        &bound,
+                        &[api::ValueSlot::Object(object.argument())],
+                        api::InvocationFrame::new(71, None, Rc::new(83)),
+                        1000,
+                    )
+                    .unwrap();
+                loop {
+                    match call.resume(1).unwrap() {
+                        api::ValueProgress::Suspended => {}
+                        api::ValueProgress::Returned(value) => {
+                            assert!(
+                                matches!(value,api::Value::Long(v) if v==expected),
+                                "{backend:?} {name}"
+                            );
+                            break;
+                        }
+                    }
+                }
+                assert_eq!(
+                    session
+                        .call_typed::<(), i32>(
+                            &session.bind_typed("Api", "ReadTotal").unwrap(),
+                            (),
+                            1000
+                        )
+                        .unwrap(),
+                    41
+                );
+                assert!(matches!(
+                    api::with_native_callback_context(|_| ()),
+                    Err(api::Error::Reentry)
+                ));
+            }
+            assert_eq!(state.callbacks.get(), 5);
+            assert_eq!(observed.calls.get(), 5);
+            assert_eq!(observed.queries.get(), queries);
+            assert_eq!(observed.dynamic.get(), 0);
+            let mut out = 0;
+            // SAFETY: exercise the still-pinned registration outside a native
+            // scope: it must refuse without entering or changing VBA state.
+            let outside = unsafe {
+                callback(
+                    (&*state as *const CallbackState).cast_mut().cast(),
+                    &mut out,
+                )
+            };
+            assert!(outside < 0);
+            assert_eq!(state.callbacks.get(), 5);
+            drop(registration);
+            drop(state);
+            drop(object);
+            host.com()
+                .release_object_variant(raw.as_object_ref().unwrap())
+                .unwrap();
+        }
+        assert_eq!(observed.references.get(), 0);
+        assert_eq!(observed.dynamic.get(), 0);
+    }
+}
+
+#[test]
+fn connection_point_dispatch_sink_runs_typed_handlers_and_rejects_stale_targets() {
+    use api::{RuntimeProvider, SessionExt};
+    use oxvba_com::{ComValue, DispatchEventSinkConfig, windows_connection_point::WindowsEventArg};
+    use std::cell::{Cell, RefCell};
+    struct Target {
+        session: std::rc::Weak<RefCell<Box<dyn api::Session>>>,
+        handler: api::TypedProcedure<(i32,), i32>,
+        deliveries: Cell<u32>,
+        errors: Cell<u32>,
+        last: Cell<i32>,
+    }
+    thread_local! {static TARGET:RefCell<Option<Rc<Target>>>=const {RefCell::new(None)};}
+    struct TargetScope;
+    impl Drop for TargetScope {
+        fn drop(&mut self) {
+            TARGET.with(|slot| {
+                slot.borrow_mut().take();
+            });
+        }
+    }
+    struct Source(*mut oxvba_com::RawIDispatch, Rc<Cell<u32>>);
+    impl Source {
+        fn as_ptr(&self) -> *mut oxvba_com::RawIDispatch {
+            self.0
+        }
+    }
+    impl Drop for Source {
+        fn drop(&mut self) {
+            // SAFETY: the fixture transferred this one native owner on this thread.
+            unsafe {
+                let remaining = ((*(*self.0).vtbl).unknown.release)(self.0.cast());
+                self.1.set(remaining);
+            }
+        }
+    }
+    struct Subscription(Option<oxvba_com::WindowsConnectionPointTransport>);
+    impl Drop for Subscription {
+        fn drop(&mut self) {
+            if let Some(transport) = self.0.take() {
+                // SAFETY: this guard owns the one advise transport until final release.
+                let _ = unsafe { oxvba_com::unadvise_connection_point(transport) };
+            }
+        }
+    }
+    // SAFETY CONTRACT: source is the retained fixture IDispatch. The helper is
+    // test-driver control: it asks the fixture to emit its declared native event.
+    unsafe fn fire(source: *mut oxvba_com::RawIDispatch, value: i32) {
+        use windows_sys::Win32::System::{
+            Com::{DISPATCH_METHOD, DISPPARAMS},
+            Variant::{VARIANT, VT_I4},
+        };
+        // SAFETY: initialized scalar VARIANT and exact live DISPPARAMS extents;
+        // the owned fixture supports this declared DISPID and consumes no owner.
+        unsafe {
+            let mut argument: VARIANT = std::mem::zeroed();
+            argument.Anonymous.Anonymous.vt = VT_I4;
+            argument.Anonymous.Anonymous.Anonymous.lVal = value;
+            let mut args = DISPPARAMS {
+                rgvarg: &mut argument,
+                rgdispidNamedArgs: std::ptr::null_mut(),
+                cArgs: 1,
+                cNamedArgs: 0,
+            };
+            let status = ((*(*source).vtbl).invoke)(
+                source.cast(),
+                oxvba_com::TEST_DISPID_FIRE_CHANGED,
+                &oxvba_com::IID_NULL,
+                0,
+                DISPATCH_METHOD,
+                &mut args,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
+            assert!(status >= 0, "fixture event driver: {status:08x}");
+        }
+    }
+    for backend in backends() {
+        let project = api::Project::module(
+            "Api",
+            "Public total As Long\nPublic Function Receive(ByVal amount As Long) As Long\ntotal=total+amount\nReceive=total\nEnd Function\nPublic Function ReadTotal() As Long\nReadTotal=total\nEnd Function\n",
+        );
+        let session = Rc::new(RefCell::new(
+            Provider::default()
+                .load(
+                    &project,
+                    match backend {
+                        Backend::Interpreter => api::Backend::Interpreter,
+                        Backend::Jit => api::Backend::Jit,
+                    },
+                    api::HOST_API_ABI,
+                )
+                .unwrap(),
+        ));
+        let target = Rc::new(Target {
+            session: Rc::downgrade(&session),
+            handler: session.borrow().bind_typed("Api", "Receive").unwrap(),
+            deliveries: Cell::new(0),
+            errors: Cell::new(0),
+            last: Cell::new(-1),
+        });
+        TARGET.with(|slot| {
+            slot.replace(Some(target.clone()));
+        });
+        let scope = TargetScope;
+        let released = Rc::new(Cell::new(u32::MAX));
+        let source = Source(oxvba_com::create_oxvba_test_dispatch(), released.clone());
+        let config = DispatchEventSinkConfig {
+            event_dispatch_member: oxvba_com::TEST_EVENT_CHANGED,
+            expected_arity: 1,
+            connection_point_iid: None,
+            on_event: Arc::new(|args| {
+                let Some(target) = TARGET.with(|slot| slot.borrow().clone()) else {
+                    return false;
+                };
+                let [WindowsEventArg::Value(ComValue::I32(value))] = args else {
+                    return false;
+                };
+                target.deliveries.set(target.deliveries.get() + 1);
+                // The Send+Sync sink callback carries no non-Send session. The
+                // owning thread snapshots its host target before running VBA.
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    api::with_native_callback_context(|context| {
+                        let session = target.session.upgrade().ok_or(api::Error::StaleHandle)?;
+                        session
+                            .borrow()
+                            .call_typed_in_context(&target.handler, (*value,), context)
+                    })
+                    .and_then(|result| result)
+                }));
+                match result {
+                    Ok(Ok(value)) => {
+                        target.last.set(value);
+                        true
+                    }
+                    _ => {
+                        target.errors.set(target.errors.get() + 1);
+                        false
+                    }
+                }
+            }),
+        };
+        // SAFETY: exact live owned source and its fixture-declared connection point IID.
+        let transport = unsafe {
+            oxvba_com::try_advise_dispatch_event_sink(
+                source.as_ptr().cast(),
+                oxvba_com::IID_OXVBA_TEST_DISPATCH_EVENTS_STR,
+                config,
+            )
+        }
+        .unwrap()
+        .unwrap();
+        let mut subscription = Subscription(Some(transport));
+        // SAFETY: the source remains owned; an unavailable context must refuse the handler.
+        unsafe {
+            fire(source.as_ptr().cast(), 3);
+        }
+        assert_eq!(target.errors.get(), 1);
+        let mut context = api::TypedContext {
+            remaining_blocks: 200,
+        };
+        for value in [7, 9] {
+            api::with_native_call(&mut context, || {
+                // SAFETY: source remains owned across this synchronous event emission.
+                unsafe {
+                    fire(source.as_ptr().cast(), value);
+                }
+            });
+        }
+        assert_eq!(target.last.get(), 16);
+        assert_eq!(target.deliveries.get(), 3);
+        assert!(context.remaining_blocks < 200);
+        session.borrow_mut().reload(&project).unwrap();
+        let before = context.remaining_blocks;
+        api::with_native_call(&mut context, || {
+            // SAFETY: source remains owned; stale generation must reject before VBA entry.
+            unsafe {
+                fire(source.as_ptr().cast(), 3);
+            }
+        });
+        assert_eq!(context.remaining_blocks, before);
+        assert_eq!(target.errors.get(), 2);
+        assert_eq!(target.last.get(), 16);
+        let fresh = Rc::new(Target {
+            session: Rc::downgrade(&session),
+            handler: session.borrow().bind_typed("Api", "Receive").unwrap(),
+            deliveries: Cell::new(0),
+            errors: Cell::new(0),
+            last: Cell::new(-1),
+        });
+        TARGET.with(|slot| {
+            slot.replace(Some(fresh.clone()));
+        });
+        api::with_native_call(&mut context, || {
+            // SAFETY: source remains owned; the replacement target has the live generation.
+            unsafe {
+                fire(source.as_ptr().cast(), 5);
+            }
+        });
+        assert_eq!(fresh.last.get(), 5);
+        assert_eq!(fresh.errors.get(), 0);
+        let transport = subscription.0.take().unwrap();
+        // SAFETY: take transfers this guard's sole advise/release authority.
+        unsafe { oxvba_com::unadvise_connection_point(transport) }.unwrap();
+        api::with_native_call(&mut context, || {
+            // SAFETY: live source, with the sink now unadvised; no handler may execute.
+            unsafe {
+                fire(source.as_ptr().cast(), 7);
+            }
+        });
+        assert_eq!(fresh.deliveries.get(), 1);
+        let read = session
+            .borrow()
+            .bind_typed::<(), i32>("Api", "ReadTotal")
+            .unwrap();
+        assert_eq!(session.borrow().call_typed(&read, (), 1000).unwrap(), 5);
+        assert!(matches!(
+            api::with_native_callback_context(|_| ()),
+            Err(api::Error::Reentry)
+        ));
+        drop(scope);
+        assert_eq!(Rc::strong_count(&fresh), 1);
+        drop(subscription);
+        drop(source);
+        assert_eq!(
+            released.get(),
+            0,
+            "connection point/source references balance"
+        );
+    }
+}

@@ -162,10 +162,12 @@ unsafe fn build(
             slots.push(
                 HostSlot::typed(parameters, result, move |context, args| {
                     crate::windows_vtable::clear_thread_error_info();
-                    // SAFETY: retained QI'd receiver and exact checked scalar ABI.
-                    let value = unsafe {
-                        super::native::invoke(owner.pointer.as_ptr(), index, result, lcid, args)
-                    }
+                    let value = calcvba_host_api::with_native_call(context, || {
+                        // SAFETY: retained QI'd receiver and exact checked scalar ABI.
+                        unsafe {
+                            super::native::invoke(owner.pointer.as_ptr(), index, result, lcid, args)
+                        }
+                    })
                     .map_err(|e| e.publish(context))?;
                     owner.bridge.record_typed_vtable_call();
                     Ok(value)
@@ -175,9 +177,11 @@ unsafe fn build(
         } else {
             let plan = plan.clone();
             slots.push(HostSlot::planned(move |context, args| {
-                // SAFETY: retained QI'd receiver and immutable admitted descriptor.
-                unsafe { super::native_values::invoke(&owner, &plan, args) }
-                    .map_err(|e| e.publish(context))
+                calcvba_host_api::with_native_call(context, || {
+                    // SAFETY: retained QI'd receiver and immutable admitted descriptor.
+                    unsafe { super::native_values::invoke(&owner, &plan, args) }
+                })
+                .map_err(|e| e.publish(context))
             }));
         }
     }

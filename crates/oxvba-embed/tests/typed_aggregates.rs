@@ -209,3 +209,94 @@ fn paramarray_private_repeated_object_aliases_and_detached_copy_match_vba() {
         assert_eq!(Rc::strong_count(&payload), 1);
     }
 }
+
+#[test]
+fn cancelling_record_and_object_paramarray_frames_releases_all_carriers() {
+    let source = include_str!(
+        "../../../docs/evidence/programs/ideal-2026-07/windows-x64/WIN-4/typed-aggregates-run11.bas"
+    );
+    for backend in backends() {
+        let session = Provider::default()
+            .load(
+                &api::Project::module("Api", source),
+                backend,
+                api::HOST_API_ABI,
+            )
+            .unwrap();
+        for slices in [0, 1, 5, 19, 37, 73] {
+            let baseline = oxvba_runtime::current_thread_live_handle_counts();
+            let api::Value::Record(record) =
+                run(session.as_ref(), "MakeSample", &[], api::ValueType::Record)
+            else {
+                panic!("record")
+            };
+            let bound = session
+                .bind_values(
+                    "Api",
+                    "AdvanceSample",
+                    &[api::ValueType::Record],
+                    api::ValueType::Record,
+                )
+                .unwrap();
+            let mut call = session
+                .begin_values(
+                    &bound,
+                    &[api::ValueSlot::Record(&record)],
+                    api::InvocationFrame::new(1, None, Rc::new(())),
+                    1000,
+                )
+                .unwrap();
+            drop(record);
+            for _ in 0..slices {
+                if let api::ValueProgress::Returned(value) = call.resume(1).unwrap() {
+                    drop(value);
+                    break;
+                }
+            }
+            drop(call);
+            assert!(
+                baseline
+                    .balance_to(oxvba_runtime::current_thread_live_handle_counts())
+                    .is_zero(),
+                "{backend:?} record slice {slices}"
+            );
+            let payload = Rc::new(());
+            let object = api::HostObject::new_with_payload([11; 16], vec![], payload.clone());
+            let bound = session
+                .bind_values(
+                    "Api",
+                    "BoundsTail",
+                    &[api::ValueType::HostObject; 2],
+                    api::ValueType::String,
+                )
+                .unwrap();
+            let mut call = session
+                .begin_values(
+                    &bound,
+                    &[api::ValueSlot::Object(object.argument()); 2],
+                    api::InvocationFrame::new(1, None, Rc::new(())),
+                    1000,
+                )
+                .unwrap();
+            drop(object);
+            for _ in 0..slices {
+                if let api::ValueProgress::Returned(value) = call.resume(1).unwrap() {
+                    drop(value);
+                    break;
+                }
+            }
+            drop(call);
+            assert_eq!(
+                Rc::strong_count(&payload),
+                1,
+                "{backend:?} packet slice {slices}"
+            );
+            assert!(
+                baseline
+                    .balance_to(oxvba_runtime::current_thread_live_handle_counts())
+                    .is_zero(),
+                "{backend:?} packet slice {slices}"
+            );
+        }
+    }
+}

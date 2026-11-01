@@ -259,3 +259,11 @@ Non-blocking formal issues and follow-up items for later ladder profiles.
   Current status: investigating.
   Reproduction command: cargo test -p oxvba-embed --test typed_aggregates --test typed_classes; cargo test -p oxvba-runtime object_owner; installed Lean 4.29.1 RefCount, TypedContinuation, TypedReentry and ProcedureHandles.
   Suggested next action: refine owner-scoped termination and aggregate alias authorities under CORE-5, then run matching Miri/native checks when the offline dependencies/sysroot are available.
+
+
+- ID: FTODO-TYPED-NATIVE-CALLBACK-SCOPE-20261101
+  Profile: synchronous native callback context and scalar connection-point handlers (bd-59co.2.9.19; CORE-5/CORE-7/WIN-5).
+  Summary: Installed TypedReentry and TypedContinuation abstractions pass. Scope tests cover nested/overlapping/other-thread/unwind/finite-budget behavior; native fixtures cover original typed handlers, invocation metadata, error/writeback ordering, stale generations, Unadvise and zero native references. Concrete thread-local raw-context provenance, higher-ranked borrow refinement and native sink/handler lifetimes remain unproved. Existing offline Miri limitations remain without passing credit.
+  Current status: investigating.
+  Reproduction command: cargo test -p calcvba-host-api native_callback; cargo test -p oxvba-embed --test typed_native_com; installed Lean 4.29.1 TypedReentry and TypedContinuation.
+  Suggested next action: refine the scoped context/borrow state and native event target authority, then run matching offline Miri/native provenance checks under CORE-5/WIN-5.

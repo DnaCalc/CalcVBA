@@ -15,6 +15,7 @@ pub const OTHER_IID: oxvba_com::ComInterfaceIid = oxvba_com::ComInterfaceIid {
     data3: 0x1101,
     data4: [11; 8],
 };
+pub type NativeCallback = unsafe extern "system" fn(*mut c_void, *mut i32) -> i32;
 #[derive(Default)]
 pub struct Observation {
     pub references: Cell<u32>,
@@ -22,6 +23,8 @@ pub struct Observation {
     pub calls: Cell<u32>,
     pub dynamic: Cell<u32>,
     pub refuse_identity: Cell<bool>,
+    pub callback: Cell<Option<NativeCallback>>,
+    pub callback_context: Cell<*mut c_void>,
 }
 #[repr(C)]
 struct Header {
@@ -32,6 +35,7 @@ struct Header {
 struct Table {
     dispatch: RawIDispatchVtbl,
     count: unsafe extern "system" fn(*mut c_void, *mut i32) -> i32,
+    count_by_ref: unsafe extern "system" fn(*mut c_void, *mut i32, *mut i32) -> i32,
 }
 struct Storage {
     headers: [Header; 3],
@@ -127,9 +131,20 @@ unsafe extern "system" fn count(this: *mut c_void, out: *mut i32) -> i32 {
     unsafe {
         let observed = &(*owner(this)).observed;
         observed.calls.set(observed.calls.get() + 1);
+        if let Some(callback) = observed.callback.get() {
+            return callback(observed.callback_context.get(), out);
+        }
         *out = 17;
     }
     0
+}
+unsafe extern "system" fn count_by_ref(this: *mut c_void, amount: *mut i32, out: *mut i32) -> i32 {
+    // SAFETY: the declared native signature supplies a retained receiver and
+    // distinct writable LONG argument/result cells until the callback returns.
+    unsafe {
+        *amount += 10;
+        count(this, out)
+    }
 }
 unsafe fn dynamic(this: *mut c_void) -> i32 {
     // SAFETY: inherited fixture receiver contract; record forbidden transport.
@@ -185,4 +200,5 @@ static TABLE: Table = Table {
         invoke,
     },
     count,
+    count_by_ref,
 };

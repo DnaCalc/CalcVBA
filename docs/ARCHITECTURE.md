@@ -324,3 +324,12 @@ termination queues. Static source member targets are retained during preparation
 unknown dynamic receivers stay refused. Both backends and owned Excel agree on
 the [bounded cases](evidence/programs/ideal-2026-07/core/CORE-7/typed-aggregates-classes-run11.md).
 Broader classes, native records/callbacks and source-free publication remain open.
+
+
+Prepared native COM calls now lend the active typed context to synchronous host
+callbacks. A same-thread scope permits one callback borrow and restores nested
+state on return/unwinding. Bound handlers execute the selected original VM3/JIT
+functions, share canonical globals/budget and inherit invocation metadata.
+Real native function callbacks and scalar connection-point/IDispatch sinks have
+[development evidence](evidence/programs/ideal-2026-07/core/CORE-7/typed-native-callbacks-run11.md).
+General WithEvents, incoming ByRef cancellation and cross-apartment policy remain open.

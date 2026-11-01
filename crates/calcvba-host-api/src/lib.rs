@@ -2,6 +2,8 @@
 //! composition; this crate links neither compiler, interpreter nor JIT.
 mod project_graph;
 pub use project_graph::*;
+mod native_callback;
+pub use native_callback::{with_native_call, with_native_callback_context};
 mod invocation;
 pub mod object;
 pub use invocation::*;

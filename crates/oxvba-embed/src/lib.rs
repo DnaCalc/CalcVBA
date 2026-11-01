@@ -125,11 +125,6 @@ impl Module {
         program.entry = None;
         oxvba_oxir::verify_program(&program)
             .map_err(|e| Error::Compile(format!("invalid program: {e:?}")))?;
-        if !program.classes.is_empty() || !program.record_layouts.is_empty() {
-            return Err(Error::UnsupportedSignature(
-                "project classes/UDTs still require the full project-session owner".into(),
-            ));
-        }
         if program.funcs.iter().any(|f| {
             f.blocks
                 .iter()
@@ -141,6 +136,12 @@ impl Module {
         }
         let procedures = catalogue
             .into_iter()
+            .filter(|p| {
+                manifest.modules.iter().any(|m| {
+                    m.module_name.eq_ignore_ascii_case(&p.module)
+                        && m.module_kind == sym::ModuleKind::Procedural
+                })
+            })
             .map(|p| {
                 let func = &program.funcs[p.index];
                 Procedure {
@@ -261,6 +262,7 @@ pub struct Session<'a> {
     typed_depth: Cell<u32>,
     typed_context: Cell<*mut calcvba_host_api::TypedContext>,
     suspended: Cell<u32>,
+    object_owner: RefCell<oxvba_runtime::object_owner::RuntimeObjectOwner>,
 }
 struct TypedActivation<'a> {
     _executing: Ref<'a, ()>,
@@ -291,6 +293,9 @@ impl<'a> Session<'a> {
         host: &'a dyn HostServices,
         code: PreparedCode<'a>,
     ) -> Result<Self, Error> {
+        let object_owner = oxvba_runtime::object_owner::RuntimeObjectOwner::fresh()
+            .ok_or_else(|| Error::Backend("object owner identity exhausted".into()))?;
+        let _object_scope = object_owner.enter();
         let executable = match code {
             PreparedCode::Interpreter(_) => Executable::Interpreter(RefCell::new(
                 oxvba_vm3::Vm3::link_with_budget(
@@ -321,10 +326,14 @@ impl<'a> Session<'a> {
             .funcs
             .iter()
             .map(|func| {
-                oxvba_vm3::typed::TypedInterpreter::bind_with_interfaces(
-                    func,
-                    &module.program.com_interfaces,
-                )
+                if module.programs().iter().any(|p| !p.classes.is_empty()) {
+                    Err("source class sessions require owning activations".into())
+                } else {
+                    oxvba_vm3::typed::TypedInterpreter::bind_with_interfaces(
+                        func,
+                        &module.program.com_interfaces,
+                    )
+                }
             })
             .collect();
         let programs = module.programs();
@@ -343,6 +352,7 @@ impl<'a> Session<'a> {
             })
             .collect();
         Ok(Self {
+            object_owner: RefCell::new(object_owner),
             module,
             programs,
             host,
@@ -366,6 +376,9 @@ impl<'a> Session<'a> {
             .executing
             .try_borrow_mut()
             .map_err(|_| Error::Reentry)?;
+        let next_owner = oxvba_runtime::object_owner::RuntimeObjectOwner::fresh()
+            .ok_or_else(|| Error::Backend("object owner identity exhausted".into()))?;
+        let _object_scope = next_owner.enter();
         match &self.executable {
             Executable::Interpreter(state) => {
                 let next = oxvba_vm3::Vm3::link_with_budget(
@@ -392,6 +405,7 @@ impl<'a> Session<'a> {
                 *state.try_borrow_mut().map_err(|_| Error::Reentry)? = next;
             }
         }
+        *self.object_owner.borrow_mut() = next_owner;
         Ok(())
     }
     pub fn backend(&self) -> Backend {
@@ -666,6 +680,9 @@ impl<'a> Session<'a> {
             .map_err(|e| Error::UnsupportedSignature(e.clone()))?
             .layout();
         for (index, argument) in arguments.iter().enumerate() {
+            if layout.param_array.is_some_and(|tail| index >= tail) {
+                continue;
+            }
             if let Some(iid) = argument.interface()
                 && layout.parameter_iids.get(index) != Some(&Some(iid))
             {
@@ -692,6 +709,15 @@ impl<'a> Session<'a> {
             }
         }
         let arguments: Vec<_> = arguments.iter().map(|ty| ty.carrier()).collect();
+        if let Some(tail) = layout.param_array {
+            if arguments.len() < tail
+                || arguments[..tail] != layout.parameters[..tail]
+                || layout.result != result.carrier()
+            {
+                return Err(Error::ArgumentMismatch);
+            }
+            return Ok(());
+        }
         if arguments.len() > layout.parameters.len()
             || layout.parameters[..arguments.len()] != arguments
             || layout.optional_parameters[arguments.len()..]
@@ -736,6 +762,7 @@ impl<'a> Session<'a> {
         bound: &BoundProcedure,
         args: &[calcvba_host_api::ValueSlot<'_>],
     ) -> Result<typed_stack::TypedStack, Error> {
+        let _object_scope = self.object_owner.borrow().enter();
         // Reject the complete reachable typed call graph before any body effect.
         let root = self.module.reference_programs.len();
         let mut pending = vec![(root, bound.id)];
@@ -768,6 +795,37 @@ impl<'a> Session<'a> {
         let typed = self.owning_typed.last().expect("root entries")[bound.id.0]
             .as_ref()
             .map_err(|e| Error::UnsupportedSignature(e.clone()))?;
+        let tail_owner = if let Some(tail) = typed.layout().param_array {
+            if args.len() < tail {
+                return Err(Error::ArgumentMismatch);
+            }
+            let values = args[tail..]
+                .iter()
+                .map(|arg| {
+                    // SAFETY: the borrowed ValueSlot retains its exact input carrier.
+                    unsafe { calcvba_host_api::value::retain_bits(arg.ty(), arg.bits()) }
+                        .map(oxvba_rt_abi::host_entry::value::to_variant)
+                        .map_err(|_| Error::ArgumentMismatch)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Some(calcvba_host_api::Value::Array(Some(
+                oxvba_runtime::safe_array::SafeArray::from_variants(values),
+            )))
+        } else {
+            None
+        };
+        let packed;
+        let args = if let Some(owner) = &tail_owner {
+            let tail = typed.layout().param_array.expect("prepared tail");
+            packed = args[..tail]
+                .iter()
+                .copied()
+                .chain(std::iter::once(owner.borrow_slot().expect("array owner")))
+                .collect::<Vec<_>>();
+            &packed[..]
+        } else {
+            args
+        };
         if args.len() > typed.layout().parameters.len()
             || typed.layout().optional_parameters[args.len()..]
                 .iter()
@@ -808,13 +866,13 @@ impl<'a> Session<'a> {
                 .iter()
                 .map(|v| v.borrow_slot().expect("admitted optional carrier")),
         );
-        let (stores, error) = match &self.executable {
+        let (stores, error, classes) = match &self.executable {
             Executable::Interpreter(state) => {
                 let mut state = state.try_borrow_mut().map_err(|_| Error::Reentry)?;
                 let stores = (0..=root)
                     .map(|unit| state.typed_globals_raw_at(unit))
                     .collect::<Vec<_>>();
-                (stores, state.typed_error_raw())
+                (stores, state.typed_error_raw(), state.typed_class_context())
             }
             #[cfg(feature = "jit")]
             Executable::Jit(_, state) => {
@@ -822,7 +880,7 @@ impl<'a> Session<'a> {
                 let stores = (0..=root)
                     .map(|unit| state.typed_globals_raw_at(unit))
                     .collect::<Vec<_>>();
-                (stores, state.typed_error_raw())
+                (stores, state.typed_error_raw(), state.typed_class_context())
             }
         };
         // SAFETY: the owning SessionCell lease retains this canonical store;
@@ -839,7 +897,9 @@ impl<'a> Session<'a> {
         .map_err(|number| self.typed_error(number))?;
         // SAFETY: the same SessionCell/execution guard leases Err and globals;
         // this stack is always dropped before the retaining session cell.
-        Ok(unsafe { typed_stack::TypedStack::new(activation, root, bound.id, stores, error) })
+        Ok(unsafe {
+            typed_stack::TypedStack::new(activation, root, bound.id, stores, error, classes)
+        })
     }
     fn resume_frame(
         &self,
@@ -860,6 +920,7 @@ impl<'a> Session<'a> {
         context: &mut TypedContext,
         operations: u64,
     ) -> Result<i32, Error> {
+        let _object_scope = self.object_owner.borrow().enter();
         let result = frame.resume(
             &self.programs,
             &self.owning_typed,
@@ -887,6 +948,7 @@ impl<'a> Session<'a> {
         args: &[Variant],
         max_steps: u64,
     ) -> Result<Variant, Error> {
+        let _object_scope = self.object_owner.borrow().enter();
         self.validate(handle)?;
         if self.suspended.get() != 0 {
             return Err(Error::Reentry);
@@ -897,10 +959,16 @@ impl<'a> Session<'a> {
             .map_err(|_| Error::Reentry)?;
         let procedure = &self.module.procedures[handle.metadata];
         if args.len() != procedure.parameters.len()
-            || args
-                .iter()
-                .zip(&procedure.parameters)
-                .any(|(value, p)| !prepared_argument_matches(value, &p.ty))
+            || args.iter().zip(&procedure.parameters).any(|(value, p)| {
+                !prepared_argument_matches(value, &p.ty)
+                    || value.as_object_ref().is_some_and(|object| {
+                        object.is_project_instance()
+                            && object.object_owner_id()
+                                != Some(
+                                    oxvba_runtime::object_owner::RuntimeObjectOwner::current().id(),
+                                )
+                    })
+            })
         {
             return Err(Error::ArgumentMismatch);
         }

@@ -491,6 +491,9 @@ impl JitSession<'_> {
     pub fn typed_error_raw(&mut self) -> *mut oxvba_rt_abi::ErrEngine {
         &raw mut *self.exec.err_engine
     }
+    pub fn typed_class_context(&mut self) -> Option<oxvba_rt_abi::TypedClassContext> {
+        self.exec.typed_class_context()
+    }
     /// Seat an unhandled typed host-entry fault in the same Err used by thunks.
     pub fn record_typed_entry_error(&mut self, number: i32) {
         self.exec.err_engine.raise(

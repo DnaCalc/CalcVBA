@@ -1550,7 +1550,9 @@ impl SafeArray {
         self.0.as_ptr().cast()
     }
 
-    pub(crate) fn into_raw_safearray_ptr(self) -> *mut core::ffi::c_void {
+    /// Transfer this canonical descriptor to an owner that will eventually use
+    /// from_raw_safearray_owned to release it on the owning thread.
+    pub fn into_raw_safearray_ptr(self) -> *mut core::ffi::c_void {
         let owner = core::mem::ManuallyDrop::new(self);
         owner.0.as_ptr().cast()
     }

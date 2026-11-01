@@ -252,14 +252,14 @@ pub struct RuntimeObjectIdentity {
     /// IUnknown pointer, this is the internal lookup handle 1:1 with it.
     pub compat_identity: i32,
     /// Class/route key: which project-dynamic route (class dispatch table) this instance
-    /// belongs to. Distinct from `compat_identity` once instances are per-`New` allocations —
+    /// belongs to. Distinct from `compat_identity` once instances are per-`New` allocations â€”
     /// many instances share one `route_key` but each has its own `compat_identity`.
     pub route_key: i32,
     /// The bundle (".NET assembly") that owns this instance's class. `(bundle_id,
     /// route_key)` together select the class dispatch table for a multi-bundle VM;
     /// `0` for single-bundle runs. Identity (`Is`) remains the IUnknown pointer.
     pub bundle_id: i32,
-    /// True when this instance's class has a `Class_Terminate` — so the last `Release`
+    /// True when this instance's class has a `Class_Terminate` â€” so the last `Release`
     /// (`compat_release` at refcount 0) enqueues it for the VM to run `Class_Terminate`.
     pub terminates_on_release: bool,
     pub class_descriptor: &'static RuntimeClassDescriptor,
@@ -733,6 +733,8 @@ struct CompatObjectBase {
     unknown: RawRuntimeIUnknown,
     ref_count: AtomicU32,
     identity: RuntimeObjectIdentity,
+    object_owner: crate::object_owner::WeakObjectOwner,
+    project_instance: bool,
     class_descriptor: &'static RuntimeClassDescriptor,
     fields: RefCell<BTreeMap<i32, Variant>>,
     /// Built-in native-object state carried on the box itself (currently a `VBA.Collection`'s
@@ -797,10 +799,10 @@ unsafe extern "C" fn compat_query_interface(
 /// original box and its fields can be released afterwards.
 #[derive(Default)]
 struct TerminationQueue {
-    /// `(instance_id, bundle_id, route_key)` — the bundle + class needed to find
+    /// `(instance_id, bundle_id, route_key)` â€” the bundle + class needed to find
     /// the parked instance's `Class_Terminate` at drain time.
-    pending: Vec<(i32, i32, i32)>,
-    parked: BTreeMap<i32, *mut CompatObjectBase>,
+    pending: Vec<(u64, i32, i32, i32)>,
+    parked: BTreeMap<(u64, i32), *mut CompatObjectBase>,
 }
 
 thread_local! {
@@ -810,13 +812,27 @@ thread_local! {
 /// True when at least one project instance has reached refcount 0 and awaits `Class_Terminate`.
 /// Cheap gate the interpreter checks at statement boundaries.
 pub fn has_pending_terminations() -> bool {
-    TERMINATIONS.with(|q| !q.borrow().pending.is_empty())
+    let owner = crate::object_owner::RuntimeObjectOwner::current().id();
+    TERMINATIONS.with(|q| q.borrow().pending.iter().any(|entry| entry.0 == owner))
 }
 
 /// Drains and returns the queued `(instance_id, bundle_id, route_key)` terminations. The parked
 /// object boxes remain owned by the termination queue until `finish_pending_termination` is called.
 pub fn take_pending_terminations() -> Vec<(i32, i32, i32)> {
-    TERMINATIONS.with(|q| std::mem::take(&mut q.borrow_mut().pending))
+    let owner = crate::object_owner::RuntimeObjectOwner::current().id();
+    TERMINATIONS.with(|q| {
+        let mut q = q.borrow_mut();
+        let mut selected = Vec::new();
+        q.pending.retain(|&(id, instance, bundle, route)| {
+            if id == owner {
+                selected.push((instance, bundle, route));
+                false
+            } else {
+                true
+            }
+        });
+        selected
+    })
 }
 
 /// Returns a retained reference to the original parked object whose `Class_Terminate` is about to
@@ -824,10 +840,11 @@ pub fn take_pending_terminations() -> Vec<(i32, i32, i32)> {
 pub fn retained_parked_termination_object(instance_id: i32) -> Option<ObjectRef> {
     TERMINATIONS.with(|q| {
         let q = q.borrow();
-        let owner = *q.parked.get(&instance_id)?;
+        let id = crate::object_owner::RuntimeObjectOwner::current().id();
+        let owner = *q.parked.get(&(id, instance_id))?;
         // SAFETY: `owner` came from the `parked` map, which owns the box that `compat_release`
-        // parked instead of freeing — it stays allocated until `finish_pending_termination` or
-        // `reset_pending_terminations` removes it — so this is a live `CompatObjectBase`.
+        // parked instead of freeing â€” it stays allocated until `finish_pending_termination` or
+        // `reset_pending_terminations` removes it â€” so this is a live `CompatObjectBase`.
         // `compat_add_ref` retains it for the returned `ObjectRef`. `CompatObjectBase` is
         // `repr(C)` with `unknown` first, so casting the allocation pointer yields that same
         // address while retaining provenance for the complete box (needed by AddRef/Release).
@@ -846,7 +863,8 @@ pub fn retained_parked_termination_object(instance_id: i32) -> Option<ObjectRef>
 /// stay intact. Otherwise the field store is dropped before the box is freed; releasing those
 /// field Variants may enqueue cascaded child terminations.
 pub fn finish_pending_termination(instance_id: i32) -> bool {
-    let owner = TERMINATIONS.with(|q| q.borrow_mut().parked.remove(&instance_id));
+    let id = crate::object_owner::RuntimeObjectOwner::current().id();
+    let owner = TERMINATIONS.with(|q| q.borrow_mut().parked.remove(&(id, instance_id)));
     let Some(owner) = owner else {
         return false;
     };
@@ -872,14 +890,31 @@ pub fn finish_pending_termination(instance_id: i32) -> bool {
 
 /// Resets all pending termination state (used when a VM run starts/ends).
 pub fn reset_pending_terminations() {
-    TERMINATIONS.with(|q| {
-        let mut q = q.borrow_mut();
-        q.pending.clear();
-        for (_, owner) in std::mem::take(&mut q.parked) {
-            // SAFETY: `std::mem::take` moved each parked entry out of the queue, transferring its
-            // sole ownership of the box `compat_release` parked (pointer from `Box::into_raw` in
-            // `from_compat_object`). Resurrected boxes (refcount > 0) are un-parked and left to
-            // their outstanding references; the rest are unreachable and freed exactly once here.
+    let id = crate::object_owner::RuntimeObjectOwner::current().id();
+    discard_pending_owner(id);
+}
+pub(crate) fn discard_pending_owner(id: u64) {
+    loop {
+        let owners = TERMINATIONS.with(|q| {
+            let mut q = q.borrow_mut();
+            q.pending.retain(|entry| entry.0 != id);
+            let keys = q
+                .parked
+                .keys()
+                .filter(|key| key.0 == id)
+                .copied()
+                .collect::<Vec<_>>();
+            keys.into_iter()
+                .filter_map(|key| q.parked.remove(&key))
+                .collect::<Vec<_>>()
+        });
+        if owners.is_empty() {
+            break;
+        }
+        for owner in owners {
+            // SAFETY: removing the scoped parked entries transfers sole queue
+            // authority. Release fields outside the queue borrow: child drops
+            // may enqueue more finalizers for this same owner.
             unsafe {
                 (*owner).running_termination.set(false);
                 (*owner).terminated.set(true);
@@ -893,7 +928,7 @@ pub fn reset_pending_terminations() {
                 drop(Box::from_raw(owner));
             }
         }
-    });
+    }
 }
 
 unsafe extern "C" fn compat_add_ref(this: *mut c_void) -> u32 {
@@ -914,14 +949,14 @@ unsafe extern "C" fn compat_release(this: *mut c_void) -> u32 {
         // For a class with a `Class_Terminate`, the last release schedules per-instance
         // teardown for the VM to run at the next statement boundary (VBA timing). The box is
         // parked, not freed, so teardown runs against the original field-owning object.
-        // SAFETY: even at refcount 0 the box is still allocated — this call alone decides below
-        // whether to park or free it — so `owner` stays valid throughout this function.
+        // SAFETY: even at refcount 0 the box is still allocated â€” this call alone decides below
+        // whether to park or free it â€” so `owner` stays valid throughout this function.
         let identity = unsafe { (*owner).identity };
         let should_park = identity.terminates_on_release
             // SAFETY: same still-allocated box as above; the `Cell` accesses are single-threaded
             // (`ObjectRef` is neither `Send` nor `Sync`, so these vtable fns only run on the
             // owning VM thread, matching the thread-local termination queue).
-            && unsafe { !(*owner).terminated.get() && !(*owner).running_termination.get() };
+            && unsafe { !(*owner).terminated.get() && !(*owner).running_termination.get() && (*owner).object_owner.is_alive() };
         if should_park {
             TERMINATIONS.with(|q| {
                 let mut q = q.borrow_mut();
@@ -929,12 +964,15 @@ unsafe extern "C" fn compat_release(this: *mut c_void) -> u32 {
                 // function) and the `Cell` flip is single-threaded as noted above; setting the
                 // flag before inserting hands the queue ownership of the box exactly once.
                 if !unsafe { (*owner).parked_for_termination.replace(true) } {
+                    // SAFETY: this still-live box retains its immutable owner ID.
+                    let id = unsafe { (*owner).object_owner.id };
                     q.pending.push((
+                        id,
                         identity.compat_identity,
                         identity.bundle_id,
                         identity.route_key,
                     ));
-                    q.parked.insert(identity.compat_identity, owner);
+                    q.parked.insert((id, identity.compat_identity), owner);
                 }
             });
             return remaining;
@@ -1001,7 +1039,14 @@ impl ObjectRef {
         class_descriptor: &'static RuntimeClassDescriptor,
     ) -> Self {
         // Legacy/template path: identity key and route key coincide; no terminate hook.
-        Self::from_compat_object(compat_identity, compat_identity, 0, false, class_descriptor)
+        Self::from_compat_object(
+            compat_identity,
+            compat_identity,
+            0,
+            false,
+            class_descriptor,
+            false,
+        )
     }
 
     /// Allocates a fresh project-class instance: a distinct `CompatObjectBase` (a distinct
@@ -1022,6 +1067,7 @@ impl ObjectRef {
             bundle_id,
             has_terminate,
             class_descriptor,
+            true,
         )
     }
 
@@ -1031,6 +1077,7 @@ impl ObjectRef {
         bundle_id: i32,
         terminates_on_release: bool,
         class_descriptor: &'static RuntimeClassDescriptor,
+        project_instance: bool,
     ) -> Self {
         let stable_object_id = compat_identity as u32 as u64;
         let boxed = Box::new(CompatObjectBase {
@@ -1038,6 +1085,8 @@ impl ObjectRef {
                 vtbl: &COMPAT_OBJECT_VTBL,
             },
             ref_count: AtomicU32::new(1),
+            object_owner: crate::object_owner::RuntimeObjectOwner::current().downgrade(),
+            project_instance,
             identity: RuntimeObjectIdentity {
                 stable_object_id,
                 compat_identity,
@@ -1077,7 +1126,7 @@ impl ObjectRef {
         // (`retained_runtime_object` in oxvba-com), and the unsafe raw constructors only
         // round-trip pointers `raw_iunknown()` produced from those boxes (Variant payloads,
         // SAFEARRAY object slots). The two entry points that previously reached here without an
-        // `is_compat_object` check — the `Debug`/`Display` impls below — now guard on it, so the
+        // `is_compat_object` check â€” the `Debug`/`Display` impls below â€” now guard on it, so the
         // remaining callers (`raw`/`route_key`/`is_project_instance`/HAL/vm2 dispatch) all sit on
         // compat objects. This `ObjectRef`'s retained reference keeps the box alive for the read.
         unsafe { (*owner).identity.compat_identity }
@@ -1097,7 +1146,7 @@ impl ObjectRef {
         unsafe { (*owner).identity.route_key }
     }
 
-    /// The bundle (".NET assembly") that owns this instance's class — `(bundle_id,
+    /// The bundle (".NET assembly") that owns this instance's class â€” `(bundle_id,
     /// route_key)` selects the class dispatch table in a multi-bundle VM. `0` for
     /// single-bundle runs.
     pub fn bundle_id(&self) -> i32 {
@@ -1108,14 +1157,31 @@ impl ObjectRef {
     }
 
     pub fn is_project_instance(&self) -> bool {
-        self.is_compat_object() && self.compat_identity() != self.route_key()
+        if !self.is_compat_object() {
+            return false;
+        }
+        // SAFETY: private vtable proof establishes the complete retained allocation.
+        unsafe { (*compat_owner_from_unknown(self.0.as_ptr())).project_instance }
     }
 
     pub fn raw_iunknown(&self) -> *mut RawRuntimeIUnknown {
         self.0.as_ptr()
     }
+    pub fn object_owner_id(&self) -> Option<u64> {
+        if !self.is_compat_object() {
+            return None;
+        }
+        // SAFETY: private-vtable proof retains this complete compat allocation.
+        Some(unsafe {
+            (*compat_owner_from_unknown(self.0.as_ptr()))
+                .object_owner
+                .id
+        })
+    }
 
-    pub(crate) fn into_raw_iunknown(self) -> *mut RawRuntimeIUnknown {
+    /// Transfer this owned runtime IUnknown reference to a same-thread carrier.
+    /// The consumer must eventually adopt it with from_raw_iunknown_owned.
+    pub fn into_raw_iunknown(self) -> *mut RawRuntimeIUnknown {
         let owner = core::mem::ManuallyDrop::new(self);
         owner.0.as_ptr()
     }
@@ -1226,9 +1292,9 @@ impl ObjectRef {
     }
 
     /// Mutably borrow instance field `token` IN PLACE (no clone / store-back) and run
-    /// `f` against it — the write counterpart to [`Self::with_project_field`]. `None`
+    /// `f` against it â€” the write counterpart to [`Self::with_project_field`]. `None`
     /// if this is not a project instance, or if the field is absent (it must already
-    /// hold the array — class init dimensions array fields before they are indexed).
+    /// hold the array â€” class init dimensions array fields before they are indexed).
     pub fn with_project_field_mut<R>(
         &self,
         token: i32,
@@ -1238,7 +1304,7 @@ impl ObjectRef {
             return None;
         }
         let owner = compat_owner_from_unknown(self.0.as_ptr());
-        // SAFETY: as in `with_project_field` — `owner` is a live `CompatObjectBase` held
+        // SAFETY: as in `with_project_field` â€” `owner` is a live `CompatObjectBase` held
         // alive by this `ObjectRef`; the exclusive `RefCell` borrow is single-threaded.
         unsafe { (*owner).fields.borrow_mut().get_mut(&token).map(f) }
     }
@@ -1248,7 +1314,7 @@ impl ObjectRef {
     /// `ObjectRef` is not one of our compat boxes (a foreign COM object has no native state).
     ///
     /// The state rides the object box's `native_state` slot, so `Set c2 = c1` (which clones the
-    /// `ObjectRef` to the same box) shares one collection — VBA reference semantics — and box
+    /// `ObjectRef` to the same box) shares one collection â€” VBA reference semantics â€” and box
     /// teardown reclaims it, so there is no VM-side store and no leak. The shared keyed-method
     /// logic (`oxvba_eval::collection::dispatch_collection`) runs inside `f`.
     pub fn with_native_collection<R>(
@@ -1270,7 +1336,7 @@ impl ObjectRef {
     }
 
     /// A snapshot of this instance's native `Collection` values in insertion order, or `None`
-    /// if it has no native collection — a foreign COM object, or a compat object that never had
+    /// if it has no native collection â€” a foreign COM object, or a compat object that never had
     /// one (a project instance, or a `Collection` with no items added yet). Unlike
     /// [`Self::with_native_collection`] this does NOT lazily create a collection, so it is safe
     /// to probe any object (e.g. `For Each`) without planting empty state on project instances.
@@ -1614,8 +1680,8 @@ mod tests {
         use crate::Variant;
         // W1-a: a built-in Collection's CollectionData rides the object box's `native_state`
         // slot, reached via `with_native_collection`. Cloning the ObjectRef (`Set c2 = c1`)
-        // points at the SAME box, so both names share one CollectionData — VBA reference
-        // semantics — and box teardown reclaims it (no VM-side store, no leak).
+        // points at the SAME box, so both names share one CollectionData â€” VBA reference
+        // semantics â€” and box teardown reclaims it (no VM-side store, no leak).
         static TEST_CLASS: RuntimeClassDescriptor = RuntimeClassDescriptor {
             name: "VBA.Collection",
             project_identity: None,
@@ -1646,7 +1712,7 @@ mod tests {
         assert_eq!(count, 2, "both ObjectRef clones share one CollectionData");
         assert_eq!(first, Some(10));
         drop(c2);
-        drop(c1); // refcount-0 frees the box and, with it, native_state — no leak
+        drop(c1); // refcount-0 frees the box and, with it, native_state â€” no leak
     }
 
     #[test]

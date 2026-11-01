@@ -155,7 +155,9 @@ impl<'p> TypedInterpreter<'p> {
                 context.step()?;
                 frame.set_pc(frame.pc() + 1);
             } else if let Some(inst) = block.instrs.get(offset - 1) {
-                if oxvba_rt_abi::host_entry::stack_instruction(inst) {
+                if oxvba_rt_abi::host_entry::stack_instruction(inst)
+                    || self.layout.owns_values() && matches!(inst, OxInst::StmtBoundary { .. })
+                {
                     return Ok(CONTROL);
                 }
                 self.instruction(frame, context, inst)?;
@@ -274,8 +276,7 @@ impl<'p> TypedInterpreter<'p> {
                     )
                 }?;
                 if let Some(iid) = plan.result_iid
-                    && let calcvba_host_api::Value::Object(Some(object)) = &value
-                    && object.header().iid != iid
+                    && !value.has_interface(iid)
                 {
                     return Err(13);
                 }

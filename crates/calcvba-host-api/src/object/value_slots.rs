@@ -50,8 +50,7 @@ impl TypedSlot {
             // SAFETY: admitted caller owns each exact carrier through this entry.
             owners[i] = unsafe { crate::value::retain_bits(*ty, bits) }?;
             if let Some(iid) = ty.interface()
-                && let Value::Object(Some(object)) = &owners[i]
-                && object.header().iid != iid
+                && !owners[i].has_interface(iid)
             {
                 return Err(13);
             }
@@ -77,8 +76,7 @@ impl TypedSlot {
             return Err(6);
         }
         if let Some(iid) = self.result.interface()
-            && let Value::Object(Some(object)) = &value
-            && object.header().iid != iid
+            && !value.has_interface(iid)
         {
             return Err(13);
         }
@@ -171,6 +169,16 @@ pub unsafe fn invoke_value_slot(
     args: &[ScalarBits],
     context: &mut TypedContext,
 ) -> Result<Value, i32> {
+    // SAFETY: every retained object carrier supplies the canonical IUnknown
+    // prefix. Source objects must never be read as the larger factory header.
+    let owner =
+        unsafe { crate::value::retain_bits(ValueType::HostObject, ScalarBits::object(header)) }?;
+    let Value::Object(owner) = owner else {
+        return Err(13);
+    };
+    if owner.is_none() {
+        return Err(91);
+    }
     if args.len() != parameters.len() {
         return Err(13);
     }

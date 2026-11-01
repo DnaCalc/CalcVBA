@@ -140,8 +140,7 @@ pub unsafe fn invoke_planned_member(
         return Err(6);
     }
     if let Some(iid) = result.interface()
-        && let Value::Object(Some(object)) = &value
-        && object.header().iid != iid
+        && !value.has_interface(iid)
     {
         return Err(13);
     }

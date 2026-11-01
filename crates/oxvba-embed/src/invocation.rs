@@ -17,6 +17,13 @@ impl OwnedSession {
                 .map_err(|e| Error::UnsupportedSignature(e.clone()))?
                 .layout()
                 .result;
+            if result == api::ValueType::HostObject
+                && session.programs.iter().any(|p| !p.classes.is_empty())
+            {
+                return Err(Error::UnsupportedSignature(
+                    "source-class object results require begin_values".into(),
+                ));
+            }
             if !matches!(
                 result.legacy(),
                 Some(ScalarType::Long | ScalarType::Double | ScalarType::HostObject)

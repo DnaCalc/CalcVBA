@@ -234,6 +234,45 @@ pub struct LoadedProgram<'h> {
     pub predeclared_singletons: HashMap<usize, Variant>,
     pub event_routes: HashMap<(i32, i32), usize>,
 }
+/// Raw class-allocation fields share the same same-thread session lease as the
+/// typed global/Err pointers. No complete ExecState borrow spans a callback.
+pub struct TypedClassContext {
+    next: *mut i32,
+    pub draining: *mut bool,
+    pub owner: oxvba_runtime::object_owner::RuntimeObjectOwner,
+    descriptors: Vec<Vec<&'static RuntimeClassDescriptor>>,
+}
+impl TypedClassContext {
+    /// # Safety
+    /// The originating execution state stays leased and uniquely executes on
+    /// this thread; reset/disposal cannot overlap this brief allocation.
+    pub unsafe fn allocate(
+        &self,
+        unit: usize,
+        class: usize,
+        terminate: bool,
+    ) -> Result<oxvba_runtime::ObjectRef, i32> {
+        let descriptor = *self
+            .descriptors
+            .get(unit)
+            .and_then(|p| p.get(class))
+            .ok_or(5)?;
+        // SAFETY: caller retains the exact canonical identity counter field.
+        let id = unsafe { *self.next };
+        let next = id.checked_add(1).ok_or(7)?;
+        // SAFETY: publish the next identity without retaining a state borrow.
+        unsafe {
+            *self.next = next;
+        }
+        Ok(oxvba_runtime::ObjectRef::from_project_instance(
+            id,
+            class as i32,
+            unit as i32,
+            terminate,
+            descriptor,
+        ))
+    }
+}
 
 pub fn runtime_class_descriptors_for_program(
     program: &OxProgram,
@@ -807,6 +846,12 @@ impl Drop for DrainGuard {
 // SAFETY CONTRACT: `state` is the live same-thread execution-state handle for the
 // complete synchronous drain. No typed borrow of it is retained across callbacks.
 unsafe fn maybe_drain_with_bridge(state: *mut RawExecState) -> Result<(), Fault> {
+    // SAFETY: take only an owned token; no state borrow spans finalizer callbacks.
+    let owner = unsafe { state_from_raw(state) }
+        .ok_or_else(|| Fault::new(5, "runtime ABI state pointer is null"))?
+        .object_owner
+        .clone();
+    let _owner_scope = owner.enter();
     let bridge = {
         // SAFETY: upheld by this private raw-state orchestrator's contract.
         let Some(exec) = (unsafe { state_from_raw(state) }) else {
@@ -884,11 +929,28 @@ pub struct ExecState<'h> {
     pub next_instance_id: i32,
     pub draining: bool,
     _not_send: PhantomData<Rc<()>>,
+    pub object_owner: oxvba_runtime::object_owner::RuntimeObjectOwner,
 }
 
 impl<'h> ExecState<'h> {
+    pub fn typed_class_context(&mut self) -> Option<TypedClassContext> {
+        if self.programs.iter().all(|p| p.class_descriptors.is_empty()) {
+            return None;
+        }
+        Some(TypedClassContext {
+            next: &raw mut self.next_instance_id,
+            draining: &raw mut self.draining,
+            owner: self.object_owner.clone(),
+            descriptors: self
+                .programs
+                .iter()
+                .map(|p| p.class_descriptors.clone())
+                .collect(),
+        })
+    }
     pub fn new(host: &'h dyn HostServices) -> Self {
         Self {
+            object_owner: oxvba_runtime::object_owner::RuntimeObjectOwner::current(),
             remaining_steps: None,
             programs: Vec::new(),
             default_error_source: "VBAProject".to_string(),

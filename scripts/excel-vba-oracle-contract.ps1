@@ -509,7 +509,7 @@ function Get-ExcelOracleCaseEvidenceContract {
 
 function Get-ExcelOracleSelectedCaseDescriptorPayload {
     param([Parameter(Mandatory = $true)]$Descriptor)
-    return [ordered]@{
+    $payload = [ordered]@{
         schema = "oxvba.excel-vba-oracle-selected-case.v1"
         id = [string]$Descriptor.id
         purpose = [string]$Descriptor.purpose
@@ -528,6 +528,8 @@ function Get-ExcelOracleSelectedCaseDescriptorPayload {
         evidence_contract = [string]$Descriptor.evidence_contract
         expected_runtime_err = $Descriptor.expected_runtime_err
     }
+    if ($Descriptor.PSObject.Properties.Name -contains 'additional_modules') { $payload.additional_modules = @($Descriptor.additional_modules) }
+    return $payload
 }
 
 function New-ExcelOracleSelectedCaseDescriptors {
@@ -552,6 +554,11 @@ function New-ExcelOracleSelectedCaseDescriptors {
             evidence_contract = Get-ExcelOracleCaseEvidenceContract -CaseId ([string]$case.id)
             expected_runtime_err = if ([string]$case.id -eq "runtime-full-err") { Get-ExcelOracleExpectedRuntimeErr } else { $null }
         }))
+        if ($case.PSObject.Properties.Name -contains 'additional_modules') {
+            $descriptor | Add-Member -NotePropertyName additional_modules -NotePropertyValue @($case.additional_modules | ForEach-Object {
+                [pscustomobject]@{ name=[string]$_.name; kind=[int]$_.kind; source=[string]$_.source; sha256=(Get-ExcelOracleSha256 -Text ([string]$_.source)) }
+            })
+        }
         $payloadJson = (Get-ExcelOracleSelectedCaseDescriptorPayload -Descriptor $descriptor) | ConvertTo-Json -Compress -Depth 8
         $descriptor | Add-Member -NotePropertyName descriptor_sha256 -NotePropertyValue (Get-ExcelOracleSha256 -Text $payloadJson)
         $descriptors.Add($descriptor)
@@ -566,6 +573,7 @@ function Test-ExcelOracleSelectedCaseDescriptor {
         "run_procedure", "diagnostic_only", "expected_value", "expected_selected_token", "expected_expanded_line", "macro_probe_target",
         "invocation_observation_prefix", "evidence_contract", "expected_runtime_err", "descriptor_sha256"
     )
+    if ($null -ne $Descriptor -and $Descriptor.PSObject.Properties.Name -contains 'additional_modules') { $expectedFields += 'additional_modules' }
     if ($null -eq $Descriptor -or
         (@($Descriptor.PSObject.Properties.Name | Sort-Object) -join "`n") -cne (@($expectedFields | Sort-Object) -join "`n")) {
         return $false
@@ -589,6 +597,18 @@ function Test-ExcelOracleSelectedCaseDescriptor {
         [string]$Descriptor.evidence_contract -cne $expectedEvidenceContract -or
         $Descriptor.descriptor_sha256 -isnot [string]) {
         return $false
+    }
+    if ($Descriptor.PSObject.Properties.Name -contains 'additional_modules') {
+        if ($Descriptor.additional_modules -isnot [array] -or $Descriptor.additional_modules.Count -eq 0) { return $false }
+        $moduleNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        [void]$moduleNames.Add([string]$Descriptor.module_name)
+        foreach ($module in $Descriptor.additional_modules) {
+            if ((@($module.PSObject.Properties.Name | Sort-Object) -join ',') -cne 'kind,name,sha256,source' -or
+                $module.name -isnot [string] -or $module.name -notmatch '^[A-Za-z][A-Za-z0-9_]*$' -or -not $moduleNames.Add($module.name) -or
+                ($module.kind -isnot [int] -and $module.kind -isnot [long]) -or $module.kind -notin @(1,2) -or
+                $module.source -isnot [string] -or $module.sha256 -isnot [string] -or
+                $module.sha256 -cne (Get-ExcelOracleSha256 -Text $module.source)) { return $false }
+        }
     }
     foreach ($nullableString in @("run_procedure", "expected_value", "expected_selected_token", "expected_expanded_line", "macro_probe_target", "invocation_observation_prefix")) {
         if ($null -ne $Descriptor.$nullableString -and $Descriptor.$nullableString -isnot [string]) { return $false }
@@ -1615,6 +1635,22 @@ function Resolve-ExcelOraclePostCleanupResult {
         $compileContextValid = $false
         if ($null -ne $case.compile_context) {
             $compileContextFields = @("schema", "injected_project_name", "injected_project_file_name", "injected_module_name", "selection_before_execute", "injected_source", "injected_source_sha256", "selected_source_sha256", "authority_before_execute", "authority_after_execute", "selection_after_execute_diagnostic_only")
+            $additionalModulesValid = $true
+            if ($descriptor.PSObject.Properties.Name -contains 'additional_modules') {
+                $compileContextFields += 'additional_modules'
+                $additionalModulesValid = $case.compile_context.PSObject.Properties.Name -contains 'additional_modules' -and
+                    ($case.compile_context.additional_modules -is [array]) -and $case.compile_context.additional_modules.Count -eq $descriptor.additional_modules.Count
+                if ($additionalModulesValid) {
+                    for ($moduleIndex=0; $moduleIndex -lt $descriptor.additional_modules.Count; $moduleIndex++) {
+                        $expectedModule=$descriptor.additional_modules[$moduleIndex]
+                        $observedModule=$case.compile_context.additional_modules[$moduleIndex]
+                        if ((@($observedModule.PSObject.Properties.Name | Sort-Object) -join ',') -cne 'kind,name,sha256,source' -or
+                            $observedModule.name -cne $expectedModule.name -or $observedModule.kind -ne $expectedModule.kind -or
+                            $observedModule.source -isnot [string] -or $observedModule.sha256 -cne $expectedModule.sha256 -or
+                            (Get-ExcelOracleSha256 -Text ([string]$observedModule.source)) -cne $expectedModule.sha256) { $additionalModulesValid=$false }
+                    }
+                }
+            }
             $authorityFields = @("schema", "stage", "captured_utc", "active_project_is_injected_project", "active_module_is_injected_module", "active_code_pane_is_injected_code_pane", "active_project_name", "active_module_name", "injected_source_sha256", "expected_source_sha256")
             $contextFieldsValid = (@($case.compile_context.PSObject.Properties.Name | Sort-Object) -join "`n") -ceq (@($compileContextFields | Sort-Object) -join "`n")
             $authorityValid = $contextFieldsValid
@@ -1639,7 +1675,7 @@ function Resolve-ExcelOraclePostCleanupResult {
                     catch { $authorityValid = $false }
                 }
             }
-            $compileContextValid = $contextFieldsValid -and
+            $compileContextValid = $contextFieldsValid -and $additionalModulesValid -and
                 [string]$case.compile_context.schema -ceq "oxvba.excel-vba-oracle-compile-context.v1" -and
                 $case.compile_context.injected_project_name -is [string] -and -not [string]::IsNullOrWhiteSpace([string]$case.compile_context.injected_project_name) -and
                 $case.compile_context.injected_project_file_name -is [string] -and

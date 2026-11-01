@@ -14,6 +14,7 @@ pub mod date;
 pub mod decimal;
 pub mod interop_plan;
 pub mod live_counters;
+pub mod object_owner;
 pub mod object_ref;
 pub mod pointer_helpers;
 pub mod safe_array;

@@ -8,7 +8,7 @@ use oxvba_eval::arith;
 use oxvba_oxir::{OxConst, OxInst, OxOperand, OxPlace};
 use oxvba_runtime::{VarType, Variant};
 
-pub(super) fn to_variant(value: Value) -> Variant {
+pub fn to_variant(value: Value) -> Variant {
     match value {
         Value::Empty => Variant::empty(),
         Value::Long(v) => Variant::from_i32(v),
@@ -18,12 +18,23 @@ pub(super) fn to_variant(value: Value) -> Variant {
         Value::Variant(v) => v,
         Value::Object(Some(v)) => Variant::from_object_ref(v.object_ref()),
         Value::Object(None) => Variant::nothing(),
+        Value::RuntimeObject(v) => Variant::from_object_ref(v),
+        Value::Record(v) => Variant::from_vba_record(v),
+        Value::Array(Some(v)) => Variant::from_safearray(v),
+        Value::Array(None) => Variant::unallocated_array(12),
     }
 }
 pub fn from_variant(ty: ScalarType, value: Variant) -> Result<Value, i32> {
     use oxvba_bundle::NumericCoerceTarget as N;
     Ok(match ty {
         ScalarType::Variant => Value::Variant(value),
+        ScalarType::Record => Value::Record(value.as_vba_record().ok_or(13)?),
+        ScalarType::Array => {
+            if value.vtype() != VarType::ArrayVariant {
+                return Err(13);
+            }
+            Value::Array(value.as_safearray())
+        }
         ScalarType::Long => Value::Long(
             arith::coerce_numeric(&value, N::Long)
                 .map_err(|e| e.code)?
@@ -52,12 +63,13 @@ pub fn from_variant(ty: ScalarType, value: Variant) -> Result<Value, i32> {
             if value.vtype() != VarType::Object {
                 return Err(13);
             }
-            Value::Object(
-                value
-                    .as_object_ref()
-                    .map(|object| calcvba_host_api::HostObject::from_object_ref(&object).ok_or(13))
-                    .transpose()?,
-            )
+            match value.as_object_ref() {
+                None => Value::Object(None),
+                Some(object) => match calcvba_host_api::HostObject::from_object_ref(&object) {
+                    Some(host) => Value::Object(Some(host)),
+                    None => Value::RuntimeObject(object),
+                },
+            }
         }
         _ => return Err(13),
     })
@@ -104,7 +116,7 @@ pub(super) unsafe fn read_operand(
     // SAFETY: scratch retains any newly created BSTR/Variant/object carrier.
     unsafe { pin_value(raw, result) }
 }
-unsafe fn operand_value(
+pub(super) unsafe fn operand_value(
     raw: *mut RawActivation,
     layout: &ScalarLayout,
     operand: &OxOperand,
@@ -112,20 +124,41 @@ unsafe fn operand_value(
     let ty = layout.operand_type(operand).map_err(|_| 5)?;
     // SAFETY: inherited retained frame/layout contract.
     let bits = unsafe { read_operand(raw, layout, operand, ty) }?;
+    if ty == ScalarType::Array
+        && bits.as_object().is_null()
+        && let OxOperand::Use(place) = operand
+    {
+        let vt = *layout
+            .array_slots
+            .get(&layout.slot(*place).map_err(|_| 5)?)
+            .ok_or(5)?;
+        return Ok(Variant::unallocated_array(vt));
+    }
     // SAFETY: this exact input remains owned until the completed instruction.
     Ok(to_variant(unsafe { value::retain_bits(ty, bits) }?))
 }
 
 pub fn needs_helper(inst: &OxInst, layout: &ScalarLayout) -> bool {
+    if super::aggregate::is_aggregate(inst) {
+        return true;
+    }
     let extended = |op: &OxOperand| {
         matches!(
             layout.operand_type(op),
-            Ok(ScalarType::String | ScalarType::Variant | ScalarType::HostObject)
+            Ok(ScalarType::String
+                | ScalarType::Variant
+                | ScalarType::HostObject
+                | ScalarType::Record
+                | ScalarType::Array)
         )
     };
     match inst {
+        OxInst::ValidateAssignment { .. } => true,
         OxInst::CallNative {
-            callee: oxvba_oxir::OxNativeCallee::Builtin(oxvba_bundle::NativeImplId::IsMissing),
+            callee:
+                oxvba_oxir::OxNativeCallee::Builtin(
+                    oxvba_bundle::NativeImplId::IsMissing | oxvba_bundle::NativeImplId::IsArray,
+                ),
             ..
         } => true,
         OxInst::ComCallEarly { method, .. } => layout
@@ -184,6 +217,10 @@ pub unsafe extern "C" fn evaluate(
         let layout = unsafe { &*(*raw).layout };
         // SAFETY: caller retains the original instruction allocation.
         let inst = unsafe { &*inst };
+        if super::aggregate::is_aggregate(inst) {
+            // SAFETY: original admitted instruction and leased physical frame.
+            return unsafe { super::aggregate::evaluate(raw, inst) }.map_or_else(|e| e, |()| 0);
+        }
         if let OxInst::ComCallEarly { .. } = inst {
             // SAFETY: same leased frame/original instruction and unique context.
             return unsafe { super::member::invoke(raw, inst, &mut *context) }
@@ -195,12 +232,49 @@ pub unsafe extern "C" fn evaluate(
         // over this context. No frame/global borrow spans a default callback.
         let read_value =
             |op: &OxOperand| resolve_default(read(op)?, layout, unsafe { &mut *context });
+        if let OxInst::ValidateAssignment {
+            src,
+            target_type_name,
+            ..
+        } = inst
+        {
+            return (|| -> Result<(), i32> {
+                let value = read(src)?;
+                if value.vtype() != VarType::Object {
+                    return Err(424);
+                }
+                if let Some(required) = layout.assignment_classes.get(target_type_name)
+                    && let Some(object) = value.as_object_ref()
+                    && !super::class_matches(&object, required)
+                {
+                    return Err(13);
+                }
+                if let Some(iid) = layout
+                    .assignment_iids
+                    .get(target_type_name)
+                    .copied()
+                    .flatten()
+                    && let Some(reference) = value.as_object_ref()
+                {
+                    let object =
+                        calcvba_host_api::HostObject::from_object_ref(&reference).ok_or(13)?;
+                    if object.header().iid != iid {
+                        return Err(13);
+                    }
+                }
+                Ok(())
+            })()
+            .map_or_else(|e| e, |()| 0);
+        }
         let result = (|| -> Result<(OxPlace, Value), i32> {
             let (dst, result) = match inst {
                 OxInst::CallNative {
                     dst: Some(dst),
                     callee:
-                        oxvba_oxir::OxNativeCallee::Builtin(oxvba_bundle::NativeImplId::IsMissing),
+                        oxvba_oxir::OxNativeCallee::Builtin(
+                            native @ (oxvba_bundle::NativeImplId::IsMissing
+                            | oxvba_bundle::NativeImplId::IsArray),
+                        ),
                     args,
                 } => {
                     let operand = match &args[0] {
@@ -211,13 +285,24 @@ pub unsafe extern "C" fn evaluate(
                     let value = read(&operand)?;
                     (
                         *dst,
-                        Variant::from_bool(
+                        Variant::from_bool(if *native == oxvba_bundle::NativeImplId::IsArray {
+                            value.vtype() == VarType::ArrayVariant
+                        } else {
                             value.vtype() == VarType::Error
-                                && value.as_error_code() == Some(0x8002_0004u32 as i32),
-                        ),
+                                && value.as_error_code() == Some(0x8002_0004u32 as i32)
+                        }),
                     )
                 }
-                OxInst::Box { dst, src, .. } => (*dst, read(src)?),
+                OxInst::Box { dst, src, from: ty } => {
+                    let value = read(src)?;
+                    let value = if *ty == oxvba_oxir::OxTy::Integer {
+                        arith::coerce_numeric(&value, oxvba_bundle::NumericCoerceTarget::Integer)
+                            .map_err(|e| e.code)?
+                    } else {
+                        value
+                    };
+                    (*dst, value)
+                }
                 OxInst::CompareObjectIs { dst, lhs, rhs } => {
                     // Is never resolves an object's default member. Check both
                     // tags before reading identity; non-object Variants raise 424.
@@ -425,6 +510,8 @@ fn matches_type(value: &Variant, ty: ScalarType) -> bool {
         ScalarType::String => value.vtype() == VarType::String,
         ScalarType::HostObject => value.vtype() == VarType::Object,
         ScalarType::Variant => true,
+        ScalarType::Record => value.as_vba_record().is_some(),
+        ScalarType::Array => value.vtype() == VarType::ArrayVariant,
         _ => false,
     }
 }

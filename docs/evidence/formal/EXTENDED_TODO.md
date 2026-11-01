@@ -251,3 +251,11 @@ Non-blocking formal issues and follow-up items for later ladder profiles.
   Current status: investigating.
   Reproduction command: cargo test -p oxvba-embed --test typed_identity --test typed_native_com; elan run leanprover/lean4:v4.29.1 lean formal/lean/OxVba/RefCount.lean.
   Suggested next action: refine native identity-owner acquisition/release and factory-table provenance with CORE-5/WIN-4, then rerun Miri when matching offline dependencies/sysroot are available.
+
+
+- ID: FTODO-TYPED-AGGREGATES-CLASSES-20261101
+  Profile: owning source records, ParamArray and bounded classes (bd-59co.2.9.18; CORE-5/CORE-7/WIN-4).
+  Summary: Execution and owned Excel checks cover physical aggregate copies/schemas, live element aliases, cross-unit global authority, class identity/fields/termination and owner isolation across reset/cancellation. Existing installed Lean abstractions do not refine these concrete SAFEARRAY/record/owner/finalizer mechanics. The offline Miri dependency/sysroot blocker remains without passing credit.
+  Current status: investigating.
+  Reproduction command: cargo test -p oxvba-embed --test typed_aggregates --test typed_classes; cargo test -p oxvba-runtime object_owner; installed Lean 4.29.1 RefCount, TypedContinuation, TypedReentry and ProcedureHandles.
+  Suggested next action: refine owner-scoped termination and aggregate alias authorities under CORE-5, then run matching Miri/native checks when the offline dependencies/sysroot are available.

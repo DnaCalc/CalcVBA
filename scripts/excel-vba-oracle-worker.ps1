@@ -66,6 +66,11 @@ public static class ExcelOracleNativeMethods
     [DllImport("user32.dll")]
     private static extern bool IsWindowVisible(IntPtr hwnd);
 
+    [DllImport("user32.dll")]
+    public static extern bool SetForegroundWindow(IntPtr hwnd);
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+
     [DllImport("oleacc.dll")]
     private static extern int AccessibleObjectFromWindow(
         IntPtr hwnd,
@@ -252,6 +257,7 @@ function Start-OwnedExcelApplication {
     $observations = [Collections.Generic.List[object]]::new()
     $lastWindows = @()
     $startupNoticeAcknowledged = $false
+    $searchCoachDismissed = $false
     while ([DateTime]::UtcNow -lt $deadline) {
         $attemptCount++
         if ($process.HasExited) {
@@ -325,6 +331,31 @@ function Start-OwnedExcelApplication {
                 $startupNoticeAcknowledged = $true
                 [ordered]@{ pid = $process.Id; action = "acknowledge-safe-mode-recovery-notice"; utc = [DateTime]::UtcNow.ToString("o") } |
                     ConvertTo-Json | Set-Content -LiteralPath "$DiagnosticPath.startup-action.json" -Encoding utf8NoBOM
+                continue
+            }
+            if (-not $searchCoachDismissed -and $blockingWindows.Count -eq 1 -and
+                [string]$blockingWindows[0].ClassName -ceq 'Net UI Tool Window' -and
+                $startupText -ccontains 'Microsoft Search (Alt+Q)' -and
+                $startupText -ccontains 'Just start typing here to bring features to your fingertips and get help.' -and
+                $startupText -ccontains 'Tell me more') {
+                # Close only the exact owned, identified informational search coach.
+                # No trust, security, add-in, recovery or account prompt is accepted.
+                $coachHwnd=[IntPtr][int64]$blockingWindows[0].Hwnd
+                [uint32]$coachPid=0
+                [void][ExcelOracleNativeMethods]::GetWindowThreadProcessId($coachHwnd,[ref]$coachPid)
+                if ($coachPid -ne $process.Id) { throw 'Search coach process identity changed' }
+                $main=@($ownedWindows | Where-Object { $_.IsTopLevel -and $_.Visible -and $_.ClassName -ceq 'XLMAIN' })
+                if ($main.Count -ne 1) { throw 'Owned search coach requires one visible Excel main window' }
+                [void][ExcelOracleNativeMethods]::SetForegroundWindow([IntPtr][int64]$main[0].Hwnd)
+                [uint32]$foregroundPid=0
+                [void][ExcelOracleNativeMethods]::GetWindowThreadProcessId([ExcelOracleNativeMethods]::GetForegroundWindow(),[ref]$foregroundPid)
+                if ($foregroundPid -ne $process.Id) { throw 'Owned search coach focus could not be established' }
+                Add-Type -AssemblyName System.Windows.Forms
+                [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+                Start-Sleep -Milliseconds 500
+                $searchCoachDismissed=$true
+                [ordered]@{ pid=$process.Id; hwnd=[string]$coachHwnd; action='close-owned-search-coach'; utc=[DateTime]::UtcNow.ToString('o') } |
+                    ConvertTo-Json | Set-Content -LiteralPath "$DiagnosticPath.search-coach-action.json" -Encoding utf8NoBOM
                 continue
             }
             $blocked = @($blockingWindows | ForEach-Object { "HWND=$($_.Hwnd) class='$($_.ClassName)' title='$($_.Title)'" }) -join "; "
@@ -777,6 +808,20 @@ function Invoke-HarnessCase {
         }
         $workbook.Activate()
         $project = $workbook.VBProject
+        $additionalModuleEvidence = @()
+        if ($Descriptor.PSObject.Properties.Name -contains 'additional_modules') {
+            foreach ($module in $Descriptor.additional_modules) {
+                $extraComponent=$project.VBComponents.Add([int]$module.kind)
+                $extraComponent.Name=$module.name
+                [void]$extraComponent.CodeModule.AddFromString([string]$module.source)
+                $extraSource=[string]$extraComponent.CodeModule.Lines(1,$extraComponent.CodeModule.CountOfLines)
+                $extraSha=Get-ExcelOracleSha256 -Text $extraSource
+                if ($extraSha -cne $module.sha256) { throw 'Injected additional module does not match the sealed selected source' }
+                $additionalModuleEvidence += [pscustomobject]@{ name=[string]$extraComponent.Name; kind=[int]$extraComponent.Type; source=$extraSource; sha256=$extraSha }
+                [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($extraComponent)
+                $extraComponent=$null
+            }
+        }
         $component = $project.VBComponents.Add(1)
         $component.Name = $Descriptor.module_name
         [void]$component.CodeModule.AddFromString($Descriptor.module_source)
@@ -805,6 +850,9 @@ function Invoke-HarnessCase {
             authority_after_execute = $null
         }
 
+        if ($Descriptor.PSObject.Properties.Name -contains 'additional_modules') {
+            $compileContext | Add-Member -NotePropertyName additional_modules -NotePropertyValue $additionalModuleEvidence
+        }
         $compileControl = Get-VbeCompileControl -Vbe $excel.VBE
         if ($null -eq $compileControl) { throw "excel-vba-oracle-worker: VBE compile command ID 578 was not found" }
         $compileCommand = [ordered]@{

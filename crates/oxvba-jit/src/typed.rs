@@ -186,10 +186,6 @@ pub(crate) fn compile_resumable_entries(
                 functions.push(None);
                 continue;
             };
-            if !program.classes.is_empty() || !program.record_layouts.is_empty() {
-                functions.push(None);
-                continue;
-            }
             let mut signature = module.make_signature();
             signature.params = vec![AbiParam::new(types::I64); 3];
             signature.returns.push(AbiParam::new(types::I32));
@@ -288,7 +284,9 @@ pub(crate) fn compile_resumable_entries(
                         b.ins()
                             .store(ir::MemFlagsData::new(), remaining, runtime, 0);
                     } else if let Some(inst) = block.instrs.get(offset - 1) {
-                        if oxvba_rt_abi::host_entry::stack_instruction(inst) {
+                        if oxvba_rt_abi::host_entry::stack_instruction(inst)
+                            || matches!(inst, OxInst::StmtBoundary { .. })
+                        {
                             let status = b.ins().iconst(types::I32, i64::from(CONTROL));
                             b.ins().return_(&[status]);
                             continue;
@@ -371,6 +369,8 @@ fn machine_type(ty: ScalarType) -> ir::Type {
         ScalarType::HostObject
         | ScalarType::String
         | ScalarType::Variant
+        | ScalarType::Record
+        | ScalarType::Array
         | ScalarType::Void
         | ScalarType::Interface(_) => types::I64,
     }
@@ -607,28 +607,22 @@ impl ScalarLower<'_> {
         }
     }
     fn check_interface(&self, b: &mut FunctionBuilder<'_>, pointer: Value, iid: [u8; 16]) {
-        let present = b.ins().icmp_imm(ir::condcodes::IntCC::NotEqual, pointer, 0);
-        let inspect = b.create_block();
-        let done = b.create_block();
-        b.ins().brif(present, inspect, &[], done, &[]);
-        b.switch_to_block(inspect);
-        for (offset, chunk) in iid.chunks_exact(8).enumerate() {
-            let actual = b.ins().load(
-                types::I64,
-                ir::MemFlagsData::new(),
-                pointer,
-                (std::mem::offset_of!(calcvba_host_api::object::ObjectHeader, iid) + offset * 8)
-                    as i32,
-            );
-            let expected = i64::from_le_bytes(chunk.try_into().expect("IID chunk"));
-            let wrong = b
-                .ins()
-                .icmp_imm(ir::condcodes::IntCC::NotEqual, actual, expected);
-            self.fail_if(b, wrong, 13);
-        }
-        b.ins().jump(done, &[]);
-        b.switch_to_block(done);
+        let low = b.ins().iconst(
+            types::I64,
+            i64::from_le_bytes(iid[..8].try_into().expect("IID half")),
+        );
+        let high = b.ins().iconst(
+            types::I64,
+            i64::from_le_bytes(iid[8..].try_into().expect("IID half")),
+        );
+        self.helper(
+            b,
+            activation::check_object_interface as *const u8,
+            &[pointer, low, high],
+            &[types::I64; 3],
+        );
     }
+
     fn helper(
         &self,
         b: &mut FunctionBuilder<'_>,

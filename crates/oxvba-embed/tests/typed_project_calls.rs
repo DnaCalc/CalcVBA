@@ -9,6 +9,49 @@ fn backends() -> Vec<api::Backend> {
     }
     values
 }
+#[test]
+fn source_project_global_byref_reads_the_owning_unit_store() {
+    let graph = api::ProjectGraph {
+        root: "App".into(),
+        projects: vec![
+            node(
+                source(
+                    "Lib",
+                    "Helpers",
+                    "Private bias As Long\nPublic Sub Bump(ByRef n As Long)\nbias=1000\nn=n+2\nEnd Sub\nPublic Function State() As Long\nState=bias\nEnd Function\n",
+                ),
+                &[],
+            ),
+            node(
+                source(
+                    "App",
+                    "Entry",
+                    "Private count As Long\nPublic Function Run() As Long\ncount=40\nHelpers.Bump count\nRun=count\nEnd Function\nPublic Function LibraryState() As Long\nLibraryState=Helpers.State()\nEnd Function\n",
+                ),
+                &["Lib"],
+            ),
+        ],
+    };
+    for backend in backends() {
+        let session = Provider::default()
+            .load_graph(&graph, &[], backend, api::HOST_API_ABI)
+            .unwrap();
+        assert_eq!(
+            long(run(&*session, "Entry", "Run", &[], api::ValueType::Long)),
+            42
+        );
+        assert_eq!(
+            long(run(
+                &*session,
+                "Entry",
+                "LibraryState",
+                &[],
+                api::ValueType::Long
+            )),
+            1000
+        );
+    }
+}
 fn source(name: &str, module: &str, text: &str) -> api::Project {
     let mut project = api::Project::module(module, text);
     project.name = name.into();

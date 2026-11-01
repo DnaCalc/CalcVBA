@@ -315,3 +315,12 @@ The current hierarchy is:
 6. accepted active worksets and canonical validation/evidence artifacts.
 
 Superseded designs and guidance are classified in [`spec/DEPRECATION_LEDGER_2026-07-10.md`](spec/DEPRECATION_LEDGER_2026-07-10.md). A historical document remains useful for provenance but cannot override this hierarchy.
+
+
+Run 11 owning source aggregates retain physical record/SAFEARRAY owners and live
+ParamArray element aliases. Bounded source classes use canonical runtime object
+fields/identity and original typed procedures, with session/reset-scoped deferred
+termination queues. Static source member targets are retained during preparation;
+unknown dynamic receivers stay refused. Both backends and owned Excel agree on
+the [bounded cases](evidence/programs/ideal-2026-07/core/CORE-7/typed-aggregates-classes-run11.md).
+Broader classes, native records/callbacks and source-free publication remain open.

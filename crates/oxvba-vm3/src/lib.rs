@@ -928,6 +928,9 @@ impl<'h> Vm3<'h> {
     pub fn typed_error_raw(&mut self) -> *mut oxvba_rt_abi::ErrEngine {
         &raw mut *self.exec.err_engine
     }
+    pub fn typed_class_context(&mut self) -> Option<oxvba_rt_abi::TypedClassContext> {
+        self.exec.typed_class_context()
+    }
 
     /// Invoke a standard-module function with already coerced value arguments.
     /// No hidden Me slot is inserted and host ByRef arguments are private copies.
@@ -3517,6 +3520,7 @@ impl<'h> Vm3<'h> {
     /// vm2's `maybe_drain`. The `draining` guard makes a re-entrant release (a Terminate that
     /// drops another object) fold into the same loop rather than nest.
     fn maybe_drain(&mut self) {
+        let _owner = self.exec.object_owner.enter();
         if self.exec.draining {
             return;
         }

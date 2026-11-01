@@ -13,6 +13,7 @@ pub struct Provider {
     host: Arc<dyn oxvba_hal::HostServices>,
     resolver: Rc<dyn TypeLibResolver>,
     object_libraries: Vec<api::TypedObjectLibrary>,
+    class_modules: Vec<String>,
 }
 impl Default for Provider {
     fn default() -> Self {
@@ -20,6 +21,7 @@ impl Default for Provider {
             host: oxvba_hal::adapters::builder::HostBuilder::new().build(),
             resolver: Rc::new(oxvba_symbol::CatalogTypeLibResolver),
             object_libraries: vec![],
+            class_modules: vec![],
         }
     }
 }
@@ -30,12 +32,22 @@ impl Provider {
             ..Self::default()
         }
     }
+    /// Explicit source module kinds, supplied by the host rather than inferred from text.
+    pub fn with_class_modules(mut self, names: Vec<String>) -> Self {
+        self.class_modules = names;
+        self
+    }
     pub fn with_type_libraries(mut self, resolver: Rc<dyn TypeLibResolver>) -> Self {
         self.resolver = resolver;
         self
     }
     /// Prepare compiler-owned metadata without publishing any callable address.
     pub fn compile_graph(&self, graph: &api::ProjectGraph) -> Result<Module, api::Error> {
+        if !self.class_modules.is_empty() {
+            return Err(api::Error::UnsupportedSignature(
+                "class module selection currently requires a single project".into(),
+            ));
+        }
         let mut manifests = crate::project_graph::manifests(graph)?;
         if graph
             .projects
@@ -88,6 +100,19 @@ impl Provider {
         Ok(module.with_host(self.host.clone()))
     }
     pub fn compile(&self, project: &api::Project) -> Result<Module, api::Error> {
+        let mut classes = std::collections::HashSet::new();
+        for name in &self.class_modules {
+            if !classes.insert(name.to_ascii_lowercase())
+                || !project
+                    .modules
+                    .iter()
+                    .any(|m| m.name.eq_ignore_ascii_case(name))
+            {
+                return Err(api::Error::Compile(
+                    "unknown or duplicate source class module".into(),
+                ));
+            }
+        }
         validate_libraries(&project.libraries)?;
         let libraries: Vec<_> = project
             .libraries
@@ -117,7 +142,11 @@ impl Provider {
                 .iter()
                 .map(|m| sym::ModuleUnit {
                     module_name: m.name.clone(),
-                    module_kind: sym::ModuleKind::Procedural,
+                    module_kind: if classes.contains(&m.name.to_ascii_lowercase()) {
+                        sym::ModuleKind::Class
+                    } else {
+                        sym::ModuleKind::Procedural
+                    },
                     attributes: sym::ModuleAttributes::named(&m.name),
                     source: m.source.clone(),
                 })
@@ -213,6 +242,7 @@ impl api::RuntimeProvider for Provider {
         let provider = Self {
             host: self.host.clone(),
             resolver: self.resolver.clone(),
+            class_modules: self.class_modules.clone(),
             object_libraries: self
                 .object_libraries
                 .iter()
@@ -248,6 +278,7 @@ impl api::RuntimeProvider for Provider {
         let provider = Self {
             host: self.host.clone(),
             resolver: self.resolver.clone(),
+            class_modules: self.class_modules.clone(),
             object_libraries: self
                 .object_libraries
                 .iter()
@@ -292,6 +323,7 @@ impl api::RuntimeProvider for Provider {
             provider: Self {
                 host: self.host.clone(),
                 resolver: self.resolver.clone(),
+                class_modules: self.class_modules.clone(),
                 object_libraries: self.object_libraries.clone(),
             },
         }))

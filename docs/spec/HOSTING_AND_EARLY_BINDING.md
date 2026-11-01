@@ -361,7 +361,7 @@ closure before publication; suspended invocations retain all old code/stores.
 Reset reinitializes every unit and refuses while an invocation is suspended.
 
 The current four-parameter/128-slot/64-frame bounds apply. Source-free graph
-publication, classes/records, ParamArray and general native callback suspension
+publication, broader class/record/ParamArray behavior and general native callback suspension
 remain open under bd-59co.2.9.9/bd-59co.2.10.7. See
 [the run-10 project-call evidence](../evidence/programs/ideal-2026-07/core/CORE-7/typed-project-calls-run10.md).
 
@@ -439,3 +439,22 @@ bd-59co.2.9.9 and CORE-8 bd-59co.2.10.7 remain open for the in-progress capabili
 complete general typed procedure bodies/carriers, source-free verified sessions,
 full cache/reentry ownership or removal of StandardHost synthetic dynamic projections.
 Native COM residuals stay with WIN-4. See the [bounded delivery/evidence](../evidence/programs/ideal-2026-07/core/CORE-7/typed-host-entries.md).
+
+
+## Run 11 source aggregates and classes
+
+The owning value API adds Record and Array carriers (descriptor-backed VbaRecord
+and canonical SAFEARRAY), plus RuntimeObject for a retained source-class IUnknown.
+These carriers execute through the selected VM3/native JIT backend. ParamArray
+creates a zero-based Variant packet; private/repeated lvalue aliases stay live,
+while packet copies detach. Host aggregate schemas are checked before body effects.
+
+The linked Provider explicitly accepts class module names with with_class_modules
+for a single source project. Bounded New/initialize, statically declared methods,
+primitive/object instance fields, Is, object results and termination execute typed
+functions. Class objects and the dynamic adapter share canonical runtime storage.
+Session/reset ownership isolates termination queues and rejects stale typed class
+inputs. Source-class object results require begin_values, not the older result API.
+Cancellation releases frames and permits reset; it does not promise completion of
+a cancelled VBA finalizer. Richer class/array/native ABI behavior remains open.
+See [the bounded proof](../evidence/programs/ideal-2026-07/core/CORE-7/typed-aggregates-classes-run11.md).

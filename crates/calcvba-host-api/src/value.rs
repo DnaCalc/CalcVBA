@@ -4,6 +4,7 @@ use crate::{
     TypedContext, Variant,
 };
 pub use oxvba_runtime::bstr::BStr;
+pub use oxvba_runtime::{safe_array::SafeArray, vba_record::VbaRecord};
 pub const TYPED_VALUE_ABI: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,6 +15,8 @@ pub enum ValueType {
     HostObject,
     String,
     Variant,
+    Record,
+    Array,
     Void,
     /// Nominal metadata for a host-library interface; its physical carrier is Object.
     Interface(InterfaceId),
@@ -49,6 +52,8 @@ impl ValueType {
             Self::HostObject => 4,
             Self::String => 5,
             Self::Variant => 6,
+            Self::Record => 7,
+            Self::Array => 8,
             _ => unreachable!(),
         }
     }
@@ -80,9 +85,13 @@ pub enum ValueSlot<'a> {
     Double(f64),
     Boolean(bool),
     Object(ObjectArg<'a>),
+    RuntimeObject(&'a oxvba_runtime::ObjectRef),
     Nothing,
     String(&'a BStr),
     Variant(&'a Variant),
+    Record(&'a VbaRecord),
+    Array(&'a SafeArray),
+    UnallocatedArray,
 }
 impl<'a> From<Slot<'a>> for ValueSlot<'a> {
     fn from(slot: Slot<'a>) -> Self {
@@ -100,9 +109,11 @@ impl ValueSlot<'_> {
             Self::Long(_) => ValueType::Long,
             Self::Double(_) => ValueType::Double,
             Self::Boolean(_) => ValueType::Boolean,
-            Self::Object(_) | Self::Nothing => ValueType::HostObject,
+            Self::Object(_) | Self::RuntimeObject(_) | Self::Nothing => ValueType::HostObject,
             Self::String(_) => ValueType::String,
             Self::Variant(_) => ValueType::Variant,
+            Self::Record(_) => ValueType::Record,
+            Self::Array(_) | Self::UnallocatedArray => ValueType::Array,
         }
     }
     pub fn bits(self) -> ScalarBits {
@@ -111,9 +122,13 @@ impl ValueSlot<'_> {
             Self::Double(v) => ScalarBits::double(v),
             Self::Boolean(v) => ScalarBits::long(if v { -1 } else { 0 }),
             Self::Object(v) => ScalarBits::object(v.as_ptr()),
+            Self::RuntimeObject(v) => ScalarBits::object(v.raw_iunknown().cast()),
             Self::Nothing => ScalarBits::ZERO,
             Self::String(v) => ScalarBits::object(v.raw_bstr().cast()),
             Self::Variant(v) => ScalarBits::object(std::ptr::from_ref(v).cast()),
+            Self::Record(v) => ScalarBits::object(std::ptr::from_ref(v).cast()),
+            Self::Array(v) => ScalarBits::object(v.raw_safearray_ptr().cast()),
+            Self::UnallocatedArray => ScalarBits::ZERO,
         }
     }
     pub fn is_valid(self) -> bool {
@@ -130,8 +145,39 @@ pub enum Value {
     String(BStr),
     Variant(Variant),
     Object(Option<HostObject>),
+    RuntimeObject(oxvba_runtime::ObjectRef),
+    Record(VbaRecord),
+    Array(Option<SafeArray>),
 }
 impl Value {
+    pub fn has_interface(&self, iid: InterfaceId) -> bool {
+        match self {
+            Self::Object(None) => true,
+            Self::Object(Some(object)) => object.header().iid == iid,
+            _ => false,
+        }
+    }
+    /// Transfer an owned non-Variant carrier. Its eventual consumer must release
+    /// the exact owner with release_owned_bits or take_result on this thread.
+    pub fn into_owned_bits(self) -> Result<ScalarBits, Self> {
+        Ok(match self {
+            Self::Empty => ScalarBits::ZERO,
+            Self::Long(v) => ScalarBits::long(v),
+            Self::Double(v) => ScalarBits::double(v),
+            Self::Boolean(v) => ScalarBits::long(if v { -1 } else { 0 }),
+            Self::Object(v) => {
+                ScalarBits::object(v.map_or(std::ptr::null(), HostObject::into_header))
+            }
+            Self::RuntimeObject(v) => ScalarBits::object(v.into_raw_iunknown().cast()),
+            Self::String(v) => ScalarBits::object(v.into_raw_bstr().cast()),
+            Self::Record(v) => ScalarBits::object(Box::into_raw(Box::new(v)).cast()),
+            Self::Array(v) => ScalarBits::object(
+                v.map_or(std::ptr::null_mut(), SafeArray::into_raw_safearray_ptr)
+                    .cast(),
+            ),
+            v @ Self::Variant(_) => return Err(v),
+        })
+    }
     pub fn ty(&self) -> ValueType {
         match self {
             Self::Empty => ValueType::Void,
@@ -140,7 +186,9 @@ impl Value {
             Self::Boolean(_) => ValueType::Boolean,
             Self::String(_) => ValueType::String,
             Self::Variant(_) => ValueType::Variant,
-            Self::Object(_) => ValueType::HostObject,
+            Self::Object(_) | Self::RuntimeObject(_) => ValueType::HostObject,
+            Self::Record(_) => ValueType::Record,
+            Self::Array(_) => ValueType::Array,
         }
     }
     pub fn borrow_slot(&self) -> Option<ValueSlot<'_>> {
@@ -151,6 +199,11 @@ impl Value {
             Self::Boolean(v) => ValueSlot::Boolean(*v),
             Self::String(v) => ValueSlot::String(v),
             Self::Variant(v) => ValueSlot::Variant(v),
+            Self::RuntimeObject(v) => ValueSlot::RuntimeObject(v),
+            Self::Record(v) => ValueSlot::Record(v),
+            Self::Array(v) => v
+                .as_ref()
+                .map_or(ValueSlot::UnallocatedArray, ValueSlot::Array),
             Self::Object(v) => v
                 .as_ref()
                 .map_or(ValueSlot::Nothing, |o| ValueSlot::Object(o.argument())),
@@ -218,6 +271,15 @@ pub struct TypedObjectLibrary {
 /// A signature tag for the existing NativeSlot layout. Original numeric tags
 /// 1/2 stay unchanged, and original double constructors keep their exact C ABI.
 pub fn value_slot_signature(parameters: &[ValueType], result: ValueType) -> Option<u32> {
+    // These carriers currently belong to source procedure frames. The native
+    // host-member table has no aggregate signature extension yet.
+    if parameters
+        .iter()
+        .chain(std::iter::once(&result))
+        .any(|p| matches!(p.carrier(), ValueType::Record | ValueType::Array))
+    {
+        return None;
+    }
     if parameters.len() > crate::MAX_TYPED_ARGS
         || parameters.iter().any(|p| p.carrier() == ValueType::Void)
     {
@@ -248,16 +310,44 @@ pub unsafe fn retain_bits(ty: ValueType, bits: ScalarBits) -> Result<Value, i32>
         ValueType::Long => Value::Long(bits.as_long()),
         ValueType::Double => Value::Double(bits.as_double()),
         ValueType::Boolean => Value::Boolean(bits.as_long() != 0),
-        ValueType::HostObject => Value::Object((!bits.as_object().is_null()).then(|| {
-            // SAFETY: the input owner retains this exact factory allocation.
-            unsafe { HostObject::retain_header(bits.as_object()) }
-        })),
+        ValueType::HostObject => {
+            // SAFETY: the input retains an exact runtime IUnknown prefix.
+            let object = unsafe {
+                oxvba_runtime::ObjectRef::from_raw_iunknown_addref(
+                    bits.as_object().cast_mut().cast(),
+                )
+            };
+            match object {
+                None => Value::Object(None),
+                Some(object) => match HostObject::from_object_ref(&object) {
+                    Some(host) => Value::Object(Some(host)),
+                    None => Value::RuntimeObject(object),
+                },
+            }
+        }
         ValueType::String => {
             // SAFETY: the input owner retains this exact BSTR.
             Value::String(
                 unsafe { BStr::clone_from_raw_bstr(bits.as_object().cast_mut().cast()) }
                     .map_err(|_| 7)?,
             )
+        }
+        ValueType::Record => {
+            // SAFETY: caller retains one exact VbaRecord through this copy.
+            Value::Record(
+                unsafe { bits.as_object().cast::<VbaRecord>().as_ref() }
+                    .ok_or(13)?
+                    .clone(),
+            )
+        }
+        ValueType::Array => {
+            let raw = bits.as_object().cast_mut().cast::<core::ffi::c_void>();
+            Value::Array(if raw.is_null() {
+                None
+            } else {
+                // SAFETY: caller retains a live canonical SAFEARRAY descriptor.
+                Some(unsafe { SafeArray::clone_from_raw_safearray(raw) }.ok_or(13)?)
+            })
         }
         ValueType::Variant => {
             // SAFETY: a nonnull pointer borrows a live exact Variant.
@@ -269,6 +359,34 @@ pub unsafe fn retain_bits(ty: ValueType, bits: ScalarBits) -> Result<Value, i32>
         }
         _ => return Err(13),
     })
+}
+/// # Safety
+/// bits transfers one owned non-Variant carrier of exactly ty, on its owning
+/// thread. Null aggregate/object/string pointers carry no allocation.
+pub unsafe fn release_owned_bits(ty: ValueType, bits: ScalarBits) {
+    let raw = bits.as_object().cast_mut();
+    if raw.is_null() {
+        return;
+    }
+    match ty.carrier() {
+        ValueType::HostObject => {
+            // SAFETY: inherited exact runtime IUnknown ownership transfer.
+            drop(unsafe { oxvba_runtime::ObjectRef::from_raw_iunknown_owned(raw.cast()) });
+        }
+        ValueType::String => {
+            // SAFETY: inherited exact BSTR ownership transfer.
+            drop(unsafe { BStr::from_raw_bstr(raw.cast()) });
+        }
+        ValueType::Record => {
+            // SAFETY: inherited complete Box<VbaRecord> ownership transfer.
+            drop(unsafe { Box::from_raw(raw.cast::<VbaRecord>()) });
+        }
+        ValueType::Array => {
+            // SAFETY: inherited canonical descriptor ownership transfer.
+            drop(unsafe { SafeArray::from_raw_safearray_owned(raw.cast()) });
+        }
+        _ => {}
+    }
 }
 /// # Safety
 /// output has the advertised native result extent and alignment: eight bytes
@@ -288,7 +406,13 @@ pub unsafe fn write_result(value: Value, output: *mut ScalarBits) {
         Value::Double(v) => ScalarBits::double(v),
         Value::Boolean(v) => ScalarBits::long(if v { -1 } else { 0 }),
         Value::Object(v) => ScalarBits::object(v.map_or(std::ptr::null(), HostObject::into_header)),
+        Value::RuntimeObject(v) => ScalarBits::object(v.into_raw_iunknown().cast()),
         Value::String(v) => ScalarBits::object(v.into_raw_bstr().cast()),
+        Value::Record(v) => ScalarBits::object(Box::into_raw(Box::new(v)).cast()),
+        Value::Array(v) => ScalarBits::object(
+            v.map_or(std::ptr::null_mut(), SafeArray::into_raw_safearray_ptr)
+                .cast(),
+        ),
     };
     // SAFETY: the checked signature supplies one writable eight-byte carrier.
     unsafe {
@@ -317,18 +441,37 @@ pub unsafe fn take_result(ty: ValueType, output: *mut ScalarBits) -> Result<Valu
             if pointer.is_null() {
                 Value::Object(None)
             } else {
-                // SAFETY: retain the transferred factory owner, then consume it.
-                let object = unsafe { HostObject::retain_header(pointer) };
-                // SAFETY: consume the one transferred raw reference.
-                unsafe {
-                    HostObject::release_header(pointer);
+                // SAFETY: successful output transfers this exact IUnknown once.
+                let object = unsafe {
+                    oxvba_runtime::ObjectRef::from_raw_iunknown_owned(pointer.cast_mut().cast())
                 }
-                Value::Object(Some(object))
+                .ok_or(13)?;
+                match HostObject::from_object_ref(&object) {
+                    Some(host) => Value::Object(Some(host)),
+                    None => Value::RuntimeObject(object),
+                }
             }
         }
         ValueType::String => {
             // SAFETY: transfer the exact owned raw BSTR.
             Value::String(unsafe { BStr::from_raw_bstr(bits.as_object().cast_mut().cast()) })
+        }
+        ValueType::Record => {
+            let raw = bits.as_object().cast_mut().cast::<VbaRecord>();
+            if raw.is_null() {
+                return Err(13);
+            }
+            // SAFETY: successful record output transfers this exact Box once.
+            Value::Record(*unsafe { Box::from_raw(raw) })
+        }
+        ValueType::Array => {
+            let raw = bits.as_object().cast_mut().cast::<core::ffi::c_void>();
+            Value::Array(if raw.is_null() {
+                None
+            } else {
+                // SAFETY: successful array output transfers its descriptor once.
+                Some(unsafe { SafeArray::from_raw_safearray_owned(raw) }.ok_or(13)?)
+            })
         }
         _ => return Err(13),
     })

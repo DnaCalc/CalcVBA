@@ -1054,6 +1054,23 @@ Assert-True (-not [bool](Invoke-TestPostCleanupResolution -Results $wrongModuleI
 $tamperedSelectedDescriptors = @(Get-TestSelectedCaseDescriptors -CaseIds $completeIds | ForEach-Object { Copy-TestJsonObject -Value $_ })
 $tamperedSelectedDescriptors[0].run_procedure = "OracleSelfTest.Attacker"
 Assert-True (-not [bool](Invoke-TestPostCleanupResolution -Results $completeResults -ExcelLedger $completeExcelLedger -HelperLedger $completeHelperLedger -ExpectedCaseIds $completeIds -SelectedCaseDescriptors $tamperedSelectedDescriptors).valid) "tampered immutable descriptor payload must fail its seal before result adjudication"
+$classCase = Copy-TestJsonObject -Value (@(Get-ExcelOracleHarnessCases | Where-Object id -eq 'success')[0])
+$classCase | Add-Member -NotePropertyName additional_modules -NotePropertyValue @([pscustomobject]@{ name='Widget'; kind=2; source="Option Explicit`nPrivate Count As Long" })
+$classDescriptor = @(New-ExcelOracleSelectedCaseDescriptors -Cases @($classCase))[0]
+Assert-True (Test-ExcelOracleSelectedCaseDescriptor -Descriptor $classDescriptor) 'additional class module source is sealed and admitted'
+foreach ($mutation in @('source','kind','name','sha256')) {
+    $badClassDescriptor=Copy-TestJsonObject -Value $classDescriptor
+    switch ($mutation) {
+        'source' { $badClassDescriptor.additional_modules[0].source+=' attacker' }
+        'kind' { $badClassDescriptor.additional_modules[0].kind=3 }
+        'name' { $badClassDescriptor.additional_modules[0].name=$badClassDescriptor.module_name }
+        'sha256' { $badClassDescriptor.additional_modules[0].sha256="sha256:$('0'*64)" }
+    }
+    # Re-sealing an invalid nested payload must still be rejected.
+    $classPayload=Get-ExcelOracleSelectedCaseDescriptorPayload -Descriptor $badClassDescriptor
+    $badClassDescriptor.descriptor_sha256=Get-ExcelOracleSha256 -Text ($classPayload | ConvertTo-Json -Compress -Depth 8)
+    Assert-True (-not (Test-ExcelOracleSelectedCaseDescriptor -Descriptor $badClassDescriptor)) "additional class module $mutation mutation must reject"
+}
 $descriptorTransportDirectory = Join-Path $env:TEMP ("oxvba-oracle-descriptor-transport-{0}" -f [Guid]::NewGuid().ToString("N"))
 [void][IO.Directory]::CreateDirectory($descriptorTransportDirectory)
 try {

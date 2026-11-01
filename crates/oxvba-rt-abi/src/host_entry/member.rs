@@ -5,7 +5,7 @@ use super::{
     value::{from_variant, read_operand},
 };
 use calcvba_host_api::{
-    HostObject, TypedContext, Value,
+    TypedContext, Value,
     object::planned_slots::{MemberArguments, invoke_planned_member},
 };
 use oxvba_oxir::{OxCallArg, OxInst};
@@ -37,8 +37,17 @@ pub(super) unsafe fn invoke(
     if header.is_null() {
         return Err(91);
     }
-    // SAFETY: owning frame reads return retained factory headers only.
-    let receiver = unsafe { HostObject::retain_header(header) };
+    // SAFETY: the retained carrier has a canonical IUnknown prefix; only a
+    // factory-vtable proof permits reading the larger host slot table.
+    let Value::Object(Some(receiver)) = (unsafe {
+        calcvba_host_api::value::retain_bits(
+            ScalarType::HostObject,
+            super::ScalarBits::object(header),
+        )
+    })?
+    else {
+        return Err(13);
+    };
     let mut values: [Value; calcvba_host_api::MAX_TYPED_ARGS] =
         std::array::from_fn(|_| Value::Empty);
     let mut aliases = std::array::from_fn::<_, { calcvba_host_api::MAX_TYPED_ARGS }, _>(|i| i);

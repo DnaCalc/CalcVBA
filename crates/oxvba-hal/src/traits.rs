@@ -416,6 +416,8 @@ pub trait ComHal: Send + Sync {
     /// # Safety
     /// Selected members and interfaces are unchanged trusted compiler-retained
     /// native ABI metadata. All objects remain in the creating COM apartment.
+    /// Pure dispinterfaces require their complete, unchanged interface member
+    /// order: it defines typed table indices separately from native vtable slots.
     unsafe fn prepare_typed_object_with_interfaces(
         &self,
         _object: ObjectRef,

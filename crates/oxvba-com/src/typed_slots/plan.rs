@@ -3,6 +3,33 @@ use super::*;
 
 pub const MAX_NATIVE_PARAMETERS: usize = 32;
 
+/// A dispinterface has only the seven IDispatch entries. Its typed table index
+/// is a compiler metadata index, never an invented native vtable slot.
+pub fn is_dispatch(member: &TypeLibMemberMetadata) -> bool {
+    member.source_typekind == Some(SourceTypeKind::Dispatch)
+        && !member.is_dual
+        && member.vtable_slot.is_none()
+        && member.vtable_slot_bound == Some(7)
+}
+
+pub fn table_slot(
+    member: &TypeLibMemberMetadata,
+    interface: &[TypeLibMemberMetadata],
+) -> Option<usize> {
+    if is_dispatch(member) {
+        interface
+            .iter()
+            .position(|candidate| candidate == member)
+            .filter(|i| *i < 4096)
+    } else {
+        member
+            .vtable_slot
+            .zip(member.vtable_slot_bound)
+            .filter(|(slot, bound)| slot < bound)
+            .map(|(slot, _)| usize::from(slot))
+    }
+}
+
 pub fn carrier(ty: P) -> Option<T> {
     Some(match ty {
         P::Long | P::ByRefLong => T::Long,
@@ -45,13 +72,14 @@ fn wire_supported(ty: P, wire: &W, result: bool) -> bool {
 pub fn validate(member: &TypeLibMemberMetadata) -> bool {
     let count = member.parameter_types.len();
     member.callconv_is_stdcall
-        && member.is_dual
-        && member.source_typekind == Some(SourceTypeKind::Interface)
-        && member.interface_iid.is_some()
-        && member
-            .vtable_slot
-            .zip(member.vtable_slot_bound)
-            .is_some_and(|(slot, bound)| slot >= 7 && slot < bound && bound <= 4096)
+        && member.interface_iid.is_some_and(|iid| !iid.is_null())
+        && (is_dispatch(member)
+            || (member.is_dual
+                && member.source_typekind == Some(SourceTypeKind::Interface)
+                && member
+                    .vtable_slot
+                    .zip(member.vtable_slot_bound)
+                    .is_some_and(|(slot, bound)| slot >= 7 && slot < bound && bound <= 4096)))
         && count <= MAX_NATIVE_PARAMETERS
         && member.parameter_wire_types.len() == count
         && member.parameter_optional.len() == count

@@ -2,7 +2,7 @@
 use super::{
     ScalarType,
     activation::{RawActivation, read_slot, slot_identity, write_owned, write_slot},
-    value::{from_variant, read_operand},
+    value::{from_variant, read_operand, to_variant},
 };
 use calcvba_host_api::{
     TypedContext, Value,
@@ -55,6 +55,23 @@ pub(super) unsafe fn invoke(
     let mut identities = [None; calcvba_host_api::MAX_TYPED_ARGS];
     let indices = oxvba_com::typed_slots::plan::visible_indices(descriptor);
     for (i, (arg, ty)) in args.iter().zip(&plan.parameters).enumerate() {
+        if let OxCallArg::Operand(operand) = arg
+            && ty.carrier() == ScalarType::Variant
+        {
+            let actual = layout.operand_type(operand).map_err(|_| 5)?;
+            if actual != ScalarType::Variant {
+                // Box the actual carrier only at the declared VARIANT boundary.
+                // A Range/object stays an object: passing a Variant parameter
+                // must not evaluate its default member before the COM call.
+                // SAFETY: the immutable layout proves the actual operand type;
+                // the frame retains it through this owning input copy.
+                let bits = unsafe { read_operand(raw, layout, operand, actual) }?;
+                // SAFETY: exact actual carrier and its retained source owner.
+                let value = unsafe { calcvba_host_api::value::retain_bits(actual, bits) }?;
+                values[i] = Value::Variant(to_variant(value));
+                continue;
+            }
+        }
         let bits = match arg {
             OxCallArg::Operand(operand) => {
                 // SAFETY: admitted actual operand and exact carrier.

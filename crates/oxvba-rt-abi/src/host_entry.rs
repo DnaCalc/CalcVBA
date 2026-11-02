@@ -426,13 +426,13 @@ impl ScalarLayout {
                 bytes[4..6].copy_from_slice(&iid.data2.to_le_bytes());
                 bytes[6..8].copy_from_slice(&iid.data3.to_le_bytes());
                 bytes[8..].copy_from_slice(&iid.data4);
-                let slot = usize::from(descriptor.vtable_slot.ok_or("typed host slot is missing")?);
-                if descriptor
-                    .vtable_slot_bound
-                    .is_none_or(|bound| slot >= usize::from(bound))
-                {
-                    return Err("typed host slot exceeds declared table".into());
-                }
+                let slot = oxvba_com::typed_slots::plan::table_slot(
+                    descriptor,
+                    interfaces[method.iface.0]
+                        .com_members()
+                        .ok_or("typed host interface is missing")?,
+                )
+                .ok_or("typed host table index is missing or exceeds declared table")?;
                 let plan = HostCallPlan {
                     native: (native
                         && oxvba_com::typed_slots::scalar_signature(descriptor).is_none())
@@ -501,18 +501,18 @@ impl ScalarLayout {
                     let Some(iid) = member.interface_iid.map(iid_bytes) else {
                         continue;
                     };
-                    let Some(slot) = member.vtable_slot else {
+                    let Some(slot) = oxvba_com::typed_slots::plan::table_slot(
+                        member,
+                        interface.com_members().unwrap_or(&[]),
+                    ) else {
                         continue;
                     };
-                    if member.vtable_slot_bound.is_none_or(|bound| slot >= bound) {
-                        continue;
-                    }
                     let plan = HostCallPlan {
                         native: (native
                             && oxvba_com::typed_slots::scalar_signature(member).is_none())
                         .then(|| member.clone()),
                         iid,
-                        slot: usize::from(slot),
+                        slot,
                         long_argument: false,
                         parameters: vec![],
                         result,
@@ -1394,7 +1394,10 @@ impl ScalarLayout {
                             );
                         }
                     };
-                    if from != ty.carrier() {
+                    let boxed_native_input = plan.native.is_some()
+                        && ty.carrier() == ScalarType::Variant
+                        && matches!(arg, oxvba_oxir::OxCallArg::Operand(_));
+                    if from != ty.carrier() && !boxed_native_input {
                         return Err("typed host argument carrier mismatch".into());
                     }
                 }

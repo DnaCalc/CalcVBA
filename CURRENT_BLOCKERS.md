@@ -1,13 +1,13 @@
 # Current Blockers
 
-Date: 2026-11-01
+Date: 2026-11-02
 Status: current; no all-path blocker
 Authority: blockers only; ordinary unfinished capability work belongs in the three current worksets and canonical matrices
 
 ## BLK-WORKSHEETFUNCTION-VTABLE-20261101 — Excel Range and WorksheetFunction have no custom vtable
 
-Status: open; affects the run-10 zero-Invoke native Range/WorksheetFunction request.
-Owner: bd-59co.3.5.3; bounded native delivery bd-59co.3.5.8 continues on other signatures.
+Status: resolved by the owner's 2026-11-02 ruling; bounded delivery is bd-59co.3.5.9.
+Owner: bd-59co.3.5.3 retains broader native client and certification scope.
 
 The installed Excel type library reports `Excel.WorksheetFunction.Sum` as
 `SourceTypeKind::Dispatch`, `is_dual=false`, IID `00020845-0000-0000-C000-000000000046`,
@@ -17,11 +17,11 @@ entry to call. This is checked by `installed_excel_typelib_retains_native_functi
 in typed_native_com; rejected native Excel run calcvba10-native-excel-initial owns
 PID 27992 and records owned-process-zero, without passing runtime credit.
 
-Next: the user was asked whether one compiler-prebound IID/DISPID Invoke is allowed
-for a genuine pure dispinterface, with no name/type-info lookup and no dual-interface
-fallback. If allowed, extend the owning planned member path using that explicit
-transport. If zero Invoke is required literally, this WorksheetFunction subset
-remains blocked. Do not invent a custom slot, guess an ABI, or change registrations.
+The owner permits what VBA does for a pure dispinterface: resolve the DISPID from
+the typelib at compile time and issue one prebound Invoke with typed arguments,
+without runtime name lookup. Optimizations require measurements. The owning
+planned member path now retains that explicit transport; dual calls do not retry
+through it. No custom slot, guessed ABI or registration change is introduced.
 Range is also `SourceTypeKind::Dispatch`, `is_dual=false`, IID
 `00020846-0000-0000-C000-000000000046`, bound 7, with no custom slot for Value
 (DISPID 6) or its default member (DISPID 0). Microsoft's public
@@ -29,9 +29,10 @@ Range is also `SourceTypeKind::Dispatch`, `is_dual=false`, IID
 and [WorksheetFunction interface](https://learn.microsoft.com/en-us/dotnet/api/microsoft.office.interop.excel.worksheetfunction?view=excel-pia)
 both declare InterfaceType(2), agreeing with the installed metadata. The second
 owned Excel attempt records the Range refusal rather than claiming it passed.
-Dictionary, native carrier fixtures, Application interface results, Optional and
-project calls can continue. The portable host-library default/Range tests remain
-separate evidence; they cannot establish native Excel Range vtable transport.
+The run-12 controlled fixture and owned Excel/VBA comparison cover both typed
+backends. See [dispatch-only delivery evidence](docs/evidence/programs/ideal-2026-07/windows-x64/WIN-4/typed-prebound-dispatch-run12.md).
+This is prebound IDispatch evidence, never Range vtable evidence. Broader Windows
+signatures, native event/ByRef behavior and pinned certification remain in-progress.
 
 ## BLK-EXCEL-COMPILE-20261031 — Negative compile oracle owned dismissal
 

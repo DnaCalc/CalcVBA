@@ -17,6 +17,8 @@ impl WindowsComBridge {
     /// # Safety
     /// All accepted descriptors are unchanged trusted compiler/type-library ABI
     /// metadata for their exact IIDs. Result identities are resolved before entry.
+    /// For a pure dispinterface, interfaces includes the complete compiler member
+    /// order used to assign typed table indices; these are not native slots.
     pub unsafe fn prepare_typed_object_with_interfaces(
         &self,
         object: oxvba_runtime::ObjectRef,
@@ -29,6 +31,16 @@ impl WindowsComBridge {
             if member.interface_iid != Some(iid) || !plan::validate(member) {
                 return Err("unsupported typed COM member signature or mixed interfaces".into());
             }
+        }
+        if members.iter().any(plan::is_dispatch)
+            && !interfaces
+                .iter()
+                .any(|interface| interface.iid == Some(iid))
+        {
+            return Err(
+                "typed dispinterface preparation requires its complete compiler interface table"
+                    .into(),
+            );
         }
         let (library, root_index) = NativeLibrary::new(interfaces.to_vec(), members)?;
         let library = Rc::new(library);
@@ -109,7 +121,7 @@ unsafe fn build(
     members: &[NativeMemberPlan],
     library: Rc<NativeLibrary>,
 ) -> Result<HostObject, String> {
-    if !members.is_empty() {
+    if members.iter().any(|m| !plan::is_dispatch(&m.member)) {
         // SAFETY: input borrows a retained same-apartment native dual interface.
         let proxy = unsafe { crate::windows_invoke::dispatch_is_marshaling_proxy(pointer) };
         if proxy
@@ -130,23 +142,35 @@ unsafe fn build(
     }?;
     // SAFETY: successful QI transfers exactly one retained identity reference.
     let identity_owner = unsafe { OwnedComInterface::from_owned(identity) };
+    let interface_members = library
+        .metadata
+        .iter()
+        .find(|m| m.iid == Some(iid))
+        .map(|m| m.members.as_slice())
+        .unwrap_or(&[]);
+    let indexed = members
+        .iter()
+        .map(|m| {
+            plan::table_slot(&m.member, interface_members)
+                .map(|slot| (slot, m))
+                .ok_or("native member has no typed table index")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let receiver = Rc::new(NativeReceiver {
         pointer,
         _identity: identity_owner,
         library,
         bridge,
     });
-    let bound = members
+    let bound = indexed
         .iter()
-        .filter_map(|m| m.member.vtable_slot)
+        .map(|(slot, _)| *slot)
         .max()
-        .map_or(0, |slot| usize::from(slot) + 1);
+        .map_or(0, |slot| slot + 1);
     let mut slots = Vec::with_capacity(bound);
     for index in 0..bound {
-        let mut candidates = members
-            .iter()
-            .filter(|m| m.member.vtable_slot == Some(index as u16));
-        let Some(plan) = candidates.next() else {
+        let mut candidates = indexed.iter().filter(|(slot, _)| *slot == index);
+        let Some((_, plan)) = candidates.next() else {
             slots.push(
                 HostSlot::typed(vec![], T::Void, |_, _| Err(438)).map_err(|e| e.to_string())?,
             );
@@ -175,7 +199,7 @@ unsafe fn build(
                 .map_err(|e| e.to_string())?,
             );
         } else {
-            let plan = plan.clone();
+            let plan = (**plan).clone();
             slots.push(HostSlot::planned(move |context, args| {
                 calcvba_host_api::with_native_call(context, || {
                     // SAFETY: retained QI'd receiver and immutable admitted descriptor.

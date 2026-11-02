@@ -73,6 +73,11 @@ impl WindowsComBridge {
         self.vtable_call_count.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn record_typed_dispatch_call(&self) {
+        self.idispatch_call_count.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Successful native vtable calls so far; failed attempts are not counted.
     pub fn vtable_call_count(&self) -> u64 {
         self.vtable_call_count.load(Ordering::Relaxed)

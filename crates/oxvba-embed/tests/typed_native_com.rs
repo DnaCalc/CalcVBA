@@ -151,7 +151,10 @@ fn installed_excel_typelib_retains_native_function_and_range_plans() {
                 );
                 assert_eq!(member.vtable_slot, None);
                 assert_eq!(member.vtable_slot_bound, Some(7));
-                assert!(oxvba_com::typed_slots::plan::visible_signature(member, 1).is_none());
+                assert_eq!(
+                    oxvba_com::typed_slots::plan::visible_signature(member, 1),
+                    Some((vec![api::ValueType::Variant], api::ValueType::Double))
+                );
             }
         }
     }
@@ -185,7 +188,10 @@ fn call_values_sliced(
         )
         .unwrap();
     loop {
-        match call.resume(1).unwrap() {
+        match call
+            .resume(1)
+            .unwrap_or_else(|error| panic!("{name}: {error:?}"))
+        {
             api::ValueProgress::Suspended => {}
             api::ValueProgress::Returned(value) => return value,
         }
@@ -668,51 +674,30 @@ fn owned_excel_imported_version_and_build_use_typed_slots() {
             .bind_native_dispatch_object_variant("Owned.ExcelWindow", pointer)
     }
     .unwrap();
-    let setup=oxvba_embed::Module::load("Setup", "Public Function App(ByVal window As Object) As Object\nSet App=window.Application\nEnd Function\nPublic Function Block(ByVal app As Object) As Object\nSet Block=app.ActiveWorkbook.Worksheets(1).Range(\"A1:B2\")\nEnd Function\nPublic Function Cell(ByVal app As Object) As Object\nSet Cell=app.ActiveWorkbook.Worksheets(1).Range(\"A1\")\nEnd Function\n").unwrap().with_host(host.clone()).into_session(Backend::Interpreter).unwrap();
+    let setup =
+        oxvba_embed::Module::load("Setup", include_str!("support/prebound_excel_setup.bas"))
+            .unwrap()
+            .with_host(host.clone())
+            .into_session(Backend::Interpreter)
+            .unwrap();
     let bound = setup.bind("Setup", "App", ProcedureKind::Function).unwrap();
     let app = setup
         .call_bound(&bound, std::slice::from_ref(&window), 1000)
         .unwrap();
     let reference = app.as_object_ref().unwrap();
+    let workbook_name = setup
+        .bind("Setup", "WorkbookName", ProcedureKind::Function)
+        .unwrap();
+    let workbook_name = setup
+        .call_bound(&workbook_name, std::slice::from_ref(&app), 1000)
+        .unwrap();
+    assert_eq!(
+        workbook_name.as_bstr().unwrap().as_str(),
+        std::env::var("OXVBA_OWNED_EXCEL_WORKBOOK").unwrap(),
+        "refuse writes outside the supervisor's exact owned workbook"
+    );
     for backend in backends() {
-        let mut project = api::Project::module(
-            "Api",
-            r#"
-Public Function Version(ByVal app As Excel.Application) As String
-    Version = app.Version
-End Function
-Public Function Build(ByVal app As Excel.Application) As Long
-    Build = app.Build
-End Function
-Public Function Height(ByVal app As Excel.Application) As Double
-    Height = app.Height
-End Function
-Public Function Visible(ByVal app As Excel.Application) As Boolean
-    Visible = app.Visible
-End Function
-Public Function ReadRange(ByVal value As Excel.Range) As Variant
-    ReadRange = value.Value
-End Function
-Public Sub WriteRange(ByVal target As Excel.Range, ByVal value As Variant)
-    target.Value = value
-End Sub
-Public Function RuntimeDefault(ByVal value As Object) As Double
-    RuntimeDefault = value + 1#
-End Function
-Public Function GetFunctions(ByVal app As Excel.Application) As Excel.WorksheetFunction
-    Set GetFunctions = app.WorksheetFunction
-End Function
-Public Function SumArray(ByVal functions As Excel.WorksheetFunction, ByVal value As Variant) As Double
-    SumArray = functions.Sum(value)
-End Function
-Public Function SumDifferentArities(ByVal functions As Excel.WorksheetFunction, ByVal x As Variant, ByVal y As Variant) As Double
-    SumDifferentArities = functions.Sum(x) + functions.Sum(x, y)
-End Function
-Public Function SumRange(ByVal app As Excel.Application, ByVal value As Excel.Range) As Double
-    SumRange = app.WorksheetFunction.Sum(value)
-End Function
-"#,
-        );
+        let mut project = api::Project::module("Api", include_str!("support/prebound_excel.bas"));
         project.references.push(api::TypeLibraryReference {
             name: "Excel".into(),
             libid: Some("{00020813-0000-0000-C000-000000000046}".into()),
@@ -783,8 +768,9 @@ End Function
             .filter(|m| {
                 m.interface_iid == Some(range_iid)
                     && (m.name.eq_ignore_ascii_case("Value")
-                        || (m.is_default_member
-                            && m.invoke_kind == oxvba_com::TypeLibMemberInvokeKind::PropertyGet))
+                        || m.name.eq_ignore_ascii_case("Value2")
+                        || m.is_default_member)
+                    && oxvba_com::typed_slots::plan::validate(m)
             })
             .cloned()
             .collect();
@@ -841,35 +827,342 @@ End Function
         ) else {
             panic!("WorksheetFunction expected")
         };
-        let sum = session
-            .bind("Api", "SumArray", ProcedureKind::Function)
-            .unwrap();
-        assert!(
-            session
-                .bind_values(
-                    &sum,
-                    &[api::ValueType::HostObject, api::ValueType::Variant],
-                    api::ValueType::Double
-                )
-                .is_err()
+        let array =
+            api::Variant::from_safearray(oxvba_runtime::safe_array::SafeArray::from_variants(
+                vec![api::Variant::from_f64(2.0), api::Variant::from_f64(3.0)],
+            ));
+        for input in [api::Variant::from_f64(7.0), array] {
+            let api::Value::Double(sum) = call_values_sliced(
+                &session,
+                "SumArray",
+                &[
+                    api::ValueSlot::Object(functions.argument()),
+                    api::ValueSlot::Variant(&input),
+                ],
+                api::ValueType::Double,
+            ) else {
+                panic!("Double sum expected")
+            };
+            assert_eq!(
+                sum,
+                if input.as_safearray().is_some() {
+                    5.0
+                } else {
+                    7.0
+                }
+            );
+        }
+        let two = api::Variant::from_f64(2.0);
+        let three = api::Variant::from_f64(3.0);
+        assert!(matches!(
+            call_values_sliced(
+                &session,
+                "SumDifferentArities",
+                &[
+                    api::ValueSlot::Object(functions.argument()),
+                    api::ValueSlot::Variant(&two),
+                    api::ValueSlot::Variant(&three)
+                ],
+                api::ValueType::Double
+            ),
+            api::Value::Double(7.0)
+        ));
+        assert!(matches!(
+            call_values_sliced(
+                &session,
+                "AverageArray",
+                &[
+                    api::ValueSlot::Object(functions.argument()),
+                    api::ValueSlot::Variant(&api::Variant::from_safearray(
+                        oxvba_runtime::safe_array::SafeArray::from_variants(vec![
+                            two.clone(),
+                            three.clone()
+                        ])
+                    ))
+                ],
+                api::ValueType::Double
+            ),
+            api::Value::Double(2.5)
+        ));
+        assert!(matches!(
+            call_values_sliced(
+                &session,
+                "SumTyped",
+                &[
+                    api::ValueSlot::Object(functions.argument()),
+                    api::ValueSlot::Long(2),
+                    api::ValueSlot::Double(3.0)
+                ],
+                api::ValueType::Double
+            ),
+            api::Value::Double(5.0)
+        ));
+        let strings = api::Variant::from_safearray(
+            oxvba_runtime::safe_array::SafeArray::from_variants(vec![
+                api::Variant::from_string("a"),
+                api::Variant::from_string("b"),
+            ]),
         );
-        let read = session
-            .bind("Api", "ReadRange", ProcedureKind::Function)
-            .unwrap();
-        assert!(
-            session
-                .bind_values(
-                    &read,
-                    &[api::ValueType::HostObject],
-                    api::ValueType::Variant
+        assert!(matches!(
+            call_values_sliced(
+                &session,
+                "MissingMatch",
+                &[
+                    api::ValueSlot::Object(functions.argument()),
+                    api::ValueSlot::Variant(&strings)
+                ],
+                api::ValueType::Long
+            ),
+            api::Value::Long(1004)
+        ));
+        for setup_name in ["Cell", "Block"] {
+            let bound = setup
+                .bind("Setup", setup_name, ProcedureKind::Function)
+                .unwrap();
+            let range = setup
+                .call_bound(&bound, std::slice::from_ref(&app), 1000)
+                .unwrap();
+            // SAFETY: exact compiler-retained Range metadata and live owned Excel
+            // receiver on this apartment; library also owns nominal result plans.
+            let range_object = unsafe {
+                host.com().prepare_typed_object_with_interfaces(
+                    range.as_object_ref().unwrap(),
+                    &range_members,
+                    &interfaces,
                 )
-                .is_err()
-        );
+            }
+            .unwrap();
+            let arg = api::ValueSlot::Object(range_object.argument());
+            let reads = ["ReadRange", "ReadValue2", "ReadDefault"];
+            let writes = ["WriteRange", "WriteValue2", "WriteDefault"];
+            for (read, write) in reads.into_iter().zip(writes) {
+                let scalar = api::Variant::from_f64(42.0);
+                let counts = host.com().com_dispatch_transport_counts();
+                call_values_sliced(
+                    &session,
+                    write,
+                    &[arg, api::ValueSlot::Variant(&scalar)],
+                    api::ValueType::Void,
+                );
+                let api::Value::Variant(value) =
+                    call_values_sliced(&session, read, &[arg], api::ValueType::Variant)
+                else {
+                    panic!("Range Variant expected")
+                };
+                if setup_name == "Cell" {
+                    assert_eq!(
+                        value.as_f64(),
+                        Some(42.0),
+                        "{backend:?} {write}/{read}: {value:?}"
+                    );
+                } else {
+                    let array = value.as_safearray().expect("block must return 2D array");
+                    assert_eq!(array.dimensions(), 2);
+                    assert_eq!(array.variant_element(0).unwrap().as_f64(), Some(42.0));
+                    assert_eq!(array.variant_element(3).unwrap().as_f64(), Some(42.0));
+                }
+                assert_eq!(
+                    host.com().com_dispatch_transport_counts(),
+                    (counts.0, counts.1 + 2)
+                );
+            }
+            if setup_name == "Cell" {
+                assert!(matches!(
+                    call_values_sliced(&session, "RuntimeDefault", &[arg], api::ValueType::Double),
+                    api::Value::Double(43.0)
+                ));
+            }
+            assert!(
+                matches!(call_values_sliced(&session, "SumRange", &[api::ValueSlot::Object(object.argument()), arg], api::ValueType::Double), api::Value::Double(v) if v == if setup_name == "Cell" {42.0} else {168.0})
+            );
+            let bounds = vec![oxvba_runtime::safe_array::SafeArrayBound { count: 2, lower: 1 }; 2];
+            let packet = api::Variant::from_safearray(
+                oxvba_runtime::safe_array::SafeArray::from_variants_nd(
+                    bounds.clone(),
+                    vec![
+                        api::Variant::from_f64(1.25),
+                        api::Variant::from_string("alpha"),
+                        api::Variant::from_bool(true),
+                        api::Variant::from_error_code(2042),
+                    ],
+                ),
+            );
+            for (read, write) in reads.into_iter().zip(writes) {
+                let counts = host.com().com_dispatch_transport_counts();
+                call_values_sliced(
+                    &session,
+                    write,
+                    &[arg, api::ValueSlot::Variant(&packet)],
+                    api::ValueType::Void,
+                );
+                let api::Value::Variant(value) =
+                    call_values_sliced(&session, read, &[arg], api::ValueType::Variant)
+                else {
+                    panic!("Range Variant expected")
+                };
+                if setup_name == "Cell" {
+                    assert_eq!(value.as_f64(), Some(1.25));
+                } else {
+                    let array = value.as_safearray().expect("block must return 2D array");
+                    assert_eq!(array.bounds().unwrap(), bounds);
+                    assert_eq!(array.variant_element(0).unwrap().as_f64(), Some(1.25));
+                    assert_eq!(array.variant_element(2).unwrap().as_bool(), Some(true));
+                    assert_eq!(
+                        array
+                            .variant_element(1)
+                            .unwrap()
+                            .as_bstr()
+                            .unwrap()
+                            .as_str(),
+                        "alpha"
+                    );
+                    assert_eq!(
+                        array.variant_element(3).unwrap().as_error_code(),
+                        Some(2042)
+                    );
+                }
+                assert_eq!(
+                    host.com().com_dispatch_transport_counts(),
+                    (counts.0, counts.1 + 2)
+                );
+                if setup_name == "Block" {
+                    // Read separate actual cells: a writer/reader array roundtrip
+                    // alone could hide a transposition in both directions. Core
+                    // flat storage is row-major; VBA's packet is A1=1.25,
+                    // B1=alpha, A2=True, B2=CVErr(2042).
+                    for (helper, boolean) in [("CellA2", true), ("CellB1", false)] {
+                        let at = setup
+                            .bind("Setup", helper, ProcedureKind::Function)
+                            .unwrap();
+                        let cell = setup
+                            .call_bound(&at, std::slice::from_ref(&app), 1000)
+                            .unwrap();
+                        // SAFETY: exact compiler Range table and owned workbook cell.
+                        let cell_object = unsafe {
+                            host.com().prepare_typed_object_with_interfaces(
+                                cell.as_object_ref().unwrap(),
+                                &range_members,
+                                &interfaces,
+                            )
+                        }
+                        .unwrap();
+                        let api::Value::Variant(value) = call_values_sliced(
+                            &session,
+                            read,
+                            &[api::ValueSlot::Object(cell_object.argument())],
+                            api::ValueType::Variant,
+                        ) else {
+                            panic!("cell Variant expected")
+                        };
+                        if boolean {
+                            assert_eq!(value.as_bool(), Some(true));
+                        } else {
+                            assert_eq!(value.as_bstr().unwrap().as_str(), "alpha");
+                        }
+                        host.com()
+                            .release_object_variant(cell.as_object_ref().unwrap())
+                            .unwrap();
+                    }
+                }
+            }
+            if setup_name == "Cell" {
+                for (read, write) in reads.into_iter().zip(writes) {
+                    for scalar in [
+                        api::Variant::from_bool(true),
+                        api::Variant::from_string("text"),
+                        api::Variant::from_error_code(2042),
+                        api::Variant::empty(),
+                    ] {
+                        call_values_sliced(
+                            &session,
+                            write,
+                            &[arg, api::ValueSlot::Variant(&scalar)],
+                            api::ValueType::Void,
+                        );
+                        let api::Value::Variant(value) =
+                            call_values_sliced(&session, read, &[arg], api::ValueType::Variant)
+                        else {
+                            panic!("scalar Variant expected")
+                        };
+                        assert_eq!(value.vtype(), scalar.vtype());
+                        match value.vtype() {
+                            oxvba_runtime::VarType::Boolean => {
+                                assert_eq!(value.as_bool(), scalar.as_bool())
+                            }
+                            oxvba_runtime::VarType::String => {
+                                assert_eq!(value.as_bstr(), scalar.as_bstr())
+                            }
+                            oxvba_runtime::VarType::Error => {
+                                assert_eq!(value.as_error_code(), scalar.as_error_code())
+                            }
+                            oxvba_runtime::VarType::Empty => {}
+                            _ => panic!("unexpected scalar"),
+                        }
+                    }
+                }
+            }
+            host.com()
+                .release_object_variant(range.as_object_ref().unwrap())
+                .unwrap();
+        }
+        for (setup_name, input, expected) in [
+            ("DateCell", 45000.0, oxvba_runtime::VarType::Date),
+            ("CurrencyCell", 1.234567, oxvba_runtime::VarType::Currency),
+        ] {
+            let bound = setup
+                .bind("Setup", setup_name, ProcedureKind::Function)
+                .unwrap();
+            let range = setup
+                .call_bound(&bound, std::slice::from_ref(&app), 1000)
+                .unwrap();
+            // SAFETY: unmodified compiler Range plans and the owned VBA-prepared
+            // cell, in this same apartment. Formatting is oracle setup, not a
+            // claim about the separate dynamic NumberFormat adapter.
+            let range_object = unsafe {
+                host.com().prepare_typed_object_with_interfaces(
+                    range.as_object_ref().unwrap(),
+                    &range_members,
+                    &interfaces,
+                )
+            }
+            .unwrap();
+            let arg = api::ValueSlot::Object(range_object.argument());
+            let number = api::Variant::from_f64(input);
+            call_values_sliced(
+                &session,
+                "WriteValue2",
+                &[arg, api::ValueSlot::Variant(&number)],
+                api::ValueType::Void,
+            );
+            for read in ["ReadRange", "ReadDefault"] {
+                let api::Value::Variant(value) =
+                    call_values_sliced(&session, read, &[arg], api::ValueType::Variant)
+                else {
+                    panic!("formatted Variant expected")
+                };
+                println!("{backend:?} {setup_name}/{read}: {value:?}");
+                assert_eq!(value.vtype(), expected);
+                if expected == oxvba_runtime::VarType::Currency {
+                    assert_eq!(value.as_currency_scaled_i64(), Some(12346));
+                } else {
+                    assert_eq!(value.as_date_f64(), Some(45000.0));
+                }
+            }
+            let api::Value::Variant(value) =
+                call_values_sliced(&session, "ReadValue2", &[arg], api::ValueType::Variant)
+            else {
+                panic!("Value2 Variant expected")
+            };
+            assert_eq!(value.as_f64(), Some(input));
+            host.com()
+                .release_object_variant(range.as_object_ref().unwrap())
+                .unwrap();
+        }
         assert!(!functions.header().iid.iter().all(|b| *b == 0));
         let counts = host.com().com_dispatch_transport_counts();
-        assert_eq!(counts, (baseline.0 + 1, baseline.1));
+        assert!(counts.0 > baseline.0 && counts.1 > baseline.1);
         println!(
-            "{backend:?}: native WorksheetFunction interface result passes with zero Invoke delta; Range.Value and Sum have no native slots"
+            "{backend:?}: retained WorksheetFunction/Range plans pass through one prebound Invoke per dispinterface call"
         );
     }
     host.com().release_object_variant(reference).unwrap();

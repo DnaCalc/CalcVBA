@@ -244,8 +244,13 @@ Run 10's bounded native owning member path adds Variant, aliased output cells,
 nominal interface results and intrinsic SAFEARRAY transport using retained metadata.
 Dictionary Add/Exists/Item and registration-free output/error/cleanup cases run on
 both backends. Native Application interface results have owned Excel development
-evidence. Excel Range.Value and WorksheetFunction.Sum are pure dispinterfaces and
-remain blocked under the directed zero-Invoke constraint; no vtable is invented.
+evidence. The run-12 owner ruling admits one compiler-prebound typed Invoke for
+pure dispinterfaces. The owning path carries the exact retained IID/DISPID,
+accessor, arguments/defaults and nominal results through both backends; native
+table indices remain distinct from vtable slots. Range default/Value/Value2
+scalars/arrays and WorksheetFunction calls have controlled transport and owned
+Excel/VBA development proof, with no runtime name/type-info lookup or dual retry.
+See [run-12 evidence](evidence/programs/ideal-2026-07/windows-x64/WIN-4/typed-prebound-dispatch-run12.md).
 See [the scoped evidence](evidence/programs/ideal-2026-07/windows-x64/WIN-4/typed-native-values-run10.md).
 
 ## 10. Host sessions, builds and outputs

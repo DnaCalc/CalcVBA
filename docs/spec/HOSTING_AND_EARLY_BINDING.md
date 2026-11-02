@@ -1,6 +1,6 @@
 # Hosting and early binding
 
-2026-11-01. Owner direction; current code and bounded evidence, not full Windows parity.
+2026-11-02. Owner direction; current code and bounded evidence, not full Windows parity.
 Authority: `CHARTER.md`, `OXVBA_SYSTEM_CONTRACT_V1.md` HOST-SESSION-001,
 COMP-BIND-001, COM-CLIENT-001 and JIT-CORE-001. Names remain OxVba; master only.
 
@@ -396,12 +396,22 @@ Scripting.Dictionary and supervised real Excel development cases are recorded in
 the [native typed-slot proof](../evidence/programs/ideal-2026-07/windows-x64/WIN-4/typed-native-slots-run9.md).
 
 The installed Excel Range and WorksheetFunction interfaces are pure dispinterfaces
-with seven IDispatch slots and no custom slot for Value or Sum. This owning native
-family refuses them under the run-10 zero-Invoke constraint. Application's native
-WorksheetFunction getter does return a retained nominal object without Invoke;
-that does not create a native Sum slot. An explicitly prebound Invoke transport
-would be needed for those pure interfaces, with no name/type-info lookup or dual
-fallback. See CURRENT_BLOCKERS.md BLK-WORKSHEETFUNCTION-VTABLE-20261101.
+with seven IDispatch slots and no custom slot for Value or Sum. The owner's run-12
+ruling permits one compiler-prebound Invoke for these interfaces. The owning
+planned path retains IID, DISPID, accessor, parameter/default/wire metadata and
+nominal result plans. The table uses the complete compiler interface member order
+for its internal indices, separately from native vtable slots. Preparation through
+prepare_typed_object_with_interfaces requires that unchanged complete table.
+Calls reverse supplied positional arguments, name the property-put value with
+DISPID_PROPERTYPUT and omit unsupplied optional tails. Declared Variant arguments
+box their actual carriers at this boundary, preserving object identity and avoiding
+premature default evaluation. Native cells own strings/arrays/interfaces; repeated
+ByRef wrappers share the same cell. EXCEPINFO, deferred fill and immediate
+IErrorInfo capture preserve full Err details. No runtime name/type-info lookup,
+guessed slot or dual-interface fallback occurs. Application's WorksheetFunction
+getter remains a native vtable call. Both typed runtimes have controlled transport
+proof and owned Excel/VBA Range/default/Value/Value2 scalar/array and function
+observations. See [run-12 evidence](../evidence/programs/ideal-2026-07/windows-x64/WIN-4/typed-prebound-dispatch-run12.md).
 
 ## Spreadsheet extraction and DNA Calc glue handoff
 

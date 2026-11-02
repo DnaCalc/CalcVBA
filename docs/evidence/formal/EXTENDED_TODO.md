@@ -267,3 +267,10 @@ Non-blocking formal issues and follow-up items for later ladder profiles.
   Current status: investigating.
   Reproduction command: cargo test -p calcvba-host-api native_callback; cargo test -p oxvba-embed --test typed_native_com; installed Lean 4.29.1 TypedReentry and TypedContinuation.
   Suggested next action: refine the scoped context/borrow state and native event target authority, then run matching offline Miri/native provenance checks under CORE-5/WIN-5.
+
+- ID: FTODO-TYPED-PREBOUND-DISPATCH-20261102
+  Profile: owning pure dispinterface calls (bd-59co.3.5.9; CORE-5/WIN-4).
+  Summary: Installed RefCount, TypedContinuation, TypedReentry and ProcedureHandles abstractions pass. Controlled and owned Excel tests cover the retained DISPID/accessor/signature path and Automation-cell ownership. These abstractions do not refine native VARIANT wrapper provenance, deferred EXCEPINFO, proxy behavior or native result cleanup. Existing offline Miri dependency/sysroot limitations remain without passing credit.
+  Current status: investigating.
+  Reproduction command: cargo test -p oxvba-embed --test typed_prebound_dispatch --test typed_native_com; elan run leanprover/lean4:v4.29.1 lean formal/lean/OxVba/TypedContinuation.lean.
+  Suggested next action: refine one-owner native cells and repeated raw ByRef views against the retained native transport, then run matching native/provenance checks under CORE-5/WIN-4.

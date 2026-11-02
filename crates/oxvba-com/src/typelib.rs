@@ -93,8 +93,10 @@ impl ComInterfaceIid {
             data4: self.data4,
         }
     }
+}
 
-    /// True for the all-zero IID (`IID_NULL`), which is never a usable QI target.
+impl ComInterfaceIid {
+    /// True for the all-zero IID (`IID_NULL`), which is never a usable interface.
     pub fn is_null(&self) -> bool {
         self.data1 == 0 && self.data2 == 0 && self.data3 == 0 && self.data4 == [0; 8]
     }

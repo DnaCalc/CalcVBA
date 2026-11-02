@@ -1,4 +1,4 @@
-//! Exact typed-slot transport for a bounded family of imported dual members.
+//! Retained typed plans for imported dual members and pure dispinterfaces.
 use crate::{
     OptionalParamDefault as D, SourceTypeKind, TypeLibMemberMetadata, TypeLibParamType as P,
     TypeLibWireType as W,

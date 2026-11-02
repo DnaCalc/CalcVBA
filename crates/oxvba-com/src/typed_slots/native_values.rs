@@ -1,5 +1,5 @@
-//! Native cells for planned typed COM calls. Variant cells exist only for
-//! declared VARIANT/SAFEARRAY signatures, independently of procedure storage.
+//! Native cells and Automation wrappers for retained typed COM call plans.
+//! Procedure storage keeps its actual carriers independently of this boundary.
 use super::{
     factory::{NativeReceiver, make_native_object},
     native::map_hresult,
@@ -79,6 +79,13 @@ impl NativeVariant {
         Ok(cell)
     }
     fn value(&self, owner: &NativeReceiver) -> Result<Variant, TypedFault> {
+        self.value_with_interface(owner, None)
+    }
+    fn value_with_interface(
+        &self,
+        owner: &NativeReceiver,
+        interface: Option<usize>,
+    ) -> Result<Variant, TypedFault> {
         let mut query = |pointer| {
             // SAFETY: valid native unknown borrowed from an owned native cell.
             unsafe {
@@ -103,7 +110,7 @@ impl NativeVariant {
                 make_native_object(
                     owner.bridge.clone(),
                     incoming.as_ptr(),
-                    None,
+                    interface,
                     owner.library.clone(),
                 )
             }?;
@@ -281,6 +288,58 @@ impl Cell {
             Self::Empty => unreachable!("admitted native input"),
         }
     }
+    /// A borrowed Automation view; native cells, rather than these wrappers,
+    /// own BSTR/array/interface storage. Never VariantClear a returned wrapper.
+    fn dispatch_argument(&mut self, by_ref: bool) -> VARIANT {
+        use windows_sys::Win32::System::Variant::*;
+        // SAFETY: the all-zero VARIANT is VT_EMPTY.
+        let mut argument: VARIANT = unsafe { std::mem::zeroed() };
+        if by_ref {
+            let tag = match self {
+                Self::Long(_) => VT_I4,
+                Self::Double(_) => VT_R8,
+                Self::Boolean(_) => VT_BOOL,
+                Self::String(_) => VT_BSTR,
+                Self::Object(_) => VT_DISPATCH,
+                Self::Variant(_) => VT_VARIANT,
+                // SAFETY: an array cell retains its initialized array tag.
+                Self::Array(value) => unsafe { value.0.Anonymous.Anonymous.vt },
+                Self::Empty => unreachable!("admitted dispatch argument"),
+            };
+            argument.Anonymous.Anonymous.vt = tag | VT_BYREF;
+            argument.Anonymous.Anonymous.Anonymous.byref = self.pointer();
+        } else {
+            match self {
+                Self::Long(value) => {
+                    argument.Anonymous.Anonymous.vt = VT_I4;
+                    argument.Anonymous.Anonymous.Anonymous.lVal = *value;
+                }
+                Self::Double(value) => {
+                    argument.Anonymous.Anonymous.vt = VT_R8;
+                    argument.Anonymous.Anonymous.Anonymous.dblVal = *value;
+                }
+                Self::Boolean(value) => {
+                    argument.Anonymous.Anonymous.vt = VT_BOOL;
+                    argument.Anonymous.Anonymous.Anonymous.boolVal = *value;
+                }
+                Self::String(value) => {
+                    argument.Anonymous.Anonymous.vt = VT_BSTR;
+                    argument.Anonymous.Anonymous.Anonymous.bstrVal = value.raw;
+                }
+                Self::Object(value) => {
+                    argument.Anonymous.Anonymous.vt = VT_DISPATCH;
+                    argument.Anonymous.Anonymous.Anonymous.pdispVal = value.raw;
+                }
+                Self::Variant(value) | Self::Array(value) => {
+                    // SAFETY: a shallow borrowed view of the initialized native
+                    // cell. Only the original guard clears its ownership.
+                    argument = unsafe { std::ptr::read(&value.0) };
+                }
+                Self::Empty => unreachable!("admitted dispatch argument"),
+            }
+        }
+        argument
+    }
     fn value(
         &mut self,
         owner: &NativeReceiver,
@@ -366,6 +425,7 @@ pub(super) unsafe fn invoke(
     arguments: &mut MemberArguments<'_>,
 ) -> Result<Value, TypedFault> {
     let member = &prepared.member;
+    let dispatch = plan::is_dispatch(member);
     let (parameters, _) =
         plan::visible_signature(member, arguments.len()).ok_or_else(|| fault(450))?;
     if parameters
@@ -413,38 +473,69 @@ pub(super) unsafe fn invoke(
             &member.parameter_wire_types[index],
             member.parameter_iids.get(index).copied().flatten(),
         )?;
+        if dispatch
+            && let Cell::Object(pointer) = &mut cells[index]
+            && !pointer.raw.is_null()
+        {
+            // A declared object parameter is checked against its nominal IID
+            // above, but an Automation VT_DISPATCH must carry IDispatch itself.
+            // SAFETY: the native input cell retains its same-apartment interface.
+            let raw = unsafe {
+                crate::query_interface_pointer(pointer.raw, &crate::windows_client::IID_IDISPATCH)
+            }
+            .map_err(|_| fault(13))?;
+            let old = std::mem::replace(pointer, NativePointer { raw });
+            drop(old);
+        }
     }
     let mut output = Cell::output(member.return_type, member.return_wire_type.as_ref())?;
-    let mut ffi = Vec::with_capacity(member.parameter_types.len() + 2);
-    ffi.push(FfiArg::Pointer(owner.pointer.as_ptr()));
-    // Derive each cell authority once after initialization. Repeated ByRef
-    // arguments reuse that exact raw pointer, rather than retagging the cell.
-    let cells_pointer = std::ptr::addr_of_mut!(cells).cast::<Cell>();
-    for index in 0..member.parameter_types.len() {
-        let argument = if canonical[index] != index {
-            ffi[canonical[index] + 1].clone()
-        } else {
-            // SAFETY: one disjoint initialized array element, in bounds, whose
-            // address remains stable until the native call returns.
-            unsafe { (&mut *cells_pointer.add(index)).argument(plan::is_by_ref(member, index)) }
+    let mut dispatch_output = NativeVariant::empty();
+    let failure = if dispatch {
+        // SAFETY: admitted pure dispinterface, immobile native cells and exactly
+        // the compiler-selected DISPID/accessor. No metadata lookup or retry.
+        unsafe {
+            invoke_dispatch(
+                owner,
+                member,
+                arguments.len(),
+                &mut cells,
+                &canonical,
+                &mut dispatch_output,
+            )
+        }
+    } else {
+        let mut ffi = Vec::with_capacity(member.parameter_types.len() + 2);
+        ffi.push(FfiArg::Pointer(owner.pointer.as_ptr()));
+        // Derive each cell authority once after initialization. Repeated ByRef
+        // arguments reuse that exact raw pointer, rather than retagging the cell.
+        let cells_pointer = std::ptr::addr_of_mut!(cells).cast::<Cell>();
+        for index in 0..member.parameter_types.len() {
+            let argument = if canonical[index] != index {
+                ffi[canonical[index] + 1].clone()
+            } else {
+                // SAFETY: one disjoint initialized array element, in bounds, whose
+                // address remains stable until the native call returns.
+                unsafe { (&mut *cells_pointer.add(index)).argument(plan::is_by_ref(member, index)) }
+            };
+            ffi.push(argument);
+        }
+        if member.return_type.is_some() {
+            ffi.push(FfiArg::Pointer(output.pointer()));
+        }
+        // SAFETY: exact retained IID, checked slot bound and complete native signature.
+        let entry = unsafe {
+            *(*(owner.pointer.as_ptr().cast::<*const *const c_void>()))
+                .add(member.vtable_slot.unwrap() as usize)
         };
-        ffi.push(argument);
-    }
-    if member.return_type.is_some() {
-        ffi.push(FfiArg::Pointer(output.pointer()));
-    }
-    // SAFETY: exact retained IID, checked slot bound and complete native signature.
-    let entry = unsafe {
-        *(*(owner.pointer.as_ptr().cast::<*const *const c_void>()))
-            .add(member.vtable_slot.unwrap() as usize)
+        crate::windows_vtable::clear_thread_error_info();
+        // SAFETY: each native cell is initialized and immobile until call completion;
+        // the CIF uses exactly the imported Windows x64 parameter/retval ABI.
+        let hr = unsafe { call_via_libffi(entry as usize, &ffi, FfiReturnType::Long) } as i32;
+        // Capture IErrorInfo before any cell decoding, QI or cleanup can replace it.
+        let failure = (hr < 0).then(|| map_hresult(hr));
+        owner.bridge.record_typed_vtable_call();
+        failure
     };
-    crate::windows_vtable::clear_thread_error_info();
-    // SAFETY: each native cell is initialized and immobile until call completion;
-    // the CIF uses exactly the imported Windows x64 parameter/retval ABI.
-    let hr = unsafe { call_via_libffi(entry as usize, &ffi, FfiReturnType::Long) } as i32;
-    // Capture IErrorInfo before any cell decoding, QI or cleanup can replace it.
-    let failure = (hr < 0).then(|| map_hresult(hr));
-    owner.bridge.record_typed_vtable_call();
     let mut writeback_failure = None;
     for index in 0..member.parameter_types.len() {
         if canonical[index] != index || !plan::is_by_ref(member, index) {
@@ -462,5 +553,146 @@ pub(super) unsafe fn invoke(
     if let Some(error) = failure.or(writeback_failure) {
         return Err(error);
     }
-    output.value(owner, prepared.result_interface)
+    if dispatch {
+        dispatch_result(
+            &dispatch_output,
+            owner,
+            member.return_type,
+            prepared.result_interface,
+        )
+    } else {
+        output.value(owner, prepared.result_interface)
+    }
+}
+
+/// # Safety
+/// The receiver is a retained exact dispinterface. Every argument borrows an
+/// initialized stable native cell until the single synchronous Invoke returns.
+unsafe fn invoke_dispatch(
+    owner: &NativeReceiver,
+    member: &TypeLibMemberMetadata,
+    supplied: usize,
+    cells: &mut [Cell; plan::MAX_NATIVE_PARAMETERS],
+    canonical: &[usize; plan::MAX_NATIVE_PARAMETERS],
+    output: &mut NativeVariant,
+) -> Option<TypedFault> {
+    use crate::TypeLibMemberInvokeKind as K;
+    use windows_sys::Win32::System::Com::*;
+    let indices = plan::visible_indices(member);
+    let mut arguments = Vec::with_capacity(indices.len());
+    let pointer = cells.as_mut_ptr();
+    let mut views = Vec::<VARIANT>::with_capacity(supplied);
+    // Derive each native ByRef authority once. Repeated aliases reuse the exact
+    // first wrapper, including its original pointer provenance.
+    for &index in &indices[..supplied] {
+        let argument = if canonical[index] != index {
+            let previous = indices
+                .iter()
+                .position(|i| *i == canonical[index])
+                .expect("admitted earlier alias");
+            // SAFETY: a shallow non-owning wrapper copy; views are never cleared.
+            unsafe { std::ptr::read(&views[previous]) }
+        } else {
+            // SAFETY: this is the sole mutable projection of this stable cell.
+            unsafe { (&mut *pointer.add(index)).dispatch_argument(plan::is_by_ref(member, index)) }
+        };
+        views.push(argument);
+    }
+    // IDispatch receives the reversed source argument list. Omitted optional
+    // tails do not occupy native positions, unlike vtable parameters.
+    arguments.extend(views.into_iter().rev());
+    let put = matches!(member.invoke_kind, K::PropertyPut | K::PropertyPutRef);
+    let flags = match member.invoke_kind {
+        K::Method => DISPATCH_METHOD,
+        K::PropertyGet => DISPATCH_PROPERTYGET,
+        K::PropertyPut => DISPATCH_PROPERTYPUT,
+        K::PropertyPutRef => DISPATCH_PROPERTYPUTREF,
+    };
+    let mut named = crate::COM_DISPID_PROPERTYPUT;
+    let mut params = DISPPARAMS {
+        rgvarg: arguments.as_mut_ptr(),
+        rgdispidNamedArgs: if put {
+            &mut named
+        } else {
+            std::ptr::null_mut()
+        },
+        cArgs: arguments.len() as u32,
+        cNamedArgs: u32::from(put),
+    };
+    // SAFETY: zero is the documented empty EXCEPINFO state.
+    let mut exception: EXCEPINFO = unsafe { std::mem::zeroed() };
+    let mut argument_error = u32::MAX;
+    let receiver = owner.pointer.as_ptr().cast::<crate::RawIDispatch>();
+    crate::windows_vtable::clear_thread_error_info();
+    // SAFETY: exact QI'd dispinterface has the standard seven-entry IDispatch
+    // prefix; initialized input/output/exception cells span the call.
+    let hr = unsafe {
+        ((*(*receiver).vtbl).invoke)(
+            receiver.cast(),
+            member.token,
+            &crate::windows_client::IID_NULL,
+            0x0400,
+            flags,
+            &mut params,
+            &mut output.0,
+            &mut exception,
+            &mut argument_error,
+        )
+    };
+    // IErrorInfo must be captured before deferred EXCEPINFO fill or cleanup.
+    let fallback = (hr < 0).then(|| map_hresult(hr));
+    if let Some(fill) = exception.pfnDeferredFillIn {
+        // SAFETY: COM supplies this deferred fill function and its own live
+        // EXCEPINFO. It is called exactly once before consuming owned BSTRs.
+        unsafe {
+            fill(&mut exception);
+        }
+    }
+    // SAFETY: Invoke/deferred fill transfers each non-null BSTR exactly once.
+    let exception = unsafe { crate::windows_invoke::take_excepinfo(&mut exception) };
+    owner.bridge.record_typed_dispatch_call();
+    fallback.map(|mut fault| {
+        let failure = crate::windows_invoke::ComInvokeFailure {
+            label: "typed-prebound",
+            dispid: member.token,
+            hr: Some(hr),
+            arg_err: (argument_error != u32::MAX).then_some(argument_error),
+            excep: exception,
+            detail: None,
+        };
+        fault.number = failure.vba_error_number();
+        if let Some(info) = failure.excep {
+            fault.description = info.description.unwrap_or(fault.description);
+            fault.source = info.source.or(fault.source);
+            fault.help_file = info.help_file.or(fault.help_file);
+            fault.help_context = info.help_context.map(|v| v as i32).or(fault.help_context);
+        }
+        fault
+    })
+}
+
+fn dispatch_result(
+    output: &NativeVariant,
+    owner: &NativeReceiver,
+    ty: Option<P>,
+    interface: Option<usize>,
+) -> Result<Value, TypedFault> {
+    if ty.is_none() {
+        return Ok(Value::Empty);
+    }
+    let value = output.value_with_interface(owner, interface)?;
+    Ok(match plan::carrier(ty.unwrap()).ok_or_else(|| fault(13))? {
+        T::Variant => Value::Variant(value),
+        T::Long => Value::Long(value.as_i32().ok_or_else(|| fault(13))?),
+        T::Double => Value::Double(value.as_f64().ok_or_else(|| fault(13))?),
+        T::Boolean => Value::Boolean(value.as_bool().ok_or_else(|| fault(13))?),
+        T::String => Value::String(value.as_bstr().ok_or_else(|| fault(13))?),
+        T::HostObject if value.vtype() == VarType::Object => Value::Object(
+            value
+                .as_object_ref()
+                .map(|object| HostObject::from_object_ref(&object).ok_or_else(|| fault(13)))
+                .transpose()?,
+        ),
+        _ => return Err(fault(13)),
+    })
 }

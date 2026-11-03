@@ -372,3 +372,12 @@ canonical Automation Boolean cells. Both native-cell and owning-caller phases
 select their declared carriers and preserve repeated alias authorities. Owning
 Boolean Not uses the existing shared operator implementation; broader logical
 and bitwise instruction admission remains open. See [scalar callback evidence](evidence/programs/ideal-2026-07/core/CORE-7/typed-native-scalar-callbacks-run13.md).
+
+Run 14 adds owning Object/Variant native member chains and generic dispatch
+result services on both backends. Runtime IDispatch lookup is confined to
+untyped calls and opaque IDispatch defaults; declared interfaces retain exact
+compiler plans. Named arguments, omissions and repeated native VARIANT aliases
+share the Automation boundary. Owned Excel parity is bounded to the retained
+chain/error/formula/touched-cell cases; native dynamic callback synchronization
+and broader certification remain open. See
+[chain evidence](evidence/programs/ideal-2026-07/windows-x64/WIN-4/object-chains-run14.md).

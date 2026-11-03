@@ -355,3 +355,92 @@ End Function
         assert_eq!(observed.references.get(), 0);
     }
 }
+
+#[test]
+fn genuine_dynamic_native_aliases_chains_and_errors_use_no_type_information() {
+    for backend in [Backend::Interpreter, Backend::Jit]
+        .into_iter()
+        .filter(|b| *b != Backend::Jit || cfg!(feature = "jit"))
+    {
+        let host = HostBuilder::new()
+            .profile(HalProfileId::Windows)
+            .policy(HostPolicy::interactive_dev())
+            .build();
+        let mut project = api::Project::module(
+            "Api",
+            r#"
+Public Function Run(ByVal obj As Object) As String
+    Dim x As Long
+    x = 2
+    Run = obj.Bump(x, x) & ":" & x & ":" & obj.Same.Value
+    Run = Run & ":" & (obj.Same + 1#)
+    On Error Resume Next
+    x = obj.Fail
+    Run = Run & ":" & Err.Number & ":" & Err.Description & ":" & Err.Source
+End Function
+Public Function Unused(ByVal obj As Dispatch.Native) As Double
+    Unused = obj.Mix(3, 2.5)
+End Function
+"#,
+        );
+        project.references.push(api::TypeLibraryReference {
+            name: "Dispatch".into(),
+            libid: None,
+            major: None,
+            minor: None,
+            lcid: None,
+            import_library: Some("owned-dispatch-fixture".into()),
+        });
+        let module = Provider::with_host(host.clone())
+            .with_type_libraries(Rc::new(Types))
+            .compile(&project)
+            .unwrap();
+        let interfaces = module
+            .com_interfaces()
+            .iter()
+            .filter_map(|i| match i {
+                oxvba_oxir::ComInterface::Com(m) => Some(m.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let (pointer, observed) = fixture::create();
+        observed.allow_dynamic.set(true);
+        {
+            // SAFETY: the fixture transfers exactly one native dispatch reference.
+            let raw = unsafe {
+                host.com()
+                    .bind_native_dispatch_object_variant("Owned.Dispatch", pointer.cast())
+            }
+            .unwrap();
+            // SAFETY: unchanged fixture descriptors and complete compiler table.
+            let object = unsafe {
+                host.com().prepare_typed_object_with_interfaces(
+                    raw.as_object_ref().unwrap(),
+                    &interfaces[0].members,
+                    &interfaces,
+                )
+            }
+            .unwrap();
+            host.com()
+                .release_object_variant(raw.as_object_ref().unwrap())
+                .unwrap();
+            let session = module.into_session(backend).unwrap();
+            let api::Value::String(result) = call(
+                &session,
+                "Run",
+                &[api::ValueSlot::Object(object.argument())],
+                api::ValueType::String,
+            ) else {
+                panic!("string")
+            };
+            assert_eq!(
+                result.as_str(),
+                "13:13:41:42:13:dispatch fixture mismatch:Owned.Dispatch"
+            );
+            assert_eq!(observed.type_reads.get(), 0);
+            assert_eq!(observed.lookups.get(), 5);
+            assert_eq!(observed.calls.borrow().len(), 6);
+        }
+        assert_eq!(observed.references.get(), 0);
+    }
+}

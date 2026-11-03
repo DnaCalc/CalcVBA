@@ -9,7 +9,12 @@ use std::{
     rc::Rc,
 };
 mod iteration;
-pub use iteration::{HostEnumerator, HostObjectServices};
+pub use iteration::{
+    DynamicArgument, DynamicMemberCall, DynamicMemberKind, HostEnumerator, HostObjectServices,
+};
+
+/// Canonical Automation IDispatch IID, in the same byte order as InterfaceId.
+pub const IDISPATCH: InterfaceId = [0, 4, 2, 0, 0, 0, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46];
 pub mod planned_slots;
 pub mod value_slots;
 
@@ -224,6 +229,23 @@ impl HostObject {
             .as_ref()
             .ok_or(438)?
             .enumerator(context)
+    }
+    pub fn invoke_dynamic(
+        &self,
+        call: &DynamicMemberCall,
+        arguments: &mut [oxvba_runtime::Variant],
+        context: &mut TypedContext,
+    ) -> Result<oxvba_runtime::Variant, crate::TypedFault> {
+        match &self.storage.services {
+            Some(services) => services.invoke_dynamic(call, arguments, context),
+            None => Err(crate::TypedFault {
+                number: 438,
+                description: oxvba_runtime::default_error_message(438).into(),
+                source: None,
+                help_file: None,
+                help_context: None,
+            }),
+        }
     }
     /// Prepare a nominal view without changing the source object's table.
     /// Portable tables without a resolver accept only their declared IID.

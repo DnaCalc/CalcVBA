@@ -153,6 +153,7 @@ pub fn needs_helper(inst: &OxInst, layout: &ScalarLayout) -> bool {
         )
     };
     match inst {
+        OxInst::ComCallLate { .. } => !super::stack_instruction(inst, layout),
         OxInst::ValidateAssignment { .. } | OxInst::Not { .. } => true,
         OxInst::CallNative {
             callee:
@@ -229,6 +230,11 @@ pub unsafe extern "C" fn evaluate(
         if let OxInst::ComCallEarly { .. } = inst {
             // SAFETY: same leased frame/original instruction and unique context.
             return unsafe { super::member::invoke(raw, inst, &mut *context) }
+                .map_or_else(|e| e, |()| 0);
+        }
+        if let OxInst::ComCallLate { .. } = inst {
+            // SAFETY: same admitted frame and original dynamic call descriptor.
+            return unsafe { super::member::invoke_dynamic(raw, inst, &mut *context) }
                 .map_or_else(|e| e, |()| 0);
         }
         // SAFETY: short operand reads retain their carriers in stable scratch.
@@ -482,6 +488,17 @@ pub fn resolve_default(
         }
         let reference = value.as_object_ref().ok_or(91)?;
         let object = calcvba_host_api::HostObject::from_object_ref(&reference).ok_or(13)?;
+        if object.header().iid == calcvba_host_api::object::IDISPATCH {
+            let call = calcvba_host_api::object::DynamicMemberCall {
+                name: None,
+                kind: calcvba_host_api::object::DynamicMemberKind::Get,
+                arguments: vec![],
+            };
+            value = object
+                .invoke_dynamic(&call, &mut [], context)
+                .map_err(|e| e.publish(context))?;
+            continue;
+        }
         let plan = layout
             .default_calls
             .get(&object.header().iid)

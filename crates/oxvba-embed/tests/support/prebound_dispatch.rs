@@ -26,6 +26,8 @@ pub const IID: oxvba_com::ComInterfaceIid = oxvba_com::ComInterfaceIid {
 pub struct Observation {
     pub references: Cell<u32>,
     pub lookups: Cell<u32>,
+    pub type_reads: Cell<u32>,
+    pub allow_dynamic: Cell<bool>,
     pub queries: Cell<u32>,
     pub calls: RefCell<Vec<(i32, u16, u32)>>,
 }
@@ -124,22 +126,56 @@ unsafe fn lookup(this: *mut c_void) -> i32 {
 }
 unsafe extern "system" fn info_count(this: *mut c_void, _: *mut u32) -> i32 {
     // SAFETY: unchanged live receiver.
-    unsafe { lookup(this) }
+    unsafe {
+        let observed = &(*this.cast::<Object>()).observed;
+        observed.type_reads.set(observed.type_reads.get() + 1);
+        lookup(this)
+    }
 }
 unsafe extern "system" fn info(this: *mut c_void, _: u32, _: u32, _: *mut *mut c_void) -> i32 {
     // SAFETY: unchanged live receiver.
-    unsafe { lookup(this) }
+    unsafe {
+        let observed = &(*this.cast::<Object>()).observed;
+        observed.type_reads.set(observed.type_reads.get() + 1);
+        lookup(this)
+    }
 }
 unsafe extern "system" fn names(
     this: *mut c_void,
     _: *const GUID,
-    _: *mut *mut u16,
+    names: *mut *mut u16,
+    count: u32,
     _: u32,
-    _: u32,
-    _: *mut i32,
+    ids: *mut i32,
 ) -> i32 {
     // SAFETY: unchanged live receiver.
-    unsafe { lookup(this) }
+    unsafe {
+        let failure = lookup(this);
+        let observed = &(*this.cast::<Object>()).observed;
+        if !observed.allow_dynamic.get() {
+            return failure;
+        }
+        if count != 1 || names.is_null() || ids.is_null() {
+            return 0x80070057u32 as i32;
+        }
+        let name = *names;
+        if name.is_null() {
+            return 0x80070057u32 as i32;
+        }
+        let mut length = 0;
+        while length < 128 && *name.add(length) != 0 {
+            length += 1;
+        }
+        let name = String::from_utf16_lossy(std::slice::from_raw_parts(name, length));
+        *ids = match name.to_ascii_lowercase().as_str() {
+            "value" => 0,
+            "bump" => 18,
+            "same" => 15,
+            "fail" => 14,
+            _ => return 0x80020006u32 as i32,
+        };
+        0
+    }
 }
 unsafe fn bstr(text: &str) -> *mut u16 {
     let units: Vec<_> = text.encode_utf16().collect();
@@ -211,9 +247,21 @@ unsafe extern "system" fn invoke(
                 (*result).Anonymous.Anonymous.Anonymous.lVal = *a;
                 0
             }
-            (14, 1, 0) => {
+            (14, 1..=3, 0) => {
                 (*exception).pfnDeferredFillIn = Some(fill);
                 0x80020009u32 as i32
+            }
+            (18, 1..=3, 2)
+                if tag(0) == VT_BYREF | VT_VARIANT && tag(1) == VT_BYREF | VT_VARIANT =>
+            {
+                let a = args[0].Anonymous.Anonymous.Anonymous.pvarVal;
+                let b = args[1].Anonymous.Anonymous.Anonymous.pvarVal;
+                if a != b || (*a).Anonymous.Anonymous.vt != VT_I4 {
+                    return 0x80070057u32 as i32;
+                }
+                (*a).Anonymous.Anonymous.Anonymous.lVal += 10;
+                (*b).Anonymous.Anonymous.Anonymous.lVal += 1;
+                VariantCopy(result, a)
             }
             (15, 2, 0) => {
                 (*result).Anonymous.Anonymous.vt = VT_DISPATCH;

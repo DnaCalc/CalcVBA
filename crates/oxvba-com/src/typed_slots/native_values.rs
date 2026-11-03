@@ -16,8 +16,10 @@ use windows_sys::Win32::{
     Foundation::SysFreeString,
     System::Variant::{VARIANT, VT_ARRAY, VT_VARIANT, VariantClear},
 };
+mod dynamic;
 mod enumeration;
 mod long_sync;
+pub(super) use dynamic::invoke as invoke_dynamic;
 pub(super) use enumeration::prepare as prepare_enumerator;
 
 fn fault(number: i32) -> TypedFault {
@@ -642,27 +644,54 @@ unsafe fn invoke_dispatch(
         K::PropertyPutRef => DISPATCH_PROPERTYPUTREF,
     };
     let mut named = crate::COM_DISPID_PROPERTYPUT;
+    // SAFETY: receiver retains its exact IDispatch interface; views contain
+    // initialized borrowed wrappers in the required Automation order.
+    unsafe {
+        invoke_dispatch_arguments(
+            owner,
+            owner.pointer.as_ptr().cast(),
+            member.token,
+            flags,
+            arguments,
+            if put {
+                std::slice::from_mut(&mut named)
+            } else {
+                &mut []
+            },
+            output,
+        )
+    }
+}
+
+/// # Safety
+/// receiver retains IDispatch, and arguments/named own initialized bounded
+/// Automation wrappers throughout the single Invoke and exception collection.
+unsafe fn invoke_dispatch_arguments(
+    owner: &NativeReceiver,
+    receiver: *mut crate::RawIDispatch,
+    dispid: i32,
+    flags: u16,
+    mut arguments: Vec<VARIANT>,
+    named: &mut [i32],
+    output: &mut NativeVariant,
+) -> Option<TypedFault> {
+    use windows_sys::Win32::System::Com::*;
     let mut params = DISPPARAMS {
         rgvarg: arguments.as_mut_ptr(),
-        rgdispidNamedArgs: if put {
-            &mut named
-        } else {
-            std::ptr::null_mut()
-        },
+        rgdispidNamedArgs: named.as_mut_ptr(),
         cArgs: arguments.len() as u32,
-        cNamedArgs: u32::from(put),
+        cNamedArgs: named.len() as u32,
     };
     // SAFETY: zero is the documented empty EXCEPINFO state.
     let mut exception: EXCEPINFO = unsafe { std::mem::zeroed() };
     let mut argument_error = u32::MAX;
-    let receiver = owner.pointer.as_ptr().cast::<crate::RawIDispatch>();
     crate::windows_vtable::clear_thread_error_info();
     // SAFETY: exact QI'd dispinterface has the standard seven-entry IDispatch
     // prefix; initialized input/output/exception cells span the call.
     let hr = unsafe {
         ((*(*receiver).vtbl).invoke)(
             receiver.cast(),
-            member.token,
+            dispid,
             &crate::windows_client::IID_NULL,
             owner.library.locale_id.unwrap_or(0x0400),
             flags,
@@ -687,7 +716,7 @@ unsafe fn invoke_dispatch(
     fallback.map(|mut fault| {
         let failure = crate::windows_invoke::ComInvokeFailure {
             label: "typed-prebound",
-            dispid: member.token,
+            dispid,
             hr: Some(hr),
             arg_err: (argument_error != u32::MAX).then_some(argument_error),
             excep: exception,

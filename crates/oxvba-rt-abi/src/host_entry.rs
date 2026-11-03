@@ -19,7 +19,10 @@ pub mod value;
 
 /// Shared operations whose mechanics belong to the retained call/error stack.
 /// Arithmetic and host callbacks still execute in the selected backend.
-pub fn stack_instruction(inst: &OxInst) -> bool {
+pub fn stack_instruction(inst: &OxInst, layout: &ScalarLayout) -> bool {
+    if matches!(inst, OxInst::ComCallLate { .. }) {
+        return layout.class_calls.iter().any(|(site, _, _)| site == inst);
+    }
     matches!(
         inst,
         OxInst::CallProc { .. }
@@ -1259,6 +1262,33 @@ impl ScalarLayout {
             {
                 if let Some(dst) = dst {
                     self.slot(*dst)?;
+                }
+                Ok(())
+            }
+            OxInst::ComCallLate {
+                dst, recv, args, ..
+            } if self.owning => {
+                if !matches!(
+                    self.operand_type(recv)?,
+                    ScalarType::HostObject | ScalarType::Variant
+                ) || args.len() > MAX_TYPED_ARGS
+                {
+                    return Err("invalid dynamic member receiver/arity".into());
+                }
+                if let Some(dst) = dst {
+                    self.slot(*dst)?;
+                }
+                for arg in args {
+                    match arg {
+                        oxvba_oxir::OxCallArg::Operand(op)
+                        | oxvba_oxir::OxCallArg::Named { value: op, .. } => {
+                            self.operand_type(op)?;
+                        }
+                        oxvba_oxir::OxCallArg::ByRef(place) => {
+                            self.slot(*place)?;
+                        }
+                        oxvba_oxir::OxCallArg::Omitted | oxvba_oxir::OxCallArg::Const(_) => {}
+                    }
                 }
                 Ok(())
             }

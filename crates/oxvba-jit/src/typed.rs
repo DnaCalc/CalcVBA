@@ -284,7 +284,7 @@ pub(crate) fn compile_resumable_entries(
                         b.ins()
                             .store(ir::MemFlagsData::new(), remaining, runtime, 0);
                     } else if let Some(inst) = block.instrs.get(offset - 1) {
-                        if oxvba_rt_abi::host_entry::stack_instruction(inst)
+                        if oxvba_rt_abi::host_entry::stack_instruction(inst, &layout)
                             || matches!(inst, OxInst::StmtBoundary { .. })
                         {
                             let status = b.ins().iconst(types::I32, i64::from(CONTROL));

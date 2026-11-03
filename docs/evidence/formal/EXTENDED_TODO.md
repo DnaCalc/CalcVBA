@@ -310,3 +310,10 @@ Non-blocking formal issues and follow-up items for later ladder profiles.
   Current status: investigating.
   Reproduction command: cargo test -p oxvba-embed --test typed_native_com native_double_boolean_aliases_remain_visible_during_prebound_and_native_callbacks; ./scripts/run-native-scalar-callback-oracle.ps1.
   Suggested next action: refine the typed native/caller synchronization phases against exact raw authorities; retain unsupported carriers, physical caller-pointer identity and complete error/cleanup semantics under bd-59co.2.9.9 and bd-59co.3.5.3.
+
+- ID: FTODO-OWNING-DYNAMIC-DISPATCH-20261103
+  Profile: retained Object/Variant member chains (bd-59co.3.5.12; broader WIN-3/WIN-4).
+  Summary: Installed Lean 4.29.1 lifecycle/reentry/handle abstractions pass. They do not refine native dynamic name binding, VARIANT alias authorities or EXCEPINFO ownership. Controlled native and owned Excel proofs are execution evidence only. No concrete native/Miri or certification credit.
+  Current status: investigating.
+  Reproduction command: cargo test -p oxvba-embed --test typed_dynamic_members --test typed_prebound_dispatch --test typed_excel_chains.
+  Suggested next action: refine single native authority projection and one-Invoke result/error ownership; keep dynamic callback/caller synchronization under broader WIN-3/WIN-4.

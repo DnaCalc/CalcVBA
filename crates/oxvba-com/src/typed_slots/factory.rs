@@ -16,6 +16,14 @@ pub(super) struct NativeReceiver {
 }
 struct NativeServices(Rc<NativeReceiver>);
 impl calcvba_host_api::HostObjectServices for NativeServices {
+    fn invoke_dynamic(
+        &self,
+        call: &calcvba_host_api::object::DynamicMemberCall,
+        arguments: &mut [oxvba_runtime::Variant],
+        context: &mut calcvba_host_api::TypedContext,
+    ) -> Result<oxvba_runtime::Variant, calcvba_host_api::TypedFault> {
+        super::native_values::invoke_dynamic(&self.0, call, arguments, context)
+    }
     fn resolve_interface(&self, wanted: calcvba_host_api::InterfaceId) -> Result<HostObject, i32> {
         let owner = &self.0;
         let index = owner

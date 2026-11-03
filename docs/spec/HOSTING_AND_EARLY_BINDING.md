@@ -502,8 +502,9 @@ incoming event cancellation and certification remain open with the broader owner
 
 Typed native views can resolve an explicit destination IID through their retained
 library without changing the source object table or searching member names. The
-owning store retains that QI'd view. Generic IDispatch results remain opaque until
-an explicit nominal assignment. TYPEDESC now reads its 32-bit HREFTYPE union member
+owning store retains that QI'd view. Generic IDispatch results retain dynamic
+services; an explicit nominal assignment prepares a separate exact interface view.
+TYPEDESC now reads its 32-bit HREFTYPE union member
 without consulting unused pointer-sized upper bytes.
 
 prepare_typed_object_with_locale retains the host-selected invocation LCID through
@@ -547,3 +548,24 @@ and canonical Automation Boolean cells. Each repeated alias projects one native
 authority, publishes its actual carrier to the owning caller before reentry and
 refreshes that authority from the caller after the callback. Other carriers and
 direct native-pointer identity with physical caller storage remain open.
+
+## Run 14 Object and Variant chains
+
+Owning VM3 and native JIT now execute genuine untyped ComCallLate operations
+through retained object-library services. Native services resolve member/argument
+names with IDispatch and invoke the selected member once; default calls use
+DISPID_VALUE. Returned dispatches retain identity, native ownership, locale and
+those services, so arbitrary-length chains do not require nominal casts. Known
+interface calls continue to use compiler-retained plans without runtime recovery.
+Repeated dynamic ByRef lvalues share one native VARIANT cell; named arguments,
+omissions, error copyback and full EXCEPINFO use the common Automation boundary.
+The source-class call path remains separate and uses its original owning stack.
+
+Owned VBE-compiled Excel and both owning runtimes agree on Range/Offset/Cells
+Object and Variant chains, named Offset, implicit defaults, formulas, returned
+strings, all seven touched cell values, and errors 91/424/438. Portable owning
+regressions also check aliases, omissions and error copyback. Dynamic native
+ByRef callback synchronization, default-member named arguments and broader
+signature/error/lifecycle certification remain open. This is bounded development
+evidence under bd-59co.3.5.12; see
+[chain evidence](../evidence/programs/ideal-2026-07/windows-x64/WIN-4/object-chains-run14.md).

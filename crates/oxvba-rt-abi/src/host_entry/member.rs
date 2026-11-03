@@ -11,6 +11,110 @@ use calcvba_host_api::{
 use oxvba_oxir::{OxCallArg, OxInst};
 
 /// # Safety
+/// Identical leased frame/context contract to invoke. Only untyped receivers
+/// reach this operation; a declared interface continues to use its static plan.
+pub(super) unsafe fn invoke_dynamic(
+    raw: *mut RawActivation,
+    inst: &OxInst,
+    context: &mut TypedContext,
+) -> Result<(), i32> {
+    use calcvba_host_api::object::{DynamicArgument, DynamicMemberCall, DynamicMemberKind};
+    use oxvba_com::TypeLibMemberInvokeKind as K;
+    // SAFETY: immutable layout is retained by the activation's code lease.
+    let layout = unsafe { &*(*raw).layout };
+    let OxInst::ComCallLate {
+        dst,
+        recv,
+        name,
+        default_member,
+        invoke_kind,
+        args,
+    } = inst
+    else {
+        return Err(5);
+    };
+    // SAFETY: admitted original operand; creates an independent retained copy.
+    let receiver = unsafe { super::value::operand_value(raw, layout, recv) }?;
+    if receiver.vtype() != oxvba_runtime::VarType::Object {
+        return Err(424);
+    }
+    let reference = receiver.as_object_ref().ok_or(91)?;
+    let receiver = calcvba_host_api::HostObject::from_object_ref(&reference).ok_or(438)?;
+    let mut values = Vec::with_capacity(args.len());
+    let mut specifications = Vec::with_capacity(args.len());
+    let mut targets = Vec::with_capacity(args.len());
+    let mut identities = Vec::with_capacity(args.len());
+    for (i, arg) in args.iter().enumerate() {
+        let mut name = None;
+        let mut target = None;
+        let value = match arg {
+            OxCallArg::Operand(op) | OxCallArg::Named { value: op, .. } => {
+                if let OxCallArg::Named { name: n, .. } = arg {
+                    name = Some(n.clone());
+                }
+                // SAFETY: admitted actual operand retained through this call.
+                unsafe { super::value::operand_value(raw, layout, op) }?
+            }
+            OxCallArg::ByRef(place) => {
+                let index = layout.slot(*place).map_err(|_| 5)?;
+                target = Some(index);
+                // SAFETY: admitted lvalue and stable ancestor/global ownership.
+                unsafe {
+                    super::value::operand_value(raw, layout, &oxvba_oxir::OxOperand::Use(*place))
+                }?
+            }
+            OxCallArg::Omitted => oxvba_runtime::Variant::from_error_code(0x80020004u32 as i32),
+            OxCallArg::Const(v) => oxvba_runtime::Variant::from_i32(*v),
+        };
+        // SAFETY: exact admitted target and retained caller storage.
+        let identity = target
+            .map(|index| unsafe { slot_identity(raw, index) })
+            .transpose()?;
+        let alias = identity
+            .and_then(|identity| identities.iter().position(|old| *old == Some(identity)))
+            .unwrap_or(i);
+        identities.push(identity);
+        specifications.push(DynamicArgument {
+            name,
+            by_ref: target.is_some(),
+            alias,
+        });
+        targets.push(target);
+        values.push(value);
+    }
+    let call = DynamicMemberCall {
+        name: (!default_member).then(|| name.clone()),
+        kind: match invoke_kind {
+            K::Method => DynamicMemberKind::Method,
+            K::PropertyGet => DynamicMemberKind::Get,
+            K::PropertyPut => DynamicMemberKind::Let,
+            K::PropertyPutRef => DynamicMemberKind::Set,
+        },
+        arguments: specifications,
+    };
+    let result = receiver.invoke_dynamic(&call, &mut values, context);
+    // Copy back even on failure. Each actual caller retains its original type.
+    for (i, target) in targets.into_iter().enumerate() {
+        if call.arguments[i].alias != i {
+            continue;
+        }
+        if let Some(index) = target {
+            let value = from_variant(layout.slots[index], values[i].clone())?;
+            // SAFETY: checked actual destination, preserving its declared carrier.
+            unsafe { write_owned(raw, index, layout.slots[index], value) }?;
+        }
+    }
+    let result = result.map_err(|fault| fault.publish(context))?;
+    if let Some(dst) = dst {
+        let index = layout.slot(*dst).map_err(|_| 5)?;
+        let value = from_variant(layout.slots[index], result)?;
+        // SAFETY: exact admitted destination receives one owning result.
+        unsafe { write_owned(raw, index, layout.slots[index], value) }?;
+    }
+    Ok(())
+}
+
+/// # Safety
 /// raw/inst follow value::evaluate's matching leased frame/code contract. context
 /// is the uniquely running synchronous typed context, including host reentry.
 pub(super) unsafe fn invoke(

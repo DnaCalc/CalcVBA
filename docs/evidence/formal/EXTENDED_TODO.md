@@ -303,3 +303,10 @@ Non-blocking formal issues and follow-up items for later ladder profiles.
   Current status: investigating.
   Reproduction command: cargo test -p oxvba-com --lib windows_connection_point; cargo test -p oxvba-embed --test typed_incoming_byref --test typed_excel_events.
   Suggested next action: model the callback lease and before-return Boolean writeback, then refine actual native cells and exact error policy under bd-59co.3.6.4.
+
+- ID: FTODO-TYPED-NATIVE-SCALAR-SYNC-20261103
+  Profile: exact Double and Boolean native callback synchronization (bd-59co.2.9.21; CORE-7/WIN-4).
+  Summary: Owned VBA and both runtimes agree on Double and canonical Boolean callback/global mutation order and repeated native alias pointers. Before/after source and native phases copy only their exact declared primitive carriers. Installed Lean lifecycle/reentry abstractions do not refine f64/i16 native authorities, canonical Boolean cells, or the new Boolean Not helper admission. No concrete native/Miri or pinned certification credit.
+  Current status: investigating.
+  Reproduction command: cargo test -p oxvba-embed --test typed_native_com native_double_boolean_aliases_remain_visible_during_prebound_and_native_callbacks; ./scripts/run-native-scalar-callback-oracle.ps1.
+  Suggested next action: refine the typed native/caller synchronization phases against exact raw authorities; retain unsupported carriers, physical caller-pointer identity and complete error/cleanup semantics under bd-59co.2.9.9 and bd-59co.3.5.3.

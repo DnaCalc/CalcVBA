@@ -1,9 +1,15 @@
-//! Exact-Long native cells synchronized with their owning caller lvalues.
+//! Exact Long/Double/Boolean native cells synchronized with their owning caller lvalues.
 use super::{MemberArguments, TypedFault, Value, fault};
+
+pub(super) enum Pointer {
+    Long(*mut i32),
+    Double(*mut f64),
+    Boolean(*mut i16),
+}
 
 pub(super) struct Binding {
     pub source: usize,
-    pub pointer: *mut i32,
+    pub pointer: Pointer,
 }
 struct Call<'a, 'b> {
     arguments: *mut MemberArguments<'a>,
@@ -11,7 +17,7 @@ struct Call<'a, 'b> {
 }
 
 // SAFETY CONTRACT: data borrows the same-thread Call below; native pointers are
-// the original canonical ByRef LONG authorities, live and immobile through the
+// the original canonical ByRef LONG/DOUBLE/VARIANT_BOOL authorities, live and immobile through the
 // foreign call. No frame/cell reference survives either short synchronization.
 unsafe fn publish(data: *mut ()) -> Result<(), i32> {
     // SAFETY: registration retains exactly this Call and exclusive arguments.
@@ -19,9 +25,15 @@ unsafe fn publish(data: *mut ()) -> Result<(), i32> {
     // SAFETY: no competing argument access occurs during a native callback.
     let arguments = unsafe { &mut *call.arguments };
     for binding in call.bindings {
-        // SAFETY: one initialized exact LONG cell from the admitted native ABI.
-        let value = unsafe { binding.pointer.read() };
-        arguments.set(binding.source, Value::Long(value))?;
+        // SAFETY: the pointer variant names the exact initialized native ABI cell.
+        let value = unsafe {
+            match binding.pointer {
+                Pointer::Long(pointer) => Value::Long(pointer.read()),
+                Pointer::Double(pointer) => Value::Double(pointer.read()),
+                Pointer::Boolean(pointer) => Value::Boolean(pointer.read() != 0),
+            }
+        };
+        arguments.set(binding.source, value)?;
     }
     arguments.write_caller_values()
 }
@@ -32,14 +44,18 @@ unsafe fn refresh(data: *mut ()) -> Result<(), i32> {
     let arguments = unsafe { &mut *call.arguments };
     arguments.read_caller_values()?;
     for binding in call.bindings {
-        let Some(Value::Long(value)) = arguments.get(binding.source) else {
-            return Err(13);
-        };
-        // SAFETY: reuse the exact original native pointer; never rederive or
-        // retag it through a fresh mutable borrow of the containing Cell.
+        // SAFETY: reuse the original native authority; no containing Cell is
+        // reborrowed. The exact source carrier must still match that authority.
         unsafe {
-            binding.pointer.write(*value);
-        }
+            match (&binding.pointer, arguments.get(binding.source)) {
+                (Pointer::Long(pointer), Some(Value::Long(value))) => pointer.write(*value),
+                (Pointer::Double(pointer), Some(Value::Double(value))) => pointer.write(*value),
+                (Pointer::Boolean(pointer), Some(Value::Boolean(value))) => {
+                    pointer.write(if *value { -1 } else { 0 })
+                }
+                _ => return Err(13),
+            }
+        };
     }
     Ok(())
 }

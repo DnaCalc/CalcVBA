@@ -153,7 +153,7 @@ pub fn needs_helper(inst: &OxInst, layout: &ScalarLayout) -> bool {
         )
     };
     match inst {
-        OxInst::ValidateAssignment { .. } => true,
+        OxInst::ValidateAssignment { .. } | OxInst::Not { .. } => true,
         OxInst::CallNative {
             callee:
                 oxvba_oxir::OxNativeCallee::Builtin(
@@ -387,6 +387,9 @@ pub unsafe extern "C" fn evaluate(
                     *dst,
                     arith::div(&read_value(lhs)?, &read_value(rhs)?).map_err(|e| e.code)?,
                 ),
+                OxInst::Not { dst, src } => {
+                    (*dst, arith::not(&read_value(src)?).map_err(|e| e.code)?)
+                }
                 OxInst::Neg { dst, src, mode } => (
                     *dst,
                     arith::neg(&read_value(src)?, *mode).map_err(|e| e.code)?,

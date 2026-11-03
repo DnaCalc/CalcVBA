@@ -15,6 +15,8 @@ pub const OTHER_IID: oxvba_com::ComInterfaceIid = oxvba_com::ComInterfaceIid {
     data3: 0x1101,
     data4: [11; 8],
 };
+pub type NativeBooleanCallback = unsafe extern "system" fn(*mut c_void, *mut i16) -> i32;
+pub type NativeDoubleCallback = unsafe extern "system" fn(*mut c_void, *mut f64) -> i32;
 pub type NativeCallback = unsafe extern "system" fn(*mut c_void, *mut i32) -> i32;
 #[derive(Default)]
 pub struct Observation {
@@ -24,6 +26,8 @@ pub struct Observation {
     pub dynamic: Cell<u32>,
     pub refuse_identity: Cell<bool>,
     pub callback: Cell<Option<NativeCallback>>,
+    pub double_callback: Cell<Option<NativeDoubleCallback>>,
+    pub boolean_callback: Cell<Option<NativeBooleanCallback>>,
     pub callback_context: Cell<*mut c_void>,
     pub prebound: Cell<bool>,
     pub invokes: Cell<u32>,
@@ -38,6 +42,8 @@ struct Table {
     dispatch: RawIDispatchVtbl,
     count: unsafe extern "system" fn(*mut c_void, *mut i32) -> i32,
     count_by_ref: unsafe extern "system" fn(*mut c_void, *mut i32, *mut i32) -> i32,
+    count_double: unsafe extern "system" fn(*mut c_void, *mut f64, *mut f64, *mut f64) -> i32,
+    count_boolean: unsafe extern "system" fn(*mut c_void, *mut i16, *mut i16, *mut i16) -> i32,
 }
 struct Storage {
     headers: [Header; 3],
@@ -148,6 +154,50 @@ unsafe extern "system" fn count_by_ref(this: *mut c_void, amount: *mut i32, out:
         count(this, out)
     }
 }
+unsafe extern "system" fn count_double(
+    this: *mut c_void,
+    amount: *mut f64,
+    alias: *mut f64,
+    out: *mut f64,
+) -> i32 {
+    // SAFETY: the exact descriptor supplies initialized DOUBLE argument/result
+    // authorities, with repeated caller aliases sharing one native pointer.
+    unsafe {
+        if amount != alias {
+            return 0x80070057u32 as i32;
+        }
+        *amount += 10.0;
+        let observed = &(*owner(this)).observed;
+        observed.calls.set(observed.calls.get() + 1);
+        if let Some(callback) = observed.double_callback.get() {
+            return callback(observed.callback_context.get(), out);
+        }
+        *out = *amount;
+        0
+    }
+}
+unsafe extern "system" fn count_boolean(
+    this: *mut c_void,
+    amount: *mut i16,
+    alias: *mut i16,
+    out: *mut i16,
+) -> i32 {
+    // SAFETY: the exact descriptor supplies initialized VARIANT_BOOL cells;
+    // repeated caller aliases share this same native pointer.
+    unsafe {
+        if amount != alias {
+            return 0x80070057u32 as i32;
+        }
+        *amount = -1;
+        let observed = &(*owner(this)).observed;
+        observed.calls.set(observed.calls.get() + 1);
+        if let Some(callback) = observed.boolean_callback.get() {
+            return callback(observed.callback_context.get(), out);
+        }
+        *out = *amount;
+        0
+    }
+}
 unsafe fn dynamic(this: *mut c_void) -> i32 {
     // SAFETY: inherited fixture receiver contract; record forbidden transport.
     unsafe {
@@ -194,6 +244,40 @@ unsafe extern "system" fn invoke(
             observed.invokes.set(observed.invokes.get() + 1);
             (*result).Anonymous.Anonymous.vt = windows_sys::Win32::System::Variant::VT_I4;
             let out = std::ptr::addr_of_mut!((*result).Anonymous.Anonymous.Anonymous.lVal);
+            if dispid == 7010 && flags == 1 && (*params).cArgs == 2 {
+                use windows_sys::Win32::System::Variant::{VT_BOOL, VT_BYREF};
+                let left = &*(*params).rgvarg.add(1);
+                let right = &*(*params).rgvarg;
+                if left.Anonymous.Anonymous.vt != VT_BYREF | VT_BOOL
+                    || right.Anonymous.Anonymous.vt != VT_BYREF | VT_BOOL
+                {
+                    return 0x80020005u32 as i32;
+                }
+                (*result).Anonymous.Anonymous.vt = VT_BOOL;
+                return count_boolean(
+                    this,
+                    left.Anonymous.Anonymous.Anonymous.pboolVal,
+                    right.Anonymous.Anonymous.Anonymous.pboolVal,
+                    std::ptr::addr_of_mut!((*result).Anonymous.Anonymous.Anonymous.boolVal),
+                );
+            }
+            if dispid == 7009 && flags == 1 && (*params).cArgs == 2 {
+                use windows_sys::Win32::System::Variant::{VT_BYREF, VT_R8};
+                let left = &*(*params).rgvarg.add(1);
+                let right = &*(*params).rgvarg;
+                if left.Anonymous.Anonymous.vt != VT_BYREF | VT_R8
+                    || right.Anonymous.Anonymous.vt != VT_BYREF | VT_R8
+                {
+                    return 0x80020005u32 as i32;
+                }
+                (*result).Anonymous.Anonymous.vt = VT_R8;
+                return count_double(
+                    this,
+                    left.Anonymous.Anonymous.Anonymous.pdblVal,
+                    right.Anonymous.Anonymous.Anonymous.pdblVal,
+                    std::ptr::addr_of_mut!((*result).Anonymous.Anonymous.Anonymous.dblVal),
+                );
+            }
             if dispid == 7008 && flags == 1 && (*params).cArgs == 1 {
                 let argument = &*(*params).rgvarg;
                 if argument.Anonymous.Anonymous.vt
@@ -225,4 +309,6 @@ static TABLE: Table = Table {
     },
     count,
     count_by_ref,
+    count_double,
+    count_boolean,
 };

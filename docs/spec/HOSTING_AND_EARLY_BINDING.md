@@ -541,3 +541,9 @@ Workbook_BeforeClose agree with both owning runtimes. This is host registration,
 not automatic document/WithEvents wiring. Full handler-error policy, structural
 ByRef arguments, apartments and pinned certification remain open. See
 [event evidence](../evidence/programs/ideal-2026-07/windows-x64/WIN-5/typed-excel-events-run13.md).
+
+Native synchronous callback synchronization now covers declared ByRef Long, Double
+and canonical Automation Boolean cells. Each repeated alias projects one native
+authority, publishes its actual carrier to the owning caller before reentry and
+refreshes that authority from the caller after the callback. Other carriers and
+direct native-pointer identity with physical caller storage remain open.

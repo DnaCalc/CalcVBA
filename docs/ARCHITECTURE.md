@@ -366,3 +366,9 @@ survives subscription removal during reentry. Excel Change suppression/nesting
 and BeforeClose cancellation match VBA on both owning backends. Automatic
 document/WithEvents wiring and the broader event contract remain open; see
 [event evidence](evidence/programs/ideal-2026-07/windows-x64/WIN-5/typed-excel-events-run13.md).
+
+The native callback scalar synchronization path also covers exact Double and
+canonical Automation Boolean cells. Both native-cell and owning-caller phases
+select their declared carriers and preserve repeated alias authorities. Owning
+Boolean Not uses the existing shared operator implementation; broader logical
+and bitwise instruction admission remains open. See [scalar callback evidence](evidence/programs/ideal-2026-07/core/CORE-7/typed-native-scalar-callbacks-run13.md).

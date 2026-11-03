@@ -2450,3 +2450,276 @@ fn connection_point_dispatch_sink_runs_typed_handlers_and_rejects_stale_targets(
         );
     }
 }
+
+#[test]
+fn native_double_boolean_aliases_remain_visible_during_prebound_and_native_callbacks() {
+    use api::{RuntimeProvider, SessionExt};
+    use std::{cell::Cell, ffi::c_void, rc::Weak};
+    struct Types(bool);
+    impl oxvba_symbol::TypeLibResolver for Types {
+        fn resolve(
+            &self,
+            request: &oxvba_com::TypeLibResolveRequest,
+        ) -> Option<oxvba_com::TypeLibMetadataBlob> {
+            use oxvba_com::{TypeLibParamType as P, TypeLibWireType as W};
+            let mut blob = FixtureTypes.resolve(request)?;
+            let prototype = blob.members[0].clone();
+            blob.members = [
+                ("CountDouble", 9, P::ByRefDouble, P::Double),
+                ("CountBoolean", 10, P::ByRefBoolean, P::Boolean),
+            ]
+            .into_iter()
+            .map(|(name, slot, parameter, result)| {
+                let mut member = prototype.clone();
+                member.name = name.into();
+                member.token = 7000 + slot;
+                member.vtable_slot = Some(slot as u16);
+                member.vtable_slot_bound = Some(11);
+                member.invoke_kind = oxvba_com::TypeLibMemberInvokeKind::Method;
+                member.requires_argument = true;
+                member.parameter_names = vec!["amount".into(), "sameAmount".into()];
+                member.parameter_optional = vec![false; 2];
+                member.parameter_optional_defaults =
+                    vec![oxvba_com::OptionalParamDefault::Required; 2];
+                member.parameter_iids = vec![None; 2];
+                member.parameter_types = vec![parameter; 2];
+                member.parameter_wire_types = vec![W::Automation(parameter); 2];
+                member.return_type = Some(result);
+                member.return_wire_type = Some(W::Automation(result));
+                if self.0 {
+                    member.vtable_slot = None;
+                    member.vtable_slot_bound = Some(7);
+                    member.is_dual = false;
+                    member.source_typekind = Some(oxvba_com::SourceTypeKind::Dispatch);
+                }
+                member
+            })
+            .collect();
+            blob.member_name_to_token = blob
+                .members
+                .iter()
+                .map(|m| (m.name.clone(), m.token))
+                .collect();
+            Some(blob)
+        }
+    }
+    struct State {
+        session: Weak<Box<dyn api::Session>>,
+        tick: api::TypedProcedure<(), f64>,
+        boolean_tick: api::BoundProcedure,
+        calls: Cell<usize>,
+    }
+    // SAFETY CONTRACT: a registration retains this state and the native DOUBLE
+    // result throughout the same-thread synchronous call, then disarms it.
+    unsafe extern "system" fn callback(data: *mut c_void, output: *mut f64) -> i32 {
+        // SAFETY: the scoped registration pins the exact State until disarmed.
+        let state = unsafe { &*data.cast::<State>() };
+        let value = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            api::with_native_callback_context(|context| {
+                let session = state.session.upgrade().ok_or(api::Error::StaleHandle)?;
+                let before = context.remaining_blocks;
+                let result = session.call_typed_in_context(&state.tick, (), context);
+                assert!(context.remaining_blocks < before);
+                state.calls.set(state.calls.get() + 1);
+                result
+            })
+            .and_then(|r| r)
+        }));
+        match value {
+            Ok(Ok(value)) => {
+                // SAFETY: the admitted native signature supplies one writable DOUBLE.
+                unsafe { output.write(value) };
+                0
+            }
+            _ => 0x80004005u32 as i32,
+        }
+    }
+    // SAFETY CONTRACT: the same registration pins State and one writable
+    // VARIANT_BOOL result for this synchronous native callback.
+    unsafe extern "system" fn boolean_callback(data: *mut c_void, output: *mut i16) -> i32 {
+        // SAFETY: registration retains this exact stable State allocation.
+        let state = unsafe { &*data.cast::<State>() };
+        let value = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            api::with_native_callback_context(|context| {
+                let session = state.session.upgrade().ok_or(api::Error::StaleHandle)?;
+                let before = context.remaining_blocks;
+                let result = session
+                    .call_values(&state.boolean_tick, &[], context)
+                    .and_then(|value| match value {
+                        api::Value::Boolean(value) => Ok(value),
+                        _ => Err(api::Error::ArgumentMismatch),
+                    });
+                assert!(context.remaining_blocks < before);
+                state.calls.set(state.calls.get() + 1);
+                result
+            })
+            .and_then(|r| r)
+        }));
+        match value {
+            Ok(Ok(value)) => {
+                // SAFETY: exact native result cell; Automation Boolean is canonical -1/0.
+                unsafe { output.write(if value { -1 } else { 0 }) };
+                0
+            }
+            _ => 0x80004005u32 as i32,
+        }
+    }
+    struct Registration(Rc<native_identity::Observation>);
+    impl Drop for Registration {
+        fn drop(&mut self) {
+            self.0.double_callback.set(None);
+            self.0.boolean_callback.set(None);
+            self.0.callback_context.set(std::ptr::null_mut());
+        }
+    }
+    for backend in backends() {
+        for dispatch in [false, true] {
+            let host = host();
+            let (pointer, observed) = native_identity::create();
+            {
+                // SAFETY: the fixture transfers exactly one owned same-apartment reference.
+                let raw = unsafe {
+                    host.com()
+                        .bind_native_dispatch_object_variant("Owned.DoubleCallback", pointer.cast())
+                }
+                .unwrap();
+                observed.prebound.set(dispatch);
+                let mut project = api::Project::module(
+                    "Api",
+                    format!(
+                        "{}\n{}",
+                        include_str!(
+                            "../../../docs/evidence/programs/ideal-2026-07/core/CORE-7/native-scalar-callback-bodies-run13.bas"
+                        ),
+                        r#"Public Function RunBoolean(ByVal root As NativeFixture.Calculator) As String
+    Dim result As Boolean
+    aliasFlag = False
+    result = root.CountBoolean(aliasFlag, aliasFlag)
+    RunBoolean = result & ":" & aliasFlag
+End Function
+Public Function Run(ByVal root As NativeFixture.Calculator) As String
+    Dim result As Double
+    aliasValue = 2#
+    result = root.CountDouble(aliasValue, aliasValue)
+    Run = result & ":" & aliasValue
+End Function
+"#
+                    ),
+                );
+                project
+                    .references
+                    .push(api::TypeLibraryReference::named("NativeFixture"));
+                let provider =
+                    Provider::with_host(host.clone()).with_type_libraries(Rc::new(Types(dispatch)));
+                let module = provider.compile(&project).unwrap();
+                let interfaces = module
+                    .com_interfaces()
+                    .iter()
+                    .filter_map(|i| match i {
+                        oxvba_oxir::ComInterface::Com(m) => Some(m.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                let members = interfaces
+                    .iter()
+                    .flat_map(|i| &i.members)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                // SAFETY: the exact unchanged fixture descriptors select its native ABI.
+                let object = unsafe {
+                    host.com().prepare_typed_object_with_interfaces(
+                        raw.as_object_ref().unwrap(),
+                        &members,
+                        &interfaces,
+                    )
+                }
+                .unwrap();
+                host.com()
+                    .release_object_variant(raw.as_object_ref().unwrap())
+                    .unwrap();
+                let session: Rc<Box<dyn api::Session>> = Rc::new(
+                    provider
+                        .load(
+                            &project,
+                            match backend {
+                                Backend::Interpreter => api::Backend::Interpreter,
+                                Backend::Jit => api::Backend::Jit,
+                            },
+                            api::HOST_API_ABI,
+                        )
+                        .unwrap(),
+                );
+                let state = Box::new(State {
+                    session: Rc::downgrade(&session),
+                    tick: session.bind_typed("Api", "CallbackValue").unwrap(),
+                    boolean_tick: session
+                        .bind_values("Api", "BooleanCallbackValue", &[], api::ValueType::Boolean)
+                        .unwrap(),
+                    calls: Cell::new(0),
+                });
+                observed
+                    .callback_context
+                    .set((&*state as *const State).cast_mut().cast());
+                observed.double_callback.set(Some(callback));
+                observed.boolean_callback.set(Some(boolean_callback));
+                let registration = Registration(observed.clone());
+                for (name, expected) in [("Run", "12.5:12.5"), ("RunBoolean", "False:False")] {
+                    let bound = session
+                        .bind_values(
+                            "Api",
+                            name,
+                            &[api::ValueType::HostObject],
+                            api::ValueType::String,
+                        )
+                        .unwrap();
+                    let before = host.com().com_dispatch_transport_counts();
+                    let mut invocation = session
+                        .begin_values(
+                            &bound,
+                            &[api::ValueSlot::Object(object.argument())],
+                            api::InvocationFrame::new(13, None, Rc::new(())),
+                            1000,
+                        )
+                        .unwrap();
+                    loop {
+                        if let api::ValueProgress::Returned(value) = invocation.resume(1).unwrap() {
+                            let api::Value::String(value) = value else {
+                                panic!("String expected")
+                            };
+                            println!("{backend:?} dispatch={dispatch} {name}: {}", value.as_str());
+                            assert_eq!(value.as_str(), expected);
+                            break;
+                        }
+                    }
+                    assert_eq!(
+                        host.com().com_dispatch_transport_counts(),
+                        (
+                            before.0 + u64::from(!dispatch),
+                            before.1 + u64::from(dispatch)
+                        )
+                    );
+                    drop(invocation);
+                }
+                let mut context = api::TypedContext {
+                    remaining_blocks: 1000,
+                };
+                for expected in [true, false] {
+                    assert!(
+                        matches!(session.call_values(&state.boolean_tick,&[],&mut context).unwrap(),api::Value::Boolean(value) if value==expected)
+                    );
+                }
+                assert_eq!(state.calls.get(), 2);
+                assert_eq!(observed.dynamic.get(), 0);
+                assert_eq!(observed.calls.get(), 2);
+                assert_eq!(observed.invokes.get(), u32::from(dispatch) * 2);
+                drop(registration);
+                drop(state);
+                drop(object);
+                drop(session);
+                drop(module);
+            }
+            drop(host);
+            assert_eq!(observed.references.get(), 0);
+        }
+    }
+}

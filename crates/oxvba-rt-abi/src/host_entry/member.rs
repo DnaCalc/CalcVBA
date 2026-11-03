@@ -112,29 +112,35 @@ pub(super) unsafe fn invoke(
     }
     let mut synchronize = |phase, values: &mut [Value]| -> Result<(), i32> {
         for i in 0..args.len() {
-            if aliases[i] != i
-                || descriptor.parameter_types[indices[i]] != oxvba_com::TypeLibParamType::ByRefLong
-            {
+            if aliases[i] != i {
                 continue;
             }
+            let ty = match descriptor.parameter_types[indices[i]] {
+                oxvba_com::TypeLibParamType::ByRefLong => ScalarType::Long,
+                oxvba_com::TypeLibParamType::ByRefDouble => ScalarType::Double,
+                oxvba_com::TypeLibParamType::ByRefBoolean => ScalarType::Boolean,
+                _ => continue,
+            };
             let Some(target) = targets[i] else {
                 continue;
             };
             match phase {
                 CallerSyncPhase::WriteCaller => {
-                    let Value::Long(value) = values[i] else {
+                    let slot = values[i].borrow_slot().ok_or(13)?;
+                    if slot.ty() != ty {
                         return Err(13);
-                    };
-                    let bits = super::ScalarBits::long(value);
-                    // SAFETY: the exact Long lvalue and its canonical ancestor/
-                    // global owner stay leased; no frame reference crosses reentry.
-                    unsafe { write_slot(raw, target, ScalarType::Long, &bits) }?;
+                    }
+                    let bits = slot.bits();
+                    // SAFETY: this exact primitive lvalue and its canonical owner
+                    // stay leased; no frame reference crosses callback reentry.
+                    unsafe { write_slot(raw, target, ty, &bits) }?;
                 }
                 CallerSyncPhase::ReadCaller => {
-                    // SAFETY: the callback has finished; read the same retained
-                    // exact Long lvalue, including any ancestor/global alias.
-                    let bits = unsafe { read_slot(raw, target, ScalarType::Long) }?;
-                    values[i] = Value::Long(bits.as_long());
+                    // SAFETY: callback finished; read the same exact primitive
+                    // lvalue, including its ancestor/global alias authority.
+                    let bits = unsafe { read_slot(raw, target, ty) }?;
+                    // SAFETY: the retained source owns this exact primitive carrier.
+                    values[i] = unsafe { calcvba_host_api::value::retain_bits(ty, bits) }?;
                 }
             }
         }

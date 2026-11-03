@@ -552,20 +552,22 @@ pub(super) unsafe fn invoke(
             pointer
         };
         if canonical[index] == index
-            && member.parameter_types[index] == P::ByRefLong
             && let Some(source) = source[index]
         {
-            bindings.push(long_sync::Binding {
-                source,
-                pointer: pointer.cast(),
-            });
+            let pointer = match member.parameter_types[index] {
+                P::ByRefLong => long_sync::Pointer::Long(pointer.cast()),
+                P::ByRefDouble => long_sync::Pointer::Double(pointer.cast()),
+                P::ByRefBoolean => long_sync::Pointer::Boolean(pointer.cast()),
+                _ => continue,
+            };
+            bindings.push(long_sync::Binding { source, pointer });
         }
     }
     if !dispatch && member.return_type.is_some() {
         ffi.push(FfiArg::Pointer(output.pointer()));
     }
     let mut native_failure = None;
-    // SAFETY: original canonical LONG pointers and caller owners span the
+    // SAFETY: original canonical scalar pointers and caller owners span the
     // synchronous operation. Hooks use no reference across callback execution.
     let synchronization_failure = unsafe {
         long_sync::with_sync(arguments, &bindings, || {

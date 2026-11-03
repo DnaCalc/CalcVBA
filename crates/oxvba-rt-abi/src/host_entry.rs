@@ -1587,6 +1587,16 @@ impl ScalarLayout {
             {
                 self.comparison_type(lhs, rhs).map(|_| ())
             }
+            OxInst::Not { dst, src }
+                if self.owning
+                    && matches!(
+                        self.slots[self.slot(*dst)?],
+                        ScalarType::Boolean | ScalarType::Variant
+                    )
+                    && self.operand_type(src)? == ScalarType::Boolean =>
+            {
+                Ok(())
+            }
             OxInst::Neg { dst, src, mode }
                 if self.owning
                     && matches!(
@@ -1674,6 +1684,7 @@ fn instruction_destination(inst: &OxInst) -> Option<OxPlace> {
         | OxInst::Arith { dst, .. }
         | OxInst::Div { dst, .. }
         | OxInst::Neg { dst, .. }
+        | OxInst::Not { dst, .. }
         | OxInst::Compare { dst, .. }
         | OxInst::CompareObjectIs { dst, .. }
         | OxInst::Concat { dst, .. }

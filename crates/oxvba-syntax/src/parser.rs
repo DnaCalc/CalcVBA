@@ -4315,25 +4315,3 @@ mod tests {
         }
     }
 }
-
-#[allow(unexpected_cfgs)]
-#[cfg(kani)]
-mod kani_proofs {
-    use super::*;
-
-    #[kani::proof]
-    fn parse_non_empty_source_roundtrips_input() {
-        let len: usize = kani::any();
-        kani::assume(len <= 24);
-
-        let mut source = String::new();
-        for _ in 0..len {
-            let b: u8 = kani::any();
-            let ascii = 32 + (b % 95);
-            source.push(char::from(ascii));
-        }
-
-        let p = parse(&source);
-        assert_eq!(p.syntax().text(), source);
-    }
-}

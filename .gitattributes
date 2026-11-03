@@ -40,7 +40,6 @@
 .gitignore text eol=lf
 .gitattributes text eol=lf
 .git-blame-ignore-revs text eol=lf
-formal/lean/lean-toolchain text eol=lf
 
 # Tracked product, Office, COM, database, and native fixture artifacts.
 *.accdb binary
@@ -51,4 +50,3 @@ formal/lean/lean-toolchain text eol=lf
 *.xlsm binary
 
 # Captured UTF-16/terminal evidence is opaque transport, despite its suffix.
-docs/evidence/conformance/com/COM_LANE_L2E_LOG_OxVba.TestEventServer_20260309T000005Z.txt binary

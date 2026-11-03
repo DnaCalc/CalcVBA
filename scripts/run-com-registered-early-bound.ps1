@@ -1,6 +1,6 @@
 param(
     [switch]$NoCapture,
-    [string]$EvidenceDir = "docs/evidence/conformance/com",
+    [string]$EvidenceDir = "temp/oracle/conformance/com",
     [string]$RunId = "",
     [switch]$NoThrow,
     [switch]$NoLatest

@@ -12,7 +12,7 @@ current source. It does not catalog HAL clause IDs (`HAL-TIME-002` etc.),
 profile/workset identifiers, or generic Rust error strings with no stable
 prefix.
 
-## Status Register
+## Error families
 
 | Family | Source status | Authority | Notes |
 |---|---|---|---|

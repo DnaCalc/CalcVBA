@@ -1,7 +1,7 @@
 //! `oxvba-bundle` — the clean, slim execution target.
 //!
 //! This crate defines the *ideal* shape of the executable semantic package per
-//! `docs/spec/OXVBA_FRONTEND_AND_CORE_IR_CONTRACT_V1.md`: a primitive instruction
+//! `docs/ARCHITECTURE.md`: a primitive instruction
 //! set (`isa::Op`), one native-call form (`isa::CallNative` over
 //! `native::NativeImplId`), and the metadata that makes a program runnable and
 //! JIT-targetable. It is built on the `oxvba-runtime` value substrate and has no

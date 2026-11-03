@@ -48,7 +48,7 @@ function Get-DefaultProfileOutputDir {
     )
 
     $gateInt = Get-ActiveGateInt -AgentsPath $AgentsPath
-    return "docs/evidence/profiles/v$gateInt"
+    return "temp/oracle/profiles/v$gateInt"
 }
 
 function Resolve-RunId {

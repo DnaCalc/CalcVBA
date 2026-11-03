@@ -2,7 +2,6 @@
 
 pub mod adapters;
 pub mod callbacks;
-pub mod conformance;
 pub mod dynamic_bridge;
 pub mod error;
 pub mod journal;

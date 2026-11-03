@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 # Reuse the owned-process supervisor, UIA guardian and explicit VBE compile.
 # No Office binaries or security settings are inspected or changed.
 $sourceName = if ($Case -eq 'dictionary') { 'early-dictionary.bas' } else { 'hosting-public.bas' }
-$sourcePath = Join-Path $PSScriptRoot "../docs/evidence/programs/ideal-2026-07/windows-x64/WIN-4/$sourceName"
+$sourcePath = Join-Path $PSScriptRoot "../temp/oracle/programs/ideal-2026-07/windows-x64/WIN-4/$sourceName"
 $script:hostingSource = Get-Content -Raw -LiteralPath $sourcePath
 if ($Case -eq 'private-module') { $script:hostingSource = "Option Private Module`n" + $script:hostingSource }
 $script:hostingCaseId = 'windows-scalar-interop'
@@ -45,6 +45,6 @@ if ($Case -eq 'dictionary') {
 }
 $supervisor = $supervisor.Replace('$PSScriptRoot', ("'" + $PSScriptRoot.Replace("'", "''") + "'"))
 try {
-    & ([scriptblock]::Create($supervisor)) -EnvironmentId 'win-x64-dev-oracle-2026-07' -NoMatrixUpdate -SafeMode -DiagnosticCaseId $script:hostingCaseId -RunId $RunId -OutputRoot $OutputRoot -TimeoutSeconds 180
+    & ([scriptblock]::Create($supervisor)) -SafeMode -DiagnosticCaseId $script:hostingCaseId -RunId $RunId -OutputRoot $OutputRoot -TimeoutSeconds 180
 }
 finally { if ($workerPath) { Remove-Item -LiteralPath $workerPath -Force } }

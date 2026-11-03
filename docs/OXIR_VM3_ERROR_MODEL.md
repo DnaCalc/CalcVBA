@@ -1,37 +1,9 @@
-# OxIR / vm3 error-handling model (On Error · Resume · Err · GoSub)
+# VBA error handling
 
-> Status: M2-c. This is the reference for how vm3 (and, later, the Cranelift JIT)
-> execute VBA run-time error handling. It is **spec-faithful to MS-VBAL** (= real
-> Office VBA 7.1); where the legacy oracle **vm2 diverges from the spec, vm3 follows
-> the spec** and the divergence is recorded in [§7](#7-confirmed-vm2-vs-spec-divergences).
-> Spec citations are to `[MS-VBAL]-250520` (mirrored in `../Foundation`).
-
-The whole point of M2-c is that error handling is the trickiest corner of VBA and we
-want it *perfectly right* — so this document is written against the spec, not against
-vm2's behaviour.
-
----
-
-## 1. The shape of the model: block-structured, not pc-arithmetic
-
-vm2 models errors over a flat program counter: a fault calls `route_fault`, which uses
-`statement_bounds(pc)` to binary-search a `statement_starts` table for the resume
-targets. OxIR is **block-structured**, which makes the model simpler and the resume
-targets *static*:
-
-- Each VBA statement lowers to its own **start block** plus a **landing-pad block**.
-- A statement's fallible instructions (and a fallible terminator — `Raise`/`RaiseValue`)
-  carry a `fault_target` edge to that statement's pad.
-- The pad is `OxTerminator::FaultDispatch { resume, resume_next }`, which **carries the
-  two resume seeds as block ids**: `resume` = the faulting statement's own start block
-  (where `Resume` re-enters), `resume_next` = the following statement's start block
-  (where `Resume Next` continues).
-
-Consequence: vm3 needs **no** `statement_starts` table and **no** pc arithmetic. When a
-handler catches, it captures `(resume, resume_next)` straight off the pad. Cross-call
-`Resume` also falls out for free — see [§5](#5-cross-call-propagation).
-
----
+OxIR retains a fault edge for each fallible statement. Its FaultDispatch
+terminator names the faulting statement and the next statement, so VM3 and
+the JIT can apply On Error and Resume without reconstructing source text.
+The runtime tests cover the supported Err/handler behaviour.
 
 ## 2. Runtime state (per VM and per activation)
 
@@ -180,69 +152,3 @@ Elaboration (`crates/oxvba-oxir`): `Raise`/`RaiseValue` fault edge (done, `478df
 (R13, M2-c-4).
 
 ---
-
-## 7. Confirmed vm2-vs-spec divergences
-
-These are real bugs in the legacy oracle (vm2). vm3 follows the spec; the vm3-vs-vm2
-differential allowlists the affected programs as known vm2 deviations (with the spec
-citation), exactly as we did for the duplicate-label case. **The single root cause is
-that vm2 has no "active error" concept — only a handler policy.**
-
-| # | Divergence | Spec | vm2 | Sev |
-|---|---|---|---|---|
-| D1 | `On Error GoTo <h>` is **not demoted** on fire, so a re-raise inside the handler **re-enters the same handler** (can loop) instead of propagating to the caller | §5.4.4 l. 2803 | `lib.rs:960-963` leaves `error_mode=Goto(h)` | high |
-| D2 | `Err.Raise` **drops Source/Description/HelpFile/HelpContext** (keeps only Number; always `default_error_message`); no §9071 inheritance | §6.1.3.2.1.2 ll. 9055-9071 | `stmt.rs:1609-1626` reads only arg 0; `set_err` forces `source=""` | high |
-| D3 | **No `Err` auto-reset** on `On Error`/`Resume`/`Exit *` — only `Err.Clear` resets | §5.4.4.1 l. 2821; §5.4.4.2 l. 2831; §6.1.3.2.1.1 ll. 9047-9052 | only `set_err` (raise) + `Op::ClearErr` touch `self.err` | med |
-| D4 | `Resume*` with **no active error** does not raise **error 20** — vm2 jumps to a stale `{0,0}` seed | §5.4.4.2 l. 2830 | `lib.rs:2466-2468` unconditional `next_pc = resume.*` | med |
-| D5 | `Error <n>` statement **fails to parse** (no parser/binder arm) | §5.4.4.3 | `parser.rs` has no `KwError` statement arm | med |
-| D6 | `Return` on an empty GoSub list does not raise **error 3** ("Return without GoSub") | §5.4.2.15 l. 2528 | `linearize.rs:285` trampoline falls through to `Op::Return` | low |
-| D7 | GoSub is a **single overwriting slot**, not a LIFO stack — nested GoSub loses outer return points | §5.4.2.14 l. 2523 | `linearize.rs` single `gosub_ret_slot` | low |
-| D8 | `On Error GoTo -1` **cannot compile** (parser rejects the `-1`) — a valid VBA construct | §5.4.4.1 l. 2815 | `parse_label_ref` rejects `Minus`; `bind_on_error` → `Malformed` | high |
-
----
-
-## 8. Needs live Excel oracle
-
-Spec-silent or spec-ambiguous points to confirm against real Office before locking
-(snippets print to the Immediate window; capture each value):
-
-1. **`On Error GoTo -1` exact effect** — clears the active error + resets `Err`, keeps
-   the handler armed; re-arming `On Error GoTo H2` after `GoTo -1` works.
-2. **Re-arming a handler while an error is still active** (no `GoTo -1`/`Resume`) — is it
-   rejected or does it silently re-arm?
-3. **Default `Err.Source`** for an omitted Source — confirm it is the VBA project name;
-   capture the literal.
-4. **`Err.Raise` field inheritance (§9071)** — a second `Raise` omitting
-   Source/Description inherits current fields when Err fields are inheritable.
-5. **Re-raise inside an active `Goto` handler propagates to the caller** (confirms D1/R9).
-
-Default `Err.Description` text for the common runtime-message table has been captured in
-`docs/evidence/conformance/vm3_default_error_message_oracle_20260701T1410Z/`.
-
-(Each item carries an exact VBA snippet in the M2-c research record / memory.)
-
----
-
-## 9. Open questions
-
-- `On Error GoTo -1` vs `Resume`: both clear the active error, but `GoTo -1` must **not**
-  transfer control or consume the resume seed — confirm.
-- `Err` properties are **writable** in real VBA (`Err.Number = …`, `Err.Source = …`);
-  vm2 has no Err-write path. Needed to make §9071 inheritance observable — scope for
-  M2-c-2 or defer.
-
----
-
-## 10. Delivery phases
-
-- **M2-c-1 (vm3 core, spec-clear, no front-end, no oracle):** `active_error` cell;
-  `SetErrorHandler` (R5); `FaultDispatch` arms with demotion (R4/R9); `Resume*` with
-  error-20 + Err-reset (R6/R7/R8); `Raise`/`RaiseValue` routing (R11-runtime, single-arg);
-  `ErrFieldGet`/`ErrFieldSet`; `GoSub`/`GoSubReturn` LIFO + error 3 (R12);
-  `Exit` Err-reset (R10).
-  Gate: the On-Error/Resume corpus programs run + match (vm2-bug edge cases allowlisted).
-- **M2-c-2 (richer `Err.Raise`/`Err`):** Source/Description/HelpFile/HelpContext through
-  binder → OxIR → `ErrState`; §9071 inheritance; Err-property writes. **Needs oracle (§8.3–8.5).**
-- **M2-c-3 (`Error <n>` statement):** parser + binder arm → `Raise`/`RaiseValue`.
-- **M2-c-4 (`On Error GoTo -1`):** parser + binder + `ErrorOp`/`ErrorHandler` variant +
-  vm3 handler. **Needs oracle (§8.1–8.2).**

@@ -1,13 +1,13 @@
 param(
     [string]$RunId = ('typed_events_{0:yyyyMMddTHHmmssZ}' -f [DateTime]::UtcNow),
-    [string]$OutputRoot = 'temp/calcvba13/oracle',
+    [string]$OutputRoot = 'temp/oracle',
     [string]$RuntimeTestExecutable = ''
 )
 $ErrorActionPreference = 'Stop'
 if ($RuntimeTestExecutable) { $RuntimeTestExecutable = (Resolve-Path -LiteralPath $RuntimeTestExecutable).Path }
 $script:preboundSource = "Public oracleEventsActive As Boolean`n" + (Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../crates/oxvba-embed/tests/support/excel_events.bas'))
 $script:preboundSource += "`n" + (Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../crates/oxvba-embed/tests/support/excel_surface.bas'))
-$script:preboundSource += "`n" + (Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../docs/evidence/programs/ideal-2026-07/windows-x64/WIN-5/typed-events-run13.bas'))
+$script:preboundSource += "`n" + (Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../crates/oxvba-embed/tests/support/oracle/typed-events-run13.bas'))
 $supervisor = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'run-excel-vba-oracle.ps1')
 $anchor = '. (Join-Path $PSScriptRoot "excel-vba-oracle-bootstrap.ps1")'
 $override = @'
@@ -66,6 +66,6 @@ if ($RuntimeTestExecutable) {
 }
 $supervisor = $supervisor.Replace('$PSScriptRoot', ("'" + $PSScriptRoot.Replace("'", "''") + "'"))
 try {
-    & ([scriptblock]::Create($supervisor)) -EnvironmentId 'win-x64-dev-oracle-2026-07' -NoMatrixUpdate -SafeMode -DiagnosticCaseId 'windows-scalar-interop' -RunId $RunId -OutputRoot $OutputRoot -TimeoutSeconds 180
+    & ([scriptblock]::Create($supervisor)) -SafeMode -DiagnosticCaseId 'windows-scalar-interop' -RunId $RunId -OutputRoot $OutputRoot -TimeoutSeconds 180
 }
 finally { if ($RuntimeTestExecutable) { Remove-Item -LiteralPath $workerPath -Force } }

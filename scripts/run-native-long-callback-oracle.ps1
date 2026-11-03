@@ -1,10 +1,10 @@
 param(
     [string]$RunId = 'calcvba12-native-long-callback',
-    [string]$OutputRoot = 'temp/calcvba12/oracle'
+    [string]$OutputRoot = 'temp/oracle'
 )
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$sourceRoot = Join-Path $root 'docs/evidence/programs/ideal-2026-07/core/CORE-7'
+$sourceRoot = Join-Path $root 'temp/oracle/programs/ideal-2026-07/core/CORE-7'
 $buildRoot = Join-Path $root 'temp/calcvba12/native-long-callback'
 [IO.Directory]::CreateDirectory($buildRoot) | Out-Null
 $library = Join-Path $buildRoot 'native-long-callback.dll'
@@ -23,4 +23,4 @@ function Get-ExcelOracleHarnessCases { return @($script:aliasDescriptor) }
 if (-not $supervisor.Contains($anchor)) { throw 'Supervisor import anchor changed' }
 $supervisor = $supervisor.Replace($anchor, $anchor + "`n" + $override)
 $supervisor = $supervisor.Replace('$PSScriptRoot', ("'" + $PSScriptRoot.Replace("'", "''") + "'"))
-& ([scriptblock]::Create($supervisor)) -EnvironmentId 'win-x64-dev-oracle-2026-07' -NoMatrixUpdate -SafeMode -DiagnosticCaseId 'windows-scalar-interop' -RunId $RunId -OutputRoot $OutputRoot -TimeoutSeconds 180
+& ([scriptblock]::Create($supervisor)) -SafeMode -DiagnosticCaseId 'windows-scalar-interop' -RunId $RunId -OutputRoot $OutputRoot -TimeoutSeconds 180

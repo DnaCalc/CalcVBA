@@ -1,6 +1,6 @@
 param(
     [string[]]$TestPath = @(),
-    [string]$OutputCsvPath = "docs/evidence/conformance/oracle_probe_queue.csv",
+    [string]$OutputCsvPath = "temp/oracle/conformance/oracle_probe_queue.csv",
     [string]$HostTag = "excel-vba"
 )
 

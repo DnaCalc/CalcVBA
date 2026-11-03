@@ -40,9 +40,7 @@ fn run(
 }
 #[test]
 fn records_and_paramarray_match_owned_vba_with_one_operation_slices() {
-    let source = include_str!(
-        "../../../docs/evidence/programs/ideal-2026-07/windows-x64/WIN-4/typed-aggregates-run11.bas"
-    );
+    let source = include_str!("support/oracle/typed-aggregates-run11.bas");
     for backend in backends() {
         let session = Provider::default()
             .load(
@@ -181,9 +179,7 @@ fn records_and_paramarray_match_owned_vba_with_one_operation_slices() {
 }
 #[test]
 fn paramarray_private_repeated_object_aliases_and_detached_copy_match_vba() {
-    let source = include_str!(
-        "../../../docs/evidence/programs/ideal-2026-07/windows-x64/WIN-4/typed-paramarray-edges-run11.bas"
-    );
+    let source = include_str!("support/oracle/typed-paramarray-edges-run11.bas");
     for backend in backends() {
         let session = Provider::default()
             .load(
@@ -212,9 +208,7 @@ fn paramarray_private_repeated_object_aliases_and_detached_copy_match_vba() {
 
 #[test]
 fn cancelling_record_and_object_paramarray_frames_releases_all_carriers() {
-    let source = include_str!(
-        "../../../docs/evidence/programs/ideal-2026-07/windows-x64/WIN-4/typed-aggregates-run11.bas"
-    );
+    let source = include_str!("support/oracle/typed-aggregates-run11.bas");
     for backend in backends() {
         let session = Provider::default()
             .load(

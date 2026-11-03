@@ -13,7 +13,7 @@ if ($RuntimeTestExecutable) {
 }
 # Reuse the exact process containment, compile authority and armed UIA guardian.
 # Replace only the runtime action: no VBA macro is active during recalculation.
-$script:worksheetSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../docs/evidence/programs/ideal-2026-07/windows-x64/WIN-4/worksheet-errors.bas')
+$script:worksheetSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../crates/oxvba-embed/tests/support/oracle/worksheet-errors.bas')
 $script:worksheetOwningObjectProbe = [bool]$OwningObjectProbe
 $supervisor = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'run-excel-vba-oracle.ps1')
 $anchor = '. (Join-Path $PSScriptRoot "excel-vba-oracle-bootstrap.ps1")'
@@ -108,6 +108,6 @@ $workerPath = Join-Path ([IO.Path]::GetTempPath()) ("oxvba-worksheet-oracle-$([G
 $supervisor = $supervisor.Replace('(Join-Path $PSScriptRoot "excel-vba-oracle-worker.ps1")', ("'" + $workerPath.Replace("'", "''") + "'"))
 $supervisor = $supervisor.Replace('$PSScriptRoot', ("'" + $PSScriptRoot.Replace("'", "''") + "'"))
 try {
-    & ([scriptblock]::Create($supervisor)) -EnvironmentId 'win-x64-dev-oracle-2026-07' -NoMatrixUpdate -SafeMode -DiagnosticCaseId 'windows-scalar-interop' -RunId $RunId -OutputRoot $OutputRoot -TimeoutSeconds 180
+    & ([scriptblock]::Create($supervisor)) -SafeMode -DiagnosticCaseId 'windows-scalar-interop' -RunId $RunId -OutputRoot $OutputRoot -TimeoutSeconds 180
 }
 finally { Remove-Item -LiteralPath $workerPath -Force }

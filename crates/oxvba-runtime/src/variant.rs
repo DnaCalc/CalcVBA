@@ -1843,15 +1843,3 @@ mod tests {
         );
     }
 }
-
-#[allow(unexpected_cfgs)]
-#[cfg(kani)]
-mod kani_proofs {
-    use super::{Variant, VariantCore};
-
-    #[kani::proof]
-    fn com_variant_layout_is_16_bytes() {
-        assert_eq!(core::mem::size_of::<VariantCore>(), 16);
-        assert_eq!(core::mem::size_of::<Variant>(), 16);
-    }
-}

@@ -1590,41 +1590,27 @@ $guardianOutput = & (Join-Path $PSScriptRoot "excel-vba-oracle-guardian.ps1") -P
 Assert-True (($guardianOutput -join "`n") -match "passed") "guardian policy self-test"
 
 $runnerPath = Join-Path $PSScriptRoot "run-excel-vba-oracle.ps1"
-$planJson = & $runnerPath -Suite HarnessSelfTest -EnvironmentId win-x64-dev-oracle-2026-07 -NoMatrixUpdate -PlanOnly -RunId offline-contract-test
+$planJson = & $runnerPath -Suite HarnessSelfTest -PlanOnly -RunId offline-contract-test
 $plan = ($planJson -join "`n") | ConvertFrom-Json
 Assert-Equal "oxvba.excel-vba-oracle-plan.v2" $plan.schema "plan schema"
 Assert-Equal 5 @($plan.cases).Count "plan case count"
 Assert-True ($plan.targeted_probe -is [bool] -and -not [bool]$plan.targeted_probe -and
     $plan.contains_diagnostic_case -is [bool] -and -not [bool]$plan.contains_diagnostic_case) "default plan must be a nontargeted selection containing only ordinary cases"
 Assert-True (@($plan.cases | Where-Object { [bool]$_.intrinsic_diagnostic_case }).Count -eq 0) "default plan descriptors must retain ordinary intrinsic membership"
-Assert-Equal $false ([bool]$plan.certifying) "dev/oracle plan cannot certify"
-Assert-Equal $false ([bool]$plan.matrix_update) "dev/oracle plan cannot update matrices"
-Assert-Equal $false ([bool]$plan.release_credit) "dev/oracle plan cannot claim release credit"
-Assert-Equal $false ([bool]$plan.capability_credit) "dev/oracle plan cannot claim capability credit"
 Assert-True ([string]$plan.ownership_policy -match "kill-on-close job" -and [string]$plan.ownership_policy -match "process-start") "plan must require prepared job containment plus complete process identity"
 Assert-True ([string]$plan.compile_policy -match "command ID 578") "plan must require forced VBE compile command ID 578"
 Assert-True ([string]$plan.modal_policy -match "guardian before") "plan must start the guardian before invocation"
-$runtimeModalPlan = ((& $runnerPath -Suite HarnessSelfTest -EnvironmentId win-x64-dev-oracle-2026-07 -NoMatrixUpdate -PlanOnly -DiagnosticCaseId runtime-unhandled-modal -RunId offline-runtime-modal-test) -join "`n") | ConvertFrom-Json
+$runtimeModalPlan = ((& $runnerPath -Suite HarnessSelfTest -PlanOnly -DiagnosticCaseId runtime-unhandled-modal -RunId offline-runtime-modal-test) -join "`n") | ConvertFrom-Json
 Assert-Equal 1 @($runtimeModalPlan.cases).Count "unhandled runtime modal diagnostic plan count"
 Assert-Equal "runtime-unhandled-modal" $runtimeModalPlan.cases[0].id "unhandled runtime modal diagnostic plan identity"
 Assert-True ([bool]$runtimeModalPlan.targeted_probe -and [bool]$runtimeModalPlan.contains_diagnostic_case -and
     [bool]$runtimeModalPlan.cases[0].intrinsic_diagnostic_case) "targeted intrinsic diagnostic plan must seal selection intent and diagnostic membership separately"
-$targetedSuccessPlan = ((& $runnerPath -Suite HarnessSelfTest -EnvironmentId win-x64-dev-oracle-2026-07 -NoMatrixUpdate -PlanOnly -DiagnosticCaseId success -RunId offline-targeted-success-test) -join "`n") | ConvertFrom-Json
+$targetedSuccessPlan = ((& $runnerPath -Suite HarnessSelfTest -PlanOnly -DiagnosticCaseId success -RunId offline-targeted-success-test) -join "`n") | ConvertFrom-Json
 Assert-True (@($targetedSuccessPlan.cases).Count -eq 1 -and [string]$targetedSuccessPlan.cases[0].id -ceq "success" -and
     [bool]$targetedSuccessPlan.targeted_probe -and -not [bool]$targetedSuccessPlan.contains_diagnostic_case -and
     -not [bool]$targetedSuccessPlan.cases[0].intrinsic_diagnostic_case) "targeted ordinary success must not be mislabeled as intrinsic diagnostic membership"
 Assert-True ([string]$plan.selected_case_selection_digest -cne [string]$targetedSuccessPlan.selected_case_selection_digest -and
     [string]$targetedSuccessPlan.selected_case_selection_digest -cne [string]$runtimeModalPlan.selected_case_selection_digest) "default, targeted ordinary, and targeted diagnostic selections must have distinct sealed digests"
-
-$missingNoMatrixRejected = $false
-try { [void](& $runnerPath -Suite HarnessSelfTest -EnvironmentId win-x64-dev-oracle-2026-07 -PlanOnly -RunId offline-contract-test) }
-catch { $missingNoMatrixRejected = $_.Exception.Message -match "requires -NoMatrixUpdate" }
-Assert-True $missingNoMatrixRejected "dev/oracle runs without -NoMatrixUpdate must fail before Excel starts"
-
-$pendingCertRejected = $false
-try { [void](& $runnerPath -Suite HarnessSelfTest -EnvironmentId win-x64-cert-vm-pending-v1 -NoMatrixUpdate -PlanOnly -RunId offline-contract-test) }
-catch { $pendingCertRejected = $_.Exception.Message -match "planned-blocking" }
-Assert-True $pendingCertRejected "pending certification VM must not be runnable"
 
 $guardianSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot "excel-vba-oracle-guardian.ps1")
 if ($IsWindows) {

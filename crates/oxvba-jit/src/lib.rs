@@ -4,7 +4,7 @@
 //! decline boundary and no VM fallback. It currently covers a broad
 //! platform-neutral language/runtime surface while Windows COM/native calls,
 //! persistent package sessions, typed-primary entries and the product cache
-//! remain open architecture work. See `docs/spec/OXVBA_JIT_ARCHITECTURE_V1.md`.
+//! remain open architecture work. See `docs/ARCHITECTURE.md`.
 
 use cranelift_codegen::ir::{
     self, AbiParam, InstBuilder, StackSlotData, StackSlotKind, UserFuncName, Value,

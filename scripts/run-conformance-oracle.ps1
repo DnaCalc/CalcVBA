@@ -18,7 +18,7 @@ try {
         if ([System.IO.Path]::IsPathRooted($OutputDir)) { $OutputDir }
         else { Join-Path $workspaceRoot $OutputDir }
     } else {
-        Join-Path $workspaceRoot "docs/evidence/conformance/oracle_captures/conformance_oracle_$stamp"
+        Join-Path $workspaceRoot "temp/oracle/conformance/oracle_captures/conformance_oracle_$stamp"
     }
     New-Item -ItemType Directory -Force -Path $runDir | Out-Null
 

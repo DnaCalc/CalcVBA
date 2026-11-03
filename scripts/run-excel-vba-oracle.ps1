@@ -1,10 +1,8 @@
 param(
     [ValidateSet("HarnessSelfTest")][string]$Suite = "HarnessSelfTest",
-    [Parameter(Mandatory = $true)][string]$EnvironmentId,
-    [switch]$NoMatrixUpdate,
     [switch]$PlanOnly,
     [string]$RunId = ("excel_vba_oracle_{0}" -f [Guid]::NewGuid().ToString("N")),
-    [string]$OutputRoot = "artifacts/windows-x64/excel-vba-oracle",
+    [string]$OutputRoot = "temp/oracle",
     [ValidateRange(30, 1800)][int]$TimeoutSeconds = 600,
     [string]$DiagnosticCaseId = "",
     [switch]$SafeMode
@@ -17,23 +15,6 @@ Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot "excel-vba-oracle-bootstrap.ps1")
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$environmentPath = Join-Path $repoRoot "docs/validation/IDEAL_ENVIRONMENT_MANIFEST_V1.csv"
-$environmentRows = @(Import-Csv -LiteralPath $environmentPath)
-$matches = @($environmentRows | Where-Object { [string]$_.environment_id -eq $EnvironmentId })
-if ($matches.Count -ne 1) {
-    throw "run-excel-vba-oracle: expected exactly one environment '$EnvironmentId', found $($matches.Count)"
-}
-$environment = $matches[0]
-if ([string]$environment.profile -ne "windows-x64" -or [string]$environment.target_arch -ne "x64" -or [string]$environment.office_bitness -ne "64") {
-    throw "run-excel-vba-oracle: environment '$EnvironmentId' is not a Windows x64 / 64-bit Excel oracle environment"
-}
-if ([string]$environment.role -eq "dev-oracle" -and -not $NoMatrixUpdate) {
-    throw "run-excel-vba-oracle: dev-oracle environment '$EnvironmentId' requires -NoMatrixUpdate"
-}
-if ([string]$environment.evidence_state -ne "characterized-noncertifying") {
-    throw "run-excel-vba-oracle: environment '$EnvironmentId' is '$($environment.evidence_state)' and is not runnable by this development/oracle supervisor"
-}
-
 $targetedProbe = -not [string]::IsNullOrWhiteSpace($DiagnosticCaseId)
 $cases = @(Get-ExcelOracleHarnessCases | Where-Object { -not [bool]$_.diagnostic_only })
 if ($targetedProbe) {
@@ -54,13 +35,6 @@ $plan = [ordered]@{
     schema = "oxvba.excel-vba-oracle-plan.v2"
     suite = $Suite
     run_id = $RunId
-    environment_id = $EnvironmentId
-    environment_role = [string]$environment.role
-    evidence_state = [string]$environment.evidence_state
-    certifying = $false
-    matrix_update = $false
-    release_credit = $false
-    capability_credit = $false
     targeted_probe = $targetedProbe
     contains_diagnostic_case = $containsDiagnosticCase
     ownership_policy = "assign the waiting worker to a kill-on-close job before publishing mutation authority; launch Excel directly inside that containment; record PID+process-start+name+executable for Excel and guardian processes; validate classified identity before fallback cleanup"
@@ -352,7 +326,6 @@ $completedUtc = [DateTime]::UtcNow
 $transcript = [ordered]@{
     schema = "oxvba.excel-vba-oracle-transcript.v2"
     run_id = $RunId
-    environment_id = $EnvironmentId
     started_utc = $startedUtc.ToString("o")
     completed_utc = $completedUtc.ToString("o")
     duration_seconds = [Math]::Round(($completedUtc - $startedUtc).TotalSeconds, 3)
@@ -362,8 +335,6 @@ $transcript = [ordered]@{
     job_terminated_before_residual_audit = $true
     baseline_excel_pids = $baselineExcelPids
     timeout = $timedOut
-    no_matrix_update = [bool]$NoMatrixUpdate
-    certifying = $false
     targeted_probe = $targetedProbe
     contains_diagnostic_case = $containsDiagnosticCase
     selected_case_selection_digest = [string]$selectedCaseDescriptorEnvelope.selection_sha256
@@ -389,10 +360,7 @@ $summary = @"
 # Excel/VBA Oracle Harness Self-Test
 
 - Run: ``$RunId``
-- Environment: ``$EnvironmentId``
 - Result: **$displayResult**
-- Authority: development/oracle characterization only; noncertifying
-- Credit: no canonical matrix, release, certification, or capability credit
 - Ownership: newly created Excel HWNDs and guardian processes were sealed by PID, process start, name, and executable; fallback cleanup required the complete identity
 - Compile authority: VBE Debug -> Compile VBAProject command ID 578; runtime invocation was never used as a compile check
 - Modal safety: the PID-scoped UIA guardian was ready before each compile and runtime invocation
@@ -406,10 +374,10 @@ Raw evidence: ``results.json``, ``transcript.json``, ``owned-processes.jsonl``, 
 Set-Content -LiteralPath (Join-Path $outputDirectory "summary.md") -Value $summary -Encoding utf8NoBOM
 
 if (-not $targetedProbe) {
-    Write-Output "excel-vba-oracle: PASS 5/5 (development/oracle, noncertifying, no matrix update)"
+    Write-Output "excel-vba-oracle: PASS 5/5"
 }
 else {
-    Write-Output "excel-vba-oracle: TARGETED PROBE $DiagnosticCaseId captured (intrinsic diagnostic=$containsDiagnosticCase; development/oracle, noncertifying, no matrix update)"
+    Write-Output "excel-vba-oracle: TARGETED PROBE $DiagnosticCaseId captured (intrinsic diagnostic=$containsDiagnosticCase)"
 }
 Write-Output "excel-vba-oracle: $outputDirectory"
 }

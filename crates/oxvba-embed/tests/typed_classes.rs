@@ -4,11 +4,12 @@ use std::rc::Rc;
 fn project() -> api::Project {
     let mut project = api::Project::module(
         "Api",
-        include_str!(
-            "../../../docs/evidence/programs/ideal-2026-07/windows-x64/WIN-4/typed-classes-api-run11.bas"
-        ),
+        include_str!("support/oracle/typed-classes-api-run11.bas"),
     );
-    project.modules.push(api::SourceModule { name:"Widget".into(),source:include_str!("../../../docs/evidence/programs/ideal-2026-07/windows-x64/WIN-4/typed-classes-widget-run11.cls").into() });
+    project.modules.push(api::SourceModule {
+        name: "Widget".into(),
+        source: include_str!("support/oracle/typed-classes-widget-run11.cls").into(),
+    });
     project
 }
 fn run(

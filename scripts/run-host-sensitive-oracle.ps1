@@ -1,5 +1,5 @@
 param(
-    [string]$OutputRoot = "docs/evidence/conformance/oracle_captures",
+    [string]$OutputRoot = "temp/oracle/conformance/oracle_captures",
     [string]$RunId = "",
     [switch]$NoArtifacts
 )

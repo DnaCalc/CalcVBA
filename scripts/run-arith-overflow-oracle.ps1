@@ -3,7 +3,7 @@
 # Single Excel session: injects a probe module, runs each case under On Error Resume Next, and
 # records either the error number or `TypeName(r):value`. The OxVba VM is asserted against these
 # outcomes by crates/oxvba-bind/tests/feature_coverage.rs (overflow_* tests). Re-run to refresh
-# the ground truth in docs/evidence/conformance/OVERFLOW_ARITHMETIC_ORACLE_*.md.
+# the ground truth in temp/oracle/conformance/OVERFLOW_ARITHMETIC_ORACLE_*.md.
 #
 # Requires Excel with "Trust access to the VBA project object model" (AccessVBOM=1).
 param(

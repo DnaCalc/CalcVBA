@@ -1,7 +1,0 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
-     Running tests\jit_windows_vm3_parity.rs (target\debug\deps\jit_windows_vm3_parity-d329a3a73f6aec8c.exe)
-
-running 1 test
-test getobject_reads_owned_excel_workbook_values_on_both_backends ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.28s

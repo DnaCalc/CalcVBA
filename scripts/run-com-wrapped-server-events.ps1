@@ -1,5 +1,5 @@
 param(
-    [string]$EvidenceDir = "docs/evidence/conformance/oracle_captures/wrapped_com_events_20260509T000000Z"
+    [string]$EvidenceDir = "temp/oracle/conformance/oracle_captures/wrapped_com_events_20260509T000000Z"
 )
 
 $ErrorActionPreference = "Stop"

@@ -1,7 +1,7 @@
 param(
     [string]$BaselineRef = "pre-value-model-migration-2026-04-20",
     [string]$CandidateRef = "HEAD",
-    [string]$OutputRoot = "docs/evidence/value_model_migration",
+    [string]$OutputRoot = "temp/oracle/value_model_migration",
     [string]$RunId = "",
     [int]$Iterations = 3,
     [string[]]$Backend = @("vm"),

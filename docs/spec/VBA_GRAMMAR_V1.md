@@ -1,87 +1,8 @@
-# VBA Grammar V1
+# VBA grammar
 
-Date: 2026-06-01
-Authority review: 2026-07-11
-Status: current VBA semantic reference; implementation and evidence tracked in canonical matrices
-System clauses: `AUTH-SPEC-001`, `SRC-CC-001`, `SYN-CST-001`
-Current compiler contract: [`OXVBA_COMPILER_AND_SEMANTIC_ANALYSIS_CONTRACT_V2.md`](OXVBA_COMPILER_AND_SEMANTIC_ANALYSIS_CONTRACT_V2.md)
-Historical origin: frontend-v2 workset/bead `bd-aprs.2.1`
-
-## Purpose
-
-This document is the in-repo semantic grammar anchor for VBA source accepted by
-OxVba. It is a clean-room, project-owned organization of public authority.
-Existing OxVba fixtures and implementation behavior may identify regression and
-coverage cases, but they do not decide the grammar. This is not a copied extract
-of any third-party grammar.
-
-The grammar exists to drive:
-
-- parser implementation and recovery shape;
-- grammar-production coverage rows;
-- fixture classification for syntax-only, binder, execution, and host-sensitive lanes;
-- explicit canonical residuals for incomplete accepted coverage.
-
-## Authority And Provenance
-
-Authority follows `CHARTER.md`, `OPERATIONS.md`, and
-[`OXVBA_SYSTEM_CONTRACT_V1.md`](OXVBA_SYSTEM_CONTRACT_V1.md). Public
-specifications define the language model; reproducible black-box Excel/VBA
-compile observations adjudicate ambiguity or specification disagreement.
-Current OxVba parsing behavior is evidence only. A mismatch remains an open
-canonical row owned by the Core source/compiler or Excel-oracle lane; it never
-becomes grammar merely because the current parser accepts or rejects it.
-
-Primary authority:
-
-- Microsoft Open Specifications, `[MS-VBAL]: VBA Language Specification`
-  (`https://learn.microsoft.com/en-us/openspecs/microsoft_general_purpose_programming_languages/ms-vbal/d5418146-0bd2-45eb-9c7a-fd9502722c74`).
-
-Non-authoritative regression and coverage inputs:
-
-- `docs/evidence/language/MS_VBAL_MODULE_PROJECT_REQUIREMENTS.md`
-- `docs/evidence/language/MS_VBAL_MODULE_PROJECT_REQUIREMENTS.csv`
-- `docs/spec/VBA_EXPRESSION_CALL_SEMANTICS_V1.md`
-- `docs/spec/VBA_SEMANTIC_TABLES_AND_BINDING_REFERENCE_V1.md`
-- `docs/spec/VBA_TYPE_SYSTEM_V1.md`
-- `conformance/tests_manifest.csv`
-- `conformance/integration/catalog.psv`
-
-Clean-room rule:
-
-- This file names grammar categories and OxVba target productions in project-owned wording.
-- Do not paste normative MS-VBAL grammar text into this repository.
-- Public secondary material may identify a question to investigate, but no
-  production or rule may originate solely from a third-party grammar. Each such
-  question must be resolved independently from the allowed public-specification
-  or Excel/VBA authority before it enters this artifact.
-
-The EBNF below is non-normative notation for semantic productions and coverage.
-It does not prescribe parser functions, CST DTOs, recovery-node storage, or
-OxIR representation. Those representations belong to the active compiler and
-artifact contracts.
-
-## Dialect Target
-
-Target dialect governed by the compiler contract:
-
-- VBA 7.x as hosted by modern Windows Office, with Excel as the primary executable oracle.
-- Existing OxVba executable language subset remains a regression baseline, not the authority.
-- Host/COM/project semantics are in scope when needed for compile-time binding, but userform/forms
-  runtime behavior remains outside this grammar scaffold unless later worksets expand it.
-
-Known dialect notes:
-
-- Source is case-insensitive for keywords and identifiers, while preserving original spelling and
-  trivia in the CST.
-- Physical lines and logical lines differ because line continuations join lines.
-- `:` separates statements inside a logical line.
-- Comments (`'` and `Rem`) are trivia for binding/lowering but must be preserved losslessly.
-- Type characters (`%`, `&`, `^`, `!`, `#`, `@`, `$`) can participate in declaration and
-  expression lexing and must be resolved contextually.
-- Bracketed identifiers preserve text and allow otherwise special names.
-- Date literals, string literals, numeric base prefixes, and numeric suffixes are lexical forms, but
-  their semantic value is resolved after tokenization.
+Language reference for in-scope VBA behaviour. Public VBA specifications and
+Excel/VBA observations decide uncertain cases. See [architecture](../ARCHITECTURE.md)
+for current implementation limits; this reference does not claim complete support.
 
 ## Notation
 
@@ -307,34 +228,3 @@ builtin_type       = "Boolean" | "Byte" | "Currency" | "Date" | "Decimal" | "Dou
 literal            = STRING_LITERAL | DATE_LITERAL | NUMERIC_LITERAL | "True" | "False"
                    | "Empty" | "Null" ;
 ```
-
-## Coverage And Residual Ownership
-
-The following semantic areas require independently closable rows. Their status
-is read from canonical matrices rather than inferred from this reference:
-
-- preprocessor grammar (`#If`, `#ElseIf`, `#Else`, `#End If`, `#Const`) and
-  parser recovery are owned by `CORE-READINESS/CORE-SYNTAX-CST`;
-- attribute, normalization, and generated-source coordinates are owned by
-  `CORE-READINESS/CORE-SOURCE-IDENTITY-PROVENANCE`;
-- declaration legality, event/`Implements` signatures, and external-reference
-  syntax-to-meaning transitions are owned by
-  `CORE-READINESS/CORE-TYPED-BINDING`, with Windows boundary behavior remaining
-  in the Windows matrices;
-- incomplete-editor recovery consumes the same CST semantics and is evidenced
-  by the IDE baseline rows;
-- userform/control grammar and forms runtime remain `PROFILE-EXT-001` scope and
-  are not silently claimed by the accepted Core profile.
-
-Unresolved grammar behavior receives a public-spec anchor or a reproducible
-Excel/VBA compile case and an exact residual owner before any compatibility
-claim advances.
-
-## Checks
-
-- Public MS-VBAL reference verified on Microsoft Learn on 2026-06-01.
-- Existing repo language evidence and parser surface inspected as
-  non-authoritative coverage inputs.
-- EBNF scaffold consistency check: all lower-snake-case RHS production references have a matching
-  LHS definition.
-- `git diff --check`: passed with line-ending warnings only for touched tracked files.

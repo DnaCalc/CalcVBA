@@ -1,6 +1,6 @@
 param(
     [string]$RunId = ("vm3_integer_literal_oracle_{0:yyyyMMddTHHmmssZ}" -f (Get-Date).ToUniversalTime()),
-    [string]$OutputRoot = "docs/evidence/conformance"
+    [string]$OutputRoot = "temp/oracle/conformance"
 )
 
 $ErrorActionPreference = "Stop"

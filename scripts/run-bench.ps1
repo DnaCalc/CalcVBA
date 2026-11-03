@@ -8,8 +8,8 @@ param(
 )
 
 # legacy-default-profile-scope: mvp-profile-v386
-# legacy-default-output-md: docs/evidence/profiles/v386/benchmark_latest.md
-# legacy-default-output-csv: docs/evidence/profiles/v386/benchmark_latest.csv
+# legacy-default-output-md: temp/oracle/profiles/v386/benchmark_latest.md
+# legacy-default-output-csv: temp/oracle/profiles/v386/benchmark_latest.csv
 
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true

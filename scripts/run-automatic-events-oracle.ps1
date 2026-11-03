@@ -75,5 +75,5 @@ $workerPath=Join-Path ([IO.Path]::GetTempPath()) ('run14-auto-'+[Guid]::NewGuid(
 [IO.File]::WriteAllText($workerPath,$worker,[Text.UTF8Encoding]::new($false))
 $supervisor=$supervisor.Replace('(Join-Path $PSScriptRoot "excel-vba-oracle-worker.ps1")',("'"+$workerPath.Replace("'","''")+"'"))
 $supervisor=$supervisor.Replace('$PSScriptRoot',("'"+$oracleScripts.Replace("'","''")+"'"))
-try {& ([scriptblock]::Create($supervisor)) -EnvironmentId 'win-x64-dev-oracle-2026-07' -NoMatrixUpdate -SafeMode -DiagnosticCaseId 'windows-scalar-interop' -RunId $RunId -OutputRoot 'temp/calcvba15/oracle' -TimeoutSeconds 360}
+try {& ([scriptblock]::Create($supervisor)) -SafeMode -DiagnosticCaseId 'windows-scalar-interop' -RunId $RunId -OutputRoot 'temp/oracle' -TimeoutSeconds 360}
 finally {Remove-Item -LiteralPath $workerPath -Force}

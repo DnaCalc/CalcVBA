@@ -416,7 +416,7 @@ impl StandardHostServices {
     }
 
     // Contract-check scaffold: lightweight invariants now, intended to harden over time.
-    // Future steps are tracked in docs/spec/HAL_CONTRACT_ASSERTION_HARDENING.md.
+    // Future steps are tracked in docs/ARCHITECTURE.md.
     fn assert_fs_invariants(&self, state: &FileSystemState, op: &'static str) {
         #[cfg(any(debug_assertions, feature = "hal_contract_checks"))]
         {

@@ -2589,9 +2589,7 @@ fn native_double_boolean_aliases_remain_visible_during_prebound_and_native_callb
                     "Api",
                     format!(
                         "{}\n{}",
-                        include_str!(
-                            "../../../docs/evidence/programs/ideal-2026-07/core/CORE-7/native-scalar-callback-bodies-run13.bas"
-                        ),
+                        include_str!("support/oracle/native-scalar-callback-bodies-run13.bas"),
                         r#"Public Function RunBoolean(ByVal root As NativeFixture.Calculator) As String
     Dim result As Boolean
     aliasFlag = False

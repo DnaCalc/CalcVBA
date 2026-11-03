@@ -1,6 +1,6 @@
 param(
     [string]$RunId = ("vm3_scoping_visibility_oracle_{0:yyyyMMddTHHmmssZ}" -f (Get-Date).ToUniversalTime()),
-    [string]$OutputRoot = "docs/evidence/conformance"
+    [string]$OutputRoot = "temp/oracle/conformance"
 )
 
 $ErrorActionPreference = "Stop"

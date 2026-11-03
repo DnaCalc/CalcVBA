@@ -1,6 +1,6 @@
 param(
     [string]$RunId = (Get-Date -Format 'yyyyMMddTHHmmss'),
-    [string]$EvidenceRoot = 'docs/evidence/showcase'
+    [string]$EvidenceRoot = 'temp/oracle/showcase'
 )
 
 $ErrorActionPreference = 'Stop'

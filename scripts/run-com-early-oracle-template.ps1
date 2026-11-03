@@ -1,5 +1,5 @@
 param(
-    [string]$OutputDir = "docs/evidence/conformance/oracle_templates/com_early",
+    [string]$OutputDir = "temp/oracle/conformance/oracle_templates/com_early",
     [string]$RunId = "",
     [switch]$NoArtifacts,
     [switch]$NoLatest

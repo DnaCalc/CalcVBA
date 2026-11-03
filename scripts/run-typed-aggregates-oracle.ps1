@@ -1,11 +1,11 @@
 param(
     [ValidateSet('Aggregates','ParamArrayEdges')][string]$Case = 'Aggregates',
     [string]$RunId = ('typed_aggregates_{0:yyyyMMddTHHmmssZ}' -f [DateTime]::UtcNow),
-    [string]$OutputRoot = 'temp/calcvba11/oracle'
+    [string]$OutputRoot = 'temp/oracle'
 )
 $ErrorActionPreference = 'Stop'
 $filename = if ($Case -eq 'Aggregates') { 'typed-aggregates-run11.bas' } else { 'typed-paramarray-edges-run11.bas' }
-$script:aggregateSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot "../docs/evidence/programs/ideal-2026-07/windows-x64/WIN-4/$filename")
+$script:aggregateSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot "../temp/oracle/programs/ideal-2026-07/windows-x64/WIN-4/$filename")
 if ($Case -eq 'Aggregates') {
     $script:aggregateSource = $script:aggregateSource.Replace('Public Function RunProbe() As String','Public Function OriginalProbe() As String').Replace('RunProbe =','OriginalProbe =').Replace('RunProbe &','OriginalProbe &')
     $script:aggregateSource += "`nPublic Function RunProbe() As String`n    RunProbe = OriginalProbe() & `"|returns=`" & RecordReturns() & `"|prefix=`" & SumFrom(10, 2, 3)`nEnd Function`n"
@@ -25,4 +25,4 @@ function Get-ExcelOracleHarnessCases { return @($script:aggregateDescriptor) }
 if (-not $supervisor.Contains($anchor)) { throw 'Supervisor import anchor changed' }
 $supervisor = $supervisor.Replace($anchor, $anchor + "`n" + $override)
 $supervisor = $supervisor.Replace('$PSScriptRoot', ("'" + $PSScriptRoot.Replace("'", "''") + "'"))
-& ([scriptblock]::Create($supervisor)) -EnvironmentId 'win-x64-dev-oracle-2026-07' -NoMatrixUpdate -SafeMode -DiagnosticCaseId 'windows-scalar-interop' -RunId $RunId -OutputRoot $OutputRoot -TimeoutSeconds 180
+& ([scriptblock]::Create($supervisor)) -SafeMode -DiagnosticCaseId 'windows-scalar-interop' -RunId $RunId -OutputRoot $OutputRoot -TimeoutSeconds 180

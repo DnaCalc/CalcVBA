@@ -15,7 +15,7 @@
 //! VM3 is broad but remains in progress for the complete verified OxIR and
 //! Windows interop profiles. Its golden snapshot is regression evidence; public
 //! VBA specifications and reproducible Excel/VBA behavior remain semantic
-//! authority. See `docs/spec/OXVBA_OXIR_AND_IMAGE_CONTRACT_V1.md`.
+//! authority. See `docs/ARCHITECTURE.md`.
 
 use std::borrow::Cow;
 use std::collections::HashMap;

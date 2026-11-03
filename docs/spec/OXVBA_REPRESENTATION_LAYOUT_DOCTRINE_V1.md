@@ -1,35 +1,8 @@
-# OxVba Representation and Layout Doctrine V1
+# Runtime value layout
 
-Date: 2026-06-22
-Status: accepted direction, in-progress implementation
-Owner: Codex
-System clauses: `RUNTIME-VALUE-001`, `RUNTIME-ABI-001`, `WIN-PLAN-001`
-
-## Decision
-
-OxVba's runtime carriers for `BSTR`, `VARIANT`, `SAFEARRAY`, `IUnknown`, and
-the numeric primitives are intended to be exact Windows/VBA/COM storage
-representations throughout the runtime stack. These carriers are not merely
-temporary boundary projections.
-
-This means:
-
-- `oxvba-runtime` owns the exact-layout carrier types and their ownership rules.
-- VM slots may still store high-level `Variant` values, but that `Variant` must
-  itself be a faithful native `VARIANT`-compatible cell.
-- `SafeArray` descriptors, bounds, feature flags, element sizes, and payload
-  storage must match the declared element layout instead of normalizing typed
-  arrays into `VT_VARIANT` arrays.
-- `ObjectRef` must retain a COM-compatible `IUnknown` object/vtable pointer
-  shape for object identity.
-- `oxvba-com` still owns COM invocation and typelib semantics, but it should use
-  the runtime's exact carriers directly where a value is addressable.
-- Copy-in/copy-out remains valid only for temporaries, coercions, rvalues, or
-  ABI-required conversions.
-
-Non-Windows builds must keep compatible simulated Windows layouts for these
-carriers so tests and cross-platform execution do not rely on a different
-semantic-only representation.
+The runtime preserves VBA/Automation carrier layout and ownership where
+implemented. Layout tests live in `oxvba-runtime` and native interop tests in
+`oxvba-com`; broader carrier families remain incomplete.
 
 ## Carrier Requirements
 
@@ -85,42 +58,3 @@ Numeric primitive payloads must match VBA/COM storage:
 
 Semantic coercion and overflow behavior still belongs to arithmetic/binder/VM
 logic; it must not change the physical layout of an already stored carrier.
-
-## Migration Consequences
-
-- Replace boundary-only materialization paths with direct use of exact runtime
-  storage whenever the source expression denotes an addressable place.
-- Add layout and pointer-stability tests for every carrier before widening
-  compatibility claims.
-- Treat `SAFEARRAY`, UDT/record, `Decimal`, and ByRef support as in-scope
-  implementation work. Only truly unknown or foreign ABI cases should remain
-  blocked.
-- Keep docs, worksets, and evidence explicit about any carrier family that is
-  exact only for a subset.
-
-## Current Slice Evidence
-
-The 2026-06-22 typed SAFEARRAY slices change VM `ReDim` so scalar declared
-arrays allocate typed SAFEARRAY payloads instead of `VT_VARIANT` payloads, and
-move VM array element assignment onto checked in-place SAFEARRAY element
-replacement on the slot-owned ArrayVariant instead of descriptor rebuild through
-`Vec<Variant>`. The targeted test anchors are:
-
-- `cargo test -p oxvba-vm2 --test linearize_roundtrip redim`
-- `cargo test -p oxvba-runtime safe_array::tests::safe_array_set_variant_element --lib`
-- `cargo test -p oxvba-runtime array_variant_set_element_preserves_owned_safearray_pointer --lib`
-- `cargo test -p oxvba-runtime record_variant_clone_deep_copies_record_payload --lib`
-- `cargo test -p oxvba-runtime safe_array_variant_element_reads --lib`
-
-Remaining exact-layout work includes UDT/record SAFEARRAY element storage,
-expanded pointer-helper addressability tests, named-constant fixed-array bounds
-in early record metadata, and COM/HAL call paths that still clone through
-`variant_elements()` for non-temporary places.
-
-The 2026-06-25 native record `ByRef As Any` slice adds descriptor-backed
-copy-in/copy-out for `Variant::Record` values whose fields are plain native ABI
-storage: numeric primitives, Booleans, nested records, and fixed arrays of those
-shapes. The HAL no longer carries a GUID-shaped SAFEARRAY special case; real
-`ole32!IIDFromString` succeeds through the same record buffer path as a general
-nested UDT `RtlMoveMemory` probe. Records containing owning `String` or `Variant`
-fields still decline at admission for this native pointer lane.

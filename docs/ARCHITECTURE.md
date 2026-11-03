@@ -345,3 +345,14 @@ Native slots and prebound Invoke share this boundary; repeated aliases reuse
 their original native pointer. The retained global counterexample produces 13:13
 on VM3/native JIT and owned Excel VBA. See [run 12 evidence](evidence/programs/ideal-2026-07/core/CORE-7/typed-native-long-callbacks-run12.md).
 Other carriers and cleanup/event reentry remain broader open work.
+
+
+Run 13 adds explicit retained native invocation locales and QI'd nominal views
+for typed assignments from generic COM results. The installed typelib loader now
+reads DWORD HREFTYPE values through the correct union member. Owned Excel/VBA and
+both owning backends agree on the bounded typed Range geometry/formula/display
+and application option/calculation/Evaluate helpers. NumberFormat currency
+classification is explained by setter locale, with 1033 explicitly selected by
+the Excel host proof. Existing default invocation locale policy is unchanged;
+automatic locale selection, genuine Variant-result member chains and collection
+iteration remain open. See [run-13 evidence](evidence/programs/ideal-2026-07/windows-x64/WIN-4/typed-excel-surface-run13.md).

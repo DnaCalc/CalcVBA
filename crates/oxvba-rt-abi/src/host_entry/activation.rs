@@ -734,7 +734,9 @@ pub unsafe fn write_slot(
     }
     // SAFETY: caller provides one initialized readable physical carrier.
     let bits = unsafe { *bits };
-    if ty == ScalarType::Array || (ty == ScalarType::Record && !bits.as_object().is_null()) {
+    if matches!(ty, ScalarType::HostObject | ScalarType::Array)
+        || (ty == ScalarType::Record && !bits.as_object().is_null())
+    {
         // SAFETY: retain the exact borrowed aggregate before validation/store.
         let value = unsafe { calcvba_host_api::value::retain_bits(ty, bits) }?;
         // SAFETY: write_owned validates the target source layout before mutation.
@@ -865,6 +867,15 @@ pub unsafe fn write_owned(
     // canonical destination, including internal calls and host ByRef copies.
     // SAFETY: immutable admission facts are leased by this activation.
     let layout = unsafe { &*(*raw).layout };
+    let value = if let Some(&iid) = layout.slot_iids.get(&index) {
+        match value {
+            Value::Object(Some(object)) => Value::Object(Some(object.resolve_interface(iid)?)),
+            Value::Object(None) => Value::Object(None),
+            _ => return Err(13),
+        }
+    } else {
+        value
+    };
     match &value {
         Value::Record(record)
             if layout

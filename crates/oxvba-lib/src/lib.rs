@@ -15,6 +15,8 @@
 mod format;
 mod host;
 mod pure;
+/// Host-independent value operations shared with owning typed execution.
+pub use pure::{cstr as convert_to_string, var_type as variant_type_code};
 
 use oxvba_bundle::NativeImplId;
 use oxvba_hal::{HalError, HostServices};

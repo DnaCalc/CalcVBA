@@ -804,9 +804,17 @@ End Function
             on_connection.parameter_wire_types[3],
             ComWireType::SafeArrayVariant
         );
+        // ext_ConnectMode is a typelib enum (LONG), not an interface pointer.
+        // Reading unused Win64 HREFTYPE upper bytes previously hid this scalar.
+        assert_eq!(on_connection.parameter_types[1], ComParamType::Long);
+        assert_eq!(
+            on_connection.parameter_wire_types[1],
+            ComWireType::Automation(ComParamType::Long)
+        );
         assert_eq!(
             addin.implemented_interfaces[0].native_requirements(),
             vec![
+                ComNativeInterfaceRequirement::AutomationValue,
                 ComNativeInterfaceRequirement::TypedInterfacePointer,
                 ComNativeInterfaceRequirement::SafeArrayVariant,
             ]

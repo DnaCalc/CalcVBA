@@ -40,3 +40,12 @@ Purpose:
   - bead mutation serialization rule added to doctrine,
   - `scripts/invoke-br-serialized.ps1` introduced,
   - rollout work is now expected to use serialized graph mutations.
+
+
+## Incident OI-003
+
+- Date: 2026-11-03
+- Title: Owned oracle cleanup wait expired before process reconciliation
+- Impact: calcvba13-collections-vba failed and receives no passing evidence. Its guardian captured and dismissed an owned runtime error 91; the cleanup wait then expired and the supervisor could not confirm the already-stopping guardian identity.
+- Root cause: the exact process-query/wait race is not established. The retained termination wait timed out during a concurrent workspace build. Subsequent read-only checks found both recorded PIDs (Excel 30896 and guardian 39928) absent; cleanup-followup.json retains their original start identities and the later absence observation. No unrelated process was stopped.
+- Preventive action: keep the failed capture, require the follow-up ownership receipt, and serialize further live engine oracles after workspace link activity. The fresh calcvba13-collections-vba-reset run compiles, executes and cleans up successfully. Cleanup reliability follow-up remains with the open WIN-14 orchestration work bd-59co.3.15.7; this recovery grants no certification credit.

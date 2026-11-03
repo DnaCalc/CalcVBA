@@ -258,9 +258,7 @@ pub unsafe extern "C" fn evaluate(
                 {
                     let object =
                         calcvba_host_api::HostObject::from_object_ref(&reference).ok_or(13)?;
-                    if object.header().iid != iid {
-                        return Err(13);
-                    }
+                    object.resolve_interface(iid)?;
                 }
                 Ok(())
             })()
@@ -441,7 +439,31 @@ pub unsafe extern "C" fn evaluate(
         }
     })
 }
-fn resolve_default(
+/// Execute admitted unary VBA library functions on their exact input carrier.
+pub fn invoke_unary_builtin(
+    id: oxvba_bundle::NativeImplId,
+    value: Variant,
+    layout: &ScalarLayout,
+    context: &mut super::TypedContext,
+) -> Result<Variant, i32> {
+    use oxvba_bundle::NativeImplId::{CStr, IsArray, IsMissing, VarType as TypeCode};
+    let value = if matches!(id, CStr | TypeCode) && value.as_object_ref().is_some() {
+        resolve_default(value, layout, context)?
+    } else {
+        value
+    };
+    match id {
+        IsArray => Ok(Variant::from_bool(value.vtype() == VarType::ArrayVariant)),
+        IsMissing => Ok(Variant::from_bool(
+            value.vtype() == VarType::Error && value.as_error_code() == Some(0x8002_0004u32 as i32),
+        )),
+        TypeCode => oxvba_lib::variant_type_code(&[value]),
+        CStr => oxvba_lib::convert_to_string(&[value]),
+        _ => return Err(5),
+    }
+    .map_err(|e| e.code)
+}
+pub fn resolve_default(
     mut value: Variant,
     layout: &ScalarLayout,
     context: &mut super::TypedContext,

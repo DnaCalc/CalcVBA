@@ -69,6 +69,7 @@ impl oxvba_symbol::TypeLibResolver for Types {
         sum.parameter_optional[1..].fill(true);
         sum.parameter_optional_defaults[1..].fill(D::OptionalVariant);
         members.push(sum);
+        members.push(make("Opaque", 15, K::PropertyGet, vec![], Some(P::Object)));
         Some(oxvba_com::TypeLibMetadataBlob {
             identity: oxvba_com::TypeLibResolvedIdentity {
                 reference_name: "Dispatch".into(),
@@ -160,6 +161,12 @@ Public Function SameObject(ByVal obj As Dispatch.Native) As Boolean
     Dim other As Dispatch.Native
     Set other = obj.Same
     SameObject = obj Is other
+End Function
+Public Function CastOpaque(ByVal obj As Dispatch.Native) As Double
+    Dim raw As Object, typed As Dispatch.Native
+    Set raw = obj.Opaque
+    Set typed = raw
+    CastOpaque = typed.Value
 End Function
 Public Function Echo(ByVal obj As Dispatch.Native, ByVal text As String) As String
     Echo = obj.Echo(text)
@@ -297,6 +304,10 @@ End Function
                 queries,
                 "scalar calls must not QI or look up names/types"
             );
+            assert!(matches!(
+                call(&session, "CastOpaque", &[arg], api::ValueType::Double),
+                api::Value::Double(41.0)
+            ));
             let value = api::Variant::from_string("owned dispatch");
             call(
                 &session,
@@ -338,8 +349,8 @@ End Function
                 "13|dispatch fixture mismatch|Owned.Dispatch|dispatch-help.chm|71"
             );
             assert_eq!(observed.lookups.get(), 0);
-            assert_eq!(observed.calls.borrow().len(), 11);
-            assert_eq!(host.com().com_dispatch_transport_counts(), (0, 11));
+            assert_eq!(observed.calls.borrow().len(), 13);
+            assert_eq!(host.com().com_dispatch_transport_counts(), (0, 13));
         }
         assert_eq!(observed.references.get(), 0);
     }

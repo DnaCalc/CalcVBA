@@ -25,6 +25,20 @@ impl WindowsComBridge {
         members: &[TypeLibMemberMetadata],
         interfaces: &[TypeLibInterfaceMetadata],
     ) -> Result<HostObject, String> {
+        // SAFETY: forward the exact caller metadata/apartment contract.
+        unsafe { self.prepare_typed_object_with_locale(object, members, interfaces, None) }
+    }
+    /// Prepare a native table with an explicit invocation locale. It applies to
+    /// prebound Invoke and hidden native LCID arguments, including result views.
+    /// # Safety
+    /// Same trusted descriptor and apartment contract as the default preparation.
+    pub unsafe fn prepare_typed_object_with_locale(
+        &self,
+        object: oxvba_runtime::ObjectRef,
+        members: &[TypeLibMemberMetadata],
+        interfaces: &[TypeLibInterfaceMetadata],
+        locale_id: Option<u32>,
+    ) -> Result<HostObject, String> {
         let first = members.first().ok_or("typed COM member list is empty")?;
         let iid = first.interface_iid.ok_or("typed COM IID is missing")?;
         for member in members {
@@ -42,7 +56,7 @@ impl WindowsComBridge {
                     .into(),
             );
         }
-        let (library, root_index) = NativeLibrary::new(interfaces.to_vec(), members)?;
+        let (library, root_index) = NativeLibrary::new(interfaces.to_vec(), members, locale_id)?;
         let library = Rc::new(library);
         let selected: Vec<_> = members
             .iter()
@@ -189,7 +203,14 @@ unsafe fn build(
                     let value = calcvba_host_api::with_native_call(context, || {
                         // SAFETY: retained QI'd receiver and exact checked scalar ABI.
                         unsafe {
-                            super::native::invoke(owner.pointer.as_ptr(), index, result, lcid, args)
+                            super::native::invoke(
+                                owner.pointer.as_ptr(),
+                                index,
+                                result,
+                                lcid,
+                                owner.library.locale_id.unwrap_or(0),
+                                args,
+                            )
                         }
                     })
                     .map_err(|e| e.publish(context))?;
@@ -214,9 +235,41 @@ unsafe fn build(
     bytes[4..6].copy_from_slice(&iid.data2.to_le_bytes());
     bytes[6..8].copy_from_slice(&iid.data3.to_le_bytes());
     bytes[8..].copy_from_slice(&iid.data4);
+    let view_owner = receiver.clone();
     // SAFETY: receiver retains the canonical native IUnknown until every table
     // and callback capture is released, including opaque Variant result tables.
     Ok(unsafe {
-        HostObject::new_with_payload_and_identity(bytes, slots, receiver, identity.cast())
+        HostObject::new_with_interface_resolver(
+            bytes,
+            slots,
+            receiver,
+            identity.cast(),
+            move |wanted| {
+                let index = view_owner
+                    .library
+                    .metadata
+                    .iter()
+                    .position(|meta| {
+                        meta.iid.is_some_and(|iid| {
+                            let mut bytes = [0; 16];
+                            bytes[..4].copy_from_slice(&iid.data1.to_le_bytes());
+                            bytes[4..6].copy_from_slice(&iid.data2.to_le_bytes());
+                            bytes[6..8].copy_from_slice(&iid.data3.to_le_bytes());
+                            bytes[8..].copy_from_slice(&iid.data4);
+                            bytes == wanted
+                        })
+                    })
+                    .ok_or(13)?;
+                // SAFETY: the retained library supplies the exact IID/member plans;
+                // build QIs this same-apartment receiver and owns every returned ref.
+                make_native_object(
+                    view_owner.bridge.clone(),
+                    view_owner.pointer.as_ptr(),
+                    Some(index),
+                    view_owner.library.clone(),
+                )
+                .map_err(|_| 13)
+            },
+        )
     })
 }

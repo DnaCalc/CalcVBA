@@ -145,6 +145,8 @@ pub struct ScalarLayout {
     pub parameters: Vec<ScalarType>,
     /// Required nominal identity for each object parameter (None for Object).
     pub parameter_iids: Vec<Option<[u8; 16]>>,
+    /// Nominal destination views, keyed by physical local/temp/global slot.
+    pub slot_iids: std::collections::HashMap<usize, [u8; 16]>,
     pub parameter_classes: Vec<Option<String>>,
     pub assignment_classes: std::collections::HashMap<String, String>,
     pub class_calls: Vec<(OxInst, oxvba_oxir::FuncId, oxvba_oxir::ClassId)>,
@@ -237,6 +239,8 @@ impl ScalarLayout {
                     let native = [
                         oxvba_bundle::NativeImplId::IsMissing,
                         oxvba_bundle::NativeImplId::IsArray,
+                        oxvba_bundle::NativeImplId::VarType,
+                        oxvba_bundle::NativeImplId::CStr,
                     ]
                     .into_iter()
                     .find(|native| {
@@ -270,7 +274,12 @@ impl ScalarLayout {
                     .iter()
                     .enumerate()
                     .find(|(_, p)| p.unit_name.eq_ignore_ascii_case(&request.unit))
-                    .ok_or("unlinked typed source project")?;
+                    .ok_or_else(|| {
+                        format!(
+                            "unlinked typed source project {} ({:?})",
+                            request.unit, request.token
+                        )
+                    })?;
                 let export = target
                     .exports
                     .iter()
@@ -394,6 +403,12 @@ impl ScalarLayout {
                     return Err("invalid typed host member signature".into());
                 }
                 let result_iid = match &descriptor.return_wire_type {
+                    Some(TypeLibWireType::InterfacePointer { name })
+                        if name.eq_ignore_ascii_case("IDispatch")
+                            || name.eq_ignore_ascii_case("IUnknown") =>
+                    {
+                        None
+                    }
                     Some(TypeLibWireType::InterfacePointer { name }) => Some(
                         interfaces
                             .iter()
@@ -897,30 +912,40 @@ impl ScalarLayout {
                 array_slots.insert(index, vt);
             }
         }
-        let parameter_iids = func.locals[..func.param_count]
+        let slot_iids = func
+            .locals
             .iter()
-            .map(|local| match local.ty {
-                OxTy::Object(oxvba_oxir::ObjClass::ComIface(id)) => {
+            .map(|l| &l.ty)
+            .chain(func.temps.iter())
+            .chain(globals.iter().map(|g| &g.ty))
+            .enumerate()
+            .filter_map(|(index, ty)| {
+                let OxTy::Object(oxvba_oxir::ObjClass::ComIface(id)) = ty else {
+                    return None;
+                };
+                Some((|| {
                     let Some(oxvba_oxir::ComInterface::Com(meta)) = interfaces.get(id.0) else {
-                        return Err("typed object parameter has no interface descriptor");
+                        return Err("typed object slot has no interface descriptor");
                     };
-                    let iid = meta
-                        .iid
-                        .ok_or("typed object parameter has no interface identity")?;
-                    let mut bytes = [0; 16];
-                    bytes[..4].copy_from_slice(&iid.data1.to_le_bytes());
-                    bytes[4..6].copy_from_slice(&iid.data2.to_le_bytes());
-                    bytes[6..8].copy_from_slice(&iid.data3.to_le_bytes());
-                    bytes[8..].copy_from_slice(&iid.data4);
-                    Ok(Some(bytes))
-                }
-                OxTy::Object(oxvba_oxir::ObjClass::Class(_)) if owning => Ok(None),
-                OxTy::Object(oxvba_oxir::ObjClass::Class(_) | oxvba_oxir::ObjClass::Iface(_)) => {
-                    Err("typed project-object parameter ABI remains open")
-                }
-                _ => Ok(None),
+                    Ok((
+                        index,
+                        iid_bytes(
+                            meta.iid
+                                .ok_or("typed object slot has no interface identity")?,
+                        ),
+                    ))
+                })())
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
+        if func.locals[..func.param_count].iter().any(|local| {
+            matches!(local.ty, OxTy::Object(oxvba_oxir::ObjClass::Iface(_)))
+                || (!owning && matches!(local.ty, OxTy::Object(oxvba_oxir::ObjClass::Class(_))))
+        }) {
+            return Err("typed project-object parameter ABI remains open".into());
+        }
+        let parameter_iids = (0..func.param_count)
+            .map(|i| slot_iids.get(&i).copied())
+            .collect();
         if !owning && parameters.contains(&ScalarType::Boolean) {
             return Err("typed Boolean parameter ABI remains open".into());
         }
@@ -1050,6 +1075,7 @@ impl ScalarLayout {
             local_count: func.locals.len(),
             parameters,
             parameter_iids,
+            slot_iids,
             return_slot: result.map_or(usize::MAX, |id| id.0),
             specialized_variant_temps,
             literal_integer_temps,

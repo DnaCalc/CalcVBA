@@ -121,6 +121,7 @@ mod native {
         this: *mut c_void,
         entry: *const c_void,
         lcid: bool,
+        locale_id: u32,
         args: &[ValueSlot<'_>],
     ) -> Result<R, calcvba_host_api::TypedFault> {
         let mut output = R::default();
@@ -130,7 +131,7 @@ mod native {
                 let call: unsafe extern "system" fn(*mut c_void, i32, u32, *mut R) -> i32 =
                     unsafe { std::mem::transmute(entry) };
                 // SAFETY: retained receiver, checked LONG and aligned result cell.
-                unsafe { call(this, *value, 0, &mut output) }
+                unsafe { call(this, *value, locale_id, &mut output) }
             } else {
                 // SAFETY: exact imported HRESULT(this, LONG, R*) signature.
                 let call: unsafe extern "system" fn(*mut c_void, i32, *mut R) -> i32 =
@@ -143,7 +144,7 @@ mod native {
             let call: unsafe extern "system" fn(*mut c_void, u32, *mut R) -> i32 =
                 unsafe { std::mem::transmute(entry) };
             // SAFETY: output is one aligned initialized exact result cell.
-            unsafe { call(this, 0, &mut output) }
+            unsafe { call(this, locale_id, &mut output) }
         } else {
             // SAFETY: metadata declares exactly HRESULT(this, R*).
             let call: unsafe extern "system" fn(*mut c_void, *mut R) -> i32 =
@@ -178,20 +179,24 @@ mod native {
         slot: usize,
         result: T,
         lcid: bool,
+        locale_id: u32,
         args: &[ValueSlot<'_>],
     ) -> Result<Value, calcvba_host_api::TypedFault> {
         // SAFETY: factory validated the authoritative bound and QI'd exact IID.
         let entry = unsafe { *(*(this.cast::<*const *const c_void>())).add(slot) };
         Ok(match result {
             // SAFETY: the imported retval is exactly a Windows LONG out-cell.
-            T::Long => Value::Long(unsafe { get::<i32>(this, entry, lcid, args) }?),
+            T::Long => Value::Long(unsafe { get::<i32>(this, entry, lcid, locale_id, args) }?),
             // SAFETY: the imported retval is exactly a Windows DOUBLE out-cell.
-            T::Double => Value::Double(unsafe { get::<f64>(this, entry, lcid, args) }?),
+            T::Double => Value::Double(unsafe { get::<f64>(this, entry, lcid, locale_id, args) }?),
             // SAFETY: the imported retval is exactly a 16-bit VARIANT_BOOL out-cell.
-            T::Boolean => Value::Boolean(unsafe { get::<i16>(this, entry, lcid, args) }? != 0),
+            T::Boolean => {
+                // SAFETY: exact imported VARIANT_BOOL retval and selected LCID.
+                Value::Boolean(unsafe { get::<i16>(this, entry, lcid, locale_id, args) }? != 0)
+            }
             T::String => {
                 // SAFETY: the imported retval is one BSTR pointer out-cell.
-                let raw = unsafe { get::<*mut u16>(this, entry, lcid, args) }?;
+                let raw = unsafe { get::<*mut u16>(this, entry, lcid, locale_id, args) }?;
                 // SAFETY: successful [out,retval] transfers exactly one BSTR owner.
                 Value::String(unsafe { calcvba_host_api::BStr::from_raw_bstr(raw) })
             }
@@ -208,8 +213,8 @@ mod native {
                         // SAFETY: metadata declares HRESULT(this, LCID), without retval.
                         let call: unsafe extern "system" fn(*mut c_void, u32) -> i32 =
                             unsafe { std::mem::transmute(entry) };
-                        // SAFETY: retained exact receiver and by-value neutral LCID.
-                        unsafe { call(this, 0) }
+                        // SAFETY: retained exact receiver and by-value selected LCID.
+                        unsafe { call(this, locale_id) }
                     }
                     ([ValueSlot::Long(value)], false) => {
                         // SAFETY: metadata declares HRESULT(this, LONG), without retval.
@@ -223,7 +228,7 @@ mod native {
                         let call: unsafe extern "system" fn(*mut c_void, i32, u32) -> i32 =
                             unsafe { std::mem::transmute(entry) };
                         // SAFETY: retained receiver, checked LONG, neutral hidden LCID.
-                        unsafe { call(this, *value, 0) }
+                        unsafe { call(this, *value, locale_id) }
                     }
                     _ => {
                         return Err(calcvba_host_api::TypedFault {

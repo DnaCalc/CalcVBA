@@ -147,8 +147,30 @@ const VT_RECORD: u16 = 36;
 #[cfg(target_os = "windows")]
 #[repr(C)]
 struct TYPEDESC {
-    union_field: usize, // lptdesc or hreftype depending on vt
+    data: TypeDescData,
     vt: u16,
+}
+
+// HREFTYPE is a DWORD even on Win64. Its union's upper bytes are not part
+// of the value and may be uninitialized; never read it as a pointer-sized integer.
+#[cfg(target_os = "windows")]
+#[repr(C)]
+union TypeDescData {
+    pointer: usize,
+    hreftype: u32,
+}
+#[cfg(target_os = "windows")]
+impl TYPEDESC {
+    fn pointer(&self) -> usize {
+        debug_assert!(matches!(self.vt, VT_PTR | VT_SAFEARRAY | VT_CARRAY));
+        // SAFETY: only pointer-bearing descriptor tags call this accessor.
+        unsafe { self.data.pointer }
+    }
+    fn href(&self) -> u32 {
+        debug_assert_eq!(self.vt, VT_USERDEFINED);
+        // SAFETY: VT_USERDEFINED initializes the DWORD member, not the padding.
+        unsafe { self.data.hreftype }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -765,8 +787,8 @@ unsafe fn typedesc_to_param_type(
     tdesc: &TYPEDESC,
     is_byref: bool,
 ) -> TypeLibParamType {
-    if tdesc.vt == VT_PTR && tdesc.union_field != 0 {
-        let inner = &*(tdesc.union_field as *const TYPEDESC);
+    if tdesc.vt == VT_PTR && tdesc.pointer() != 0 {
+        let inner = &*(tdesc.pointer() as *const TYPEDESC);
         // A SAFEARRAY parameter is represented semantically as a Variant array;
         // SAFEARRAY*/SAFEARRAY** transport is preserved separately in
         // TypeLibWireType so the admission table can require writeback slots for
@@ -774,8 +796,8 @@ unsafe fn typedesc_to_param_type(
         if inner.vt == VT_SAFEARRAY || inner.vt == VT_CARRAY {
             return TypeLibParamType::Variant;
         }
-        if inner.vt == VT_PTR && inner.union_field != 0 {
-            let nested = &*(inner.union_field as *const TYPEDESC);
+        if inner.vt == VT_PTR && inner.pointer() != 0 {
+            let nested = &*(inner.pointer() as *const TYPEDESC);
             if nested.vt == VT_SAFEARRAY || nested.vt == VT_CARRAY {
                 return TypeLibParamType::Variant;
             }
@@ -818,7 +840,7 @@ unsafe fn typedesc_to_param_type(
         // enum-returning getter was slot-called expecting a 16-byte VARIANT while the
         // callee wrote a 4-byte enum — decoding the value as 0. Attempt the resolve
         // for every `VT_USERDEFINED`; fall back to `Variant` only if it truly fails.
-        let href = u32::try_from(tdesc.union_field).unwrap_or(0);
+        let href = tdesc.href();
         let vtbl = *(owner_ptinfo as *const *const ITypeInfoVtbl);
         let mut ref_ptinfo: *mut c_void = std::ptr::null_mut();
         if ((*vtbl).get_ref_type_info)(owner_ptinfo, href, &mut ref_ptinfo) == COM_S_OK
@@ -859,13 +881,13 @@ unsafe fn typedesc_to_wire_type(
     tdesc: &TYPEDESC,
     is_byref: bool,
 ) -> TypeLibWireType {
-    if tdesc.vt == VT_PTR && tdesc.union_field != 0 {
-        let inner = &*(tdesc.union_field as *const TYPEDESC);
+    if tdesc.vt == VT_PTR && tdesc.pointer() != 0 {
+        let inner = &*(tdesc.pointer() as *const TYPEDESC);
         if inner.vt == VT_SAFEARRAY || inner.vt == VT_CARRAY {
             return safearray_wire_type(owner_ptinfo, inner, is_byref);
         }
-        if inner.vt == VT_PTR && inner.union_field != 0 {
-            let nested = &*(inner.union_field as *const TYPEDESC);
+        if inner.vt == VT_PTR && inner.pointer() != 0 {
+            let nested = &*(inner.pointer() as *const TYPEDESC);
             if nested.vt == VT_SAFEARRAY || nested.vt == VT_CARRAY {
                 return safearray_wire_type(owner_ptinfo, nested, true);
             }
@@ -932,13 +954,13 @@ unsafe fn safearray_record_binding(
     owner_ptinfo: *mut c_void,
     tdesc: &TYPEDESC,
 ) -> Option<(String, Option<TypeLibRecordInfo>)> {
-    if !(tdesc.vt == VT_SAFEARRAY || tdesc.vt == VT_CARRAY) || tdesc.union_field == 0 {
+    if !(tdesc.vt == VT_SAFEARRAY || tdesc.vt == VT_CARRAY) || tdesc.pointer() == 0 {
         return None;
     }
     let element = if tdesc.vt == VT_SAFEARRAY {
-        &*(tdesc.union_field as *const TYPEDESC)
+        &*(tdesc.pointer() as *const TYPEDESC)
     } else {
-        let array_desc = &*(tdesc.union_field as *const ARRAYDESC);
+        let array_desc = &*(tdesc.pointer() as *const ARRAYDESC);
         if array_desc.c_dims == 0 {
             return None;
         }
@@ -949,14 +971,14 @@ unsafe fn safearray_record_binding(
 
 #[cfg(target_os = "windows")]
 unsafe fn safearray_element_vartype(owner_ptinfo: *mut c_void, tdesc: &TYPEDESC) -> Option<u16> {
-    if !(tdesc.vt == VT_SAFEARRAY || tdesc.vt == VT_CARRAY) || tdesc.union_field == 0 {
+    if !(tdesc.vt == VT_SAFEARRAY || tdesc.vt == VT_CARRAY) || tdesc.pointer() == 0 {
         return None;
     }
     if tdesc.vt == VT_SAFEARRAY {
-        let element = &*(tdesc.union_field as *const TYPEDESC);
+        let element = &*(tdesc.pointer() as *const TYPEDESC);
         return typedesc_to_safearray_element_vartype(owner_ptinfo, element);
     }
-    let array_desc = &*(tdesc.union_field as *const ARRAYDESC);
+    let array_desc = &*(tdesc.pointer() as *const ARRAYDESC);
     if array_desc.c_dims == 0 {
         return None;
     }
@@ -969,12 +991,12 @@ unsafe fn typedesc_to_safearray_element_vartype(
     element_tdesc: &TYPEDESC,
 ) -> Option<u16> {
     match element_tdesc.vt {
-        VT_PTR if element_tdesc.union_field != 0 => {
-            let inner = &*(element_tdesc.union_field as *const TYPEDESC);
+        VT_PTR if element_tdesc.pointer() != 0 => {
+            let inner = &*(element_tdesc.pointer() as *const TYPEDESC);
             typedesc_to_safearray_element_vartype(owner_ptinfo, inner)
         }
         VT_USERDEFINED if !owner_ptinfo.is_null() => {
-            let href = u32::try_from(element_tdesc.union_field).unwrap_or(0);
+            let href = element_tdesc.href();
             let vtbl = *(owner_ptinfo as *const *const ITypeInfoVtbl);
             let mut ref_ptinfo: *mut c_void = std::ptr::null_mut();
             if ((*vtbl).get_ref_type_info)(owner_ptinfo, href, &mut ref_ptinfo) != COM_S_OK
@@ -1021,12 +1043,12 @@ unsafe fn typedesc_to_interface_binding_name(
     match tdesc.vt {
         VT_DISPATCH => Some("IDispatch".to_string()),
         VT_UNKNOWN => Some("IUnknown".to_string()),
-        VT_PTR if tdesc.union_field != 0 => {
-            let inner = &*(tdesc.union_field as *const TYPEDESC);
+        VT_PTR if tdesc.pointer() != 0 => {
+            let inner = &*(tdesc.pointer() as *const TYPEDESC);
             typedesc_to_interface_binding_name(owner_ptinfo, inner)
         }
         VT_USERDEFINED => {
-            let href = u32::try_from(tdesc.union_field).unwrap_or(0);
+            let href = tdesc.href();
             let vtbl = *(owner_ptinfo as *const *const ITypeInfoVtbl);
             let mut ref_ptinfo: *mut c_void = std::ptr::null_mut();
             if ((*vtbl).get_ref_type_info)(owner_ptinfo, href, &mut ref_ptinfo) != COM_S_OK
@@ -1065,12 +1087,12 @@ unsafe fn typedesc_to_record_binding(
     tdesc: &TYPEDESC,
 ) -> Option<(String, Option<TypeLibRecordInfo>)> {
     match tdesc.vt {
-        VT_PTR if tdesc.union_field != 0 => {
-            let inner = &*(tdesc.union_field as *const TYPEDESC);
+        VT_PTR if tdesc.pointer() != 0 => {
+            let inner = &*(tdesc.pointer() as *const TYPEDESC);
             typedesc_to_record_binding(owner_ptinfo, inner)
         }
         VT_USERDEFINED => {
-            let href = u32::try_from(tdesc.union_field).unwrap_or(0);
+            let href = tdesc.href();
             let vtbl = *(owner_ptinfo as *const *const ITypeInfoVtbl);
             let mut ref_ptinfo: *mut c_void = std::ptr::null_mut();
             if ((*vtbl).get_ref_type_info)(owner_ptinfo, href, &mut ref_ptinfo) != COM_S_OK
@@ -1177,12 +1199,12 @@ unsafe fn typedesc_to_record_field_kind(
         VT_BSTR => TypeLibRecordFieldKind::BStr,
         VT_VARIANT => TypeLibRecordFieldKind::Variant,
         VT_DISPATCH | VT_UNKNOWN => TypeLibRecordFieldKind::Dispatch,
-        VT_PTR if tdesc.union_field != 0 => {
-            let inner = &*(tdesc.union_field as *const TYPEDESC);
+        VT_PTR if tdesc.pointer() != 0 => {
+            let inner = &*(tdesc.pointer() as *const TYPEDESC);
             typedesc_to_record_field_kind(owner_ptinfo, inner)
         }
-        VT_CARRAY if tdesc.union_field != 0 => {
-            let array_desc = &*(tdesc.union_field as *const ARRAYDESC);
+        VT_CARRAY if tdesc.pointer() != 0 => {
+            let array_desc = &*(tdesc.pointer() as *const ARRAYDESC);
             TypeLibRecordFieldKind::FixedArray {
                 element: Box::new(typedesc_to_record_field_kind(
                     owner_ptinfo,
@@ -1192,7 +1214,7 @@ unsafe fn typedesc_to_record_field_kind(
             }
         }
         VT_USERDEFINED if !owner_ptinfo.is_null() => {
-            let href = u32::try_from(tdesc.union_field).unwrap_or(0);
+            let href = tdesc.href();
             let vtbl = *(owner_ptinfo as *const *const ITypeInfoVtbl);
             let mut ref_ptinfo: *mut c_void = std::ptr::null_mut();
             if ((*vtbl).get_ref_type_info)(owner_ptinfo, href, &mut ref_ptinfo) != COM_S_OK
@@ -1288,8 +1310,8 @@ unsafe fn retval_typedesc_to_param_type(
 ) -> TypeLibParamType {
     // A pointer-to-interface (or pointer-to-anything) in retval position is the
     // by-value language type of the pointee; strip the pointer without byref.
-    if tdesc.vt == VT_PTR && tdesc.union_field != 0 {
-        let inner = &*(tdesc.union_field as *const TYPEDESC);
+    if tdesc.vt == VT_PTR && tdesc.pointer() != 0 {
+        let inner = &*(tdesc.pointer() as *const TYPEDESC);
         return retval_typedesc_to_param_type(owner_ptinfo, inner);
     }
     if tdesc.vt == VT_USERDEFINED {
@@ -1305,8 +1327,8 @@ unsafe fn retval_typedesc_to_wire_type(
     owner_ptinfo: *mut c_void,
     tdesc: &TYPEDESC,
 ) -> TypeLibWireType {
-    if tdesc.vt == VT_PTR && tdesc.union_field != 0 {
-        let inner = &*(tdesc.union_field as *const TYPEDESC);
+    if tdesc.vt == VT_PTR && tdesc.pointer() != 0 {
+        let inner = &*(tdesc.pointer() as *const TYPEDESC);
         if inner.vt == VT_SAFEARRAY || inner.vt == VT_CARRAY {
             return safearray_wire_type(owner_ptinfo, inner, false);
         }
@@ -1359,12 +1381,12 @@ unsafe fn typedesc_to_iid(
     match tdesc.vt {
         VT_DISPATCH => Some(IID_IDISPATCH),
         VT_UNKNOWN => Some(IID_IUNKNOWN),
-        VT_PTR if tdesc.union_field != 0 => {
-            let inner = &*(tdesc.union_field as *const TYPEDESC);
+        VT_PTR if tdesc.pointer() != 0 => {
+            let inner = &*(tdesc.pointer() as *const TYPEDESC);
             typedesc_to_iid(owner_ptinfo, inner)
         }
         VT_USERDEFINED => {
-            let href = u32::try_from(tdesc.union_field).unwrap_or(0);
+            let href = tdesc.href();
             let vtbl = *(owner_ptinfo as *const *const ITypeInfoVtbl);
             let mut ref_ptinfo: *mut c_void = std::ptr::null_mut();
             if ((*vtbl).get_ref_type_info)(owner_ptinfo, href, &mut ref_ptinfo) != COM_S_OK
@@ -1722,10 +1744,7 @@ fn vt_supported_directly(vt: u16) -> bool {
 
 #[cfg(target_os = "windows")]
 unsafe fn userdefined_typedesc_supported(owner_ptinfo: *mut c_void, tdesc: &TYPEDESC) -> bool {
-    if tdesc.union_field == 0 {
-        return true;
-    }
-    let href = u32::try_from(tdesc.union_field).unwrap_or(0);
+    let href = tdesc.href();
     let vtbl = *(owner_ptinfo as *const *const ITypeInfoVtbl);
     let mut ref_ptinfo: *mut c_void = std::ptr::null_mut();
     if ((*vtbl).get_ref_type_info)(owner_ptinfo, href, &mut ref_ptinfo) != COM_S_OK
@@ -1791,8 +1810,8 @@ unsafe fn audit_typedesc(
             });
         }
     }
-    if tdesc.vt == VT_PTR && tdesc.union_field != 0 {
-        let inner = &*(tdesc.union_field as *const TYPEDESC);
+    if tdesc.vt == VT_PTR && tdesc.pointer() != 0 {
+        let inner = &*(tdesc.pointer() as *const TYPEDESC);
         audit_typedesc(owner_ptinfo, inner, audit, site);
     }
 }
@@ -2616,8 +2635,8 @@ unsafe fn extract_members_from_typeinfo(
                 // `[out,retval] T*`: strip the outer out-pointer, then resolve the
                 // pointee to its by-VALUE language type (an interface → Object,
                 // never ByRefObject).
-                let retval_type = if vt == VT_PTR && param_desc.tdesc.union_field != 0 {
-                    let inner = &*(param_desc.tdesc.union_field as *const TYPEDESC);
+                let retval_type = if vt == VT_PTR && param_desc.tdesc.pointer() != 0 {
+                    let inner = &*(param_desc.tdesc.pointer() as *const TYPEDESC);
                     retval_typedesc_to_param_type(ptinfo, inner)
                 } else if vt == VT_USERDEFINED {
                     retval_typedesc_to_param_type(ptinfo, &param_desc.tdesc)
@@ -4049,17 +4068,52 @@ mod tests {
     }
 
     #[test]
+    fn userdefined_reference_reads_only_the_dword_union_member() {
+        let short = TYPEDESC {
+            data: TypeDescData { hreftype: 0x1234 },
+            vt: VT_USERDEFINED,
+        };
+        assert_eq!(short.href(), 0x1234);
+        let dirty = TYPEDESC {
+            data: TypeDescData {
+                pointer: 0xdead_beef_0000_1234u64 as usize,
+            },
+            vt: VT_USERDEFINED,
+        };
+        assert_eq!(dirty.href(), 0x1234);
+        let zero = TYPEDESC {
+            data: TypeDescData {
+                pointer: 0xdead_beef_0000_0000u64 as usize,
+            },
+            vt: VT_USERDEFINED,
+        };
+        assert_eq!(zero.href(), 0, "zero is a valid type-reference token");
+        assert_eq!(
+            std::mem::size_of::<TYPEDESC>(),
+            std::mem::size_of::<windows_sys::Win32::System::Com::TYPEDESC>()
+        );
+        assert_eq!(
+            std::mem::align_of::<TYPEDESC>(),
+            std::mem::align_of::<windows_sys::Win32::System::Com::TYPEDESC>()
+        );
+    }
+
+    #[test]
     fn typedesc_wire_type_preserves_safearray_element_vartype() {
         let element_tdesc = TYPEDESC {
-            union_field: 0,
+            data: TypeDescData { pointer: 0 },
             vt: VT_I4,
         };
         let array_tdesc = TYPEDESC {
-            union_field: (&element_tdesc as *const TYPEDESC) as usize,
+            data: TypeDescData {
+                pointer: (&element_tdesc as *const TYPEDESC) as usize,
+            },
             vt: VT_SAFEARRAY,
         };
         let ptr_tdesc = TYPEDESC {
-            union_field: (&array_tdesc as *const TYPEDESC) as usize,
+            data: TypeDescData {
+                pointer: (&array_tdesc as *const TYPEDESC) as usize,
+            },
             vt: VT_PTR,
         };
         assert_eq!(
@@ -4128,13 +4182,15 @@ mod tests {
 
         let carray_desc = ARRAYDESC {
             tdesc_elem: TYPEDESC {
-                union_field: 0,
+                data: TypeDescData { pointer: 0 },
                 vt: VT_I4,
             },
             c_dims: 1,
         };
         let carray_tdesc = TYPEDESC {
-            union_field: (&carray_desc as *const ARRAYDESC) as usize,
+            data: TypeDescData {
+                pointer: (&carray_desc as *const ARRAYDESC) as usize,
+            },
             vt: VT_CARRAY,
         };
         assert_eq!(
@@ -4154,7 +4210,7 @@ mod tests {
     #[test]
     fn malformed_safearray_typedesc_does_not_infer_variant_element_type() {
         let malformed = TYPEDESC {
-            union_field: 0,
+            data: TypeDescData { pointer: 0 },
             vt: VT_SAFEARRAY,
         };
         assert_eq!(

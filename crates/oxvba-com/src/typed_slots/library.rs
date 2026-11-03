@@ -11,11 +11,13 @@ pub(super) struct NativeMemberPlan {
 pub(super) struct NativeLibrary {
     pub metadata: Vec<TypeLibInterfaceMetadata>,
     pub plans: Vec<Vec<NativeMemberPlan>>,
+    pub locale_id: Option<u32>,
 }
 impl NativeLibrary {
     pub fn new(
         mut metadata: Vec<TypeLibInterfaceMetadata>,
         root: &[TypeLibMemberMetadata],
+        locale_id: Option<u32>,
     ) -> Result<(Self, usize), String> {
         let iid = root
             .first()
@@ -42,12 +44,15 @@ impl NativeLibrary {
                         if !plan::validate(member) {
                             return None;
                         }
-                        let result_interface =
-                            if let Some(W::InterfacePointer { name }) = &member.return_wire_type {
-                                Some(resolve(&metadata, name)?)
-                            } else {
-                                None
-                            };
+                        let result_interface = if let Some(W::InterfacePointer { name }) =
+                            &member.return_wire_type
+                            && !name.eq_ignore_ascii_case("IDispatch")
+                            && !name.eq_ignore_ascii_case("IUnknown")
+                        {
+                            Some(resolve(&metadata, name)?)
+                        } else {
+                            None
+                        };
                         let parameter_interfaces: Vec<_> =
                             member
                                 .parameter_types
@@ -90,7 +95,14 @@ impl NativeLibrary {
                     .collect()
             })
             .collect();
-        Ok((Self { metadata, plans }, root_index))
+        Ok((
+            Self {
+                metadata,
+                plans,
+                locale_id,
+            },
+            root_index,
+        ))
     }
 }
 fn resolve(metadata: &[TypeLibInterfaceMetadata], name: &str) -> Option<usize> {

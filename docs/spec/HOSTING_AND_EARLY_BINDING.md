@@ -496,3 +496,27 @@ for the retained global-alias regression, matching owned Excel VBA. See the
 [delivery evidence](../evidence/programs/ideal-2026-07/core/CORE-7/typed-native-long-callbacks-run12.md).
 General native ByRef/reentry, other carriers, post-return cleanup callbacks,
 incoming event cancellation and certification remain open with the broader owners.
+
+
+## Run 13 native roots and invocation locale
+
+Typed native views can resolve an explicit destination IID through their retained
+library without changing the source object table or searching member names. The
+owning store retains that QI'd view. Generic IDispatch results remain opaque until
+an explicit nominal assignment. TYPEDESC now reads its 32-bit HREFTYPE union member
+without consulting unused pointer-sized upper bytes.
+
+prepare_typed_object_with_locale retains the host-selected invocation LCID through
+returned views, prebound Invoke and native hidden LCID parameters. Existing default
+preparation keeps its prior locale policy. The owned Excel proof selects 1033 to
+match VBA's format interpretation; user-default $0.00 writes on this machine mean
+a literal dollar and legitimately yield Double on Value. Cross-locale reads retain
+the setter provenance. This is an explicit host configuration, not an engine
+member-name or format-string rule. Automatic locale selection and broader locale
+parity remain open.
+
+Owning VM3/native JIT and VBE-compiled VBA agree on the bounded ordinary range,
+formula/text, application option/calculation/Evaluate source. VarType/CStr imports
+share the exact value library and active default-call context. Collection iteration
+and genuine Variant-result member chains remain open at this point. See
+[run-13 evidence](../evidence/programs/ideal-2026-07/windows-x64/WIN-4/typed-excel-surface-run13.md).

@@ -356,7 +356,7 @@ impl TypedStack {
                     parent.set_pc(parent.pc() + 1);
                 }
                 Ok(CONTROL) => {
-                    if let Err(number) = self.control(programs, entries) {
+                    if let Err(number) = self.control(programs, entries, context) {
                         self.route(
                             programs,
                             Fault::new(number, oxvba_rt_abi::default_error_message(number)),
@@ -386,6 +386,7 @@ impl TypedStack {
         &mut self,
         programs: &[&OxProgram],
         entries: &[Vec<Result<TypedInterpreter<'_>, String>>],
+        context: &mut TypedContext,
     ) -> Result<(), i32> {
         let (block_id, offset) = self.position(programs)?;
         let current = self.frames.last().ok_or(5)?.program;
@@ -402,16 +403,22 @@ impl TypedStack {
                             let target = parent.layout().extern_calls.get(import).ok_or(5)?;
                             if let LinkedTarget::Builtin(
                                 native @ (oxvba_bundle::NativeImplId::IsMissing
-                                | oxvba_bundle::NativeImplId::IsArray),
+                                | oxvba_bundle::NativeImplId::IsArray
+                                | oxvba_bundle::NativeImplId::VarType
+                                | oxvba_bundle::NativeImplId::CStr),
                             ) = target.target
                             {
-                                let frame = &mut self.frames.last_mut().ok_or(5)?.activation;
                                 let operand = match &args[0] {
                                     oxvba_oxir::OxArg::ByVal(op) => op.clone(),
                                     oxvba_oxir::OxArg::ByRef(p) => OxOperand::Use(*p),
                                     _ => return Err(13),
                                 };
-                                let bits = frame.read(&operand, ScalarType::Variant)?;
+                                let bits = self
+                                    .frames
+                                    .last_mut()
+                                    .ok_or(5)?
+                                    .activation
+                                    .read(&operand, ScalarType::Variant)?;
                                 // SAFETY: the executing frame retains this exact Variant cell.
                                 let Value::Variant(value) = (unsafe {
                                     calcvba_host_api::value::retain_bits(ScalarType::Variant, bits)
@@ -419,17 +426,18 @@ impl TypedStack {
                                 else {
                                     return Err(13);
                                 };
-                                let missing = if native == oxvba_bundle::NativeImplId::IsArray {
-                                    value.vtype() == oxvba_runtime::VarType::ArrayVariant
-                                } else {
-                                    value.vtype() == oxvba_runtime::VarType::Error
-                                        && value.as_error_code() == Some(0x8002_0004u32 as i32)
-                                };
+                                let result = oxvba_rt_abi::host_entry::value::invoke_unary_builtin(
+                                    native,
+                                    value,
+                                    entries[current][procedure.0]
+                                        .as_ref()
+                                        .map_err(|_| 5)?
+                                        .layout(),
+                                    context,
+                                )?;
+                                let frame = &mut self.frames.last_mut().ok_or(5)?.activation;
                                 if let Some(dst) = dst {
-                                    frame.write_owned_value(
-                                        *dst,
-                                        Value::Variant(oxvba_runtime::Variant::from_bool(missing)),
-                                    )?;
+                                    frame.write_owned_value(*dst, Value::Variant(result))?;
                                 }
                                 frame.set_pc(frame.pc() + 1);
                                 return Ok(());

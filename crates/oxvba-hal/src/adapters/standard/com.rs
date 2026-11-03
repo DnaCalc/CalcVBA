@@ -534,6 +534,42 @@ impl ComHal for StandardHostServices {
         Err(self.unsupported(capability, operation))
     }
 
+    unsafe fn prepare_typed_object_with_locale(
+        &self,
+        object: ObjectRef,
+        members: &[crate::traits::TypeLibMemberMetadata],
+        interfaces: &[oxvba_com::TypeLibInterfaceMetadata],
+        locale_id: u32,
+    ) -> HalResult<calcvba_host_api::HostObject> {
+        let capability = CapabilityId::ComActivationDispatch;
+        let operation = "prepare_typed_object_with_locale";
+        if !self.supports(capability) {
+            return Err(self.unsupported(capability, operation));
+        }
+        if !self.policy.allow_com_activation {
+            return Err(self.denied(capability, operation));
+        }
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        if self.native_com_enabled() {
+            self.ensure_thread_com_apartment(operation)?;
+            // SAFETY: forward the caller's exact trusted descriptor contract;
+            // the bridge validates ownership, slot bounds, QI and proxy alignment.
+            return unsafe {
+                self.com_bridge.prepare_typed_object_with_locale(
+                    object,
+                    members,
+                    interfaces,
+                    Some(locale_id),
+                )
+            }
+            .map_err(|message| {
+                HalError::adapter_fault(self.profile, capability, operation, message)
+            });
+        }
+        let _ = (object, members, interfaces, locale_id);
+        Err(self.unsupported(capability, operation))
+    }
+
     fn release_object_variant(&self, object: ObjectRef) -> HalResult<Variant> {
         let capability = CapabilityId::ComActivationDispatch;
         if !self.supports(capability) {

@@ -465,7 +465,11 @@ pub(super) unsafe fn invoke(
         let value = if let Some(i) = source[index] {
             arguments.get(i).ok_or_else(|| fault(13))?
         } else {
-            default = default_input(member, index)?;
+            default = if member.parameter_optional_defaults[index] == D::Lcid {
+                Value::Long(owner.library.locale_id.unwrap_or(0) as i32)
+            } else {
+                default_input(member, index)?
+            };
             &default
         };
         cells[index] = Cell::input(
@@ -656,7 +660,7 @@ unsafe fn invoke_dispatch(
             receiver.cast(),
             member.token,
             &crate::windows_client::IID_NULL,
-            0x0400,
+            owner.library.locale_id.unwrap_or(0x0400),
             flags,
             &mut params,
             &mut output.0,

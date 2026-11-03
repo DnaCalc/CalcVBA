@@ -429,6 +429,21 @@ pub trait ComHal: Send + Sync {
             "prepare_typed_object_with_interfaces",
         )
     }
+    /// # Safety
+    /// The same exact metadata/apartment contract as prepare_typed_object_with_interfaces.
+    /// locale_id is retained for all native and prebound dispatch member calls.
+    unsafe fn prepare_typed_object_with_locale(
+        &self,
+        _object: ObjectRef,
+        _members: &[TypeLibMemberMetadata],
+        _interfaces: &[oxvba_com::TypeLibInterfaceMetadata],
+        _locale_id: u32,
+    ) -> HalResult<calcvba_host_api::HostObject> {
+        variant_companion_not_overridden(
+            CapabilityId::ComActivationDispatch,
+            "prepare_typed_object_with_locale",
+        )
+    }
     fn describe_object(&self, object: ObjectRef) -> HalResult<Option<ComObjectDescriptor>>;
     /// Snapshot a foreign COM collection's elements via `IEnumVARIANT` (VBA
     /// `For Each`). Collecting every element up front is intentional: the

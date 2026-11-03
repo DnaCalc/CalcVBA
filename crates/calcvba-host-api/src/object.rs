@@ -81,7 +81,9 @@ struct ObjectStorage {
     _owners: Vec<HostSlot>,
     payload: Option<Rc<dyn std::any::Any>>,
     identity: *const (),
+    interface_resolver: Option<Box<InterfaceResolver>>,
 }
+type InterfaceResolver = dyn Fn(InterfaceId) -> Result<HostObject, i32>;
 /// Clone retains the table and callback captures. Drop releases them on this thread.
 /// Objects contain no borrowed invocation pointers and can outlive any one call.
 /// Captures stored by their own session should use weak session handles; the host
@@ -148,7 +150,7 @@ impl HostObject {
         }
     }
     pub fn new(iid: InterfaceId, slots: Vec<HostSlot>) -> Self {
-        Self::build(iid, slots, None, std::ptr::null())
+        Self::build(iid, slots, None, std::ptr::null(), None)
     }
     /// Attach a same-thread host owner without exposing native pointers in the
     /// portable header. Boundary crates may recover only their own payload type.
@@ -157,7 +159,7 @@ impl HostObject {
         slots: Vec<HostSlot>,
         payload: Rc<dyn std::any::Any>,
     ) -> Self {
-        Self::build(iid, slots, Some(payload), std::ptr::null())
+        Self::build(iid, slots, Some(payload), std::ptr::null(), None)
     }
     /// Construct a boundary table with an independently retained object identity.
     /// # Safety
@@ -171,7 +173,40 @@ impl HostObject {
         identity: *const (),
     ) -> Self {
         assert!(!identity.is_null());
-        Self::build(iid, slots, Some(payload), identity)
+        Self::build(iid, slots, Some(payload), identity, None)
+    }
+    /// Retain a boundary-owned interface view resolver alongside the object.
+    /// It selects only interfaces declared by the host's retained library.
+    /// # Safety
+    /// The identity contract is identical to new_with_payload_and_identity.
+    /// Every resolved view must retain that same canonical identity.
+    pub unsafe fn new_with_interface_resolver(
+        iid: InterfaceId,
+        slots: Vec<HostSlot>,
+        payload: Rc<dyn std::any::Any>,
+        identity: *const (),
+        resolver: impl Fn(InterfaceId) -> Result<HostObject, i32> + 'static,
+    ) -> Self {
+        assert!(!identity.is_null());
+        Self::build(
+            iid,
+            slots,
+            Some(payload),
+            identity,
+            Some(Box::new(resolver)),
+        )
+    }
+    /// Prepare a nominal view without changing the source object's table.
+    /// Portable tables without a resolver accept only their declared IID.
+    pub fn resolve_interface(&self, iid: InterfaceId) -> Result<Self, i32> {
+        if self.header().iid == iid {
+            return Ok(self.clone());
+        }
+        let view = self.storage.interface_resolver.as_ref().ok_or(13)?(iid)?;
+        if view.header().iid != iid || !view.same_identity(self) {
+            return Err(13);
+        }
+        Ok(view)
     }
     /// Compare retained identities without calling a member or QueryInterface.
     pub fn same_identity(&self, other: &Self) -> bool {
@@ -192,6 +227,7 @@ impl HostObject {
         slots: Vec<HostSlot>,
         payload: Option<Rc<dyn std::any::Any>>,
         identity: *const (),
+        interface_resolver: Option<Box<InterfaceResolver>>,
     ) -> Self {
         // Derive raw table pointers only after immutable Rc allocation. Moving
         // a Box after taking as_ptr would invalidate that pointer's borrow tag.
@@ -210,6 +246,7 @@ impl HostObject {
                 _owners: slots,
                 payload,
                 identity,
+                interface_resolver,
             }),
         }
     }

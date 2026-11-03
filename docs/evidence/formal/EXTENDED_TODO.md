@@ -281,3 +281,11 @@ Non-blocking formal issues and follow-up items for later ladder profiles.
   Current status: investigating.
   Reproduction command: cargo test -p calcvba-host-api native_callback; cargo test -p oxvba-embed --test typed_native_com --test typed_prebound_dispatch.
   Suggested next action: refine the before-callback/after-callback synchronization state and exact raw-cell/caller leases, then run matching native/provenance checks under the broader owners.
+
+
+- ID: FTODO-TYPED-NATIVE-VIEWS-LOCALE-20261103
+  Profile: nominal native object-result views and retained invocation locale (bd-59co.3.5.10/.11; CORE-5/CORE-7/WIN-4).
+  Summary: Installed Lean 4.29.1 RefCount, TypedContinuation, TypedReentry and ProcedureHandles abstractions pass. They do not refine the TYPEDESC DWORD union read, native QI view ownership, locale interpretation or generated destination stores. Controlled no-lookup fixtures and owned Excel cross-locale observations are execution evidence only. No concrete native/Miri or pinned-version formal credit. The pinned 4.19 launcher attempted a missing-toolchain download and was interrupted; installed 4.29.1 ran directly.
+  Current status: investigating.
+  Reproduction command: cargo test -p oxvba-embed --test typed_excel_surface --test typed_prebound_dispatch; installed Lean 4.29.1 on formal/lean/OxVba/RefCount.lean, TypedContinuation.lean, TypedReentry.lean and ProcedureHandles.lean.
+  Suggested next action: refine active TYPEDESC union validity and one-owner nominal views against the canonical store, then cover explicit locale policy under broader WIN-4 conformance. Existing offline Miri dependency/sysroot limitations remain without passing credit.

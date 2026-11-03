@@ -2498,6 +2498,11 @@ impl<'a> Parser<'a> {
                 self.parse_array_bounds();
             }
             self.eat_whitespace();
+            if self.eat(SyntaxKind::KwAs) {
+                self.eat_whitespace();
+                self.parse_type_ref();
+                self.eat_whitespace();
+            }
             if !self.eat(SyntaxKind::Comma) {
                 break;
             }
@@ -3029,7 +3034,9 @@ impl<'a> Parser<'a> {
         while j < self.tokens.len() {
             let k = self.tokens[j].0;
             match k {
-                SyntaxKind::Newline | SyntaxKind::Eof | SyntaxKind::Comment => return false,
+                SyntaxKind::Newline | SyntaxKind::Eof | SyntaxKind::Comment | SyntaxKind::Colon => {
+                    return false;
+                }
                 SyntaxKind::LParen => paren_depth += 1,
                 SyntaxKind::RParen => paren_depth -= 1,
                 SyntaxKind::Eq if paren_depth == 0 => return true,
@@ -3458,6 +3465,15 @@ mod tests {
         let call = parse_ok(&in_sub("x = Seek(f)"));
         assert!(!has_node_kind(&call.syntax(), SyntaxKind::SeekStmt));
         assert!(has_node_kind(&call.syntax(), SyntaxKind::AssignStmt));
+    }
+
+    #[test]
+    fn call_before_colon_does_not_consume_following_assignment() {
+        let source = in_sub("Err.Clear: result = Empty");
+        let parsed = parse_ok(&source);
+        assert!(has_node_kind(&parsed.syntax(), SyntaxKind::CallStmt));
+        assert!(has_node_kind(&parsed.syntax(), SyntaxKind::AssignStmt));
+        assert_eq!(parsed.syntax().text(), source);
     }
 
     #[test]

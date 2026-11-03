@@ -194,8 +194,8 @@ Handler:
     ActiveHandlerPropagates = root.Read(9) + Err.Number
 End Function
 Private Sub UnsupportedChild()
-    Dim values() As Double
-    ReDim values(0 To 1)
+    Dim value As Currency
+    value = 0@
 End Sub
 Public Function RejectBeforeEffects(ByVal root As HostObjects.Range) As Double
     RejectBeforeEffects = root.Read(0)

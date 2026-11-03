@@ -33,6 +33,173 @@ pub(crate) struct TypedStack {
     automatic: std::rc::Rc<crate::events::AutomaticEvents>,
 }
 impl TypedStack {
+    fn abort_event_fault(
+        &mut self,
+        programs: &[&OxProgram],
+        context: &TypedContext,
+    ) -> Result<(), i32> {
+        if let Some(fault) = calcvba_host_api::take_unhandled_event_fault(context) {
+            let number = fault.number;
+            let unit = programs[self.frames.last().ok_or(5)?.program]
+                .unit_name
+                .clone();
+            self.err().raise(
+                Fault {
+                    code: number,
+                    message: fault.description,
+                    source: fault.source,
+                    help_file: fault.help_file,
+                    help_context: fault.help_context,
+                },
+                unit,
+            );
+            return Err(number);
+        }
+        Ok(())
+    }
+    fn dynamic_field(
+        &mut self,
+        program: &OxProgram,
+        inst: &OxInst,
+        context: &mut TypedContext,
+    ) -> Result<bool, i32> {
+        let OxInst::ComCallLate {
+            dst,
+            recv,
+            name,
+            default_member: false,
+            invoke_kind,
+            args,
+        } = inst
+        else {
+            return Ok(false);
+        };
+        let reference = self.operand(recv)?;
+        let Some(object) = reference
+            .as_object_ref()
+            .filter(|o| o.is_project_instance())
+        else {
+            return Ok(false);
+        };
+        let current = self.frames.last().ok_or(5)?.program;
+        if object.bundle_id() != current as i32
+            || object.object_owner_id()
+                != Some(oxvba_runtime::object_owner::RuntimeObjectOwner::current().id())
+        {
+            return Err(13);
+        }
+        let class = program.classes.get(object.route_key() as usize).ok_or(13)?;
+        let Some(field) = class
+            .fields
+            .iter()
+            .find(|field| field.externally_visible && field.name.eq_ignore_ascii_case(name))
+        else {
+            return Ok(false);
+        };
+        let carrier = match field.ty {
+            oxvba_oxir::OxTy::Long => ScalarType::Long,
+            oxvba_oxir::OxTy::Double => ScalarType::Double,
+            oxvba_oxir::OxTy::Bool => ScalarType::Boolean,
+            oxvba_oxir::OxTy::Str => ScalarType::String,
+            oxvba_oxir::OxTy::Object(_) => ScalarType::HostObject,
+            oxvba_oxir::OxTy::Variant => ScalarType::Variant,
+            _ => return Err(13),
+        };
+        match invoke_kind {
+            oxvba_com::TypeLibMemberInvokeKind::PropertyGet
+            | oxvba_com::TypeLibMemberInvokeKind::Method
+                if args.is_empty() =>
+            {
+                let value = object.project_field_get(field.token).unwrap_or_else(|| {
+                    if carrier == ScalarType::HostObject {
+                        oxvba_runtime::Variant::nothing()
+                    } else {
+                        oxvba_runtime::Variant::empty()
+                    }
+                });
+                let value = oxvba_rt_abi::host_entry::value::to_variant(
+                    oxvba_rt_abi::host_entry::value::from_variant(carrier, value)?,
+                );
+                if let Some(dst) = dst {
+                    let frame = &mut self.frames.last_mut().ok_or(5)?.activation;
+                    let ty = frame
+                        .layout()
+                        .operand_type(&OxOperand::Use(*dst))
+                        .map_err(|_| 5)?;
+                    frame.write_owned_value(
+                        *dst,
+                        oxvba_rt_abi::host_entry::value::from_variant(ty, value)?,
+                    )?;
+                }
+            }
+            oxvba_com::TypeLibMemberInvokeKind::PropertyPut
+            | oxvba_com::TypeLibMemberInvokeKind::PropertyPutRef
+                if args.len() == 1 =>
+            {
+                let mut value = match &args[0] {
+                    oxvba_oxir::OxCallArg::Operand(op) => self.operand(op)?,
+                    oxvba_oxir::OxCallArg::ByRef(p) => self.operand(&OxOperand::Use(*p))?,
+                    _ => return Err(450),
+                };
+                if *invoke_kind == oxvba_com::TypeLibMemberInvokeKind::PropertyPut {
+                    value = oxvba_rt_abi::host_entry::value::resolve_default(
+                        value,
+                        self.frames.last().ok_or(5)?.activation.layout(),
+                        context,
+                    )?;
+                } else if !matches!(carrier, ScalarType::HostObject | ScalarType::Variant)
+                    || value.vtype() != oxvba_runtime::VarType::Object
+                {
+                    return Err(13);
+                }
+                let value = oxvba_rt_abi::host_entry::value::to_variant(
+                    oxvba_rt_abi::host_entry::value::from_variant(carrier, value)?,
+                );
+                if !object.project_field_set(field.token, value) {
+                    return Err(438);
+                }
+            }
+            _ => return Err(450),
+        }
+        let frame = &mut self.frames.last_mut().ok_or(5)?.activation;
+        frame.set_pc(frame.pc() + 1);
+        Ok(true)
+    }
+    fn invoke_builtin(
+        &self,
+        native: oxvba_bundle::NativeImplId,
+        mut values: Vec<oxvba_runtime::Variant>,
+        layout: &oxvba_rt_abi::host_entry::ScalarLayout,
+        context: &mut TypedContext,
+        host: &dyn oxvba_hal::HostServices,
+    ) -> Result<oxvba_runtime::Variant, i32> {
+        use oxvba_bundle::NativeImplId as N;
+        if matches!(native, N::IsMissing | N::IsArray | N::VarType | N::CStr) {
+            return oxvba_rt_abi::host_entry::value::invoke_unary_builtin(
+                native,
+                values.into_iter().next().ok_or(450)?,
+                layout,
+                context,
+            );
+        }
+        for value in &mut values {
+            *value =
+                oxvba_rt_abi::host_entry::value::resolve_default(value.clone(), layout, context)?;
+        }
+        let result = calcvba_host_api::with_native_call(context, || {
+            oxvba_lib::invoke_context_free(native, &values, host)
+        })
+        .map_err(|error| match error {
+            oxvba_lib::ContextFreeInvokeError::Library(error) => error.code,
+            oxvba_lib::ContextFreeInvokeError::ContextRequired => 5,
+        })?;
+        if native == N::CreateObject {
+            let object = result.as_object_ref().ok_or(13)?;
+            let object = host.com().prepare_dynamic_object(object).map_err(|_| 429)?;
+            return Ok(oxvba_runtime::Variant::from_object_ref(object.object_ref()));
+        }
+        Ok(result)
+    }
     pub(crate) fn error(&mut self, number: i32, source: &str) -> crate::Error {
         if number == -1 {
             return crate::Error::BudgetExceeded;
@@ -342,6 +509,7 @@ impl TypedStack {
         entries: &[Vec<Result<TypedInterpreter<'_>, String>>],
         context: &mut TypedContext,
         mut operations: u64,
+        host: &dyn oxvba_hal::HostServices,
         mut execute: impl FnMut(
             usize,
             FuncId,
@@ -365,6 +533,7 @@ impl TypedStack {
                 operations = frame.activation.raw().remaining_operations;
                 result
             };
+            self.abort_event_fault(programs, context)?;
             // Ancestors remain parked while descendants hold their aliases.
             // Global alias reads retain scratch on the executing frame itself.
             self.frames.last_mut().ok_or(5)?.activation.clear_scratch();
@@ -421,15 +590,54 @@ impl TypedStack {
                     parent.set_pc(parent.pc() + 1);
                 }
                 Ok(CONTROL) => {
-                    if let Err(number) = self.control(programs, entries, context) {
-                        self.route(
-                            programs,
-                            Fault::new(number, oxvba_rt_abi::default_error_message(number)),
-                        )?;
+                    let result = self.control(programs, entries, context, host);
+                    self.abort_event_fault(programs, context)?;
+                    if let Err(number) = result {
+                        if std::env::var_os("OXVBA_TYPED_TRACE").is_some() {
+                            eprintln!(
+                                "control fault {number}: {:?}",
+                                self.position(programs).ok().and_then(|(b, o)| self
+                                    .frames
+                                    .last()
+                                    .map(|f| (
+                                        programs[f.program].funcs[f.procedure.0].blocks[b]
+                                            .instrs
+                                            .get(o.saturating_sub(1)),
+                                        b,
+                                        o
+                                    )))
+                            );
+                        }
+                        let fault = calcvba_host_api::take_typed_fault(context, number)
+                            .map_or_else(
+                                || Fault::new(number, oxvba_rt_abi::default_error_message(number)),
+                                |fault| Fault {
+                                    code: fault.number,
+                                    message: fault.description,
+                                    source: fault.source,
+                                    help_file: fault.help_file,
+                                    help_context: fault.help_context,
+                                },
+                            );
+                        self.route(programs, fault)?;
                     }
                 }
                 Err(-1) => return Err(-1),
                 Err(number) => {
+                    if std::env::var_os("OXVBA_TYPED_TRACE").is_some() {
+                        eprintln!(
+                            "value fault {number}: {:?}",
+                            self.position(programs)
+                                .ok()
+                                .and_then(|(b, o)| self.frames.last().map(|f| (
+                                    programs[f.program].funcs[f.procedure.0].blocks[b]
+                                        .instrs
+                                        .get(o.saturating_sub(1)),
+                                    b,
+                                    o
+                                )))
+                        );
+                    }
                     let fault = calcvba_host_api::take_typed_fault(context, number).map_or_else(
                         || Fault::new(number, oxvba_rt_abi::default_error_message(number)),
                         |fault| Fault {
@@ -452,6 +660,7 @@ impl TypedStack {
         programs: &[&OxProgram],
         entries: &[Vec<Result<TypedInterpreter<'_>, String>>],
         context: &mut TypedContext,
+        host: &dyn oxvba_hal::HostServices,
     ) -> Result<(), i32> {
         let (block_id, offset) = self.position(programs)?;
         let current = self.frames.last().ok_or(5)?.program;
@@ -460,6 +669,48 @@ impl TypedStack {
         let block = &program.funcs[procedure.0].blocks[block_id];
         if let Some(inst) = offset.checked_sub(1).and_then(|i| block.instrs.get(i)) {
             match inst {
+                OxInst::NewExtern { dst, .. } => {
+                    let object = oxvba_rt_abi::host_entry::collection::new_collection();
+                    self.frames
+                        .last_mut()
+                        .ok_or(5)?
+                        .activation
+                        .write_owned_value(*dst, Value::RuntimeObject(object))?;
+                }
+                OxInst::CallNative {
+                    dst,
+                    callee: oxvba_oxir::OxNativeCallee::Builtin(id),
+                    args,
+                } => {
+                    let mut values = Vec::with_capacity(args.len());
+                    for arg in args {
+                        values.push(match arg {
+                            oxvba_oxir::OxCallArg::Operand(op) => self.operand(op)?,
+                            oxvba_oxir::OxCallArg::ByRef(p) => self.operand(&OxOperand::Use(*p))?,
+                            oxvba_oxir::OxCallArg::Const(v) => oxvba_runtime::Variant::from_i32(*v),
+                            oxvba_oxir::OxCallArg::Omitted => {
+                                oxvba_runtime::Variant::from_error_code(0x80020004u32 as i32)
+                            }
+                            _ => return Err(13),
+                        });
+                    }
+                    let value = self.invoke_builtin(
+                        *id,
+                        values,
+                        entries[current][procedure.0]
+                            .as_ref()
+                            .map_err(|_| 5)?
+                            .layout(),
+                        context,
+                        host,
+                    )?;
+                    let frame = &mut self.frames.last_mut().ok_or(5)?.activation;
+                    if let Some(dst) = dst {
+                        frame.write_owned_value(*dst, Value::Variant(value))?;
+                    }
+                    frame.set_pc(frame.pc() + 1);
+                    return Ok(());
+                }
                 OxInst::Predeclared { dst, class } => {
                     let classes = self.classes.as_ref().ok_or(5)?;
                     // SAFETY: the canonical singleton map is leased by this stack.
@@ -538,39 +789,39 @@ impl TypedStack {
                         OxInst::CallExtern { import, .. } => {
                             let parent = entries[current][procedure.0].as_ref().map_err(|_| 5)?;
                             let target = parent.layout().extern_calls.get(import).ok_or(5)?;
-                            if let LinkedTarget::Builtin(
-                                native @ (oxvba_bundle::NativeImplId::IsMissing
-                                | oxvba_bundle::NativeImplId::IsArray
-                                | oxvba_bundle::NativeImplId::VarType
-                                | oxvba_bundle::NativeImplId::CStr),
-                            ) = target.target
-                            {
-                                let operand = match &args[0] {
-                                    oxvba_oxir::OxArg::ByVal(op) => op.clone(),
-                                    oxvba_oxir::OxArg::ByRef(p) => OxOperand::Use(*p),
-                                    _ => return Err(13),
-                                };
-                                let bits = self
-                                    .frames
-                                    .last_mut()
-                                    .ok_or(5)?
-                                    .activation
-                                    .read(&operand, ScalarType::Variant)?;
-                                // SAFETY: the executing frame retains this exact Variant cell.
-                                let Value::Variant(value) = (unsafe {
-                                    calcvba_host_api::value::retain_bits(ScalarType::Variant, bits)
-                                })?
-                                else {
-                                    return Err(13);
-                                };
-                                let result = oxvba_rt_abi::host_entry::value::invoke_unary_builtin(
+                            if let LinkedTarget::Builtin(native) = target.target {
+                                let mut values = Vec::with_capacity(args.len());
+                                for arg in args {
+                                    values.push(match arg {
+                                        oxvba_oxir::OxArg::ByVal(op) => self.operand(op)?,
+                                        oxvba_oxir::OxArg::ByRef(p) => {
+                                            self.operand(&OxOperand::Use(*p))?
+                                        }
+                                        oxvba_oxir::OxArg::Omitted => {
+                                            oxvba_runtime::Variant::from_error_code(
+                                                0x80020004u32 as i32,
+                                            )
+                                        }
+                                    });
+                                }
+                                if let oxvba_bundle::ExportToken::ModuleFunc { member, .. } =
+                                    &program.imports[import.0].token
+                                    && native.is_string_typed_library_alias(member)
+                                    && values
+                                        .iter()
+                                        .any(|v| v.vtype() == oxvba_runtime::VarType::Null)
+                                {
+                                    return Err(94);
+                                }
+                                let result = self.invoke_builtin(
                                     native,
-                                    value,
+                                    values,
                                     entries[current][procedure.0]
                                         .as_ref()
                                         .map_err(|_| 5)?
                                         .layout(),
                                     context,
+                                    host,
                                 )?;
                                 let frame = &mut self.frames.last_mut().ok_or(5)?.activation;
                                 if let Some(dst) = dst {
@@ -624,18 +875,46 @@ impl TypedStack {
                 OxInst::ComCallLate {
                     dst, recv, args, ..
                 } => {
-                    let (proc, class) = self
-                        .frames
-                        .last()
-                        .ok_or(5)?
-                        .activation
-                        .layout()
-                        .class_calls
-                        .iter()
-                        .find(|(site, _, _)| site == inst)
-                        .map(|(_, p, c)| (*p, *c))
-                        .ok_or(5)?;
+                    if self.dynamic_field(program, inst, context)? {
+                        return Ok(());
+                    }
+                    let reference = self.operand(recv)?;
+                    let object = reference.as_object_ref();
+                    let route = object
+                        .as_ref()
+                        .filter(|o| o.is_project_instance())
+                        .and_then(|object| {
+                            self.frames
+                                .last()?
+                                .activation
+                                .layout()
+                                .class_calls
+                                .iter()
+                                .find(|(site, _, class)| {
+                                    site == inst && class.0 as i32 == object.route_key()
+                                })
+                                .map(|(_, p, c)| (*p, *c))
+                        });
+                    if route.is_none() {
+                        let frame = &mut self.frames.last_mut().ok_or(5)?.activation;
+                        // SAFETY: this is the original admitted instruction and its
+                        // uniquely executing retained frame/context. Native dispatch
+                        // executes once, through the same shared member helper.
+                        let status = unsafe {
+                            oxvba_rt_abi::host_entry::value::evaluate(
+                                frame.raw_mut(),
+                                inst,
+                                context,
+                            )
+                        };
+                        if status != 0 {
+                            return Err(status);
+                        }
+                        frame.set_pc(frame.pc() + 1);
+                        return Ok(());
+                    }
                     let object = self.project_object(recv)?;
+                    let (proc, class) = route.ok_or(438)?;
                     if object.bundle_id() != current as i32 || object.route_key() != class.0 as i32
                     {
                         return Err(13);
@@ -714,7 +993,9 @@ impl TypedStack {
                         .and_then(|p| p.classes.get(object.route_key() as usize))
                         .ok_or(13)?;
                     let declaration = class.fields.iter().find(|f| f.token == *field).ok_or(438)?;
-                    let mut value = object.project_field_get(*field).ok_or(438)?;
+                    let mut value = object
+                        .project_field_get(*field)
+                        .unwrap_or_else(oxvba_runtime::Variant::empty);
                     if value.vtype() == oxvba_runtime::VarType::Empty {
                         value = match declaration.ty {
                             oxvba_oxir::OxTy::Long => oxvba_runtime::Variant::from_i32(0),
@@ -723,6 +1004,25 @@ impl TypedStack {
                             oxvba_oxir::OxTy::Str => oxvba_runtime::Variant::from_string(""),
                             oxvba_oxir::OxTy::Object(_) => oxvba_runtime::Variant::nothing(),
                             oxvba_oxir::OxTy::Variant => value,
+                            oxvba_oxir::OxTy::Array(_, _) => {
+                                oxvba_runtime::Variant::unallocated_array(
+                                    oxvba_bundle::safearray_vartype_for_element(
+                                        declaration.array_element.as_ref().ok_or(13)?,
+                                    ),
+                                )
+                            }
+                            oxvba_oxir::OxTy::Record(id) => {
+                                let fields = programs[object.bundle_id() as usize]
+                                    .record_layouts
+                                    .get(id.0)
+                                    .ok_or(13)?;
+                                let layout = oxvba_bundle::vba_record_layout_for_fields(fields)
+                                    .map_err(|_| 13)?;
+                                oxvba_runtime::Variant::from_vba_record(
+                                    oxvba_runtime::vba_record::VbaRecord::new_default(layout)
+                                        .map_err(|_| 7)?,
+                                )
+                            }
                             _ => return Err(13),
                         };
                     }
@@ -744,6 +1044,56 @@ impl TypedStack {
                     let object = self.project_object(object)?;
                     let value = self.operand(value)?;
                     if !object.project_field_set(*field, value) {
+                        return Err(438);
+                    }
+                }
+                OxInst::FieldArrayGet {
+                    dst,
+                    object,
+                    field,
+                    indices,
+                } => {
+                    let object = self.project_object(object)?;
+                    let array = object
+                        .project_field_get(*field)
+                        .unwrap_or_else(oxvba_runtime::Variant::empty);
+                    let (bounds, _) = array.safearray_bounds_len().ok_or(9)?;
+                    let indices = indices
+                        .iter()
+                        .map(|op| oxvba_eval::arith::int(&self.operand(op)?).map_err(|e| e.code))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let index = oxvba_rt_abi::host_entry::array_flat_index(&bounds, &indices)?;
+                    let value = array.safearray_element(index).ok_or(9)?.map_err(|_| 9)?;
+                    let frame = &mut self.frames.last_mut().ok_or(5)?.activation;
+                    let ty = frame
+                        .layout()
+                        .operand_type(&OxOperand::Use(*dst))
+                        .map_err(|_| 5)?;
+                    frame.write_owned_value(
+                        *dst,
+                        oxvba_rt_abi::host_entry::value::from_variant(ty, value)?,
+                    )?;
+                }
+                OxInst::FieldArraySet {
+                    object,
+                    field,
+                    indices,
+                    value,
+                } => {
+                    let object = self.project_object(object)?;
+                    let mut array = object
+                        .project_field_get(*field)
+                        .unwrap_or_else(oxvba_runtime::Variant::empty);
+                    let (bounds, _) = array.safearray_bounds_len().ok_or(9)?;
+                    let indices = indices
+                        .iter()
+                        .map(|op| oxvba_eval::arith::int(&self.operand(op)?).map_err(|e| e.code))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let index = oxvba_rt_abi::host_entry::array_flat_index(&bounds, &indices)?;
+                    array
+                        .set_safearray_element(index, &self.operand(value)?)
+                        .map_err(|_| 13)?;
+                    if !object.project_field_set(*field, array) {
                         return Err(438);
                     }
                 }

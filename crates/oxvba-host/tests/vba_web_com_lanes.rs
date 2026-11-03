@@ -121,6 +121,7 @@ impl TypeLibResolver for ApplicationTypeLibs {
             .is_some_and(|name| name.eq_ignore_ascii_case("Workbooks"))
         {
             return Some(TypeLibMetadataBlob {
+                constants: Vec::new(),
                 identity: TypeLibResolvedIdentity {
                     reference_name: "Excel".into(),
                     requested_coclass: Some("Workbooks".into()),
@@ -154,6 +155,7 @@ impl TypeLibResolver for ApplicationTypeLibs {
             });
         }
         Some(TypeLibMetadataBlob {
+            constants: Vec::new(),
             identity: TypeLibResolvedIdentity {
                 reference_name: "Excel".into(),
                 requested_coclass: Some("Application".into()),

@@ -3830,6 +3830,7 @@ pub fn build_metadata_blob_from_typelib(
         members.iter().map(|m| (m.name.clone(), m.token)).collect();
 
     Ok(TypeLibMetadataBlob {
+        constants: enumerate_typelib_constants(ptlib)?,
         identity,
         activation_prog_id,
         member_name_to_token,
@@ -3837,6 +3838,86 @@ pub fn build_metadata_blob_from_typelib(
         events,
         coclass_names,
     })
+}
+/// Read authoritative enum/module constants without activating an object or
+/// interpreting dependency-specific names. COM owns every descriptor until its
+/// corresponding Release; each scalar/string value is copied before release.
+#[cfg(target_os = "windows")]
+fn enumerate_typelib_constants(
+    ptlib: *mut c_void,
+) -> Result<Vec<crate::TypeLibConstantMetadata>, String> {
+    if ptlib.is_null() {
+        return Err("null constant type library".into());
+    }
+    let mut constants = Vec::new();
+    // SAFETY: the loader retains this ITypeLib on the creating apartment. Every
+    // successful GetTypeInfo/GetTypeAttr/GetVarDesc is balanced below, including
+    // conversion/name errors; no COM-owned address escapes this function.
+    unsafe {
+        let library = *(ptlib as *const *const ITypeLibVtbl);
+        for index in 0..((*library).get_type_info_count)(ptlib) {
+            let mut kind = 0;
+            if ((*library).get_type_info_type)(ptlib, index, &mut kind) != COM_S_OK {
+                return Err("constant type kind could not be read".into());
+            }
+            if kind != TKIND_ENUM && kind != TKIND_MODULE {
+                continue;
+            }
+            let mut info = null_mut();
+            if ((*library).get_type_info)(ptlib, index, &mut info) != COM_S_OK || info.is_null() {
+                return Err("constant type information is missing".into());
+            }
+            let table = *(info as *const *const ITypeInfoVtbl);
+            let result = (|| -> Result<(), String> {
+                let owner = typeinfo_name(info).ok_or("constant owner name is missing")?;
+                let mut attr = null_mut();
+                if ((*table).get_type_attr)(info, &mut attr) != COM_S_OK || attr.is_null() {
+                    return Err("constant type attributes are missing".into());
+                }
+                let count = (*attr).cvars;
+                ((*table).release_type_attr)(info, attr);
+                for variable in 0..u32::from(count) {
+                    let mut raw = null_mut();
+                    if ((*table).get_var_desc)(info, variable, &mut raw) != COM_S_OK
+                        || raw.is_null()
+                    {
+                        return Err("constant variable descriptor is missing".into());
+                    }
+                    let result = (|| -> Result<Option<crate::TypeLibConstantMetadata>, String> {
+                        let var = &*(raw as *const VARDESC);
+                        if var.varkind != 2 {
+                            return Ok(None);
+                        } // VAR_CONST
+                        if var.union_field == 0 {
+                            return Err("constant value is missing".into());
+                        }
+                        let name = typeinfo_member_name(info, var.memid)
+                            .ok_or("constant name is missing")?;
+                        let value = crate::variant_to_com_value(
+                            &*(var.union_field
+                                as *const windows_sys::Win32::System::Variant::VARIANT),
+                        )
+                        .map_err(|e| format!("constant {owner}.{name}: {e}"))?;
+                        let value = crate::ComDefaultValue::from_com_value(&value)
+                            .ok_or("unsupported constant carrier")?;
+                        Ok(Some(crate::TypeLibConstantMetadata {
+                            owner: owner.clone(),
+                            name,
+                            value,
+                        }))
+                    })();
+                    ((*table).release_var_desc)(info, raw);
+                    if let Some(value) = result? {
+                        constants.push(value);
+                    }
+                }
+                Ok(())
+            })();
+            ((*table).release)(info);
+            result?;
+        }
+    }
+    Ok(constants)
 }
 
 /// Recovers a [`TypeLibMetadataBlob`] from a live activated `IDispatch` when the
@@ -3965,6 +4046,7 @@ pub unsafe fn build_metadata_blob_from_dispatch(
     // its single owning Release.
     unsafe { release_typelib(local_ptlib) };
     Some(TypeLibMetadataBlob {
+        constants: Vec::new(),
         identity,
         activation_prog_id: None,
         member_name_to_token: Vec::new(),

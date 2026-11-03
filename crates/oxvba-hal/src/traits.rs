@@ -392,6 +392,16 @@ pub trait ComHal: Send + Sync {
             "bind_native_dispatch_object_variant",
         )
     }
+    /// Retain an activated IDispatch for owning Object/Variant member dispatch.
+    fn prepare_dynamic_object(
+        &self,
+        _object: ObjectRef,
+    ) -> HalResult<calcvba_host_api::HostObject> {
+        variant_companion_not_overridden(
+            CapabilityId::ComActivationDispatch,
+            "prepare_dynamic_object",
+        )
+    }
     /// Prepare selected authoritative dual-interface members for typed host slots.
     /// The returned owner retains a QI'd native receiver in the current apartment.
     /// # Safety

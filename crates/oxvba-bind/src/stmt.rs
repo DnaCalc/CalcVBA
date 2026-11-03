@@ -1031,6 +1031,7 @@ impl<'a> ProcLower<'a> {
             .any(|t| t.kind == SyntaxKind::KwPreserve);
         let mut out = Vec::new();
         let mut segments: Vec<&str> = Vec::new();
+        let mut last_variant = false;
         for el in node.children() {
             match el {
                 SyntaxElement::Token(t)
@@ -1045,8 +1046,27 @@ impl<'a> ProcLower<'a> {
                 SyntaxElement::Token(t) if matches!(t.kind, SyntaxKind::Dot | SyntaxKind::Bang) => {
                 }
                 SyntaxElement::Node(n) if n.kind() == SyntaxKind::ArrayBounds => {
-                    out.push(self.redim_one(&segments, n, preserve)?);
+                    let (statement, variant) = self.redim_one(&segments, n, preserve)?;
+                    out.push(statement);
+                    last_variant = variant;
                     segments.clear();
+                }
+                SyntaxElement::Node(n) if n.kind() == SyntaxKind::TypeRef => {
+                    let ty = oxvba_symbol::scanner::type_ref_node(n);
+                    let requested = self.g.array_element_layout(&ty);
+                    let Some(CoreStmt::ReDim {
+                        explicit_element,
+                        element_type,
+                        ..
+                    }) = out.last_mut()
+                    else {
+                        return Err(BindError::Malformed("ReDim type without target".into()));
+                    };
+                    if !last_variant && requested != *element_type {
+                        return Err(BindError::TypeMismatch);
+                    }
+                    *element_type = requested;
+                    *explicit_element = true;
                 }
                 SyntaxElement::Token(t) if t.kind == SyntaxKind::Comma => segments.clear(),
                 _ => {}
@@ -1061,7 +1081,7 @@ impl<'a> ProcLower<'a> {
         &mut self,
         segments: &[&str],
         preserve: bool,
-    ) -> Result<(CorePlace, oxvba_bundle::ArrayElementType), BindError> {
+    ) -> Result<(CorePlace, oxvba_bundle::ArrayElementType, bool), BindError> {
         match segments {
             [] => Err(BindError::Malformed("ReDim target".into())),
             [name] => self.redim_simple_target(name, preserve),
@@ -1090,7 +1110,7 @@ impl<'a> ProcLower<'a> {
                         });
                     }
                 };
-                Ok((place, element_type))
+                Ok((place, element_type, ty == VarTypeRef::Variant))
             }
         }
     }
@@ -1099,7 +1119,7 @@ impl<'a> ProcLower<'a> {
         &mut self,
         name: &str,
         preserve: bool,
-    ) -> Result<(CorePlace, oxvba_bundle::ArrayElementType), BindError> {
+    ) -> Result<(CorePlace, oxvba_bundle::ArrayElementType, bool), BindError> {
         if preserve && self.resolve(name).is_none() {
             if self.has_ambiguous_unqualified_name(name) {
                 return Err(BindError::AmbiguousName {
@@ -1119,6 +1139,7 @@ impl<'a> ProcLower<'a> {
                 err
             }
         })?;
+        let variant = ty == VarTypeRef::Variant;
         let element_type = match ty {
             VarTypeRef::Variant => oxvba_bundle::ArrayElementType::Variant,
             VarTypeRef::Array(inner) => self.g.array_element_layout(&inner),
@@ -1129,7 +1150,7 @@ impl<'a> ProcLower<'a> {
                 });
             }
         };
-        Ok((place, element_type))
+        Ok((place, element_type, variant))
     }
 
     /// Rebuild a `CorePlace::Field` for a dotted ReDim target (`a.b.arr`): the
@@ -1224,17 +1245,21 @@ impl<'a> ProcLower<'a> {
         segments: &[&str],
         bounds_node: SyntaxNode<'_>,
         preserve: bool,
-    ) -> Result<CoreStmt, BindError> {
-        let (array, element_type) = self.redim_target(segments, preserve)?;
+    ) -> Result<(CoreStmt, bool), BindError> {
+        let (array, element_type, variant) = self.redim_target(segments, preserve)?;
         let bounds = self.bind_array_bounds(bounds_node)?;
-        Ok(CoreStmt::ReDim {
-            array,
-            bounds,
-            element_type,
-            preserve,
-            // A user `ReDim` produces a dynamic (resizable) array.
-            fixed: false,
-        })
+        Ok((
+            CoreStmt::ReDim {
+                explicit_element: false,
+                array,
+                bounds,
+                element_type,
+                preserve,
+                // A user `ReDim` produces a dynamic (resizable) array.
+                fixed: false,
+            },
+            variant,
+        ))
     }
 
     /// Lower an `ArrayBounds` node to `CoreBound`s (each `lower To upper`, or
@@ -1362,9 +1387,10 @@ impl<'a> ProcLower<'a> {
             // A fixed-size array allocates via ReDim.
             if let Some(bounds_node) = declarator.array_bounds() {
                 if !bounds_node.children_of(SyntaxKind::Bound).is_empty() {
-                    let (array, element_type) = self.redim_target(&[name.text], false)?;
+                    let (array, element_type, _) = self.redim_target(&[name.text], false)?;
                     let bounds = self.bind_array_bounds(bounds_node)?;
                     out.push(CoreStmt::ReDim {
+                        explicit_element: false,
                         array,
                         bounds,
                         element_type,
@@ -1480,6 +1506,7 @@ impl<'a> ProcLower<'a> {
                 VarTypeRef::Array(inner) => {
                     if let Some(bounds) = self.udt_fixed_array_field_bounds(udt, &field_name)? {
                         out.push(CoreStmt::ReDim {
+                            explicit_element: false,
                             array: sub,
                             bounds,
                             element_type: self.g.array_element_layout(&inner),

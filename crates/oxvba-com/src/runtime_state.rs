@@ -679,6 +679,7 @@ mod tests {
     #[test]
     fn binding_from_typelib_metadata_carries_runtime_descriptor_projection() {
         let metadata = TypeLibMetadataBlob {
+            constants: Vec::new(),
             identity: sample_typelib_identity(),
             activation_prog_id: Some("TestLib.Widget".to_string()),
             member_name_to_token: vec![("Lookup".to_string(), 7)],
@@ -751,6 +752,7 @@ mod tests {
     #[test]
     fn event_specs_carry_byref_parameter_metadata() {
         let metadata = TypeLibMetadataBlob {
+            constants: Vec::new(),
             identity: sample_typelib_identity(),
             activation_prog_id: Some("TestLib.Widget".to_string()),
             member_name_to_token: vec![("BeforeClose".to_string(), 22)],
@@ -790,6 +792,7 @@ mod tests {
         // `ComMemberSpec`, where today it was dropped. `vtable_slot` carries the
         // x64 slot INDEX (oVft / 8), not the raw byte offset.
         let metadata = TypeLibMetadataBlob {
+            constants: Vec::new(),
             identity: sample_typelib_identity(),
             activation_prog_id: Some("TestLib.Widget".to_string()),
             member_name_to_token: vec![("Lookup".to_string(), 7)],

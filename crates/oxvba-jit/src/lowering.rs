@@ -462,6 +462,7 @@ pub(crate) struct ArrayRedimInputs<'a> {
     pub(crate) element: &'a ArrayElementType,
     pub(crate) preserve: bool,
     pub(crate) fixed: bool,
+    pub(crate) explicit_element: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -797,6 +798,7 @@ impl<'a> LowerFunc<'a> {
                 element,
                 preserve,
                 fixed,
+                explicit_element,
             } => self.lower_array_redim(
                 builder,
                 module,
@@ -807,6 +809,7 @@ impl<'a> LowerFunc<'a> {
                     element,
                     preserve: *preserve,
                     fixed: *fixed,
+                    explicit_element: *explicit_element,
                 },
             ),
             OxInst::ArrayGet {
@@ -1434,13 +1437,13 @@ impl<'a> LowerFunc<'a> {
                 lhs,
                 rhs,
                 mode,
+                coercion,
             } => match place_ty(self.program, self.func, *dst)? {
                 OxTy::Variant => self.emit_variant_compare_slot_call(
                     builder,
                     module,
                     *dst,
-                    *op,
-                    *mode,
+                    (*op, *mode, *coercion),
                     BinaryVariantOperands { lhs, rhs },
                 ),
                 OxTy::Bool => {
@@ -2685,10 +2688,10 @@ impl<'a> LowerFunc<'a> {
         builder: &mut FunctionBuilder<'_>,
         module: &mut JITModule,
         dst: OxPlace,
-        op: CmpOp,
-        mode: StringCompareMode,
+        comparison: (CmpOp, StringCompareMode, oxvba_bundle::ComparisonCoercion),
         operands: BinaryVariantOperands<'_>,
     ) -> Result<(), JitError> {
+        let (op, mode, coercion) = comparison;
         let operands = [
             self.lower_variant_operand(builder, operands.lhs)?,
             self.lower_variant_operand(builder, operands.rhs)?,
@@ -2701,12 +2704,30 @@ impl<'a> LowerFunc<'a> {
         let mode = builder
             .ins()
             .iconst(types::I32, i64::from(raw_string_compare_mode(mode)));
+        let coercion = builder.ins().iconst(
+            types::I32,
+            match coercion {
+                oxvba_bundle::ComparisonCoercion::Strict => 0,
+                oxvba_bundle::ComparisonCoercion::String => 1,
+                oxvba_bundle::ComparisonCoercion::Numeric => 2,
+                oxvba_bundle::ComparisonCoercion::Variant => 3,
+            },
+        );
         let area = builder.ins().iconst(types::I32, i64::from(area));
         let index = builder.ins().iconst(types::I32, index as i64);
         let callee = self.import(builder, module, self.imports.compare_v_slot);
         let call = builder.ins().call(
             callee,
-            &[self.state, self.run, op, mode, operands_ptr, area, index],
+            &[
+                self.state,
+                self.run,
+                op,
+                mode,
+                coercion,
+                operands_ptr,
+                area,
+                index,
+            ],
         );
         let status = builder.inst_results(call)[0];
         self.return_if_not_ok(builder, status);
@@ -4544,6 +4565,7 @@ impl<'a> LowerFunc<'a> {
             element,
             preserve,
             fixed,
+            explicit_element,
         } = inputs;
         let dst_ty = place_ty(self.program, self.func, dst)?;
         let supported_dst = if matches!(dst_ty, OxTy::Variant) {
@@ -4592,6 +4614,10 @@ impl<'a> LowerFunc<'a> {
         let preserve = builder
             .ins()
             .iconst(types::I32, if preserve { 1 } else { 0 });
+        let inherit_current = builder.ins().iconst(
+            types::I32,
+            i64::from(!explicit_element && matches!(dst_ty, OxTy::Variant)),
+        );
         let element_ptr = self.emit_array_element_metadata_ptr(builder, module, element)?;
         let callee = self.import(builder, module, self.imports.array_redim_slot);
         let call = builder.ins().call(
@@ -4605,6 +4631,7 @@ impl<'a> LowerFunc<'a> {
                 element_ptr,
                 fixed,
                 preserve,
+                inherit_current,
                 area,
                 index,
             ],
@@ -8072,7 +8099,7 @@ impl<'a> LowerFunc<'a> {
                         native_impl,
                         NativeImplId::TypeName | NativeImplId::IsObject | NativeImplId::VarType
                     ))
-                    || is_m4_4_fixed_variant_array_ty(ty))
+                    || matches!(ty, OxTy::Array(_, _)))
             }
             _ => Ok(false),
         }

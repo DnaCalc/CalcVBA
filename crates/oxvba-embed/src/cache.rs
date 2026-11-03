@@ -186,6 +186,19 @@ impl OwnedSession {
             )
         });
         let generation = generation?;
+        let documents = self.cell.with_dependent(|_, s| {
+            s.module
+                .documents
+                .iter()
+                .filter_map(|document| {
+                    s.automatic
+                        .documents
+                        .borrow()
+                        .get(&(s.module.reference_programs.len(), document.class))
+                        .map(|source| (document.name.clone(), source.clone()))
+                })
+                .collect::<Vec<_>>()
+        });
         let mut next = Self::new(module, self.backend())?;
         Rc::get_mut(&mut next.cell)
             .expect("unpublished replacement")
@@ -193,6 +206,19 @@ impl OwnedSession {
                 s.owner = owner;
                 s.generation = generation;
             });
+        for (name, source) in documents {
+            // Module names, rather than class ordinals, survive source reorder.
+            let retained = next.cell.with_dependent(|_, s| {
+                s.module
+                    .documents
+                    .iter()
+                    .any(|d| d.name.eq_ignore_ascii_case(&name))
+            });
+            if retained {
+                next.attach_document(&name, &source)?;
+            }
+        }
+        self.cell.with_dependent(|_, s| s.automatic.clear());
         std::mem::swap(self, &mut next);
         Ok(())
     }

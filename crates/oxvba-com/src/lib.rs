@@ -69,10 +69,10 @@ pub use runtime_state::{
 };
 pub use typelib::{
     ComDefaultValue, ComInterfaceIid, OptionalParamDefault, SourceTypeKind, TypeLibCacheScope,
-    TypeLibEventDispatchPath, TypeLibEventMetadata, TypeLibInterfaceMetadata,
-    TypeLibMemberInvokeKind, TypeLibMemberMetadata, TypeLibMetadataBlob, TypeLibParamType,
-    TypeLibRecordField, TypeLibRecordFieldKind, TypeLibRecordInfo, TypeLibRecordLayout,
-    TypeLibResolveRequest, TypeLibResolvedIdentity, TypeLibWireType,
+    TypeLibConstantMetadata, TypeLibEventDispatchPath, TypeLibEventMetadata,
+    TypeLibInterfaceMetadata, TypeLibMemberInvokeKind, TypeLibMemberMetadata, TypeLibMetadataBlob,
+    TypeLibParamType, TypeLibRecordField, TypeLibRecordFieldKind, TypeLibRecordInfo,
+    TypeLibRecordLayout, TypeLibResolveRequest, TypeLibResolvedIdentity, TypeLibWireType,
     runtime_class_descriptor_from_typelib_metadata,
 };
 pub use typelib_cache::TypeLibMetadataCacheState;

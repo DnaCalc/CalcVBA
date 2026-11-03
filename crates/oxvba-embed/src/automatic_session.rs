@@ -9,6 +9,12 @@ fn number(error: Error) -> i32 {
     }
 }
 impl OwnedSession {
+    /// Retrieve the first unacknowledged handler error, including idle delivery.
+    /// Hosts own debugger/UI policy; the engine never displays an Excel dialog.
+    pub fn take_event_error(&self) -> Option<Error> {
+        self.cell
+            .with_dependent(|_, s| s.automatic.unhandled.borrow_mut().take())
+    }
     pub(crate) fn ensure_event_dispatcher(&self) {
         self.cell.with_dependent(|_, session| {
             *session.automatic.session.borrow_mut() = Rc::downgrade(&self.cell);
@@ -21,8 +27,137 @@ impl OwnedSession {
         self.cell
             .with_dependent(|_, session| session.attach_document(module, source))
     }
+    /// Stop delivery from this host document. A later attachment may supply a
+    /// replacement identity; detaching does not synthesize a host event.
+    pub fn detach_document(&self, module: &str) -> Result<(), Error> {
+        self.cell
+            .with_dependent(|_, session| session.detach_document(module))
+    }
+    /// Deliver a host lifecycle notification after its document identities have
+    /// been attached. The host owns event timing (including events raised while
+    /// loading); the compiler alone selects the private handler and signature.
+    /// Native connection-point delivery continues to use the automatic sink.
+    pub fn deliver_document_event(
+        &self,
+        module: &str,
+        interface: api::InterfaceId,
+        dispatch_id: i32,
+        arguments: &mut [Value],
+        context: &mut api::TypedContext,
+    ) -> Result<(), Error> {
+        self.ensure_event_dispatcher();
+        let deliveries = self.cell.with_dependent(|_, session| {
+            let document = session
+                .module
+                .documents
+                .iter()
+                .find(|d| d.name.eq_ignore_ascii_case(module))
+                .ok_or_else(|| Error::UnknownProcedure(module.into()))?;
+            let unit = session.module.reference_programs.len();
+            if !session
+                .automatic
+                .documents
+                .borrow()
+                .contains_key(&(unit, document.class))
+            {
+                return Err(Error::ArgumentMismatch);
+            }
+            let binding_id = i32::MIN
+                .checked_add(i32::try_from(document.class).map_err(|_| Error::ArgumentMismatch)?)
+                .ok_or(Error::ArgumentMismatch)?;
+            let state = session.automatic.state.borrow().clone();
+            let state = state.borrow();
+            let (key, binding) = state
+                .bindings
+                .iter()
+                .find(|(key, _)| key.0 == unit && key.2 == binding_id)
+                .ok_or(Error::ArgumentMismatch)?;
+            let handlers = session.programs[unit]
+                .event_routes
+                .iter()
+                .filter(|route| {
+                    route.document_class == Some(document.class)
+                        && route.native.as_ref().is_some_and(|native| {
+                            native.dispatch_member_id == Some(dispatch_id)
+                                && native
+                                    .connection_point_iid
+                                    .as_deref()
+                                    .and_then(oxvba_runtime::RuntimeGuid::parse)
+                                    .is_some_and(|iid| {
+                                        let mut bytes = [0; 16];
+                                        bytes[..4].copy_from_slice(&iid.data1.to_le_bytes());
+                                        bytes[4..6].copy_from_slice(&iid.data2.to_le_bytes());
+                                        bytes[6..8].copy_from_slice(&iid.data3.to_le_bytes());
+                                        bytes[8..].copy_from_slice(&iid.data4);
+                                        bytes == interface
+                                    })
+                        })
+                })
+                .map(|route| route.handler)
+                .collect::<Vec<_>>();
+            Ok((
+                session.automatic.clone(),
+                *key,
+                binding.generation,
+                handlers,
+            ))
+        })?;
+        let (events, key, generation, handlers) = deliveries;
+        for handler in handlers {
+            let result = api::with_native_call(context, || {
+                events.deliver(key, generation, handler, arguments)
+            });
+            if let Some(fault) = api::take_unhandled_event_fault(context) {
+                return Err(Error::Runtime {
+                    number: fault.number,
+                    description: fault.description,
+                    vba_source: fault.source.unwrap_or_default(),
+                });
+            }
+            result.map_err(|number| {
+                self.cell
+                    .with_dependent(|_, session| session.typed_error(number))
+            })?;
+        }
+        Ok(())
+    }
 }
 impl Session<'_> {
+    fn detach_document(&self, module: &str) -> Result<(), Error> {
+        if self.typed_depth.get() != 0 || self.suspended.get() != 0 {
+            return Err(Error::Reentry);
+        }
+        let _executing = self
+            .executing
+            .try_borrow_mut()
+            .map_err(|_| Error::Reentry)?;
+        let document = self
+            .module
+            .documents
+            .iter()
+            .find(|d| d.name.eq_ignore_ascii_case(module))
+            .ok_or_else(|| Error::UnknownProcedure(module.into()))?;
+        let unit = self.module.reference_programs.len();
+        let classes = match &self.executable {
+            Executable::Interpreter(state) => state.borrow_mut().typed_class_context(),
+            #[cfg(feature = "jit")]
+            Executable::Jit(_, state) => state.borrow_mut().typed_class_context(),
+        }
+        .ok_or_else(|| Error::Compile("missing document class".into()))?;
+        let _object_scope = self.object_owner.borrow().enter();
+        // SAFETY: this same-thread session retains the canonical singleton map.
+        let owner =
+            unsafe { classes.predeclared(unit, document.class) }.and_then(|v| v.as_object_ref());
+        if let Some(owner) = owner {
+            self.automatic.clear_owner(unit, &owner);
+            owner.project_field_set(oxvba_bundle::HOST_DOCUMENT_FIELD, Variant::nothing());
+        }
+        self.automatic
+            .documents
+            .borrow_mut()
+            .remove(&(unit, document.class));
+        Ok(())
+    }
     pub(crate) fn validate_reachable(&self, unit: usize, procedure: FuncId) -> Result<(), Error> {
         let mut pending = vec![(unit, procedure)];
         let mut visited = std::collections::HashSet::new();
@@ -166,7 +301,36 @@ impl Session<'_> {
             }
             args[index - 1] = value;
         }
-        if result.map_err(number)? != 0 {
+        let status = result.map_err(|error| {
+            if self.automatic.unhandled.borrow().is_none() {
+                *self.automatic.unhandled.borrow_mut() = Some(error.clone());
+            }
+            let code = match &error {
+                Error::Runtime { number, .. } => *number,
+                Error::BudgetExceeded => -1,
+                _ => 5,
+            };
+            let (description, source) = match error {
+                Error::Runtime {
+                    description,
+                    vba_source,
+                    ..
+                } => (description, Some(vba_source)),
+                error => (error.to_string(), None),
+            };
+            api::publish_unhandled_event_fault(
+                context,
+                api::TypedFault {
+                    number: code,
+                    description,
+                    source,
+                    help_file: None,
+                    help_context: None,
+                },
+            );
+            code
+        })?;
+        if status != 0 {
             return Err(5);
         }
         Ok(())
@@ -217,14 +381,17 @@ impl Session<'_> {
         let source = source
             .resolve_interface(iid)
             .map_err(|_| Error::ArgumentMismatch)?;
-        if self
+        if let Some(old) = self
             .automatic
             .documents
             .borrow()
             .get(&(unit, document.class))
-            .is_some_and(|old| !old.same_identity(&source))
         {
-            return Err(Error::ArgumentMismatch);
+            return if old.same_identity(&source) {
+                Ok(())
+            } else {
+                Err(Error::ArgumentMismatch)
+            };
         }
         let classes = match &self.executable {
             Executable::Interpreter(state) => state.borrow_mut().typed_class_context(),

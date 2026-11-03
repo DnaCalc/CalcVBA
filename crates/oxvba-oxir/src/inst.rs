@@ -170,6 +170,8 @@ pub enum OxInst {
         lhs: OxOperand,
         rhs: OxOperand,
         mode: StringCompareMode,
+        #[serde(default)]
+        coercion: oxvba_bundle::ComparisonCoercion,
     },
     /// Object identity (`Is`).
     CompareObjectIs {
@@ -359,6 +361,8 @@ pub enum OxInst {
     },
     /// `ReDim [Preserve]`.
     ArrayRedim {
+        #[serde(default)]
+        explicit_element: bool,
         dst: OxPlace,
         upper_bounds: Vec<OxOperand>,
         lower_bounds: Vec<OxOperand>,

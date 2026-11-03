@@ -4,7 +4,9 @@ mod project_graph;
 pub use project_graph::*;
 mod native_callback;
 pub use native_callback::{
-    NativeCallbackSync, with_native_call, with_native_callback_context, with_native_callback_sync,
+    NativeCallbackSync, UNHANDLED_EVENT_ABORT, has_unhandled_event_fault,
+    publish_unhandled_event_fault, take_unhandled_event_fault, with_native_call,
+    with_native_callback_context, with_native_callback_sync,
 };
 mod invocation;
 pub mod object;

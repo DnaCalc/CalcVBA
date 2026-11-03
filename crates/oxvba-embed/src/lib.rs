@@ -56,7 +56,7 @@ pub struct Procedure {
     id: FuncId,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum Error {
     #[error("compile: {0}")]
     Compile(String),
@@ -455,6 +455,7 @@ impl<'a> Session<'a> {
             .iter()
             .map(|((_, class), source)| (*class, source.clone()))
             .collect::<Vec<_>>();
+        self.automatic.documents.borrow_mut().clear();
         drop(_executing);
         for (class, source) in documents {
             let document = self
@@ -950,6 +951,7 @@ impl<'a> Session<'a> {
             &self.owning_typed,
             context,
             operations,
+            self.host,
             |unit, id, frame, context, operations| match &self.executable {
                 Executable::Interpreter(_) => self.owning_typed[unit][id.0]
                     .as_ref()

@@ -24,6 +24,47 @@ pub struct ComTypeLibProvider {
 }
 
 impl ComTypeLibProvider {
+    fn resolve_constant(&self, parts: &[&str]) -> Option<Binding> {
+        use oxvba_bundle::coreir::CoreConst as C;
+        use oxvba_com::ComDefaultValue as V;
+        let name = *parts.last()?;
+        let candidates = self
+            .blob
+            .constants
+            .iter()
+            .filter(|constant| {
+                constant.name.eq_ignore_ascii_case(name)
+                    && match parts {
+                        [_] => true,
+                        [owner, _] => {
+                            owner.eq_ignore_ascii_case(&self.blob.identity.reference_name)
+                                || owner.eq_ignore_ascii_case(&constant.owner)
+                        }
+                        [library, owner, _] => {
+                            library.eq_ignore_ascii_case(&self.blob.identity.reference_name)
+                                && owner.eq_ignore_ascii_case(&constant.owner)
+                        }
+                        _ => false,
+                    }
+            })
+            .collect::<Vec<_>>();
+        let [constant] = candidates.as_slice() else {
+            return None;
+        };
+        let value = match &constant.value {
+            V::Empty => C::Empty,
+            V::Null => C::Null,
+            V::Bool(value) => C::Bool(*value),
+            // Enum constants have their declared Long type, even for small values.
+            V::Int(value) => i32::try_from(*value).map(C::I32).unwrap_or(C::I64(*value)),
+            V::FloatBits(value) => C::F64(*value),
+            V::CurrencyScaled(value) => C::Currency(*value),
+            V::DateBits(value) => C::Date(*value),
+            V::Str(value) => C::Str(value.clone()),
+            V::ErrorCode(_) => return None,
+        };
+        Some(Binding::new(None, DispatchRoute::ConstValue(value)))
+    }
     pub fn new(blob: TypeLibMetadataBlob) -> Self {
         let iid = blob
             .members
@@ -209,6 +250,21 @@ impl ComTypeLibProvider {
 }
 
 impl Provider for ComTypeLibProvider {
+    fn resolve(&self, name: &str) -> Option<Binding> {
+        self.resolve_constant(&[name])
+    }
+    fn resolve_qualified(&self, parts: &[&str]) -> Option<Binding> {
+        self.resolve_constant(parts)
+    }
+    fn has_ambiguous_unqualified_name(&self, name: &str) -> bool {
+        self.blob
+            .constants
+            .iter()
+            .filter(|c| c.name.eq_ignore_ascii_case(name))
+            .take(2)
+            .count()
+            > 1
+    }
     fn source_event_metadata(
         &self,
         recv: &VarTypeRef,

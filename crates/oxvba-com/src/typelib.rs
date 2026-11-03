@@ -33,6 +33,8 @@ pub struct TypeLibResolvedIdentity {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeLibMetadataBlob {
+    /// Compile-time constants from TKIND_ENUM/TKIND_MODULE VARDESCs.
+    pub constants: Vec<TypeLibConstantMetadata>,
     pub identity: TypeLibResolvedIdentity,
     pub activation_prog_id: Option<String>,
     pub member_name_to_token: Vec<(String, i32)>,
@@ -45,6 +47,12 @@ pub struct TypeLibMetadataBlob {
     /// could not resolve. The symbol provider owns `<reference_name>.<coclass>` for each
     /// of these, so every coclass in the referenced library is bindable by name.
     pub coclass_names: Vec<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeLibConstantMetadata {
+    pub owner: String,
+    pub name: String,
+    pub value: ComDefaultValue,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1128,6 +1136,7 @@ mod tests {
     #[test]
     fn typelib_metadata_projects_to_runtime_dispatch_descriptor() {
         let metadata = TypeLibMetadataBlob {
+            constants: Vec::new(),
             identity: identity(),
             activation_prog_id: Some("OxVba.TestDispatch".to_string()),
             member_name_to_token: vec![("Value".to_string(), 0), ("NewEnum".to_string(), -4)],

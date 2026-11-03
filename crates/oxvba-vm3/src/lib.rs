@@ -1485,10 +1485,14 @@ impl<'h> Vm3<'h> {
                 lhs,
                 rhs,
                 mode,
+                coercion,
             } => {
                 let l = self.operand(lhs)?;
                 let r = self.operand(rhs)?;
-                self.store_arith(dst, arith::compare(&l, &r, *mode, cmp_op(*op)))?;
+                self.store_arith(
+                    dst,
+                    arith::compare_declared(&l, &r, *mode, cmp_op(*op), *coercion),
+                )?;
             }
             OxInst::Logical { dst, op, lhs, rhs } => {
                 let l = self.operand(lhs)?;
@@ -1757,7 +1761,14 @@ impl<'h> Vm3<'h> {
                 element,
                 preserve,
                 fixed,
-            } => self.array_redim(dst, upper_bounds, lower_bounds, element, *preserve, *fixed)?,
+                explicit_element,
+            } => self.array_redim(
+                dst,
+                upper_bounds,
+                lower_bounds,
+                element,
+                (*preserve, *fixed, *explicit_element),
+            )?,
             OxInst::ArrayGet {
                 dst,
                 array,
@@ -3042,9 +3053,26 @@ impl<'h> Vm3<'h> {
         upper_bounds: &[OxOperand],
         lower_bounds: &[OxOperand],
         element: &ArrayElementType,
-        preserve: bool,
-        fixed: bool,
+        policy: (bool, bool, bool),
     ) -> Result<(), Vm3Error> {
+        let (preserve, fixed, explicit_element) = policy;
+        let frame = self.frames.last().expect("array instruction frame");
+        let program = self.exec.programs[frame.prog].program;
+        let function = &program.funcs[frame.func.0];
+        let ty = match dst {
+            OxPlace::Local(id) => &function.locals[id.0].ty,
+            OxPlace::Temp(id) => &function.temps[id.0],
+            OxPlace::Global(id) => &program.globals[id.0].ty,
+        };
+        let inherit_current = !explicit_element && matches!(ty, OxTy::Variant);
+        let selected = oxvba_bundle::array_runtime::resolve_redim_element(
+            &self.read(dst)?,
+            element,
+            inherit_current,
+            preserve,
+        )
+        .map_err(|code| Vm3Error::Fault(Fault::new(code, "ReDim element type mismatch")))?;
+        let element = &selected;
         // A user `ReDim` (lowered with `fixed = false`) of an already-fixed-size array is
         // illegal in VBA — `Dim a(1 To 3) : ReDim a(...)` is the compile error "Array already
         // dimensioned". vm3 carries fixed-ness only on the runtime value (the symbol model
@@ -5911,6 +5939,7 @@ mod tests {
                 terminate: None,
                 fields: Vec::new(),
                 methods: vec![CoreClassMethod {
+                    externally_visible: true,
                     name: "Twice".into(),
                     kind: ProjectMemberKind::Method,
                     proc: ProcId(1),
@@ -6326,6 +6355,7 @@ mod tests {
                 terminate: None,
                 fields: Vec::new(),
                 methods: vec![CoreClassMethod {
+                    externally_visible: true,
                     name: "Twice".into(),
                     kind: ProjectMemberKind::Method,
                     proc: ProcId(1),
@@ -6439,18 +6469,21 @@ mod tests {
                 terminate: Some(ProcId(5)),
                 fields: vec![
                     CoreClassField {
+                        externally_visible: true,
                         name: "mCount".into(),
                         token: 11,
                         ty: VarTypeRef::Builtin(BuiltinType::Long),
                         array_element: None,
                     },
                     CoreClassField {
+                        externally_visible: true,
                         name: "Items".into(),
                         token: 12,
                         ty: VarTypeRef::Array(Box::new(VarTypeRef::Builtin(BuiltinType::Long))),
                         array_element: Some(ArrayElementType::Long),
                     },
                     CoreClassField {
+                        externally_visible: true,
                         name: "Child".into(),
                         token: 13,
                         ty: VarTypeRef::Object("Widget".into()),
@@ -6459,6 +6492,7 @@ mod tests {
                 ],
                 methods: vec![
                     CoreClassMethod {
+                        externally_visible: true,
                         name: "Value".into(),
                         kind: ProjectMemberKind::PropertyGet,
                         proc: ProcId(1),
@@ -6468,6 +6502,7 @@ mod tests {
                         is_enumerator_member: false,
                     },
                     CoreClassMethod {
+                        externally_visible: true,
                         name: "Value".into(),
                         kind: ProjectMemberKind::PropertyLet,
                         proc: ProcId(2),
@@ -6477,6 +6512,7 @@ mod tests {
                         is_enumerator_member: false,
                     },
                     CoreClassMethod {
+                        externally_visible: true,
                         name: "Reset".into(),
                         kind: ProjectMemberKind::Method,
                         proc: ProcId(3),
@@ -6486,6 +6522,7 @@ mod tests {
                         is_enumerator_member: false,
                     },
                     CoreClassMethod {
+                        externally_visible: true,
                         name: "NewEnum".into(),
                         kind: ProjectMemberKind::PropertyGet,
                         proc: ProcId(6),
@@ -6686,6 +6723,7 @@ mod tests {
                     fields: Vec::new(),
                     methods: vec![
                         CoreClassMethod {
+                            externally_visible: true,
                             name: "IShape_Size".into(),
                             kind: ProjectMemberKind::PropertyGet,
                             proc: ProcId(3),
@@ -6695,6 +6733,7 @@ mod tests {
                             is_enumerator_member: false,
                         },
                         CoreClassMethod {
+                            externally_visible: true,
                             name: "IShape_Size".into(),
                             kind: ProjectMemberKind::PropertyLet,
                             proc: ProcId(4),
@@ -6715,6 +6754,7 @@ mod tests {
                     fields: Vec::new(),
                     methods: vec![
                         CoreClassMethod {
+                            externally_visible: true,
                             name: "Size".into(),
                             kind: ProjectMemberKind::PropertyGet,
                             proc: ProcId(1),
@@ -6724,6 +6764,7 @@ mod tests {
                             is_enumerator_member: false,
                         },
                         CoreClassMethod {
+                            externally_visible: true,
                             name: "Size".into(),
                             kind: ProjectMemberKind::PropertyLet,
                             proc: ProcId(2),

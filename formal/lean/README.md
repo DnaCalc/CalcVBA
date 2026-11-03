@@ -16,3 +16,6 @@ Planned modules (initial):
 - `ExecutionBudget.lean`: abstract finite/unlimited step model; zero is sticky,
   successful finite steps consume exactly one, and the budget never increases.
   This does not prove the Rust implementation or backend abort propagation.
+
+- `DocumentEvents.lean`: abstract idempotent attachment, detach rejection and
+  monotonic callback epochs across reset; excludes COM/Rust storage refinement.

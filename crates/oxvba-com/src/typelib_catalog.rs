@@ -124,6 +124,7 @@ pub fn build_typelib_metadata(identity: &TypeLibResolvedIdentity) -> TypeLibMeta
     match try_live_typelib_metadata(identity) {
         Some(blob) => blob,
         None => TypeLibMetadataBlob {
+            constants: Vec::new(),
             identity: identity.clone(),
             activation_prog_id: None,
             member_name_to_token: Vec::new(),

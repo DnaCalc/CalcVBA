@@ -13,7 +13,7 @@ $script:preboundDescriptor.module_source=$script:preboundSource
 $script:preboundDescriptor.module_name='Api'
 $script:preboundDescriptor.run_procedure='Api.RunProbe'
 $script:preboundDescriptor.macro_probe_target='Api.RunProbe'
-$script:preboundDescriptor.expected_value='1:1:WA1;DA1;|nested=3:3:WA1;DA1;WA2;DA2;|rebind=4:WA3;DA3;|release=4:1:True:DA5;|close=1'
+$script:preboundDescriptor.expected_value='1:1:WA1;DA1;|nested=3:3:WA1;DA1;WA2;DA2;|rebind=4:WA3;DA3;|release=4:1:True:DA5;|close=1|idle=1:DZ1;'
 $script:preboundDescriptor.purpose='Automatic document and WithEvents routing VBA observation'
 $script:preboundDescriptor | Add-Member -NotePropertyName additional_modules -NotePropertyValue @([pscustomobject]@{name='Watcher';kind=2;source=$script:watchSource})
 function Get-ExcelOracleHarnessCases {return @($script:preboundDescriptor)}
@@ -41,6 +41,9 @@ $worker=$worker.Replace('__SOURCE_ROOT__',$sourceRoot.Replace('\','/').Replace("
 $runtime=@'
                 $excel.VBE.MainWindow.Visible=$false
                 $runValue=$excel.Run($qualifiedName)
+                [void]$excel.Run("'"+$workbook.Name+"'!Api.ResetIdle")
+                $workbook.Worksheets.Item(1).Range('Z1').Value2=17
+                $runValue+='|idle='+$excel.Run("'"+$workbook.Name+"'!Api.ReadIdle")
                 $excel.EnableEvents=$false
                 if ('__ENGINE__') {
                     # Retain the unchanged VBA source as evidence, then remove the
@@ -72,5 +75,5 @@ $workerPath=Join-Path ([IO.Path]::GetTempPath()) ('run14-auto-'+[Guid]::NewGuid(
 [IO.File]::WriteAllText($workerPath,$worker,[Text.UTF8Encoding]::new($false))
 $supervisor=$supervisor.Replace('(Join-Path $PSScriptRoot "excel-vba-oracle-worker.ps1")',("'"+$workerPath.Replace("'","''")+"'"))
 $supervisor=$supervisor.Replace('$PSScriptRoot',("'"+$oracleScripts.Replace("'","''")+"'"))
-try {& ([scriptblock]::Create($supervisor)) -EnvironmentId 'win-x64-dev-oracle-2026-07' -NoMatrixUpdate -SafeMode -DiagnosticCaseId 'windows-scalar-interop' -RunId $RunId -OutputRoot 'temp/calcvba14/oracle' -TimeoutSeconds 180}
+try {& ([scriptblock]::Create($supervisor)) -EnvironmentId 'win-x64-dev-oracle-2026-07' -NoMatrixUpdate -SafeMode -DiagnosticCaseId 'windows-scalar-interop' -RunId $RunId -OutputRoot 'temp/calcvba15/oracle' -TimeoutSeconds 360}
 finally {Remove-Item -LiteralPath $workerPath -Force}

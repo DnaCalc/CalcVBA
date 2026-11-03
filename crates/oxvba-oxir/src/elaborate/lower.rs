@@ -213,6 +213,7 @@ fn lower_class(
             .fields
             .iter()
             .map(|field| OxClassField {
+                externally_visible: field.externally_visible,
                 name: field.name.clone(),
                 token: field.token,
                 ty: lower_declared_var_type_with_longptr_width(&field.ty, resolver, long_ptr_width),
@@ -223,6 +224,7 @@ fn lower_class(
             .methods
             .iter()
             .map(|m| OxClassMethod {
+                externally_visible: m.externally_visible,
                 name: m.name.clone(),
                 kind: m.kind,
                 proc: FuncId(m.proc.0),
@@ -1032,6 +1034,7 @@ impl<'a> Lowerer<'a> {
             }
             CoreStmt::Error(op) => self.lower_error(op, s_next),
             CoreStmt::ReDim {
+                explicit_element,
                 array,
                 bounds,
                 element_type,
@@ -1063,6 +1066,7 @@ impl<'a> Lowerer<'a> {
                     self.simple_place(array)?
                 };
                 self.emit(OxInst::ArrayRedim {
+                    explicit_element: *explicit_element,
                     dst,
                     upper_bounds,
                     lower_bounds,
@@ -1467,6 +1471,7 @@ impl<'a> Lowerer<'a> {
         // step >= 0 ? (fixed at entry — the step sign never changes)
         let nonneg = self.new_temp(compare_result_type(&step_ty, &OxTy::Long));
         self.emit(OxInst::Compare {
+            coercion: oxvba_bundle::ComparisonCoercion::Strict,
             dst: OxPlace::Temp(nonneg),
             op: CmpOp::Ge,
             lhs: OxOperand::temp(step_t),
@@ -1496,6 +1501,7 @@ impl<'a> Lowerer<'a> {
         // ascending: counter <= limit
         let cond_t = self.new_temp(compare_result_type(&counter_ty, &end_ty));
         self.emit(OxInst::Compare {
+            coercion: oxvba_bundle::ComparisonCoercion::Strict,
             dst: OxPlace::Temp(cond_t),
             op: CmpOp::Le,
             lhs: var_op.clone(),
@@ -1505,6 +1511,7 @@ impl<'a> Lowerer<'a> {
         self.finish_to(OxTerminator::Jump(test), desc);
         // descending: counter >= limit (writes the same cond temp)
         self.emit(OxInst::Compare {
+            coercion: oxvba_bundle::ComparisonCoercion::Strict,
             dst: OxPlace::Temp(cond_t),
             op: CmpOp::Ge,
             lhs: var_op.clone(),
@@ -1619,6 +1626,7 @@ impl<'a> Lowerer<'a> {
 
         let neg_t = self.new_temp(OxTy::Bool);
         self.emit(OxInst::Compare {
+            coercion: oxvba_bundle::ComparisonCoercion::Strict,
             dst: OxPlace::Temp(neg_t),
             op: CmpOp::Lt,
             lhs: sel_op.clone(),
@@ -1653,6 +1661,7 @@ impl<'a> Lowerer<'a> {
             let k = (i + 1) as i32;
             let cmp_t = self.new_temp(OxTy::Bool);
             self.emit(OxInst::Compare {
+                coercion: oxvba_bundle::ComparisonCoercion::Strict,
                 dst: OxPlace::Temp(cmp_t),
                 op: CmpOp::Eq,
                 lhs: sel_op.clone(),
@@ -1735,6 +1744,7 @@ impl<'a> Lowerer<'a> {
                 let (val, _) = self.lower_value(v)?;
                 let t = self.new_temp(OxTy::Variant);
                 self.emit(OxInst::Compare {
+                    coercion: oxvba_bundle::ComparisonCoercion::Strict,
                     dst: OxPlace::Temp(t),
                     op: CmpOp::Eq,
                     lhs: sel.clone(),
@@ -1747,6 +1757,7 @@ impl<'a> Lowerer<'a> {
                 let (lo_op, _) = self.lower_value(lo)?;
                 let ge = self.new_temp(OxTy::Variant);
                 self.emit(OxInst::Compare {
+                    coercion: oxvba_bundle::ComparisonCoercion::Strict,
                     dst: OxPlace::Temp(ge),
                     op: CmpOp::Ge,
                     lhs: sel.clone(),
@@ -1756,6 +1767,7 @@ impl<'a> Lowerer<'a> {
                 let (hi_op, _) = self.lower_value(hi)?;
                 let le = self.new_temp(OxTy::Variant);
                 self.emit(OxInst::Compare {
+                    coercion: oxvba_bundle::ComparisonCoercion::Strict,
                     dst: OxPlace::Temp(le),
                     op: CmpOp::Le,
                     lhs: sel.clone(),
@@ -1778,6 +1790,7 @@ impl<'a> Lowerer<'a> {
                 ))?;
                 let t = self.new_temp(OxTy::Variant);
                 self.emit(OxInst::Compare {
+                    coercion: oxvba_bundle::ComparisonCoercion::Strict,
                     dst: OxPlace::Temp(t),
                     op: cmp,
                     lhs: sel.clone(),
@@ -2067,6 +2080,17 @@ impl<'a> Lowerer<'a> {
             | CoreBinOp::Ge => {
                 let cop = bin_cmp(op).expect("cmp op");
                 self.emit(OxInst::Compare {
+                    coercion: if l_ty == OxTy::Variant && r_ty == OxTy::Variant {
+                        oxvba_bundle::ComparisonCoercion::Variant
+                    } else if l_ty == OxTy::Variant || r_ty == OxTy::Variant {
+                        if l_ty == OxTy::Str || r_ty == OxTy::Str {
+                            oxvba_bundle::ComparisonCoercion::String
+                        } else {
+                            oxvba_bundle::ComparisonCoercion::Numeric
+                        }
+                    } else {
+                        oxvba_bundle::ComparisonCoercion::Strict
+                    },
                     dst,
                     op: cop,
                     lhs: l,
@@ -3426,6 +3450,7 @@ mod tests {
                 terminate: None,
                 fields: Vec::new(),
                 methods: vec![CoreClassMethod {
+                    externally_visible: true,
                     name: "Value".into(),
                     kind: ProjectMemberKind::PropertyGet,
                     proc: CoreProcId(1),
@@ -3629,6 +3654,7 @@ mod tests {
         let idx1 = || vec![CoreValue::Const(CoreConst::I32(1))];
         let body = vec![
             CoreStmt::ReDim {
+                explicit_element: false,
                 array: a(),
                 bounds: vec![CoreBound {
                     upper: CoreValue::Const(CoreConst::I32(10)),

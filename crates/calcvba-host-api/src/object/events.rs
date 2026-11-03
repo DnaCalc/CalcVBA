@@ -6,6 +6,7 @@ use std::{any::Any, rc::Rc};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EventParameter {
     Object(Option<InterfaceId>),
+    Boolean,
     BooleanByRef,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]

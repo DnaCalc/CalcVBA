@@ -1013,6 +1013,7 @@ fn variant_compare_program() -> OxProgram {
                 value: OxOperand::Const(OxConst::Null),
             },
             OxInst::Compare {
+                coercion: oxvba_bundle::ComparisonCoercion::Strict,
                 dst: OxPlace::Global(GlobalId(0)),
                 op: CmpOp::Eq,
                 lhs: OxOperand::local(LocalId(0)),
@@ -1435,6 +1436,7 @@ fn fixed_variant_array_store_load_program() -> OxProgram {
                 id: BlockId(0),
                 instrs: vec![
                     OxInst::ArrayRedim {
+                        explicit_element: false,
                         dst: OxPlace::Local(LocalId(0)),
                         upper_bounds: vec![OxOperand::Const(OxConst::I32(2))],
                         lower_bounds: Vec::new(),
@@ -3123,6 +3125,7 @@ fn branch_program() -> OxProgram {
         id: BlockId(0),
         instrs: vec![
             OxInst::Compare {
+                coercion: oxvba_bundle::ComparisonCoercion::Strict,
                 dst: OxPlace::Temp(cond),
                 op: CmpOp::Lt,
                 lhs: OxOperand::Const(OxConst::I32(1)),
@@ -3439,12 +3442,14 @@ fn unsupported_project_object_instruction_program(inst: OxInst) -> OxProgram {
             terminate: None,
             fields: vec![
                 OxClassField {
+                    externally_visible: true,
                     name: "Value".to_string(),
                     token: 1,
                     ty: OxTy::Long,
                     array_element: None,
                 },
                 OxClassField {
+                    externally_visible: true,
                     name: "Items".to_string(),
                     token: 2,
                     ty: OxTy::Array(Box::new(OxTy::Variant), ArrayShape::Dynamic),
@@ -3952,6 +3957,7 @@ fn jit_static_calls_move_array_carriers_byval_byref_and_return() {
                 id: BlockId(0),
                 instrs: vec![
                     OxInst::ArrayRedim {
+                        explicit_element: false,
                         dst: OxPlace::Local(LocalId(0)),
                         upper_bounds: vec![OxOperand::Const(OxConst::I32(0))],
                         lower_bounds: vec![OxOperand::Const(OxConst::I32(0))],
@@ -4042,6 +4048,7 @@ fn jit_static_calls_move_array_carriers_byval_byref_and_return() {
                 id: BlockId(0),
                 instrs: vec![
                     OxInst::ArrayRedim {
+                        explicit_element: false,
                         dst: OxPlace::Local(LocalId(0)),
                         upper_bounds: vec![OxOperand::Const(OxConst::I32(1))],
                         lower_bounds: vec![OxOperand::Const(OxConst::I32(0))],

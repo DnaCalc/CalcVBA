@@ -3365,6 +3365,7 @@ impl TypeLibResolver for WidgetTypeLibs {
         _request: &oxvba_com::TypeLibResolveRequest,
     ) -> Option<oxvba_com::TypeLibMetadataBlob> {
         Some(oxvba_com::TypeLibMetadataBlob {
+            constants: Vec::new(),
             identity: oxvba_com::TypeLibResolvedIdentity {
                 reference_name: "Widget".into(),
                 requested_coclass: None,
@@ -4120,6 +4121,7 @@ impl TypeLibResolver for ScopedEventTypeLibs {
         request: &oxvba_com::TypeLibResolveRequest,
     ) -> Option<oxvba_com::TypeLibMetadataBlob> {
         Some(oxvba_com::TypeLibMetadataBlob {
+            constants: Vec::new(),
             identity: oxvba_com::TypeLibResolvedIdentity {
                 reference_name: "Excel".into(),
                 requested_coclass: request.requested_coclass.clone(),
@@ -4210,6 +4212,7 @@ impl TypeLibResolver for ScopedWorkbookEventTypeLibs {
             Vec::new()
         };
         Some(oxvba_com::TypeLibMetadataBlob {
+            constants: Vec::new(),
             identity: oxvba_com::TypeLibResolvedIdentity {
                 reference_name: "Excel".into(),
                 requested_coclass: request.requested_coclass.clone(),
@@ -4464,6 +4467,7 @@ impl TypeLibResolver for DefaultValueTypeLibs {
         _request: &oxvba_com::TypeLibResolveRequest,
     ) -> Option<oxvba_com::TypeLibMetadataBlob> {
         Some(oxvba_com::TypeLibMetadataBlob {
+            constants: Vec::new(),
             identity: oxvba_com::TypeLibResolvedIdentity {
                 reference_name: "Widget".into(),
                 requested_coclass: None,
@@ -4549,6 +4553,7 @@ impl TypeLibResolver for ApplicationTypeLibs {
         _request: &oxvba_com::TypeLibResolveRequest,
     ) -> Option<oxvba_com::TypeLibMetadataBlob> {
         Some(oxvba_com::TypeLibMetadataBlob {
+            constants: Vec::new(),
             identity: oxvba_com::TypeLibResolvedIdentity {
                 reference_name: "Excel".into(),
                 requested_coclass: Some("Application".into()),
@@ -4695,6 +4700,7 @@ impl TypeLibResolver for ChainedComTypeLibs {
                 .is_some_and(|name| name.eq_ignore_ascii_case("Workbooks"))
         {
             return Some(oxvba_com::TypeLibMetadataBlob {
+                constants: Vec::new(),
                 identity: oxvba_com::TypeLibResolvedIdentity {
                     reference_name: "Excel".into(),
                     requested_coclass: Some("Workbooks".into()),
@@ -4738,6 +4744,7 @@ impl TypeLibResolver for ChainedComTypeLibs {
                 .is_some_and(|name| name.eq_ignore_ascii_case("Workbook"))
         {
             return Some(oxvba_com::TypeLibMetadataBlob {
+                constants: Vec::new(),
                 identity: oxvba_com::TypeLibResolvedIdentity {
                     reference_name: "Excel".into(),
                     requested_coclass: Some("Workbook".into()),
@@ -4765,6 +4772,7 @@ impl TypeLibResolver for ChainedComTypeLibs {
         }
         if request.reference_name.eq_ignore_ascii_case("Excel") {
             return Some(oxvba_com::TypeLibMetadataBlob {
+                constants: Vec::new(),
                 identity: oxvba_com::TypeLibResolvedIdentity {
                     reference_name: "Excel".into(),
                     requested_coclass: request.requested_coclass.clone(),

@@ -765,6 +765,56 @@ pub fn compare(l: &Variant, r: &Variant, mode: StringCompareMode, op: CmpOp) -> 
     };
     Ok(Variant::from_bool(result))
 }
+/// Compare using compiler-retained declaration rules (MS-VBAL 5.6.9.4).
+pub fn compare_declared(
+    l: &Variant,
+    r: &Variant,
+    mode: StringCompareMode,
+    op: CmpOp,
+    coercion: oxvba_bundle::ComparisonCoercion,
+) -> R {
+    use oxvba_bundle::ComparisonCoercion as C;
+    if is_null(l) || is_null(r) {
+        return Ok(Variant::null());
+    }
+    match coercion {
+        C::Strict => compare(l, r, mode, op),
+        C::String => compare(&coerce_string(l)?, &coerce_string(r)?, mode, op),
+        C::Numeric => {
+            let numeric = |value: &Variant| {
+                if cmp_is_string(value) {
+                    num(value).map(Variant::from_f64)
+                } else {
+                    Ok(value.clone())
+                }
+            };
+            match (numeric(l), numeric(r)) {
+                (Ok(left), Ok(right)) => compare(&left, &right, mode, op),
+                // Observed VBA keeps subtype ordering when a String Variant
+                // cannot be read as a number; assignment coercion stays strict.
+                (Err(error), _) | (_, Err(error)) if error.code == 13 => {
+                    compare_declared(l, r, mode, op, C::Variant)
+                }
+                (Err(error), _) | (_, Err(error)) => Err(error),
+            }
+        }
+        C::Variant => {
+            if cmp_is_numeric(l) && cmp_is_string(r) {
+                return compare(&Variant::from_i32(0), &Variant::from_i32(1), mode, op);
+            }
+            if cmp_is_string(l) && cmp_is_numeric(r) {
+                return compare(&Variant::from_i32(1), &Variant::from_i32(0), mode, op);
+            }
+            if l.vtype() == VarType::Empty && cmp_is_string(r) {
+                return compare(&Variant::from_string(""), r, mode, op);
+            }
+            if r.vtype() == VarType::Empty && cmp_is_string(l) {
+                return compare(l, &Variant::from_string(""), mode, op);
+            }
+            compare(l, r, mode, op)
+        }
+    }
+}
 
 // ── Boolean / bitwise ─────────────────────────────────────────────────────────
 

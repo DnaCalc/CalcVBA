@@ -336,6 +336,7 @@ mod tests {
                 initialize: None,
                 terminate: None,
                 fields: vec![OxClassField {
+                    externally_visible: true,
                     name: "child".to_string(),
                     token: 0,
                     ty: OxTy::Object(ObjClass::Class(ClassId(0))),
@@ -501,6 +502,7 @@ mod tests {
     fn verifier_catches_duplicate_class_field_token() {
         let mut p = sample_class_field_program();
         p.classes[0].fields.push(OxClassField {
+            externally_visible: true,
             name: "alias".to_string(),
             token: 0,
             ty: OxTy::Variant,
@@ -579,6 +581,7 @@ mod tests {
         let mut p = sample_class_field_program();
         p.funcs.push(class_receiver_func("Touch"));
         p.classes[0].methods.push(OxClassMethod {
+            externally_visible: true,
             name: "Touch".to_string(),
             kind: ProjectMemberKind::Method,
             proc: FuncId(0),
@@ -639,6 +642,7 @@ mod tests {
     fn verifier_catches_bad_class_method_proc_ref() {
         let mut p = sample_class_field_program();
         p.classes[0].methods.push(OxClassMethod {
+            externally_visible: true,
             name: "Touch".to_string(),
             kind: ProjectMemberKind::Method,
             proc: FuncId(99),
@@ -668,6 +672,7 @@ mod tests {
         let mut proc_program = sample_program();
         p.funcs.push(proc_program.funcs.remove(0));
         p.classes[0].methods.push(OxClassMethod {
+            externally_visible: true,
             name: "Touch".to_string(),
             kind: ProjectMemberKind::Method,
             proc: FuncId(0),
@@ -697,6 +702,7 @@ mod tests {
         let mut p = sample_class_field_program();
         p.funcs.push(class_receiver_func("Value"));
         p.classes[0].methods.push(OxClassMethod {
+            externally_visible: true,
             name: "Value".to_string(),
             kind: ProjectMemberKind::PropertyGet,
             proc: FuncId(0),
@@ -730,6 +736,7 @@ mod tests {
             false,
         ));
         p.classes[0].methods.push(OxClassMethod {
+            externally_visible: true,
             name: "Value".to_string(),
             kind: ProjectMemberKind::PropertyLet,
             proc: FuncId(0),
@@ -749,6 +756,7 @@ mod tests {
             ProcedureKind::PropertyLet,
         ));
         p.classes[0].methods.push(OxClassMethod {
+            externally_visible: true,
             name: "Value".to_string(),
             kind: ProjectMemberKind::PropertyLet,
             proc: FuncId(0),
@@ -784,6 +792,7 @@ mod tests {
             true,
         ));
         p.classes[0].methods.push(OxClassMethod {
+            externally_visible: true,
             name: "Child".to_string(),
             kind: ProjectMemberKind::PropertySet,
             proc: FuncId(0),
@@ -827,6 +836,7 @@ mod tests {
         ));
         p.classes[0].methods.extend([
             OxClassMethod {
+                externally_visible: true,
                 name: "Value".to_string(),
                 kind: ProjectMemberKind::PropertyGet,
                 proc: FuncId(0),
@@ -836,6 +846,7 @@ mod tests {
                 is_enumerator_member: false,
             },
             OxClassMethod {
+                externally_visible: true,
                 name: "Value".to_string(),
                 kind: ProjectMemberKind::PropertyLet,
                 proc: FuncId(1),
@@ -845,6 +856,7 @@ mod tests {
                 is_enumerator_member: false,
             },
             OxClassMethod {
+                externally_visible: true,
                 name: "NewEnum".to_string(),
                 kind: ProjectMemberKind::PropertyGet,
                 proc: FuncId(2),
@@ -870,6 +882,7 @@ mod tests {
         ));
         p.classes[0].methods.extend([
             OxClassMethod {
+                externally_visible: true,
                 name: "Value".to_string(),
                 kind: ProjectMemberKind::PropertyGet,
                 proc: FuncId(0),
@@ -879,6 +892,7 @@ mod tests {
                 is_enumerator_member: false,
             },
             OxClassMethod {
+                externally_visible: true,
                 name: "Caption".to_string(),
                 kind: ProjectMemberKind::PropertyGet,
                 proc: FuncId(1),
@@ -911,6 +925,7 @@ mod tests {
             ProcedureKind::PropertyGet,
         ));
         p.classes[0].methods.push(OxClassMethod {
+            externally_visible: true,
             name: "Value".to_string(),
             kind: ProjectMemberKind::PropertyGet,
             proc: FuncId(0),
@@ -948,6 +963,7 @@ mod tests {
         ));
         p.classes[0].methods.extend([
             OxClassMethod {
+                externally_visible: true,
                 name: "NewEnum".to_string(),
                 kind: ProjectMemberKind::PropertyGet,
                 proc: FuncId(0),
@@ -957,6 +973,7 @@ mod tests {
                 is_enumerator_member: true,
             },
             OxClassMethod {
+                externally_visible: true,
                 name: "OtherEnum".to_string(),
                 kind: ProjectMemberKind::PropertyGet,
                 proc: FuncId(1),
@@ -990,6 +1007,7 @@ mod tests {
             false,
         ));
         p.classes[0].methods.push(OxClassMethod {
+            externally_visible: true,
             name: "NewEnum".to_string(),
             kind: ProjectMemberKind::PropertyLet,
             proc: FuncId(0),
@@ -1021,6 +1039,7 @@ mod tests {
             ProcedureKind::PropertyGet,
         ));
         p.classes[0].methods.push(OxClassMethod {
+            externally_visible: true,
             name: "NewEnum".to_string(),
             kind: ProjectMemberKind::PropertyGet,
             proc: FuncId(0),
@@ -1054,6 +1073,7 @@ mod tests {
             false,
         ));
         p.classes[0].methods.push(OxClassMethod {
+            externally_visible: true,
             name: "NewEnum".to_string(),
             kind: ProjectMemberKind::PropertyGet,
             proc: FuncId(0),
@@ -1085,6 +1105,7 @@ mod tests {
         p.funcs.push(proc_program.funcs.remove(0));
         p.classes[0].methods.extend([
             OxClassMethod {
+                externally_visible: true,
                 name: "Value".to_string(),
                 kind: ProjectMemberKind::PropertyGet,
                 proc: FuncId(0),
@@ -1094,6 +1115,7 @@ mod tests {
                 is_enumerator_member: false,
             },
             OxClassMethod {
+                externally_visible: true,
                 name: "value".to_string(),
                 kind: ProjectMemberKind::PropertyGet,
                 proc: FuncId(0),

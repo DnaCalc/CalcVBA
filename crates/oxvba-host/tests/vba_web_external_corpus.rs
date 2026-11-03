@@ -325,6 +325,7 @@ fn app_member(
 
 fn application_blob() -> TypeLibMetadataBlob {
     TypeLibMetadataBlob {
+        constants: Vec::new(),
         identity: TypeLibResolvedIdentity {
             reference_name: "Excel".into(),
             requested_coclass: Some("Application".into()),

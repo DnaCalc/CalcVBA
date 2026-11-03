@@ -605,3 +605,37 @@ the existing native boundary converts Automation descriptor order. The XLSM
 whole-cell comparison detected and now rejects the earlier off-diagonal transpose.
 General ReDim, typed allocation and the remaining small physical scalar carriers
 remain open.
+
+## Run 15 document lifecycle and array carriers
+
+Automatic document attachments now survive reload by module name. Repeated
+attachment to the same identity preserves subscription order; detach removes the
+routes and permits reattachment. Callback epochs survive reset, preventing a
+retained callback from entering a newly created document instance. The host may
+deliver a post-load lifecycle notification by imported source IID and DISPID;
+the compiler selects its private handler. No Excel event names enter the engine.
+Owned native idle Change delivery, reset, reload and reattachment agree with VBA
+on VM3 and JIT. Multi-area Target objects retain their native structure, and
+BeforeSave retains its ByVal Boolean plus Cancel writeback, including error exit.
+
+An unhandled Change or BeforeSave handler error aborts the triggering invocation,
+including a caller using On Error Resume Next. Native writeback completes before
+the fault is propagated. Hosts can retrieve an idle handler error with
+take_event_error and own debugger/UI policy. Public source-defined document
+methods, properties and fields resolve before native host members on untyped
+receivers; private source members remain inaccessible.
+
+Both owning runtimes now allocate Variant and typed dynamic arrays with checked
+bounds and allocation, preserve surviving coordinates, and retain the previous
+allocation after an invalid Preserve. A Variant containing a typed array retains
+its element type for plain ReDim; an explicit As clause can replace the type,
+while Preserve rejects a type change with error 13. UDT fixed-array fields and
+private class dynamic-array fields use canonical carriers. The saved-project
+probes pass arrays through real Range.Value and Value2 calls; the engine has no
+spreadsheet implementation. COM enum constants come from retained type metadata.
+
+These are bounded development observations, not complete event/carrier parity.
+Multiple structural ByRef authorities, apartments, source-free descriptor
+retention, arbitrary existing projects and pinned certification remain open.
+See [event evidence](../evidence/programs/ideal-2026-07/windows-x64/WIN-5/automatic-events-run15.md)
+and [workbook evidence](../evidence/programs/ideal-2026-07/windows-x64/WIN-4/xlsm-projects-run15.md).

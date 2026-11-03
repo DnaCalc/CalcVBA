@@ -47,6 +47,15 @@ pub enum StringCompareMode {
     Binary,
     Text,
 }
+/// Declared operand rules, retained before Variant payloads erase static types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum ComparisonCoercion {
+    #[default]
+    Strict,
+    String,
+    Numeric,
+    Variant,
+}
 
 /// Target type of a fixed-scalar narrowing coercion (`CoerceNumeric`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]

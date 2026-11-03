@@ -1208,12 +1208,46 @@ unsafe fn read_field_variant_at(
             // `FADF_FIXEDSIZE` so `Erase` of the materialized member array resets
             // its elements (and is then written back into the inline storage)
             // rather than deallocating — which the inline field cannot represent.
-            Variant::from_safearray(
-                SafeArray::from_variants_nd(bounds.clone(), values).with_fixed_size(true),
-            )
+            Variant::from_safearray(materialize_fixed_array(bounds, element, values)?)
         }
     };
     Ok(value)
+}
+
+fn materialize_fixed_array(
+    bounds: &[SafeArrayBound],
+    element: &VbaRecordFieldKind,
+    values: Vec<Variant>,
+) -> Result<SafeArray, String> {
+    use crate::safe_array::*;
+    let vartype = match element {
+        VbaRecordFieldKind::Variant => VT_VARIANT_VALUE,
+        VbaRecordFieldKind::Integer => VT_I2_VALUE,
+        VbaRecordFieldKind::Long => VT_I4_VALUE,
+        VbaRecordFieldKind::LongLong => VT_I8_VALUE,
+        VbaRecordFieldKind::Byte => VT_UI1_VALUE,
+        VbaRecordFieldKind::Single => VT_R4_VALUE,
+        VbaRecordFieldKind::Double => VT_R8_VALUE,
+        VbaRecordFieldKind::Currency => VT_CY_VALUE,
+        VbaRecordFieldKind::Date => VT_DATE_VALUE,
+        VbaRecordFieldKind::String | VbaRecordFieldKind::FixedString { .. } => VT_BSTR_VALUE,
+        VbaRecordFieldKind::Boolean => VT_BOOL_VALUE,
+        VbaRecordFieldKind::Record(layout) => {
+            let records = values
+                .into_iter()
+                .map(|value| {
+                    value
+                        .as_vba_record()
+                        .ok_or_else(|| "fixed record-array element is not a record".to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            return SafeArray::from_vba_records_nd(bounds.to_vec(), layout.clone(), records)
+                .map(|array| array.with_fixed_size(true));
+        }
+        VbaRecordFieldKind::FixedArray { .. } => return Err("nested fixed-array element".into()),
+    };
+    SafeArray::from_typed_variants_nd(bounds.to_vec(), vartype, values)
+        .map(|array| array.with_fixed_size(true))
 }
 
 /// # Safety
@@ -2379,6 +2413,8 @@ mod tests {
             .as_safearray()
             .expect("array projection");
         assert_eq!(array.bounds(), Some(bounds(1, 4)));
+        assert_eq!(array.element_vartype(), crate::safe_array::VT_UI1_VALUE);
+        assert!(array.is_fixed_size());
         array
             .set_variant_element(1, &Variant::from_u8(0xAB))
             .expect("set array element");

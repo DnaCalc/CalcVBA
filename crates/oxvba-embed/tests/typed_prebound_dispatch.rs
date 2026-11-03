@@ -71,6 +71,7 @@ impl oxvba_symbol::TypeLibResolver for Types {
         members.push(sum);
         members.push(make("Opaque", 15, K::PropertyGet, vec![], Some(P::Object)));
         Some(oxvba_com::TypeLibMetadataBlob {
+            constants: Vec::new(),
             identity: oxvba_com::TypeLibResolvedIdentity {
                 reference_name: "Dispatch".into(),
                 requested_coclass: Some("Native".into()),
@@ -440,6 +441,13 @@ End Function
             assert_eq!(observed.type_reads.get(), 0);
             assert_eq!(observed.lookups.get(), 5);
             assert_eq!(observed.calls.borrow().len(), 6);
+            assert!(
+                observed
+                    .calls
+                    .borrow()
+                    .iter()
+                    .all(|(_, flags, _)| *flags == 3)
+            );
         }
         assert_eq!(observed.references.get(), 0);
     }

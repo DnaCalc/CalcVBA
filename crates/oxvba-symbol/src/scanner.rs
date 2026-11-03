@@ -2379,7 +2379,8 @@ fn type_ref_name(node: SyntaxNode<'_>) -> String {
     normalize_identifier_token(name).to_string()
 }
 
-fn type_ref_node(node: SyntaxNode<'_>) -> VarTypeRef {
+/// Decode the shared parser's TypeRef node using the declaration type vocabulary.
+pub fn type_ref_node(node: SyntaxNode<'_>) -> VarTypeRef {
     let name = type_ref_name(node);
     match name.to_ascii_lowercase().as_str() {
         "boolean" => VarTypeRef::Builtin(BuiltinType::Boolean),

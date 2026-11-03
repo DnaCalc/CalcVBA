@@ -2623,6 +2623,7 @@ pub fn build_typelib_metadata(identity: &TypeLibResolvedIdentity) -> TypeLibMeta
     };
 
     TypeLibMetadataBlob {
+        constants: Vec::new(),
         identity: {
             if effective_identity.requested_coclass.is_none()
                 && (effective_identity

@@ -49,6 +49,7 @@ pub(in crate::typed_slots) fn subscribe(
             .iter()
             .map(|p| match p {
                 EventParameter::Object(_) => crate::TypeLibParamType::Object,
+                EventParameter::Boolean => crate::TypeLibParamType::Boolean,
                 EventParameter::BooleanByRef => crate::TypeLibParamType::ByRefBoolean,
             })
             .collect(),
@@ -94,6 +95,9 @@ pub(in crate::typed_slots) fn subscribe(
         let mut values = Vec::with_capacity(arguments.len());
         for (argument, parameter) in arguments.iter().zip(&parameters) {
             values.push(match (argument, parameter) {
+                (SynchronousEventArgument::Boolean(value), EventParameter::Boolean) => {
+                    Value::Boolean(*value)
+                }
                 (SynchronousEventArgument::BooleanByRef(value), EventParameter::BooleanByRef) => {
                     Value::Boolean(value.get())
                 }

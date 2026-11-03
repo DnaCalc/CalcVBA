@@ -48,13 +48,8 @@ pub(super) fn admit(layout: &ScalarLayout, inst: &OxInst) -> Result<bool, String
             dst,
             upper_bounds,
             lower_bounds,
-            element,
-            preserve,
-            fixed,
+            ..
         } => {
-            if *preserve || !*fixed || *element != oxvba_bundle::ArrayElementType::Variant {
-                return Err("owning dynamic ReDim and typed element allocation remain open".into());
-            }
             if upper_bounds.is_empty()
                 || upper_bounds.len() > 60
                 || lower_bounds.len() > upper_bounds.len()
@@ -184,7 +179,7 @@ pub(super) fn admit(layout: &ScalarLayout, inst: &OxInst) -> Result<bool, String
     }
     Ok(true)
 }
-fn flat(bounds: &[SafeArrayBound], indices: &[i64]) -> Result<usize, i32> {
+pub fn array_flat_index(bounds: &[SafeArrayBound], indices: &[i64]) -> Result<usize, i32> {
     if bounds.len() != indices.len() {
         return Err(9);
     }
@@ -227,8 +222,24 @@ pub(super) unsafe fn evaluate(raw: *mut RawActivation, inst: &OxInst) -> Result<
             dst,
             upper_bounds,
             lower_bounds,
-            ..
+            element,
+            preserve,
+            fixed,
+            explicit_element,
         } => {
+            let previous = read(&OxOperand::Use(*dst))?;
+            let selected = oxvba_bundle::array_runtime::resolve_redim_element(
+                &previous,
+                element,
+                !*explicit_element
+                    && layout.operand_type(&OxOperand::Use(*dst)).map_err(|_| 5)? == T::Variant,
+                *preserve,
+            )?;
+            let element = &selected;
+            let old = previous.as_safearray();
+            if !fixed && old.as_ref().is_some_and(SafeArray::is_fixed_size) {
+                return Err(10);
+            }
             let mut bounds = Vec::with_capacity(upper_bounds.len());
             let mut count = 1usize;
             for (i, upper) in upper_bounds.iter().enumerate() {
@@ -256,10 +267,30 @@ pub(super) unsafe fn evaluate(raw: *mut RawActivation, inst: &OxInst) -> Result<
             }
             let mut values = Vec::new();
             values.try_reserve_exact(count).map_err(|_| 7)?;
-            values.resize_with(count, Variant::empty);
-            let array = SafeArray::from_shape_and_variants(bounds, values)
-                .map_err(|_| 7)?
-                .with_fixed_size(true);
+            for _ in 0..count {
+                values.push(oxvba_bundle::default_array_element(element).map_err(|_| 7)?);
+            }
+            if *preserve && let Some(old) = old {
+                let old_bounds = old.bounds().ok_or(9)?;
+                let rank = bounds.len();
+                if old_bounds.len() != rank
+                    || old_bounds[..rank - 1] != bounds[..rank - 1]
+                    || old_bounds[rank - 1].lower != bounds[rank - 1].lower
+                {
+                    return Err(9);
+                }
+                let old_width = old_bounds[rank - 1].count as usize;
+                let new_width = bounds[rank - 1].count as usize;
+                for (index, value) in old.variant_elements().ok_or(13)?.into_iter().enumerate() {
+                    let column = index % old_width;
+                    if column < new_width {
+                        values[index / old_width * new_width + column] = value;
+                    }
+                }
+            }
+            let array =
+                oxvba_bundle::redim_safearray_from_elements(bounds, element, values, *fixed)
+                    .map_err(|_| 13)?;
             store(*dst, Variant::from_safearray(array))
         }
         OxInst::NewRecord { dst, .. } => {
@@ -306,7 +337,7 @@ pub(super) unsafe fn evaluate(raw: *mut RawActivation, inst: &OxInst) -> Result<
                 .map_err(|_| 13)?
                 .ok_or(9)?;
             let item = record
-                .record_array_field_element(*index, flat(&bounds, &indices)?)
+                .record_array_field_element(*index, array_flat_index(&bounds, &indices)?)
                 .map_err(|_| 9)?
                 .ok_or(9)?;
             store(*dst, item)
@@ -325,7 +356,11 @@ pub(super) unsafe fn evaluate(raw: *mut RawActivation, inst: &OxInst) -> Result<
                 .map_err(|_| 13)?
                 .ok_or(9)?;
             target
-                .set_record_array_field_element(*index, flat(&bounds, &indices)?, &value)
+                .set_record_array_field_element(
+                    *index,
+                    array_flat_index(&bounds, &indices)?,
+                    &value,
+                )
                 .map_err(|_| 13)?
                 .ok_or(9)?;
             store(*record, target)
@@ -405,7 +440,7 @@ pub(super) unsafe fn evaluate(raw: *mut RawActivation, inst: &OxInst) -> Result<
         } => {
             let value = read(array)?;
             let (bounds, _) = value.safearray_bounds_len().ok_or(9)?;
-            let flat = flat(&bounds, &indices(subscripts)?)?;
+            let flat = array_flat_index(&bounds, &indices(subscripts)?)?;
             let alias = if let OxOperand::Use(place) = array {
                 // SAFETY: alias metadata is retained by this boxed stack.
                 unsafe { array_aliases(raw, layout.slot(*place).map_err(|_| 5)?) }
@@ -430,7 +465,7 @@ pub(super) unsafe fn evaluate(raw: *mut RawActivation, inst: &OxInst) -> Result<
             let value = read(value)?;
             let mut target = read(&OxOperand::Use(*array))?;
             let (bounds, _) = target.safearray_bounds_len().ok_or(9)?;
-            let flat = flat(&bounds, &indices)?;
+            let flat = array_flat_index(&bounds, &indices)?;
             // SAFETY: alias metadata is retained by this boxed stack.
             let aliases = unsafe { array_aliases(raw, layout.slot(*array).map_err(|_| 5)?) };
             if let Some(Some(alias)) = aliases.as_ref().and_then(|a| a.get(flat)) {

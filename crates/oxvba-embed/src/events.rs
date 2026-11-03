@@ -9,6 +9,8 @@ use oxvba_rt_abi::automatic_events::{AutomaticBinding, AutomaticEventState, Bind
 use std::{collections::HashMap, rc::Weak};
 
 pub(crate) struct AutomaticEvents {
+    next_generation: Cell<u64>,
+    pub unhandled: RefCell<Option<Error>>,
     pub session: RefCell<Weak<SessionCell>>,
     pub state: RefCell<Rc<RefCell<AutomaticEventState>>>,
     pub documents: RefCell<HashMap<(usize, usize), api::HostObject>>,
@@ -16,12 +18,15 @@ pub(crate) struct AutomaticEvents {
 impl AutomaticEvents {
     pub fn new(state: Rc<RefCell<AutomaticEventState>>) -> Rc<Self> {
         Rc::new(Self {
+            next_generation: Cell::new(0),
+            unhandled: RefCell::new(None),
             session: RefCell::new(Weak::new()),
             state: RefCell::new(state),
             documents: RefCell::default(),
         })
     }
     pub fn clear(&self) {
+        self.unhandled.borrow_mut().take();
         let state = self.state.borrow().clone();
         let old = std::mem::take(&mut state.borrow_mut().bindings);
         drop(old);
@@ -144,6 +149,7 @@ impl AutomaticEvents {
                         typed.layout().parameter_iids.get(i + 1).copied().flatten(),
                     )),
                     oxvba_com::TypeLibParamType::ByRefBoolean => Ok(EventParameter::BooleanByRef),
+                    oxvba_com::TypeLibParamType::Boolean => Ok(EventParameter::Boolean),
                     _ => Err(13),
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -168,9 +174,13 @@ impl AutomaticEvents {
             Some(api::HostObject::from_object_ref(&reference).ok_or(13)?)
         };
         let generation = {
-            let mut state = state.borrow_mut();
-            state.next_generation = state.next_generation.checked_add(1).ok_or(7)?;
-            state.next_generation
+            // Session reset replaces the canonical VM state. This counter must
+            // survive that replacement so a queued old callback cannot match a
+            // newly allocated document with the same numeric instance identity.
+            let generation = self.next_generation.get().checked_add(1).ok_or(7)?;
+            self.next_generation.set(generation);
+            state.borrow_mut().next_generation = generation;
+            generation
         };
         let old = state.borrow_mut().bindings.remove(&key);
         drop(old);
@@ -186,9 +196,9 @@ impl AutomaticEvents {
         for (handler, descriptor) in plans {
             let weak = Rc::downgrade(self);
             let callback = Rc::new(move |arguments: &mut [Value]| {
-                weak.upgrade()
-                    .ok_or(5)?
-                    .deliver(key, generation, handler, arguments)
+                weak.upgrade().map_or(Ok(()), |events| {
+                    events.deliver(key, generation, handler, arguments)
+                })
             });
             let subscription = host
                 .as_ref()
@@ -227,7 +237,7 @@ impl AutomaticEvents {
         }
         Ok(())
     }
-    fn deliver(
+    pub(crate) fn deliver(
         &self,
         key: BindingKey,
         generation: u64,
@@ -256,6 +266,9 @@ impl AutomaticEvents {
         let called = Cell::new(false);
         let result = api::with_native_callback_context(|context| {
             called.set(true);
+            if api::has_unhandled_event_fault(context) {
+                return Err(api::UNHANDLED_EVENT_ABORT);
+            }
             cell.with_dependent(|_, session| {
                 session.call_event(key.0, FuncId(handler), &owner, arguments, context)
             })

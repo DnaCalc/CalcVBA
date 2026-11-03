@@ -25,6 +25,8 @@ oxvba-jit = { workspace = true, optional = true }
 thiserror.workspace = true
 self_cell = "1.2"
 oxvba-rt-abi.workspace = true
+oxvba-lib.workspace = true
+oxvba-eval.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

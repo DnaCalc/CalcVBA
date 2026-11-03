@@ -36,6 +36,7 @@ impl TypeLibResolver for HostTypes {
             vtable_slot_bound: Some(40),
         };
         Some(TypeLibMetadataBlob {
+            constants: Vec::new(),
             identity: TypeLibResolvedIdentity {
                 reference_name: request.reference_name.clone(),
                 requested_coclass: request.requested_coclass.clone(),

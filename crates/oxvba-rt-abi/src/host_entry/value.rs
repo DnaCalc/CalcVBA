@@ -213,7 +213,7 @@ pub unsafe extern "C" fn evaluate(
     inst: *const OxInst,
     context: *mut super::TypedContext,
 ) -> i32 {
-    crate::with_status(|| {
+    let status = crate::with_status(|| {
         // SAFETY: the generated entry retains both immutable descriptors.
         let layout = unsafe { &*(*raw).layout };
         // SAFETY: caller retains the original instruction allocation.
@@ -410,6 +410,7 @@ pub unsafe extern "C" fn evaluate(
                     rhs,
                     mode,
                     op,
+                    coercion,
                 } => {
                     let op = match op {
                         oxvba_oxir::CmpOp::Eq => arith::CmpOp::Eq,
@@ -421,8 +422,14 @@ pub unsafe extern "C" fn evaluate(
                     };
                     (
                         *dst,
-                        arith::compare(&read_value(lhs)?, &read_value(rhs)?, *mode, op)
-                            .map_err(|e| e.code)?,
+                        arith::compare_declared(
+                            &read_value(lhs)?,
+                            &read_value(rhs)?,
+                            *mode,
+                            op,
+                            *coercion,
+                        )
+                        .map_err(|e| e.code)?,
                     )
                 }
                 _ => return Err(5),
@@ -451,7 +458,13 @@ pub unsafe extern "C" fn evaluate(
             }
             Err(error) => error,
         }
-    })
+    });
+    // SAFETY: the caller retains this exact synchronous context through return.
+    if calcvba_host_api::has_unhandled_event_fault(unsafe { &*context }) {
+        calcvba_host_api::UNHANDLED_EVENT_ABORT
+    } else {
+        status
+    }
 }
 /// Execute admitted unary VBA library functions on their exact input carrier.
 pub fn invoke_unary_builtin(

@@ -1,4 +1,9 @@
 # Public VBOM is the host project loader. No VBA binary-stream parser is claimed.
+function Get-XlsmFileSha256([string]$Path) {
+    $stream=[IO.FileStream]::new($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    try { return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream)).ToLowerInvariant() }
+    finally { $stream.Dispose() }
+}
 function Get-XlsmScalar($Value) {
     if ($null -eq $Value) { return [ordered]@{kind='Empty'} }
     if ($Value -is [string]) { return [ordered]@{kind='String';units=@($Value.ToCharArray() | ForEach-Object {[int]$_})} }
@@ -43,10 +48,27 @@ function Get-XlsmProject($Workbook,[string]$EntryModule) {
         $references+=,[ordered]@{name=[string]$reference.Name;guid=[string]$reference.GUID;major=[int]$reference.Major;minor=[int]$reference.Minor;broken=[bool]$reference.IsBroken;path=[string]$reference.FullPath}
         [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($reference)
     }
-    $result=[ordered]@{name=[string]$project.Name;entry_module=$EntryModule;modules=$modules;references=$references}
+    $caseId=[IO.Path]::GetFileNameWithoutExtension([string]$Workbook.Name)
+    $fixtureRoot=Join-Path $PSScriptRoot '../crates/oxvba-embed/tests/support/xlsm'
+    $fixture=@((Get-Content -Raw (Join-Path $fixtureRoot 'cases.json') | ConvertFrom-Json) | Where-Object id -CEQ $caseId)
+    $startup=if ($fixture.Count -eq 1 -and $fixture[0].PSObject.Properties['startup']) {$fixture[0].startup} else {$null}
+    $expectedError=if ($fixture.Count -eq 1 -and $fixture[0].PSObject.Properties['expected_error']) {[int]$fixture[0].expected_error} else {$null}
+    $cancelSave=$fixture.Count -eq 1 -and $fixture[0].PSObject.Properties['cancel_save'] -and [bool]$fixture[0].cancel_save
+    $result=[ordered]@{name=[string]$project.Name;entry_module=$EntryModule;modules=$modules;references=$references;startup=$startup;expected_error=$expectedError;cancel_save=[bool]$cancelSave}
     return $result
 }
 function Initialize-XlsmProject($Excel,[ref]$Workbook,[ref]$Project,[ref]$Component,[string]$Directory,[string]$CaseId,[string]$EntryModule,[string]$SourceRoot) {
+    $fixtures=Join-Path $PSScriptRoot '../crates/oxvba-embed/tests/support/xlsm'
+    $case=@((Get-Content -Raw (Join-Path $fixtures 'cases.json') | ConvertFrom-Json) | Where-Object id -CEQ $CaseId)
+    if ($case.Count -eq 1 -and $case[0].PSObject.Properties['documents']) {
+        foreach ($property in $case[0].documents.PSObject.Properties) {
+            $doc=$Project.Value.VBComponents.Item($property.Name)
+            $source=Get-Content -Raw -LiteralPath (Join-Path $fixtures $property.Value)
+            [void]$doc.CodeModule.AddFromString($source)
+            if ((Get-ExcelOracleSha256 -Text $source) -cne (Get-ExcelOracleSha256 -Text ([string]$doc.CodeModule.Lines(1,$doc.CodeModule.CountOfLines)))) {throw 'Document source changed during injection'}
+            [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($doc)
+        }
+    }
     if ($CaseId -in @('events','mixed','application')) {
         $documentSources=,@([string]$Workbook.Value.CodeName,'ThisWorkbook.cls')
         if ($CaseId -ne 'application') {$documentSources+=,@([string]$Workbook.Value.Worksheets.Item(1).CodeName,'Sheet1.cls')}
@@ -80,9 +102,37 @@ function Initialize-XlsmProject($Excel,[ref]$Workbook,[ref]$Project,[ref]$Compon
     $Excel.EnableEvents=$true
 }
 function Compare-XlsmRuntimes($Excel,[ref]$Workbook,[ref]$Project,[ref]$Component,[string]$Directory,[string]$EntryModule,[string]$QualifiedName,[string]$Engine,[int]$OwnedPid) {
-    $referenceValue=$Excel.Run($QualifiedName)
-    $referenceReturn=Get-XlsmScalar $referenceValue
+    $snapshot=Get-Content -Raw (Join-Path $Directory 'project.json') | ConvertFrom-Json
+    $referenceFileSha=if ($snapshot.cancel_save) {Get-XlsmFileSha256 ([string]$Workbook.Value.FullName)} else {$null}
+    if ($snapshot.startup) {
+        # The explicit VBE compile already succeeded. Reopen the unchanged saved
+        # project with the existing macro policy so native VBA receives Open.
+        $path=[string]$Workbook.Value.FullName
+        $Excel.EnableEvents=$false
+        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($Component.Value)
+        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($Project.Value)
+        $Workbook.Value.Close($false)
+        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($Workbook.Value)
+        $Excel.EnableEvents=$true
+        $Workbook.Value=$Excel.Workbooks.Open($path)
+        $Project.Value=$Workbook.Value.VBProject
+        $Component.Value=$Project.Value.VBComponents.Item($EntryModule)
+    }
+    if ($snapshot.expected_error) {
+        $raised=$false
+        try { $referenceValue=$Excel.Run($QualifiedName) } catch { $raised=$true }
+        if (-not $raised) { throw 'Expected the native unhandled event to abort its caller' }
+        $observations=@(Get-Content -LiteralPath (Join-Path $Directory 'guardian-events.jsonl') | ForEach-Object {$_ | ConvertFrom-Json})
+        $dialogs=@($observations | Where-Object { $_.event_type -eq 'dialog-observation' -and $_.classification -eq 'runtime-error' -and (@($_.dialog_text) -join ' ') -match "error '11'" })
+        if ($dialogs.Count -ne 1) { throw 'Expected exactly one owned native error 11 dialog' }
+        $referenceValue=$null
+        $referenceReturn=[ordered]@{kind='RuntimeError';number=[int]$snapshot.expected_error}
+    } else {
+        $referenceValue=$Excel.Run($QualifiedName)
+        $referenceReturn=Get-XlsmScalar $referenceValue
+    }
     $referenceCells=Get-XlsmCells $Workbook.Value
+    if ($snapshot.cancel_save -and (Get-XlsmFileSha256 ([string]$Workbook.Value.FullName)) -cne $referenceFileSha) { throw 'Native BeforeSave did not cancel the file write' }
     $referenceReturn | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $Directory 'excel-return.json') -Encoding utf8NoBOM
     ConvertTo-Json -InputObject $referenceCells -Depth 30 | Set-Content (Join-Path $Directory 'excel-cells.json') -Encoding utf8NoBOM
     $baseline=[string]$Workbook.Value.FullName
@@ -123,6 +173,7 @@ function Compare-XlsmRuntimes($Excel,[ref]$Workbook,[ref]$Project,[ref]$Componen
         & $Engine --ignored --exact owned_xlsm_project --nocapture *> (Join-Path $backendDirectory 'engine.log')
         $exit=$LASTEXITCODE
         if ($exit -ne 0) {throw "Saved XLSM $backend execution failed: $exit"}
+        if ($snapshot.cancel_save -and (Get-XlsmFileSha256 $copy) -cne $workbookSha) { throw 'Engine BeforeSave did not cancel the file write' }
         $cells=Get-XlsmCells $Workbook.Value
         ConvertTo-Json -InputObject $cells -Depth 30 | Set-Content (Join-Path $backendDirectory 'engine-cells.json') -Encoding utf8NoBOM
         $result=Get-Content -Raw $env:OXVBA_XLSM_RESULT | ConvertFrom-Json

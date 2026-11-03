@@ -1591,6 +1591,7 @@ pub(crate) fn declare_imports(module: &mut JITModule) -> Result<Imports, JitErro
     array_redim_slot_sig.params.push(AbiParam::new(types::I32));
     array_redim_slot_sig.params.push(AbiParam::new(types::I32));
     array_redim_slot_sig.params.push(AbiParam::new(types::I32));
+    array_redim_slot_sig.params.push(AbiParam::new(types::I32));
     array_redim_slot_sig.returns.push(AbiParam::new(types::I32));
     let array_redim_slot = module
         .declare_function(
@@ -1900,6 +1901,7 @@ pub(crate) fn declare_imports(module: &mut JITModule) -> Result<Imports, JitErro
     let mut compare_v_slot_sig = module.make_signature();
     compare_v_slot_sig.params.push(AbiParam::new(ptr_ty));
     compare_v_slot_sig.params.push(AbiParam::new(ptr_ty));
+    compare_v_slot_sig.params.push(AbiParam::new(types::I32));
     compare_v_slot_sig.params.push(AbiParam::new(types::I32));
     compare_v_slot_sig.params.push(AbiParam::new(types::I32));
     compare_v_slot_sig.params.push(AbiParam::new(ptr_ty));
@@ -6008,6 +6010,7 @@ pub(crate) unsafe extern "C" fn rt_jit_array_redim_to_slot(
     element: *const ArrayElementType,
     fixed: i32,
     preserve: i32,
+    inherit_current: i32,
     dst_area: u32,
     dst_index: u32,
 ) -> i32 {
@@ -6053,7 +6056,21 @@ pub(crate) unsafe extern "C" fn rt_jit_array_redim_to_slot(
         };
         // SAFETY: null was rejected and the compiled image passes a pointer into
         // the live OxProgram instruction's immutable element metadata.
-        let element = unsafe { (*element).clone() };
+        let declared = unsafe { &*element };
+        // SAFETY: the retained run is live; this read ends before slot replacement.
+        let Some(current) = slot_ref(unsafe { &*run }, dst_area, dst_index) else {
+            return ST_FAULT;
+        };
+        let element = match oxvba_bundle::array_runtime::resolve_redim_element(
+            current,
+            declared,
+            inherit_current != 0,
+            preserve != 0,
+        ) {
+            Ok(element) => element,
+            // SAFETY: state is the live execution state validated above.
+            Err(_) => return unsafe { rt_raise_type_mismatch(state) },
+        };
         let array = if preserve == 0 {
             match jit_redim_default_safearray(bounds, &element, count, fixed != 0) {
                 Ok(array) => array,
@@ -6954,6 +6971,7 @@ pub(crate) unsafe extern "C" fn rt_jit_compare_v_to_slot(
     run: *mut JitRun,
     op: u32,
     mode: u32,
+    coercion: u32,
     operands: *const JitVariantOperandDesc,
     dst_area: u32,
     dst_index: u32,
@@ -6980,7 +6998,15 @@ pub(crate) unsafe extern "C" fn rt_jit_compare_v_to_slot(
             return ST_FAULT;
         };
         // SAFETY: the enclosing JIT boundary validated the live state and all Variant input/output pointers are initialized, live, and nonaliasing.
-        unsafe { rt_compare_v(state, op, mode, &lhs, &rhs, out) }
+        let coercion = match coercion {
+            0 => oxvba_bundle::ComparisonCoercion::Strict,
+            1 => oxvba_bundle::ComparisonCoercion::String,
+            2 => oxvba_bundle::ComparisonCoercion::Numeric,
+            3 => oxvba_bundle::ComparisonCoercion::Variant,
+            _ => return ST_FAULT,
+        };
+        // SAFETY: retained input copies and uniquely writable initialized output.
+        unsafe { oxvba_rt_abi::compare_declared_values(state, op, mode, coercion, &lhs, &rhs, out) }
     })
 }
 

@@ -68,6 +68,42 @@ impl calcvba_host_api::HostObjectServices for NativeServices {
     }
 }
 impl WindowsComBridge {
+    /// Retain an activated IDispatch as a genuinely dynamic owning receiver.
+    /// No nominal interface, member metadata or vtable signature is invented.
+    pub fn prepare_dynamic_object(
+        &self,
+        object: oxvba_runtime::ObjectRef,
+    ) -> Result<HostObject, String> {
+        let dispatch = {
+            let state = self
+                .shared_state()
+                .lock()
+                .map_err(|_| "COM state lock poisoned")?;
+            let binding = state
+                .bindings
+                .get(&ComObjectToken::new(object.raw()))
+                .ok_or("unbound dynamic COM receiver")?;
+            if binding.native_owner_thread != std::thread::current().id() {
+                return Err("dynamic COM receiver belongs to a different thread/apartment".into());
+            }
+            let pointer = binding.native_dispatch as *mut crate::RawIDispatch;
+            if pointer.is_null() {
+                return Err("dynamic COM receiver has no native dispatch".into());
+            }
+            // SAFETY: this same-thread binding retains the live native dispatch.
+            unsafe {
+                crate::add_ref_dispatch(pointer);
+                OwnedComInterface::from_owned(pointer.cast())
+            }
+        };
+        let library = Rc::new(NativeLibrary {
+            metadata: vec![],
+            plans: vec![],
+            locale_id: None,
+        });
+        // SAFETY: retained same-apartment IDispatch, with no nominal member plans.
+        unsafe { make_native_object(self.clone(), dispatch.as_ptr(), None, library) }
+    }
     /// # Safety
     /// All accepted descriptors are unchanged trusted compiler/type-library ABI
     /// metadata for their exact IIDs. Result identities are resolved before entry.
@@ -277,8 +313,11 @@ unsafe fn build(
                                 args,
                             )
                         }
-                    })
-                    .map_err(|e| e.publish(context))?;
+                    });
+                    if calcvba_host_api::has_unhandled_event_fault(context) {
+                        return Err(calcvba_host_api::UNHANDLED_EVENT_ABORT);
+                    }
+                    let value = value.map_err(|e| e.publish(context))?;
                     owner.bridge.record_typed_vtable_call();
                     Ok(value)
                 })
@@ -287,11 +326,14 @@ unsafe fn build(
         } else {
             let plan = (**plan).clone();
             slots.push(HostSlot::planned(move |context, args| {
-                calcvba_host_api::with_native_call(context, || {
+                let value = calcvba_host_api::with_native_call(context, || {
                     // SAFETY: retained QI'd receiver and immutable admitted descriptor.
                     unsafe { super::native_values::invoke(&owner, &plan, args) }
-                })
-                .map_err(|e| e.publish(context))
+                });
+                if calcvba_host_api::has_unhandled_event_fault(context) {
+                    return Err(calcvba_host_api::UNHANDLED_EVENT_ABORT);
+                }
+                value.map_err(|e| e.publish(context))
             }));
         }
     }

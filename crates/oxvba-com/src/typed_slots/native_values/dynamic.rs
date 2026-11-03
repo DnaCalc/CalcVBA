@@ -123,7 +123,9 @@ pub(in crate::typed_slots) fn invoke(
     }
     let flags = match call.kind {
         K::Method => DISPATCH_METHOD | DISPATCH_PROPERTYGET,
-        K::Get => DISPATCH_PROPERTYGET,
+        // An untyped value lookup may denote either a property or a Function.
+        // VBA supplies both flags in one Invoke; there is no retry or type lookup.
+        K::Get => DISPATCH_METHOD | DISPATCH_PROPERTYGET,
         K::Let => DISPATCH_PROPERTYPUT,
         K::Set => DISPATCH_PROPERTYPUTREF,
     };

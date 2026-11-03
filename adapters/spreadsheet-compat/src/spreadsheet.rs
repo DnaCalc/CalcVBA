@@ -668,6 +668,7 @@ impl oxvba_symbol::TypeLibResolver for SpreadsheetTypes {
             ]
         };
         Some(TypeLibMetadataBlob {
+            constants: Vec::new(),
             identity: TypeLibResolvedIdentity {
                 reference_name: request.reference_name.clone(),
                 requested_coclass: Some(class.into()),

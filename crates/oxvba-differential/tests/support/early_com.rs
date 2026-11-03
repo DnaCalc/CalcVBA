@@ -104,6 +104,7 @@ impl TypeLibResolver for FixtureTypes {
             }
         }
         Some(TypeLibMetadataBlob {
+            constants: Vec::new(),
             identity: TypeLibResolvedIdentity {
                 reference_name: request.reference_name.clone(),
                 requested_coclass: request.requested_coclass.clone(),

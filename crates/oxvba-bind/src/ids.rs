@@ -37,6 +37,7 @@ use crate::types;
 
 /// One procedure's frame skeleton + the `SymbolId`→`LocalId` map for its scope.
 pub struct ProcInfo {
+    pub externally_visible: bool,
     pub proc_id: ProcId,
     pub name: String,
     pub kind: ProcedureKind,
@@ -283,6 +284,7 @@ impl IdAllocator {
                 .and_then(|m| m.attributes.host_document_type.as_ref())
             {
                 fields.push(CoreClassField {
+                    externally_visible: false,
                     name: "__host_document".into(),
                     token: oxvba_bundle::HOST_DOCUMENT_FIELD,
                     ty: VarTypeRef::Object(host.clone()),
@@ -316,6 +318,7 @@ impl IdAllocator {
                         let kind = member_kind_of(info.kind);
                         let facts = surface_facts.get(&(fold_identifier(&info.name), kind));
                         methods.push(CoreClassMethod {
+                            externally_visible: info.externally_visible,
                             name: info.name.clone(),
                             kind,
                             proc: info.proc_id,
@@ -444,6 +447,12 @@ impl IdAllocator {
             type_ctx,
         )?;
 
+        if let Some(class) = &class_name {
+            // The implicit receiver has the enclosing class's nominal type.
+            // Retain it so elaboration can type its fields without recovering
+            // source meaning from a Variant payload or a reserved field name.
+            params[0].ty = VarTypeRef::Object(class.clone());
+        }
         if let Some(symbol) = proc_sym {
             for (index, parameter) in params
                 .iter_mut()
@@ -478,6 +487,9 @@ impl IdAllocator {
         }
 
         self.procs.push(ProcInfo {
+            externally_visible: proc_sym
+                .and_then(|id| symbols.symbol(id))
+                .is_some_and(|s| s.visibility == Some(oxvba_symbol::model::Visibility::Public)),
             proc_id,
             name: logical,
             kind,
@@ -573,6 +585,7 @@ fn class_fields(
             _ => None,
         };
         fields.push(CoreClassField {
+            externally_visible: sym.visibility == Some(oxvba_symbol::model::Visibility::Public),
             name: alloc_name(env, sym.name),
             token,
             ty: normalize_declared_type(env, declared_var_type(&sym.imp)),

@@ -20,6 +20,33 @@ use oxvba_runtime::vba_record::{
 };
 
 use crate::ArrayElementType;
+/// Choose the actual element type for ReDim. A Variant keeps its contained
+/// array's type unless the source explicitly supplies an As clause.
+pub fn resolve_redim_element(
+    current: &Variant,
+    declared: &ArrayElementType,
+    inherit_current: bool,
+    preserve: bool,
+) -> Result<ArrayElementType, i32> {
+    let old = current.array_element_vartype();
+    let element = if inherit_current {
+        if let Some(vt) = old {
+            let element = array_element_type_for_vartype(vt);
+            if safearray_vartype_for_element(&element) != vt {
+                return Err(13);
+            }
+            element
+        } else {
+            declared.clone()
+        }
+    } else {
+        declared.clone()
+    };
+    if preserve && old.is_some_and(|vt| vt != safearray_vartype_for_element(&element)) {
+        return Err(13);
+    }
+    Ok(element)
+}
 
 /// Build a [`SafeArray`] of `elems` shaped by `bounds`, using the SAFEARRAY storage that
 /// matches the declared `element_type`: a UDT element stores native VBA records; every other

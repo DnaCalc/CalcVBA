@@ -85,6 +85,8 @@ pub struct OxFunc {
 /// A late-bound-callable member of a project class.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OxClassMethod {
+    #[serde(default)]
+    pub externally_visible: bool,
     pub name: String,
     pub kind: ProjectMemberKind,
     pub proc: FuncId,
@@ -111,6 +113,8 @@ pub struct OxClassAsNewField {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OxClassField {
+    #[serde(default)]
+    pub externally_visible: bool,
     pub name: String,
     /// Stable per-class instance-field token used by field get/set instructions.
     pub token: i32,

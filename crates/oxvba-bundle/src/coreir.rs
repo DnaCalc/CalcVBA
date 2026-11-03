@@ -179,6 +179,7 @@ pub struct CoreClassAsNewField {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreClassField {
+    pub externally_visible: bool,
     pub name: String,
     /// Stable per-class instance-field token used by [`CorePlace::Field`].
     pub token: i32,
@@ -210,6 +211,7 @@ pub struct CoreClass {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreClassMethod {
+    pub externally_visible: bool,
     pub name: String,
     pub kind: ProjectMemberKind,
     pub proc: ProcId,
@@ -850,6 +852,7 @@ pub enum CoreStmt {
     Error(ErrorOp),
     /// `ReDim`/`ReDim Preserve`.
     ReDim {
+        explicit_element: bool,
         array: CorePlace,
         bounds: Vec<CoreBound>,
         element_type: ArrayElementType,

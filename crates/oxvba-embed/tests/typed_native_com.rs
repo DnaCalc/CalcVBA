@@ -1594,6 +1594,7 @@ impl oxvba_symbol::TypeLibResolver for FixtureTypes {
             })
             .collect();
         Some(oxvba_com::TypeLibMetadataBlob {
+            constants: Vec::new(),
             identity: oxvba_com::TypeLibResolvedIdentity {
                 reference_name: request.reference_name.clone(),
                 requested_coclass: request.requested_coclass.clone(),

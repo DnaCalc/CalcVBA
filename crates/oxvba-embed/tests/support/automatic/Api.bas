@@ -6,6 +6,15 @@ Public TermCount As Long
 Public TermHasSource As Boolean
 Public Nested As Boolean
 Public observer As Watcher
+Public Function ResetIdle() As Long
+    DocCount = 0
+    Journal = ""
+    Nested = False
+    ResetIdle = 0
+End Function
+Public Function ReadIdle() As String
+    ReadIdle = DocCount & ":" & Journal
+End Function
 Public Function Scenario(ByVal book As Excel.Workbook) As String
     Dim sh As Excel.Worksheet
     Set sh = book.Worksheets(1)

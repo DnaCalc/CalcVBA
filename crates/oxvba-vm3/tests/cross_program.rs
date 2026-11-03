@@ -360,6 +360,7 @@ fn app_with_thing_program() -> CoreProgram {
             terminate: None,
             fields: Vec::new(),
             methods: vec![CoreClassMethod {
+                externally_visible: true,
                 name: "GetVal".into(),
                 kind: ProjectMemberKind::Method,
                 proc: ProcId(1),
@@ -534,6 +535,7 @@ fn app_echo_program() -> CoreProgram {
             terminate: None,
             fields: Vec::new(),
             methods: vec![CoreClassMethod {
+                externally_visible: true,
                 name: "Echo".into(),
                 kind: ProjectMemberKind::Method,
                 proc: ProcId(1),
@@ -610,6 +612,7 @@ fn lib_widget_program() -> CoreProgram {
             terminate: None,
             fields: Vec::new(),
             methods: vec![CoreClassMethod {
+                externally_visible: true,
                 name: "Val".into(),
                 kind: ProjectMemberKind::Method,
                 proc: ProcId(0),

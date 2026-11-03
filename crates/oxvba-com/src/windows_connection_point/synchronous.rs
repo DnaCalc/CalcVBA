@@ -12,6 +12,7 @@ pub struct IncomingEventObject(pub(crate) OwnedComInterface);
 
 pub enum SynchronousEventArgument {
     Object(Option<IncomingEventObject>),
+    Boolean(bool),
     BooleanByRef(Cell<bool>),
 }
 pub type SynchronousEventCallback =
@@ -34,10 +35,14 @@ impl SynchronousEventSinkConfig {
             || metadata.connection_point_iid.is_none()
             || metadata.dispatch_member_id.is_none()
             || metadata.parameter_types.len() != usize::from(metadata.callback_arity)
-            || metadata
-                .parameter_types
-                .iter()
-                .any(|p| !matches!(p, TypeLibParamType::Object | TypeLibParamType::ByRefBoolean))
+            || metadata.parameter_types.iter().any(|p| {
+                !matches!(
+                    p,
+                    TypeLibParamType::Object
+                        | TypeLibParamType::Boolean
+                        | TypeLibParamType::ByRefBoolean
+                )
+            })
             || metadata
                 .parameter_types
                 .iter()
@@ -94,6 +99,12 @@ pub(super) unsafe fn invoke(
         // SAFETY: live initialized native VARIANT tag.
         let tag = unsafe { variant.Anonymous.Anonymous.vt };
         let value = match ty {
+            TypeLibParamType::Boolean if tag == VT_BOOL => {
+                // SAFETY: the checked VT_BOOL tag selects the initialized i16 union member.
+                SynchronousEventArgument::Boolean(unsafe {
+                    variant.Anonymous.Anonymous.Anonymous.boolVal != 0
+                })
+            }
             TypeLibParamType::Object if matches!(tag, VT_DISPATCH | VT_UNKNOWN) => {
                 // SAFETY: exact admitted native object union member.
                 let raw = unsafe { variant.Anonymous.Anonymous.Anonymous.punkVal };

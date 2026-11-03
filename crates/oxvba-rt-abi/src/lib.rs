@@ -2004,6 +2004,30 @@ pub unsafe extern "C" fn rt_compare_v(
     rhs: *const Variant,
     out: *mut Variant,
 ) -> i32 {
+    // SAFETY: forwards this entry's exact retained input/output/state contract.
+    unsafe {
+        compare_declared_values(
+            state,
+            op,
+            mode,
+            oxvba_bundle::ComparisonCoercion::Strict,
+            lhs,
+            rhs,
+            out,
+        )
+    }
+}
+/// # Safety
+/// Identical initialized, nonaliasing state/input/output contract to rt_compare_v.
+pub unsafe fn compare_declared_values(
+    state: *mut RawExecState,
+    op: u32,
+    mode: u32,
+    coercion: oxvba_bundle::ComparisonCoercion,
+    lhs: *const Variant,
+    rhs: *const Variant,
+    out: *mut Variant,
+) -> i32 {
     with_status(|| {
         // SAFETY: the exported helper contract guarantees live unique state and an aligned, initialized, nonaliasing input valid for the borrow.
         let lhs = match unsafe { read_in(state, lhs, "lhs") } {
@@ -2025,7 +2049,7 @@ pub unsafe extern "C" fn rt_compare_v(
             // SAFETY: the exported helper contract guarantees that non-null `state` is the live, uniquely borrowed execution state.
             Err(fault) => return unsafe { seat_fault(state, fault) },
         };
-        match arith::compare(lhs, rhs, mode, op) {
+        match arith::compare_declared(lhs, rhs, mode, op, coercion) {
             // SAFETY: the exported helper contract guarantees live unique state and aligned, initialized, uniquely writable typed output storage.
             Ok(value) => unsafe { write_out(state, out, value) },
             // SAFETY: the exported helper contract guarantees that non-null `state` is the live, uniquely borrowed execution state.

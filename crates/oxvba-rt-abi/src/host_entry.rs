@@ -13,15 +13,39 @@ pub const MAX_TYPED_SLOTS: usize = 128;
 pub use calcvba_host_api::ValueType as ScalarType;
 pub mod activation;
 mod aggregate;
+pub use aggregate::array_flat_index;
+pub mod collection;
 mod iteration;
 mod member;
 pub mod value;
+pub fn owning_builtin(id: oxvba_bundle::NativeImplId) -> bool {
+    use oxvba_bundle::NativeImplId::*;
+    matches!(
+        id,
+        IsMissing
+            | IsArray
+            | VarType
+            | CStr
+            | Left
+            | Right
+            | Mid
+            | UCase
+            | LCase
+            | Trim
+            | LTrim
+            | RTrim
+            | Replace
+            | Len
+            | InStr
+            | CreateObject
+    )
+}
 
 /// Shared operations whose mechanics belong to the retained call/error stack.
 /// Arithmetic and host callbacks still execute in the selected backend.
 pub fn stack_instruction(inst: &OxInst, layout: &ScalarLayout) -> bool {
     if matches!(inst, OxInst::ComCallLate { .. }) {
-        return layout.class_calls.iter().any(|(site, _, _)| site == inst);
+        return layout.owning;
     }
     matches!(
         inst,
@@ -31,9 +55,13 @@ pub fn stack_instruction(inst: &OxInst, layout: &ScalarLayout) -> bool {
             | OxInst::WithEventsSet { .. }
             | OxInst::WithEventsClearOwner { .. }
             | OxInst::NewObject { .. }
+            | OxInst::NewExtern { .. }
+            | OxInst::CallNative { .. }
             | OxInst::ComCallLate { .. }
             | OxInst::FieldGet { .. }
             | OxInst::FieldSet { .. }
+            | OxInst::FieldArrayGet { .. }
+            | OxInst::FieldArraySet { .. }
             | OxInst::DrainTerminations
             | OxInst::CallExtern { .. }
             | OxInst::SetErrorHandler(_)
@@ -148,6 +176,7 @@ pub unsafe extern "C" fn typed_context_finish(
 /// instruction, including unreachable blocks. Unsupported bodies are refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScalarLayout {
+    pub library_news: std::collections::HashSet<oxvba_oxir::ImportId>,
     pub slots: Vec<ScalarType>,
     pub local_count: usize,
     pub parameters: Vec<ScalarType>,
@@ -234,7 +263,7 @@ impl ScalarLayout {
     ) -> Result<Self, String> {
         let mut external = std::collections::HashMap::new();
         for inst in func.blocks.iter().flat_map(|b| &b.instrs) {
-            if let OxInst::CallExtern { import, .. } = inst {
+            if let OxInst::CallExtern { import, args, .. } = inst {
                 let request = program
                     .imports
                     .get(import.0)
@@ -244,33 +273,34 @@ impl ScalarLayout {
                         .iter()
                         .any(|p| p.unit_name.eq_ignore_ascii_case("VBA"))
                 {
-                    let native = [
-                        oxvba_bundle::NativeImplId::IsMissing,
-                        oxvba_bundle::NativeImplId::IsArray,
-                        oxvba_bundle::NativeImplId::VarType,
-                        oxvba_bundle::NativeImplId::CStr,
-                    ]
-                    .into_iter()
-                    .find(|native| {
-                        native.library_member().is_some_and(|(module, member)| {
-                            request
-                                .token
-                                .matches(&oxvba_bundle::ExportToken::ModuleFunc {
-                                    module: module.into(),
-                                    member: member.into(),
-                                    kind: oxvba_bundle::ProjectMemberKind::Method,
-                                })
-                        })
-                    });
+                    let native = oxvba_bundle::NativeImplId::ALL
+                        .iter()
+                        .copied()
+                        .filter(|id| owning_builtin(*id))
+                        .find(|native| {
+                            native.library_member().is_some_and(|(module, primary)| {
+                                std::iter::once(primary)
+                                    .chain(native.library_member_aliases().iter().copied())
+                                    .any(|member| {
+                                        request.token.matches(
+                                            &oxvba_bundle::ExportToken::ModuleFunc {
+                                                module: module.into(),
+                                                member: member.into(),
+                                                kind: oxvba_bundle::ProjectMemberKind::Method,
+                                            },
+                                        )
+                                    })
+                            })
+                        });
                     if let Some(native) = native {
                         external.insert(
                             *import,
                             LinkedCall {
                                 target: LinkedTarget::Builtin(native),
                                 signature: CallSignature {
-                                    parameters: vec![ScalarType::Variant],
-                                    by_ref: vec![true],
-                                    optional: vec![false],
+                                    parameters: vec![ScalarType::Variant; args.len()],
+                                    by_ref: vec![true; args.len()],
+                                    optional: vec![true; args.len()],
                                     result: Some(ScalarType::Variant),
                                 },
                             },
@@ -625,12 +655,12 @@ impl ScalarLayout {
                         | OxTy::Str
                         | OxTy::Variant
                         | OxTy::Object(_)
+                        | OxTy::Array(_, _)
+                        | OxTy::Record(_)
                 )
             })
         {
-            return Err(
-                "typed source classes currently require primitive or object instance fields".into(),
-            );
+            return Err("typed source class field has no owning carrier".into());
         }
         let mut class_calls = Vec::new();
         if owning {
@@ -649,31 +679,41 @@ impl ScalarLayout {
                         OxPlace::Temp(id) => func.temps.get(id.0),
                         OxPlace::Global(id) => globals.get(id.0).map(|g| &g.ty),
                     };
-                    if let Some(OxTy::Object(oxvba_oxir::ObjClass::Class(id))) = ty {
-                        let class = classes.get(id.0).ok_or("missing source class descriptor")?;
-                        let method = class
-                            .methods
-                            .iter()
-                            .find(|m| {
-                                m.name.eq_ignore_ascii_case(name)
-                                    && matches!(
-                                        (m.kind, invoke_kind),
-                                        (
-                                            oxvba_bundle::ProjectMemberKind::Method,
-                                            oxvba_com::TypeLibMemberInvokeKind::Method
-                                        ) | (
-                                            oxvba_bundle::ProjectMemberKind::PropertyGet,
-                                            oxvba_com::TypeLibMemberInvokeKind::PropertyGet
-                                        ) | (
-                                            oxvba_bundle::ProjectMemberKind::PropertyLet,
-                                            oxvba_com::TypeLibMemberInvokeKind::PropertyPut
-                                        ) | (
-                                            oxvba_bundle::ProjectMemberKind::PropertySet,
-                                            oxvba_com::TypeLibMemberInvokeKind::PropertyPutRef
-                                        )
+                    let declared = match ty {
+                        Some(OxTy::Object(oxvba_oxir::ObjClass::Class(id))) => Some(*id),
+                        _ => None,
+                    };
+                    for (index, class) in classes.iter().enumerate() {
+                        let id = oxvba_oxir::ClassId(index);
+                        if declared.is_some_and(|declared| declared != id) {
+                            continue;
+                        }
+                        let method = class.methods.iter().find(|m| {
+                            (declared.is_some() || m.externally_visible)
+                                && m.name.eq_ignore_ascii_case(name)
+                                && matches!(
+                                    (m.kind, invoke_kind),
+                                    (
+                                        oxvba_bundle::ProjectMemberKind::Method,
+                                        oxvba_com::TypeLibMemberInvokeKind::Method
+                                    ) | (
+                                        oxvba_bundle::ProjectMemberKind::PropertyGet,
+                                        oxvba_com::TypeLibMemberInvokeKind::PropertyGet
+                                    ) | (
+                                        oxvba_bundle::ProjectMemberKind::PropertyLet,
+                                        oxvba_com::TypeLibMemberInvokeKind::PropertyPut
+                                    ) | (
+                                        oxvba_bundle::ProjectMemberKind::PropertySet,
+                                        oxvba_com::TypeLibMemberInvokeKind::PropertyPutRef
                                     )
-                            })
-                            .ok_or("unresolved typed source class member")?;
+                                )
+                        });
+                        let Some(method) = method else {
+                            if declared.is_some() {
+                                return Err("unresolved typed source class member".into());
+                            }
+                            continue;
+                        };
                         if args.iter().any(|a| {
                             !matches!(
                                 a,
@@ -690,7 +730,7 @@ impl ScalarLayout {
                                 functions.get(method.proc.0).ok_or("invalid class method")?,
                             )?,
                         );
-                        class_calls.push((inst.clone(), method.proc, *id));
+                        class_calls.push((inst.clone(), method.proc, id));
                     }
                 }
             }
@@ -734,9 +774,56 @@ impl ScalarLayout {
             .map(|l| scalar(&l.ty).map(Some))
             .collect::<Result<Vec<_>, _>>()?;
         let escapes = oxvba_oxir::escape_facts(func);
-        let literal_integer_temps: std::collections::HashSet<_> = func.temps.iter().enumerate().filter(|(id, ty)| {
-            owning && **ty == OxTy::Integer && !escapes.temps[*id] && func.blocks.iter().flat_map(|b| &b.instrs).any(|inst| matches!(inst, OxInst::Assign { dst: OxPlace::Temp(target), value: OxOperand::Const(OxConst::I16(_)) } if target.0 == *id))
-        }).map(|(id,_)| func.locals.len()+id).collect();
+        let mut integer_writers = std::collections::HashMap::<usize, usize>::new();
+        for inst in func.blocks.iter().flat_map(|block| &block.instrs) {
+            if let Some(OxPlace::Temp(id)) = instruction_destination(inst) {
+                *integer_writers.entry(id.0).or_default() += 1;
+            }
+        }
+        let mut integer_constants = std::collections::HashMap::<usize, i16>::new();
+        loop {
+            let mut changed = false;
+            for inst in func.blocks.iter().flat_map(|b| &b.instrs) {
+                let (dst, value) = match inst {
+                    OxInst::Assign {
+                        dst: OxPlace::Temp(dst),
+                        value: OxOperand::Const(OxConst::I16(value)),
+                    } => (*dst, Some(*value)),
+                    OxInst::Neg {
+                        dst: OxPlace::Temp(dst),
+                        src,
+                        ..
+                    } => {
+                        let value = match src {
+                            OxOperand::Const(OxConst::I16(value)) => Some(*value),
+                            OxOperand::Use(OxPlace::Temp(id)) => {
+                                integer_constants.get(&id.0).copied()
+                            }
+                            _ => None,
+                        }
+                        .and_then(i16::checked_neg);
+                        (*dst, value)
+                    }
+                    _ => continue,
+                };
+                if owning
+                    && func.temps.get(dst.0) == Some(&OxTy::Integer)
+                    && integer_writers.get(&dst.0) == Some(&1)
+                    && !escapes.temps[dst.0]
+                    && let Some(value) = value
+                    && integer_constants.insert(dst.0, value).is_none()
+                {
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let literal_integer_temps: std::collections::HashSet<_> = integer_constants
+            .keys()
+            .map(|id| func.locals.len() + id)
+            .collect();
         physical.extend(func.temps.iter().enumerate().map(|(index, ty)| {
             if literal_integer_temps.contains(&(func.locals.len() + index)) {
                 return Some(ScalarType::Long);
@@ -1012,6 +1099,8 @@ impl ScalarLayout {
                     let iid = if bare.is_empty()
                         || bare.eq_ignore_ascii_case("Object")
                         || bare.eq_ignore_ascii_case("Variant")
+                        || target_type_name.eq_ignore_ascii_case("VBA.Collection")
+                        || target_type_name.eq_ignore_ascii_case("Collection")
                     {
                         None
                     } else {
@@ -1054,6 +1143,12 @@ impl ScalarLayout {
             }
         }
         let layout = Self {
+            library_news: program.map(|p| p.imports.iter().enumerate().filter_map(|(i, import)| {
+                let library = oxvba_bundle::vba_library_bundle();
+                (import.unit.eq_ignore_ascii_case("VBA") && library.exports.iter().any(|export| export.token.matches(&import.token)
+                    && matches!(export.target, oxvba_bundle::ExportTarget::Class(id) if library.classes.get(id).is_some_and(|c| c.name.eq_ignore_ascii_case("Collection")))))
+                    .then_some(oxvba_oxir::ImportId(i))
+            }).collect()).unwrap_or_default(),
             parameter_classes: func.locals[..func.param_count]
                 .iter()
                 .map(|l| {
@@ -1260,15 +1355,72 @@ impl ScalarLayout {
                 OxInst::Assign {
                     value: OxOperand::Const(OxConst::I16(_)),
                     ..
-                }
+                } | OxInst::Neg { .. }
             )
         {
             return Err("Integer literal temporary has a conflicting writer".into());
+        }
+        if matches!(inst, OxInst::Neg { dst, .. } if self.literal_integer_temps.contains(&self.slot(*dst)?))
+        {
+            return Ok(());
         }
         if self.owning && (iteration::admit(self, inst)? || aggregate::admit(self, inst)?) {
             return Ok(());
         }
         match inst {
+            OxInst::FieldArrayGet {
+                dst,
+                object,
+                indices,
+                ..
+            } if self.owning => {
+                self.slot(*dst)?;
+                self.operand_type(object)?;
+                for index in indices {
+                    self.operand_type(index)?;
+                }
+                Ok(())
+            }
+            OxInst::FieldArraySet {
+                object,
+                indices,
+                value,
+                ..
+            } if self.owning => {
+                self.operand_type(object)?;
+                self.operand_type(value)?;
+                for index in indices {
+                    self.operand_type(index)?;
+                }
+                Ok(())
+            }
+            OxInst::NewExtern { dst, import }
+                if self.owning && self.library_news.contains(import) =>
+            {
+                self.slot(*dst).map(|_| ())
+            }
+            OxInst::CallNative {
+                dst,
+                callee: oxvba_oxir::OxNativeCallee::Builtin(id),
+                args,
+            } if self.owning && owning_builtin(*id) => {
+                if let Some(dst) = dst {
+                    self.slot(*dst)?;
+                }
+                for arg in args {
+                    match arg {
+                        oxvba_oxir::OxCallArg::Operand(op) => {
+                            self.operand_type(op)?;
+                        }
+                        oxvba_oxir::OxCallArg::ByRef(p) => {
+                            self.slot(*p)?;
+                        }
+                        oxvba_oxir::OxCallArg::Omitted | oxvba_oxir::OxCallArg::Const(_) => {}
+                        _ => return Err("named native library arguments remain open".into()),
+                    }
+                }
+                Ok(())
+            }
             OxInst::Predeclared { dst, class }
                 if self.owning && self.class_news.contains_key(class) =>
             {
@@ -1936,6 +2088,7 @@ mod tests {
         }];
         assert!(ScalarLayout::new(&func).is_err());
         func.blocks[0].instrs = vec![OxInst::Compare {
+            coercion: oxvba_bundle::ComparisonCoercion::Strict,
             dst: OxPlace::Temp(TempId(0)),
             op: oxvba_oxir::CmpOp::Eq,
             lhs: object.clone(),

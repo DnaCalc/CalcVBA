@@ -94,15 +94,15 @@ const EXPECTED: &str =
 
 #[derive(Default)]
 struct IdleSource {
-    callback: RefCell<Option<api::object::EventCallback>>,
+    callbacks: RefCell<std::collections::BTreeMap<u32, api::object::EventCallback>>,
     subscriptions: Cell<u32>,
     removals: Cell<u32>,
 }
 struct IdleServices(Rc<IdleSource>);
-struct IdleSubscription(Rc<IdleSource>);
+struct IdleSubscription(Rc<IdleSource>, u32);
 impl Drop for IdleSubscription {
     fn drop(&mut self) {
-        let callback = self.0.callback.borrow_mut().take();
+        let callback = self.0.callbacks.borrow_mut().remove(&self.1);
         drop(callback);
         self.0.removals.set(self.0.removals.get() + 1);
     }
@@ -118,10 +118,12 @@ impl api::object::HostObjectServices for IdleServices {
             descriptor.parameters.as_slice(),
             [api::object::EventParameter::Object(Some(_))]
         ));
-        assert!(self.0.callback.borrow_mut().replace(callback).is_none());
-        self.0.subscriptions.set(self.0.subscriptions.get() + 1);
+        let id = self.0.subscriptions.get() + 1;
+        self.0.callbacks.borrow_mut().insert(id, callback);
+        self.0.subscriptions.set(id);
         Ok(api::object::EventSubscription::new(IdleSubscription(
             self.0.clone(),
+            id,
         )))
     }
 }
@@ -195,26 +197,59 @@ End Sub
                 Rc::new(IdleServices(state.clone())),
             )
         };
-        let session = module.clone().into_session(backend).unwrap();
+        let mut session = module.clone().into_session(backend).unwrap();
         session.attach_document("Sheet1", &source).unwrap();
-        for reset in [false, true] {
-            if reset {
-                session.reset().unwrap();
+        let old_handle = session
+            .bind("Api", "ReadCounter", ProcedureKind::Function)
+            .unwrap();
+        let mut stale = None;
+        for phase in 0..4 {
+            match phase {
+                1 => session.reset().unwrap(),
+                2 => session.reload(module.clone()).unwrap(),
+                3 => {
+                    session.detach_document("Sheet1").unwrap();
+                    assert!(state.callbacks.borrow().is_empty());
+                    session.reset().unwrap();
+                    session.attach_document("Sheet1", &source).unwrap();
+                }
+                _ => (),
+            }
+            session.attach_document("Sheet1", &source).unwrap();
+            assert_eq!(state.callbacks.borrow().len(), 1);
+            if let Some(callback) = stale.take() {
+                let callback: api::object::EventCallback = callback;
+                callback(&mut [api::Value::Object(None)]).unwrap();
+                assert!(matches!(
+                    call(&session, "Api", "ReadCounter", &[]),
+                    api::Value::Long(0)
+                ));
             }
             for expected in 1..=2 {
-                let callback = state.callback.borrow().clone().unwrap();
+                let callback = state.callbacks.borrow().values().next().cloned().unwrap();
                 assert!(api::with_native_callback_context(|_| ()).is_err());
                 callback(&mut [api::Value::Object(None)]).unwrap();
                 assert!(
                     matches!(call(&session,"Api","ReadCounter",&[]),api::Value::Long(value) if value==expected)
                 );
             }
+            stale = state.callbacks.borrow().values().next().cloned();
         }
-        assert_eq!(state.subscriptions.get(), 2);
-        assert_eq!(state.removals.get(), 1);
+        assert!(matches!(
+            session.call_values(
+                &old_handle,
+                &[],
+                &mut api::TypedContext {
+                    remaining_blocks: 100
+                }
+            ),
+            Err(oxvba_embed::Error::StaleHandle)
+        ));
+        assert_eq!(state.subscriptions.get(), 4);
+        assert_eq!(state.removals.get(), 3);
         drop(session);
-        assert!(state.callback.borrow().is_none());
-        assert_eq!(state.removals.get(), 2);
+        assert!(state.callbacks.borrow().is_empty());
+        assert_eq!(state.removals.get(), 4);
     }
 }
 fn excel_reference() -> Vec<api::TypeLibraryReference> {
@@ -226,6 +261,90 @@ fn excel_reference() -> Vec<api::TypeLibraryReference> {
         lcid: Some(0),
         import_library: None,
     }]
+}
+fn poke_owned_excel_from_another_apartment() {
+    let (_com, pointer) = owned_excel::attach();
+    let host = HostBuilder::new()
+        .profile(HalProfileId::Windows)
+        .policy(HostPolicy::interactive_dev())
+        .build();
+    let mut project = api::Project::module(
+        "Poke",
+        r#"
+Public Function WriteCell(ByVal win As Excel.Window) As Long
+    win.Application.ActiveWorkbook.Worksheets(1).Range("Z1").Value2 = 17#
+    WriteCell = 1
+End Function
+"#,
+    );
+    project.references = excel_reference();
+    let module = Provider::with_host(host.clone()).compile(&project).unwrap();
+    let interfaces = module
+        .com_interfaces()
+        .iter()
+        .filter_map(|i| match i {
+            oxvba_oxir::ComInterface::Com(m) => Some(m.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let members = interfaces
+        .iter()
+        .find(|i| i.name.eq_ignore_ascii_case("Excel.Window"))
+        .unwrap()
+        .members
+        .iter()
+        .filter(|m| m.name == "Application")
+        .cloned()
+        .collect::<Vec<_>>();
+    // SAFETY: checked owned HWND/PID attachment transfers this STA reference.
+    let raw = unsafe {
+        host.com()
+            .bind_native_dispatch_object_variant("Owned.ExcelWindow", pointer)
+    }
+    .unwrap();
+    // SAFETY: unchanged imported descriptors and this same-apartment native root.
+    let window = unsafe {
+        host.com().prepare_typed_object_with_locale(
+            raw.as_object_ref().unwrap(),
+            &members,
+            &interfaces,
+            1033,
+        )
+    }
+    .unwrap();
+    let session = module.into_session(Backend::Interpreter).unwrap();
+    assert!(matches!(
+        call(
+            &session,
+            "Poke",
+            "WriteCell",
+            &[api::ValueSlot::Object(window.argument())]
+        ),
+        api::Value::Long(1)
+    ));
+}
+fn pump_until_finished(worker: &std::thread::JoinHandle<()>) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+    while !worker.is_finished() && std::time::Instant::now() < deadline {
+        // SAFETY: initialized MSG lives through each same-thread message dispatch.
+        let mut message: MSG = unsafe { std::mem::zeroed() };
+        // SAFETY: this STA owns the message queue; all callbacks finish before
+        // the next iteration and no engine invocation is running while idle.
+        unsafe {
+            while PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        worker.is_finished(),
+        "owned idle event sender did not complete"
+    );
 }
 #[test]
 fn compiler_retains_document_and_withevents_routes_and_rejects_wrong_handlers() {
@@ -331,7 +450,7 @@ fn owned_excel_automatic_events() {
             )
         }
         .unwrap();
-        let session = module.into_session(backend).unwrap();
+        let mut session = module.clone().into_session(backend).unwrap();
         let app = object(call(
             &session,
             "HostSetup",
@@ -364,15 +483,57 @@ fn owned_excel_automatic_events() {
         ));
         session.attach_document("ThisWorkbook", &book).unwrap();
         session.attach_document("Sheet1", &sheet).unwrap();
-        for run in 0..2 {
-            if run == 1 {
-                session.reset().unwrap();
+        for run in 0..4 {
+            match run {
+                1 => session.reset().unwrap(),
+                2 => {
+                    let mut replacement = project();
+                    replacement.modules.reverse();
+                    let replacement = configured(Provider::with_host(host.clone()))
+                        .compile(&replacement)
+                        .unwrap();
+                    let document_class = |module: &oxvba_embed::Module| {
+                        module
+                            .event_routes()
+                            .iter()
+                            .find(|route| {
+                                route.document_class.is_some()
+                                    && route.native.as_ref().is_some_and(|native| {
+                                        native.name.eq_ignore_ascii_case("BeforeClose")
+                                    })
+                            })
+                            .unwrap()
+                            .document_class
+                    };
+                    assert_ne!(document_class(&module), document_class(&replacement));
+                    session.reload(replacement).unwrap();
+                }
+                3 => {
+                    session.detach_document("Sheet1").unwrap();
+                    session.detach_document("ThisWorkbook").unwrap();
+                    session.reset().unwrap();
+                    session.attach_document("Sheet1", &sheet).unwrap();
+                    session.attach_document("ThisWorkbook", &book).unwrap();
+                }
+                _ => (),
             }
+            // Reattachment is idempotent and must not reorder native sinks.
+            session.attach_document("Sheet1", &sheet).unwrap();
             let api::Value::String(result) = call(&session, "Api", "RunProbe", &[]) else {
                 panic!("string")
             };
             println!("{backend:?} automatic run={run}: {}", result.as_str());
             assert_eq!(result.as_str(), EXPECTED);
         }
+        call(&session, "Api", "ResetIdle", &[]);
+        assert!(api::with_native_callback_context(|_| ()).is_err());
+        let worker = std::thread::spawn(poke_owned_excel_from_another_apartment);
+        pump_until_finished(&worker);
+        worker.join().unwrap();
+        let api::Value::String(idle) = call(&session, "Api", "ReadIdle", &[]) else {
+            panic!("idle state")
+        };
+        assert_eq!(idle.as_str(), "1:DZ1;");
+        println!("{backend:?} native idle event: {}", idle.as_str());
     }
 }

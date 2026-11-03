@@ -50,7 +50,6 @@ pub(super) unsafe fn invoke_dynamic(
         return Err(424);
     }
     let reference = receiver.as_object_ref().ok_or(91)?;
-    let receiver = host_view(&reference).ok_or(438)?;
     let mut values = Vec::with_capacity(args.len());
     let mut specifications = Vec::with_capacity(args.len());
     let mut targets = Vec::with_capacity(args.len());
@@ -103,7 +102,25 @@ pub(super) unsafe fn invoke_dynamic(
         },
         arguments: specifications,
     };
-    let result = receiver.invoke_dynamic(&call, &mut values, context);
+    let result = if reference.native_collection_snapshot().is_some() {
+        super::collection::invoke(
+            &reference,
+            call.name.as_deref().unwrap_or("Item"),
+            &values,
+            &call.arguments,
+        )
+        .map_err(|number| calcvba_host_api::TypedFault {
+            number,
+            description: crate::default_error_message(number),
+            source: None,
+            help_file: None,
+            help_context: None,
+        })
+    } else {
+        host_view(&reference)
+            .ok_or(438)?
+            .invoke_dynamic(&call, &mut values, context)
+    };
     // Copy back even on failure. Each actual caller retains its original type.
     for (i, target) in targets.into_iter().enumerate() {
         if call.arguments[i].alias != i {

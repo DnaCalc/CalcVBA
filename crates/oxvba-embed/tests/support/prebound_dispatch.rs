@@ -220,7 +220,12 @@ unsafe extern "system" fn invoke(
         let args = std::slice::from_raw_parts((*params).rgvarg, (*params).cArgs as usize);
         let tag = |i: usize| args[i].Anonymous.Anonymous.vt;
         match (dispid, flags, args.len()) {
-            (0, DISPATCH_PROPERTYGET, 0) => VariantCopy(result, &object.value.borrow().0),
+            (0, flags, 0)
+                if flags == DISPATCH_PROPERTYGET
+                    || (object.observed.allow_dynamic.get() && flags == 3) =>
+            {
+                VariantCopy(result, &object.value.borrow().0)
+            }
             (0, DISPATCH_PROPERTYPUT, 1)
                 if (*params).cNamedArgs == 1 && *(*params).rgdispidNamedArgs == -3 =>
             {
@@ -263,7 +268,7 @@ unsafe extern "system" fn invoke(
                 (*b).Anonymous.Anonymous.Anonymous.lVal += 1;
                 VariantCopy(result, a)
             }
-            (15, 2, 0) => {
+            (15, flags, 0) if flags == 2 || (object.observed.allow_dynamic.get() && flags == 3) => {
                 (*result).Anonymous.Anonymous.vt = VT_DISPATCH;
                 (*result).Anonymous.Anonymous.Anonymous.pdispVal = this;
                 add_ref(this);

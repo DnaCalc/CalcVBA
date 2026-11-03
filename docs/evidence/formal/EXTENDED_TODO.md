@@ -331,3 +331,10 @@ Non-blocking formal issues and follow-up items for later ladder profiles.
   Current status: investigating.
   Reproduction command: cargo test -p oxvba-embed --test xlsm_projects; ./scripts/run-xlsm-project-oracle.ps1 -CaseId arrays; ./scripts/run-xlsm-project-oracle.ps1 -CaseId bounds.
   Suggested next action: refine checked dimension products and canonical coordinate ordering; extend general ReDim, typed allocation and exact small scalar physical carriers under bd-59co.2.9.9.
+
+- ID: FTODO-DOCUMENT-LIFECYCLE-ARRAYS-20261103
+  Profile: run15 document lifecycle/errors and ReDim carriers (bd-59co.3.6.10 and bd-59co.3.5.14).
+  Summary: Installed Lean 4.29.1 checks DocumentEvents, ProcedureHandles, TypedReentry, TypedContinuation and RefCount. DocumentEvents proves abstract idempotent attach, detached rejection and monotonic epochs across reset. These models do not refine native idle message transport, TLS event-error abortion, COM Boolean writeback, SAFEARRAY type inheritance/allocation or source-class array fields. Runtime/oracle observations are execution evidence only; no concrete native/Miri or certification credit.
+  Current status: investigating.
+  Reproduction command: installed Lean 4.29.1 binary on formal/lean/OxVba/DocumentEvents.lean; cargo test -p oxvba-embed --test automatic_events --test xlsm_projects; scripts/run-xlsm-suite.ps1 and scripts/run-automatic-events-oracle.ps1 under the owned supervisor.
+  Suggested next action: refine callback epochs and fault/writeback ordering against retained session/native authorities; model allocation failure and Preserve type/bound rules before claiming concrete array refinement.

@@ -490,11 +490,25 @@ fn graph_validation_preflight_visibility_and_cache_identity() {
         "Option Private Module\n".to_string() + &private.projects[1].project.modules[0].source;
     assert!(provider.compile_graph(&private).is_err());
     for backend in backends() {
+        // Len is now admitted by the owning runtime. Keep its cross-project
+        // success separate from the preflight refusal checked below.
+        let mut supported = graph();
+        supported.projects[1].project.modules[0].source = supported.projects[1].project.modules[0]
+            .source
+            .replace("n = n + delta", "n = Len(\"supported\")");
+        let session = provider
+            .load_graph(&supported, &[], backend, api::HOST_API_ABI)
+            .unwrap();
+        assert_eq!(
+            long(run(&*session, "Entry", "Run", &[], api::ValueType::Long)),
+            20
+        );
+
         let mut unsupported = graph();
         unsupported.projects[1].project.modules[0].source = unsupported.projects[1].project.modules
             [0]
         .source
-        .replace("n = n + delta", "n = Len(\"unsupported\")");
+        .replace("n = n + delta", "n = Abs(-1)");
         let session = provider
             .load_graph(&unsupported, &[], backend, api::HOST_API_ABI)
             .unwrap();

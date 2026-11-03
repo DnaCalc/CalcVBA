@@ -534,6 +534,28 @@ impl ComHal for StandardHostServices {
         Err(self.unsupported(capability, operation))
     }
 
+    fn prepare_dynamic_object(&self, object: ObjectRef) -> HalResult<calcvba_host_api::HostObject> {
+        let capability = CapabilityId::ComActivationDispatch;
+        let operation = "prepare_dynamic_object";
+        if !self.supports(capability) {
+            return Err(self.unsupported(capability, operation));
+        }
+        if !self.policy.allow_com_activation {
+            return Err(self.denied(capability, operation));
+        }
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        if self.native_com_enabled() {
+            self.ensure_thread_com_apartment(operation)?;
+            return self
+                .com_bridge
+                .prepare_dynamic_object(object)
+                .map_err(|message| {
+                    HalError::adapter_fault(self.profile, capability, operation, message)
+                });
+        }
+        let _ = object;
+        Err(self.unsupported(capability, operation))
+    }
     unsafe fn prepare_typed_object_with_locale(
         &self,
         object: ObjectRef,

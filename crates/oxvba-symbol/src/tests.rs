@@ -830,6 +830,7 @@ fn win32_longptr_const_above_long_rejects() {
 
 fn widget_blob() -> TypeLibMetadataBlob {
     TypeLibMetadataBlob {
+        constants: Vec::new(),
         identity: TypeLibResolvedIdentity {
             reference_name: "Widget".into(),
             requested_coclass: None,
@@ -929,6 +930,48 @@ fn widget_put_before_get_default_blob() -> TypeLibMetadataBlob {
     putter.return_wire_type = None;
     blob.members = vec![putter, getter];
     blob
+}
+#[test]
+fn imported_constants_resolve_bare_library_owner_and_fully_qualified_names() {
+    use crate::provider::Provider;
+    use crate::providers::com::ComTypeLibProvider;
+    let mut blob = widget_blob();
+    let library = blob.identity.reference_name.clone();
+    blob.constants.push(oxvba_com::TypeLibConstantMetadata {
+        owner: "Choice".into(),
+        name: "chosenValue".into(),
+        value: oxvba_com::ComDefaultValue::Int(-4101),
+    });
+    let provider = ComTypeLibProvider::new(blob.clone());
+    for binding in [
+        provider.resolve("chosenValue"),
+        provider.resolve_qualified(&[&library, "chosenValue"]),
+        provider.resolve_qualified(&["Choice", "chosenValue"]),
+        provider.resolve_qualified(&[&library, "Choice", "chosenValue"]),
+    ] {
+        assert!(matches!(
+            binding.unwrap().route,
+            crate::binding::DispatchRoute::ConstValue(oxvba_bundle::coreir::CoreConst::I32(-4101))
+        ));
+    }
+    assert!(
+        provider
+            .resolve_qualified(&["Other", "Choice", "chosenValue"])
+            .is_none()
+    );
+    blob.constants.push(oxvba_com::TypeLibConstantMetadata {
+        owner: "OtherChoice".into(),
+        name: "chosenValue".into(),
+        value: oxvba_com::ComDefaultValue::Int(42),
+    });
+    let provider = ComTypeLibProvider::new(blob);
+    assert!(provider.has_ambiguous_unqualified_name("chosenValue"));
+    assert!(provider.resolve("chosenValue").is_none());
+    assert!(
+        provider
+            .resolve_qualified(&["Choice", "chosenValue"])
+            .is_some()
+    );
 }
 
 fn assert_com_accessor(

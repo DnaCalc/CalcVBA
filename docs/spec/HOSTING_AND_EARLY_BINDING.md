@@ -38,6 +38,8 @@ members resolve dynamically. Both backends use shared marshalling and error
 translation; nominal interfaces and native object results retain COM identity.
 
 Host tables can supply portable typed objects without native Windows COM.
+HAL host and callback traits do not require Send or Sync. Arc host ownership
+remains for the DNA Calc API; it does not permit cross-thread execution.
 Native interface references remain on the owning apartment. The host controls
 lifecycle and supplies the root objects; it must not pass another thread's raw
 COM interface to a session. The runtime executes on its owning VBA thread.
@@ -47,7 +49,8 @@ COM interface to a session. The runtime executes on its owning VBA thread.
 Compiler metadata selects source interfaces and private event handlers.
 Hosts attach document identities by module name and supply lifecycle timing.
 Owning sessions wire WithEvents and document sources through retained native
-connection points. Supported synchronous events enter the same VM3/JIT session;
+connection points. Native sinks retain the same-thread Rc callback directly,
+without a TLS callback-ID registry. Supported synchronous events enter the same VM3/JIT session;
 tested Boolean ByRef arguments copy back before returning to the native caller.
 Idle delivery needs an STA message pump. Reset/reload/detach reject stale
 callbacks and release subscriptions. Unhandled handler errors abort the

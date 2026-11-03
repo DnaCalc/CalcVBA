@@ -393,7 +393,7 @@ fn owned_xlsm_project() {
     let (_com, pointer) = owned_excel::attach();
     let host = HostBuilder::new()
         .profile(HalProfileId::Windows)
-        .policy(HostPolicy::interactive_dev())
+        .policy(HostPolicy::native())
         .build();
     // SAFETY: exact owned NativeOM attachment transfers this same-apartment reference.
     let raw = unsafe {

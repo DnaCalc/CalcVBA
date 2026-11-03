@@ -7029,7 +7029,7 @@ mod tests {
     impl QueuedDoEventsHost {
         fn new() -> Self {
             Self {
-                inner: NullHostServices::new(HostPolicy::deterministic_runtime()),
+                inner: NullHostServices::new(HostPolicy::default()),
                 in_do_events: AtomicBool::new(false),
                 callback_ready: AtomicBool::new(false),
                 order: Mutex::new(Vec::new()),
@@ -7246,7 +7246,7 @@ mod tests {
     impl MockDynlinkHost {
         fn new(last_dll_error: i32) -> Self {
             Self {
-                inner: NullHostServices::new(HostPolicy::deterministic_runtime()),
+                inner: NullHostServices::new(HostPolicy::default()),
                 last_dll_error,
             }
         }
@@ -7317,7 +7317,7 @@ mod tests {
     impl MockComEnumerateFailHost {
         fn new() -> Self {
             Self {
-                inner: NullHostServices::new(HostPolicy::deterministic_runtime()),
+                inner: NullHostServices::new(HostPolicy::default()),
             }
         }
     }

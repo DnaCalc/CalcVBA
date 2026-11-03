@@ -453,7 +453,7 @@ mod tests {
         let host = WasmHostServices::new(crate::HostPolicy {
             allow_interaction: true,
             ui_virtualization: UiVirtualizationMode::Disabled,
-            ..crate::HostPolicy::interactive_dev()
+            ..crate::HostPolicy::native()
         });
         assert_eq!(
             host.msg_box_variant(Variant::from_i32(3), Variant::from_i32(1))
@@ -471,7 +471,7 @@ mod tests {
 
     #[test]
     fn wasm_backend_rejects_process_env_domain() {
-        let host = WasmHostServices::new(crate::HostPolicy::interactive_dev());
+        let host = WasmHostServices::new(crate::HostPolicy::native());
         assert_eq!(
             host.shell_variant(Variant::from_i32(1), Variant::from_i32(0))
                 .expect_err("shell")
@@ -519,8 +519,7 @@ mod tests {
     #[test]
     fn wasm_browser_sandbox_descriptor_disables_ui_capability() {
         let host = WasmHostServices::new(
-            crate::HostPolicy::deterministic_runtime()
-                .with_wasm_runtime_class(WasmRuntimeClass::BrowserSandbox),
+            crate::HostPolicy::default().with_wasm_runtime_class(WasmRuntimeClass::BrowserSandbox),
         );
         assert_eq!(host.descriptor().runtime_class, "browser-sandbox");
         assert!(
@@ -537,7 +536,7 @@ mod tests {
 
     #[test]
     fn wasm_variant_companions_are_direct() {
-        let host = WasmHostServices::new(crate::HostPolicy::deterministic_runtime());
+        let host = WasmHostServices::new(crate::HostPolicy::default());
 
         assert_eq!(
             host.date_serial_now_variant().expect("date"),

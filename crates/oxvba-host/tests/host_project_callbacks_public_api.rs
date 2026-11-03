@@ -84,7 +84,7 @@ fn engine_public_api_exposes_callback_backed_project_services() {
         mutations: Mutex::new(Vec::new()),
     });
     let mut engine = Engine::new(HostConfig::default()).with_host_callbacks(callbacks.clone());
-    engine.set_host_policy(HostPolicy::interactive_dev());
+    engine.set_host_policy(HostPolicy::native());
     engine.set_unsupported_feature_mode(UnsupportedFeatureMode::Runtime);
 
     let host = engine.host_services();

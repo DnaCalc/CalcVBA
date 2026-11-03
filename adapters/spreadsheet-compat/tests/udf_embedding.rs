@@ -849,7 +849,15 @@ fn cache_uses_the_compiled_configuration_and_host_capability_profile() {
         .prepare_with_configuration(Module::load("Pure", source).unwrap(), &plain)
         .unwrap();
     assert_ne!(first.code_identity(), other.code_identity());
-    let denied = HostBuilder::new().policy(HostPolicy::strict_ci()).build();
+    let denied = HostBuilder::new()
+        .policy(HostPolicy {
+            allow_process_spawn: false,
+            allow_com_activation: false,
+            ui_virtualization: oxvba_hal::model::UiVirtualizationMode::FailOnPrompt,
+            unsupported_feature_mode: oxvba_hal::model::UnsupportedFeatureMode::CompileTime,
+            ..HostPolicy::default()
+        })
+        .build();
     let policy = cache
         .prepare_with_configuration(
             Module::load("Pure", source).unwrap().with_host(denied),

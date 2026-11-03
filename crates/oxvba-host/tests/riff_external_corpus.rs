@@ -80,7 +80,7 @@ fn run_harness(harness_source: &str) -> Vec<Variant> {
     let closure = oxvba_project::load_project_closure_with_entry(&project, None)
         .expect("load Riff project closure");
     let mut engine = Engine::new(HostConfig::vm3());
-    engine.set_host_policy(HostPolicy::deterministic_runtime());
+    engine.set_host_policy(HostPolicy::default());
     engine
         .execute_project_closure_with_variant_snapshot(&closure)
         .expect("execute Riff harness")
@@ -259,7 +259,7 @@ End Sub
     let closure = oxvba_project::load_project_closure_with_entry(&project, None)
         .expect("load Riff project closure");
     let mut engine = Engine::new(HostConfig::vm3());
-    engine.set_host_policy(HostPolicy::deterministic_runtime());
+    engine.set_host_policy(HostPolicy::default());
     let err = engine
         .execute_project_closure_with_variant_snapshot(&closure)
         .expect_err("deterministic policy should block RiffOpen native Declare path");

@@ -73,7 +73,7 @@ fn owned_excel_object_variant_chains() {
     let (_com, pointer) = owned_excel::attach();
     let host = HostBuilder::new()
         .profile(HalProfileId::Windows)
-        .policy(HostPolicy::interactive_dev())
+        .policy(HostPolicy::native())
         .build();
     // SAFETY: exact owned NativeOM reference transferred by the checked attach.
     let raw = unsafe {

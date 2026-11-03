@@ -32,7 +32,7 @@ fn run_referenced(source: &str, jit: bool, references: Vec<sym::ProjectReference
             HostConfig::vm3()
         });
         // Deterministic HAL tokens are not native-call evidence.
-        let mut policy = HostPolicy::interactive_dev();
+        let mut policy = HostPolicy::native();
         policy.com_invocation_strategy = ComInvocationStrategy::DispatchOnly;
         engine.set_host_policy(policy);
         let manifest = sym::SymbolProjectManifest {

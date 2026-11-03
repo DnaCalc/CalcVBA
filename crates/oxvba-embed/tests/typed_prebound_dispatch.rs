@@ -136,7 +136,7 @@ fn pure_dispatch_uses_retained_id_accessor_and_types_without_lookup_or_retry() {
     {
         let host = HostBuilder::new()
             .profile(HalProfileId::Windows)
-            .policy(HostPolicy::interactive_dev())
+            .policy(HostPolicy::native())
             .build();
         let mut project = api::Project::module(
             "Api",
@@ -365,7 +365,7 @@ fn genuine_dynamic_native_aliases_chains_and_errors_use_no_type_information() {
     {
         let host = HostBuilder::new()
             .profile(HalProfileId::Windows)
-            .policy(HostPolicy::interactive_dev())
+            .policy(HostPolicy::native())
             .build();
         let mut project = api::Project::module(
             "Api",

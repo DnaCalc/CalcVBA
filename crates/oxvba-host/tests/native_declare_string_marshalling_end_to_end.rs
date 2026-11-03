@@ -11,7 +11,7 @@ mod windows_native_declare_string_e2e {
     ) -> Option<Vec<Variant>> {
         if let (true, Some(expected_decline)) = (jit_requested, jit_decline) {
             let mut engine = Engine::new(HostConfig::jit());
-            engine.set_host_policy(HostPolicy::interactive_dev());
+            engine.set_host_policy(HostPolicy::native());
             let err = engine
                 .execute_source_with_variant_snapshot_clean(source)
                 .expect_err("pointer-helper writeback should remain an explicit JIT decline");
@@ -33,7 +33,7 @@ mod windows_native_declare_string_e2e {
         } else {
             HostConfig::vm3()
         });
-        engine.set_host_policy(HostPolicy::interactive_dev());
+        engine.set_host_policy(HostPolicy::native());
         Some(
             engine
                 .execute_source_with_variant_snapshot_clean(source)

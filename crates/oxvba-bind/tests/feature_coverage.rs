@@ -73,7 +73,7 @@ fn run_manifest_result(manifest: &SymbolProjectManifest) -> Result<Vec<Variant>,
         .map_err(|e| format!("bind error: {e:?}"))?;
     let oxp = oxvba_oxir::elaborate::elaborate(&program)
         .map_err(|e| format!("elaborate error: {e:?}"))?;
-    let host = NullHostServices::new(HostPolicy::deterministic_runtime());
+    let host = NullHostServices::new(HostPolicy::default());
     let vm = oxvba_vm3::Vm3::run(&oxp, &host).map_err(|e| match e {
         oxvba_vm3::Vm3Error::Fault(fault) => {
             format!("runtime error: {} {}", fault.code, fault.message)

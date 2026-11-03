@@ -11,7 +11,7 @@ use oxvba_host::{Engine, HostConfig};
 
 fn run_clean(source: &str) -> Result<(), String> {
     let mut engine = Engine::new(HostConfig::vm3());
-    engine.set_host_policy(HostPolicy::interactive_dev());
+    engine.set_host_policy(HostPolicy::native());
     engine
         .execute_source_with_variant_snapshot_clean(source)
         .map(|_| ())
@@ -55,7 +55,7 @@ fn filecopy_and_filelen_round_trip() {
         dst = vba_literal(&dst),
     );
     let mut engine = Engine::new(HostConfig::vm3());
-    engine.set_host_policy(HostPolicy::interactive_dev());
+    engine.set_host_policy(HostPolicy::native());
     let snap = engine.execute_source_with_variant_snapshot_clean(&source);
     let copied = dst.is_file();
     let _ = std::fs::remove_dir_all(&dir);
@@ -116,7 +116,7 @@ fn getattr_and_setattr_round_trip() {
         file = vba_literal(&file),
     );
     let mut engine = Engine::new(HostConfig::vm3());
-    engine.set_host_policy(HostPolicy::interactive_dev());
+    engine.set_host_policy(HostPolicy::native());
     let snap = engine.execute_source_with_variant_snapshot_clean(&source);
     clear_readonly(&file); // ensure teardown can delete it
     let _ = std::fs::remove_dir_all(&dir);
@@ -154,7 +154,7 @@ fn filedatetime_reads_a_files_modification_time() {
         file = vba_literal(&file),
     );
     let mut engine = Engine::new(HostConfig::vm3());
-    engine.set_host_policy(HostPolicy::interactive_dev());
+    engine.set_host_policy(HostPolicy::native());
     let snap = engine.execute_source_with_variant_snapshot_clean(&source);
     let _ = std::fs::remove_dir_all(&dir);
     let snap = snap.unwrap_or_else(|d| panic!("{:?}: {}", d.phase(), d.message()));
@@ -199,7 +199,7 @@ fn binary_seek_and_loc_are_one_based() {
         file = vba_literal(&file),
     );
     let mut engine = Engine::new(HostConfig::vm3());
-    engine.set_host_policy(HostPolicy::interactive_dev());
+    engine.set_host_policy(HostPolicy::native());
     let snap = engine.execute_source_with_variant_snapshot_clean(&source);
     let _ = std::fs::remove_dir_all(&dir);
     let snap = snap.unwrap_or_else(|d| panic!("{:?}: {}", d.phase(), d.message()));
@@ -247,7 +247,7 @@ fn seek_past_eof_does_not_extend_the_file() {
         file = vba_literal(&file),
     );
     let mut engine = Engine::new(HostConfig::vm3());
-    engine.set_host_policy(HostPolicy::interactive_dev());
+    engine.set_host_policy(HostPolicy::native());
     let snap = engine.execute_source_with_variant_snapshot_clean(&source);
     let on_disk_len = std::fs::metadata(&file).map(|m| m.len()).ok();
     let _ = std::fs::remove_dir_all(&dir);
@@ -301,7 +301,7 @@ fn random_loc_and_seek_are_record_numbers() {
         file = vba_literal(&file),
     );
     let mut engine = Engine::new(HostConfig::vm3());
-    engine.set_host_policy(HostPolicy::interactive_dev());
+    engine.set_host_policy(HostPolicy::native());
     let snap = engine.execute_source_with_variant_snapshot_clean(&source);
     let _ = std::fs::remove_dir_all(&dir);
     let snap = snap.unwrap_or_else(|d| panic!("{:?}: {}", d.phase(), d.message()));
@@ -368,7 +368,7 @@ fn append_reports_fresh_cursor_but_writes_at_eof() {
         file = vba_literal(&file),
     );
     let mut engine = Engine::new(HostConfig::vm3());
-    engine.set_host_policy(HostPolicy::interactive_dev());
+    engine.set_host_policy(HostPolicy::native());
     let snap = engine.execute_source_with_variant_snapshot_clean(&source);
     let _ = std::fs::remove_dir_all(&dir);
     let snap = snap.unwrap_or_else(|d| panic!("{:?}: {}", d.phase(), d.message()));
@@ -416,7 +416,7 @@ fn write_input_roundtrips_date_and_null_fields() {
         file = vba_literal(&file),
     );
     let mut engine = Engine::new(HostConfig::vm3());
-    engine.set_host_policy(HostPolicy::interactive_dev());
+    engine.set_host_policy(HostPolicy::native());
     let snap = engine.execute_source_with_variant_snapshot_clean(&source);
     let _ = std::fs::remove_dir_all(&dir);
     let snap = snap.unwrap_or_else(|d| panic!("{:?}: {}", d.phase(), d.message()));
@@ -538,7 +538,7 @@ fn width_hash_rejects_values_outside_vba_range() {
         file = vba_literal(&file),
     );
     let mut engine = Engine::new(HostConfig::vm3());
-    engine.set_host_policy(HostPolicy::interactive_dev());
+    engine.set_host_policy(HostPolicy::native());
     let snap = engine.execute_source_with_variant_snapshot_clean(&source);
     let _ = std::fs::remove_dir_all(&dir);
     let snap = snap.unwrap_or_else(|d| panic!("{:?}: {}", d.phase(), d.message()));
@@ -608,7 +608,7 @@ fn sequential_loc_is_byte_position_over_128() {
         file = vba_literal(&file),
     );
     let mut engine = Engine::new(HostConfig::vm3());
-    engine.set_host_policy(HostPolicy::interactive_dev());
+    engine.set_host_policy(HostPolicy::native());
     let snap = engine.execute_source_with_variant_snapshot_clean(&source);
     let _ = std::fs::remove_dir_all(&dir);
     let snap = snap.unwrap_or_else(|d| panic!("{:?}: {}", d.phase(), d.message()));

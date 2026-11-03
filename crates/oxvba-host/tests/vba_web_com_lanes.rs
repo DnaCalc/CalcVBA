@@ -386,8 +386,10 @@ fn application_host_manifest() -> SymbolProjectManifest {
 
 #[test]
 fn vba_web_dictionary_createobject_is_policy_gated() {
-    let mut policy = HostPolicy::deterministic_runtime();
-    policy.allow_com_activation = false;
+    let policy = HostPolicy {
+        allow_com_activation: false,
+        ..HostPolicy::default()
+    };
     let err = run_source_with_policy(
         "Sub Main()\n\
          Dim d As Object\n\
@@ -415,7 +417,7 @@ fn host_injected_application_run_and_ontime_execute_through_portable_host_root()
 
     let host = HostBuilder::new()
         .profile(native_host_profile())
-        .policy(HostPolicy::interactive_dev())
+        .policy(HostPolicy::native())
         .portable_objects(projection)
         .build();
     let manifest = application_host_manifest();
@@ -444,7 +446,7 @@ fn engine_preserves_portable_com_projection_across_policy_rebuild() {
 
     let profile = HostProfileProvider::new()
         .with_portable_com_projection(projection)
-        .with_host_policy(HostPolicy::interactive_dev());
+        .with_host_policy(HostPolicy::native());
     let engine = Engine::new(HostConfig::vm3()).with_host_profile_provider(profile);
     let values = engine
         .execute_source_with_variant_snapshot_clean(
@@ -585,7 +587,7 @@ fn vba_web_dictionary_late_bound_smoke_executes_when_available() {
          If d.Exists(\"status\") Then verdict = verdict + d(\"status\")\n\
          If d(\"body\") = \"ok\" Then verdict = verdict + 1\n\
          End Sub\n";
-    let values = run_source_with_policy(source, HostPolicy::interactive_dev())
+    let values = run_source_with_policy(source, HostPolicy::native())
         .expect("live Scripting.Dictionary smoke should run when registered");
     assert_eq!(first_i32(&values), Some(2201), "snapshot: {values:?}");
 }
@@ -602,7 +604,7 @@ fn vba_web_winhttp_activation_and_setup_smoke_executes_when_available() {
          req.Open \"GET\", \"https://example.test/\", False\n\
          verdict = 1\n\
          End Sub\n";
-    let values = run_source_with_policy(source, HostPolicy::interactive_dev())
+    let values = run_source_with_policy(source, HostPolicy::native())
         .expect("live WinHttpRequest activation/setup smoke should run when registered");
     assert_eq!(first_i32(&values), Some(1), "snapshot: {values:?}");
 }

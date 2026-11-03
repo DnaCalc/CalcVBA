@@ -39,7 +39,7 @@ fn package_session_for(modules: Vec<ModuleUnit>) -> ProjectRuntimeSession {
     let program = oxvba_bind::bind_program(&manifest, &typelibs).expect("bind package");
     let oxp = oxvba_oxir::elaborate::elaborate(&program).expect("elaborate package");
     let mut engine = Engine::new(HostConfig::default());
-    engine.set_host_policy(HostPolicy::interactive_dev());
+    engine.set_host_policy(HostPolicy::native());
     engine
         .prepare_image_session(OxImage::new(vec![oxp]))
         .expect("prepare vm3 session")

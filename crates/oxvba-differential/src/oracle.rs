@@ -1,17 +1,6 @@
-//! Oracle-conformance corpus: the bridge from the **live Excel/VBA 7.1 oracle** (the
-//! `oracle/` probe `.bas` files + their captured `results/*.json`) to a runnable corpus
-//! the OxVBA executors are validated against.
-//!
-//! Each `PROBE_*` function in a probe `.bas` is turned into a **self-contained, runnable
-//! program**: the probe function, the transitive set of *private helper* procedures it
-//! calls, and a generated `Sub Main` that stores the probe's return value in snapshot
-//! slot 0. Running that program under an [`Executor`] and reading slot 0 yields the
-//! observable to compare against the oracle's captured string.
-//!
-//! This is the runtime test corpus the plan calls for — usable by **vm3 today and the
-//! JIT later** by swapping the [`Executor`]. The oracle JSON is the ground truth
-//! (Windows Office VBA 7.1); where vm2 deviates from it, that is a documented vm2
-//! non-compliance, and vm3 must be 100% oracle-compliant.
+//! Load captured Excel/VBA probes as self-contained comparison cases.
+//! Each case retains its probe, private helpers and expected return string;
+//! the selected backend executes a generated Main that stores that result.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};

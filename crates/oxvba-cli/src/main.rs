@@ -8,8 +8,7 @@
 //!   * `build <project> --target WrappedComServer --out-dir <dir>` — emit the
 //!     clean package and wrapper artifacts for an in-process COM DLL target.
 //!
-//! The run commands accept the shared runner-bootstrap flags (HAL profile / host
-//! policy / capability overrides). The legacy compiler and host execution paths
+//! The run commands accept a platform host profile. The legacy compiler and host execution paths
 //! remain removed; `build` is the clean wrapper-artifact lane.
 
 use std::path::{Path, PathBuf};
@@ -17,9 +16,6 @@ use std::{env, fs};
 
 use oxvba_diagnostics::{
     Diagnostic as OxDiagnostic, DiagnosticPhase as OxDiagnosticPhase, DiagnosticReport,
-};
-use oxvba_hal::model::{
-    HalRuntimeClass, UiVirtualizationMode, UnsupportedFeatureMode, WasmRuntimeClass,
 };
 use oxvba_host::{
     Engine, ExecBackend, HostConfig, ResolvedRunnerBootstrap, RunnerBootstrapFallbacks,
@@ -42,24 +38,9 @@ fn main() {
         }
     }
 }
-
 fn print_usage() {
     eprintln!(
-        "usage:\n  \
-         oxvba run <source.bas> [--dump-values] [--backend vm3|jit] [--jit] [bootstrap options]\n  \
-         oxvba run-project [path] [--entry <Module.Procedure>] [--dump-values] [--backend vm3|jit] [--jit] [bootstrap options]\n  \
-         oxvba build <project.basproj|project.vbp> --target WrappedComServer --out-dir <dir>\n\n\
-         oxvba build <project.basproj|project.vbp> --target OxImage --out-dir <dir>\n  \
-         oxvba run-image <project.oxi> [--backend vm3|jit] [--dump-values] [bootstrap options]\n\n\
-         diagnostics:\n  \
-         --diagnostic-format <human|json>\n  \
-         --backend <vm3|jit>  (--jit is an alias for --backend jit)\n\n\
-         bootstrap options:\n  \
-         --profile <id>  --policy <preset>  --config <path>  --runtime-class <class>\n  \
-         --allow-interaction|--allow-process-spawn|--allow-filesystem-mutation <bool>\n  \
-         --allow-dynamic-link|--allow-com-activation|--deterministic-mode <bool>\n  \
-         --ui-virtualization <mode>  --unsupported-mode <mode>  --wasm-runtime-class <class>\n  \
-         --dump-bootstrap"
+        "usage:\n  oxvba run <source.bas> [--backend vm3|jit] [--dump-values]\n  oxvba run-project [path] [--entry Module.Procedure] [--backend vm3|jit]\n  oxvba build <project> --target OxImage|WrappedComServer --out-dir <dir>\n  oxvba run-image <project.oxi> [--backend vm3|jit]\n\n  --profile <id>  --dump-bootstrap  --diagnostic-format human|json"
     );
 }
 
@@ -351,7 +332,6 @@ fn resolve_project_runner_bootstrap(
         bootstrap,
         &RunnerBootstrapFallbacks {
             profile: loaded.default_runtime_profile.clone(),
-            policy_preset: loaded.default_policy_preset.clone(),
         },
         env_get,
     )
@@ -574,84 +554,21 @@ fn parse_run_project_args_from(args: Vec<String>) -> Option<RunProjectArgs> {
         entry_point_override,
     })
 }
-
-/// Interpret `flag` as a runner-bootstrap option (each consumes exactly one value
-/// from `value`). Returns `None` if `flag` is not a bootstrap flag, `Some(Ok(()))`
-/// if applied, `Some(Err(()))` if the value is missing or invalid.
 fn consume_bootstrap_flag(
     bootstrap: &mut RunnerBootstrapOptions,
     flag: &str,
     value: Option<&String>,
 ) -> Option<Result<(), ()>> {
-    let is_bootstrap_flag = matches!(
-        flag,
-        "--config"
-            | "--profile"
-            | "--policy"
-            | "--runtime-class"
-            | "--allow-interaction"
-            | "--allow-process-spawn"
-            | "--allow-filesystem-mutation"
-            | "--allow-dynamic-link"
-            | "--allow-com-activation"
-            | "--deterministic-mode"
-            | "--ui-virtualization"
-            | "--unsupported-mode"
-            | "--wasm-runtime-class"
-    );
-    if !is_bootstrap_flag {
+    if flag != "--profile" {
         return None;
     }
-    let Some(v) = value else {
-        return Some(Err(()));
-    };
-    let overrides = &mut bootstrap.overrides;
-    let outcome = match flag {
-        "--config" => {
-            bootstrap.config_path = Some(PathBuf::from(v.as_str()));
-            Ok(())
-        }
-        "--profile" => {
-            bootstrap.profile = Some(v.clone());
-            Ok(())
-        }
-        "--policy" => {
-            bootstrap.policy_preset = Some(v.clone());
-            Ok(())
-        }
-        "--runtime-class" => set_or_err(&mut overrides.runtime_class, parse_runtime_class(v)),
-        "--allow-interaction" => set_or_err(&mut overrides.allow_interaction, parse_bool(v)),
-        "--allow-process-spawn" => set_or_err(&mut overrides.allow_process_spawn, parse_bool(v)),
-        "--allow-filesystem-mutation" => {
-            set_or_err(&mut overrides.allow_filesystem_mutation, parse_bool(v))
-        }
-        "--allow-dynamic-link" => set_or_err(&mut overrides.allow_dynamic_link, parse_bool(v)),
-        "--allow-com-activation" => set_or_err(&mut overrides.allow_com_activation, parse_bool(v)),
-        "--deterministic-mode" => set_or_err(&mut overrides.deterministic_mode, parse_bool(v)),
-        "--ui-virtualization" => {
-            set_or_err(&mut overrides.ui_virtualization, parse_ui_virtualization(v))
-        }
-        "--unsupported-mode" => set_or_err(
-            &mut overrides.unsupported_feature_mode,
-            parse_unsupported_mode(v),
-        ),
-        "--wasm-runtime-class" => set_or_err(
-            &mut overrides.wasm_runtime_class,
-            parse_wasm_runtime_class(v),
-        ),
-        _ => unreachable!("flag set was checked above"),
-    };
-    Some(outcome)
-}
-
-fn set_or_err<T>(slot: &mut Option<T>, parsed: Option<T>) -> Result<(), ()> {
-    match parsed {
-        Some(value) => {
-            *slot = Some(value);
-            Ok(())
-        }
-        None => Err(()),
-    }
+    Some(
+        value
+            .map(|value| {
+                bootstrap.profile = Some(value.clone());
+            })
+            .ok_or(()),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -711,15 +628,6 @@ fn format_variant_value(value: &Variant) -> String {
         },
     }
 }
-
-fn parse_bool(value: &str) -> Option<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "true" | "1" | "yes" | "on" => Some(true),
-        "false" | "0" | "no" | "off" => Some(false),
-        _ => None,
-    }
-}
-
 fn parse_diagnostic_format(value: &str) -> Option<DiagnosticFormat> {
     match value.trim().to_ascii_lowercase().as_str() {
         "human" => Some(DiagnosticFormat::Human),
@@ -731,49 +639,6 @@ fn parse_diagnostic_format(value: &str) -> Option<DiagnosticFormat> {
 fn parse_exec_backend(value: &str) -> Option<ExecBackend> {
     ExecBackend::parse(value)
 }
-
-fn parse_runtime_class(value: &str) -> Option<HalRuntimeClass> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "host-native" => Some(HalRuntimeClass::HostNative),
-        "windows-gui" => Some(HalRuntimeClass::WindowsGui),
-        "windows-stdio" => Some(HalRuntimeClass::WindowsStdio),
-        "windows-headless" => Some(HalRuntimeClass::WindowsHeadless),
-        "linux-stdio" => Some(HalRuntimeClass::LinuxStdio),
-        "linux-headless" => Some(HalRuntimeClass::LinuxHeadless),
-        "macos-gui" => Some(HalRuntimeClass::MacOsGui),
-        "macos-headless" => Some(HalRuntimeClass::MacOsHeadless),
-        "wasi-local" => Some(HalRuntimeClass::WasmWasiLocal),
-        "browser-sandbox" => Some(HalRuntimeClass::WasmBrowserSandbox),
-        "null-floor" => Some(HalRuntimeClass::NullFloor),
-        _ => None,
-    }
-}
-
-fn parse_ui_virtualization(value: &str) -> Option<UiVirtualizationMode> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "disabled" => Some(UiVirtualizationMode::Disabled),
-        "scripted-responses" => Some(UiVirtualizationMode::ScriptedResponses),
-        "fail-on-prompt" => Some(UiVirtualizationMode::FailOnPrompt),
-        _ => None,
-    }
-}
-
-fn parse_unsupported_mode(value: &str) -> Option<UnsupportedFeatureMode> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "compile-time" => Some(UnsupportedFeatureMode::CompileTime),
-        "runtime" => Some(UnsupportedFeatureMode::Runtime),
-        _ => None,
-    }
-}
-
-fn parse_wasm_runtime_class(value: &str) -> Option<WasmRuntimeClass> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "wasi" | "wasi-local" => Some(WasmRuntimeClass::Wasi),
-        "browser-sandbox" => Some(WasmRuntimeClass::BrowserSandbox),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -868,24 +733,12 @@ mod tests {
             "json".to_string(),
             "--profile".to_string(),
             "linux-stdio".to_string(),
-            "--policy".to_string(),
-            "strict-ci".to_string(),
-            "--allow-dynamic-link".to_string(),
-            "false".to_string(),
-            "--unsupported-mode".to_string(),
-            "compile-time".to_string(),
             "--dump-bootstrap".to_string(),
         ];
         let parsed = parse_run_args_from(args).expect("args should parse");
         assert!(parsed.dump_bootstrap);
         assert_eq!(parsed.diagnostic_format, DiagnosticFormat::Json);
         assert_eq!(parsed.bootstrap.profile.as_deref(), Some("linux-stdio"));
-        assert_eq!(parsed.bootstrap.policy_preset.as_deref(), Some("strict-ci"));
-        assert_eq!(parsed.bootstrap.overrides.allow_dynamic_link, Some(false));
-        assert_eq!(
-            parsed.bootstrap.overrides.unsupported_feature_mode,
-            Some(UnsupportedFeatureMode::CompileTime)
-        );
     }
 
     #[test]

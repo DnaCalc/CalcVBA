@@ -6,18 +6,12 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
-[features]
-default = []
-hal_contract_checks = []
-
 [dependencies]
 calcvba-host-api.workspace = true
 oxvba-diagnostics.workspace = true
 oxvba-com.workspace = true
 oxvba-runtime.workspace = true
 thiserror.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = [

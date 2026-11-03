@@ -18,3 +18,7 @@ not escape their supported lifetime or move to another runtime thread.
 General pointer/native callback signatures and physical carriers remain
 incomplete. The pointer, Declare and controlled native tests describe the
 supported cases on both backends.
+
+The general JIT still refuses some Ptr instructions, including StrPtr in the
+TB08 fixture. That fixture retains its VM3 denial/ownership regression; the
+scalar Declare denial comparison separately checks both backends.

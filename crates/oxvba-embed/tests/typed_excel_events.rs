@@ -9,7 +9,6 @@ use oxvba_hal::{
 use std::{
     cell::{Cell, RefCell},
     rc::{Rc, Weak},
-    sync::Arc,
 };
 #[path = "support/owned_excel.rs"]
 mod owned_excel;
@@ -171,7 +170,7 @@ fn owned_excel_events_reenter_and_cancel_before_native_return() {
     let (change_event, close_event) = metadata();
     let host = HostBuilder::new()
         .profile(HalProfileId::Windows)
-        .policy(HostPolicy::interactive_dev())
+        .policy(HostPolicy::native())
         .build();
     // SAFETY: exact owned NativeOM window reference transferred by attach.
     let raw = unsafe {
@@ -281,7 +280,7 @@ fn owned_excel_events_reenter_and_cancel_before_native_return() {
             oxvba_com::typed_slots::advise_typed_event(
                 &sheet,
                 change_event.clone(),
-                Arc::new(receive_change),
+                Rc::new(receive_change),
             )
         }
         .unwrap();
@@ -290,7 +289,7 @@ fn owned_excel_events_reenter_and_cancel_before_native_return() {
             oxvba_com::typed_slots::advise_typed_event(
                 &book,
                 close_event.clone(),
-                Arc::new(receive_close),
+                Rc::new(receive_close),
             )
         }
         .unwrap();

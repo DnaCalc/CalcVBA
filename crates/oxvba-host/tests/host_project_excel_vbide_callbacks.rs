@@ -251,7 +251,7 @@ fn write_capture(status: &str, payload: &str) {
 
 fn build_engine(callbacks: Arc<ExcelVbideHostCallbacks>) -> Engine {
     let mut engine = Engine::new(HostConfig::default()).with_host_callbacks(callbacks.clone());
-    engine.set_host_policy(HostPolicy::interactive_dev());
+    engine.set_host_policy(HostPolicy::native());
     engine
 }
 

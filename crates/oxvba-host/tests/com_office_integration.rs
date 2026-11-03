@@ -37,7 +37,7 @@ use oxvba_symbol::manifest::ProjectReference;
 /// snapshot (module globals followed by `Main`'s locals).
 fn run_clean(source: &str) -> Result<Vec<Variant>, String> {
     let mut engine = Engine::new(HostConfig::vm3());
-    engine.set_host_policy(HostPolicy::interactive_dev());
+    engine.set_host_policy(HostPolicy::native());
     engine
         .execute_source_with_variant_snapshot_clean(source)
         .map_err(|d| format!("{:?}: {}", d.phase(), d.message()))
@@ -51,7 +51,7 @@ fn run_clean_with_references(
     references: Vec<ProjectReference>,
 ) -> Result<Vec<Variant>, String> {
     let mut engine = Engine::new(HostConfig::vm3());
-    engine.set_host_policy(HostPolicy::interactive_dev());
+    engine.set_host_policy(HostPolicy::native());
     engine
         .execute_source_with_references_and_snapshot(source, references)
         .map_err(|d| format!("{:?}: {}", d.phase(), d.message()))
@@ -66,7 +66,7 @@ fn run_clean_with_references_prefer_vtable(
     source: &str,
     references: Vec<ProjectReference>,
 ) -> Result<(Vec<Variant>, (u64, u64)), String> {
-    let mut policy = HostPolicy::interactive_dev();
+    let mut policy = HostPolicy::native();
     policy.com_invocation_strategy = ComInvocationStrategy::PreferVtable;
     let mut engine = Engine::new(HostConfig::vm3());
     engine.set_host_policy(policy);
@@ -307,7 +307,7 @@ fn com_source_withevents_handler_fires_through_live_dispatch_sink() {
         conditional_compilation_target: Default::default(),
     };
     let mut engine = Engine::new(HostConfig::vm3());
-    engine.set_host_policy(HostPolicy::interactive_dev());
+    engine.set_host_policy(HostPolicy::native());
     let result = engine
         .execute_manifest_with_variant_snapshot(&manifest)
         .map_err(|d| format!("{:?}: {}", d.phase(), d.message()));

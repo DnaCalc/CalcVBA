@@ -4,30 +4,7 @@ use calcvba_host_api::{
     Value,
     object::{EventCallback, EventDescriptor, EventParameter, EventSubscription},
 };
-use std::{
-    cell::{Cell, RefCell},
-    collections::HashMap,
-    rc::Rc,
-    sync::Arc,
-};
-thread_local! {
-    static NEXT: Cell<u64> = const { Cell::new(1) };
-    static CALLBACKS: RefCell<HashMap<u64, LocalCallback>> = RefCell::default();
-}
-type LocalCallback = Rc<dyn Fn(&[SynchronousEventArgument]) -> Result<(), i32>>;
-struct Subscription {
-    native: Option<TypedEventSubscription>,
-    key: u64,
-}
-impl Drop for Subscription {
-    fn drop(&mut self) {
-        // Unadvise can call back. The local callback remains alive until it returns.
-        drop(self.native.take());
-        CALLBACKS.with(|callbacks| {
-            callbacks.borrow_mut().remove(&self.key);
-        });
-    }
-}
+use std::rc::Rc;
 pub(in crate::typed_slots) fn subscribe(
     owner: Rc<NativeReceiver>,
     descriptor: &EventDescriptor,
@@ -82,13 +59,8 @@ pub(in crate::typed_slots) fn subscribe(
         )
     }
     .map_err(|_| 13)?;
-    let key = NEXT.with(|next| {
-        let key = next.get();
-        next.set(key.checked_add(1).ok_or(7)?);
-        Ok::<u64, i32>(key)
-    })?;
     let parameters = descriptor.parameters.clone();
-    let local: LocalCallback = Rc::new(move |arguments| {
+    let receive = Rc::new(move |arguments: &[SynchronousEventArgument]| {
         if arguments.len() != parameters.len() {
             return Err(450);
         }
@@ -157,18 +129,8 @@ pub(in crate::typed_slots) fn subscribe(
         }
         result
     });
-    CALLBACKS.with(|callbacks| callbacks.borrow_mut().insert(key, local));
-    let mut subscription = Subscription { native: None, key };
-    // Native Invoke already enforces the creating apartment before this TLS lookup.
-    let receive = Arc::new(move |arguments: &[SynchronousEventArgument]| {
-        let callback = CALLBACKS
-            .with(|callbacks| callbacks.borrow().get(&key).cloned())
-            .ok_or(5)?;
-        callback(arguments)
-    });
     // SAFETY: only checked IDispatch argument shapes are admitted; source IID,
     // DISPID and signature come from the compiler-owned event descriptor.
-    subscription.native =
-        Some(unsafe { advise_typed_event(&source, metadata, receive) }.map_err(|_| 438)?);
-    Ok(EventSubscription::new(subscription))
+    let native = unsafe { advise_typed_event(&source, metadata, receive) }.map_err(|_| 438)?;
+    Ok(EventSubscription::new(native))
 }

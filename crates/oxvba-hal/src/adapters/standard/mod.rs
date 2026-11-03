@@ -1,5 +1,5 @@
 // Macros must be defined before mod declarations so child modules can use them.
-#[cfg(any(debug_assertions, feature = "hal_contract_checks"))]
+#[cfg(debug_assertions)]
 macro_rules! hal_contract_assert {
     ($cond:expr, $($arg:tt)+) => {
         assert!(
@@ -10,7 +10,7 @@ macro_rules! hal_contract_assert {
     };
 }
 
-#[cfg(not(any(debug_assertions, feature = "hal_contract_checks")))]
+#[cfg(not(debug_assertions))]
 macro_rules! hal_contract_assert {
     ($cond:expr, $($arg:tt)+) => {
         let _ = (stringify!($cond), stringify!($($arg)+));
@@ -238,6 +238,7 @@ fn cached_env_value(vars: &[(String, String)], key: &str) -> Option<String> {
 }
 
 impl StandardHostServices {
+    #[cfg(test)]
     pub(crate) fn new(profile: HalProfileId, policy: HostPolicy) -> Self {
         let runtime_class = policy
             .runtime_class
@@ -418,7 +419,7 @@ impl StandardHostServices {
     // Contract-check scaffold: lightweight invariants now, intended to harden over time.
     // Future steps are tracked in docs/ARCHITECTURE.md.
     fn assert_fs_invariants(&self, state: &FileSystemState, op: &'static str) {
-        #[cfg(any(debug_assertions, feature = "hal_contract_checks"))]
+        #[cfg(debug_assertions)]
         {
             hal_contract_assert!(
                 state.handles.len() <= 511,
@@ -458,7 +459,7 @@ impl StandardHostServices {
             }
         }
 
-        #[cfg(not(any(debug_assertions, feature = "hal_contract_checks")))]
+        #[cfg(not(debug_assertions))]
         {
             let _ = (state, op);
         }
@@ -3476,7 +3477,7 @@ mod tests {
         let Some(profile) = current_native_profile() else {
             return;
         };
-        let host = StandardHostServices::new(profile, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(profile, HostPolicy::native());
         let shell = host
             .shell_variant(rv(1), rv(0))
             .expect("native shell should succeed");
@@ -3510,7 +3511,7 @@ mod tests {
         let Some(profile) = current_native_profile() else {
             return;
         };
-        let host = StandardHostServices::new(profile, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(profile, HostPolicy::native());
         unsafe {
             std::env::set_var("OXVBA_NATIVE_PROCESS_ENV_TEST", "native-process-env-value");
         }
@@ -3530,7 +3531,7 @@ mod tests {
         let Some(profile) = current_native_profile() else {
             return;
         };
-        let host = StandardHostServices::new(profile, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(profile, HostPolicy::native());
         let temp_dir = std::env::current_dir()
             .expect("cwd")
             .join("temp")
@@ -3597,7 +3598,7 @@ mod tests {
         let Some(profile) = current_native_profile() else {
             return;
         };
-        let mut policy = HostPolicy::interactive_dev();
+        let mut policy = HostPolicy::native();
         policy.allow_filesystem_mutation = true;
         let host = StandardHostServices::new(profile, policy);
         let temp_dir = std::env::current_dir()
@@ -3637,7 +3638,7 @@ mod tests {
         let Some(profile) = current_native_profile() else {
             return;
         };
-        let host = StandardHostServices::new(profile, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(profile, HostPolicy::native());
         let handle = host.open_variant(rv(27182), rv(1)).expect("open output");
 
         assert_eq!(
@@ -3681,7 +3682,7 @@ mod tests {
         let Some(profile) = current_native_profile() else {
             return;
         };
-        let host = StandardHostServices::new(profile, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(profile, HostPolicy::native());
         let handle = host
             .open_variant(rv(31415), rv(1))
             .expect("native open should succeed");
@@ -3709,7 +3710,7 @@ mod tests {
         let Some(profile) = current_native_profile() else {
             return;
         };
-        let host = StandardHostServices::new(profile, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(profile, HostPolicy::native());
         assert!(expect_f64(host.date_serial_now_variant().expect("date")) >= 0.0);
         assert!(expect_f64(host.time_serial_now_variant().expect("time")) >= 0.0);
         assert!(expect_f64(host.timer_ticks_variant().expect("ticks")) >= 0.0);
@@ -3760,7 +3761,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_com_event_subscription_lifecycle_is_tracked() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
@@ -3858,7 +3859,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_com_event_multi_arg_callback_payload_roundtrips() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
@@ -3919,7 +3920,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_com_event_poll_returns_structured_payload() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
@@ -3962,7 +3963,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_com_release_object_clears_subscriptions_and_callbacks() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
@@ -3998,7 +3999,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_com_event_subscription_rejects_unknown_event_token() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
@@ -4012,7 +4013,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_com_event_subscription_supports_controlled_com_evt_b_source_interface_lane() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
@@ -4065,7 +4066,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_com_event_unsubscribe_rejects_unknown_subscription() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let err = host
             .unsubscribe_event_variant(40_999.into())
             .expect_err("unknown subscription should fail deterministically");
@@ -4076,7 +4077,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_com_event_callback_lookup_rejects_unknown_callback() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let err = host
             .event_callback_subscription(60_999.into())
             .expect_err("unknown callback should fail deterministically");
@@ -4092,7 +4093,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_com_event_callback_arg_index_is_validated() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
@@ -4127,7 +4128,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_mode_persists_mutation_to_host_file() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let token = 424_242;
         let host_path = host.host_path_from_token(token);
         let _ = std::fs::remove_file(&host_path);
@@ -4156,7 +4157,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_com_dictionary_lane_executes_when_available() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(SCRIPTING_DICTIONARY_PROG_ID_NAME)
             .expect("create_object should return a token");
@@ -4184,7 +4185,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_controlled_test_dispatch_returns_deterministic_values() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
@@ -4242,7 +4243,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_controlled_test_dispatch_supports_named_method_args_variant_v2() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
@@ -4297,7 +4298,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_controlled_test_dispatch_supports_named_property_get_args_variant_v2() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
@@ -4322,7 +4323,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_controlled_test_dispatch_supports_named_default_member_args_variant_v2() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
@@ -4344,7 +4345,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_dictionary_named_default_member_passes_through_for_runtime_resolution_v2() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
 
         let object = host
             .create_object_test(SCRIPTING_DICTIONARY_PROG_ID_NAME)
@@ -4364,7 +4365,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_controlled_test_dispatch_preserves_omitted_arg_metadata_v2() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
@@ -4384,7 +4385,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_controlled_test_dispatch_named_property_put_value_uses_propertyput_lane_v2() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
@@ -4406,7 +4407,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_controlled_test_dispatch_roundtrips_semantic_safe_array_payload_v2() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
@@ -4435,7 +4436,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_controlled_test_dispatch_named_indexed_property_put_reorders_value_last_v2() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
@@ -4467,7 +4468,7 @@ mod tests {
     #[test]
     fn windows_native_controlled_test_dispatch_named_indexed_property_putref_reorders_value_last_v2()
      {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
@@ -4496,7 +4497,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_controlled_property_get_with_required_arg_reports_missing_arg_stably() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
@@ -4519,7 +4520,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_controlled_exception_surfaces_excepinfo_without_fake_arg_error() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
@@ -4548,7 +4549,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_com_binding_keeps_stable_dispatch_identity() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
@@ -4596,7 +4597,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_com_member_dispid_cache_populates_for_known_tokens() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
@@ -4649,9 +4650,8 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_com_prefer_vtable_strategy_matches_dispatch_results() {
-        let dispatch_host =
-            StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
-        let mut vtable_policy = HostPolicy::interactive_dev();
+        let dispatch_host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
+        let mut vtable_policy = HostPolicy::native();
         vtable_policy.com_invocation_strategy = ComInvocationStrategy::PreferVtable;
         let vtable_host = StandardHostServices::new(HalProfileId::Windows, vtable_policy);
 
@@ -4682,7 +4682,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_typelib_resolve_load_and_cache_roundtrip() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let identity = host
             .resolve_typelib_reference(&TypeLibResolveRequest {
                 reference_name: "StdOle".to_string(),
@@ -4711,7 +4711,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_typelib_reference_invalidation_scope_is_stable() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let alpha = host
             .resolve_typelib_reference(&TypeLibResolveRequest {
                 reference_name: "StdOle".to_string(),
@@ -4755,7 +4755,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_typelib_testdispatch_metadata_includes_member_and_event_shapes() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let identity = host
             .resolve_typelib_reference(&TypeLibResolveRequest {
                 reference_name: "OxVba".to_string(),
@@ -4987,7 +4987,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_typelib_excel_metadata_includes_quit_event_connection_point_shape() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let identity = match host.resolve_typelib_reference(&TypeLibResolveRequest {
             reference_name: "Excel".to_string(),
             requested_coclass: Some("Application".to_string()),
@@ -5050,7 +5050,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_com_binding_caches_typelib_member_and_event_specs() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
@@ -5176,7 +5176,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_com_object_descriptor_reports_identity_and_capabilities() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
@@ -5249,7 +5249,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_dictionary_binding_exposes_member_metadata_without_fake_event_projection() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
 
         let object = host
             .create_object_test(SCRIPTING_DICTIONARY_PROG_ID_NAME)
@@ -5287,7 +5287,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_dictionary_event_subscription_fails_without_event_metadata() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
 
         let object = host
             .create_object_test(SCRIPTING_DICTIONARY_PROG_ID_NAME)
@@ -5369,7 +5369,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_string_prog_id_activation_resolves_native_mapping() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
 
         let object = host
             .create_object_test(SCRIPTING_DICTIONARY_PROG_ID_NAME)
@@ -5383,7 +5383,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_createobject_failure_includes_stable_label_when_class_missing() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
 
         let err = host
             .create_object_test(MISSING_CLASS_PROG_ID_NAME)
@@ -5403,7 +5403,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_dispatch_unknown_name_failure_includes_stable_label() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let err = host.com_dispatch_adapter_fault(
             "IDispatch::GetIDsOfNames failed for `DefinitelyMissingMember` with HRESULT 0x80020006"
                 .to_string(),
@@ -5425,7 +5425,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn release_object_clears_native_subscriptions_and_pending_callbacks() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return controlled COM object");

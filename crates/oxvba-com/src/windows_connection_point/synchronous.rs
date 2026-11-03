@@ -4,6 +4,7 @@ use crate::{TypeLibEventMetadata, TypeLibParamType, windows_client::OwnedComInte
 use std::{
     cell::Cell,
     panic::{AssertUnwindSafe, catch_unwind},
+    rc::Rc,
 };
 
 /// Native object arguments keep their own reference for this callback. No raw
@@ -15,8 +16,7 @@ pub enum SynchronousEventArgument {
     Boolean(bool),
     BooleanByRef(Cell<bool>),
 }
-pub type SynchronousEventCallback =
-    Arc<dyn Fn(&[SynchronousEventArgument]) -> Result<(), i32> + Send + Sync>;
+pub type SynchronousEventCallback = Rc<dyn Fn(&[SynchronousEventArgument]) -> Result<(), i32>>;
 #[derive(Clone)]
 pub struct SynchronousEventSinkConfig {
     metadata: TypeLibEventMetadata,
@@ -170,7 +170,6 @@ pub(super) unsafe fn invoke(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use windows_sys::Win32::System::Variant::{VT_BOOL, VT_BYREF, VT_DISPATCH};
 
     fn metadata(parameters: Vec<TypeLibParamType>) -> TypeLibEventMetadata {
@@ -234,11 +233,11 @@ mod tests {
     }
     #[test]
     fn incoming_boolean_copyback_precedes_return_and_objects_balance_on_error() {
-        let calls = Arc::new(AtomicUsize::new(0));
+        let calls = Rc::new(Cell::new(0));
         let observed = calls.clone();
         let sink = sink(
             vec![TypeLibParamType::Object, TypeLibParamType::ByRefBoolean],
-            Arc::new(move |args| {
+            Rc::new(move |args| {
                 let [
                     SynchronousEventArgument::Object(Some(_)),
                     SynchronousEventArgument::BooleanByRef(cancel),
@@ -246,7 +245,7 @@ mod tests {
                 else {
                     panic!("wrong argument order")
                 };
-                observed.fetch_add(1, Ordering::Relaxed);
+                observed.set(observed.get() + 1);
                 cancel.set(true);
                 Err(5)
             }),
@@ -263,7 +262,7 @@ mod tests {
         let actual = unsafe { call(sink, &mut arguments) };
         assert_eq!(actual, windows_sys::Win32::Foundation::E_FAIL);
         assert_eq!(cancel, -1);
-        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(calls.get(), 1);
         // SAFETY: the temporary incoming object owner already dropped on error.
         let actual = unsafe { ((*(*object).vtbl).unknown.release)(object.cast()) };
         assert_eq!(actual, 0);
@@ -274,12 +273,12 @@ mod tests {
     }
     #[test]
     fn invalid_shape_and_wrong_thread_refuse_before_handler_effects() {
-        let calls = Arc::new(AtomicUsize::new(0));
+        let calls = Rc::new(Cell::new(0));
         let observed = calls.clone();
         let sink = sink(
             vec![TypeLibParamType::ByRefBoolean],
-            Arc::new(move |_| {
-                observed.fetch_add(1, Ordering::Relaxed);
+            Rc::new(move |_| {
+                observed.set(observed.get() + 1);
                 Ok(())
             }),
         );
@@ -298,7 +297,7 @@ mod tests {
         .join()
         .unwrap();
         assert_eq!(result, 0x8001_010eu32 as i32);
-        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        assert_eq!(calls.get(), 0);
         // SAFETY: join finished and the parent still owns this exact reference.
         unsafe {
             release(sink);
@@ -308,7 +307,7 @@ mod tests {
     fn panic_stays_inside_invoke_and_preserves_prior_boolean_mutation() {
         let sink = sink(
             vec![TypeLibParamType::ByRefBoolean],
-            Arc::new(|args| {
+            Rc::new(|args| {
                 let [SynchronousEventArgument::BooleanByRef(cancel)] = args else {
                     unreachable!()
                 };
@@ -332,15 +331,15 @@ mod tests {
     }
     #[test]
     fn handler_can_release_the_subscription_owner_before_boolean_copyback() {
-        let address = Arc::new(AtomicUsize::new(0));
+        let address = Rc::new(Cell::new(0));
         let callback_address = address.clone();
         let sink = sink(
             vec![TypeLibParamType::ByRefBoolean],
-            Arc::new(move |args| {
+            Rc::new(move |args| {
                 let [SynchronousEventArgument::BooleanByRef(cancel)] = args else {
                     unreachable!()
                 };
-                let source = callback_address.load(Ordering::Relaxed) as *mut RawIDispatch;
+                let source = callback_address.get() as *mut RawIDispatch;
                 // SAFETY: this callback transfers the factory owner's reference,
                 // analogous to Unadvise removing the last external sink owner.
                 let remaining = unsafe { ((*(*source).vtbl).unknown.release)(source.cast()) };
@@ -349,7 +348,7 @@ mod tests {
                 Ok(())
             }),
         );
-        address.store(sink as usize, Ordering::Relaxed);
+        address.set(sink as usize);
         let mut cancel = 0i16;
         // SAFETY: initialized native Boolean cell retained until Invoke returns.
         let mut arguments: [VARIANT; 1] = unsafe { std::mem::zeroed() };

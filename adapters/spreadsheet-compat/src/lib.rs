@@ -166,6 +166,10 @@ impl Module {
                 )
             })
             .collect();
+        #[expect(
+            clippy::arc_with_non_send_sync,
+            reason = "The existing adapter passes Arc-owned hosts to the engine; calls stay on the session thread."
+        )]
         let spreadsheet =
             spreadsheet_objects.then(|| Arc::new(spreadsheet::SpreadsheetHost::new()));
         let engine = if let Some(host) = &spreadsheet {

@@ -128,7 +128,7 @@ fn run(source: &str, jit: bool, fault: DescriptorFault) -> Observation {
     let before = current_thread_live_handle_counts();
     let native_references;
     let observation = {
-        let mut policy = HostPolicy::interactive_dev();
+        let mut policy = HostPolicy::native();
         // This preference controls genuinely dynamic calls only. Typed calls
         // must remain vtable calls even when the host prefers late dispatch.
         policy.com_invocation_strategy = ComInvocationStrategy::DispatchOnly;

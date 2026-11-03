@@ -416,7 +416,7 @@ mod tests {
 
     #[test]
     fn null_backend_rejects_host_sensitive_domains() {
-        let host = NullHostServices::new(crate::HostPolicy::interactive_dev());
+        let host = NullHostServices::new(crate::HostPolicy::native());
         assert_eq!(
             host.msg_box_variant(Variant::from_i32(1), Variant::from_i32(1))
                 .expect_err("msg_box")

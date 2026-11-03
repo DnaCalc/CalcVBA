@@ -73,6 +73,9 @@ these remain part of the embedding API. See
 [hosting](docs/spec/HOSTING_AND_EARLY_BINDING.md) and
 [project files](docs/spec/BASPROJ_SPEC_V1.md).
 
+Criterion benchmarks remain available with
+`cargo bench -p oxvba-differential --bench jit_m4_baseline`.
+
 ## Excel comparisons
 
 `oracle/` contains VBA probes and captured return values.

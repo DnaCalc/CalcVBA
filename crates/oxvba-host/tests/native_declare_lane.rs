@@ -20,7 +20,7 @@ use oxvba_runtime::{VarType, Variant};
 /// locals.
 fn run(source: &str) -> Vec<Variant> {
     let mut engine = Engine::new(HostConfig::vm3());
-    engine.set_host_policy(HostPolicy::interactive_dev());
+    engine.set_host_policy(HostPolicy::native());
     engine
         .execute_source_with_variant_snapshot_clean(source)
         .expect("native declare probe should execute on the VM backend")
@@ -28,7 +28,7 @@ fn run(source: &str) -> Vec<Variant> {
 
 fn run_err(source: &str) -> String {
     let mut engine = Engine::new(HostConfig::vm3());
-    engine.set_host_policy(HostPolicy::interactive_dev());
+    engine.set_host_policy(HostPolicy::native());
     match engine.execute_source_with_variant_snapshot_clean(source) {
         Ok(snapshot) => panic!("native declare probe should have failed, got {snapshot:?}"),
         Err(err) => format!("{err:?}"),
@@ -523,7 +523,7 @@ fn riff_shaped_dispcallfunc_vtable_call_writes_variant_result() {
 #[cfg(target_arch = "x86_64")]
 fn scalar_native_declare_executes_on_jit_without_falling_back() {
     let mut engine = Engine::new(HostConfig::jit());
-    engine.set_host_policy(HostPolicy::interactive_dev());
+    engine.set_host_policy(HostPolicy::native());
     let values = engine
         .execute_source_with_variant_snapshot_clean(
             "Private Declare PtrSafe Function NativeSqrt Lib \"msvcrt\" Alias \"sqrt\" (ByVal x As Double) As Double\n\

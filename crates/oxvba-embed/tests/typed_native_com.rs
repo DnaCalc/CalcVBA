@@ -91,7 +91,7 @@ fn backends() -> Vec<Backend> {
 fn host() -> Arc<dyn HostServices> {
     HostBuilder::new()
         .profile(HalProfileId::Windows)
-        .policy(HostPolicy::interactive_dev())
+        .policy(HostPolicy::native())
         .build()
 }
 fn prepare(
@@ -478,22 +478,32 @@ End Function
             data4: [1; 8],
         });
         assert!(prepare(host.as_ref(), reference.clone(), &[wrong_iid]).is_err());
-        let other_host = host.clone();
+        // Exercise the native ownership guard directly: a HAL host itself is
+        // deliberately not Send, so safe callers cannot move it to a worker.
+        let bridge = oxvba_com::WindowsComBridge::new(false);
+        let owned = bridge
+            .activate_runtime_object_binding("Scripting.Dictionary", |_| Ok(()))
+            .unwrap();
+        let other_bridge = bridge.clone();
         let other_members = members.clone();
-        let raw_identity = reference.raw();
+        let raw_identity = owned.raw();
         let error = std::thread::spawn(move || {
-            prepare(
-                other_host.as_ref(),
-                oxvba_runtime::ObjectRef::from_compat_identity(raw_identity),
-                &other_members,
-            )
+            // SAFETY: unchanged trusted compiler metadata. The bridge must
+            // reject the foreign owner before touching its native pointer.
+            unsafe {
+                other_bridge.prepare_typed_object(
+                    oxvba_runtime::ObjectRef::from_compat_identity(raw_identity),
+                    &other_members,
+                )
+            }
             .err()
-            .map(|e| e.to_string())
         })
         .join()
         .unwrap()
         .unwrap();
         assert!(error.contains("different thread/apartment"));
+        // SAFETY: the parent apartment remains initialized and owns this binding.
+        unsafe { bridge.release_object(owned) }.unwrap();
         let object = prepare(host.as_ref(), reference.clone(), &members).unwrap();
         // The typed receiver owns its QI reference independently of the HAL binding.
         host.com()
@@ -1771,7 +1781,7 @@ fn real_text_stream_long_to_bstr_calls_preserve_position_across_slices() {
             .unwrap();
         file.write_all(b"abcdef").unwrap();
         drop(file);
-        let mut policy = HostPolicy::interactive_dev();
+        let mut policy = HostPolicy::native();
         policy.com_invocation_strategy = oxvba_hal::model::ComInvocationStrategy::DispatchOnly;
         let host = HostBuilder::new()
             .profile(HalProfileId::Windows)

@@ -349,7 +349,7 @@ fn class_method_indexed_put_on_com_field_mutates_dictionary() {
 
     let closure = oxvba_project::load_project_closure(&basproj).expect("load closure");
     let mut engine = Engine::new(HostConfig::vm3());
-    engine.set_host_policy(HostPolicy::interactive_dev());
+    engine.set_host_policy(HostPolicy::native());
     let values = engine
         .execute_project_closure_with_variant_snapshot(&closure)
         .expect("indexed put class field run");

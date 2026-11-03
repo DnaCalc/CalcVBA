@@ -74,6 +74,10 @@ type SplitModule = (
     Option<Arc<spreadsheet::SpreadsheetHost>>,
 );
 fn split_module(module: Module) -> SplitModule {
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "The existing adapter passes Arc-owned hosts to the engine; calls stay on the session thread."
+    )]
     let spreadsheet = module
         .spreadsheet
         .as_ref()

@@ -80,6 +80,9 @@ spreadsheet members and formula policy stay outside the engine.
 native loading and COM operations to host adapters. Null and browser hosts can
 refuse unavailable operations. DNA Calc and WASM use the host abstractions;
 host policy and descriptors must not be confused with VBA language semantics.
+The preset/configuration menu, maturity labels and record/replay adapters are
+removed. Host/callback traits allow local state without Send/Sync bounds;
+Arc ownership stays at the DNA Calc host API boundary.
 
 `oxvba-com` owns type libraries, native calls, dispatch, vtables, marshalling,
 connection points and COM error translation. Imported declarations retain IIDs,

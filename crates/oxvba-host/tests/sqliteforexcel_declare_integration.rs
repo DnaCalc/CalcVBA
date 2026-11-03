@@ -45,7 +45,7 @@ fn run_bounded_demo(jit_requested: bool) -> Result<(), String> {
     } else {
         HostConfig::vm3()
     });
-    engine.set_host_policy(HostPolicy::interactive_dev());
+    engine.set_host_policy(HostPolicy::native());
     engine
         .execute_project_closure_with_variant_snapshot(&closure)
         .map(|_| ())

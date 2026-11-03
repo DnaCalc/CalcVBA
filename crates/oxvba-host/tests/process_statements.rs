@@ -40,7 +40,7 @@ fn shell_returns_task_id_without_waiting_for_process_exit() {
     );
 
     let mut engine = Engine::new(HostConfig::vm3());
-    engine.set_host_policy(HostPolicy::interactive_dev());
+    engine.set_host_policy(HostPolicy::native());
     let started = std::time::Instant::now();
     let snap = engine.execute_source_with_variant_snapshot_clean(&source);
     let elapsed = started.elapsed();

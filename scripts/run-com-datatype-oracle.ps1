@@ -119,7 +119,7 @@ End Sub
         }
         Set-Content -Path $sourcePath -Value $source
         $logPath = Join-Path $runDir ($Case.id + ".oxvba.log.txt")
-        $cargoArgs = @("run", "-p", "oxvba-cli", "--", "run", $sourcePath, "--dump-values", "--allow-com-activation", "true", "--runtime-class", "host-native")
+        $cargoArgs = @("run", "-p", "oxvba-cli", "--", "run", $sourcePath, "--dump-values", "--profile", "windows-stdio")
         $cargoOutput = & cargo @cargoArgs 2>&1 | Tee-Object -FilePath $logPath
         $exitCode = $LASTEXITCODE
         if ($exitCode -ne 0) { return @{ status="error"; observed="lane-failed(exit=$exitCode)"; log=$logPath } }

@@ -4,7 +4,6 @@ pub mod adapters;
 pub mod callbacks;
 pub mod dynamic_bridge;
 pub mod error;
-pub mod journal;
 pub mod model;
 pub mod output_tap;
 pub mod project;
@@ -13,10 +12,9 @@ pub mod traits;
 pub use dynamic_bridge::HalComDynamicBridge;
 pub use error::{HalError, HalErrorKind, HalResult};
 pub use model::{
-    CapabilityDescriptor, CapabilityId, CapabilityMaturity, ComInvocationStrategy, HalDescriptor,
-    HalProfileId, HalRuntimeClass, HostPolicy, HostPolicyPreset, UiVirtualizationMode,
-    UnsupportedFeatureMode, WasmRuntimeClass, host_backed_mode_active,
-    host_backed_profile_matches_host,
+    CapabilityDescriptor, CapabilityId, ComInvocationStrategy, HalDescriptor, HalProfileId,
+    HalRuntimeClass, HostPolicy, UiVirtualizationMode, UnsupportedFeatureMode, WasmRuntimeClass,
+    host_backed_mode_active, host_backed_profile_matches_host,
 };
 pub use output_tap::{
     HostOutputChannel, HostOutputTap, ThreadOutputTapGuard, install_thread_output_tap,

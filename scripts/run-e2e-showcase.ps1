@@ -111,7 +111,7 @@ label = "single-file-ok"
 End Sub
 '@
 Invoke-Captured -Name 'single_file_compile_to_oxb' -Category 'single-file' -Exe $cli -ArgList @('compile',$single,'-o',$singleOxb) -ExpectStdoutContains 'compiled' -After { @{ artifactExistsOk = (Test-Path $singleOxb); artifactBytes = if (Test-Path $singleOxb) { (Get-Item $singleOxb).Length } else { 0 } } } -Notes 'Compiles a brand-new .bas source into an OxBundle artifact.'
-Invoke-Captured -Name 'single_file_run_source_vm' -Category 'single-file' -Exe $cli -ArgList @('run',$single,'--dump-values','--runtime-class','windows-stdio') -ExpectStdoutContains 'VALUES:i32:42|string:"single-file-ok"' -Notes 'Runs the source path through the CLI/host/VM stack and checks the slot snapshot.'
+Invoke-Captured -Name 'single_file_run_source_vm' -Category 'single-file' -Exe $cli -ArgList @('run',$single,'--dump-values','--profile','windows-stdio') -ExpectStdoutContains 'VALUES:i32:42|string:"single-file-ok"' -Notes 'Runs the source path through the CLI/host/VM stack and checks the slot snapshot.'
 Invoke-Captured -Name 'single_file_run_compiled_launcher' -Category 'single-file' -Exe $runner -ArgList @($singleOxb) -ExpectStderrContains 'Long' -Notes 'Runs the serialized .oxb bundle through oxvba-run and checks executable snapshot output emitted by the launcher.'
 
 # 2. Two-module project: cross-module calls, VM target, disabled JIT boundary, bundle output.
@@ -155,8 +155,8 @@ Write-Utf8NoBom $basproj @'
 </Project>
 '@
 $projOxb = Join-Path $artifactDir 'ShowcaseTwoModule.oxb'
-Invoke-Captured -Name 'two_module_project_run_vm' -Category 'project' -Exe $cli -ArgList @('run-project',$basproj,'--dump-values','--runtime-class','windows-stdio') -ExpectStdoutContains 'VALUES:i32:42|i32:84|string:"two-module=84"' -Notes 'Project loader resolves two modules and executes a cross-module qualified call plus an unqualified local call.'
-Invoke-Captured -Name 'two_module_project_jit_disabled' -Category 'project' -Exe $cli -ArgList @('run-project',$basproj,'--jit','--dump-values','--runtime-class','windows-stdio') -ExpectFailure -ExpectStderrContains 'JIT execution is not implemented' -Notes 'The purged JIT backend reports an explicit disabled-backend diagnostic rather than falling back to the VM.'
+Invoke-Captured -Name 'two_module_project_run_vm' -Category 'project' -Exe $cli -ArgList @('run-project',$basproj,'--dump-values','--profile','windows-stdio') -ExpectStdoutContains 'VALUES:i32:42|i32:84|string:"two-module=84"' -Notes 'Project loader resolves two modules and executes a cross-module qualified call plus an unqualified local call.'
+Invoke-Captured -Name 'two_module_project_jit_disabled' -Category 'project' -Exe $cli -ArgList @('run-project',$basproj,'--jit','--dump-values','--profile','windows-stdio') -ExpectFailure -ExpectStderrContains 'JIT execution is not implemented' -Notes 'The purged JIT backend reports an explicit disabled-backend diagnostic rather than falling back to the VM.'
 Invoke-Captured -Name 'two_module_project_build_bundle' -Category 'project' -Exe $cli -ArgList @('build',$basproj,'-o',$projOxb) -ExpectStdoutContains 'built' -After { @{ artifactExistsOk = (Test-Path $projOxb); artifactBytes = if (Test-Path $projOxb) { (Get-Item $projOxb).Length } else { 0 } } } -Notes 'Build target serializes the project to an OxBundle artifact.'
 Invoke-Captured -Name 'two_module_project_run_bundle' -Category 'project' -Exe $runner -ArgList @($projOxb) -Notes 'The project bundle is accepted by oxvba-run. Current project-bundle launcher output is intentionally quieter than single-file slot bundles.'
 
@@ -288,7 +288,7 @@ try {
 }
 if ($comPreflightOk) {
     if (Test-Path $dbPath) { Remove-Item -Force $dbPath }
-    Invoke-Captured -Name 'access_jet_create_insert_query' -Category 'access-jet-com' -Exe $cli -ArgList @('run-project',$accessBasproj,'--dump-values','--runtime-class','windows-stdio','--allow-com-activation','true','--allow-filesystem-mutation','true') -ExpectStdoutContains 'string:"Grace"|i32:99' -After { @{ databaseExistsOk = (Test-Path $dbPath); databaseBytes = if (Test-Path $dbPath) { (Get-Item $dbPath).Length } else { 0 } } } -Notes 'OxVba project carries COMReference metadata for ADO/ADOX and uses real Windows COM Automation to create an Access/ACE .accdb, insert two rows, select Grace back, and surface scalar field values in the VM snapshot.'
+    Invoke-Captured -Name 'access_jet_create_insert_query' -Category 'access-jet-com' -Exe $cli -ArgList @('run-project',$accessBasproj,'--dump-values','--profile','windows-stdio') -ExpectStdoutContains 'string:"Grace"|i32:99' -After { @{ databaseExistsOk = (Test-Path $dbPath); databaseBytes = if (Test-Path $dbPath) { (Get-Item $dbPath).Length } else { 0 } } } -Notes 'OxVba project carries COMReference metadata for ADO/ADOX and uses real Windows COM Automation to create an Access/ACE .accdb, insert two rows, select Grace back, and surface scalar field values in the VM snapshot.'
 
     $adodbTypelib = Find-AdoTypelib 'msado15.dll'
     $adoxTypelib = Find-AdoTypelib 'msadox.dll'
@@ -342,7 +342,7 @@ End Sub
 </Project>
 "@
         if (Test-Path $earlyDbPath) { Remove-Item -Force $earlyDbPath }
-        Invoke-Captured -Name 'access_jet_mixed_imported_com_create_insert_query' -Category 'access-jet-com' -Exe $cli -ArgList @('run-project',$earlyBasproj,'--dump-values','--runtime-class','windows-stdio','--allow-com-activation','true','--allow-filesystem-mutation','true') -ExpectStdoutContains 'string:"Grace"|i32:99' -After { @{ databaseExistsOk = (Test-Path $earlyDbPath); databaseBytes = if (Test-Path $earlyDbPath) { (Get-Item $earlyDbPath).Length } else { 0 } } } -Notes 'Mixed imported-COM ADO/ADOX project imports real typelib files, declares ADOX.Catalog and ADODB.Connection with As New, invokes ADODB Open/Execute through metadata-backed calls, still uses DispatchInvoke for unsupported Catalog/Recordset/Field pieces, creates an Access/ACE .accdb, inserts rows, and queries Grace / 99 back.'
+        Invoke-Captured -Name 'access_jet_mixed_imported_com_create_insert_query' -Category 'access-jet-com' -Exe $cli -ArgList @('run-project',$earlyBasproj,'--dump-values','--profile','windows-stdio') -ExpectStdoutContains 'string:"Grace"|i32:99' -After { @{ databaseExistsOk = (Test-Path $earlyDbPath); databaseBytes = if (Test-Path $earlyDbPath) { (Get-Item $earlyDbPath).Length } else { 0 } } } -Notes 'Mixed imported-COM ADO/ADOX project imports real typelib files, declares ADOX.Catalog and ADODB.Connection with As New, invokes ADODB Open/Execute through metadata-backed calls, still uses DispatchInvoke for unsupported Catalog/Recordset/Field pieces, creates an Access/ACE .accdb, inserts rows, and queries Grace / 99 back.'
 
 
         $strictProj = Join-Path $srcDir 'access_jet_strict_early_bound_project'
@@ -394,7 +394,7 @@ End Sub
 </Project>
 "@
         if (Test-Path $strictDbPath) { Remove-Item -Force $strictDbPath }
-        Invoke-Captured -Name 'access_jet_strict_early_bound_create_insert_query' -Category 'access-jet-com' -Exe $cli -ArgList @('run-project',$strictBasproj,'--dump-values','--runtime-class','windows-stdio','--allow-com-activation','true','--allow-filesystem-mutation','true') -ExpectStdoutContains 'string:"Grace"|i32:99|string:"Grace"|i32:99' -After { @{ databaseExistsOk = (Test-Path $strictDbPath); databaseBytes = if (Test-Path $strictDbPath) { (Get-Item $strictDbPath).Length } else { 0 } } } -Notes 'Strict natural-source Access/JET COM pass: no DispatchInvoke appears in the VBA source; ADOX.Catalog, ADODB.Connection, ADODB.Recordset, and ADODB.Field are imported types, Fields("Name").Value and rs!Name/rs!Score are exercised, and the compiler lowers the natural source into the current COM bridge internally.'
+        Invoke-Captured -Name 'access_jet_strict_early_bound_create_insert_query' -Category 'access-jet-com' -Exe $cli -ArgList @('run-project',$strictBasproj,'--dump-values','--profile','windows-stdio') -ExpectStdoutContains 'string:"Grace"|i32:99|string:"Grace"|i32:99' -After { @{ databaseExistsOk = (Test-Path $strictDbPath); databaseBytes = if (Test-Path $strictDbPath) { (Get-Item $strictDbPath).Length } else { 0 } } } -Notes 'Strict natural-source Access/JET COM pass: no DispatchInvoke appears in the VBA source; ADOX.Catalog, ADODB.Connection, ADODB.Recordset, and ADODB.Field are imported types, Fields("Name").Value and rs!Name/rs!Score are exercised, and the compiler lowers the natural source into the current COM bridge internally.'
     }
 }
 
@@ -459,7 +459,7 @@ scoreValue = DispatchInvoke(DispatchInvoke(rs, "Fields", "Score"), "Value")
 End Sub
 "@
     if (Test-Path $daoLateDb) { Remove-Item -Force $daoLateDb }
-    Invoke-Captured -Name 'access_jet_dao_late_bound_create_insert_query' -Category 'access-jet-dao' -Exe $cli -ArgList @('run-project', $daoLateBasproj, '--dump-values', '--runtime-class', 'windows-stdio', '--allow-com-activation', 'true', '--allow-filesystem-mutation', 'true') -ExpectStdoutContains 'string:"Grace"|i32:99' -After { @{ databaseExistsOk = (Test-Path $daoLateDb); databaseBytes = if (Test-Path $daoLateDb) { (Get-Item $daoLateDb).Length } else { 0 } } } -Notes 'Late-bound DAO: CreateObject("DAO.DBEngine.120") plus DispatchInvoke create the Access/ACE .accdb via the DAO object model, insert two rows, open a recordset, and read Grace / 99 back through dynamic name dispatch.'
+    Invoke-Captured -Name 'access_jet_dao_late_bound_create_insert_query' -Category 'access-jet-dao' -Exe $cli -ArgList @('run-project', $daoLateBasproj, '--dump-values', '--profile', 'windows-stdio') -ExpectStdoutContains 'string:"Grace"|i32:99' -After { @{ databaseExistsOk = (Test-Path $daoLateDb); databaseBytes = if (Test-Path $daoLateDb) { (Get-Item $daoLateDb).Length } else { 0 } } } -Notes 'Late-bound DAO: CreateObject("DAO.DBEngine.120") plus DispatchInvoke create the Access/ACE .accdb via the DAO object model, insert two rows, open a recordset, and read Grace / 99 back through dynamic name dispatch.'
 
     # Mixed DAO: typed declarations early-bind the DBEngine/Database methods; recordset field
     # access stays on DispatchInvoke.
@@ -483,7 +483,7 @@ scoreValue = DispatchInvoke(DispatchInvoke(rs, "Fields", "Score"), "Value")
 End Sub
 "@
     if (Test-Path $daoMixedDb) { Remove-Item -Force $daoMixedDb }
-    Invoke-Captured -Name 'access_jet_dao_mixed_create_insert_query' -Category 'access-jet-dao' -Exe $cli -ArgList @('run-project', $daoMixedBasproj, '--dump-values', '--runtime-class', 'windows-stdio', '--allow-com-activation', 'true', '--allow-filesystem-mutation', 'true') -ExpectStdoutContains 'string:"Grace"|i32:99' -After { @{ databaseExistsOk = (Test-Path $daoMixedDb); databaseBytes = if (Test-Path $daoMixedDb) { (Get-Item $daoMixedDb).Length } else { 0 } } } -Notes 'Mixed DAO: typed Dim ... As DAO.DBEngine/Database/Recordset early-bind CreateDatabase/Execute/OpenRecordset against the scoped DAO interfaces, while the recordset Fields("...").Value chain stays on DispatchInvoke.'
+    Invoke-Captured -Name 'access_jet_dao_mixed_create_insert_query' -Category 'access-jet-dao' -Exe $cli -ArgList @('run-project', $daoMixedBasproj, '--dump-values', '--profile', 'windows-stdio') -ExpectStdoutContains 'string:"Grace"|i32:99' -After { @{ databaseExistsOk = (Test-Path $daoMixedDb); databaseBytes = if (Test-Path $daoMixedDb) { (Get-Item $daoMixedDb).Length } else { 0 } } } -Notes 'Mixed DAO: typed Dim ... As DAO.DBEngine/Database/Recordset early-bind CreateDatabase/Execute/OpenRecordset against the scoped DAO interfaces, while the recordset Fields("...").Value chain stays on DispatchInvoke.'
 
     # Strict early-bound DAO: no DispatchInvoke in the source. DAO.DBEngine/Database/Recordset/Field
     # are imported types; rs.Fields("Name").Value and rs!Name/rs!Score are exercised.
@@ -515,7 +515,7 @@ bangScoreValue = rs!Score
 End Sub
 "@
     if (Test-Path $daoStrictDb) { Remove-Item -Force $daoStrictDb }
-    Invoke-Captured -Name 'access_jet_dao_strict_early_bound_create_insert_query' -Category 'access-jet-dao' -Exe $cli -ArgList @('run-project', $daoStrictBasproj, '--dump-values', '--runtime-class', 'windows-stdio', '--allow-com-activation', 'true', '--allow-filesystem-mutation', 'true') -ExpectStdoutContains 'string:"Grace"|i32:99|string:"Grace"|i32:99' -After { @{ databaseExistsOk = (Test-Path $daoStrictDb); databaseBytes = if (Test-Path $daoStrictDb) { (Get-Item $daoStrictDb).Length } else { 0 } } } -Notes 'Strict natural-source DAO pass: no DispatchInvoke in the VBA source; DAO.DBEngine, DAO.Database, DAO.Recordset, and DAO.Field are imported types, Fields("Name").Value and rs!Name/rs!Score are exercised, and the compiler lowers the natural source into the COM bridge internally.'
+    Invoke-Captured -Name 'access_jet_dao_strict_early_bound_create_insert_query' -Category 'access-jet-dao' -Exe $cli -ArgList @('run-project', $daoStrictBasproj, '--dump-values', '--profile', 'windows-stdio') -ExpectStdoutContains 'string:"Grace"|i32:99|string:"Grace"|i32:99' -After { @{ databaseExistsOk = (Test-Path $daoStrictDb); databaseBytes = if (Test-Path $daoStrictDb) { (Get-Item $daoStrictDb).Length } else { 0 } } } -Notes 'Strict natural-source DAO pass: no DispatchInvoke in the VBA source; DAO.DBEngine, DAO.Database, DAO.Recordset, and DAO.Field are imported types, Fields("Name").Value and rs!Name/rs!Score are exercised, and the compiler lowers the natural source into the COM bridge internally.'
 }
 
 # 5. Immediate window / REPL transcript.
@@ -535,7 +535,7 @@ $immErr = Join-Path $logDir "$safe.stderr.log"
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $cli
 $psi.WorkingDirectory = $repo
-foreach ($a in @('immediate',$basproj,'--module','Main','--runtime-class','windows-stdio')) { [void]$psi.ArgumentList.Add($a) }
+foreach ($a in @('immediate',$basproj,'--module','Main','--profile','windows-stdio')) { [void]$psi.ArgumentList.Add($a) }
 $psi.RedirectStandardInput = $true
 $psi.RedirectStandardOutput = $true
 $psi.RedirectStandardError = $true

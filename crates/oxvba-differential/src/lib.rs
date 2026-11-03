@@ -1,28 +1,8 @@
-//! `oxvba-differential` — the vm3 conformance harness.
-//!
-//! Runs a corpus program on **vm3** (the sole product runtime + the JIT oracle) and
-//! captures its observable across the fidelity axes that define behavioural
-//! equivalence for OxVBA:
-//!
-//! 1. **Return values** — the entry-globals `Variant` snapshot, compared by
-//!    canonical, NaN-aware `Variant` equality.
-//! 2. **`Err` state** — final `Err.Number`/`Description`/`Source` + `LastDllError`.
-//! 3. **Side-effect order** — the ordered recording-HAL journal of host calls
-//!    (Print/MsgBox/file/COM).
-//! 4. **Refcount / terminate timing** — the ordered `Class_Initialize`/
-//!    `Class_Terminate` events keyed by statement index.
-//! 5. **COM transport counts** — `(vtable, idispatch)` dispatch counts.
-//! 6. **COM typing & errors** — typed-argument fidelity, `[out]`/retval writebacks,
-//!    and HRESULT→`Err.Number` fidelity.
-//!
-//! Sequencing spine: vm3 IS the oracle (the legacy `Op`-bundle interpreter has been
-//! retired). The vm3 GOLDEN SNAPSHOT ([`tests::vm3_golden_snapshot`]) pins
-//! vm3's validated observable for every corpus program — the standalone regression net
-//! that the legacy differential used to provide — and the live-Excel oracle gate
-//! ([`oracle`]) validates vm3 against captured VBA 7.1 ground truth. The optimization
-//! tier (M4 JIT) differentials the JIT against this same vm3 observable.
+//! VM3/JIT comparison helpers and captured Excel/VBA observations.
+//! Compares result subtypes/values, full Err state, raised errors and carrier
+//! ownership. Aggregate structure is tested through explicit result probes;
+//! Canon::Opaque alone compares only a tag and cannot establish value parity.
 
-pub mod balance_protocol;
 pub mod oracle;
 
 use oxvba_host::{Engine, FinalErr, HostConfig, RuntimeProfileId, SnapshotOutcome, Vm3Snapshot};
@@ -196,8 +176,7 @@ pub struct RunOutcome {
     /// canonicalized and dropped.
     ///
     /// VM3 and JIT execution, supported callbacks, and cleanup currently remain on this runner
-    /// thread. This observable does not certify future asynchronous or cross-thread runtime work;
-    /// whole-process/subprocess evidence uses [`oxvba_runtime::live_handle_counts`] instead.
+    /// thread. The carrier tests also check whole-process counts after disposal.
     pub handle_balance: Option<HandleBalance>,
 }
 

@@ -22,7 +22,6 @@ pub struct LoadedProject {
     pub build_target: BuildTarget,
     pub runtime_flavor: RuntimeFlavor,
     pub default_runtime_profile: Option<String>,
-    pub default_policy_preset: Option<String>,
     pub default_root_object: String,
     pub entry_point: Option<String>,
     /// Per-class metadata keyed by module name (instancing, prog_id, description).
@@ -233,7 +232,6 @@ pub(crate) fn build_loaded_project(
         build_target: props.build_target.unwrap_or(BuildTarget::Bundle),
         runtime_flavor: props.runtime_flavor.unwrap_or(RuntimeFlavor::Lite),
         default_runtime_profile: props.default_runtime_profile.clone(),
-        default_policy_preset: props.default_policy_preset.clone(),
         default_root_object: props
             .default_root_object
             .clone()

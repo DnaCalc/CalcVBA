@@ -33,7 +33,6 @@ pub struct BasProjProperties {
     pub entry_point: Option<String>,
     pub runtime_flavor: Option<RuntimeFlavor>,
     pub default_runtime_profile: Option<String>,
-    pub default_policy_preset: Option<String>,
     pub default_root_object: Option<String>,
     pub define_constants: Option<String>,
 }

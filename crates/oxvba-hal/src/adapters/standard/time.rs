@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn native_time_uses_local_clock_components() {
-        let host = StandardHostServices::new(native_profile(), HostPolicy::interactive_dev());
+        let host = StandardHostServices::new(native_profile(), HostPolicy::native());
         if !host.native_time_enabled() {
             return;
         }

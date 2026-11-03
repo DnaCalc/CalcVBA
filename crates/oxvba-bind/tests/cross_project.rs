@@ -98,7 +98,7 @@ fn link_run_global0_i32(closure_leaf_first: &[SymbolProjectManifest]) -> Option<
         .map(|p| oxvba_oxir::elaborate::elaborate(p).expect("elaborate"))
         .collect();
     let refs: Vec<&_> = oxps.iter().collect();
-    let host = NullHostServices::new(HostPolicy::deterministic_runtime());
+    let host = NullHostServices::new(HostPolicy::default());
     let mut vm = oxvba_vm3::Vm3::link(&refs, &host).expect("link");
     vm.run_entry().expect("run");
     vm.slot(0).and_then(|v| v.as_i32())
@@ -111,7 +111,7 @@ fn link_run_fails(closure_leaf_first: &[SymbolProjectManifest]) {
         .map(|p| oxvba_oxir::elaborate::elaborate(p).expect("elaborate"))
         .collect();
     let refs: Vec<&_> = oxps.iter().collect();
-    let host = NullHostServices::new(HostPolicy::deterministic_runtime());
+    let host = NullHostServices::new(HostPolicy::default());
     let mut vm = oxvba_vm3::Vm3::link(&refs, &host).expect("link");
     assert!(vm.run_entry().is_err());
 }

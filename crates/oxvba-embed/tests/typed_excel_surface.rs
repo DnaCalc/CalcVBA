@@ -102,7 +102,7 @@ fn owned_excel_surface_from_native_window_uses_prebound_calls() {
     let (_com, pointer) = owned_excel::attach();
     let host = HostBuilder::new()
         .profile(HalProfileId::Windows)
-        .policy(HostPolicy::interactive_dev())
+        .policy(HostPolicy::native())
         .build();
     // SAFETY: attach transfers one owned dispatch for the checked owned window.
     let raw = unsafe {

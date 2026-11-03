@@ -1,12 +1,5 @@
 //! HAL trait contracts.
 //!
-//! Source anchors (Foundation canonical mirror):
-//! - `CreateObject`: CONF-discovered-ms-vbal-250520-f945507e-0325
-//! - `InputBox`: CONF-discovered-ms-vbal-250520-f945507e-0329
-//! - `MsgBox`: CONF-discovered-ms-vbal-250520-f945507e-0337
-//! - `Shell`: CONF-discovered-ms-vbal-250520-f945507e-0346
-//! - `Dir`: CONF-discovered-ms-vbal-250520-f945507e-0282
-//! - `FreeFile`: CONF-discovered-ms-vbal-250520-f945507e-0286
 
 use crate::{
     error::{HalError, HalResult},
@@ -80,13 +73,22 @@ impl DynLinkDescriptorView<'_> {
     }
 }
 
-/// Root HAL service registry.
+/// Root HAL service registry, used on the owning VBA thread.
+///
+/// A host may retain thread-bound callbacks or COM objects. Shared ownership
+/// does not make it transferable to a worker:
+///
+/// ```compile_fail
+/// fn move_host(host: std::sync::Arc<dyn oxvba_hal::HostServices>) {
+///     std::thread::spawn(move || drop(host));
+/// }
+/// ```
 ///
 /// HAL traits below expose a value-model boundary: methods accept and return
 /// direct [`Variant`] carriers at VM/JIT call sites. Implementations should
 /// override retained companions directly; trait defaults fault rather than
 /// silently projecting through compatibility methods.
-pub trait HostServices: Send + Sync {
+pub trait HostServices {
     fn profile(&self) -> HalProfileId;
     fn descriptor(&self) -> HalDescriptor;
     fn policy(&self) -> &HostPolicy;
@@ -123,7 +125,7 @@ fn variant_companion_not_overridden<T>(
     ))
 }
 
-pub trait ConsoleHal: Send + Sync {
+pub trait ConsoleHal {
     /// Console text output with line semantics for stdio-style hosts.
     fn print_line_variant(&self, _data: Variant) -> HalResult<Variant> {
         variant_companion_not_overridden(CapabilityId::ConsoleIo, "print_line_variant")
@@ -138,7 +140,7 @@ pub trait ConsoleHal: Send + Sync {
     }
 }
 
-pub trait UiInteractionHal: Send + Sync {
+pub trait UiInteractionHal {
     /// Deterministically implements `MsgBox` interaction or a policy/capability error.
     fn msg_box_variant(&self, _prompt: Variant, _style: Variant) -> HalResult<Variant> {
         variant_companion_not_overridden(CapabilityId::UiInteraction, "msg_box_variant")
@@ -157,14 +159,14 @@ pub trait UiInteractionHal: Send + Sync {
     }
 }
 
-pub trait EventPumpHal: Send + Sync {
+pub trait EventPumpHal {
     /// Deterministically pumps host events, or reports unsupported behavior.
     fn do_events_variant(&self) -> HalResult<Variant> {
         variant_companion_not_overridden(CapabilityId::EventPump, "do_events_variant")
     }
 }
 
-pub trait FileSystemHal: Send + Sync {
+pub trait FileSystemHal {
     fn open_variant(&self, _path: Variant, _mode: Variant) -> HalResult<Variant> {
         variant_companion_not_overridden(CapabilityId::FileSystemIo, "open_variant")
     }
@@ -313,7 +315,7 @@ pub trait FileSystemHal: Send + Sync {
     }
 }
 
-pub trait ProcessEnvHal: Send + Sync {
+pub trait ProcessEnvHal {
     fn command_variant(&self) -> HalResult<Variant> {
         variant_companion_not_overridden(CapabilityId::ProcessEnv, "command_variant")
     }
@@ -357,7 +359,7 @@ pub trait ProcessEnvHal: Send + Sync {
     }
 }
 
-pub trait ComHal: Send + Sync {
+pub trait ComHal {
     fn create_object_variant(&self, _prog_id: Variant) -> HalResult<Variant> {
         variant_companion_not_overridden(
             CapabilityId::ComActivationDispatch,
@@ -571,7 +573,7 @@ pub trait ComHal: Send + Sync {
     }
 }
 
-pub trait TimeLocaleHal: Send + Sync {
+pub trait TimeLocaleHal {
     fn date_serial_now_variant(&self) -> HalResult<Variant> {
         variant_companion_not_overridden(CapabilityId::TimeLocale, "date_serial_now_variant")
     }
@@ -583,7 +585,7 @@ pub trait TimeLocaleHal: Send + Sync {
     }
 }
 
-pub trait DynamicLinkHal: Send + Sync {
+pub trait DynamicLinkHal {
     /// Resolves descriptor metadata into an invocation binding token.
     fn bind_descriptor(&self, descriptor: &DynLinkDescriptorView<'_>) -> HalResult<BindingHandle> {
         Ok(descriptor.symbol.raw().into())
@@ -647,7 +649,7 @@ pub trait DynamicLinkHal: Send + Sync {
     }
 }
 
-pub trait DiagnosticsHal: Send + Sync {
+pub trait DiagnosticsHal {
     fn emit_variant(&self, _code: Variant, _payload: Variant) -> HalResult<Variant> {
         variant_companion_not_overridden(CapabilityId::DiagnosticsTelemetry, "emit_variant")
     }
@@ -656,12 +658,12 @@ pub trait DiagnosticsHal: Send + Sync {
     }
 }
 
-pub trait ProjectCatalogHal: Send + Sync {
+pub trait ProjectCatalogHal {
     fn list_projects(&self) -> HalResult<Vec<ProjectDescriptor>>;
     fn get_project(&self, project_name: &str) -> HalResult<ProjectDescriptor>;
 }
 
-pub trait ProjectReferenceHal: Send + Sync {
+pub trait ProjectReferenceHal {
     fn list_references(&self, project_name: &str) -> HalResult<Vec<ProjectReferenceDescriptor>>;
     fn resolve_reference(
         &self,
@@ -669,7 +671,7 @@ pub trait ProjectReferenceHal: Send + Sync {
     ) -> HalResult<ResolvedProjectReference>;
 }
 
-pub trait ProjectMutationHal: Send + Sync {
+pub trait ProjectMutationHal {
     fn attach_host_extension_module(&self, change: &HostExtensionModuleChange) -> HalResult<()>;
 }
 

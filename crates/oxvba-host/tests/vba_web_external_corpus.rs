@@ -456,7 +456,7 @@ fn engine(shape: HostShape, calls: Arc<Mutex<Vec<String>>>) -> Engine {
     let profile = HostProfileProvider::new()
         .with_typelib_resolver(Arc::new(VbaWebResolver))
         .with_portable_com_projection(projection)
-        .with_host_policy(HostPolicy::interactive_dev());
+        .with_host_policy(HostPolicy::native());
     Engine::new(HostConfig::vm3()).with_host_profile_provider(profile)
 }
 

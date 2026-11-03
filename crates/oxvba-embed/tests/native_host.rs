@@ -159,7 +159,7 @@ fn host_injected_owned_excel_range_uses_default_without_losing_identity() {
         );
         let host = oxvba_hal::adapters::builder::HostBuilder::new()
             .profile(oxvba_hal::model::HalProfileId::Windows)
-            .policy(oxvba_hal::model::HostPolicy::interactive_dev())
+            .policy(oxvba_hal::model::HostPolicy::native())
             .build();
         // SAFETY: transfer exactly the NativeOM reference to the same-thread HAL.
         let root = unsafe {
@@ -303,7 +303,7 @@ fn host_supplied_object_uses_declared_iid_and_slot_on_each_backend() {
         {
             let host = oxvba_hal::adapters::builder::HostBuilder::new()
                 .profile(oxvba_hal::model::HalProfileId::Windows)
-                .policy(oxvba_hal::model::HostPolicy::interactive_dev())
+                .policy(oxvba_hal::model::HostPolicy::native())
                 .build();
             // SAFETY: fixture owns one retained native reference; HAL accepts
             // ownership on this thread and releases it when the host is dropped.

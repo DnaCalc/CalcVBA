@@ -117,7 +117,7 @@ fn bind_error_display(source: &str) -> String {
 fn run_main_local0(source: &str) -> Option<f64> {
     let program = bind(source);
     let oxp = oxvba_oxir::elaborate::elaborate(&program).expect("elaborate");
-    let host = NullHostServices::new(HostPolicy::deterministic_runtime());
+    let host = NullHostServices::new(HostPolicy::default());
     let vm = oxvba_vm3::Vm3::run(&oxp, &host).expect("run");
     let value = vm.slot(oxp.globals.len())?;
     value
@@ -149,7 +149,7 @@ fn arithmetic_precedence() {
 fn run_main_local0_string(source: &str) -> Option<String> {
     let program = bind(source);
     let oxp = oxvba_oxir::elaborate::elaborate(&program).expect("elaborate");
-    let host = NullHostServices::new(HostPolicy::deterministic_runtime());
+    let host = NullHostServices::new(HostPolicy::default());
     let vm = oxvba_vm3::Vm3::run(&oxp, &host).expect("run");
     vm.slot(oxp.globals.len())?.as_bstr().map(|b| b.as_str())
 }
@@ -514,7 +514,7 @@ fn module_qualified_global_variable_is_read_and_written_as_place() {
     ]);
     let program = bind_program(&manifest, &NullTypeLibs).expect("bind qualified global");
     let oxp = oxvba_oxir::elaborate::elaborate(&program).expect("elaborate");
-    let host = NullHostServices::new(HostPolicy::deterministic_runtime());
+    let host = NullHostServices::new(HostPolicy::default());
     let vm = oxvba_vm3::Vm3::run(&oxp, &host).expect("run");
     assert_eq!(
         vm.slot(oxp.globals.len()).and_then(|v| v.as_i32()),
@@ -538,7 +538,7 @@ fn module_qualified_object_global_can_receive_member_calls() {
     ]);
     let program = bind_program(&manifest, &NullTypeLibs).expect("bind qualified object global");
     let oxp = oxvba_oxir::elaborate::elaborate(&program).expect("elaborate");
-    let host = NullHostServices::new(HostPolicy::deterministic_runtime());
+    let host = NullHostServices::new(HostPolicy::default());
     let vm = oxvba_vm3::Vm3::run(&oxp, &host).expect("run");
     assert_eq!(vm.slot(oxp.globals.len()).and_then(|v| v.as_i32()), Some(1));
 }
@@ -1202,7 +1202,7 @@ fn call_keyword_module_qualified_sub_with_attached_parens_runs() {
     )
     .expect("module-qualified Call statement should bind");
     let oxp = oxvba_oxir::elaborate::elaborate(&program).expect("elaborate");
-    let host = NullHostServices::new(HostPolicy::deterministic_runtime());
+    let host = NullHostServices::new(HostPolicy::default());
     let vm = oxvba_vm3::Vm3::run(&oxp, &host).expect("run");
     assert_eq!(vm.slot(0).and_then(|value| value.as_i32()), Some(42));
 }
@@ -2147,7 +2147,7 @@ fn run_class_main_local0(main_src: &str, class_name: &str, class_src: &str) -> O
     )
     .expect("bind_program");
     let oxp = oxvba_oxir::elaborate::elaborate(&program).expect("elaborate");
-    let host = NullHostServices::new(HostPolicy::deterministic_runtime());
+    let host = NullHostServices::new(HostPolicy::default());
     let vm = oxvba_vm3::Vm3::run(&oxp, &host).expect("run");
     let value = vm.slot(oxp.globals.len())?;
     value
@@ -2839,7 +2839,7 @@ fn let_assignment_to_object_without_default_member_is_runtime_error() {
     let program =
         bind_program(&class_manifest(main, "Widget", widget), &NullTypeLibs).expect("bind_program");
     let oxp = oxvba_oxir::elaborate::elaborate(&program).expect("elaborate");
-    let host = NullHostServices::new(HostPolicy::deterministic_runtime());
+    let host = NullHostServices::new(HostPolicy::default());
     let err = match oxvba_vm3::Vm3::run(&oxp, &host) {
         Ok(_) => panic!("Let into an object slot must fail"),
         Err(oxvba_vm3::Vm3Error::Fault(fault)) => fault,
@@ -2870,7 +2870,7 @@ fn is_operator_variant_scalar_operands_raise_object_required() {
     ] {
         let program = bind_program(&manifest(src), &NullTypeLibs).expect("bind_program");
         let oxp = oxvba_oxir::elaborate::elaborate(&program).expect("elaborate");
-        let host = NullHostServices::new(HostPolicy::deterministic_runtime());
+        let host = NullHostServices::new(HostPolicy::default());
         let err = match oxvba_vm3::Vm3::run(&oxp, &host) {
             Ok(_) => panic!("{label} must fail"),
             Err(oxvba_vm3::Vm3Error::Fault(fault)) => fault,
@@ -3006,7 +3006,7 @@ fn callbyname_unknown_member_errors() {
     let calc = "Public Function Add(a As Long, b As Long) As Long\n    Add = a + b\nEnd Function\n";
     let program = bind_program(&class_manifest(main, "Calc", calc), &NullTypeLibs).expect("bind");
     let oxp = oxvba_oxir::elaborate::elaborate(&program).expect("elaborate");
-    let host = NullHostServices::new(HostPolicy::deterministic_runtime());
+    let host = NullHostServices::new(HostPolicy::default());
     assert!(oxvba_vm3::Vm3::run(&oxp, &host).is_err());
 }
 
@@ -3291,7 +3291,7 @@ fn implements_set_type_mismatch_errors() {
     )
     .expect("bind");
     let oxp = oxvba_oxir::elaborate::elaborate(&program).expect("elaborate");
-    let host = NullHostServices::new(HostPolicy::deterministic_runtime());
+    let host = NullHostServices::new(HostPolicy::default());
     match oxvba_vm3::Vm3::run(&oxp, &host) {
         Ok(_) => panic!("Set of a non-implementing class into an interface var must fail"),
         Err(oxvba_vm3::Vm3Error::Fault(fault)) => assert_eq!(
@@ -3496,7 +3496,7 @@ fn multi_manifest(modules: &[(&str, ModuleKind, &str)]) -> SymbolProjectManifest
 fn run_multi_main_local0(modules: &[(&str, ModuleKind, &str)]) -> Option<f64> {
     let program = bind_program(&multi_manifest(modules), &NullTypeLibs).expect("bind_program");
     let oxp = oxvba_oxir::elaborate::elaborate(&program).expect("elaborate");
-    let host = NullHostServices::new(HostPolicy::deterministic_runtime());
+    let host = NullHostServices::new(HostPolicy::default());
     let vm = oxvba_vm3::Vm3::run(&oxp, &host).expect("run");
     let value = vm.slot(oxp.globals.len())?;
     value

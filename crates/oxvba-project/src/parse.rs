@@ -289,7 +289,6 @@ fn apply_property(
             };
         }
         "DefaultRuntimeProfile" => props.default_runtime_profile = Some(value.to_string()),
-        "DefaultPolicyPreset" => props.default_policy_preset = Some(value.to_string()),
         "DefaultRootObject" => props.default_root_object = Some(value.to_string()),
         "DefineConstants" => props.define_constants = Some(value.to_string()),
         _ => {} // Unknown properties are silently ignored

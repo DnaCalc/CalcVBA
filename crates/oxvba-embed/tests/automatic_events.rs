@@ -266,7 +266,7 @@ fn poke_owned_excel_from_another_apartment() {
     let (_com, pointer) = owned_excel::attach();
     let host = HostBuilder::new()
         .profile(HalProfileId::Windows)
-        .policy(HostPolicy::interactive_dev())
+        .policy(HostPolicy::native())
         .build();
     let mut project = api::Project::module(
         "Poke",
@@ -407,7 +407,7 @@ fn owned_excel_automatic_events() {
     let (_com, pointer) = owned_excel::attach();
     let host = HostBuilder::new()
         .profile(HalProfileId::Windows)
-        .policy(HostPolicy::interactive_dev())
+        .policy(HostPolicy::native())
         .build();
     // SAFETY: the checked owned NativeOM attachment transferred this reference.
     let raw = unsafe {

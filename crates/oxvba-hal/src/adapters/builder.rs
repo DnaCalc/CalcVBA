@@ -10,7 +10,7 @@ use crate::{
     traits::HostServices,
 };
 
-use super::{null, recording::RecordingHostServices, standard, wasm};
+use super::{null, standard, wasm};
 
 /// Builder for constructing host service instances with optional components.
 pub struct HostBuilder {
@@ -19,7 +19,6 @@ pub struct HostBuilder {
     policy: HostPolicy,
     callbacks: Option<Arc<dyn HostCallbacks>>,
     portable_objects: Option<Arc<PortableComProjection>>,
-    recording: bool,
 }
 
 impl HostBuilder {
@@ -30,7 +29,6 @@ impl HostBuilder {
             policy: HostPolicy::default(),
             callbacks: None,
             portable_objects: None,
-            recording: false,
         }
     }
 
@@ -59,19 +57,16 @@ impl HostBuilder {
         self.portable_objects = Some(projection);
         self
     }
-
-    /// Enable recording of HAL interactions into a journal.
-    pub fn recording(mut self, enable: bool) -> Self {
-        self.recording = enable;
-        self
-    }
-
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "DNA Calc consumes Arc-owned hosts; execution stays on the owning VBA thread."
+    )]
     pub fn build(self) -> Arc<dyn HostServices> {
         let runtime_class = self.runtime_class.unwrap_or_else(|| {
             HalRuntimeClass::default_for(self.profile, self.policy.wasm_runtime_class)
         });
 
-        let host: Arc<dyn HostServices> = match self.profile {
+        match self.profile {
             HalProfileId::Windows | HalProfileId::Linux | HalProfileId::MacOs => {
                 let mut host = standard::StandardHostServices::new_with_runtime_class(
                     self.profile,
@@ -88,12 +83,6 @@ impl HostBuilder {
             }
             HalProfileId::Wasm => wasm::WasmHostServices::boxed(self.policy),
             HalProfileId::Null => null::NullHostServices::boxed(self.policy),
-        };
-
-        if self.recording {
-            Arc::new(RecordingHostServices::new(host))
-        } else {
-            host
         }
     }
 }
@@ -201,7 +190,7 @@ mod tests {
     fn builder_creates_windows_host() {
         let host = HostBuilder::new()
             .profile(HalProfileId::Windows)
-            .policy(HostPolicy::deterministic_runtime())
+            .policy(HostPolicy::default())
             .build();
         assert_eq!(host.profile(), HalProfileId::Windows);
     }
@@ -210,7 +199,13 @@ mod tests {
     fn builder_creates_null_host() {
         let host = HostBuilder::new()
             .profile(HalProfileId::Null)
-            .policy(HostPolicy::strict_ci())
+            .policy(HostPolicy {
+                allow_process_spawn: false,
+                allow_com_activation: false,
+                ui_virtualization: crate::model::UiVirtualizationMode::FailOnPrompt,
+                unsupported_feature_mode: crate::model::UnsupportedFeatureMode::CompileTime,
+                ..HostPolicy::default()
+            })
             .build();
         assert_eq!(host.profile(), HalProfileId::Null);
     }
@@ -219,7 +214,7 @@ mod tests {
     fn builder_accepts_callbacks() {
         let host = HostBuilder::new()
             .profile(HalProfileId::Windows)
-            .policy(HostPolicy::deterministic_runtime())
+            .policy(HostPolicy::default())
             .callbacks(Arc::new(DefaultHostCallbacks))
             .build();
         assert_eq!(host.profile(), HalProfileId::Windows);
@@ -230,7 +225,7 @@ mod tests {
         let host = HostBuilder::new()
             .profile(HalProfileId::Windows)
             .runtime_class(HalRuntimeClass::WindowsHeadless)
-            .policy(HostPolicy::deterministic_runtime())
+            .policy(HostPolicy::default())
             .build();
         assert_eq!(host.descriptor().runtime_class, "windows-headless");
     }
@@ -242,7 +237,7 @@ mod tests {
         });
         let host = HostBuilder::new()
             .profile(HalProfileId::Windows)
-            .policy(HostPolicy::interactive_dev())
+            .policy(HostPolicy::native())
             .callbacks(callbacks.clone())
             .build();
 

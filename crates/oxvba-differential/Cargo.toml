@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Differential oracle harness: runs a program under two executors and compares the six fidelity axes."
+description = "Differential oracle harness: runs a program under two executors and compares values, errors and ownership."
 
 [dependencies]
 oxvba-host.workspace = true
@@ -14,7 +14,6 @@ oxvba-oxir.workspace = true
 oxvba-runtime = { workspace = true, features = ["live-counters"] }
 oxvba-symbol.workspace = true
 oxvba-vm3.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

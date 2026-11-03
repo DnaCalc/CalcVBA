@@ -6,7 +6,7 @@ use crate::project::{
 };
 
 /// Trait implemented by host embeddings to handle interactive operations.
-pub trait HostCallbacks: Send + Sync {
+pub trait HostCallbacks {
     /// Called when VBA executes `MsgBox`. Returns the button code.
     fn on_msg_box(&self, prompt: &str, style: i32) -> i32;
     /// Called when VBA executes `InputBox`. Returns the user input string.

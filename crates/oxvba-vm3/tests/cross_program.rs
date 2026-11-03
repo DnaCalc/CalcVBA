@@ -133,7 +133,7 @@ fn app_program() -> CoreProgram {
 fn cross_program_call_runs_in_the_referenced_program() {
     let lib = elaborate(&lib_program()).expect("elaborate lib");
     let app = elaborate(&app_program()).expect("elaborate app");
-    let host = NullHostServices::new(HostPolicy::deterministic_runtime());
+    let host = NullHostServices::new(HostPolicy::default());
     // Referenced program first, referrer (entry) last.
     let mut vm = Vm3::link(&[&lib, &app], &host).expect("link");
     vm.run_entry().expect("run");
@@ -232,7 +232,7 @@ fn error_app_program() -> CoreProgram {
 fn cross_program_fault_unwinds_to_the_callers_handler() {
     let lib = elaborate(&boom_lib_program()).expect("elaborate lib");
     let app = elaborate(&error_app_program()).expect("elaborate app");
-    let host = NullHostServices::new(HostPolicy::deterministic_runtime());
+    let host = NullHostServices::new(HostPolicy::default());
     let mut vm = Vm3::link(&[&lib, &app], &host).expect("link");
     vm.run_entry().expect("run");
     // The error raised in Lib was caught by App's `On Error Resume Next`, and the resumed
@@ -395,7 +395,7 @@ fn cross_program_dispatch_uses_the_objects_program_not_the_executing_one() {
     // dispatch keyed on ObjectRef.bundle_id, not the executing cur.)
     let lib = elaborate(&lib_apply_program()).expect("elaborate lib");
     let app = elaborate(&app_with_thing_program()).expect("elaborate app");
-    let host = NullHostServices::new(HostPolicy::deterministic_runtime());
+    let host = NullHostServices::new(HostPolicy::default());
     let mut vm = Vm3::link(&[&lib, &app], &host).expect("link");
     vm.run_entry().expect("run");
     assert_eq!(vm.slot(0).and_then(|v| v.as_i32()), Some(99));
@@ -570,7 +570,7 @@ fn cross_program_method_arg_resolves_in_the_callers_program() {
     // bug read App's global slot 0, which is `result`, still Empty -> wrong value.)
     let lib = elaborate(&lib_apply_global_arg_program()).expect("elaborate lib");
     let app = elaborate(&app_echo_program()).expect("elaborate app");
-    let host = NullHostServices::new(HostPolicy::deterministic_runtime());
+    let host = NullHostServices::new(HostPolicy::default());
     let mut vm = Vm3::link(&[&lib, &app], &host).expect("link");
     vm.run_entry().expect("run");
     assert_eq!(vm.slot(0).and_then(|v| v.as_i32()), Some(55));
@@ -811,7 +811,7 @@ fn cross_program_predeclared_resolves_the_referenced_singleton() {
     // PredeclaredExtern, the no-New sibling of NewExtern.)
     let lib = elaborate(&lib_widget_program()).expect("elaborate lib");
     let app = elaborate(&app_predeclared_extern_program()).expect("elaborate app");
-    let host = NullHostServices::new(HostPolicy::deterministic_runtime());
+    let host = NullHostServices::new(HostPolicy::default());
     let mut vm = Vm3::link(&[&lib, &app], &host).expect("link");
     vm.run_entry().expect("run");
     assert_eq!(vm.slot(0).and_then(|v| v.as_i32()), Some(42));
@@ -824,7 +824,7 @@ fn cross_program_new_creates_and_dispatches_the_referenced_class() {
     // (Slice 5b item 5: cross-project object CREATION via NewExtern of a referenced class.)
     let lib = elaborate(&lib_widget_program()).expect("elaborate lib");
     let app = elaborate(&app_new_extern_program()).expect("elaborate app");
-    let host = NullHostServices::new(HostPolicy::deterministic_runtime());
+    let host = NullHostServices::new(HostPolicy::default());
     let mut vm = Vm3::link(&[&lib, &app], &host).expect("link");
     vm.run_entry().expect("run");
     assert_eq!(vm.slot(0).and_then(|v| v.as_i32()), Some(42));
@@ -834,7 +834,7 @@ fn cross_program_new_creates_and_dispatches_the_referenced_class() {
 fn cross_program_same_named_classes_keep_runtime_descriptor_identity() {
     let lib = elaborate(&lib_widget_program()).expect("elaborate lib");
     let app = elaborate(&app_same_named_widget_identity_program()).expect("elaborate app");
-    let host = NullHostServices::new(HostPolicy::deterministic_runtime());
+    let host = NullHostServices::new(HostPolicy::default());
     let mut vm = Vm3::link(&[&lib, &app], &host).expect("link");
     vm.run_entry().expect("run");
 
@@ -869,7 +869,7 @@ fn cross_program_same_named_classes_keep_runtime_descriptor_identity() {
 fn link_rejects_an_unresolved_reference() {
     // App imports unit "Lib", but we only load App → the link must fail naming the missing unit.
     let app = elaborate(&app_program()).expect("elaborate app");
-    let host = NullHostServices::new(HostPolicy::deterministic_runtime());
+    let host = NullHostServices::new(HostPolicy::default());
     match Vm3::link(&[&app], &host) {
         Err(Vm3Error::Malformed(m)) => {
             assert!(m.contains("Lib"), "error names the missing unit: {m}")

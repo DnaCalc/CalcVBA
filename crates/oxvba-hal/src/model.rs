@@ -70,29 +70,16 @@ pub enum CapabilityId {
     ProjectReferenceProvider,
     ProjectMutation,
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CapabilityMaturity {
-    Stub,
-    Experimental,
-    Provisional,
-    Stable,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityDescriptor {
     pub id: CapabilityId,
     pub supported: bool,
-    pub maturity: CapabilityMaturity,
-    pub spec_anchor: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HalDescriptor {
     pub profile: HalProfileId,
     pub runtime_class: &'static str,
-    pub contract_version: &'static str,
-    pub adapter_version: &'static str,
     pub capabilities: Vec<CapabilityDescriptor>,
 }
 
@@ -152,26 +139,6 @@ impl WasmRuntimeClass {
         }
     }
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HostPolicyPreset {
-    StrictCi,
-    DeterministicRuntime,
-    DeterministicCompileTime,
-    InteractiveDev,
-}
-
-impl HostPolicyPreset {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::StrictCi => "strict-ci",
-            Self::DeterministicRuntime => "deterministic-runtime",
-            Self::DeterministicCompileTime => "deterministic-compile-time",
-            Self::InteractiveDev => "interactive-dev",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostPolicy {
     pub runtime_class: Option<HalRuntimeClass>,
@@ -188,56 +155,25 @@ pub struct HostPolicy {
 }
 
 impl HostPolicy {
-    pub fn for_preset(preset: HostPolicyPreset) -> Self {
-        match preset {
-            HostPolicyPreset::StrictCi => Self {
-                runtime_class: None,
-                allow_interaction: false,
-                allow_process_spawn: false,
-                allow_filesystem_mutation: false,
-                allow_dynamic_link: false,
-                allow_com_activation: false,
-                deterministic_mode: true,
-                ui_virtualization: UiVirtualizationMode::FailOnPrompt,
-                unsupported_feature_mode: UnsupportedFeatureMode::CompileTime,
-                com_invocation_strategy: ComInvocationStrategy::DispatchOnly,
-                wasm_runtime_class: WasmRuntimeClass::Wasi,
-            },
-            HostPolicyPreset::DeterministicRuntime => Self {
-                runtime_class: None,
-                allow_interaction: false,
-                allow_process_spawn: true,
-                allow_filesystem_mutation: false,
-                allow_dynamic_link: false,
-                allow_com_activation: true,
-                deterministic_mode: true,
-                ui_virtualization: UiVirtualizationMode::ScriptedResponses,
-                unsupported_feature_mode: UnsupportedFeatureMode::Runtime,
-                com_invocation_strategy: ComInvocationStrategy::DispatchOnly,
-                wasm_runtime_class: WasmRuntimeClass::Wasi,
-            },
-            HostPolicyPreset::DeterministicCompileTime => Self {
-                unsupported_feature_mode: UnsupportedFeatureMode::CompileTime,
-                ..Self::for_preset(HostPolicyPreset::DeterministicRuntime)
-            },
-            HostPolicyPreset::InteractiveDev => Self {
-                runtime_class: None,
-                allow_interaction: true,
-                allow_process_spawn: true,
-                allow_filesystem_mutation: true,
-                allow_dynamic_link: true,
-                allow_com_activation: true,
-                deterministic_mode: false,
-                ui_virtualization: UiVirtualizationMode::Disabled,
-                unsupported_feature_mode: UnsupportedFeatureMode::Runtime,
-                // Normal-operation default: in-process dual-interface members dispatch
-                // through the COM vtable (slot = oVft / live-pointer-size, bound-checked
-                // against the FDUAL partner interface's cbSizeVft); out-of-process
-                // marshaling proxies (IID_IProxyManager) and ineligible shapes fall back
-                // to IDispatch::Invoke. See the COM-vtable-early-bound-dispatch workset.
-                com_invocation_strategy: ComInvocationStrategy::PreferVtable,
-                wasm_runtime_class: WasmRuntimeClass::Wasi,
-            },
+    /// Enable the native host services for ordinary Office-style execution.
+    pub fn native() -> Self {
+        Self {
+            runtime_class: None,
+            allow_interaction: true,
+            allow_process_spawn: true,
+            allow_filesystem_mutation: true,
+            allow_dynamic_link: true,
+            allow_com_activation: true,
+            deterministic_mode: false,
+            ui_virtualization: UiVirtualizationMode::Disabled,
+            unsupported_feature_mode: UnsupportedFeatureMode::Runtime,
+            // Normal-operation default: in-process dual-interface members dispatch
+            // through the COM vtable (slot = oVft / live-pointer-size, bound-checked
+            // against the FDUAL partner interface's cbSizeVft); out-of-process
+            // marshaling proxies (IID_IProxyManager) and ineligible shapes fall back
+            // to IDispatch::Invoke for genuinely dynamic calls.
+            com_invocation_strategy: ComInvocationStrategy::PreferVtable,
+            wasm_runtime_class: WasmRuntimeClass::Wasi,
         }
     }
 
@@ -255,44 +191,25 @@ impl HostPolicy {
         self.com_invocation_strategy = strategy;
         self
     }
-
-    pub fn strict_ci() -> Self {
-        Self::for_preset(HostPolicyPreset::StrictCi)
-    }
-
-    pub fn deterministic_runtime() -> Self {
-        Self::for_preset(HostPolicyPreset::DeterministicRuntime)
-    }
-
-    pub fn deterministic_compile_time() -> Self {
-        Self::for_preset(HostPolicyPreset::DeterministicCompileTime)
-    }
-
-    pub fn interactive_dev() -> Self {
-        Self::for_preset(HostPolicyPreset::InteractiveDev)
-    }
 }
 
 impl Default for HostPolicy {
     fn default() -> Self {
-        Self::deterministic_runtime()
+        Self {
+            runtime_class: None,
+            allow_interaction: false,
+            allow_process_spawn: true,
+            allow_filesystem_mutation: false,
+            allow_dynamic_link: false,
+            allow_com_activation: true,
+            deterministic_mode: true,
+            ui_virtualization: UiVirtualizationMode::ScriptedResponses,
+            unsupported_feature_mode: UnsupportedFeatureMode::Runtime,
+            com_invocation_strategy: ComInvocationStrategy::DispatchOnly,
+            wasm_runtime_class: WasmRuntimeClass::Wasi,
+        }
     }
 }
-
-pub const ALL_CAPABILITIES: [CapabilityId; 12] = [
-    CapabilityId::ConsoleIo,
-    CapabilityId::UiInteraction,
-    CapabilityId::EventPump,
-    CapabilityId::FileSystemIo,
-    CapabilityId::ProcessEnv,
-    CapabilityId::ComActivationDispatch,
-    CapabilityId::TimeLocale,
-    CapabilityId::DynamicLinking,
-    CapabilityId::DiagnosticsTelemetry,
-    CapabilityId::ProjectCatalog,
-    CapabilityId::ProjectReferenceProvider,
-    CapabilityId::ProjectMutation,
-];
 
 pub fn host_backed_profile_matches_host(profile: HalProfileId) -> bool {
     match profile {
@@ -321,53 +238,12 @@ pub fn host_backed_mode_active(profile: HalProfileId, policy: &HostPolicy) -> bo
 #[cfg(test)]
 mod tests {
     use super::{
-        ComInvocationStrategy, HalProfileId, HostPolicy, HostPolicyPreset, UiVirtualizationMode,
+        ComInvocationStrategy, HalProfileId, HostPolicy, UiVirtualizationMode,
         UnsupportedFeatureMode, WasmRuntimeClass, host_backed_profile_matches_host,
     };
-
     #[test]
-    fn preset_deterministic_runtime_matches_existing_factory() {
-        assert_eq!(
-            HostPolicy::deterministic_runtime(),
-            HostPolicy::for_preset(HostPolicyPreset::DeterministicRuntime)
-        );
-    }
-
-    #[test]
-    fn preset_deterministic_compile_time_sets_compile_mode() {
-        let policy = HostPolicy::deterministic_compile_time();
-        assert_eq!(
-            policy.unsupported_feature_mode,
-            UnsupportedFeatureMode::CompileTime
-        );
-        assert_eq!(policy.wasm_runtime_class, WasmRuntimeClass::Wasi);
-        assert!(policy.deterministic_mode);
-    }
-
-    #[test]
-    fn strict_ci_is_fully_restrictive_and_compile_time_gated() {
-        let policy = HostPolicy::strict_ci();
-        assert!(!policy.allow_interaction);
-        assert!(!policy.allow_process_spawn);
-        assert!(!policy.allow_filesystem_mutation);
-        assert!(!policy.allow_dynamic_link);
-        assert!(!policy.allow_com_activation);
-        assert!(policy.deterministic_mode);
-        assert_eq!(policy.ui_virtualization, UiVirtualizationMode::FailOnPrompt);
-        assert_eq!(
-            policy.unsupported_feature_mode,
-            UnsupportedFeatureMode::CompileTime
-        );
-        assert_eq!(
-            policy.com_invocation_strategy,
-            ComInvocationStrategy::DispatchOnly
-        );
-        assert_eq!(policy.wasm_runtime_class, WasmRuntimeClass::Wasi);
-    }
-
-    #[test]
-    fn interactive_dev_relaxes_policy_for_local_exploration() {
-        let policy = HostPolicy::interactive_dev();
+    fn native_host_allows_platform_operations() {
+        let policy = HostPolicy::native();
         assert!(policy.allow_interaction);
         assert!(policy.allow_process_spawn);
         assert!(policy.allow_filesystem_mutation);
@@ -389,8 +265,8 @@ mod tests {
 
     #[test]
     fn com_invocation_strategy_override_is_available() {
-        let policy = HostPolicy::interactive_dev()
-            .with_com_invocation_strategy(ComInvocationStrategy::PreferVtable);
+        let policy =
+            HostPolicy::native().with_com_invocation_strategy(ComInvocationStrategy::PreferVtable);
         assert_eq!(
             policy.com_invocation_strategy,
             ComInvocationStrategy::PreferVtable
@@ -400,8 +276,8 @@ mod tests {
 
     #[test]
     fn wasm_runtime_class_override_is_available() {
-        let policy = HostPolicy::deterministic_runtime()
-            .with_wasm_runtime_class(WasmRuntimeClass::BrowserSandbox);
+        let policy =
+            HostPolicy::default().with_wasm_runtime_class(WasmRuntimeClass::BrowserSandbox);
         assert_eq!(policy.wasm_runtime_class, WasmRuntimeClass::BrowserSandbox);
     }
 

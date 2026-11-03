@@ -16,10 +16,7 @@ use oxvba_diagnostics::{Diagnostic as OxDiagnostic, DiagnosticPhase as OxDiagnos
 use oxvba_hal::{
     adapters::builder::HostBuilder,
     callbacks::HostCallbacks,
-    model::{
-        HalDescriptor, HalProfileId, HostPolicy, HostPolicyPreset, UnsupportedFeatureMode,
-        native_host_profile,
-    },
+    model::{HalDescriptor, HalProfileId, HostPolicy, UnsupportedFeatureMode, native_host_profile},
     traits::HostServices,
 };
 use oxvba_runtime::{ObjectRef, Variant};
@@ -412,8 +409,10 @@ fn build_host_services(
 impl Engine {
     pub fn new(config: HostConfig) -> Self {
         let runtime_profile = RuntimeProfileId::default_for_hal_profile(native_host_profile());
-        let mut policy = HostPolicy::deterministic_runtime();
-        policy.runtime_class = Some(runtime_profile.runtime_class());
+        let policy = HostPolicy {
+            runtime_class: Some(runtime_profile.runtime_class()),
+            ..HostPolicy::default()
+        };
         Self {
             config,
             runtime_profile,
@@ -429,23 +428,6 @@ impl Engine {
             ),
         }
     }
-
-    /// Create an engine that replays from a recorded HAL journal.
-    pub fn from_replay(config: HostConfig, journal: oxvba_hal::journal::HalJournal) -> Self {
-        let policy = HostPolicy::deterministic_runtime();
-        let host_services: Arc<dyn HostServices> = Arc::new(
-            oxvba_hal::adapters::replay::ReplayHostServices::new(journal, policy),
-        );
-        Self {
-            config,
-            runtime_profile: RuntimeProfileId::default_for_hal_profile(HalProfileId::Null),
-            host_callbacks: None,
-            portable_com_projection: None,
-            typelib_resolver: Arc::new(CatalogTypeLibResolver),
-            host_services,
-        }
-    }
-
     pub fn set_hal_profile(&mut self, profile: HalProfileId) {
         let policy = self.host_services.policy().clone();
         self.runtime_profile = RuntimeProfileId::default_for_hal_profile(profile);
@@ -483,15 +465,6 @@ impl Engine {
         self.set_hal_profile(profile);
         self
     }
-
-    /// Wrap the current host services in a recording layer.
-    pub fn with_recording(mut self) -> Self {
-        self.host_services = Arc::new(oxvba_hal::adapters::recording::RecordingHostServices::new(
-            self.host_services.clone(),
-        ));
-        self
-    }
-
     pub fn set_host_policy(&mut self, policy: HostPolicy) {
         let profile = self.host_services.profile();
         let runtime_class = policy
@@ -571,11 +544,6 @@ impl Engine {
         self.set_host_profile_provider(provider);
         self
     }
-
-    pub fn set_host_policy_preset(&mut self, preset: HostPolicyPreset) {
-        self.set_host_policy(HostPolicy::for_preset(preset));
-    }
-
     pub fn set_unsupported_feature_mode(&mut self, mode: UnsupportedFeatureMode) {
         let mut policy = self.host_services.policy().clone();
         policy.unsupported_feature_mode = mode;

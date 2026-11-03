@@ -14,3 +14,8 @@ explicit VBE compilation. `test-excel-vba-oracle.ps1` checks that handling
 without launching Excel. Never change macro security or registrations to make
 an oracle run succeed; never dismiss or terminate another run's processes.
 Generated observations belong under `temp/`, not in the source tree.
+
+For the browser probe, build the spreadsheet adapter example without JIT:
+`cargo build -p oxvba-spreadsheet-compat --no-default-features --example browser_probe --target wasm32-unknown-unknown`,
+then run `node scripts/test-udf-wasm.mjs`. It checks values, matrices and the
+noncatchable host budget without browser/native imports.

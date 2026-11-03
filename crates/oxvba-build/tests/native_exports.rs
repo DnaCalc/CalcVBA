@@ -181,3 +181,45 @@ fn escaped_xml_export_names_resolve_by_the_decoded_name() {
         );
     }
 }
+
+#[test]
+fn discarded_numeric_conversions_still_execute_and_propagate_errors() {
+    let temp = Directory::new();
+    let project = temp.0.join("Discarded.basproj");
+    let mut source = String::from("Attribute VB_Name = \"Code\"\n");
+    let mut exports = String::new();
+    for parameter in ["Double", "Long", "Boolean"] {
+        source.push_str(&format!(
+            "Public Function From{parameter}(ByVal value As {parameter}) As Long\nCall CLng(value)\nCall CDbl(value)\nCall CBool(value)\nFrom{parameter}=42&\nEnd Function\n"
+        ));
+        exports.push_str(&format!(
+            "<NativeExport Include=\"From{parameter}\"><Module>Code</Module><Procedure>From{parameter}</Procedure></NativeExport>"
+        ));
+    }
+    std::fs::write(temp.0.join("Code.bas"), source).unwrap();
+    std::fs::write(&project, format!("<Project><PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>Discarded</ProjectName></PropertyGroup><ItemGroup><Module Include=\"Code.bas\"/>{exports}</ItemGroup></Project>")).unwrap();
+    let output = build_native_library(&NativeLibraryBuildOptions {
+        project_path: project,
+        out_dir: temp.0.join("out"),
+        template_path: None,
+    })
+    .unwrap();
+    let source = format!(
+        "Private Declare PtrSafe Function FromDouble Lib \"{dll}\" (ByVal value As Double) As Long\nPrivate Declare PtrSafe Function FromLong Lib \"{dll}\" (ByVal value As Long) As Long\nPrivate Declare PtrSafe Function FromBoolean Lib \"{dll}\" (ByVal value As Boolean) As Long\nSub Main()\nDim observed As String\nobserved=CStr(FromDouble(2.5#)) & \"|\" & CStr(FromDouble(1E+30)) & \"|\" & CStr(FromDouble(-2.5#)) & \"|\" & CStr(FromLong(-2147483647&)) & \"|\" & CStr(FromBoolean(True))\nEnd Sub",
+        dll = output.dll_path.display()
+    );
+    for config in [oxvba_host::HostConfig::vm3(), oxvba_host::HostConfig::jit()] {
+        let mut engine = oxvba_host::Engine::new(config);
+        engine.set_host_policy(oxvba_hal::model::HostPolicy::native());
+        let values = engine
+            .execute_source_with_variant_snapshot_clean(&source)
+            .unwrap();
+        assert!(
+            values
+                .iter()
+                .filter_map(|value| value.as_bstr())
+                .any(|value| value.to_string() == "42|0|42|42|42"),
+            "discarded conversions: {values:?}"
+        );
+    }
+}

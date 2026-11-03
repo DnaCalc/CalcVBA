@@ -27,6 +27,8 @@ fn native_exports_refuse_unsupported_options_including_empty_elements_and_attrib
         for item in [
             format!("<NativeExport Include=\"F\"><{name}>ignored</{name}></NativeExport>"),
             format!("<NativeExport Include=\"F\"><{name}/></NativeExport>"),
+            format!("<NativeExport Include=\"F\"><{name}></{name}></NativeExport>"),
+            format!("<NativeExport Include=\"F\"><{name}> \n </{name}></NativeExport>"),
             format!("<NativeExport Include=\"F\" {name}=\"ignored\"/>"),
             format!("<NativeExport Include=\"F\" {name}=\"ignored\"></NativeExport>"),
         ] {

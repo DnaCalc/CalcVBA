@@ -54,6 +54,12 @@ pub fn parse_basproj_xml(xml: &str) -> Result<BasProj, BasProjError> {
                     // because e.g. <Module> can be both an item tag and a metadata
                     // element inside <NativeExport>)
                     _ if current_item.is_some() => {
+                        let item = current_item.as_mut().expect("current item");
+                        if item.tag == "NativeExport" {
+                            // Presence matters for refused options even when
+                            // paired tags contain no non-whitespace text.
+                            item.set_metadata(&tag, "");
+                        }
                         current_item_metadata_name = Some(tag);
                     }
                     // Item elements inside ItemGroup

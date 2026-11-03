@@ -13,12 +13,11 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const MAX_NATIVE_CALL_DEPTH: i32 = 128;
 const DEPTH_OFFSET: i32 = 8;
 
-fn conversion_target(id: NativeImplId) -> Option<oxvba_bundle::NumericCoerceTarget> {
-    use oxvba_bundle::NumericCoerceTarget as N;
+fn conversion_target(id: NativeImplId) -> Option<ScalarType> {
     match id {
-        NativeImplId::CLng => Some(N::Long),
-        NativeImplId::CDbl => Some(N::Double),
-        NativeImplId::CBool => Some(N::Boolean),
+        NativeImplId::CLng => Some(ScalarType::Long),
+        NativeImplId::CDbl => Some(ScalarType::Double),
+        NativeImplId::CBool => Some(ScalarType::Boolean),
         _ => None,
     }
 }
@@ -283,34 +282,34 @@ pub fn compile_native_scalars(
                 for inst in &block.instrs {
                     // Numeric library conversions have polymorphic VBA inputs,
                     // but their bound result type is fixed. Specialize each
-                    // numeric call site to the same unboxed Coerce lowering.
-                    let conversion = if let OxInst::CallExtern {
-                        dst: Some(dst),
-                        import,
-                        args,
-                    } = inst
+                    // numeric call site to unboxed conversion lowering. A
+                    // discarded result must still evaluate and report errors.
+                    let conversion = if let OxInst::CallExtern { dst, import, args } = inst
                         && let LinkedTarget::Builtin(native) =
                             plan.layout.extern_calls[import].target
                         && let Some(target) = conversion_target(native)
                         && let [OxArg::ByVal(src)] = args.as_slice()
                     {
-                        Some(OxInst::Coerce {
-                            dst: *dst,
-                            src: src.clone(),
-                            target: oxvba_oxir::OxCoerceTarget::Numeric(target),
-                        })
+                        Some((*dst, src, target))
+                    } else if let OxInst::Coerce { dst, src, .. } = inst
+                        && oxvba_rt_abi::host_entry::value::needs_helper(inst, &plan.layout)
+                    {
+                        let to =
+                            plan.layout.slots[plan.layout.slot(*dst).expect("admitted result")];
+                        Some((Some(*dst), src, to))
                     } else {
                         None
                     };
-                    let inst = conversion.as_ref().unwrap_or(inst);
-                    if let OxInst::Coerce { dst, src, .. } = inst
-                        && oxvba_rt_abi::host_entry::value::needs_helper(inst, &plan.layout)
-                    {
+                    if let Some((dst, src, to)) = conversion {
                         let from = plan.layout.operand_type(src).expect("admitted conversion");
-                        let to =
-                            plan.layout.slots[plan.layout.slot(*dst).expect("admitted result")];
                         let input = lower.operand(&mut b, src, from);
                         let value = match (from, to) {
+                            (from, to) if from == to => {
+                                if to == ScalarType::Double {
+                                    lower.finite(&mut b, input);
+                                }
+                                input
+                            }
                             (ScalarType::Double, ScalarType::Long) => {
                                 let helper = module.declare_func_in_func(long_from_f64, b.func);
                                 let call = b.ins().call(helper, &[runtime, input, call_output_ptr]);
@@ -318,7 +317,7 @@ pub fn compile_native_scalars(
                                 check_status(&mut b, status);
                                 b.ins().stack_load(types::I32, call_output, 0)
                             }
-                            (ScalarType::Boolean, ScalarType::Double) => {
+                            (ScalarType::Long | ScalarType::Boolean, ScalarType::Double) => {
                                 b.ins().fcvt_from_sint(types::F64, input)
                             }
                             (ScalarType::Boolean, ScalarType::Long) => input,
@@ -335,7 +334,9 @@ pub fn compile_native_scalars(
                             }
                             _ => unreachable!("admitted numeric conversion"),
                         };
-                        lower.store_slot(&mut b, plan.layout.slot(*dst).unwrap(), to, value);
+                        if let Some(dst) = dst {
+                            lower.store_slot(&mut b, plan.layout.slot(dst).unwrap(), to, value);
+                        }
                         continue;
                     }
                     let call_plan = match inst {

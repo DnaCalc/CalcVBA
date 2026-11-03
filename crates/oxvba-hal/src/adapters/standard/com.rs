@@ -88,7 +88,7 @@ fn allocate_projection_object_ref_inner(
     reuse_by_prog_id: bool,
 ) -> HalResult<ObjectRef> {
     let capability = CapabilityId::ComActivationDispatch;
-    let mut state = host.projection_lock(capability, "create_object")?;
+    let mut state = host.borrow_projection(capability, "create_object")?;
     if reuse_by_prog_id && let Some(handle) = state.handles_by_prog_id.get(prog_id_name).copied() {
         return Ok(ObjectRef::from_compat_identity(handle));
     }
@@ -115,7 +115,7 @@ fn release_projection_object_ref(
     object: &ObjectRef,
 ) -> HalResult<bool> {
     let capability = CapabilityId::ComActivationDispatch;
-    let mut state = host.projection_lock(capability, "release_object")?;
+    let mut state = host.borrow_projection(capability, "release_object")?;
     if let Some(prog_id_name) = state.prog_ids_by_handle.remove(&object.raw()) {
         if state
             .handles_by_prog_id
@@ -135,7 +135,7 @@ fn projection_prog_id_name(
     object: &ObjectRef,
 ) -> HalResult<Option<String>> {
     let capability = CapabilityId::ComActivationDispatch;
-    let state = host.projection_lock(capability, "describe_object")?;
+    let state = host.borrow_projection(capability, "describe_object")?;
     Ok(state.prog_ids_by_handle.get(&object.raw()).cloned())
 }
 
@@ -144,7 +144,7 @@ fn portable_dispatch_for_object(
     object: &ObjectRef,
 ) -> HalResult<Option<Arc<dyn PortableDispatch>>> {
     let capability = CapabilityId::ComActivationDispatch;
-    let state = host.projection_lock(capability, "dispatch_invoke")?;
+    let state = host.borrow_projection(capability, "dispatch_invoke")?;
     Ok(state.portable_objects_by_handle.get(&object.raw()).cloned())
 }
 

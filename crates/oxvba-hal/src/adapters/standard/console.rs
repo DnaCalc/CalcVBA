@@ -1,7 +1,7 @@
 use std::{
+    cell::RefMut,
     collections::VecDeque,
     io::{self, Write},
-    sync::MutexGuard,
 };
 
 use crate::{
@@ -49,13 +49,13 @@ fn split_console_fields(line: &str) -> VecDeque<String> {
 }
 
 impl StandardHostServices {
-    fn console_lock(&self, op: &'static str) -> HalResult<MutexGuard<'_, ConsoleState>> {
-        self.console_state.lock().map_err(|_| {
+    fn borrow_console(&self, op: &'static str) -> HalResult<RefMut<'_, ConsoleState>> {
+        self.console_state.try_borrow_mut().map_err(|_| {
             HalError::adapter_fault(
                 self.profile,
                 CapabilityId::ConsoleIo,
                 op,
-                "console state lock poisoned",
+                "console state already borrowed",
             )
         })
     }
@@ -128,7 +128,7 @@ impl ConsoleHal for StandardHostServices {
         }
         let count = self.variant_to_i32(&count, capability, "input_fields", "count")?;
         let count = count.max(1) as usize;
-        let mut state = self.console_lock("input_fields")?;
+        let mut state = self.borrow_console("input_fields")?;
         while state.pending_fields.len() < count {
             let line = self.console_read_line("input_fields")?;
             state.pending_fields.extend(split_console_fields(&line));

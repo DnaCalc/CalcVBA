@@ -485,7 +485,7 @@ impl FileSystemHal for StandardHostServices {
             return Err(self.denied(capability, "open"));
         }
         if let Some(path_text) = path.as_bstr() {
-            let mut state = self.fs_lock(capability, "open")?;
+            let mut state = self.borrow_fs(capability, "open")?;
             self.assert_fs_invariants(&state, "open-pre");
             let handle = if requested_handle > 0 && requested_handle <= 511 {
                 if state.is_handle_in_use(requested_handle) {
@@ -633,7 +633,7 @@ impl FileSystemHal for StandardHostServices {
             return Ok(Variant::from_i32(handle));
         }
         let path = self.variant_to_i32(&path, capability, "open", "path")?;
-        let mut state = self.fs_lock(capability, "open")?;
+        let mut state = self.borrow_fs(capability, "open")?;
         self.assert_fs_invariants(&state, "open-pre");
         let Some(handle) = state.first_free_in(1, 511) else {
             return Err(HalError::adapter_fault(
@@ -779,7 +779,7 @@ impl FileSystemHal for StandardHostServices {
             && let Ok(handle_id) =
                 self.variant_to_i32(&handle, CapabilityId::FileSystemIo, "open", "handle")
         {
-            let mut state = self.fs_lock(CapabilityId::FileSystemIo, "open")?;
+            let mut state = self.borrow_fs(CapabilityId::FileSystemIo, "open")?;
             if let Ok(entry) = self.fs_entry_mut(&mut state, handle_id, "open") {
                 entry.record_len = len;
             }
@@ -793,7 +793,7 @@ impl FileSystemHal for StandardHostServices {
             return Err(self.unsupported(capability, "close"));
         }
         let handle = self.variant_to_i32(&handle, capability, "close", "handle")?;
-        let mut state = self.fs_lock(capability, "close")?;
+        let mut state = self.borrow_fs(capability, "close")?;
         self.assert_fs_invariants(&state, "close-pre");
         if handle == 0 {
             let drained: Vec<FileHandleState> = state.handles.values().cloned().collect();
@@ -992,7 +992,7 @@ impl FileSystemHal for StandardHostServices {
         // current 1-based position (next byte, or next record in Random) without
         // moving the cursor.
         if matches!(position.vtype(), VarType::Empty | VarType::Null) {
-            let mut state = self.fs_lock(capability, "seek")?;
+            let mut state = self.borrow_fs(capability, "seek")?;
             let entry = self.fs_entry_mut(&mut state, handle, "seek")?;
             return Ok(Variant::from_i32(seek_report(entry)));
         }
@@ -1009,7 +1009,7 @@ impl FileSystemHal for StandardHostServices {
                 format!("bad record number for seek: {position}"),
             ));
         }
-        let mut state = self.fs_lock(capability, "seek")?;
+        let mut state = self.borrow_fs(capability, "seek")?;
         self.assert_fs_invariants(&state, "seek-pre");
         {
             let entry = self.fs_entry_mut(&mut state, handle, "seek")?;
@@ -1036,7 +1036,7 @@ impl FileSystemHal for StandardHostServices {
             return Err(self.unsupported(capability, "eof"));
         }
         let handle = self.variant_to_i32(&handle, capability, "eof", "handle")?;
-        let mut state = self.fs_lock(capability, "eof")?;
+        let mut state = self.borrow_fs(capability, "eof")?;
         let entry = self.fs_entry_mut(&mut state, handle, "eof")?;
         Ok(Variant::from_i32(if entry.position >= entry.len {
             1
@@ -1051,7 +1051,7 @@ impl FileSystemHal for StandardHostServices {
             return Err(self.unsupported(capability, "lof"));
         }
         let handle = self.variant_to_i32(&handle, capability, "lof", "handle")?;
-        let mut state = self.fs_lock(capability, "lof")?;
+        let mut state = self.borrow_fs(capability, "lof")?;
         let entry = self.fs_entry_mut(&mut state, handle, "lof")?;
         Ok(Variant::from_i32(entry.len))
     }
@@ -1068,7 +1068,7 @@ impl FileSystemHal for StandardHostServices {
         } else {
             (1, 255)
         };
-        let state = self.fs_lock(capability, "free_file")?;
+        let state = self.borrow_fs(capability, "free_file")?;
         self.assert_fs_invariants(&state, "free_file");
         let candidate = state.first_free_in(start, end).ok_or_else(|| {
             HalError::adapter_fault(
@@ -1095,7 +1095,7 @@ impl FileSystemHal for StandardHostServices {
         }
         let handle_id = self.variant_to_i32(&handle, capability, "read_bytes", "handle")?;
         let count = self.variant_to_i32(&count, capability, "read_bytes", "count")?;
-        let mut state = self.fs_lock(capability, "read_bytes")?;
+        let mut state = self.borrow_fs(capability, "read_bytes")?;
         let entry = self.fs_entry_mut(&mut state, handle_id, "read_bytes")?;
         let pos = entry.position as usize;
         let count = count.max(0) as usize;
@@ -1119,7 +1119,7 @@ impl FileSystemHal for StandardHostServices {
         let handle_id = self.variant_to_i32(&handle, capability, "write_bytes", "handle")?;
         let text = format!("{}\r\n", oxvba_runtime::write_display_text(&data));
         let bytes = text.as_bytes();
-        let mut state = self.fs_lock(capability, "write_bytes")?;
+        let mut state = self.borrow_fs(capability, "write_bytes")?;
         let entry = self.fs_entry_mut(&mut state, handle_id, "write_bytes")?;
         let pos = seq_write_offset(entry);
         let end = pos + bytes.len();
@@ -1151,7 +1151,7 @@ impl FileSystemHal for StandardHostServices {
             .map(|t| t.as_str().to_string())
             .unwrap_or_default();
         let bytes = text.as_bytes();
-        let mut state = self.fs_lock(capability, "print_line")?;
+        let mut state = self.borrow_fs(capability, "print_line")?;
         let entry = self.fs_entry_mut(&mut state, handle_id, "print_line")?;
         let pos = seq_write_offset(entry);
         let end = pos + bytes.len();
@@ -1171,7 +1171,7 @@ impl FileSystemHal for StandardHostServices {
             return Err(self.unsupported(capability, "print_column"));
         }
         let handle_id = self.variant_to_i32(&handle, capability, "print_column", "handle")?;
-        let mut state = self.fs_lock(capability, "print_column")?;
+        let mut state = self.borrow_fs(capability, "print_column")?;
         let entry = self.fs_entry_mut(&mut state, handle_id, "print_column")?;
         Ok(Variant::from_i32(entry.print_column))
     }
@@ -1182,7 +1182,7 @@ impl FileSystemHal for StandardHostServices {
             return Err(self.unsupported(capability, "print_width"));
         }
         let handle_id = self.variant_to_i32(&handle, capability, "print_width", "handle")?;
-        let mut state = self.fs_lock(capability, "print_width")?;
+        let mut state = self.borrow_fs(capability, "print_width")?;
         let entry = self.fs_entry_mut(&mut state, handle_id, "print_width")?;
         Ok(Variant::from_i32(entry.width))
     }
@@ -1195,7 +1195,7 @@ impl FileSystemHal for StandardHostServices {
         let handle_id = self.variant_to_i32(&handle, capability, "input_fields", "handle")?;
         let count = self.variant_to_i32(&count, capability, "input_fields", "count")?;
         let count = count.max(1) as usize;
-        let mut state = self.fs_lock(capability, "input_fields")?;
+        let mut state = self.borrow_fs(capability, "input_fields")?;
         let entry = self.fs_entry_mut(&mut state, handle_id, "input_fields")?;
         let pos = entry.position as usize;
         let mut fields = Vec::new();
@@ -1222,7 +1222,7 @@ impl FileSystemHal for StandardHostServices {
             return Err(self.unsupported(capability, "line_input"));
         }
         let handle_id = self.variant_to_i32(&handle, capability, "line_input", "handle")?;
-        let mut state = self.fs_lock(capability, "line_input")?;
+        let mut state = self.borrow_fs(capability, "line_input")?;
         let entry = self.fs_entry_mut(&mut state, handle_id, "line_input")?;
         let pos = entry.position as usize;
         if pos >= entry.data.len() {
@@ -1251,7 +1251,7 @@ impl FileSystemHal for StandardHostServices {
             return Err(self.unsupported(capability, "loc"));
         }
         let handle_id = self.variant_to_i32(&handle, capability, "loc", "handle")?;
-        let mut state = self.fs_lock(capability, "loc")?;
+        let mut state = self.borrow_fs(capability, "loc")?;
         let entry = self.fs_entry_mut(&mut state, handle_id, "loc")?;
         Ok(Variant::from_i32(loc_report(entry)))
     }
@@ -1278,7 +1278,7 @@ impl FileSystemHal for StandardHostServices {
             .variant_to_i32(&fixed, capability, "put", "fixed")
             .unwrap_or(0)
             != 0;
-        let mut state = self.fs_lock(capability, "put")?;
+        let mut state = self.borrow_fs(capability, "put")?;
         let entry = self.fs_entry_mut(&mut state, handle_id, "put")?;
         let mode = entry.mode;
         let bytes = serialize_record(&value, mode, fixed);
@@ -1348,7 +1348,7 @@ impl FileSystemHal for StandardHostServices {
         let str_len = self
             .variant_to_i32(&str_len, capability, "get", "str_len")
             .unwrap_or(0);
-        let mut state = self.fs_lock(capability, "get")?;
+        let mut state = self.borrow_fs(capability, "get")?;
         let entry = self.fs_entry_mut(&mut state, handle_id, "get")?;
         let mode = entry.mode;
         // Random mode strides by the fixed record length (or the value's natural
@@ -1444,7 +1444,7 @@ impl FileSystemHal for StandardHostServices {
             )
             .with_host_error_code(5));
         }
-        let mut state = self.fs_lock(capability, "width")?;
+        let mut state = self.borrow_fs(capability, "width")?;
         let entry = self.fs_entry_mut(&mut state, handle_id, "width")?;
         entry.width = width;
         Ok(Variant::empty())
@@ -1704,7 +1704,7 @@ impl FileSystemHal for StandardHostServices {
         }
         let handle_id = self.variant_to_i32(&handle, capability, "lock", "handle")?;
         let range = self.lock_range(&start, &end, capability, "lock")?;
-        let mut state = self.fs_lock(capability, "lock")?;
+        let mut state = self.borrow_fs(capability, "lock")?;
         let entry = self.fs_entry_mut(&mut state, handle_id, "lock")?;
         // Re-locking an already-locked range is VBA error 70 (permission denied).
         if entry
@@ -1730,7 +1730,7 @@ impl FileSystemHal for StandardHostServices {
         }
         let handle_id = self.variant_to_i32(&handle, capability, "unlock", "handle")?;
         let range = self.lock_range(&start, &end, capability, "unlock")?;
-        let mut state = self.fs_lock(capability, "unlock")?;
+        let mut state = self.borrow_fs(capability, "unlock")?;
         let entry = self.fs_entry_mut(&mut state, handle_id, "unlock")?;
         entry.locks.retain(|&r| r != range);
         Ok(Variant::empty())

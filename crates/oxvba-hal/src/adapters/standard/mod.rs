@@ -65,13 +65,13 @@ use oxvba_com::{
     TypeLibParamType, WindowsComBridge, map_com_hresult_label,
 };
 use oxvba_runtime::{VarType, Variant};
-#[cfg(target_os = "windows")]
-use std::cell::Cell;
 use std::{
+    cell::{Cell, RefCell},
     collections::BTreeMap,
     path::PathBuf,
     process::Command,
-    sync::{Arc, Mutex},
+    rc::Rc,
+    sync::Arc,
 };
 
 #[cfg(target_os = "windows")]
@@ -132,18 +132,17 @@ pub(crate) struct StandardHostServices {
     policy: HostPolicy,
     #[cfg(target_os = "windows")]
     env_cache: StandardEnvCache,
-    fs_state: Arc<Mutex<FileSystemState>>,
-    dir_state: Arc<Mutex<DirSearchState>>,
-    settings_state: Arc<Mutex<SettingsState>>,
-    console_state: Arc<Mutex<ConsoleState>>,
-    projection_state: Arc<Mutex<ProjectionObjectState>>,
+    fs_state: Rc<RefCell<FileSystemState>>,
+    dir_state: Rc<RefCell<DirSearchState>>,
+    settings_state: Rc<RefCell<SettingsState>>,
+    console_state: Rc<RefCell<ConsoleState>>,
+    projection_state: Rc<RefCell<ProjectionObjectState>>,
     #[cfg(target_os = "windows")]
     com_bridge: Arc<WindowsComBridge>,
-    dynlink_state: Arc<Mutex<DynLinkBindingState>>,
+    dynlink_state: Rc<RefCell<DynLinkBindingState>>,
     /// OS last-error captured after the most recent native `Declare` call (shared
-    /// across clones), read back by `Err.LastDllError`. `Arc` so a cloned adapter
-    /// observes the same value.
-    last_dll_error: Arc<std::sync::atomic::AtomicI32>,
+    /// across clones on the owning VBA thread), read back by `Err.LastDllError`.
+    last_dll_error: Rc<Cell<i32>>,
     portable_objects: Option<Arc<PortableComProjection>>,
     callbacks: Option<Arc<dyn crate::callbacks::HostCallbacks>>,
 }
@@ -264,18 +263,18 @@ impl StandardHostServices {
             )),
             #[cfg(target_os = "windows")]
             env_cache,
-            fs_state: Arc::new(Mutex::new(FileSystemState::default())),
-            dir_state: Arc::new(Mutex::new(DirSearchState::default())),
-            settings_state: Arc::new(Mutex::new(SettingsState::default())),
-            console_state: Arc::new(Mutex::new(ConsoleState::default())),
-            projection_state: Arc::new(Mutex::new(ProjectionObjectState {
+            fs_state: Rc::new(RefCell::new(FileSystemState::default())),
+            dir_state: Rc::new(RefCell::new(DirSearchState::default())),
+            settings_state: Rc::new(RefCell::new(SettingsState::default())),
+            console_state: Rc::new(RefCell::new(ConsoleState::default())),
+            projection_state: Rc::new(RefCell::new(ProjectionObjectState {
                 next_handle: 5_003,
                 handles_by_prog_id: BTreeMap::new(),
                 prog_ids_by_handle: BTreeMap::new(),
                 portable_objects_by_handle: BTreeMap::new(),
             })),
-            dynlink_state: Arc::new(Mutex::new(DynLinkBindingState::default())),
-            last_dll_error: Arc::new(std::sync::atomic::AtomicI32::new(0)),
+            dynlink_state: Rc::new(RefCell::new(DynLinkBindingState::default())),
+            last_dll_error: Rc::new(Cell::new(0)),
             portable_objects: None,
             callbacks: None,
         }
@@ -314,17 +313,17 @@ impl StandardHostServices {
         self.runtime_class
     }
 
-    fn projection_lock(
+    fn borrow_projection(
         &self,
         capability: CapabilityId,
         op: &'static str,
-    ) -> HalResult<std::sync::MutexGuard<'_, ProjectionObjectState>> {
-        self.projection_state.lock().map_err(|_| {
+    ) -> HalResult<std::cell::RefMut<'_, ProjectionObjectState>> {
+        self.projection_state.try_borrow_mut().map_err(|_| {
             HalError::adapter_fault(
                 self.profile,
                 capability,
                 op,
-                "projection object state lock poisoned",
+                "projection object state already borrowed",
             )
         })
     }
@@ -360,43 +359,48 @@ impl StandardHostServices {
         HalError::policy_denied(self.profile, capability, op)
     }
 
-    fn fs_lock(
+    fn borrow_fs(
         &self,
         capability: CapabilityId,
         op: &'static str,
-    ) -> HalResult<std::sync::MutexGuard<'_, FileSystemState>> {
-        self.fs_state.lock().map_err(|_| {
+    ) -> HalResult<std::cell::RefMut<'_, FileSystemState>> {
+        self.fs_state.try_borrow_mut().map_err(|_| {
             HalError::adapter_fault(
                 self.profile,
                 capability,
                 op,
-                "filesystem state lock poisoned",
+                "filesystem state already borrowed",
             )
         })
     }
 
-    fn dir_lock(
+    fn borrow_dir(
         &self,
         capability: CapabilityId,
         op: &'static str,
-    ) -> HalResult<std::sync::MutexGuard<'_, DirSearchState>> {
-        self.dir_state.lock().map_err(|_| {
+    ) -> HalResult<std::cell::RefMut<'_, DirSearchState>> {
+        self.dir_state.try_borrow_mut().map_err(|_| {
             HalError::adapter_fault(
                 self.profile,
                 capability,
                 op,
-                "dir search state lock poisoned",
+                "dir search state already borrowed",
             )
         })
     }
 
-    fn settings_lock(
+    fn borrow_settings(
         &self,
         capability: CapabilityId,
         op: &'static str,
-    ) -> HalResult<std::sync::MutexGuard<'_, SettingsState>> {
-        self.settings_state.lock().map_err(|_| {
-            HalError::adapter_fault(self.profile, capability, op, "settings state lock poisoned")
+    ) -> HalResult<std::cell::RefMut<'_, SettingsState>> {
+        self.settings_state.try_borrow_mut().map_err(|_| {
+            HalError::adapter_fault(
+                self.profile,
+                capability,
+                op,
+                "settings state already borrowed",
+            )
         })
     }
 
@@ -3177,13 +3181,16 @@ mod tests {
         }
 
         let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::default());
+        let reader = host.clone();
         assert_eq!(
-            host.get_setting_variant(s("App"), s("Startup"), s("Left"), Variant::empty())
+            reader
+                .get_setting_variant(s("App"), s("Startup"), s("Left"), Variant::empty())
                 .expect("missing setting"),
             s("")
         );
         assert_eq!(
-            host.get_setting_variant(s("App"), s("Startup"), s("Left"), s("fallback"))
+            reader
+                .get_setting_variant(s("App"), s("Startup"), s("Left"), s("fallback"))
                 .expect("defaulted setting"),
             s("fallback")
         );
@@ -3193,7 +3200,8 @@ mod tests {
         host.save_setting_variant(s("App"), s("Startup"), s("Left"), s("50"))
             .expect("save Left");
         assert_eq!(
-            host.get_setting_variant(s("APP"), s("startup"), s("top"), s("fallback"))
+            reader
+                .get_setting_variant(s("APP"), s("startup"), s("top"), s("fallback"))
                 .expect("case-insensitive get"),
             s("75")
         );
@@ -3216,14 +3224,17 @@ mod tests {
             .collect();
         assert_eq!(texts, ["Left", "50", "Top", "75"]);
 
-        host.delete_setting_variant(s("App"), s("Startup"), s("Left"))
+        reader
+            .delete_setting_variant(s("App"), s("Startup"), s("Left"))
             .expect("delete key");
         assert_eq!(
-            host.get_setting_variant(s("App"), s("Startup"), s("Left"), s("fallback"))
+            reader
+                .get_setting_variant(s("App"), s("Startup"), s("Left"), s("fallback"))
                 .expect("deleted key should default"),
             s("fallback")
         );
-        host.delete_setting_variant(s("App"), s("Startup"), Variant::empty())
+        reader
+            .delete_setting_variant(s("App"), s("Startup"), Variant::empty())
             .expect("delete section");
         assert_eq!(
             host.get_all_settings_variant(s("App"), s("Startup"))

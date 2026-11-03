@@ -62,7 +62,7 @@ impl ProcessEnvHal for StandardHostServices {
         let section = self.setting_text(&section, capability, op, "section")?;
         let key = self.setting_text(&key, capability, op, "key")?;
         let default = self.setting_text(&default, capability, op, "default")?;
-        let state = self.settings_lock(capability, op)?;
+        let state = self.borrow_settings(capability, op)?;
         let value = state
             .values
             .get(&settings_key(&appname, &section, &key))
@@ -79,7 +79,7 @@ impl ProcessEnvHal for StandardHostServices {
         }
         let appname = self.setting_text(&appname, capability, op, "appname")?;
         let section = self.setting_text(&section, capability, op, "section")?;
-        let state = self.settings_lock(capability, op)?;
+        let state = self.borrow_settings(capability, op)?;
         let prefix = (
             normalize_setting_name(&appname),
             normalize_setting_name(&section),
@@ -134,7 +134,7 @@ impl ProcessEnvHal for StandardHostServices {
         let section = self.setting_text(&section, capability, op, "section")?;
         let key_name = self.setting_text(&key, capability, op, "key")?;
         let value = self.setting_text(&setting, capability, op, "setting")?;
-        let mut state = self.settings_lock(capability, op)?;
+        let mut state = self.borrow_settings(capability, op)?;
         state.values.insert(
             settings_key(&appname, &section, &key_name),
             SettingEntry { key_name, value },
@@ -155,7 +155,7 @@ impl ProcessEnvHal for StandardHostServices {
         }
         let appname = self.setting_text(&appname, capability, op, "appname")?;
         let section = self.setting_text(&section, capability, op, "section")?;
-        let mut state = self.settings_lock(capability, op)?;
+        let mut state = self.borrow_settings(capability, op)?;
         if key.vtype() == VarType::Empty {
             let prefix = (
                 normalize_setting_name(&appname),
@@ -303,7 +303,7 @@ impl ProcessEnvHal for StandardHostServices {
                 }
             };
             if is_continuation {
-                let mut state = self.dir_lock(capability, "dir")?;
+                let mut state = self.borrow_dir(capability, "dir")?;
                 let next = if state.remaining.is_empty() {
                     String::new()
                 } else {
@@ -331,7 +331,7 @@ impl ProcessEnvHal for StandardHostServices {
                 })
                 .collect::<Vec<_>>();
             let first = names.first().cloned().unwrap_or_default();
-            let mut state = self.dir_lock(capability, "dir")?;
+            let mut state = self.borrow_dir(capability, "dir")?;
             state.remaining = if names.len() > 1 {
                 names.drain(1..).collect()
             } else {

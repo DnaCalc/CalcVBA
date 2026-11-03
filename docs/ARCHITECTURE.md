@@ -82,7 +82,9 @@ refuse unavailable operations. DNA Calc and WASM use the host abstractions;
 host policy and descriptors must not be confused with VBA language semantics.
 The preset/configuration menu, maturity labels and record/replay adapters are
 removed. Host/callback traits allow local state without Send/Sync bounds;
-Arc ownership stays at the DNA Calc host API boundary.
+Arc ownership stays at the DNA Calc host API boundary. Private file, console,
+directory, settings, portable-object and native-binding state uses local shared
+ownership and checked borrows; LastDllError uses a shared local cell.
 
 `oxvba-com` owns type libraries, native calls, dispatch, vtables, marshalling,
 connection points and COM error translation. Imported declarations retain IIDs,

@@ -214,12 +214,12 @@ impl DynamicLinkHal for StandardHostServices {
             ));
         }
 
-        let mut state = self.dynlink_state.lock().map_err(|_| {
+        let mut state = self.dynlink_state.try_borrow_mut().map_err(|_| {
             HalError::adapter_fault(
                 self.profile,
                 capability,
                 "invoke_symbol",
-                "dynlink binding table lock poisoned",
+                "dynlink binding table already borrowed",
             )
         })?;
         if let Some(existing) = state.descriptors.get(&descriptor.descriptor_id).copied() {
@@ -266,12 +266,12 @@ impl DynamicLinkHal for StandardHostServices {
             return Err(self.denied(capability, "invoke_bound_variants"));
         }
         let symbol = {
-            let state = self.dynlink_state.lock().map_err(|_| {
+            let state = self.dynlink_state.try_borrow_mut().map_err(|_| {
                 HalError::adapter_fault(
                     self.profile,
                     capability,
                     "invoke_bound_variants",
-                    "dynlink binding table lock poisoned",
+                    "dynlink binding table already borrowed",
                 )
             })?;
             state.bindings.get(&binding).copied().ok_or_else(|| {
@@ -370,8 +370,7 @@ impl DynamicLinkHal for StandardHostServices {
     }
 
     fn last_dll_error(&self) -> i32 {
-        self.last_dll_error
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.last_dll_error.get()
     }
 }
 
@@ -463,12 +462,12 @@ fn invoke_m1_native(
         ));
     }
     let library = {
-        let mut state = host.dynlink_state.lock().map_err(|_| {
+        let mut state = host.dynlink_state.try_borrow_mut().map_err(|_| {
             HalError::adapter_fault(
                 host.profile,
                 capability,
                 "invoke_symbol",
-                "dynlink binding table lock poisoned",
+                "dynlink binding table already borrowed",
             )
         })?;
         let key = descriptor.library.to_ascii_lowercase();
@@ -588,8 +587,7 @@ fn invoke_m1_native(
             HalError::adapter_fault(host.profile, capability, "invoke_symbol", msg)
         })?;
     // The bridge captured the OS state before its CIF and argument cleanup.
-    host.last_dll_error
-        .store(last_error as i32, std::sync::atomic::Ordering::Relaxed);
+    host.last_dll_error.set(last_error as i32);
 
     let result = unmarshal_ffi_to_variant(raw_result, descriptor.return_type.as_deref());
     let mut writeback_values = args.to_vec();
@@ -728,10 +726,8 @@ fn invoke_m1_native(
     let raw_result = invoke_stdcall(proc_addr, &ffi_args, return_type)
         .map_err(|msg| HalError::adapter_fault(host.profile, capability, "invoke_symbol", msg))?;
     // Capture `errno` (the Unix analogue of the Win32 last-error) for `Err.LastDllError`.
-    host.last_dll_error.store(
-        std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
-        std::sync::atomic::Ordering::Relaxed,
-    );
+    host.last_dll_error
+        .set(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
 
     let result = unmarshal_ffi_to_variant(raw_result, descriptor.return_type.as_deref());
     Ok((result, Vec::new()))

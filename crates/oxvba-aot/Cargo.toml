@@ -1,0 +1,23 @@
+[package]
+name = "oxvba-aot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Cranelift Module backend for direct native code in CalcVBA PE templates."
+
+[dependencies]
+cranelift-codegen.workspace = true
+cranelift-control = "0.133.1"
+cranelift-module.workspace = true
+cranelift-native.workspace = true
+oxvba-pe.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+cranelift-frontend.workspace = true
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }
+
+[lints]
+workspace = true

@@ -687,7 +687,7 @@ fn invalid_project_enum_properties_are_errors() {
 fn addin_without_entry_point_loads_successfully() {
     let xml = r#"<Project Sdk="OxVba.Sdk/0.1.0">
   <PropertyGroup>
-    <OutputType>Addin</OutputType>
+    <OutputType>NativeLibrary</OutputType>
     <ProjectName>MyAddin</ProjectName>
   </PropertyGroup>
 </Project>"#;
@@ -697,7 +697,7 @@ fn addin_without_entry_point_loads_successfully() {
     std::fs::create_dir_all(&tmp).unwrap();
 
     let loaded = load_basproj_from_str(xml, &tmp).expect("addin without entry point should load");
-    assert_eq!(loaded.output_type, OutputType::Addin);
+    assert_eq!(loaded.output_type, OutputType::NativeLibrary);
     assert!(loaded.entry_point.is_none());
 
     let _ = std::fs::remove_dir_all(&tmp);

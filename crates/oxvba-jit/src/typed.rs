@@ -175,7 +175,7 @@ impl CompiledImage<'_> {
 
 pub(crate) type ResumableDefinitions = Vec<Vec<Option<ClifFuncId>>>;
 pub(crate) fn compile_resumable_entries(
-    module: &mut JITModule,
+    module: &mut impl Module,
     programs: &[&OxProgram],
 ) -> Result<ResumableDefinitions, JitError> {
     let mut entries = Vec::new();
@@ -362,7 +362,7 @@ pub(crate) fn compile_resumable_entries(
     Ok(entries)
 }
 
-fn machine_type(ty: ScalarType) -> ir::Type {
+pub(crate) fn machine_type(ty: ScalarType) -> ir::Type {
     match ty {
         ScalarType::Double => types::F64,
         ScalarType::Long | ScalarType::Boolean => types::I32,
@@ -378,7 +378,7 @@ fn machine_type(ty: ScalarType) -> ir::Type {
 
 pub(crate) type ScalarDefinitions = Vec<Vec<Option<(ClifFuncId, ScalarLayout, ClifFuncId)>>>;
 fn compile_slots_thunk(
-    module: &mut JITModule,
+    module: &mut impl Module,
     p: usize,
     f: usize,
     native: ClifFuncId,
@@ -421,7 +421,7 @@ fn compile_slots_thunk(
     Ok(id)
 }
 pub(crate) fn compile_scalar_entries(
-    module: &mut JITModule,
+    module: &mut impl Module,
     programs: &[&OxProgram],
 ) -> Result<ScalarDefinitions, JitError> {
     let mut entries = Vec::new();
@@ -553,14 +553,14 @@ pub(crate) fn compile_scalar_entries(
     Ok(entries)
 }
 
-struct ScalarLower<'a> {
-    layout: &'a ScalarLayout,
-    slots: PhysicalSlots,
-    runtime: Value,
-    call_conv: cranelift_codegen::isa::CallConv,
+pub(crate) struct ScalarLower<'a> {
+    pub(crate) layout: &'a ScalarLayout,
+    pub(crate) slots: PhysicalSlots,
+    pub(crate) runtime: Value,
+    pub(crate) call_conv: cranelift_codegen::isa::CallConv,
 }
 #[derive(Clone, Copy)]
-enum PhysicalSlots {
+pub(crate) enum PhysicalSlots {
     Stack(ir::StackSlot),
     Frame(Value),
 }
@@ -645,7 +645,13 @@ impl ScalarLower<'_> {
         b.ins().return_(&[status]);
         b.switch_to_block(next);
     }
-    fn store_slot(&self, b: &mut FunctionBuilder<'_>, index: usize, ty: ScalarType, value: Value) {
+    pub(crate) fn store_slot(
+        &self,
+        b: &mut FunctionBuilder<'_>,
+        index: usize,
+        ty: ScalarType,
+        value: Value,
+    ) {
         match self.slots {
             PhysicalSlots::Stack(slots) => {
                 b.ins().stack_store(value, slots, (index * 8) as i32);
@@ -700,7 +706,12 @@ impl ScalarLower<'_> {
         b.ins().return_(&[status]);
         b.switch_to_block(next);
     }
-    fn operand(&self, b: &mut FunctionBuilder<'_>, operand: &OxOperand, to: ScalarType) -> Value {
+    pub(crate) fn operand(
+        &self,
+        b: &mut FunctionBuilder<'_>,
+        operand: &OxOperand,
+        to: ScalarType,
+    ) -> Value {
         let from = self.layout.operand_type(operand).expect("admitted operand");
         let value = match operand {
             OxOperand::Use(place) => {
@@ -942,7 +953,7 @@ impl ScalarLower<'_> {
             }
         }
     }
-    fn instruction(&self, b: &mut FunctionBuilder<'_>, inst: &OxInst) {
+    pub(crate) fn instruction(&self, b: &mut FunctionBuilder<'_>, inst: &OxInst) {
         if oxvba_rt_abi::host_entry::value::needs_helper(inst, self.layout) {
             let PhysicalSlots::Frame(frame) = self.slots else {
                 unreachable!("admitted owning value operation");

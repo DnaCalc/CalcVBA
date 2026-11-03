@@ -870,11 +870,13 @@ pub fn math1(args: &[Variant], f: impl Fn(f64) -> f64) -> LibResult<Variant> {
 }
 
 pub fn sqr(args: &[Variant]) -> LibResult<Variant> {
-    let x = as_f64(need(args, 0)?)?;
+    Ok(vf64(sqr_f64(as_f64(need(args, 0)?)?)?))
+}
+pub fn sqr_f64(x: f64) -> LibResult<f64> {
     if x < 0.0 {
         return Err(LibError::invalid_call("Sqr argument must be non-negative"));
     }
-    Ok(vf64(x.sqrt()))
+    Ok(x.sqrt())
 }
 
 pub fn log(args: &[Variant]) -> LibResult<Variant> {
@@ -941,10 +943,13 @@ pub fn sgn(args: &[Variant]) -> LibResult<Variant> {
 
 fn float_op(op: Math1Op, x: f64) -> f64 {
     match op {
-        Math1Op::Abs => x.abs(),
+        Math1Op::Abs => abs_f64(x),
         Math1Op::Int => x.floor(),
         Math1Op::Fix => x.trunc(),
     }
+}
+pub fn abs_f64(x: f64) -> f64 {
+    x.abs()
 }
 
 /// `Abs` of a signed integer, promoting to the next wider type when the

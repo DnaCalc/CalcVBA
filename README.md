@@ -60,8 +60,22 @@ cargo run -p oxvba-cli -- build project.basproj --target WrappedComServer --out-
 ```
 
 `.oxi` packages contain the compiled project closure. WrappedComServer emits a
-runtime-backed Windows COM DLL, currently using VM3. Genuine native DLL/EXE
-outputs and JIT-backed wrappers remain unfinished.
+runtime-backed Windows COM DLL, currently using VM3. NativeLibrary emits a
+Windows x64 DLL for admitted numeric exports. Native EXE outputs and JIT-backed
+COM wrappers remain unfinished.
+
+```powershell
+cargo run -p oxvba-cli -- build examples/native/scalars/NativeScalars.basproj --target NativeLibrary --out-dir out
+```
+
+The installed CLI patches its embedded template without invoking Rust or a
+linker. Each named export calls a compiled procedure directly. The initial
+boundary supports ByVal Long, Double and Boolean, with direct procedure calls
+and typed Abs/Sqr library helpers; unsupported reachable code is refused.
+`scripts/build-native-template.ps1` rebuilds the shipped template for developers.
+`scripts/run-native-export-clients.ps1 -Excel` compares a single batch through
+C, CalcVBA Declare (both backends) and one owned Excel instance. CalcVBA has no
+XLL-specific target or runtime support.
 
 Hosts use [`calcvba-host-api`](crates/calcvba-host-api) and
 [`oxvba-embed`](crates/oxvba-embed). They supply application objects and type

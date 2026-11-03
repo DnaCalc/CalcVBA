@@ -1,0 +1,18 @@
+<Project Sdk="OxVba.Sdk/0.1.0">
+  <PropertyGroup>
+    <OutputType>NativeLibrary</OutputType>
+    <ProjectName>NativeScalars</ProjectName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Module Include="Scalars.bas" />
+    <NativeExport Include="AddLong"><Module>Scalars</Module><Procedure>AddLong</Procedure><Ordinal>11</Ordinal></NativeExport>
+    <NativeExport Include="DirectLong"><Module>Scalars</Module><Procedure>DirectLong</Procedure></NativeExport>
+    <NativeExport Include="AddDouble"><Module>Scalars</Module><Procedure>AddDouble</Procedure></NativeExport>
+    <NativeExport Include="Greater"><Module>Scalars</Module><Procedure>Greater</Procedure></NativeExport>
+    <NativeExport Include="EchoBoolean"><Module>Scalars</Module><Procedure>EchoBoolean</Procedure></NativeExport>
+    <NativeExport Include="Mixed5"><Module>Scalars</Module><Procedure>Mixed5</Procedure></NativeExport>
+    <NativeExport Include="Divide"><Module>Scalars</Module><Procedure>Divide</Procedure></NativeExport>
+    <NativeExport Include="LibraryAbs"><Module>Scalars</Module><Procedure>LibraryAbs</Procedure></NativeExport>
+    <NativeExport Include="LibrarySqr"><Module>Scalars</Module><Procedure>LibrarySqr</Procedure></NativeExport>
+  </ItemGroup>
+</Project>

@@ -91,9 +91,10 @@ pub(crate) fn build_loaded_project(
     // Map OutputType to ProjectKind
     let project_kind = match output_type {
         OutputType::HostModule => ProjectKind::Host,
-        OutputType::Library | OutputType::Addin | OutputType::ComServer | OutputType::ComExe => {
-            ProjectKind::Library
-        }
+        OutputType::Library
+        | OutputType::NativeLibrary
+        | OutputType::ComServer
+        | OutputType::ComExe => ProjectKind::Library,
         OutputType::Exe => ProjectKind::Source,
     };
 
@@ -157,9 +158,17 @@ pub(crate) fn build_loaded_project(
     // Build native export descriptors
     let mut native_exports = Vec::new();
     let mut seen_export_names = std::collections::HashSet::new();
+    let mut seen_export_ordinals = std::collections::HashSet::new();
     for ne in &basproj.native_exports {
         if !seen_export_names.insert(ne.include.clone()) {
             return Err(BasProjError::DuplicateExportName(ne.include.clone()));
+        }
+        if let Some(ordinal) = ne.ordinal
+            && (ordinal == 0 || !seen_export_ordinals.insert(ordinal))
+        {
+            return Err(BasProjError::XmlParse(format!(
+                "duplicate/zero native export ordinal {ordinal}"
+            )));
         }
         let module = ne
             .module
@@ -186,9 +195,6 @@ pub(crate) fn build_loaded_project(
             kind: None,
             param_types: None,
             return_type: None,
-            category: ne.category.clone(),
-            description: ne.description.clone(),
-            argument_descriptions: ne.argument_descriptions.clone(),
         });
     }
 
@@ -295,7 +301,10 @@ fn validate_top_level_mainline_policy(
 ) -> Result<(), BasProjError> {
     if !matches!(
         output_type,
-        OutputType::Library | OutputType::Addin | OutputType::ComServer | OutputType::ComExe
+        OutputType::Library
+            | OutputType::NativeLibrary
+            | OutputType::ComServer
+            | OutputType::ComExe
     ) {
         return Ok(());
     }
@@ -811,7 +820,7 @@ fn output_type_name(output_type: OutputType) -> &'static str {
         OutputType::HostModule => "HostModule",
         OutputType::Library => "Library",
         OutputType::Exe => "Exe",
-        OutputType::Addin => "Addin",
+        OutputType::NativeLibrary => "NativeLibrary",
         OutputType::ComServer => "ComServer",
         OutputType::ComExe => "ComExe",
     }
@@ -1723,7 +1732,7 @@ mod tests {
     fn non_exe_output_types_reject_top_level_mainline_modules() {
         for (output_type, project_name) in [
             ("Library", "ProjectLibrary"),
-            ("Addin", "ProjectAddin"),
+            ("NativeLibrary", "ProjectNativeLibrary"),
             ("ComServer", "ProjectComServer"),
             ("ComExe", "ProjectComExe"),
         ] {
@@ -2117,7 +2126,7 @@ mod tests {
         let xml = "\
 <Project Sdk=\"OxVba.Sdk/0.1.0\">
   <PropertyGroup>
-    <OutputType>Addin</OutputType>
+    <OutputType>NativeLibrary</OutputType>
     <ProjectName>ProjectAddin</ProjectName>
   </PropertyGroup>
   <ItemGroup>
@@ -2128,7 +2137,7 @@ mod tests {
 
         let loaded = load_basproj_from_str(xml, &temp_root)
             .expect("addin without entry point should load when no top-level mainline exists");
-        assert_eq!(loaded.output_type, OutputType::Addin);
+        assert_eq!(loaded.output_type, OutputType::NativeLibrary);
         assert!(loaded.entry_point.is_none());
 
         std::fs::remove_dir_all(&temp_root).expect("cleanup temp project root");

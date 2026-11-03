@@ -39,6 +39,9 @@ Validation is ordinary executable code, not a formal proof.
 - `oxvba-rt-abi`: shared VM/JIT helpers, physical typed slots and owning calls.
 - `oxvba-vm3`: typed-CFG interpreter, frames, aliases, errors and class lifecycle.
 - `oxvba-jit`: Cranelift lowering, compiled entries and runtime helper calls.
+- `oxvba-aot`: Cranelift Module backend laying out direct native code for PE.
+- `oxvba-pe`: template finishing, helper manifest and checked PE patching.
+- `oxvba-native-template`: developer-built runtime DLL, with no compiler or VM.
 
 BSTR/VARIANT/SAFEARRAY/IUnknown-shaped carriers preserve VBA/Automation layout
 where implemented. Runtime ownership must survive calls, errors and teardown.
@@ -108,7 +111,13 @@ no forms-runtime crate here yet.
 `oxvba-build` emits OxImage and wrapper/COM-server artifacts.
 `oxvba-comhost` is the reusable Windows in-process COM host, currently VM3 based.
 `oxvba-cli` exposes source/project/package execution and builds. A wrapped DLL
-runs the engine; genuine native program DLL/EXE output is still unfinished.
+runs the engine. NativeLibrary instead patches compiled code, named exports and
+Windows unwind information into the shipped template without a user linker.
+It currently admits ByVal Long/Double/Boolean Functions, direct local procedure
+calls and typed Abs/Sqr helpers. Wrappers call their procedure directly; there
+is no interpreter or generic dispatch entry. Other widths, owning boundary
+types, module state and native EXE output remain unfinished. No XLL target,
+registration metadata or conversion code belongs to CalcVBA.
 The existing bounded .vbp module-list importer is a compatibility adapter, not
 support for the VB6 project system or forms.
 

@@ -251,7 +251,14 @@ impl ScalarLayout {
         func: &OxFunc,
         interfaces: &[oxvba_oxir::ComInterface],
     ) -> Result<Self, String> {
-        Self::with_storage(func, interfaces, None, false, Default::default())
+        Self::with_storage(
+            func,
+            interfaces,
+            None,
+            false,
+            Default::default(),
+            MAX_TYPED_ARGS,
+        )
     }
     pub fn with_program(func: &OxFunc, program: &oxvba_oxir::OxProgram) -> Result<Self, String> {
         Self::with_programs(func, program, &[program])
@@ -342,7 +349,65 @@ impl ScalarLayout {
                 );
             }
         }
-        Self::with_storage(func, &program.com_interfaces, Some(program), true, external)
+        Self::with_storage(
+            func,
+            &program.com_interfaces,
+            Some(program),
+            true,
+            external,
+            MAX_TYPED_ARGS,
+        )
+    }
+    /// Native exports have a generated ABI signature, rather than the host's
+    /// fixed four-slot Arguments carrier. Source-project calls remain local.
+    pub fn with_native_program(
+        func: &OxFunc,
+        program: &oxvba_oxir::OxProgram,
+    ) -> Result<Self, String> {
+        use oxvba_bundle::{ExportToken, NativeImplId, ProjectMemberKind};
+        let mut external = std::collections::HashMap::new();
+        for inst in func.blocks.iter().flat_map(|b| &b.instrs) {
+            if let OxInst::CallExtern { import, .. } = inst {
+                let request = program
+                    .imports
+                    .get(import.0)
+                    .ok_or("invalid native builtin import")?;
+                let native = [NativeImplId::Abs, NativeImplId::Sqr]
+                    .into_iter()
+                    .find(|id| {
+                        id.library_member().is_some_and(|(module, member)| {
+                            request.unit.eq_ignore_ascii_case("VBA")
+                                && request.token.matches(&ExportToken::ModuleFunc {
+                                    module: module.into(),
+                                    member: member.into(),
+                                    kind: ProjectMemberKind::Method,
+                                })
+                        })
+                    });
+                if let Some(native) = native {
+                    external.insert(
+                        *import,
+                        LinkedCall {
+                            target: LinkedTarget::Builtin(native),
+                            signature: CallSignature {
+                                parameters: vec![ScalarType::Double],
+                                by_ref: vec![false],
+                                optional: vec![false],
+                                result: Some(ScalarType::Double),
+                            },
+                        },
+                    );
+                }
+            }
+        }
+        Self::with_storage(
+            func,
+            &program.com_interfaces,
+            Some(program),
+            true,
+            external,
+            32,
+        )
     }
     fn with_storage(
         func: &OxFunc,
@@ -350,6 +415,7 @@ impl ScalarLayout {
         program: Option<&oxvba_oxir::OxProgram>,
         owning: bool,
         extern_calls: std::collections::HashMap<oxvba_oxir::ImportId, LinkedCall>,
+        argument_limit: usize,
     ) -> Result<Self, String> {
         let globals = program.map_or(&[][..], |p| &p.globals);
         let functions = program.map_or(&[][..], |p| &p.funcs);
@@ -593,7 +659,7 @@ impl ScalarLayout {
                 })
                 .ok_or_else(|| format!("typed entry carrier {ty:?} is not supported"))
         };
-        if func.param_count > MAX_TYPED_ARGS
+        if func.param_count > argument_limit
             || func.param_count > func.locals.len()
             || func
                 .locals
@@ -612,7 +678,7 @@ impl ScalarLayout {
         for inst in func.blocks.iter().flat_map(|b| &b.instrs) {
             if let OxInst::CallProc { proc, .. } = inst {
                 let callee = functions.get(proc.0).ok_or("invalid typed callee")?;
-                if callee.param_count > MAX_TYPED_ARGS || callee.param_count > callee.locals.len() {
+                if callee.param_count > argument_limit || callee.param_count > callee.locals.len() {
                     return Err("typed callee exceeds argument bounds".into());
                 }
                 let mut by_ref = Vec::new();

@@ -8,6 +8,11 @@ mod com_descriptor;
 mod compile;
 mod identity;
 mod idl;
+mod native;
+pub use native::{
+    NativeLibraryBuildOptions, NativeLibraryBuildOutput, build_native_library,
+    write_native_template,
+};
 #[cfg(target_os = "windows")]
 mod oleaut_typelib;
 
@@ -50,6 +55,8 @@ pub struct WrappedComServerBuildOutput {
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
+    #[error("native export: {0}")]
+    NativeExport(String),
     #[error("I/O error at {path}: {source}")]
     Io {
         path: String,

@@ -43,7 +43,7 @@ pub enum OutputType {
     HostModule,
     Library,
     Exe,
-    Addin,
+    NativeLibrary,
     ComServer,
     ComExe,
 }
@@ -149,10 +149,6 @@ pub struct BasProjNativeExport {
     pub procedure: Option<String>,
     pub calling_convention: Option<CallingConvention>,
     pub ordinal: Option<u16>,
-    /// XLL addin metadata.
-    pub category: Option<String>,
-    pub description: Option<String>,
-    pub argument_descriptions: Option<String>,
 }
 
 /// Calling convention for native exports.
@@ -183,10 +179,6 @@ pub struct NativeExportDescriptor {
     pub kind: Option<crate::manifest::ExportKind>,
     pub param_types: Option<Vec<crate::manifest::DeclareParamType>>,
     pub return_type: Option<Option<crate::manifest::DeclareParamType>>,
-    /// XLL addin metadata (carried through from `.basproj` for round-trip fidelity).
-    pub category: Option<String>,
-    pub description: Option<String>,
-    pub argument_descriptions: Option<String>,
 }
 
 /// Parsed conditional compilation constants.

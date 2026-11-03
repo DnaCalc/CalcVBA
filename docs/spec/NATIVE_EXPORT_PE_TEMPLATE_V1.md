@@ -15,6 +15,9 @@ Owner direction (2026-11-03):
   compiled and connected along a direct path: a native-ABI wrapper calls the compiled procedure.
 
 Status: owner-directed design; N1-N5 implementation is tracked by bd-2pntk.
+N1 is implemented; N2 currently admits x64 ByVal Long/Double/Boolean Functions,
+direct local calls and Double Abs/Sqr helpers. Other numeric widths and all N3
+ownership/state/error APIs remain unfinished and are refused.
 
 ## 1. Declaration
 
@@ -117,6 +120,9 @@ Excel VBA `Declare` of the export round-trips exactly.
   under `ErrorPolicy=HResult`, and sets a defined Win32 last-error value on the rejected calling thread. It must not mutate the owning runtime context from that thread.
 - Such calls are never marshalled and never run concurrently.
 - No locks, no per-thread contexts, and no thread-safety analysis in the compiler. Claiming the owning thread uses an atomic thread ID (or equivalent OS primitive) so simultaneous first calls cannot create a data race. All context reads and writes follow the successful thread check.
+- The initial template atomically claims a retained OS thread handle; it prevents
+  thread-ID reuse after the owner exits. DllMain closes only that handle on unload.
+  A rejected caller gets Win32 ERROR_INVALID_THREAD_ID (1444), without a context write.
 
 ## 4. Template DLL (prebuilt per architecture; CalcVBA developer-time build)
 
@@ -133,6 +139,9 @@ Excel VBA `Declare` of the export round-trips exactly.
   entry the lowering may call, plus the runtime ABI hash. The patcher refuses a mismatch.
 - Build without Control Flow Guard at first. CFG needs the guard function table to be extended
   for generated functions; that is a later milestone.
+  MSVC CRT objects can retain the inactive CF_INSTRUMENTED marker with /GUARD:NO.
+  It is accepted only with the GuardCF DLL flag clear, no guard function table
+  or count, and no other guard flags. Actual CFG-enabled templates are refused.
 
 **Templates ship with CalcVBA**
 - `calcvba-native-x64.dll` first. ARM64 and x86 are later work; x86 also needs a code generator that supports it.

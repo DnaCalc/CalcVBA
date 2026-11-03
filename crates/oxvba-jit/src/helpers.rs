@@ -521,7 +521,7 @@ pub(crate) fn register_symbols(builder: &mut JITBuilder) {
     builder.symbol("rt_currency_mul", rt_currency_mul as *const u8);
 }
 
-pub(crate) fn declare_imports(module: &mut JITModule) -> Result<Imports, JitError> {
+pub(crate) fn declare_imports(module: &mut impl Module) -> Result<Imports, JitError> {
     let ptr_ty = module.target_config().pointer_type();
     let mut execution_step_sig = module.make_signature();
     execution_step_sig.params.push(AbiParam::new(ptr_ty));

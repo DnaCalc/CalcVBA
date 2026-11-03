@@ -15,6 +15,8 @@
 mod format;
 mod host;
 mod pure;
+/// Unboxed numeric kernels shared by Variant callers and native exports.
+pub use pure::{abs_f64, sqr_f64};
 /// Host-independent value operations shared with owning typed execution.
 pub use pure::{cstr as convert_to_string, var_type as variant_type_code};
 

@@ -40,7 +40,7 @@ fn main() {
 }
 fn print_usage() {
     eprintln!(
-        "usage:\n  oxvba run <source.bas> [--backend vm3|jit] [--dump-values]\n  oxvba run-project [path] [--entry Module.Procedure] [--backend vm3|jit]\n  oxvba build <project> --target OxImage|WrappedComServer --out-dir <dir>\n  oxvba run-image <project.oxi> [--backend vm3|jit]\n\n  --profile <id>  --dump-bootstrap  --diagnostic-format human|json"
+        "usage:\n  oxvba run <source.bas> [--backend vm3|jit] [--dump-values]\n  oxvba run-project [path] [--entry Module.Procedure] [--backend vm3|jit]\n  oxvba build <project> --target OxImage|NativeLibrary|WrappedComServer --out-dir <dir>\n  oxvba run-image <project.oxi> [--backend vm3|jit]\n\n  --profile <id>  --dump-bootstrap  --diagnostic-format human|json"
     );
 }
 
@@ -224,11 +224,36 @@ fn run_project(args: Vec<String>) {
 fn run_build(args: Vec<String>) {
     let parsed = parse_build_args_from(args).unwrap_or_else(|| {
         eprintln!(
-            "usage: oxvba build <project.basproj|project.vbp> --target <WrappedComServer|OxImage> --out-dir <dir> [--diagnostic-format <human|json>]"
+            "usage: oxvba build <project.basproj|project.vbp> --target <WrappedComServer|OxImage|NativeLibrary> --out-dir <dir> [--diagnostic-format <human|json>]"
         );
         std::process::exit(2);
     });
 
+    if parsed.native_library {
+        match oxvba_build::build_native_library(&oxvba_build::NativeLibraryBuildOptions {
+            project_path: parsed.project_path,
+            out_dir: parsed.out_dir,
+            template_path: None,
+        }) {
+            Ok(output) => {
+                println!("DLL:{}", output.dll_path.display());
+                println!("MAP:{}", output.map_path.display());
+            }
+            Err(error) => {
+                emit_diagnostic(
+                    "oxvba build",
+                    &OxDiagnostic::error(
+                        "BUILD-E-NATIVE-EXPORT",
+                        OxDiagnosticPhase::Host,
+                        error.to_string(),
+                    ),
+                    parsed.diagnostic_format,
+                );
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if parsed.oximage {
         match oxvba_build::build_oximage(&parsed.project_path, &parsed.out_dir) {
             Ok(path) => println!("OXI:{}", path.display()),
@@ -399,6 +424,7 @@ struct BuildArgs {
     out_dir: PathBuf,
     diagnostic_format: DiagnosticFormat,
     oximage: bool,
+    native_library: bool,
 }
 
 fn parse_run_args_from(args: Vec<String>) -> Option<RunArgs> {
@@ -487,7 +513,8 @@ fn parse_build_args_from(args: Vec<String>) -> Option<BuildArgs> {
 
     let target = target?;
     let oximage = target.eq_ignore_ascii_case("OxImage") || target.eq_ignore_ascii_case("Bundle");
-    if !oximage && !target.eq_ignore_ascii_case("WrappedComServer") {
+    let native_library = target.eq_ignore_ascii_case("NativeLibrary");
+    if !oximage && !native_library && !target.eq_ignore_ascii_case("WrappedComServer") {
         return None;
     }
 
@@ -496,6 +523,7 @@ fn parse_build_args_from(args: Vec<String>) -> Option<BuildArgs> {
         out_dir: out_dir?,
         diagnostic_format,
         oximage,
+        native_library,
     })
 }
 

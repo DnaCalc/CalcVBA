@@ -6,6 +6,9 @@ members = [
     "crates/oxvba-syntax",
     "crates/oxvba-runtime",
     "crates/oxvba-jit",
+    "crates/oxvba-pe",
+    "crates/oxvba-aot",
+    "crates/oxvba-native-template",
     "crates/oxvba-com",
     "crates/oxvba-comhost",
     "crates/oxvba-host",
@@ -58,6 +61,8 @@ oxvba-diagnostics = { path = "crates/oxvba-diagnostics" }
 oxvba-hal = { path = "crates/oxvba-hal" }
 oxvba-runtime = { path = "crates/oxvba-runtime" }
 oxvba-jit = { path = "crates/oxvba-jit" }
+oxvba-pe = { path = "crates/oxvba-pe" }
+oxvba-aot = { path = "crates/oxvba-aot" }
 oxvba-com = { path = "crates/oxvba-com" }
 oxvba-comhost = { path = "crates/oxvba-comhost" }
 oxvba-host = { path = "crates/oxvba-host" }

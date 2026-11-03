@@ -71,9 +71,9 @@ impl<'p> Compiler<'p> {
             oxvba_rt_abi::host_entry::typed_context_finish as *const u8,
         );
         let mut module = UnpublishedModule(Some(JITModule::new(builder)));
-        let imports = declare_imports(&mut module)?;
-        let scalar_entries = crate::typed::compile_scalar_entries(&mut module, programs)?;
-        let resumable_entries = crate::typed::compile_resumable_entries(&mut module, programs)?;
+        let imports = declare_imports(&mut *module)?;
+        let scalar_entries = crate::typed::compile_scalar_entries(&mut *module, programs)?;
+        let resumable_entries = crate::typed::compile_resumable_entries(&mut *module, programs)?;
         let ptr = module.target_config().pointer_type();
         let mut signature = module.make_signature();
         signature.params = vec![AbiParam::new(ptr), AbiParam::new(ptr)];
@@ -91,7 +91,7 @@ impl<'p> Compiler<'p> {
             .iter()
             .enumerate()
             .map(|(program_index, program)| {
-                declare_program_functions(&mut module, program_index, program)
+                declare_program_functions(&mut *module, program_index, program)
             })
             .collect::<Result<Vec<_>, _>>()?;
         let mut compiler = Self {
@@ -191,7 +191,7 @@ impl<'p> Compiler<'p> {
                     self.define_scalar_thunk(program_index, index, &mut ctx, &mut func_ctx)?;
                     self.module.clear_context(&mut ctx);
                     if self.programs[program_index].entry == Some(FuncId(index)) {
-                        let signature = entry_signature(&mut self.module);
+                        let signature = entry_signature(&mut *self.module);
                         let id = self
                             .module
                             .declare_function(
@@ -228,7 +228,7 @@ impl<'p> Compiler<'p> {
             .expect("scalar entry");
         let program = self.programs[program_index];
         let func = &program.funcs[index];
-        ctx.func.signature = entry_signature(&mut self.module);
+        ctx.func.signature = entry_signature(&mut *self.module);
         ctx.func.name = UserFuncName::user(
             program_index as u32,
             self.clif_ids[program_index][index].as_u32(),
@@ -278,10 +278,10 @@ impl<'p> Compiler<'p> {
                 let operand = OxOperand::local(oxvba_oxir::LocalId(i));
                 args.push(match ty {
                     ScalarType::Double => {
-                        lower.lower_operand_f64(&mut builder, &mut self.module, &operand)?
+                        lower.lower_operand_f64(&mut builder, &mut *self.module, &operand)?
                     }
                     ScalarType::Long => {
-                        lower.lower_operand_i32(&mut builder, &mut self.module, &operand)?
+                        lower.lower_operand_i32(&mut builder, &mut *self.module, &operand)?
                     }
                     _ => {
                         unreachable!("scalar parameter admission")
@@ -308,11 +308,11 @@ impl<'p> Compiler<'p> {
             match layout.result {
                 ScalarType::Double => {
                     let value = builder.ins().stack_load(types::F64, result, 0);
-                    lower.emit_store_f64(&mut builder, &mut self.module, dst, value)?;
+                    lower.emit_store_f64(&mut builder, &mut *self.module, dst, value)?;
                 }
                 ScalarType::Long => {
                     let value = builder.ins().stack_load(types::I32, result, 0);
-                    lower.emit_store_i32(&mut builder, &mut self.module, dst, value)?;
+                    lower.emit_store_i32(&mut builder, &mut *self.module, dst, value)?;
                 }
                 _ => {
                     unreachable!("scalar result admission")
@@ -338,7 +338,7 @@ impl<'p> Compiler<'p> {
         let program = self.programs[program_index];
         let func = &program.funcs[index];
         validate_func_shape(func)?;
-        ctx.func.signature = entry_signature(&mut self.module);
+        ctx.func.signature = entry_signature(&mut *self.module);
         ctx.func.name = UserFuncName::user(
             program_index as u32,
             self.clif_ids[program_index][index].as_u32(),
@@ -378,7 +378,7 @@ impl<'p> Compiler<'p> {
                 state,
                 current_fault_target: None,
             };
-            lower.define_blocks(&mut builder, &mut self.module)?;
+            lower.define_blocks(&mut builder, &mut *self.module)?;
             builder.seal_all_blocks();
             builder.finalize();
         }
@@ -519,7 +519,7 @@ impl<'a> LowerFunc<'a> {
     fn define_blocks(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
     ) -> Result<(), JitError> {
         for block in &self.func.blocks {
             self.current_fault_target = block
@@ -551,7 +551,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_inst(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         inst: &OxInst,
     ) -> Result<(), JitError> {
         match inst {
@@ -1742,7 +1742,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_set_error_handler(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         handler: &ErrorHandler,
     ) -> Result<(), JitError> {
         let (kind, block) = match handler {
@@ -1763,7 +1763,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_err_clear(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
     ) -> Result<(), JitError> {
         let callee = self.import(builder, module, self.imports.err_clear);
         let call = builder.ins().call(callee, &[self.state]);
@@ -1775,7 +1775,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_err_field_get(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         field: ErrField,
     ) -> Result<(), JitError> {
@@ -1837,7 +1837,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_set_line_number(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         line: i32,
     ) -> Result<(), JitError> {
         let line = builder.ins().iconst(types::I32, i64::from(line));
@@ -1851,7 +1851,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_erl_get(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
     ) -> Result<(), JitError> {
         let slot =
@@ -1875,7 +1875,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_err_field_set(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         field: ErrField,
         src: &OxOperand,
     ) -> Result<(), JitError> {
@@ -1904,7 +1904,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_store_i32_variant_value(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         value: Value,
     ) -> Result<(), JitError> {
@@ -1933,7 +1933,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_store_utf8_variant_value(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         ptr: Value,
         len: Value,
@@ -2312,7 +2312,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_variant_operand_descriptors(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &JITModule,
+        module: &impl Module,
         operands: &[LoweredVariantOperand],
     ) -> Result<Value, JitError> {
         let ptr_ty = module.target_config().pointer_type();
@@ -2352,7 +2352,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_i32_stack_values(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &JITModule,
+        module: &impl Module,
         values: &[Value],
         label: &'static str,
     ) -> Result<Value, JitError> {
@@ -2384,7 +2384,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_param_array_alias_descriptors(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &JITModule,
+        module: &impl Module,
         aliases: &[Option<OxPlace>],
     ) -> Result<Value, JitError> {
         let ptr_ty = module.target_config().pointer_type();
@@ -2581,7 +2581,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_variant_arith_slot_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         op: ArithOp,
         mode: NumericMode,
@@ -2597,7 +2597,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_variant_arith_raw_slot_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         op: u32,
         mode: u32,
@@ -2636,7 +2636,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_variant_concat_slot_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         lhs: &OxOperand,
         rhs: &OxOperand,
@@ -2661,7 +2661,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_variant_neg_slot_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         mode: NumericMode,
         src: &OxOperand,
@@ -2686,7 +2686,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_variant_compare_slot_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         comparison: (CmpOp, StringCompareMode, oxvba_bundle::ComparisonCoercion),
         operands: BinaryVariantOperands<'_>,
@@ -2737,7 +2737,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_compare_object_is_slot_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         lhs: &OxOperand,
         rhs: &OxOperand,
@@ -2763,7 +2763,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_type_of_is(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         object: &OxOperand,
         type_name: &str,
@@ -2811,7 +2811,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_variant_logical_slot_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         op: LogicalOp,
         lhs: &OxOperand,
@@ -2840,7 +2840,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_variant_not_slot_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         src: &OxOperand,
     ) -> Result<(), JitError> {
@@ -2861,7 +2861,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_variant_truthy_slot_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         src: &OxOperand,
     ) -> Result<(), JitError> {
@@ -2882,7 +2882,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_variant_changed_slot_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         current: &OxOperand,
         original: &OxOperand,
@@ -2907,7 +2907,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_variant_numeric_coerce_slot_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         target: NumericCoerceTarget,
         src: &OxOperand,
@@ -2932,7 +2932,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_variant_string_coerce_slot_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         src: &OxOperand,
     ) -> Result<(), JitError> {
@@ -2953,7 +2953,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_variant_fixed_string_coerce_slot_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         len: u32,
         src: &OxOperand,
@@ -2977,7 +2977,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_store_variant(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         value: &OxOperand,
     ) -> Result<(), JitError> {
@@ -2998,7 +2998,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_as_new_register(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         place: OxPlace,
         binding: &OxAsNew,
     ) -> Result<(), JitError> {
@@ -3042,7 +3042,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_new_object_to_slot(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         class_index: usize,
     ) -> Result<(), JitError> {
@@ -3068,7 +3068,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_new_extern_to_slot(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         import: oxvba_oxir::ImportId,
     ) -> Result<(), JitError> {
@@ -3106,7 +3106,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_predeclared_to_slot(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         class_index: usize,
     ) -> Result<(), JitError> {
@@ -3132,7 +3132,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_predeclared_extern_to_slot(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         import: oxvba_oxir::ImportId,
     ) -> Result<(), JitError> {
@@ -3153,7 +3153,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_project_class_to_slot(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         target: ProjectClassTarget,
         callee_id: ClifFuncId,
@@ -3182,7 +3182,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_predeclared_set(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         class_index: usize,
         value: &OxOperand,
     ) -> Result<(), JitError> {
@@ -3206,7 +3206,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_predeclared_extern_set(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         import: oxvba_oxir::ImportId,
         value: &OxOperand,
     ) -> Result<(), JitError> {
@@ -3304,7 +3304,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_field_get_to_slot(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         object: &OxOperand,
         field: i32,
@@ -3329,7 +3329,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_field_set(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         object: &OxOperand,
         field: i32,
         value: &OxOperand,
@@ -3351,7 +3351,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_withevents_get_to_slot(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         owner: &OxOperand,
         binding: i32,
@@ -3376,7 +3376,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_withevents_set_to_slot(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         owner: &OxOperand,
         binding: i32,
@@ -3404,7 +3404,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_withevents_clear_owner_to_slot(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         owner: &OxOperand,
     ) -> Result<(), JitError> {
@@ -3426,7 +3426,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_withevents_first_owner_to_slot(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         source: &OxOperand,
         binding: i32,
@@ -3451,7 +3451,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_withevents_next_owner_to_slot(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
     ) -> Result<(), JitError> {
         self.ensure_variant_carrier_place(dst)?;
@@ -3520,7 +3520,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_raise_event(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         source: &OxOperand,
         event: i32,
         args: &[OxArg],
@@ -3546,7 +3546,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_project_member_call_to_slot(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: Option<OxPlace>,
         inputs: ProjectMemberCallInputs<'_>,
     ) -> Result<(), JitError> {
@@ -3624,7 +3624,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_call_by_name_to_slot(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: Option<OxPlace>,
         inputs: CallByNameInputs<'_>,
     ) -> Result<(), JitError> {
@@ -3682,7 +3682,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_project_type_name_to_slot(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         object: &OxOperand,
     ) -> Result<(), JitError> {
@@ -3711,7 +3711,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_validate_assignment(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         src: &OxOperand,
         intent: AssignmentIntent,
         target_kind: AssignmentTargetKind,
@@ -3758,7 +3758,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_new_record_to_slot(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         fields: &[ArrayElementType],
     ) -> Result<(), JitError> {
@@ -3795,7 +3795,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_record_get_to_slot(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         record: &OxOperand,
         index: usize,
@@ -3822,7 +3822,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_record_set(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         record: OxPlace,
         index: usize,
         value: &OxOperand,
@@ -3849,7 +3849,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_record_lset(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         record: OxPlace,
         value: &OxOperand,
     ) -> Result<(), JitError> {
@@ -3871,7 +3871,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_record_array_get_to_slot(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         record: &OxOperand,
         index: usize,
@@ -3919,7 +3919,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_record_array_set(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         record: OxPlace,
         index: usize,
         indices: &[OxOperand],
@@ -3967,7 +3967,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_field_array_get_to_slot(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         object: &OxOperand,
         field: i32,
@@ -4013,7 +4013,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_field_array_set(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         object: &OxOperand,
         field: i32,
         indices: &[OxOperand],
@@ -4056,7 +4056,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_lowered_i32_indices(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         indices: &[OxOperand],
         label: &'static str,
     ) -> Result<Value, JitError> {
@@ -4070,7 +4070,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_unbox_to_slot(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         src: &OxOperand,
         to: &OxTy,
@@ -4109,7 +4109,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_checked_slot_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         helper: ClifFuncId,
         lhs: Value,
@@ -4136,7 +4136,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_overflow_if_not_finite(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         value: Value,
         is_single: bool,
     ) -> Result<(), JitError> {
@@ -4189,7 +4189,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_long_call_arg(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         arg: &OxArg,
     ) -> Result<LoweredCallArg, JitError> {
         let zero_i32 = builder.ins().iconst(types::I32, 0);
@@ -4234,7 +4234,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_unknown_long_call_arg(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         arg: &OxArg,
     ) -> Result<LoweredCallArg, JitError> {
         if let OxArg::ByVal(operand) = arg
@@ -4258,7 +4258,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_long_call_args(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         args: &[OxArg],
     ) -> Result<Vec<LoweredCallArg>, JitError> {
         let mut lowered = Vec::with_capacity(args.len());
@@ -4271,7 +4271,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_static_scalar_call_arg_value(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         param_ty: &OxTy,
         arg: &OxOperand,
     ) -> Result<Value, JitError> {
@@ -4398,7 +4398,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_unknown_proc_ref_call_args(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         args: &[OxArg],
     ) -> Result<(Vec<LoweredCallArg>, UnknownProcRefArgShape), JitError> {
         if args.is_empty() {
@@ -4502,7 +4502,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_array_literal(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         values: &[OxOperand],
         aliases: &[Option<OxPlace>],
@@ -4555,7 +4555,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_array_redim(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         inputs: ArrayRedimInputs<'_>,
     ) -> Result<(), JitError> {
@@ -4644,7 +4644,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_array_get(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         array: &OxOperand,
         indices: &[OxOperand],
@@ -4734,7 +4734,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_array_erase(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         array: OxPlace,
         element: &ArrayElementType,
     ) -> Result<(), JitError> {
@@ -4761,7 +4761,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_array_element_metadata_ptr(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &JITModule,
+        module: &impl Module,
         element: &ArrayElementType,
     ) -> Result<Value, JitError> {
         let ptr = i64::try_from(element as *const ArrayElementType as usize).map_err(|_| {
@@ -4774,7 +4774,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_array_set(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         array: OxPlace,
         indices: &[OxOperand],
         value: &OxOperand,
@@ -4851,7 +4851,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_bound(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: OxPlace,
         which: BoundWhich,
         array: &OxOperand,
@@ -4913,7 +4913,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_for_each_init(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         iter: OxPlace,
         source: &OxOperand,
     ) -> Result<(), JitError> {
@@ -4947,7 +4947,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_for_each_next(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         iter: OxPlace,
         item: OxPlace,
         has_value: OxPlace,
@@ -4979,7 +4979,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_static_call_arg(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         arg: &OxArg,
         param: &OxLocal,
     ) -> Result<LoweredCallArg, JitError> {
@@ -5109,7 +5109,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_static_call_args(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         callee: &OxFunc,
         args: &[OxArg],
     ) -> Result<Vec<LoweredCallArg>, JitError> {
@@ -5129,7 +5129,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_call_arg_descriptors(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &JITModule,
+        module: &impl Module,
         args: &[LoweredCallArg],
     ) -> Result<Value, JitError> {
         let ptr_ty = module.target_config().pointer_type();
@@ -5172,7 +5172,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_call_arg_name_descriptors(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &JITModule,
+        module: &impl Module,
         names: &[Option<&str>],
     ) -> Result<Value, JitError> {
         let ptr_ty = module.target_config().pointer_type();
@@ -5220,7 +5220,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_call_proc_ref(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: Option<OxPlace>,
         target: &OxOperand,
         args: &[oxvba_oxir::OxArg],
@@ -5479,7 +5479,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_expect_proc_ref_target(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         target_area: Value,
         target_index: Value,
         proc: FuncId,
@@ -5816,7 +5816,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_direct_noarg_sub_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         proc: FuncId,
     ) -> Result<(), JitError> {
         let Some(callee_id) = self.clif_ids.get(proc.0).copied() else {
@@ -5849,7 +5849,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_direct_one_i32_sub_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         proc: FuncId,
         args: &[oxvba_oxir::OxArg],
     ) -> Result<(), JitError> {
@@ -5889,7 +5889,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_direct_one_i32_byref_sub_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         proc: FuncId,
         args: &[oxvba_oxir::OxArg],
     ) -> Result<(), JitError> {
@@ -5932,7 +5932,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_direct_two_i32_sub_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         proc: FuncId,
         args: &[oxvba_oxir::OxArg],
     ) -> Result<(), JitError> {
@@ -5973,7 +5973,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_direct_one_i32_function_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         proc: FuncId,
         args: &[oxvba_oxir::OxArg],
         dst: OxPlace,
@@ -6025,7 +6025,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_direct_one_i32_byref_function_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         proc: FuncId,
         args: &[oxvba_oxir::OxArg],
         dst: OxPlace,
@@ -6084,7 +6084,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_direct_two_i32_function_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         proc: FuncId,
         args: &[oxvba_oxir::OxArg],
         dst: OxPlace,
@@ -6137,7 +6137,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_direct_ignored_noarg_function_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         proc: FuncId,
     ) -> Result<(), JitError> {
         let Some(callee_id) = self.clif_ids.get(proc.0).copied() else {
@@ -6170,7 +6170,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_direct_ignored_one_i32_function_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         proc: FuncId,
         args: &[oxvba_oxir::OxArg],
     ) -> Result<(), JitError> {
@@ -6210,7 +6210,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_direct_ignored_one_i32_byref_function_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         proc: FuncId,
         args: &[oxvba_oxir::OxArg],
     ) -> Result<(), JitError> {
@@ -6258,7 +6258,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_direct_ignored_two_i32_function_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         proc: FuncId,
         args: &[oxvba_oxir::OxArg],
     ) -> Result<(), JitError> {
@@ -6300,7 +6300,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_direct_noarg_function_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         proc: FuncId,
         dst: OxPlace,
     ) -> Result<(), JitError> {
@@ -6345,7 +6345,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_direct_descriptor_static_call(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         proc: FuncId,
         args_len: usize,
         args_ptr: Value,
@@ -6404,7 +6404,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_call_proc(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: Option<OxPlace>,
         proc: FuncId,
         args: &[oxvba_oxir::OxArg],
@@ -6507,7 +6507,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_call_extern(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: Option<OxPlace>,
         import: oxvba_oxir::ImportId,
         args: &[oxvba_oxir::OxArg],
@@ -6586,7 +6586,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_cross_project_call_extern(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: Option<OxPlace>,
         target_program: usize,
         target_proc: FuncId,
@@ -6691,7 +6691,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_call_native(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: Option<OxPlace>,
         callee: &OxNativeCallee,
         args: &[OxCallArg],
@@ -6717,7 +6717,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_call_native_builtin(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: Option<OxPlace>,
         native_impl: NativeImplId,
         args: &[OxCallArg],
@@ -6781,7 +6781,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_call_native_declare(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         dst: Option<OxPlace>,
         descriptor_id: u32,
         args: &[OxCallArg],
@@ -8108,7 +8108,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_terminator(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         term: &OxTerminator,
     ) -> Result<(), JitError> {
         match term {
@@ -8339,7 +8339,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_resume(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         target_kind: u32,
         label: usize,
     ) -> Result<(), JitError> {
@@ -8362,7 +8362,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_gosub_return(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
     ) -> Result<(), JitError> {
         let block_slot =
             builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 4, 2));
@@ -8401,7 +8401,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_operand_i32(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         operand: &OxOperand,
     ) -> Result<Value, JitError> {
         match operand {
@@ -8433,7 +8433,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_operand_i64(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         operand: &OxOperand,
     ) -> Result<Value, JitError> {
         match operand {
@@ -8466,7 +8466,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_operand_currency_i64(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         operand: &OxOperand,
     ) -> Result<Value, JitError> {
         match operand {
@@ -8497,7 +8497,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_operand_f64(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         operand: &OxOperand,
     ) -> Result<Value, JitError> {
         match operand {
@@ -8528,7 +8528,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_operand_date_f64(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         operand: &OxOperand,
     ) -> Result<Value, JitError> {
         match operand {
@@ -8559,7 +8559,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_operand_f32(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         operand: &OxOperand,
     ) -> Result<Value, JitError> {
         match operand {
@@ -8594,7 +8594,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_operand_i16_i32(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         operand: &OxOperand,
     ) -> Result<Value, JitError> {
         match operand {
@@ -8624,7 +8624,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_operand_u8_i32(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         operand: &OxOperand,
     ) -> Result<Value, JitError> {
         match operand {
@@ -8647,7 +8647,7 @@ impl<'a> LowerFunc<'a> {
     fn lower_operand_bool_i32(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         operand: &OxOperand,
     ) -> Result<Value, JitError> {
         match operand {
@@ -8678,7 +8678,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_store_i32(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         place: OxPlace,
         value: Value,
     ) -> Result<(), JitError> {
@@ -8695,7 +8695,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_store_i64(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         place: OxPlace,
         value: Value,
     ) -> Result<(), JitError> {
@@ -8712,7 +8712,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_store_currency_i64(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         place: OxPlace,
         value: Value,
     ) -> Result<(), JitError> {
@@ -8729,7 +8729,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_store_f64(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         place: OxPlace,
         value: Value,
     ) -> Result<(), JitError> {
@@ -8746,7 +8746,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_store_date_f64(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         place: OxPlace,
         value: Value,
     ) -> Result<(), JitError> {
@@ -8763,7 +8763,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_store_f32(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         place: OxPlace,
         value: Value,
     ) -> Result<(), JitError> {
@@ -8780,7 +8780,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_store_i16(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         place: OxPlace,
         value: Value,
     ) -> Result<(), JitError> {
@@ -8797,7 +8797,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_store_u8(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         place: OxPlace,
         value: Value,
     ) -> Result<(), JitError> {
@@ -8814,7 +8814,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_store_bool(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         place: OxPlace,
         value: Value,
     ) -> Result<(), JitError> {
@@ -8831,7 +8831,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_stmt_boundary(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         clear_temps_from: usize,
     ) -> Result<(), JitError> {
         let state = self.state;
@@ -8848,7 +8848,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_drain_terminations(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
     ) -> Result<(), JitError> {
         let callee = self.import(builder, module, self.imports.drain_terminations);
         let call = builder.ins().call(callee, &[self.run, self.state]);
@@ -8860,7 +8860,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_add_ref(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         object: &OxOperand,
     ) -> Result<(), JitError> {
         let operand = self.lower_variant_operand(builder, object)?;
@@ -8877,7 +8877,7 @@ impl<'a> LowerFunc<'a> {
     fn emit_release(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         object: &OxOperand,
     ) -> Result<(), JitError> {
         let operand = self.lower_variant_operand(builder, object)?;
@@ -8923,7 +8923,7 @@ impl<'a> LowerFunc<'a> {
     fn import(
         &self,
         builder: &mut FunctionBuilder<'_>,
-        module: &mut JITModule,
+        module: &mut impl Module,
         id: ClifFuncId,
     ) -> ir::FuncRef {
         module.declare_func_in_func(id, builder.func)
@@ -9107,7 +9107,7 @@ impl<'a> LowerFunc<'a> {
 }
 
 pub(crate) fn declare_program_functions(
-    module: &mut JITModule,
+    module: &mut impl Module,
     program_index: usize,
     program: &OxProgram,
 ) -> Result<Vec<ClifFuncId>, JitError> {
@@ -9128,7 +9128,7 @@ pub(crate) fn declare_program_functions(
         .collect()
 }
 
-pub(crate) fn entry_signature(module: &mut JITModule) -> ir::Signature {
+pub(crate) fn entry_signature(module: &mut impl Module) -> ir::Signature {
     let ptr_ty = module.target_config().pointer_type();
     let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(ptr_ty));

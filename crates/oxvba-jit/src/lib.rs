@@ -88,6 +88,7 @@ mod error;
 mod runtime;
 mod helpers;
 mod lowering;
+pub mod native;
 mod typed;
 pub use typed::TypedEntry;
 

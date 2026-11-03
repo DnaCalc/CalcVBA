@@ -94,7 +94,7 @@ pub fn parse_basproj_xml(xml: &str) -> Result<BasProj, BasProjError> {
                             &mut com_references,
                             &mut native_references,
                             &mut native_exports,
-                        );
+                        )?;
                     }
                     _ => {}
                 }
@@ -152,7 +152,7 @@ pub fn parse_basproj_xml(xml: &str) -> Result<BasProj, BasProjError> {
                                     &mut com_references,
                                     &mut native_references,
                                     &mut native_exports,
-                                );
+                                )?;
                             }
                         }
                         _ => {}
@@ -264,7 +264,7 @@ fn apply_property(
                 "HostModule" => Some(OutputType::HostModule),
                 "Library" => Some(OutputType::Library),
                 "Exe" => Some(OutputType::Exe),
-                "Addin" => Some(OutputType::Addin),
+                "NativeLibrary" => Some(OutputType::NativeLibrary),
                 "ComServer" => Some(OutputType::ComServer),
                 "ComExe" => Some(OutputType::ComExe),
                 _ => return Err(BasProjError::InvalidOutputType(value.to_string())),
@@ -303,7 +303,7 @@ fn emit_item(
     com_refs: &mut Vec<BasProjComReference>,
     native_refs: &mut Vec<BasProjNativeReference>,
     native_exports: &mut Vec<BasProjNativeExport>,
-) {
+) -> Result<(), BasProjError> {
     match ctx.tag.as_str() {
         "Module" => {
             modules.push(BasProjModule {
@@ -396,30 +396,45 @@ fn emit_item(
             });
         }
         "NativeExport" => {
-            let cc = ctx
-                .meta_str("CallingConvention")
-                .and_then(|s| match s.as_str() {
-                    "Stdcall" => Some(CallingConvention::Stdcall),
-                    "Cdecl" => Some(CallingConvention::Cdecl),
-                    _ => None,
-                });
+            for key in ctx.metadata.keys() {
+                if !matches!(
+                    key.as_str(),
+                    "Module" | "Procedure" | "CallingConvention" | "Ordinal"
+                ) {
+                    return Err(BasProjError::XmlParse(format!(
+                        "unsupported NativeExport metadata {key}"
+                    )));
+                }
+            }
+            let cc = match ctx.meta_str("CallingConvention").as_deref() {
+                None => None,
+                Some("Stdcall") => Some(CallingConvention::Stdcall),
+                Some("Cdecl") => Some(CallingConvention::Cdecl),
+                Some(other) => {
+                    return Err(BasProjError::XmlParse(format!(
+                        "invalid native calling convention {other}"
+                    )));
+                }
+            };
             let module = ctx.meta_str("Module");
             let procedure = ctx.meta_str("Procedure");
-            let ordinal = ctx.meta_u16("Ordinal");
-            let category = ctx.meta_str("Category");
-            let description = ctx.meta_str("Description");
-            let argument_descriptions = ctx.meta_str("ArgumentDescriptions");
+            let ordinal = ctx
+                .meta_str("Ordinal")
+                .map(|s| {
+                    s.parse::<u16>().map_err(|_| {
+                        BasProjError::XmlParse(format!("invalid native export ordinal {s}"))
+                    })
+                })
+                .transpose()?;
             native_exports.push(BasProjNativeExport {
                 include: ctx.include,
                 module,
                 procedure,
                 calling_convention: cc,
                 ordinal,
-                category,
-                description,
-                argument_descriptions,
             });
         }
         _ => {}
     }
+    Ok(())
 }

@@ -1,0 +1,73 @@
+{
+  "schema": "oxvba.run12.br076-tracker-repair.v1",
+  "issue": "bd-ivaha.37",
+  "before_assignee": "doors.bas (Rosetta 100 doors) runs under --backend jit with output identical to vm3; fizzbuzz-style Debug.Print with concatenated Variant and scalar constants covered by a differential/jit test; no silent fallback to vm3.",
+  "after_acceptance_criteria": "doors.bas (Rosetta 100 doors) runs under --backend jit with output identical to vm3; fizzbuzz-style Debug.Print with concatenated Variant and scalar constants covered by a differential/jit test; no silent fallback to vm3.",
+  "owner_unset": true,
+  "historical_state_preserved": true,
+  "other_records_unchanged": 1504,
+  "global_executable": "C:\\Users\\GovertvanDrimmelen\\.cargo\\bin\\br.exe",
+  "global_executable_sha256": "08f4d93ae88f65aed5a70d24073617459b23fe8c6326e5f5de4486d764825e04",
+  "version": "br 0.7.6",
+  "engine": "frankensqlite",
+  "mode": "direct",
+  "issue_count": 1505,
+  "successful_commands": [
+    "br update bd-ivaha.37 --notes <retained repair evidence>",
+    "br show bd-ivaha.37 --json",
+    "br list --limit 3 --json",
+    "br ready --limit 3 --json",
+    "br info --json"
+  ],
+  "before_refusal": "warning: Configuration error: Preflight checks failed:\n  - json_valid: Found 1 invalid issue record(s): line 1155: assignee: exceeds 200 characters\n    Hint: Fix or remove malformed issue records before importing.\n. This read-only command reads issues.jsonl directly instead (as with --no-db).\nError: Configuration error: Validation failed for issue bd-ivaha.37 at line 1155: assignee: exceeds 200 characters\n",
+  "schema_migration": {
+    "old": 4,
+    "new": 19,
+    "backup_directory": ".beads/.br_recovery",
+    "backups_retained": true
+  },
+  "doctor_exit_code": 1,
+  "doctor": {
+    "workspace_health": "healthy",
+    "reliability_anomaly_count": 0,
+    "checks": 60,
+    "non_ok_checks": [
+      {
+        "name": "db.recovery_artifacts",
+        "status": "warn",
+        "message": "Preserved recovery artifacts remain for this database family (10 item(s))",
+        "artifact_count": 10
+      }
+    ],
+    "raw_receipt": "temp/calcvba12/tracker-doctor.json",
+    "raw_receipt_sha256": "9731428390666f6bc65ff855857b0f9728c9961f15805baf83484c2f91601ca0"
+  },
+  "tracked_source_sha256": {
+    ".beads/.gitignore": "62c2a6b0628d5dfd2dce19af9a2ad11042e17e0105cb9f0196ec83f6f59c859d",
+    ".beads/issues.jsonl": "3a1e6d700510b88c72797e6a50bcbe25aee7736fbacfb22aed8b7ca0091f6574"
+  },
+  "capability_credit": false,
+  "fresh_review": [
+    "Only bd-ivaha.37 changed among 1505 canonical records; acceptance text is copied verbatim and no owner is invented.",
+    "Historical closure, creation/closure timestamps, description, dependencies and all other record fields are preserved except the intended assignee/acceptance/notes/update time fields.",
+    "Ignore patterns cover observed local database, lock, namespace, WAL, migration, recovery and temporary files; canonical JSONL/config/metadata remain visible.",
+    "Global br 0.7.6 performs a real update and direct database reads; no legacy binary or JSONL-only fallback is used for final validation.",
+    "Database diagnostics are healthy with zero anomalies; the retained migration-backup warning is recorded without claiming doctor exit zero.",
+    "No capability matrix or broader delivery status is promoted by this tracker repair."
+  ],
+  "base_commit": "7dc0d6beddc88f936b9c4e5f5608ee6c489769f8",
+  "repository_check": {
+    "command": "pwsh -NoProfile -File scripts/meta-check.ps1 -Fast -NoArtifacts -NoRegistry -RunId calcvba12-global-br076-final",
+    "global_br": "0.7.6, default PATH; no legacy binary or JSONL-only fallback",
+    "counts": {
+      "passed": 3767,
+      "failed": 0,
+      "ignored": 181,
+      "suites": 202
+    },
+    "exit_code": 0,
+    "excluded_without_credit": "four registration-writing record fixtures",
+    "transcript": "temp/calcvba12/tracker-meta-final.log",
+    "transcript_sha256": "33b2a3433cfb27be04eac8674a7ccd005a181966b3d1c6e47ac1732ed5035d83"
+  }
+}

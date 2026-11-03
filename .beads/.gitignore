@@ -2,7 +2,18 @@
 *.db
 *.db-journal
 *.db-shm
-*.db-wal
+*.db-wal*
+
+# Local database files created by br 0.7.x
+*.db-lock-*
+*-fsqlite-ns-gate
+*-fsqlite-ns-use
+*.vacuum-wal-cert*
+*.fsqlite-migration-state
+.br-wal-index-*/
+.br_recovery/
+.beads.vacuum.*
+.tmp*
 
 # Lock files
 *.lock

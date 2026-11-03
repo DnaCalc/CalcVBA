@@ -9,6 +9,124 @@ fn backends() -> Vec<api::Backend> {
     }
     values
 }
+
+#[test]
+fn typed_numeric_operators_keep_long_width_boolean_results_and_vba_fault_numbers() {
+    let source = concat!(
+        include_str!("../../../examples/native/scalars/Operators.bas"),
+        "\nPublic Function MixedBits(ByVal a As Long, ByVal b As Boolean) As Long\nMixedBits = a And b\nEnd Function\n"
+    );
+    let project = api::Project::module("Operators", source);
+    for backend in backends() {
+        let session = Provider::default()
+            .load(&project, backend, api::HOST_API_ABI)
+            .unwrap();
+        for (name, a, b, expected) in [
+            ("IntegerDivide", -7, 3, -2),
+            ("IntegerDivide", 7, -3, -2),
+            ("IntegerMod", -7, 3, -1),
+            ("IntegerMod", 7, -3, 1),
+            ("IntegerMod", i32::MIN, -1, 0),
+            ("LongAnd", i32::MIN, i32::MAX, 0),
+            ("LongOr", i32::MIN, i32::MAX, -1),
+            ("LongXor", i32::MIN, i32::MAX, -1),
+            ("LongEqv", 0, 0, -1),
+            ("LongImp", -1, 0, 0),
+        ] {
+            assert_eq!(
+                long(run(
+                    &*session,
+                    "Operators",
+                    name,
+                    &[api::ValueSlot::Long(a), api::ValueSlot::Long(b)],
+                    api::ValueType::Long
+                )),
+                expected,
+                "{backend:?} {name}"
+            );
+        }
+        assert_eq!(
+            long(run(
+                &*session,
+                "Operators",
+                "LongNot",
+                &[api::ValueSlot::Long(i32::MIN)],
+                api::ValueType::Long
+            )),
+            i32::MAX
+        );
+        for (a, b, expected) in [
+            (false, false, [false, false, false, true, true]),
+            (false, true, [false, true, true, false, true]),
+            (true, false, [false, true, true, false, false]),
+            (true, true, [true, true, false, true, true]),
+        ] {
+            for (name, expected) in [
+                "BooleanAnd",
+                "BooleanOr",
+                "BooleanXor",
+                "BooleanEqv",
+                "BooleanImp",
+            ]
+            .into_iter()
+            .zip(expected)
+            {
+                assert!(
+                    matches!(run(&*session,"Operators",name,&[api::ValueSlot::Boolean(a),api::ValueSlot::Boolean(b)],api::ValueType::Boolean),api::Value::Boolean(value) if value == expected),
+                    "{backend:?} {name}({a},{b})"
+                );
+            }
+        }
+        for (truth, expected) in [(true, 42), (false, 0)] {
+            assert_eq!(
+                long(run(
+                    &*session,
+                    "Operators",
+                    "MixedBits",
+                    &[api::ValueSlot::Long(42), api::ValueSlot::Boolean(truth)],
+                    api::ValueType::Long
+                )),
+                expected
+            );
+        }
+        for (name, a, b, number) in [
+            ("IntegerDivide", i32::MIN, -1, 6),
+            ("IntegerDivide", 9, 0, 11),
+            ("IntegerMod", 9, 0, 11),
+        ] {
+            let bound = session
+                .bind_values(
+                    "Operators",
+                    name,
+                    &[api::ValueType::Long; 2],
+                    api::ValueType::Long,
+                )
+                .unwrap();
+            let mut call = session
+                .begin_values(
+                    &bound,
+                    &[api::ValueSlot::Long(a), api::ValueSlot::Long(b)],
+                    api::InvocationFrame::new(11, None, Rc::new(())),
+                    10000,
+                )
+                .unwrap();
+            assert!(
+                matches!(call.resume(10000),Err(api::Error::Runtime {number: observed,..}) if observed == number),
+                "{backend:?} {name}({a},{b})"
+            );
+        }
+        assert_eq!(
+            long(run(
+                &*session,
+                "Operators",
+                "IntegerDivide",
+                &[api::ValueSlot::Long(9), api::ValueSlot::Long(2)],
+                api::ValueType::Long
+            )),
+            4
+        );
+    }
+}
 #[test]
 fn source_project_global_byref_reads_the_owning_unit_store() {
     let graph = api::ProjectGraph {

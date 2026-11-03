@@ -61,7 +61,11 @@ and exact types; cached declaration strings do not supply the ABI.
 
 The initial native implementation admits ByVal Long, Double and Boolean Functions
 with numeric locals, direct calls to admitted procedures, and Double Abs/Sqr
-library calls. Native signatures support up to 32 parameters. Unsupported
+library calls. CLng/CDbl/CBool specialize numeric arguments without Variant boxing.
+Long integer division/modulo and Boolean/Long And/Or/Xor/Eqv/Imp/Not are admitted.
+Native signatures support up to 32 parameters and calls may cross standard modules.
+Native call depth is limited to 128 frames; exhaustion follows the zero-on-error
+return policy. Generated code uses baseline x64 instructions. Unsupported
 reachable signatures, state and instructions fail before the DLL is written.
 The DLL contains no interpreter fallback. Other numeric widths and the remaining
 native boundary types are unfinished. See [the native template design](NATIVE_EXPORT_PE_TEMPLATE_V1.md).
@@ -69,7 +73,8 @@ native boundary types are unfinished. See [the native template design](NATIVE_EX
 CalcVBA has no XLL target, registration metadata, conversions or host support.
 Addin is rejected as an OutputType. Category, Description, ArgumentDescriptions
 and unimplemented StringEncoding/ErrorPolicy metadata on NativeExport are
-rejected. A future external VBA library can build ordinary named exports with
+rejected, including empty elements and unsupported NativeExport attributes.
+A future external VBA library can build ordinary named exports with
 the pointer/layout features it needs.
 
 The parser, loader and project tests in `crates/oxvba-project` are the source

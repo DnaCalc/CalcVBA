@@ -14,6 +14,7 @@ crate-type = ["cdylib"]
 oxvba-runtime.workspace = true
 oxvba-rt-abi.workspace = true
 oxvba-lib.workspace = true
+oxvba-eval.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_SystemServices"] }

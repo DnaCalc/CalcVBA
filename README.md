@@ -71,7 +71,11 @@ cargo run -p oxvba-cli -- build examples/native/scalars/NativeScalars.basproj --
 The installed CLI patches its embedded template without invoking Rust or a
 linker. Each named export calls a compiled procedure directly. The initial
 boundary supports ByVal Long, Double and Boolean, with direct procedure calls
-and typed Abs/Sqr library helpers; unsupported reachable code is refused.
+and typed Abs/Sqr library helpers. CLng/CDbl/CBool specialize numeric operands.
+Long integer division/modulo and Boolean/Long bitwise operators are compiled.
+Calls may cross standard modules, with up to 32 arguments and 128 active native
+frames. A depth or numeric failure returns zero. Generated code uses baseline
+x64 instructions; unsupported reachable code is refused.
 `scripts/build-native-template.ps1` rebuilds the shipped template for developers.
 `scripts/run-native-export-clients.ps1 -Excel` compares a single batch through
 C, CalcVBA Declare (both backends) and one owned Excel instance. CalcVBA has no

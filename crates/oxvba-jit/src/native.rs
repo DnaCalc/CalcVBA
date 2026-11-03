@@ -8,6 +8,31 @@ use oxvba_oxir::OxArg;
 use oxvba_rt_abi::host_entry::{LinkedTarget, ScalarLayout, ScalarType};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Keep native recursion inside a bounded part of the caller's stack. A typed
+/// status 28 leaves the DLL through the ordinary zero-on-error wrapper path.
+pub const MAX_NATIVE_CALL_DEPTH: i32 = 128;
+const DEPTH_OFFSET: i32 = 8;
+
+fn conversion_target(id: NativeImplId) -> Option<oxvba_bundle::NumericCoerceTarget> {
+    use oxvba_bundle::NumericCoerceTarget as N;
+    match id {
+        NativeImplId::CLng => Some(N::Long),
+        NativeImplId::CDbl => Some(N::Double),
+        NativeImplId::CBool => Some(N::Boolean),
+        _ => None,
+    }
+}
+
+fn check_status(b: &mut FunctionBuilder<'_>, status: Value) {
+    let failed = b.ins().icmp_imm(ir::condcodes::IntCC::NotEqual, status, 0);
+    let fail = b.create_block();
+    let next = b.create_block();
+    b.ins().brif(failed, fail, &[], next, &[]);
+    b.switch_to_block(fail);
+    b.ins().return_(&[status]);
+    b.switch_to_block(next);
+}
+
 pub struct NativeScalar {
     pub procedure: FuncId,
     pub function: ClifFuncId,
@@ -30,6 +55,7 @@ pub fn compile_native_scalars(
     program: &OxProgram,
     roots: &[FuncId],
     library_helpers: &HashMap<NativeImplId, ClifFuncId>,
+    long_from_f64: ClifFuncId,
 ) -> Result<Vec<NativeScalar>, JitError> {
     oxvba_oxir::verify_program(program)
         .map_err(|e| JitError::unsupported(format!("invalid native OxIR: {e:?}")))?;
@@ -66,6 +92,18 @@ pub fn compile_native_scalars(
         for block in &func.blocks {
             for (index, inst) in block.instrs.iter().enumerate() {
                 match inst {
+                    OxInst::Coerce {
+                        dst,
+                        src,
+                        target:
+                            oxvba_oxir::OxCoerceTarget::Numeric(
+                                oxvba_bundle::NumericCoerceTarget::Long
+                                | oxvba_bundle::NumericCoerceTarget::Double
+                                | oxvba_bundle::NumericCoerceTarget::Boolean,
+                            ),
+                    } if numeric(
+                        layout.slots[layout.slot(*dst).map_err(|e| problem(func, e))?],
+                    ) && numeric(layout.operand_type(src).map_err(|e| problem(func, e))?) => {}
                     OxInst::CallProc { proc, args, .. } => {
                         if args.iter().any(|arg| !matches!(arg, OxArg::ByVal(_))) {
                             return Err(problem(
@@ -84,12 +122,20 @@ pub fn compile_native_scalars(
                             .get(import)
                             .ok_or_else(|| problem(func, "unplanned native library call"))?
                             .target;
-                        if !matches!(target,LinkedTarget::Builtin(native) if library_helpers.contains_key(&native))
+                        if !matches!(target,LinkedTarget::Builtin(native) if library_helpers.contains_key(&native) || conversion_target(native).is_some())
                             || args.iter().any(|arg| !matches!(arg, OxArg::ByVal(_)))
                         {
                             return Err(problem(
                                 func,
                                 format!("unsupported native library call {inst:?}"),
+                            ));
+                        }
+                        if matches!(target, LinkedTarget::Builtin(native) if conversion_target(native).is_some())
+                            && !matches!(args.as_slice(), [OxArg::ByVal(src)] if layout.operand_type(src).is_ok_and(numeric))
+                        {
+                            return Err(problem(
+                                func,
+                                "native numeric conversions require one numeric ByVal argument",
                             ));
                         }
                     }
@@ -99,6 +145,8 @@ pub fn compile_native_scalars(
                     | OxInst::Div { .. }
                     | OxInst::Neg { .. }
                     | OxInst::Compare { .. }
+                    | OxInst::Logical { .. }
+                    | OxInst::Not { .. }
                     | OxInst::Truthy { .. }
                     | OxInst::StmtBoundary { .. }
                     | OxInst::DrainTerminations => {
@@ -169,14 +217,40 @@ pub fn compile_native_scalars(
             .signature
             .clone();
         let mut frontend = FunctionBuilderContext::new();
+        let depth_guard;
+        let runtime;
+        let depth;
         {
             let mut b = FunctionBuilder::new(&mut context.func, &mut frontend);
             let entry = b.create_block();
             b.switch_to_block(entry);
             b.append_block_params_for_function_params(entry);
             let params = b.block_params(entry).to_vec();
-            let runtime = params[0];
+            runtime = params[0];
             let out = *params.last().expect("typed result pointer");
+            depth = b
+                .ins()
+                .load(types::I32, ir::MemFlagsData::new(), runtime, DEPTH_OFFSET);
+            let exhausted = b.ins().icmp_imm(
+                ir::condcodes::IntCC::UnsignedGreaterThanOrEqual,
+                depth,
+                i64::from(MAX_NATIVE_CALL_DEPTH),
+            );
+            let refused = b.create_block();
+            let accepted = b.create_block();
+            b.ins().brif(exhausted, refused, &[], accepted, &[]);
+            b.switch_to_block(refused);
+            let overflow = b.ins().iconst(types::I32, 28);
+            depth_guard = b.ins().return_(&[overflow]);
+            b.switch_to_block(accepted);
+            let next_depth = b.ins().iadd_imm(depth, 1);
+            b.ins()
+                .store(ir::MemFlagsData::new(), next_depth, runtime, DEPTH_OFFSET);
+            // All calls complete synchronously. Reuse one private result slot
+            // instead of growing the frame once for each call instruction.
+            let call_output =
+                b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+            let call_output_ptr = b.ins().stack_addr(types::I64, call_output, 0);
             let slots = b.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
                 (plan.layout.slots.len().max(1) * 8) as u32,
@@ -207,6 +281,63 @@ pub fn compile_native_scalars(
             for block in &func.blocks {
                 b.switch_to_block(blocks[&block.id]);
                 for inst in &block.instrs {
+                    // Numeric library conversions have polymorphic VBA inputs,
+                    // but their bound result type is fixed. Specialize each
+                    // numeric call site to the same unboxed Coerce lowering.
+                    let conversion = if let OxInst::CallExtern {
+                        dst: Some(dst),
+                        import,
+                        args,
+                    } = inst
+                        && let LinkedTarget::Builtin(native) =
+                            plan.layout.extern_calls[import].target
+                        && let Some(target) = conversion_target(native)
+                        && let [OxArg::ByVal(src)] = args.as_slice()
+                    {
+                        Some(OxInst::Coerce {
+                            dst: *dst,
+                            src: src.clone(),
+                            target: oxvba_oxir::OxCoerceTarget::Numeric(target),
+                        })
+                    } else {
+                        None
+                    };
+                    let inst = conversion.as_ref().unwrap_or(inst);
+                    if let OxInst::Coerce { dst, src, .. } = inst
+                        && oxvba_rt_abi::host_entry::value::needs_helper(inst, &plan.layout)
+                    {
+                        let from = plan.layout.operand_type(src).expect("admitted conversion");
+                        let to =
+                            plan.layout.slots[plan.layout.slot(*dst).expect("admitted result")];
+                        let input = lower.operand(&mut b, src, from);
+                        let value = match (from, to) {
+                            (ScalarType::Double, ScalarType::Long) => {
+                                let helper = module.declare_func_in_func(long_from_f64, b.func);
+                                let call = b.ins().call(helper, &[runtime, input, call_output_ptr]);
+                                let status = b.inst_results(call)[0];
+                                check_status(&mut b, status);
+                                b.ins().stack_load(types::I32, call_output, 0)
+                            }
+                            (ScalarType::Boolean, ScalarType::Double) => {
+                                b.ins().fcvt_from_sint(types::F64, input)
+                            }
+                            (ScalarType::Boolean, ScalarType::Long) => input,
+                            (ScalarType::Double | ScalarType::Long, ScalarType::Boolean) => {
+                                let truth = if from == ScalarType::Double {
+                                    lower.finite(&mut b, input);
+                                    let zero = b.ins().f64const(0.0);
+                                    b.ins().fcmp(ir::condcodes::FloatCC::NotEqual, input, zero)
+                                } else {
+                                    b.ins().icmp_imm(ir::condcodes::IntCC::NotEqual, input, 0)
+                                };
+                                let truth = b.ins().uextend(types::I32, truth);
+                                b.ins().ineg(truth)
+                            }
+                            _ => unreachable!("admitted numeric conversion"),
+                        };
+                        lower.store_slot(&mut b, plan.layout.slot(*dst).unwrap(), to, value);
+                        continue;
+                    }
                     let call_plan = match inst {
                         OxInst::CallProc { dst, proc, args } => {
                             let callee = &plans[&proc.0];
@@ -234,12 +365,6 @@ pub fn compile_native_scalars(
                         _ => None,
                     };
                     if let Some((dst, args, parameters, result_type, function)) = call_plan {
-                        let output = b.create_sized_stack_slot(StackSlotData::new(
-                            StackSlotKind::ExplicitSlot,
-                            8,
-                            3,
-                        ));
-                        let output_ptr = b.ins().stack_addr(types::I64, output, 0);
                         let mut values = vec![runtime];
                         for (arg, ty) in args.iter().zip(parameters) {
                             let OxArg::ByVal(op) = arg else {
@@ -247,19 +372,15 @@ pub fn compile_native_scalars(
                             };
                             values.push(lower.operand(&mut b, op, *ty));
                         }
-                        values.push(output_ptr);
+                        values.push(call_output_ptr);
                         let target = module.declare_func_in_func(function, b.func);
                         let call = b.ins().call(target, &values);
                         let status = b.inst_results(call)[0];
-                        let failed = b.ins().icmp_imm(ir::condcodes::IntCC::NotEqual, status, 0);
-                        let fail = b.create_block();
-                        let next = b.create_block();
-                        b.ins().brif(failed, fail, &[], next, &[]);
-                        b.switch_to_block(fail);
-                        b.ins().return_(&[status]);
-                        b.switch_to_block(next);
+                        check_status(&mut b, status);
                         if let Some(dst) = dst {
-                            let result = b.ins().stack_load(machine_type(result_type), output, 0);
+                            let result =
+                                b.ins()
+                                    .stack_load(machine_type(result_type), call_output, 0);
                             lower.store_slot(
                                 &mut b,
                                 plan.layout.slot(dst).expect("admitted call output"),
@@ -302,6 +423,25 @@ pub fn compile_native_scalars(
             }
             b.seal_all_blocks();
             b.finalize();
+        }
+        // ScalarLower emits early status returns too. Restore the depth on
+        // every accepted exit, including arithmetic and helper failures.
+        let returns: Vec<_> = context
+            .func
+            .layout
+            .blocks()
+            .flat_map(|block| context.func.layout.block_insts(block))
+            .filter(|inst| {
+                *inst != depth_guard && context.func.dfg.insts[*inst].opcode() == ir::Opcode::Return
+            })
+            .collect();
+        use cranelift_codegen::cursor::{Cursor, FuncCursor};
+        for inst in returns {
+            let mut cursor = FuncCursor::new(&mut context.func);
+            cursor.goto_inst(inst);
+            cursor
+                .ins()
+                .store(ir::MemFlagsData::new(), depth, runtime, DEPTH_OFFSET);
         }
         module
             .define_function(plan.function, &mut context)
@@ -369,11 +509,12 @@ pub fn compile_native_wrapper(
         let output =
             b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
         let runtime =
-            b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+            b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 16, 3));
         let zero = b.ins().iconst(types::I64, 0);
         b.ins().stack_store(zero, output, 0);
         let budget = b.ins().iconst(types::I64, -1);
         b.ins().stack_store(budget, runtime, 0);
+        b.ins().stack_store(zero, runtime, DEPTH_OFFSET);
         let runtime = b.ins().stack_addr(types::I64, runtime, 0);
         let output_ptr = b.ins().stack_addr(types::I64, output, 0);
         let mut args = vec![runtime];

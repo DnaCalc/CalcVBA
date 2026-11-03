@@ -43,6 +43,24 @@ pub unsafe extern "C" fn cvb_sqr_f64(
     }
 }
 
+/// # Safety
+/// out is a live aligned, writable, nonaliasing i32 result for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cvb_long_from_f64(
+    _context: *mut std::ffi::c_void,
+    value: f64,
+    out: *mut i32,
+) -> i32 {
+    match oxvba_eval::typed::long_from_f64(value) {
+        Ok(value) => {
+            // SAFETY: the generated caller supplies its private result slot.
+            unsafe { out.write(value) };
+            0
+        }
+        Err(error) => error.code,
+    }
+}
+
 const fn abi_hash(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     let mut at = 0;
@@ -64,19 +82,23 @@ mod thread {
     use windows_sys::Win32::{
         Foundation::{
             CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, GetLastError, SetLastError,
+            WAIT_TIMEOUT,
         },
         System::{
             LibraryLoader::DisableThreadLibraryCalls,
             SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH},
-            Threading::{GetCurrentProcess, GetCurrentThread, GetCurrentThreadId, GetThreadId},
+            Threading::{
+                GetCurrentProcess, GetCurrentThread, GetCurrentThreadId, GetThreadId,
+                WaitForSingleObject,
+            },
         },
     };
     static OWNER: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
 
     #[unsafe(no_mangle)]
     pub extern "C" fn cvb_enter_scalar() -> i32 {
-        // SAFETY: OS pseudo handles are valid in this process. A retained real
-        // thread handle prevents thread-ID reuse until this DLL is unloaded.
+        // SAFETY: OS pseudo handles are valid in this process. The retained
+        // real handle identifies the original thread even after termination.
         unsafe {
             let mut owner = OWNER.load(Ordering::Acquire);
             if owner.is_null() {
@@ -107,7 +129,11 @@ mod thread {
                     }
                 }
             }
-            if GetThreadId(owner) == GetCurrentThreadId() {
+            // A zero timeout only tests thread state; it never waits. Do not
+            // rely on an ID remaining unique after its thread terminates.
+            if WaitForSingleObject(owner, 0) == WAIT_TIMEOUT
+                && GetThreadId(owner) == GetCurrentThreadId()
+            {
                 0
             } else {
                 SetLastError(1444);

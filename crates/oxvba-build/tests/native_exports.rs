@@ -38,7 +38,7 @@ fn patched_numeric_exports_roundtrip_through_vm3_and_jit_declare() {
     .unwrap();
     let bytes = std::fs::read(&output.dll_path).unwrap();
     let file = object::File::parse(bytes.as_slice()).unwrap();
-    assert_eq!(file.exports().unwrap().len(), 9);
+    assert_eq!(file.exports().unwrap().len(), 32);
     assert!(file.section_by_name(".cvbtext").is_some());
     let image = file.section_by_name(".cvbimg").unwrap();
     let parsed =
@@ -106,5 +106,78 @@ fn native_build_refuses_private_byref_state_and_unsupported_reachable_bodies() {
         .to_string();
         assert!(error.contains(message), "expected {message} in {error}");
         assert!(!out.exists(), "refused build published artifacts");
+    }
+}
+
+#[test]
+fn native_build_refuses_more_than_32_parameters_and_invalid_export_ordinals() {
+    let temp = Directory::new();
+    let parameters = (0..33)
+        .map(|i| format!("ByVal p{i} As Long"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let cases = [
+        (
+            format!("Public Function Selected({parameters}) As Long\nSelected=p0\nEnd Function"),
+            "",
+            "argument/slot bounds",
+        ),
+        (
+            "Public Function Selected() As Long\nSelected=1&\nEnd Function".into(),
+            "<Ordinal>0</Ordinal>",
+            "ordinal",
+        ),
+    ];
+    for (index, (source, metadata, expected)) in cases.iter().enumerate() {
+        std::fs::write(temp.0.join("Code.bas"), source).unwrap();
+        let project = temp.0.join("Refused.basproj");
+        std::fs::write(&project, format!("<Project><PropertyGroup><OutputType>NativeLibrary</OutputType></PropertyGroup><ItemGroup><Module Include=\"Code.bas\"/><NativeExport Include=\"Selected\"><Module>Code</Module><Procedure>Selected</Procedure>{metadata}</NativeExport></ItemGroup></Project>")).unwrap();
+        let out = temp.0.join(format!("out{index}"));
+        let error = build_native_library(&NativeLibraryBuildOptions {
+            project_path: project,
+            out_dir: out.clone(),
+            template_path: None,
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains(expected), "{error}");
+        assert!(!out.exists());
+    }
+}
+
+#[test]
+fn escaped_xml_export_names_resolve_by_the_decoded_name() {
+    use object::Object;
+    let temp = Directory::new();
+    let project = temp.0.join("Names.basproj");
+    std::fs::write(
+        temp.0.join("Code&Numbers.bas"),
+        "Attribute VB_Name = \"Code\"\nPublic Function Selected() As Long\nSelected=42&\nEnd Function",
+    )
+    .unwrap();
+    std::fs::write(&project,"<Project><PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>Names</ProjectName></PropertyGroup><ItemGroup><Module Include=\"Code&amp;Numbers.bas\"/><NativeExport Include=\"A&amp;B.C\"><Module>Code</Module><Procedure>Selected</Procedure></NativeExport></ItemGroup></Project>").unwrap();
+    let output = build_native_library(&NativeLibraryBuildOptions {
+        project_path: project,
+        out_dir: temp.0.join("out"),
+        template_path: None,
+    })
+    .unwrap();
+    let bytes = std::fs::read(&output.dll_path).unwrap();
+    let file = object::File::parse(bytes.as_slice()).unwrap();
+    assert_eq!(file.exports().unwrap()[0].name(), b"A&B.C");
+    let source = format!(
+        "Private Declare PtrSafe Function ReadName Lib \"{}\" Alias \"A&B.C\" () As Long\nSub Main()\nDim result As Long\nresult=ReadName()\nEnd Sub",
+        output.dll_path.display()
+    );
+    for config in [oxvba_host::HostConfig::vm3(), oxvba_host::HostConfig::jit()] {
+        let mut engine = oxvba_host::Engine::new(config);
+        engine.set_host_policy(oxvba_hal::model::HostPolicy::native());
+        assert!(
+            engine
+                .execute_source_with_variant_snapshot_clean(&source)
+                .unwrap()
+                .iter()
+                .any(|value| value.as_i32() == Some(42))
+        );
     }
 }

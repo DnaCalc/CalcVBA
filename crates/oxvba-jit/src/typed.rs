@@ -774,7 +774,7 @@ impl ScalarLower<'_> {
             value
         }
     }
-    fn finite(&self, b: &mut FunctionBuilder<'_>, value: Value) {
+    pub(crate) fn finite(&self, b: &mut FunctionBuilder<'_>, value: Value) {
         let abs = b.ins().fabs(value);
         let max = b.ins().f64const(f64::MAX);
         let finite = b
@@ -1169,11 +1169,16 @@ impl ScalarLower<'_> {
                 } else {
                     let a = b.ins().sextend(types::I64, a);
                     let c = b.ins().sextend(types::I64, c);
+                    if matches!(op, ArithOp::IntDiv | ArithOp::Mod) {
+                        let zero = b.ins().icmp_imm(ir::condcodes::IntCC::Equal, c, 0);
+                        self.fail_if(b, zero, 11);
+                    }
                     let wide = match op {
                         ArithOp::Add => b.ins().iadd(a, c),
                         ArithOp::Sub => b.ins().isub(a, c),
                         ArithOp::Mul => b.ins().imul(a, c),
-                        _ => unreachable!("admitted arithmetic"),
+                        ArithOp::IntDiv => b.ins().sdiv(a, c),
+                        ArithOp::Mod => b.ins().srem(a, c),
                     };
                     let narrow = b.ins().ireduce(types::I32, wide);
                     let back = b.ins().sextend(types::I64, narrow);
@@ -1236,6 +1241,37 @@ impl ScalarLower<'_> {
                 };
                 let value = b.ins().uextend(types::I32, truth);
                 let value = b.ins().ineg(value);
+                (*dst, value)
+            }
+            OxInst::Not { dst, src } => {
+                let ty = self.layout.operand_type(src).expect("admitted Not");
+                let value = self.operand(b, src, ty);
+                (*dst, b.ins().bnot(value))
+            }
+            OxInst::Logical { dst, op, lhs, rhs } => {
+                let left = self
+                    .layout
+                    .operand_type(lhs)
+                    .expect("admitted logical operand");
+                let right = self
+                    .layout
+                    .operand_type(rhs)
+                    .expect("admitted logical operand");
+                let a = self.operand(b, lhs, left);
+                let c = self.operand(b, rhs, right);
+                let value = match op {
+                    oxvba_oxir::LogicalOp::And => b.ins().band(a, c),
+                    oxvba_oxir::LogicalOp::Or => b.ins().bor(a, c),
+                    oxvba_oxir::LogicalOp::Xor => b.ins().bxor(a, c),
+                    oxvba_oxir::LogicalOp::Eqv => {
+                        let xor = b.ins().bxor(a, c);
+                        b.ins().bnot(xor)
+                    }
+                    oxvba_oxir::LogicalOp::Imp => {
+                        let not = b.ins().bnot(a);
+                        b.ins().bor(not, c)
+                    }
+                };
                 (*dst, value)
             }
             _ => unreachable!("admitted instruction"),

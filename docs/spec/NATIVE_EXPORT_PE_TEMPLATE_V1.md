@@ -16,7 +16,12 @@ Owner direction (2026-11-03):
 
 Status: owner-directed design; N1-N5 implementation is tracked by bd-2pntk.
 N1 is implemented; N2 currently admits x64 ByVal Long/Double/Boolean Functions,
-direct local calls and Double Abs/Sqr helpers. Other numeric widths and all N3
+direct calls across standard modules, numeric CLng/CDbl/CBool conversions and
+Double Abs/Sqr helpers. Long integer division/modulo and Boolean/Long bitwise
+operators use the shared VM3/JIT numeric lowering. Generated code targets baseline x64, not the build CPU's
+optional instructions. Calls have at most 32 parameters and 128 active native
+procedure frames; exceeding the depth returns VBA status 28 through the ordinary
+zero-on-error wrapper. Other numeric widths and all N3
 ownership/state/error APIs remain unfinished and are refused.
 
 ## 1. Declaration
@@ -72,7 +77,12 @@ Excel VBA `Declare` of the export round-trips exactly.
 **Returns**
 - Scalars return in registers.
 - `String` returns a `BSTR`; the caller frees it.
-- `Variant` and UDT results use a hidden result pointer as the first argument.
+- A 16-byte `Variant` result uses a hidden result pointer as the first argument;
+  the callee also returns that pointer in RAX.
+- UDT results follow the Windows x64 aggregate rules: eligible plain 1-, 2-, 4-
+  and 8-byte aggregates return in RAX; other aggregates use the hidden pointer
+  and return it in RAX. Do not apply the hidden-pointer rule to every UDT.
+  These boundary types remain refused until N3 tests the C and VBA Declare ABI.
 
 **Unhandled VBA error in an export**
 - The export returns the type's zero value.
@@ -84,12 +94,11 @@ Excel VBA `Declare` of the export round-trips exactly.
 ## 3. Direct compiled path (AOT)
 
 1. **One lowering, two module backends.**
-   - Today `oxvba-jit` lowering is tied to `cranelift_jit::JITModule` (lowering.rs:19-73, 521+;
-     helpers.rs:524).
-   - Make the lowering generic over `cranelift_module::Module`.
-   - Keep `JITModule` for the JIT.
-   - Add `PeModule` (in a new crate, `oxvba-aot`). It lays functions and data out at chosen section
-     offsets and resolves relocations itself.
+   - Shared lowering and import declaration are generic over `cranelift_module::Module`.
+   - The JIT still owns `JITModule` and retains its existing entry paths.
+   - `PeModule` (in `oxvba-aot`) lays functions and data out at chosen section
+     offsets and resolves relocations itself. Its x64 backend does not infer
+     optional CPU features from the build host.
    - Do not go through `cranelift-object` and a COFF link step.
 2. **Whole project compiled native.** For every procedure reachable from the exports:
    - calls between project procedures are direct `rel32` calls;
@@ -120,8 +129,10 @@ Excel VBA `Declare` of the export round-trips exactly.
   under `ErrorPolicy=HResult`, and sets a defined Win32 last-error value on the rejected calling thread. It must not mutate the owning runtime context from that thread.
 - Such calls are never marshalled and never run concurrently.
 - No locks, no per-thread contexts, and no thread-safety analysis in the compiler. Claiming the owning thread uses an atomic thread ID (or equivalent OS primitive) so simultaneous first calls cannot create a data race. All context reads and writes follow the successful thread check.
-- The initial template atomically claims a retained OS thread handle; it prevents
-  thread-ID reuse after the owner exits. DllMain closes only that handle on unload.
+- The initial template atomically claims a retained OS thread handle. The entry
+  check first verifies that the owner has not terminated, using a zero-timeout
+  thread-state query, and then compares the thread ID. It does not rely on an ID
+  remaining unique after termination. DllMain closes only that handle on unload.
   A rejected caller gets Win32 ERROR_INVALID_THREAD_ID (1444), without a context write.
 
 ## 4. Template DLL (prebuilt per architecture; CalcVBA developer-time build)
@@ -267,6 +278,8 @@ future metadata until implemented; reject them rather than silently ignoring the
 - [Microsoft PE format](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format).
 - [Microsoft x64 calling convention](https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention).
 - [Microsoft x64 unwind tables](https://learn.microsoft.com/en-us/cpp/build/exception-handling-x64).
+- [Windows thread handles and IDs](https://learn.microsoft.com/en-us/windows/win32/procthread/thread-handles-and-identifiers)
+  and [zero-timeout thread-state queries](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject).
 - Cranelift 0.133.1 Module trait and x64 unwind emitter (the pinned dependency sources).
 - .basproj §2.5.1 and HAL Declare ABI spec as retained in git before 78e386cf.
 - Owner direction: calcvba-native-export-design.md, 2026-11-03.

@@ -96,6 +96,38 @@ fn scalar_type(ty: &OxTy) -> Option<ScalarType> {
     }
 }
 
+fn physical_operand_type(
+    func: &OxFunc,
+    physical: &[Option<ScalarType>],
+    global_base: usize,
+    op: &OxOperand,
+) -> Option<ScalarType> {
+    match op {
+        OxOperand::Use(OxPlace::Local(id)) if id.0 < func.locals.len() => physical[id.0],
+        OxOperand::Use(OxPlace::Temp(id)) => func
+            .locals
+            .len()
+            .checked_add(id.0)
+            .and_then(|i| physical.get(i))
+            .copied()
+            .flatten(),
+        OxOperand::Use(OxPlace::Global(id)) => physical.get(global_base + id.0).copied().flatten(),
+        OxOperand::Const(OxConst::I16(_) | OxConst::I32(_)) => Some(ScalarType::Long),
+        OxOperand::Const(OxConst::F64(_)) => Some(ScalarType::Double),
+        OxOperand::Const(OxConst::Bool(_)) => Some(ScalarType::Boolean),
+        _ => None,
+    }
+}
+
+fn logical_type(lhs: ScalarType, rhs: ScalarType) -> Option<ScalarType> {
+    match (lhs, rhs) {
+        (ScalarType::Boolean, ScalarType::Boolean) => Some(ScalarType::Boolean),
+        (ScalarType::Long, ScalarType::Long | ScalarType::Boolean)
+        | (ScalarType::Boolean, ScalarType::Long) => Some(ScalarType::Long),
+        _ => None,
+    }
+}
+
 /// Transfer the caller's budget into a stack-owned typed activation.
 /// # Safety
 /// State follows RawExecState's live unique same-thread contract; context is a
@@ -372,28 +404,40 @@ impl ScalarLayout {
                     .imports
                     .get(import.0)
                     .ok_or("invalid native builtin import")?;
-                let native = [NativeImplId::Abs, NativeImplId::Sqr]
-                    .into_iter()
-                    .find(|id| {
-                        id.library_member().is_some_and(|(module, member)| {
-                            request.unit.eq_ignore_ascii_case("VBA")
-                                && request.token.matches(&ExportToken::ModuleFunc {
-                                    module: module.into(),
-                                    member: member.into(),
-                                    kind: ProjectMemberKind::Method,
-                                })
-                        })
-                    });
+                let native = [
+                    NativeImplId::Abs,
+                    NativeImplId::Sqr,
+                    NativeImplId::CLng,
+                    NativeImplId::CDbl,
+                    NativeImplId::CBool,
+                ]
+                .into_iter()
+                .find(|id| {
+                    id.library_member().is_some_and(|(module, member)| {
+                        request.unit.eq_ignore_ascii_case("VBA")
+                            && request.token.matches(&ExportToken::ModuleFunc {
+                                module: module.into(),
+                                member: member.into(),
+                                kind: ProjectMemberKind::Method,
+                            })
+                    })
+                });
                 if let Some(native) = native {
+                    let (parameter, result) = match native {
+                        NativeImplId::CLng => (ScalarType::Variant, ScalarType::Long),
+                        NativeImplId::CDbl => (ScalarType::Variant, ScalarType::Double),
+                        NativeImplId::CBool => (ScalarType::Variant, ScalarType::Boolean),
+                        _ => (ScalarType::Double, ScalarType::Double),
+                    };
                     external.insert(
                         *import,
                         LinkedCall {
                             target: LinkedTarget::Builtin(native),
                             signature: CallSignature {
-                                parameters: vec![ScalarType::Double],
+                                parameters: vec![parameter],
                                 by_ref: vec![false],
                                 optional: vec![false],
-                                result: Some(ScalarType::Double),
+                                result: Some(result),
                             },
                         },
                     );
@@ -922,6 +966,21 @@ impl ScalarLayout {
             for block in &func.blocks {
                 for inst in &block.instrs {
                     let source_result = match inst {
+                        OxInst::Not {
+                            dst: OxPlace::Temp(id),
+                            src,
+                        } => physical_operand_type(func, &physical, global_base, src)
+                            .filter(|ty| matches!(ty, ScalarType::Boolean | ScalarType::Long))
+                            .map(|ty| (*id, Some(ty))),
+                        OxInst::Logical {
+                            dst: OxPlace::Temp(id),
+                            lhs,
+                            rhs,
+                            ..
+                        } => physical_operand_type(func, &physical, global_base, lhs)
+                            .zip(physical_operand_type(func, &physical, global_base, rhs))
+                            .and_then(|(left, right)| logical_type(left, right))
+                            .map(|ty| (*id, Some(ty))),
                         OxInst::CallProc {
                             dst: Some(OxPlace::Temp(id)),
                             proc,
@@ -1844,7 +1903,8 @@ impl ScalarLayout {
                             ScalarType::Double,
                             NumericMode::Checked(N::Double) | NumericMode::Widening
                         )
-                ) || !matches!(op, ArithOp::Add | ArithOp::Sub | ArithOp::Mul)
+                ) || !(matches!(op, ArithOp::Add | ArithOp::Sub | ArithOp::Mul)
+                    || (ty == ScalarType::Long && matches!(op, ArithOp::IntDiv | ArithOp::Mod)))
                 {
                     return Err("typed arithmetic mode requires the dynamic runtime".into());
                 }
@@ -1885,6 +1945,21 @@ impl ScalarLayout {
                     || (self.owning && self.slots[self.slot(*dst)?] == ScalarType::Variant) =>
             {
                 self.comparison_type(lhs, rhs).map(|_| ())
+            }
+            OxInst::Logical { dst, lhs, rhs, .. }
+                if logical_type(self.operand_type(lhs)?, self.operand_type(rhs)?)
+                    == Some(self.slots[self.slot(*dst)?]) =>
+            {
+                Ok(())
+            }
+            OxInst::Not { dst, src }
+                if self.slots[self.slot(*dst)?] == self.operand_type(src)?
+                    && matches!(
+                        self.operand_type(src)?,
+                        ScalarType::Long | ScalarType::Boolean
+                    ) =>
+            {
+                Ok(())
             }
             OxInst::Not { dst, src }
                 if self.owning

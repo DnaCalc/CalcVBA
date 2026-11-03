@@ -305,15 +305,24 @@ impl<'p> TypedInterpreter<'p> {
                     ScalarBits::double(value)
                 } else {
                     let (a, b) = (a.as_long(), b.as_long());
-                    ScalarBits::long(
-                        match op {
-                            ArithOp::Add => a.checked_add(b),
-                            ArithOp::Sub => a.checked_sub(b),
-                            ArithOp::Mul => a.checked_mul(b),
-                            _ => unreachable!("admitted arithmetic"),
+                    let result = match op {
+                        ArithOp::Add => a.checked_add(b),
+                        ArithOp::Sub => a.checked_sub(b),
+                        ArithOp::Mul => a.checked_mul(b),
+                        ArithOp::IntDiv | ArithOp::Mod => {
+                            if b == 0 {
+                                return Err(11);
+                            }
+                            let wide = if *op == ArithOp::IntDiv {
+                                i64::from(a) / i64::from(b)
+                            } else {
+                                i64::from(a) % i64::from(b)
+                            };
+                            i32::try_from(wide).ok()
                         }
-                        .ok_or(6)?,
-                    )
+                    }
+                    .ok_or(6)?;
+                    ScalarBits::long(result)
                 };
                 (*dst, value)
             }
@@ -378,6 +387,30 @@ impl<'p> TypedInterpreter<'p> {
                     bits.as_long() != 0
                 };
                 (*dst, ScalarBits::long(if truth { -1 } else { 0 }))
+            }
+            OxInst::Not { dst, src } => {
+                let ty = self.layout.operand_type(src).expect("admitted Not");
+                (*dst, ScalarBits::long(!frame.read(src, ty)?.as_long()))
+            }
+            OxInst::Logical { dst, op, lhs, rhs } => {
+                let left = self
+                    .layout
+                    .operand_type(lhs)
+                    .expect("admitted logical operand");
+                let right = self
+                    .layout
+                    .operand_type(rhs)
+                    .expect("admitted logical operand");
+                let a = frame.read(lhs, left)?.as_long();
+                let b = frame.read(rhs, right)?.as_long();
+                let value = match op {
+                    oxvba_oxir::LogicalOp::And => a & b,
+                    oxvba_oxir::LogicalOp::Or => a | b,
+                    oxvba_oxir::LogicalOp::Xor => a ^ b,
+                    oxvba_oxir::LogicalOp::Eqv => !(a ^ b),
+                    oxvba_oxir::LogicalOp::Imp => !a | b,
+                };
+                (*dst, ScalarBits::long(value))
             }
             _ => unreachable!("admitted instruction"),
         };

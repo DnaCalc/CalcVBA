@@ -65,6 +65,16 @@ pub fn narrow_i64_to_u8(value: i64) -> Result<u8, ArithError> {
     u8::try_from(value).map_err(|_| ArithError::overflow())
 }
 
+/// CLng's Double conversion, including banker's rounding before the range check.
+pub fn long_from_f64(value: f64) -> Result<i32, ArithError> {
+    let rounded = value.round_ties_even();
+    if rounded.is_finite() && rounded >= f64::from(i32::MIN) && rounded <= f64::from(i32::MAX) {
+        Ok(rounded as i32)
+    } else {
+        Err(ArithError::overflow())
+    }
+}
+
 pub fn currency_add_scaled(lhs: i64, rhs: i64) -> Result<i64, ArithError> {
     currency_add_scaled_i128(i128::from(lhs), i128::from(rhs))
 }
@@ -143,6 +153,33 @@ mod tests {
     use crate::arith;
     use oxvba_bundle::{NumericCoerceTarget, NumericMode};
     use oxvba_runtime::Variant;
+
+    #[test]
+    fn long_from_double_rounds_ties_even_before_checking_the_long_limits() {
+        for (input, expected) in [
+            (-3.5, -4),
+            (-2.5, -2),
+            (-1.5, -2),
+            (-0.5, 0),
+            (0.5, 0),
+            (1.5, 2),
+            (2.5, 2),
+            (3.5, 4),
+            (2_147_483_647.0, i32::MAX),
+            (-2_147_483_648.5, i32::MIN),
+        ] {
+            assert_eq!(long_from_f64(input).unwrap(), expected, "{input}");
+        }
+        for input in [
+            2_147_483_647.5,
+            -2_147_483_648.6,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            assert_eq!(long_from_f64(input).unwrap_err().code, 6, "{input}");
+        }
+    }
     use proptest::prelude::*;
 
     fn assert_i32_equivalent(

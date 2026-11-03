@@ -60,7 +60,9 @@ impl PeModule {
         ] {
             flags.set(name, value).map_err(|e| Error(e.to_string()))?;
         }
-        let isa = cranelift_native::builder()
+        // A DLL can be distributed to another x64 machine. Unlike the JIT,
+        // do not enable instructions merely because this build host has them.
+        let isa = cranelift_native::builder_with_options(false)
             .map_err(|e| Error(e.into()))?
             .finish(settings::Flags::new(flags))
             .map_err(|e| Error(e.to_string()))?;

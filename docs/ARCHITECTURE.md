@@ -114,7 +114,11 @@ no forms-runtime crate here yet.
 runs the engine. NativeLibrary instead patches compiled code, named exports and
 Windows unwind information into the shipped template without a user linker.
 It currently admits ByVal Long/Double/Boolean Functions, direct local procedure
-calls and typed Abs/Sqr helpers. Wrappers call their procedure directly; there
+calls, numeric CLng/CDbl/CBool conversions and typed Abs/Sqr helpers.
+Long integer division/modulo and Boolean/Long bitwise lowering is shared with VM3/JIT.
+Native code uses baseline x64 instructions, 32-argument signatures and at most 128 active
+procedure frames. One private result slot is reused for synchronous calls.
+Wrappers call their procedure directly; there
 is no interpreter or generic dispatch entry. Other widths, owning boundary
 types, module state and native EXE output remain unfinished. No XLL target,
 registration metadata or conversion code belongs to CalcVBA.

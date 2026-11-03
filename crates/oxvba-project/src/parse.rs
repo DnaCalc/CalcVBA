@@ -61,6 +61,9 @@ pub fn parse_basproj_xml(xml: &str) -> Result<BasProj, BasProjError> {
                     | "COMReference" | "NativeReference" | "NativeExport"
                         if in_item_group =>
                     {
+                        if tag == "NativeExport" {
+                            validate_native_export_attributes(e)?;
+                        }
                         let include = extract_include_attr(e)?;
                         current_item = Some(ItemContext::new(&tag, include));
                     }
@@ -70,6 +73,12 @@ pub fn parse_basproj_xml(xml: &str) -> Result<BasProj, BasProjError> {
             Ok(Event::Empty(ref e)) => {
                 let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 match tag.as_str() {
+                    _ if current_item.is_some() => {
+                        current_item
+                            .as_mut()
+                            .expect("current item")
+                            .set_metadata(&tag, "");
+                    }
                     "Import" if in_project => {
                         // Collect import paths for later processing
                         for attr in e.attributes().flatten() {
@@ -85,6 +94,9 @@ pub fn parse_basproj_xml(xml: &str) -> Result<BasProj, BasProjError> {
                     | "COMReference" | "NativeReference" | "NativeExport"
                         if in_item_group =>
                     {
+                        if tag == "NativeExport" {
+                            validate_native_export_attributes(e)?;
+                        }
                         let include = extract_include_attr(e)?;
                         let ctx = ItemContext::new(&tag, include);
                         emit_item(
@@ -243,7 +255,12 @@ fn extract_include_attr(e: &quick_xml::events::BytesStart<'_>) -> Result<String,
     for attr in e.attributes().flatten() {
         let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
         if key == "Include" {
-            return Ok(String::from_utf8_lossy(&attr.value).to_string());
+            return attr
+                .unescape_value()
+                .map(|value| value.into_owned())
+                .map_err(|error| {
+                    BasProjError::XmlParse(format!("XML Include attribute unescape error: {error}"))
+                });
         }
     }
     let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
@@ -251,6 +268,21 @@ fn extract_include_attr(e: &quick_xml::events::BytesStart<'_>) -> Result<String,
         element: tag,
         attribute: "Include".to_string(),
     })
+}
+
+fn validate_native_export_attributes(
+    e: &quick_xml::events::BytesStart<'_>,
+) -> Result<(), BasProjError> {
+    for attribute in e.attributes() {
+        let attribute = attribute.map_err(|error| BasProjError::XmlParse(error.to_string()))?;
+        if attribute.key.as_ref() != b"Include" {
+            return Err(BasProjError::XmlParse(format!(
+                "unsupported NativeExport attribute {}",
+                String::from_utf8_lossy(attribute.key.as_ref())
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn apply_property(

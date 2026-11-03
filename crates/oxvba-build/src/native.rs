@@ -109,7 +109,7 @@ pub fn build_native_library(
     let mut enter_signature = module.make_signature();
     enter_signature.returns.push(AbiParam::new(types::I32));
     let enter = module
-        .declare_helper("cvb_enter_scalar", 1, &enter_signature)
+        .declare_helper("cvb_enter_scalar", 2, &enter_signature)
         .map_err(native_error)?;
     let ptr = module.target_config().pointer_type();
     let mut math_signature = module.make_signature();
@@ -119,6 +119,9 @@ pub fn build_native_library(
         AbiParam::new(ptr),
     ];
     math_signature.returns.push(AbiParam::new(types::I32));
+    let long_from_f64 = module
+        .declare_helper("cvb_long_from_f64", 1, &math_signature)
+        .map_err(native_error)?;
     let mut library_helpers = std::collections::HashMap::new();
     for (native, name) in [
         (oxvba_bundle::NativeImplId::Abs, "cvb_abs_f64"),
@@ -131,9 +134,14 @@ pub fn build_native_library(
                 .map_err(native_error)?,
         );
     }
-    let plans =
-        oxvba_jit::native::compile_native_scalars(&mut module, program, &roots, &library_helpers)
-            .map_err(native_error)?;
+    let plans = oxvba_jit::native::compile_native_scalars(
+        &mut module,
+        program,
+        &roots,
+        &library_helpers,
+        long_from_f64,
+    )
+    .map_err(native_error)?;
     let mut exports = Vec::new();
     for (index, (selected, root)) in loaded.native_exports.iter().zip(&roots).enumerate() {
         let body = plans

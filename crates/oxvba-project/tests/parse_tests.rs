@@ -2,6 +2,67 @@
 
 use oxvba_project::*;
 
+#[test]
+fn native_export_names_and_source_paths_decode_xml_attribute_entities() {
+    let project = parse_basproj_xml("<Project><ItemGroup><Module Include=\"M&amp;N.bas\"/><NativeExport Include=\"A&amp;B&#x2e;C\"><Module>M</Module><Procedure>F</Procedure></NativeExport></ItemGroup></Project>").unwrap();
+    assert_eq!(project.modules[0].include, "M&N.bas");
+    assert_eq!(project.native_exports[0].include, "A&B.C");
+    assert!(
+        parse_basproj_xml(
+            "<Project><ItemGroup><NativeExport Include=\"A&missing;B\"/></ItemGroup></Project>"
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn native_exports_refuse_unsupported_options_including_empty_elements_and_attributes() {
+    for name in [
+        "Category",
+        "Description",
+        "ArgumentDescriptions",
+        "StringEncoding",
+        "ErrorPolicy",
+    ] {
+        for item in [
+            format!("<NativeExport Include=\"F\"><{name}>ignored</{name}></NativeExport>"),
+            format!("<NativeExport Include=\"F\"><{name}/></NativeExport>"),
+            format!("<NativeExport Include=\"F\" {name}=\"ignored\"/>"),
+            format!("<NativeExport Include=\"F\" {name}=\"ignored\"></NativeExport>"),
+        ] {
+            let error =
+                parse_basproj_xml(&format!("<Project><ItemGroup>{item}</ItemGroup></Project>"))
+                    .unwrap_err()
+                    .to_string();
+            assert!(error.contains(name), "{item}: {error}");
+        }
+    }
+    assert!(
+        parse_basproj_xml(
+            "<Project><ItemGroup><NativeExport Include=\"F\" Include=\"G\"/></ItemGroup></Project>"
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn native_library_replaces_the_xll_specific_output_type() {
+    assert!(
+        parse_basproj_xml(
+            "<Project><PropertyGroup><OutputType>Addin</OutputType></PropertyGroup></Project>"
+        )
+        .is_err()
+    );
+    let project = parse_basproj_xml(
+        "<Project><PropertyGroup><OutputType>NativeLibrary</OutputType></PropertyGroup></Project>",
+    )
+    .unwrap();
+    assert_eq!(
+        project.properties.output_type,
+        Some(OutputType::NativeLibrary)
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Use Case A: Embedded Host Module
 // ---------------------------------------------------------------------------

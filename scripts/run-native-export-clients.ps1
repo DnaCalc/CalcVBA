@@ -53,7 +53,7 @@ $script:nativeDescriptor.module_source = $script:nativeSource
 $script:nativeDescriptor.run_procedure = 'OracleSelfTest.ProbeNativeExports'
 $script:nativeDescriptor.macro_probe_target = $script:nativeDescriptor.run_procedure
 $script:nativeDescriptor.expected_value = $script:nativeExpected
-$script:nativeDescriptor.purpose = 'Named AOT numeric exports: direct procedures, Boolean ABI, stack arguments and typed VBA math helpers'
+$script:nativeDescriptor.purpose = 'Named AOT scalars: casts, bitwise operators, integer faults, bounded recursion and 32-argument cross-module calls'
 function Get-ExcelOracleHarnessCases { return @($script:nativeDescriptor) }
 '@
         if (-not $supervisor.Contains($anchor)) { throw 'Excel supervisor bootstrap anchor changed' }

@@ -64,7 +64,7 @@ public static class ExcelOracleNativeMethods
     private static extern int GetWindowText(IntPtr hwnd, StringBuilder title, int maxCount);
 
     [DllImport("user32.dll")]
-    private static extern bool IsWindowVisible(IntPtr hwnd);
+    public static extern bool IsWindowVisible(IntPtr hwnd);
 
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr hwnd);
@@ -251,7 +251,9 @@ function Start-OwnedExcelApplication {
         launch_argv = @($startInfo.ArgumentList)
         bootstrap_workbook = $BootstrapWorkbook
     }
-    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    # Cold Office startup can overlap compiler/linker I/O. Keep waiting on this
+    # exact owned process instead of repeatedly launching fresh instances.
+    $deadline = [DateTime]::UtcNow.AddSeconds(90)
     $attemptCount = 0
     $truncatedObservationCount = 0
     $observations = [Collections.Generic.List[object]]::new()
@@ -331,6 +333,16 @@ function Start-OwnedExcelApplication {
                 $startupNoticeAcknowledged = $true
                 [ordered]@{ pid = $process.Id; action = "acknowledge-safe-mode-recovery-notice"; utc = [DateTime]::UtcNow.ToString("o") } |
                     ConvertTo-Json | Set-Content -LiteralPath "$DiagnosticPath.startup-action.json" -Encoding utf8NoBOM
+                # Invoke can return while the dismissed notice still appears in
+                # EnumWindows. Wait for this exact owned window to disappear;
+                # otherwise the next pass can reject its stale HWND as a modal.
+                $noticeHwnd = [IntPtr][int64]$blockingWindows[0].Hwnd
+                while ([DateTime]::UtcNow -lt $deadline) {
+                    [uint32]$noticePid = 0
+                    [void][ExcelOracleNativeMethods]::GetWindowThreadProcessId($noticeHwnd, [ref]$noticePid)
+                    if ($noticePid -ne $process.Id -or -not [ExcelOracleNativeMethods]::IsWindowVisible($noticeHwnd)) { break }
+                    Start-Sleep -Milliseconds 100
+                }
                 continue
             }
             if (-not $searchCoachDismissed -and $blockingWindows.Count -eq 1 -and

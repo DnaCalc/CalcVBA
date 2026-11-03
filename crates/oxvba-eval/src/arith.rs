@@ -951,6 +951,9 @@ pub fn coerce_numeric(v: &Variant, target: NumericCoerceTarget) -> R {
             }
         }
         NumericCoerceTarget::Long => {
+            if let Some(value) = v.as_f64() {
+                return typed::long_from_f64(value).map(Variant::from_i32);
+            }
             let n = int(v)?;
             if n >= i64::from(i32::MIN) && n <= i64::from(i32::MAX) {
                 Ok(Variant::from_i32(n as i32))

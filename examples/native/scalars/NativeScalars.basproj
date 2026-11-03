@@ -5,6 +5,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Module Include="Scalars.bas" />
+    <Module Include="NativeInternals.bas" />
+    <Module Include="Operators.bas" />
     <NativeExport Include="AddLong"><Module>Scalars</Module><Procedure>AddLong</Procedure><Ordinal>11</Ordinal></NativeExport>
     <NativeExport Include="DirectLong"><Module>Scalars</Module><Procedure>DirectLong</Procedure></NativeExport>
     <NativeExport Include="AddDouble"><Module>Scalars</Module><Procedure>AddDouble</Procedure></NativeExport>
@@ -14,5 +16,28 @@
     <NativeExport Include="Divide"><Module>Scalars</Module><Procedure>Divide</Procedure></NativeExport>
     <NativeExport Include="LibraryAbs"><Module>Scalars</Module><Procedure>LibraryAbs</Procedure></NativeExport>
     <NativeExport Include="LibrarySqr"><Module>Scalars</Module><Procedure>LibrarySqr</Procedure></NativeExport>
+    <NativeExport Include="RoundLong"><Module>Scalars</Module><Procedure>RoundLong</Procedure></NativeExport>
+    <NativeExport Include="RoundThenAdd"><Module>Scalars</Module><Procedure>RoundThenAdd</Procedure></NativeExport>
+    <NativeExport Include="BooleanDouble"><Module>Scalars</Module><Procedure>BooleanDouble</Procedure></NativeExport>
+    <NativeExport Include="BooleanLong"><Module>Scalars</Module><Procedure>BooleanLong</Procedure></NativeExport>
+    <NativeExport Include="DoubleBoolean"><Module>Scalars</Module><Procedure>DoubleBoolean</Procedure></NativeExport>
+    <NativeExport Include="LongBoolean"><Module>Scalars</Module><Procedure>LongBoolean</Procedure></NativeExport>
+    <NativeExport Include="SumTo"><Module>Scalars</Module><Procedure>SumTo</Procedure></NativeExport>
+    <NativeExport Include="Depth"><Module>Scalars</Module><Procedure>Depth</Procedure></NativeExport>
+    <NativeExport Include="Weighted32"><Module>Scalars</Module><Procedure>Weighted32</Procedure></NativeExport>
+    <NativeExport Include="IntegerDivide"><Module>Operators</Module><Procedure>IntegerDivide</Procedure></NativeExport>
+    <NativeExport Include="IntegerMod"><Module>Operators</Module><Procedure>IntegerMod</Procedure></NativeExport>
+    <NativeExport Include="BooleanAnd"><Module>Operators</Module><Procedure>BooleanAnd</Procedure></NativeExport>
+    <NativeExport Include="BooleanOr"><Module>Operators</Module><Procedure>BooleanOr</Procedure></NativeExport>
+    <NativeExport Include="BooleanXor"><Module>Operators</Module><Procedure>BooleanXor</Procedure></NativeExport>
+    <NativeExport Include="BooleanEqv"><Module>Operators</Module><Procedure>BooleanEqv</Procedure></NativeExport>
+    <NativeExport Include="BooleanImp"><Module>Operators</Module><Procedure>BooleanImp</Procedure></NativeExport>
+    <NativeExport Include="BooleanNot"><Module>Operators</Module><Procedure>BooleanNot</Procedure></NativeExport>
+    <NativeExport Include="LongAnd"><Module>Operators</Module><Procedure>LongAnd</Procedure></NativeExport>
+    <NativeExport Include="LongOr"><Module>Operators</Module><Procedure>LongOr</Procedure></NativeExport>
+    <NativeExport Include="LongXor"><Module>Operators</Module><Procedure>LongXor</Procedure></NativeExport>
+    <NativeExport Include="LongEqv"><Module>Operators</Module><Procedure>LongEqv</Procedure></NativeExport>
+    <NativeExport Include="LongImp"><Module>Operators</Module><Procedure>LongImp</Procedure></NativeExport>
+    <NativeExport Include="LongNot"><Module>Operators</Module><Procedure>LongNot</Procedure></NativeExport>
   </ItemGroup>
 </Project>

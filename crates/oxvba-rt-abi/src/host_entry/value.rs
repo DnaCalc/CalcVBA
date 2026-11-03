@@ -154,7 +154,11 @@ pub fn needs_helper(inst: &OxInst, layout: &ScalarLayout) -> bool {
     };
     match inst {
         OxInst::ComCallLate { .. } => !super::stack_instruction(inst, layout),
-        OxInst::ValidateAssignment { .. } | OxInst::Not { .. } => true,
+        OxInst::ValidateAssignment { .. } => true,
+        OxInst::Not { dst, src } => !layout.operand_type(src).is_ok_and(|from| {
+            matches!(from, ScalarType::Long | ScalarType::Boolean)
+                && layout.slot(*dst).is_ok_and(|i| layout.slots[i] == from)
+        }),
         OxInst::CallNative {
             callee:
                 oxvba_oxir::OxNativeCallee::Builtin(

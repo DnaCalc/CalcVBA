@@ -1,6 +1,8 @@
 //! Same-thread context borrowing across a synchronous native call.
 use crate::{Error, TypedContext};
 use std::cell::Cell;
+mod sync;
+pub use sync::{NativeCallbackSync, with_native_callback_sync};
 thread_local! {
     static CONTEXT: Cell<*mut TypedContext> = const { Cell::new(std::ptr::null_mut()) };
     static BORROWED: Cell<bool> = const { Cell::new(false) };
@@ -19,6 +21,7 @@ impl Drop for NativeScope {
 /// synchronous native operation. The scope restores on return and unwinding.
 /// Native callbacks cannot suspend the foreign call or retain a context reference.
 pub fn with_native_call<R>(context: &mut TypedContext, call: impl FnOnce() -> R) -> R {
+    let _synchronization_scope = sync::native_call_scope();
     let _scope = NativeScope {
         previous: CONTEXT.with(|slot| slot.replace(context)),
         borrowed: BORROWED.with(|slot| slot.replace(false)),
@@ -43,11 +46,14 @@ pub fn with_native_callback_context<R>(
         return Err(Error::Reentry);
     }
     let _borrow = CallbackBorrow;
+    let synchronization = sync::begin_callback()?;
     // SAFETY: with_native_call retains the exclusive live input borrow until
     // its private scope drops. This same-thread flag excludes another mutable
     // borrower; nested native calls install their own scoped reborrow. The
     // callback's higher-ranked input cannot escape in R.
-    Ok(callback(unsafe { &mut *pointer }))
+    let result = callback(unsafe { &mut *pointer });
+    synchronization.finish()?;
+    Ok(result)
 }
 #[cfg(test)]
 mod tests {

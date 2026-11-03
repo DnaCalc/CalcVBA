@@ -1898,9 +1898,8 @@ End Sub
 #[test]
 fn native_callback_into_typed_vba_shares_context_globals_view_and_error_routing() {
     use api::{RuntimeProvider, SessionExt};
-    use oxvba_symbol::TypeLibResolver;
     use std::{cell::Cell, ffi::c_void, rc::Weak};
-    struct CallbackTypes;
+    struct CallbackTypes(bool);
     impl oxvba_symbol::TypeLibResolver for CallbackTypes {
         fn resolve(
             &self,
@@ -1924,6 +1923,14 @@ fn native_callback_into_typed_vba_shares_context_globals_view_and_error_routing(
                 oxvba_com::TypeLibParamType::ByRefLong,
             )];
             blob.members.push(member);
+            if self.0 {
+                for member in &mut blob.members {
+                    member.vtable_slot = None;
+                    member.vtable_slot_bound = Some(7);
+                    member.is_dual = false;
+                    member.source_typekind = Some(oxvba_com::SourceTypeKind::Dispatch);
+                }
+            }
             blob.member_name_to_token = blob
                 .members
                 .iter()
@@ -1994,9 +2001,16 @@ fn native_callback_into_typed_vba_shares_context_globals_view_and_error_routing(
     }
     let source = r#"
 Public total As Long
+Private nesting As Boolean
+Private nested As NativeFixture.Calculator
 Public Function OnTick(ByVal amount As Long) As Long
     total = total + amount
-    OnTick = total
+    If nesting Then
+        nesting = False
+        OnTick = nested.CountByRef(total)
+    Else
+        OnTick = total
+    End If
 End Function
 Public Function RaiseTick() As Long
     total = total + 1
@@ -2027,13 +2041,38 @@ Public Function HandledByRef(ByVal value As NativeFixture.Calculator) As Long
     HandledByRef = value.CountByRef(amount)
     HandledByRef = Err.Number + amount + total
 End Function
+Public Function TriggerGlobalByRef(ByVal value As NativeFixture.Calculator) As Long
+    total = 2
+    TriggerGlobalByRef = value.CountByRef(total)
+    TriggerGlobalByRef = TriggerGlobalByRef * 100 + total
+End Function
+Public Function HandledGlobalByRef(ByVal value As NativeFixture.Calculator) As Long
+    On Error Resume Next
+    total = 2
+    HandledGlobalByRef = value.CountByRef(total)
+    HandledGlobalByRef = Err.Number * 100 + total
+End Function
+Public Function TriggerPrivateGlobalByRef(ByVal value As NativeFixture.Calculator) As Long
+    total = 2
+    TriggerPrivateGlobalByRef = value.CountByRef((total))
+    TriggerPrivateGlobalByRef = TriggerPrivateGlobalByRef * 100 + total
+End Function
+Public Function TriggerNestedByRef(ByVal value As NativeFixture.Calculator) As Long
+    Set nested = value
+    nesting = True
+    total = 2
+    TriggerNestedByRef = value.CountByRef(total)
+    TriggerNestedByRef = TriggerNestedByRef * 100 + total
+    Set nested = Nothing
+End Function
 Public Function ReadTotal() As Long
     ReadTotal = total
 End Function
 "#;
-    for backend in backends() {
+    for (backend, dispatch) in backends().into_iter().flat_map(|b| [(b, false), (b, true)]) {
         let host = host();
         let (pointer, observed) = native_identity::create();
+        observed.prebound.set(dispatch);
         {
             // SAFETY: create transfers the owned same-thread fixture dispatch reference.
             let raw = unsafe {
@@ -2041,26 +2080,38 @@ End Function
                     .bind_native_dispatch_object_variant("Owned.Callback", pointer.cast())
             }
             .unwrap();
-            let members = CallbackTypes
-                .resolve(&oxvba_com::TypeLibResolveRequest {
-                    reference_name: "NativeFixture".into(),
-                    requested_coclass: Some("Calculator".into()),
-                    importlib_hint: None,
-                    libid_hint: None,
-                    major_version_hint: None,
-                    minor_version_hint: None,
-                    lcid_hint: None,
-                })
-                .unwrap()
-                .members;
-            let object = prepare(host.as_ref(), raw.as_object_ref().unwrap(), &members).unwrap();
             let mut project = api::Project::module("Api", source);
             project
                 .references
                 .push(api::TypeLibraryReference::named("NativeFixture"));
+            let provider = Provider::with_host(host.clone())
+                .with_type_libraries(Rc::new(CallbackTypes(dispatch)));
+            let module = provider.compile(&project).unwrap();
+            let interfaces: Vec<_> = module
+                .com_interfaces()
+                .iter()
+                .filter_map(|i| match i {
+                    oxvba_oxir::ComInterface::Com(m) => Some(m.clone()),
+                    _ => None,
+                })
+                .collect();
+            let members = &interfaces
+                .iter()
+                .find(|i| !i.members.is_empty())
+                .unwrap()
+                .members;
+            // SAFETY: the fixture ABI matches these unchanged compiler plans;
+            // dispatch additionally retains the complete compiler table ordering.
+            let object = unsafe {
+                host.com().prepare_typed_object_with_interfaces(
+                    raw.as_object_ref().unwrap(),
+                    members,
+                    &interfaces,
+                )
+            }
+            .unwrap();
             let session: Rc<Box<dyn api::Session>> = Rc::new(
-                Provider::with_host(host.clone())
-                    .with_type_libraries(Rc::new(CallbackTypes))
+                provider
                     .load(
                         &project,
                         match backend {
@@ -2084,12 +2135,16 @@ End Function
             observed.callback.set(Some(callback));
             let registration = Registration(observed.clone());
             let queries = observed.queries.get();
-            for (name, expected, fail) in [
-                ("Trigger", 82, false),
-                ("Handled", 13, true),
-                ("TriggerByRef", 94, false),
-                ("HandledByRef", 66, true),
-                ("Trigger", 82, false),
+            for (name, expected, fail, expected_global) in [
+                ("Trigger", 82, false, 41),
+                ("Handled", 13, true, 41),
+                ("TriggerByRef", 94, false, 41),
+                ("HandledByRef", 66, true, 41),
+                ("TriggerGlobalByRef", 1313, false, 13),
+                ("HandledGlobalByRef", 1313, true, 13),
+                ("TriggerPrivateGlobalByRef", 303, false, 3),
+                ("TriggerNestedByRef", 2424, false, 24),
+                ("Trigger", 82, false, 41),
             ] {
                 state.fail_next.set(fail);
                 let bound = session
@@ -2114,7 +2169,7 @@ End Function
                         api::ValueProgress::Returned(value) => {
                             assert!(
                                 matches!(value,api::Value::Long(v) if v==expected),
-                                "{backend:?} {name}"
+                                "{backend:?} {name}: {value:?}, expected {expected}"
                             );
                             break;
                         }
@@ -2128,15 +2183,16 @@ End Function
                             1000
                         )
                         .unwrap(),
-                    41
+                    expected_global
                 );
                 assert!(matches!(
                     api::with_native_callback_context(|_| ()),
                     Err(api::Error::Reentry)
                 ));
             }
-            assert_eq!(state.callbacks.get(), 5);
-            assert_eq!(observed.calls.get(), 5);
+            assert_eq!(state.callbacks.get(), 10);
+            assert_eq!(observed.calls.get(), 10);
+            assert_eq!(observed.invokes.get(), if dispatch { 10 } else { 0 });
             assert_eq!(observed.queries.get(), queries);
             assert_eq!(observed.dynamic.get(), 0);
             let mut out = 0;
@@ -2149,7 +2205,7 @@ End Function
                 )
             };
             assert!(outside < 0);
-            assert_eq!(state.callbacks.get(), 5);
+            assert_eq!(state.callbacks.get(), 10);
             drop(registration);
             drop(state);
             drop(object);

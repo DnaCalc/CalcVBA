@@ -16,6 +16,7 @@ use windows_sys::Win32::{
     Foundation::SysFreeString,
     System::Variant::{VARIANT, VT_ARRAY, VT_VARIANT, VariantClear},
 };
+mod long_sync;
 
 fn fault(number: i32) -> TypedFault {
     TypedFault {
@@ -490,52 +491,97 @@ pub(super) unsafe fn invoke(
     }
     let mut output = Cell::output(member.return_type, member.return_wire_type.as_ref())?;
     let mut dispatch_output = NativeVariant::empty();
-    let failure = if dispatch {
-        // SAFETY: admitted pure dispinterface, immobile native cells and exactly
-        // the compiler-selected DISPID/accessor. No metadata lookup or retry.
-        unsafe {
-            invoke_dispatch(
-                owner,
-                member,
-                arguments.len(),
-                &mut cells,
-                &canonical,
-                &mut dispatch_output,
-            )
-        }
+    let mut ffi = Vec::with_capacity(if dispatch {
+        0
     } else {
-        let mut ffi = Vec::with_capacity(member.parameter_types.len() + 2);
+        member.parameter_types.len() + 2
+    });
+    let mut views = Vec::<VARIANT>::with_capacity(if dispatch { arguments.len() } else { 0 });
+    let mut bindings = Vec::new();
+    if !dispatch {
         ffi.push(FfiArg::Pointer(owner.pointer.as_ptr()));
-        // Derive each cell authority once after initialization. Repeated ByRef
-        // arguments reuse that exact raw pointer, rather than retagging the cell.
-        let cells_pointer = std::ptr::addr_of_mut!(cells).cast::<Cell>();
-        for index in 0..member.parameter_types.len() {
+    }
+    // Project each canonical native authority once. Everything below retains
+    // these exact pointers; no containing Cell is reborrowed until return.
+    let cells_pointer = std::ptr::addr_of_mut!(cells).cast::<Cell>();
+    for index in 0..member.parameter_types.len() {
+        if dispatch && source[index].is_none() {
+            continue;
+        }
+        let pointer = if dispatch {
+            let argument = if canonical[index] != index {
+                let previous = indices
+                    .iter()
+                    .position(|i| *i == canonical[index])
+                    .expect("admitted earlier alias");
+                // SAFETY: a borrowed Automation wrapper owns no native storage.
+                unsafe { std::ptr::read(&views[previous]) }
+            } else {
+                // SAFETY: sole projection of a disjoint, stable initialized cell.
+                unsafe {
+                    (&mut *cells_pointer.add(index))
+                        .dispatch_argument(plan::is_by_ref(member, index))
+                }
+            };
+            let pointer = if plan::is_by_ref(member, index) {
+                // SAFETY: dispatch_argument initialized exactly VT_BYREF here.
+                unsafe { argument.Anonymous.Anonymous.Anonymous.byref }
+            } else {
+                std::ptr::null_mut()
+            };
+            views.push(argument);
+            pointer
+        } else {
             let argument = if canonical[index] != index {
                 ffi[canonical[index] + 1].clone()
             } else {
-                // SAFETY: one disjoint initialized array element, in bounds, whose
-                // address remains stable until the native call returns.
+                // SAFETY: sole projection of a disjoint, stable initialized cell.
                 unsafe { (&mut *cells_pointer.add(index)).argument(plan::is_by_ref(member, index)) }
             };
+            let pointer = match &argument {
+                FfiArg::Pointer(pointer) if plan::is_by_ref(member, index) => *pointer,
+                _ => std::ptr::null_mut(),
+            };
             ffi.push(argument);
-        }
-        if member.return_type.is_some() {
-            ffi.push(FfiArg::Pointer(output.pointer()));
-        }
-        // SAFETY: exact retained IID, checked slot bound and complete native signature.
-        let entry = unsafe {
-            *(*(owner.pointer.as_ptr().cast::<*const *const c_void>()))
-                .add(member.vtable_slot.unwrap() as usize)
+            pointer
         };
-        crate::windows_vtable::clear_thread_error_info();
-        // SAFETY: each native cell is initialized and immobile until call completion;
-        // the CIF uses exactly the imported Windows x64 parameter/retval ABI.
-        let hr = unsafe { call_via_libffi(entry as usize, &ffi, FfiReturnType::Long) } as i32;
-        // Capture IErrorInfo before any cell decoding, QI or cleanup can replace it.
-        let failure = (hr < 0).then(|| map_hresult(hr));
-        owner.bridge.record_typed_vtable_call();
-        failure
-    };
+        if canonical[index] == index
+            && member.parameter_types[index] == P::ByRefLong
+            && let Some(source) = source[index]
+        {
+            bindings.push(long_sync::Binding {
+                source,
+                pointer: pointer.cast(),
+            });
+        }
+    }
+    if !dispatch && member.return_type.is_some() {
+        ffi.push(FfiArg::Pointer(output.pointer()));
+    }
+    let mut native_failure = None;
+    // SAFETY: original canonical LONG pointers and caller owners span the
+    // synchronous operation. Hooks use no reference across callback execution.
+    let synchronization_failure = unsafe {
+        long_sync::with_sync(arguments, &bindings, || {
+            native_failure = if dispatch {
+                // SAFETY: exact compiler-selected DISPID/accessor and prepared
+                // native wrappers. One Invoke, no metadata lookup or retry.
+                invoke_dispatch(owner, member, views, &mut dispatch_output)
+            } else {
+                // SAFETY: exact retained IID, checked slot and full native ABI.
+                let entry = *(*(owner.pointer.as_ptr().cast::<*const *const c_void>()))
+                    .add(member.vtable_slot.unwrap() as usize);
+                crate::windows_vtable::clear_thread_error_info();
+                let hr = call_via_libffi(entry as usize, &ffi, FfiReturnType::Long) as i32;
+                // Preserve IErrorInfo before any decoding/QI/cleanup operation.
+                let failure = (hr < 0).then(|| map_hresult(hr));
+                owner.bridge.record_typed_vtable_call();
+                failure
+            };
+        })
+    }
+    .err();
+    let failure = native_failure.or(synchronization_failure);
     let mut writeback_failure = None;
     for index in 0..member.parameter_types.len() {
         if canonical[index] != index || !plan::is_by_ref(member, index) {
@@ -571,33 +617,12 @@ pub(super) unsafe fn invoke(
 unsafe fn invoke_dispatch(
     owner: &NativeReceiver,
     member: &TypeLibMemberMetadata,
-    supplied: usize,
-    cells: &mut [Cell; plan::MAX_NATIVE_PARAMETERS],
-    canonical: &[usize; plan::MAX_NATIVE_PARAMETERS],
+    views: Vec<VARIANT>,
     output: &mut NativeVariant,
 ) -> Option<TypedFault> {
     use crate::TypeLibMemberInvokeKind as K;
     use windows_sys::Win32::System::Com::*;
-    let indices = plan::visible_indices(member);
-    let mut arguments = Vec::with_capacity(indices.len());
-    let pointer = cells.as_mut_ptr();
-    let mut views = Vec::<VARIANT>::with_capacity(supplied);
-    // Derive each native ByRef authority once. Repeated aliases reuse the exact
-    // first wrapper, including its original pointer provenance.
-    for &index in &indices[..supplied] {
-        let argument = if canonical[index] != index {
-            let previous = indices
-                .iter()
-                .position(|i| *i == canonical[index])
-                .expect("admitted earlier alias");
-            // SAFETY: a shallow non-owning wrapper copy; views are never cleared.
-            unsafe { std::ptr::read(&views[previous]) }
-        } else {
-            // SAFETY: this is the sole mutable projection of this stable cell.
-            unsafe { (&mut *pointer.add(index)).dispatch_argument(plan::is_by_ref(member, index)) }
-        };
-        views.push(argument);
-    }
+    let mut arguments = Vec::with_capacity(views.len());
     // IDispatch receives the reversed source argument list. Omitted optional
     // tails do not occupy native positions, unlike vtable parameters.
     arguments.extend(views.into_iter().rev());

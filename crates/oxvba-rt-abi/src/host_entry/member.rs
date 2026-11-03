@@ -6,7 +6,7 @@ use super::{
 };
 use calcvba_host_api::{
     TypedContext, Value,
-    object::planned_slots::{MemberArguments, invoke_planned_member},
+    object::planned_slots::{CallerSyncPhase, MemberArguments, invoke_planned_member},
 };
 use oxvba_oxir::{OxCallArg, OxInst};
 
@@ -110,7 +110,38 @@ pub(super) unsafe fn invoke(
         // SAFETY: the retained frame owns each exact input through this clone.
         values[i] = unsafe { calcvba_host_api::value::retain_bits(ty.carrier(), bits) }?;
     }
-    let mut arguments = MemberArguments::new(&mut values[..args.len()], &aliases[..args.len()])?;
+    let mut synchronize = |phase, values: &mut [Value]| -> Result<(), i32> {
+        for i in 0..args.len() {
+            if aliases[i] != i
+                || descriptor.parameter_types[indices[i]] != oxvba_com::TypeLibParamType::ByRefLong
+            {
+                continue;
+            }
+            let Some(target) = targets[i] else {
+                continue;
+            };
+            match phase {
+                CallerSyncPhase::WriteCaller => {
+                    let Value::Long(value) = values[i] else {
+                        return Err(13);
+                    };
+                    let bits = super::ScalarBits::long(value);
+                    // SAFETY: the exact Long lvalue and its canonical ancestor/
+                    // global owner stay leased; no frame reference crosses reentry.
+                    unsafe { write_slot(raw, target, ScalarType::Long, &bits) }?;
+                }
+                CallerSyncPhase::ReadCaller => {
+                    // SAFETY: the callback has finished; read the same retained
+                    // exact Long lvalue, including any ancestor/global alias.
+                    let bits = unsafe { read_slot(raw, target, ScalarType::Long) }?;
+                    values[i] = Value::Long(bits.as_long());
+                }
+            }
+        }
+        Ok(())
+    };
+    let mut arguments = MemberArguments::new(&mut values[..args.len()], &aliases[..args.len()])?
+        .with_caller_sync(&mut synchronize);
     let result_type = plan.result_iid.map_or(plan.result, ScalarType::Interface);
     // SAFETY: factory receiver and retained plan plus typed argument owners span
     // this exact planned member callback; no frame/global reference crosses it.

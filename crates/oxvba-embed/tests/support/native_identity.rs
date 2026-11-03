@@ -25,6 +25,8 @@ pub struct Observation {
     pub refuse_identity: Cell<bool>,
     pub callback: Cell<Option<NativeCallback>>,
     pub callback_context: Cell<*mut c_void>,
+    pub prebound: Cell<bool>,
+    pub invokes: Cell<u32>,
 }
 #[repr(C)]
 struct Header {
@@ -175,15 +177,37 @@ unsafe extern "system" fn names(
 }
 unsafe extern "system" fn invoke(
     this: *mut c_void,
-    _: i32,
+    dispid: i32,
     _: *const GUID,
     _: u32,
-    _: u16,
-    _: *mut DISPPARAMS,
-    _: *mut VARIANT,
+    flags: u16,
+    params: *mut DISPPARAMS,
+    result: *mut VARIANT,
     _: *mut EXCEPINFO,
     _: *mut u32,
 ) -> i32 {
+    // SAFETY: controlled prebound plans lend initialized wrappers and output;
+    // checked tags/counts below determine the active Automation union members.
+    unsafe {
+        let observed = &(*owner(this)).observed;
+        if observed.prebound.get() {
+            observed.invokes.set(observed.invokes.get() + 1);
+            (*result).Anonymous.Anonymous.vt = windows_sys::Win32::System::Variant::VT_I4;
+            let out = std::ptr::addr_of_mut!((*result).Anonymous.Anonymous.Anonymous.lVal);
+            if dispid == 7008 && flags == 1 && (*params).cArgs == 1 {
+                let argument = &*(*params).rgvarg;
+                if argument.Anonymous.Anonymous.vt
+                    == windows_sys::Win32::System::Variant::VT_BYREF
+                        | windows_sys::Win32::System::Variant::VT_I4
+                {
+                    return count_by_ref(this, argument.Anonymous.Anonymous.Anonymous.plVal, out);
+                }
+            } else if dispid == 7007 && flags == 2 && (*params).cArgs == 0 {
+                return count(this, out);
+            }
+            return 0x80020003u32 as i32;
+        }
+    }
     // SAFETY: forwards the unchanged native receiver.
     unsafe { dynamic(this) }
 }

@@ -67,3 +67,7 @@ entry/return synchronization without dangling frame/global references. This
 residual prevents any general native ByRef/reentry compatibility claim.
 
 Scoped bd-59co.2.9.19 is closed after 3763 tests in 201 suites, 181 ignored; four registry-writing fixtures excluded without credit. Strict workspace Clippy, formatting and path checks pass. Metadata is rechecked after recording bd-59co.2.9.20. The observed alias mismatch remains open and receives no parity credit.
+
+Run12 follow-up: the historical mismatch above is corrected for exact native Long
+by bd-59co.2.9.20; see [current delivery evidence](typed-native-long-callbacks-run12.md).
+The original run11 observation and archive remain historical evidence.

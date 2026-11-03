@@ -487,8 +487,12 @@ ByRef cancellation and broader native event policy remain with bd-59co.3.6.4.
 See [native callback evidence](../evidence/programs/ideal-2026-07/core/CORE-7/typed-native-callbacks-run11.md).
 
 
-Native ByRef alias visibility during a callback remains open under bd-59co.2.9.20.
-The owned VBA exact-Long callback probe produces 13:13, while both typed backends
-currently observe 3:12 when the native ByRef argument aliases the callback's
-global. Native-private-cell copyback before caller resume is insufficient for
-that interleaving. General native ByRef/reentry parity is not claimed.
+Run 12 synchronizes exact native ByRef Long cells with their retained caller
+lvalues before synchronous callback entry and refreshes those same native cells
+after callback return or unwind. This applies to native slots and prebound Invoke;
+repeated aliases retain their original pointer and nested calls use their own
+scope. Private arguments remain private. Both typed backends now observe 13:13
+for the retained global-alias regression, matching owned Excel VBA. See the
+[delivery evidence](../evidence/programs/ideal-2026-07/core/CORE-7/typed-native-long-callbacks-run12.md).
+General native ByRef/reentry, other carriers, post-return cleanup callbacks,
+incoming event cancellation and certification remain open with the broader owners.

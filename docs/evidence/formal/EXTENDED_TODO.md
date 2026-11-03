@@ -274,3 +274,10 @@ Non-blocking formal issues and follow-up items for later ladder profiles.
   Current status: investigating.
   Reproduction command: cargo test -p oxvba-embed --test typed_prebound_dispatch --test typed_native_com; elan run leanprover/lean4:v4.29.1 lean formal/lean/OxVba/TypedContinuation.lean.
   Suggested next action: refine one-owner native cells and repeated raw ByRef views against the retained native transport, then run matching native/provenance checks under CORE-5/WIN-4.
+
+- ID: FTODO-TYPED-NATIVE-LONG-SYNC-20261103
+  Profile: exact native Long callback/caller synchronization (bd-59co.2.9.20; CORE-5/CORE-7/WIN-4).
+  Summary: Installed Lean 4.29.1 RefCount, TypedContinuation, TypedReentry and ProcedureHandles abstractions pass. Native slot/prebound Invoke fixtures cover global/private alias visibility, nested native calls, errors, scope restoration and zero reference balance on both runtimes. These abstractions do not refine the concrete TLS hook frame, retained caller lvalue accesses or original native pointer provenance. Existing offline Miri dependency/sysroot limitations remain without passing credit.
+  Current status: investigating.
+  Reproduction command: cargo test -p calcvba-host-api native_callback; cargo test -p oxvba-embed --test typed_native_com --test typed_prebound_dispatch.
+  Suggested next action: refine the before-callback/after-callback synchronization state and exact raw-cell/caller leases, then run matching native/provenance checks under the broader owners.

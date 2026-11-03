@@ -338,3 +338,10 @@ functions, share canonical globals/budget and inherit invocation metadata.
 Real native function callbacks and scalar connection-point/IDispatch sinks have
 [development evidence](evidence/programs/ideal-2026-07/core/CORE-7/typed-native-callbacks-run11.md).
 General WithEvents, incoming ByRef cancellation and cross-apartment policy remain open.
+
+Exact native ByRef Long cells now synchronize with retained caller lvalues around
+synchronous callbacks, including error/unwind return and nested native calls.
+Native slots and prebound Invoke share this boundary; repeated aliases reuse
+their original native pointer. The retained global counterexample produces 13:13
+on VM3/native JIT and owned Excel VBA. See [run 12 evidence](evidence/programs/ideal-2026-07/core/CORE-7/typed-native-long-callbacks-run12.md).
+Other carriers and cleanup/event reentry remain broader open work.

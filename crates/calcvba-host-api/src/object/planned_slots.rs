@@ -7,11 +7,19 @@ pub const SLOT_PLANNED_MEMBER: u32 = 0x4000_0001;
 pub(super) type PlannedCallback =
     dyn Fn(&mut TypedContext, &mut MemberArguments<'_>) -> Result<Value, i32>;
 
+#[derive(Clone, Copy)]
+pub enum CallerSyncPhase {
+    WriteCaller,
+    ReadCaller,
+}
+pub type CallerSync<'a> = dyn FnMut(CallerSyncPhase, &mut [Value]) -> Result<(), i32> + 'a;
+
 /// A bounded typed argument list. Repeated ByRef arguments address the same cell;
 /// no simultaneous mutable Rust references to an aliased value are exposed.
 pub struct MemberArguments<'a> {
     values: &'a mut [Value],
     aliases: &'a [usize],
+    caller_sync: Option<&'a mut CallerSync<'a>>,
 }
 impl<'a> MemberArguments<'a> {
     pub fn new(values: &'a mut [Value], aliases: &'a [usize]) -> Result<Self, i32> {
@@ -23,7 +31,35 @@ impl<'a> MemberArguments<'a> {
         {
             return Err(13);
         }
-        Ok(Self { values, aliases })
+        Ok(Self {
+            values,
+            aliases,
+            caller_sync: None,
+        })
+    }
+    /// Lend the owning caller's lvalue copies for this exact member operation.
+    /// The callback must read/write only its canonical alias positions.
+    pub fn with_caller_sync(mut self, sync: &'a mut CallerSync<'a>) -> Self {
+        self.caller_sync = Some(sync);
+        self
+    }
+    fn sync_caller(&mut self, phase: CallerSyncPhase) -> Result<(), i32> {
+        let Some(sync) = &mut self.caller_sync else {
+            return Ok(());
+        };
+        match catch_unwind(AssertUnwindSafe(|| sync(phase, self.values))) {
+            Ok(result) => result,
+            Err(payload) => {
+                discard_panic(payload);
+                Err(5)
+            }
+        }
+    }
+    pub fn write_caller_values(&mut self) -> Result<(), i32> {
+        self.sync_caller(CallerSyncPhase::WriteCaller)
+    }
+    pub fn read_caller_values(&mut self) -> Result<(), i32> {
+        self.sync_caller(CallerSyncPhase::ReadCaller)
     }
     pub fn len(&self) -> usize {
         self.values.len()

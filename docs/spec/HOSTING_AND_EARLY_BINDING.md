@@ -569,3 +569,39 @@ ByRef callback synchronization, default-member named arguments and broader
 signature/error/lifecycle certification remain open. This is bounded development
 evidence under bd-59co.3.5.12; see
 [chain evidence](../evidence/programs/ideal-2026-07/windows-x64/WIN-4/object-chains-run14.md).
+
+Run 14 also retains native event descriptors in compiler-owned routes and verifies
+handler signatures before execution. Owning document attachment supplies only the
+host identity; the engine selects handlers and owns subscriptions. WithEvents
+assignments, rebinding, release, Class_Terminate and reset use the canonical event
+fabric on VM3/JIT. Private event callbacks re-enter the same owning session and
+copy supported native Boolean ByRef values before returning to Excel. Real VBA
+agrees on Change ordering/nesting and BeforeClose cancellation. Structural native
+arguments, complete event errors/apartments, startup/reload/resurrection and broad
+certification remain in-progress; see [automatic event evidence](../evidence/programs/ideal-2026-07/windows-x64/WIN-5/automatic-events-run14.md).
+
+Application WithEvents WorkbookBeforeClose also passes its native Workbook input,
+document/application handler ordering, Is identity and Boolean copyback. Typed
+ByVal object parameters privately unbox Variant objects and resolve their declared
+interface before entry; their subsequent member calls retain compile-time plans.
+Document host types and explicitly qualified interface declarations retain nominal
+metadata even when only event handlers use the type and no source member call
+forces a lookup. Controlled idle callbacks also enter private handlers, reset
+correctly and dispose subscriptions on both owning backends.
+
+The saved-XLSM harness reopens actual macro-enabled packages, reads every module
+and ordered reference through public VBOM, and executes those unchanged bodies on
+both owning runtimes against retained Excel roots. Document Object/Variant native
+member access and Is comparisons use the retained host identity. Internal ByVal
+Variant calls create private retained copies of typed source values. The harness
+compares returned UTF-16 units and every used cell's value, formula, displayed
+text, number format, fill, bold and merge state. This is a public host source-loader
+proof, with no standalone MS-OVBA parser or broader workbook compatibility claim;
+see [workbook evidence](../evidence/programs/ideal-2026-07/windows-x64/WIN-4/xlsm-projects-run14.md).
+
+Owning fixed Variant-array allocation now uses checked bounds/product/allocation.
+Multidimensional indexing follows canonical first-dimension-outermost storage;
+the existing native boundary converts Automation descriptor order. The XLSM
+whole-cell comparison detected and now rejects the earlier off-diagonal transpose.
+General ReDim, typed allocation and the remaining small physical scalar carriers
+remain open.

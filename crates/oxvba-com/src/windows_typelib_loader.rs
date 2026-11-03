@@ -3620,6 +3620,7 @@ unsafe fn extract_events_from_coclass(
                     };
                 let callback_arity = parameter_types.len().max(member.parameter_names.len());
                 events.push(TypeLibEventMetadata {
+                    parameter_iids: member.parameter_iids.clone(),
                     name: member.name,
                     token: member.token,
                     callback_arity: callback_arity as u8,

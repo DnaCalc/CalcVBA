@@ -1071,6 +1071,19 @@ foreach ($mutation in @('source','kind','name','sha256')) {
     $badClassDescriptor.descriptor_sha256=Get-ExcelOracleSha256 -Text ($classPayload | ConvertTo-Json -Compress -Depth 8)
     Assert-True (-not (Test-ExcelOracleSelectedCaseDescriptor -Descriptor $badClassDescriptor)) "additional class module $mutation mutation must reject"
 }
+$savedCase=Copy-TestJsonObject -Value $classCase
+$savedCase | Add-Member -NotePropertyName saved_workbook_name -NotePropertyValue 'events.xlsm'
+$savedDescriptor=@(New-ExcelOracleSelectedCaseDescriptors -Cases @($savedCase))[0]
+Assert-True (Test-ExcelOracleSelectedCaseDescriptor $savedDescriptor) 'saved XLSM compile target is sealed separately from the macro-free bootstrap'
+foreach ($name in @('../events.xlsm','C:\events.xlsm','events.xlsx','events.xlsm/other',42)) {
+    $bad=Copy-TestJsonObject -Value $savedDescriptor
+    $bad.saved_workbook_name=$name
+    $bad.descriptor_sha256=Get-ExcelOracleSha256 -Text ((Get-ExcelOracleSelectedCaseDescriptorPayload $bad) | ConvertTo-Json -Compress -Depth 8)
+    Assert-True (-not (Test-ExcelOracleSelectedCaseDescriptor $bad)) 'saved compile target rejects paths and invalid formats even when resealed'
+}
+$bad=Copy-TestJsonObject -Value $savedDescriptor
+$bad.saved_workbook_name='other.xlsm'
+Assert-True (-not (Test-ExcelOracleSelectedCaseDescriptor $bad)) 'changed saved compile target rejects a stale seal'
 $descriptorTransportDirectory = Join-Path $env:TEMP ("oxvba-oracle-descriptor-transport-{0}" -f [Guid]::NewGuid().ToString("N"))
 [void][IO.Directory]::CreateDirectory($descriptorTransportDirectory)
 try {
@@ -1796,7 +1809,8 @@ Assert-True ($runnerSource -match 'function Read-SupervisorGuardianEvidence' -an
     $runnerSource.IndexOf('$supervisorGuardianEvidence = @(Read-SupervisorGuardianEvidence') -lt $runnerSource.IndexOf('$postCleanup = Resolve-ExcelOraclePostCleanupResult')) "supervisor must independently retain exact per-case guardian ledger bytes/digests before resolution"
 Assert-True ($contractSource -match 'module path is not the exact supervisor-derived case path' -and
     $contractSource -match 'function Test-ExcelOracleBootstrapResultEvidence' -and
-    $contractSource -match 'Bootstrap\.path, \$ExpectedPath' -and $contractSource -match 'injected_project_file_name, \$expectedBootstrapPath') "module, bootstrap descriptor, and compile-project paths must bind to supervisor-derived run/case paths"
+    $contractSource -match 'Bootstrap\.path, \$ExpectedPath' -and $contractSource -match 'injected_project_file_name, \$expectedCompilePath' -and
+    $contractSource -match '\$expectedCompilePath = \$expectedBootstrapPath' -and $contractSource -match 'Join-Path \$expectedCaseDirectory \$descriptor.saved_workbook_name') "module, bootstrap descriptor, and sealed compile-project paths must bind to supervisor-derived run/case paths"
 Assert-True ($contractSource -match 'guardian event Excel PIDs do not bind to the exact supervisor-retained Excel ownership record' -and
     $contractSource -match 'guardian-stopped is not the final, causally latest guardian event' -and
     $guardianSource -match 'schema = "oxvba\.excel-vba-oracle-final-state\.v1"(?s).*excel_pid = \$ExcelPid') "guardian events and the terminal final state must bind Excel identity and causal order to supervisor authority"

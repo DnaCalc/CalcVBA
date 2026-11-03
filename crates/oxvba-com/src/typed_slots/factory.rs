@@ -16,6 +16,13 @@ pub(super) struct NativeReceiver {
 }
 struct NativeServices(Rc<NativeReceiver>);
 impl calcvba_host_api::HostObjectServices for NativeServices {
+    fn subscribe_event(
+        &self,
+        descriptor: &calcvba_host_api::object::EventDescriptor,
+        callback: calcvba_host_api::object::EventCallback,
+    ) -> Result<calcvba_host_api::object::EventSubscription, i32> {
+        super::events::subscribe_automatic(self.0.clone(), descriptor, callback)
+    }
     fn invoke_dynamic(
         &self,
         call: &calcvba_host_api::object::DynamicMemberCall,

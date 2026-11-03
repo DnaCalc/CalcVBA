@@ -192,6 +192,7 @@ fn bind_one(
     manifest: &SymbolProjectManifest,
 ) -> Result<CoreProgram, BindError> {
     let ids = IdAllocator::build(env, manifest)?;
+    let event_routes = build_event_routes(env, &ids, manifest)?;
     let lower = Lower {
         env,
         manifest,
@@ -305,7 +306,7 @@ fn bind_one(
         procs,
         classes,
         object_interfaces,
-        event_routes: build_event_routes(env, &ids)?,
+        event_routes,
         external_calls: build_external_calls(env),
         com_class_exports: build_com_class_exports(manifest),
         entry: ids.entry(),
@@ -408,6 +409,7 @@ fn collect_proc_decls<'a>(env: &'a ResolutionEnvironment) -> Vec<SyntaxNode<'a>>
 fn build_event_routes(
     env: &ResolutionEnvironment,
     ids: &IdAllocator,
+    manifest: &SymbolProjectManifest,
 ) -> Result<Vec<EventRoute>, BindError> {
     let symbols = &env.symbols;
     let module_scope_by_name: HashMap<String, ScopeId> = env
@@ -450,30 +452,114 @@ fn build_event_routes(
                 symbols.find_in_scope(sink_scope, SymbolNamespace::Procedure, &handler_name)
                 && let Some(&proc) = ids.proc_of.get(&handler_sym)
             {
+                let native = env
+                    .com_source_event_metadata(source_name)
+                    .and_then(|events| {
+                        events.into_iter().find(|metadata| {
+                            metadata.token == event
+                                && fold_identifier(&metadata.name) == ev_name_folded
+                        })
+                    });
+                if let Some(native) = &native {
+                    validate_event_handler(env, ids, proc.0, native)?;
+                }
                 routes.push(EventRoute {
                     binding,
                     event,
                     handler: proc.0,
+                    native,
+                    document_class: None,
                 });
             }
         }
     }
-    // A COM coclass source reads LIBRARY-WIDE typelib events, so an event name shared
-    // across source interfaces (e.g. `SheetChange` on both `AppEvents` and
-    // `WorkbookEvents`, which Excel assigns the same dispid) yields one route per
-    // occurrence — all with an identical `(binding, event, handler)`. Collapse those
-    // duplicates so a `WithEvents` field is advised once per (binding, event).
-    //
-    // NOTE: `EventRoute` carries no connection-point IID, so this dedup cannot choose
-    // BETWEEN distinct source interfaces that share a dispid — it only removes exact
-    // duplicates. The runtime selects the actual connection point from the bound object's
-    // own (coclass-scoped) `event_specs`. That is correct for the common single-source case
-    // and for same-named shared-dispid events (identical handler => genuinely one route);
-    // a coclass exposing two DIFFERENTLY-named events on one dispid would need the IID
-    // carried here to disambiguate — see `event_specs_from_typelib_metadata`.
+    for module in manifest
+        .modules
+        .iter()
+        .filter(|module| module.module_kind == ModuleKind::Document)
+    {
+        let Some(source) = &module.attributes.host_document_type else {
+            continue;
+        };
+        let Some(&class) = ids.class_of.get(&fold_identifier(&module.module_name)) else {
+            continue;
+        };
+        let Some(&scope) = module_scope_by_name.get(&fold_identifier(&module.module_name)) else {
+            continue;
+        };
+        let prefix = source.rsplit('.').next().unwrap_or(source);
+        for native in env.com_source_event_metadata(source).unwrap_or_default() {
+            let name = format!("{}_{}", prefix, native.name);
+            if let Ok(Some(symbol)) =
+                symbols.find_in_scope(scope, SymbolNamespace::Procedure, &name)
+                && let Some(proc) = ids.proc_of.get(&symbol)
+            {
+                validate_event_handler(env, ids, proc.0, &native)?;
+                routes.push(EventRoute {
+                    binding: i32::MIN
+                        .checked_add(i32::try_from(class.0).map_err(|_| {
+                            BindError::Unsupported("too many document classes".into())
+                        })?)
+                        .ok_or_else(|| {
+                            BindError::Unsupported("too many document classes".into())
+                        })?,
+                    event: native.token,
+                    handler: proc.0,
+                    native: Some(native),
+                    document_class: Some(class.0),
+                });
+            }
+        }
+    }
+    // Remove repeated source-event declarations while retaining the selected
+    // coclass source IID in each native route. Multiple source interfaces sharing
+    // a name and DISPID still need a separate source-selection parity proof.
     let mut seen = std::collections::HashSet::new();
     routes.retain(|route| seen.insert((route.binding, route.event, route.handler)));
     Ok(routes)
+}
+
+fn validate_event_handler(
+    env: &ResolutionEnvironment,
+    ids: &IdAllocator,
+    procedure: usize,
+    event: &oxvba_com::TypeLibEventMetadata,
+) -> Result<(), BindError> {
+    use oxvba_com::TypeLibParamType as P;
+    let proc = &ids.procs[procedure];
+    let fail = || {
+        BindError::Unsupported(format!(
+            "event handler {} signature does not match {}",
+            proc.name, event.name
+        ))
+    };
+    if proc.kind != ProcedureKind::Sub || proc.params.len() != event.parameter_types.len() + 1 {
+        return Err(fail());
+    }
+    for (index, (parameter, expected)) in proc
+        .params
+        .iter()
+        .skip(1)
+        .zip(&event.parameter_types)
+        .enumerate()
+    {
+        if parameter.optional || parameter.variadic || parameter.by_ref != expected.is_by_ref() {
+            return Err(fail());
+        }
+        if matches!(expected, P::Object | P::ByRefObject) {
+            let VarTypeRef::Object(name) = &parameter.ty else {
+                return Err(fail());
+            };
+            if let Some(iid) = event.parameter_iids.get(index).copied().flatten()
+                && env.object_interface(name).and_then(|m| m.iid) != Some(iid)
+            {
+                return Err(fail());
+            }
+        } else if parameter.ty != call::tlb_param_to_vartype(expected) {
+            return Err(fail());
+        }
+    }
+    Ok(())
 }
 
 /// The `(folded event name, event id)` list of a WithEvents source class. An
@@ -654,7 +740,35 @@ impl Lower<'_> {
     }
 
     fn coerce(&self, value: CoreValue, from: &VarTypeRef, to: &VarTypeRef) -> CoreValue {
+        if self.document_host_type(from).is_some_and(
+            |host| matches!(to,VarTypeRef::Object(name) if name.eq_ignore_ascii_case(host)),
+        ) {
+            return CoreValue::Load(CorePlace::Field {
+                object: Box::new(value),
+                field: oxvba_bundle::HOST_DOCUMENT_FIELD,
+            });
+        }
         types::coerce_with(self.type_ctx, value, from, to)
+    }
+    fn document_host_type(&self, ty: &VarTypeRef) -> Option<&str> {
+        let VarTypeRef::Object(name) = ty else {
+            return None;
+        };
+        let name = if let Some((project, module)) = name.split_once('.')
+            && project.eq_ignore_ascii_case(&self.manifest.project_name)
+        {
+            module
+        } else {
+            name
+        };
+        self.manifest
+            .modules
+            .iter()
+            .find(|module| {
+                module.module_kind == ModuleKind::Document
+                    && module.module_name.eq_ignore_ascii_case(name)
+            })
+            .and_then(|module| module.attributes.host_document_type.as_deref())
     }
 
     fn numeric_mode(&self, ty: &VarTypeRef) -> oxvba_bundle::NumericMode {

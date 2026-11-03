@@ -52,7 +52,7 @@ impl<'a> Lower<'a> {
             // (`me_local = None`). Each class field's default record-init is
             // emitted per-instance into its `Class_Initialize` prologue instead
             // (see `class_field_record_inits`).
-            if module.module_kind == ModuleKind::Class {
+            if matches!(module.module_kind, ModuleKind::Class | ModuleKind::Document) {
                 continue;
             }
             let module_info = LowerContext::from_module(

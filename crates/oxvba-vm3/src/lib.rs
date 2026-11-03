@@ -931,6 +931,11 @@ impl<'h> Vm3<'h> {
     pub fn typed_class_context(&mut self) -> Option<oxvba_rt_abi::TypedClassContext> {
         self.exec.typed_class_context()
     }
+    pub fn typed_event_state(
+        &self,
+    ) -> std::rc::Rc<std::cell::RefCell<oxvba_rt_abi::automatic_events::AutomaticEventState>> {
+        self.exec.events.automatic.clone()
+    }
 
     /// Invoke a standard-module function with already coerced value arguments.
     /// No hidden Me slot is inserted and host ByRef arguments are private copies.

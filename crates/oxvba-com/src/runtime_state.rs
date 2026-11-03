@@ -756,6 +756,7 @@ mod tests {
             member_name_to_token: vec![("BeforeClose".to_string(), 22)],
             members: Vec::new(),
             events: vec![TypeLibEventMetadata {
+                parameter_iids: Vec::new(),
                 name: "BeforeClose".to_string(),
                 token: 22,
                 callback_arity: 1,

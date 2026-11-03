@@ -271,6 +271,7 @@ struct ProgramResolver {
     records: HashMap<String, RecordLayoutId>,
     record_layouts: Vec<Vec<ArrayElementType>>,
     com_interfaces: HashMap<String, IfaceId>,
+    object_field_types: HashMap<(ClassId, i32), OxTy>,
 }
 
 impl ProgramResolver {
@@ -282,6 +283,7 @@ impl ProgramResolver {
             .map(|(i, c)| (c.name.to_ascii_lowercase(), ClassId(i)))
             .collect();
         let mut this = Self {
+            object_field_types: HashMap::new(),
             classes,
             records: HashMap::new(),
             record_layouts: Vec::new(),
@@ -306,6 +308,20 @@ impl ProgramResolver {
             }
             this.harvest_record_layouts(&proc.body);
         }
+        this.object_field_types = program
+            .classes
+            .iter()
+            .enumerate()
+            .flat_map(|(id, class)| class.fields.iter().map(move |field| (ClassId(id), field)))
+            .filter_map(|(class, field)| {
+                let ty = lower_declared_var_type_with_longptr_width(
+                    &field.ty,
+                    &this,
+                    program.long_ptr_width,
+                );
+                matches!(ty, OxTy::Object(_)).then_some(((class, field.token), ty))
+            })
+            .collect();
         this
     }
 
@@ -533,6 +549,7 @@ fn elaborate_proc(
     // The binding types are recovered up front (the `locals` above, via the resolver);
     // the lowerer carries the COM interner so early-bound calls intern their members.
     let mut lo = Lowerer::new(LowererInputs {
+        object_field_types: &resolver.object_field_types,
         locals,
         param_count: proc.params.len(),
         label_lines: proc.label_lines.clone(),
@@ -604,9 +621,11 @@ struct Lowerer<'a> {
     record_ids: &'a HashMap<String, RecordLayoutId>,
     long_ptr_width: CoreLongPtrWidth,
     proc_return_types: &'a [Option<OxTy>],
+    object_field_types: &'a HashMap<(ClassId, i32), OxTy>,
 }
 
 struct LowererInputs<'a> {
+    object_field_types: &'a HashMap<(ClassId, i32), OxTy>,
     locals: Vec<OxLocal>,
     param_count: usize,
     label_lines: Vec<Option<i32>>,
@@ -642,6 +661,7 @@ impl<'a> Lowerer<'a> {
             record_ids: inputs.record_ids,
             long_ptr_width: inputs.long_ptr_width,
             proc_return_types: inputs.proc_return_types,
+            object_field_types: inputs.object_field_types,
         }
     }
 
@@ -2549,16 +2569,24 @@ impl<'a> Lowerer<'a> {
                 Ok((OxOperand::temp(t), OxTy::Variant))
             }
             coreir::CorePlace::Field { object, field } => {
-                let obj = self.lower_value(object)?.0;
-                let t = self.new_temp(OxTy::Variant);
+                let (obj, object_type) = self.lower_value(object)?;
+                let ty = if let OxTy::Object(ObjClass::Class(class)) = object_type {
+                    self.object_field_types
+                        .get(&(class, *field))
+                        .cloned()
+                        .unwrap_or(OxTy::Variant)
+                } else {
+                    OxTy::Variant
+                };
+                let t = self.new_temp(ty.clone());
                 self.emit(OxInst::FieldGet {
                     dst: OxPlace::Temp(t),
                     object: obj,
                     field: *field,
                 });
-                // A field's static type needs the class field-type table (a later
-                // step); conservatively `Variant` (a COM property accessor is dynamic).
-                Ok((OxOperand::temp(t), OxTy::Variant))
+                // Declared object fields retain their exact nominal carrier.
+                // Other field families keep their existing Variant value route.
+                Ok((OxOperand::temp(t), ty))
             }
             coreir::CorePlace::WithEvents { owner, binding } => {
                 let own = self.lower_value(owner)?.0;

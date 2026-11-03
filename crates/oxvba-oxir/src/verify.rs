@@ -21,6 +21,10 @@ use oxvba_bundle::{ProcedureKind, ProjectMemberKind};
 /// A single structural defect found by [`verify_program`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerifyError {
+    BadEventRoute {
+        route: usize,
+        reason: &'static str,
+    },
     /// `block.id` does not match its position in the block list.
     BlockIdMismatch {
         func: usize,
@@ -34,9 +38,15 @@ pub enum VerifyError {
         blocks: usize,
     },
     /// The program's entry `FuncId` is out of range.
-    BadProgramEntry { entry: usize, funcs: usize },
+    BadProgramEntry {
+        entry: usize,
+        funcs: usize,
+    },
     /// The program's `global_initializer` `FuncId` is out of range.
-    BadGlobalInitializer { initializer: usize, funcs: usize },
+    BadGlobalInitializer {
+        initializer: usize,
+        funcs: usize,
+    },
     /// A terminator names a successor block that does not exist.
     BadSuccessor {
         func: usize,
@@ -59,7 +69,10 @@ pub enum VerifyError {
     },
     /// A block ends in a fallible terminator (`Raise`/`Resume*`/`GoSubReturn`) but has
     /// no `fault_target`, so a raised error could not reach the statement's handler.
-    MissingFaultTargetForTerminator { func: usize, block: usize },
+    MissingFaultTargetForTerminator {
+        func: usize,
+        block: usize,
+    },
     /// `param_count` exceeds the number of locals.
     BadParamCount {
         func: usize,
@@ -159,9 +172,15 @@ pub enum VerifyError {
         classes: usize,
     },
     /// A class declares the same instance field token more than once.
-    DuplicateClassFieldToken { class_index: usize, field: i32 },
+    DuplicateClassFieldToken {
+        class_index: usize,
+        field: i32,
+    },
     /// A class field `As New` binding names a field token absent from the class field table.
-    BadClassFieldAsNewFieldRef { class_index: usize, field: i32 },
+    BadClassFieldAsNewFieldRef {
+        class_index: usize,
+        field: i32,
+    },
     /// A class lifecycle hook names a function outside the program function table.
     BadClassLifecycleProcRef {
         class_index: usize,
@@ -331,6 +350,9 @@ fn site(block: usize, inst: Option<usize>) -> String {
 impl std::fmt::Display for VerifyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            VerifyError::BadEventRoute { route, reason } => {
+                write!(f, "event route {route}: {reason}")
+            }
             VerifyError::BlockIdMismatch { func, position, id } => write!(
                 f,
                 "func {func}: block at position {position} has id {id} (must equal its position)"
@@ -728,6 +750,7 @@ pub fn verify_program(program: &OxProgram) -> Result<(), Vec<VerifyError>> {
         });
     }
     verify_classes(program, &mut errors);
+    verify_event_routes(program, &mut errors);
     for (fi, func) in program.funcs.iter().enumerate() {
         verify_func(program, fi, func, &mut errors);
     }
@@ -736,6 +759,113 @@ pub fn verify_program(program: &OxProgram) -> Result<(), Vec<VerifyError>> {
     } else {
         Err(errors)
     }
+}
+
+fn verify_event_routes(program: &OxProgram, errors: &mut Vec<VerifyError>) {
+    let mut seen = HashSet::new();
+    for (index, route) in program.event_routes.iter().enumerate() {
+        let mut fail = |reason| {
+            errors.push(VerifyError::BadEventRoute {
+                route: index,
+                reason,
+            })
+        };
+        let Some(handler) = program.funcs.get(route.handler) else {
+            fail("handler is out of range");
+            continue;
+        };
+        if handler.kind != ProcedureKind::Sub || !func_has_hidden_me_receiver(handler) {
+            fail("handler must be a Sub with Me");
+        }
+        if route
+            .document_class
+            .is_some_and(|class| class >= program.classes.len())
+        {
+            fail("document class is out of range");
+        }
+        let source = route
+            .native
+            .as_ref()
+            .and_then(|native| native.connection_point_iid.as_deref());
+        if !seen.insert((route.binding, route.event, source)) {
+            fail("duplicate source event route");
+        }
+        let Some(native) = &route.native else {
+            continue;
+        };
+        if native.token != route.event
+            || usize::from(native.callback_arity) != native.parameter_types.len()
+            || handler.param_count != native.parameter_types.len() + 1
+            || (!native.parameter_iids.is_empty()
+                && native.parameter_iids.len() != native.parameter_types.len())
+        {
+            fail("native event arity or identity disagrees");
+        }
+        if native.dispatch_path == oxvba_com::TypeLibEventDispatchPath::Dispatch
+            && (native.dispatch_member_id != Some(route.event)
+                || source
+                    .and_then(oxvba_com::ComInterfaceIid::parse)
+                    .is_none_or(|iid| iid.is_null()))
+        {
+            fail("invalid dispatch source IID or DISPID");
+        }
+        for (i, ty) in native.parameter_types.iter().enumerate() {
+            if handler.locals.get(i + 1).is_none_or(|local| {
+                !event_parameter_matches(
+                    program,
+                    ty,
+                    native.parameter_iids.get(i).copied().flatten(),
+                    &local.ty,
+                )
+            }) {
+                fail("handler parameter type disagrees");
+            }
+            if handler
+                .locals
+                .get(i + 1)
+                .and_then(|local| local.param)
+                .is_none_or(|p| p.by_ref != ty.is_by_ref() || p.optional || p.variadic)
+            {
+                fail("handler passing mode disagrees");
+            }
+        }
+    }
+}
+
+fn event_parameter_matches(
+    program: &OxProgram,
+    native: &oxvba_com::TypeLibParamType,
+    iid: Option<oxvba_com::ComInterfaceIid>,
+    ty: &OxTy,
+) -> bool {
+    use oxvba_com::TypeLibParamType as P;
+    if matches!(native, P::Object | P::ByRefObject) {
+        return match (ty, iid) {
+            (OxTy::Object(crate::ObjClass::ComIface(interface)), Some(iid)) => {
+                matches!(program.com_interfaces.get(interface.0),Some(ComInterface::Com(metadata)) if metadata.iid==Some(iid))
+            }
+            (OxTy::Object(_), None) => true,
+            _ => false,
+        };
+    }
+    iid.is_none()
+        && matches!(
+            (native, ty),
+            (P::Variant | P::ByRefVariant, OxTy::Variant)
+                | (P::Boolean | P::ByRefBoolean, OxTy::Bool)
+                | (P::Byte | P::ByRefByte, OxTy::Byte)
+                | (P::Integer | P::ByRefInteger, OxTy::Integer)
+                | (P::Long | P::ByRefLong, OxTy::Long)
+                | (P::LongLong | P::ByRefLongLong, OxTy::LongLong)
+                | (P::LongPtr | P::ByRefLongPtr, OxTy::Long | OxTy::LongLong)
+                | (P::Single | P::ByRefSingle, OxTy::Single)
+                | (P::Double | P::ByRefDouble, OxTy::Double)
+                | (P::String | P::ByRefString, OxTy::Str)
+                | (P::Currency | P::ByRefCurrency, OxTy::Currency)
+                | (P::Date | P::ByRefDate, OxTy::Date)
+                | (P::Decimal | P::ByRefDecimal, OxTy::Decimal)
+                | (P::Record | P::ByRefRecord, OxTy::Record(_))
+        )
 }
 
 fn verify_classes(program: &OxProgram, errors: &mut Vec<VerifyError>) {

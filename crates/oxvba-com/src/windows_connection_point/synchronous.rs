@@ -164,6 +164,7 @@ mod tests {
 
     fn metadata(parameters: Vec<TypeLibParamType>) -> TypeLibEventMetadata {
         TypeLibEventMetadata {
+            parameter_iids: Vec::new(),
             name: "Cancel".into(),
             token: 77,
             callback_arity: parameters.len() as u8,

@@ -15,7 +15,9 @@ pub use iteration::{
 
 /// Canonical Automation IDispatch IID, in the same byte order as InterfaceId.
 pub const IDISPATCH: InterfaceId = [0, 4, 2, 0, 0, 0, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46];
+mod events;
 pub mod planned_slots;
+pub use events::{EventCallback, EventDescriptor, EventParameter, EventSubscription};
 pub mod value_slots;
 
 pub type InterfaceId = [u8; 16];
@@ -246,6 +248,17 @@ impl HostObject {
                 help_context: None,
             }),
         }
+    }
+    pub fn subscribe_event(
+        &self,
+        descriptor: &EventDescriptor,
+        callback: EventCallback,
+    ) -> Result<EventSubscription, i32> {
+        self.storage
+            .services
+            .as_ref()
+            .ok_or(438)?
+            .subscribe_event(descriptor, callback)
     }
     /// Prepare a nominal view without changing the source object's table.
     /// Portable tables without a resolver accept only their declared IID.

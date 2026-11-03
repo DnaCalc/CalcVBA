@@ -303,7 +303,7 @@ impl CodeCache {
         let key = Key {
             image: serde_json::to_vec(&module.programs())
                 .map_err(|e| Error::Compile(e.to_string()))?,
-            signature: format!("{:?}", module.procedures),
+            signature: format!("{:?}|{:?}", module.procedures, module.documents),
             target,
             host: format!("{:?}|{:?}", module.host.descriptor(), module.host.policy()),
             backend,

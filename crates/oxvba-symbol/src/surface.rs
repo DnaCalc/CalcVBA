@@ -352,7 +352,7 @@ pub fn synthesize_export_surface(
         if attrs.option_private_module || scan.option_private_module {
             continue;
         }
-        let is_class = module.module_kind == ModuleKind::Class;
+        let is_class = matches!(module.module_kind, ModuleKind::Class | ModuleKind::Document);
         let exposed = source_attrs.vb_exposed.unwrap_or(attrs.vb_exposed);
         let creatable = source_attrs.vb_creatable.unwrap_or(attrs.vb_creatable);
         let predeclared = source_attrs

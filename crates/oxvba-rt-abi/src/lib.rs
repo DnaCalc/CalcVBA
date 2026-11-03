@@ -31,6 +31,7 @@ use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 use std::slice;
+pub mod automatic_events;
 
 /// Project-instance ids start above class route keys, matching vm3/vm2 allocation.
 pub const INSTANCE_ID_BASE: i32 = 0x1000_0000;
@@ -180,6 +181,7 @@ pub type ProjectEventSink<'h> =
 /// describe subscriptions, ordering, and host sinks are VM-agnostic session state.
 #[derive(Default)]
 pub struct EventFabric<'h> {
+    pub automatic: Rc<std::cell::RefCell<automatic_events::AutomaticEventState>>,
     pub withevents: HashMap<i64, EventBinding>,
     pub next_withevents_order: u64,
     pub com_subscriptions: HashMap<i32, ComEventSink>,
@@ -241,8 +243,30 @@ pub struct TypedClassContext {
     pub draining: *mut bool,
     pub owner: oxvba_runtime::object_owner::RuntimeObjectOwner,
     descriptors: Vec<Vec<&'static RuntimeClassDescriptor>>,
+    singletons: Vec<*mut HashMap<usize, Variant>>,
 }
 impl TypedClassContext {
+    /// # Safety
+    /// The canonical session maps stay leased on this thread; no reference is retained.
+    pub unsafe fn predeclared(&self, unit: usize, class: usize) -> Option<Variant> {
+        let map = *self.singletons.get(unit)?;
+        // SAFETY: inherited short canonical-map access contract.
+        unsafe { (&*map).get(&class).cloned() }
+    }
+    /// # Safety
+    /// Same canonical map lease; replacing a value must not overlap another map access.
+    pub unsafe fn set_predeclared(
+        &self,
+        unit: usize,
+        class: usize,
+        value: Variant,
+    ) -> Result<(), i32> {
+        let map = *self.singletons.get(unit).ok_or(5)?;
+        // SAFETY: short exclusive map access ends before the old owner is released.
+        let old = unsafe { (&mut *map).insert(class, value) };
+        drop(old);
+        Ok(())
+    }
     /// # Safety
     /// The originating execution state stays leased and uniquely executes on
     /// this thread; reset/disposal cannot overlap this brief allocation.
@@ -945,6 +969,11 @@ impl<'h> ExecState<'h> {
                 .programs
                 .iter()
                 .map(|p| p.class_descriptors.clone())
+                .collect(),
+            singletons: self
+                .programs
+                .iter_mut()
+                .map(|program| &raw mut program.predeclared_singletons)
                 .collect(),
         })
     }

@@ -473,9 +473,38 @@ impl<'a> Activation<'a> {
                 OxArg::ByRef(p) => OxOperand::Use(*p),
                 _ => return Err(13),
             };
-            let bits = parent.read(&operand, *ty)?;
+            let source_type = parent.layout.operand_type(&operand).map_err(|_| 13)?;
+            let bits = parent.read(&operand, source_type)?;
             // SAFETY: the parent retains every exact source carrier through cloning.
-            owners.push(unsafe { calcvba_host_api::value::retain_bits(*ty, bits) }?);
+            let value = unsafe { calcvba_host_api::value::retain_bits(source_type, bits) }?;
+            let by_value = !matches!(arg, OxArg::ByRef(_));
+            let mut value = if *ty == ScalarType::Variant && source_type != *ty {
+                if matches!(arg, OxArg::ByRef(_)) {
+                    return Err(13);
+                }
+                Value::Variant(super::value::to_variant(value))
+            } else {
+                value
+            };
+            if by_value && *ty == ScalarType::HostObject {
+                if source_type == ScalarType::Variant {
+                    value = super::value::from_variant(*ty, super::value::to_variant(value))?;
+                }
+                if let Some(iid) = layout.parameter_iids[i] {
+                    let host = match &value {
+                        Value::Object(Some(host)) => Some(host.clone()),
+                        Value::RuntimeObject(reference) => {
+                            Some(super::member::host_view(reference).ok_or(13)?)
+                        }
+                        Value::Object(None) => None,
+                        _ => return Err(13),
+                    };
+                    if let Some(host) = host {
+                        value = Value::Object(Some(host.resolve_interface(iid)?));
+                    }
+                }
+            }
+            owners.push(value);
         }
         let slots = owners
             .iter()

@@ -288,6 +288,12 @@ pub trait RuntimeProvider {
 /// Same-thread session owner. Rust object borrows and opaque call handles never
 /// authorize concurrent access. Reload prepares replacement before invalidation.
 pub trait Session {
+    /// Bind a document identity; the runtime owns handler selection and wiring.
+    fn attach_document(&self, _module: &str, _source: &HostObject) -> Result<(), Error> {
+        Err(Error::UnsupportedSignature(
+            "automatic documents are unavailable".into(),
+        ))
+    }
     fn reload_graph(&mut self, _graph: &ProjectGraph) -> Result<(), Error> {
         Err(Error::UnsupportedSignature(
             "provider has no source-project graph API".into(),

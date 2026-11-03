@@ -30,6 +30,7 @@ pub(crate) struct TypedStack {
     owns_drain: bool,
     writeback_slots: Vec<usize>,
     writebacks: Vec<(usize, Value)>,
+    automatic: std::rc::Rc<crate::events::AutomaticEvents>,
 }
 impl TypedStack {
     pub(crate) fn error(&mut self, number: i32, source: &str) -> crate::Error {
@@ -62,6 +63,7 @@ impl TypedStack {
         stores: Vec<(*mut oxvba_runtime::Variant, usize)>,
         error: *mut ErrEngine,
         classes: Option<oxvba_rt_abi::TypedClassContext>,
+        automatic: std::rc::Rc<crate::events::AutomaticEvents>,
     ) -> Self {
         // SAFETY: caller retains unique session execution authority.
         let saved_error = unsafe { (&mut *error).enter_activation() };
@@ -84,6 +86,7 @@ impl TypedStack {
             owns_drain: false,
             writeback_slots: Vec::new(),
             writebacks: Vec::new(),
+            automatic,
         }
     }
     /// Enable explicit synchronous copyback of root ByRef scalar parameters.
@@ -153,6 +156,9 @@ impl TypedStack {
     }
     fn pop(&mut self) -> Frame {
         let frame = self.frames.pop().expect("retained frame");
+        if let Some(id) = frame.termination {
+            self.automatic.clear_owner_id(frame.program, id);
+        }
         self.err().restore(frame.saved_error);
         frame
     }
@@ -283,6 +289,7 @@ impl TypedStack {
         programs: &[&OxProgram],
         entries: &[Vec<Result<TypedInterpreter<'_>, String>>],
     ) -> Result<bool, i32> {
+        self.automatic.collect();
         let Some(classes) = &self.classes else {
             return Ok(false);
         };
@@ -316,12 +323,14 @@ impl TypedStack {
                 let object = oxvba_runtime::retained_parked_termination_object(id).ok_or(5)?;
                 if let Err(code) = self.push_me(entries, unit as usize, proc, &object) {
                     drop(object);
+                    self.automatic.clear_owner_id(unit as usize, id);
                     oxvba_runtime::finish_pending_termination(id);
                     return Err(code);
                 }
                 self.frames.last_mut().ok_or(5)?.termination = Some(id);
                 return Ok(true);
             }
+            self.automatic.clear_owner_id(unit as usize, id);
             oxvba_runtime::finish_pending_termination(id);
         }
 
@@ -451,6 +460,78 @@ impl TypedStack {
         let block = &program.funcs[procedure.0].blocks[block_id];
         if let Some(inst) = offset.checked_sub(1).and_then(|i| block.instrs.get(i)) {
             match inst {
+                OxInst::Predeclared { dst, class } => {
+                    let classes = self.classes.as_ref().ok_or(5)?;
+                    // SAFETY: the canonical singleton map is leased by this stack.
+                    let value = unsafe { classes.predeclared(current, class.0) }.ok_or(91)?;
+                    self.frames
+                        .last_mut()
+                        .ok_or(5)?
+                        .activation
+                        .write_owned_value(
+                            *dst,
+                            Value::RuntimeObject(value.as_object_ref().ok_or(91)?),
+                        )?;
+                }
+                OxInst::WithEventsGet {
+                    dst,
+                    owner,
+                    binding,
+                } => {
+                    let owner = self.project_object(owner)?;
+                    let value = self.automatic.get(current, &owner, *binding);
+                    let frame = &mut self.frames.last_mut().ok_or(5)?.activation;
+                    let ty = frame
+                        .layout()
+                        .operand_type(&OxOperand::Use(*dst))
+                        .map_err(|_| 5)?;
+                    frame.write_owned_value(
+                        *dst,
+                        oxvba_rt_abi::host_entry::value::from_variant(ty, value)?,
+                    )?;
+                }
+                OxInst::WithEventsSet {
+                    dst,
+                    owner,
+                    binding,
+                    value,
+                } => {
+                    let owner = self.project_object(owner)?;
+                    let value = self.operand(value)?;
+                    self.automatic.set(
+                        current,
+                        owner,
+                        *binding,
+                        value.clone(),
+                        program,
+                        &entries[current],
+                    )?;
+                    let frame = &mut self.frames.last_mut().ok_or(5)?.activation;
+                    let ty = frame
+                        .layout()
+                        .operand_type(&OxOperand::Use(*dst))
+                        .map_err(|_| 5)?;
+                    frame.write_owned_value(
+                        *dst,
+                        oxvba_rt_abi::host_entry::value::from_variant(ty, value)?,
+                    )?;
+                }
+                OxInst::WithEventsClearOwner { dst, owner } => {
+                    let owner = self.project_object(owner)?;
+                    self.automatic.clear_owner(current, &owner);
+                    let frame = &mut self.frames.last_mut().ok_or(5)?.activation;
+                    let ty = frame
+                        .layout()
+                        .operand_type(&OxOperand::Use(*dst))
+                        .map_err(|_| 5)?;
+                    frame.write_owned_value(
+                        *dst,
+                        oxvba_rt_abi::host_entry::value::from_variant(
+                            ty,
+                            oxvba_runtime::Variant::from_i32(0),
+                        )?,
+                    )?;
+                }
                 OxInst::CallProc { args, dst, .. } | OxInst::CallExtern { args, dst, .. } => {
                     let (unit, proc) = match inst {
                         OxInst::CallProc { proc, .. } => (current, *proc),
@@ -811,9 +892,11 @@ impl Drop for TypedStack {
                 oxvba_runtime::finish_pending_termination(id);
             }
         }
-        for (id, _, _) in self.terminations.drain(..) {
+        for (id, unit, _) in self.terminations.drain(..) {
+            self.automatic.clear_owner_id(unit as usize, id);
             oxvba_runtime::finish_pending_termination(id);
         }
         self.stop_drain();
+        self.automatic.collect();
     }
 }

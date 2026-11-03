@@ -317,3 +317,17 @@ Non-blocking formal issues and follow-up items for later ladder profiles.
   Current status: investigating.
   Reproduction command: cargo test -p oxvba-embed --test typed_dynamic_members --test typed_prebound_dispatch --test typed_excel_chains.
   Suggested next action: refine single native authority projection and one-Invoke result/error ownership; keep dynamic callback/caller synchronization under broader WIN-3/WIN-4.
+
+- ID: FTODO-AUTOMATIC-EVENTS-20261103
+  Profile: compiler-owned document and WithEvents routes (bd-59co.3.6.10; WIN-5).
+  Summary: Installed Lean lifecycle/reentry abstractions do not refine native connection-point subscriptions, TLS callback identity, parked Class_Terminate ownership, hidden native document fields, private ByVal Variant copies, or native interface conversion at VBA call boundaries. Owned Excel VM3/JIT observations are execution evidence only; no concrete native/Miri or certification credit.
+  Current status: investigating.
+  Reproduction command: cargo test -p oxvba-embed --test automatic_events --test xlsm_projects; ./scripts/run-automatic-events-oracle.ps1; ./scripts/run-xlsm-project-oracle.ps1.
+  Suggested next action: refine stale-generation rejection, reentrant Unadvise and parked-owner release against the canonical event fabric; retain structural arguments, errors, apartments and reload/lifecycle parity under bd-59co.3.6.4 and bd-59co.3.6.10.
+
+- ID: FTODO-OWNING-FIXED-ARRAYS-20261103
+  Profile: fixed Variant arrays and coordinate storage (bd-59co.3.5.13; broader bd-59co.2.9.9).
+  Summary: Owned XLSM observations detect off-diagonal transpose and check positive and nonzero/negative Long bounds on both backends. Existing Lean lifecycle abstractions do not refine checked array allocation or canonical/native coordinate conversion. No concrete array refinement or Miri claim.
+  Current status: investigating.
+  Reproduction command: cargo test -p oxvba-embed --test xlsm_projects; ./scripts/run-xlsm-project-oracle.ps1 -CaseId arrays; ./scripts/run-xlsm-project-oracle.ps1 -CaseId bounds.
+  Suggested next action: refine checked dimension products and canonical coordinate ordering; extend general ReDim, typed allocation and exact small scalar physical carriers under bd-59co.2.9.9.

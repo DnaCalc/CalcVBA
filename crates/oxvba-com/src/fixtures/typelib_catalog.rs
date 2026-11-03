@@ -2314,6 +2314,7 @@ pub fn build_typelib_metadata(identity: &TypeLibResolvedIdentity) -> TypeLibMeta
         ];
         let events = vec![
             TypeLibEventMetadata {
+                parameter_iids: Vec::new(),
                 name: "Changed".to_string(),
                 token: TEST_EVENT_CHANGED,
                 callback_arity: 1,
@@ -2324,6 +2325,7 @@ pub fn build_typelib_metadata(identity: &TypeLibResolvedIdentity) -> TypeLibMeta
                 coclass: None,
             },
             TypeLibEventMetadata {
+                parameter_iids: Vec::new(),
                 name: "ChangedSourceInterface".to_string(),
                 token: TEST_EVENT_CHANGED_SOURCE_INTERFACE,
                 callback_arity: 1,
@@ -2334,6 +2336,7 @@ pub fn build_typelib_metadata(identity: &TypeLibResolvedIdentity) -> TypeLibMeta
                 coclass: None,
             },
             TypeLibEventMetadata {
+                parameter_iids: Vec::new(),
                 name: "ChangedPair".to_string(),
                 token: TEST_EVENT_CHANGED_PAIR,
                 callback_arity: 2,
@@ -2547,6 +2550,7 @@ pub fn build_typelib_metadata(identity: &TypeLibResolvedIdentity) -> TypeLibMeta
         ];
         let events = vec![
             TypeLibEventMetadata {
+                parameter_iids: Vec::new(),
                 name: "OnSimpleEvent".to_string(),
                 token: TEST_EVENT_SERVER_EVENT_SIMPLE,
                 callback_arity: 0,
@@ -2557,6 +2561,7 @@ pub fn build_typelib_metadata(identity: &TypeLibResolvedIdentity) -> TypeLibMeta
                 coclass: None,
             },
             TypeLibEventMetadata {
+                parameter_iids: Vec::new(),
                 name: "OnValueChanged".to_string(),
                 token: TEST_EVENT_SERVER_EVENT_VALUE_CHANGED,
                 callback_arity: 1,
@@ -2567,6 +2572,7 @@ pub fn build_typelib_metadata(identity: &TypeLibResolvedIdentity) -> TypeLibMeta
                 coclass: None,
             },
             TypeLibEventMetadata {
+                parameter_iids: Vec::new(),
                 name: "OnPairChanged".to_string(),
                 token: TEST_EVENT_SERVER_EVENT_PAIR_CHANGED,
                 callback_arity: 2,

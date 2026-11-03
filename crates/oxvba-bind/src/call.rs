@@ -1447,6 +1447,7 @@ impl<'a> ProcLower<'a> {
             return Ok(None);
         };
         let recv = self.member_receiver_bound(base)?;
+        let recv = self.document_member_receiver(recv, member, Some(kind));
         // The index argument list lives on the enclosing IndexExpr (`target`).
         let arglist = target.index_arg_list();
         match self.resolve_member(&recv.ty, member, Some(kind)) {
@@ -2110,6 +2111,31 @@ impl<'a> ProcLower<'a> {
 
     // ── Member access ───────────────────────────────────────
 
+    pub(crate) fn document_member_receiver(
+        &self,
+        recv: Bound,
+        member: &str,
+        want: Option<ProjectMemberKind>,
+    ) -> Bound {
+        if self.resolve_member(&recv.ty, member, want).is_none()
+            && let Some(host) = self.g.document_host_type(&recv.ty)
+        {
+            let ty = VarTypeRef::Object(host.into());
+            if self.resolve_member(&ty, member, want).is_some() {
+                let place = CorePlace::Field {
+                    object: Box::new(recv.value),
+                    field: oxvba_bundle::HOST_DOCUMENT_FIELD,
+                };
+                return Bound {
+                    value: CoreValue::Load(place.clone()),
+                    place: Some(place),
+                    ty,
+                };
+            }
+        }
+        recv
+    }
+
     /// The receiver of a `MemberExpr` as a bound value: an explicit `obj` (or
     /// `Me`), or the active `With` block's object for a leading-dot member.
     pub(crate) fn member_receiver_bound(
@@ -2400,6 +2426,7 @@ impl<'a> ProcLower<'a> {
 
     /// Lower `recv.member` (already-bound receiver, no args) to a value.
     fn bind_member_value(&mut self, recv: Bound, member: &str) -> Result<Bound, BindError> {
+        let recv = self.document_member_receiver(recv, member, None);
         match self.resolve_member(&recv.ty, member, None) {
             Some(binding) => match &binding.route {
                 DispatchRoute::Value => {
@@ -2534,6 +2561,7 @@ impl<'a> ProcLower<'a> {
             return Ok(bound);
         }
         let recv = self.member_receiver_bound(member_node)?;
+        let recv = self.document_member_receiver(recv, member, None);
         // A field of a UDT receiver (`o.Lines(i)` / `o.field`): a fixed-index
         // record element, optionally indexed when the field is an array. This
         // is the value/read counterpart of `udt_field_place`, and is what makes
@@ -3129,7 +3157,7 @@ fn scalar_ptr_writeback_kind(
 /// Scalars drive narrowing `Coerce` nodes for ByVal arguments; generic COM
 /// object returns stay `Object`, which remains true late binding unless wire
 /// metadata gives a specific interface name.
-fn tlb_param_to_vartype(p: &TypeLibParamType) -> VarTypeRef {
+pub(crate) fn tlb_param_to_vartype(p: &TypeLibParamType) -> VarTypeRef {
     use TypeLibParamType as T;
     match p {
         T::Boolean | T::ByRefBoolean => VarTypeRef::Builtin(BuiltinType::Boolean),

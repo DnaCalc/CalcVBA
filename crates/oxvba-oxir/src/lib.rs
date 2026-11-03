@@ -357,6 +357,81 @@ mod tests {
         class_receiver_func_with_kind(name, ProcedureKind::Sub)
     }
 
+    #[test]
+    fn native_event_routes_roundtrip_and_reject_damaged_descriptors() {
+        let mut handler = class_receiver_func("source_BeforeClose");
+        handler.locals.push(OxLocal {
+            name: "Cancel".into(),
+            ty: OxTy::Bool,
+            array_element: None,
+            param: Some(OxParamInfo {
+                optional: false,
+                by_ref: true,
+                variadic: false,
+            }),
+            escaped: false,
+        });
+        handler.param_count = 2;
+        let route = oxvba_bundle::EventRoute {
+            binding: 0,
+            event: 1546,
+            handler: 0,
+            document_class: None,
+            native: Some(oxvba_com::TypeLibEventMetadata {
+                name: "BeforeClose".into(),
+                token: 1546,
+                callback_arity: 1,
+                parameter_types: vec![oxvba_com::TypeLibParamType::ByRefBoolean],
+                parameter_iids: vec![None],
+                dispatch_path: oxvba_com::TypeLibEventDispatchPath::Dispatch,
+                connection_point_iid: Some("00024412-0000-0000-C000-000000000046".into()),
+                dispatch_member_id: Some(1546),
+                coclass: Some("Workbook".into()),
+            }),
+        };
+        let program = OxProgram {
+            funcs: vec![handler],
+            event_routes: vec![route],
+            ..Default::default()
+        };
+        assert_eq!(verify_program(&program), Ok(()));
+        let encoded = serde_json::to_string(&program).unwrap();
+        let decoded: OxProgram = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, program);
+        for mutation in 0..9 {
+            let mut bad = program.clone();
+            let route = &mut bad.event_routes[0];
+            match mutation {
+                0 => route.handler = 99,
+                1 => route.document_class = Some(99),
+                2 => route.native.as_mut().unwrap().callback_arity = 2,
+                3 => {
+                    route.native.as_mut().unwrap().connection_point_iid = Some("not-an-IID".into())
+                }
+                4 => route.native.as_mut().unwrap().dispatch_member_id = Some(1),
+                5 => bad.funcs[0].locals[1].param.as_mut().unwrap().by_ref = false,
+                7 => bad.funcs[0].locals[1].ty = OxTy::Long,
+                8 => {
+                    route.native.as_mut().unwrap().parameter_iids[0] = Some(
+                        oxvba_com::ComInterfaceIid::parse("00024412-0000-0000-C000-000000000046")
+                            .unwrap(),
+                    )
+                }
+                _ => {
+                    let duplicate = route.clone();
+                    bad.event_routes.push(duplicate);
+                }
+            }
+            assert!(
+                verify_program(&bad)
+                    .unwrap_err()
+                    .iter()
+                    .any(|e| matches!(e, VerifyError::BadEventRoute { .. })),
+                "mutation {mutation}"
+            );
+        }
+    }
+
     fn class_receiver_func_with_kind(name: &str, kind: ProcedureKind) -> OxFunc {
         OxFunc {
             name: name.to_string(),

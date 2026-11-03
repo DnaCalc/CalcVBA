@@ -96,6 +96,15 @@ impl ComInterfaceIid {
 }
 
 impl ComInterfaceIid {
+    pub fn parse(text: &str) -> Option<Self> {
+        let iid = oxvba_runtime::RuntimeGuid::parse(text)?;
+        Some(Self {
+            data1: iid.data1,
+            data2: iid.data2,
+            data3: iid.data3,
+            data4: iid.data4,
+        })
+    }
     /// True for the all-zero IID (`IID_NULL`), which is never a usable interface.
     pub fn is_null(&self) -> bool {
         self.data1 == 0 && self.data2 == 0 && self.data3 == 0 && self.data4 == [0; 8]
@@ -641,18 +650,20 @@ pub enum SourceTypeKind {
     Dispatch,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TypeLibEventDispatchPath {
     Dispatch,
     SourceInterface,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TypeLibEventMetadata {
     pub name: String,
     pub token: i32,
     pub callback_arity: u8,
     pub parameter_types: Vec<TypeLibParamType>,
+    #[serde(default)]
+    pub parameter_iids: Vec<Option<ComInterfaceIid>>,
     pub dispatch_path: TypeLibEventDispatchPath,
     pub connection_point_iid: Option<String>,
     pub dispatch_member_id: Option<i32>,

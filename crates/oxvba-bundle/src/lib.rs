@@ -347,11 +347,17 @@ pub struct ClassDescriptor {
 /// sink binding is `binding`, run the sink's handler procedure `handler` (with
 /// the sink instance as `Me`). `binding` matches the token a `WithEventsSet`
 /// stores; `event` is the source class's stable id for that event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub const HOST_DOCUMENT_FIELD: i32 = i32::MIN;
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EventRoute {
     pub binding: i32,
     pub event: i32,
     pub handler: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<oxvba_com::TypeLibEventMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document_class: Option<usize>,
 }
 
 // ── The bundle ───────────────────────────────────────────────────────────────

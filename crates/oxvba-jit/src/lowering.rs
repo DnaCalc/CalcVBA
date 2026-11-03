@@ -4548,9 +4548,9 @@ impl<'a> LowerFunc<'a> {
         let dst_ty = place_ty(self.program, self.func, dst)?;
         let supported_dst = if matches!(dst_ty, OxTy::Variant) {
             true
-        } else if fixed {
-            is_m4_4_fixed_array_ty_for_element(dst_ty, element)
         } else {
+            // Constant bound expressions can retain a conservative Dynamic
+            // shape. The operation's fixed flag still fixes the allocation.
             is_m4_4_array_ty_for_element(dst_ty, element)
         };
         if !supported_dst {

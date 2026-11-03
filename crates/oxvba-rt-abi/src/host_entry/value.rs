@@ -324,8 +324,8 @@ pub unsafe extern "C" fn evaluate(
                         (None, None) => true,
                         (Some(left), Some(right)) => {
                             match (
-                                calcvba_host_api::HostObject::from_object_ref(&left),
-                                calcvba_host_api::HostObject::from_object_ref(&right),
+                                super::member::host_view(&left),
+                                super::member::host_view(&right),
                             ) {
                                 (Some(left), Some(right)) => left.same_identity(&right),
                                 // Runtime-owned and foreign runtime IUnknown

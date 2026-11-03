@@ -6,6 +6,8 @@ use crate::windows_connection_point::{
 };
 use crate::{TypeLibEventMetadata, WindowsConnectionPointTransport, unadvise_connection_point};
 use calcvba_host_api::{HostObject, InterfaceId};
+mod automatic;
+pub(super) use automatic::subscribe as subscribe_automatic;
 
 pub struct TypedEventSubscription {
     transport: Option<WindowsConnectionPointTransport>,

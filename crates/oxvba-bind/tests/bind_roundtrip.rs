@@ -4137,6 +4137,7 @@ impl TypeLibResolver for ScopedEventTypeLibs {
             member_name_to_token: Vec::new(),
             members: Vec::new(),
             events: vec![oxvba_com::TypeLibEventMetadata {
+                parameter_iids: Vec::new(),
                 name: "NewWorkbook".into(),
                 token: 1565,
                 callback_arity: 1,
@@ -4195,6 +4196,7 @@ impl TypeLibResolver for ScopedWorkbookEventTypeLibs {
     ) -> Option<oxvba_com::TypeLibMetadataBlob> {
         let events = if request.requested_coclass.as_deref() == Some("Workbook") {
             vec![oxvba_com::TypeLibEventMetadata {
+                parameter_iids: Vec::new(),
                 name: "BeforeClose".into(),
                 token: 42,
                 callback_arity: 0,

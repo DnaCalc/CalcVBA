@@ -198,6 +198,16 @@ $worker = $containedWorker.process
 $workerStartUtc = $worker.StartTime.ToUniversalTime().ToString("o")
 $workerExecutablePath = [string]$worker.Path
 try {
+    # Process.Path can be empty immediately after Start-Process. Query the
+    # retained process identity before publishing any worker mutation authority.
+    $retainedWorker=[ExcelOracleRetainedProcess]::Open($worker.Id)
+    if ($null -eq $retainedWorker) { throw 'Contained worker exited before identity publication' }
+    try {
+        if ($retainedWorker.StartTimeUtc.ToString('o') -cne $workerStartUtc) { throw 'Contained worker start identity changed' }
+        $workerExecutablePath=$retainedWorker.ExecutablePath
+        if (-not [StringComparer]::OrdinalIgnoreCase.Equals($workerExecutablePath,(Join-Path $PSHOME 'pwsh.exe'))) { throw 'Contained worker executable identity differs from launched PowerShell' }
+    }
+    finally { $retainedWorker.Dispose() }
     [ordered]@{
         schema = "oxvba.excel-vba-oracle-containment-ready.v1"
         run_id = $RunId

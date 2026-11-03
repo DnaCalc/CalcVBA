@@ -10,6 +10,17 @@ use calcvba_host_api::{
 };
 use oxvba_oxir::{OxCallArg, OxInst};
 
+/// Document source instances retain the native host identity in a reserved
+/// compiler field. Untyped host members and Is use that same identity.
+pub(super) fn host_view(
+    reference: &oxvba_runtime::ObjectRef,
+) -> Option<calcvba_host_api::HostObject> {
+    calcvba_host_api::HostObject::from_object_ref(reference).or_else(|| {
+        let native = reference.project_field_get(oxvba_bundle::HOST_DOCUMENT_FIELD)?;
+        calcvba_host_api::HostObject::from_object_ref(&native.as_object_ref()?)
+    })
+}
+
 /// # Safety
 /// Identical leased frame/context contract to invoke. Only untyped receivers
 /// reach this operation; a declared interface continues to use its static plan.
@@ -39,7 +50,7 @@ pub(super) unsafe fn invoke_dynamic(
         return Err(424);
     }
     let reference = receiver.as_object_ref().ok_or(91)?;
-    let receiver = calcvba_host_api::HostObject::from_object_ref(&reference).ok_or(438)?;
+    let receiver = host_view(&reference).ok_or(438)?;
     let mut values = Vec::with_capacity(args.len());
     let mut specifications = Vec::with_capacity(args.len());
     let mut targets = Vec::with_capacity(args.len());

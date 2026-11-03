@@ -889,6 +889,7 @@ fn widget_blob() -> TypeLibMetadataBlob {
             },
         ],
         events: vec![TypeLibEventMetadata {
+            parameter_iids: Vec::new(),
             name: "Changed".into(),
             token: 9,
             callback_arity: 1,
@@ -1156,6 +1157,7 @@ fn com_events_scope_to_receiver_coclass_without_library_fallback() {
     blob.activation_prog_id = None;
     blob.coclass_names = vec!["Application".into(), "Workbook".into()];
     blob.events = vec![TypeLibEventMetadata {
+        parameter_iids: Vec::new(),
         name: "NewWorkbook".into(),
         token: 1565,
         callback_arity: 1,

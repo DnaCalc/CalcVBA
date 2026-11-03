@@ -529,6 +529,7 @@ function Get-ExcelOracleSelectedCaseDescriptorPayload {
         expected_runtime_err = $Descriptor.expected_runtime_err
     }
     if ($Descriptor.PSObject.Properties.Name -contains 'additional_modules') { $payload.additional_modules = @($Descriptor.additional_modules) }
+    if ($Descriptor.PSObject.Properties.Name -contains 'saved_workbook_name') { $payload.saved_workbook_name = $Descriptor.saved_workbook_name }
     return $payload
 }
 
@@ -559,6 +560,9 @@ function New-ExcelOracleSelectedCaseDescriptors {
                 [pscustomobject]@{ name=[string]$_.name; kind=[int]$_.kind; source=[string]$_.source; sha256=(Get-ExcelOracleSha256 -Text ([string]$_.source)) }
             })
         }
+        if ($case.PSObject.Properties.Name -contains 'saved_workbook_name') {
+            $descriptor | Add-Member -NotePropertyName saved_workbook_name -NotePropertyValue $case.saved_workbook_name
+        }
         $payloadJson = (Get-ExcelOracleSelectedCaseDescriptorPayload -Descriptor $descriptor) | ConvertTo-Json -Compress -Depth 8
         $descriptor | Add-Member -NotePropertyName descriptor_sha256 -NotePropertyValue (Get-ExcelOracleSha256 -Text $payloadJson)
         $descriptors.Add($descriptor)
@@ -574,6 +578,7 @@ function Test-ExcelOracleSelectedCaseDescriptor {
         "invocation_observation_prefix", "evidence_contract", "expected_runtime_err", "descriptor_sha256"
     )
     if ($null -ne $Descriptor -and $Descriptor.PSObject.Properties.Name -contains 'additional_modules') { $expectedFields += 'additional_modules' }
+    if ($null -ne $Descriptor -and $Descriptor.PSObject.Properties.Name -contains 'saved_workbook_name') { $expectedFields += 'saved_workbook_name' }
     if ($null -eq $Descriptor -or
         (@($Descriptor.PSObject.Properties.Name | Sort-Object) -join "`n") -cne (@($expectedFields | Sort-Object) -join "`n")) {
         return $false
@@ -609,6 +614,9 @@ function Test-ExcelOracleSelectedCaseDescriptor {
                 $module.source -isnot [string] -or $module.sha256 -isnot [string] -or
                 $module.sha256 -cne (Get-ExcelOracleSha256 -Text $module.source)) { return $false }
         }
+    }
+    if ($Descriptor.PSObject.Properties.Name -contains 'saved_workbook_name') {
+        if ($Descriptor.saved_workbook_name -isnot [string] -or $Descriptor.saved_workbook_name -cnotmatch '^[A-Za-z0-9_-]+\.xlsm$') { return $false }
     }
     foreach ($nullableString in @("run_procedure", "expected_value", "expected_selected_token", "expected_expanded_line", "macro_probe_target", "invocation_observation_prefix")) {
         if ($null -ne $Descriptor.$nullableString -and $Descriptor.$nullableString -isnot [string]) { return $false }
@@ -1675,11 +1683,15 @@ function Resolve-ExcelOraclePostCleanupResult {
                     catch { $authorityValid = $false }
                 }
             }
+            $expectedCompilePath = $expectedBootstrapPath
+            if ($descriptor.PSObject.Properties.Name -contains 'saved_workbook_name') {
+                $expectedCompilePath = [IO.Path]::GetFullPath((Join-Path $expectedCaseDirectory $descriptor.saved_workbook_name))
+            }
             $compileContextValid = $contextFieldsValid -and $additionalModulesValid -and
                 [string]$case.compile_context.schema -ceq "oxvba.excel-vba-oracle-compile-context.v1" -and
                 $case.compile_context.injected_project_name -is [string] -and -not [string]::IsNullOrWhiteSpace([string]$case.compile_context.injected_project_name) -and
                 $case.compile_context.injected_project_file_name -is [string] -and
-                [StringComparer]::OrdinalIgnoreCase.Equals([string]$case.compile_context.injected_project_file_name, $expectedBootstrapPath) -and
+                [StringComparer]::OrdinalIgnoreCase.Equals([string]$case.compile_context.injected_project_file_name, $expectedCompilePath) -and
                 $case.compile_context.injected_module_name -is [string] -and [string]$case.compile_context.injected_module_name -ceq [string]$case.module_name -and
                 $case.compile_context.injected_source -is [string] -and
                 (Get-ExcelOracleSha256 -Text ([string]$case.compile_context.injected_source)) -ceq (Get-ExcelOracleSha256 -Text ([string]$descriptor.module_source)) -and

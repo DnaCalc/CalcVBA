@@ -441,6 +441,7 @@ impl<'a> ProcLower<'a> {
                     })]));
                 }
                 let recv = self.member_receiver_bound(target)?;
+                let recv = self.document_member_receiver(recv, member, Some(kind));
                 // Through an interface-typed target, the setter is the mangled
                 // `Interface_Property` accessor on the implementing class.
                 let dispatch = self.interface_dispatch_name(&recv.ty, member);

@@ -18,6 +18,7 @@ pub(super) fn is_aggregate(inst: &OxInst) -> bool {
             | OxInst::RecordArrayGet { .. }
             | OxInst::RecordArraySet { .. }
             | OxInst::ArrayLiteral { .. }
+            | OxInst::ArrayRedim { .. }
             | OxInst::ArrayAppend { .. }
             | OxInst::ArrayGet { .. }
             | OxInst::ArraySet { .. }
@@ -43,6 +44,28 @@ pub(super) fn admit(layout: &ScalarLayout, inst: &OxInst) -> Result<bool, String
         }
     };
     match inst {
+        OxInst::ArrayRedim {
+            dst,
+            upper_bounds,
+            lower_bounds,
+            element,
+            preserve,
+            fixed,
+        } => {
+            if *preserve || !*fixed || *element != oxvba_bundle::ArrayElementType::Variant {
+                return Err("owning dynamic ReDim and typed element allocation remain open".into());
+            }
+            if upper_bounds.is_empty()
+                || upper_bounds.len() > 60
+                || lower_bounds.len() > upper_bounds.len()
+            {
+                return Err("invalid fixed array bound descriptor".into());
+            }
+            array(&OxOperand::Use(*dst))?;
+            for bound in upper_bounds.iter().chain(lower_bounds) {
+                operand(bound)?;
+            }
+        }
         OxInst::NewRecord { dst, fields } => {
             let slot = layout.slot(*dst)?;
             let expected = layout
@@ -166,16 +189,17 @@ fn flat(bounds: &[SafeArrayBound], indices: &[i64]) -> Result<usize, i32> {
         return Err(9);
     }
     let mut offset = 0usize;
-    let mut stride = 1usize;
     for (bound, &index) in bounds.iter().zip(indices) {
         let index = index.checked_sub(i64::from(bound.lower)).ok_or(9)?;
         if index < 0 || index >= i64::from(bound.count) {
             return Err(9);
         }
+        // Runtime SAFEARRAY values use first-dimension-outermost storage;
+        // the native Automation boundary converts its descriptor ordering.
         offset = offset
-            .checked_add((index as usize).checked_mul(stride).ok_or(9)?)
+            .checked_mul(bound.count as usize)
+            .and_then(|offset| offset.checked_add(index as usize))
             .ok_or(9)?;
-        stride = stride.checked_mul(bound.count as usize).ok_or(9)?;
     }
     Ok(offset)
 }
@@ -199,6 +223,45 @@ pub(super) unsafe fn evaluate(raw: *mut RawActivation, inst: &OxInst) -> Result<
         unsafe { write_owned(raw, index, ty, value) }
     };
     match inst {
+        OxInst::ArrayRedim {
+            dst,
+            upper_bounds,
+            lower_bounds,
+            ..
+        } => {
+            let mut bounds = Vec::with_capacity(upper_bounds.len());
+            let mut count = 1usize;
+            for (i, upper) in upper_bounds.iter().enumerate() {
+                let lower = lower_bounds
+                    .get(i)
+                    .map(|op| {
+                        i32::try_from(oxvba_eval::arith::int(&read(op)?).map_err(|e| e.code)?)
+                            .map_err(|_| 6)
+                    })
+                    .transpose()?
+                    .unwrap_or(0);
+                let upper =
+                    i32::try_from(oxvba_eval::arith::int(&read(upper)?).map_err(|e| e.code)?)
+                        .map_err(|_| 6)?;
+                if upper < lower {
+                    return Err(9);
+                }
+                let length =
+                    u32::try_from(i64::from(upper) - i64::from(lower) + 1).map_err(|_| 7)?;
+                count = count.checked_mul(length as usize).ok_or(7)?;
+                bounds.push(SafeArrayBound {
+                    lower,
+                    count: length,
+                });
+            }
+            let mut values = Vec::new();
+            values.try_reserve_exact(count).map_err(|_| 7)?;
+            values.resize_with(count, Variant::empty);
+            let array = SafeArray::from_shape_and_variants(bounds, values)
+                .map_err(|_| 7)?
+                .with_fixed_size(true);
+            store(*dst, Variant::from_safearray(array))
+        }
         OxInst::NewRecord { dst, .. } => {
             let index = layout.slot(*dst).map_err(|_| 5)?;
             let record = VbaRecord::new_default(layout.record_slots.get(&index).ok_or(5)?.clone())

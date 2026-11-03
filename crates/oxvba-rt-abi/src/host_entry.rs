@@ -26,6 +26,10 @@ pub fn stack_instruction(inst: &OxInst, layout: &ScalarLayout) -> bool {
     matches!(
         inst,
         OxInst::CallProc { .. }
+            | OxInst::Predeclared { .. }
+            | OxInst::WithEventsGet { .. }
+            | OxInst::WithEventsSet { .. }
+            | OxInst::WithEventsClearOwner { .. }
             | OxInst::NewObject { .. }
             | OxInst::ComCallLate { .. }
             | OxInst::FieldGet { .. }
@@ -702,8 +706,16 @@ impl ScalarLayout {
                 }
             }
             for inst in func.blocks.iter().flat_map(|b| &b.instrs) {
-                if let OxInst::NewObject { class, .. } = inst {
+                if let OxInst::NewObject { class, .. } | OxInst::Predeclared { class, .. } = inst {
                     let plan = classes.get(class.0).ok_or("invalid class constructor")?;
+                    if matches!(inst, OxInst::Predeclared { .. })
+                        && !plan
+                            .fields
+                            .iter()
+                            .any(|field| field.token == oxvba_bundle::HOST_DOCUMENT_FIELD)
+                    {
+                        return Err("owning predeclared instances require an explicitly bound host document".into());
+                    }
                     class_news.insert(*class, plan.initialize);
                     if let Some(proc) = plan.initialize {
                         calls.insert(
@@ -1257,6 +1269,40 @@ impl ScalarLayout {
             return Ok(());
         }
         match inst {
+            OxInst::Predeclared { dst, class }
+                if self.owning && self.class_news.contains_key(class) =>
+            {
+                self.slot(*dst)?;
+                Ok(())
+            }
+            OxInst::WithEventsGet { dst, owner, .. }
+            | OxInst::WithEventsClearOwner { dst, owner }
+                if self.owning =>
+            {
+                self.slot(*dst)?;
+                if !matches!(
+                    self.operand_type(owner)?,
+                    ScalarType::HostObject | ScalarType::Variant
+                ) {
+                    return Err("invalid WithEvents owner".into());
+                }
+                Ok(())
+            }
+            OxInst::WithEventsSet {
+                dst, owner, value, ..
+            } if self.owning => {
+                self.slot(*dst)?;
+                if !matches!(
+                    self.operand_type(owner)?,
+                    ScalarType::HostObject | ScalarType::Variant
+                ) || !matches!(
+                    self.operand_type(value)?,
+                    ScalarType::HostObject | ScalarType::Variant
+                ) {
+                    return Err("invalid WithEvents assignment".into());
+                }
+                Ok(())
+            }
             OxInst::ComCallLate { dst, .. }
                 if self.owning && self.class_calls.iter().any(|(site, _, _)| site == inst) =>
             {
@@ -1343,8 +1389,13 @@ impl ScalarLayout {
                         oxvba_oxir::OxArg::ByRef(p) => (self.slots[self.slot(*p)?], true),
                         _ => return Err("omitted typed arguments remain open".into()),
                     };
-                    let private_variant = value_builtin && !alias && *ty == ScalarType::Variant;
-                    if (from != *ty && !private_variant) || (alias && !by_ref) {
+                    let private_variant =
+                        (self.owning || value_builtin) && !alias && *ty == ScalarType::Variant;
+                    let private_object = self.owning
+                        && !alias
+                        && from == ScalarType::Variant
+                        && *ty == ScalarType::HostObject;
+                    if (from != *ty && !private_variant && !private_object) || (alias && !by_ref) {
                         return Err("typed call carrier/passing mismatch".into());
                     }
                 }

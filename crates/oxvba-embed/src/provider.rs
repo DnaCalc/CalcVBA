@@ -14,6 +14,7 @@ pub struct Provider {
     resolver: Rc<dyn TypeLibResolver>,
     object_libraries: Vec<api::TypedObjectLibrary>,
     class_modules: Vec<String>,
+    document_modules: Vec<(String, String)>,
 }
 impl Default for Provider {
     fn default() -> Self {
@@ -22,6 +23,7 @@ impl Default for Provider {
             resolver: Rc::new(oxvba_symbol::CatalogTypeLibResolver),
             object_libraries: vec![],
             class_modules: vec![],
+            document_modules: vec![],
         }
     }
 }
@@ -37,13 +39,18 @@ impl Provider {
         self.class_modules = names;
         self
     }
+    /// Module name and declared host type, such as (Sheet1, Excel.Worksheet).
+    pub fn with_document_modules(mut self, documents: Vec<(String, String)>) -> Self {
+        self.document_modules = documents;
+        self
+    }
     pub fn with_type_libraries(mut self, resolver: Rc<dyn TypeLibResolver>) -> Self {
         self.resolver = resolver;
         self
     }
     /// Prepare compiler-owned metadata without publishing any callable address.
     pub fn compile_graph(&self, graph: &api::ProjectGraph) -> Result<Module, api::Error> {
-        if !self.class_modules.is_empty() {
+        if !self.class_modules.is_empty() || !self.document_modules.is_empty() {
             return Err(api::Error::UnsupportedSignature(
                 "class module selection currently requires a single project".into(),
             ));
@@ -113,6 +120,19 @@ impl Provider {
                 ));
             }
         }
+        for (name, host_type) in &self.document_modules {
+            if host_type.trim().is_empty()
+                || !classes.insert(name.to_ascii_lowercase())
+                || !project
+                    .modules
+                    .iter()
+                    .any(|m| m.name.eq_ignore_ascii_case(name))
+            {
+                return Err(api::Error::Compile(
+                    "unknown or duplicate document module/host type".into(),
+                ));
+            }
+        }
         validate_libraries(&project.libraries)?;
         let libraries: Vec<_> = project
             .libraries
@@ -140,15 +160,28 @@ impl Provider {
             modules: project
                 .modules
                 .iter()
-                .map(|m| sym::ModuleUnit {
-                    module_name: m.name.clone(),
-                    module_kind: if classes.contains(&m.name.to_ascii_lowercase()) {
-                        sym::ModuleKind::Class
-                    } else {
-                        sym::ModuleKind::Procedural
-                    },
-                    attributes: sym::ModuleAttributes::named(&m.name),
-                    source: m.source.clone(),
+                .map(|m| {
+                    let document = self
+                        .document_modules
+                        .iter()
+                        .find(|(name, _)| name.eq_ignore_ascii_case(&m.name));
+                    let mut attributes = sym::ModuleAttributes::named(&m.name);
+                    if let Some((_, host)) = document {
+                        attributes.host_document_type = Some(host.clone());
+                        attributes.vb_predeclared_id = true;
+                    }
+                    sym::ModuleUnit {
+                        module_name: m.name.clone(),
+                        module_kind: if document.is_some() {
+                            sym::ModuleKind::Document
+                        } else if classes.contains(&m.name.to_ascii_lowercase()) {
+                            sym::ModuleKind::Class
+                        } else {
+                            sym::ModuleKind::Procedural
+                        },
+                        attributes,
+                        source: m.source.clone(),
+                    }
                 })
                 .collect(),
             references: project
@@ -243,6 +276,7 @@ impl api::RuntimeProvider for Provider {
             host: self.host.clone(),
             resolver: self.resolver.clone(),
             class_modules: self.class_modules.clone(),
+            document_modules: self.document_modules.clone(),
             object_libraries: self
                 .object_libraries
                 .iter()
@@ -279,6 +313,7 @@ impl api::RuntimeProvider for Provider {
             host: self.host.clone(),
             resolver: self.resolver.clone(),
             class_modules: self.class_modules.clone(),
+            document_modules: self.document_modules.clone(),
             object_libraries: self
                 .object_libraries
                 .iter()
@@ -324,6 +359,7 @@ impl api::RuntimeProvider for Provider {
                 host: self.host.clone(),
                 resolver: self.resolver.clone(),
                 class_modules: self.class_modules.clone(),
+                document_modules: self.document_modules.clone(),
                 object_libraries: self.object_libraries.clone(),
             },
         }))
@@ -355,6 +391,9 @@ fn dynamic_bound(handle: &api::BoundProcedure) -> Result<&crate::BoundProcedure,
     Ok(bound)
 }
 impl api::Session for Session {
+    fn attach_document(&self, module: &str, source: &api::HostObject) -> Result<(), api::Error> {
+        self.session.attach_document(module, source).map_err(error)
+    }
     fn reload_graph(&mut self, graph: &api::ProjectGraph) -> Result<(), api::Error> {
         let module = self.provider.compile_graph(graph)?;
         self.session.reload(module).map_err(error)?;

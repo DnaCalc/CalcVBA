@@ -12,7 +12,9 @@ use std::{
     rc::Rc,
     sync::Arc,
 };
+mod automatic_session;
 mod cache;
+mod events;
 mod invocation;
 mod typed_stack;
 use cache::PreparedCode;
@@ -90,6 +92,13 @@ pub struct Module {
     reference_programs: Vec<OxProgram>,
     procedures: Vec<Procedure>,
     host: Arc<dyn HostServices>,
+    documents: Vec<DocumentModule>,
+}
+#[derive(Clone, Debug)]
+struct DocumentModule {
+    name: String,
+    host_type: String,
+    class: usize,
 }
 impl Module {
     pub fn load(module_name: &str, source: &str) -> Result<Self, Error> {
@@ -171,11 +180,27 @@ impl Module {
                 }
             })
             .collect();
+        let documents = manifest
+            .modules
+            .iter()
+            .filter(|m| m.module_kind == sym::ModuleKind::Document)
+            .filter_map(|m| {
+                Some(DocumentModule {
+                    name: m.module_name.clone(),
+                    host_type: m.attributes.host_document_type.clone()?,
+                    class: program
+                        .classes
+                        .iter()
+                        .position(|c| c.name.eq_ignore_ascii_case(&m.module_name))?,
+                })
+            })
+            .collect();
         Ok(Self {
             program,
             reference_programs: vec![],
             procedures,
             host: HostBuilder::new().build(),
+            documents,
         })
     }
     /// Compile leaf-first units, retaining independent canonical stores.
@@ -208,6 +233,9 @@ impl Module {
     }
     pub fn com_interfaces(&self) -> &[oxvba_oxir::ComInterface] {
         &self.program.com_interfaces
+    }
+    pub fn event_routes(&self) -> &[oxvba_bundle::EventRoute] {
+        &self.program.event_routes
     }
     pub fn prepare(&self, backend: Backend) -> Result<Session<'_>, Error> {
         Session::new(self, backend)
@@ -263,6 +291,7 @@ pub struct Session<'a> {
     typed_context: Cell<*mut calcvba_host_api::TypedContext>,
     suspended: Cell<u32>,
     object_owner: RefCell<oxvba_runtime::object_owner::RuntimeObjectOwner>,
+    automatic: Rc<events::AutomaticEvents>,
 }
 struct TypedActivation<'a> {
     _executing: Ref<'a, ()>,
@@ -351,7 +380,13 @@ impl<'a> Session<'a> {
                     .collect()
             })
             .collect();
+        let event_state = match &executable {
+            Executable::Interpreter(state) => state.borrow().typed_event_state(),
+            #[cfg(feature = "jit")]
+            Executable::Jit(_, state) => state.borrow().typed_event_state(),
+        };
         Ok(Self {
+            automatic: events::AutomaticEvents::new(event_state),
             object_owner: RefCell::new(object_owner),
             module,
             programs,
@@ -379,6 +414,7 @@ impl<'a> Session<'a> {
         let next_owner = oxvba_runtime::object_owner::RuntimeObjectOwner::fresh()
             .ok_or_else(|| Error::Backend("object owner identity exhausted".into()))?;
         let _object_scope = next_owner.enter();
+        self.automatic.clear();
         match &self.executable {
             Executable::Interpreter(state) => {
                 let next = oxvba_vm3::Vm3::link_with_budget(
@@ -406,6 +442,29 @@ impl<'a> Session<'a> {
             }
         }
         *self.object_owner.borrow_mut() = next_owner;
+        let state = match &self.executable {
+            Executable::Interpreter(state) => state.borrow().typed_event_state(),
+            #[cfg(feature = "jit")]
+            Executable::Jit(_, state) => state.borrow().typed_event_state(),
+        };
+        *self.automatic.state.borrow_mut() = state;
+        let documents = self
+            .automatic
+            .documents
+            .borrow()
+            .iter()
+            .map(|((_, class), source)| (*class, source.clone()))
+            .collect::<Vec<_>>();
+        drop(_executing);
+        for (class, source) in documents {
+            let document = self
+                .module
+                .documents
+                .iter()
+                .find(|d| d.class == class)
+                .ok_or(Error::ArgumentMismatch)?;
+            self.attach_document(&document.name, &source)?;
+        }
         Ok(())
     }
     pub fn backend(&self) -> Backend {
@@ -652,7 +711,7 @@ impl<'a> Session<'a> {
         }
         if self.typed[bound.id.0].is_err() {
             let mut frame = self.new_activation(bound, args)?;
-            let status = self.execute_frame(bound, &mut frame, context, u64::MAX)?;
+            let status = self.execute_frame(&mut frame, context, u64::MAX)?;
             if status != 0 {
                 return Err(Error::Backend("unexpected finite-slice suspension".into()));
             }
@@ -738,7 +797,7 @@ impl<'a> Session<'a> {
         self.validate(bound)?;
         let _activation = self.enter_typed(context)?;
         let mut frame = self.new_value_activation(bound, args)?;
-        if self.execute_frame(bound, &mut frame, context, u64::MAX)? != 0 {
+        if self.execute_frame(&mut frame, context, u64::MAX)? != 0 {
             return Err(Error::Backend("unexpected synchronous suspension".into()));
         }
         Ok(frame.result())
@@ -758,7 +817,7 @@ impl<'a> Session<'a> {
         let mut frame = self.new_value_activation(bound, &inputs)?;
         frame.enable_writebacks(args.len())?;
         drop(inputs);
-        let result = self.execute_frame(bound, &mut frame, context, u64::MAX);
+        let result = self.execute_frame(&mut frame, context, u64::MAX);
         // VBA mutations made before an unhandled error still reach the caller.
         for (index, value) in frame.take_writebacks().map_err(|n| self.typed_error(n))? {
             args[index] = value;
@@ -790,33 +849,7 @@ impl<'a> Session<'a> {
         let _object_scope = self.object_owner.borrow().enter();
         // Reject the complete reachable typed call graph before any body effect.
         let root = self.module.reference_programs.len();
-        let mut pending = vec![(root, bound.id)];
-        let mut visited = std::collections::HashSet::new();
-        while let Some((unit, id)) = pending.pop() {
-            if !visited.insert((unit, id)) {
-                continue;
-            }
-            let entry = self
-                .owning_typed
-                .get(unit)
-                .and_then(|p| p.get(id.0))
-                .ok_or_else(|| Error::UnsupportedSignature("invalid typed callee".into()))?
-                .as_ref()
-                .map_err(|e| Error::UnsupportedSignature(e.clone()))?;
-            pending.extend(entry.layout().calls.keys().map(|id| (unit, *id)));
-            pending.extend(
-                entry
-                    .layout()
-                    .extern_calls
-                    .values()
-                    .filter_map(|c| match c.target {
-                        LinkedTarget::Procedure { program, procedure } => {
-                            Some((program, procedure))
-                        }
-                        LinkedTarget::Builtin(_) => None,
-                    }),
-            );
-        }
+        self.validate_reachable(root, bound.id)?;
         let typed = self.owning_typed.last().expect("root entries")[bound.id.0]
             .as_ref()
             .map_err(|e| Error::UnsupportedSignature(e.clone()))?;
@@ -891,40 +924,7 @@ impl<'a> Session<'a> {
                 .iter()
                 .map(|v| v.borrow_slot().expect("admitted optional carrier")),
         );
-        let (stores, error, classes) = match &self.executable {
-            Executable::Interpreter(state) => {
-                let mut state = state.try_borrow_mut().map_err(|_| Error::Reentry)?;
-                let stores = (0..=root)
-                    .map(|unit| state.typed_globals_raw_at(unit))
-                    .collect::<Vec<_>>();
-                (stores, state.typed_error_raw(), state.typed_class_context())
-            }
-            #[cfg(feature = "jit")]
-            Executable::Jit(_, state) => {
-                let mut state = state.try_borrow_mut().map_err(|_| Error::Reentry)?;
-                let stores = (0..=root)
-                    .map(|unit| state.typed_globals_raw_at(unit))
-                    .collect::<Vec<_>>();
-                (stores, state.typed_error_raw(), state.typed_class_context())
-            }
-        };
-        // SAFETY: the owning SessionCell lease retains this canonical store;
-        // executing/suspended guards exclude reset and unrelated execution.
-        let activation = unsafe {
-            oxvba_rt_abi::host_entry::activation::Activation::new_values(
-                typed.layout(),
-                &prepared,
-                stores[root].0,
-                stores[root].1,
-                typed.entry_pc(),
-            )
-        }
-        .map_err(|number| self.typed_error(number))?;
-        // SAFETY: the same SessionCell/execution guard leases Err and globals;
-        // this stack is always dropped before the retaining session cell.
-        Ok(unsafe {
-            typed_stack::TypedStack::new(activation, root, bound.id, stores, error, classes)
-        })
+        self.new_internal_stack(root, bound.id, &prepared)
     }
     fn resume_frame(
         &self,
@@ -936,11 +936,10 @@ impl<'a> Session<'a> {
     ) -> Result<i32, Error> {
         self.validate(bound)?;
         let _activation = self.enter_activation(context, resuming)?;
-        self.execute_frame(bound, frame, context, operations)
+        self.execute_frame(frame, context, operations)
     }
     fn execute_frame(
         &self,
-        _bound: &BoundProcedure,
         frame: &mut typed_stack::TypedStack,
         context: &mut TypedContext,
         operations: u64,

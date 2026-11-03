@@ -271,7 +271,24 @@ impl IdAllocator {
             }
             let folded = fold_identifier(&display);
             let surface_facts = class_member_surface_facts(env, &display);
-            let fields = class_fields(env, type_ctx, module.module_scope, &alloc.field_token_of)?;
+            let mut fields =
+                class_fields(env, type_ctx, module.module_scope, &alloc.field_token_of)?;
+            if let Some(host) = manifest
+                .modules
+                .iter()
+                .find(|m| {
+                    m.module_kind == ModuleKind::Document
+                        && m.module_name.eq_ignore_ascii_case(module.module_name)
+                })
+                .and_then(|m| m.attributes.host_document_type.as_ref())
+            {
+                fields.push(CoreClassField {
+                    name: "__host_document".into(),
+                    token: oxvba_bundle::HOST_DOCUMENT_FIELD,
+                    ty: VarTypeRef::Object(host.clone()),
+                    array_element: None,
+                });
+            }
             let default_member = env
                 .resolve_default_member(&VarTypeRef::Object(display.clone()))
                 .and_then(|binding| {
@@ -1081,8 +1098,9 @@ pub(crate) fn class_name_for(
         } else {
             &m.attributes.vb_name
         };
-        (fold_identifier(name) == folded && m.module_kind == ModuleKind::Class)
-            .then(|| name.clone())
+        (fold_identifier(name) == folded
+            && matches!(m.module_kind, ModuleKind::Class | ModuleKind::Document))
+        .then(|| name.clone())
     })
 }
 
@@ -1097,8 +1115,8 @@ fn predeclared_class(manifest: &SymbolProjectManifest, module_name: &str) -> boo
             &m.attributes.vb_name
         };
         fold_identifier(name) == folded
-            && m.module_kind == ModuleKind::Class
-            && m.attributes.vb_predeclared_id
+            && matches!(m.module_kind, ModuleKind::Class | ModuleKind::Document)
+            && (m.module_kind == ModuleKind::Document || m.attributes.vb_predeclared_id)
     })
 }
 

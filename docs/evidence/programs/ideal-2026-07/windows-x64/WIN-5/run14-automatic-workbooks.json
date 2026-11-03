@@ -1,0 +1,1823 @@
+{
+  "schema": "calcvba.run14.automatic-and-xlsm.v1",
+  "created_utc": "2026-11-03T08:50:53.013233+00:00",
+  "base_commit": "b69bf089792d821e8e2145d69f17a64f14479ea6",
+  "status": "bounded development execution proof; broader automatic events and workbook compatibility in-progress",
+  "inputs": {
+    "Cargo.lock": "92a2de67a2126a181f89cc35809b8119481e04f53b9cd7927d4d8c0315ef51af",
+    "Cargo.toml": "847d85416b6740b58d3af73d831aa980cd60503209b487f046325d88d88041b0",
+    "crates/oxvba-embed/tests/support/owned_excel.rs": "f1aeea3a8d7fed227ffcf6a5be904f5ee2e61c7449cbebc9ee76f8038c67cb58",
+    "scripts/excel-vba-oracle-bootstrap.ps1": "ef647eac363549180b85988a984f45a2aa57a81b2a636f4f09fa01d30581e83b",
+    "scripts/excel-vba-oracle-contract.ps1": "381ef4d53f1698150b0ed27baf2cf96a345f99bb5410cabb0bc7cafff0266103",
+    "scripts/excel-vba-oracle-guardian.ps1": "ab29ddd83c0e877160b6d74b7817e8f872ffe5ca789df7f6746ebce38889c707",
+    "scripts/excel-vba-oracle-job.ps1": "d0a39548b1b0c8afea86f6aad3925583d75493d423c7d10c4c0ea0fbba838c96",
+    "scripts/excel-vba-oracle-worker.ps1": "348564130f5ed4404d9aa181410e84ffdde8dfbfa8f135c3f9168bfeb52b1e46",
+    "scripts/meta-check.ps1": "c848e75f8808c6f0cd11508c961f551175ed16a13e08428ea548c0e2f8055ec6",
+    "scripts/run-excel-vba-oracle.ps1": "7c399e4f093f7cfeaf28e453b0118a6817ec419ea4e0e22229a95e82bcfa6062",
+    "temp/archive_run14_automatic.py": "95ac775de9b2e18377ebf2a80a008b00024d1f7920271462db1cf3de38c00da8",
+    "temp/audit_run14_owned.ps1": "927c7333af3be9b9946c4a34535808f61ccffe963d27d88571a34a6d2ed96bd2"
+  },
+  "proofs": [
+    {
+      "run": "run14-sealed-automatic",
+      "excel_pid": 50096,
+      "cleanup": "owned-process-zero",
+      "vba_return": "1:1:WA1;DA1;|nested=3:3:WA1;DA1;WA2;DA2;|rebind=4:WA3;DA3;|release=4:1:True:DA5;|close=1",
+      "engine": {
+        "executable": "C:\\Work\\DnaCalc\\OxVba\\temp\\run14-final\\automatic_events-sealed.exe",
+        "sha256": "2afc7bd2d0473ce1037c5489707281ece5edf1fd270ee13cdbc49762fb0e51ec",
+        "exit_code": 0,
+        "excel_pid": 50096,
+        "hwnd": "80550168",
+        "workbook": "C:\\Work\\DnaCalc\\OxVba\\temp\\calcvba14\\oracle\\run14-sealed-automatic\\windows-scalar-interop\\oracle-bootstrap.xlsx",
+        "test": "owned_excel_automatic_events"
+      }
+    },
+    {
+      "run": "run14-sealed-chains",
+      "excel_pid": 65360,
+      "cleanup": "owned-process-zero",
+      "vba_return": "A2:12:19:38:9:A2;E2:14;91:424:438;7:12:19:38:3:12:14",
+      "vbe_identifier_recasing_only": [],
+      "cells_per_backend": 24,
+      "comparisons": [
+        {
+          "backend": "vm3",
+          "exit_code": 0,
+          "returned_value_equal": true,
+          "all_used_cells_equal": true,
+          "workbook_sha256": "de28710ed8fcd8f946601a0f12534df5fe6d4e26da1c755bd5347df7ebc80258",
+          "engine_sha256": "35c7b38f74ad068a5184395bb8fc32b4d8cb91fa062502a644ae764a73d06f28",
+          "owned_excel_pid": 65360
+        },
+        {
+          "backend": "jit",
+          "exit_code": 0,
+          "returned_value_equal": true,
+          "all_used_cells_equal": true,
+          "workbook_sha256": "de28710ed8fcd8f946601a0f12534df5fe6d4e26da1c755bd5347df7ebc80258",
+          "engine_sha256": "35c7b38f74ad068a5184395bb8fc32b4d8cb91fa062502a644ae764a73d06f28",
+          "owned_excel_pid": 65360
+        }
+      ],
+      "module_sources": {
+        "ThisWorkbook": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "Sheet1": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "ChainOps": "86cb930fe352ab286c0b5da83dda1254ac759c9c40b5c4867d8b65b7228c6102",
+        "Api": "b33baf13d7101aaa958f0e5db520ed170020d80d8ee57c0b73c2afe497fbd977"
+      },
+      "vba_project_bin_sha256": "a71a4ebd71a7c5f112eb1f51efa9a9c9059143aac702753e31575075f1ee9d03",
+      "xlsm_sha256": "de28710ed8fcd8f946601a0f12534df5fe6d4e26da1c755bd5347df7ebc80258"
+    },
+    {
+      "run": "run14-sealed-events",
+      "excel_pid": 64652,
+      "cleanup": "owned-process-zero",
+      "vba_return": "1:1:WA1;DA1;|nested=3:3:WA1;DA1;WA2;DA2;|rebind=4:WA3;DA3;|release=4:1:True:DA5;|close=1",
+      "vbe_identifier_recasing_only": [],
+      "cells_per_backend": 5,
+      "comparisons": [
+        {
+          "backend": "vm3",
+          "exit_code": 0,
+          "returned_value_equal": true,
+          "all_used_cells_equal": true,
+          "workbook_sha256": "65f71b08a4062ba9a0e062719cf92bbcaab9142d4bb07e8d89abf1fc61c8676c",
+          "engine_sha256": "35c7b38f74ad068a5184395bb8fc32b4d8cb91fa062502a644ae764a73d06f28",
+          "owned_excel_pid": 64652
+        },
+        {
+          "backend": "jit",
+          "exit_code": 0,
+          "returned_value_equal": true,
+          "all_used_cells_equal": true,
+          "workbook_sha256": "65f71b08a4062ba9a0e062719cf92bbcaab9142d4bb07e8d89abf1fc61c8676c",
+          "engine_sha256": "35c7b38f74ad068a5184395bb8fc32b4d8cb91fa062502a644ae764a73d06f28",
+          "owned_excel_pid": 64652
+        }
+      ],
+      "module_sources": {
+        "ThisWorkbook": "9c2197ce4b165fed2618a3d551888250d570e315979b4877d6d492dccbc89bd3",
+        "Sheet1": "52b204a69986dc8560b0160bc3dc058f79fd763111a3cd2072ea4f03d91acc8e",
+        "Watcher": "3e109ac5e1513d82e6f52e75cda90739f2b9c3227bd5ad1d9cd9df5e6143a877",
+        "Api": "ac2f5aff755cf3fc16aabf6032801452ca631158cdf7c1c0d1577a53c71c6df5"
+      },
+      "vba_project_bin_sha256": "3ed804f69bce2304790d236fbb6cddf84bb4e9f7e3881942b56486e06ce7f82a",
+      "xlsm_sha256": "65f71b08a4062ba9a0e062719cf92bbcaab9142d4bb07e8d89abf1fc61c8676c"
+    },
+    {
+      "run": "run14-sealed-mixed",
+      "excel_pid": 32348,
+      "cleanup": "owned-process-zero",
+      "vba_return": "1:1:WA1;DA1;|nested=3:3:WA1;DA1;WA2;DA2;|rebind=4:WA3;DA3;|release=4:1:True:DA5;|close=1;chains=A2:12:19:38:9:A2;E2:14;91:424:438;7:12:19:38:3:12:14",
+      "vbe_identifier_recasing_only": [
+        "ChainOps"
+      ],
+      "cells_per_backend": 40,
+      "comparisons": [
+        {
+          "backend": "vm3",
+          "exit_code": 0,
+          "returned_value_equal": true,
+          "all_used_cells_equal": true,
+          "workbook_sha256": "94ab6dbc11652a827e20f5e36e942fa7e96281777083156c6725b3c849c3f609",
+          "engine_sha256": "35c7b38f74ad068a5184395bb8fc32b4d8cb91fa062502a644ae764a73d06f28",
+          "owned_excel_pid": 32348
+        },
+        {
+          "backend": "jit",
+          "exit_code": 0,
+          "returned_value_equal": true,
+          "all_used_cells_equal": true,
+          "workbook_sha256": "94ab6dbc11652a827e20f5e36e942fa7e96281777083156c6725b3c849c3f609",
+          "engine_sha256": "35c7b38f74ad068a5184395bb8fc32b4d8cb91fa062502a644ae764a73d06f28",
+          "owned_excel_pid": 32348
+        }
+      ],
+      "module_sources": {
+        "ThisWorkbook": "9c2197ce4b165fed2618a3d551888250d570e315979b4877d6d492dccbc89bd3",
+        "Sheet1": "52b204a69986dc8560b0160bc3dc058f79fd763111a3cd2072ea4f03d91acc8e",
+        "Watcher": "3e109ac5e1513d82e6f52e75cda90739f2b9c3227bd5ad1d9cd9df5e6143a877",
+        "ChainOps": "f1993afa1977b423616eb4780156234b321ac6e585c2d729f9f0fbeed3e7bb71",
+        "WorkbookMain": "9eeeb60a8602edab82c29f31fa7edbf2c8ed8b45482d44045e45fe865d6981cd",
+        "Api": "ac2f5aff755cf3fc16aabf6032801452ca631158cdf7c1c0d1577a53c71c6df5"
+      },
+      "vba_project_bin_sha256": "136220d849763df066ecbd2d30c5d6b200767932b64e12dd2a5b38250a564781",
+      "xlsm_sha256": "94ab6dbc11652a827e20f5e36e942fa7e96281777083156c6725b3c849c3f609"
+    },
+    {
+      "run": "run14-sealed-documents",
+      "excel_pid": 69540,
+      "cleanup": "owned-process-zero",
+      "vba_return": "True:True:True:True:2",
+      "vbe_identifier_recasing_only": [],
+      "cells_per_backend": 2,
+      "comparisons": [
+        {
+          "backend": "vm3",
+          "exit_code": 0,
+          "returned_value_equal": true,
+          "all_used_cells_equal": true,
+          "workbook_sha256": "892e3766efaaa9fdc810f3d0d1e19fe8b7283a7c739653a1c6bee1efa2d3e9a0",
+          "engine_sha256": "35c7b38f74ad068a5184395bb8fc32b4d8cb91fa062502a644ae764a73d06f28",
+          "owned_excel_pid": 69540
+        },
+        {
+          "backend": "jit",
+          "exit_code": 0,
+          "returned_value_equal": true,
+          "all_used_cells_equal": true,
+          "workbook_sha256": "892e3766efaaa9fdc810f3d0d1e19fe8b7283a7c739653a1c6bee1efa2d3e9a0",
+          "engine_sha256": "35c7b38f74ad068a5184395bb8fc32b4d8cb91fa062502a644ae764a73d06f28",
+          "owned_excel_pid": 69540
+        }
+      ],
+      "module_sources": {
+        "ThisWorkbook": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "Sheet1": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "Api": "12f6d5ac25147139bed064c0fd73c7d4fde7394bb132b657307ebac02e33de5f"
+      },
+      "vba_project_bin_sha256": "87674513f948c86a2a692f7a107d31dbe71f9ace046b1a4c4213f8c870920d46",
+      "xlsm_sha256": "892e3766efaaa9fdc810f3d0d1e19fe8b7283a7c739653a1c6bee1efa2d3e9a0"
+    },
+    {
+      "run": "run14-sealed-arrays",
+      "excel_pid": 62280,
+      "cleanup": "owned-process-zero",
+      "vba_return": "1:4:10",
+      "vbe_identifier_recasing_only": [],
+      "cells_per_backend": 10,
+      "comparisons": [
+        {
+          "backend": "vm3",
+          "exit_code": 0,
+          "returned_value_equal": true,
+          "all_used_cells_equal": true,
+          "workbook_sha256": "f9c49f06c05b9fb9a3e41cc75552e2cb20485f74a338f9ff42376e9b631aa9a8",
+          "engine_sha256": "35c7b38f74ad068a5184395bb8fc32b4d8cb91fa062502a644ae764a73d06f28",
+          "owned_excel_pid": 62280
+        },
+        {
+          "backend": "jit",
+          "exit_code": 0,
+          "returned_value_equal": true,
+          "all_used_cells_equal": true,
+          "workbook_sha256": "f9c49f06c05b9fb9a3e41cc75552e2cb20485f74a338f9ff42376e9b631aa9a8",
+          "engine_sha256": "35c7b38f74ad068a5184395bb8fc32b4d8cb91fa062502a644ae764a73d06f28",
+          "owned_excel_pid": 62280
+        }
+      ],
+      "module_sources": {
+        "ThisWorkbook": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "Sheet1": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "Api": "ecf4ba7b5de358acb1119cd372a061f6e0a3e5b80f7b0c1d4d50add989102af4"
+      },
+      "vba_project_bin_sha256": "db2f42c4bde8308b742a493c66a1c40cb61c4e5943b3c96b72024b8d9a3dc9ba",
+      "xlsm_sha256": "f9c49f06c05b9fb9a3e41cc75552e2cb20485f74a338f9ff42376e9b631aa9a8"
+    },
+    {
+      "run": "run14-sealed-bounds",
+      "excel_pid": 62756,
+      "cleanup": "owned-process-zero",
+      "vba_return": "1:4:10",
+      "vbe_identifier_recasing_only": [],
+      "cells_per_backend": 10,
+      "comparisons": [
+        {
+          "backend": "vm3",
+          "exit_code": 0,
+          "returned_value_equal": true,
+          "all_used_cells_equal": true,
+          "workbook_sha256": "2b018f3413ff6a69e0cdcd202492be59255b6d8dea6b433f71f17527eb76450d",
+          "engine_sha256": "35c7b38f74ad068a5184395bb8fc32b4d8cb91fa062502a644ae764a73d06f28",
+          "owned_excel_pid": 62756
+        },
+        {
+          "backend": "jit",
+          "exit_code": 0,
+          "returned_value_equal": true,
+          "all_used_cells_equal": true,
+          "workbook_sha256": "2b018f3413ff6a69e0cdcd202492be59255b6d8dea6b433f71f17527eb76450d",
+          "engine_sha256": "35c7b38f74ad068a5184395bb8fc32b4d8cb91fa062502a644ae764a73d06f28",
+          "owned_excel_pid": 62756
+        }
+      ],
+      "module_sources": {
+        "ThisWorkbook": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "Sheet1": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "Api": "8de98b5b86f3e31d54014d40de1f19d07339a2b2760210e010a0410c875908e2"
+      },
+      "vba_project_bin_sha256": "e80397ec6870a61891cdafb05ffe8d24d5b33afc5849837aa94d4da2a9ea8771",
+      "xlsm_sha256": "2b018f3413ff6a69e0cdcd202492be59255b6d8dea6b433f71f17527eb76450d"
+    },
+    {
+      "run": "run14-sealed-application",
+      "excel_pid": 21216,
+      "cleanup": "owned-process-zero",
+      "vba_return": "1:1:DA:True",
+      "vbe_identifier_recasing_only": [],
+      "cells_per_backend": 1,
+      "comparisons": [
+        {
+          "backend": "vm3",
+          "exit_code": 0,
+          "returned_value_equal": true,
+          "all_used_cells_equal": true,
+          "workbook_sha256": "18da5aed1b6e188df18fffdf514ecee91956a85f1078f193ede6fa43bce5a9de",
+          "engine_sha256": "35c7b38f74ad068a5184395bb8fc32b4d8cb91fa062502a644ae764a73d06f28",
+          "owned_excel_pid": 21216
+        },
+        {
+          "backend": "jit",
+          "exit_code": 0,
+          "returned_value_equal": true,
+          "all_used_cells_equal": true,
+          "workbook_sha256": "18da5aed1b6e188df18fffdf514ecee91956a85f1078f193ede6fa43bce5a9de",
+          "engine_sha256": "35c7b38f74ad068a5184395bb8fc32b4d8cb91fa062502a644ae764a73d06f28",
+          "owned_excel_pid": 21216
+        }
+      ],
+      "module_sources": {
+        "ThisWorkbook": "ccda282bc3fbb8ff192f49c5221437502982b04a7753904dfd3eccf9857d3610",
+        "Sheet1": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "AppWatcher": "9727a6835ed53482d6ee4440ba4ca72d2a857539cddebbe7678bad230eaa8924",
+        "Api": "0dac00341c29c441b0f646f82b259dd155d4019f46fe77de025d52e6a4d16513"
+      },
+      "vba_project_bin_sha256": "9cc3a11a26eb4307a0c20ec98c534b3792433b312be210b8c62bfcd6cd02029d",
+      "xlsm_sha256": "18da5aed1b6e188df18fffdf514ecee91956a85f1078f193ede6fa43bce5a9de"
+    }
+  ],
+  "repository_check": {
+    "command": "scripts/meta-check.ps1 -Fast -NoArtifacts -NoRegistry",
+    "passed": 3786,
+    "ignored": 186,
+    "suites": 210,
+    "excluded_registry_writers": 4
+  },
+  "formal": "Installed Lean 4.29.1 RefCount TypedReentry TypedContinuation ProcedureHandles pass; concrete native/array refinement and Miri unproved",
+  "fresh_eyes": "Found and repaired private Variant/object call conversion, native document identity, transposed array coordinates, conservative fixed allocation shape and saved project-name loading and missing unused/document interface metadata. Controlled idle callbacks pass on both backends. Reviewed stale generations, reentrant Unadvise, parked finalizers, reset and weak session lifetime. Broader errors/apartments/startup/reload/resurrection/structural events remain open.",
+  "prior_attempt_receipts": [
+    {
+      "run": "run14-application-01",
+      "worker_passed": false,
+      "supervisor_transcript_retained": false,
+      "excel_pid": 59004,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-application-02",
+      "worker_passed": false,
+      "supervisor_transcript_retained": false,
+      "excel_pid": 61476,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-application-03",
+      "worker_passed": false,
+      "supervisor_transcript_retained": false,
+      "excel_pid": 63796,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-application-04",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 21272,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-auto-vba-01",
+      "worker_passed": false,
+      "supervisor_transcript_retained": false,
+      "excel_pid": 68396,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-auto-vba-02",
+      "worker_passed": false,
+      "supervisor_transcript_retained": false,
+      "excel_pid": 68596,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-auto-vba-final-02",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 55404,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-auto-vba-final-03",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 58772,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-automatic-01",
+      "worker_passed": false,
+      "supervisor_transcript_retained": false,
+      "excel_pid": 9488,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-automatic-02",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 39128,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-automatic-final",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 15096,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-chains-01",
+      "worker_passed": false,
+      "supervisor_transcript_retained": false,
+      "excel_pid": 40184,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-chains-02",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 52636,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-chains-03",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 16984,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-chains-final",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 62160,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-evidence-automatic",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 31504,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-evidence-chains",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 31488,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-evidence-events",
+      "worker_passed": true,
+      "supervisor_transcript_retained": false,
+      "excel_pid": 38224,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-evidence2-arrays",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 35160,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-evidence2-bounds",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 13296,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-evidence2-documents",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 40404,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-evidence2-events",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 59720,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-evidence2-mixed",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 37380,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-final-application",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 69588,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-final-arrays",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 50356,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-final-automatic",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 15140,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-final-bounds",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 50644,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-final-chains",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 61452,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-final-documents",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 604,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-final-events",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 43144,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-final-mixed",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 4592,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-named-arrays",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 21608,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-named-bounds",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 7388,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-named-chains",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 61512,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-named-documents",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 67348,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-named-events",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 61360,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-named-mixed",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 27856,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-proof-arrays",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 35628,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-proof-bounds",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 3216,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-proof-chains",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 41404,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-proof-documents",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 24332,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-proof-events",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 54688,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-proof-mixed",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 58944,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-sealed-application",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 21216,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-sealed-arrays",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 62280,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-sealed-automatic",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 50096,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-sealed-bounds",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 62756,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-sealed-chains",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 65360,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-sealed-documents",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 69540,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-sealed-events",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 64652,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-sealed-mixed",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 32348,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-xlsm-arrays-01",
+      "worker_passed": false,
+      "supervisor_transcript_retained": false,
+      "excel_pid": 41720,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-xlsm-arrays-02",
+      "worker_passed": false,
+      "supervisor_transcript_retained": false,
+      "excel_pid": 58648,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-xlsm-arrays-03",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 36728,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-xlsm-chains-01",
+      "worker_passed": false,
+      "supervisor_transcript_retained": false,
+      "excel_pid": 56400,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-xlsm-chains-02",
+      "worker_passed": false,
+      "supervisor_transcript_retained": false,
+      "excel_pid": 14164,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-xlsm-chains-03",
+      "worker_passed": false,
+      "supervisor_transcript_retained": false,
+      "excel_pid": 31256,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-xlsm-chains-04",
+      "worker_passed": true,
+      "supervisor_transcript_retained": false,
+      "excel_pid": 53052,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-xlsm-chains-final",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 16620,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-xlsm-documents-01",
+      "worker_passed": false,
+      "supervisor_transcript_retained": false,
+      "excel_pid": 38868,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-xlsm-documents-02",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 55116,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-xlsm-events-01",
+      "worker_passed": true,
+      "supervisor_transcript_retained": false,
+      "excel_pid": 51692,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-xlsm-events-02",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 41252,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-xlsm-mixed-01",
+      "worker_passed": true,
+      "supervisor_transcript_retained": false,
+      "excel_pid": 67536,
+      "cleanup": "owned-process-zero"
+    },
+    {
+      "run": "run14-xlsm-mixed-final",
+      "worker_passed": true,
+      "supervisor_transcript_retained": true,
+      "excel_pid": 52372,
+      "cleanup": "owned-process-zero"
+    }
+  ],
+  "owned_process_audit": {
+    "captured_utc": "2026-11-03T08:50:36.4022804Z",
+    "recorded_identities": 132,
+    "exact_live_owned_processes": [],
+    "unverified_live_processes": [],
+    "observations": [
+      {
+        "run": "run14-application-01",
+        "pid": 59004,
+        "recorded_start_utc": "11/03/2026 07:37:57",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-application-01",
+        "pid": 57720,
+        "recorded_start_utc": "11/03/2026 07:38:00",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-application-02",
+        "pid": 61476,
+        "recorded_start_utc": "11/03/2026 07:38:58",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-application-02",
+        "pid": 644,
+        "recorded_start_utc": "11/03/2026 07:39:01",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-application-03",
+        "pid": 63796,
+        "recorded_start_utc": "11/03/2026 07:41:44",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-application-03",
+        "pid": 67996,
+        "recorded_start_utc": "11/03/2026 07:41:48",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-application-04",
+        "pid": 21272,
+        "recorded_start_utc": "11/03/2026 07:52:30",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-application-04",
+        "pid": 65156,
+        "recorded_start_utc": "11/03/2026 07:52:35",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-auto-vba-01",
+        "pid": 68396,
+        "recorded_start_utc": "11/03/2026 05:29:09",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-auto-vba-01",
+        "pid": 46688,
+        "recorded_start_utc": "11/03/2026 05:29:13",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-auto-vba-02",
+        "pid": 68596,
+        "recorded_start_utc": "11/03/2026 05:30:30",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-auto-vba-02",
+        "pid": 63232,
+        "recorded_start_utc": "11/03/2026 05:30:35",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-auto-vba-final",
+        "pid": 11288,
+        "recorded_start_utc": "11/03/2026 05:33:11",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-auto-vba-final",
+        "pid": 2644,
+        "recorded_start_utc": "11/03/2026 05:33:41",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-auto-vba-final-02",
+        "pid": 55404,
+        "recorded_start_utc": "11/03/2026 05:36:48",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-auto-vba-final-02",
+        "pid": 57340,
+        "recorded_start_utc": "11/03/2026 05:36:53",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-auto-vba-final-03",
+        "pid": 58772,
+        "recorded_start_utc": "11/03/2026 05:44:28",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-auto-vba-final-03",
+        "pid": 28628,
+        "recorded_start_utc": "11/03/2026 05:44:32",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-automatic-01",
+        "pid": 9488,
+        "recorded_start_utc": "11/03/2026 06:15:33",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-automatic-01",
+        "pid": 20152,
+        "recorded_start_utc": "11/03/2026 06:15:37",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-automatic-02",
+        "pid": 39128,
+        "recorded_start_utc": "11/03/2026 06:19:48",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "pid-reused"
+      },
+      {
+        "run": "run14-automatic-02",
+        "pid": 62504,
+        "recorded_start_utc": "11/03/2026 06:19:51",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-automatic-final",
+        "pid": 15096,
+        "recorded_start_utc": "11/03/2026 07:19:15",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-automatic-final",
+        "pid": 26512,
+        "recorded_start_utc": "11/03/2026 07:19:19",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-chains-01",
+        "pid": 40184,
+        "recorded_start_utc": "11/03/2026 05:04:36",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-chains-01",
+        "pid": 23120,
+        "recorded_start_utc": "11/03/2026 05:04:42",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-chains-02",
+        "pid": 52636,
+        "recorded_start_utc": "11/03/2026 05:05:38",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-chains-02",
+        "pid": 35532,
+        "recorded_start_utc": "11/03/2026 05:05:43",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-chains-03",
+        "pid": 16984,
+        "recorded_start_utc": "11/03/2026 05:11:10",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-chains-03",
+        "pid": 67580,
+        "recorded_start_utc": "11/03/2026 05:11:14",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-chains-final",
+        "pid": 62160,
+        "recorded_start_utc": "11/03/2026 05:20:24",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-chains-final",
+        "pid": 23724,
+        "recorded_start_utc": "11/03/2026 05:20:28",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-evidence-automatic",
+        "pid": 31504,
+        "recorded_start_utc": "11/03/2026 07:25:46",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-evidence-automatic",
+        "pid": 46496,
+        "recorded_start_utc": "11/03/2026 07:25:51",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-evidence-chains",
+        "pid": 31488,
+        "recorded_start_utc": "11/03/2026 07:26:30",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-evidence-chains",
+        "pid": 66308,
+        "recorded_start_utc": "11/03/2026 07:26:34",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-evidence-events",
+        "pid": 38224,
+        "recorded_start_utc": "11/03/2026 07:27:11",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-evidence-events",
+        "pid": 68672,
+        "recorded_start_utc": "11/03/2026 07:27:14",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-evidence2-arrays",
+        "pid": 35160,
+        "recorded_start_utc": "11/03/2026 07:31:34",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-evidence2-arrays",
+        "pid": 19712,
+        "recorded_start_utc": "11/03/2026 07:31:39",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-evidence2-bounds",
+        "pid": 13296,
+        "recorded_start_utc": "11/03/2026 07:32:17",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-evidence2-bounds",
+        "pid": 33484,
+        "recorded_start_utc": "11/03/2026 07:32:21",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-evidence2-documents",
+        "pid": 40404,
+        "recorded_start_utc": "11/03/2026 07:31:00",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-evidence2-documents",
+        "pid": 68236,
+        "recorded_start_utc": "11/03/2026 07:31:04",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-evidence2-events",
+        "pid": 59720,
+        "recorded_start_utc": "11/03/2026 07:29:41",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-evidence2-events",
+        "pid": 57072,
+        "recorded_start_utc": "11/03/2026 07:29:45",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-evidence2-mixed",
+        "pid": 37380,
+        "recorded_start_utc": "11/03/2026 07:30:20",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-evidence2-mixed",
+        "pid": 68868,
+        "recorded_start_utc": "11/03/2026 07:30:24",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-final-application",
+        "pid": 69588,
+        "recorded_start_utc": "11/03/2026 07:58:24",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-final-application",
+        "pid": 67432,
+        "recorded_start_utc": "11/03/2026 07:58:28",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-final-arrays",
+        "pid": 50356,
+        "recorded_start_utc": "11/03/2026 07:57:21",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-final-arrays",
+        "pid": 3216,
+        "recorded_start_utc": "11/03/2026 07:57:24",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-final-automatic",
+        "pid": 15140,
+        "recorded_start_utc": "11/03/2026 07:54:25",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-final-automatic",
+        "pid": 27844,
+        "recorded_start_utc": "11/03/2026 07:54:29",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-final-bounds",
+        "pid": 50644,
+        "recorded_start_utc": "11/03/2026 07:57:52",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-final-bounds",
+        "pid": 46688,
+        "recorded_start_utc": "11/03/2026 07:57:56",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-final-chains",
+        "pid": 61452,
+        "recorded_start_utc": "11/03/2026 07:54:58",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-final-chains",
+        "pid": 21204,
+        "recorded_start_utc": "11/03/2026 07:55:02",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-final-documents",
+        "pid": 604,
+        "recorded_start_utc": "11/03/2026 07:56:49",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-final-documents",
+        "pid": 54160,
+        "recorded_start_utc": "11/03/2026 07:56:52",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-final-events",
+        "pid": 43144,
+        "recorded_start_utc": "11/03/2026 07:55:35",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-final-events",
+        "pid": 4436,
+        "recorded_start_utc": "11/03/2026 07:55:39",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-final-mixed",
+        "pid": 4592,
+        "recorded_start_utc": "11/03/2026 07:56:11",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-final-mixed",
+        "pid": 31092,
+        "recorded_start_utc": "11/03/2026 07:56:15",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-named-arrays",
+        "pid": 21608,
+        "recorded_start_utc": "11/03/2026 07:36:27",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-named-arrays",
+        "pid": 34296,
+        "recorded_start_utc": "11/03/2026 07:36:31",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-named-bounds",
+        "pid": 7388,
+        "recorded_start_utc": "11/03/2026 07:37:00",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-named-bounds",
+        "pid": 35024,
+        "recorded_start_utc": "11/03/2026 07:37:04",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-named-chains",
+        "pid": 61512,
+        "recorded_start_utc": "11/03/2026 07:33:47",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-named-chains",
+        "pid": 52228,
+        "recorded_start_utc": "11/03/2026 07:33:51",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-named-documents",
+        "pid": 67348,
+        "recorded_start_utc": "11/03/2026 07:35:56",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-named-documents",
+        "pid": 24124,
+        "recorded_start_utc": "11/03/2026 07:36:00",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-named-events",
+        "pid": 61360,
+        "recorded_start_utc": "11/03/2026 07:34:39",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-named-events",
+        "pid": 69524,
+        "recorded_start_utc": "11/03/2026 07:34:44",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-named-mixed",
+        "pid": 27856,
+        "recorded_start_utc": "11/03/2026 07:35:16",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-named-mixed",
+        "pid": 48916,
+        "recorded_start_utc": "11/03/2026 07:35:20",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-proof-arrays",
+        "pid": 35628,
+        "recorded_start_utc": "11/03/2026 07:22:50",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-proof-arrays",
+        "pid": 51580,
+        "recorded_start_utc": "11/03/2026 07:22:55",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-proof-bounds",
+        "pid": 3216,
+        "recorded_start_utc": "11/03/2026 07:19:45",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-proof-bounds",
+        "pid": 64488,
+        "recorded_start_utc": "11/03/2026 07:19:49",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-proof-chains",
+        "pid": 41404,
+        "recorded_start_utc": "11/03/2026 07:20:19",
+        "observed_reused_start_utc": "2026-11-03T08:45:04.6505710Z",
+        "process_name": "EXCEL",
+        "state": "pid-reused"
+      },
+      {
+        "run": "run14-proof-chains",
+        "pid": 68084,
+        "recorded_start_utc": "11/03/2026 07:20:23",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-proof-documents",
+        "pid": 24332,
+        "recorded_start_utc": "11/03/2026 07:22:10",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-proof-documents",
+        "pid": 56492,
+        "recorded_start_utc": "11/03/2026 07:22:15",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-proof-events",
+        "pid": 54688,
+        "recorded_start_utc": "11/03/2026 07:20:53",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-proof-events",
+        "pid": 11632,
+        "recorded_start_utc": "11/03/2026 07:20:56",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-proof-mixed",
+        "pid": 58944,
+        "recorded_start_utc": "11/03/2026 07:21:28",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-proof-mixed",
+        "pid": 34664,
+        "recorded_start_utc": "11/03/2026 07:21:32",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-sealed-application",
+        "pid": 21216,
+        "recorded_start_utc": "11/03/2026 08:35:12",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-sealed-application",
+        "pid": 6640,
+        "recorded_start_utc": "11/03/2026 08:35:18",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-sealed-arrays",
+        "pid": 62280,
+        "recorded_start_utc": "11/03/2026 08:33:47",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-sealed-arrays",
+        "pid": 21992,
+        "recorded_start_utc": "11/03/2026 08:33:51",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-sealed-automatic",
+        "pid": 50096,
+        "recorded_start_utc": "11/03/2026 08:28:11",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-sealed-automatic",
+        "pid": 22960,
+        "recorded_start_utc": "11/03/2026 08:28:16",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-sealed-bounds",
+        "pid": 62756,
+        "recorded_start_utc": "11/03/2026 08:34:28",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-sealed-bounds",
+        "pid": 59812,
+        "recorded_start_utc": "11/03/2026 08:34:33",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-sealed-chains",
+        "pid": 65360,
+        "recorded_start_utc": "11/03/2026 08:28:47",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-sealed-chains",
+        "pid": 58320,
+        "recorded_start_utc": "11/03/2026 08:28:52",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-sealed-documents",
+        "pid": 69540,
+        "recorded_start_utc": "11/03/2026 08:33:03",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-sealed-documents",
+        "pid": 50420,
+        "recorded_start_utc": "11/03/2026 08:33:09",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-sealed-events",
+        "pid": 64652,
+        "recorded_start_utc": "11/03/2026 08:29:32",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-sealed-events",
+        "pid": 63444,
+        "recorded_start_utc": "11/03/2026 08:29:35",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-sealed-mixed",
+        "pid": 32348,
+        "recorded_start_utc": "11/03/2026 08:30:42",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-sealed-mixed",
+        "pid": 26176,
+        "recorded_start_utc": "11/03/2026 08:30:51",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-arrays-01",
+        "pid": 41720,
+        "recorded_start_utc": "11/03/2026 07:06:42",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-arrays-01",
+        "pid": 30284,
+        "recorded_start_utc": "11/03/2026 07:06:49",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-arrays-02",
+        "pid": 58648,
+        "recorded_start_utc": "11/03/2026 07:10:03",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-arrays-02",
+        "pid": 29456,
+        "recorded_start_utc": "11/03/2026 07:10:07",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-arrays-03",
+        "pid": 36728,
+        "recorded_start_utc": "11/03/2026 07:11:14",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-arrays-03",
+        "pid": 67448,
+        "recorded_start_utc": "11/03/2026 07:11:17",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-chains-01",
+        "pid": 56400,
+        "recorded_start_utc": "11/03/2026 06:48:07",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-chains-01",
+        "pid": 58300,
+        "recorded_start_utc": "11/03/2026 06:48:10",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-chains-02",
+        "pid": 14164,
+        "recorded_start_utc": "11/03/2026 06:48:59",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-chains-02",
+        "pid": 67892,
+        "recorded_start_utc": "11/03/2026 06:49:02",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-chains-03",
+        "pid": 31256,
+        "recorded_start_utc": "11/03/2026 06:52:12",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-chains-03",
+        "pid": 62316,
+        "recorded_start_utc": "11/03/2026 06:52:16",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-chains-04",
+        "pid": 53052,
+        "recorded_start_utc": "11/03/2026 06:53:03",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-chains-04",
+        "pid": 46988,
+        "recorded_start_utc": "11/03/2026 06:53:07",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-chains-final",
+        "pid": 16620,
+        "recorded_start_utc": "11/03/2026 07:01:13",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-chains-final",
+        "pid": 48888,
+        "recorded_start_utc": "11/03/2026 07:01:20",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-documents-01",
+        "pid": 38868,
+        "recorded_start_utc": "11/03/2026 07:03:59",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-documents-01",
+        "pid": 34276,
+        "recorded_start_utc": "11/03/2026 07:04:06",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-documents-02",
+        "pid": 55116,
+        "recorded_start_utc": "11/03/2026 07:05:30",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-documents-02",
+        "pid": 57924,
+        "recorded_start_utc": "11/03/2026 07:05:34",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-events-01",
+        "pid": 51692,
+        "recorded_start_utc": "11/03/2026 06:54:08",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-events-01",
+        "pid": 36732,
+        "recorded_start_utc": "11/03/2026 06:54:11",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-events-02",
+        "pid": 41252,
+        "recorded_start_utc": "11/03/2026 06:56:53",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-events-02",
+        "pid": 68084,
+        "recorded_start_utc": "11/03/2026 06:56:57",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-mixed-01",
+        "pid": 67536,
+        "recorded_start_utc": "11/03/2026 06:57:26",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-mixed-01",
+        "pid": 65896,
+        "recorded_start_utc": "11/03/2026 06:57:29",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-mixed-final",
+        "pid": 52372,
+        "recorded_start_utc": "11/03/2026 07:00:28",
+        "observed_reused_start_utc": "",
+        "process_name": "EXCEL",
+        "state": "missing"
+      },
+      {
+        "run": "run14-xlsm-mixed-final",
+        "pid": 20472,
+        "recorded_start_utc": "11/03/2026 07:00:32",
+        "observed_reused_start_utc": "",
+        "process_name": "pwsh",
+        "state": "missing"
+      }
+    ],
+    "protected_pid_3144_was_never_targeted": true,
+    "termination_actions": []
+  },
+  "archive_sha256": "9bfec9ecd3111a4152da0b7731fee3cf1552de1c8a4248abad6f9ad5c253ec64"
+}

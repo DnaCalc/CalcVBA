@@ -381,3 +381,16 @@ share the Automation boundary. Owned Excel parity is bounded to the retained
 chain/error/formula/touched-cell cases; native dynamic callback synchronization
 and broader certification remain open. See
 [chain evidence](evidence/programs/ideal-2026-07/windows-x64/WIN-4/object-chains-run14.md).
+
+Automatic native event routes retain source interface identity and exact handler
+signatures in the bundle. The canonical event fabric owns subscription generations
+and source lifetimes; private handlers re-enter the same owning session on VM3/JIT.
+Document identities supplied by the host create predeclared source instances with
+reserved native host fields. Known host members retain static plans; genuinely
+untyped document member calls and Is comparisons share native identity. Finalizers
+can read their WithEvents source before teardown. Reset rewires documents; broader
+startup/reload/resurrection, structural events and errors/apartments remain open.
+See [event evidence](evidence/programs/ideal-2026-07/windows-x64/WIN-5/automatic-events-run14.md).
+Saved XLSM execution loads unchanged module bodies and ordered references through
+public Excel VBOM and compares both backends with owned VBE-compiled Excel; an
+independent VBA binary-project reader remains separate delivery work.

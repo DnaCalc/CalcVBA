@@ -10,6 +10,7 @@ impl OwnedSession {
         frame: api::InvocationFrame,
         max_blocks: u64,
     ) -> Result<Box<dyn api::Invocation>, Error> {
+        self.ensure_event_dispatcher();
         let activation = self.cell.with_dependent(|_, session| {
             session.validate(bound)?;
             let result = session.owning_typed.last().expect("root entries")[bound.id.0]
@@ -156,6 +157,7 @@ impl OwnedSession {
         frame: api::InvocationFrame,
         max_blocks: u64,
     ) -> Result<Box<dyn api::ValueInvocation>, Error> {
+        self.ensure_event_dispatcher();
         let activation = self.cell.with_dependent(|_, session| {
             session.validate(bound)?;
             if session.suspended.get() != 0 {
@@ -185,6 +187,7 @@ impl OwnedSession {
         args: &[api::ValueSlot<'_>],
         context: &mut TypedContext,
     ) -> Result<api::Value, Error> {
+        self.ensure_event_dispatcher();
         self.cell
             .with_dependent(|_, session| session.call_values(bound, args, context))
     }
@@ -195,6 +198,7 @@ impl OwnedSession {
         args: &mut [api::Value],
         context: &mut TypedContext,
     ) -> Result<api::Value, Error> {
+        self.ensure_event_dispatcher();
         self.cell
             .with_dependent(|_, session| session.call_values_with_writebacks(bound, args, context))
     }

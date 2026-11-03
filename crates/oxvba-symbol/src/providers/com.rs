@@ -209,6 +209,16 @@ impl ComTypeLibProvider {
 }
 
 impl Provider for ComTypeLibProvider {
+    fn source_event_metadata(
+        &self,
+        recv: &VarTypeRef,
+    ) -> Option<Vec<oxvba_com::TypeLibEventMetadata>> {
+        let VarTypeRef::Object(name) = recv else {
+            return None;
+        };
+        self.scoped_source_events(name)
+            .map(|events| events.into_iter().cloned().collect())
+    }
     fn object_interface(&self, type_name: &str) -> Option<oxvba_com::TypeLibInterfaceMetadata> {
         if !self.owns_members(type_name) {
             return None;

@@ -43,6 +43,13 @@ impl HostEnumerator {
 /// Optional capabilities supplied by an object library. Engine code knows no
 /// native pointers or application member names through this contract.
 pub trait HostObjectServices {
+    fn subscribe_event(
+        &self,
+        _descriptor: &super::EventDescriptor,
+        _callback: super::EventCallback,
+    ) -> Result<super::EventSubscription, i32> {
+        Err(438)
+    }
     fn invoke_dynamic(
         &self,
         _call: &DynamicMemberCall,

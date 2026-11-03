@@ -45,6 +45,12 @@ impl ResolutionContext {
 /// A non-source scope filler. Each provider owns one link of the chain and is
 /// queried by the environment; adding a source is adding one of these.
 pub trait Provider {
+    fn source_event_metadata(
+        &self,
+        _recv: &VarTypeRef,
+    ) -> Option<Vec<oxvba_com::TypeLibEventMetadata>> {
+        None
+    }
     /// Resolve a bare name in this provider's scope.
     fn resolve(&self, name: &str) -> Option<Binding> {
         let _ = name;
@@ -416,6 +422,16 @@ impl ResolutionEnvironment {
         }
         saw_owner.then(Vec::new)
     }
+    pub fn com_source_event_metadata(
+        &self,
+        source_name: &str,
+    ) -> Option<Vec<oxvba_com::TypeLibEventMetadata>> {
+        let recv = VarTypeRef::Object(source_name.into());
+        self.providers
+            .iter()
+            .filter_map(|provider| provider.source_event_metadata(&recv))
+            .find(|events| !events.is_empty())
+    }
 
     pub fn push_provider(&mut self, provider: Box<dyn Provider>) {
         self.providers.push(provider);
@@ -680,6 +696,26 @@ fn resolve_typelib_provider_closure(
             push_typelib_followup(
                 &reference_name,
                 coclass_name,
+                &mut followups,
+                &mut followup_seen,
+            );
+        }
+        // Explicit interface declarations need nominal IIDs even when no
+        // procedure body uses a member and the type is not a coclass.
+        let mut declared_interfaces = used_type_names
+            .iter()
+            .filter_map(|name| {
+                let (library, interface) = name.split_once('.')?;
+                library
+                    .eq_ignore_ascii_case(&reference_name)
+                    .then(|| interface.to_string())
+            })
+            .collect::<Vec<_>>();
+        declared_interfaces.sort();
+        for interface in declared_interfaces {
+            push_typelib_followup(
+                &reference_name,
+                interface,
                 &mut followups,
                 &mut followup_seen,
             );
@@ -1521,7 +1557,12 @@ pub fn build_resolution_environment_with_project_surfaces(
     validate_optional_udt_parameter_types(&module_csts, &type_index.udt_fields)?;
     validate_public_object_module_data_member_types(&module_csts)?;
     validate_public_object_module_signature_member_types(&module_csts)?;
-    let used_type_names = collect_type_ref_names(&module_csts);
+    let mut used_type_names = collect_type_ref_names(&module_csts);
+    for module in &manifest.modules {
+        if let Some(host) = &module.attributes.host_document_type {
+            used_type_names.insert(fold_identifier(host));
+        }
+    }
 
     // Each referenced project's public surface — a referencing call binds through
     // the same COM contract a compiled component would present.

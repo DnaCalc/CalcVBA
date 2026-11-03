@@ -139,7 +139,7 @@ pub(super) unsafe fn operand_value(
 }
 
 pub fn needs_helper(inst: &OxInst, layout: &ScalarLayout) -> bool {
-    if super::aggregate::is_aggregate(inst) {
+    if super::iteration::is_iteration(inst) || super::aggregate::is_aggregate(inst) {
         return true;
     }
     let extended = |op: &OxOperand| {
@@ -217,6 +217,11 @@ pub unsafe extern "C" fn evaluate(
         let layout = unsafe { &*(*raw).layout };
         // SAFETY: caller retains the original instruction allocation.
         let inst = unsafe { &*inst };
+        if super::iteration::is_iteration(inst) {
+            // SAFETY: admitted original instruction, retained frame and unique context.
+            return unsafe { super::iteration::evaluate(raw, inst, &mut *context) }
+                .map_or_else(|e| e, |()| 0);
+        }
         if super::aggregate::is_aggregate(inst) {
             // SAFETY: original admitted instruction and leased physical frame.
             return unsafe { super::aggregate::evaluate(raw, inst) }.map_or_else(|e| e, |()| 0);

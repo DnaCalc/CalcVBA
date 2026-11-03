@@ -743,6 +743,31 @@ impl<'a> Session<'a> {
         }
         Ok(frame.result())
     }
+    fn call_values_with_writebacks(
+        &self,
+        bound: &BoundProcedure,
+        args: &mut [calcvba_host_api::Value],
+        context: &mut TypedContext,
+    ) -> Result<calcvba_host_api::Value, Error> {
+        self.validate(bound)?;
+        let _activation = self.enter_typed(context)?;
+        let inputs = args
+            .iter()
+            .map(|v| v.borrow_slot().ok_or(Error::ArgumentMismatch))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut frame = self.new_value_activation(bound, &inputs)?;
+        frame.enable_writebacks(args.len())?;
+        drop(inputs);
+        let result = self.execute_frame(bound, &mut frame, context, u64::MAX);
+        // VBA mutations made before an unhandled error still reach the caller.
+        for (index, value) in frame.take_writebacks().map_err(|n| self.typed_error(n))? {
+            args[index] = value;
+        }
+        if result? != 0 {
+            return Err(Error::Backend("unexpected synchronous suspension".into()));
+        }
+        Ok(frame.result())
+    }
     fn new_activation(
         &self,
         bound: &BoundProcedure,

@@ -68,3 +68,65 @@ Public Function ReadCurrencyFormat(ByVal target As Excel.Range) As String
     ReadCurrencyFormat = VarType(cell.Value) & ":" & VarType(cell.Value2)
     ReadCurrencyFormat = ReadCurrencyFormat & "|" & cell.NumberFormat & "|" & CStr(cell.Value)
 End Function
+Public Function RangeIteration(ByVal target As Excel.Range) As String
+    Dim cell As Excel.Range, listing As String
+    target.Value2 = 1#
+    For Each cell In target
+        listing = listing & cell.Address(False, False) & ":" & cell.Value2 & ";"
+        cell.Offset(0, 1).Value2 = cell.Value2 + 10#
+    Next
+    RangeIteration = listing & "nothing=" & (cell Is Nothing) & ":" & VarType(cell)
+End Function
+Public Function RangeFirst(ByVal target As Excel.Range) As String
+    Dim cell As Excel.Range
+    For Each cell In target
+        RangeFirst = cell.Address(False, False)
+        Exit For
+    Next
+    RangeFirst = RangeFirst & ":" & cell.Address(False, False)
+End Function
+Public Function EnsureSheets(ByVal book As Excel.Workbook) As Long
+    Dim first As Excel.Worksheet, added As Excel.Worksheet
+    Set first = book.Worksheets.Item(1)
+    first.Name = "Run13First"
+    If book.Worksheets.Count = 1 Then
+        Set added = book.Worksheets.Add(After:=first)
+        added.Name = "Run13Second"
+    End If
+    EnsureSheets = book.Worksheets.Count
+End Function
+Public Function SheetIteration(ByVal book As Excel.Workbook) As String
+    Dim sh As Excel.Worksheet, listing As String, seen As Long
+    For Each sh In book.Worksheets
+        seen = seen + 1
+        listing = listing & sh.Name & ";"
+    Next
+    SheetIteration = seen & ":" & listing & "nothing=" & (sh Is Nothing)
+End Function
+Public Function BookIteration(ByVal app As Excel.Application) As String
+    Dim book As Excel.Workbook, seen As Long
+    For Each book In app.Workbooks
+        seen = seen + 1
+    Next
+    BookIteration = seen & ":" & (book Is Nothing)
+End Function
+Public Function BookItem(ByVal app As Excel.Application, ByVal book As Excel.Workbook) As String
+    Dim selected As Excel.Workbook
+    Set selected = app.Workbooks.Item(book.Name)
+    BookItem = selected.Name
+End Function
+Public Function SheetItem(ByVal book As Excel.Workbook) As String
+    Dim selected As Excel.Worksheet
+    Set selected = book.Worksheets.Item("Run13Second")
+    SheetItem = selected.Name
+End Function
+Public Function NothingIteration() As Long
+    On Error GoTo Failed
+    Dim target As Excel.Range, cell As Excel.Range
+    For Each cell In target
+        NothingIteration = 1
+    Next
+    Exit Function
+Failed:
+    NothingIteration = Err.Number
+End Function

@@ -517,6 +517,27 @@ parity remain open.
 
 Owning VM3/native JIT and VBE-compiled VBA agree on the bounded ordinary range,
 formula/text, application option/calculation/Evaluate source. VarType/CStr imports
-share the exact value library and active default-call context. Collection iteration
-and genuine Variant-result member chains remain open at this point. See
+share the exact value library and active default-call context. Live Range,
+Worksheets and Workbooks enumeration uses the retained -4 descriptor and
+IEnumVARIANT without runtime name lookup or pre-materializing the collection.
+Exhausted object loop variables become Nothing; Exit For retains the current
+item. An uninitialized Range source raises Excel's observed error 424. The compiler
+retains complete interface metadata for typed property/method results as well as
+declared types. Genuine Variant-result member chains remain open. See
 [run-13 evidence](../evidence/programs/ideal-2026-07/windows-x64/WIN-4/typed-excel-surface-run13.md).
+
+## Run 13 synchronous incoming events
+
+Host-registered typed handlers can subscribe from a retained native object using
+its exact imported source-interface descriptor. The synchronous sink owns object
+arguments, permits one incoming Boolean ByRef, and copies that Boolean before
+Invoke returns. A same-thread check and retained Invoke reference cover callback
+reentry and subscription removal. No member or event name is searched at delivery.
+
+The additive call_values_with_writebacks API returns primitive root ByRef changes
+on success and VBA errors; structural root aliases are refused before effects.
+Owned Excel Worksheet_Change EnableEvents toggling/nested writes and canceled
+Workbook_BeforeClose agree with both owning runtimes. This is host registration,
+not automatic document/WithEvents wiring. Full handler-error policy, structural
+ByRef arguments, apartments and pinned certification remain open. See
+[event evidence](../evidence/programs/ideal-2026-07/windows-x64/WIN-5/typed-excel-events-run13.md).

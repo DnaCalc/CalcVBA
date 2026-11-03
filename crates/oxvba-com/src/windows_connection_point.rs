@@ -18,6 +18,12 @@ use windows_sys::Win32::System::Com::{DISPPARAMS, EXCEPINFO};
 use windows_sys::Win32::System::Variant::VARIANT;
 use windows_sys::core::GUID;
 
+mod synchronous;
+pub use synchronous::{
+    IncomingEventObject, SynchronousEventArgument, SynchronousEventCallback,
+    SynchronousEventSinkConfig, try_advise_synchronous_event_sink,
+};
+
 /// Native event argument as received by the sink. Scalar values are already
 /// projected to `ComValue`; object values carry one retained `IDispatch`
 /// reference for the runtime state to bind or release.
@@ -106,11 +112,25 @@ unsafe fn retain_dispatch_arg(variant: &VARIANT) -> Option<*mut RawIDispatch> {
 #[repr(C)]
 struct WindowsDispatchEventSink {
     dispatch: RawIDispatch,
+    synchronous: Option<SynchronousEventSinkConfig>,
+    owner_thread: std::thread::ThreadId,
     ref_count: AtomicU32,
     event_dispatch_member: i32,
     expected_arity: usize,
     connection_point_iid: Option<GUID>,
     on_event: DispatchEventCallback,
+}
+const _: () = assert!(std::mem::offset_of!(WindowsDispatchEventSink, dispatch) == 0);
+
+struct EventInvokeLease(*mut WindowsDispatchEventSink);
+impl Drop for EventInvokeLease {
+    fn drop(&mut self) {
+        // SAFETY: incoming Invoke retained this exact sink before any callback;
+        // a handler may remove the connection point's last reference reentrantly.
+        unsafe {
+            windows_dispatch_event_sink_release(self.0.cast());
+        }
+    }
 }
 
 static WINDOWS_DISPATCH_EVENT_SINK_VTBL: RawIDispatchVtbl = RawIDispatchVtbl {
@@ -125,8 +145,13 @@ static WINDOWS_DISPATCH_EVENT_SINK_VTBL: RawIDispatchVtbl = RawIDispatchVtbl {
     invoke: windows_dispatch_event_sink_invoke,
 };
 
-fn create_dispatch_event_sink(config: DispatchEventSinkConfig) -> *mut c_void {
+fn create_dispatch_event_sink(
+    config: DispatchEventSinkConfig,
+    synchronous: Option<SynchronousEventSinkConfig>,
+) -> *mut c_void {
     let sink = Box::new(WindowsDispatchEventSink {
+        synchronous,
+        owner_thread: std::thread::current().id(),
         dispatch: RawIDispatch {
             vtbl: &WINDOWS_DISPATCH_EVENT_SINK_VTBL,
         },
@@ -153,6 +178,15 @@ pub unsafe fn try_advise_dispatch_event_sink(
     dispatch: *mut RawIDispatch,
     connection_point_iid: &str,
     config: DispatchEventSinkConfig,
+) -> Result<Option<WindowsConnectionPointTransport>, String> {
+    // SAFETY: preserve the legacy caller's exact source/apartment contract.
+    unsafe { advise_dispatch_event_sink(dispatch, connection_point_iid, config, None) }
+}
+unsafe fn advise_dispatch_event_sink(
+    dispatch: *mut RawIDispatch,
+    connection_point_iid: &str,
+    config: DispatchEventSinkConfig,
+    synchronous: Option<SynchronousEventSinkConfig>,
 ) -> Result<Option<WindowsConnectionPointTransport>, String> {
     if dispatch.is_null() {
         return Err("dispatch pointer was null during connection-point advise".to_string());
@@ -201,10 +235,13 @@ pub unsafe fn try_advise_dispatch_event_sink(
     }
 
     let connection_point = connection_point_ptr.cast::<RawIConnectionPoint>();
-    let sink_ptr = create_dispatch_event_sink(DispatchEventSinkConfig {
-        connection_point_iid: Some(iid),
-        ..config
-    });
+    let sink_ptr = create_dispatch_event_sink(
+        DispatchEventSinkConfig {
+            connection_point_iid: Some(iid),
+            ..config
+        },
+        synchronous,
+    );
     let mut cookie = 0u32;
     let advise_hr = ((*(*connection_point).vtbl).advise)(
         connection_point.cast::<c_void>(),
@@ -401,6 +438,11 @@ unsafe extern "system" fn windows_dispatch_event_sink_invoke(
     puargerr: *mut u32,
 ) -> i32 {
     let sink = as_windows_dispatch_event_sink(this);
+    (*sink).ref_count.fetch_add(1, Ordering::AcqRel);
+    let _lease = EventInvokeLease(sink);
+    if (*sink).synchronous.is_some() && (*sink).owner_thread != std::thread::current().id() {
+        return 0x8001_010eu32 as i32; // RPC_E_WRONG_THREAD
+    }
     if (*sink).event_dispatch_member != dispidmember
         && (*sink).event_dispatch_member != i32::MIN + 3_333
     {
@@ -433,6 +475,10 @@ unsafe extern "system" fn windows_dispatch_event_sink_invoke(
             }
         }
     };
+    if let Some(config) = &(*sink).synchronous {
+        // SAFETY: the common path validated exact arity, arrays and named indices.
+        return unsafe { synchronous::invoke(config, &raw_indices, rgvarg, puargerr) };
+    }
     let mut args = Vec::with_capacity(cargs);
     for raw_index in raw_indices.iter().copied().take(cargs) {
         let variant = rgvarg.add(raw_index);

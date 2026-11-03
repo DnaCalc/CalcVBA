@@ -2893,6 +2893,18 @@ impl<'a> ProcLower<'a> {
         recv: CoreValue,
         mut method_args: Vec<CoreArg>,
     ) -> CoreValue {
+        self.g
+            .retained_object_names
+            .borrow_mut()
+            .insert(interface_name.to_string());
+        if let Some(oxvba_com::TypeLibWireType::InterfacePointer { name }) =
+            &member.return_wire_type
+        {
+            self.g
+                .retained_object_names
+                .borrow_mut()
+                .insert(name.clone());
+        }
         let mut args = vec![CoreArg::ByVal(recv)];
         args.append(&mut method_args);
         CoreValue::Call {

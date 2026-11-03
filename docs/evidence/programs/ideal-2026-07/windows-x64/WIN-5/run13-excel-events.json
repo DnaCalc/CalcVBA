@@ -1,0 +1,255 @@
+{
+  "schema": "calcvba.run13.excel-events.v1",
+  "created_utc": "2026-11-03T03:54:12.396172+00:00",
+  "base_commit": "b5ac808fdb8df023d93db62cad0489a591252762",
+  "status": "development evidence; broader rows/certification in-progress",
+  "inputs": {
+    "crates/calcvba-host-api/src/object/iteration.rs": "e6f25c2c75f08426379427f3364d995b6c05ac0124f5ead09f8c411e7f7104fd",
+    "crates/oxvba-com/src/typed_slots/events.rs": "ae18d05804f0fff9b09d7c71d92b5955e01fd5abfba60e234c4554642cdd6d93",
+    "crates/oxvba-com/src/typed_slots/native_values/enumeration.rs": "b64278410a3346e7957824d0254ab7fca08b5f504a98e8a05c2a5c687207fe69",
+    "crates/oxvba-com/src/windows_connection_point/synchronous.rs": "9f16ca74c329c9200fcd3d30695ed30c7469dbd9fdac2e2122a5dc4f11e14885",
+    "crates/oxvba-embed/tests/support/excel_events.bas": "d4c7b8b39359b83de2b74275952ec4ac397e194f2b35e275574f0146e48ce5ff",
+    "crates/oxvba-embed/tests/typed_enumeration.rs": "21399cb7c5b210b687a61eace1b019a789d31464f5344be7888a374261443e05",
+    "crates/oxvba-embed/tests/typed_excel_events.rs": "49768ba4ffb7d4842fd9443c29cb2e8e0af49b698a596b8ef1b20c4b0dc84e92",
+    "crates/oxvba-embed/tests/typed_incoming_byref.rs": "0c86ab92a20b00241c416dd411fea1416b08c5360ba3bba0642ca4192778dd5b",
+    "crates/oxvba-rt-abi/src/host_entry/iteration.rs": "2eb6b5ad3dd5d62b829e17cb1f8065ad6352e63396ce8e310bbc7b5550f4cca7",
+    "scripts/run-typed-events-oracle.ps1": "d5f45f812c80d1c6790c3c7968a72c4cabb6fa8e2f32fafe2bd97cd139698055",
+    "crates/calcvba-host-api/src/lib.rs": "e422eb8373d752fd2d06ef98b534d3f2739bf57c7b6c0989c03969b2532bb7e8",
+    "crates/calcvba-host-api/src/object.rs": "15ec8cf544ce6a30b60ee4812db4de8134e59512a5e640acd3e3713dfb77793a",
+    "crates/oxvba-bind/src/call.rs": "f3aac58a2e6b5545103dfbc2cdacc1be7a72faf064380c08f1d3a651981ab4b0",
+    "crates/oxvba-bind/src/lib.rs": "4170d1b2e36ff648f71519c91141d789f6cb6166db9c37c45f120391cab8ad57",
+    "crates/oxvba-com/src/typed_slots.rs": "f610dc95990a95bd16f56148f3845a242d920521d9adcc961fd3707785eb6ff9",
+    "crates/oxvba-com/src/typed_slots/factory.rs": "2de5cb0cc8d8b066374cea6e51b048420cf6934c5a06e4645ee30f6c768a3806",
+    "crates/oxvba-com/src/typed_slots/native_values.rs": "d94f36e1d615e1920d3a30f8ac77e6cca395707bce9627d97a726c9d9b8b0f18",
+    "crates/oxvba-com/src/windows_connection_point.rs": "d969c31a221b3ee4f1f6280007e369b91b541baaf711d8cf6154dee79385e53c",
+    "crates/oxvba-embed/src/invocation.rs": "5c8c25b6b0d61dc984638336de6ca5984b04bf30c9ed31868a1d6c12394ae899",
+    "crates/oxvba-embed/src/lib.rs": "a937966ddab4e4f282317507d310622243c224ba4e8af28f70031ed8f2be1bc2",
+    "crates/oxvba-embed/src/provider.rs": "7eeb8e116838e26d14c5302366d9a6c359a9e97d1243c786f1d530415f158620",
+    "crates/oxvba-embed/src/typed_stack.rs": "5df9bf9fb36d217ba05de4501fe254917a4453497516e5820b6640834365ff65",
+    "crates/oxvba-embed/tests/support/excel_surface.bas": "d1b13b082be18772f82cb8f5d4e4184037a8ea4646702fef21cc8dc8e70bf73b",
+    "crates/oxvba-embed/tests/typed_excel_surface.rs": "1bc5a94e075af36fa1dcab0d7cb2aa965c976f8fa2983a2a4b20eef68080b620",
+    "crates/oxvba-jit/src/lowering.rs": "40dd3785c5136cbca3bbe36af1b20af4f88e0d4cd0207a66c45b5544e64d3b00",
+    "crates/oxvba-oxir/src/elaborate/lower.rs": "a8d224db18337d294bfc557ea8751ec22b6b35972535816b6a6055653df70d8a",
+    "crates/oxvba-rt-abi/src/host_entry.rs": "0d0e121250d1e0dd4bfa9a0a90cb7add4e78e2a48cfb281f4c4b55868a8f2314",
+    "crates/oxvba-rt-abi/src/host_entry/activation.rs": "f0f82ba89d8dce7d8a615d91c75d0d3cd9fdf84a49b0272fdb8c6b3e6af942df",
+    "crates/oxvba-rt-abi/src/host_entry/value.rs": "e817602296c51d10bc7da3d3a77cb9dbc571577e48bda4c830c7e22da352887d",
+    "scripts/run-typed-surface-oracle.ps1": "faf4cd263e9733511635d4d1f068959ea4ab76535eeedb51a97b595250e54f54"
+  },
+  "final_oracle_run": "calcvba13-events-final",
+  "engine": {
+    "executable": "C:\\Work\\DnaCalc\\OxVba\\target\\debug\\deps\\typed_excel_events-ec0506def849e423.exe",
+    "sha256": "2e4b0893df2d0abd45457a675389b75ac6480416e984c850e79840f8a577b3f0",
+    "exit_code": 0,
+    "excel_pid": 68936,
+    "hwnd": "73340014",
+    "workbook": "C:\\Work\\DnaCalc\\OxVba\\temp\\calcvba13\\oracle\\calcvba13-events-final\\windows-scalar-interop\\oracle-bootstrap.xlsx",
+    "test": "owned_excel_events_reenter_and_cancel_before_native_return"
+  },
+  "vba_result": "off=1:True:20;on=2:True:20;close=1:oracle-bootstrap.xlsx",
+  "repository_check": {
+    "command": "scripts/meta-check.ps1 -Fast -NoArtifacts -NoRegistry -RunId calcvba13-checked-final",
+    "passed": 3776,
+    "ignored": 183,
+    "suites": 206,
+    "excluded_registry_writers": 4
+  },
+  "formal": "Installed Lean 4.29.1: four abstractions pass; concrete native/QI/locale/iteration/event/copyback refinement unproved; no native Miri credit",
+  "owned_excel_cleanup": [
+    {
+      "run": "calcvba13-collections-dedup-final",
+      "pid": 25376,
+      "cleanup": "owned-process-zero",
+      "passed": true
+    },
+    {
+      "run": "calcvba13-collections-final",
+      "pid": 49824,
+      "cleanup": "owned-process-zero",
+      "passed": true
+    },
+    {
+      "run": "calcvba13-collections-native-1",
+      "pid": 44020,
+      "cleanup": "owned-process-zero",
+      "passed": false
+    },
+    {
+      "run": "calcvba13-collections-native-2",
+      "pid": 56524,
+      "cleanup": "owned-process-zero",
+      "passed": false
+    },
+    {
+      "run": "calcvba13-collections-native-3",
+      "pid": 60396,
+      "cleanup": "owned-process-zero",
+      "passed": false
+    },
+    {
+      "run": "calcvba13-collections-native-4",
+      "pid": 58596,
+      "cleanup": "owned-process-zero",
+      "passed": false
+    },
+    {
+      "run": "calcvba13-collections-native-5",
+      "pid": 67376,
+      "cleanup": "owned-process-zero",
+      "passed": false
+    },
+    {
+      "run": "calcvba13-collections-native-6",
+      "pid": 45092,
+      "cleanup": "owned-process-zero",
+      "passed": false
+    },
+    {
+      "run": "calcvba13-collections-vba-reset",
+      "pid": 61008,
+      "cleanup": "owned-process-zero",
+      "passed": true
+    },
+    {
+      "run": "calcvba13-events-final",
+      "pid": 68936,
+      "cleanup": "owned-process-zero",
+      "passed": true
+    },
+    {
+      "run": "calcvba13-events-native-1",
+      "pid": 21324,
+      "cleanup": "owned-process-zero",
+      "passed": true
+    },
+    {
+      "run": "calcvba13-surface-final",
+      "pid": 9384,
+      "cleanup": "owned-process-zero",
+      "passed": true
+    },
+    {
+      "run": "calcvba13-surface-native-1",
+      "pid": 19600,
+      "cleanup": "owned-process-zero",
+      "passed": false
+    },
+    {
+      "run": "calcvba13-surface-native-2",
+      "pid": 55156,
+      "cleanup": "owned-process-zero",
+      "passed": false
+    },
+    {
+      "run": "calcvba13-surface-native-3",
+      "pid": 67156,
+      "cleanup": "owned-process-zero",
+      "passed": false
+    },
+    {
+      "run": "calcvba13-surface-native-4",
+      "pid": 41192,
+      "cleanup": "owned-process-zero",
+      "passed": false
+    },
+    {
+      "run": "calcvba13-surface-native-5",
+      "pid": 49344,
+      "cleanup": "owned-process-zero",
+      "passed": false
+    },
+    {
+      "run": "calcvba13-surface-native-6",
+      "pid": 68636,
+      "cleanup": "owned-process-zero",
+      "passed": false
+    },
+    {
+      "run": "calcvba13-surface-native-7",
+      "pid": 61640,
+      "cleanup": "owned-process-zero",
+      "passed": false
+    },
+    {
+      "run": "calcvba13-surface-native-cross",
+      "pid": 29608,
+      "cleanup": "owned-process-zero",
+      "passed": false
+    },
+    {
+      "run": "calcvba13-surface-native-locale",
+      "pid": 18868,
+      "cleanup": "owned-process-zero",
+      "passed": true
+    },
+    {
+      "run": "calcvba13-surface-native-neutral",
+      "pid": 59260,
+      "cleanup": "owned-process-zero",
+      "passed": false
+    },
+    {
+      "run": "calcvba13-surface-native-observe",
+      "pid": 65692,
+      "cleanup": "owned-process-zero",
+      "passed": true
+    },
+    {
+      "run": "calcvba13-surface-native-us",
+      "pid": 56092,
+      "cleanup": "owned-process-zero",
+      "passed": false
+    },
+    {
+      "run": "calcvba13-surface-source-final",
+      "pid": 67640,
+      "cleanup": "owned-process-zero",
+      "passed": true
+    },
+    {
+      "run": "calcvba13-surface-vba-2",
+      "pid": 50232,
+      "cleanup": "owned-process-zero",
+      "passed": true
+    },
+    {
+      "run": "calcvba13-surface-vba-initial",
+      "pid": 13896,
+      "cleanup": "owned-process-zero",
+      "passed": false
+    }
+  ],
+  "failed_oracle_cleanup_followups": [
+    {
+      "schema": "calcvba.owned-process-cleanup-followup.v1",
+      "run_id": "calcvba13-collections-vba",
+      "initial_result": "cleanup authority failed; no passing evidence",
+      "records": [
+        {
+          "pid": 30896,
+          "recorded_name": "EXCEL",
+          "recorded_start_utc": "2026-11-03T01:53:09.1309424Z",
+          "observed": "absent",
+          "observed_utc": "2026-11-03T01:56:22.1656309Z"
+        },
+        {
+          "pid": 39928,
+          "recorded_name": "pwsh",
+          "recorded_start_utc": "2026-11-03T01:53:29.9397506Z",
+          "observed": "absent",
+          "observed_utc": "2026-11-03T01:56:22.1722224Z"
+        }
+      ],
+      "action": "read-only follow-up; no process stopped"
+    }
+  ],
+  "archive": {
+    "path": "run13-excel-events.zip",
+    "sha256": "32cdcf060199e2b142198d79edb4e021458bcd4b11936f46f19df104efc73a06"
+  },
+  "limits": [
+    "host-registered handlers; automatic document/WithEvents wiring remains open",
+    "one incoming Boolean ByRef and retained object inputs; structural aliases refused",
+    "full handler-error/EXCEPINFO and apartment policy remain open",
+    "pinned certification and concrete native formal refinement remain unproved"
+  ]
+}

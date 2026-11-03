@@ -198,6 +198,7 @@ fn bind_one(
         ids: &ids,
         type_ctx: types::TypeContext::from_target(manifest.conditional_compilation_target),
         imports: RefCell::new(ImportCollector::default()),
+        retained_object_names: RefCell::default(),
     };
 
     // Proc decl nodes in the same order `ids.procs` was built (ProcId order). The
@@ -258,7 +259,7 @@ fn bind_one(
     let exports = build_exports(env, &ids);
     let imports = lower.imports.into_inner().imports;
 
-    let mut object_names = std::collections::BTreeSet::new();
+    let mut object_names = lower.retained_object_names.into_inner();
     fn collect_object_names(
         ty: &oxvba_bundle::VarTypeRef,
         names: &mut std::collections::BTreeSet<String>,
@@ -291,6 +292,9 @@ fn bind_one(
         }
     }
     let object_interfaces = object_names
+        .iter()
+        .map(|name| name.to_ascii_lowercase())
+        .collect::<std::collections::BTreeSet<_>>()
         .iter()
         .filter_map(|name| env.object_interface(name))
         .collect();
@@ -636,6 +640,7 @@ struct Lower<'a> {
     ids: &'a IdAllocator,
     type_ctx: types::TypeContext,
     imports: RefCell<ImportCollector>,
+    retained_object_names: RefCell<std::collections::BTreeSet<String>>,
 }
 
 impl Lower<'_> {

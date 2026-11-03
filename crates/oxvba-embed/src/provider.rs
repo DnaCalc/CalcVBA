@@ -409,6 +409,16 @@ impl api::Session for Session {
             .call_values(typed_bound(handle)?, args, context)
             .map_err(error)
     }
+    fn call_values_with_writebacks(
+        &self,
+        handle: &api::BoundProcedure,
+        args: &mut [api::Value],
+        context: &mut api::TypedContext,
+    ) -> Result<api::Value, api::Error> {
+        self.session
+            .call_values_with_writebacks(typed_bound(handle)?, args, context)
+            .map_err(error)
+    }
     fn begin_values(
         &self,
         handle: &api::BoundProcedure,

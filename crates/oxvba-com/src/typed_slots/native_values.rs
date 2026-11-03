@@ -16,7 +16,9 @@ use windows_sys::Win32::{
     Foundation::SysFreeString,
     System::Variant::{VARIANT, VT_ARRAY, VT_VARIANT, VariantClear},
 };
+mod enumeration;
 mod long_sync;
+pub(super) use enumeration::prepare as prepare_enumerator;
 
 fn fault(number: i32) -> TypedFault {
     TypedFault {

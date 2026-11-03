@@ -12,6 +12,45 @@ pub(super) struct NativeReceiver {
     _identity: OwnedComInterface,
     pub library: Rc<NativeLibrary>,
     pub bridge: WindowsComBridge,
+    enumerator: Option<NativeMemberPlan>,
+}
+struct NativeServices(Rc<NativeReceiver>);
+impl calcvba_host_api::HostObjectServices for NativeServices {
+    fn resolve_interface(&self, wanted: calcvba_host_api::InterfaceId) -> Result<HostObject, i32> {
+        let owner = &self.0;
+        let index = owner
+            .library
+            .metadata
+            .iter()
+            .position(|meta| {
+                meta.iid.is_some_and(|iid| {
+                    let mut bytes = [0; 16];
+                    bytes[..4].copy_from_slice(&iid.data1.to_le_bytes());
+                    bytes[4..6].copy_from_slice(&iid.data2.to_le_bytes());
+                    bytes[6..8].copy_from_slice(&iid.data3.to_le_bytes());
+                    bytes[8..].copy_from_slice(&iid.data4);
+                    bytes == wanted
+                })
+            })
+            .ok_or(13)?;
+        // SAFETY: exact retained library metadata and same-apartment native owner.
+        unsafe {
+            make_native_object(
+                owner.bridge.clone(),
+                owner.pointer.as_ptr(),
+                Some(index),
+                owner.library.clone(),
+            )
+        }
+        .map_err(|_| 13)
+    }
+    fn enumerator(
+        &self,
+        context: &mut calcvba_host_api::TypedContext,
+    ) -> Result<calcvba_host_api::HostEnumerator, i32> {
+        let plan = self.0.enumerator.as_ref().ok_or(438)?;
+        super::native_values::prepare_enumerator(self.0.clone(), plan, context)
+    }
 }
 impl WindowsComBridge {
     /// # Safety
@@ -175,6 +214,17 @@ unsafe fn build(
         _identity: identity_owner,
         library,
         bridge,
+        enumerator: members
+            .iter()
+            .find(|m| {
+                m.member.token == -4
+                    && matches!(
+                        m.member.invoke_kind,
+                        crate::TypeLibMemberInvokeKind::PropertyGet
+                            | crate::TypeLibMemberInvokeKind::Method
+                    )
+            })
+            .cloned(),
     });
     let bound = indexed
         .iter()
@@ -235,41 +285,7 @@ unsafe fn build(
     bytes[4..6].copy_from_slice(&iid.data2.to_le_bytes());
     bytes[6..8].copy_from_slice(&iid.data3.to_le_bytes());
     bytes[8..].copy_from_slice(&iid.data4);
-    let view_owner = receiver.clone();
-    // SAFETY: receiver retains the canonical native IUnknown until every table
-    // and callback capture is released, including opaque Variant result tables.
-    Ok(unsafe {
-        HostObject::new_with_interface_resolver(
-            bytes,
-            slots,
-            receiver,
-            identity.cast(),
-            move |wanted| {
-                let index = view_owner
-                    .library
-                    .metadata
-                    .iter()
-                    .position(|meta| {
-                        meta.iid.is_some_and(|iid| {
-                            let mut bytes = [0; 16];
-                            bytes[..4].copy_from_slice(&iid.data1.to_le_bytes());
-                            bytes[4..6].copy_from_slice(&iid.data2.to_le_bytes());
-                            bytes[6..8].copy_from_slice(&iid.data3.to_le_bytes());
-                            bytes[8..].copy_from_slice(&iid.data4);
-                            bytes == wanted
-                        })
-                    })
-                    .ok_or(13)?;
-                // SAFETY: the retained library supplies the exact IID/member plans;
-                // build QIs this same-apartment receiver and owns every returned ref.
-                make_native_object(
-                    view_owner.bridge.clone(),
-                    view_owner.pointer.as_ptr(),
-                    Some(index),
-                    view_owner.library.clone(),
-                )
-                .map_err(|_| 13)
-            },
-        )
-    })
+    let services = Rc::new(NativeServices(receiver.clone()));
+    // SAFETY: payload/services retain the canonical native IUnknown identity.
+    Ok(unsafe { HostObject::new_with_services(bytes, slots, receiver, identity.cast(), services) })
 }

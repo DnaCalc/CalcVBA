@@ -11,7 +11,9 @@ pub mod object;
 pub use invocation::*;
 mod scalar;
 pub mod value;
-pub use object::{HostObject, HostSlot, InterfaceId, ObjectArg};
+pub use object::{
+    HostEnumerator, HostObject, HostObjectServices, HostSlot, InterfaceId, ObjectArg,
+};
 pub use oxvba_runtime::Variant;
 pub use scalar::*;
 use std::{any::Any, marker::PhantomData, rc::Rc};
@@ -320,6 +322,18 @@ pub trait Session {
     ) -> Result<Value, Error> {
         Err(Error::UnsupportedSignature(
             "provider has no extended value-slot API".into(),
+        ))
+    }
+    /// Synchronous primitive ByRef copyback. Values are updated even when the
+    /// body raises an error; unsupported structural aliases are refused before effects.
+    fn call_values_with_writebacks(
+        &self,
+        _handle: &BoundProcedure,
+        _args: &mut [Value],
+        _context: &mut TypedContext,
+    ) -> Result<Value, Error> {
+        Err(Error::UnsupportedSignature(
+            "provider has no synchronous copyback API".into(),
         ))
     }
     fn begin_values(

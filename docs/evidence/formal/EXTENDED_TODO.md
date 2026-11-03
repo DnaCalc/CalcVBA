@@ -289,3 +289,17 @@ Non-blocking formal issues and follow-up items for later ladder profiles.
   Current status: investigating.
   Reproduction command: cargo test -p oxvba-embed --test typed_excel_surface --test typed_prebound_dispatch; installed Lean 4.29.1 on formal/lean/OxVba/RefCount.lean, TypedContinuation.lean, TypedReentry.lean and ProcedureHandles.lean.
   Suggested next action: refine active TYPEDESC union validity and one-owner nominal views against the canonical store, then cover explicit locale policy under broader WIN-4 conformance. Existing offline Miri dependency/sysroot limitations remain without passing credit.
+
+- ID: FTODO-TYPED-ENUMERATION-20261103
+  Profile: live owning host enumeration (bd-59co.3.5.11; broader WIN-4/CORE-7).
+  Summary: Iterator ownership detaches before foreign Next and drops on exhaustion, error, return or cancellation. Portable VM3/JIT tests cover mutation, slices, Exit For and balance. Installed Lean lifecycle/reentry abstractions do not model IEnumVARIANT or prove native pointer refinement. No native Miri/formal credit.
+  Current status: investigating.
+  Reproduction command: cargo test -p oxvba-embed --test typed_enumeration --test typed_excel_surface.
+  Suggested next action: refine retained iterator state and native callback ownership against the canonical activation.
+
+- ID: FTODO-TYPED-INCOMING-COPYBACK-20261103
+  Profile: synchronous host event sink and primitive root ByRef outputs (bd-59co.3.6.9; broader WIN-5).
+  Summary: Owned Excel/VBA and both runtimes agree on nested Change and BeforeClose cancellation. Native sink tests cover object ownership, exact Boolean copyback, wrong-thread/shape rejection, panic and reentrant owner release. Existing Lean TypedReentry/RefCount abstractions do not refine incoming raw Boolean cells, the sink lease, or root-output snapshots. No concrete native/Miri or certification credit.
+  Current status: investigating.
+  Reproduction command: cargo test -p oxvba-com --lib windows_connection_point; cargo test -p oxvba-embed --test typed_incoming_byref --test typed_excel_events.
+  Suggested next action: model the callback lease and before-return Boolean writeback, then refine actual native cells and exact error policy under bd-59co.3.6.4.

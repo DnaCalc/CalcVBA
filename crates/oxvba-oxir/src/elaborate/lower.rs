@@ -1149,7 +1149,12 @@ impl<'a> Lowerer<'a> {
                 self.loops.pop();
                 self.finish_to(OxTerminator::Jump(head), exhausted_blk);
                 self.cur_fault = for_pad;
-                self.store_to_place(item, OxOperand::Const(OxConst::Empty))?;
+                let exhausted = if matches!(self.place_static_ty(item), Some(OxTy::Object(_))) {
+                    OxConst::Nothing
+                } else {
+                    OxConst::Empty
+                };
+                self.store_to_place(item, OxOperand::Const(exhausted))?;
                 self.finish_to(OxTerminator::Jump(s_next), s_next);
                 Ok(())
             }

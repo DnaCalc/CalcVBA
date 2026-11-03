@@ -80,6 +80,21 @@ fn installed_surface_retains_compiler_metadata() {
     );
     assert!(oxvba_com::typed_slots::plan::is_dispatch(cells));
     assert!(module.procedures().any(|p| p.name == "RangeShape"));
+    for name in ["Excel.Range", "Excel.Sheets", "Excel.Workbooks"] {
+        let interface = module
+            .com_interfaces()
+            .iter()
+            .find(|i| i.name().eq_ignore_ascii_case(name))
+            .unwrap();
+        assert!(
+            interface
+                .com_members()
+                .unwrap()
+                .iter()
+                .any(|m| m.token == -4),
+            "{name} retains the complete enumerator descriptor"
+        );
+    }
 }
 #[test]
 #[ignore = "requires the owned PID/HWND oracle supervisor"]
@@ -211,7 +226,67 @@ fn owned_excel_surface_from_native_window_uses_prebound_calls() {
                 (before.0 + transports.0, before.1 + transports.1),
                 "exact native/prebound calls for {name}"
             );
-        } // Two independently prepared locale views reach the same owned cells.
+        }
+        assert!(matches!(
+            call(
+                &session,
+                "EnsureSheets",
+                &[api::ValueSlot::Object(book.argument())],
+                api::ValueType::Long
+            ),
+            api::Value::Long(2)
+        ));
+        for (name, arg, expected, transports) in [
+            (
+                "RangeIteration",
+                range.argument(),
+                "F1:1;G1:11;F2:1;G2:11;nothing=True:9",
+                (5, 22),
+            ),
+            ("RangeFirst", range.argument(), "F1:F1", (1, 3)),
+            (
+                "SheetIteration",
+                book.argument(),
+                "2:Run13First;Run13Second;nothing=True",
+                (7, 0),
+            ),
+            ("BookIteration", app.argument(), "1:True", (4, 0)),
+            ("SheetItem", book.argument(), "Run13Second", (3, 0)),
+        ] {
+            let before = host.com().com_dispatch_transport_counts();
+            let api::Value::String(value) = call(
+                &session,
+                name,
+                &[api::ValueSlot::Object(arg)],
+                api::ValueType::String,
+            ) else {
+                panic!("String expected")
+            };
+            println!("{backend:?} {name}={}", value.as_str());
+            assert_eq!(value.as_str(), expected);
+            assert_eq!(
+                host.com().com_dispatch_transport_counts(),
+                (before.0 + transports.0, before.1 + transports.1),
+                "live enumeration transport {name}"
+            );
+        }
+        let api::Value::String(value) = call(
+            &session,
+            "BookItem",
+            &[
+                api::ValueSlot::Object(app.argument()),
+                api::ValueSlot::Object(book.argument()),
+            ],
+            api::ValueType::String,
+        ) else {
+            panic!("String expected")
+        };
+        assert_eq!(value.as_str(), "oracle-bootstrap.xlsx");
+        assert!(matches!(
+            call(&session, "NothingIteration", &[], api::ValueType::Long),
+            api::Value::Long(424)
+        ));
+        // Two independently prepared locale views reach the same owned cells.
         // Cross-read them to distinguish setter provenance from read locale.
         // SAFETY: same exact retained descriptors and owned NativeOM receiver.
         let default_window = unsafe {

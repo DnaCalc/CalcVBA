@@ -8,6 +8,8 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     rc::Rc,
 };
+mod iteration;
+pub use iteration::{HostEnumerator, HostObjectServices};
 pub mod planned_slots;
 pub mod value_slots;
 
@@ -81,9 +83,15 @@ struct ObjectStorage {
     _owners: Vec<HostSlot>,
     payload: Option<Rc<dyn std::any::Any>>,
     identity: *const (),
-    interface_resolver: Option<Box<InterfaceResolver>>,
+    services: Option<Rc<dyn HostObjectServices>>,
 }
 type InterfaceResolver = dyn Fn(InterfaceId) -> Result<HostObject, i32>;
+struct ResolverService(Box<InterfaceResolver>);
+impl HostObjectServices for ResolverService {
+    fn resolve_interface(&self, iid: InterfaceId) -> Result<HostObject, i32> {
+        self.0(iid)
+    }
+}
 /// Clone retains the table and callback captures. Drop releases them on this thread.
 /// Objects contain no borrowed invocation pointers and can outlive any one call.
 /// Captures stored by their own session should use weak session handles; the host
@@ -193,8 +201,29 @@ impl HostObject {
             slots,
             Some(payload),
             identity,
-            Some(Box::new(resolver)),
+            Some(Rc::new(ResolverService(Box::new(resolver)))),
         )
+    }
+    /// Construct an object with retained host interface/iteration services.
+    /// # Safety
+    /// The payload and every service-produced view retain the supplied canonical
+    /// identity under the same contract as new_with_payload_and_identity.
+    pub unsafe fn new_with_services(
+        iid: InterfaceId,
+        slots: Vec<HostSlot>,
+        payload: Rc<dyn std::any::Any>,
+        identity: *const (),
+        services: Rc<dyn HostObjectServices>,
+    ) -> Self {
+        assert!(!identity.is_null());
+        Self::build(iid, slots, Some(payload), identity, Some(services))
+    }
+    pub fn enumerator(&self, context: &mut TypedContext) -> Result<HostEnumerator, i32> {
+        self.storage
+            .services
+            .as_ref()
+            .ok_or(438)?
+            .enumerator(context)
     }
     /// Prepare a nominal view without changing the source object's table.
     /// Portable tables without a resolver accept only their declared IID.
@@ -202,7 +231,12 @@ impl HostObject {
         if self.header().iid == iid {
             return Ok(self.clone());
         }
-        let view = self.storage.interface_resolver.as_ref().ok_or(13)?(iid)?;
+        let view = self
+            .storage
+            .services
+            .as_ref()
+            .ok_or(13)?
+            .resolve_interface(iid)?;
         if view.header().iid != iid || !view.same_identity(self) {
             return Err(13);
         }
@@ -227,7 +261,7 @@ impl HostObject {
         slots: Vec<HostSlot>,
         payload: Option<Rc<dyn std::any::Any>>,
         identity: *const (),
-        interface_resolver: Option<Box<InterfaceResolver>>,
+        services: Option<Rc<dyn HostObjectServices>>,
     ) -> Self {
         // Derive raw table pointers only after immutable Rc allocation. Moving
         // a Box after taking as_ptr would invalidate that pointer's borrow tag.
@@ -246,7 +280,7 @@ impl HostObject {
                 _owners: slots,
                 payload,
                 identity,
-                interface_resolver,
+                services,
             }),
         }
     }

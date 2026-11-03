@@ -6,11 +6,15 @@ use crate::{
 use calcvba_host_api::ValueType as T;
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+mod events;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 mod factory;
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 mod library;
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 mod native_values;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+pub use events::{TypedEventSubscription, advise_typed_event, prepare_typed_event_object};
 pub mod plan;
 
 pub fn signature(member: &TypeLibMemberMetadata) -> Option<(Vec<T>, T)> {

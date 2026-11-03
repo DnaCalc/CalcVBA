@@ -13,6 +13,7 @@ pub const MAX_TYPED_SLOTS: usize = 128;
 pub use calcvba_host_api::ValueType as ScalarType;
 pub mod activation;
 mod aggregate;
+mod iteration;
 mod member;
 pub mod value;
 
@@ -1249,7 +1250,7 @@ impl ScalarLayout {
         {
             return Err("Integer literal temporary has a conflicting writer".into());
         }
-        if self.owning && aggregate::admit(self, inst)? {
+        if self.owning && (iteration::admit(self, inst)? || aggregate::admit(self, inst)?) {
             return Ok(());
         }
         match inst {
@@ -1277,6 +1278,8 @@ impl ScalarLayout {
                 self.operand_type(value).map(|_| ())
             }
             OxInst::CallProc { dst, args, .. } | OxInst::CallExtern { dst, args, .. } => {
+                let value_builtin = matches!(inst, OxInst::CallExtern { import, .. }
+                    if self.extern_calls.get(import).is_some_and(|call| matches!(call.target, LinkedTarget::Builtin(_))));
                 let call = match inst {
                     OxInst::CallProc { proc, .. } => self.calls.get(proc),
                     OxInst::CallExtern { import, .. } => {
@@ -1310,7 +1313,8 @@ impl ScalarLayout {
                         oxvba_oxir::OxArg::ByRef(p) => (self.slots[self.slot(*p)?], true),
                         _ => return Err("omitted typed arguments remain open".into()),
                     };
-                    if from != *ty || (alias && !by_ref) {
+                    let private_variant = value_builtin && !alias && *ty == ScalarType::Variant;
+                    if (from != *ty && !private_variant) || (alias && !by_ref) {
                         return Err("typed call carrier/passing mismatch".into());
                     }
                 }

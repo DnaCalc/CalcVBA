@@ -25,6 +25,7 @@ pub struct RawActivation {
     variant_len: usize,
     scratch: [Scratch; SCRATCH_CAPACITY],
     scratch_len: usize,
+    pub(super) iterators: std::collections::HashMap<usize, calcvba_host_api::HostEnumerator>,
     pub(super) param_arrays: std::collections::HashMap<usize, Vec<Option<Alias>>>,
 }
 #[derive(Clone, Copy)]
@@ -273,6 +274,7 @@ impl<'a> Activation<'a> {
                 scratch: [Scratch::EMPTY; SCRATCH_CAPACITY],
                 scratch_len: 0,
                 param_arrays: Default::default(),
+                iterators: Default::default(),
             },
             layout,
         };
@@ -390,6 +392,7 @@ impl<'a> Activation<'a> {
         self.clear_scratch();
         self.raw.aliases.fill(Alias::NONE);
         self.raw.param_arrays.clear();
+        self.raw.iterators.clear();
         for index in 0..self.layout.global_base {
             if self.layout.has_result && index == self.layout.return_slot {
                 continue;
@@ -1129,6 +1132,8 @@ pub unsafe extern "C" fn scratch_clear(raw: *mut RawActivation) {
 /// # Safety
 /// raw/index name a live initialized slot of this exact physical carrier.
 unsafe fn clear_slot(raw: *mut RawActivation, index: usize, ty: ScalarType) -> Result<(), i32> {
+    // SAFETY: remove only this frame's retained iterator, after detaching its owner.
+    drop(unsafe { (*raw).iterators.remove(&index) });
     if ty == ScalarType::Variant {
         // SAFETY: retain the actual cell's pointer while replacing its owned value.
         unsafe { write_owned(raw, index, ty, Value::Variant(Variant::empty())) }

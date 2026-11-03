@@ -12,7 +12,7 @@ $anchor = '. (Join-Path $PSScriptRoot "excel-vba-oracle-bootstrap.ps1")'
 $override = @'
 $script:preboundDescriptor = @(Get-ExcelOracleHarnessCases | Where-Object id -eq 'windows-scalar-interop')[0]
 $script:preboundDescriptor.module_source = $script:preboundSource
-$script:preboundDescriptor.expected_value = '7:5|6:5|$0.00|1.2346;shape=$F$2|$H$2:$I$3|$F$1:$F$3|2:2:4|F1:G2;formula==2+3:5:5.00|=G1*2:=RC[1]*2:8;app=False:False|5'
+$script:preboundDescriptor.expected_value = '7:5|6:5|$0.00|1.2346;shape=$F$2|$H$2:$I$3|$F$1:$F$3|2:2:4|F1:G2;formula==2+3:5:5.00|=G1*2:=RC[1]*2:8;app=False:False|5;range=F1:1;G1:11;F2:1;G2:11;nothing=True:9;first=F1:F1;ensure=2;sheets=2:Run13First;Run13Second;nothing=True;books=1:True;items=oracle-bootstrap.xlsx:Run13Second;nothing=424'
 $script:preboundDescriptor.purpose = 'Typed native-root ordinary Excel members and NumberFormat locale provenance'
 function Get-ExcelOracleHarnessCases { return @($script:preboundDescriptor) }
 '@

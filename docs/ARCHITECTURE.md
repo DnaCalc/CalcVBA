@@ -354,5 +354,15 @@ both owning backends agree on the bounded typed Range geometry/formula/display
 and application option/calculation/Evaluate helpers. NumberFormat currency
 classification is explained by setter locale, with 1033 explicitly selected by
 the Excel host proof. Existing default invocation locale policy is unchanged;
-automatic locale selection, genuine Variant-result member chains and collection
-iteration remain open. See [run-13 evidence](evidence/programs/ideal-2026-07/windows-x64/WIN-4/typed-excel-surface-run13.md).
+owning frames now retain live host enumerators across slices. Range uses its
+prebound -4 Invoke; dual collections use their native enumerator getter and
+IEnumVARIANT::Next. The binder retains complete metadata for interfaces reached
+through typed calls. Automatic locale selection and genuine Variant-result member
+chains remain open. See [run-13 evidence](evidence/programs/ideal-2026-07/windows-x64/WIN-4/typed-excel-surface-run13.md).
+
+Run 13 also provides an additive synchronous primitive root ByRef copyback API
+and host-registered incoming object/Boolean event sinks. A native Invoke lease
+survives subscription removal during reentry. Excel Change suppression/nesting
+and BeforeClose cancellation match VBA on both owning backends. Automatic
+document/WithEvents wiring and the broader event contract remain open; see
+[event evidence](evidence/programs/ideal-2026-07/windows-x64/WIN-5/typed-excel-events-run13.md).

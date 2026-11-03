@@ -4108,7 +4108,7 @@ impl<'a> LowerFunc<'a> {
 
     /// Seat Overflow (error 6) when a checked Single/Double arithmetic result is
     /// not finite. The f32/f64 fast paths compute with raw `fadd`/`fsub`/`fmul`,
-    /// so an overflow produced ±Inf silently; vm3 raises error 6 (its Single/Double
+    /// so an overflow produced Â±Inf silently; vm3 raises error 6 (its Single/Double
     /// coercion rejects a non-finite result). This restores parity: a finite
     /// result flows through; a non-finite one seats error 6 and routes to the
     /// active On Error handler (or returns the fault) via `return_if_not_ok`.
@@ -8068,7 +8068,10 @@ impl<'a> LowerFunc<'a> {
             OxOperand::Use(place) => {
                 let ty = place_ty(self.program, self.func, *place)?;
                 Ok((matches!(ty, OxTy::Object(_))
-                    && matches!(native_impl, NativeImplId::TypeName | NativeImplId::IsObject))
+                    && matches!(
+                        native_impl,
+                        NativeImplId::TypeName | NativeImplId::IsObject | NativeImplId::VarType
+                    ))
                     || is_m4_4_fixed_variant_array_ty(ty))
             }
             _ => Ok(false),

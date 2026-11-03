@@ -1,8 +1,8 @@
 # Runtime value layout
 
 The runtime preserves VBA/Automation carrier layout and ownership where
-implemented. Layout tests live in `oxvba-runtime` and native interop tests in
-`oxvba-com`; broader carrier families remain incomplete.
+implemented. Layout tests live in `calcvba-runtime` and native interop tests in
+`calcvba-com`; broader carrier families remain incomplete.
 
 ## Carrier Requirements
 

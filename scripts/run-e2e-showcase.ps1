@@ -95,9 +95,9 @@ function Write-Utf8NoBom([string]$Path, [string]$Text) {
 }
 
 # Build the real external command surfaces once. Subsequent commands use the produced EXEs directly.
-Invoke-Captured -Name 'build_cli_and_launcher' -Category 'toolchain' -Exe 'cargo' -ArgList @('build','-p','oxvba-cli','-p','oxvba-launcher') -ExpectStderrContains 'Finished' -Notes 'Rust build verifies the command-line integration binaries used by every following pass.'
-$cli = Join-Path $repo 'target/debug/oxvba-cli.exe'
-$runner = Join-Path $repo 'target/debug/oxvba-run.exe'
+Invoke-Captured -Name 'build_cli_and_launcher' -Category 'toolchain' -Exe 'cargo' -ArgList @('build','-p','calcvba-cli','-p','calcvba-launcher') -ExpectStderrContains 'Finished' -Notes 'Rust build verifies the command-line integration binaries used by every following pass.'
+$cli = Join-Path $repo 'target/debug/calcvba-cli.exe'
+$runner = Join-Path $repo 'target/debug/calcvba-run.exe'
 
 # 1. New single file: compile, run source, run compiled artifact, inspect artifact.
 $single = Join-Path $srcDir 'single_file/HelloSlots.bas'
@@ -112,7 +112,7 @@ End Sub
 '@
 Invoke-Captured -Name 'single_file_compile_to_oxb' -Category 'single-file' -Exe $cli -ArgList @('compile',$single,'-o',$singleOxb) -ExpectStdoutContains 'compiled' -After { @{ artifactExistsOk = (Test-Path $singleOxb); artifactBytes = if (Test-Path $singleOxb) { (Get-Item $singleOxb).Length } else { 0 } } } -Notes 'Compiles a brand-new .bas source into an OxBundle artifact.'
 Invoke-Captured -Name 'single_file_run_source_vm' -Category 'single-file' -Exe $cli -ArgList @('run',$single,'--dump-values','--profile','windows-stdio') -ExpectStdoutContains 'VALUES:i32:42|string:"single-file-ok"' -Notes 'Runs the source path through the CLI/host/VM stack and checks the slot snapshot.'
-Invoke-Captured -Name 'single_file_run_compiled_launcher' -Category 'single-file' -Exe $runner -ArgList @($singleOxb) -ExpectStderrContains 'Long' -Notes 'Runs the serialized .oxb bundle through oxvba-run and checks executable snapshot output emitted by the launcher.'
+Invoke-Captured -Name 'single_file_run_compiled_launcher' -Category 'single-file' -Exe $runner -ArgList @($singleOxb) -ExpectStderrContains 'Long' -Notes 'Runs the serialized .oxb bundle through calcvba-run and checks executable snapshot output emitted by the launcher.'
 
 # 2. Two-module project: cross-module calls, VM target, disabled JIT boundary, bundle output.
 $proj = Join-Path $srcDir 'two_module_project'
@@ -158,7 +158,7 @@ $projOxb = Join-Path $artifactDir 'ShowcaseTwoModule.oxb'
 Invoke-Captured -Name 'two_module_project_run_vm' -Category 'project' -Exe $cli -ArgList @('run-project',$basproj,'--dump-values','--profile','windows-stdio') -ExpectStdoutContains 'VALUES:i32:42|i32:84|string:"two-module=84"' -Notes 'Project loader resolves two modules and executes a cross-module qualified call plus an unqualified local call.'
 Invoke-Captured -Name 'two_module_project_jit_disabled' -Category 'project' -Exe $cli -ArgList @('run-project',$basproj,'--jit','--dump-values','--profile','windows-stdio') -ExpectFailure -ExpectStderrContains 'JIT execution is not implemented' -Notes 'The purged JIT backend reports an explicit disabled-backend diagnostic rather than falling back to the VM.'
 Invoke-Captured -Name 'two_module_project_build_bundle' -Category 'project' -Exe $cli -ArgList @('build',$basproj,'-o',$projOxb) -ExpectStdoutContains 'built' -After { @{ artifactExistsOk = (Test-Path $projOxb); artifactBytes = if (Test-Path $projOxb) { (Get-Item $projOxb).Length } else { 0 } } } -Notes 'Build target serializes the project to an OxBundle artifact.'
-Invoke-Captured -Name 'two_module_project_run_bundle' -Category 'project' -Exe $runner -ArgList @($projOxb) -Notes 'The project bundle is accepted by oxvba-run. Current project-bundle launcher output is intentionally quieter than single-file slot bundles.'
+Invoke-Captured -Name 'two_module_project_run_bundle' -Category 'project' -Exe $runner -ArgList @($projOxb) -Notes 'The project bundle is accepted by calcvba-run. Current project-bundle launcher output is intentionally quieter than single-file slot bundles.'
 
 # 3. Editing errors and diagnostics.
 $badSyntax = Join-Path $srcDir 'diagnostics/BrokenSyntax.bas'

@@ -93,7 +93,7 @@ try {
         try {
             Set-Item -Path "Env:$envName" -Value $envValue
             $cargoArgs = @(
-                "test", "-p", "oxvba-host", "--test", "host_sensitive_oracle_lane",
+                "test", "-p", "calcvba-engine", "--test", "host_sensitive_oracle_lane",
                 $TestName,
                 "--", "--ignored", "--exact", "--test-threads=1", "--nocapture"
             )
@@ -197,8 +197,8 @@ End Function
             scenario = $oxRow.scenario
             vba_status = $vbaRow.status
             vba_observed = $vbaRow.observed
-            oxvba_status = $oxRow.status
-            oxvba_observed = $oxRow.observed
+            calcvba_status = $oxRow.status
+            calcvba_observed = $oxRow.observed
             match = if ($vbaRow.status -eq $oxRow.status -and $vbaRow.observed -eq $oxRow.observed) { "true" } else { "false" }
             notes = $oxRow.notes
         }
@@ -227,7 +227,7 @@ End Function
     )
     foreach ($row in $rows) {
         $vbaCell = "$($row.vba_status): $($row.vba_observed)"
-        $oxCell = "$($row.oxvba_status): $($row.oxvba_observed)"
+        $oxCell = "$($row.calcvba_status): $($row.calcvba_observed)"
         $summary += "| $($row.topic_id) | $($row.case_id) | $vbaCell | $oxCell | $($row.match) | $($row.notes) |"
     }
     Set-Content -Path $summaryPath -Value ($summary -join [Environment]::NewLine)

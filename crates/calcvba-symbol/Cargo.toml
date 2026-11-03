@@ -1,0 +1,21 @@
+[package]
+name = "calcvba-symbol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Uniform VBA symbol model: scope chain, providers (VBA library/intrinsics, COM typelib, cross-module projects, Declare, host), and source-agnostic resolution feeding the binder."
+
+[dependencies]
+calcvba-diagnostics.workspace = true
+calcvba-runtime.workspace = true
+calcvba-syntax.workspace = true
+calcvba-com.workspace = true
+calcvba-bundle.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+calcvba-com = { workspace = true, features = ["fixture-typelibs"] }
+[lints]
+workspace = true

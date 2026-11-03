@@ -1,0 +1,31 @@
+[package]
+name = "calcvba-jit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+calcvba-host-api.workspace = true
+cranelift-codegen.workspace = true
+cranelift-frontend.workspace = true
+cranelift-jit.workspace = true
+cranelift-module.workspace = true
+cranelift-native.workspace = true
+calcvba-bundle.workspace = true
+calcvba-com.workspace = true
+calcvba-eval.workspace = true
+calcvba-hal.workspace = true
+calcvba-oxir.workspace = true
+calcvba-rt-abi.workspace = true
+calcvba-runtime.workspace = true
+thiserror.workspace = true
+
+[features]
+default = []
+[lints]
+workspace = true
+
+[dev-dependencies]
+region = "3"

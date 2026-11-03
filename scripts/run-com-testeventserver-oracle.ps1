@@ -74,7 +74,7 @@ try {
             -Scenario "AddFromFile + New TestEventServer + Ping()" `
             -ExpectedObserved "42" `
             -CargoArgs @(
-                "test", "-p", "oxvba-host", "--test", "com_early_project_end_to_end",
+                "test", "-p", "calcvba-engine", "--test", "com_early_project_end_to_end",
                 "early_bound_project_executes_registered_testeventserver_ping",
                 "--", "--ignored", "--exact", "--test-threads=1", "--nocapture"
             ) `
@@ -84,7 +84,7 @@ try {
             -Scenario "AddFromFile + WithEvents TestEventServer source interface" `
             -ExpectedObserved "7" `
             -CargoArgs @(
-                "test", "-p", "oxvba-host", "--test", "com_early_project_end_to_end",
+                "test", "-p", "calcvba-engine", "--test", "com_early_project_end_to_end",
                 "early_bound_project_registered_testeventserver_withevents_callback_preserves_value_payload",
                 "--", "--ignored", "--exact", "--test-threads=1", "--nocapture"
             ) `
@@ -99,8 +99,8 @@ try {
             scenario = $oxRow.scenario
             vba_status = $probeRow.status
             vba_observed = $probeRow.observed
-            oxvba_status = $oxRow.status
-            oxvba_observed = $oxRow.observed
+            calcvba_status = $oxRow.status
+            calcvba_observed = $oxRow.observed
             match = if ($probeRow.status -eq $oxRow.status -and $probeRow.observed -eq $oxRow.observed) { "true" } else { "false" }
             notes = $oxRow.notes
         }
@@ -126,7 +126,7 @@ try {
     $md += "|---|---|---|---|---|---|"
     foreach ($row in $rows) {
         $vbaCell = "$($row.vba_status): $($row.vba_observed)"
-        $oxCell = "$($row.oxvba_status): $($row.oxvba_observed)"
+        $oxCell = "$($row.calcvba_status): $($row.calcvba_observed)"
         $md += "| $($row.topic_id) | $($row.case_id) | $vbaCell | $oxCell | $($row.match) | $($row.notes) |"
     }
     Set-Content -Path $summaryPath -Value ($md -join [Environment]::NewLine)

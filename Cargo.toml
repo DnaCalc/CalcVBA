@@ -1,30 +1,30 @@
 [workspace]
 members = [
     "crates/calcvba-host-api",
-    "crates/oxvba-diagnostics",
-    "crates/oxvba-hal",
-    "crates/oxvba-syntax",
-    "crates/oxvba-runtime",
-    "crates/oxvba-jit",
-    "crates/oxvba-pe",
-    "crates/oxvba-aot",
-    "crates/oxvba-native-template",
-    "crates/oxvba-com",
-    "crates/oxvba-comhost",
-    "crates/oxvba-host",
-    "crates/oxvba-build",
-    "crates/oxvba-cli",
-    "crates/oxvba-project",
-    "crates/oxvba-bundle",
-    "crates/oxvba-lib",
-    "crates/oxvba-symbol",
-    "crates/oxvba-bind",
-    "crates/oxvba-oxir",
-    "crates/oxvba-rt-abi",
-    "crates/oxvba-eval",
-    "crates/oxvba-vm3",
-    "crates/oxvba-differential",
-    "crates/oxvba-embed",
+    "crates/calcvba-diagnostics",
+    "crates/calcvba-hal",
+    "crates/calcvba-syntax",
+    "crates/calcvba-runtime",
+    "crates/calcvba-jit",
+    "crates/calcvba-pe",
+    "crates/calcvba-aot",
+    "crates/calcvba-native-template",
+    "crates/calcvba-com",
+    "crates/calcvba-comhost",
+    "crates/calcvba-engine",
+    "crates/calcvba-build",
+    "crates/calcvba-cli",
+    "crates/calcvba-project",
+    "crates/calcvba-bundle",
+    "crates/calcvba-lib",
+    "crates/calcvba-symbol",
+    "crates/calcvba-bind",
+    "crates/calcvba-oxir",
+    "crates/calcvba-rt-abi",
+    "crates/calcvba-eval",
+    "crates/calcvba-vm3",
+    "crates/calcvba-differential",
+    "crates/calcvba-host",
     "adapters/spreadsheet-compat",
 ]
 resolver = "2"
@@ -34,7 +34,7 @@ version = "0.1.2"
 edition = "2024"
 license = "MIT"
 authors = ["DNA Kode"]
-repository = "https://github.com/DnaCalc/OxVba"
+repository = "https://github.com/DnaCalc/CalcVBA"
 
 # CI runs `cargo clippy --workspace --all-targets -- -D warnings`, so every
 # warn-level lint here is build-blocking. Ratchet lints (documented below)
@@ -56,27 +56,27 @@ unwrap_used = "allow"
 
 [workspace.dependencies]
 calcvba-host-api = { path = "crates/calcvba-host-api" }
-oxvba-syntax = { path = "crates/oxvba-syntax" }
-oxvba-diagnostics = { path = "crates/oxvba-diagnostics" }
-oxvba-hal = { path = "crates/oxvba-hal" }
-oxvba-runtime = { path = "crates/oxvba-runtime" }
-oxvba-jit = { path = "crates/oxvba-jit" }
-oxvba-pe = { path = "crates/oxvba-pe" }
-oxvba-aot = { path = "crates/oxvba-aot" }
-oxvba-com = { path = "crates/oxvba-com" }
-oxvba-comhost = { path = "crates/oxvba-comhost" }
-oxvba-host = { path = "crates/oxvba-host" }
-oxvba-build = { path = "crates/oxvba-build" }
-oxvba-project = { path = "crates/oxvba-project" }
-oxvba-bundle = { path = "crates/oxvba-bundle" }
-oxvba-lib = { path = "crates/oxvba-lib" }
-oxvba-symbol = { path = "crates/oxvba-symbol" }
-oxvba-bind = { path = "crates/oxvba-bind" }
-oxvba-oxir = { path = "crates/oxvba-oxir" }
-oxvba-rt-abi = { path = "crates/oxvba-rt-abi" }
-oxvba-eval = { path = "crates/oxvba-eval" }
-oxvba-vm3 = { path = "crates/oxvba-vm3" }
-oxvba-differential = { path = "crates/oxvba-differential" }
+calcvba-syntax = { path = "crates/calcvba-syntax" }
+calcvba-diagnostics = { path = "crates/calcvba-diagnostics" }
+calcvba-hal = { path = "crates/calcvba-hal" }
+calcvba-runtime = { path = "crates/calcvba-runtime" }
+calcvba-jit = { path = "crates/calcvba-jit" }
+calcvba-pe = { path = "crates/calcvba-pe" }
+calcvba-aot = { path = "crates/calcvba-aot" }
+calcvba-com = { path = "crates/calcvba-com" }
+calcvba-comhost = { path = "crates/calcvba-comhost" }
+calcvba-engine = { path = "crates/calcvba-engine" }
+calcvba-build = { path = "crates/calcvba-build" }
+calcvba-project = { path = "crates/calcvba-project" }
+calcvba-bundle = { path = "crates/calcvba-bundle" }
+calcvba-lib = { path = "crates/calcvba-lib" }
+calcvba-symbol = { path = "crates/calcvba-symbol" }
+calcvba-bind = { path = "crates/calcvba-bind" }
+calcvba-oxir = { path = "crates/calcvba-oxir" }
+calcvba-rt-abi = { path = "crates/calcvba-rt-abi" }
+calcvba-eval = { path = "crates/calcvba-eval" }
+calcvba-vm3 = { path = "crates/calcvba-vm3" }
+calcvba-differential = { path = "crates/calcvba-differential" }
 rkyv = "0.8"
 quick-xml = "0.37"
 thiserror = "2"

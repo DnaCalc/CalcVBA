@@ -6,4 +6,4 @@ referenced modules. Names use `<ModuleName>.<kind>.bas` (`proc`, `class`,
 
 The lexer corpus and VM3/JIT source corpus read these files. Project-level
 reference and event behaviour is exercised by the focused tests in
-`crates/oxvba-host/tests` and `crates/oxvba-embed/tests`.
+`crates/calcvba-engine/tests` and `crates/calcvba-host/tests`.

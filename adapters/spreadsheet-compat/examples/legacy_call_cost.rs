@@ -1,8 +1,8 @@
 //! Warm host-call cost. Run with --release; compilation is outside the timed loop.
-use oxvba_spreadsheet_compat::{Backend, Module, Value};
+use calcvba_spreadsheet_compat::{Backend, Module, Value};
 use std::{hint::black_box, time::Instant};
 
-fn main() -> Result<(), oxvba_spreadsheet_compat::Error> {
+fn main() -> Result<(), calcvba_spreadsheet_compat::Error> {
     let module = Module::load(
         "Math",
         "Public Function Add2(ByVal x As Double, ByVal y As Double) As Double\nAdd2 = x + y\nEnd Function\n",

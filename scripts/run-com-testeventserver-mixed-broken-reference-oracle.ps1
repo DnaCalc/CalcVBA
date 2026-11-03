@@ -71,7 +71,7 @@ function Get-WindowProcessId {
     [int]$windowPid
 }
 
-$root = Join-Path $env:TEMP ("oxvba_mixed_broken_ref_" + [guid]::NewGuid().ToString("N"))
+$root = Join-Path $env:TEMP ("calcvba_mixed_broken_ref_" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $root | Out-Null
 $firstCopy = Join-Path $root ([System.IO.Path]::GetFileName($FirstTypeLibPath))
 $secondCopy = Join-Path $root ([System.IO.Path]::GetFileName($SecondTypeLibPath))
@@ -191,8 +191,8 @@ try {
                 scenario        = $Scenario
                 vba_status      = $VbaStatus
                 vba_observed    = $VbaObserved
-                oxvba_status    = $OxVbaStatus
-                oxvba_observed  = $OxVbaObserved
+                calcvba_status    = $OxVbaStatus
+                calcvba_observed  = $OxVbaObserved
                 match           = $Match
                 notes           = $Notes
             }) | Out-Null
@@ -372,7 +372,7 @@ try {
             first = $baseTypeLibPath
             second = $altTypeLibPath
             command = @(
-                "test", "-p", "oxvba-host", "--test", "com_early_project_end_to_end",
+                "test", "-p", "calcvba-engine", "--test", "com_early_project_end_to_end",
                 "early_bound_loaded_basproj_mixed_broken_base_then_valid_alt_reports_unresolved_importlib",
                 "--", "--ignored", "--exact", "--test-threads=1", "--nocapture"
             )
@@ -384,7 +384,7 @@ try {
             first = $altTypeLibPath
             second = $baseTypeLibPath
             command = @(
-                "test", "-p", "oxvba-host", "--test", "com_early_project_end_to_end",
+                "test", "-p", "calcvba-engine", "--test", "com_early_project_end_to_end",
                 "early_bound_loaded_basproj_mixed_broken_alt_then_valid_base_reports_unresolved_importlib",
                 "--", "--ignored", "--exact", "--test-threads=1", "--nocapture"
             )
@@ -447,7 +447,7 @@ try {
         "|---|---|---|---|---|---|"
     )
     foreach ($row in $rows) {
-        $summary += "| $($row.topic_id) | $($row.case_id) | $($row.vba_status): $($row.vba_observed) | $($row.oxvba_status): $($row.oxvba_observed) | $($row.match) | $($row.notes) |"
+        $summary += "| $($row.topic_id) | $($row.case_id) | $($row.vba_status): $($row.vba_observed) | $($row.calcvba_status): $($row.calcvba_observed) | $($row.match) | $($row.notes) |"
     }
     Set-Content -Path $summaryPath -Value ($summary -join "`n")
 

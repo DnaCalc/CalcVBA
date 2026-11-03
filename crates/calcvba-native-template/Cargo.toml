@@ -1,0 +1,23 @@
+[package]
+name = "calcvba-native-template"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Developer-built runtime DLL for CalcVBA native PE exports; no compiler or VM."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calcvba-runtime.workspace = true
+calcvba-rt-abi.workspace = true
+calcvba-lib.workspace = true
+calcvba-eval.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_SystemServices"] }
+
+[lints]
+workspace = true

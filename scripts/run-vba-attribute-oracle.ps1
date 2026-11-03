@@ -244,7 +244,7 @@ End Function
 
         $logPath = Join-Path $runDir ("{0}.log.txt" -f ($CaseId -replace '[^A-Za-z0-9_.-]', '_'))
         $cargoArgs = @(
-            "test", "-p", "oxvba-host", "--test", "vba_attribute_oracle_lane",
+            "test", "-p", "calcvba-engine", "--test", "vba_attribute_oracle_lane",
             $TestName,
             "--", "--ignored", "--exact", "--test-threads=1", "--nocapture"
         )
@@ -309,8 +309,8 @@ End Function
             scenario = $oxRow.scenario
             vba_status = $vbaRow.status
             vba_observed = $vbaRow.observed
-            oxvba_status = $oxRow.status
-            oxvba_observed = $oxRow.observed
+            calcvba_status = $oxRow.status
+            calcvba_observed = $oxRow.observed
             excel_roundtrip_status = $vbaRow.roundtrip_status
             excel_roundtrip_summary = $vbaRow.roundtrip_summary
             excel_roundtrip_member_attrs = $vbaRow.roundtrip_member_attrs
@@ -340,7 +340,7 @@ End Function
     )
     foreach ($row in $rows) {
         $vbaCell = "$($row.vba_status): $($row.vba_observed)"
-        $oxCell = "$($row.oxvba_status): $($row.oxvba_observed)"
+        $oxCell = "$($row.calcvba_status): $($row.calcvba_observed)"
         $roundtripCell = "$($row.excel_roundtrip_status): $($row.excel_roundtrip_member_attrs)"
         $summary += "| $($row.topic_id) | $($row.case_id) | $vbaCell | $oxCell | $roundtripCell | $($row.match) | $($row.notes) |"
     }

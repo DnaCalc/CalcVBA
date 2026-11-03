@@ -13,10 +13,10 @@ pub mod object;
 pub use invocation::*;
 mod scalar;
 pub mod value;
+pub use calcvba_runtime::Variant;
 pub use object::{
     HostEnumerator, HostObject, HostObjectServices, HostSlot, InterfaceId, ObjectArg,
 };
-pub use oxvba_runtime::Variant;
 pub use scalar::*;
 use std::{any::Any, marker::PhantomData, rc::Rc};
 pub use value::*;

@@ -1,0 +1,5750 @@
+//! End-to-end: real VBA source → `calcvba_bind::bind_program` → `calcvba_oxir::elaborate`
+//! → run on `calcvba-vm3`. This is the "tie the path together" proof — the whole
+//! clean pipeline exercised from source text.
+
+use std::collections::BTreeMap;
+
+use calcvba_bind::bind_program;
+use calcvba_bundle::DeclareParamType;
+use calcvba_bundle::coreir::{
+    CoreArg, CoreCallee, CoreConst, CorePlace, CoreProgram, CoreStmt, CoreValue,
+};
+use calcvba_bundle::native::NativeImplId;
+use calcvba_hal::HostPolicy;
+use calcvba_hal::adapters::null::NullHostServices;
+use calcvba_symbol::manifest::{
+    ModuleAttributes, ModuleKind, ModuleUnit, ProjectKind, ProjectReference, SymbolProjectManifest,
+};
+use calcvba_symbol::provider::TypeLibResolver;
+
+struct NullTypeLibs;
+
+#[test]
+fn declare_ordinal_literals_produce_canonical_native_descriptors() {
+    for alias in ["#32767", "#00032767", "#&H7FFF", "#&O77777", "#&77777"] {
+        let source = format!(
+            "Private Declare PtrSafe Function NativeOrdinal Lib \"kernel32\" Alias \"{alias}\" () As Long\nSub Main()\nEnd Sub\n"
+        );
+        let program = bind_program(&manifest(&source), &NullTypeLibs).unwrap();
+        assert_eq!(program.external_calls.len(), 1);
+        let call = &program.external_calls[0];
+        assert_eq!(call.alias, "#32767", "{alias}");
+        assert!(call.ordinal_alias);
+        assert_eq!(call.selection_policy, "ordinal-literal-canonical");
+    }
+}
+
+#[test]
+fn invalid_declare_ordinals_fail_before_an_external_call_plan_is_built() {
+    for alias in ["#32768", "#65535", "#-1", "#1.0", "#1&"] {
+        let source = format!(
+            "Private Declare PtrSafe Function NativeOrdinal Lib \"kernel32\" Alias \"{alias}\" () As Long\nSub Main()\nDim value As Long\nvalue = NativeOrdinal()\nEnd Sub\n"
+        );
+        let err = bind_program(&manifest(&source), &NullTypeLibs).unwrap_err();
+        let diagnostic = err.to_diagnostic();
+        assert_eq!(diagnostic.code.as_str(), "SYM-E-INVALID-DECLARE-ORDINAL");
+        let span = diagnostic.source.unwrap().span.unwrap();
+        assert_eq!(
+            &source[span.start as usize..span.end as usize],
+            format!("\"{alias}\"")
+        );
+    }
+}
+impl TypeLibResolver for NullTypeLibs {
+    fn resolve(
+        &self,
+        _request: &calcvba_com::TypeLibResolveRequest,
+    ) -> Option<calcvba_com::TypeLibMetadataBlob> {
+        None
+    }
+}
+
+fn manifest(source: &str) -> SymbolProjectManifest {
+    SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Mod1".into(),
+            module_kind: ModuleKind::Procedural,
+            attributes: ModuleAttributes::named("Mod1"),
+            source: source.into(),
+        }],
+        references: Vec::new(),
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    }
+}
+
+fn manifest_modules(modules: &[(&str, ModuleKind, &str)]) -> SymbolProjectManifest {
+    SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: modules
+            .iter()
+            .map(|(name, kind, source)| ModuleUnit {
+                module_name: (*name).into(),
+                module_kind: *kind,
+                attributes: ModuleAttributes::named(*name),
+                source: (*source).into(),
+            })
+            .collect(),
+        references: Vec::new(),
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    }
+}
+
+fn bind(source: &str) -> CoreProgram {
+    bind_program(&manifest(source), &NullTypeLibs).expect("bind_program")
+}
+
+fn bind_error(source: &str) -> String {
+    format!(
+        "{:?}",
+        bind_program(&manifest(source), &NullTypeLibs).expect_err("bind should fail")
+    )
+}
+
+fn bind_error_display(source: &str) -> String {
+    bind_program(&manifest(source), &NullTypeLibs)
+        .expect_err("bind should fail")
+        .to_string()
+}
+
+/// Bind + elaborate + run on vm3; read `Main`'s first local as a number.
+fn run_main_local0(source: &str) -> Option<f64> {
+    let program = bind(source);
+    let oxp = calcvba_oxir::elaborate::elaborate(&program).expect("elaborate");
+    let host = NullHostServices::new(HostPolicy::default());
+    let vm = calcvba_vm3::Vm3::run(&oxp, &host).expect("run");
+    let value = vm.slot(oxp.globals.len())?;
+    value
+        .as_f64()
+        .or_else(|| value.as_f32().map(f64::from))
+        .or_else(|| value.as_i16().map(f64::from))
+        .or_else(|| value.as_i32().map(f64::from))
+        .or_else(|| value.as_i64().map(|v| v as f64))
+        .or_else(|| value.as_currency_scaled_i64().map(|v| v as f64 / 10_000.0))
+        .or_else(|| value.as_date_f64())
+        .or_else(|| value.as_bool().map(|b| if b { -1.0 } else { 0.0 }))
+}
+
+/// Wrap a `Main` body that leaves its result in the first declared local.
+fn main_sub(body: &str) -> String {
+    format!("Sub Main()\n{body}End Sub\n")
+}
+
+// ── Arithmetic / coercion / operators ────────────────────────────────────────
+
+#[test]
+fn arithmetic_precedence() {
+    assert_eq!(
+        run_main_local0(&main_sub("    Dim r As Long\n    r = 1 + 2 * 3\n")),
+        Some(7.0)
+    );
+}
+
+fn run_main_local0_string(source: &str) -> Option<String> {
+    let program = bind(source);
+    let oxp = calcvba_oxir::elaborate::elaborate(&program).expect("elaborate");
+    let host = NullHostServices::new(HostPolicy::default());
+    let vm = calcvba_vm3::Vm3::run(&oxp, &host).expect("run");
+    vm.slot(oxp.globals.len())?.as_bstr().map(|b| b.as_str())
+}
+
+#[test]
+fn fixed_length_string_pads_on_assignment() {
+    // `Dim s As String * 5` pads a shorter assignment with spaces.
+    assert_eq!(
+        run_main_local0_string("Sub Main()\n    Dim s As String * 5\n    s = \"ab\"\nEnd Sub\n"),
+        Some("ab   ".to_string())
+    );
+}
+
+#[test]
+fn fixed_length_string_truncates_on_assignment() {
+    assert_eq!(
+        run_main_local0_string("Sub Main()\n    Dim s As String * 2\n    s = \"abcd\"\nEnd Sub\n"),
+        Some("ab".to_string())
+    );
+}
+
+#[test]
+fn lset_rset_reject_non_string_targets_with_vba_messages() {
+    let lset = bind_error_display("Sub Main()\n    Dim n As Long\n    LSet n = \"12\"\nEnd Sub\n");
+    assert!(
+        lset.contains("LSet allowed only on strings and user-defined types"),
+        "expected VBA LSet target diagnostic, got {lset}"
+    );
+    let rset = bind_error_display("Sub Main()\n    Dim n As Long\n    RSet n = \"12\"\nEnd Sub\n");
+    assert!(
+        rset.contains("RSet allowed only on strings"),
+        "expected VBA RSet target diagnostic, got {rset}"
+    );
+}
+
+#[test]
+fn lset_udt_record_copy_lowers_to_record_statement() {
+    let program = bind(
+        "Private Type A\n    X As String * 2\nEnd Type\n\
+         Private Type B\n    X As String * 2\nEnd Type\n\
+         Sub Main()\n    Dim a As A\n    Dim b As B\n    LSet a = b\nEnd Sub\n",
+    );
+    assert!(
+        program.procs[0]
+            .body
+            .iter()
+            .any(|stmt| matches!(stmt, CoreStmt::LSetRecord { .. })),
+        "expected UDT LSet to lower as CoreStmt::LSetRecord, got {:?}",
+        program.procs[0].body
+    );
+}
+
+#[test]
+fn lset_udt_record_copy_rejects_vba_type_mismatch_cases() {
+    let non_record_rhs = bind_error_display(
+        "Private Type A\n    X As String * 2\nEnd Type\n\
+         Sub Main()\n    Dim a As A\n    LSet a = \"xy\"\nEnd Sub\n",
+    );
+    assert!(
+        non_record_rhs.contains("Type mismatch"),
+        "expected VBA Type mismatch, got {non_record_rhs}"
+    );
+
+    let owning_field = bind_error_display(
+        "Private Type A\n    S As String\nEnd Type\n\
+         Private Type B\n    S As String\nEnd Type\n\
+         Sub Main()\n    Dim a As A\n    Dim b As B\n    LSet a = b\nEnd Sub\n",
+    );
+    assert!(
+        owning_field.contains("Type mismatch"),
+        "expected VBA Type mismatch, got {owning_field}"
+    );
+}
+
+#[test]
+fn date_literal_assigns_serial() {
+    // 2020-01-01 is OLE automation serial 43831.
+    assert_eq!(
+        run_main_local0(&main_sub("    Dim d As Date\n    d = #1/1/2020#\n")),
+        Some(43831.0)
+    );
+}
+
+#[test]
+fn iif_selects_branch() {
+    assert_eq!(
+        run_main_local0(&main_sub("    Dim r\n    r = IIf(2 > 1, 10, 20)\n")),
+        Some(10.0)
+    );
+    assert_eq!(
+        run_main_local0(&main_sub("    Dim r\n    r = IIf(1 > 2, 10, 20)\n")),
+        Some(20.0)
+    );
+}
+
+#[test]
+fn choose_is_one_based() {
+    assert_eq!(
+        run_main_local0(&main_sub("    Dim r\n    r = Choose(2, 100, 200, 300)\n")),
+        Some(200.0)
+    );
+}
+
+#[test]
+fn switch_returns_first_true() {
+    assert_eq!(
+        run_main_local0(&main_sub("    Dim r\n    r = Switch(False, 1, True, 42)\n")),
+        Some(42.0)
+    );
+}
+
+#[test]
+fn const_references_const() {
+    let body = "    Dim r As Long\n    Const A As Long = 1\n    Const B As Long = A + 1\n    Const C As Long = B * 2\n    r = C\n";
+    assert_eq!(run_main_local0(&main_sub(body)), Some(4.0));
+}
+
+#[test]
+fn const_forward_reference_resolves() {
+    // C depends on B depends on A, all declared after the use site.
+    let body = "    Dim r As Long\n    Const C As Long = B * 2\n    Const B As Long = A + 1\n    Const A As Long = 1\n    r = C\n";
+    assert_eq!(run_main_local0(&main_sub(body)), Some(4.0));
+}
+
+#[test]
+fn const_cycle_is_error() {
+    let body = "    Const A As Long = B\n    Const B As Long = A\n    Dim r As Long\n    r = A\n";
+    let src = main_sub(body);
+    assert!(bind_program(&manifest(&src), &NullTypeLibs).is_err());
+}
+
+#[test]
+fn module_qualified_call() {
+    // `Mod1.SetIt` — a standard-module-qualified call (the form the project startup
+    // shim emits as `Call Module.Proc()`). The module name is a namespace qualifier,
+    // not a value; resolve the member as a qualified project call.
+    let src = "Sub Main()\n    Dim r As Long\n    Call Mod1.SetIt\n    r = total\nEnd Sub\n\
+               Public total As Long\n\
+               Sub SetIt()\n    total = 7\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(7.0));
+}
+
+#[test]
+fn module_qualified_const_and_variable() {
+    // `Mod1.K` (a qualified Public Const) and `Mod1.gShared` (a qualified module
+    // variable) resolve as a value / a place — not a call (regression for the
+    // qualified-member path that previously routed everything through a call).
+    let src = "Sub Main()\n    Dim r As Long\n    gShared = 5\n    r = Mod1.K + Mod1.gShared\nEnd Sub\n\
+               Public Const K As Long = 10\n\
+               Public gShared As Long\n";
+    assert_eq!(run_main_local0(src), Some(15.0));
+}
+
+#[test]
+fn module_qualified_const_initializer_folds() {
+    // A local `Const` initializer is folded in the symbol layer before binding;
+    // qualified module constants must therefore resolve there too, not only in
+    // ordinary expression binding.
+    let src = "Sub Main()\n    Dim r As Long\n    Const X As Long = Mod1.K + 1\n    r = X\nEnd Sub\n\
+               Public Const K As Long = 10\n";
+    assert_eq!(run_main_local0(src), Some(11.0));
+}
+
+#[test]
+fn module_qualified_const_initializer_respects_local_shadowing() {
+    let src = "Sub Main()\n    Const Mod1 As Long = 1\n    Const X As Long = Mod1.K + 1\n    Dim r As Long\n    r = X\nEnd Sub\n\
+               Public Const K As Long = 10\n";
+    assert!(
+        bind_program(&manifest(src), &NullTypeLibs).is_err(),
+        "a local const named like the module must shadow the module qualifier"
+    );
+}
+
+#[test]
+fn enum_qualified_member_binds_as_constant_value() {
+    let src = "Public Enum WebFormat\n  PlainText = 0\n  Json = 1\nEnd Enum\n\
+               Sub Main()\n    Dim r As Long\n    r = WebFormat.Json\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(1.0));
+}
+
+#[test]
+fn public_enum_member_binds_unqualified_as_constant_value() {
+    let src = "Public Enum WebFormat\n  PlainText = 0\n  Json = 1\nEnd Enum\n\
+               Sub Main()\n    Dim r As Long\n    r = PlainText\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(0.0));
+}
+
+#[test]
+fn keyword_token_can_be_parameter_name() {
+    let src = "Sub UseName(Name As String)\n    Dim r As Long\n    r = Len(Name)\nEnd Sub\n\
+               Sub Main()\n    Dim r As Long\n    UseName \"abc\"\n    r = 1\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(1.0));
+}
+
+#[test]
+fn native_intrinsic_named_argument_reorders_to_parameter_slot() {
+    assert_eq!(
+        run_main_local0_string(&main_sub(
+            "    Dim s As String\n    s = Replace(\"a?a?\", \"?\", \"\", Count:=1)\n"
+        )),
+        Some("aa?".to_string())
+    );
+}
+
+#[test]
+fn function_name_is_assignable_return_target_for_set() {
+    let src = "Function MakeObject() As Object\n    Set MakeObject = Nothing\nEnd Function\n\
+               Sub Main()\n    Dim r As Long\n    r = 1\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(1.0));
+}
+
+#[test]
+fn indexed_function_result_binds_as_default_member_access() {
+    let src = "Function Lookup() As Object\nEnd Function\n\
+               Sub Main()\n    Dim value As Variant\n    value = Lookup()(\"MediaType\")\nEnd Sub\n";
+    bind_program(&manifest(src), &NullTypeLibs).expect("bind indexed function result");
+}
+
+#[test]
+fn mid_assignment_mutates_target_string() {
+    assert_eq!(
+        run_main_local0_string(&main_sub(
+            "    Dim s As String\n    s = \"abcdef\"\n    Mid$(s, 3, 2) = \"XY\"\n"
+        )),
+        Some("abXYef".to_string())
+    );
+}
+
+#[test]
+fn mid_assignment_omitted_length_and_qualified_spelling_mutate_target_string() {
+    assert_eq!(
+        run_main_local0_string(&main_sub(
+            "    Dim s As String\n    s = \"abcdef\"\n    VBA.Mid$(s, 4) = \"XYZ\"\n"
+        )),
+        Some("abcXYZ".to_string())
+    );
+}
+
+#[test]
+fn err_raise_accepts_foldable_error_number_expression() {
+    let src = "Sub Main()\n    On Error Resume Next\n    Err.Raise 11099 + vbObjectError\n    Dim r As Long\n    r = Err.Number\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(-2147210405.0));
+}
+
+#[test]
+fn err_raise_accepts_named_number_and_clear_resets_number() {
+    let src = "Sub Main()\n    On Error Resume Next\n    Err.Raise Number:=12\n    Err.Clear\n    Dim r As Long\n    r = Err.Number\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(0.0));
+}
+
+#[test]
+fn err_raise_accepts_dynamic_error_number_expression() {
+    let src = "Sub Main()\n    On Error Resume Next\n    Dim n As Long\n    n = 7\n    Err.Raise n\n    Dim r As Long\n    r = Err.Number\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(7.0));
+}
+
+fn default_vba_help_file() -> &'static str {
+    "C:\\Program Files\\Common Files\\Microsoft Shared\\VBA\\VBA7.1\\1033\\VbLR6.chm"
+}
+
+#[test]
+fn err_help_fields_read_write_and_clear() {
+    let src = "Sub Main()\n\
+               Dim r As String\n\
+               Err.HelpFile = \"help.chm\"\n\
+               Err.HelpContext = 42\n\
+               r = Err.HelpFile & \"|\" & CStr(Err.HelpContext)\n\
+               Err.Clear\n\
+               r = r & \";\" & Err.HelpFile & \"|\" & CStr(Err.HelpContext) & \"|\" & CStr(Err.Number)\n\
+               End Sub\n";
+    assert_eq!(
+        run_main_local0_string(src),
+        Some("help.chm|42;|0|0".to_string())
+    );
+}
+
+#[test]
+fn err_help_defaults_for_error_statement() {
+    let src = "Sub Main()\n\
+               Dim r As String\n\
+               On Error Resume Next\n\
+               Error 9\n\
+               r = Err.HelpFile & \"|\" & CStr(Err.HelpContext) & \"|\" & Err.Description\n\
+               End Sub\n";
+    assert_eq!(
+        run_main_local0_string(src),
+        Some(format!(
+            "{}|1000009|Subscript out of range",
+            default_vba_help_file()
+        ))
+    );
+}
+
+#[test]
+fn err_raise_help_fields_explicit_and_named() {
+    let src = "Sub Main()\n\
+               Dim r As String\n\
+               On Error Resume Next\n\
+               Err.Raise 77, \"src\", \"desc\", \"help.chm\", 42\n\
+               r = CStr(Err.Number) & \"|\" & Err.Description & \"|\" & Err.Source & \"|\" & Err.HelpFile & \"|\" & CStr(Err.HelpContext)\n\
+               Err.Clear\n\
+               Err.Raise Number:=78, HelpContext:=43, HelpFile:=\"named.hlp\", Description:=\"desc2\", Source:=\"src2\"\n\
+               r = r & \";\" & CStr(Err.Number) & \"|\" & Err.Description & \"|\" & Err.Source & \"|\" & Err.HelpFile & \"|\" & CStr(Err.HelpContext)\n\
+               End Sub\n";
+    assert_eq!(
+        run_main_local0_string(src),
+        Some("77|desc|src|help.chm|42;78|desc2|src2|named.hlp|43".to_string())
+    );
+}
+
+#[test]
+fn err_raise_omitted_help_fields_inherit_when_err_state_is_inheritable() {
+    let src = "Sub Main()\n\
+               Dim r As String\n\
+               On Error Resume Next\n\
+               Err.Raise 5, \"prevsrc\", \"prevdesc\", \"prev.hlp\", 9\n\
+               Err.Raise 79\n\
+               r = CStr(Err.Number) & \"|\" & Err.Description & \"|\" & Err.Source & \"|\" & Err.HelpFile & \"|\" & CStr(Err.HelpContext)\n\
+               Err.Clear\n\
+               Err.Description = \"prevdesc\"\n\
+               Err.Source = \"prevsrc\"\n\
+               Err.HelpFile = \"prev.hlp\"\n\
+               Err.HelpContext = 9\n\
+               Err.Raise 79\n\
+               r = r & \";\" & CStr(Err.Number) & \"|\" & Err.Description & \"|\" & Err.Source & \"|\" & Err.HelpFile & \"|\" & CStr(Err.HelpContext)\n\
+               Err.Clear\n\
+               Err.Raise 80\n\
+               r = r & \";\" & CStr(Err.Number) & \"|\" & Err.Description & \"|\" & Err.Source & \"|\" & Err.HelpFile & \"|\" & CStr(Err.HelpContext)\n\
+               Err.Clear\n\
+               Err.Raise 5, \"prevsrc\", \"prevdesc\", \"prev.hlp\", 9\n\
+               Err.Raise 81, , , \"explicit.hlp\"\n\
+               r = r & \";\" & CStr(Err.Number) & \"|\" & Err.Description & \"|\" & Err.Source & \"|\" & Err.HelpFile & \"|\" & CStr(Err.HelpContext)\n\
+               End Sub\n";
+    assert_eq!(
+        run_main_local0_string(src),
+        Some(
+            format!(
+                "79|prevdesc|prevsrc|prev.hlp|9;\
+             79|prevdesc|prevsrc|prev.hlp|9;\
+             80|Application-defined or object-defined error|Proj|{}|1000095;\
+             81|prevdesc|prevsrc|explicit.hlp|9",
+                default_vba_help_file()
+            )
+            .replace("\n             ", "")
+        )
+    );
+}
+
+#[test]
+fn module_qualified_global_variable_is_read_and_written_as_place() {
+    let manifest = manifest_modules(&[
+        (
+            "WebHelpers",
+            ModuleKind::Procedural,
+            "Public AsyncRequests As Long\n",
+        ),
+        (
+            "Main",
+            ModuleKind::Procedural,
+            "Sub Main()\n    WebHelpers.AsyncRequests = 42\n    Dim r As Long\n    r = WebHelpers.AsyncRequests\nEnd Sub\n",
+        ),
+    ]);
+    let program = bind_program(&manifest, &NullTypeLibs).expect("bind qualified global");
+    let oxp = calcvba_oxir::elaborate::elaborate(&program).expect("elaborate");
+    let host = NullHostServices::new(HostPolicy::default());
+    let vm = calcvba_vm3::Vm3::run(&oxp, &host).expect("run");
+    assert_eq!(
+        vm.slot(oxp.globals.len()).and_then(|v| v.as_i32()),
+        Some(42)
+    );
+}
+
+#[test]
+fn module_qualified_object_global_can_receive_member_calls() {
+    let manifest = manifest_modules(&[
+        (
+            "WebHelpers",
+            ModuleKind::Procedural,
+            "Public AsyncRequests As Collection\n",
+        ),
+        (
+            "Main",
+            ModuleKind::Procedural,
+            "Sub Main()\n    Set WebHelpers.AsyncRequests = New Collection\n    WebHelpers.AsyncRequests.Add 10\n    Dim r As Long\n    r = WebHelpers.AsyncRequests.Count\nEnd Sub\n",
+        ),
+    ]);
+    let program = bind_program(&manifest, &NullTypeLibs).expect("bind qualified object global");
+    let oxp = calcvba_oxir::elaborate::elaborate(&program).expect("elaborate");
+    let host = NullHostServices::new(HostPolicy::default());
+    let vm = calcvba_vm3::Vm3::run(&oxp, &host).expect("run");
+    assert_eq!(vm.slot(oxp.globals.len()).and_then(|v| v.as_i32()), Some(1));
+}
+
+#[test]
+fn vba_qualified_intrinsic_and_constant_resolve_through_library_namespace() {
+    assert_eq!(
+        run_main_local0(&main_sub(
+            "    Dim r As Long\n    r = VBA.Len(\"abc\") + VBA.vbString\n"
+        )),
+        Some(11.0)
+    );
+}
+
+#[test]
+fn vba_module_qualified_intrinsic_requires_matching_module_owner() {
+    assert_eq!(
+        run_main_local0(&main_sub(
+            "    Dim r As Long\n    r = VBA.Strings.Len(\"abc\")\n"
+        )),
+        Some(3.0)
+    );
+    let src = main_sub("    Dim r As Long\n    r = VBA.NotStrings.Len(\"abc\")\n");
+    assert!(
+        bind_program(&manifest(&src), &NullTypeLibs).is_err(),
+        "VBA.<module>.<member> must not ignore a bogus middle qualifier"
+    );
+}
+
+#[test]
+fn vba_left_intrinsic_is_not_shadowed_by_unrelated_class_property() {
+    let main = "Sub Main()\n    Dim r As Long\n    r = Len(Left(\"hello\", 2)) + Len(Left$(\"world\", 3))\nEnd Sub\n";
+    let control = "Public Property Get Left() As Single\n    Left = 99\nEnd Property\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("ControlLike", ModuleKind::Class, control),
+        ]),
+        Some(5.0)
+    );
+}
+
+#[test]
+fn left_dollar_intrinsic_is_not_shadowed_by_own_class_left_property() {
+    // The same class that owns a `Left As Single` property (every MSForms control)
+    // calls the bare `Left$` string intrinsic in one of its own methods. The `$`
+    // type-declaration character makes `Left$` a distinct identifier from the
+    // suffix-less `Left` property, so it must route to `VBA.Strings.Left` (here
+    // `Len(Left$("hello", 2))` = 2), not to the implicit-`Me` property (whose
+    // Single value would coerce to a 1-char string → 1, or fault).
+    let main = "Sub Main()\n    Dim r As Long\n    Dim f As FormLike\n    \
+                Set f = New FormLike\n    r = f.Lead()\nEnd Sub\n";
+    let form = "Public Property Get Left() As Single\n    Left = 0\nEnd Property\n\n\
+                Public Function Lead() As Long\n    Lead = Len(Left$(\"hello\", 2))\nEnd Function\n";
+    assert_eq!(run_class_main_local0(main, "FormLike", form), Some(2.0));
+}
+
+#[test]
+fn left_intrinsic_without_suffix_is_shadowed_by_own_class_left_property() {
+    // Without a type-declaration character, an unqualified `Left` inside the class
+    // that owns a `Left` property is the (implicit-`Me`) property — VBA scoping puts
+    // the class member ahead of the library intrinsic. Reading it yields the
+    // property's value (7), confirming the suffix is what distinguishes the two.
+    let main = "Sub Main()\n    Dim r As Long\n    Dim f As FormLike\n    \
+                Set f = New FormLike\n    r = f.Lead()\nEnd Sub\n";
+    let form = "Public Property Get Left() As Long\n    Left = 7\nEnd Property\n\n\
+                Public Function Lead() As Long\n    Lead = Left\nEnd Function\n";
+    assert_eq!(run_class_main_local0(main, "FormLike", form), Some(7.0));
+}
+
+#[test]
+fn local_value_named_vba_shadows_library_namespace_qualifier() {
+    let src = main_sub("    Dim VBA As Long\n    Dim r As Long\n    r = VBA.Len(\"abc\")\n");
+    assert!(
+        bind_program(&manifest(&src), &NullTypeLibs).is_err(),
+        "a local value named VBA must shadow the library namespace qualifier"
+    );
+}
+
+#[test]
+fn integer_division() {
+    assert_eq!(
+        run_main_local0(&main_sub("    Dim r As Long\n    r = 7 \\ 2\n")),
+        Some(3.0)
+    );
+}
+
+#[test]
+fn xor_operator() {
+    assert_eq!(
+        run_main_local0(&main_sub("    Dim r As Long\n    r = 6 Xor 3\n")),
+        Some(5.0)
+    );
+}
+
+#[test]
+fn currency_coercion_on_assignment() {
+    // 2.5 assigned to a Currency local narrows via the new Currency coercion target.
+    assert_eq!(
+        run_main_local0(&main_sub("    Dim r As Currency\n    r = 2.5\n")),
+        Some(2.5)
+    );
+}
+
+// ── Control flow ─────────────────────────────────────────────────────────────
+
+#[test]
+fn if_elseif_else() {
+    let body = "    Dim r As Long\n    r = 0\n    If 2 > 3 Then\n        r = 1\n    ElseIf 5 > 4 Then\n        r = 42\n    Else\n        r = 7\n    End If\n";
+    assert_eq!(run_main_local0(&main_sub(body)), Some(42.0));
+}
+
+#[test]
+fn for_with_exit_for() {
+    let body = "    Dim total As Long\n    Dim i As Long\n    total = 0\n    For i = 1 To 10\n        If i > 5 Then Exit For\n        total = total + i\n    Next\n";
+    assert_eq!(run_main_local0(&main_sub(body)), Some(15.0));
+}
+
+#[test]
+fn for_each_over_array() {
+    let body = "    Dim total As Long\n    Dim item\n    total = 0\n    For Each item In Array(10, 20, 30)\n        total = total + item\n    Next\n";
+    assert_eq!(run_main_local0(&main_sub(body)), Some(60.0));
+}
+
+#[test]
+fn for_each_array_control_variable_must_be_variant() {
+    let scalar = bind_error_display(
+        "Sub Main()\n    Dim item As Long\n    For Each item In Array(10, 20, 30)\n    Next\nEnd Sub\n",
+    );
+    assert!(
+        scalar.contains("For Each control variable must be Variant or Object"),
+        "unexpected error: {scalar}"
+    );
+
+    let object = bind_error_display(
+        "Sub Main()\n    Dim item As Object\n    For Each item In Array(10, 20, 30)\n    Next\nEnd Sub\n",
+    );
+    assert!(
+        object.contains("For Each control variable must be Variant or Object"),
+        "unexpected error: {object}"
+    );
+
+    let fixed = bind_error_display(
+        "Sub Main()\n    Dim values(1) As Long\n    Dim item As Long\n    For Each item In values\n    Next\nEnd Sub\n",
+    );
+    assert!(
+        fixed.contains("For Each control variable must be Variant or Object"),
+        "unexpected error: {fixed}"
+    );
+
+    let dynamic = bind_error_display(
+        "Sub Main()\n    Dim values() As Long\n    ReDim values(1)\n    Dim item As Long\n    For Each item In values\n    Next\nEnd Sub\n",
+    );
+    assert!(
+        dynamic.contains("For Each control variable must be Variant or Object"),
+        "unexpected error: {dynamic}"
+    );
+}
+
+#[test]
+fn do_while_loop() {
+    let body = "    Dim n As Long\n    n = 0\n    Do While n < 10\n        n = n + 1\n    Loop\n";
+    assert_eq!(run_main_local0(&main_sub(body)), Some(10.0));
+}
+
+#[test]
+fn select_case_value_list_and_is() {
+    let body = "    Dim r As Long\n    Dim x As Long\n    x = 2\n    Select Case x\n        Case 1\n            r = 10\n        Case 2, 3\n            r = 20\n        Case Is > 5\n            r = 30\n        Case Else\n            r = 99\n    End Select\n";
+    assert_eq!(run_main_local0(&main_sub(body)), Some(20.0));
+}
+
+// ── Calls (project Sub ByRef + Function, native) ─────────────────────────────
+
+#[test]
+fn project_sub_by_ref_mutates_caller() {
+    let src = "Sub Main()\n    Dim r As Long\n    r = 5\n    Inc r\nEnd Sub\n\nSub Inc(ByRef n As Long)\n    n = n + 100\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(105.0));
+}
+
+#[test]
+fn project_function_returns_value() {
+    let src = "Sub Main()\n    Dim r As Long\n    r = Add(2, 3)\nEnd Sub\n\nFunction Add(a As Long, b As Long) As Long\n    Add = a + b\nEnd Function\n";
+    assert_eq!(run_main_local0(src), Some(5.0));
+}
+
+#[test]
+fn native_len() {
+    assert_eq!(
+        run_main_local0(&main_sub("    Dim r As Long\n    r = Len(\"hello\")\n")),
+        Some(5.0)
+    );
+}
+
+// ── Arrays / error-state ─────────────────────────────────────────────────────
+
+#[test]
+fn paramarray_sums_trailing_args() {
+    let src = "Sub Main()\n    Dim r As Long\n    r = SumAll(10, 20, 30)\nEnd Sub\n\n\
+               Function SumAll(ParamArray xs() As Variant) As Long\n\
+               Dim i As Long\n    Dim t As Long\n    t = 0\n\
+               For i = LBound(xs) To UBound(xs)\n        t = t + xs(i)\n    Next\n\
+               SumAll = t\nEnd Function\n";
+    assert_eq!(run_main_local0(src), Some(60.0));
+}
+
+#[test]
+fn paramarray_empty_is_zero_length() {
+    let src = "Sub Main()\n    Dim r As Long\n    r = CountAll()\nEnd Sub\n\n\
+               Function CountAll(ParamArray xs() As Variant) As Long\n\
+               CountAll = UBound(xs) - LBound(xs) + 1\nEnd Function\n";
+    assert_eq!(run_main_local0(src), Some(0.0));
+}
+
+#[test]
+fn paramarray_mixed_fixed_and_variadic() {
+    let src = "Sub Main()\n    Dim r As Long\n    r = AddBase(100, 1, 2, 3)\nEnd Sub\n\n\
+               Function AddBase(seed As Long, ParamArray xs() As Variant) As Long\n\
+               Dim i As Long\n    Dim t As Long\n    t = seed\n\
+               For i = LBound(xs) To UBound(xs)\n        t = t + xs(i)\n    Next\n\
+               AddBase = t\nEnd Function\n";
+    assert_eq!(run_main_local0(src), Some(106.0));
+}
+
+#[test]
+fn lbound_ubound_invalid_dimension_raises_under_resume_next() {
+    let src = "Sub Main()\n    Dim r As Long\n    Dim xs As Variant\n    Dim lower2 As Long\n    xs = Array(\"A\", \"B\", \"C\")\n    On Error Resume Next\n    lower2 = LBound(xs, 2)\n    If Err.Number <> 0 Then\n        Err.Clear\n        r = UBound(xs, 1) - LBound(xs, 1) + 1\n    Else\n        r = -100\n    End If\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(3.0));
+}
+
+#[test]
+fn random_access_file_statements_bind_and_lower() {
+    // Get/Put/Seek/Width/Lock/Unlock/Name previously errored in the binder; they
+    // now route to native impls (Get lowers as an assignment of the read value).
+    let src = "Sub Main()\n\
+        Dim num As Integer\n    num = 1\n\
+        Dim v As Long\n    v = 7\n\
+        Put #num, 1, v\n\
+        Get #num, 1, v\n\
+        Seek #num, 1\n\
+        Width #num, 80\n\
+        Lock #num\n\
+        Unlock #num\n\
+        Name \"a\" As \"b\"\n\
+    End Sub\n";
+    let program = bind(src);
+    assert!(calcvba_oxir::elaborate::elaborate(&program).is_ok());
+}
+
+#[test]
+fn declare_byval_string_lvalue_binds_byref_for_ansi_writeback() {
+    // VBA marshals a `Declare` String argument through a system-codepage ANSI
+    // buffer and converts the (possibly callee-mutated) buffer back into the
+    // variable after the call — even when the parameter is declared `ByVal` (the
+    // pre-sized-buffer idiom). The call site must therefore bind a String-typed
+    // l-value argument ByRef so the marshaled-back value reaches the variable,
+    // while an r-value (here a literal) stays ByVal with no write-back target.
+    let program = bind(
+        "Private Declare PtrSafe Function lstrcpyA Lib \"kernel32\" (ByVal dst As String, ByVal src As String) As LongPtr\n\
+         Sub Main()\n    Dim buffer As String\n    lstrcpyA buffer, \"alpha\"\nEnd Sub\n",
+    );
+    let entry = program.entry.expect("entry");
+    let args = program.procs[entry.0]
+        .body
+        .iter()
+        .find_map(|stmt| match stmt {
+            CoreStmt::Eval(CoreValue::Call {
+                callee: CoreCallee::Declare { .. },
+                args,
+            }) => Some(args.clone()),
+            _ => None,
+        })
+        .expect("the Declare call should lower in Main's body");
+    assert!(
+        matches!(args[0], CoreArg::ByRef(_)),
+        "a String l-value to a ByVal String param must bind ByRef (ANSI write-back), got {:?}",
+        args[0]
+    );
+    assert!(
+        matches!(args[1], CoreArg::ByVal(_)),
+        "a literal String argument must stay ByVal, got {:?}",
+        args[1]
+    );
+}
+
+#[test]
+fn kill_statement_routes_to_vba_filesystem() {
+    // `Kill pathname` is not a lexer keyword (unlike Open/Close/Print#/Name/…), so it
+    // parses as an ordinary statement-call and resolves by name. Since P4 it routes
+    // cross-bundle to the `VBA` unit's `FileSystem.Kill` member (an `ExternProc` call),
+    // exactly like the by-name file functions — not the bespoke `Native` route.
+    let program = bind("Sub Main()\n    Kill \"scratch.tmp\"\nEnd Sub\n");
+    assert!(
+        imports_vba_filesystem(&program, "Kill"),
+        "`Kill` should import VBA/FileSystem.Kill: {:?}",
+        program.imports
+    );
+}
+
+/// True if the bound `program` imports a `VBA`/`FileSystem` `ModuleFunc` named
+/// `member` (the cross-bundle link a `FileSystem` call lowers to).
+fn imports_vba_filesystem(program: &calcvba_bundle::coreir::CoreProgram, member: &str) -> bool {
+    program.imports.iter().any(|imp| {
+        imp.unit.eq_ignore_ascii_case("VBA")
+            && matches!(
+                &imp.token,
+                calcvba_bundle::ExportToken::ModuleFunc { module, member: m, .. }
+                    if module.eq_ignore_ascii_case("FileSystem")
+                        && m.eq_ignore_ascii_case(member)
+            )
+    })
+}
+
+#[test]
+fn random_file_put_get_round_trips_through_vm() {
+    // End-to-end: Open Random with Len=8, Put a Long at record 2, Get it back —
+    // exercising the mode + Len plumbing through the standard host's in-memory file.
+    let src = "Sub Main()\n\
+        Dim r As Long\n    Dim v As Long\n    v = 222\n\
+        Open \"rec.dat\" For Random As #1 Len = 8\n\
+        Put #1, 2, v\n\
+        Get #1, 2, r\n\
+        Close #1\n\
+    End Sub\n";
+    let program = bind(src);
+    let oxp = calcvba_oxir::elaborate::elaborate(&program).expect("elaborate");
+    let host = calcvba_hal::adapters::builder::HostBuilder::new()
+        .profile(calcvba_hal::HalProfileId::Windows)
+        .policy(calcvba_hal::HostPolicy {
+            allow_filesystem_mutation: true,
+            ..calcvba_hal::HostPolicy::default()
+        })
+        .build();
+    let vm = calcvba_vm3::Vm3::run(&oxp, host.as_ref()).expect("run");
+    assert_eq!(
+        vm.slot(oxp.globals.len()).and_then(|v| v.as_i32()),
+        Some(222)
+    );
+}
+
+/// Run a single-module source on the standard (in-memory) host; read `Main`'s
+/// first local as a string.
+fn run_main_local0_string_std(src: &str) -> Option<String> {
+    let program = bind(src);
+    let oxp = calcvba_oxir::elaborate::elaborate(&program).expect("elaborate");
+    let host = calcvba_hal::adapters::builder::HostBuilder::new()
+        .profile(calcvba_hal::HalProfileId::Windows)
+        .policy(calcvba_hal::HostPolicy {
+            allow_filesystem_mutation: true,
+            ..calcvba_hal::HostPolicy::default()
+        })
+        .build();
+    let vm = calcvba_vm3::Vm3::run(&oxp, host.as_ref()).expect("run");
+    vm.slot(oxp.globals.len())?.as_bstr().map(|b| b.as_str())
+}
+
+#[test]
+fn fixed_length_string_random_record_round_trips() {
+    // String * 4 is written raw (no prefix, padded to 4) and read back as 4 chars.
+    let src = "Sub Main()\n\
+        Dim r As String * 4\n    Dim v As String * 4\n    v = \"ab\"\n\
+        Open \"f.dat\" For Random As #1 Len = 4\n\
+        Put #1, 1, v\n    Get #1, 1, r\n    Close #1\n\
+    End Sub\n";
+    assert_eq!(run_main_local0_string_std(src), Some("ab  ".to_string()));
+}
+
+#[test]
+fn binary_variable_string_reads_current_length() {
+    // Binary `Get` reads `Len(r)` bytes; r is pre-sized to 5 spaces, so it reads
+    // the 5 bytes previously written.
+    let src = "Sub Main()\n\
+        Dim r As String\n\
+        Open \"f.dat\" For Binary As #1\n\
+        Put #1, 1, \"hello\"\n    r = \"     \"\n    Get #1, 1, r\n    Close #1\n\
+    End Sub\n";
+    assert_eq!(run_main_local0_string_std(src), Some("hello".to_string()));
+}
+
+/// Run a single-module source on the standard (in-memory) host; read `Main`'s first local as
+/// a `Long`.
+fn run_main_local0_i32_std(src: &str) -> Option<i32> {
+    let program = bind(src);
+    let oxp = calcvba_oxir::elaborate::elaborate(&program).expect("elaborate");
+    let host = calcvba_hal::adapters::builder::HostBuilder::new()
+        .profile(calcvba_hal::HalProfileId::Windows)
+        .policy(calcvba_hal::HostPolicy {
+            allow_filesystem_mutation: true,
+            ..calcvba_hal::HostPolicy::default()
+        })
+        .build();
+    let vm = calcvba_vm3::Vm3::run(&oxp, host.as_ref()).expect("run");
+    vm.slot(oxp.globals.len())?.as_i32()
+}
+
+#[test]
+fn bare_close_closes_all_without_error() {
+    // `Close` with no file number closes ALL open files — it must not raise Err 5. Reaching
+    // `ok = 1` (the run did not raise) proves it.
+    let src = "Sub Main()\n\
+        Dim ok As Long\n\
+        Open \"f.dat\" For Output As #1\n    Print #1, \"x\"\n    Close\n\
+        ok = 1\n\
+    End Sub\n";
+    assert_eq!(run_main_local0_i32_std(src), Some(1));
+}
+
+#[test]
+fn reset_closes_all_without_error() {
+    // `Reset` parses as a `Close`-all and must likewise not raise.
+    let src = "Sub Main()\n\
+        Dim ok As Long\n\
+        Open \"f.dat\" For Output As #1\n    Print #1, \"x\"\n    Reset\n\
+        ok = 1\n\
+    End Sub\n";
+    assert_eq!(run_main_local0_i32_std(src), Some(1));
+}
+
+#[test]
+fn seek_function_reads_position_without_resetting() {
+    // The `Seek(filenumber)` FUNCTION returns the current position WITHOUT moving it (it used to
+    // reset the position to 0). VBA's Seek is 1-based: after writing 5 bytes it reports the
+    // next-write byte position 6 (live-Excel verified: 3 bytes → Seek = 4).
+    let src = "Sub Main()\n\
+        Dim p As Long\n\
+        Open \"f.dat\" For Binary As #1\n    Put #1, 1, \"hello\"\n    p = Seek(1)\n    Close #1\n\
+    End Sub\n";
+    assert_eq!(run_main_local0_i32_std(src), Some(6));
+}
+
+/// The args of the (single) `Main`-body `ExternProc` call into `VBA`/`FileSystem.<member>`,
+/// or `None` if there is no such call. Used to assert `Print`/`Write` pass every field.
+fn extern_filesystem_call_args<'p>(
+    program: &'p CoreProgram,
+    member: &str,
+) -> Option<&'p Vec<CoreArg>> {
+    fn matches_member(program: &CoreProgram, import: usize, member: &str) -> bool {
+        program.imports.get(import).is_some_and(|imp| {
+            imp.unit.eq_ignore_ascii_case("VBA")
+                && matches!(
+                    &imp.token,
+                    calcvba_bundle::ExportToken::ModuleFunc { module, member: m, .. }
+                        if module.eq_ignore_ascii_case("FileSystem")
+                            && m.eq_ignore_ascii_case(member)
+                )
+        })
+    }
+    program
+        .procs
+        .iter()
+        .flat_map(|p| &p.body)
+        .find_map(|s| match s {
+            CoreStmt::Eval(CoreValue::Call {
+                callee: CoreCallee::ExternProc { import },
+                args,
+            }) if matches_member(program, *import, member) => Some(args),
+            _ => None,
+        })
+}
+
+/// Count the `Main`-body assignments whose value is an `ExternProc` call into
+/// `VBA`/`FileSystem.<member>` — i.e. read-into-target statements like
+/// `var = FileInput(handle, 1)` / `var = FileLineInput(handle)`.
+fn extern_filesystem_assign_count(program: &CoreProgram, member: &str) -> usize {
+    fn call_member(program: &CoreProgram, value: &CoreValue, member: &str) -> bool {
+        fn unwrap_import(value: &CoreValue) -> Option<usize> {
+            match value {
+                CoreValue::Call {
+                    callee: CoreCallee::ExternProc { import },
+                    ..
+                } => Some(*import),
+                CoreValue::Coerce { value, .. } => unwrap_import(value),
+                _ => None,
+            }
+        }
+        unwrap_import(value).is_some_and(|import| {
+            program.imports.get(import).is_some_and(|imp| {
+                imp.unit.eq_ignore_ascii_case("VBA")
+                    && matches!(
+                        &imp.token,
+                        calcvba_bundle::ExportToken::ModuleFunc { module, member: m, .. }
+                            if module.eq_ignore_ascii_case("FileSystem")
+                                && m.eq_ignore_ascii_case(member)
+                    )
+            })
+        })
+    }
+    program
+        .procs
+        .iter()
+        .flat_map(|p| &p.body)
+        .filter(
+            |s| matches!(s, CoreStmt::Assign { value, .. } if call_member(program, value, member)),
+        )
+        .count()
+}
+
+#[test]
+fn print_hash_binds_every_field_with_a_separator_spec() {
+    // `Print #` previously dropped all but the first field. The dedicated binder must now
+    // emit `[handle, sep-spec, kind-spec, field0, field1, field2]` — a `,`/`;`-aware
+    // separator spec plus EVERY field. `Print #1, a; b, c`: a→`;`, b→`,`, c→none(`n`)
+    // ⇒ spec ";,n"; all are ordinary value fields (`vvv`).
+    let program = bind(
+        "Sub Main()\n    Dim a, b, c\n    Open \"x.txt\" For Output As #1\n    Print #1, a; b, c\nEnd Sub\n",
+    );
+    let args = extern_filesystem_call_args(&program, "Print").expect("a FileSystem.Print call");
+    assert_eq!(
+        args.len(),
+        6,
+        "handle + sep-spec + kind-spec + 3 fields: {args:?}"
+    );
+    match &args[1] {
+        CoreArg::ByVal(CoreValue::Const(calcvba_bundle::coreir::CoreConst::Str(spec))) => {
+            assert_eq!(spec, ";,n", "per-field separator spec");
+        }
+        other => panic!("args[1] should be the separator-spec string const, got {other:?}"),
+    }
+    match &args[2] {
+        CoreArg::ByVal(CoreValue::Const(calcvba_bundle::coreir::CoreConst::Str(spec))) => {
+            assert_eq!(spec, "vvv", "per-item value/control spec");
+        }
+        other => panic!("args[2] should be the item-kind spec string const, got {other:?}"),
+    }
+}
+
+#[test]
+fn print_hash_binds_spc_and_tab_as_print_clause_controls() {
+    let program = bind(
+        "Sub Main()\n    Open \"x.txt\" For Output As #1\n    Print #1, \"a\"; Spc(3); \"b\"; Tab(10); \"c\"; Tab; \"d\"\nEnd Sub\n",
+    );
+    let args = extern_filesystem_call_args(&program, "Print").expect("a FileSystem.Print call");
+    assert_eq!(
+        args.len(),
+        10,
+        "handle + sep-spec + kind-spec + 7 item values: {args:?}"
+    );
+    match &args[1] {
+        CoreArg::ByVal(CoreValue::Const(calcvba_bundle::coreir::CoreConst::Str(spec))) => {
+            assert_eq!(spec, ";;;;;;n", "separator spec should track every item");
+        }
+        other => panic!("args[1] should be the separator-spec string const, got {other:?}"),
+    }
+    match &args[2] {
+        CoreArg::ByVal(CoreValue::Const(calcvba_bundle::coreir::CoreConst::Str(spec))) => {
+            assert_eq!(spec, "vsvtvzv", "value/control spec");
+        }
+        other => panic!("args[2] should be the item-kind spec string const, got {other:?}"),
+    }
+}
+
+#[test]
+fn write_hash_binds_every_field() {
+    // `Write #1, x, y` ⇒ `[handle, sep-spec, x, y]` — all fields reach the call.
+    let program = bind(
+        "Sub Main()\n    Dim x, y\n    Open \"x.txt\" For Output As #1\n    Write #1, x, y\nEnd Sub\n",
+    );
+    let args = extern_filesystem_call_args(&program, "Write").expect("a FileSystem.Write call");
+    assert_eq!(args.len(), 4, "handle + sep-spec + 2 fields: {args:?}");
+}
+
+#[test]
+fn input_hash_binds_one_writeback_assignment_per_target() {
+    // `Input #` previously discarded its targets (no write-back). It must now bind ONE
+    // `target = FileInput(handle, 1)` assignment per target.
+    let program = bind(
+        "Sub Main()\n    Dim a, b, c\n    Open \"x.txt\" For Input As #1\n    Input #1, a, b, c\nEnd Sub\n",
+    );
+    assert_eq!(
+        extern_filesystem_assign_count(&program, "Input"),
+        3,
+        "one write-back assignment per Input # target"
+    );
+}
+
+#[test]
+fn line_input_hash_binds_a_writeback_assignment() {
+    // `Line Input #1, s` must bind `s = FileLineInput(handle)` (previously discarded).
+    let program = bind(
+        "Sub Main()\n    Dim s As String\n    Open \"x.txt\" For Input As #1\n    Line Input #1, s\nEnd Sub\n",
+    );
+    assert_eq!(
+        extern_filesystem_assign_count(&program, "LineInput"),
+        1,
+        "Line Input # must write the line back to its target"
+    );
+}
+
+#[test]
+fn addressof_binds_to_proc_ref() {
+    let src = "Sub Main()\n    Dim p As Long\n    p = AddressOf Helper\nEnd Sub\n\nSub Helper()\nEnd Sub\n";
+    let program = bind(src);
+    let main = program
+        .procs
+        .iter()
+        .find(|p| p.name.eq_ignore_ascii_case("Main"))
+        .unwrap();
+    // The proc-ref is stored into a `Long`, so the store coerces it to `Long`
+    // (a no-op for an integer pointer); look through that `Coerce` wrapper.
+    fn is_addressof(v: &CoreValue) -> bool {
+        match v {
+            CoreValue::AddressOf(_) => true,
+            CoreValue::Coerce { value, .. } => is_addressof(value),
+            _ => false,
+        }
+    }
+    assert!(
+        main.body
+            .iter()
+            .any(|s| matches!(s, CoreStmt::Assign { value, .. } if is_addressof(value)))
+    );
+}
+
+#[test]
+fn addressof_runs_as_integer() {
+    // The proc reference materializes as an integer (round-trips through a slot).
+    let src = "Sub Main()\n    Dim r As Long\n    r = AddressOf Helper\nEnd Sub\n\nSub Helper()\nEnd Sub\n";
+    assert!(run_main_local0(src).is_some());
+}
+
+#[test]
+fn addressof_unknown_is_error() {
+    let src = "Sub Main()\n    Dim p As Long\n    p = AddressOf Nope\nEnd Sub\n";
+    assert!(bind_program(&manifest(src), &NullTypeLibs).is_err());
+}
+
+#[test]
+fn ubound_lbound_of_local_array() {
+    let body = "    Dim r As Long\n    Dim v\n    ReDim v(2 To 9)\n    r = UBound(v) - LBound(v)\n";
+    assert_eq!(run_main_local0(&main_sub(body)), Some(7.0));
+}
+
+#[test]
+fn redim_array_set_get() {
+    let body =
+        "    Dim r As Long\n    Dim v1\n    ReDim v1(0 To 2)\n    v1(1) = 77\n    r = v1(1)\n";
+    assert_eq!(run_main_local0(&main_sub(body)), Some(77.0));
+}
+
+#[test]
+fn redim_undeclared_simple_name_declares_dynamic_variant_array() {
+    let body = "    Dim r As Long\n    ReDim a(0 To 2)\n    a(1) = 77\n    r = a(1)\n";
+    assert_eq!(run_main_local0(&main_sub(body)), Some(77.0));
+}
+
+#[test]
+fn call_keyword_module_qualified_sub_with_attached_parens_runs() {
+    let program = bind_program(
+        &manifest_modules(&[
+            (
+                "Startup",
+                ModuleKind::Procedural,
+                "Public Sub Main()\nCall Program.Run()\nEnd Sub\n",
+            ),
+            (
+                "Program",
+                ModuleKind::Procedural,
+                "Public result As Long\nPublic Sub Run()\nresult = 42\nEnd Sub\n",
+            ),
+        ]),
+        &NullTypeLibs,
+    )
+    .expect("module-qualified Call statement should bind");
+    let oxp = calcvba_oxir::elaborate::elaborate(&program).expect("elaborate");
+    let host = NullHostServices::new(HostPolicy::default());
+    let vm = calcvba_vm3::Vm3::run(&oxp, &host).expect("run");
+    assert_eq!(vm.slot(0).and_then(|value| value.as_i32()), Some(42));
+}
+
+#[test]
+fn redim_preserve_does_not_declare_undeclared_name() {
+    let err = bind_error_display("Option Explicit\nSub Main()\n    ReDim Preserve a(1)\nEnd Sub\n");
+    assert_eq!(err, "Variable not defined");
+}
+
+#[test]
+fn redim_scalar_declared_target_is_expected_array() {
+    let err = bind_error_display(
+        "Option Explicit\nSub Main()\n    Dim a As Long\n    ReDim a(1)\nEnd Sub\n",
+    );
+    assert_eq!(err, "Expected array");
+}
+
+#[test]
+fn on_error_resume_next_err_number() {
+    let body =
+        "    Dim r As Long\n    On Error Resume Next\n    Err.Raise 11\n    r = Err.Number\n";
+    assert_eq!(run_main_local0(&main_sub(body)), Some(11.0));
+}
+
+#[test]
+fn on_error_resume_next_caught_error_does_not_arm_resume() {
+    let src = "Sub Main()\n\
+               Dim r As String\n\
+               Dim first As Long\n\
+               Dim second As Long\n\
+               On Error Resume Next\n\
+               Error 5\n\
+               first = Err.Number\n\
+               Resume Next\n\
+               second = Err.Number\n\
+               r = CStr(first) & \":\" & CStr(second)\n\
+               End Sub\n";
+    assert_eq!(run_main_local0_string(src), Some("5:20".to_string()));
+}
+
+#[test]
+fn cverr_out_of_range_raises_and_skips_assignment_under_resume_next() {
+    let src = "Sub Main()\n\
+               Dim r As String\n\
+               Dim value\n\
+               On Error Resume Next\n\
+               value = CVErr(70000)\n\
+               r = CStr(Err.Number) & \":\" & CStr(VarType(value))\n\
+               End Sub\n";
+    assert_eq!(run_main_local0_string(src), Some("5:0".to_string()));
+}
+
+// ── Regression tests for review findings ────────────────────────────────────
+
+#[test]
+fn recursive_function_call() {
+    // `Fact(n-1)` inside `Fact` must lower to a recursive call, not an index into
+    // the return pseudo-variable.
+    let src = "Sub Main()\n    Dim r As Long\n    r = Fact(5)\nEnd Sub\n\nFunction Fact(n As Long) As Long\n    If n <= 1 Then\n        Fact = 1\n    Else\n        Fact = n * Fact(n - 1)\n    End If\nEnd Function\n";
+    assert_eq!(run_main_local0(src), Some(120.0));
+}
+
+#[test]
+fn named_arguments_reordered() {
+    // Named args must be reordered into the parameter positions, not passed in
+    // call-site order.
+    let src = "Sub Main()\n    Dim r As Long\n    r = Diff(b:=2, a:=10)\nEnd Sub\n\nFunction Diff(a As Long, b As Long) As Long\n    Diff = a - b\nEnd Function\n";
+    assert_eq!(run_main_local0(src), Some(8.0));
+}
+
+#[test]
+fn duplicate_named_argument_is_bind_error() {
+    let src = "Sub Main()\n    Dim x As Long\n    x = 1\n    Call Fill(x, target := x)\nEnd Sub\n\nSub Fill(ByRef target As Long, ByVal value As Long)\n    target = value\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("duplicate argument for parameter target"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn positional_after_named_argument_is_bind_error() {
+    let src = "Sub Main()\n    Dim x As Long\n    x = 1\n    Call Fill(value := 9, x)\nEnd Sub\n\nSub Fill(ByRef target As Long, ByVal value As Long)\n    target = value\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("positional argument cannot follow named argument"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn positional_paramarray_tail_after_named_fixed_argument_binds() {
+    let src = "Sub Main()\n    Dim r As Long\n    Call Capture(target := r, 3, 4)\nEnd Sub\n\nSub Capture(ByRef target As Long, ParamArray items() As Variant)\n    target = UBound(items)\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(1.0));
+}
+
+#[test]
+fn named_argument_to_paramarray_parameter_is_bind_error() {
+    let src = "Sub Main()\n    Dim x\n    Call Capture(target := x, items := 5)\nEnd Sub\n\nSub Capture(ByRef target, ParamArray items() As Variant)\n    target = UBound(items)\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("named argument to a ParamArray parameter"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn invalid_paramarray_declaration_is_bind_error() {
+    let src =
+        "Sub Main()\nEnd Sub\n\nSub Capture(Optional ParamArray items() As Variant)\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("InvalidParamArrayDeclaration")
+            || err.contains("SYM-E-INVALID-PARAMARRAY-DECLARATION"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn non_variant_paramarray_declaration_is_bind_error() {
+    let src = "Sub Main()\nEnd Sub\n\nSub Capture(ParamArray items() As Long)\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("InvalidParamArrayDeclaration")
+            || err.contains("SYM-E-INVALID-PARAMARRAY-DECLARATION"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn extra_argument_is_bind_error() {
+    let src = "Sub Main()\n    TakeOne 1, 2\nEnd Sub\n\nSub TakeOne(ByVal n As Long)\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("WrongNumberOfArgumentsOrInvalidPropertyAssignment"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn migrated_vba_intrinsic_extra_argument_is_bind_error() {
+    let src = "Sub Main()\n    Dim r\n    r = NPV(0, 10, 20)\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("WrongNumberOfArgumentsOrInvalidPropertyAssignment"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn migrated_vba_zero_arg_intrinsic_extra_argument_is_bind_error() {
+    let src = "Sub Main()\n    Dim r\n    r = Timer(1)\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("WrongNumberOfArgumentsOrInvalidPropertyAssignment"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn missing_required_argument_is_bind_error() {
+    let src = "Sub Main()\n    TakeTwo 1\nEnd Sub\n\nSub TakeTwo(ByVal a As Long, ByVal b As Long)\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("ArgumentNotOptional") && err.contains("b"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn indexed_property_extra_argument_is_bind_error() {
+    let src = "Private mV As Long\n\nSub Main()\n    Item(1, 2) = 3\nEnd Sub\n\nProperty Let Item(ByVal i As Long, ByVal v As Long)\n    mV = v\nEnd Property\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("WrongNumberOfArgumentsOrInvalidPropertyAssignment"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn indexed_property_missing_required_index_is_bind_error() {
+    let src = "Private mV As Long\n\nSub Main()\n    Item = 3\nEnd Sub\n\nProperty Let Item(ByVal i As Long, ByVal v As Long)\n    mV = v\nEnd Property\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("ArgumentNotOptional") && err.contains("i"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn property_accessor_index_name_mismatch_is_bind_error() {
+    let src = "Sub Main()\nEnd Sub\n\n\
+               Property Get Item(ByVal index As Long) As Object\nEnd Property\n\n\
+               Property Set Item(ByVal key As Long, ByVal value As Object)\nEnd Property\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("IncompatiblePropertyAccessor")
+            || err.contains("Property Set index parameter names must match Property Get"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn omitted_optional_argument_still_uses_default() {
+    let src = "Sub Main()\n    Dim r As Long\n    r = AddOpt(5)\nEnd Sub\n\nFunction AddOpt(ByVal n As Long, Optional ByVal bonus As Long = 7) As Long\n    AddOpt = n + bonus\nEnd Function\n";
+    assert_eq!(run_main_local0(src), Some(12.0));
+}
+
+#[test]
+fn invalid_optional_default_is_bind_error() {
+    let src =
+        "Sub Main()\n    Fill\nEnd Sub\n\nSub Fill(Optional ByVal n As Long = \"abc\")\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("InvalidOptionalDefault") && err.contains("Fill") && err.contains("n"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn residual_optional_default_expression_is_bind_error() {
+    let src = "Sub Main()\n    Fill\nEnd Sub\n\nSub Fill(Optional ByVal stamp As Date = \"2/3/2026\")\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("InvalidOptionalDefault") && err.contains("Fill") && err.contains("stamp"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn required_parameter_default_is_bind_error() {
+    let src = "Sub Main()\nEnd Sub\n\nSub Fill(ByVal n As Long = 7)\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("InvalidOptionalParameterDeclaration")
+            && err.contains("parameter default values require Optional"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn optional_udt_parameter_is_bind_error() {
+    let manifest = manifest_modules(&[
+        (
+            "Types",
+            ModuleKind::Procedural,
+            "Public Type Payload\n    Value As Long\nEnd Type\n",
+        ),
+        (
+            "Mod1",
+            ModuleKind::Procedural,
+            "Sub Main()\nEnd Sub\n\nSub Fill(Optional ByVal value As Payload)\nEnd Sub\n",
+        ),
+    ]);
+    let err = format!(
+        "{:?}",
+        bind_program(&manifest, &NullTypeLibs)
+            .expect_err("Optional UDT parameter should fail binding")
+    );
+    assert!(
+        err.contains("InvalidOptionalParameterDeclaration")
+            && err.contains("Optional parameters cannot be user-defined types"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn signature_as_new_is_bind_error() {
+    for (source, expected_name, expected_context) in [
+        (
+            "Sub Main()\nEnd Sub\n\nSub Fill(ByVal value As New Widget)\nEnd Sub\n",
+            "name: \"value\"",
+            "context: \"parameter\"",
+        ),
+        (
+            "Sub Main()\nEnd Sub\n\nFunction Make() As New Widget\nEnd Function\n",
+            "name: \"Make\"",
+            "context: \"return type\"",
+        ),
+    ] {
+        let err = bind_error(source);
+        assert!(
+            err.contains("InvalidAsNewDeclaration")
+                || err.contains("SYM-E-INVALID-AS-NEW-DECLARATION"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.contains(expected_name) && err.contains(expected_context),
+            "expected `{expected_name}` and `{expected_context}` in bind error, got {err}"
+        );
+    }
+}
+
+#[test]
+fn type_block_field_as_new_is_bind_error() {
+    let src = "Private Type Payload\n    Item As New Widget\nEnd Type\n\
+               Sub Main()\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("InvalidAsNewDeclaration")
+            && err.contains("name: \"Item\"")
+            && err.contains("context: \"Type field\""),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn type_block_duplicate_field_is_bind_error() {
+    let src = "Private Type Payload\n    Item As Long\n    item As String\nEnd Type\n\
+               Sub Main()\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("DuplicateTypeField")
+            && err.contains("type_name: \"Payload\"")
+            && err.contains("field: \"item\""),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn class_module_public_type_block_is_bind_error() {
+    let manifest = manifest_modules(&[
+        ("Main", ModuleKind::Procedural, "Sub Main()\nEnd Sub\n"),
+        (
+            "Widget",
+            ModuleKind::Class,
+            "Public Type Payload\n    Item As Long\nEnd Type\n",
+        ),
+    ]);
+    let err = format!(
+        "{:?}",
+        bind_program(&manifest, &NullTypeLibs)
+            .expect_err("public Type block in a class module should fail binding")
+    );
+    assert!(
+        err.contains("PublicTypeNotValidInObjectModule") && err.contains("name: \"Payload\""),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn class_module_public_declare_is_bind_error() {
+    for declare_src in [
+        "Public Declare PtrSafe Sub Host Lib \"kernel32\" ()\n",
+        "Declare PtrSafe Sub Host Lib \"kernel32\" ()\n",
+    ] {
+        let manifest = manifest_modules(&[
+            ("Main", ModuleKind::Procedural, "Sub Main()\nEnd Sub\n"),
+            ("Widget", ModuleKind::Class, declare_src),
+        ]);
+        let err = format!(
+            "{:?}",
+            bind_program(&manifest, &NullTypeLibs)
+                .expect_err("public Declare in a class module should fail binding")
+        );
+        assert!(
+            err.contains("PublicDeclareNotValidInObjectModule") && err.contains("name: \"Host\""),
+            "unexpected error: {err}"
+        );
+    }
+}
+
+#[test]
+fn class_module_public_data_members_are_bind_errors() {
+    for (member_src, expected_name, expected_member) in [
+        ("Public Const K As Long = 1\n", "K", "constant"),
+        ("Public Name As String * 8\n", "Name", "fixed-length string"),
+        ("Public Items() As Long\n", "Items", "array"),
+        ("Public Values(1 To 3) As Long\n", "Values", "array"),
+    ] {
+        let manifest = manifest_modules(&[
+            ("Main", ModuleKind::Procedural, "Sub Main()\nEnd Sub\n"),
+            ("Widget", ModuleKind::Class, member_src),
+        ]);
+        let err = format!(
+            "{:?}",
+            bind_program(&manifest, &NullTypeLibs)
+                .expect_err("public data member in a class module should fail binding")
+        );
+        assert!(
+            err.contains("PublicObjectModuleDataMemberNotValid")
+                && err.contains(&format!("name: \"{expected_name}\""))
+                && err.contains(&format!("member: \"{expected_member}\"")),
+            "unexpected error: {err}"
+        );
+    }
+}
+
+#[test]
+fn invalid_fixed_string_length_is_bind_error() {
+    for (src, expected_name, expected_length) in [
+        (
+            "Sub Main()\n    Dim Name As String * 0\nEnd Sub\n",
+            "Name",
+            "0",
+        ),
+        (
+            "Sub Main()\n    Dim Name As String * 65527\nEnd Sub\n",
+            "Name",
+            "65527",
+        ),
+        (
+            "Private Type Payload\n    Text As String * -1\nEnd Type\nSub Main()\nEnd Sub\n",
+            "Text",
+            "-1",
+        ),
+    ] {
+        let err = bind_error(src);
+        assert!(
+            err.contains("InvalidFixedStringLength")
+                && err.contains(&format!("name: \"{expected_name}\""))
+                && err.contains(&format!("length: \"{expected_length}\"")),
+            "unexpected error: {err}"
+        );
+    }
+}
+
+#[test]
+fn public_object_member_private_class_type_is_bind_error() {
+    let mut public_attrs = ModuleAttributes::named("PublicWidget");
+    public_attrs.vb_exposed = true;
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![
+            ModuleUnit {
+                module_name: "Main".into(),
+                module_kind: ModuleKind::Procedural,
+                attributes: ModuleAttributes::named("Main"),
+                source: "Sub Main()\nEnd Sub\n".into(),
+            },
+            ModuleUnit {
+                module_name: "PublicWidget".into(),
+                module_kind: ModuleKind::Class,
+                attributes: public_attrs,
+                source: "Public Child As PrivateChild\n".into(),
+            },
+            ModuleUnit {
+                module_name: "PrivateChild".into(),
+                module_kind: ModuleKind::Class,
+                attributes: ModuleAttributes::named("PrivateChild"),
+                source: "".into(),
+            },
+        ],
+        references: Vec::new(),
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let err = format!(
+        "{:?}",
+        bind_program(&manifest, &NullTypeLibs)
+            .expect_err("public member typed as private class should fail binding")
+    );
+    assert!(
+        err.contains("PrivateObjectModuleTypeNotValidInPublicObjectMember")
+            && err.contains("name: \"Child\"")
+            && err.contains("type_name: \"PrivateChild\""),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn public_object_signature_private_class_type_is_bind_error() {
+    let mut public_attrs = ModuleAttributes::named("PublicWidget");
+    public_attrs.vb_exposed = true;
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![
+            ModuleUnit {
+                module_name: "Main".into(),
+                module_kind: ModuleKind::Procedural,
+                attributes: ModuleAttributes::named("Main"),
+                source: "Sub Main()\nEnd Sub\n".into(),
+            },
+            ModuleUnit {
+                module_name: "PublicWidget".into(),
+                module_kind: ModuleKind::Class,
+                attributes: public_attrs,
+                source: "Public Function Make() As PrivateChild\nEnd Function\n".into(),
+            },
+            ModuleUnit {
+                module_name: "PrivateChild".into(),
+                module_kind: ModuleKind::Class,
+                attributes: ModuleAttributes::named("PrivateChild"),
+                source: "".into(),
+            },
+        ],
+        references: Vec::new(),
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let err = format!(
+        "{:?}",
+        bind_program(&manifest, &NullTypeLibs)
+            .expect_err("public signature typed as private class should fail binding")
+    );
+    assert!(
+        err.contains("PrivateObjectModuleTypeNotValidInPublicObjectMember")
+            && err.contains("name: \"Make\"")
+            && err.contains("type_name: \"PrivateChild\""),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn required_parameter_after_optional_is_bind_error() {
+    let src = "Sub Main()\nEnd Sub\n\nSub Fill(Optional ByVal first As Long, ByVal second As Long)\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("InvalidOptionalParameterDeclaration")
+            || err.contains("SYM-E-INVALID-OPTIONAL-PARAMETER-DECLARATION"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn paramarray_still_accepts_extra_arguments() {
+    let src = "Sub Main()\n    Dim r As Long\n    r = SumAll(1, 2, 3)\nEnd Sub\n\nFunction SumAll(ParamArray xs() As Variant) As Long\n    Dim i As Long\n    For i = LBound(xs) To UBound(xs)\n        SumAll = SumAll + CLng(xs(i))\n    Next i\nEnd Function\n";
+    assert_eq!(run_main_local0(src), Some(6.0));
+}
+
+#[test]
+fn duplicate_label_in_one_procedure_is_bind_error() {
+    // Two `done:` labels in one `Sub` — a VBA compile error ("Duplicate declaration
+    // in current scope"). The binder must reject it (vm2 used to run it leniently).
+    let src = "Sub Main()\n    Dim x As Long\ndone:\n    x = 1\ndone:\n    x = 2\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("DuplicateLabel") && err.contains("done"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn same_label_name_in_different_procedures_binds() {
+    // Label scope is per-procedure, so the same name in two procedures is legal.
+    let src = "Sub A()\ndone:\nEnd Sub\n\nSub B()\ndone:\nEnd Sub\n";
+    bind(src);
+}
+
+#[test]
+fn label_referenced_many_times_but_defined_once_binds() {
+    // A label may be *referenced* any number of times (here by `On Error GoTo` and
+    // `GoTo`); only a second *definition* is an error. Guards against counting a
+    // reference as a definition.
+    let src = "Sub Main()\n    Dim x As Long\n    On Error GoTo handler\n    GoTo handler\nhandler:\n    x = 1\nEnd Sub\n";
+    bind(src);
+}
+
+#[test]
+fn colonless_line_number_labels_bind_and_branch() {
+    let src = "Sub Main()\n\
+               Dim x As Long\n\
+               GoTo 200\n\
+               100 x = 1\n\
+               200 x = 5\n\
+               End Sub\n";
+    assert_eq!(run_main_local0(src), Some(5.0));
+}
+
+#[test]
+fn erl_initial_and_numeric_line_without_error_stay_zero() {
+    let initial = "Sub Main()\n    Dim r As String\n    r = CStr(Erl) & \":\" & CStr(VarType(Erl))\nEnd Sub\n";
+    assert_eq!(run_main_local0_string(initial), Some("0:3".to_string()));
+
+    let no_error = "Sub Main()\n\
+                    Dim r As String\n\
+                    Dim x As Long\n\
+10                  x = 1\n\
+                    r = CStr(Erl) & \":\" & CStr(VarType(Erl)) & \":\" & CStr(x)\n\
+                    End Sub\n";
+    assert_eq!(run_main_local0_string(no_error), Some("0:3:1".to_string()));
+}
+
+#[test]
+fn erl_records_caught_error_line_in_current_activation() {
+    let resume_next = "Sub Main()\n\
+                       Dim r As String\n\
+                       Dim x As Long\n\
+                       On Error Resume Next\n\
+10                     x = 1 / 0\n\
+                       r = CStr(Err.Number) & \":\" & CStr(Erl)\n\
+                       End Sub\n";
+    assert_eq!(
+        run_main_local0_string(resume_next),
+        Some("11:10".to_string())
+    );
+
+    let handler = "Sub Main()\n\
+                   Dim r As String\n\
+                   On Error GoTo EH\n\
+10                 Err.Raise 5\n\
+                   r = \"miss\"\n\
+                   Exit Sub\n\
+EH:\n\
+                   r = CStr(Err.Number) & \":\" & CStr(Erl)\n\
+                   End Sub\n";
+    assert_eq!(run_main_local0_string(handler), Some("5:10".to_string()));
+}
+
+#[test]
+fn erl_uses_prior_numeric_label_for_unnumbered_faults() {
+    let src = "Sub Main()\n\
+               Dim r As String\n\
+               Dim x As Long\n\
+               On Error GoTo EH\n\
+10             x = 1\n\
+               x = 1 / 0\n\
+               r = \"miss\"\n\
+               Exit Sub\n\
+EH:\n\
+               r = CStr(Err.Number) & \":\" & CStr(Erl)\n\
+               End Sub\n";
+    assert_eq!(run_main_local0_string(src), Some("11:10".to_string()));
+}
+
+#[test]
+fn caller_handler_reports_call_site_line_for_callee_fault() {
+    let src = "Sub Main()\n\
+               Dim r As String\n\
+               On Error GoTo EH\n\
+               Boom\n\
+               r = \"miss\"\n\
+               Exit Sub\n\
+EH:\n\
+               r = CStr(Err.Number) & \":\" & CStr(Erl)\n\
+               End Sub\n\
+\n\
+               Private Sub Boom()\n\
+20             Err.Raise 7\n\
+               End Sub\n";
+    assert_eq!(run_main_local0_string(src), Some("7:0".to_string()));
+}
+
+#[test]
+fn on_error_undefined_label_is_bind_error() {
+    let src = "Sub Main()\n    On Error GoTo MissingHandler\nEnd Sub\n";
+    let err = bind_error_display(src);
+    assert!(err.contains("Label not defined"), "unexpected error: {err}");
+}
+
+fn computed_goto_result(selector: &str) -> Option<String> {
+    let src = format!(
+        "Sub Main()\n\
+         Dim r As String\n\
+         Dim n As Variant\n\
+         On Error GoTo EH\n\
+         n = {selector}\n\
+         On n GoTo L1, L2\n\
+         r = \"fallthrough:\" & CStr(Err.Number)\n\
+         Exit Sub\n\
+         L1:\n\
+         r = \"L1:\" & CStr(Err.Number)\n\
+         Exit Sub\n\
+         L2:\n\
+         r = \"L2:\" & CStr(Err.Number)\n\
+         Exit Sub\n\
+         EH:\n\
+         r = \"err:\" & CStr(Err.Number)\n\
+         End Sub\n"
+    );
+    run_main_local0_string(&src)
+}
+
+fn computed_gosub_result(selector: &str) -> Option<String> {
+    let src = format!(
+        "Sub Main()\n\
+         Dim r As String\n\
+         Dim n As Variant\n\
+         On Error GoTo EH\n\
+         r = \"before\"\n\
+         n = {selector}\n\
+         On n GoSub S1, S2\n\
+         r = r & \":after:\" & CStr(Err.Number)\n\
+         Exit Sub\n\
+         S1:\n\
+         r = r & \":S1\"\n\
+         Return\n\
+         S2:\n\
+         r = r & \":S2\"\n\
+         Return\n\
+         EH:\n\
+         r = \"err:\" & CStr(Err.Number) & \":\" & r\n\
+         End Sub\n"
+    );
+    run_main_local0_string(&src)
+}
+
+#[test]
+fn computed_goto_selector_matches_vba_boundaries() {
+    assert_eq!(computed_goto_result("1"), Some("L1:0".to_string()));
+    assert_eq!(computed_goto_result("0"), Some("fallthrough:0".to_string()));
+    assert_eq!(computed_goto_result("3"), Some("fallthrough:0".to_string()));
+    assert_eq!(computed_goto_result("-1"), Some("err:5".to_string()));
+    assert_eq!(computed_goto_result("1.5"), Some("L2:0".to_string()));
+    assert_eq!(computed_goto_result("2.5"), Some("L2:0".to_string()));
+    assert_eq!(computed_goto_result("\"x\""), Some("err:13".to_string()));
+    assert_eq!(computed_goto_result("Null"), Some("err:94".to_string()));
+}
+
+#[test]
+fn computed_gosub_selector_matches_vba_boundaries() {
+    assert_eq!(
+        computed_gosub_result("2"),
+        Some("before:S2:after:0".to_string())
+    );
+    assert_eq!(
+        computed_gosub_result("0"),
+        Some("before:after:0".to_string())
+    );
+    assert_eq!(
+        computed_gosub_result("3"),
+        Some("before:after:0".to_string())
+    );
+    assert_eq!(
+        computed_gosub_result("-1"),
+        Some("err:5:before".to_string())
+    );
+    assert_eq!(
+        computed_gosub_result("1.5"),
+        Some("before:S2:after:0".to_string())
+    );
+}
+
+#[test]
+fn multivariable_next_closes_nested_for_loops() {
+    let src = "Sub Main()\n\
+               Dim total As Long\n\
+               Dim i As Long\n\
+               Dim j As Long\n\
+               For i = 1 To 2\n\
+               For j = 1 To 3\n\
+                   total = total + 1\n\
+               Next j, i\n\
+               End Sub\n";
+    assert_eq!(run_main_local0(src), Some(6.0));
+}
+
+#[test]
+fn sub_used_as_expression_is_bind_error() {
+    let src = "Sub Main()\nDim x\nx = DoIt()\nEnd Sub\nSub DoIt()\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("ExpectedFunctionOrVariable") || err.contains("Expected Function or variable"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn sub_called_as_statement_still_binds() {
+    let src = "Sub Main()\nDim x As Long\nDoIt x\nCall DoIt(x)\nEnd Sub\nSub DoIt(ByRef x As Long)\nx = x + 1\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(2.0));
+}
+
+#[test]
+fn exit_do_inside_while_wend_is_bind_error() {
+    let src = "Sub Main()\nWhile True\nExit Do\nWend\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("Exit Do outside Do loop"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn exit_do_inside_do_loop_still_binds() {
+    let src = "Sub Main()\nDim x As Long\nDo\nx = x + 1\nExit Do\nLoop\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(1.0));
+}
+
+#[test]
+fn exit_do_inside_while_nested_in_do_is_bind_error() {
+    let src = "Sub Main()\nDo\nWhile True\nExit Do\nWend\nLoop\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("Exit Do outside Do loop"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn keyword_named_proc_does_not_desync_frames() {
+    // `Function Name()` has a keyword name (no plain Ident), but the scanner still
+    // gives it a scope. The binder must agree on the proc set so `Compute`'s body
+    // binds against its OWN frame (its local), not the keyword proc's frame.
+    let src = "Sub Main()\n    Dim r As Long\n    r = Compute()\nEnd Sub\n\nFunction Name(p As Long) As String\n    Name = \"x\"\nEnd Function\n\nFunction Compute() As Long\n    Dim total As Long\n    total = 42\n    Compute = total\nEnd Function\n";
+    assert_eq!(run_main_local0(src), Some(42.0));
+}
+
+#[test]
+fn parenthesized_argument_forces_by_val() {
+    // A parenthesized statement-call argument `Inc (r)` is forced ByVal → caller unchanged
+    // (without the parens, `Inc r` would mutate r to 105 via ByRef).
+    let src = "Sub Main()\n    Dim r As Long\n    r = 5\n    Inc (r)\nEnd Sub\n\nSub Inc(ByRef n As Long)\n    n = n + 100\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(5.0));
+}
+
+#[test]
+fn call_site_byval_forces_by_val_over_byref_param() {
+    // A call-site `ByVal r` overrides the callee's declared `ByRef`, so the
+    // mutation must NOT reach the caller's `r`. (The parser accepted the
+    // `ByVal`/`ByRef` modifier but dropped it, so this used to mutate r to 105.)
+    let src = "Sub Main()\n    Dim r As Long\n    r = 5\n    Inc ByVal r\nEnd Sub\n\nSub Inc(ByRef n As Long)\n    n = n + 100\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(5.0));
+}
+
+#[test]
+fn call_site_byref_keeps_write_back() {
+    // The control: `Inc r` (no modifier) and an explicit `Inc ByRef r` both
+    // write back through the ByRef param.
+    let bare = "Sub Main()\n    Dim r As Long\n    r = 5\n    Inc r\nEnd Sub\n\nSub Inc(ByRef n As Long)\n    n = n + 100\nEnd Sub\n";
+    let explicit = "Sub Main()\n    Dim r As Long\n    r = 5\n    Inc ByRef r\nEnd Sub\n\nSub Inc(ByRef n As Long)\n    n = n + 100\nEnd Sub\n";
+    assert_eq!(run_main_local0(bare), Some(105.0));
+    assert_eq!(run_main_local0(explicit), Some(105.0));
+}
+
+#[test]
+fn byref_type_mismatch_is_bind_error() {
+    let src = "Sub Main()\n    Dim x As Integer\n    TakeLong x\nEnd Sub\n\nSub TakeLong(ByRef n As Long)\n    n = 7\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("ByRefTypeMismatch") && err.contains("Long") && err.contains("Integer"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn byref_variant_to_scalar_is_bind_error() {
+    let src = "Sub Main()\n    Dim x As Variant\n    x = 3\n    TakeLong x\nEnd Sub\n\nSub TakeLong(ByRef n As Long)\n    n = 7\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("ByRefTypeMismatch") && err.contains("Long") && err.contains("Variant"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn byref_variant_requires_variant_lvalue() {
+    let src = "Sub Main()\n    Dim x As Long\n    Capture x\nEnd Sub\n\nSub Capture(ByRef target As Variant)\n    target = 7\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("ByRefTypeMismatch") && err.contains("Variant") && err.contains("Long"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn byref_variant_lvalue_still_aliases() {
+    let src = "Sub Main()\n    Dim r As Variant\n    r = 5\n    Capture r\nEnd Sub\n\nSub Capture(ByRef target As Variant)\n    target = 7\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(7.0));
+}
+
+#[test]
+fn byref_variant_accepts_array_lvalue() {
+    let src = "Sub Main()\n    Dim bytes() As Byte\n    ReDim bytes(0 To 1)\n    Capture bytes\nEnd Sub\n\nSub Capture(ByRef target As Variant)\nEnd Sub\n";
+    bind(src);
+}
+
+#[test]
+fn parenthesized_byref_type_mismatch_uses_byval_temporary() {
+    let src = "Sub Main()\n    Dim r As Long\n    Dim x As Integer\n    x = 5\n    TakeLong (x)\n    r = x\nEnd Sub\n\nSub TakeLong(ByRef n As Long)\n    n = n + 100\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(5.0));
+}
+
+#[test]
+fn byval_object_param_rejects_statically_scalar_argument() {
+    let src = "DefObj A-Z\nSub Main()\n    Call Use(1)\nEnd Sub\n\nSub Use(ByVal alpha)\nEnd Sub\n";
+    let err = bind_error_display(src);
+    assert!(err.contains("Type mismatch"), "unexpected error: {err}");
+}
+
+#[test]
+fn byval_object_param_accepts_object_or_nothing_argument() {
+    bind(
+        "DefObj A-Z\nSub Main()\n    Dim alpha As Object\n    Set alpha = Nothing\n    Use alpha\n    Use Nothing\nEnd Sub\n\nSub Use(ByVal beta)\nEnd Sub\n",
+    );
+}
+
+#[test]
+fn hex_literal() {
+    assert_eq!(
+        run_main_local0(&main_sub("    Dim r As Long\n    r = &H1F\n")),
+        Some(31.0)
+    );
+}
+
+// ── Long tail ────────────────────────────────────────────────────────────────
+
+#[test]
+fn module_and_proc_consts_fold() {
+    // A module-level Const and a proc-level Const both substitute their values.
+    let src = "Const FACTOR As Long = 10\n\n\
+               Sub Main()\n    Dim r As Long\n    Const ADD = 5\n    r = FACTOR * 2 + ADD\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(25.0));
+}
+
+#[test]
+fn option_compare_text_is_case_insensitive() {
+    // Under `Option Compare Text`, `"A" = "a"` is True (-1); Binary would give 0.
+    let src = "Option Compare Text\n\nSub Main()\n    Dim r As Boolean\n    r = (\"A\" = \"a\")\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(-1.0));
+}
+
+// ── Objects: classes, New, Me, fields, methods, properties, Set ──────────────
+
+/// A two-module project: a procedural `Main` + one class module. The class
+/// module is named so it sorts after `Main`.
+fn class_manifest(main_src: &str, class_name: &str, class_src: &str) -> SymbolProjectManifest {
+    SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![
+            ModuleUnit {
+                module_name: "Main".into(),
+                module_kind: ModuleKind::Procedural,
+                attributes: ModuleAttributes::named("Main"),
+                source: main_src.into(),
+            },
+            ModuleUnit {
+                module_name: class_name.into(),
+                module_kind: ModuleKind::Class,
+                attributes: ModuleAttributes::named(class_name),
+                source: class_src.into(),
+            },
+        ],
+        references: Vec::new(),
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    }
+}
+
+/// Bind + elaborate + run a class project on vm3; read `Main`'s first local as a number.
+fn run_class_main_local0(main_src: &str, class_name: &str, class_src: &str) -> Option<f64> {
+    let program = bind_program(
+        &class_manifest(main_src, class_name, class_src),
+        &NullTypeLibs,
+    )
+    .expect("bind_program");
+    let oxp = calcvba_oxir::elaborate::elaborate(&program).expect("elaborate");
+    let host = NullHostServices::new(HostPolicy::default());
+    let vm = calcvba_vm3::Vm3::run(&oxp, &host).expect("run");
+    let value = vm.slot(oxp.globals.len())?;
+    value
+        .as_f64()
+        .or_else(|| value.as_i32().map(f64::from))
+        .or_else(|| value.as_i64().map(|v| v as f64))
+}
+
+#[test]
+fn new_initialize_field_and_method() {
+    // New runs Class_Initialize (sets the instance field); a method reads it.
+    let main = "Sub Main()\n    Dim r As Long\n    Dim w As Widget\n    Set w = New Widget\n    r = w.GetValue()\nEnd Sub\n";
+    let widget = "Private mValue As Long\n\n\
+                  Private Sub Class_Initialize()\n    mValue = 42\nEnd Sub\n\n\
+                  Public Function GetValue() As Long\n    GetValue = mValue\nEnd Function\n";
+    assert_eq!(run_class_main_local0(main, "Widget", widget), Some(42.0));
+}
+
+#[test]
+fn property_get_let_roundtrip() {
+    // `w.Value = 10` routes to Property Let; `r = w.Value` to Property Get.
+    let main = "Sub Main()\n    Dim r As Long\n    Dim w As Widget\n    Set w = New Widget\n    w.Value = 10\n    r = w.Value\nEnd Sub\n";
+    let widget = "Private mV As Long\n\n\
+                  Public Property Get Value() As Long\n    Value = mV\nEnd Property\n\n\
+                  Public Property Let Value(ByVal v As Long)\n    mV = v\nEnd Property\n";
+    assert_eq!(run_class_main_local0(main, "Widget", widget), Some(10.0));
+}
+
+#[test]
+fn standard_module_property_let_roundtrip() {
+    let src = "Private mV As Long\n\n\
+               Public Property Get Value() As Long\n    Value = mV\nEnd Property\n\n\
+               Public Property Let Value(ByVal v As Long)\n    mV = v\nEnd Property\n\n\
+               Public Sub Main()\n    Dim r As Long\n    Value = 17\n    r = Value\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(17.0));
+}
+
+#[test]
+fn write_only_standard_module_property_let_roundtrip() {
+    let src = "Private mV As Long\n\n\
+               Public Property Let Value(ByVal v As Long)\n    mV = v\nEnd Property\n\n\
+               Public Function GetValue() As Long\n    GetValue = mV\nEnd Function\n\n\
+               Public Sub Main()\n    Dim r As Long\n    Value = 17\n    r = GetValue()\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(17.0));
+}
+
+#[test]
+fn standard_module_property_let_updates_global_udt_field() {
+    let src = "Private Type State\n    Value As Single\nEnd Type\n\
+               Private s As State\n\n\
+               Public Property Get Value() As Single\n    Value = s.Value\nEnd Property\n\n\
+               Public Property Let Value(ByVal v As Single)\n    s.Value = v\nEnd Property\n\n\
+               Public Sub Main()\n    Dim r As Single\n    Value = 0.25!\n    r = Value\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(0.25));
+}
+
+#[test]
+fn module_udt_fixed_array_field_round_trips() {
+    let src = "Private Type State\n    Buses(0 To 1) As Single\nEnd Type\n\
+               Private s As State\n\n\
+               Public Sub Main()\n    Dim r As Single\n    s.Buses(1) = 0.5!\n    r = s.Buses(1)\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(0.5));
+}
+
+#[test]
+fn module_udt_fixed_array_field_accepts_const_bounds() {
+    let src = "Private Const LastBus As Long = 1\n\
+               Private Type State\n    Buses(0 To LastBus) As Single\nEnd Type\n\
+               Private s As State\n\n\
+               Public Sub Main()\n    Dim r As Single\n    s.Buses(1) = 0.75!\n    r = s.Buses(1)\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(0.75));
+}
+
+#[test]
+fn module_udt_fixed_array_field_of_udt_elements_round_trips() {
+    let src = "Private Type Buffer\n    Value As Long\nEnd Type\n\
+               Private Type State\n    Buffers(0 To 1) As Buffer\nEnd Type\n\
+               Private s As State\n\n\
+               Public Sub Main()\n    Dim r As Long\n    s.Buffers(1).Value = 42\n    r = s.Buffers(1).Value\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(42.0));
+}
+
+#[test]
+fn module_udt_scalar_field_index_read_is_expected_array() {
+    let src = "Private Type State\n    Value As Long\nEnd Type\n\
+               Private s As State\n\n\
+               Public Sub Main()\n    Dim r As Long\n    r = s.Value(0)\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("ExpectedArray"),
+        "scalar UDT field indexing must bind as VBA compile error `Expected array`, got {err}"
+    );
+}
+
+#[test]
+fn module_udt_scalar_field_index_write_is_expected_array() {
+    let src = "Private Type State\n    Value As Long\nEnd Type\n\
+               Private s As State\n\n\
+               Public Sub Main()\n    s.Value(0) = 7\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("ExpectedArray"),
+        "scalar UDT field index assignment must bind as VBA compile error `Expected array`, got {err}"
+    );
+}
+
+#[test]
+fn module_udt_scalar_field_redim_is_expected_array() {
+    let src = "Private Type State\n    Value As Long\nEnd Type\n\
+               Private s As State\n\n\
+               Public Sub Main()\n    ReDim s.Value(0)\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("ExpectedArray"),
+        "scalar UDT field ReDim must bind as VBA compile error `Expected array`, got {err}"
+    );
+}
+
+#[test]
+fn module_udt_scalar_field_index_error_precedes_index_binding() {
+    let src = "Private Type State\n    Value As Long\nEnd Type\n\
+               Private s As State\n\n\
+               Public Sub Main()\n    Dim r As Long\n    r = s.Value(MissingName)\nEnd Sub\n";
+    let err = bind_error(src);
+    assert!(
+        err.contains("ExpectedArray"),
+        "scalar UDT field shape should raise `Expected array` before binding index expressions, got {err}"
+    );
+}
+
+#[test]
+fn local_variable_shadows_standard_module_property_let() {
+    let src = "Private mV As Long\n\n\
+               Public Property Get Value() As Long\n    Value = mV\nEnd Property\n\n\
+               Public Property Let Value(ByVal v As Long)\n    mV = v\nEnd Property\n\n\
+               Public Sub Main()\n    Dim Value As Long\n    Dim r As Long\n    Value = 17\n    r = Value\nEnd Sub\n";
+    assert_eq!(run_main_local0(src), Some(17.0));
+}
+
+#[test]
+fn indexed_property_get_let_roundtrip() {
+    // `w.Value(3) = 10` is an indexed Property Let, not an array-element write
+    // through a synthesized helper. The setter receives index args followed by
+    // the assigned value, and the getter remains an indexed Property Get.
+    let main = "Sub Main()\n    Dim r As Long\n    Dim w As Widget\n    Set w = New Widget\n    w.Value(3) = 10\n    r = w.Value(2)\nEnd Sub\n";
+    let widget = "Private mV As Long\n\n\
+                  Public Property Get Value(ByVal i As Long) As Long\n    Value = mV + i\nEnd Property\n\n\
+                  Public Property Let Value(ByVal i As Long, ByVal v As Long)\n    mV = v + i\nEnd Property\n";
+    assert_eq!(run_class_main_local0(main, "Widget", widget), Some(15.0));
+}
+
+#[test]
+fn named_indexed_property_let_roundtrip() {
+    // Named index arguments on an indexed Property Let are reordered by the
+    // accessor signature before the assigned value is placed in the trailing slot.
+    let main = "Sub Main()\n    Dim r As Long\n    Dim w As Widget\n    Set w = New Widget\n    w.Value(i := 3) = 10\n    r = w.Value(2)\nEnd Sub\n";
+    let widget = "Private mV As Long\n\n\
+                  Public Property Get Value(ByVal i As Long) As Long\n    Value = mV + i\nEnd Property\n\n\
+                  Public Property Let Value(ByVal i As Long, ByVal v As Long)\n    mV = v + i\nEnd Property\n";
+    assert_eq!(run_class_main_local0(main, "Widget", widget), Some(15.0));
+}
+
+#[test]
+fn property_let_assigned_value_is_byval_even_when_declared_byref() {
+    let src = "Private mV As Long\n\n\
+               Public Sub Main()\n    Dim target As Long\n    Item(target) = 3\nEnd Sub\n\n\
+               Public Property Let Item(ByRef target As Long, ByRef newValue As Long)\n    target = newValue\n    mV = target\nEnd Property\n";
+    let program = bind(src);
+    let setter = program
+        .procs
+        .iter()
+        .find(|proc| {
+            proc.name.eq_ignore_ascii_case("Item")
+                && proc.kind == calcvba_bundle::ProcedureKind::PropertyLet
+        })
+        .expect("Property Let procedure should be present");
+    assert_eq!(setter.params.len(), 2);
+    assert!(setter.params[0].by_ref);
+    assert!(!setter.params[1].by_ref);
+
+    let calls = top_level_calls(&program);
+    let (_, args) = calls
+        .into_iter()
+        .find(|(callee, args)| matches!(callee, CoreCallee::VbaProc { .. }) && args.len() == 2)
+        .expect("indexed Property Let should lower to a two-argument VBA proc call");
+    assert!(
+        matches!(args.first(), Some(CoreArg::ByRef(_))),
+        "indexed argument should retain the declared ByRef mode, got {args:?}"
+    );
+    assert_core_arg_i16(&args[1], 3);
+}
+
+#[test]
+fn assigning_to_get_only_property_is_bind_error() {
+    let main =
+        "Sub Main()\n    Dim w As Widget\n    Set w = New Widget\n    w.Value = 10\nEnd Sub\n";
+    let widget = "Public Property Get Value() As Long\n    Value = 1\nEnd Property\n";
+    assert!(
+        bind_program(&class_manifest(main, "Widget", widget), &NullTypeLibs).is_err(),
+        "a get-only project property must not lower to a synthetic PropertyLet call"
+    );
+}
+
+#[test]
+fn assigning_to_indexed_get_only_property_is_bind_error() {
+    let main =
+        "Sub Main()\n    Dim w As Widget\n    Set w = New Widget\n    w.Value(3) = 10\nEnd Sub\n";
+    let widget =
+        "Public Property Get Value(ByVal i As Long) As Long\n    Value = i\nEnd Property\n";
+    assert!(
+        bind_program(&class_manifest(main, "Widget", widget), &NullTypeLibs).is_err(),
+        "an indexed get-only project property must not lower to a synthetic PropertyLet call"
+    );
+}
+
+#[test]
+fn indexed_property_set_roundtrip() {
+    // `Set b.Item(3) = t` must select the indexed Property Set accessor, carrying
+    // the index argument before the object value argument.
+    let main = "Sub Main()\n    Dim r As Long\n    Dim b As Box\n    Dim t As Thing\n    Dim got As Thing\n    Set b = New Box\n    Set t = New Thing\n    Set b.Item(3) = t\n    Set got = b.Item(2)\n    r = got.GetVal()\nEnd Sub\n";
+    let box_cls = "Private stored As Thing\n\n\
+                   Public Property Get Item(ByVal i As Long) As Thing\n    Set Item = stored\nEnd Property\n\n\
+                   Public Property Set Item(ByVal i As Long, ByVal v As Thing)\n    Set stored = v\nEnd Property\n";
+    let thing = "Public Function GetVal() As Long\n    GetVal = 23\nEnd Function\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Box", ModuleKind::Class, box_cls),
+            ("Thing", ModuleKind::Class, thing),
+        ]),
+        Some(23.0)
+    );
+}
+
+#[test]
+fn property_set_assigned_object_is_byval_after_byref_index_arg() {
+    let main = "Sub Main()\n    Dim b As Box\n    Dim t As Thing\n    Dim target As Long\n    Set b = New Box\n    Set t = New Thing\n    Set b.Item(target) = t\nEnd Sub\n";
+    let box_cls =
+        "Public Property Set Item(ByRef target As Long, ByRef value As Thing)\nEnd Property\n";
+    let thing = "Public Sub Touch()\nEnd Sub\n";
+    let program = bind_program(
+        &multi_manifest(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Box", ModuleKind::Class, box_cls),
+            ("Thing", ModuleKind::Class, thing),
+        ]),
+        &NullTypeLibs,
+    )
+    .expect("bind");
+    let setter = program
+        .procs
+        .iter()
+        .find(|proc| {
+            proc.name.eq_ignore_ascii_case("Item")
+                && proc.kind == calcvba_bundle::ProcedureKind::PropertySet
+        })
+        .expect("Property Set procedure should be present");
+    assert_eq!(setter.params.len(), 3);
+    assert_eq!(setter.params[0].name, "Me");
+    assert!(!setter.params[0].by_ref);
+    assert!(setter.params[1].by_ref);
+    assert!(!setter.params[2].by_ref);
+
+    let calls = top_level_calls(&program);
+    let (_, args) = calls
+        .into_iter()
+        .find(|(callee, args)| {
+            matches!(
+                callee,
+                CoreCallee::LateDispatch {
+                    name,
+                    kind: Some(calcvba_bundle::ProjectMemberKind::PropertySet),
+                    default_member: false,
+                } if name == "Item"
+            ) && args.len() == 3
+        })
+        .expect("indexed Property Set should lower to receiver, index, and assigned value args");
+    assert!(
+        matches!(args.first(), Some(CoreArg::ByVal(_))),
+        "receiver should be passed as a value argument, got {args:?}"
+    );
+    assert!(
+        matches!(args.get(1), Some(CoreArg::ByRef(_))),
+        "indexed argument should retain the declared ByRef mode, got {args:?}"
+    );
+    assert!(
+        matches!(args.get(2), Some(CoreArg::ByVal(_))),
+        "assigned Property Set object should lower as the trailing ByVal runtime value, got {args:?}"
+    );
+}
+
+#[test]
+fn project_default_member_get_let_roundtrip() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim w As Widget\n    Set w = New Widget\n    w(3) = 10\n    r = w(2)\nEnd Sub\n";
+    let widget = "Private mV As Long\n\n\
+                  Public Property Get Value(ByVal i As Long) As Long\n    Value = mV + i\nEnd Property\nAttribute Value.VB_UserMemId = 0\n\n\
+                  Public Property Let Value(ByVal i As Long, ByVal v As Long)\n    mV = v + i\nEnd Property\nAttribute Value.VB_UserMemId = 0\n";
+    assert_eq!(run_class_main_local0(main, "Widget", widget), Some(15.0));
+}
+
+#[test]
+fn project_newenum_attribute_marks_enumerator_member() {
+    let main = "Sub Main()\nEnd Sub\n";
+    let widget = "Public Property Get NewEnum() As IUnknown\nEnd Property\n\
+                  Attribute NewEnum.VB_UserMemId = -4\n\
+                  Attribute NewEnum.VB_MemberFlags = \"40\"\n";
+    let program =
+        bind_program(&class_manifest(main, "Widget", widget), &NullTypeLibs).expect("bind");
+    let class = program
+        .classes
+        .iter()
+        .find(|class| class.name == "Widget")
+        .expect("Widget class");
+    assert!(
+        class.methods.iter().any(|method| {
+            method.name == "NewEnum"
+                && method.kind == calcvba_bundle::ProjectMemberKind::PropertyGet
+                && method.is_enumerator_member
+        }),
+        "VB_UserMemId = -4 should mark the project-class enumerator member: {:?}",
+        class.methods
+    );
+}
+
+#[test]
+fn project_newenum_attribute_requires_exact_minus_four_memid() {
+    let main = "Sub Main()\nEnd Sub\n";
+    let widget = "Public Property Get NewEnum() As IUnknown\nEnd Property\n\
+                  Attribute NewEnum.VB_UserMemId = -40\n";
+    let program =
+        bind_program(&class_manifest(main, "Widget", widget), &NullTypeLibs).expect("bind");
+    let class = program
+        .classes
+        .iter()
+        .find(|class| class.name == "Widget")
+        .expect("Widget class");
+    assert!(
+        class
+            .methods
+            .iter()
+            .all(|method| !method.is_enumerator_member),
+        "only exact VB_UserMemId = -4 should mark NewEnum: {:?}",
+        class.methods
+    );
+}
+
+#[test]
+fn exposed_class_methods_carry_surface_dispatch_metadata() {
+    let main = "Sub Main()\nEnd Sub\n";
+    let widget = "Public Property Get Value() As Long\nEnd Property\n\
+                  Attribute Value.VB_UserMemId = 0\n\
+                  Public Property Let Value(ByVal v As Long)\nEnd Property\n\
+                  Attribute Value.VB_UserMemId = 0\n\
+                  Public Property Get NewEnum() As IUnknown\nEnd Property\n\
+                  Attribute NewEnum.VB_UserMemId = -4\n\
+                  Public Sub Echo()\nEnd Sub\n";
+    let mut manifest = multi_manifest(&[
+        ("Main", ModuleKind::Procedural, main),
+        ("Widget", ModuleKind::Class, widget),
+    ]);
+    manifest.modules[1].attributes.vb_exposed = true;
+    let program = bind_program(&manifest, &NullTypeLibs).expect("bind");
+    let class = program
+        .classes
+        .iter()
+        .find(|class| class.name == "Widget")
+        .expect("Widget class");
+    assert!(
+        class.methods.iter().any(|method| {
+            method.name == "Value"
+                && method.kind == calcvba_bundle::ProjectMemberKind::PropertyGet
+                && method.dispid == Some(0)
+                && method.vtable_slot == Some(7)
+        }),
+        "default Property Get should carry DISPID 0 and vtable slot 7: {:?}",
+        class.methods
+    );
+    assert!(
+        class.methods.iter().any(|method| {
+            method.name == "Value"
+                && method.kind == calcvba_bundle::ProjectMemberKind::PropertyLet
+                && method.dispid == Some(0)
+                && method.vtable_slot == Some(8)
+        }),
+        "default Property Let should share DISPID 0 and carry vtable slot 8: {:?}",
+        class.methods
+    );
+    assert!(
+        class.methods.iter().any(|method| {
+            method.name == "NewEnum" && method.dispid == Some(-4) && method.vtable_slot == Some(9)
+        }),
+        "_NewEnum should carry DISPID -4 and vtable slot 9: {:?}",
+        class.methods
+    );
+    assert!(
+        class.methods.iter().any(|method| {
+            method.name == "Echo" && method.dispid == Some(1) && method.vtable_slot == Some(10)
+        }),
+        "ordinary class methods should carry the next synthesized DISPID and vtable slot: {:?}",
+        class.methods
+    );
+}
+
+#[test]
+fn predeclared_class_descriptor_carries_singleton_flag() {
+    let main = "Sub Main()\nEnd Sub\n";
+    let counter = "Public Sub Bump()\nEnd Sub\n";
+    let widget = "Public Sub Touch()\nEnd Sub\n";
+    let mut manifest = multi_manifest(&[
+        ("Main", ModuleKind::Procedural, main),
+        ("Counter", ModuleKind::Class, counter),
+        ("Widget", ModuleKind::Class, widget),
+    ]);
+    manifest.modules[1].attributes.vb_predeclared_id = true;
+    let program = bind_program(&manifest, &NullTypeLibs).expect("bind");
+    let counter = program
+        .classes
+        .iter()
+        .find(|class| class.name == "Counter")
+        .expect("Counter class");
+    assert!(
+        counter.predeclared,
+        "VB_PredeclaredId class should carry descriptor metadata: {:?}",
+        program.classes
+    );
+    let widget = program
+        .classes
+        .iter()
+        .find(|class| class.name == "Widget")
+        .expect("Widget class");
+    assert!(
+        !widget.predeclared,
+        "ordinary classes should not be marked predeclared: {:?}",
+        program.classes
+    );
+}
+
+#[test]
+fn class_descriptor_carries_instance_field_table() {
+    let main = "Sub Main()\nEnd Sub\n";
+    let widget = "Option Base 1\n\
+                  Private count As Long\n\
+                  Private names(3) As String\n\
+                  Private current As Widget\n\
+                  Public Sub Touch()\nEnd Sub\n";
+    let program = bind_program(
+        &multi_manifest(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Widget", ModuleKind::Class, widget),
+        ]),
+        &NullTypeLibs,
+    )
+    .expect("bind");
+    let class = program
+        .classes
+        .iter()
+        .find(|class| class.name == "Widget")
+        .expect("Widget class");
+    assert_eq!(
+        class.fields.len(),
+        3,
+        "class descriptor should carry only ordinary instance fields: {:?}",
+        class.fields
+    );
+    let count = class
+        .fields
+        .iter()
+        .find(|field| field.name == "count")
+        .expect("count field");
+    assert_eq!(count.token, 0);
+    assert_eq!(
+        count.ty,
+        calcvba_bundle::VarTypeRef::Builtin(calcvba_bundle::BuiltinType::Long)
+    );
+    assert_eq!(count.array_element, None);
+
+    let names = class
+        .fields
+        .iter()
+        .find(|field| field.name == "names")
+        .expect("names field");
+    assert_eq!(names.token, 1);
+    assert!(
+        matches!(
+            names.ty,
+            calcvba_bundle::VarTypeRef::Array(_) | calcvba_bundle::VarTypeRef::FixedArray { .. }
+        ),
+        "array field should carry its declared array type: {:?}",
+        names.ty
+    );
+    assert_eq!(
+        names.array_element,
+        Some(calcvba_bundle::ArrayElementType::String)
+    );
+    match &names.ty {
+        calcvba_bundle::VarTypeRef::FixedArray { bounds, .. } => {
+            assert_eq!(bounds.len(), 1);
+            assert_eq!(bounds[0].lower, 1);
+            assert_eq!(bounds[0].len, 3);
+        }
+        other => panic!("names should carry fixed-array bounds, got {other:?}"),
+    }
+
+    let current = class
+        .fields
+        .iter()
+        .find(|field| field.name == "current")
+        .expect("current field");
+    assert_eq!(current.token, 2);
+    assert_eq!(
+        current.ty,
+        calcvba_bundle::VarTypeRef::Object("widget".into())
+    );
+
+    let ox = calcvba_oxir::elaborate::elaborate(&program).expect("elaborate");
+    let ox_class = ox
+        .classes
+        .iter()
+        .find(|class| class.name == "Widget")
+        .expect("OxIR Widget class");
+    let ox_count = ox_class
+        .fields
+        .iter()
+        .find(|field| field.name == "count")
+        .expect("OxIR count field");
+    assert_eq!(ox_count.token, 0);
+    assert_eq!(ox_count.ty, calcvba_oxir::OxTy::Long);
+    let ox_current = ox_class
+        .fields
+        .iter()
+        .find(|field| field.name == "current")
+        .expect("OxIR current field");
+    assert_eq!(
+        ox_current.ty,
+        calcvba_oxir::OxTy::Object(calcvba_oxir::ObjClass::Class(calcvba_oxir::ClassId(0)))
+    );
+}
+
+#[test]
+fn project_default_member_set_roundtrip() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim b As Box\n    Dim t As Thing\n    Dim got As Thing\n    Set b = New Box\n    Set t = New Thing\n    Set b(3) = t\n    Set got = b(2)\n    r = got.GetVal()\nEnd Sub\n";
+    let box_cls = "Private stored As Thing\n\n\
+                   Public Property Get Item(ByVal i As Long) As Thing\n    Set Item = stored\nEnd Property\nAttribute Item.VB_UserMemId = 0\n\n\
+                   Public Property Set Item(ByVal i As Long, ByVal v As Thing)\n    Set stored = v\nEnd Property\nAttribute Item.VB_UserMemId = 0\n";
+    let thing = "Public Function GetVal() As Long\n    GetVal = 23\nEnd Function\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Box", ModuleKind::Class, box_cls),
+            ("Thing", ModuleKind::Class, thing),
+        ]),
+        Some(23.0)
+    );
+}
+
+#[test]
+fn default_member_property_set_assigned_object_is_byval_after_byref_index_arg() {
+    let main = "Sub Main()\n    Dim b As Box\n    Dim t As Thing\n    Dim target As Long\n    Set b = New Box\n    Set t = New Thing\n    Set b(target) = t\nEnd Sub\n";
+    let box_cls = "Public Property Get Item(ByVal i As Long) As Thing\n    Set Item = Nothing\nEnd Property\nAttribute Item.VB_UserMemId = 0\n\n\
+                   Public Property Set Item(ByRef i As Long, ByRef value As Thing)\nEnd Property\nAttribute Item.VB_UserMemId = 0\n";
+    let thing = "Public Sub Touch()\nEnd Sub\n";
+    let program = bind_program(
+        &multi_manifest(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Box", ModuleKind::Class, box_cls),
+            ("Thing", ModuleKind::Class, thing),
+        ]),
+        &NullTypeLibs,
+    )
+    .expect("bind");
+    let setter = program
+        .procs
+        .iter()
+        .find(|proc| {
+            proc.name.eq_ignore_ascii_case("Item")
+                && proc.kind == calcvba_bundle::ProcedureKind::PropertySet
+        })
+        .expect("Property Set procedure should be present");
+    assert_eq!(setter.params.len(), 3);
+    assert_eq!(setter.params[0].name, "Me");
+    assert!(!setter.params[0].by_ref);
+    assert!(setter.params[1].by_ref);
+    assert!(!setter.params[2].by_ref);
+
+    let calls = top_level_calls(&program);
+    let (_, args) = calls
+        .into_iter()
+        .find(|(callee, args)| {
+            matches!(
+                callee,
+                CoreCallee::LateDispatch {
+                    name,
+                    kind: Some(calcvba_bundle::ProjectMemberKind::PropertySet),
+                    default_member: false,
+                } if name == "Item"
+            ) && args.len() == 3
+        })
+        .expect(
+            "default-member Property Set should lower to receiver, index, and assigned value args",
+        );
+    assert!(
+        matches!(args.first(), Some(CoreArg::ByVal(_))),
+        "receiver should be passed as a value argument, got {args:?}"
+    );
+    assert!(
+        matches!(args.get(1), Some(CoreArg::ByRef(_))),
+        "indexed argument should retain the declared ByRef mode, got {args:?}"
+    );
+    assert!(
+        matches!(args.get(2), Some(CoreArg::ByVal(_))),
+        "assigned default-member Property Set object should lower as the trailing ByVal runtime value, got {args:?}"
+    );
+}
+
+#[test]
+fn project_default_member_bare_get_let_roundtrip() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim w As Widget\n    Set w = New Widget\n    w = 10\n    r = w\nEnd Sub\n";
+    let widget = "Private mV As Long\n\n\
+                  Public Property Get Value() As Long\n    Value = mV\nEnd Property\nAttribute Value.VB_UserMemId = 0\n\n\
+                  Public Property Let Value(ByVal v As Long)\n    mV = v\nEnd Property\nAttribute Value.VB_UserMemId = 0\n";
+    assert_eq!(run_class_main_local0(main, "Widget", widget), Some(10.0));
+}
+
+#[test]
+fn bare_default_member_property_let_assigned_value_is_byval_even_when_declared_byref() {
+    let main = "Sub Main()\n    Dim w As Widget\n    Set w = New Widget\n    w = 3\nEnd Sub\n";
+    let widget = "Public Property Get Value() As Long\n    Value = 0\nEnd Property\nAttribute Value.VB_UserMemId = 0\n\n\
+                  Public Property Let Value(ByRef v As Long)\nEnd Property\nAttribute Value.VB_UserMemId = 0\n";
+    let program =
+        bind_program(&class_manifest(main, "Widget", widget), &NullTypeLibs).expect("bind");
+    let setter = program
+        .procs
+        .iter()
+        .find(|proc| {
+            proc.name.eq_ignore_ascii_case("Value")
+                && proc.kind == calcvba_bundle::ProcedureKind::PropertyLet
+        })
+        .expect("Property Let procedure should be present");
+    assert_eq!(setter.params.len(), 2);
+    assert_eq!(setter.params[0].name, "Me");
+    assert!(!setter.params[0].by_ref);
+    assert!(!setter.params[1].by_ref);
+
+    let calls = top_level_calls(&program);
+    let (_, args) = calls
+        .into_iter()
+        .find(|(callee, args)| {
+            matches!(
+                callee,
+                CoreCallee::LateDispatch {
+                    name,
+                    kind: Some(calcvba_bundle::ProjectMemberKind::PropertyLet),
+                    default_member: false,
+                } if name == "Value"
+            ) && args.len() == 2
+        })
+        .expect(
+            "bare default-member Property Let should lower to receiver and assigned value args",
+        );
+    assert!(
+        matches!(args.first(), Some(CoreArg::ByVal(_))),
+        "receiver should be passed as a value argument, got {args:?}"
+    );
+    assert_core_arg_i16(&args[1], 3);
+}
+
+#[test]
+fn set_assignment_keeps_defaulted_object_reference() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim w As Widget\n    Dim w2 As Widget\n    Set w = New Widget\n    w = 10\n    Set w2 = w\n    w2 = 12\n    r = w\nEnd Sub\n";
+    let widget = "Private mV As Long\n\n\
+                  Public Property Get Value() As Long\n    Value = mV\nEnd Property\nAttribute Value.VB_UserMemId = 0\n\n\
+                  Public Property Let Value(ByVal v As Long)\n    mV = v\nEnd Property\nAttribute Value.VB_UserMemId = 0\n";
+    assert_eq!(run_class_main_local0(main, "Widget", widget), Some(12.0));
+}
+
+#[test]
+fn project_property_let_rhs_uses_default_member_value() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim src As Widget\n    Dim dst As Widget\n    Set src = New Widget\n    Set dst = New Widget\n    src = 7\n    dst = src\n    r = dst\nEnd Sub\n";
+    let widget = "Private mV As Long\n\n\
+                  Public Property Get Value() As Long\n    Value = mV\nEnd Property\nAttribute Value.VB_UserMemId = 0\n\n\
+                  Public Property Let Value(ByVal v As Long)\n    mV = v\nEnd Property\nAttribute Value.VB_UserMemId = 0\n";
+    assert_eq!(run_class_main_local0(main, "Widget", widget), Some(7.0));
+}
+
+#[test]
+fn let_assignment_to_object_without_default_member_is_runtime_error() {
+    let main = "Sub Main()\n    Dim w As Widget\n    Set w = New Widget\n    w = 10\nEnd Sub\n";
+    let widget = "Public Function GetValue() As Long\n    GetValue = 1\nEnd Function\n";
+    let program =
+        bind_program(&class_manifest(main, "Widget", widget), &NullTypeLibs).expect("bind_program");
+    let oxp = calcvba_oxir::elaborate::elaborate(&program).expect("elaborate");
+    let host = NullHostServices::new(HostPolicy::default());
+    let err = match calcvba_vm3::Vm3::run(&oxp, &host) {
+        Ok(_) => panic!("Let into an object slot must fail"),
+        Err(calcvba_vm3::Vm3Error::Fault(fault)) => fault,
+        Err(other) => panic!("expected a VBA fault, got {other:?}"),
+    };
+    assert_eq!(err.code, 424);
+}
+
+#[test]
+fn is_operator_rejects_statically_scalar_operands() {
+    let err = bind_error_display(
+        "Sub Main()\n    Dim a As Long\n    Dim b As Long\n    Dim r As Boolean\n    r = (a Is b)\nEnd Sub\n",
+    );
+    assert!(err.contains("Type mismatch"), "unexpected error: {err}");
+}
+
+#[test]
+fn is_operator_variant_scalar_operands_raise_object_required() {
+    for (label, src) in [
+        (
+            "Variant scalar Is Variant scalar",
+            "Sub Main()\n    Dim a As Variant\n    Dim b As Variant\n    Dim r As Boolean\n    a = 1\n    b = 2\n    r = (a Is b)\nEnd Sub\n",
+        ),
+        (
+            "Object Is Variant scalar",
+            "Sub Main()\n    Dim o As Object\n    Dim v As Variant\n    Dim r As Boolean\n    v = 1\n    r = (o Is v)\nEnd Sub\n",
+        ),
+    ] {
+        let program = bind_program(&manifest(src), &NullTypeLibs).expect("bind_program");
+        let oxp = calcvba_oxir::elaborate::elaborate(&program).expect("elaborate");
+        let host = NullHostServices::new(HostPolicy::default());
+        let err = match calcvba_vm3::Vm3::run(&oxp, &host) {
+            Ok(_) => panic!("{label} must fail"),
+            Err(calcvba_vm3::Vm3Error::Fault(fault)) => fault,
+            Err(other) => panic!("expected a VBA fault for {label}, got {other:?}"),
+        };
+        assert_eq!(err.code, 424, "{label}");
+    }
+}
+
+#[test]
+fn is_operator_keeps_object_and_nothing_identity() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim a As Widget\n    Dim b As Widget\n    Dim c As Widget\n    Dim z As Widget\n    Set a = New Widget\n    Set b = a\n    Set c = New Widget\n    If a Is b Then r = r + 1\n    If Not (a Is c) Then r = r + 10\n    If Not (a Is Nothing) Then r = r + 100\n    Set a = Nothing\n    If a Is Nothing Then r = r + 1000\n    If z Is Nothing Then r = r + 10000\nEnd Sub\n";
+    assert_eq!(
+        run_class_main_local0(main, "Widget", "' empty class\n"),
+        Some(11111.0)
+    );
+}
+
+#[test]
+fn set_assigning_to_property_without_set_accessor_is_bind_error() {
+    let main = "Sub Main()\n    Dim b As Box\n    Dim t As Thing\n    Set b = New Box\n    Set t = New Thing\n    Set b.Item(1) = t\nEnd Sub\n";
+    let box_cls = "Public Property Get Item(ByVal i As Long) As Thing\n    Set Item = Nothing\nEnd Property\n";
+    let thing = "Public Function GetVal() As Long\n    GetVal = 1\nEnd Function\n";
+    assert!(
+        bind_program(
+            &multi_manifest(&[
+                ("Main", ModuleKind::Procedural, main),
+                ("Box", ModuleKind::Class, box_cls),
+                ("Thing", ModuleKind::Class, thing),
+            ]),
+            &NullTypeLibs,
+        )
+        .is_err(),
+        "an object property without Property Set must not lower to a synthetic setter"
+    );
+}
+
+#[test]
+fn method_mutates_instance_field_across_calls() {
+    // Two `c.Inc` statement-calls mutate the same instance's field; Total() reads it.
+    let main = "Sub Main()\n    Dim r As Long\n    Dim c As Counter\n    Set c = New Counter\n    c.Inc\n    c.Inc\n    r = c.Total()\nEnd Sub\n";
+    let counter = "Private n As Long\n\n\
+                   Public Sub Inc()\n    n = n + 1\nEnd Sub\n\n\
+                   Public Function Total() As Long\n    Total = n\nEnd Function\n";
+    assert_eq!(run_class_main_local0(main, "Counter", counter), Some(2.0));
+}
+
+#[test]
+fn private_class_method_is_not_accessible_from_other_module() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim w As Widget\n    Set w = New Widget\n    r = w.Secret()\nEnd Sub\n";
+    let widget = "Private Function Secret() As Long\n    Secret = 29\nEnd Function\n";
+    assert!(
+        bind_program(&class_manifest(main, "Widget", widget), &NullTypeLibs).is_err(),
+        "external receiver calls must not bind Private class members"
+    );
+}
+
+#[test]
+fn private_class_field_is_not_accessible_from_other_module() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim w As Widget\n    Set w = New Widget\n    r = w.secretValue\nEnd Sub\n";
+    let widget = "Private secretValue As Long\n";
+    assert!(
+        bind_program(&class_manifest(main, "Widget", widget), &NullTypeLibs).is_err(),
+        "external receiver reads must not bind Private class fields"
+    );
+}
+
+#[test]
+fn private_class_method_is_accessible_from_declaring_class() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim w As Widget\n    Set w = New Widget\n    r = w.PublicProbe()\nEnd Sub\n";
+    let widget = "Private Function Secret() As Long\n    Secret = 23\nEnd Function\n\n\
+                  Public Function PublicProbe() As Long\n    PublicProbe = Me.Secret()\nEnd Function\n";
+    assert_eq!(run_class_main_local0(main, "Widget", widget), Some(23.0));
+}
+
+#[test]
+fn friend_class_method_remains_accessible_inside_project() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim w As Widget\n    Set w = New Widget\n    r = w.FriendValue()\nEnd Sub\n";
+    let widget = "Friend Function FriendValue() As Long\n    FriendValue = 19\nEnd Function\n";
+    assert_eq!(run_class_main_local0(main, "Widget", widget), Some(19.0));
+}
+
+#[test]
+fn project_method_byref_mutates_caller() {
+    // o.Inc r passes r ByRef to a method; the method's write propagates back.
+    // (The headline fix: method dispatch used to force ByVal.)
+    let main = "Sub Main()\n    Dim r As Long\n    Dim o As C\n    r = 5\n    Set o = New C\n    o.Inc r\nEnd Sub\n";
+    let class_c = "Public Sub Inc(ByRef x As Long)\n    x = x + 100\nEnd Sub\n";
+    assert_eq!(run_class_main_local0(main, "C", class_c), Some(105.0));
+}
+
+#[test]
+fn byref_object_reassign_through_proc() {
+    // `Set p = New Thing` through a ByRef object param rewrites the caller's
+    // variable (release-old/retain-new), so `o` is a live Thing afterwards.
+    let main = "Sub Main()\n    Dim r As Long\n    Dim o As Thing\n    MakeThing o\n    r = o.GetVal()\nEnd Sub\n\n\
+                Sub MakeThing(ByRef p As Thing)\n    Set p = New Thing\nEnd Sub\n";
+    let thing = "Private mVal As Long\n\n\
+                 Private Sub Class_Initialize()\n    mVal = 7\nEnd Sub\n\n\
+                 Public Function GetVal() As Long\n    GetVal = mVal\nEnd Function\n";
+    assert_eq!(run_class_main_local0(main, "Thing", thing), Some(7.0));
+}
+
+#[test]
+fn redim_member_array_then_use() {
+    // ReDim a private class array field through a dotted Me target, then write and
+    // read an element of it (the resized array must be stored back into the field).
+    let main = "Sub Main()\n    Dim r As Long\n    Dim b As Box\n    Set b = New Box\n    r = b.UseIt()\nEnd Sub\n";
+    let box_cls = "Private arr() As Long\n\n\
+                   Public Function UseIt() As Long\n    ReDim Me.arr(5)\n    Me.arr(2) = 7\n    UseIt = Me.arr(2)\nEnd Function\n";
+    assert_eq!(run_class_main_local0(main, "Box", box_cls), Some(7.0));
+}
+
+#[test]
+fn callbyname_invokes_method() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim o As Calc\n    Set o = New Calc\n    r = CallByName(o, \"Add\", vbMethod, 2, 3)\nEnd Sub\n";
+    let calc = "Public Function Add(a As Long, b As Long) As Long\n    Add = a + b\nEnd Function\n";
+    assert_eq!(run_class_main_local0(main, "Calc", calc), Some(5.0));
+}
+
+#[test]
+fn callbyname_property_let_then_get() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim ignore\n    Dim o As Box\n    Set o = New Box\n    ignore = CallByName(o, \"Value\", vbLet, 42)\n    r = CallByName(o, \"Value\", vbGet)\nEnd Sub\n";
+    let box_cls = "Private mV As Long\n\n\
+                   Public Property Get Value() As Long\n    Value = mV\nEnd Property\n\n\
+                   Public Property Let Value(ByVal v As Long)\n    mV = v\nEnd Property\n";
+    assert_eq!(run_class_main_local0(main, "Box", box_cls), Some(42.0));
+}
+
+#[test]
+fn callbyname_unknown_member_errors() {
+    let main = "Sub Main()\n    Dim r\n    Dim o As Calc\n    Set o = New Calc\n    r = CallByName(o, \"Nope\", vbMethod)\nEnd Sub\n";
+    let calc = "Public Function Add(a As Long, b As Long) As Long\n    Add = a + b\nEnd Function\n";
+    let program = bind_program(&class_manifest(main, "Calc", calc), &NullTypeLibs).expect("bind");
+    let oxp = calcvba_oxir::elaborate::elaborate(&program).expect("elaborate");
+    let host = NullHostServices::new(HostPolicy::default());
+    assert!(calcvba_vm3::Vm3::run(&oxp, &host).is_err());
+}
+
+// ── Implements: interface dispatch + TypeOf + strict Set ─────────────────────
+
+const IANIMAL: &str = "Public Function Speak() As Long\nEnd Function\n";
+const CDOG: &str = "Implements IAnimal\n\nPrivate Function IAnimal_Speak() As Long\n    IAnimal_Speak = 42\nEnd Function\n";
+
+#[test]
+fn implements_dispatch_through_interface_var() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim a As IAnimal\n    Set a = New CDog\n    r = a.Speak()\nEnd Sub\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("IAnimal", ModuleKind::Class, IANIMAL),
+            ("CDog", ModuleKind::Class, CDOG),
+        ]),
+        Some(42.0)
+    );
+}
+
+#[test]
+fn implements_typeof_true_for_implementer() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim a As IAnimal\n    Set a = New CDog\n    If TypeOf a Is IAnimal Then\n        r = 1\n    Else\n        r = 0\n    End If\nEnd Sub\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("IAnimal", ModuleKind::Class, IANIMAL),
+            ("CDog", ModuleKind::Class, CDOG),
+        ]),
+        Some(1.0)
+    );
+}
+
+#[test]
+fn as_new_auto_instantiates_a_user_class() {
+    // `Dim t As New Thing` auto-instantiates `t` on first read — not Collection-
+    // specific: any project class works. Without the fix `t` was `Nothing` (and was
+    // mis-typed `Object("new")` by the parser-absorbs-`New` bug), so `t.GetVal()`
+    // would fault.
+    let main =
+        "Sub Main()\n    Dim r As Long\n    Dim t As New Thing\n    r = t.GetVal()\nEnd Sub\n";
+    let thing = "Public Function GetVal() As Long\n    GetVal = 7\nEnd Function\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Thing", ModuleKind::Class, thing),
+        ]),
+        Some(7.0)
+    );
+}
+
+#[test]
+fn as_new_local_reinstantiates_after_set_nothing() {
+    let main = "Private counter As Long\n\n\
+                Public Function NextId() As Long\n    counter = counter + 1\n    NextId = counter\nEnd Function\n\n\
+                Sub Main()\n    Dim r As Long\n    Dim t As New Thing\n    r = t.Id\n    Set t = Nothing\n    r = r + 10 * t.Id\nEnd Sub\n";
+    let thing = "Private mId As Long\n\n\
+                 Private Sub Class_Initialize()\n    mId = NextId()\nEnd Sub\n\n\
+                 Public Property Get Id() As Long\n    Id = mId\nEnd Property\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Thing", ModuleKind::Class, thing),
+        ]),
+        Some(21.0)
+    );
+}
+
+#[test]
+fn as_new_field_reinstantiates_after_set_nothing() {
+    let main = "Private counter As Long\n\n\
+                Public Function NextId() As Long\n    counter = counter + 1\n    NextId = counter\nEnd Function\n\n\
+                Sub Main()\n    Dim r As Long\n    Dim h As New Holder\n    r = h.Child.Id\n    h.ClearChild\n    r = r + 10 * h.Child.Id\nEnd Sub\n";
+    let holder = "Private mChild As New Thing\n\n\
+                  Public Property Get Child() As Thing\n    Set Child = mChild\nEnd Property\n\n\
+                  Public Sub ClearChild()\n    Set mChild = Nothing\nEnd Sub\n";
+    let thing = "Private mId As Long\n\n\
+                 Private Sub Class_Initialize()\n    mId = NextId()\nEnd Sub\n\n\
+                 Public Property Get Id() As Long\n    Id = mId\nEnd Property\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Holder", ModuleKind::Class, holder),
+            ("Thing", ModuleKind::Class, thing),
+        ]),
+        Some(21.0)
+    );
+}
+
+#[test]
+fn class_initialize_can_set_collection_field_and_read_count() {
+    let main =
+        "Sub Main()\n    Dim r As Long\n    Dim t As New Thing\n    r = t.ItemCount\nEnd Sub\n";
+    let thing = "Private Items As VBA.Collection\n\n\
+                 Private Sub Class_Initialize()\n    Set Items = New VBA.Collection\nEnd Sub\n\n\
+                 Public Property Get ItemCount() As Long\n    ItemCount = Items.Count\nEnd Property\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Thing", ModuleKind::Class, thing),
+        ]),
+        Some(0.0)
+    );
+}
+
+#[test]
+fn variant_property_set_preserves_collection_object_for_readback() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim h As New Holder\n    Dim c As New VBA.Collection\n    c.Add \"A\"\n    c.Add \"B\"\n    Set h.Body = c\n    r = h.Body.Count\nEnd Sub\n";
+    let holder = "Private pBody As Variant\n\n\
+                  Public Property Get Body() As Variant\n    Set Body = pBody\nEnd Property\n\n\
+                  Public Property Set Body(Value As Variant)\n    Set pBody = Value\nEnd Property\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Holder", ModuleKind::Class, holder),
+        ]),
+        Some(2.0)
+    );
+}
+
+#[test]
+fn variant_collection_typename_and_foreach_work_after_property_readback() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim h As New Holder\n    Dim c As New VBA.Collection\n    c.Add \"A\"\n    c.Add \"B\"\n    Set h.Body = c\n    r = CountItems(h.Body)\nEnd Sub\n\n\
+                Public Function CountItems(Value As Variant) As Long\n    Dim item As Variant\n    If VBA.TypeName(Value) <> \"Collection\" Then\n        CountItems = -100\n        Exit Function\n    End If\n    For Each item In Value\n        CountItems = CountItems + 1\n    Next item\nEnd Function\n";
+    let holder = "Private pBody As Variant\n\n\
+                  Public Property Get Body() As Variant\n    Set Body = pBody\nEnd Property\n\n\
+                  Public Property Set Body(Value As Variant)\n    Set pBody = Value\nEnd Property\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Holder", ModuleKind::Class, holder),
+        ]),
+        Some(2.0)
+    );
+}
+
+#[test]
+fn with_receiver_function_result_is_evaluated_once_for_leading_dot_calls() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim s As New Suite\n    With s.It()\n        .Expect(\"actual\").ToEqual \"expected\"\n    End With\n    r = s.Created\nEnd Sub\n";
+    let suite = "Public Created As Long\n\n\
+                 Public Function It() As Spec\n    Created = Created + 1\n    Set It = New Spec\nEnd Function\n";
+    let spec = "Public Expectations As VBA.Collection\n\n\
+                Private Sub Class_Initialize()\n    Set Expectations = New VBA.Collection\nEnd Sub\n\n\
+                Public Function Expect(Optional Actual As Variant) As Expectation\n    Dim e As New Expectation\n    If VBA.VarType(Actual) = VBA.vbObject Then\n        Set e.Actual = Actual\n    Else\n        e.Actual = Actual\n    End If\n    Expectations.Add e\n    Set Expect = e\nEnd Function\n";
+    let expectation = "Public Actual As Variant\nPublic Expected As Variant\nPublic Passed As Boolean\n\n\
+                       Public Sub ToEqual(Expected As Variant)\n    Check IsEqual(Me.Actual, Expected), Expected:=Expected\nEnd Sub\n\n\
+                       Private Function IsEqual(Actual As Variant, Expected As Variant) As Variant\n    If VBA.IsObject(Actual) Or VBA.IsObject(Expected) Then\n        IsEqual = False\n    Else\n        IsEqual = Actual = Expected\n    End If\nEnd Function\n\n\
+                       Private Sub Check(Result As Variant, Optional Expected As Variant)\n    If Not VBA.IsMissing(Expected) Then\n        If VBA.IsObject(Expected) Then\n            Set Me.Expected = Expected\n        Else\n            Me.Expected = Expected\n        End If\n    End If\n    Passed = Result\nEnd Sub\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Suite", ModuleKind::Class, suite),
+            ("Spec", ModuleKind::Class, spec),
+            ("Expectation", ModuleKind::Class, expectation),
+        ]),
+        Some(1.0)
+    );
+}
+
+#[test]
+fn isobject_false_for_scalar_variant_named_optional_argument() {
+    let source = "Sub Main()\n    Dim r As Long\n    r = Outer(\"text\")\nEnd Sub\n\n\
+                  Function Outer(Expected As Variant) As Long\n    Outer = Inner(Expected:=Expected)\nEnd Function\n\n\
+                  Function Inner(Optional Expected As Variant) As Long\n    If VBA.IsObject(Expected) Then\n        Inner = 1\n    Else\n        Inner = 0\n    End If\nEnd Function\n";
+    assert_eq!(run_main_local0(source), Some(0.0));
+}
+
+#[test]
+fn isobject_guarded_set_branch_not_taken_for_scalar_named_optional_method_arg() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim e As New Expectation\n    e.ToEqual \"expected\"\n    r = e.Branch\nEnd Sub\n";
+    let expectation = "Public Branch As Long\nPublic Expected As Variant\n\n\
+                       Public Sub ToEqual(Expected As Variant)\n    Check Expected:=Expected\nEnd Sub\n\n\
+                       Private Sub Check(Optional Expected As Variant)\n    If VBA.IsObject(Expected) Then\n        Branch = 1\n        Set Me.Expected = Expected\n    Else\n        Branch = 2\n        Me.Expected = Expected\n    End If\nEnd Sub\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Expectation", ModuleKind::Class, expectation),
+        ]),
+        Some(2.0)
+    );
+}
+
+#[test]
+fn method_argument_string_is_not_object_in_class_method() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim e As New Expectation\n    e.ToEqual \"expected\"\n    r = e.Branch\nEnd Sub\n";
+    let expectation = "Public Branch As Long\n\n\
+                       Public Sub ToEqual(Expected As Variant)\n    If VBA.IsObject(Expected) Then\n        Branch = 1\n    Else\n        Branch = 2\n    End If\nEnd Sub\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Expectation", ModuleKind::Class, expectation),
+        ]),
+        Some(2.0)
+    );
+}
+
+#[test]
+fn named_argument_to_private_class_method_binds_caller_parameter_value() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim e As New Expectation\n    e.ToEqual \"expected\"\n    r = e.Branch\nEnd Sub\n";
+    let expectation = "Public Branch As Long\n\n\
+                       Public Sub ToEqual(Expected As Variant)\n    Check Expected:=Expected\nEnd Sub\n\n\
+                       Private Sub Check(Optional Expected As Variant)\n    If VBA.IsMissing(Expected) Then\n        Branch = 1\n    ElseIf Expected = \"expected\" Then\n        Branch = 2\n    Else\n        Branch = 3\n    End If\nEnd Sub\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Expectation", ModuleKind::Class, expectation),
+        ]),
+        Some(2.0)
+    );
+}
+
+#[test]
+fn named_args_to_instance_class_method_skip_hidden_me_receiver() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim c As New Calculator\n    r = c.Combine(right := 3, left := 2)\nEnd Sub\n";
+    let calculator = "Public Function Combine(left As Long, right As Long) As Long\n    Combine = left * 10 + right\nEnd Function\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Calculator", ModuleKind::Class, calculator),
+        ]),
+        Some(23.0)
+    );
+}
+
+#[test]
+fn paramarray_instance_class_method_packs_tail_after_hidden_me_receiver() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim c As New Calculator\n    r = c.SumAll(4, 1, 2, 3)\nEnd Sub\n";
+    let calculator = "Public Function SumAll(seed As Long, ParamArray xs() As Variant) As Long\n    Dim i As Long\n    SumAll = seed\n    For i = LBound(xs) To UBound(xs)\n        SumAll = SumAll + CLng(xs(i))\n    Next i\nEnd Function\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Calculator", ModuleKind::Class, calculator),
+        ]),
+        Some(10.0)
+    );
+}
+
+#[test]
+fn statement_form_named_argument_binds_in_standard_module() {
+    let source = "Sub Main()\n    Dim r As Long\n    ToEqual \"expected\"\n    r = g\nEnd Sub\n\n\
+                  Public g As Long\n\n\
+                  Public Sub ToEqual(Expected As Variant)\n    Check Expected:=Expected\nEnd Sub\n\n\
+                  Private Sub Check(Optional Expected As Variant)\n    If VBA.IsMissing(Expected) Then\n        g = 1\n    ElseIf Expected = \"expected\" Then\n        g = 2\n    Else\n        g = 3\n    End If\nEnd Sub\n";
+    assert_eq!(run_main_local0(source), Some(2.0));
+}
+
+#[test]
+fn statement_form_call_accepts_negative_first_argument() {
+    let source = "Sub Main()\n    Dim r As Long\n    Capture -1, 2\n    r = g\nEnd Sub\n\n\
+                  Public g As Long\n\n\
+                  Private Sub Capture(ByVal first As Long, ByVal second As Long)\n    g = first + second\nEnd Sub\n";
+    assert_eq!(run_main_local0(source), Some(1.0));
+}
+
+#[test]
+fn implements_typeof_false_for_non_implementer() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim o As Object\n    Set o = New CRock\n    If TypeOf o Is IAnimal Then\n        r = 1\n    Else\n        r = 0\n    End If\nEnd Sub\n";
+    let crock = "Public Function Foo() As Long\nEnd Function\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("IAnimal", ModuleKind::Class, IANIMAL),
+            ("CRock", ModuleKind::Class, crock),
+        ]),
+        Some(0.0)
+    );
+}
+
+#[test]
+fn implements_set_type_mismatch_errors() {
+    // Set into an IAnimal-typed var with a class that does not implement it → error 13.
+    let main = "Sub Main()\n    Dim a As IAnimal\n    Set a = New CRock\nEnd Sub\n";
+    let crock = "Public Function Foo() As Long\nEnd Function\n";
+    let program = bind_program(
+        &multi_manifest(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("IAnimal", ModuleKind::Class, IANIMAL),
+            ("CRock", ModuleKind::Class, crock),
+        ]),
+        &NullTypeLibs,
+    )
+    .expect("bind");
+    let oxp = calcvba_oxir::elaborate::elaborate(&program).expect("elaborate");
+    let host = NullHostServices::new(HostPolicy::default());
+    match calcvba_vm3::Vm3::run(&oxp, &host) {
+        Ok(_) => panic!("Set of a non-implementing class into an interface var must fail"),
+        Err(calcvba_vm3::Vm3Error::Fault(fault)) => assert_eq!(
+            fault.code, 13,
+            "interface type mismatch must be VBA error 13 (Type mismatch)"
+        ),
+        Err(other) => panic!("expected a VBA type-mismatch fault, got {other:?}"),
+    }
+}
+
+#[test]
+fn implements_missing_member_is_bind_error() {
+    // CDog declares Implements IAnimal but omits IAnimal_Speak → bind error.
+    let main = "Sub Main()\nEnd Sub\n";
+    let cdog = "Implements IAnimal\n";
+    assert!(
+        bind_program(
+            &multi_manifest(&[
+                ("Main", ModuleKind::Procedural, main),
+                ("IAnimal", ModuleKind::Class, IANIMAL),
+                ("CDog", ModuleKind::Class, cdog),
+            ]),
+            &NullTypeLibs,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn implements_property_through_interface_var() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim s As IShape\n    Set s = New CBox\n    s.Size = 10\n    r = s.Size\nEnd Sub\n";
+    let ishape = "Public Property Get Size() As Long\nEnd Property\n\n\
+                  Public Property Let Size(ByVal v As Long)\nEnd Property\n";
+    let cbox = "Implements IShape\n\nPrivate mS As Long\n\n\
+                Private Property Get IShape_Size() As Long\n    IShape_Size = mS\nEnd Property\n\n\
+                Private Property Let IShape_Size(ByVal v As Long)\n    mS = v\nEnd Property\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("IShape", ModuleKind::Class, ishape),
+            ("CBox", ModuleKind::Class, cbox),
+        ]),
+        Some(10.0)
+    );
+}
+
+#[test]
+fn implements_indexed_property_through_interface_var() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim s As IShape\n    Set s = New CBox\n    s.Size(3) = 10\n    r = s.Size(2)\nEnd Sub\n";
+    let ishape = "Public Property Get Size(ByVal i As Long) As Long\nEnd Property\n\n\
+                  Public Property Let Size(ByVal i As Long, ByVal v As Long)\nEnd Property\n";
+    let cbox = "Implements IShape\n\nPrivate mS As Long\n\n\
+                Private Property Get IShape_Size(ByVal i As Long) As Long\n    IShape_Size = mS + i\nEnd Property\n\n\
+                Private Property Let IShape_Size(ByVal i As Long, ByVal v As Long)\n    mS = v + i\nEnd Property\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("IShape", ModuleKind::Class, ishape),
+            ("CBox", ModuleKind::Class, cbox),
+        ]),
+        Some(15.0)
+    );
+}
+
+// ── New of a COM coclass (lowers to CreateObject activation) ─────────────────
+
+struct WidgetTypeLibs;
+impl TypeLibResolver for WidgetTypeLibs {
+    fn resolve(
+        &self,
+        _request: &calcvba_com::TypeLibResolveRequest,
+    ) -> Option<calcvba_com::TypeLibMetadataBlob> {
+        Some(calcvba_com::TypeLibMetadataBlob {
+            constants: Vec::new(),
+            identity: calcvba_com::TypeLibResolvedIdentity {
+                reference_name: "Widget".into(),
+                requested_coclass: None,
+                importlib: "widget".into(),
+                libid: None,
+                major_version: 1,
+                minor_version: 0,
+                lcid: None,
+                cache_key: "widget".into(),
+            },
+            activation_prog_id: Some("Widget.Thing".into()),
+            member_name_to_token: Vec::new(),
+            members: Vec::new(),
+            events: Vec::new(),
+            coclass_names: Vec::new(),
+        })
+    }
+}
+
+#[test]
+fn new_com_coclass_lowers_to_create_object() {
+    let main = "Sub Main()\n    Dim x As Widget\n    Set x = New Widget\nEnd Sub\n";
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Main".into(),
+            module_kind: ModuleKind::Procedural,
+            attributes: ModuleAttributes::named("Main"),
+            source: main.into(),
+        }],
+        references: vec![ProjectReference::TypeLibrary {
+            name: "Widget".into(),
+            guid: None,
+            version_major: Some(1),
+            version_minor: Some(0),
+            lcid: None,
+            import_lib: None,
+        }],
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let program = bind_program(&manifest, &WidgetTypeLibs).expect("bind_program");
+    // `New Widget` resolves the coclass to its ProgID and lowers to CreateObject.
+    assert!(format!("{program:?}").contains("CreateObject"));
+}
+
+#[test]
+fn getobject_call_lowers_to_native_getobject() {
+    // `GetObject` is a SpecialForm intrinsic that keeps the bespoke `Native` route (like
+    // `CreateObject`); each of its three call shapes must reach `NativeImplId::GetObject`,
+    // including the leading-omitted `GetObject(, class)` (the running-instance mode).
+    for src in [
+        "Sub Main()\n    Dim x As Object\n    Set x = GetObject(\"c:\\book.xlsx\")\nEnd Sub\n",
+        "Sub Main()\n    Dim x As Object\n    Set x = GetObject(, \"Excel.Application\")\nEnd Sub\n",
+        "Sub Main()\n    Dim x As Object\n    Set x = GetObject(\"\", \"Scripting.Dictionary\")\nEnd Sub\n",
+    ] {
+        let program = bind(src);
+        assert!(
+            format!("{program:?}").contains("GetObject"),
+            "expected a Native(GetObject) call for:\n{src}"
+        );
+    }
+}
+
+#[test]
+fn getobject_omitted_pathname_passes_an_empty_first_arg() {
+    // `GetObject(, "Excel.Application")` — the omitted pathname must reach the native call as
+    // an Omitted arg (the VM materializes it as `Empty`), so the HAL can tell the
+    // running-instance mode from a present `""` (new-instance). Assert the first arg is
+    // Omitted and the second is the class string.
+    let program = bind(
+        "Sub Main()\n    Dim x As Object\n    Set x = GetObject(, \"Excel.Application\")\nEnd Sub\n",
+    );
+    fn native_getobject_args(program: &CoreProgram) -> Option<&Vec<CoreArg>> {
+        fn find(value: &CoreValue) -> Option<&Vec<CoreArg>> {
+            match value {
+                CoreValue::Call {
+                    callee: CoreCallee::Native(NativeImplId::GetObject),
+                    args,
+                } => Some(args),
+                CoreValue::Coerce { value, .. } => find(value),
+                _ => None,
+            }
+        }
+        program
+            .procs
+            .iter()
+            .flat_map(|p| &p.body)
+            .find_map(|s| match s {
+                CoreStmt::Assign { value, .. } => find(value),
+                CoreStmt::Eval(value) => find(value),
+                _ => None,
+            })
+    }
+    let args = native_getobject_args(&program).expect("a Native(GetObject) call");
+    assert_eq!(args.len(), 2, "pathname + class: {args:?}");
+    assert!(
+        matches!(args[0], CoreArg::Omitted),
+        "omitted pathname must stay Omitted: {:?}",
+        args[0]
+    );
+}
+
+// ── Events: WithEvents + RaiseEvent routing ──────────────────────────────────
+
+fn multi_manifest(modules: &[(&str, ModuleKind, &str)]) -> SymbolProjectManifest {
+    SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: modules
+            .iter()
+            .map(|(name, kind, src)| ModuleUnit {
+                module_name: (*name).into(),
+                module_kind: *kind,
+                attributes: ModuleAttributes::named(*name),
+                source: (*src).into(),
+            })
+            .collect(),
+        references: Vec::new(),
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    }
+}
+
+fn run_multi_main_local0(modules: &[(&str, ModuleKind, &str)]) -> Option<f64> {
+    let program = bind_program(&multi_manifest(modules), &NullTypeLibs).expect("bind_program");
+    let oxp = calcvba_oxir::elaborate::elaborate(&program).expect("elaborate");
+    let host = NullHostServices::new(HostPolicy::default());
+    let vm = calcvba_vm3::Vm3::run(&oxp, &host).expect("run");
+    let value = vm.slot(oxp.globals.len())?;
+    value
+        .as_f64()
+        .or_else(|| value.as_i32().map(f64::from))
+        .or_else(|| value.as_i64().map(|v| v as f64))
+}
+
+#[test]
+fn module_private_fixed_array_global_in_non_entry_module_is_allocated() {
+    let main = "Sub Main()\n    Dim r As Long\n    AddTopic 7\n    r = TopicTotal()\nEnd Sub\n";
+    let helper = "Private gTopicIds(1 To 2) As Long\nPrivate gTopicCount As Long\n\n\
+                  Public Sub AddTopic(ByVal topicId As Long)\n    gTopicCount = gTopicCount + 1\n    gTopicIds(gTopicCount) = topicId\nEnd Sub\n\n\
+                  Public Function TopicTotal() As Long\n    TopicTotal = gTopicIds(1)\nEnd Function\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("RtdTimer", ModuleKind::Procedural, helper),
+        ]),
+        Some(7.0)
+    );
+}
+
+#[test]
+fn module_private_fixed_array_global_in_procedureless_module_is_initialized() {
+    let program = bind_program(
+        &multi_manifest(&[(
+            "Globals",
+            ModuleKind::Procedural,
+            "Private gTopicIds(1 To 2) As Long\n",
+        )]),
+        &NullTypeLibs,
+    )
+    .expect("bind procedureless module global");
+    assert!(
+        program.global_initializer.is_some(),
+        "fixed-size module array should allocate even when the project has no procedures"
+    );
+}
+
+#[test]
+fn withevents_raise_event_routes_to_handler() {
+    // `Set k.Watched = s` subscribes the sink; `s.Fire` raises the event, which
+    // routes to `Watched_Fired` (run with the sink's Me) and sets `k.Got`.
+    let main = "Sub Main()\n    Dim r As Long\n    Dim k As Sink\n    Dim s As Source\n    Set s = New Source\n    Set k = New Sink\n    Set k.Watched = s\n    s.Fire\n    r = k.Got\nEnd Sub\n";
+    let sink = "Public WithEvents Watched As Source\nPublic Got As Long\n\n\
+                Private Sub Watched_Fired(ByVal v As Long)\n    Got = v\nEnd Sub\n";
+    let source = "Public Event Fired(ByVal v As Long)\n\n\
+                  Public Sub Fire()\n    RaiseEvent Fired(99)\nEnd Sub\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Sink", ModuleKind::Class, sink),
+            ("Source", ModuleKind::Class, source),
+        ]),
+        Some(99.0)
+    );
+}
+
+#[test]
+fn raise_event_outside_class_module_is_bind_error() {
+    let err = bind_error("Sub Main()\n    RaiseEvent Tick\nEnd Sub\n");
+    assert!(
+        err.contains("RaiseEvent outside a class module"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn event_declaration_outside_class_module_is_bind_error() {
+    let err = bind_error("Public Event Tick()\n");
+    assert!(
+        err.contains("EventNotValidInStandardModule")
+            || err.contains("SYM-E-EVENT-ONLY-VALID-IN-OBJECT-MODULE"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn withevents_scalar_field_type_is_bind_error() {
+    let manifest = manifest_modules(&[(
+        "Sink",
+        ModuleKind::Class,
+        "Private WithEvents src As Long\n",
+    )]);
+    let err = format!(
+        "{:?}",
+        bind_program(&manifest, &NullTypeLibs)
+            .expect_err("scalar WithEvents field should fail binding")
+    );
+    assert!(
+        err.contains("InvalidWithEventsFieldType")
+            || err.contains("SYM-E-INVALID-WITHEVENTS-FIELD-TYPE"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn withevents_as_new_field_is_bind_error() {
+    let manifest = manifest_modules(&[(
+        "Sink",
+        ModuleKind::Class,
+        "Private WithEvents src As New Source\n",
+    )]);
+    let err = format!(
+        "{:?}",
+        bind_program(&manifest, &NullTypeLibs)
+            .expect_err("WithEvents As New field should fail binding")
+    );
+    assert!(
+        err.contains("InvalidWithEventsAutoInstantiation")
+            || err.contains("SYM-E-INVALID-WITHEVENTS-AUTO-INSTANTIATION"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn withevents_local_declaration_is_bind_error() {
+    let manifest = manifest_modules(&[(
+        "Sink",
+        ModuleKind::Class,
+        "Public Sub Hook()\n    Dim WithEvents src As Source\nEnd Sub\n",
+    )]);
+    let err = format!(
+        "{:?}",
+        bind_program(&manifest, &NullTypeLibs)
+            .expect_err("local WithEvents declaration should fail binding")
+    );
+    assert!(
+        err.contains("WithEventsNotValidInLocalScope")
+            || err.contains("SYM-E-WITHEVENTS-ONLY-VALID-AT-MODULE-LEVEL"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn withevents_const_declaration_is_bind_error() {
+    let manifest = manifest_modules(&[(
+        "Sink",
+        ModuleKind::Class,
+        "Private Const WithEvents src As Long = 1\n",
+    )]);
+    let err = format!(
+        "{:?}",
+        bind_program(&manifest, &NullTypeLibs)
+            .expect_err("WithEvents Const declaration should fail binding")
+    );
+    assert!(
+        err.contains("InvalidWithEventsConstDeclaration")
+            || err.contains("SYM-E-INVALID-WITHEVENTS-CONST-DECLARATION"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn event_declaration_rejects_invalid_parameters() {
+    for (source, expected) in [
+        (
+            "Public Event Tick(Optional ByVal n As Long)\n",
+            "Event arguments cannot be Optional",
+        ),
+        (
+            "Public Event Tick(ByVal n As Long = 1)\n",
+            "Event arguments cannot have default values",
+        ),
+        (
+            "Public Event Tick(ParamArray xs() As Variant)\n",
+            "Event arguments cannot be ParamArray",
+        ),
+    ] {
+        let manifest = manifest_modules(&[("Source", ModuleKind::Class, source)]);
+        let err = format!(
+            "{:?}",
+            bind_program(&manifest, &NullTypeLibs)
+                .expect_err("invalid Event parameter should fail binding")
+        );
+        assert!(
+            err.contains(expected),
+            "expected `{expected}` in bind error, got {err}"
+        );
+    }
+}
+
+#[test]
+fn event_declaration_as_new_parameter_is_bind_error() {
+    let manifest = manifest_modules(&[(
+        "Source",
+        ModuleKind::Class,
+        "Public Event Tick(ByVal value As New Source)\n",
+    )]);
+    let err = format!(
+        "{:?}",
+        bind_program(&manifest, &NullTypeLibs)
+            .expect_err("Event As New parameter should fail binding")
+    );
+    assert!(
+        err.contains("InvalidAsNewDeclaration")
+            && err.contains("name: \"value\"")
+            && err.contains("context: \"Event argument\""),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn raise_event_rejects_invalid_argument_syntax() {
+    for (source, expected) in [
+        (
+            "Public Event Fired()\nPublic Sub Fire()\n    RaiseEvent Fired()\nEnd Sub\n",
+            "RaiseEvent without arguments must omit parentheses",
+        ),
+        (
+            "Public Event Fired(ByVal v As Long)\nPublic Sub Fire()\n    RaiseEvent Fired 1\nEnd Sub\n",
+            "RaiseEvent arguments must be enclosed in parentheses",
+        ),
+        (
+            "Public Event Fired(ByVal v As Long)\nPublic Sub Fire()\n    RaiseEvent Fired(v:=1)\nEnd Sub\n",
+            "RaiseEvent arguments cannot be named",
+        ),
+        (
+            "Public Event Fired(ByVal v As Long)\nPublic Sub Fire()\n    RaiseEvent Fired(,)\nEnd Sub\n",
+            "ArgumentNotOptional",
+        ),
+        (
+            "Public Event Fired(ByVal v As Long)\nPublic Sub Fire()\n    RaiseEvent Fired\nEnd Sub\n",
+            "WrongNumberOfArgumentsOrInvalidPropertyAssignment",
+        ),
+    ] {
+        let manifest = manifest_modules(&[("Source", ModuleKind::Class, source)]);
+        let err = format!(
+            "{:?}",
+            bind_program(&manifest, &NullTypeLibs)
+                .expect_err("invalid RaiseEvent argument list should fail binding")
+        );
+        assert!(
+            err.contains(expected),
+            "expected `{expected}` in bind error, got {err}"
+        );
+    }
+}
+
+#[test]
+fn raise_event_undeclared_event_is_bind_error() {
+    let err = format!(
+        "{:?}",
+        bind_program(
+            &multi_manifest(&[
+                ("Main", ModuleKind::Procedural, "Sub Main()\nEnd Sub\n"),
+                (
+                    "Emitter",
+                    ModuleKind::Class,
+                    "Public Sub Fire()\n    RaiseEvent Tick\nEnd Sub\n",
+                ),
+            ]),
+            &NullTypeLibs,
+        )
+        .expect_err("undeclared RaiseEvent target should fail binding")
+    );
+    assert!(
+        err.to_ascii_lowercase().contains("tick"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn two_sink_classes_same_source_event_route_independently() {
+    // Two DISTINCT sink classes each `WithEvents Watched As Source` with their own
+    // `Watched_Fired` handler. A single `RaiseEvent Fired` on the shared source must
+    // dispatch to BOTH handlers independently. Regression: the binder used to draw a
+    // WithEvents field's binding token from a PER-CLASS counter, so both sink fields
+    // got token 1 and the bundle's `event_routes[(binding, event)]` collided — vm2
+    // panicked at `LoadedBundle::load` (the dedup invariant). A bundle-global binding
+    // counter gives each field a distinct token, so both routes coexist.
+    //
+    // The handlers write DIFFERENT values (v vs v+1) so the asserted result proves
+    // each route reached its OWN handler, not that one shadowed the other.
+    let main = "Sub Main()\n    Dim r As Long\n    Dim a As SinkA\n    Dim b As SinkB\n    Dim s As Source\n    \
+                Set s = New Source\n    Set a = New SinkA\n    Set b = New SinkB\n    \
+                Set a.Watched = s\n    Set b.Watched = s\n    s.Fire\n    \
+                r = a.Got * 1000 + b.Got\nEnd Sub\n";
+    let sink_a = "Public WithEvents Watched As Source\nPublic Got As Long\n\n\
+                  Private Sub Watched_Fired(ByVal v As Long)\n    Got = v\nEnd Sub\n";
+    let sink_b = "Public WithEvents Watched As Source\nPublic Got As Long\n\n\
+                  Private Sub Watched_Fired(ByVal v As Long)\n    Got = v + 1\nEnd Sub\n";
+    let source = "Public Event Fired(ByVal v As Long)\n\n\
+                  Public Sub Fire()\n    RaiseEvent Fired(99)\nEnd Sub\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("SinkA", ModuleKind::Class, sink_a),
+            ("SinkB", ModuleKind::Class, sink_b),
+            ("Source", ModuleKind::Class, source),
+        ]),
+        // a.Got = 99, b.Got = 100  ⇒  99 * 1000 + 100
+        Some(99_100.0),
+        "both sink classes must route the shared event to their own handler",
+    );
+}
+
+#[test]
+fn same_sink_class_twice_each_instance_dispatches() {
+    // Two INSTANCES of ONE sink class, both subscribed to the same source. They share
+    // a single binding token (and handler proc) — correctly, since the token names a
+    // (sink class, field), not an instance — yet each must dispatch with its own `Me`.
+    // The owner identity in the subscription key disambiguates them. Guards the
+    // per-instance half of the invariant the bundle-global token change relies on.
+    let main = "Sub Main()\n    Dim r As Long\n    Dim a As Sink\n    Dim b As Sink\n    Dim s As Source\n    \
+                Set s = New Source\n    Set a = New Sink\n    Set b = New Sink\n    \
+                Set a.Watched = s\n    Set b.Watched = s\n    s.Fire\n    \
+                r = a.Got + b.Got\nEnd Sub\n";
+    let sink = "Public WithEvents Watched As Source\nPublic Got As Long\n\n\
+                Private Sub Watched_Fired(ByVal v As Long)\n    Got = v\nEnd Sub\n";
+    let source = "Public Event Fired(ByVal v As Long)\n\n\
+                  Public Sub Fire()\n    RaiseEvent Fired(99)\nEnd Sub\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Sink", ModuleKind::Class, sink),
+            ("Source", ModuleKind::Class, source),
+        ]),
+        // Both instances' handlers fire with their own Me: a.Got = 99, b.Got = 99.
+        Some(198.0),
+        "both instances of one sink class must dispatch independently",
+    );
+}
+
+#[test]
+fn raise_event_byref_param_writes_back_to_raiser() {
+    // VBA event parameters default to ByRef, and RaiseEvent is synchronous, so a
+    // handler that assigns to a ByRef parameter mutates the raiser's variable
+    // after RaiseEvent returns. (RaiseEvent args used to bind without the event
+    // signature, defaulting every argument to ByVal and dropping the write-back.)
+    let main = "Sub Main()\n    Dim r As Long\n    Dim k As Sink\n    Dim s As Source\n    Set s = New Source\n    Set k = New Sink\n    Set k.Watched = s\n    r = s.FireWith(7)\nEnd Sub\n";
+    let sink = "Public WithEvents Watched As Source\n\n\
+                Private Sub Watched_Poked(v As Long)\n    v = 1234\nEnd Sub\n";
+    let source = "Public Event Poked(v As Long)\n\n\
+                  Public Function FireWith(ByVal start As Long) As Long\n    Dim x As Long\n    x = start\n    RaiseEvent Poked(x)\n    FireWith = x\nEnd Function\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Sink", ModuleKind::Class, sink),
+            ("Source", ModuleKind::Class, source),
+        ]),
+        Some(1234.0),
+        "the handler's write to its ByRef parameter must reach the raiser's variable"
+    );
+}
+
+#[test]
+fn raise_event_prefers_event_over_same_named_property() {
+    // `RaiseEvent Result(...)` must target the event declaration even when the
+    // class also has a `Result` property. VBA-Web's SpecSuite has this shape.
+    let main = "Sub Main()\n    Dim r As Long\n    Dim k As Sink\n    Dim s As Source\n    Set s = New Source\n    Set k = New Sink\n    Set k.Watched = s\n    s.Fire\n    r = k.Got\nEnd Sub\n";
+    let sink = "Public WithEvents Watched As Source\nPublic Got As Long\n\n\
+                Private Sub Watched_Result(ByVal v As Long)\n    Got = v\nEnd Sub\n";
+    let source = "Public Event Result(ByVal v As Long)\n\n\
+                  Public Property Get Result() As Long\n    Result = -1\nEnd Property\n\n\
+                  Public Sub Fire()\n    RaiseEvent Result(7)\nEnd Sub\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Sink", ModuleKind::Class, sink),
+            ("Source", ModuleKind::Class, source),
+        ]),
+        Some(7.0)
+    );
+}
+
+#[test]
+fn raise_event_byval_param_does_not_write_back() {
+    // The event declares its parameter ByVal, so a handler that assigns to it
+    // must mutate a copy — never the raiser's variable. (RaiseEvent args used
+    // to bind without the event's signature, so an l-value argument took the
+    // ByRef default and the handler's write corrupted the raiser's local.)
+    let main = "Sub Main()\n    Dim r As Long\n    Dim k As Sink\n    Dim s As Source\n    Set s = New Source\n    Set k = New Sink\n    Set k.Watched = s\n    r = s.FireWith(7)\nEnd Sub\n";
+    let sink = "Public WithEvents Watched As Source\n\n\
+                Private Sub Watched_Poked(ByVal v As Long)\n    v = 1234\nEnd Sub\n";
+    let source = "Public Event Poked(ByVal v As Long)\n\n\
+                  Public Function FireWith(ByVal start As Long) As Long\n    Dim x As Long\n    x = start\n    RaiseEvent Poked(x)\n    FireWith = x\nEnd Function\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Sink", ModuleKind::Class, sink),
+            ("Source", ModuleKind::Class, source),
+        ]),
+        Some(7.0),
+        "the handler's write to its ByVal parameter must not reach the raiser"
+    );
+}
+
+#[test]
+fn raise_event_accepts_bracketed_reserved_event_name() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim k As Sink\n    Dim s As Source\n    Set s = New Source\n    Set k = New Sink\n    Set k.Watched = s\n    s.Fire\n    r = k.Got\nEnd Sub\n";
+    let sink = "Public WithEvents Watched As Source\nPublic Got As Long\n\n\
+                Private Sub Watched_Exit()\n    Got = 42\nEnd Sub\n";
+    let source = "Public Event [Exit]()\n\n\
+                  Public Sub Fire()\n    RaiseEvent [Exit]\nEnd Sub\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Sink", ModuleKind::Class, sink),
+            ("Source", ModuleKind::Class, source),
+        ]),
+        Some(42.0)
+    );
+}
+
+// ── Class-module UDT fields: per-instance default record-init ────────────────
+
+#[test]
+fn class_udt_field_initializes_and_round_trips() {
+    // A class module with a scalar UDT field (`Private p As Point`) must bind
+    // without faulting `"is not a variable"` (the field resolves through `Me`,
+    // unreachable from the entry proc's frame — its default record-init is
+    // emitted per-instance into `Class_Initialize`). At runtime the field is a
+    // default record, so writing/reading a sub-field round-trips.
+    let main = "Sub Main()\n    Dim r As Long\n    Dim b As Box\n    Set b = New Box\n\
+                \x20   b.SetX 42\n    r = b.GetX\nEnd Sub\n";
+    let class = "Private Type Point\n  X As Long\n  Y As Long\nEnd Type\n\
+                 Private p As Point\n\n\
+                 Private Sub Class_Initialize()\n    p.Y = 0\nEnd Sub\n\n\
+                 Public Sub SetX(ByVal v As Long)\n    p.X = v\nEnd Sub\n\n\
+                 Public Property Get GetX() As Long\n    GetX = p.X\nEnd Property\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Box", ModuleKind::Class, class),
+        ]),
+        Some(42.0),
+        "a class scalar-UDT field is a default record, so its sub-field round-trips"
+    );
+}
+
+#[test]
+fn class_with_udt_field_and_no_class_initialize_binds() {
+    // The same shape with *no* `Class_Initialize`: binding must still SKIP the
+    // class field as a bundle global (no `"is not a variable"`). This guards the
+    // bind half — the runtime materialization is the gap below.
+    let main = "Sub Main()\n    Dim b As Box\n    Set b = New Box\nEnd Sub\n";
+    let class = "Private Type Point\n  X As Long\nEnd Type\n\
+                 Private p As Point\n\n\
+                 Public Sub SetX(ByVal v As Long)\n    p.X = v\nEnd Sub\n";
+    // Binds + links + runs (Main never touches the field) without panicking.
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Box", ModuleKind::Class, class),
+        ]),
+        None
+    );
+}
+
+#[test]
+fn class_udt_field_without_class_initialize_round_trips() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim b As Box\n    Set b = New Box\n\
+                \x20   b.SetX 7\n    r = b.GetX\nEnd Sub\n";
+    let class = "Private Type Point\n  X As Long\nEnd Type\n\
+                 Private p As Point\n\n\
+                 Public Sub SetX(ByVal v As Long)\n    p.X = v\nEnd Sub\n\n\
+                 Public Property Get GetX() As Long\n    GetX = p.X\nEnd Property\n";
+    assert_eq!(
+        run_multi_main_local0(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Box", ModuleKind::Class, class),
+        ]),
+        Some(7.0)
+    );
+}
+
+#[test]
+fn class_udt_field_without_class_initialize_synthesizes_initializer_descriptor() {
+    let main = "Sub Main()\nEnd Sub\n";
+    let class = "Private Type Point\n  X As Long\nEnd Type\n\
+                 Private p As Point\n\n\
+                 Public Sub SetX(ByVal v As Long)\n    p.X = v\nEnd Sub\n";
+    let program = bind_program(
+        &multi_manifest(&[
+            ("Main", ModuleKind::Procedural, main),
+            ("Box", ModuleKind::Class, class),
+        ]),
+        &NullTypeLibs,
+    )
+    .expect("bind_program");
+    let class = &program.classes[0];
+    let initialize = class
+        .initialize
+        .expect("UDT class field should synthesize Class_Initialize");
+    let proc = &program.procs[initialize.0];
+    assert_eq!(proc.name, "Class_Initialize");
+    assert_eq!(proc.params.len(), 1);
+    assert_eq!(proc.params[0].name, "Me");
+    assert!(
+        proc.body.iter().any(|stmt| matches!(
+            stmt,
+            CoreStmt::Assign {
+                place: CorePlace::Field { field: 0, .. },
+                value: CoreValue::NewRecord { .. },
+                ..
+            }
+        )),
+        "synthetic Class_Initialize should default-record-initialize field `p`"
+    );
+}
+
+// ── COM-source WithEvents: binder emits EventRoutes for a typelib coclass ────
+
+/// Resolve the fixture `OxVba.TestEventServer` typelib through the real fixture
+/// catalog (enabled by the `fixture-typelibs` dev-dep), so the bind test exercises
+/// the genuine event classification (OnSimpleEvent/OnValueChanged/OnPairChanged,
+/// all `Dispatch` path) rather than a hand-rolled blob.
+struct EventServerTypeLibs;
+impl TypeLibResolver for EventServerTypeLibs {
+    fn resolve(
+        &self,
+        request: &calcvba_com::TypeLibResolveRequest,
+    ) -> Option<calcvba_com::TypeLibMetadataBlob> {
+        let identity = calcvba_com::resolve_known_typelib_identity(request)?;
+        Some(calcvba_com::build_typelib_metadata(&identity))
+    }
+}
+
+#[test]
+fn withevents_com_source_emits_event_route() {
+    // A `WithEvents` field typed as a referenced COM coclass plus a matching
+    // `<field>_<EventName>` handler must produce an `EventRoute` bound to that
+    // handler, keyed on the event's dispid/token (the runtime subscribe key).
+    let main = "Private WithEvents x As OxVba.TestEventServer\n\n\
+                Private Sub x_OnValueChanged(ByVal v As Long)\nEnd Sub\n";
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Main".into(),
+            module_kind: ModuleKind::Class,
+            attributes: ModuleAttributes::named("Main"),
+            source: main.into(),
+        }],
+        references: vec![ProjectReference::TypeLibrary {
+            name: "OxVba_TestEventServer".into(),
+            guid: None,
+            version_major: Some(1),
+            version_minor: Some(0),
+            lcid: None,
+            import_lib: Some("calcvba_testeventserver.tlb".into()),
+        }],
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let env = calcvba_symbol::build_resolution_environment(&manifest, &EventServerTypeLibs)
+        .expect("resolution environment");
+    assert!(
+        env.resolve_member(
+            &calcvba_bundle::VarTypeRef::Object("oxvba.testeventserver".into()),
+            "Increment",
+            None,
+        )
+        .is_some(),
+        "TestEventServer.Increment should resolve against the ProgID-style receiver type"
+    );
+    let program = bind_program(&manifest, &EventServerTypeLibs).expect("bind_program");
+
+    // OnValueChanged is event token 2 in the fixture typelib; exactly one route is
+    // emitted (only OnValueChanged has a matching handler) and it targets the
+    // handler proc, keyed on that token.
+    assert_eq!(
+        program.event_routes.len(),
+        1,
+        "exactly one EventRoute (only OnValueChanged has a handler): {:?}",
+        program.event_routes
+    );
+    let route = &program.event_routes[0];
+    assert_eq!(
+        route.event, 2,
+        "route keyed on the OnValueChanged dispid/token"
+    );
+    let handler = &program.procs[route.handler];
+    assert!(
+        handler.name.eq_ignore_ascii_case("x_OnValueChanged"),
+        "route targets the x_OnValueChanged handler, got: {}",
+        handler.name
+    );
+}
+
+#[test]
+fn withevents_com_source_without_handler_emits_no_route() {
+    // A COM-source `WithEvents` field with no matching handler emits no route
+    // (nothing to subscribe).
+    let main = "Private WithEvents x As OxVba.TestEventServer\n";
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Main".into(),
+            module_kind: ModuleKind::Class,
+            attributes: ModuleAttributes::named("Main"),
+            source: main.into(),
+        }],
+        references: vec![ProjectReference::TypeLibrary {
+            name: "OxVba_TestEventServer".into(),
+            guid: None,
+            version_major: Some(1),
+            version_minor: Some(0),
+            lcid: None,
+            import_lib: Some("calcvba_testeventserver.tlb".into()),
+        }],
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let program = bind_program(&manifest, &EventServerTypeLibs).expect("bind_program");
+    assert!(
+        program.event_routes.is_empty(),
+        "no handler ⇒ no EventRoute: {:?}",
+        program.event_routes
+    );
+}
+
+struct ScopedEventTypeLibs;
+impl TypeLibResolver for ScopedEventTypeLibs {
+    fn resolve(
+        &self,
+        request: &calcvba_com::TypeLibResolveRequest,
+    ) -> Option<calcvba_com::TypeLibMetadataBlob> {
+        Some(calcvba_com::TypeLibMetadataBlob {
+            constants: Vec::new(),
+            identity: calcvba_com::TypeLibResolvedIdentity {
+                reference_name: "Excel".into(),
+                requested_coclass: request.requested_coclass.clone(),
+                importlib: "excel.tlb".into(),
+                libid: None,
+                major_version: 1,
+                minor_version: 0,
+                lcid: None,
+                cache_key: format!(
+                    "excel:{}",
+                    request.requested_coclass.as_deref().unwrap_or("")
+                ),
+            },
+            activation_prog_id: None,
+            member_name_to_token: Vec::new(),
+            members: Vec::new(),
+            events: vec![calcvba_com::TypeLibEventMetadata {
+                parameter_iids: Vec::new(),
+                name: "NewWorkbook".into(),
+                token: 1565,
+                callback_arity: 1,
+                parameter_types: vec![calcvba_com::TypeLibParamType::Object],
+                dispatch_path: calcvba_com::TypeLibEventDispatchPath::Dispatch,
+                connection_point_iid: Some("{app-events}".into()),
+                dispatch_member_id: Some(1565),
+                coclass: Some("Application".into()),
+            }],
+            coclass_names: vec!["Application".into(), "Workbook".into()],
+        })
+    }
+}
+
+#[test]
+fn withevents_com_source_ignores_events_from_other_coclasses() {
+    // A library-wide typelib can expose events from many coclasses. A `Workbook`
+    // sink must not receive `Application` events just because both live in Excel.
+    let main = "Private WithEvents wb As Excel.Workbook\n\n\
+                Private Sub wb_NewWorkbook(ByVal value As Object)\nEnd Sub\n";
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Sink".into(),
+            module_kind: ModuleKind::Class,
+            attributes: ModuleAttributes::named("Sink"),
+            source: main.into(),
+        }],
+        references: vec![ProjectReference::TypeLibrary {
+            name: "Excel".into(),
+            guid: None,
+            version_major: Some(1),
+            version_minor: Some(0),
+            lcid: None,
+            import_lib: Some("excel.tlb".into()),
+        }],
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let program = bind_program(&manifest, &ScopedEventTypeLibs).expect("bind_program");
+
+    assert!(
+        program.event_routes.is_empty(),
+        "Workbook sink must not synthesize Application event routes: {:?}",
+        program.event_routes
+    );
+}
+
+struct ScopedWorkbookEventTypeLibs;
+impl TypeLibResolver for ScopedWorkbookEventTypeLibs {
+    fn resolve(
+        &self,
+        request: &calcvba_com::TypeLibResolveRequest,
+    ) -> Option<calcvba_com::TypeLibMetadataBlob> {
+        let events = if request.requested_coclass.as_deref() == Some("Workbook") {
+            vec![calcvba_com::TypeLibEventMetadata {
+                parameter_iids: Vec::new(),
+                name: "BeforeClose".into(),
+                token: 42,
+                callback_arity: 0,
+                parameter_types: Vec::new(),
+                dispatch_path: calcvba_com::TypeLibEventDispatchPath::Dispatch,
+                connection_point_iid: Some("{workbook-events}".into()),
+                dispatch_member_id: Some(42),
+                coclass: Some("Workbook".into()),
+            }]
+        } else {
+            Vec::new()
+        };
+        Some(calcvba_com::TypeLibMetadataBlob {
+            constants: Vec::new(),
+            identity: calcvba_com::TypeLibResolvedIdentity {
+                reference_name: "Excel".into(),
+                requested_coclass: request.requested_coclass.clone(),
+                importlib: "excel.tlb".into(),
+                libid: None,
+                major_version: 1,
+                minor_version: 0,
+                lcid: None,
+                cache_key: format!(
+                    "excel:{}",
+                    request.requested_coclass.as_deref().unwrap_or("")
+                ),
+            },
+            activation_prog_id: None,
+            member_name_to_token: Vec::new(),
+            members: Vec::new(),
+            events,
+            coclass_names: vec!["Application".into(), "Workbook".into()],
+        })
+    }
+}
+
+#[test]
+fn withevents_com_source_uses_later_scoped_provider_after_empty_library_provider() {
+    // The library provider may only establish known coclass names while a follow-up
+    // scoped provider carries the receiver's events. An empty broad result must not
+    // mask the later scoped provider.
+    let main = "Private WithEvents wb As Excel.Workbook\n\n\
+                Private Sub wb_BeforeClose()\nEnd Sub\n";
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Sink".into(),
+            module_kind: ModuleKind::Class,
+            attributes: ModuleAttributes::named("Sink"),
+            source: main.into(),
+        }],
+        references: vec![ProjectReference::TypeLibrary {
+            name: "Excel".into(),
+            guid: None,
+            version_major: Some(1),
+            version_minor: Some(0),
+            lcid: None,
+            import_lib: Some("excel.tlb".into()),
+        }],
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let program = bind_program(&manifest, &ScopedWorkbookEventTypeLibs).expect("bind_program");
+
+    assert_eq!(
+        program.event_routes.len(),
+        1,
+        "Workbook scoped provider should produce one event route: {:?}",
+        program.event_routes
+    );
+    assert_eq!(program.event_routes[0].event, 42);
+    let handler = &program.procs[program.event_routes[0].handler];
+    assert!(
+        handler.name.eq_ignore_ascii_case("wb_BeforeClose"),
+        "route targets the wb_BeforeClose handler, got: {}",
+        handler.name
+    );
+}
+
+// ── COM early binding: typed receiver lowers a member call to EarlyCom{dispid} ──
+
+#[test]
+fn typed_com_receiver_member_call_lowers_to_early_com() {
+    // A receiver typed as a referenced COM coclass (`Dim s As OxVba.TestEventServer`)
+    // resolves its member against the real fixture typelib, so `s.Ping()` lowers to an
+    // early-bound dispatch keyed on Ping's dispid (104 in the fixture) — NOT a
+    // by-name LateDispatch (the untyped-Object default). This proves the whole
+    // early-bind lowering against a genuine typelib blob, headlessly.
+    let main = "Sub Main()\n    Dim s As OxVba.TestEventServer\n    Dim r As Long\n    r = s.Ping()\nEnd Sub\n";
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Main".into(),
+            module_kind: ModuleKind::Procedural,
+            attributes: ModuleAttributes::named("Main"),
+            source: main.into(),
+        }],
+        references: vec![ProjectReference::TypeLibrary {
+            name: "OxVba_TestEventServer".into(),
+            guid: None,
+            version_major: Some(1),
+            version_minor: Some(0),
+            lcid: None,
+            import_lib: Some("calcvba_testeventserver.tlb".into()),
+        }],
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let program = bind_program(&manifest, &EventServerTypeLibs).expect("bind_program");
+
+    // Exactly one early-bound COM call, on Ping's dispid; and no late dispatch to Ping
+    // (that would mean the typed receiver was treated as an untyped Object).
+    let callees = top_level_callees(&program);
+    assert!(
+        callees
+            .iter()
+            .any(|c| matches!(c, CoreCallee::EarlyCom { member, .. } if member.token == 104)),
+        "expected an EarlyCom on Ping's dispid (104), got: {callees:?}"
+    );
+    assert!(
+        !callees.iter().any(|c| matches!(
+            c,
+            CoreCallee::LateDispatch { name, .. } if name.eq_ignore_ascii_case("Ping")
+        )),
+        "Ping on a typed receiver must NOT lower to LateDispatch: {callees:?}"
+    );
+}
+
+#[test]
+fn typed_com_byref_method_lowers_lvalue_arg_to_byref() {
+    // A typelib `[in, out]` / `ByRef Long` method argument over an unparenthesized
+    // l-value must lower as `CoreArg::ByRef`; otherwise the COM runtime cannot copy
+    // the mutated value back to the caller, diverging from VBA.
+    let main = "Sub Main()\n    Dim s As OxVba.TestEventServer\n    Dim n As Long\n    s.Increment n\nEnd Sub\n";
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Main".into(),
+            module_kind: ModuleKind::Procedural,
+            attributes: ModuleAttributes::named("Main"),
+            source: main.into(),
+        }],
+        references: vec![ProjectReference::TypeLibrary {
+            name: "OxVba_TestEventServer".into(),
+            guid: None,
+            version_major: Some(1),
+            version_minor: Some(0),
+            lcid: None,
+            import_lib: Some("calcvba_testeventserver.tlb".into()),
+        }],
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let env = calcvba_symbol::build_resolution_environment(&manifest, &EventServerTypeLibs)
+        .expect("resolution environment");
+    assert!(
+        env.resolve_member(
+            &calcvba_bundle::VarTypeRef::Object("oxvba.testeventserver".into()),
+            "Increment",
+            None,
+        )
+        .is_some(),
+        "TestEventServer.Increment should resolve against the ProgID-style receiver type"
+    );
+    let program = bind_program(&manifest, &EventServerTypeLibs).expect("bind_program");
+    let Some((_, args)) = top_level_calls(&program).into_iter().find(
+        |(callee, _)| matches!(callee, CoreCallee::EarlyCom { member, .. } if member.token == 126),
+    ) else {
+        let locals = program
+            .entry
+            .and_then(|entry| program.procs.get(entry.0))
+            .map(|proc| &proc.locals);
+        panic!(
+            "no EarlyCom call with token 126; locals={locals:?}; calls={:?}",
+            top_level_calls(&program)
+        );
+    };
+    assert!(
+        matches!(args.get(1), Some(CoreArg::ByRef(_))),
+        "Increment's Long argument should bind ByRef, got {args:?}"
+    );
+}
+
+#[test]
+fn late_com_method_lowers_lvalue_arg_to_byref() {
+    let main = "Sub Main()\n    Dim s As Object\n    Dim n As Long\n    s.Increment n\nEnd Sub\n";
+    let program = bind_program(&manifest(main), &NullTypeLibs).expect("bind_program");
+    let Some((_, args)) = top_level_calls(&program).into_iter().find(|(callee, _)| {
+        matches!(callee, CoreCallee::LateDispatch { name, .. } if name.eq_ignore_ascii_case("Increment"))
+    }) else {
+        panic!(
+            "expected LateDispatch Increment call, got {:?}",
+            top_level_calls(&program)
+        );
+    };
+    assert!(
+        matches!(args.get(1), Some(CoreArg::ByRef(_))),
+        "late-bound l-value argument should bind ByRef, got {args:?}"
+    );
+}
+
+#[test]
+fn typed_com_paramarray_method_boxes_tail_to_zero_based_array() {
+    let main = "Sub Main()\n    Dim s As OxVba.TestEventServer\n    Dim r As Long\n    r = s.SumParamArray(1, 2, 3)\nEnd Sub\n";
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Main".into(),
+            module_kind: ModuleKind::Procedural,
+            attributes: ModuleAttributes::named("Main"),
+            source: main.into(),
+        }],
+        references: vec![ProjectReference::TypeLibrary {
+            name: "OxVba_TestEventServer".into(),
+            guid: None,
+            version_major: Some(1),
+            version_minor: Some(0),
+            lcid: None,
+            import_lib: Some("calcvba_testeventserver.tlb".into()),
+        }],
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let program = bind_program(&manifest, &EventServerTypeLibs).expect("bind_program");
+    let Some((_, args)) = top_level_calls(&program).into_iter().find(
+        |(callee, _)| matches!(callee, CoreCallee::EarlyCom { member, .. } if member.token == 127),
+    ) else {
+        panic!(
+            "no EarlyCom SumParamArray call with token 127; calls={:?}",
+            top_level_calls(&program)
+        );
+    };
+    let Some(CoreArg::ByVal(CoreValue::ArrayLiteral {
+        elems,
+        lower_bound,
+        aliases,
+    })) = args.get(1)
+    else {
+        panic!("SumParamArray tail should be boxed into one array arg, got {args:?}");
+    };
+    assert_eq!(*lower_bound, 0, "COM ParamArray tail should be zero-based");
+    assert_eq!(
+        elems.len(),
+        3,
+        "three source args should become three array elements"
+    );
+    assert_eq!(
+        aliases,
+        &vec![None, None, None],
+        "COM ParamArray elements should not record caller-slot aliases"
+    );
+}
+
+struct DefaultValueTypeLibs;
+impl TypeLibResolver for DefaultValueTypeLibs {
+    fn resolve(
+        &self,
+        _request: &calcvba_com::TypeLibResolveRequest,
+    ) -> Option<calcvba_com::TypeLibMetadataBlob> {
+        Some(calcvba_com::TypeLibMetadataBlob {
+            constants: Vec::new(),
+            identity: calcvba_com::TypeLibResolvedIdentity {
+                reference_name: "Widget".into(),
+                requested_coclass: None,
+                importlib: "widget".into(),
+                libid: None,
+                major_version: 1,
+                minor_version: 0,
+                lcid: None,
+                cache_key: "widget".into(),
+            },
+            activation_prog_id: Some("Widget.Thing".into()),
+            member_name_to_token: vec![("Value".into(), 0)],
+            members: vec![
+                calcvba_com::TypeLibMemberMetadata {
+                    name: "Value".into(),
+                    token: 0,
+                    vtable_slot: None,
+                    requires_argument: false,
+                    invoke_kind: calcvba_com::TypeLibMemberInvokeKind::PropertyGet,
+                    parameter_names: Vec::new(),
+                    parameter_optional: Vec::new(),
+                    parameter_optional_defaults: Vec::new(),
+                    is_default_member: true,
+                    parameter_types: Vec::new(),
+                    parameter_iids: Vec::new(),
+                    return_type: Some(calcvba_com::TypeLibParamType::Long),
+                    parameter_wire_types: Vec::new(),
+                    return_wire_type: Some(calcvba_com::TypeLibWireType::Automation(
+                        calcvba_com::TypeLibParamType::Long,
+                    )),
+                    callconv_is_stdcall: false,
+                    is_dual: true,
+                    interface_iid: None,
+                    source_typekind: Some(calcvba_com::SourceTypeKind::Dispatch),
+                    vtable_slot_bound: None,
+                },
+                calcvba_com::TypeLibMemberMetadata {
+                    name: "Value".into(),
+                    token: 0,
+                    vtable_slot: None,
+                    requires_argument: true,
+                    invoke_kind: calcvba_com::TypeLibMemberInvokeKind::PropertyPut,
+                    parameter_names: vec!["Value".into()],
+                    parameter_optional: vec![false],
+                    parameter_optional_defaults: Vec::new(),
+                    is_default_member: true,
+                    parameter_types: vec![calcvba_com::TypeLibParamType::Long],
+                    parameter_wire_types: vec![calcvba_com::TypeLibWireType::Automation(
+                        calcvba_com::TypeLibParamType::Long,
+                    )],
+                    parameter_iids: vec![None],
+                    return_type: None,
+                    return_wire_type: None,
+                    callconv_is_stdcall: false,
+                    is_dual: true,
+                    interface_iid: None,
+                    source_typekind: Some(calcvba_com::SourceTypeKind::Dispatch),
+                    vtable_slot_bound: None,
+                },
+            ],
+            events: Vec::new(),
+            coclass_names: Vec::new(),
+        })
+    }
+}
+
+struct DefaultValuePutFirstTypeLibs;
+impl TypeLibResolver for DefaultValuePutFirstTypeLibs {
+    fn resolve(
+        &self,
+        request: &calcvba_com::TypeLibResolveRequest,
+    ) -> Option<calcvba_com::TypeLibMetadataBlob> {
+        let mut blob = DefaultValueTypeLibs.resolve(request)?;
+        blob.members.reverse();
+        Some(blob)
+    }
+}
+
+struct ApplicationTypeLibs;
+impl TypeLibResolver for ApplicationTypeLibs {
+    fn resolve(
+        &self,
+        _request: &calcvba_com::TypeLibResolveRequest,
+    ) -> Option<calcvba_com::TypeLibMetadataBlob> {
+        Some(calcvba_com::TypeLibMetadataBlob {
+            constants: Vec::new(),
+            identity: calcvba_com::TypeLibResolvedIdentity {
+                reference_name: "Excel".into(),
+                requested_coclass: Some("Application".into()),
+                importlib: "excel".into(),
+                libid: None,
+                major_version: 1,
+                minor_version: 0,
+                lcid: None,
+                cache_key: "excel-application-test".into(),
+            },
+            activation_prog_id: Some("Excel.Application".into()),
+            member_name_to_token: vec![("Run".into(), 10), ("OnTime".into(), 11)],
+            members: vec![
+                calcvba_com::TypeLibMemberMetadata {
+                    name: "Run".into(),
+                    token: 10,
+                    vtable_slot: None,
+                    requires_argument: true,
+                    invoke_kind: calcvba_com::TypeLibMemberInvokeKind::Method,
+                    parameter_names: vec!["Macro".into(), "Arg1".into()],
+                    parameter_optional: vec![false, true],
+                    parameter_optional_defaults: vec![
+                        calcvba_com::OptionalParamDefault::Required,
+                        calcvba_com::OptionalParamDefault::OptionalVariant,
+                    ],
+                    is_default_member: false,
+                    parameter_types: vec![
+                        calcvba_com::TypeLibParamType::Variant,
+                        calcvba_com::TypeLibParamType::Variant,
+                    ],
+                    parameter_iids: vec![None, None],
+                    return_type: Some(calcvba_com::TypeLibParamType::Variant),
+                    parameter_wire_types: vec![
+                        calcvba_com::TypeLibWireType::Automation(
+                            calcvba_com::TypeLibParamType::Variant,
+                        ),
+                        calcvba_com::TypeLibWireType::Automation(
+                            calcvba_com::TypeLibParamType::Variant,
+                        ),
+                    ],
+                    return_wire_type: Some(calcvba_com::TypeLibWireType::Automation(
+                        calcvba_com::TypeLibParamType::Variant,
+                    )),
+                    callconv_is_stdcall: false,
+                    is_dual: true,
+                    interface_iid: None,
+                    source_typekind: Some(calcvba_com::SourceTypeKind::Dispatch),
+                    vtable_slot_bound: None,
+                },
+                calcvba_com::TypeLibMemberMetadata {
+                    name: "OnTime".into(),
+                    token: 11,
+                    vtable_slot: None,
+                    requires_argument: true,
+                    invoke_kind: calcvba_com::TypeLibMemberInvokeKind::Method,
+                    parameter_names: vec![
+                        "EarliestTime".into(),
+                        "Procedure".into(),
+                        "LatestTime".into(),
+                        "Schedule".into(),
+                    ],
+                    parameter_optional: vec![false, false, true, true],
+                    parameter_optional_defaults: vec![
+                        calcvba_com::OptionalParamDefault::Required,
+                        calcvba_com::OptionalParamDefault::Required,
+                        calcvba_com::OptionalParamDefault::OptionalVariant,
+                        calcvba_com::OptionalParamDefault::OptionalVariant,
+                    ],
+                    is_default_member: false,
+                    parameter_types: vec![
+                        calcvba_com::TypeLibParamType::Variant,
+                        calcvba_com::TypeLibParamType::String,
+                        calcvba_com::TypeLibParamType::Variant,
+                        calcvba_com::TypeLibParamType::Variant,
+                    ],
+                    parameter_iids: vec![None, None, None, None],
+                    return_type: None,
+                    parameter_wire_types: vec![
+                        calcvba_com::TypeLibWireType::Automation(
+                            calcvba_com::TypeLibParamType::Variant,
+                        ),
+                        calcvba_com::TypeLibWireType::Automation(
+                            calcvba_com::TypeLibParamType::String,
+                        ),
+                        calcvba_com::TypeLibWireType::Automation(
+                            calcvba_com::TypeLibParamType::Variant,
+                        ),
+                        calcvba_com::TypeLibWireType::Automation(
+                            calcvba_com::TypeLibParamType::Variant,
+                        ),
+                    ],
+                    return_wire_type: None,
+                    callconv_is_stdcall: false,
+                    is_dual: true,
+                    interface_iid: None,
+                    source_typekind: Some(calcvba_com::SourceTypeKind::Dispatch),
+                    vtable_slot_bound: None,
+                },
+            ],
+            events: Vec::new(),
+            coclass_names: vec!["Application".into()],
+        })
+    }
+}
+
+fn test_tlb_property_get(
+    name: &str,
+    token: i32,
+    return_type: Option<calcvba_com::TypeLibParamType>,
+    return_wire_type: Option<calcvba_com::TypeLibWireType>,
+    is_default_member: bool,
+) -> calcvba_com::TypeLibMemberMetadata {
+    calcvba_com::TypeLibMemberMetadata {
+        name: name.into(),
+        token,
+        vtable_slot: None,
+        requires_argument: false,
+        invoke_kind: calcvba_com::TypeLibMemberInvokeKind::PropertyGet,
+        parameter_names: Vec::new(),
+        parameter_optional: Vec::new(),
+        parameter_optional_defaults: Vec::new(),
+        is_default_member,
+        parameter_types: Vec::new(),
+        parameter_wire_types: Vec::new(),
+        parameter_iids: Vec::new(),
+        return_type,
+        return_wire_type,
+        callconv_is_stdcall: false,
+        is_dual: true,
+        interface_iid: None,
+        source_typekind: Some(calcvba_com::SourceTypeKind::Dispatch),
+        vtable_slot_bound: None,
+    }
+}
+
+struct ChainedComTypeLibs;
+impl TypeLibResolver for ChainedComTypeLibs {
+    fn resolve(
+        &self,
+        request: &calcvba_com::TypeLibResolveRequest,
+    ) -> Option<calcvba_com::TypeLibMetadataBlob> {
+        if request.reference_name.eq_ignore_ascii_case("Excel")
+            && request
+                .requested_coclass
+                .as_deref()
+                .is_some_and(|name| name.eq_ignore_ascii_case("Workbooks"))
+        {
+            return Some(calcvba_com::TypeLibMetadataBlob {
+                constants: Vec::new(),
+                identity: calcvba_com::TypeLibResolvedIdentity {
+                    reference_name: "Excel".into(),
+                    requested_coclass: Some("Workbooks".into()),
+                    importlib: "excel".into(),
+                    libid: None,
+                    major_version: 1,
+                    minor_version: 0,
+                    lcid: None,
+                    cache_key: "excel-workbooks-chaining-test".into(),
+                },
+                activation_prog_id: None,
+                member_name_to_token: vec![("Item".into(), 0), ("Count".into(), 21)],
+                members: vec![
+                    test_tlb_property_get(
+                        "Item",
+                        0,
+                        Some(calcvba_com::TypeLibParamType::Long),
+                        Some(calcvba_com::TypeLibWireType::Automation(
+                            calcvba_com::TypeLibParamType::Long,
+                        )),
+                        true,
+                    ),
+                    test_tlb_property_get(
+                        "Count",
+                        21,
+                        Some(calcvba_com::TypeLibParamType::Long),
+                        Some(calcvba_com::TypeLibWireType::Automation(
+                            calcvba_com::TypeLibParamType::Long,
+                        )),
+                        false,
+                    ),
+                ],
+                events: Vec::new(),
+                coclass_names: vec!["Workbooks".into()],
+            });
+        }
+        if request.reference_name.eq_ignore_ascii_case("Excel")
+            && request
+                .requested_coclass
+                .as_deref()
+                .is_some_and(|name| name.eq_ignore_ascii_case("Workbook"))
+        {
+            return Some(calcvba_com::TypeLibMetadataBlob {
+                constants: Vec::new(),
+                identity: calcvba_com::TypeLibResolvedIdentity {
+                    reference_name: "Excel".into(),
+                    requested_coclass: Some("Workbook".into()),
+                    importlib: "excel".into(),
+                    libid: None,
+                    major_version: 1,
+                    minor_version: 0,
+                    lcid: None,
+                    cache_key: "excel-workbook-scoping-test".into(),
+                },
+                activation_prog_id: None,
+                member_name_to_token: vec![("Name".into(), 23)],
+                members: vec![test_tlb_property_get(
+                    "Name",
+                    23,
+                    Some(calcvba_com::TypeLibParamType::String),
+                    Some(calcvba_com::TypeLibWireType::Automation(
+                        calcvba_com::TypeLibParamType::String,
+                    )),
+                    false,
+                )],
+                events: Vec::new(),
+                coclass_names: vec!["Workbook".into()],
+            });
+        }
+        if request.reference_name.eq_ignore_ascii_case("Excel") {
+            return Some(calcvba_com::TypeLibMetadataBlob {
+                constants: Vec::new(),
+                identity: calcvba_com::TypeLibResolvedIdentity {
+                    reference_name: "Excel".into(),
+                    requested_coclass: request.requested_coclass.clone(),
+                    importlib: "excel".into(),
+                    libid: None,
+                    major_version: 1,
+                    minor_version: 0,
+                    lcid: None,
+                    cache_key: "excel-application-chaining-test".into(),
+                },
+                activation_prog_id: Some("Excel.Application".into()),
+                member_name_to_token: vec![("Workbooks".into(), 20), ("DynamicThing".into(), 22)],
+                members: vec![
+                    test_tlb_property_get(
+                        "Workbooks",
+                        20,
+                        Some(calcvba_com::TypeLibParamType::Object),
+                        Some(calcvba_com::TypeLibWireType::InterfacePointer {
+                            name: "Workbooks".into(),
+                        }),
+                        false,
+                    ),
+                    test_tlb_property_get(
+                        "DynamicThing",
+                        22,
+                        Some(calcvba_com::TypeLibParamType::Object),
+                        Some(calcvba_com::TypeLibWireType::Automation(
+                            calcvba_com::TypeLibParamType::Object,
+                        )),
+                        false,
+                    ),
+                ],
+                events: Vec::new(),
+                coclass_names: vec!["Application".into(), "Workbook".into()],
+            });
+        }
+        None
+    }
+}
+
+#[test]
+fn typed_com_default_member_bare_let_get_lowers_to_early_com() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim w As Widget\n    Dim w2 As Widget\n    w = 10\n    Set w2 = w\n    r = w2\nEnd Sub\n";
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Main".into(),
+            module_kind: ModuleKind::Procedural,
+            attributes: ModuleAttributes::named("Main"),
+            source: main.into(),
+        }],
+        references: vec![ProjectReference::TypeLibrary {
+            name: "Widget".into(),
+            guid: None,
+            version_major: Some(1),
+            version_minor: Some(0),
+            lcid: None,
+            import_lib: None,
+        }],
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let program = bind_program(&manifest, &DefaultValueTypeLibs).expect("bind_program");
+    let callees = top_level_callees(&program);
+    assert_eq!(
+        callees
+            .iter()
+            .filter(|c| matches!(
+                c,
+                CoreCallee::EarlyCom {
+                    kind: Some(calcvba_bundle::ProjectMemberKind::PropertyLet),
+                    member,
+                    ..
+                } if member.token == 0
+                    && member.invoke_kind == calcvba_com::TypeLibMemberInvokeKind::PropertyPut
+            ))
+            .count(),
+        1,
+        "bare `w = 10` should be one early-bound default PropertyLet: {callees:?}"
+    );
+    assert_eq!(
+        callees
+            .iter()
+            .filter(|c| matches!(
+                c,
+                CoreCallee::EarlyCom {
+                    kind: Some(calcvba_bundle::ProjectMemberKind::PropertyGet),
+                    member,
+                    ..
+                } if member.token == 0
+                    && member.invoke_kind == calcvba_com::TypeLibMemberInvokeKind::PropertyGet
+            ))
+            .count(),
+        1,
+        "bare `r = w2` should be one early-bound default PropertyGet, while `Set w2 = w` stays object assignment: {callees:?}"
+    );
+}
+
+#[test]
+fn typed_com_default_member_put_before_get_preserves_accessor_descriptors() {
+    let main =
+        "Sub Main()\n    Dim r As Long\n    Dim w As Widget\n    w = 10\n    r = w\nEnd Sub\n";
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Main".into(),
+            module_kind: ModuleKind::Procedural,
+            attributes: ModuleAttributes::named("Main"),
+            source: main.into(),
+        }],
+        references: vec![ProjectReference::TypeLibrary {
+            name: "Widget".into(),
+            guid: None,
+            version_major: Some(1),
+            version_minor: Some(0),
+            lcid: None,
+            import_lib: None,
+        }],
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let program = bind_program(&manifest, &DefaultValuePutFirstTypeLibs).expect("bind_program");
+    let callees = top_level_callees(&program);
+    assert_eq!(
+        callees
+            .iter()
+            .filter(|c| matches!(
+                c,
+                CoreCallee::EarlyCom {
+                    kind: Some(calcvba_bundle::ProjectMemberKind::PropertyLet),
+                    member,
+                    ..
+                } if member.token == 0
+                    && member.invoke_kind == calcvba_com::TypeLibMemberInvokeKind::PropertyPut
+            ))
+            .count(),
+        1,
+        "put-before-get metadata should still carry the PropertyPut descriptor for `w = 10`: {callees:?}"
+    );
+    assert_eq!(
+        callees
+            .iter()
+            .filter(|c| matches!(
+                c,
+                CoreCallee::EarlyCom {
+                    kind: Some(calcvba_bundle::ProjectMemberKind::PropertyGet),
+                    member,
+                    ..
+                } if member.token == 0
+                    && member.invoke_kind == calcvba_com::TypeLibMemberInvokeKind::PropertyGet
+            ))
+            .count(),
+        1,
+        "put-before-get metadata should still carry the PropertyGet descriptor for `r = w`: {callees:?}"
+    );
+}
+
+#[test]
+fn typed_com_default_member_binary_expression_lowers_operands_to_early_com() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim s As String\n    Dim w As Widget\n    Dim w2 As Widget\n    r = w + w2\n    s = \"x=\" & w\n    If w Is w2 Then r = r + 1\nEnd Sub\n";
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Main".into(),
+            module_kind: ModuleKind::Procedural,
+            attributes: ModuleAttributes::named("Main"),
+            source: main.into(),
+        }],
+        references: vec![ProjectReference::TypeLibrary {
+            name: "Widget".into(),
+            guid: None,
+            version_major: Some(1),
+            version_minor: Some(0),
+            lcid: None,
+            import_lib: None,
+        }],
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let program = bind_program(&manifest, &DefaultValueTypeLibs).expect("bind_program");
+    let callees = all_value_callees(&program);
+    let default_get_count = callees
+        .iter()
+        .filter(|c| {
+            matches!(
+                c,
+                CoreCallee::EarlyCom {
+                    kind: Some(calcvba_bundle::ProjectMemberKind::PropertyGet),
+                    member,
+                    ..
+                } if member.token == 0
+                    && member.invoke_kind == calcvba_com::TypeLibMemberInvokeKind::PropertyGet
+            )
+        })
+        .count();
+    assert_eq!(
+        default_get_count, 3,
+        "`w + w2` should default both operands and `\"x=\" & w` should default w once: {callees:?}"
+    );
+}
+
+#[test]
+fn host_injected_default_member_binary_expression_lowers_operands_to_early_com() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim s As String\n    Dim w As Widget\n    Dim w2 As Widget\n    r = w + w2\n    s = \"x=\" & w\n    If w Is w2 Then r = r + 1\nEnd Sub\n";
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Main".into(),
+            module_kind: ModuleKind::Procedural,
+            attributes: ModuleAttributes::named("Main"),
+            source: main.into(),
+        }],
+        references: vec![ProjectReference::HostInjected {
+            referenced_project_name: "Widget".into(),
+        }],
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let program = bind_program(&manifest, &DefaultValueTypeLibs).expect("bind_program");
+    let callees = all_value_callees(&program);
+    let default_get_count = callees
+        .iter()
+        .filter(|c| {
+            matches!(
+                c,
+                CoreCallee::EarlyCom {
+                    kind: Some(calcvba_bundle::ProjectMemberKind::PropertyGet),
+                    member,
+                    ..
+                } if member.token == 0
+                    && member.invoke_kind == calcvba_com::TypeLibMemberInvokeKind::PropertyGet
+            )
+        })
+        .count();
+    assert_eq!(
+        default_get_count, 3,
+        "host-injected `w + w2` should default both operands and `\"x=\" & w` should default w once: {callees:?}"
+    );
+}
+
+#[test]
+fn host_injected_default_member_bare_let_get_lowers_to_early_com() {
+    let main = "Sub Main()\n    Dim r As Long\n    Dim w As Widget\n    Dim w2 As Widget\n    w = 10\n    Set w2 = w\n    r = w2\nEnd Sub\n";
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Main".into(),
+            module_kind: ModuleKind::Procedural,
+            attributes: ModuleAttributes::named("Main"),
+            source: main.into(),
+        }],
+        references: vec![ProjectReference::HostInjected {
+            referenced_project_name: "Widget".into(),
+        }],
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let program = bind_program(&manifest, &DefaultValueTypeLibs).expect("bind_program");
+    let callees = top_level_callees(&program);
+    assert_eq!(
+        callees
+            .iter()
+            .filter(|c| matches!(
+                c,
+                CoreCallee::EarlyCom {
+                    kind: Some(calcvba_bundle::ProjectMemberKind::PropertyLet),
+                    member,
+                    ..
+                } if member.token == 0
+                    && member.invoke_kind == calcvba_com::TypeLibMemberInvokeKind::PropertyPut
+            ))
+            .count(),
+        1,
+        "host-injected bare `w = 10` should be one early-bound default PropertyLet: {callees:?}"
+    );
+    assert_eq!(
+        callees
+            .iter()
+            .filter(|c| matches!(
+                c,
+                CoreCallee::EarlyCom {
+                    kind: Some(calcvba_bundle::ProjectMemberKind::PropertyGet),
+                    member,
+                    ..
+                } if member.token == 0
+                    && member.invoke_kind == calcvba_com::TypeLibMemberInvokeKind::PropertyGet
+            ))
+            .count(),
+        1,
+        "host-injected bare `r = w2` should be one early-bound default PropertyGet, while `Set w2 = w` stays object assignment: {callees:?}"
+    );
+}
+
+#[test]
+fn host_injected_root_object_member_lowers_through_com_metadata() {
+    let main = "Sub Main()\n    Dim r As Long\n    r = Widget.Value\nEnd Sub\n";
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Main".into(),
+            module_kind: ModuleKind::Procedural,
+            attributes: ModuleAttributes::named("Main"),
+            source: main.into(),
+        }],
+        references: vec![ProjectReference::HostInjected {
+            referenced_project_name: "Widget".into(),
+        }],
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let program = bind_program(&manifest, &DefaultValueTypeLibs).expect("bind_program");
+    let callees = top_level_callees(&program);
+    assert!(
+        callees.iter().any(|c| matches!(
+            c,
+            CoreCallee::EarlyCom {
+                kind: Some(calcvba_bundle::ProjectMemberKind::PropertyGet),
+                member,
+                ..
+            } if member.token == 0
+        )),
+        "host root member should bind against host-injected typelib metadata: {callees:?}"
+    );
+}
+
+#[test]
+fn host_injected_application_run_and_ontime_lower_through_com_metadata() {
+    let main = "Sub Main()\n    Dim r As Variant\n    r = Application.Run(\"MacroName\", 1)\n    Application.OnTime 0, \"MacroName\"\nEnd Sub\n";
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Main".into(),
+            module_kind: ModuleKind::Procedural,
+            attributes: ModuleAttributes::named("Main"),
+            source: main.into(),
+        }],
+        references: vec![ProjectReference::HostInjected {
+            referenced_project_name: "Excel".into(),
+        }],
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let program = bind_program(&manifest, &ApplicationTypeLibs).expect("bind_program");
+    let callees = top_level_callees(&program);
+    assert!(
+        callees.iter().any(|c| matches!(
+            c,
+            CoreCallee::EarlyCom {
+                kind: Some(calcvba_bundle::ProjectMemberKind::Method),
+                member,
+                ..
+            } if member.token == 10
+        )),
+        "Application.Run should bind through the host-injected Excel metadata: {callees:?}"
+    );
+    assert!(
+        callees.iter().any(|c| matches!(
+            c,
+            CoreCallee::EarlyCom {
+                kind: Some(calcvba_bundle::ProjectMemberKind::Method),
+                member,
+                ..
+            } if member.token == 11
+        )),
+        "Application.OnTime should bind through the host-injected Excel metadata: {callees:?}"
+    );
+}
+
+#[test]
+fn host_injected_application_named_args_bind_to_typelib_order() {
+    let main = "Sub Main()\n    Dim r As Variant\n    r = Application.Run(Arg1:=1, Macro:=\"MacroName\")\n    Application.OnTime Schedule:=False, Procedure:=\"MacroName\", EarliestTime:=0\nEnd Sub\n";
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Main".into(),
+            module_kind: ModuleKind::Procedural,
+            attributes: ModuleAttributes::named("Main"),
+            source: main.into(),
+        }],
+        references: vec![ProjectReference::HostInjected {
+            referenced_project_name: "Excel".into(),
+        }],
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let program = bind_program(&manifest, &ApplicationTypeLibs).expect("bind_program");
+    let run_args = early_com_args(&program, 10);
+    assert_eq!(run_args.len(), 3, "receiver + Macro + Arg1: {run_args:?}");
+    assert_core_arg_str(&run_args[1], "MacroName");
+    assert_core_arg_i16(&run_args[2], 1);
+    assert_no_named_args(&run_args[1..]);
+
+    let ontime_args = early_com_args(&program, 11);
+    assert_eq!(
+        ontime_args.len(),
+        5,
+        "receiver + EarliestTime + Procedure + LatestTime omitted + Schedule: {ontime_args:?}"
+    );
+    assert_core_arg_i16(&ontime_args[1], 0);
+    assert_core_arg_str(&ontime_args[2], "MacroName");
+    assert!(matches!(ontime_args[3], CoreArg::Omitted));
+    assert_core_arg_bool(&ontime_args[4], false);
+    assert_no_named_args(&ontime_args[1..]);
+}
+
+#[test]
+fn typed_com_receiver_named_args_bind_to_typelib_order() {
+    let main = "Sub Main()\n    Dim r As Variant\n    Dim app As Application\n    r = app.Run(Arg1:=1, Macro:=\"MacroName\")\nEnd Sub\n";
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Main".into(),
+            module_kind: ModuleKind::Procedural,
+            attributes: ModuleAttributes::named("Main"),
+            source: main.into(),
+        }],
+        references: vec![ProjectReference::TypeLibrary {
+            name: "Excel".into(),
+            guid: None,
+            version_major: Some(1),
+            version_minor: Some(0),
+            lcid: None,
+            import_lib: None,
+        }],
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let program = bind_program(&manifest, &ApplicationTypeLibs).expect("bind_program");
+    let run_args = early_com_args(&program, 10);
+    assert_eq!(run_args.len(), 3, "receiver + Macro + Arg1: {run_args:?}");
+    assert_core_arg_str(&run_args[1], "MacroName");
+    assert_core_arg_i16(&run_args[2], 1);
+    assert_no_named_args(&run_args[1..]);
+}
+
+#[test]
+fn typed_com_return_interface_pointer_chains_to_early_com() {
+    let main = "Sub Main()\n    Dim n As Long\n    Dim app As Application\n    n = app.Workbooks.Count\n    n = app.Workbooks\nEnd Sub\n";
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Main".into(),
+            module_kind: ModuleKind::Procedural,
+            attributes: ModuleAttributes::named("Main"),
+            source: main.into(),
+        }],
+        references: vec![ProjectReference::TypeLibrary {
+            name: "Excel".into(),
+            guid: None,
+            version_major: Some(1),
+            version_minor: Some(0),
+            lcid: None,
+            import_lib: None,
+        }],
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let program = bind_program(&manifest, &ChainedComTypeLibs).expect("bind_program");
+    let count_args = early_com_args(&program, 21);
+    assert_receiver_early_com_token(count_args, 20);
+    let item_args = early_com_args(&program, 0);
+    assert_receiver_early_com_token(item_args, 20);
+}
+
+#[test]
+fn host_injected_com_return_interface_pointer_chains_to_early_com() {
+    let main = "Sub Main()\n    Dim n As Long\n    n = Application.Workbooks.Count\n    n = Application.Workbooks\nEnd Sub\n";
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Main".into(),
+            module_kind: ModuleKind::Procedural,
+            attributes: ModuleAttributes::named("Main"),
+            source: main.into(),
+        }],
+        references: vec![ProjectReference::HostInjected {
+            referenced_project_name: "Excel.Application".into(),
+        }],
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let program = bind_program(&manifest, &ChainedComTypeLibs).expect("bind_program");
+    let count_args = early_com_args(&program, 21);
+    assert_receiver_early_com_token(count_args, 20);
+    let item_args = early_com_args(&program, 0);
+    assert_receiver_early_com_token(item_args, 20);
+}
+
+#[test]
+fn generic_com_object_return_stays_late_bound() {
+    let main =
+        "Sub Main()\n    Dim n As Variant\n    n = Application.DynamicThing.Count\nEnd Sub\n";
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Main".into(),
+            module_kind: ModuleKind::Procedural,
+            attributes: ModuleAttributes::named("Main"),
+            source: main.into(),
+        }],
+        references: vec![ProjectReference::HostInjected {
+            referenced_project_name: "Excel.Application".into(),
+        }],
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let program = bind_program(&manifest, &ChainedComTypeLibs).expect("bind_program");
+    assert!(
+        top_level_callees(&program).iter().any(|c| matches!(
+            c,
+            CoreCallee::LateDispatch { name, .. } if name.eq_ignore_ascii_case("Count")
+        )),
+        "generic Object return should remain late-bound for .Count: {:?}",
+        top_level_callees(&program)
+    );
+}
+
+#[test]
+fn library_wide_com_member_lookup_is_scoped_to_receiver_type() {
+    let main = "Sub Main()\n    Dim n As Variant\n    Dim wb As Workbook\n    n = wb.Workbooks.Count\nEnd Sub\n";
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Main".into(),
+            module_kind: ModuleKind::Procedural,
+            attributes: ModuleAttributes::named("Main"),
+            source: main.into(),
+        }],
+        references: vec![ProjectReference::TypeLibrary {
+            name: "Excel".into(),
+            guid: None,
+            version_major: Some(1),
+            version_minor: Some(0),
+            lcid: None,
+            import_lib: None,
+        }],
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let err = bind_program(&manifest, &ChainedComTypeLibs)
+        .expect_err("Workbook must not inherit Application.Workbooks from the flat library blob");
+    assert!(
+        format!("{err:?}").contains("Workbooks"),
+        "unexpected scoped COM lookup error: {err:?}"
+    );
+}
+
+#[test]
+fn typed_com_named_argument_errors_are_bind_time_diagnostics() {
+    let manifest_for = |source: &str| SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Main".into(),
+            module_kind: ModuleKind::Procedural,
+            attributes: ModuleAttributes::named("Main"),
+            source: source.into(),
+        }],
+        references: vec![ProjectReference::HostInjected {
+            referenced_project_name: "Excel".into(),
+        }],
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let unknown = "Sub Main()\n    Dim r As Variant\n    r = Application.Run(NotAParam:=\"MacroName\")\nEnd Sub\n";
+    let unknown_err = bind_program(&manifest_for(unknown), &ApplicationTypeLibs)
+        .expect_err("unknown COM named arg should fail")
+        .to_string();
+    assert!(
+        unknown_err.contains("Named argument not found") && unknown_err.contains("NotAParam"),
+        "unexpected unknown-name error: {unknown_err}"
+    );
+
+    let duplicate = "Sub Main()\n    Dim r As Variant\n    r = Application.Run(Macro:=\"A\", Macro:=\"B\")\nEnd Sub\n";
+    let duplicate_err = bind_program(&manifest_for(duplicate), &ApplicationTypeLibs)
+        .expect_err("duplicate COM named arg should fail");
+    assert!(
+        format!("{duplicate_err:?}").contains("duplicate argument for parameter Macro"),
+        "unexpected duplicate-name error: {duplicate_err:?}"
+    );
+}
+
+// ── COM late dispatch + Declare (structural — emit-correct, not run) ─────────
+
+/// The callee of a value, unwrapping a `Coerce` wrapper (an assignment to a typed
+/// target coerces the call result).
+fn callee_of(value: &CoreValue) -> Option<&CoreCallee> {
+    match value {
+        CoreValue::Call { callee, .. } => Some(callee),
+        CoreValue::Coerce { value, .. } => callee_of(value),
+        _ => None,
+    }
+}
+
+/// The callees of top-level `Assign`/`Eval` calls in every procedure.
+fn top_level_callees(program: &CoreProgram) -> Vec<&CoreCallee> {
+    let mut out = Vec::new();
+    for proc in &program.procs {
+        for stmt in &proc.body {
+            let value = match stmt {
+                CoreStmt::Assign { value, .. } => Some(value),
+                CoreStmt::Eval(value) => Some(value),
+                _ => None,
+            };
+            if let Some(callee) = value.and_then(callee_of) {
+                out.push(callee);
+            }
+        }
+    }
+    out
+}
+
+fn collect_arg_callees<'a>(arg: &'a CoreArg, out: &mut Vec<&'a CoreCallee>) {
+    match arg {
+        CoreArg::ByVal(value) | CoreArg::Named { value, .. } => collect_value_callees(value, out),
+        CoreArg::ByRef(_) | CoreArg::Omitted => {}
+    }
+}
+
+fn collect_value_callees<'a>(value: &'a CoreValue, out: &mut Vec<&'a CoreCallee>) {
+    match value {
+        CoreValue::Unary { expr, .. } | CoreValue::Coerce { value: expr, .. } => {
+            collect_value_callees(expr, out);
+        }
+        CoreValue::Binary { lhs, rhs, .. } => {
+            collect_value_callees(lhs, out);
+            collect_value_callees(rhs, out);
+        }
+        CoreValue::Call { callee, args } => {
+            out.push(callee);
+            for arg in args {
+                collect_arg_callees(arg, out);
+            }
+        }
+        CoreValue::TypeOfIs { object, .. } | CoreValue::Ptr { value: object, .. } => {
+            collect_value_callees(object, out);
+        }
+        CoreValue::ArrayLiteral { elems, .. } => {
+            for elem in elems {
+                collect_value_callees(elem, out);
+            }
+        }
+        CoreValue::Bound { dimension, .. } => {
+            if let Some(dimension) = dimension {
+                collect_value_callees(dimension, out);
+            }
+        }
+        CoreValue::Const(_)
+        | CoreValue::Load(_)
+        | CoreValue::WithTemp(_)
+        | CoreValue::New(_)
+        | CoreValue::NewRecord { .. }
+        | CoreValue::ErrField(_)
+        | CoreValue::Erl
+        | CoreValue::AddressOf(_)
+        | CoreValue::NewExtern { .. }
+        | CoreValue::Predeclared { .. }
+        | CoreValue::PredeclaredExtern { .. } => {}
+    }
+}
+
+fn all_value_callees(program: &CoreProgram) -> Vec<&CoreCallee> {
+    let mut out = Vec::new();
+    for proc in &program.procs {
+        for stmt in &proc.body {
+            match stmt {
+                CoreStmt::Assign { value, .. } | CoreStmt::Eval(value) => {
+                    collect_value_callees(value, &mut out);
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+fn call_of(value: &CoreValue) -> Option<(&CoreCallee, &[CoreArg])> {
+    match value {
+        CoreValue::Call { callee, args } => Some((callee, args)),
+        CoreValue::Coerce { value, .. } => call_of(value),
+        _ => None,
+    }
+}
+
+/// The top-level `Assign`/`Eval` calls in every procedure, including their args.
+fn top_level_calls(program: &CoreProgram) -> Vec<(&CoreCallee, &[CoreArg])> {
+    let mut out = Vec::new();
+    for proc in &program.procs {
+        for stmt in &proc.body {
+            let value = match stmt {
+                CoreStmt::Assign { value, .. } => Some(value),
+                CoreStmt::Eval(value) => Some(value),
+                _ => None,
+            };
+            if let Some(call) = value.and_then(call_of) {
+                out.push(call);
+            }
+        }
+    }
+    out
+}
+
+fn early_com_args(program: &CoreProgram, token: i32) -> &[CoreArg] {
+    for (callee, args) in top_level_calls(program) {
+        if matches!(callee, CoreCallee::EarlyCom { member, .. } if member.token == token) {
+            return args;
+        }
+    }
+    panic!(
+        "no EarlyCom call with token {token}: {:?}",
+        top_level_callees(program)
+    );
+}
+
+fn assert_receiver_early_com_token(args: &[CoreArg], token: i32) {
+    let Some(CoreArg::ByVal(receiver)) = args.first() else {
+        panic!("expected early-COM receiver arg, got {args:?}");
+    };
+    let Some((CoreCallee::EarlyCom { member, .. }, _)) = call_of(receiver) else {
+        panic!("expected nested early-COM receiver, got {receiver:?}");
+    };
+    assert_eq!(
+        member.token, token,
+        "expected receiver to come from early-COM token {token}, got {member:?}"
+    );
+}
+
+fn core_arg_const(arg: &CoreArg) -> Option<&CoreConst> {
+    match arg {
+        CoreArg::ByVal(value) => core_value_const(value),
+        _ => None,
+    }
+}
+
+fn core_value_const(value: &CoreValue) -> Option<&CoreConst> {
+    match value {
+        CoreValue::Const(c) => Some(c),
+        CoreValue::Coerce { value, .. } => core_value_const(value),
+        _ => None,
+    }
+}
+
+fn assert_core_arg_str(arg: &CoreArg, expected: &str) {
+    assert!(
+        matches!(core_arg_const(arg), Some(CoreConst::Str(s)) if s == expected),
+        "expected string constant {expected:?}, got {arg:?}"
+    );
+}
+
+fn assert_core_arg_i16(arg: &CoreArg, expected: i16) {
+    assert!(
+        matches!(core_arg_const(arg), Some(CoreConst::I16(n)) if *n == expected),
+        "expected i16 constant {expected}, got {arg:?}"
+    );
+}
+
+fn assert_core_arg_bool(arg: &CoreArg, expected: bool) {
+    assert!(
+        matches!(core_arg_const(arg), Some(CoreConst::Bool(b)) if *b == expected),
+        "expected bool constant {expected}, got {arg:?}"
+    );
+}
+
+fn assert_no_named_args(args: &[CoreArg]) {
+    assert!(
+        !args.iter().any(|arg| matches!(arg, CoreArg::Named { .. })),
+        "early-bound COM args must be descriptor-ordered, not dynamic named args: {args:?}"
+    );
+}
+
+#[test]
+fn late_bound_member_call_on_object() {
+    // A member call on an untyped `Object` (no typelib) becomes a by-name late
+    // dispatch — the VBA late-binding default.
+    let src = "Sub Main()\n    Dim o As Object\n    Dim r\n    r = o.Compute(1)\nEnd Sub\n";
+    let program = bind(src);
+    assert!(
+        top_level_callees(&program).iter().any(|c| matches!(
+            c,
+            CoreCallee::LateDispatch { name, .. } if name.eq_ignore_ascii_case("Compute")
+        )),
+        "expected a LateDispatch to Compute"
+    );
+}
+
+#[test]
+fn late_bound_object_index_lowers_to_default_member_get() {
+    let src = "Sub Main()\n    Dim o As Object\n    Dim r\n    r = o(1)\nEnd Sub\n";
+    let program = bind(src);
+    assert!(
+        top_level_callees(&program).iter().any(|c| matches!(
+            c,
+            CoreCallee::LateDispatch {
+                default_member: true,
+                kind: Some(calcvba_bundle::ProjectMemberKind::PropertyGet),
+                ..
+            }
+        )),
+        "expected Object index read to lower to default-member PropertyGet"
+    );
+}
+
+#[test]
+fn late_bound_property_put_on_object() {
+    // `o.Value = 5` on an untyped Object becomes a late-bound Property Let put.
+    let src = "Sub Main()\n    Dim o As Object\n    o.Value = 5\nEnd Sub\n";
+    let program = bind(src);
+    assert!(
+        top_level_callees(&program).iter().any(|c| matches!(
+            c,
+            CoreCallee::LateDispatch {
+                name,
+                kind: Some(calcvba_bundle::ProjectMemberKind::PropertyLet),
+                default_member: false,
+            }
+                if name.eq_ignore_ascii_case("Value")
+        )),
+        "expected a late PropertyLet put to Value"
+    );
+}
+
+#[test]
+fn late_bound_object_index_assignment_lowers_to_default_member_put() {
+    let src = "Sub Main()\n    Dim o As Object\n    o(1) = 5\nEnd Sub\n";
+    let program = bind(src);
+    assert!(
+        top_level_callees(&program).iter().any(|c| matches!(
+            c,
+            CoreCallee::LateDispatch {
+                default_member: true,
+                kind: Some(calcvba_bundle::ProjectMemberKind::PropertyLet),
+                ..
+            }
+        )),
+        "expected Object index assignment to lower to default-member PropertyLet"
+    );
+}
+
+#[test]
+fn declare_lib_emits_external_call_descriptor() {
+    // `Declare` lowers calls to CoreCallee::Declare and records a descriptor with
+    // the source-declared library/name/params (runtime fields are defaults).
+    let src = "Declare Function GetTickCount Lib \"kernel32\" () As Long\n\n\
+               Sub Main()\n    Dim r As Long\n    r = GetTickCount()\nEnd Sub\n";
+    let program = bind(src);
+    assert!(
+        top_level_callees(&program)
+            .iter()
+            .any(|c| matches!(c, CoreCallee::Declare { .. })),
+        "expected a Declare callee"
+    );
+    let desc = program
+        .external_calls
+        .iter()
+        .find(|d| d.declared_name.eq_ignore_ascii_case("GetTickCount"))
+        .expect("expected a GetTickCount external-call descriptor");
+    assert_eq!(desc.library, "kernel32");
+    assert!(desc.return_type.is_some());
+}
+
+#[test]
+fn declare_function_type_suffix_emits_external_return_type() {
+    let src = "DefDbl A-Z\nDeclare PtrSafe Function GetTickCount& Lib \"kernel32\" ()\n\n\
+               Sub Main()\n    Dim r As Long\n    r = GetTickCount()\nEnd Sub\n";
+    let program = bind(src);
+    let desc = program
+        .external_calls
+        .iter()
+        .find(|d| d.declared_name.eq_ignore_ascii_case("GetTickCount"))
+        .expect("expected a GetTickCount external-call descriptor");
+    assert_eq!(desc.return_type, Some(DeclareParamType::Long));
+}
+
+#[test]
+fn declare_byref_arg_emits_byref() {
+    // A ByRef `Declare` param called with an l-value lowers to CoreArg::ByRef (the
+    // write-back target). This guards the Declare-specific ByRef argument path.
+    let src = "Declare Sub Bump Lib \"k\" (ByRef n As Long)\n\n\
+               Sub Main()\n    Dim r As Long\n    r = 5\n    Bump r\nEnd Sub\n";
+    let program = bind(src);
+    let args = program
+        .procs
+        .iter()
+        .flat_map(|p| &p.body)
+        .find_map(|s| match s {
+            CoreStmt::Eval(CoreValue::Call {
+                callee: CoreCallee::Declare { .. },
+                args,
+            }) => Some(args),
+            _ => None,
+        })
+        .expect("a Declare call");
+    assert!(
+        matches!(args.first(), Some(CoreArg::ByRef(_))),
+        "ByRef Declare arg should be CoreArg::ByRef, got {:?}",
+        args.first()
+    );
+}
+
+// ── File I/O (structural — bind emits cross-bundle ExternProc calls; not run) ──
+
+#[test]
+fn file_io_lowers_to_vba_filesystem_externs() {
+    // Since P4 the funny-syntax file statements lower to cross-bundle `ExternProc`
+    // calls into the `VBA` bundle's `FileSystem` module (internal member names
+    // `Open`/`Print`/`Close`/…) rather than `CoreCallee::Native(File*)`. We assert the
+    // entry bundle imports each member; the special arg-shaping is unchanged.
+    let src = "Sub Main()\n    Dim f As Long\n    f = FreeFile\n    Open \"x.txt\" For Output As #1\n    Print #1, \"hi\"\n    Close #1\nEnd Sub\n";
+    let program = bind(src);
+    for member in ["Open", "Print", "Close"] {
+        assert!(
+            imports_vba_filesystem(&program, member),
+            "expected a VBA/FileSystem import for {member}: {:?}",
+            program.imports
+        );
+    }
+    // No file statement remains on the bespoke `CoreCallee::Native` route.
+    assert!(
+        !contains_file_native(&program),
+        "no file statement may lower to CoreCallee::Native after P4"
+    );
+}
+
+/// True if any statement still lowers a *migrated* file id to `CoreCallee::Native`.
+fn contains_file_native(program: &CoreProgram) -> bool {
+    fn value_native(v: &CoreValue) -> Option<NativeImplId> {
+        match v {
+            CoreValue::Call {
+                callee: CoreCallee::Native(n),
+                ..
+            } => Some(*n),
+            CoreValue::Unary { expr, .. } => value_native(expr),
+            _ => None,
+        }
+    }
+    program.procs.iter().flat_map(|p| &p.body).any(|s| {
+        let id = match s {
+            CoreStmt::Eval(v) => value_native(v),
+            CoreStmt::Assign { value, .. } => value_native(value),
+            _ => None,
+        };
+        id.is_some_and(|id| {
+            id.library_member().is_some() || id.library_statement_member().is_some()
+        })
+    })
+}

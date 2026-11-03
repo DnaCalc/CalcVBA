@@ -231,9 +231,9 @@ function Register-TestRegistryPath {
 }
 
 $testId = [Guid]::NewGuid().ToString('N')
-$outer = Join-Path ([IO.Path]::GetTempPath()) "oxvba-owned-policy-test-$testId"
-$journalDirectory = Join-Path $outer 'oxvba-owned-resource-journals'
-$runDirectory = Join-Path $outer 'oxvba-owned-resource-runs'
+$outer = Join-Path ([IO.Path]::GetTempPath()) "calcvba-owned-policy-test-$testId"
+$journalDirectory = Join-Path $outer 'calcvba-owned-resource-journals'
+$runDirectory = Join-Path $outer 'calcvba-owned-resource-runs'
 $fileSentinel = Join-Path $outer 'neighbor-sentinel.txt'
 $junctionTarget = Join-Path $outer 'junction-target'
 $registryNamespacePath = 'HKCU\Software\OxVbaOwnedResourcePolicy'
@@ -284,9 +284,9 @@ try {
     foreach ($invalidPathCase in @(
         [pscustomobject]@{ name = 'drive-relative local path'; path = 'C:relative-owned-resource.txt'; pattern = 'drive-qualified|ADS/device/namespace/UNC' },
         [pscustomobject]@{ name = 'alternate data stream'; path = ([string]::Concat($outer, ':owned-stream')); pattern = 'ADS/device/namespace/UNC' },
-        [pscustomobject]@{ name = 'UNC path'; path = '\\localhost\C$\oxvba-owned-resource.txt'; pattern = 'ADS/device/namespace/UNC' },
+        [pscustomobject]@{ name = 'UNC path'; path = '\\localhost\C$\calcvba-owned-resource.txt'; pattern = 'ADS/device/namespace/UNC' },
         [pscustomobject]@{ name = 'extended namespace path'; path = "\\?\$outer"; pattern = 'ADS/device/namespace/UNC' },
-        [pscustomobject]@{ name = 'device namespace path'; path = '\\.\C:\oxvba-owned-resource.txt'; pattern = 'ADS/device/namespace/UNC' },
+        [pscustomobject]@{ name = 'device namespace path'; path = '\\.\C:\calcvba-owned-resource.txt'; pattern = 'ADS/device/namespace/UNC' },
         [pscustomobject]@{ name = 'reserved device component'; path = (Join-Path $outer 'CON'); pattern = 'reserved Windows device' }
     )) {
         Expect-PolicyRejection -Name $invalidPathCase.name -MessagePattern $invalidPathCase.pattern -Action {
@@ -361,7 +361,7 @@ try {
 
     $infrastructureTemp = Join-Path $outer 'infrastructure-junction-probe'
     [void](New-Item -ItemType Directory -Path $infrastructureTemp)
-    $infrastructureJunction = Join-Path $infrastructureTemp 'oxvba-owned-resource-journals'
+    $infrastructureJunction = Join-Path $infrastructureTemp 'calcvba-owned-resource-journals'
     [void](New-Item -ItemType Junction -Path $infrastructureJunction -Target $junctionTarget)
     Expect-PolicyRejection -Name 'journal infrastructure junction' -MessagePattern 'reparse point' -Action {
         New-WindowsOwnedResourceJournal -RepositoryRoot $repository -TempRoot $infrastructureTemp
@@ -731,7 +731,7 @@ while ([DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 50 }
     }
     [IO.File]::WriteAllBytes($tamperJournalPath, $script:tamperBackup)
     $originalTamperText = [Text.UTF8Encoding]::new($false, $true).GetString($script:tamperBackup)
-    $schemaLine = '  "schema_id": "oxvba-windows-owned-resource-journal-v1",'
+    $schemaLine = '  "schema_id": "calcvba-windows-owned-resource-journal-v1",'
     $duplicateText = $originalTamperText.Replace($schemaLine, "$schemaLine`n$schemaLine")
     [IO.File]::WriteAllText($tamperJournalPath, $duplicateText, [Text.UTF8Encoding]::new($false))
     Expect-PolicyRejection -Name 'duplicate JSON property' -MessagePattern 'duplicate JSON property' -Action {

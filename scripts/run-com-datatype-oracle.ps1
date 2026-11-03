@@ -119,7 +119,7 @@ End Sub
         }
         Set-Content -Path $sourcePath -Value $source
         $logPath = Join-Path $runDir ($Case.id + ".oxvba.log.txt")
-        $cargoArgs = @("run", "-p", "oxvba-cli", "--", "run", $sourcePath, "--dump-values", "--profile", "windows-stdio")
+        $cargoArgs = @("run", "-p", "calcvba-cli", "--", "run", $sourcePath, "--dump-values", "--profile", "windows-stdio")
         $cargoOutput = & cargo @cargoArgs 2>&1 | Tee-Object -FilePath $logPath
         $exitCode = $LASTEXITCODE
         if ($exitCode -ne 0) { return @{ status="error"; observed="lane-failed(exit=$exitCode)"; log=$logPath } }
@@ -141,8 +141,8 @@ End Sub
             scenario = "Late-bound COM $($case.kind) VarType/value parity"
             vba_status = $vba.status
             vba_observed = $vba.observed
-            oxvba_status = $ox.status
-            oxvba_observed = $ox.observed
+            calcvba_status = $ox.status
+            calcvba_observed = $ox.observed
             match = if ($vba.status -eq $ox.status -and $vba.observed -eq $ox.observed) { "true" } else { "false" }
             notes = "Fixture: OxVba.TestEventServer; OxVba log=$($ox.log)"
         }
@@ -154,7 +154,7 @@ End Sub
     $summary = @(
         "# COM Datatype Oracle Run", "", "- Run ID: $resolvedRunId", "- Generated UTC: $((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))", "- Fixture: `OxVba.TestEventServer` datatype methods", "- Results CSV: $csvPath", "- Match count: $((@($rows | Where-Object { $_.match -eq 'true' })).Count)", "- Mismatch count: $((@($rows | Where-Object { $_.match -ne 'true' })).Count)", "", "| Topic | Case | VBA | OxVba | Match | Notes |", "|---|---|---|---|---|---|"
     )
-    foreach ($row in $rows) { $summary += "| $($row.topic_id) | $($row.case_id) | $($row.vba_status): $($row.vba_observed) | $($row.oxvba_status): $($row.oxvba_observed) | $($row.match) | $($row.notes) |" }
+    foreach ($row in $rows) { $summary += "| $($row.topic_id) | $($row.case_id) | $($row.vba_status): $($row.vba_observed) | $($row.calcvba_status): $($row.calcvba_observed) | $($row.match) | $($row.notes) |" }
     Set-Content -Path $summaryPath -Value ($summary -join [Environment]::NewLine)
     Write-Host "com-datatype-oracle: complete"; Write-Host "run_dir=$runDir"; Write-Host "results=$csvPath"; Write-Host "summary=$summaryPath"
     if (-not $AllowMismatch -and (@($rows | Where-Object { $_.match -ne "true" }).Count -gt 0)) { exit 1 }

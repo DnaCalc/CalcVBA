@@ -50,7 +50,7 @@ try {
 
         $status = "ok"
         $values = ""
-        $output = & cargo run -q -p oxvba-cli --bin oxvba-cli -- run $fixture --dump-values 2>&1 | Out-String
+        $output = & cargo run -q -p calcvba-cli --bin calcvba-cli -- run $fixture --dump-values 2>&1 | Out-String
         if ($LASTEXITCODE -ne 0) {
             $status = "error"
         }
@@ -76,7 +76,7 @@ try {
     if ($hostedVmRows.Count -gt 0) {
         $hostedIds = ($hostedVmRows | ForEach-Object { $_.id }) -join ","
         Write-Host "jit-v2 tracer: running hosted VM seed test for $hostedIds"
-        $testOutput = & cargo test -q -p oxvba-host --test jit_v2_tracer_vm_seed -- --nocapture 2>&1 | Out-String
+        $testOutput = & cargo test -q -p calcvba-engine --test jit_v2_tracer_vm_seed -- --nocapture 2>&1 | Out-String
         if ($LASTEXITCODE -ne 0) {
             Write-Host $testOutput
             throw "JIT v2 hosted VM seed test failed for $hostedIds"

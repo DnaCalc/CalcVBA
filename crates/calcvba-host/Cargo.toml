@@ -1,0 +1,40 @@
+[package]
+name = "calcvba-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Host-neutral procedure metadata and generation-checked typed calls"
+
+[features]
+default = ["jit"]
+jit = ["dep:calcvba-jit"]
+
+[dependencies]
+calcvba-host-api.workspace = true
+calcvba-com.workspace = true
+calcvba-bind.workspace = true
+calcvba-bundle.workspace = true
+calcvba-hal.workspace = true
+calcvba-oxir.workspace = true
+calcvba-runtime.workspace = true
+calcvba-symbol.workspace = true
+calcvba-vm3.workspace = true
+calcvba-jit = { workspace = true, optional = true }
+thiserror.workspace = true
+self_cell = "1.2"
+calcvba-rt-abi.workspace = true
+calcvba-lib.workspace = true
+calcvba-eval.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+calcvba-runtime = { workspace = true, features = ["live-counters"] }
+calcvba-com = { workspace = true, features = ["fixture-typelibs"] }
+
+[lints]
+workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging"] }

@@ -1,9 +1,9 @@
 //! Minimal WebAssembly export proving the interpreter-only embedding path.
 //! The product API remains the Rust Module/Session interface.
-use oxvba_spreadsheet_compat::{Backend, Error, Module, Value};
+use calcvba_spreadsheet_compat::{Backend, Error, Module, Value};
 
 #[unsafe(no_mangle)]
-pub extern "C" fn oxvba_add2_probe(a: f64, b: f64) -> f64 {
+pub extern "C" fn calcvba_add2_probe(a: f64, b: f64) -> f64 {
     let result = (|| {
         let module = Module::load("Math", "Function Add2(a, b): Add2 = a + b: End Function\n")?;
         module.prepare(Backend::Interpreter)?.call(
@@ -19,7 +19,7 @@ pub extern "C" fn oxvba_add2_probe(a: f64, b: f64) -> f64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn oxvba_budget_probe() -> i32 {
+pub extern "C" fn calcvba_budget_probe() -> i32 {
     let module = Module::load(
         "Budget",
         "Function Forever()\nOn Error Resume Next\nDo\nLoop\nEnd Function\n",
@@ -35,7 +35,7 @@ pub extern "C" fn oxvba_budget_probe() -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn oxvba_matrix_probe() -> f64 {
+pub extern "C" fn calcvba_matrix_probe() -> f64 {
     let module = Module::load(
         "Matrix",
         "Function Pick(values)\nPick = values(2, 1)\nEnd Function\n",

@@ -35,7 +35,7 @@ try {
             throw "Missing example source: $source"
         }
 
-        $output = & cargo run -q -p oxvba-cli --bin oxvba-cli -- run $source --dump-values @backendArgs 2>$null | Out-String
+        $output = & cargo run -q -p calcvba-cli --bin calcvba-cli -- run $source --dump-values @backendArgs 2>$null | Out-String
         if ($LASTEXITCODE -ne 0) {
             throw "Example failed: $($row.file)"
         }
@@ -58,7 +58,7 @@ try {
             throw "Missing project example: $source"
         }
 
-        $output = & cargo run -q -p oxvba-cli --bin oxvba-cli -- run-project $source --dump-values @backendArgs 2>$null | Out-String
+        $output = & cargo run -q -p calcvba-cli --bin calcvba-cli -- run-project $source --dump-values @backendArgs 2>$null | Out-String
         if ($LASTEXITCODE -ne 0) {
             throw "Project example failed: $($row.path)"
         }

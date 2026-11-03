@@ -1,0 +1,34 @@
+[package]
+name = "calcvba-hal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+calcvba-host-api.workspace = true
+calcvba-diagnostics.workspace = true
+calcvba-com.workspace = true
+calcvba-runtime.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Time",
+    "Win32_System_Variant",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+calcvba-com = { workspace = true, features = ["fixture-typelibs"] }
+[lints]
+workspace = true

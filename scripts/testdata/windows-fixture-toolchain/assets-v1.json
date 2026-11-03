@@ -1,5 +1,5 @@
 {
-  "schema_id": "oxvba-windows-fixture-admission-test-assets-v1",
+  "schema_id": "calcvba-windows-fixture-admission-test-assets-v1",
   "producer": "MSVC 14.51.36231 cl/link and Windows SDK 10.0.26100.0 MIDL /env x64",
   "source_files": [
     {

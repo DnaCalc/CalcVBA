@@ -1,0 +1,25 @@
+[package]
+name = "calcvba-bind"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The binder: a single typed pass that lowers the resolved calcvba-syntax CST + calcvba-symbol resolution into symbol-free calcvba-bundle Core IR (coreir) for OxIR elaboration → vm3/JIT."
+
+[dependencies]
+calcvba-diagnostics.workspace = true
+calcvba-syntax.workspace = true
+calcvba-symbol.workspace = true
+calcvba-bundle.workspace = true
+calcvba-runtime.workspace = true
+calcvba-com.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+calcvba-oxir.workspace = true
+calcvba-vm3.workspace = true
+calcvba-hal.workspace = true
+calcvba-com = { workspace = true, features = ["fixture-typelibs"] }
+[lints]
+workspace = true

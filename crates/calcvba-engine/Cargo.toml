@@ -1,0 +1,33 @@
+[package]
+name = "calcvba-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+calcvba-diagnostics.workspace = true
+calcvba-runtime.workspace = true
+calcvba-com.workspace = true
+calcvba-hal.workspace = true
+calcvba-symbol.workspace = true
+calcvba-bind.workspace = true
+calcvba-bundle.workspace = true
+calcvba-oxir.workspace = true
+calcvba-vm3.workspace = true
+calcvba-jit.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+calcvba-project.workspace = true
+calcvba-com = { workspace = true, features = ["fixture-typelibs"] }
+
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Variant",
+] }
+[lints]
+workspace = true

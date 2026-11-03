@@ -53,12 +53,12 @@ pub trait HostObjectServices {
     fn invoke_dynamic(
         &self,
         _call: &DynamicMemberCall,
-        _arguments: &mut [oxvba_runtime::Variant],
+        _arguments: &mut [calcvba_runtime::Variant],
         _context: &mut TypedContext,
-    ) -> Result<oxvba_runtime::Variant, crate::TypedFault> {
+    ) -> Result<calcvba_runtime::Variant, crate::TypedFault> {
         Err(crate::TypedFault {
             number: 438,
-            description: oxvba_runtime::default_error_message(438).into(),
+            description: calcvba_runtime::default_error_message(438).into(),
             source: None,
             help_file: None,
             help_context: None,

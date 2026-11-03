@@ -3,7 +3,7 @@ param(
     [string]$OutputRoot = 'temp/oracle'
 )
 $ErrorActionPreference = 'Stop'
-$script:defaultsSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../crates/oxvba-embed/tests/support/oracle/typed-optional-run10.bas')
+$script:defaultsSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../crates/calcvba-host/tests/support/oracle/typed-optional-run10.bas')
 $script:defaultsExpected = 'default=42|alias=42:42|private=44:42|missing=True|present=False|zero=0|named=6.5'
 $supervisor = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'run-excel-vba-oracle.ps1')
 $anchor = '. (Join-Path $PSScriptRoot "excel-vba-oracle-bootstrap.ps1")'

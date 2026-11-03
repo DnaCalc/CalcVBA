@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference='Stop'
 $oracleScripts=$PSScriptRoot
 $engine=(Resolve-Path -LiteralPath $RuntimeTestExecutable).Path
-$fixtures=(Resolve-Path (Join-Path $PSScriptRoot '../crates/oxvba-embed/tests/support')).Path
+$fixtures=(Resolve-Path (Join-Path $PSScriptRoot '../crates/calcvba-host/tests/support')).Path
 $extraCases=Get-Content -Raw (Join-Path $fixtures 'xlsm/cases.json') | ConvertFrom-Json
 $extraCase=@($extraCases | Where-Object id -CEQ $CaseId)
 if ($CaseId -notin @('chains','events','mixed','documents','arrays','bounds','application') -and $extraCase.Count -ne 1) { throw "Unknown saved workbook case: $CaseId" }

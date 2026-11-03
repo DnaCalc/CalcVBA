@@ -25,7 +25,7 @@ try {
     $cmd = @(
         "test",
         "-p",
-        "oxvba-host",
+        "calcvba-engine",
         "--test",
         "com_early_project_end_to_end",
         "early_bound_project_executes_registered_scripting_dictionary_member_subset",

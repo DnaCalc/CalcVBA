@@ -13,7 +13,7 @@ if ($RuntimeTestExecutable) {
 }
 # Reuse the exact process containment, compile authority and armed UIA guardian.
 # Replace only the runtime action: no VBA macro is active during recalculation.
-$script:worksheetSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../crates/oxvba-embed/tests/support/oracle/worksheet-errors.bas')
+$script:worksheetSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../crates/calcvba-host/tests/support/oracle/worksheet-errors.bas')
 $script:worksheetOwningObjectProbe = [bool]$OwningObjectProbe
 $supervisor = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'run-excel-vba-oracle.ps1')
 $anchor = '. (Join-Path $PSScriptRoot "excel-vba-oracle-bootstrap.ps1")'
@@ -103,7 +103,7 @@ if ($OwningObjectProbe) {
 if (-not $worker.Contains($runAnchor)) { throw 'Worker runtime anchor changed' }
 $worker = $worker.Replace($runAnchor, $runtime)
 $worker = $worker.Replace('$PSScriptRoot', ("'" + $PSScriptRoot.Replace("'", "''") + "'"))
-$workerPath = Join-Path ([IO.Path]::GetTempPath()) ("oxvba-worksheet-oracle-$([Guid]::NewGuid().ToString('N')).ps1")
+$workerPath = Join-Path ([IO.Path]::GetTempPath()) ("calcvba-worksheet-oracle-$([Guid]::NewGuid().ToString('N')).ps1")
 [IO.File]::WriteAllText($workerPath, $worker, [Text.UTF8Encoding]::new($false))
 $supervisor = $supervisor.Replace('(Join-Path $PSScriptRoot "excel-vba-oracle-worker.ps1")', ("'" + $workerPath.Replace("'", "''") + "'"))
 $supervisor = $supervisor.Replace('$PSScriptRoot', ("'" + $PSScriptRoot.Replace("'", "''") + "'"))

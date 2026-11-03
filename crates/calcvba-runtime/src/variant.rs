@@ -1,0 +1,1845 @@
+use crate::{
+    Decimal96,
+    bstr::{BStr, OwnedBStrCore, borrow_raw_bstr},
+    com_record::ComRecord,
+    object_ref::{ObjectRef, RawRuntimeIUnknown},
+    safe_array::{SafeArray, SafeArrayBound, VT_VARIANT_VALUE},
+    vba_record::VbaRecord,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u16)]
+pub enum VarType {
+    Empty = 0x0000,
+    Null = 0x0001,
+    Integer = 0x0002,
+    Long = 0x0003,
+    Single = 0x0004,
+    Double = 0x0005,
+    Currency = 0x0006,
+    Date = 0x0007,
+    String = 0x0008,
+    Object = 0x0009,
+    Error = 0x000A,
+    Boolean = 0x000B,
+    Decimal = 0x000E,
+    SignedByte = 0x0010,
+    Byte = 0x0011,
+    UnsignedInteger = 0x0012,
+    UnsignedLong = 0x0013,
+    LongLong = 0x0014,
+    UnsignedLongLong = 0x0015,
+    UnsignedInt = 0x0017,
+    Record = 0x0024,
+    ArrayVariant = 0x200C,
+    ProcRef = 0xFFF0,
+}
+
+impl VarType {
+    pub fn from_u16(value: u16) -> Option<Self> {
+        match value {
+            0x0000 => Some(Self::Empty),
+            0x0001 => Some(Self::Null),
+            0x0002 => Some(Self::Integer),
+            0x0003 => Some(Self::Long),
+            0x0004 => Some(Self::Single),
+            0x0005 => Some(Self::Double),
+            0x0006 => Some(Self::Currency),
+            0x0007 => Some(Self::Date),
+            0x0008 => Some(Self::String),
+            0x0009 | 0x000D => Some(Self::Object),
+            0x000A => Some(Self::Error),
+            0x000B => Some(Self::Boolean),
+            0x000E => Some(Self::Decimal),
+            0x0010 => Some(Self::SignedByte),
+            0x0011 => Some(Self::Byte),
+            0x0012 => Some(Self::UnsignedInteger),
+            0x0013 => Some(Self::UnsignedLong),
+            0x0014 => Some(Self::LongLong),
+            0x0015 => Some(Self::UnsignedLongLong),
+            0x0017 => Some(Self::UnsignedInt),
+            0x0024 => Some(Self::Record),
+            0x200C => Some(Self::ArrayVariant),
+            0xFFF0 => Some(Self::ProcRef),
+            _ => None,
+        }
+    }
+}
+
+/// Fully initialized eight-byte payload of [`VariantCore`].
+///
+/// This used to be a public union whose short scalar fields allowed safe code
+/// to initialize only one, two, or four bytes. A later safe `data_bytes`,
+/// `Debug`, equality, or wire read then observed the uninitialized tail. The
+/// byte carrier makes that state unrepresentable: every safe constructor writes
+/// all eight bytes.
+///
+/// Downstream code that previously used a union scalar literal should migrate
+/// to the matching `from_*` constructor. Code that owns an exact ABI payload
+/// should use [`Self::from_bytes`].
+///
+/// ```compile_fail
+/// use calcvba_runtime::variant::VariantData;
+///
+/// // The former public short union field no longer exists, so safe external
+/// // code cannot create a payload with six uninitialized trailing bytes.
+/// let _partial = VariantData { i16_val: 7 };
+/// ```
+///
+/// The former union's raw-pointer member also made the carrier neither `Send`
+/// nor `Sync`. The zero-sized marker preserves that safety boundary without
+/// changing layout:
+///
+/// ```compile_fail
+/// use calcvba_runtime::VariantData;
+/// fn require_send<T: Send>() {}
+/// require_send::<VariantData>();
+/// ```
+///
+/// ```compile_fail
+/// use calcvba_runtime::VariantData;
+/// fn require_sync<T: Sync>() {}
+/// require_sync::<VariantData>();
+/// ```
+#[repr(C, align(8))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VariantData {
+    bytes: [u8; 8],
+    not_send_sync: core::marker::PhantomData<*mut core::ffi::c_void>,
+}
+
+impl VariantData {
+    /// Construct a fully initialized raw payload from all eight ABI bytes.
+    ///
+    /// The active carrier contract is simulated x64 little-endian. These bytes
+    /// are initialized but otherwise unvalidated and non-owning: this function
+    /// does not allocate, retain, recover pointer provenance, or make pointer-tag
+    /// bytes safe to dereference. Safe code cannot promote this payload into an
+    /// owning [`Variant`]. Use validated wire decoding for untrusted input; the
+    /// unsafe trusted decoder is the only pointer-recovery route.
+    pub const fn from_bytes(bytes: [u8; 8]) -> Self {
+        Self {
+            bytes,
+            not_send_sync: core::marker::PhantomData,
+        }
+    }
+
+    /// Encode an `i16` into the low two little-endian bytes.
+    ///
+    /// The six unused ABI bytes are zero-filled, not sign-extended. The result
+    /// is an initialized, unvalidated, non-owning raw carrier.
+    pub const fn from_i16(value: i16) -> Self {
+        let value = value.to_le_bytes();
+        Self::from_bytes([value[0], value[1], 0, 0, 0, 0, 0, 0])
+    }
+
+    /// Encode an `i32` into the low four little-endian bytes.
+    ///
+    /// The four unused ABI bytes are zero-filled, not sign-extended. The result
+    /// is an initialized, unvalidated, non-owning raw carrier.
+    pub const fn from_i32(value: i32) -> Self {
+        let value = value.to_le_bytes();
+        Self::from_bytes([value[0], value[1], value[2], value[3], 0, 0, 0, 0])
+    }
+
+    /// Encode an `i64` into all eight simulated-x64 little-endian bytes.
+    ///
+    /// The result is initialized but unvalidated and non-owning.
+    pub const fn from_i64(value: i64) -> Self {
+        Self::from_bytes(value.to_le_bytes())
+    }
+
+    /// Encode an IEEE-754 `f64` into all eight little-endian ABI bytes.
+    ///
+    /// The result is initialized but unvalidated and non-owning.
+    pub const fn from_f64(value: f64) -> Self {
+        Self::from_bytes(value.to_le_bytes())
+    }
+
+    /// Store the exposed address of a process-local pointer in the complete
+    /// x64 byte carrier.
+    ///
+    /// Recovering a dereferenceable pointer later requires the matching Rust
+    /// Exposed Provenance API and a live originating allocation. This method
+    /// only creates the initialized, unvalidated, non-owning ABI bytes; it does
+    /// not extend any lifetime or make the bytes safe to promote into an owning
+    /// [`Variant`].
+    pub fn from_exposed_pointer<T>(pointer: *const T) -> Self {
+        let address = u64::try_from(pointer.expose_provenance())
+            .expect("Variant pointer address must fit the x64 carrier");
+        Self::from_bytes(address.to_le_bytes())
+    }
+
+    pub const fn bytes(self) -> [u8; 8] {
+        self.bytes
+    }
+}
+
+/// Exact 16-byte VBA/COM-shaped Variant core.
+///
+/// The fields are private so safe downstream code must use fully initialized
+/// constructors. This changes only Rust source access: `repr(C)`, size,
+/// alignment, offsets, and byte representation remain unchanged. Direct field
+/// construction migrates to [`Self::from_parts`], and reads migrate to the
+/// accessors below.
+///
+/// ```compile_fail
+/// use calcvba_runtime::{VarType, VariantCore};
+/// use calcvba_runtime::variant::VariantData;
+///
+/// // Direct field construction is intentionally sealed at the safe boundary.
+/// let _core = VariantCore {
+///     vtype: VarType::Integer,
+///     reserved1: 0,
+///     reserved2: 0,
+///     reserved3: 0,
+///     data: VariantData::from_i16(7),
+/// };
+/// ```
+///
+/// `VariantCore` retains the former union's cross-thread ownership boundary:
+///
+/// ```compile_fail
+/// use calcvba_runtime::VariantCore;
+/// fn require_send<T: Send>() {}
+/// require_send::<VariantCore>();
+/// ```
+///
+/// ```compile_fail
+/// use calcvba_runtime::VariantCore;
+/// fn require_sync<T: Sync>() {}
+/// require_sync::<VariantCore>();
+/// ```
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct VariantCore {
+    vtype: VarType,
+    reserved1: u16,
+    reserved2: u16,
+    reserved3: u16,
+    data: VariantData,
+}
+
+impl core::fmt::Debug for VariantCore {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("VariantCore")
+            .field("vtype", &self.vtype)
+            .field("reserved1", &self.reserved1)
+            .field("reserved2", &self.reserved2)
+            .field("reserved3", &self.reserved3)
+            .field("data", &self.data_bytes())
+            .finish()
+    }
+}
+
+impl PartialEq for VariantCore {
+    fn eq(&self, other: &Self) -> bool {
+        self.vtype == other.vtype
+            && self.reserved1 == other.reserved1
+            && self.reserved2 == other.reserved2
+            && self.reserved3 == other.reserved3
+            && self.data_bytes() == other.data_bytes()
+    }
+}
+
+impl Eq for VariantCore {}
+
+impl VariantCore {
+    /// Construct a fully initialized raw core with zero reserved words.
+    ///
+    /// `bytes` use the simulated x64 little-endian carrier representation. The
+    /// result is initialized but unvalidated and non-owning; tag/payload
+    /// canonicality is not checked, and pointer-looking bytes gain no lifetime,
+    /// provenance, or ownership. Safe downstream code cannot turn this core into
+    /// an owning/dereferenceable [`Variant`]. Use [`Self::from_wire_bytes`] to
+    /// validate untrusted raw cores; pointer-bearing owning recovery is only via
+    /// unsafe [`Variant::from_trusted_wire_bytes`].
+    pub const fn from_bytes(vtype: VarType, bytes: [u8; 8]) -> Self {
+        Self::from_parts(vtype, 0, 0, 0, bytes)
+    }
+
+    /// Construct a fully initialized raw core with explicit header words.
+    ///
+    /// This is the documented source migration for direct field construction,
+    /// not an untrusted decoder. All bytes are initialized in simulated x64
+    /// little-endian form, but noncanonical reserved words, tag/payload pairs,
+    /// and pointer addresses are deliberately not validated. The returned Copy
+    /// carrier is non-owning and cannot be safely promoted to an owning
+    /// [`Variant`]. Use [`Self::from_wire_bytes`] for untrusted validation and
+    /// unsafe [`Variant::from_trusted_wire_bytes`] only when its live-pointer
+    /// preconditions hold.
+    pub const fn from_parts(
+        vtype: VarType,
+        reserved1: u16,
+        reserved2: u16,
+        reserved3: u16,
+        bytes: [u8; 8],
+    ) -> Self {
+        Self {
+            vtype,
+            reserved1,
+            reserved2,
+            reserved3,
+            data: VariantData::from_bytes(bytes),
+        }
+    }
+
+    pub const fn vtype(&self) -> VarType {
+        self.vtype
+    }
+
+    pub const fn reserved1(&self) -> u16 {
+        self.reserved1
+    }
+
+    pub const fn reserved2(&self) -> u16 {
+        self.reserved2
+    }
+
+    pub const fn reserved3(&self) -> u16 {
+        self.reserved3
+    }
+
+    pub const fn data_bytes(&self) -> [u8; 8] {
+        self.data.bytes()
+    }
+
+    pub fn to_wire_bytes(&self) -> [u8; 16] {
+        let mut out = [0u8; 16];
+        out[0..2].copy_from_slice(&(self.vtype as u16).to_le_bytes());
+        out[2..4].copy_from_slice(&self.reserved1.to_le_bytes());
+        out[4..6].copy_from_slice(&self.reserved2.to_le_bytes());
+        out[6..8].copy_from_slice(&self.reserved3.to_le_bytes());
+        out[8..16].copy_from_slice(&self.data_bytes());
+        out
+    }
+
+    /// Decode an untrusted raw core after validating its tag and reserved-word
+    /// shape.
+    ///
+    /// The result is still a non-owning byte carrier. Pointer payloads are not
+    /// recovered or dereferenced here; safe owning [`Variant`] admission rejects
+    /// them, while trusted live-pointer recovery is explicitly unsafe.
+    pub fn from_wire_bytes(bytes: [u8; 16]) -> Result<Self, String> {
+        let vtype_raw = u16::from_le_bytes([bytes[0], bytes[1]]);
+        let Some(vtype) = VarType::from_u16(vtype_raw) else {
+            return Err(format!("unsupported VARENUM value: 0x{vtype_raw:04X}"));
+        };
+        let reserved1 = u16::from_le_bytes([bytes[2], bytes[3]]);
+        let reserved2 = u16::from_le_bytes([bytes[4], bytes[5]]);
+        let reserved3 = u16::from_le_bytes([bytes[6], bytes[7]]);
+        let mut payload = [0u8; 8];
+        payload.copy_from_slice(&bytes[8..16]);
+        if vtype != VarType::Decimal && (reserved1 != 0 || reserved2 != 0 || reserved3 != 0) {
+            return Err(format!(
+                "malformed VARIANT wire bytes: non-zero reserved words for {vtype:?}"
+            ));
+        }
+        Ok(Self::from_parts(
+            vtype, reserved1, reserved2, reserved3, payload,
+        ))
+    }
+}
+
+fn exposed_pointer_to_bytes<T>(ptr: *const T) -> [u8; 8] {
+    // `VariantCore` deliberately carries the x64 address representation as eight
+    // bytes. Exposing provenance here records that a later
+    // `with_exposed_provenance` recovery may use this allocation's provenance. The
+    // owning Variant must keep the allocation/reference live between these calls.
+    u64::try_from(ptr.expose_provenance())
+        .expect("Variant pointer address must fit the x64 carrier")
+        .to_le_bytes()
+}
+
+fn exposed_pointer_address(bytes: [u8; 8]) -> usize {
+    usize::try_from(u64::from_le_bytes(bytes))
+        .expect("Variant x64 pointer carrier must fit the target address space")
+}
+
+fn raw_bstr_ptr_to_bytes(ptr: *mut u16) -> [u8; 8] {
+    exposed_pointer_to_bytes(ptr.cast_const())
+}
+
+fn raw_iunknown_ptr_to_bytes(ptr: *mut RawRuntimeIUnknown) -> [u8; 8] {
+    exposed_pointer_to_bytes(ptr.cast_const())
+}
+
+fn raw_safearray_ptr_to_bytes(ptr: *mut core::ffi::c_void) -> [u8; 8] {
+    exposed_pointer_to_bytes(ptr.cast_const())
+}
+
+#[derive(Debug)]
+enum RecordPayload {
+    Com(ComRecord),
+    Vba(VbaRecord),
+}
+
+impl RecordPayload {
+    fn deep_clone(&self) -> Result<Self, String> {
+        match self {
+            Self::Com(record) => Ok(Self::Com(record.deep_clone()?)),
+            Self::Vba(record) => Ok(Self::Vba(record.try_clone()?)),
+        }
+    }
+}
+
+fn raw_record_payload_ptr_to_bytes(ptr: *const RecordPayload) -> [u8; 8] {
+    exposed_pointer_to_bytes(ptr)
+}
+
+fn bytes_to_raw_bstr(bytes: [u8; 8]) -> *mut u16 {
+    core::ptr::with_exposed_provenance_mut(exposed_pointer_address(bytes))
+}
+
+fn bytes_to_raw_iunknown(bytes: [u8; 8]) -> *mut RawRuntimeIUnknown {
+    core::ptr::with_exposed_provenance_mut(exposed_pointer_address(bytes))
+}
+
+fn bytes_to_raw_safearray(bytes: [u8; 8]) -> *mut core::ffi::c_void {
+    core::ptr::with_exposed_provenance_mut(exposed_pointer_address(bytes))
+}
+
+fn bytes_to_raw_record_payload(bytes: [u8; 8]) -> *const RecordPayload {
+    core::ptr::with_exposed_provenance(exposed_pointer_address(bytes))
+}
+
+/// Owning runtime Variant.
+///
+/// Runtime values retain their historical single-thread ownership boundary.
+/// Cross-thread object/carrier transfer requires an explicit, reviewed runtime
+/// protocol rather than an accidental auto-trait derived from scalar payloads.
+///
+/// ```compile_fail
+/// use calcvba_runtime::Variant;
+/// fn require_send<T: Send>() {}
+/// require_send::<Variant>();
+/// ```
+///
+/// ```compile_fail
+/// use calcvba_runtime::Variant;
+/// fn require_sync<T: Sync>() {}
+/// require_sync::<Variant>();
+/// ```
+#[repr(transparent)]
+pub struct Variant {
+    core: VariantCore,
+}
+
+impl Variant {
+    fn from_core(core: VariantCore) -> Self {
+        #[cfg(any(test, feature = "live-counters"))]
+        crate::live_counters::variant_constructed();
+        Self { core }
+    }
+
+    pub fn zeroed(vtype: VarType) -> Self {
+        Self::from_core(VariantCore::from_bytes(vtype, [0; 8]))
+    }
+
+    pub fn unallocated_array(element_vartype: u16) -> Self {
+        let element_vartype = if element_vartype == 0 {
+            VT_VARIANT_VALUE
+        } else {
+            element_vartype
+        };
+        Self::from_core(VariantCore::from_parts(
+            VarType::ArrayVariant,
+            element_vartype,
+            0,
+            0,
+            [0; 8],
+        ))
+    }
+
+    pub fn vtype(&self) -> VarType {
+        self.core.vtype()
+    }
+
+    pub fn core(&self) -> VariantCore {
+        self.core
+    }
+
+    pub fn reserved1(&self) -> u16 {
+        self.core.reserved1()
+    }
+
+    pub fn reserved2(&self) -> u16 {
+        self.core.reserved2()
+    }
+
+    pub fn reserved3(&self) -> u16 {
+        self.core.reserved3()
+    }
+
+    pub fn data_bytes(&self) -> [u8; 8] {
+        self.core.data_bytes()
+    }
+
+    pub fn as_variant_cell_ptr(&self) -> *mut core::ffi::c_void {
+        (self as *const Self).cast_mut().cast()
+    }
+
+    pub fn to_wire_bytes(&self) -> [u8; 16] {
+        if self.vtype() == VarType::ArrayVariant && self.safearray_bounds_len().is_none() {
+            let element_vartype = self.array_element_vartype().unwrap_or(VT_VARIANT_VALUE);
+            let mut out = [0u8; 16];
+            out[0..2].copy_from_slice(&(0x2000u16 | element_vartype).to_le_bytes());
+            out[8..16].copy_from_slice(&self.data_bytes());
+            return out;
+        }
+        self.core.to_wire_bytes()
+    }
+
+    /// Decode an untrusted wire value into an owning Variant when no process-local
+    /// pointer carrier is involved.
+    ///
+    /// String, Object, ArrayVariant, and Record tags are rejected even when their
+    /// address bytes are zero. Callers with a live process-local source must use
+    /// [`Self::from_trusted_wire_bytes`] and satisfy its unsafe preconditions.
+    pub fn from_wire_bytes(bytes: [u8; 16]) -> Result<Self, String> {
+        let core = VariantCore::from_wire_bytes(bytes)?;
+        match core.vtype {
+            VarType::String | VarType::Object | VarType::ArrayVariant | VarType::Record => {
+                Err(format!(
+                    "pointer-carrying VARIANT wire bytes for {:?} require trusted in-process provenance",
+                    core.vtype
+                ))
+            }
+            _ => Ok(Self::from_core(core)),
+        }
+    }
+
+    /// Rebuilds a Variant from wire bytes that may contain process-local pointer
+    /// carriers (`BSTR`, runtime object identity, OxVba-owned SAFEARRAY, or
+    /// runtime-owned record payload).
+    ///
+    /// # Safety
+    /// For `String`, `Object`, `ArrayVariant`, and `Record` payloads, the pointer
+    /// encoded in the wire bytes must have been produced by `Variant::to_wire_bytes`
+    /// in this process and the source allocation/object must still be live for the
+    /// whole call. Arbitrary or stale pointer bytes are undefined behavior.
+    pub unsafe fn from_trusted_wire_bytes(bytes: [u8; 16]) -> Result<Self, String> {
+        let core = VariantCore::from_wire_bytes(bytes)?;
+        match core.vtype {
+            VarType::String => {
+                let ptr = bytes_to_raw_bstr(core.data_bytes());
+                // SAFETY: guaranteed by this unsafe fn's caller.
+                let cloned = unsafe { borrow_raw_bstr(ptr) }.try_to_owned()?;
+                Ok(Self::from_core(VariantCore::from_bytes(
+                    VarType::String,
+                    raw_bstr_ptr_to_bytes(cloned.into_raw_bstr()),
+                )))
+            }
+            VarType::Object => {
+                let ptr = bytes_to_raw_iunknown(core.data_bytes());
+                // SAFETY: guaranteed by this unsafe fn's caller.
+                let object = unsafe { ObjectRef::from_raw_iunknown_addref(ptr) };
+                Ok(match object {
+                    Some(value) => Self::from_object_ref(value),
+                    None => Self::from_core(VariantCore::from_bytes(VarType::Object, [0; 8])),
+                })
+            }
+            VarType::ArrayVariant => {
+                let ptr = bytes_to_raw_safearray(core.data_bytes());
+                // SAFETY: guaranteed by this unsafe fn's caller.
+                let Some(array) = (unsafe { SafeArray::try_clone_from_raw_safearray(ptr) })? else {
+                    return Ok(Self::from_core(core));
+                };
+                Ok(Self::from_safearray(array))
+            }
+            VarType::Record => {
+                let ptr = bytes_to_raw_record_payload(core.data_bytes());
+                if ptr.is_null() {
+                    return Ok(Self::from_core(VariantCore::from_bytes(
+                        VarType::Record,
+                        [0; 8],
+                    )));
+                }
+                // SAFETY: guaranteed by this unsafe fn's caller.
+                let payload = unsafe { (*ptr).deep_clone()? };
+                Ok(Self::from_record_payload(payload))
+            }
+            _ => Ok(Self::from_core(core)),
+        }
+    }
+
+    pub fn empty() -> Self {
+        Self::from_core(VariantCore::from_bytes(VarType::Empty, [0; 8]))
+    }
+
+    pub fn null() -> Self {
+        Self::from_core(VariantCore::from_bytes(VarType::Null, [0; 8]))
+    }
+
+    pub fn from_i16(value: i16) -> Self {
+        let mut bytes = [0u8; 8];
+        bytes[0..2].copy_from_slice(&value.to_le_bytes());
+        Self::from_core(VariantCore::from_bytes(VarType::Integer, bytes))
+    }
+
+    pub fn as_i16(&self) -> Option<i16> {
+        if self.vtype() != VarType::Integer {
+            return None;
+        }
+        let bytes = self.data_bytes();
+        Some(i16::from_le_bytes([bytes[0], bytes[1]]))
+    }
+
+    pub fn from_i32(value: i32) -> Self {
+        let mut bytes = [0u8; 8];
+        bytes[0..4].copy_from_slice(&value.to_le_bytes());
+        Self::from_core(VariantCore::from_bytes(VarType::Long, bytes))
+    }
+
+    pub fn as_i32(&self) -> Option<i32> {
+        if self.vtype() != VarType::Long {
+            return None;
+        }
+        let bytes = self.data_bytes();
+        Some(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    pub fn from_i64(value: i64) -> Self {
+        Self::from_core(VariantCore::from_bytes(
+            VarType::LongLong,
+            value.to_le_bytes(),
+        ))
+    }
+
+    pub fn as_i64(&self) -> Option<i64> {
+        if self.vtype() != VarType::LongLong {
+            return None;
+        }
+        Some(i64::from_le_bytes(self.data_bytes()))
+    }
+
+    pub fn from_proc_ref(proc: usize) -> Self {
+        Self::from_core(VariantCore::from_bytes(
+            VarType::ProcRef,
+            (proc as u64).to_le_bytes(),
+        ))
+    }
+
+    pub fn as_proc_ref(&self) -> Option<usize> {
+        if self.vtype() != VarType::ProcRef {
+            return None;
+        }
+        usize::try_from(u64::from_le_bytes(self.data_bytes())).ok()
+    }
+
+    pub fn from_f32(value: f32) -> Self {
+        let mut bytes = [0u8; 8];
+        bytes[0..4].copy_from_slice(&value.to_le_bytes());
+        Self::from_core(VariantCore::from_bytes(VarType::Single, bytes))
+    }
+
+    pub fn as_f32(&self) -> Option<f32> {
+        if self.vtype() != VarType::Single {
+            return None;
+        }
+        let bytes = self.data_bytes();
+        Some(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    pub fn from_f64(value: f64) -> Self {
+        Self::from_core(VariantCore::from_bytes(
+            VarType::Double,
+            value.to_le_bytes(),
+        ))
+    }
+
+    pub fn as_f64(&self) -> Option<f64> {
+        if self.vtype() != VarType::Double {
+            return None;
+        }
+        Some(f64::from_le_bytes(self.data_bytes()))
+    }
+
+    pub fn from_currency_scaled_i64(value: i64) -> Self {
+        Self::from_core(VariantCore::from_bytes(
+            VarType::Currency,
+            value.to_le_bytes(),
+        ))
+    }
+
+    pub fn as_currency_scaled_i64(&self) -> Option<i64> {
+        if self.vtype() != VarType::Currency {
+            return None;
+        }
+        Some(i64::from_le_bytes(self.data_bytes()))
+    }
+
+    pub fn from_decimal96(value: Decimal96) -> Self {
+        let mut bytes = [0u8; 8];
+        bytes[0..4].copy_from_slice(&value.lo.to_le_bytes());
+        bytes[4..8].copy_from_slice(&value.mid.to_le_bytes());
+        Self::from_core(VariantCore::from_parts(
+            VarType::Decimal,
+            value.scale_sign,
+            (value.hi & 0xFFFF) as u16,
+            (value.hi >> 16) as u16,
+            bytes,
+        ))
+    }
+
+    pub fn as_decimal96(&self) -> Option<Decimal96> {
+        if self.vtype() != VarType::Decimal {
+            return None;
+        }
+        let bytes = self.data_bytes();
+        let lo = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        let mid = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+        let hi = u32::from(self.reserved2()) | (u32::from(self.reserved3()) << 16);
+        Some(Decimal96::from_scale_sign(lo, mid, hi, self.reserved1()))
+    }
+
+    pub fn from_date_f64(value: f64) -> Self {
+        Self::from_core(VariantCore::from_bytes(VarType::Date, value.to_le_bytes()))
+    }
+
+    pub fn as_date_f64(&self) -> Option<f64> {
+        if self.vtype() != VarType::Date {
+            return None;
+        }
+        Some(f64::from_le_bytes(self.data_bytes()))
+    }
+
+    pub fn from_bool(value: bool) -> Self {
+        let mut bytes = [0u8; 8];
+        let vb_bool: i16 = if value { -1 } else { 0 };
+        bytes[0..2].copy_from_slice(&vb_bool.to_le_bytes());
+        Self::from_core(VariantCore::from_bytes(VarType::Boolean, bytes))
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        if self.vtype() != VarType::Boolean {
+            return None;
+        }
+        let bytes = self.data_bytes();
+        let v = i16::from_le_bytes([bytes[0], bytes[1]]);
+        Some(v != 0)
+    }
+
+    pub fn from_i8(value: i8) -> Self {
+        let mut bytes = [0u8; 8];
+        bytes[0] = value as u8;
+        Self::from_core(VariantCore::from_bytes(VarType::SignedByte, bytes))
+    }
+
+    pub fn as_i8(&self) -> Option<i8> {
+        if self.vtype() != VarType::SignedByte {
+            return None;
+        }
+        Some(self.data_bytes()[0] as i8)
+    }
+
+    pub fn from_u8(value: u8) -> Self {
+        let mut bytes = [0u8; 8];
+        bytes[0] = value;
+        Self::from_core(VariantCore::from_bytes(VarType::Byte, bytes))
+    }
+
+    pub fn as_u8(&self) -> Option<u8> {
+        if self.vtype() != VarType::Byte {
+            return None;
+        }
+        Some(self.data_bytes()[0])
+    }
+
+    pub fn from_u16(value: u16) -> Self {
+        let mut bytes = [0u8; 8];
+        bytes[0..2].copy_from_slice(&value.to_le_bytes());
+        Self::from_core(VariantCore::from_bytes(VarType::UnsignedInteger, bytes))
+    }
+
+    pub fn as_u16(&self) -> Option<u16> {
+        if self.vtype() != VarType::UnsignedInteger {
+            return None;
+        }
+        let bytes = self.data_bytes();
+        Some(u16::from_le_bytes([bytes[0], bytes[1]]))
+    }
+
+    pub fn from_u32(value: u32) -> Self {
+        let mut bytes = [0u8; 8];
+        bytes[0..4].copy_from_slice(&value.to_le_bytes());
+        Self::from_core(VariantCore::from_bytes(VarType::UnsignedLong, bytes))
+    }
+
+    pub fn from_uint(value: u32) -> Self {
+        let mut bytes = [0u8; 8];
+        bytes[0..4].copy_from_slice(&value.to_le_bytes());
+        Self::from_core(VariantCore::from_bytes(VarType::UnsignedInt, bytes))
+    }
+
+    pub fn as_u32(&self) -> Option<u32> {
+        if self.vtype() != VarType::UnsignedLong && self.vtype() != VarType::UnsignedInt {
+            return None;
+        }
+        let bytes = self.data_bytes();
+        Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    pub fn from_u64(value: u64) -> Self {
+        Self::from_core(VariantCore::from_bytes(
+            VarType::UnsignedLongLong,
+            value.to_le_bytes(),
+        ))
+    }
+
+    pub fn as_u64(&self) -> Option<u64> {
+        if self.vtype() != VarType::UnsignedLongLong {
+            return None;
+        }
+        Some(u64::from_le_bytes(self.data_bytes()))
+    }
+
+    pub fn from_error_code(code: i32) -> Self {
+        let mut bytes = [0u8; 8];
+        bytes[0..4].copy_from_slice(&code.to_le_bytes());
+        Self::from_core(VariantCore::from_bytes(VarType::Error, bytes))
+    }
+
+    pub fn as_error_code(&self) -> Option<i32> {
+        if self.vtype() != VarType::Error {
+            return None;
+        }
+        let bytes = self.data_bytes();
+        Some(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    pub fn from_string(value: impl Into<BStr>) -> Self {
+        let text = value.into();
+        let raw = text.into_raw_bstr();
+        Self::from_core(VariantCore::from_bytes(
+            VarType::String,
+            raw_bstr_ptr_to_bytes(raw),
+        ))
+    }
+
+    /// Build a `String` Variant DIRECTLY from raw UTF-16 code units, preserving any
+    /// lone/paired surrogate halves verbatim. Unlike [`from_string`] (which goes
+    /// through a Rust `&str`/`String` and so can only carry Unicode SCALAR values),
+    /// this is the faithful path for `ChrW(&HD83D)` and code-unit-level string
+    /// concatenation — VBA strings are UTF-16 sequences that may hold unpaired
+    /// surrogates, which a UTF-8 round-trip would replace with U+FFFD.
+    pub fn from_utf16_units(units: &[u16]) -> Self {
+        Self::from_string(BStr::from_utf16_units(units).expect("BSTR allocation should succeed"))
+    }
+
+    pub fn from_bstr_bytes(bytes: &[u8]) -> Self {
+        Self::from_string(BStr::from_bytes(bytes).expect("BSTR allocation should succeed"))
+    }
+
+    /// The String Variant's raw UTF-16 code units (none for a non-string), preserving
+    /// surrogate halves verbatim — the faithful counterpart to a lossy `as_str`.
+    pub fn string_units(&self) -> Option<Vec<u16>> {
+        self.string_core().map(|core| core.payload_units().to_vec())
+    }
+
+    pub fn string_bytes(&self) -> Option<Vec<u8>> {
+        self.as_bstr().map(|text| text.payload_bytes().to_vec())
+    }
+
+    pub fn string_byte_len(&self) -> Option<u32> {
+        self.as_bstr().map(|text| text.byte_len())
+    }
+
+    pub fn as_bstr(&self) -> Option<BStr> {
+        self.try_as_bstr()
+            .expect("String Variant BSTR clone should succeed")
+    }
+
+    pub(crate) fn try_as_bstr(&self) -> Result<Option<BStr>, String> {
+        if self.vtype() != VarType::String {
+            return Ok(None);
+        }
+        // SAFETY: vtype was checked to be String above, so the payload is null or the BSTR
+        // pointer this Variant owns until drop. BorrowedBStr has no destructor, so
+        // error or unwind while cloning cannot take the source allocation with it.
+        Ok(Some(
+            unsafe { borrow_raw_bstr(bytes_to_raw_bstr(self.data_bytes())) }.try_to_owned()?,
+        ))
+    }
+
+    pub fn string_core(&self) -> Option<OwnedBStrCore> {
+        self.as_bstr().map(|text| text.owned_core())
+    }
+
+    pub fn from_object_ref(value: ObjectRef) -> Self {
+        let raw = value.into_raw_iunknown();
+        Self::from_core(VariantCore::from_bytes(
+            VarType::Object,
+            raw_iunknown_ptr_to_bytes(raw),
+        ))
+    }
+
+    pub fn nothing() -> Self {
+        Self::from_core(VariantCore::from_bytes(VarType::Object, [0; 8]))
+    }
+
+    pub fn as_object_ref(&self) -> Option<ObjectRef> {
+        if self.vtype() != VarType::Object {
+            return None;
+        }
+        // SAFETY: vtype was checked to be Object above, so the payload is null or the
+        // IUnknown pointer on which this Variant holds one retained reference until drop,
+        // keeping the object alive for the AddRef taken here on behalf of the returned
+        // ObjectRef.
+        unsafe { ObjectRef::from_raw_iunknown_addref(bytes_to_raw_iunknown(self.data_bytes())) }
+    }
+
+    pub fn from_safearray(value: SafeArray) -> Self {
+        let raw = value.into_raw_safearray_ptr();
+        Self::from_core(VariantCore::from_bytes(
+            VarType::ArrayVariant,
+            raw_safearray_ptr_to_bytes(raw),
+        ))
+    }
+
+    pub fn as_safearray(&self) -> Option<SafeArray> {
+        self.try_as_safearray()
+            .expect("Array Variant SAFEARRAY clone should succeed")
+    }
+
+    pub(crate) fn try_as_safearray(&self) -> Result<Option<SafeArray>, String> {
+        if self.vtype() != VarType::ArrayVariant {
+            return Ok(None);
+        }
+        // SAFETY: vtype was checked to be ArrayVariant above, so the payload is null or
+        // the OxVba SAFEARRAY descriptor this Variant owns until drop (set by
+        // `from_safearray`/clone); `clone_from_raw_safearray` verifies the provenance
+        // prefix and deep-clones, leaving ownership with this Variant.
+        unsafe {
+            SafeArray::try_clone_from_raw_safearray(bytes_to_raw_safearray(self.data_bytes()))
+        }
+    }
+
+    pub fn array_element_vartype(&self) -> Option<u16> {
+        if self.vtype() != VarType::ArrayVariant {
+            return None;
+        }
+        match self.as_safearray() {
+            Some(array) => Some(array.element_vartype()),
+            None => Some(match self.reserved1() {
+                0 => VT_VARIANT_VALUE,
+                element_vartype => element_vartype,
+            }),
+        }
+    }
+
+    pub fn set_safearray_element(&mut self, index: usize, value: &Variant) -> Result<(), String> {
+        if self.vtype() != VarType::ArrayVariant {
+            return Err(format!(
+                "expected Array Variant for SAFEARRAY element write, got {:?}",
+                self.vtype()
+            ));
+        }
+        // SAFETY: `&mut self` proves exclusive access to this Variant. An
+        // ArrayVariant owns its raw SAFEARRAY descriptor until drop, so mutating
+        // one element through the descriptor preserves ownership and aliases no
+        // other safe reference to the same descriptor.
+        unsafe {
+            SafeArray::set_raw_safearray_variant_element(
+                bytes_to_raw_safearray(self.data_bytes()),
+                index,
+                value,
+            )
+        }
+    }
+
+    pub fn safearray_i32_element(&self, index: usize) -> Option<Result<Option<i32>, String>> {
+        if self.vtype() != VarType::ArrayVariant {
+            return None;
+        }
+        // SAFETY: vtype was checked to be ArrayVariant, so the payload is this
+        // Variant's owned raw OxVba descriptor. The raw helper borrows without
+        // taking ownership and returns `Ok(None)` for non-i32 element arrays.
+        Some(unsafe {
+            SafeArray::raw_safearray_i32_element(bytes_to_raw_safearray(self.data_bytes()), index)
+        })
+    }
+
+    pub fn set_safearray_i32_element(
+        &mut self,
+        index: usize,
+        value: i32,
+    ) -> Option<Result<bool, String>> {
+        if self.vtype() != VarType::ArrayVariant {
+            return None;
+        }
+        // SAFETY: `&mut self` proves exclusive access to this ArrayVariant's
+        // owned descriptor. The raw helper returns `Ok(false)` for non-i32
+        // element arrays so callers can keep the generic fallback.
+        Some(unsafe {
+            SafeArray::set_raw_safearray_i32_element(
+                bytes_to_raw_safearray(self.data_bytes()),
+                index,
+                value,
+            )
+        })
+    }
+
+    /// Reads one SAFEARRAY element **without cloning the whole array** — O(1) in
+    /// array length. `None` if this Variant does not hold an array. This is the
+    /// O(1) element-read counterpart to [`Self::set_safearray_element`]; reading
+    /// via [`Self::as_safearray`] deep-clones the entire backing store (O(N)) and
+    /// must not be used for per-element access in a loop.
+    pub fn safearray_element(&self, index: usize) -> Option<Result<Variant, String>> {
+        if self.vtype() != VarType::ArrayVariant {
+            return None;
+        }
+        // SAFETY: vtype was checked to be ArrayVariant, so the payload is this
+        // Variant's owned raw OxVba descriptor; the raw reader borrows it without
+        // taking ownership (leaving this Variant the owner until drop).
+        Some(unsafe {
+            SafeArray::raw_safearray_variant_element(
+                bytes_to_raw_safearray(self.data_bytes()),
+                index,
+            )
+        })
+    }
+
+    /// Reads the array's bounds and element count **without cloning the element
+    /// payload** — O(rank). `None` if this Variant does not hold an array.
+    pub fn safearray_bounds_len(&self) -> Option<(Vec<SafeArrayBound>, usize)> {
+        if self.vtype() != VarType::ArrayVariant {
+            return None;
+        }
+        // SAFETY: as in `safearray_element` — borrow the owned descriptor without
+        // taking ownership.
+        unsafe { SafeArray::raw_safearray_bounds_len(bytes_to_raw_safearray(self.data_bytes())) }
+    }
+
+    pub fn from_com_record(value: ComRecord) -> Self {
+        Self::from_record_payload(RecordPayload::Com(value))
+    }
+
+    pub fn from_vba_record(value: VbaRecord) -> Self {
+        Self::from_record_payload(RecordPayload::Vba(value))
+    }
+
+    fn from_record_payload(value: RecordPayload) -> Self {
+        let raw = Box::into_raw(Box::new(value));
+        Self::from_core(VariantCore::from_bytes(
+            VarType::Record,
+            raw_record_payload_ptr_to_bytes(raw),
+        ))
+    }
+
+    fn as_record_payload(&self) -> Option<&RecordPayload> {
+        if self.vtype() != VarType::Record {
+            return None;
+        }
+        let raw = bytes_to_raw_record_payload(self.data_bytes());
+        if raw.is_null() {
+            return None;
+        }
+        // SAFETY: vtype was checked to be Record, so the payload is a
+        // Box<RecordPayload> pointer produced by `from_record_payload` and owned by
+        // this Variant until drop.
+        Some(unsafe { &*raw })
+    }
+
+    fn as_record_payload_mut(&mut self) -> Option<&mut RecordPayload> {
+        if self.vtype() != VarType::Record {
+            return None;
+        }
+        let raw = bytes_to_raw_record_payload(self.data_bytes()).cast_mut();
+        if raw.is_null() {
+            return None;
+        }
+        // SAFETY: `&mut self` proves exclusive access to the record Variant and the
+        // payload box it owns.
+        Some(unsafe { &mut *raw })
+    }
+
+    pub fn as_com_record(&self) -> Option<ComRecord> {
+        match self.as_record_payload()? {
+            RecordPayload::Com(record) => Some(record.clone()),
+            RecordPayload::Vba(_) => None,
+        }
+    }
+
+    pub fn as_vba_record(&self) -> Option<VbaRecord> {
+        Some(self.vba_record_ref()?.clone())
+    }
+
+    pub(crate) fn vba_record_ref(&self) -> Option<&VbaRecord> {
+        match self.as_record_payload()? {
+            RecordPayload::Com(_) => None,
+            RecordPayload::Vba(record) => Some(record),
+        }
+    }
+
+    pub fn vba_record_file_len(&self) -> Option<Result<usize, String>> {
+        match self.as_record_payload()? {
+            RecordPayload::Com(_) => None,
+            RecordPayload::Vba(record) => Some(record.file_len()),
+        }
+    }
+
+    pub fn vba_record_memory_len(&self) -> Option<usize> {
+        match self.as_record_payload()? {
+            RecordPayload::Com(_) => None,
+            RecordPayload::Vba(record) => Some(record.memory_len()),
+        }
+    }
+
+    pub fn read_record_field_variant(&self, index: usize) -> Result<Variant, String> {
+        match self.as_record_payload() {
+            Some(RecordPayload::Vba(record)) => record.read_field_variant(index),
+            Some(RecordPayload::Com(_)) => Err("COM record fields require COM metadata".into()),
+            None => Err(format!("expected Record Variant, got {:?}", self.vtype())),
+        }
+    }
+
+    pub fn write_record_field_variant(
+        &mut self,
+        index: usize,
+        value: &Variant,
+    ) -> Result<(), String> {
+        match self.as_record_payload_mut() {
+            Some(RecordPayload::Vba(record)) => record.write_field_variant(index, value),
+            Some(RecordPayload::Com(_)) => Err("COM record fields require COM metadata".into()),
+            None => Err(format!("expected Record Variant, got {:?}", self.vtype())),
+        }
+    }
+
+    pub fn lset_record_from(&mut self, source: &Variant) -> Result<(), String> {
+        match (self.as_record_payload_mut(), source.as_record_payload()) {
+            (Some(RecordPayload::Vba(target)), Some(RecordPayload::Vba(source))) => {
+                target.lset_from(source)
+            }
+            (Some(RecordPayload::Com(_)), _) | (_, Some(RecordPayload::Com(_))) => {
+                Err("COM record LSet requires COM metadata".into())
+            }
+            _ => Err("Type mismatch".into()),
+        }
+    }
+
+    pub fn record_array_field_bounds_len(
+        &self,
+        index: usize,
+    ) -> Result<Option<(Vec<SafeArrayBound>, usize)>, String> {
+        match self.as_record_payload() {
+            Some(RecordPayload::Vba(record)) => record.array_field_bounds_len(index),
+            Some(RecordPayload::Com(_)) => Err("COM record fields require COM metadata".into()),
+            None => Err(format!("expected Record Variant, got {:?}", self.vtype())),
+        }
+    }
+
+    pub fn record_array_field_element(
+        &self,
+        index: usize,
+        flat: usize,
+    ) -> Result<Option<Variant>, String> {
+        match self.as_record_payload() {
+            Some(RecordPayload::Vba(record)) => record.read_array_field_element(index, flat),
+            Some(RecordPayload::Com(_)) => Err("COM record fields require COM metadata".into()),
+            None => Err(format!("expected Record Variant, got {:?}", self.vtype())),
+        }
+    }
+
+    pub fn set_record_array_field_element(
+        &mut self,
+        index: usize,
+        flat: usize,
+        value: &Variant,
+    ) -> Result<Option<()>, String> {
+        match self.as_record_payload_mut() {
+            Some(RecordPayload::Vba(record)) => {
+                record.write_array_field_element(index, flat, value)
+            }
+            Some(RecordPayload::Com(_)) => Err("COM record fields require COM metadata".into()),
+            None => Err(format!("expected Record Variant, got {:?}", self.vtype())),
+        }
+    }
+
+    pub(crate) fn try_clone(&self) -> Result<Self, String> {
+        match self.vtype() {
+            VarType::String => {
+                crate::vba_record::owning_boundary("variant-bstr-clone")?;
+                let source = bytes_to_raw_bstr(self.data_bytes());
+                // SAFETY: this String Variant keeps `source` live for the borrow.
+                let cloned = unsafe { borrow_raw_bstr(source) }.try_to_owned()?;
+                Ok(Self::from_core(VariantCore::from_bytes(
+                    VarType::String,
+                    raw_bstr_ptr_to_bytes(cloned.into_raw_bstr()),
+                )))
+            }
+            VarType::Object => {
+                crate::vba_record::owning_boundary("variant-object-clone")?;
+                Ok(match self.as_object_ref() {
+                    Some(object) => Self::from_object_ref(object),
+                    None => Self::from_core(self.core),
+                })
+            }
+            VarType::ArrayVariant => {
+                crate::vba_record::owning_boundary("variant-safearray-clone")?;
+                Ok(match self.try_as_safearray()? {
+                    Some(array) => Self::from_safearray(array),
+                    None => Self::from_core(self.core),
+                })
+            }
+            VarType::Record => {
+                crate::vba_record::owning_boundary("variant-record-clone")?;
+                Ok(match self.as_record_payload() {
+                    Some(payload) => Self::from_record_payload(payload.deep_clone()?),
+                    None => Self::from_core(self.core),
+                })
+            }
+            _ => Ok(Self::from_core(self.core)),
+        }
+    }
+}
+
+impl Clone for Variant {
+    fn clone(&self) -> Self {
+        self.try_clone()
+            .expect("Variant clone should deep-copy owning payload")
+    }
+}
+
+impl Drop for Variant {
+    fn drop(&mut self) {
+        match self.vtype() {
+            // SAFETY: a String Variant owns its BSTR payload until drop (VARIANT owns its
+            // BSTR until cleared), so reconstituting the `BStr` here takes that ownership
+            // and its drop frees the allocation exactly once.
+            VarType::String => unsafe {
+                let _ = BStr::from_raw_bstr(bytes_to_raw_bstr(self.data_bytes()));
+            },
+            VarType::Object => {
+                let raw = bytes_to_raw_iunknown(self.data_bytes());
+                if !raw.is_null() {
+                    // SAFETY: `raw` was checked non-null above and an Object Variant holds
+                    // exactly one retained reference taken at construction
+                    // (`from_object_ref` / `from_raw_iunknown_addref`), so the object is
+                    // still alive — every COM object's first field is its vtbl — and this
+                    // release balances that AddRef.
+                    unsafe {
+                        let vtbl = (*raw).vtbl;
+                        ((*vtbl).release)(raw.cast());
+                    }
+                }
+            }
+            VarType::ArrayVariant => {
+                let raw = bytes_to_raw_safearray(self.data_bytes());
+                // SAFETY: an ArrayVariant payload was produced by moving an OxVba
+                // SafeArray into this Variant (`from_safearray`/clone), satisfying
+                // `from_raw_safearray_owned`'s provenance contract; ownership transfers
+                // back here, so the descriptor is freed exactly once.
+                if let Some(array) = unsafe { SafeArray::from_raw_safearray_owned(raw) } {
+                    drop(array);
+                }
+            }
+            VarType::Record => {
+                let raw = bytes_to_raw_record_payload(self.data_bytes()).cast_mut();
+                if !raw.is_null() {
+                    // SAFETY: a Record Variant owns a Box<RecordPayload> created by
+                    // `from_record_payload`; taking the box here drops that payload.
+                    unsafe {
+                        drop(Box::from_raw(raw));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl core::fmt::Debug for Variant {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut dbg = f.debug_struct("Variant");
+        dbg.field("vtype", &self.vtype())
+            .field("reserved1", &self.reserved1())
+            .field("reserved2", &self.reserved2())
+            .field("reserved3", &self.reserved3());
+        match self.vtype() {
+            VarType::String => {
+                dbg.field("string", &self.as_bstr());
+            }
+            VarType::Object => {
+                dbg.field("object", &self.as_object_ref().map(|value| value.raw()));
+            }
+            VarType::ArrayVariant => {
+                dbg.field("array", &self.as_safearray());
+            }
+            VarType::Record => {
+                dbg.field("record", &self.as_record_payload());
+            }
+            _ => {
+                dbg.field("data", &self.data_bytes());
+            }
+        }
+        dbg.finish()
+    }
+}
+
+impl PartialEq for Variant {
+    fn eq(&self, other: &Self) -> bool {
+        if self.vtype() != other.vtype()
+            || self.reserved1() != other.reserved1()
+            || self.reserved2() != other.reserved2()
+            || self.reserved3() != other.reserved3()
+        {
+            return false;
+        }
+        match self.vtype() {
+            VarType::String => self.as_bstr() == other.as_bstr(),
+            VarType::Object => {
+                bytes_to_raw_iunknown(self.data_bytes())
+                    == bytes_to_raw_iunknown(other.data_bytes())
+            }
+            VarType::ArrayVariant => self.as_safearray() == other.as_safearray(),
+            VarType::Record => match (self.as_record_payload(), other.as_record_payload()) {
+                (Some(RecordPayload::Com(left)), Some(RecordPayload::Com(right))) => left == right,
+                (Some(RecordPayload::Vba(left)), Some(RecordPayload::Vba(right))) => {
+                    left.data_ptr() == right.data_ptr()
+                }
+                (None, None) => true,
+                _ => false,
+            },
+            _ => self.data_bytes() == other.data_bytes(),
+        }
+    }
+}
+
+impl Eq for Variant {}
+
+#[cfg(test)]
+mod tests {
+    use core::ffi::c_void;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use crate::live_counters::thread_live_handle_counts;
+    use crate::vba_record::{
+        OwningFailureMode, clear_owning_boundary_failure, inject_owning_boundary_failure,
+        take_owning_boundary_trace,
+    };
+    use crate::{
+        Decimal96, ObjectRef, VbaRecord, VbaRecordFieldKind, VbaRecordFieldSpec, VbaRecordLayout,
+        bstr::BStr,
+        safe_array::{SafeArray, VT_I4_VALUE},
+    };
+
+    use super::{VarType, Variant, VariantCore, VariantData};
+
+    fn offset_of<T, U>(field: fn(*const T) -> *const U) -> usize {
+        let value = core::mem::MaybeUninit::<T>::uninit();
+        let base = value.as_ptr();
+        field(base) as usize - base as usize
+    }
+
+    #[test]
+    fn numeric_roundtrip() {
+        let i16v = Variant::from_i16(-12);
+        assert_eq!(i16v.as_i16(), Some(-12));
+
+        let i32v = Variant::from_i32(1024);
+        assert_eq!(i32v.as_i32(), Some(1024));
+
+        let i64v = Variant::from_i64(5_000_000_000);
+        assert_eq!(i64v.as_i64(), Some(5_000_000_000));
+
+        let f32v = Variant::from_f32(3.5);
+        assert_eq!(f32v.as_f32(), Some(3.5));
+
+        let f64v = Variant::from_f64(3.5);
+        assert_eq!(f64v.as_f64(), Some(3.5));
+
+        let cyv = Variant::from_currency_scaled_i64(125_000);
+        assert_eq!(cyv.as_currency_scaled_i64(), Some(125_000));
+
+        let decv = Variant::from_decimal96(Decimal96::from_parts(123_450, 0, 0, 3, true));
+        assert_eq!(
+            decv.as_decimal96(),
+            Some(Decimal96::from_parts(123_450, 0, 0, 3, true))
+        );
+
+        let datev = Variant::from_date_f64(45200.25);
+        assert_eq!(datev.as_date_f64(), Some(45200.25));
+    }
+
+    #[test]
+    fn string_roundtrip_preserves_owned_pointer_payload() {
+        let value = Variant::from_string("abc");
+        assert_eq!(value.vtype(), VarType::String);
+        assert_eq!(value.as_bstr(), Some(BStr::from("abc")));
+        assert!(value.string_core().is_some());
+        assert_ne!(u64::from_le_bytes(value.data_bytes()), 0);
+    }
+
+    #[test]
+    fn string_variant_preserves_raw_odd_bstr_bytes() {
+        let value = Variant::from_bstr_bytes(&[0x00, 0x43, 0x00]);
+        assert_eq!(value.vtype(), VarType::String);
+        assert_eq!(value.string_byte_len(), Some(3));
+        assert_eq!(value.string_bytes(), Some(vec![0x00, 0x43, 0x00]));
+        assert_eq!(value.string_units(), Some(vec![0x4300]));
+
+        let cloned = value.clone();
+        assert_eq!(cloned.string_byte_len(), Some(3));
+        assert_eq!(cloned.string_bytes(), Some(vec![0x00, 0x43, 0x00]));
+        assert_eq!(cloned.string_units(), Some(vec![0x4300]));
+    }
+
+    #[test]
+    fn borrowed_carrier_unwind_safety_variant_bstr_and_safearray_projections() {
+        let handles_before = thread_live_handle_counts();
+        {
+            let source_bytes = vec![0x41, 0x00, 0x00, 0x42, 0x7f];
+            let source = Variant::from_bstr_bytes(&source_bytes);
+            let source_carrier = source.data_bytes();
+            let source_wire = source.to_wire_bytes();
+
+            for mode in [OwningFailureMode::Error, OwningFailureMode::Panic] {
+                inject_owning_boundary_failure(0, mode);
+                let outcome = catch_unwind(AssertUnwindSafe(|| source.try_as_bstr()));
+                clear_owning_boundary_failure();
+                assert_eq!(take_owning_boundary_trace(), vec!["borrowed-bstr-clone"]);
+                match (mode, outcome) {
+                    (OwningFailureMode::Error, Ok(Err(error))) => assert!(
+                        error.contains("injected owning clone/allocation failure"),
+                        "unexpected Variant BSTR projection error: {error}"
+                    ),
+                    (OwningFailureMode::Panic, Err(_)) => {}
+                    (OwningFailureMode::Error, Err(_)) => {
+                        panic!("fallible Variant BSTR projection unexpectedly unwound")
+                    }
+                    (OwningFailureMode::Error, Ok(Ok(_))) => {
+                        panic!("injected Variant BSTR projection error unexpectedly succeeded")
+                    }
+                    (OwningFailureMode::Panic, Ok(result)) => {
+                        panic!("injected Variant BSTR projection panic did not unwind: {result:?}")
+                    }
+                }
+                assert_eq!(source.data_bytes(), source_carrier);
+                assert_eq!(source.string_bytes(), Some(source_bytes.clone()));
+
+                // The first clone boundary is Variant-level admission; failing at
+                // the second reaches the destructor-free raw BSTR view itself.
+                inject_owning_boundary_failure(1, mode);
+                let outcome = catch_unwind(AssertUnwindSafe(|| source.try_clone()));
+                clear_owning_boundary_failure();
+                assert_eq!(
+                    take_owning_boundary_trace(),
+                    vec!["variant-bstr-clone", "borrowed-bstr-clone"]
+                );
+                match (mode, outcome) {
+                    (OwningFailureMode::Error, Ok(Err(error))) => assert!(
+                        error.contains("injected owning clone/allocation failure"),
+                        "unexpected Variant BSTR clone error: {error}"
+                    ),
+                    (OwningFailureMode::Panic, Err(_)) => {}
+                    (OwningFailureMode::Error, Err(_)) => {
+                        panic!("fallible Variant BSTR clone unexpectedly unwound")
+                    }
+                    (OwningFailureMode::Error, Ok(Ok(_))) => {
+                        panic!("injected Variant BSTR clone error unexpectedly succeeded")
+                    }
+                    (OwningFailureMode::Panic, Ok(result)) => {
+                        panic!("injected Variant BSTR clone panic did not unwind: {result:?}")
+                    }
+                }
+                assert_eq!(source.data_bytes(), source_carrier);
+                assert_eq!(source.string_bytes(), Some(source_bytes.clone()));
+
+                inject_owning_boundary_failure(0, mode);
+                let outcome = catch_unwind(AssertUnwindSafe(|| {
+                    // SAFETY: `source_wire` was produced from `source`, which
+                    // remains live for this complete trusted reconstruction.
+                    unsafe { Variant::from_trusted_wire_bytes(source_wire) }
+                }));
+                clear_owning_boundary_failure();
+                assert_eq!(take_owning_boundary_trace(), vec!["borrowed-bstr-clone"]);
+                match (mode, outcome) {
+                    (OwningFailureMode::Error, Ok(Err(error))) => assert!(
+                        error.contains("injected owning clone/allocation failure"),
+                        "unexpected trusted BSTR reconstruction error: {error}"
+                    ),
+                    (OwningFailureMode::Panic, Err(_)) => {}
+                    (OwningFailureMode::Error, Err(_)) => {
+                        panic!("fallible trusted BSTR reconstruction unexpectedly unwound")
+                    }
+                    (OwningFailureMode::Error, Ok(Ok(_))) => {
+                        panic!("injected trusted BSTR reconstruction unexpectedly succeeded")
+                    }
+                    (OwningFailureMode::Panic, Ok(result)) => {
+                        panic!("injected trusted BSTR reconstruction did not unwind: {result:?}")
+                    }
+                }
+                assert_eq!(source.data_bytes(), source_carrier);
+                assert_eq!(source.string_bytes(), Some(source_bytes.clone()));
+            }
+
+            let array_source = Variant::from_safearray(SafeArray::from_variants(vec![
+                Variant::from_string("array text"),
+                Variant::from_object_ref(ObjectRef::from_compat_identity(411)),
+            ]));
+            let array_carrier = array_source.data_bytes();
+            let array_wire = array_source.to_wire_bytes();
+            for mode in [OwningFailureMode::Error, OwningFailureMode::Panic] {
+                inject_owning_boundary_failure(0, mode);
+                let outcome = catch_unwind(AssertUnwindSafe(|| array_source.try_as_safearray()));
+                clear_owning_boundary_failure();
+                assert_eq!(
+                    take_owning_boundary_trace(),
+                    vec!["borrowed-safearray-clone"]
+                );
+                match (mode, outcome) {
+                    (OwningFailureMode::Error, Ok(Err(error))) => assert!(
+                        error.contains("injected owning clone/allocation failure"),
+                        "unexpected Variant SAFEARRAY projection error: {error}"
+                    ),
+                    (OwningFailureMode::Panic, Err(_)) => {}
+                    (OwningFailureMode::Error, Err(_)) => {
+                        panic!("fallible Variant SAFEARRAY projection unexpectedly unwound")
+                    }
+                    (OwningFailureMode::Error, Ok(Ok(_))) => {
+                        panic!("injected Variant SAFEARRAY projection error unexpectedly succeeded")
+                    }
+                    (OwningFailureMode::Panic, Ok(result)) => {
+                        panic!(
+                            "injected Variant SAFEARRAY projection panic did not unwind: {result:?}"
+                        )
+                    }
+                }
+                assert_eq!(array_source.data_bytes(), array_carrier);
+                assert_eq!(
+                    array_source
+                        .safearray_element(0)
+                        .expect("array carrier")
+                        .expect("readable source element")
+                        .as_bstr()
+                        .expect("String element")
+                        .as_str(),
+                    "array text"
+                );
+                assert_eq!(
+                    array_source
+                        .safearray_element(1)
+                        .expect("array carrier")
+                        .expect("readable source element")
+                        .as_object_ref()
+                        .expect("Object element")
+                        .compat_identity(),
+                    411
+                );
+                take_owning_boundary_trace();
+
+                inject_owning_boundary_failure(0, mode);
+                let outcome = catch_unwind(AssertUnwindSafe(|| {
+                    // SAFETY: `array_wire` was produced from the still-live
+                    // `array_source` and is consumed within this call only.
+                    unsafe { Variant::from_trusted_wire_bytes(array_wire) }
+                }));
+                clear_owning_boundary_failure();
+                assert_eq!(
+                    take_owning_boundary_trace(),
+                    vec!["borrowed-safearray-clone"]
+                );
+                match (mode, outcome) {
+                    (OwningFailureMode::Error, Ok(Err(error))) => assert!(
+                        error.contains("injected owning clone/allocation failure"),
+                        "unexpected trusted SAFEARRAY reconstruction error: {error}"
+                    ),
+                    (OwningFailureMode::Panic, Err(_)) => {}
+                    (OwningFailureMode::Error, Err(_)) => {
+                        panic!("fallible trusted SAFEARRAY reconstruction unexpectedly unwound")
+                    }
+                    (OwningFailureMode::Error, Ok(Ok(_))) => {
+                        panic!("injected trusted SAFEARRAY reconstruction unexpectedly succeeded")
+                    }
+                    (OwningFailureMode::Panic, Ok(result)) => {
+                        panic!(
+                            "injected trusted SAFEARRAY reconstruction did not unwind: {result:?}"
+                        )
+                    }
+                }
+                assert_eq!(array_source.data_bytes(), array_carrier);
+                assert_eq!(
+                    array_source
+                        .safearray_element(0)
+                        .expect("array carrier")
+                        .expect("source remains readable")
+                        .as_bstr()
+                        .expect("String element")
+                        .as_str(),
+                    "array text"
+                );
+                take_owning_boundary_trace();
+            }
+        }
+        clear_owning_boundary_failure();
+        take_owning_boundary_trace();
+        assert_eq!(
+            thread_live_handle_counts(),
+            handles_before,
+            "Variant BSTR/SAFEARRAY projections and final source drops must balance"
+        );
+    }
+
+    #[test]
+    fn nothing_is_null_object_variant() {
+        let value = Variant::nothing();
+        assert_eq!(value.vtype(), VarType::Object);
+        assert!(value.as_object_ref().is_none());
+        assert_eq!(value.data_bytes(), [0; 8]);
+        assert_eq!(value.clone(), value);
+    }
+
+    #[test]
+    fn boolean_roundtrip_vba_encoding() {
+        let t = Variant::from_bool(true);
+        let f = Variant::from_bool(false);
+        assert_eq!(t.vtype(), VarType::Boolean);
+        assert_eq!(f.vtype(), VarType::Boolean);
+        assert_eq!(t.as_bool(), Some(true));
+        assert_eq!(f.as_bool(), Some(false));
+    }
+
+    #[test]
+    fn com_variant_layout_shape() {
+        assert_eq!(core::mem::size_of::<VariantCore>(), 16);
+        assert_eq!(core::mem::align_of::<VariantCore>(), 8);
+        assert_eq!(core::mem::size_of::<VariantData>(), 8);
+        assert_eq!(core::mem::align_of::<VariantData>(), 8);
+        assert_eq!(core::mem::size_of::<Variant>(), 16);
+        assert_eq!(core::mem::align_of::<Variant>(), 8);
+        // SAFETY (all five): `offset_of` calls the closure with `base` pointing to
+        // live, aligned `MaybeUninit<VariantCore>` storage; `addr_of!` computes the
+        // field's address without ever reading the (uninitialized) field.
+        assert_eq!(
+            offset_of::<VariantCore, _>(|base|
+                // SAFETY: see above — address-of only, no read.
+                unsafe { core::ptr::addr_of!((*base).vtype) }),
+            0
+        );
+        assert_eq!(
+            offset_of::<VariantCore, _>(|base|
+                // SAFETY: see above — address-of only, no read.
+                unsafe { core::ptr::addr_of!((*base).reserved1) }),
+            2
+        );
+        assert_eq!(
+            offset_of::<VariantCore, _>(|base|
+                // SAFETY: see above — address-of only, no read.
+                unsafe { core::ptr::addr_of!((*base).reserved2) }),
+            4
+        );
+        assert_eq!(
+            offset_of::<VariantCore, _>(|base|
+                // SAFETY: see above — address-of only, no read.
+                unsafe { core::ptr::addr_of!((*base).reserved3) }),
+            6
+        );
+        assert_eq!(
+            offset_of::<VariantCore, _>(|base|
+                // SAFETY: see above — address-of only, no read.
+                unsafe { core::ptr::addr_of!((*base).data) }),
+            8
+        );
+    }
+
+    #[test]
+    fn com_variant_wire_roundtrip_for_numeric_value() {
+        let original = Variant::from_i32(42);
+        let wire = original.to_wire_bytes();
+        let roundtrip = Variant::from_wire_bytes(wire).expect("wire roundtrip");
+        assert_eq!(roundtrip.vtype(), VarType::Long);
+        assert_eq!(roundtrip.as_i32(), Some(42));
+    }
+
+    #[test]
+    fn string_variant_wire_roundtrip_clones_bstr_payload() {
+        let original = Variant::from_string("A\0BC");
+        let wire = original.to_wire_bytes();
+        // SAFETY: `wire` was just produced from `original`, which stays live for
+        // the full call.
+        let roundtrip = unsafe { Variant::from_trusted_wire_bytes(wire) }.expect("wire roundtrip");
+        assert_eq!(roundtrip.as_bstr(), Some(BStr::from("A\0BC")));
+    }
+
+    #[test]
+    fn array_variant_set_element_preserves_owned_safearray_pointer() {
+        let array = crate::safe_array::SafeArray::from_variants(vec![Variant::from_i32(1)]);
+        let mut value = Variant::from_safearray(array);
+        let raw_before = u64::from_le_bytes(value.data_bytes());
+
+        value
+            .set_safearray_element(0, &Variant::from_i32(2))
+            .expect("set element");
+
+        assert_eq!(u64::from_le_bytes(value.data_bytes()), raw_before);
+        assert_eq!(
+            value
+                .as_safearray()
+                .and_then(|array| array.variant_elements()),
+            Some(vec![Variant::from_i32(2)])
+        );
+    }
+
+    #[test]
+    fn unallocated_array_marker_projects_typed_wire_tag_without_reserved_words() {
+        let value = Variant::unallocated_array(VT_I4_VALUE);
+        let wire = value.to_wire_bytes();
+
+        assert_eq!(u16::from_le_bytes([wire[0], wire[1]]), 0x2000 | VT_I4_VALUE);
+        assert_eq!(&wire[2..8], &[0, 0, 0, 0, 0, 0]);
+        assert_eq!(&wire[8..16], &[0; 8]);
+    }
+
+    unsafe fn clone_test_record(
+        record_info: *mut c_void,
+        record_data: *const c_void,
+    ) -> Result<(*mut c_void, *mut c_void), String> {
+        // SAFETY: this clone callback is only registered for records whose data is a
+        // boxed `i32` (see `test_record_variant`), so `record_data` points to a live i32.
+        let value = unsafe { *record_data.cast::<i32>() };
+        Ok((record_info, Box::into_raw(Box::new(value)).cast()))
+    }
+
+    unsafe fn destroy_test_record(_record_info: *mut c_void, record_data: *mut c_void) {
+        // SAFETY: paired with `clone_test_record`/`test_record_variant`, `record_data`
+        // is a `Box<i32>` raw pointer reclaimed exactly once here.
+        unsafe {
+            drop(Box::from_raw(record_data.cast::<i32>()));
+        }
+    }
+
+    fn test_record_variant(value: i32) -> Variant {
+        let record_info = core::ptr::NonNull::<u8>::dangling()
+            .as_ptr()
+            .cast::<c_void>();
+        let record_data = Box::into_raw(Box::new(value)).cast::<c_void>();
+        // SAFETY: `record_data` is a freshly leaked `Box<i32>`, `record_info` is a
+        // non-null placeholder, and the clone/destroy callbacks match that i32 payload.
+        let record = unsafe {
+            crate::ComRecord::from_raw_parts(
+                record_info,
+                record_data,
+                clone_test_record,
+                destroy_test_record,
+            )
+            .expect("test record")
+        };
+        Variant::from_com_record(record)
+    }
+
+    #[test]
+    fn record_variant_clone_deep_copies_record_payload() {
+        let original = test_record_variant(41);
+        let cloned = original.clone();
+        let original_record = original.as_com_record().expect("original record");
+        let cloned_record = cloned.as_com_record().expect("cloned record");
+
+        assert_ne!(
+            original_record.record_data_ptr(),
+            cloned_record.record_data_ptr()
+        );
+        // SAFETY: both records' data pointers reference the boxed `i32` payloads
+        // created by `test_record_variant`; they stay live for the whole test.
+        assert_eq!(
+            // SAFETY: original record's data is a live `i32` (see above).
+            unsafe { *original_record.record_data_ptr().cast::<i32>() },
+            41
+        );
+        assert_eq!(
+            // SAFETY: cloned record's data is a live `i32` (deep-copied box).
+            unsafe { *cloned_record.record_data_ptr().cast::<i32>() },
+            41
+        );
+        // SAFETY: original record's data is a live, uniquely-owned `i32` slot we mutate.
+        unsafe {
+            *original_record.record_data_ptr().cast::<i32>() = 99;
+        }
+        assert_eq!(
+            // SAFETY: re-reads the original's live `i32` after the mutation above.
+            unsafe { *original_record.record_data_ptr().cast::<i32>() },
+            99
+        );
+        assert_eq!(
+            // SAFETY: clone is an independent box, still holding its original `i32`.
+            unsafe { *cloned_record.record_data_ptr().cast::<i32>() },
+            41
+        );
+    }
+
+    #[test]
+    fn vba_record_variant_clone_deep_copies_native_payload() {
+        let layout = std::sync::Arc::new(
+            VbaRecordLayout::new(vec![VbaRecordFieldSpec::named(
+                "Value",
+                VbaRecordFieldKind::Long,
+            )])
+            .expect("layout"),
+        );
+        let mut record = VbaRecord::new_default(layout).expect("record");
+        let field = record.field_handle(0).expect("record field handle");
+        // SAFETY: `field` is this record's own `Long` field, so `field_mut_ptr` yields
+        // an in-bounds, `i32`-aligned slot to overwrite.
+        unsafe {
+            record
+                .field_mut_ptr(&field)
+                .expect("record field pointer")
+                .cast::<i32>()
+                .write(41);
+        }
+        let original = Variant::from_vba_record(record);
+        let cloned = original.clone();
+
+        assert!(original.as_com_record().is_none());
+        assert!(cloned.as_com_record().is_none());
+        let original_record = original.as_vba_record().expect("original record");
+        let cloned_record = cloned.as_vba_record().expect("cloned record");
+        assert_ne!(original_record.data_ptr(), cloned_record.data_ptr());
+        assert_eq!(
+            original_record
+                .read_field_variant(0)
+                .expect("original field")
+                .as_i32(),
+            Some(41)
+        );
+        assert_eq!(
+            cloned_record
+                .read_field_variant(0)
+                .expect("cloned field")
+                .as_i32(),
+            Some(41)
+        );
+    }
+
+    #[test]
+    fn safe_variant_wire_rejects_pointer_carriers() {
+        let wire = Variant::from_string("A\0BC").to_wire_bytes();
+        assert_eq!(
+            Variant::from_wire_bytes(wire).expect_err("safe wire must reject pointers"),
+            "pointer-carrying VARIANT wire bytes for String require trusted in-process provenance"
+        );
+    }
+
+    #[test]
+    fn variant_wire_rejects_non_decimal_reserved_words() {
+        let mut wire = Variant::from_i32(42).to_wire_bytes();
+        wire[2..4].copy_from_slice(&1u16.to_le_bytes());
+
+        assert_eq!(
+            Variant::from_wire_bytes(wire).expect_err("reserved words must be zero"),
+            "malformed VARIANT wire bytes: non-zero reserved words for Long"
+        );
+    }
+
+    #[test]
+    fn decimal_variant_wire_accepts_reserved_payload_words() {
+        let original =
+            Variant::from_decimal96(Decimal96::from_parts(123_450, 7, 0x0002_0001, 3, true));
+        let roundtrip = Variant::from_wire_bytes(original.to_wire_bytes()).expect("decimal wire");
+
+        assert_eq!(
+            roundtrip.as_decimal96(),
+            Some(Decimal96::from_parts(123_450, 7, 0x0002_0001, 3, true))
+        );
+    }
+}

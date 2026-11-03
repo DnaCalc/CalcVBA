@@ -3,8 +3,8 @@ use crate::{
     Error, HostObject, InterfaceId, ObjectArg, OwnedValue, ScalarBits, ScalarType, Slot,
     TypedContext, Variant,
 };
-pub use oxvba_runtime::bstr::BStr;
-pub use oxvba_runtime::{safe_array::SafeArray, vba_record::VbaRecord};
+pub use calcvba_runtime::bstr::BStr;
+pub use calcvba_runtime::{safe_array::SafeArray, vba_record::VbaRecord};
 pub const TYPED_VALUE_ABI: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,7 +85,7 @@ pub enum ValueSlot<'a> {
     Double(f64),
     Boolean(bool),
     Object(ObjectArg<'a>),
-    RuntimeObject(&'a oxvba_runtime::ObjectRef),
+    RuntimeObject(&'a calcvba_runtime::ObjectRef),
     Nothing,
     String(&'a BStr),
     Variant(&'a Variant),
@@ -145,7 +145,7 @@ pub enum Value {
     String(BStr),
     Variant(Variant),
     Object(Option<HostObject>),
-    RuntimeObject(oxvba_runtime::ObjectRef),
+    RuntimeObject(calcvba_runtime::ObjectRef),
     Record(VbaRecord),
     Array(Option<SafeArray>),
 }
@@ -313,7 +313,7 @@ pub unsafe fn retain_bits(ty: ValueType, bits: ScalarBits) -> Result<Value, i32>
         ValueType::HostObject => {
             // SAFETY: the input retains an exact runtime IUnknown prefix.
             let object = unsafe {
-                oxvba_runtime::ObjectRef::from_raw_iunknown_addref(
+                calcvba_runtime::ObjectRef::from_raw_iunknown_addref(
                     bits.as_object().cast_mut().cast(),
                 )
             };
@@ -371,7 +371,7 @@ pub unsafe fn release_owned_bits(ty: ValueType, bits: ScalarBits) {
     match ty.carrier() {
         ValueType::HostObject => {
             // SAFETY: inherited exact runtime IUnknown ownership transfer.
-            drop(unsafe { oxvba_runtime::ObjectRef::from_raw_iunknown_owned(raw.cast()) });
+            drop(unsafe { calcvba_runtime::ObjectRef::from_raw_iunknown_owned(raw.cast()) });
         }
         ValueType::String => {
             // SAFETY: inherited exact BSTR ownership transfer.
@@ -443,7 +443,7 @@ pub unsafe fn take_result(ty: ValueType, output: *mut ScalarBits) -> Result<Valu
             } else {
                 // SAFETY: successful output transfers this exact IUnknown once.
                 let object = unsafe {
-                    oxvba_runtime::ObjectRef::from_raw_iunknown_owned(pointer.cast_mut().cast())
+                    calcvba_runtime::ObjectRef::from_raw_iunknown_owned(pointer.cast_mut().cast())
                 }
                 .ok_or(13)?;
                 match HostObject::from_object_ref(&object) {

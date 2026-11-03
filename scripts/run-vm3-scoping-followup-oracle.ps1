@@ -237,7 +237,7 @@ function Invoke-Case($Case) {
     $before = Get-ExcelPids
     $xl = $null
     $ownedExcelPid = $null
-    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("oxvba-scoping-oracle-" + [System.Guid]::NewGuid().ToString("N"))
+    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("calcvba-scoping-oracle-" + [System.Guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 
     $compileStatus = "not-run"

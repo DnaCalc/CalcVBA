@@ -1,7 +1,7 @@
 # Spreadsheet function embedding
 
 DNA Calc's `crates/calc-vba` consumes the neutral `calcvba-host-api` and
-`oxvba-embed` interfaces described in [hosting](HOSTING_AND_EARLY_BINDING.md).
+`calcvba-host` interfaces described in [hosting](HOSTING_AND_EARLY_BINDING.md).
 It supplies its own application objects, type library, formula conversions,
 calculation context and scheduler. Its invocation slices, read views, budgets,
 reloads and handle generations are active consumers of the engine API.

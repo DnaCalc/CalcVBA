@@ -12,15 +12,15 @@ try {
     # Developer comparison harness. Only this C harness needs MSVC; the product
     # NativeLibrary build below uses its embedded template and no system linker.
     if (-not $CliPath) {
-        cargo build -p oxvba-cli
-        $CliPath = Join-Path $repoRoot 'target/debug/oxvba-cli.exe'
+        cargo build -p calcvba-cli
+        $CliPath = Join-Path $repoRoot 'target/debug/calcvba-cli.exe'
     }
     $CliPath = (Resolve-Path -LiteralPath $CliPath).Path
     New-Item -ItemType Directory -Force $OutDir | Out-Null
     $OutDir = (Resolve-Path -LiteralPath $OutDir).Path
     & $CliPath build examples/native/scalars/NativeScalars.basproj --target NativeLibrary --out-dir $OutDir
     $dll = Join-Path $OutDir 'NativeScalars.dll'
-    $support = Join-Path $repoRoot 'crates/oxvba-build/tests/support'
+    $support = Join-Path $repoRoot 'crates/calcvba-build/tests/support'
     $expected = (Get-Content -LiteralPath (Join-Path $support 'native_scalar_expected.txt') -Raw).Trim()
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
     $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath

@@ -6,7 +6,7 @@ surface. They are VM-runnable package fixtures, not JIT execution evidence.
 Run with:
 
 ```powershell
-cargo test -p oxvba-vm --test package_identity_fixtures -- --nocapture
+cargo test -p calcvba-vm --test package_identity_fixtures -- --nocapture
 ```
 
 The test output prints value snapshots plus package digest, bytecode digest,
@@ -80,7 +80,7 @@ ByVal call-entry coercion descriptors outside the selected `Long` to `Double`
 shape are likewise not yet descriptor-driven. The call-site evidence also
 records the selected table row ids for the behavior-driving call-entry coercion:
 `COERCE-CALL-BYVAL-DECLARED-TARGET`, `COERCE-LET-NUMERIC-WIDEN`, and runtime
-helper `oxvba_runtime::coerce_to`.
+helper `calcvba_runtime::coerce_to`.
 
 The expression/operator/coercion/member lane records `OxBundle` v14 package
 evidence for selected `ExpressionSemanticsDescriptor`,

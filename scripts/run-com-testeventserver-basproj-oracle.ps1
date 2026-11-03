@@ -42,7 +42,7 @@ try {
 
     $logPath = Join-Path $runDir "CCT-043-TES-001.log.txt"
     $cargoArgs = @(
-        "test", "-p", "oxvba-host", "--test", "com_early_project_end_to_end",
+        "test", "-p", "calcvba-engine", "--test", "com_early_project_end_to_end",
         "early_bound_loaded_basproj_executes_registered_testeventserver_ping",
         "--", "--ignored", "--exact", "--test-threads=1", "--nocapture"
     )
@@ -56,8 +56,8 @@ try {
         scenario = "Loaded .basproj file-backed typelib reference executes New TestEventServer + Ping()"
         vba_status = $probeRow.status
         vba_observed = $probeRow.observed
-        oxvba_status = if ($exitCode -eq 0) { "ok" } else { "error" }
-        oxvba_observed = if ($exitCode -eq 0) { "42" } else { "lane-failed(exit=$exitCode)" }
+        calcvba_status = if ($exitCode -eq 0) { "ok" } else { "error" }
+        calcvba_observed = if ($exitCode -eq 0) { "42" } else { "lane-failed(exit=$exitCode)" }
         match = if ($probeRow.status -eq "ok" -and $exitCode -eq 0 -and $probeRow.observed -eq "42") { "true" } else { "false" }
         notes = "Excel baseline reuses file-backed .tlb AddFromFile probe CCT-027-TES-001; OxVba anchor: com_early_project_end_to_end::early_bound_loaded_basproj_executes_registered_testeventserver_ping; command=$cmdText; log=$logPath"
     }
@@ -80,7 +80,7 @@ try {
         "## Case Results",
         "| Topic | Case | VBA | OxVba | Match | Notes |",
         "|---|---|---|---|---|---|",
-        "| $($row.topic_id) | $($row.case_id) | $($row.vba_status): $($row.vba_observed) | $($row.oxvba_status): $($row.oxvba_observed) | $($row.match) | $($row.notes) |"
+        "| $($row.topic_id) | $($row.case_id) | $($row.vba_status): $($row.vba_observed) | $($row.calcvba_status): $($row.calcvba_observed) | $($row.match) | $($row.notes) |"
     )
     Set-Content -Path $summaryPath -Value ($summary -join [Environment]::NewLine)
 

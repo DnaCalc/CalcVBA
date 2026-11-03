@@ -42,9 +42,9 @@ End Sub
 ```
 
 ```powershell
-cargo run -p oxvba-cli -- run hello.bas --backend vm3
-cargo run -p oxvba-cli -- run hello.bas --backend jit
-cargo run -p oxvba-cli -- run-project project.basproj --backend vm3
+cargo run -p calcvba-cli -- run hello.bas --backend vm3
+cargo run -p calcvba-cli -- run hello.bas --backend jit
+cargo run -p calcvba-cli -- run-project project.basproj --backend vm3
 ```
 
 Both backends consume typed OxIR. The JIT compiles with Cranelift and refuses
@@ -54,9 +54,9 @@ Use `--help` for current CLI options and `--diagnostic-format json` for tools.
 ## Packages and hosts
 
 ```powershell
-cargo run -p oxvba-cli -- build project.basproj --target OxImage --out-dir out
-cargo run -p oxvba-cli -- run-image out/ProjectName.oxi --backend jit
-cargo run -p oxvba-cli -- build project.basproj --target WrappedComServer --out-dir out
+cargo run -p calcvba-cli -- build project.basproj --target OxImage --out-dir out
+cargo run -p calcvba-cli -- run-image out/ProjectName.oxi --backend jit
+cargo run -p calcvba-cli -- build project.basproj --target WrappedComServer --out-dir out
 ```
 
 `.oxi` packages contain the compiled project closure. WrappedComServer emits a
@@ -65,7 +65,7 @@ Windows x64 DLL for admitted numeric exports. Native EXE outputs and JIT-backed
 COM wrappers remain unfinished.
 
 ```powershell
-cargo run -p oxvba-cli -- build examples/native/scalars/NativeScalars.basproj --target NativeLibrary --out-dir out
+cargo run -p calcvba-cli -- build examples/native/scalars/NativeScalars.basproj --target NativeLibrary --out-dir out
 ```
 
 The installed CLI patches its embedded template without invoking Rust or a
@@ -82,7 +82,7 @@ C, CalcVBA Declare (both backends) and one owned Excel instance. CalcVBA has no
 XLL-specific target or runtime support.
 
 Hosts use [`calcvba-host-api`](crates/calcvba-host-api) and
-[`oxvba-embed`](crates/oxvba-embed). They supply application objects and type
+[`calcvba-host`](crates/calcvba-host). They supply application objects and type
 information; Excel's Range/Application/WorksheetFunction model belongs to the
 host. Bound procedures avoid repeated name lookup. Sessions retain globals,
 Static variables, errors and objects. DNA Calc uses invocation slices, read
@@ -92,16 +92,16 @@ these remain part of the embedding API. See
 [project files](docs/spec/BASPROJ_SPEC_V1.md).
 
 Criterion benchmarks remain available with
-`cargo bench -p oxvba-differential --bench jit_m4_baseline`.
+`cargo bench -p calcvba-differential --bench jit_m4_baseline`.
 
 ## Excel comparisons
 
 `oracle/` contains VBA probes and captured return values.
-`crates/oxvba-embed/tests/support/` contains source fixtures used by the native
+`crates/calcvba-host/tests/support/` contains source fixtures used by the native
 hosting and saved-XLSM tests. The `run-typed-*-oracle.ps1`,
 `run-automatic-events-oracle.ps1` and `run-xlsm-project-oracle.ps1` scripts compare
 those tests with real Excel. Build the matching test executable with
-`cargo test -p oxvba-embed --test <name> --no-run`, then pass its path through
+`cargo test -p calcvba-host --test <name> --no-run`, then pass its path through
 `-RuntimeTestExecutable`. The scripts record owned process identities, start a
 PID-scoped UIA dialog handler before compiling/running, and compile through
 VBE Debug -> Compile. They do not change Trust Center, macro security, Excel

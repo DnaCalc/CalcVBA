@@ -70,8 +70,8 @@ public static class Win32User32Pid {
                 scenario       = $Scenario
                 vba_status     = $VbaStatus
                 vba_observed   = $VbaObserved
-                oxvba_status   = $OxvbaStatus
-                oxvba_observed = $OxvbaObserved
+                calcvba_status   = $OxvbaStatus
+                calcvba_observed = $OxvbaObserved
                 match          = if ($match) { "true" } else { "false" }
                 notes          = $Notes
             }) | Out-Null
@@ -397,7 +397,7 @@ End Function
         $md += "|---|---|---|---|---|---|"
         foreach ($row in $rows) {
             $vbaCell = "$($row.vba_status): $($row.vba_observed)"
-            $oxCell = "$($row.oxvba_status): $($row.oxvba_observed)"
+            $oxCell = "$($row.calcvba_status): $($row.calcvba_observed)"
             $md += "| $($row.topic_id) | $($row.case_id) | $vbaCell | $oxCell | $($row.match) | $($row.notes) |"
         }
         Set-Content -Path $summaryPath -Value ($md -join [Environment]::NewLine)

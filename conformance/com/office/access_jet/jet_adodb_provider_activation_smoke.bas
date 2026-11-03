@@ -4,7 +4,7 @@ Sub Main()
     Dim stateValue
 
     conn = CreateObject("ADODB.Connection")
-    connectionString = "Provider=Microsoft.ACE.OLEDB.12.0;Data Source=C:\Temp\oxvba-office-com-corpus.accdb;"
+    connectionString = "Provider=Microsoft.ACE.OLEDB.12.0;Data Source=C:\Temp\calcvba-office-com-corpus.accdb;"
     DispatchInvoke(conn, "Open", connectionString)
     stateValue = DispatchInvoke(conn, "State")
     DispatchInvoke(conn, "Close")

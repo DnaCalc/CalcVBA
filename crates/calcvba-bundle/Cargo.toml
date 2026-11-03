@@ -1,0 +1,15 @@
+[package]
+name = "calcvba-bundle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Core IR (coreir) + shared front-end vocabulary, and the synthetic VBA built-in library bundle vm3 reads."
+
+[dependencies]
+calcvba-runtime.workspace = true
+calcvba-com.workspace = true
+serde.workspace = true
+[lints]
+workspace = true

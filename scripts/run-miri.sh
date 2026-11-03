@@ -1,7 +1,7 @@
 #!/bin/bash
 # Run cargo miri on unsafe-heavy crates.
 # Excludes Windows-specific COM FFI paths (Windows APIs are incompatible with miri).
-# The oxvba-com miri_variant_mock module provides pure-Rust mock paths for
+# The calcvba-com miri_variant_mock module provides pure-Rust mock paths for
 # VARIANT layout verification without calling actual COM APIs.
 #
 # Prerequisites:
@@ -12,21 +12,21 @@
 
 set -euo pipefail
 
-echo "=== Running miri on oxvba-runtime ==="
-cargo +nightly miri test -p oxvba-runtime 2>&1 || {
-    echo "FAIL: oxvba-runtime miri"
+echo "=== Running miri on calcvba-runtime ==="
+cargo +nightly miri test -p calcvba-runtime 2>&1 || {
+    echo "FAIL: calcvba-runtime miri"
     exit 1
 }
 
-echo "=== Running miri on oxvba-jit ==="
-cargo +nightly miri test -p oxvba-jit 2>&1 || {
-    echo "FAIL: oxvba-jit miri"
+echo "=== Running miri on calcvba-jit ==="
+cargo +nightly miri test -p calcvba-jit 2>&1 || {
+    echo "FAIL: calcvba-jit miri"
     exit 1
 }
 
-echo "=== Running miri on oxvba-com (miri_variant mock paths) ==="
-cargo +nightly miri test -p oxvba-com -- miri_variant 2>&1 || {
-    echo "FAIL: oxvba-com miri"
+echo "=== Running miri on calcvba-com (miri_variant mock paths) ==="
+cargo +nightly miri test -p calcvba-com -- miri_variant 2>&1 || {
+    echo "FAIL: calcvba-com miri"
     exit 1
 }
 

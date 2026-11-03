@@ -1,0 +1,1224 @@
+use crate::{
+    error::{HalError, HalResult},
+    model::{CapabilityId, HalProfileId},
+    traits::{DynLinkDescriptorView, DynamicLinkHal},
+};
+use calcvba_runtime::{
+    BindingHandle, DynLinkSymbol, RuntimeCallArgument, Variant, VbaRecord, VbaRecordLayout,
+};
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use super::StandardHostServices;
+
+#[derive(Debug, Default)]
+pub(super) struct DynLinkBindingState {
+    next_binding: i32,
+    pub(super) descriptors: BTreeMap<u32, BindingHandle>,
+    pub(super) bindings: BTreeMap<BindingHandle, DynLinkSymbol>,
+    #[cfg(target_os = "windows")]
+    native_modules: BTreeMap<String, Arc<calcvba_com::windows_ffi_bridge::OwnedLibrary>>,
+}
+
+impl DynLinkBindingState {
+    pub(super) fn allocate_binding(&mut self) -> BindingHandle {
+        self.next_binding = self.next_binding.saturating_add(1).max(1);
+        BindingHandle::new(80_000i32.saturating_add(self.next_binding))
+    }
+}
+
+pub(super) fn external_symbol_token(library: &str, alias: &str, name: &str) -> i32 {
+    let mut hash: u32 = 2_166_136_261;
+    let library = library.to_ascii_lowercase();
+    let alias = alias.to_ascii_lowercase();
+    let name = name.to_ascii_lowercase();
+    for byte in library
+        .bytes()
+        .chain([b'!'])
+        .chain(alias.bytes())
+        .chain([b'!'])
+        .chain(name.bytes())
+    {
+        hash ^= byte as u32;
+        hash = hash.wrapping_mul(16_777_619);
+    }
+    (hash & 0x7fff_ffff).max(1) as i32
+}
+
+fn variant_i32(value: &Variant) -> i32 {
+    value
+        .as_i32()
+        .or_else(|| value.as_i16().map(i32::from))
+        .or_else(|| value.as_u8().map(i32::from))
+        .or_else(|| value.as_bool().map(i32::from))
+        .or_else(|| value.as_i64().and_then(|value| i32::try_from(value).ok()))
+        .or_else(|| value.as_f64().map(|value| value as i32))
+        .or_else(|| value.as_f32().map(|value| value as i32))
+        .or_else(|| {
+            value
+                .as_currency_scaled_i64()
+                .map(|value| (value / 10_000) as i32)
+        })
+        .or_else(|| value.as_error_code())
+        .or_else(|| value.as_object_ref().map(|value| value.raw()))
+        .unwrap_or(0)
+}
+
+fn variant_f64(value: &Variant) -> f64 {
+    value
+        .as_f64()
+        .or_else(|| value.as_date_f64())
+        .or_else(|| value.as_f32().map(f64::from))
+        .or_else(|| value.as_i64().map(|value| value as f64))
+        .unwrap_or_else(|| f64::from(variant_i32(value)))
+}
+
+fn variant_i64(value: &Variant) -> i64 {
+    value
+        .as_i64()
+        .or_else(|| value.as_i32().map(i64::from))
+        .or_else(|| value.as_i16().map(i64::from))
+        .or_else(|| value.as_u8().map(i64::from))
+        .or_else(|| value.as_bool().map(i64::from))
+        .unwrap_or_else(|| i64::from(variant_i32(value)))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn variant_currency_raw(value: &Variant) -> Result<i64, String> {
+    calcvba_runtime::coerce::coerce_to(value, calcvba_runtime::VarType::Currency)?
+        .as_currency_scaled_i64()
+        .ok_or_else(|| "Currency coercion did not produce scaled storage".into())
+}
+
+impl DynamicLinkHal for StandardHostServices {
+    fn bind_descriptor(&self, descriptor: &DynLinkDescriptorView<'_>) -> HalResult<BindingHandle> {
+        let capability = CapabilityId::DynamicLinking;
+        const LANE_M0: &str = "m0-deterministic";
+        const LANE_M1: &str = "m1-native-ffi";
+        const CONV_PLATFORM_DEFAULT: &str = "platform-default";
+        const POLICY_CASE_INSENSITIVE: &str = "case-insensitive-canonical";
+        const POLICY_ORDINAL_LITERAL: &str = "ordinal-literal-canonical";
+
+        if !self.supports(capability) {
+            return Err(self.unsupported(capability, "invoke_symbol"));
+        }
+        if !self.policy.allow_dynamic_link {
+            return Err(self.denied(capability, "invoke_symbol"));
+        }
+
+        if descriptor.marshal_lane != LANE_M0 && descriptor.marshal_lane != LANE_M1 {
+            return Err(HalError::adapter_fault(
+                self.profile,
+                capability,
+                "invoke_symbol",
+                format!(
+                    "unsupported marshaling lane `{}` for descriptor {}",
+                    descriptor.marshal_lane, descriptor.descriptor_id
+                ),
+            ));
+        }
+        if descriptor.calling_convention != CONV_PLATFORM_DEFAULT {
+            return Err(HalError::adapter_fault(
+                self.profile,
+                capability,
+                "invoke_symbol",
+                format!(
+                    "unsupported calling convention `{}` for descriptor {}",
+                    descriptor.calling_convention, descriptor.descriptor_id
+                ),
+            ));
+        }
+        let expected_selection_policy = if descriptor.ordinal_alias {
+            POLICY_ORDINAL_LITERAL
+        } else {
+            POLICY_CASE_INSENSITIVE
+        };
+        let legacy_symbol_mode = descriptor.selection_policy == "legacy-symbol";
+        if !legacy_symbol_mode && descriptor.selection_policy != expected_selection_policy {
+            return Err(HalError::adapter_fault(
+                self.profile,
+                capability,
+                "invoke_symbol",
+                format!(
+                    "unsupported selection policy `{}` for descriptor {} (expected `{}`)",
+                    descriptor.selection_policy,
+                    descriptor.descriptor_id,
+                    expected_selection_policy
+                ),
+            ));
+        }
+        if descriptor.declared_name.trim().is_empty() {
+            return Err(HalError::adapter_fault(
+                self.profile,
+                capability,
+                "invoke_symbol",
+                format!(
+                    "descriptor {} has empty declared_name",
+                    descriptor.descriptor_id
+                ),
+            ));
+        }
+        if descriptor.library.trim().is_empty() {
+            return Err(HalError::adapter_fault(
+                self.profile,
+                capability,
+                "invoke_symbol",
+                format!("descriptor {} has empty library", descriptor.descriptor_id),
+            ));
+        }
+        if descriptor.alias.trim().is_empty() {
+            return Err(HalError::adapter_fault(
+                self.profile,
+                capability,
+                "invoke_symbol",
+                format!("descriptor {} has empty alias", descriptor.descriptor_id),
+            ));
+        }
+        if descriptor.ordinal_alias {
+            let ordinal_digits = descriptor.alias.strip_prefix('#').ok_or_else(|| {
+                HalError::adapter_fault(
+                    self.profile,
+                    capability,
+                    "invoke_symbol",
+                    format!(
+                        "ordinal alias descriptor {} must start with `#`",
+                        descriptor.descriptor_id
+                    ),
+                )
+            })?;
+            if ordinal_digits.is_empty() || !ordinal_digits.chars().all(|ch| ch.is_ascii_digit()) {
+                return Err(HalError::adapter_fault(
+                    self.profile,
+                    capability,
+                    "invoke_symbol",
+                    format!(
+                        "ordinal alias descriptor {} must contain decimal digits after `#`",
+                        descriptor.descriptor_id
+                    ),
+                ));
+            }
+        }
+        if legacy_symbol_mode
+            && !(descriptor.declared_name == "<legacy>"
+                && descriptor.library == "<legacy>"
+                && descriptor.alias == "<legacy>")
+        {
+            return Err(HalError::adapter_fault(
+                self.profile,
+                capability,
+                "invoke_symbol",
+                format!(
+                    "legacy selection policy is only valid for legacy descriptors (id={})",
+                    descriptor.descriptor_id
+                ),
+            ));
+        }
+
+        let mut state = self.dynlink_state.try_borrow_mut().map_err(|_| {
+            HalError::adapter_fault(
+                self.profile,
+                capability,
+                "invoke_symbol",
+                "dynlink binding table already borrowed",
+            )
+        })?;
+        if let Some(existing) = state.descriptors.get(&descriptor.descriptor_id).copied() {
+            let Some(existing_symbol) = state.bindings.get(&existing).copied() else {
+                return Err(HalError::adapter_fault(
+                    self.profile,
+                    capability,
+                    "invoke_symbol",
+                    format!(
+                        "descriptor {} binding {} is missing from dynlink registry",
+                        descriptor.descriptor_id, existing
+                    ),
+                ));
+            };
+            if existing_symbol != descriptor.symbol {
+                return Err(HalError::adapter_fault(
+                    self.profile,
+                    capability,
+                    "invoke_symbol",
+                    format!(
+                        "descriptor {} binding mismatch: existing={} resolved_symbol={} new_symbol={}",
+                        descriptor.descriptor_id, existing, existing_symbol, descriptor.symbol
+                    ),
+                ));
+            }
+            return Ok(existing);
+        }
+        let binding = state.allocate_binding();
+        state.descriptors.insert(descriptor.descriptor_id, binding);
+        state.bindings.insert(binding, descriptor.symbol);
+        Ok(binding)
+    }
+
+    fn invoke_bound_variants(
+        &self,
+        binding: BindingHandle,
+        args: &[Variant],
+    ) -> HalResult<(Variant, Vec<Variant>)> {
+        let capability = CapabilityId::DynamicLinking;
+        if !self.supports(capability) {
+            return Err(self.unsupported(capability, "invoke_bound_variants"));
+        }
+        if !self.policy.allow_dynamic_link {
+            return Err(self.denied(capability, "invoke_bound_variants"));
+        }
+        let symbol = {
+            let state = self.dynlink_state.try_borrow_mut().map_err(|_| {
+                HalError::adapter_fault(
+                    self.profile,
+                    capability,
+                    "invoke_bound_variants",
+                    "dynlink binding table already borrowed",
+                )
+            })?;
+            state.bindings.get(&binding).copied().ok_or_else(|| {
+                HalError::adapter_fault(
+                    self.profile,
+                    capability,
+                    "invoke_bound_variants",
+                    format!(
+                        "binding handle {} is not resolved in dynlink registry",
+                        binding
+                    ),
+                )
+            })?
+        };
+        let arg = args
+            .first()
+            .cloned()
+            .unwrap_or_else(|| Variant::from_i32(0));
+        let arg = self.variant_to_i32(&arg, capability, "invoke_bound_variants", "arg")?;
+        if self.native_mode_enabled()
+            && matches!(self.profile, HalProfileId::Windows | HalProfileId::Linux)
+        {
+            return match symbol.raw() {
+                s if s == external_symbol_token("host", "ping", "hostping") => {
+                    Ok((Variant::from_i32(arg.saturating_add(1)), Vec::new()))
+                }
+                s if s == external_symbol_token("host", "double", "hostdouble") => {
+                    Ok((Variant::from_i32(arg.saturating_mul(2)), Vec::new()))
+                }
+                _ => Err(HalError::adapter_fault(
+                    self.profile,
+                    capability,
+                    "invoke_bound_variants",
+                    format!(
+                        "binding handle {} resolved to unsupported symbol token {} in host-backed lane",
+                        binding, symbol
+                    ),
+                )),
+            };
+        }
+        Ok((
+            Variant::from_i32(symbol.raw().saturating_add(arg)),
+            Vec::new(),
+        ))
+    }
+
+    fn invoke_descriptor_variants(
+        &self,
+        descriptor: &DynLinkDescriptorView<'_>,
+        args: &[Variant],
+    ) -> HalResult<(Variant, Vec<Variant>)> {
+        invoke_descriptor_values(self, descriptor, args, &[])
+    }
+
+    fn invoke_descriptor_arguments(
+        &self,
+        descriptor: &DynLinkDescriptorView<'_>,
+        args: &[RuntimeCallArgument],
+    ) -> HalResult<(Variant, Vec<Variant>)> {
+        let values = args.iter().map(|arg| arg.value.clone()).collect::<Vec<_>>();
+        let aliases = args
+            .iter()
+            .map(|arg| arg.by_ref.map(|slot| slot.id))
+            .collect::<Vec<_>>();
+        invoke_descriptor_values(self, descriptor, &values, &aliases)
+    }
+
+    fn invoke_symbol_variant(&self, symbol: DynLinkSymbol, arg: &Variant) -> HalResult<Variant> {
+        let capability = CapabilityId::DynamicLinking;
+        if !self.supports(capability) {
+            return Err(self.unsupported(capability, "invoke_symbol"));
+        }
+        if !self.policy.allow_dynamic_link {
+            return Err(self.denied(capability, "invoke_symbol"));
+        }
+        let arg = self.variant_to_i32(arg, CapabilityId::DynamicLinking, "invoke_symbol", "arg")?;
+        if self.native_mode_enabled()
+            && matches!(self.profile, HalProfileId::Windows | HalProfileId::Linux)
+        {
+            return match symbol.raw() {
+                s if s == external_symbol_token("host", "ping", "hostping") => {
+                    Ok(Variant::from_i32(arg.saturating_add(1)))
+                }
+                s if s == external_symbol_token("host", "double", "hostdouble") => {
+                    Ok(Variant::from_i32(arg.saturating_mul(2)))
+                }
+                _ => Err(HalError::adapter_fault(
+                    self.profile,
+                    capability,
+                    "invoke_symbol",
+                    format!("unsupported symbol token {} in host-backed lane", symbol),
+                )),
+            };
+        }
+        Ok(Variant::from_i32(symbol.raw().saturating_add(arg)))
+    }
+
+    fn last_dll_error(&self) -> i32 {
+        self.last_dll_error.get()
+    }
+}
+
+// ── m1-native-ffi invocation ──
+
+fn invoke_descriptor_values(
+    host: &StandardHostServices,
+    descriptor: &DynLinkDescriptorView<'_>,
+    args: &[Variant],
+    aliases: &[Option<u32>],
+) -> HalResult<(Variant, Vec<Variant>)> {
+    // Gate BOTH lanes before any dispatch: the m1-native-ffi branch reaches
+    // LoadLibrary + a real native call, and `allow_dynamic_link` is
+    // independent of `deterministic_mode` (a live host may forbid
+    // arbitrary DLLs). The deterministic fallback re-checks inside
+    // `bind_descriptor`; this is the single guard for the native lane.
+    let capability = CapabilityId::DynamicLinking;
+    if !host.supports(capability) {
+        return Err(host.unsupported(capability, "invoke_descriptor_variants"));
+    }
+    if !host.policy.allow_dynamic_link {
+        return Err(host.denied(capability, "invoke_descriptor_variants"));
+    }
+    if descriptor.marshal_lane != "m1-native-ffi" || !host.native_mode_enabled() {
+        let _binding = host.bind_descriptor(descriptor)?;
+        let arg = args
+            .first()
+            .cloned()
+            .unwrap_or_else(|| Variant::from_i32(0));
+        let arg =
+            host.variant_to_i32(&arg, CapabilityId::DynamicLinking, "invoke_symbol", "arg")?;
+        if host.native_mode_enabled()
+            && matches!(host.profile, HalProfileId::Windows | HalProfileId::Linux)
+        {
+            return match descriptor.symbol.raw() {
+                s if s == external_symbol_token("host", "ping", "hostping") => {
+                    Ok((Variant::from_i32(arg.saturating_add(1)), Vec::new()))
+                }
+                s if s == external_symbol_token("host", "double", "hostdouble") => {
+                    Ok((Variant::from_i32(arg.saturating_mul(2)), Vec::new()))
+                }
+                _ => Err(HalError::adapter_fault(
+                    host.profile,
+                    CapabilityId::DynamicLinking,
+                    "invoke_symbol",
+                    format!(
+                        "descriptor {} resolved to unsupported symbol token {} in host-backed lane",
+                        descriptor.descriptor_id, descriptor.symbol
+                    ),
+                )),
+            };
+        }
+        return Ok((
+            Variant::from_i32(descriptor.symbol.raw().saturating_add(arg)),
+            Vec::new(),
+        ));
+    }
+    invoke_m1_native_variants(host, descriptor, args, aliases)
+}
+
+fn invoke_m1_native_variants(
+    host: &StandardHostServices,
+    descriptor: &DynLinkDescriptorView<'_>,
+    args: &[Variant],
+    aliases: &[Option<u32>],
+) -> HalResult<(Variant, Vec<Variant>)> {
+    invoke_m1_native(host, descriptor, args, aliases)
+}
+
+#[cfg(target_os = "windows")]
+fn invoke_m1_native(
+    host: &StandardHostServices,
+    descriptor: &DynLinkDescriptorView<'_>,
+    args: &[Variant],
+    aliases: &[Option<u32>],
+) -> HalResult<(Variant, Vec<Variant>)> {
+    use calcvba_com::windows_ffi_bridge::{
+        FfiArg, FfiReturnType, OwnedLibrary, get_proc_address, get_proc_address_ordinal,
+        invoke_stdcall_with_last_error,
+    };
+
+    let capability = CapabilityId::DynamicLinking;
+    if args.len() != descriptor.param_count {
+        return Err(HalError::adapter_fault(
+            host.profile,
+            capability,
+            "invoke_symbol",
+            "native argument count differs from descriptor",
+        ));
+    }
+    let library = {
+        let mut state = host.dynlink_state.try_borrow_mut().map_err(|_| {
+            HalError::adapter_fault(
+                host.profile,
+                capability,
+                "invoke_symbol",
+                "dynlink binding table already borrowed",
+            )
+        })?;
+        let key = descriptor.library.to_ascii_lowercase();
+        if let Some(library) = state.native_modules.get(&key) {
+            Arc::clone(library)
+        } else {
+            let library = Arc::new(OwnedLibrary::load(descriptor.library).map_err(|msg| {
+                HalError::adapter_fault(host.profile, capability, "invoke_symbol", msg)
+            })?);
+            state.native_modules.insert(key, Arc::clone(&library));
+            library
+        }
+    };
+    let module = library.handle();
+
+    let proc_addr = if descriptor.ordinal_alias {
+        let ordinal_str = descriptor
+            .alias
+            .strip_prefix('#')
+            .unwrap_or(descriptor.alias);
+        let ordinal: u16 = ordinal_str.parse().map_err(|_| {
+            HalError::adapter_fault(
+                host.profile,
+                capability,
+                "invoke_symbol",
+                format!("invalid ordinal `{}`", descriptor.alias),
+            )
+        })?;
+        get_proc_address_ordinal(module, ordinal)
+    } else {
+        get_proc_address(module, descriptor.alias)
+    }
+    .map_err(|_msg| {
+        let entry = if descriptor.ordinal_alias {
+            descriptor
+                .alias
+                .strip_prefix('#')
+                .unwrap_or(descriptor.alias)
+        } else {
+            descriptor.alias
+        };
+        let description = format!(
+            "Can't find DLL entry point {entry} in {}",
+            descriptor.library
+        );
+        HalError::adapter_fault(host.profile, capability, "invoke_symbol", description)
+            .with_host_error_code(if descriptor.ordinal_alias { 452 } else { 453 })
+    })?;
+
+    let mut byref_cells: Vec<NativeByRefCell> = Vec::new();
+    let mut alias_cells = BTreeMap::<u32, (usize, usize, Option<&'static str>)>::new();
+    let mut alias_writebacks = Vec::new();
+    let mut ffi_args: Vec<FfiArg> = Vec::with_capacity(args.len());
+    for (i, value) in args.iter().enumerate() {
+        let param_type = descriptor
+            .param_types
+            .get(i)
+            .map(|s| s.as_str())
+            .unwrap_or("Long");
+        let by_ref = descriptor.param_by_ref.get(i).copied().unwrap_or(false);
+        let alias = aliases.get(i).copied().flatten().filter(|_| by_ref);
+        let kind = native_alias_storage_type(param_type, value);
+        if let Some((cell, original_arg, prior_kind)) =
+            alias.and_then(|id| alias_cells.get(&id).copied())
+        {
+            if kind.is_none() || prior_kind != kind {
+                return Err(HalError::adapter_fault(
+                    host.profile,
+                    capability,
+                    "invoke_symbol",
+                    "repeated native ByRef aliases require compatible supported storage; broader shapes remain under WIN-9",
+                ));
+            }
+            if kind != Some("StringTemporary") {
+                // Reuse the original raw pointer. A new mutable projection of its
+                // boxed storage could invalidate the first pointer's provenance.
+                ffi_args.push(ffi_args[original_arg].clone());
+                alias_writebacks.push((i, cell));
+                continue;
+            }
+            // VBA stages each native String argument in a separate ANSI
+            // temporary, even for one repeated caller variable. Keep the class
+            // check above for mixed declarations, then marshal a fresh cell.
+        }
+        let cell_index = byref_cells.len();
+        ffi_args.push(marshal_variant_to_ffi(
+            host.profile,
+            value,
+            param_type,
+            by_ref,
+            i,
+            &mut byref_cells,
+        )?);
+        if let Some(id) = alias {
+            alias_cells.insert(id, (cell_index, i, kind));
+        }
+    }
+
+    let return_type = match descriptor.return_type.as_deref() {
+        None => FfiReturnType::Void,
+        Some("Long") => FfiReturnType::Long,
+        Some("Integer") => FfiReturnType::Integer,
+        Some("Byte") => FfiReturnType::Byte,
+        Some("Boolean") => FfiReturnType::Boolean,
+        Some("Double" | "Date") => FfiReturnType::Double,
+        Some("Single") => FfiReturnType::Single,
+        Some("LongLong" | "Currency") => FfiReturnType::LongLong,
+        Some("LongPtr") => FfiReturnType::LongPtr,
+        // A `String` return is a BSTR — pointer-sized in the return register;
+        // `unmarshal_ffi_to_variant` decodes and frees it.
+        Some("String") => FfiReturnType::LongPtr,
+        Some(_) => FfiReturnType::Long,
+    };
+
+    let (raw_result, last_error) =
+        invoke_stdcall_with_last_error(proc_addr, &ffi_args, return_type).map_err(|msg| {
+            HalError::adapter_fault(host.profile, capability, "invoke_symbol", msg)
+        })?;
+    // The bridge captured the OS state before its CIF and argument cleanup.
+    host.last_dll_error.set(last_error as i32);
+
+    let result = unmarshal_ffi_to_variant(raw_result, descriptor.return_type.as_deref());
+    let mut writeback_values = args.to_vec();
+    for cell in &byref_cells {
+        writeback_values[cell.index] = cell.storage.read_back_variant().map_err(|msg| {
+            HalError::adapter_fault(host.profile, capability, "invoke_symbol", msg)
+        })?;
+    }
+    for (index, cell) in alias_writebacks {
+        writeback_values[index] = writeback_values[byref_cells[cell].index].clone();
+    }
+    Ok((result, writeback_values))
+}
+
+#[cfg(target_os = "windows")]
+fn native_alias_storage_type(param_type: &str, value: &Variant) -> Option<&'static str> {
+    use calcvba_runtime::VarType;
+
+    Some(match param_type {
+        "Long" => "Long",
+        "Integer" => "Integer",
+        "Byte" => "Byte",
+        "Boolean" => "Boolean",
+        "Double" => "Double",
+        "Single" => "Single",
+        "LongLong" | "LongPtr" => "LongLong",
+        "Currency" => "Currency",
+        "Date" => "Date",
+        "String" if value.vtype() == VarType::String => "StringTemporary",
+        // One boxed VARIANT, including its owned BSTR, must be shared just as
+        // scalar cells are. Reuse the first raw pointer and read/clear the owner
+        // once. Array/object/record/procedure carriers still need their own
+        // ownership and alias evidence before this boundary admits them.
+        "Variant"
+            if !matches!(
+                value.vtype(),
+                VarType::ArrayVariant | VarType::Object | VarType::Record | VarType::ProcRef
+            ) =>
+        {
+            "Variant"
+        }
+        _ => return None,
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn invoke_m1_native(
+    host: &StandardHostServices,
+    _descriptor: &DynLinkDescriptorView<'_>,
+    _args: &[Variant],
+    _aliases: &[Option<u32>],
+) -> HalResult<(Variant, Vec<Variant>)> {
+    Err(HalError::adapter_fault(
+        host.profile,
+        CapabilityId::DynamicLinking,
+        "invoke_symbol",
+        "native DLL invocation is not supported on WebAssembly targets",
+    ))
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_arch = "wasm32")))]
+fn invoke_m1_native(
+    host: &StandardHostServices,
+    descriptor: &DynLinkDescriptorView<'_>,
+    args: &[Variant],
+    _aliases: &[Option<u32>],
+) -> HalResult<(Variant, Vec<Variant>)> {
+    use calcvba_com::windows_ffi_bridge::{
+        FfiArg, FfiReturnType, get_proc_address, invoke_stdcall, load_library,
+    };
+
+    let capability = CapabilityId::DynamicLinking;
+
+    if descriptor.ordinal_alias {
+        return Err(HalError::adapter_fault(
+            host.profile,
+            capability,
+            "invoke_symbol",
+            format!(
+                "ordinal-based symbol resolution (alias `{}`) is not supported on Unix platforms",
+                descriptor.alias
+            ),
+        ));
+    }
+    if descriptor.param_by_ref.iter().copied().any(|flag| flag) {
+        return Err(HalError::adapter_fault(
+            host.profile,
+            capability,
+            "invoke_symbol",
+            "native m1 ByRef scalar marshaling is not yet implemented on Unix hosts",
+        ));
+    }
+
+    let module = load_library(descriptor.library)
+        .map_err(|msg| HalError::adapter_fault(host.profile, capability, "invoke_symbol", msg))?;
+
+    let proc_addr = get_proc_address(module, descriptor.alias)
+        .map_err(|msg| HalError::adapter_fault(host.profile, capability, "invoke_symbol", msg))?;
+
+    let ffi_args: Vec<FfiArg> = args
+        .iter()
+        .enumerate()
+        .map(|(i, value)| {
+            let param_type = descriptor
+                .param_types
+                .get(i)
+                .map(|s| s.as_str())
+                .unwrap_or("Long");
+            marshal_variant_to_ffi_unix(value, param_type)
+        })
+        .collect::<Result<_, _>>()
+        .map_err(|msg| HalError::adapter_fault(host.profile, capability, "invoke_symbol", msg))?;
+
+    let return_type = match descriptor.return_type.as_deref() {
+        None => FfiReturnType::Void,
+        Some("Long") => FfiReturnType::Long,
+        Some("Integer") => FfiReturnType::Integer,
+        Some("Byte") => FfiReturnType::Byte,
+        Some("Boolean") => FfiReturnType::Boolean,
+        Some("Double" | "Date") => FfiReturnType::Double,
+        Some("Single") => FfiReturnType::Single,
+        Some("LongLong" | "Currency") => FfiReturnType::LongLong,
+        Some("LongPtr") => FfiReturnType::LongPtr,
+        // The `String` return contract is BSTR-based (OLE) — Windows-only.
+        Some("String") => {
+            return Err(HalError::adapter_fault(
+                host.profile,
+                capability,
+                "invoke_symbol",
+                "`Declare … As String` return marshaling is not implemented on Unix hosts",
+            ));
+        }
+        Some(_) => FfiReturnType::Long,
+    };
+
+    let raw_result = invoke_stdcall(proc_addr, &ffi_args, return_type)
+        .map_err(|msg| HalError::adapter_fault(host.profile, capability, "invoke_symbol", msg))?;
+    // Capture `errno` (the Unix analogue of the Win32 last-error) for `Err.LastDllError`.
+    host.last_dll_error
+        .set(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
+
+    let result = unmarshal_ffi_to_variant(raw_result, descriptor.return_type.as_deref());
+    Ok((result, Vec::new()))
+}
+
+#[cfg(target_os = "windows")]
+use windows_sys::{
+    Win32::Foundation::{SysFreeString, SysStringByteLen},
+    core::BSTR,
+};
+
+/// Decode system-codepage ANSI bytes into a canonical string Variant (embedded
+/// NULs preserved — the slice length bounds the conversion, as VBA converts a
+/// `Declare` string buffer back at its full length, not to the first NUL).
+#[cfg(target_os = "windows")]
+fn variant_from_ansi_bytes(bytes: &[u8]) -> Variant {
+    use calcvba_runtime::bstr::BStr;
+    let units = calcvba_com::windows_ffi_bridge::utf16_from_ansi(bytes);
+    Variant::from_string(BStr::from_utf16_lossy(&units))
+}
+
+/// Decode an [`ansi_c_string`]-shaped buffer (ANSI payload + our trailing NUL)
+/// back to a string Variant at the payload's full length.
+#[cfg(target_os = "windows")]
+fn variant_from_ansi_payload(buffer: &[u8]) -> Variant {
+    variant_from_ansi_bytes(&buffer[..buffer.len().saturating_sub(1)])
+}
+
+/// Decode a NUL-terminated ANSI string at `ptr` (capped at 1 MiB so a missing
+/// terminator cannot scan unbounded memory).
+#[cfg(target_os = "windows")]
+fn variant_from_ansi_c_str(ptr: *const u8) -> Variant {
+    use calcvba_runtime::bstr::BStr;
+    if ptr.is_null() {
+        return Variant::from_string(BStr::empty());
+    }
+    const CAP: usize = 1 << 20;
+    let mut len = 0usize;
+    // SAFETY: `ptr` was checked non-null above and, under the Declare ByRef-String
+    // contract (the only caller passes the LPSTR the native callee left in the ByRef
+    // cell), points at a NUL-terminated system-codepage ANSI string; each byte read
+    // at `ptr.add(len)` is inside that string because the scan stops at the
+    // terminator, and CAP bounds the walk if the callee broke the contract.
+    while len < CAP && unsafe { *ptr.add(len) } != 0 {
+        len += 1;
+    }
+    // SAFETY: every byte in `[ptr, ptr + len)` was just read by the terminator scan
+    // above (len < CAP), so the range is initialized, readable memory owned by the
+    // native callee's string for the duration of this borrow.
+    variant_from_ansi_bytes(unsafe { std::slice::from_raw_parts(ptr, len) })
+}
+
+/// A post-call read-back cell for one argument: declared-`ByRef` scalars, and
+/// `String` arguments in **either** direction (VBA converts a `Declare` String
+/// argument to an ANSI buffer for the call and converts the buffer back into
+/// the variable afterwards — even when declared `ByVal`).
+#[cfg(target_os = "windows")]
+struct NativeByRefCell {
+    index: usize,
+    storage: NativeByRefStorage,
+}
+
+#[cfg(target_os = "windows")]
+enum NativeByRefStorage {
+    I32(Box<i32>),
+    I16(Box<i16>),
+    U8(Box<u8>),
+    Bool(Box<i16>),
+    F32(Box<f32>),
+    F64(Box<f64>),
+    I64(Box<i64>),
+    Currency(Box<i64>),
+    Date(Box<f64>),
+    /// `ByVal … As String`: the system-codepage ANSI conversion of the argument
+    /// (payload + NUL). The callee receives the buffer pointer (`LPSTR`) and may
+    /// mutate the payload in place; read-back decodes the full payload length
+    /// back to Unicode (VBA's pre-sized-buffer idiom).
+    AnsiBuffer(Vec<u8>),
+    /// `ByRef … As String`: an `LPSTR` cell initialized to the ANSI buffer. The
+    /// callee receives `&cell` (`LPSTR*`) and may overwrite the pointer itself;
+    /// read-back follows whichever pointer the cell finally holds.
+    AnsiStringCell {
+        buffer: Vec<u8>,
+        cell: Box<*mut u8>,
+    },
+    VbaRecordCell {
+        layout: Arc<VbaRecordLayout>,
+        words: Vec<u64>,
+    },
+    VariantCell(Box<windows_sys::Win32::System::Variant::VARIANT>),
+}
+
+#[cfg(target_os = "windows")]
+impl NativeByRefStorage {
+    fn from_variant(value: &Variant, param_type: &str) -> Result<Self, String> {
+        Ok(match param_type {
+            "Long" => Self::I32(Box::new(variant_i32(value))),
+            "Integer" => Self::I16(Box::new(variant_i32(value) as i16)),
+            "Byte" => Self::U8(Box::new(variant_i32(value) as u8)),
+            "Boolean" => Self::Bool(Box::new(if variant_i32(value) != 0 { -1 } else { 0 })),
+            "Double" => {
+                let raw = value.as_f64().unwrap_or_else(|| variant_f64(value));
+                Self::F64(Box::new(raw))
+            }
+            "Single" => {
+                let raw = value.as_f64().unwrap_or_else(|| variant_f64(value)) as f32;
+                Self::F32(Box::new(raw))
+            }
+            "LongLong" | "LongPtr" => {
+                let raw = value.as_i64().unwrap_or_else(|| variant_i64(value));
+                Self::I64(Box::new(raw))
+            }
+            "Currency" => Self::Currency(Box::new(variant_currency_raw(value)?)),
+            "Date" => {
+                let raw = value
+                    .as_f64()
+                    .or_else(|| value.as_i64().map(|value| value as f64))
+                    .unwrap_or_else(|| variant_f64(value));
+                Self::Date(Box::new(raw))
+            }
+            "String" => {
+                let text = value
+                    .as_bstr()
+                    .map(|text| text.as_str())
+                    .unwrap_or_default();
+                let mut buffer = calcvba_com::windows_ffi_bridge::ansi_c_string(&text);
+                let cell = Box::new(buffer.as_mut_ptr());
+                Self::AnsiStringCell { buffer, cell }
+            }
+            "Variant" => variant_cell_storage_from_variant(value)?,
+            "Any" => any_byref_storage_from_variant(value)?,
+            other => {
+                return Err(format!(
+                    "native ByRef marshaling for declare parameter type `{other}` is not yet supported"
+                ));
+            }
+        })
+    }
+
+    fn as_ffi_arg(&mut self) -> calcvba_com::windows_ffi_bridge::FfiArg {
+        use calcvba_com::windows_ffi_bridge::FfiArg;
+        use std::ffi::c_void;
+
+        match self {
+            Self::I32(value) => FfiArg::Pointer((&mut **value as *mut i32).cast::<c_void>()),
+            Self::I16(value) => FfiArg::Pointer((&mut **value as *mut i16).cast::<c_void>()),
+            Self::U8(value) => FfiArg::Pointer((&mut **value as *mut u8).cast::<c_void>()),
+            Self::Bool(value) => FfiArg::Pointer((&mut **value as *mut i16).cast::<c_void>()),
+            Self::F32(value) => FfiArg::Pointer((&mut **value as *mut f32).cast::<c_void>()),
+            Self::F64(value) => FfiArg::Pointer((&mut **value as *mut f64).cast::<c_void>()),
+            Self::I64(value) => FfiArg::Pointer((&mut **value as *mut i64).cast::<c_void>()),
+            Self::Currency(value) => FfiArg::Pointer((&mut **value as *mut i64).cast::<c_void>()),
+            Self::Date(value) => FfiArg::Pointer((&mut **value as *mut f64).cast::<c_void>()),
+            Self::AnsiBuffer(buffer) => FfiArg::Pointer(buffer.as_mut_ptr().cast::<c_void>()),
+            Self::AnsiStringCell { cell, .. } => {
+                FfiArg::Pointer((&mut **cell as *mut *mut u8).cast::<c_void>())
+            }
+            Self::VbaRecordCell { words, .. } => {
+                FfiArg::Pointer(words.as_mut_ptr().cast::<c_void>())
+            }
+            Self::VariantCell(cell) => FfiArg::Pointer(
+                (&mut **cell as *mut windows_sys::Win32::System::Variant::VARIANT).cast::<c_void>(),
+            ),
+        }
+    }
+
+    fn read_back_variant(&self) -> Result<Variant, String> {
+        Ok(match self {
+            Self::I32(value) => Variant::from_i32(**value),
+            Self::I16(value) => Variant::from_i16(**value),
+            Self::U8(value) => Variant::from_u8(**value),
+            Self::Bool(value) => Variant::from_bool(**value != 0),
+            Self::F32(value) => Variant::from_f32(**value),
+            Self::F64(value) => Variant::from_f64(**value),
+            Self::I64(value) => Variant::from_i64(**value),
+            Self::Currency(value) => Variant::from_currency_scaled_i64(**value),
+            Self::Date(value) => Variant::from_date_f64(**value),
+            Self::AnsiBuffer(buffer) => variant_from_ansi_payload(buffer),
+            Self::AnsiStringCell { buffer, cell } => {
+                if std::ptr::eq(*(*cell) as *const u8, buffer.as_ptr()) {
+                    variant_from_ansi_payload(buffer)
+                } else {
+                    // The callee replaced the pointer; read the replacement as a
+                    // NUL-terminated ANSI string. We deliberately do NOT free the
+                    // replacement (VBA frees its temp here, which crashes real VBA
+                    // whenever the callee stored a static/CRT-owned pointer — guest
+                    // code must never abort this host, so we accept the leak in the
+                    // callee-allocated case instead).
+                    variant_from_ansi_c_str((*(*cell)).cast_const())
+                }
+            }
+            // SAFETY: `words` is this cell's native-ABI image of a record laid out by
+            // `layout`: it was sized and staged by `vba_record_storage_from_variant`
+            // (which validated plain-native eligibility) and only mutated in place by
+            // the native callee, so it remains a live image for `clone_from_native_words`.
+            Self::VbaRecordCell { layout, words } => Variant::from_vba_record(unsafe {
+                VbaRecord::clone_from_native_words(words, layout.clone())?
+            }),
+            // SAFETY: `cell` is this cell's live, initialized `Box<VARIANT>`, staged by
+            // `variant_cell_storage_from_variant` and possibly written by the native
+            // callee; `variant_to_variant_value` reads that live VARIANT back.
+            Self::VariantCell(cell) => unsafe {
+                calcvba_com::variant_to_variant_value(
+                    cell,
+                    &mut |_unknown| {
+                        Err(
+                            "native Declare ByRef Variant read-back cannot bind VT_UNKNOWN values"
+                                .to_string(),
+                        )
+                    },
+                    &mut |_dispatch| {},
+                    &mut |_dispatch, _prog_id_hint, _op| {
+                        Err(
+                            "native Declare ByRef Variant read-back cannot bind VT_DISPATCH values"
+                                .to_string(),
+                        )
+                    },
+                    "",
+                    "native_byref_variant",
+                )?
+            },
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for NativeByRefStorage {
+    fn drop(&mut self) {
+        if let Self::VariantCell(cell) = self {
+            // SAFETY: `cell` is this storage's live, initialized `Box<VARIANT>`;
+            // `VariantClear` releases its owned contents exactly once at drop.
+            unsafe {
+                let _ = windows_sys::Win32::System::Variant::VariantClear(&mut **cell);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn any_byref_storage_from_variant(value: &Variant) -> Result<NativeByRefStorage, String> {
+    match value.vtype() {
+        calcvba_runtime::VarType::Long => Ok(NativeByRefStorage::I32(Box::new(variant_i32(value)))),
+        calcvba_runtime::VarType::Integer => {
+            Ok(NativeByRefStorage::I16(Box::new(variant_i32(value) as i16)))
+        }
+        calcvba_runtime::VarType::Byte => {
+            Ok(NativeByRefStorage::U8(Box::new(variant_i32(value) as u8)))
+        }
+        calcvba_runtime::VarType::Boolean => Ok(NativeByRefStorage::Bool(Box::new(
+            if variant_i32(value) != 0 { -1 } else { 0 },
+        ))),
+        calcvba_runtime::VarType::Single => Ok(NativeByRefStorage::F32(Box::new(
+            value.as_f64().unwrap_or_else(|| variant_f64(value)) as f32,
+        ))),
+        calcvba_runtime::VarType::Double => Ok(NativeByRefStorage::F64(Box::new(
+            value.as_f64().unwrap_or_else(|| variant_f64(value)),
+        ))),
+        calcvba_runtime::VarType::LongLong => Ok(NativeByRefStorage::I64(Box::new(
+            value.as_i64().unwrap_or_else(|| variant_i64(value)),
+        ))),
+        calcvba_runtime::VarType::Currency => Ok(NativeByRefStorage::Currency(Box::new(
+            value
+                .as_currency_scaled_i64()
+                .or_else(|| value.as_i64())
+                .unwrap_or_else(|| {
+                    i64::from(variant_i32(value)) * calcvba_runtime::CurrencyValue::SCALE
+                }),
+        ))),
+        calcvba_runtime::VarType::Date => Ok(NativeByRefStorage::Date(Box::new(
+            value
+                .as_f64()
+                .or_else(|| value.as_i64().map(|value| value as f64))
+                .unwrap_or_else(|| variant_f64(value)),
+        ))),
+        calcvba_runtime::VarType::Record => vba_record_storage_from_variant(value),
+        other => Err(format!(
+            "native ByRef As Any marshaling for value type `{other:?}` is not yet supported"
+        )),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn variant_cell_storage_from_variant(value: &Variant) -> Result<NativeByRefStorage, String> {
+    let mut cell: Box<windows_sys::Win32::System::Variant::VARIANT> =
+        // SAFETY: an all-zero VARIANT is a valid VT_EMPTY value (VT_EMPTY == 0).
+        Box::new(unsafe { std::mem::zeroed() });
+    let com_value = calcvba_com::ComValue::from_variant(value)?;
+    // SAFETY: `cell` is the freshly zeroed (VT_EMPTY), live `Box<VARIANT>` above;
+    // `set_variant_from_com_value` populates it from `com_value`, and the object
+    // callback declines (returns Err) so no VT_UNKNOWN is stored.
+    unsafe {
+        calcvba_com::set_variant_from_com_value(
+            &mut *cell,
+            &com_value,
+            &mut |_object| {
+                Err("native Declare ByRef Variant cannot marshal Object values".to_string())
+            },
+            &mut |_dispatch| {},
+        )?;
+    }
+    Ok(NativeByRefStorage::VariantCell(cell))
+}
+
+#[cfg(target_os = "windows")]
+fn vba_record_storage_from_variant(value: &Variant) -> Result<NativeByRefStorage, String> {
+    let record = value.as_vba_record().ok_or_else(|| {
+        "native ByRef As Any record marshaling requires a native VBA record value".to_string()
+    })?;
+    let layout = record.layout().clone();
+    layout
+        .validate_byref_as_any_native_abi()
+        .map_err(|reason| {
+            format!("native ByRef As Any record marshaling is not supported: {reason}")
+        })?;
+    Ok(NativeByRefStorage::VbaRecordCell {
+        words: record.clone_into_native_words()?,
+        layout,
+    })
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_arch = "wasm32")))]
+fn marshal_variant_to_ffi_unix(
+    value: &Variant,
+    param_type: &str,
+) -> Result<calcvba_com::windows_ffi_bridge::FfiArg, String> {
+    use calcvba_com::windows_ffi_bridge::FfiArg;
+
+    Ok(match param_type {
+        "Long" => FfiArg::Long(variant_i32(value)),
+        "Integer" => FfiArg::Integer(variant_i32(value) as i16),
+        "Byte" => FfiArg::Byte(variant_i32(value) as u8),
+        "Boolean" => FfiArg::Boolean(if variant_i32(value) != 0 { -1 } else { 0 }),
+        "Double" => {
+            let f = value.as_f64().unwrap_or_else(|| variant_f64(value));
+            FfiArg::Double(f)
+        }
+        "Date" => FfiArg::Double(variant_f64(value)),
+        "Currency" => FfiArg::LongLong(variant_currency_raw(value)?),
+        "Single" => {
+            let f = value.as_f64().unwrap_or_else(|| variant_f64(value)) as f32;
+            FfiArg::Single(f)
+        }
+        "LongLong" | "LongPtr" => {
+            let v = value.as_i64().unwrap_or_else(|| variant_i64(value));
+            if let Some(pointer) = calcvba_runtime::pointer_helpers::lookup_pointer(v) {
+                FfiArg::Pointer(pointer)
+            } else {
+                FfiArg::LongLong(v)
+            }
+        }
+        "String" => {
+            let text = value
+                .as_bstr()
+                .map(|text| text.as_str())
+                .unwrap_or_default();
+            // On Unix, we still marshal as wide string for API compatibility.
+            // Individual native functions that expect UTF-8 would need a separate
+            // marshaling path in the future.
+            let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+            FfiArg::String(wide)
+        }
+        _ => FfiArg::Long(variant_i32(value)),
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn marshal_variant_to_ffi(
+    profile: HalProfileId,
+    value: &Variant,
+    param_type: &str,
+    by_ref: bool,
+    arg_index: usize,
+    byref_cells: &mut Vec<NativeByRefCell>,
+) -> Result<calcvba_com::windows_ffi_bridge::FfiArg, HalError> {
+    use calcvba_com::windows_ffi_bridge::FfiArg;
+
+    if by_ref {
+        let storage = NativeByRefStorage::from_variant(value, param_type).map_err(|msg| {
+            HalError::adapter_fault(profile, CapabilityId::DynamicLinking, "invoke_symbol", msg)
+        })?;
+        let cell = byref_cells.len();
+        byref_cells.push(NativeByRefCell {
+            index: arg_index,
+            storage,
+        });
+        return Ok(byref_cells[cell].storage.as_ffi_arg());
+    }
+
+    match param_type {
+        "Long" => Ok(FfiArg::Long(variant_i32(value))),
+        "Integer" => Ok(FfiArg::Integer(variant_i32(value) as i16)),
+        "Byte" => Ok(FfiArg::Byte(variant_i32(value) as u8)),
+        "Boolean" => Ok(FfiArg::Boolean(if variant_i32(value) != 0 {
+            -1
+        } else {
+            0
+        })),
+        "Double" => Ok(FfiArg::Double(
+            value.as_f64().unwrap_or_else(|| variant_f64(value)),
+        )),
+        "Date" => Ok(FfiArg::Double(variant_f64(value))),
+        "Currency" => Ok(FfiArg::LongLong(variant_currency_raw(value).map_err(
+            |msg| {
+                HalError::adapter_fault(profile, CapabilityId::DynamicLinking, "invoke_symbol", msg)
+            },
+        )?)),
+        "Single" => Ok(FfiArg::Single(
+            value.as_f64().unwrap_or_else(|| variant_f64(value)) as f32,
+        )),
+        "LongLong" | "LongPtr" => {
+            let v = value.as_i64().unwrap_or_else(|| variant_i64(value));
+            if let Some(pointer) = calcvba_runtime::pointer_helpers::lookup_pointer(v) {
+                Ok(FfiArg::Pointer(pointer))
+            } else {
+                Ok(FfiArg::LongLong(v))
+            }
+        }
+        "String" => {
+            // VBA marshals every `Declare` String argument as system-codepage
+            // ANSI — never wide, regardless of the export's A/W name — and
+            // converts the (possibly callee-mutated) buffer back into the
+            // argument after the call even for `ByVal`. Keep the buffer in a
+            // cell so the post-call read-back can decode it.
+            let text = value
+                .as_bstr()
+                .map(|text| text.as_str())
+                .unwrap_or_default();
+            let storage = NativeByRefStorage::AnsiBuffer(
+                calcvba_com::windows_ffi_bridge::ansi_c_string(&text),
+            );
+            let cell = byref_cells.len();
+            byref_cells.push(NativeByRefCell {
+                index: arg_index,
+                storage,
+            });
+            Ok(byref_cells[cell].storage.as_ffi_arg())
+        }
+        _ => Ok(FfiArg::Long(variant_i32(value))),
+    }
+}
+
+fn unmarshal_ffi_to_variant(raw: i64, return_type: Option<&str>) -> Variant {
+    match return_type {
+        None => Variant::empty(),
+        Some("Long") => Variant::from_i32(raw as i32),
+        Some("Integer") => Variant::from_i16(raw as i16),
+        Some("Byte") => Variant::from_u8(raw as u8),
+        Some("Boolean") => Variant::from_bool(raw != 0),
+        Some("Double") => Variant::from_f64(f64::from_bits(raw as u64)),
+        Some("Date") => Variant::from_date_f64(f64::from_bits(raw as u64)),
+        Some("Currency") => Variant::from_currency_scaled_i64(raw),
+        Some("Single") => Variant::from_f32(f32::from_bits(raw as u32)),
+        Some("LongLong") | Some("LongPtr") => Variant::from_i64(raw),
+        Some("String") => {
+            // The VB contract for `Declare Function … As String`: the DLL returns
+            // a BSTR holding ANSI bytes (`SysAllocStringByteLen`); the caller
+            // decodes it to Unicode and owns — so frees — it. (A DLL returning a
+            // plain `char*` is invalid under this contract in real VBA too.)
+            #[cfg(target_os = "windows")]
+            {
+                let bstr = raw as usize as BSTR;
+                if bstr.is_null() {
+                    Variant::from_string(calcvba_runtime::bstr::BStr::empty())
+                } else {
+                    // SAFETY: `bstr` was checked non-null above and, under the
+                    // `Declare … As String` return contract, is a real BSTR the DLL
+                    // allocated via SysAllocStringByteLen, so the 4-byte byte-length
+                    // prefix SysStringByteLen reads at ptr-4 exists.
+                    let byte_len = unsafe { SysStringByteLen(bstr) } as usize;
+                    // SAFETY: a BSTR's allocation holds exactly `byte_len` payload
+                    // bytes after the length prefix (embedded NULs legal — the prefix,
+                    // not a terminator, bounds the data), and the BSTR stays live
+                    // until the SysFreeString below, outliving this borrow.
+                    let bytes = unsafe { std::slice::from_raw_parts(bstr.cast::<u8>(), byte_len) };
+                    let value = variant_from_ansi_bytes(bytes);
+                    // SAFETY: ownership of the returned BSTR transferred to us (the
+                    // caller frees under the As-String return contract); `bytes` was
+                    // fully copied into `value` above, so this is the single release
+                    // of a still-live allocation with no readers left.
+                    unsafe { SysFreeString(bstr) };
+                    value
+                }
+            }
+            // Unreachable on Unix (the invoke path rejects String returns first);
+            // kept total so this function stays platform-independent.
+            #[cfg(not(target_os = "windows"))]
+            {
+                let _ = raw;
+                Variant::empty()
+            }
+        }
+        Some(_) => Variant::from_i32(raw as i32),
+    }
+}

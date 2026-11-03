@@ -69,7 +69,7 @@ fn error(number: i32) -> Error {
     } else {
         Error::Runtime {
             number,
-            description: oxvba_runtime::default_error_message(number).into(),
+            description: calcvba_runtime::default_error_message(number).into(),
             vba_source: "NativeCallback".into(),
         }
     }

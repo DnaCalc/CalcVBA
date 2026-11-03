@@ -9,7 +9,7 @@ host, not to an engine-built substitute for Excel.
 
 `calcvba-host-api` defines projects, modules, ordered library references,
 procedure signatures, values, bound handles, host objects and runtime providers.
-`oxvba-embed::provider::Provider` compiles and loads them on VM3 or the JIT.
+`calcvba-host::provider::Provider` compiles and loads them on VM3 or the JIT.
 Loading initialises project state without calling Main. Calls retain globals,
 Static variables, Err and object identity. Separate sessions have separate state.
 Reset clears project state; reload prepares replacement code before publishing

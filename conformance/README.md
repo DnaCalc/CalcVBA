@@ -1,7 +1,7 @@
 # VBA test inputs
 
 Source fixtures here feed parser tests, VM3/JIT comparisons, focused runtime
-regressions and benchmarks. `crates/oxvba-differential` compares source results
+regressions and benchmarks. `crates/calcvba-differential` compares source results
 and full Err state; its golden snapshot retains expected VM3 observations.
 Captured Excel return values and their VBA probes live under `oracle/`.
 

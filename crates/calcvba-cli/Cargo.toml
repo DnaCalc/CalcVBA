@@ -1,0 +1,16 @@
+[package]
+name = "calcvba-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+calcvba-build.workspace = true
+calcvba-diagnostics.workspace = true
+calcvba-engine.workspace = true
+calcvba-project.workspace = true
+calcvba-runtime.workspace = true
+[lints]
+workspace = true

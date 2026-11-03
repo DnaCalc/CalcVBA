@@ -1,0 +1,33 @@
+[package]
+name = "calcvba-com"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+fixture-typelibs = []
+
+[dependencies]
+calcvba-host-api.workspace = true
+calcvba-diagnostics.workspace = true
+calcvba-runtime.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+libffi = "5.1.0"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Registry",
+    "Win32_System_Variant",
+] }
+
+[target.'cfg(all(not(target_os = "windows"), not(target_arch = "wasm32")))'.dependencies]
+libc.workspace = true
+[lints]
+workspace = true

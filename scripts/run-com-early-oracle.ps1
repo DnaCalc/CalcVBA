@@ -135,8 +135,8 @@ End Function
             scenario = "As New Scripting.Dictionary plus Add / Exists / Count"
             vba_status = $excelProbe.status
             vba_observed = $excelProbe.observed
-            oxvba_status = $oxStatus
-            oxvba_observed = $oxObserved
+            calcvba_status = $oxStatus
+            calcvba_observed = $oxObserved
             match = if ($match) { "true" } else { "false" }
             notes = "$oxNotes; OxVba report: $($oxLane.report); OxVba log: $($oxLane.log)"
         }
@@ -168,7 +168,7 @@ End Function
     $md += "|---|---|---|---|---|---|"
     foreach ($row in $rows) {
         $vbaCell = "$($row.vba_status): $($row.vba_observed)"
-        $oxCell = "$($row.oxvba_status): $($row.oxvba_observed)"
+        $oxCell = "$($row.calcvba_status): $($row.calcvba_observed)"
         $md += "| $($row.topic_id) | $($row.case_id) | $vbaCell | $oxCell | $($row.match) | $($row.notes) |"
     }
     Set-Content -Path $summaryPath -Value ($md -join [Environment]::NewLine)

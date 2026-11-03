@@ -1,0 +1,39 @@
+//! vm3 should bind headless `Stop` as a no-op debugger suspend point.
+
+use calcvba_differential::{Canon, Executor, canon, run};
+use calcvba_runtime::Variant;
+
+fn value(body: &str) -> Canon {
+    let source = format!("Public r As Variant\nSub Main()\n{body}End Sub\n");
+    let outcome = run(Executor::Vm3, &source);
+    assert!(
+        outcome.unsupported.is_none(),
+        "unsupported: {:?}",
+        outcome.unsupported
+    );
+    let snap = outcome.result.unwrap_or_else(|e| panic!("run failed: {e}"));
+    snap.first().cloned().expect("snapshot slot")
+}
+
+#[test]
+fn stop_statement_matches_no_stop_control_exactly() {
+    let control = value("    r = 1\n    r = r + 1\n");
+    assert_eq!(
+        control,
+        canon(&Variant::from_i16(2)),
+        "the control must complete both assignments with VBA's Integer carrier"
+    );
+    assert_eq!(
+        value("    r = 1\n    Stop\n    r = r + 1\n"),
+        control,
+        "headless Stop must not change the exact result value or carrier"
+    );
+}
+
+#[test]
+fn stop_statement_does_not_set_err_number() {
+    assert_eq!(
+        value("    On Error Resume Next\n    Stop\n    r = Err.Number\n"),
+        canon(&Variant::from_i32(0))
+    );
+}

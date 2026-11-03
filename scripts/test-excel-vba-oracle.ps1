@@ -474,7 +474,7 @@ function Test-JobContainsPreLedgerChild {
         [Parameter(Mandatory = $true)][string]$Label,
         [ValidateSet("Terminate", "Dispose")][string]$CloseMode = "Terminate"
     )
-    $directory = Join-Path ([IO.Path]::GetTempPath()) "oxvba-oracle-job-$Label-$([Guid]::NewGuid().ToString('N'))"
+    $directory = Join-Path ([IO.Path]::GetTempPath()) "calcvba-oracle-job-$Label-$([Guid]::NewGuid().ToString('N'))"
     New-Item -ItemType Directory -Force -Path $directory | Out-Null
     $readyFile = Join-Path $directory "ready"
     $childPidFile = Join-Path $directory "child.pid"
@@ -517,7 +517,7 @@ Start-Sleep -Seconds 120
 }
 
 function Test-JobKillsOnAbruptSupervisorDeath {
-    $directory = Join-Path ([IO.Path]::GetTempPath()) "oxvba-oracle-job-abrupt-$([Guid]::NewGuid().ToString('N'))"
+    $directory = Join-Path ([IO.Path]::GetTempPath()) "calcvba-oracle-job-abrupt-$([Guid]::NewGuid().ToString('N'))"
     [void][IO.Directory]::CreateDirectory($directory)
     $childPidFile = Join-Path $directory "child.pid"
     $jobScript = (Join-Path $PSScriptRoot "excel-vba-oracle-job.ps1").Replace("'", "''")
@@ -589,7 +589,7 @@ foreach ($productionFile in @("excel-vba-oracle-contract.ps1", "excel-vba-oracle
     Assert-True ($productionSource -notmatch '\.Kill\(') "$productionFile must not use Process.Kill outside harmless offline test fixtures"
 }
 
-$bootstrapDirectory = Join-Path ([IO.Path]::GetTempPath()) "oxvba-oracle-bootstrap-$([Guid]::NewGuid().ToString('N'))"
+$bootstrapDirectory = Join-Path ([IO.Path]::GetTempPath()) "calcvba-oracle-bootstrap-$([Guid]::NewGuid().ToString('N'))"
 [void][IO.Directory]::CreateDirectory($bootstrapDirectory)
 try {
     $bootstrapA = New-ExcelOracleBootstrapWorkbook -Path (Join-Path $bootstrapDirectory "a.xlsx")
@@ -1084,7 +1084,7 @@ foreach ($name in @('../events.xlsm','C:\events.xlsm','events.xlsx','events.xlsm
 $bad=Copy-TestJsonObject -Value $savedDescriptor
 $bad.saved_workbook_name='other.xlsm'
 Assert-True (-not (Test-ExcelOracleSelectedCaseDescriptor $bad)) 'changed saved compile target rejects a stale seal'
-$descriptorTransportDirectory = Join-Path $env:TEMP ("oxvba-oracle-descriptor-transport-{0}" -f [Guid]::NewGuid().ToString("N"))
+$descriptorTransportDirectory = Join-Path $env:TEMP ("calcvba-oracle-descriptor-transport-{0}" -f [Guid]::NewGuid().ToString("N"))
 [void][IO.Directory]::CreateDirectory($descriptorTransportDirectory)
 try {
     $transportDescriptors = @(Get-TestSelectedCaseDescriptors -CaseIds $completeIds)
@@ -1282,7 +1282,7 @@ Assert-True (@((ConvertFrom-ExcelOracleGuardianControl -Json $controlJson.Replac
 Assert-True (@((ConvertFrom-ExcelOracleGuardianControl -Json $controlJson.Replace('"allow_dismiss":true', '"allow_dismiss":1') -RunId "run-a").errors).Count -gt 0) "numeric Boolean guardian control must fail closed"
 Assert-True (@((ConvertFrom-ExcelOracleGuardianControl -Json $controlJson.Replace('"phase":"compile"', '"phase":"run"').Replace('"run_id":"run-a"', '"run_id":"other"') -RunId "run-a").errors).Count -gt 0) "foreign run control must fail closed"
 
-$claimRoot = Join-Path ([IO.Path]::GetTempPath()) "oxvba-oracle-claims-$([Guid]::NewGuid().ToString('N'))"
+$claimRoot = Join-Path ([IO.Path]::GetTempPath()) "calcvba-oracle-claims-$([Guid]::NewGuid().ToString('N'))"
 $claimOne = $null
 $claimOther = $null
 try {
@@ -1299,7 +1299,7 @@ finally {
     Remove-Item -LiteralPath $claimRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-$claimCleanupRoot = Join-Path ([IO.Path]::GetTempPath()) "oxvba-oracle-claim-cleanup-$([Guid]::NewGuid().ToString('N'))"
+$claimCleanupRoot = Join-Path ([IO.Path]::GetTempPath()) "calcvba-oracle-claim-cleanup-$([Guid]::NewGuid().ToString('N'))"
 $deletionFailureClaim = $null
 try {
     $deletionFailureClaim = Enter-ExcelOracleRunClaim -OutputBase $claimCleanupRoot -RunId "delete-failure"
@@ -1348,7 +1348,7 @@ finally {
     Remove-Item -LiteralPath $claimCleanupRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-$failureRoot = Join-Path ([IO.Path]::GetTempPath()) "oxvba-oracle-claim-failure-$([Guid]::NewGuid().ToString('N'))"
+$failureRoot = Join-Path ([IO.Path]::GetTempPath()) "calcvba-oracle-claim-failure-$([Guid]::NewGuid().ToString('N'))"
 $failedClaim = $null
 $failedClaimPath = $null
 $failedOutputDirectory = $null
@@ -1681,7 +1681,7 @@ $publishControl = $workerAst.Find({ param($node)
 }, $true)
 Assert-True ($null -ne $publishControl) "production control publisher must be present"
 . ([scriptblock]::Create($publishControl.Extent.Text))
-$controlTestRoot = Join-Path ([IO.Path]::GetTempPath()) "oxvba-oracle-control-$([Guid]::NewGuid().ToString('N'))"
+$controlTestRoot = Join-Path ([IO.Path]::GetTempPath()) "calcvba-oracle-control-$([Guid]::NewGuid().ToString('N'))"
 [void][IO.Directory]::CreateDirectory($controlTestRoot)
 $controlTestPath = Join-Path $controlTestRoot "control.json"
 $RunId = "atomic-control-test"

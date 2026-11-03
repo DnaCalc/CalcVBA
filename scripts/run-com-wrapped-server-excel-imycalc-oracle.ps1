@@ -115,7 +115,7 @@ End Function
     $dllPath = Join-Path $buildRoot "MyCalcServer.dll"
     $tlbPath = Join-Path $buildRoot "MyCalcServer.tlb"
     $buildLog = Join-Path $runDir "wrapped_server_build.log.txt"
-    $buildCmd = @("run", "--quiet", "-p", "oxvba-cli", "--", "build", $basprojPath, "-o", $dllPath)
+    $buildCmd = @("run", "--quiet", "-p", "calcvba-cli", "--", "build", $basprojPath, "-o", $dllPath)
     $buildCmdText = "cargo " + ($buildCmd -join " ")
     $null = & cargo @buildCmd 2>&1 | Tee-Object -FilePath $buildLog
     $buildExitCode = $LASTEXITCODE

@@ -1,15 +1,15 @@
 //! Thin adapter over neutral code/session ownership.
 use super::*;
 pub struct OwnedSession {
-    inner: oxvba_embed::OwnedSession,
-    functions: Vec<(Function, oxvba_embed::Procedure)>,
+    inner: calcvba_host::OwnedSession,
+    functions: Vec<(Function, calcvba_host::Procedure)>,
     spreadsheet: Option<Arc<spreadsheet::SpreadsheetHost>>,
-    bound: Vec<oxvba_embed::BoundProcedure>,
+    bound: Vec<calcvba_host::BoundProcedure>,
 }
 impl OwnedSession {
     fn wrap(
-        inner: oxvba_embed::OwnedSession,
-        functions: Vec<(Function, oxvba_embed::Procedure)>,
+        inner: calcvba_host::OwnedSession,
+        functions: Vec<(Function, calcvba_host::Procedure)>,
         spreadsheet: Option<Arc<spreadsheet::SpreadsheetHost>>,
     ) -> Result<Self, Error> {
         let bound = bind_functions(&functions, |p| inner.bind(&p.module, &p.name, p.kind))?;
@@ -69,8 +69,8 @@ impl OwnedSession {
     }
 }
 type SplitModule = (
-    oxvba_embed::Module,
-    Vec<(Function, oxvba_embed::Procedure)>,
+    calcvba_host::Module,
+    Vec<(Function, calcvba_host::Procedure)>,
     Option<Arc<spreadsheet::SpreadsheetHost>>,
 );
 fn split_module(module: Module) -> SplitModule {
@@ -89,10 +89,10 @@ fn split_module(module: Module) -> SplitModule {
     };
     (engine, module.functions, spreadsheet)
 }
-pub struct CodeCache(oxvba_embed::CodeCache);
+pub struct CodeCache(calcvba_host::CodeCache);
 impl CodeCache {
     pub fn new(max_entries: usize, max_description_bytes: usize) -> Self {
-        Self(oxvba_embed::CodeCache::new(
+        Self(calcvba_host::CodeCache::new(
             max_entries,
             max_description_bytes,
         ))
@@ -115,7 +115,7 @@ impl CodeCache {
     pub fn prepare_with_configuration(
         &mut self,
         module: Module,
-        configuration: &oxvba_jit::JitConfiguration,
+        configuration: &calcvba_jit::JitConfiguration,
     ) -> Result<OwnedSession, Error> {
         let (module, functions, spreadsheet) = split_module(module);
         OwnedSession::wrap(

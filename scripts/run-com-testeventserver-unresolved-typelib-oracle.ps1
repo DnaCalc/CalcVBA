@@ -55,8 +55,8 @@ try {
                 scenario        = $Scenario
                 vba_status      = $VbaStatus
                 vba_observed    = $VbaObserved
-                oxvba_status    = $OxVbaStatus
-                oxvba_observed  = $OxVbaObserved
+                calcvba_status    = $OxVbaStatus
+                calcvba_observed  = $OxVbaObserved
                 match           = $Match
                 notes           = $Notes
             }) | Out-Null
@@ -133,7 +133,7 @@ try {
             expected_classification = "unresolved-libid"
             expected_ox_code = "PMR-E-TYPELIB-LIBID-UNRESOLVED"
             command = @(
-                "test", "-p", "oxvba-host", "--test", "com_early_project_end_to_end",
+                "test", "-p", "calcvba-engine", "--test", "com_early_project_end_to_end",
                 "early_bound_loaded_basproj_reports_unresolved_typelib_libid_identity",
                 "--", "--ignored", "--exact", "--test-threads=1", "--nocapture"
             )
@@ -145,7 +145,7 @@ try {
             expected_classification = "unresolved-importlib"
             expected_ox_code = "PMR-E-TYPELIB-IMPORTLIB-UNRESOLVED"
             command = @(
-                "test", "-p", "oxvba-host", "--test", "com_early_project_end_to_end",
+                "test", "-p", "calcvba-engine", "--test", "com_early_project_end_to_end",
                 "early_bound_loaded_basproj_reports_unresolved_typelib_importlib_identity",
                 "--", "--ignored", "--exact", "--test-threads=1", "--nocapture"
             )
@@ -203,7 +203,7 @@ try {
         "|---|---|---|---|---|---|"
     )
     foreach ($row in $rows) {
-        $summary += "| $($row.topic_id) | $($row.case_id) | $($row.vba_status): $($row.vba_observed) | $($row.oxvba_status): $($row.oxvba_observed) | $($row.match) | $($row.notes) |"
+        $summary += "| $($row.topic_id) | $($row.case_id) | $($row.vba_status): $($row.vba_observed) | $($row.calcvba_status): $($row.calcvba_observed) | $($row.match) | $($row.notes) |"
     }
     Set-Content -Path $summaryPath -Value ($summary -join "`n")
 

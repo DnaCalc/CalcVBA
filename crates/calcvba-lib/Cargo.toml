@@ -1,0 +1,16 @@
+[package]
+name = "calcvba-lib"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Native bodies of the VBA base library (built-ins) for the clean bundle."
+
+[dependencies]
+calcvba-bundle.workspace = true
+calcvba-runtime.workspace = true
+calcvba-hal.workspace = true
+calcvba-com.workspace = true
+[lints]
+workspace = true

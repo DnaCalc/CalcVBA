@@ -27,7 +27,7 @@ ownership/state/error APIs remain unfinished and are refused.
 ## 1. Declaration
 
 - `<NativeExport>` in the `.basproj` is the single declaration. Its selection fields are already parsed by
-  `oxvba-project` (model.rs) and specified in `docs/spec/BASPROJ_SPEC_V1.md` §2.5.1.
+  `calcvba-project` (model.rs) and specified in `docs/spec/BASPROJ_SPEC_V1.md` §2.5.1.
 - Its fields are export name, `Module`, `Procedure`, `CallingConvention` and `Ordinal`.
 - Add a `StringEncoding` field per export or per parameter: `Bstr` (default), `Utf16` or `Ansi`.
 - Validation:
@@ -96,7 +96,7 @@ Excel VBA `Declare` of the export round-trips exactly.
 1. **One lowering, two module backends.**
    - Shared lowering and import declaration are generic over `cranelift_module::Module`.
    - The JIT still owns `JITModule` and retains its existing entry paths.
-   - `PeModule` (in `oxvba-aot`) lays functions and data out at chosen section
+   - `PeModule` (in `calcvba-aot`) lays functions and data out at chosen section
      offsets and resolves relocations itself. Its x64 backend does not infer
      optional CPU features from the build host.
    - Do not go through `cranelift-object` and a COFF link step.
@@ -158,7 +158,7 @@ Excel VBA `Declare` of the export round-trips exactly.
 - `calcvba-native-x64.dll` first. ARM64 and x86 are later work; x86 also needs a code generator that supports it.
 - Each is built once by CalcVBA's release build and is never rebuilt on the user's machine.
 
-## 5. Patcher (user build time, pure Rust, new crate `oxvba-pe`)
+## 5. Patcher (user build time, pure Rust, new crate `calcvba-pe`)
 
 **Input:** the template, the PeModule layout, the export list and the `.oxi`.
 
@@ -198,7 +198,7 @@ Excel VBA `Declare` of the export round-trips exactly.
 
 | Milestone | Scope | Accept when |
 |---|---|---|
-| N1 | Template DLL plus finisher, and `oxvba-pe` patcher | A patched hand-written stub export (returns 42) with `.pdata`/`.reloc` correct loads, resolves by name and stack-walks |
+| N1 | Template DLL plus finisher, and `calcvba-pe` patcher | A patched hand-written stub export (returns 42) with `.pdata`/`.reloc` correct loads, resolves by name and stack-walks |
 | N2 | Lowering generic over `Module`; `PeModule`; helper manifest; ByVal numeric/Boolean exports; direct calls between procedures; VBA library helpers | Called from C, CalcVBA `Declare` and Excel VBA `Declare` with identical results |
 | N3 | Strings (BSTR/LPWSTR/LPSTR), ByRef scalars, UDTs, SAFEARRAY arrays, Variant, objects; error policy and `CalcVbaGetLastError`; module state; single-thread rule (§3a) | All three clients agree |
 | N4 | General pointer/layout/library support exercised by ordinary VBA (§8) | An external VBA library can use N1-N3 exports and pointer/Declare operations; CalcVBA has no XLL target, intrinsic or registration metadata |

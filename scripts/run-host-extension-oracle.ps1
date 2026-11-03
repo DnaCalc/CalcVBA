@@ -136,7 +136,7 @@ finally {
         try {
             Set-Item Env:OXVBA_HOST_EXTENSION_CAPTURE_PATH $ObservedPath
             $cargoArgs = @(
-                "test", "-p", "oxvba-host",
+                "test", "-p", "calcvba-engine",
                 "--test", "host_project_excel_vbide_callbacks",
                 $TestName,
                 "--", "--ignored", "--exact", "--test-threads=1", "--nocapture"
@@ -199,8 +199,8 @@ finally {
         $caseSlug = $case.case_id.ToLowerInvariant().Replace("-", "_")
         $excelWorkbook = Join-Path $runDir "$caseSlug.excel_probe.xlsm"
         $excelObservedPath = Join-Path $runDir "$caseSlug.excel_observed.json"
-        $oxObservedPath = Join-Path $runDir "$caseSlug.oxvba_observed.json"
-        $oxLogPath = Join-Path $runDir "$caseSlug.oxvba_test.log.txt"
+        $oxObservedPath = Join-Path $runDir "$caseSlug.calcvba_observed.json"
+        $oxLogPath = Join-Path $runDir "$caseSlug.calcvba_test.log.txt"
 
         Invoke-ExcelDirectProbe `
             -WorkbookPath $excelWorkbook `
@@ -229,8 +229,8 @@ finally {
             scenario = $case.scenario
             vba_status = $excelObserved.status
             vba_observed = $excelObserved.payload
-            oxvba_status = $oxObserved.status
-            oxvba_observed = $oxObserved.payload
+            calcvba_status = $oxObserved.status
+            calcvba_observed = $oxObserved.payload
             match = if ($isMatch) { "true" } else { "false" }
             notes = "OxVba anchor: host_project_excel_vbide_callbacks::$($case.test_name); log=$oxLogPath; $($case.notes)"
         }
@@ -253,7 +253,7 @@ finally {
         "|---|---|---|---|---|---|"
     )
     foreach ($row in $rows) {
-        $summary += "| $($row.topic_id) | $($row.case_id) | $($row.vba_status): $($row.vba_observed) | $($row.oxvba_status): $($row.oxvba_observed) | $($row.match) | $($row.notes) |"
+        $summary += "| $($row.topic_id) | $($row.case_id) | $($row.vba_status): $($row.vba_observed) | $($row.calcvba_status): $($row.calcvba_observed) | $($row.match) | $($row.notes) |"
     }
     Set-Content -Path $summaryPath -Value ($summary -join [Environment]::NewLine)
 

@@ -1,0 +1,74 @@
+//! The host object-model seam. The host's `Application`/`ThisWorkbook`/etc.
+//! arrive as COM typelib metadata via host-injected references, so the host scope
+//! is a `ComTypeLibProvider` over those host-injected blobs at host precedence.
+//! There are no static Excel/Word stubs here — those are host COM metadata, not
+//! the VBA language.
+
+use calcvba_bundle::ProjectMemberKind;
+use calcvba_com::TypeLibMetadataBlob;
+
+use crate::binding::Binding;
+use crate::provider::Provider;
+use crate::providers::com::ComTypeLibProvider;
+use crate::signature::VarTypeRef;
+
+pub struct HostProvider {
+    blobs: Vec<ComTypeLibProvider>,
+}
+
+impl HostProvider {
+    pub(crate) fn from_providers(blobs: Vec<ComTypeLibProvider>) -> Self {
+        Self { blobs }
+    }
+    pub fn new(blobs: Vec<TypeLibMetadataBlob>) -> Self {
+        Self {
+            blobs: blobs.into_iter().map(ComTypeLibProvider::new).collect(),
+        }
+    }
+}
+
+impl Provider for HostProvider {
+    fn object_interface(&self, type_name: &str) -> Option<calcvba_com::TypeLibInterfaceMetadata> {
+        self.blobs
+            .iter()
+            .find_map(|blob| blob.object_interface(type_name))
+    }
+    fn resolve(&self, name: &str) -> Option<Binding> {
+        self.blobs
+            .iter()
+            .find_map(|blob| blob.resolve_object_root(name))
+    }
+
+    fn resolve_member(
+        &self,
+        recv: &VarTypeRef,
+        name: &str,
+        want: Option<ProjectMemberKind>,
+    ) -> Option<Binding> {
+        self.blobs
+            .iter()
+            .find_map(|blob| blob.resolve_member(recv, name, want))
+    }
+
+    fn resolve_default_member(&self, recv: &VarTypeRef) -> Option<Binding> {
+        self.blobs
+            .iter()
+            .find_map(|blob| blob.resolve_default_member(recv))
+    }
+
+    fn resolve_default_member_kind(
+        &self,
+        recv: &VarTypeRef,
+        want: Option<ProjectMemberKind>,
+    ) -> Option<Binding> {
+        self.blobs
+            .iter()
+            .find_map(|blob| blob.resolve_default_member_kind(recv, want))
+    }
+
+    fn is_known_object_type(&self, type_name: &str) -> bool {
+        self.blobs
+            .iter()
+            .any(|blob| blob.is_known_object_type(type_name))
+    }
+}

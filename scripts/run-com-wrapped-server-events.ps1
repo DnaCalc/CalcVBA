@@ -17,7 +17,7 @@ try {
     "Excel unavailable: $($_.Exception.Message)" | Set-Content -Path $excelLog
 }
 
-cargo test -p oxvba-build wrapped_com_server_build_compiles_dll_with_standard_exports --quiet 2>&1 |
+cargo test -p calcvba-build wrapped_com_server_build_compiles_dll_with_standard_exports --quiet 2>&1 |
     Tee-Object -FilePath $log
 
 if ($LASTEXITCODE -ne 0) {

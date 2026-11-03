@@ -11,8 +11,8 @@ character payload; VarPtr of a Variant refers to its native VARIANT cell.
 ObjPtr must preserve the supported object's native identity and reference
 lifetime. A synthetic object token is not a native COM pointer.
 
-`oxvba-runtime/src/pointer_helpers.rs` owns retained storage/pins and
-`oxvba-com` consumes them at the FFI boundary. Native parameter cells and
+`calcvba-runtime/src/pointer_helpers.rs` owns retained storage/pins and
+`calcvba-com` consumes them at the FFI boundary. Native parameter cells and
 pinned owners outlive every synchronous use and copyback. Raw addresses must
 not escape their supported lifetime or move to another runtime thread.
 General pointer/native callback signatures and physical carriers remain

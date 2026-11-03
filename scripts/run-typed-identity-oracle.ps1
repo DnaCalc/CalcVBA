@@ -3,7 +3,7 @@ param(
     [string]$OutputRoot = 'temp/oracle'
 )
 $ErrorActionPreference = 'Stop'
-$script:identitySource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../crates/oxvba-embed/tests/support/oracle/typed-identity-run11.bas')
+$script:identitySource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../crates/calcvba-host/tests/support/oracle/typed-identity-run11.bas')
 $supervisor = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'run-excel-vba-oracle.ps1')
 $anchor = '. (Join-Path $PSScriptRoot "excel-vba-oracle-bootstrap.ps1")'
 $override = @'

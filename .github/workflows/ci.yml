@@ -32,4 +32,4 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check -p oxvba-embed --no-default-features --target wasm32-unknown-unknown
+      - run: cargo check -p calcvba-host --no-default-features --target wasm32-unknown-unknown

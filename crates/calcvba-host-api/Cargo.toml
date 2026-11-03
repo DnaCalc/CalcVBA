@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Host-neutral CalcVBA contracts; no compiler or execution backend dependency"
 
 [dependencies]
-oxvba-runtime.workspace = true
+calcvba-runtime.workspace = true
 thiserror.workspace = true
 
 [lints]

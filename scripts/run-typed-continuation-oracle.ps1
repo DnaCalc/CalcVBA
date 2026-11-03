@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = 'Stop'
 # The existing supervisor owns Excel and arms its PID-scoped UIA guardian before
 # explicit VBE compile command 578. It preserves security settings and registration.
-$sourcePath = Join-Path $PSScriptRoot '../crates/oxvba-embed/tests/support/oracle/typed-continuation.bas'
+$sourcePath = Join-Path $PSScriptRoot '../crates/calcvba-host/tests/support/oracle/typed-continuation.bas'
 $script:continuationSource = Get-Content -Raw -LiteralPath $sourcePath
 $script:continuationExpected = 'alias=10:0,1,2,|catch=27:0,7,8,2,|retry=43:7,8,7,|skip=14:7,2,|object=42:$B$1'
 $supervisor = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'run-excel-vba-oracle.ps1')

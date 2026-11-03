@@ -1,0 +1,21 @@
+[package]
+name = "calcvba-rt-abi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Shared runtime ABI substrate for vm3 and the Cranelift JIT."
+
+[dependencies]
+calcvba-host-api.workspace = true
+calcvba-bundle.workspace = true
+calcvba-com.workspace = true
+calcvba-eval.workspace = true
+calcvba-hal.workspace = true
+calcvba-lib.workspace = true
+calcvba-oxir.workspace = true
+calcvba-runtime.workspace = true
+
+[lints]
+workspace = true

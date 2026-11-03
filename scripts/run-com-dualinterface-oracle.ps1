@@ -128,18 +128,18 @@ End Function
             scenario = "Scripting.Dictionary Add / Exists / Count stays stable across dispatch and PreferVtable"
             vba_status = $excelRows["CCT-047-SCRRUN-001"].status
             vba_observed = $excelRows["CCT-047-SCRRUN-001"].observed
-            oxvba_dispatch_status = (Invoke-OxCase -CaseId "CCT-047-SCRRUN-001-dispatch" -ExpectedObserved "True,1" -CargoArgs @(
-                "test","-p","oxvba-host","--test","com_early_project_end_to_end",
+            calcvba_dispatch_status = (Invoke-OxCase -CaseId "CCT-047-SCRRUN-001-dispatch" -ExpectedObserved "True,1" -CargoArgs @(
+                "test","-p","calcvba-engine","--test","com_early_project_end_to_end",
                 "early_bound_project_executes_registered_scripting_dictionary_member_subset",
                 "--","--ignored","--exact","--test-threads=1","--nocapture"
             ) -Notes "OxVba dispatch/default anchor: com_early_project_end_to_end::early_bound_project_executes_registered_scripting_dictionary_member_subset").status
-            oxvba_dispatch_observed = "True,1"
-            oxvba_vtable_status = (Invoke-OxCase -CaseId "CCT-047-SCRRUN-001-vtable" -ExpectedObserved "True,1" -CargoArgs @(
-                "test","-p","oxvba-host","--test","com_early_project_end_to_end",
+            calcvba_dispatch_observed = "True,1"
+            calcvba_vtable_status = (Invoke-OxCase -CaseId "CCT-047-SCRRUN-001-vtable" -ExpectedObserved "True,1" -CargoArgs @(
+                "test","-p","calcvba-engine","--test","com_early_project_end_to_end",
                 "early_bound_project_registered_scripting_dictionary_member_subset_prefer_vtable_matches_dispatch",
                 "--","--ignored","--exact","--test-threads=1","--nocapture"
             ) -Notes "OxVba prefer-vtable anchor: com_early_project_end_to_end::early_bound_project_registered_scripting_dictionary_member_subset_prefer_vtable_matches_dispatch").status
-            oxvba_vtable_observed = "True,1"
+            calcvba_vtable_observed = "True,1"
             match_dispatch = if ($excelRows["CCT-047-SCRRUN-001"].status -eq "ok" -and $excelRows["CCT-047-SCRRUN-001"].observed -eq "True,1") { "true" } else { "false" }
             match_vtable = if ($excelRows["CCT-047-SCRRUN-001"].status -eq "ok" -and $excelRows["CCT-047-SCRRUN-001"].observed -eq "True,1") { "true" } else { "false" }
         }
@@ -149,18 +149,18 @@ End Function
             scenario = "TestEventServer Ping stays stable across dispatch and PreferVtable/fallback policy"
             vba_status = $excelRows["CCT-047-TES-001"].status
             vba_observed = $excelRows["CCT-047-TES-001"].observed
-            oxvba_dispatch_status = (Invoke-OxCase -CaseId "CCT-047-TES-001-dispatch" -ExpectedObserved "42" -CargoArgs @(
-                "test","-p","oxvba-host","--test","com_early_project_end_to_end",
+            calcvba_dispatch_status = (Invoke-OxCase -CaseId "CCT-047-TES-001-dispatch" -ExpectedObserved "42" -CargoArgs @(
+                "test","-p","calcvba-engine","--test","com_early_project_end_to_end",
                 "early_bound_project_executes_registered_testeventserver_ping",
                 "--","--ignored","--exact","--test-threads=1","--nocapture"
             ) -Notes "OxVba dispatch/default anchor: com_early_project_end_to_end::early_bound_project_executes_registered_testeventserver_ping").status
-            oxvba_dispatch_observed = "42"
-            oxvba_vtable_status = (Invoke-OxCase -CaseId "CCT-047-TES-001-vtable" -ExpectedObserved "42" -CargoArgs @(
-                "test","-p","oxvba-host","--test","com_early_project_end_to_end",
+            calcvba_dispatch_observed = "42"
+            calcvba_vtable_status = (Invoke-OxCase -CaseId "CCT-047-TES-001-vtable" -ExpectedObserved "42" -CargoArgs @(
+                "test","-p","calcvba-engine","--test","com_early_project_end_to_end",
                 "early_bound_project_registered_testeventserver_ping_prefer_vtable_matches_dispatch",
                 "--","--ignored","--exact","--test-threads=1","--nocapture"
             ) -Notes "OxVba prefer-vtable anchor: com_early_project_end_to_end::early_bound_project_registered_testeventserver_ping_prefer_vtable_matches_dispatch").status
-            oxvba_vtable_observed = "42"
+            calcvba_vtable_observed = "42"
             match_dispatch = if ($excelRows["CCT-047-TES-001"].status -eq "ok" -and $excelRows["CCT-047-TES-001"].observed -eq "42") { "true" } else { "false" }
             match_vtable = if ($excelRows["CCT-047-TES-001"].status -eq "ok" -and $excelRows["CCT-047-TES-001"].observed -eq "42") { "true" } else { "false" }
         }
@@ -184,7 +184,7 @@ End Function
     $md += "| Topic | Case | VBA | OxVba Dispatch | OxVba PreferVtable | Match Dispatch | Match PreferVtable |"
     $md += "|---|---|---|---|---|---|---|"
     foreach ($row in $rows) {
-        $md += "| $($row.topic_id) | $($row.case_id) | $($row.vba_status): $($row.vba_observed) | $($row.oxvba_dispatch_status): $($row.oxvba_dispatch_observed) | $($row.oxvba_vtable_status): $($row.oxvba_vtable_observed) | $($row.match_dispatch) | $($row.match_vtable) |"
+        $md += "| $($row.topic_id) | $($row.case_id) | $($row.vba_status): $($row.vba_observed) | $($row.calcvba_dispatch_status): $($row.calcvba_dispatch_observed) | $($row.calcvba_vtable_status): $($row.calcvba_vtable_observed) | $($row.match_dispatch) | $($row.match_vtable) |"
     }
     Set-Content -Path $summaryPath -Value ($md -join [Environment]::NewLine)
 

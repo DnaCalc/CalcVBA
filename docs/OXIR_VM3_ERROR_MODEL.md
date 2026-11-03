@@ -66,7 +66,7 @@ Each rule cites its MS-VBAL basis. "R*" ids are referenced from the code.
   - `None` (Default) → **propagate** the fault to the caller (early unwind).
   - `ResumeNext` → set `active_error = Some((resume, resume_next))`, then continue at
     `resume_next`. **⚠ Unverified discrepancy (bd-ivaha.31):** the vm3 code
-    (`oxvba-rt-abi` `FaultDispatch`) currently clears `active_error` (`None`) on the
+    (`calcvba-rt-abi` `FaultDispatch`) currently clears `active_error` (`None`) on the
     implicit ResumeNext skip, contradicting this rule. `On Error Resume Next` does not
     establish a handler, so `None` may be correct — but neither behavior is
     live-oracle-confirmed. Do not rely on `active_error` after an implicit ResumeNext
@@ -136,7 +136,7 @@ the unwound callee.
 
 ## 6. Implementation map (vm3)
 
-`crates/oxvba-vm3/src/lib.rs`:
+`crates/calcvba-vm3/src/lib.rs`:
 - `Vm3` cells: `error_mode`, `active_error: Option<ResumePoint>`, `err: ErrState`,
   `last_dll_error`.
 - `Frame`: `saved_error_mode`, `saved_active_error`, `gosub_stack`.
@@ -147,7 +147,7 @@ the unwound callee.
 - `call_proc`/`do_return`/`propagate_fault`: save/restore `active_error` (R3) +
   per-frame `gosub_stack`.
 
-Elaboration (`crates/oxvba-oxir`): `Raise`/`RaiseValue` fault edge (done, `478df517`);
+Elaboration (`crates/calcvba-oxir`): `Raise`/`RaiseValue` fault edge (done, `478df517`);
 `Exit` path emits a `ClearErr` (R10); `On Error GoTo -1` → `ErrorHandler::ClearActiveError`
 (R13, M2-c-4).
 

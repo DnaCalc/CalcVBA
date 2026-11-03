@@ -1,6 +1,6 @@
 # Diagnostics
 
-OxVba uses `oxvba-diagnostics` as the shared diagnostic contract across the
+OxVba uses `calcvba-diagnostics` as the shared diagnostic contract across the
 compiler, project loader, runtime, HAL, COM bridge, host, and CLI.
 
 ## Shape

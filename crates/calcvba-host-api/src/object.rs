@@ -1,6 +1,6 @@
 //! Same-thread host-owned object tables. This ABI is independent of native COM.
 use crate::{ScalarBits, Slot, TypedContext};
-use oxvba_runtime::{
+use calcvba_runtime::{
     RUNTIME_GUID_IUNKNOWN, RawRuntimeIUnknown, RawRuntimeIUnknownVtbl, RuntimeGuid,
 };
 use std::{
@@ -117,18 +117,18 @@ impl std::fmt::Debug for HostObject {
 }
 impl HostObject {
     /// Retain this exact portable host table in the canonical IUnknown carrier.
-    pub fn object_ref(&self) -> oxvba_runtime::object_ref::ObjectRef {
+    pub fn object_ref(&self) -> calcvba_runtime::object_ref::ObjectRef {
         // SAFETY: argument() preserves complete-allocation provenance and this
         // owner spans the AddRef; the carrier releases on the creating thread.
         unsafe {
-            oxvba_runtime::object_ref::ObjectRef::from_raw_iunknown_addref(
+            calcvba_runtime::object_ref::ObjectRef::from_raw_iunknown_addref(
                 self.argument().as_ptr().cast_mut().cast(),
             )
         }
         .expect("host object is nonnull")
     }
     /// Recover only a table created by this ABI, never an arbitrary COM object.
-    pub fn from_object_ref(object: &oxvba_runtime::object_ref::ObjectRef) -> Option<Self> {
+    pub fn from_object_ref(object: &calcvba_runtime::object_ref::ObjectRef) -> Option<Self> {
         let raw = object.raw_iunknown();
         // SAFETY: ObjectRef owns a valid IUnknown prefix. The private vtable
         // identity proves the complete allocation came from this factory.
@@ -235,14 +235,14 @@ impl HostObject {
     pub fn invoke_dynamic(
         &self,
         call: &DynamicMemberCall,
-        arguments: &mut [oxvba_runtime::Variant],
+        arguments: &mut [calcvba_runtime::Variant],
         context: &mut TypedContext,
-    ) -> Result<oxvba_runtime::Variant, crate::TypedFault> {
+    ) -> Result<calcvba_runtime::Variant, crate::TypedFault> {
         match &self.storage.services {
             Some(services) => services.invoke_dynamic(call, arguments, context),
             None => Err(crate::TypedFault {
                 number: 438,
-                description: oxvba_runtime::default_error_message(438).into(),
+                description: calcvba_runtime::default_error_message(438).into(),
                 source: None,
                 help_file: None,
                 help_context: None,

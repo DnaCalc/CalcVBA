@@ -12,7 +12,7 @@ $engine=Join-Path $root 'xlsm_projects.exe'
 Copy-Item -LiteralPath (Resolve-Path $RuntimeTestExecutable).Path -Destination $engine
 if ($Cases.Count -eq 0) {
     $Cases=@('chains','events','mixed','documents','arrays','bounds','application')
-    $Cases+=@((Get-Content -Raw (Join-Path $repo 'crates/oxvba-embed/tests/support/xlsm/cases.json') | ConvertFrom-Json).id)
+    $Cases+=@((Get-Content -Raw (Join-Path $repo 'crates/calcvba-host/tests/support/xlsm/cases.json') | ConvertFrom-Json).id)
 }
 $results=@()
 foreach ($case in $Cases) {

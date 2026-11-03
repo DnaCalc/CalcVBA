@@ -1,7 +1,7 @@
 Set-StrictMode -Version Latest
 
-$script:WindowsOwnedJournalSchema = "oxvba-windows-owned-resource-journal-v1"
-$script:WindowsOwnedRunIdPattern = '^oxvba-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{32}$'
+$script:WindowsOwnedJournalSchema = "calcvba-windows-owned-resource-journal-v1"
+$script:WindowsOwnedRunIdPattern = '^calcvba-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{32}$'
 $script:WindowsOwnedPolicyRepositoryRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)).TrimEnd(
     [IO.Path]::DirectorySeparatorChar,
     [IO.Path]::AltDirectorySeparatorChar)
@@ -620,7 +620,7 @@ function Get-WindowsOwnedUtcText {
 }
 
 function New-WindowsOwnedRunId {
-    return "oxvba-$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ', [Globalization.CultureInfo]::InvariantCulture))-$([Guid]::NewGuid().ToString('N'))"
+    return "calcvba-$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ', [Globalization.CultureInfo]::InvariantCulture))-$([Guid]::NewGuid().ToString('N'))"
 }
 
 function Get-WindowsOwnedJournalLeaseName {
@@ -1487,8 +1487,8 @@ function Read-WindowsOwnedResourceJournal {
     ) -Owner "owned-resource journal '$path' orchestrator apartment"
     $repositoryRoot = [IO.Path]::GetFullPath([string]$journal.repository_root).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
     $tempRoot = [IO.Path]::GetFullPath([string]$journal.temp_root).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
-    $expectedRunRoot = [IO.Path]::GetFullPath((Join-Path (Join-Path $tempRoot 'oxvba-owned-resource-runs') ([string]$journal.run_id)))
-    $expectedJournalPath = [IO.Path]::GetFullPath((Join-Path (Join-Path $tempRoot 'oxvba-owned-resource-journals') "$($journal.run_id).json"))
+    $expectedRunRoot = [IO.Path]::GetFullPath((Join-Path (Join-Path $tempRoot 'calcvba-owned-resource-runs') ([string]$journal.run_id)))
+    $expectedJournalPath = [IO.Path]::GetFullPath((Join-Path (Join-Path $tempRoot 'calcvba-owned-resource-journals') "$($journal.run_id).json"))
     if ([string]$journal.schema_id -cne $script:WindowsOwnedJournalSchema -or
         [int]$journal.schema_version -ne 1 -or
         [string]$journal.run_id -notmatch $script:WindowsOwnedRunIdPattern -or
@@ -1834,8 +1834,8 @@ function New-WindowsOwnedResourceJournal {
         $executables.Add($full)
     }
 
-    $journalDirectory = Join-Path $tempRootFull "oxvba-owned-resource-journals"
-    $runDirectory = Join-Path $tempRootFull "oxvba-owned-resource-runs"
+    $journalDirectory = Join-Path $tempRootFull "calcvba-owned-resource-journals"
+    $runDirectory = Join-Path $tempRootFull "calcvba-owned-resource-runs"
     $journalPath = Join-Path $journalDirectory "$RunId.json"
     $runRoot = Join-Path $runDirectory $RunId
     $lease = Enter-WindowsOwnedJournalLease -JournalPath $journalPath
@@ -2129,7 +2129,7 @@ function Assert-WindowsOwnedResourceDescriptor {
                     -not ($path -ieq $ancestorPath -or $path.StartsWith($ancestorPath + '\', [StringComparison]::OrdinalIgnoreCase)) -or
                     [string]$keyRecord.creation_disposition -notin @('pending', 'created-owned', 'opened-existing') -or
                     $markerName -notmatch '^__OxVbaOwnedKey_[0-9a-f]{32}$' -or
-                    [string]$keyRecord.marker_token -cne "oxvba-key-token-v1:$($markerName.Substring('__OxVbaOwnedKey_'.Length))") {
+                    [string]$keyRecord.marker_token -cne "calcvba-key-token-v1:$($markerName.Substring('__OxVbaOwnedKey_'.Length))") {
                     throw "$owner registry key ownership must be canonical, token-bound, unique and shallow-to-deep"
                 }
                 if ([string]$keyRecord.creation_disposition -ceq 'pending') {
@@ -2758,7 +2758,7 @@ function New-WindowsOwnedRegistryKeyOwnershipPlan {
             path = [string]$absentPath
             creation_disposition = 'pending'
             marker_name = "__OxVbaOwnedKey_$markerId"
-            marker_token = "oxvba-key-token-v1:$markerId"
+            marker_token = "calcvba-key-token-v1:$markerId"
         })
     }
     return [pscustomobject][ordered]@{

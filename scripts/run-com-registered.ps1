@@ -30,7 +30,7 @@ try {
         $cmd = @(
             "test",
             "-p",
-            "oxvba-host",
+            "calcvba-engine",
             "--test",
             "com_client_registered_lane",
             "--",

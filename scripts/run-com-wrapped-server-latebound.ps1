@@ -15,7 +15,7 @@ if (-not $isWindowsPlatform) {
 $cargoArgs = @(
     "test",
     "-p",
-    "oxvba-build",
+    "calcvba-build",
     "wrapped_com_server_build_compiles_dll_with_standard_exports"
 )
 

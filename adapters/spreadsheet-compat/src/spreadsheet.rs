@@ -1,19 +1,19 @@
 //! Read-only spreadsheet objects. Values are always read through the current host call.
 use crate::{Error, Value, from_variant, to_variant};
-use oxvba_com::{
+use calcvba_com::{
     ComCallbackPayload, ComCallbackToken, ComMemberToken, ComObjectDescriptor,
     ComObjectTransportKind, ComSubscriptionToken, DynamicCallKind, DynamicCallRequest,
     DynamicMemberSelector, TypeLibCacheScope, TypeLibMetadataBlob, TypeLibResolveRequest,
     TypeLibResolvedIdentity,
 };
-use oxvba_hal::{
+use calcvba_hal::{
     HostServices,
     adapters::builder::HostBuilder,
     error::{HalError, HalResult},
     model::{CapabilityId, HalDescriptor, HalProfileId, HostPolicy},
     traits::*,
 };
-use oxvba_runtime::{ObjectRef, Variant};
+use calcvba_runtime::{ObjectRef, Variant};
 use std::{
     cell::RefCell,
     sync::{Arc, Mutex},
@@ -327,9 +327,9 @@ impl SpreadsheetHost {
             }
             "CELLS" | "ITEM" => {
                 fn index(value: &Variant) -> HalResult<u32> {
-                    let n = oxvba_eval::arith::coerce_numeric(
+                    let n = calcvba_eval::arith::coerce_numeric(
                         value,
-                        oxvba_bundle::NumericCoerceTarget::Long,
+                        calcvba_bundle::NumericCoerceTarget::Long,
                     )
                     .map_err(|e| fault(e.code, e.message))?
                     .as_i32()
@@ -387,9 +387,9 @@ impl SpreadsheetHost {
                     let enabled = match args {
                         [] => true,
                         [one] if one.as_error_code() == Some(-2147352572) => true,
-                        [one] => oxvba_eval::arith::coerce_numeric(
+                        [one] => calcvba_eval::arith::coerce_numeric(
                             one,
-                            oxvba_bundle::NumericCoerceTarget::Boolean,
+                            calcvba_bundle::NumericCoerceTarget::Boolean,
                         )
                         .map_err(|e| fault(e.code, e.message))?
                         .as_bool()
@@ -470,8 +470,8 @@ impl ComHal for SpreadsheetHost {
         &self,
         object: ObjectRef,
         member: &TypeLibMemberMetadata,
-        args: &[oxvba_com::DynamicCallArg],
-    ) -> HalResult<oxvba_runtime::RuntimeCallResult> {
+        args: &[calcvba_com::DynamicCallArg],
+    ) -> HalResult<calcvba_runtime::RuntimeCallResult> {
         // Preserve only the existing portable projection until extraction to host
         // glue. Compiler-bound calls use its fixed tokens, never dynamic names.
         // This is not native COM/vtable compatibility evidence.
@@ -506,7 +506,7 @@ impl ComHal for SpreadsheetHost {
             })
             .collect::<Vec<_>>();
         self.invoke_projected_member(object, name, &args)
-            .map(oxvba_runtime::RuntimeCallResult::value)
+            .map(calcvba_runtime::RuntimeCallResult::value)
     }
 
     fn create_object_variant(&self, name: Variant) -> HalResult<Variant> {
@@ -610,9 +610,9 @@ impl ComHal for SpreadsheetHost {
 }
 
 pub(crate) struct SpreadsheetTypes;
-impl oxvba_symbol::TypeLibResolver for SpreadsheetTypes {
+impl calcvba_symbol::TypeLibResolver for SpreadsheetTypes {
     fn resolve(&self, request: &TypeLibResolveRequest) -> Option<TypeLibMetadataBlob> {
-        use oxvba_com::{
+        use calcvba_com::{
             TypeLibMemberInvokeKind as Kind, TypeLibMemberMetadata, TypeLibParamType as Ty,
         };
         fn member(
@@ -691,7 +691,7 @@ impl oxvba_symbol::TypeLibResolver for SpreadsheetTypes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxvba_symbol::TypeLibResolver;
+    use calcvba_symbol::TypeLibResolver;
 
     #[test]
     fn legacy_typed_projection_uses_fixed_token_and_refuses_unknown_token() {

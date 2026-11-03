@@ -303,7 +303,7 @@ function Invoke-Case($Case) {
 
 $supportCode = @'
 Private Function ProbePath(ByVal id As String) As String
-    ProbePath = Environ$("TEMP") & "\oxvba_width_" & id & "_" & CStr(Int(Timer * 1000)) & ".txt"
+    ProbePath = Environ$("TEMP") & "\calcvba_width_" & id & "_" & CStr(Int(Timer * 1000)) & ".txt"
 End Function
 
 Private Function ReadAll(ByVal path As String) As String

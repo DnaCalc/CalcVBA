@@ -151,7 +151,7 @@ try {
         $cmd = @(
             "test",
             "-p",
-            "oxvba-host",
+            "calcvba-engine",
             "--test",
             "com_client_registered_lane",
             "windows_registered_com_lane::registered_event_callback_success_when_event_capable_server_is_configured",

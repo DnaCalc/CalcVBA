@@ -49,7 +49,7 @@ function Get-XlsmProject($Workbook,[string]$EntryModule) {
         [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($reference)
     }
     $caseId=[IO.Path]::GetFileNameWithoutExtension([string]$Workbook.Name)
-    $fixtureRoot=Join-Path $PSScriptRoot '../crates/oxvba-embed/tests/support/xlsm'
+    $fixtureRoot=Join-Path $PSScriptRoot '../crates/calcvba-host/tests/support/xlsm'
     $fixture=@((Get-Content -Raw (Join-Path $fixtureRoot 'cases.json') | ConvertFrom-Json) | Where-Object id -CEQ $caseId)
     $startup=if ($fixture.Count -eq 1 -and $fixture[0].PSObject.Properties['startup']) {$fixture[0].startup} else {$null}
     $expectedError=if ($fixture.Count -eq 1 -and $fixture[0].PSObject.Properties['expected_error']) {[int]$fixture[0].expected_error} else {$null}
@@ -58,7 +58,7 @@ function Get-XlsmProject($Workbook,[string]$EntryModule) {
     return $result
 }
 function Initialize-XlsmProject($Excel,[ref]$Workbook,[ref]$Project,[ref]$Component,[string]$Directory,[string]$CaseId,[string]$EntryModule,[string]$SourceRoot) {
-    $fixtures=Join-Path $PSScriptRoot '../crates/oxvba-embed/tests/support/xlsm'
+    $fixtures=Join-Path $PSScriptRoot '../crates/calcvba-host/tests/support/xlsm'
     $case=@((Get-Content -Raw (Join-Path $fixtures 'cases.json') | ConvertFrom-Json) | Where-Object id -CEQ $CaseId)
     if ($case.Count -eq 1 -and $case[0].PSObject.Properties['documents']) {
         foreach ($property in $case[0].documents.PSObject.Properties) {

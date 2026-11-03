@@ -39,7 +39,7 @@ if ($Case -eq 'dictionary') {
     if (-not $worker.Contains($projectAnchor)) { throw 'Worker project anchor changed' }
     $worker = $worker.Replace($projectAnchor, $projectAnchor + "`n" + '        [void]$project.References.AddFromGuid("{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0)')
     $worker = $worker.Replace('$PSScriptRoot', ("'" + $PSScriptRoot.Replace("'", "''") + "'"))
-    $workerPath = Join-Path ([IO.Path]::GetTempPath()) ("oxvba-early-oracle-$([Guid]::NewGuid().ToString('N')).ps1")
+    $workerPath = Join-Path ([IO.Path]::GetTempPath()) ("calcvba-early-oracle-$([Guid]::NewGuid().ToString('N')).ps1")
     [IO.File]::WriteAllText($workerPath, $worker, [Text.UTF8Encoding]::new($false))
     $supervisor = $supervisor.Replace('(Join-Path $PSScriptRoot "excel-vba-oracle-worker.ps1")', ("'" + $workerPath.Replace("'", "''") + "'"))
 }

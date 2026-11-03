@@ -1,0 +1,100 @@
+//! Oracle-conformance gate: validate vm3 against the **live Excel/VBA 7.1 oracle**
+//! captured in `oracle/results/*.json`.
+//!
+//! For every probe in the oracle corpus this runs the self-contained program under vm3
+//! (the sole product runtime + JIT oracle; it MUST be 100% oracle-compliant). The ground
+//! truth is the oracle string.
+//!
+//! The single hard assertion: **vm3 matches the oracle on every case outside the
+//! documented out-of-scope allowlist.** An allowlisted case that starts matching is
+//! flagged so the allowlist can shrink.
+
+use calcvba_differential::Executor;
+use calcvba_differential::oracle::{OracleObservation, all_oracle_cases, run_oracle_case};
+
+/// Probes whose vm3 result is a KNOWN, documented gap — NOT an error-model regression.
+/// Each entry names the missing capability and the wave that closes it.
+///
+/// Empty as of M3-2: the last gap (`PROBE_cf_for_each_array`, `For Each` over `Array()`) closed
+/// when vm3 gained array ops + `For Each` over arrays. vm3 is now 100% oracle-compliant across
+/// the full probe corpus.
+const KNOWN_VM3_GAPS: &[&str] = &[];
+
+fn render(obs: &OracleObservation) -> String {
+    match obs {
+        OracleObservation::Value(s) => format!("\"{s}\""),
+        OracleObservation::Unsupported(w) => format!("UNSUPPORTED({w})"),
+        OracleObservation::Failed(e) => format!("FAILED({e})"),
+        OracleObservation::NotAString(c) => format!("NOT-A-STRING({c:?})"),
+        OracleObservation::Empty => "EMPTY".to_string(),
+        OracleObservation::Timeout => "TIMEOUT".to_string(),
+    }
+}
+
+#[test]
+fn vm3_is_oracle_compliant() {
+    let cases = all_oracle_cases();
+    assert!(
+        !cases.is_empty(),
+        "no oracle cases loaded — is oracle/ present?"
+    );
+
+    let mut vm3_match = 0usize;
+    let mut vm3_mismatch: Vec<String> = Vec::new();
+    let mut allowlisted_now_passing: Vec<String> = Vec::new();
+    let mut report: Vec<String> = Vec::new();
+
+    for case in &cases {
+        let vm3 = run_oracle_case(Executor::Vm3, case);
+        let allowlisted = KNOWN_VM3_GAPS.contains(&case.name.as_str());
+
+        let vm3_ok = vm3.value() == Some(case.expected.as_str());
+
+        report.push(format!(
+            "{:<36} oracle={:<40} vm3={}",
+            case.name,
+            format!("\"{}\"", case.expected),
+            render(&vm3),
+        ));
+
+        if allowlisted {
+            if vm3_ok {
+                allowlisted_now_passing.push(case.name.clone());
+            }
+        } else if vm3_ok {
+            vm3_match += 1;
+        } else {
+            vm3_mismatch.push(format!(
+                "  {} : oracle=\"{}\"  vm3={}",
+                case.name,
+                case.expected,
+                render(&vm3)
+            ));
+        }
+    }
+
+    eprintln!("\n=== oracle two-way report (oracle | vm3) ===");
+    for line in &report {
+        eprintln!("{line}");
+    }
+    eprintln!(
+        "\nvm3: {} matched / {} mismatched (outside allowlist), {} allowlisted gaps",
+        vm3_match,
+        vm3_mismatch.len(),
+        KNOWN_VM3_GAPS.len()
+    );
+
+    // If an allowlisted case now passes, the allowlist is stale — shrink it.
+    assert!(
+        allowlisted_now_passing.is_empty(),
+        "these allowlisted gaps now pass on vm3 — remove them from KNOWN_VM3_GAPS: {allowlisted_now_passing:?}"
+    );
+
+    // The hard gate: vm3 must be oracle-compliant on every non-allowlisted case.
+    assert!(
+        vm3_mismatch.is_empty(),
+        "vm3 diverges from the Excel/VBA oracle on {} case(s):\n{}",
+        vm3_mismatch.len(),
+        vm3_mismatch.join("\n")
+    );
+}

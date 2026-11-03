@@ -10,22 +10,22 @@ may use parallel work internally.
 
 ```text
 source / .basproj / host project graph
-  -> oxvba-project: modules and referenced-project closure
-  -> oxvba-symbol: conditional compilation, declarations, providers, references
-  -> oxvba-syntax: lossless VBA CST
-  -> oxvba-bind: typed CoreProgram
-  -> oxvba-oxir: typed CFG OxProgram / serialized OxImage (.oxi)
-       |-- oxvba-vm3: interpreter
-       `-- oxvba-jit: Cranelift native code
+  -> calcvba-project: modules and referenced-project closure
+  -> calcvba-symbol: conditional compilation, declarations, providers, references
+  -> calcvba-syntax: lossless VBA CST
+  -> calcvba-bind: typed CoreProgram
+  -> calcvba-oxir: typed CFG OxProgram / serialized OxImage (.oxi)
+       |-- calcvba-vm3: interpreter
+       `-- calcvba-jit: Cranelift native code
 ```
 
 The symbol layer uses the shared parser. Providers describe source projects,
 the VBA library, host libraries and imported COM type information. Binding
 retains declared types, passing modes, property/default-member decisions and
 native descriptors for both backends. Conditional compilation preserves active
-source offsets. `oxvba-diagnostics` carries errors between layers.
+source offsets. `calcvba-diagnostics` carries errors between layers.
 
-`oxvba-bundle` holds Core IR and synthetic VBA-library metadata. Remaining
+`calcvba-bundle` holds Core IR and synthetic VBA-library metadata. Remaining
 Bundle/Op types support that metadata; VM2 and .oxb are retired execution paths.
 VM3 and the JIT execute the same typed OxIR. The JIT has no interpreter fallback.
 OxImage stores a project closure; loading validates the image and its programs.
@@ -33,15 +33,15 @@ Validation is ordinary executable code, not a formal proof.
 
 ## Runtime values and language services
 
-- `oxvba-runtime`: Variant, BSTR, SAFEARRAY, object identity, records and errors.
-- `oxvba-eval`: shared value, arithmetic, coercion, collection and array semantics.
-- `oxvba-lib`: VBA library functions over those values and host services.
-- `oxvba-rt-abi`: shared VM/JIT helpers, physical typed slots and owning calls.
-- `oxvba-vm3`: typed-CFG interpreter, frames, aliases, errors and class lifecycle.
-- `oxvba-jit`: Cranelift lowering, compiled entries and runtime helper calls.
-- `oxvba-aot`: Cranelift Module backend laying out direct native code for PE.
-- `oxvba-pe`: template finishing, helper manifest and checked PE patching.
-- `oxvba-native-template`: developer-built runtime DLL, with no compiler or VM.
+- `calcvba-runtime`: Variant, BSTR, SAFEARRAY, object identity, records and errors.
+- `calcvba-eval`: shared value, arithmetic, coercion, collection and array semantics.
+- `calcvba-lib`: VBA library functions over those values and host services.
+- `calcvba-rt-abi`: shared VM/JIT helpers, physical typed slots and owning calls.
+- `calcvba-vm3`: typed-CFG interpreter, frames, aliases, errors and class lifecycle.
+- `calcvba-jit`: Cranelift lowering, compiled entries and runtime helper calls.
+- `calcvba-aot`: Cranelift Module backend laying out direct native code for PE.
+- `calcvba-pe`: template finishing, helper manifest and checked PE patching.
+- `calcvba-native-template`: developer-built runtime DLL, with no compiler or VM.
 
 BSTR/VARIANT/SAFEARRAY/IUnknown-shaped carriers preserve VBA/Automation layout
 where implemented. Runtime ownership must survive calls, errors and teardown.
@@ -60,8 +60,8 @@ there is currently no language-service/LSP or debugger crate in the workspace.
 
 `calcvba-host-api` defines source projects, ordered references, signatures,
 bound handles, values, host objects and provider interfaces without linking a
-compiler or JIT. `oxvba-embed::provider::Provider` composes the implementation.
-`oxvba-host` supplies source/project execution and VM3 package sessions.
+compiler or JIT. `calcvba-host::provider::Provider` composes the implementation.
+`calcvba-engine` supplies source/project execution and VM3 package sessions.
 
 Sessions initialise without calling Main, retain VBA globals/Static/Err/object
 state and release it on disposal. The code cache shares code, never mutable
@@ -79,7 +79,7 @@ spreadsheet members and formula policy stay outside the engine.
 
 ## Host services and Windows interop
 
-`oxvba-hal` delegates console/diagnostics, UI, events, files, environment/time,
+`calcvba-hal` delegates console/diagnostics, UI, events, files, environment/time,
 native loading and COM operations to host adapters. Null and browser hosts can
 refuse unavailable operations. DNA Calc and WASM use the host abstractions;
 host policy and descriptors must not be confused with VBA language semantics.
@@ -89,7 +89,7 @@ Arc ownership stays at the DNA Calc host API boundary. Private file, console,
 directory, settings, portable-object and native-binding state uses local shared
 ownership and checked borrows; LastDllError uses a shared local cell.
 
-`oxvba-com` owns type libraries, native calls, dispatch, vtables, marshalling,
+`calcvba-com` owns type libraries, native calls, dispatch, vtables, marshalling,
 connection points and COM error translation. Imported declarations retain IIDs,
 member kinds, DISPIDs, slots, argument/default and result information. Dual
 members use native vtables without an implicit IDispatch retry. Pure
@@ -108,9 +108,9 @@ no forms-runtime crate here yet.
 
 ## Outputs and portability
 
-`oxvba-build` emits OxImage and wrapper/COM-server artifacts.
-`oxvba-comhost` is the reusable Windows in-process COM host, currently VM3 based.
-`oxvba-cli` exposes source/project/package execution and builds. A wrapped DLL
+`calcvba-build` emits OxImage and wrapper/COM-server artifacts.
+`calcvba-comhost` is the reusable Windows in-process COM host, currently VM3 based.
+`calcvba-cli` exposes source/project/package execution and builds. A wrapped DLL
 runs the engine. NativeLibrary instead patches compiled code, named exports and
 Windows unwind information into the shipped template without a user linker.
 It currently admits ByVal Long/Double/Boolean Functions, direct local procedure
@@ -126,7 +126,7 @@ The existing bounded .vbp module-list importer is a compatibility adapter, not
 support for the VB6 project system or forms.
 
 Compiler/runtime code and the interpreter support non-Windows hosts. Browser
-builds use `oxvba-embed` without its default JIT feature; native COM and direct
+builds use `calcvba-host` without its default JIT feature; native COM and direct
 filesystem access are supplied or refused by the host. Windows interop targets
 64-bit Office and x64 native calls. Wider Windows architectures, broader native
 signatures, nominal interface/record arrays, recursion limits and full JIT

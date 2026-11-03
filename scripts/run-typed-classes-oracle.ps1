@@ -1,7 +1,7 @@
 param([string]$RunId=('typed_classes_{0:yyyyMMddTHHmmssZ}' -f [DateTime]::UtcNow),[string]$OutputRoot='temp/oracle')
 $ErrorActionPreference='Stop'
-$script:aggregateSource=Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../crates/oxvba-embed/tests/support/oracle/typed-classes-api-run11.bas')
-$script:classSource=Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../crates/oxvba-embed/tests/support/oracle/typed-classes-widget-run11.cls')
+$script:aggregateSource=Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../crates/calcvba-host/tests/support/oracle/typed-classes-api-run11.bas')
+$script:classSource=Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../crates/calcvba-host/tests/support/oracle/typed-classes-widget-run11.cls')
 $script:aggregateExpected='same=True|start=40|next=42|distinct=False|journal=IIT42T40'
 $supervisor = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'run-excel-vba-oracle.ps1')
 $anchor = '. (Join-Path $PSScriptRoot "excel-vba-oracle-bootstrap.ps1")'

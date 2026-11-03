@@ -1,6 +1,6 @@
 # .basproj project files
 
-`oxvba-project` reads XML project files. This is a project loader, not an
+`calcvba-project` reads XML project files. This is a project loader, not an
 MSBuild engine. Source paths are relative to the project file. For example:
 
 ```xml
@@ -77,5 +77,5 @@ rejected, including empty elements and unsupported NativeExport attributes.
 A future external VBA library can build ordinary named exports with
 the pointer/layout features it needs.
 
-The parser, loader and project tests in `crates/oxvba-project` are the source
+The parser, loader and project tests in `crates/calcvba-project` are the source
 for exact accepted attributes and diagnostics.

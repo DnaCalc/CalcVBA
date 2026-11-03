@@ -18,7 +18,7 @@ try {
         New-Item -ItemType Directory -Path $EvidenceDir -Force | Out-Null
     }
 
-    $cmd = @("test", "-p", "oxvba-host", "--test", "com_client_end_to_end", "--", "--test-threads=1")
+    $cmd = @("test", "-p", "calcvba-engine", "--test", "com_client_end_to_end", "--", "--test-threads=1")
     if (-not $NoCapture) {
         $cmd += "--nocapture"
     }

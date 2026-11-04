@@ -533,7 +533,14 @@ impl<'a> LowerFunc<'a> {
             let status = builder.inst_results(call)[0];
             self.return_if_not_ok(builder, status);
             for inst in &block.instrs {
-                self.lower_inst(builder, module, inst)?;
+                self.lower_inst(builder, module, inst)
+                    .map_err(|error| match error {
+                        JitError::Unsupported(message) => JitError::unsupported(format!(
+                            "{}: {inst:?}: {message}",
+                            self.func.name
+                        )),
+                        other => other,
+                    })?;
             }
             self.lower_terminator(builder, module, &block.terminator)?;
         }
@@ -1447,6 +1454,17 @@ impl<'a> LowerFunc<'a> {
                     BinaryVariantOperands { lhs, rhs },
                 ),
                 OxTy::Bool => {
+                    if self.operand_is_static_string_source(lhs)?
+                        || self.operand_is_static_string_source(rhs)?
+                    {
+                        return self.emit_variant_compare_slot_call(
+                            builder,
+                            module,
+                            *dst,
+                            (*op, *mode, *coercion),
+                            BinaryVariantOperands { lhs, rhs },
+                        );
+                    }
                     let lhs_float_lane = self.compare_float_lane(lhs)?;
                     let rhs_float_lane = self.compare_float_lane(rhs)?;
                     let lhs_lane = self.compare_i64_lane(lhs)?;
@@ -1732,6 +1750,30 @@ impl<'a> LowerFunc<'a> {
             OxInst::ErlGet { dst } => self.emit_erl_get(builder, module, *dst),
             OxInst::ErrFieldSet { field, src } => {
                 self.emit_err_field_set(builder, module, *field, src)
+            }
+            OxInst::Ptr { dst, kind, src } => {
+                // Literal descriptors must borrow the retained program's text,
+                // never a temporary clone of the operand.
+                let operand = self.lower_variant_operand(builder, src)?;
+                let args = self.emit_variant_operand_descriptors(builder, module, &[operand])?;
+                let kind = match kind {
+                    calcvba_oxir::PtrKind::Str => 0,
+                    calcvba_oxir::PtrKind::Var => 1,
+                    calcvba_oxir::PtrKind::VarString => 2,
+                    calcvba_oxir::PtrKind::VarVariant => 3,
+                    calcvba_oxir::PtrKind::Obj => 4,
+                };
+                let kind = builder.ins().iconst(types::I32, kind);
+                let (area, index) = place_addr(*dst);
+                let area = builder.ins().iconst(types::I32, i64::from(area));
+                let index = builder.ins().iconst(types::I32, i64::from(index));
+                let callee = self.import(builder, module, self.imports.pointer_slot);
+                let call = builder
+                    .ins()
+                    .call(callee, &[self.state, self.run, kind, args, area, index]);
+                let status = builder.inst_results(call)[0];
+                self.return_if_not_ok(builder, status);
+                Ok(())
             }
             other => Err(JitError::unsupported(format!(
                 "instruction not lowered in M4-4: {other:?}"
@@ -5041,7 +5083,10 @@ impl<'a> LowerFunc<'a> {
                         index: operand.index,
                     });
                 }
-                if is_jit_variant_carrier_ty(param_ty) {
+                if is_jit_variant_carrier_ty(param_ty)
+                    || (numeric_call_target(param_ty).is_some()
+                        && matches!(arg, OxOperand::Use(place) if place_ty(self.program, self.func, *place)? == &OxTy::Variant))
+                {
                     let operand = self.lower_variant_operand(builder, arg)?;
                     let kind = builder
                         .ins()
@@ -6703,14 +6748,14 @@ impl<'a> LowerFunc<'a> {
             OxNativeCallee::Declare {
                 descriptor_id,
                 ptr_writebacks,
-            } => {
-                if !ptr_writebacks.is_empty() {
-                    return Err(JitError::unsupported(
-                        "Declare pointer-helper writebacks remain with bd-59co.3.3.5",
-                    ));
-                }
-                self.lower_call_native_declare(builder, module, dst, *descriptor_id, args)
-            }
+            } => self.lower_call_native_declare(
+                builder,
+                module,
+                dst,
+                *descriptor_id,
+                args,
+                ptr_writebacks,
+            ),
         }
     }
 
@@ -6785,6 +6830,7 @@ impl<'a> LowerFunc<'a> {
         dst: Option<OxPlace>,
         descriptor_id: u32,
         args: &[OxCallArg],
+        ptr_writebacks: &[calcvba_oxir::value::DeclarePtrWriteback],
     ) -> Result<(), JitError> {
         if !cfg!(all(target_os = "windows", target_arch = "x86_64")) {
             return Err(JitError::unsupported("native/COM calls start in M4-9"));
@@ -6798,6 +6844,14 @@ impl<'a> LowerFunc<'a> {
             .map_err(|_| JitError::unsupported("JIT Declare argument count is too large"))?;
         let argc = builder.ins().iconst(types::I32, i64::from(argc));
         let descriptor_id = builder.ins().iconst(types::I32, i64::from(descriptor_id));
+        // The compiled image borrows this OxProgram for its entire lifetime.
+        let writebacks = builder.ins().iconst(
+            module.target_config().pointer_type(),
+            ptr_writebacks.as_ptr() as i64,
+        );
+        let writeback_count = builder
+            .ins()
+            .iconst(types::I32, ptr_writebacks.len() as i64);
         let (dst_area, dst_index) = if let Some(dst) = dst {
             let (area, index) = place_addr(dst);
             (
@@ -6821,6 +6875,8 @@ impl<'a> LowerFunc<'a> {
                 args_ptr,
                 dst_area,
                 dst_index,
+                writebacks,
+                writeback_count,
             ],
         );
         let status = builder.inst_results(call)[0];
@@ -7047,7 +7103,10 @@ impl<'a> LowerFunc<'a> {
                             "M4-4 CallNative {shape} subset lowers only ordinary operands"
                         )));
                     };
-                    if !self.is_supported_variant_extern_operand(operand)? {
+                    if !self.is_supported_variant_extern_operand(operand)?
+                        && !self
+                            .is_supported_conversion_extern_operand(operand, NativeImplId::CVar)?
+                    {
                         return Err(JitError::unsupported(format!(
                             "M4-4 CallNative {shape} subset lowers only supported scalar/String/Variant operands, got {operand:?}"
                         )));
@@ -7168,12 +7227,12 @@ impl<'a> LowerFunc<'a> {
         for arg in args {
             let OxArg::ByVal(operand) = arg else {
                 return Err(JitError::unsupported(format!(
-                    "M4-4 CallExtern {shape} subset lowers only supported ByVal fixed-integer scalar arguments"
+                    "M4-4 CallExtern {shape} subset lowers only supported ByVal scalar, String, or Variant arguments"
                 )));
             };
             if !self.is_supported_scalar_double_extern_operand(operand, native_impl)? {
                 return Err(JitError::unsupported(format!(
-                    "M4-4 CallExtern {shape} subset lowers only supported ByVal fixed-integer scalar arguments, got {operand:?}"
+                    "M4-4 CallExtern {shape} subset lowers only supported ByVal scalar, String, or Variant arguments, got {operand:?}"
                 )));
             }
         }
@@ -7822,7 +7881,9 @@ impl<'a> LowerFunc<'a> {
         native_impl: NativeImplId,
     ) -> Result<bool, JitError> {
         match native_impl {
-            NativeImplId::StringRepeat => self.is_supported_fixed_integer_extern_operand(operand),
+            NativeImplId::StringRepeat => Ok(self
+                .is_supported_fixed_integer_extern_operand(operand)?
+                || self.is_supported_variant_extern_operand(operand)?),
             _ => Ok(false),
         }
     }

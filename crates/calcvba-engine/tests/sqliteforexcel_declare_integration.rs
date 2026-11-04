@@ -3,8 +3,8 @@
 //! OxIR → VM3 → HAL native FFI). The bounded demo opens an in-memory
 //! database, runs statements, and closes — completing only if native Declare
 //! execution (lane routing, ByVal/ByRef marshalling, StrPtr/VarPtr buffers +
-//! write-back, RtlMoveMemory) all work end to end. The JIT path explicitly
-//! declines this external-call shape without VM3 fallback. Windows-only; uses the
+//! write-back, RtlMoveMemory) all work end to end. The JIT now supports those
+//! pointer calls and still explicitly declines Environ without VM3 fallback. Windows-only; uses the
 //! fixtures + x64 sqlite3.dll vendored under `.external/sqliteforexcel`.
 #![cfg(target_os = "windows")]
 
@@ -65,11 +65,7 @@ fn bounded_demo_rejects_jit_without_falling_back() {
         "the SQLite fixture still has unsupported JIT shapes; it must not fall back to VM3",
     );
     assert!(
-        err.contains("Declare pointer-helper writebacks remain with bd-59co.3.3.5")
-            || err.contains("native/COM calls start in M4-9")
-            || err.contains(
-                "M4-4 lowers only Long/Byte/Integer/Bool places for this operation, got Str"
-            ),
+        err.contains("CallExtern library subset") && err.contains("got Environ"),
         "unexpected diagnostic: {err}"
     );
 }

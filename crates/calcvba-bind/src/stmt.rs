@@ -1332,6 +1332,12 @@ impl<'a> ProcLower<'a> {
         let Some(local) = self.info.return_local else {
             return Ok(Vec::new());
         };
+        if let VarTypeRef::Udt(udt) = self.info.return_type.clone() {
+            let mut out = Vec::new();
+            let name = self.info.name.clone();
+            self.emit_udt_record_init(CorePlace::Local(local), &udt, &name, &mut out)?;
+            return Ok(out);
+        }
         let Some((value, intent, target_kind, type_name)) =
             default_value_for_type(self.g.type_ctx, &self.info.return_type)
         else {

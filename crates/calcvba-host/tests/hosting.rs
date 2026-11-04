@@ -349,7 +349,7 @@ fn failed_jit_reload_preserves_the_old_generation() {
         .unwrap();
     let unsupported = Module::load(
         "Bad",
-        "Public Function F()\nDim value As Long\nF = VarPtr(value)\nEnd Function\n",
+        "Public Function F()\nF = Environ(\"TEMP\")\nEnd Function\n",
     )
     .unwrap();
     assert!(matches!(

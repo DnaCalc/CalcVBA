@@ -51,6 +51,8 @@ compiler or linker. Native EXE output remains unfinished.
   <Procedure>AddNumbers</Procedure>
   <CallingConvention>Stdcall</CallingConvention>
   <Ordinal>7</Ordinal>
+  <StringEncoding>Bstr</StringEncoding>
+  <ErrorPolicy>Zero</ErrorPolicy>
 </NativeExport>
 ```
 
@@ -61,20 +63,32 @@ Export names are case-sensitive and unique. The procedure must be Public in a
 standard module. Its actual signature comes from binding, including ByVal/ByRef
 and exact types; cached declaration strings do not supply the ABI.
 
-The initial native implementation admits ByVal Long, Double and Boolean Functions
+The native implementation admits ByVal/ByRef Byte, Integer, Long, LongLong/LongPtr,
+Single, Double, Currency, Date and Boolean Functions and Subs
 with numeric locals, direct calls to admitted procedures, and Double Abs/Sqr
 library calls. CLng/CDbl/CBool specialize numeric arguments without Variant boxing.
 Long integer division/modulo and Boolean/Long And/Or/Xor/Eqv/Imp/Not are admitted.
 Native signatures support up to 32 parameters and calls may cross standard modules.
 Native call depth is limited to 128 frames; exhaustion follows the zero-on-error
 return policy. Generated code uses baseline x64 instructions. Unsupported
-reachable signatures, state and instructions fail before the DLL is written.
-The DLL contains no interpreter fallback. Other numeric widths and the remaining
-native boundary types are unfinished. See [the native template design](NATIVE_EXPORT_PE_TEMPLATE_V1.md).
+reachable signatures and instructions fail before the DLL is written.
+BSTR String, UDT, SAFEARRAY, Variant and Object boundary cases are implemented,
+with module/Static state initialized by the owning thread on its first call.
+StringEncoding accepts Bstr (default), Utf16 and Ansi for ByVal String inputs;
+String results remain caller-owned BSTRs. ErrorPolicy accepts Zero (default) or
+HResult (HRESULT return, with a trailing result pointer for Functions).
+CalcVbaGetLastError is a reserved export returning the error number and optional
+BSTR source/description outputs; callers free those BSTRs with SysFreeString.
+CalcVbaShutdown is also reserved. Call it on the owning thread before unloading
+the DLL to release module-held strings, arrays, Variants and COM references.
+It returns a VBA status number and closes the context permanently; later VBA
+export calls return error 5. It does not run cleanup under the loader lock.
+The DLL contains no interpreter fallback. Some owning
+constructs remain unfinished. See [the native template design](NATIVE_EXPORT_PE_TEMPLATE_V1.md).
 
 CalcVBA has no XLL target, registration metadata, conversions or host support.
 Addin is rejected as an OutputType. Category, Description, ArgumentDescriptions
-and unimplemented StringEncoding/ErrorPolicy metadata on NativeExport are
+metadata on NativeExport are
 rejected, including empty elements and unsupported NativeExport attributes.
 A future external VBA library can build ordinary named exports with
 the pointer/layout features it needs.

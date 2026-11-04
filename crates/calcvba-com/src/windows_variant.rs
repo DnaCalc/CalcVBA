@@ -590,13 +590,7 @@ unsafe fn safe_array_to_com_value(psa: *mut SAFEARRAY) -> Result<ComValue, Strin
     let array = if element_vt != VT_VARIANT_VALUE
         && SafeArray::supports_intrinsic_element_vartype(element_vt)
     {
-        if dims == 1 {
-            SafeArray::from_typed_variants(element_vt, values)?
-        } else {
-            SafeArray::from_typed_variants_nd(bounds, element_vt, values)?
-        }
-    } else if dims == 1 {
-        SafeArray::from_variants(values)
+        SafeArray::from_typed_variants_nd(bounds, element_vt, values)?
     } else {
         SafeArray::from_variants_nd(bounds, values)
     };
@@ -1175,13 +1169,7 @@ where
     let array = if element_vt != VT_VARIANT_VALUE
         && SafeArray::supports_intrinsic_element_vartype(element_vt)
     {
-        if dims == 1 {
-            SafeArray::from_typed_variants(element_vt, values)?
-        } else {
-            SafeArray::from_typed_variants_nd(bounds, element_vt, values)?
-        }
-    } else if dims == 1 {
-        SafeArray::from_variants(values)
+        SafeArray::from_typed_variants_nd(bounds, element_vt, values)?
     } else {
         SafeArray::from_variants_nd(bounds, values)
     };
@@ -3320,6 +3308,38 @@ mod tests {
             let err = variant_to_com_value(&variant)
                 .expect_err("VT_BYREF|VT_ARRAY with null SAFEARRAY should error");
             assert_eq!(err, "VT_ARRAY result carried null SAFEARRAY");
+        }
+    }
+
+    #[test]
+    fn one_dimensional_native_array_keeps_its_lower_bound_in_both_decoders() {
+        unsafe {
+            let psa = SafeArrayCreateVector(VT_I4, -2, 3);
+            assert!(!psa.is_null());
+            let index = -2;
+            let value = 37i32;
+            assert!(SafeArrayPutElement(psa, &index, (&value as *const i32).cast()) >= 0);
+            let mut variant: VARIANT = std::mem::zeroed();
+            variant.Anonymous.Anonymous.vt = VT_ARRAY | VT_I4;
+            variant.Anonymous.Anonymous.Anonymous.parray = psa;
+            let ComValue::ArrayIntent(com) = variant_to_com_value(&variant).unwrap() else {
+                panic!("array expected");
+            };
+            assert_eq!(com.bounds().unwrap()[0].lower, -2);
+            let decoded = variant_to_variant_value(
+                &variant,
+                &mut |_unknown| Err("no object".into()),
+                &mut |_dispatch| panic!("numeric array cannot AddRef objects"),
+                &mut |_dispatch, _hint, _op| panic!("numeric array cannot bind objects"),
+                "",
+                "array test",
+            )
+            .unwrap();
+            assert_eq!(
+                decoded.as_safearray().unwrap().bounds().unwrap()[0].lower,
+                -2
+            );
+            assert!(VariantClear(&mut variant) >= 0);
         }
     }
 

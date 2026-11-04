@@ -956,6 +956,9 @@ impl<'a> ProcLower<'a> {
                     PtrKind::Var if matches!(ty, VarTypeRef::Array(_)) => {
                         Some((place.clone(), PtrWritebackKind::ByteArray))
                     }
+                    PtrKind::Var if matches!(ty, VarTypeRef::Udt(_)) => {
+                        Some((place.clone(), PtrWritebackKind::Record))
+                    }
                     PtrKind::Var => scalar_ptr_writeback_kind(self.g.type_ctx, &ty)
                         .map(|kind| (place.clone(), kind)),
                     _ => None,
@@ -963,13 +966,9 @@ impl<'a> ProcLower<'a> {
             } else {
                 None
             };
-            let value = if matches!(kind, PtrKind::Var)
-                && scalar_ptr_writeback_kind(self.g.type_ctx, &ty).is_some()
-            {
-                self.g.coerce_store(CoreValue::Load(place), &ty)
-            } else {
-                CoreValue::Load(place)
-            };
+            // Address the declared variable itself. Coercing this load would
+            // allocate a temporary and make native writes miss the source cell.
+            let value = CoreValue::Load(place);
             return Ok((kind, value, writeback));
         }
         // An r-value operand (literal / expression): pin the value, no write-back.

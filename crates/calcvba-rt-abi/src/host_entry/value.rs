@@ -146,6 +146,12 @@ pub fn needs_helper(inst: &OxInst, layout: &ScalarLayout) -> bool {
         matches!(
             layout.operand_type(op),
             Ok(ScalarType::String
+                | ScalarType::Byte
+                | ScalarType::Integer
+                | ScalarType::LongLong
+                | ScalarType::Single
+                | ScalarType::Currency
+                | ScalarType::Date
                 | ScalarType::Variant
                 | ScalarType::HostObject
                 | ScalarType::Record
@@ -250,9 +256,17 @@ pub unsafe extern "C" fn evaluate(
         if let OxInst::ValidateAssignment {
             src,
             target_type_name,
+            target_kind,
+            intent,
             ..
         } = inst
         {
+            if *target_kind == calcvba_bundle::AssignmentTargetKind::Scalar
+                && *intent != calcvba_bundle::AssignmentIntent::Set
+                && layout.operand_type(src) == Ok(ScalarType::Record)
+            {
+                return 0;
+            }
             return (|| -> Result<(), i32> {
                 let value = read(src)?;
                 if value.vtype() != VarType::Object {

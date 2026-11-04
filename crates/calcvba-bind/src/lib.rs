@@ -258,6 +258,51 @@ fn bind_one(
     // The active project's published surface → this bundle's exports (the contract
     // a referrer's imports resolve against). Imports were accumulated while lowering.
     let exports = build_exports(env, &ids);
+    fn record_names(
+        ty: &calcvba_bundle::VarTypeRef,
+        env: &ResolutionEnvironment,
+        names: &mut std::collections::BTreeSet<String>,
+    ) {
+        use calcvba_bundle::VarTypeRef;
+        match ty {
+            VarTypeRef::Udt(name) | VarTypeRef::Object(name) if env.is_udt(name) => {
+                names.insert(name.clone());
+            }
+            VarTypeRef::Array(element) | VarTypeRef::FixedArray { element, .. } => {
+                record_names(element, env, names)
+            }
+            _ => {}
+        }
+    }
+    let mut names = std::collections::BTreeSet::new();
+    for global in &ids.globals {
+        record_names(&global.ty, env, &mut names);
+    }
+    for proc in &procs {
+        for parameter in &proc.params {
+            record_names(&parameter.ty, env, &mut names);
+        }
+        for local in &proc.locals {
+            record_names(&local.ty, env, &mut names);
+        }
+    }
+    for class in &classes {
+        for field in &class.fields {
+            record_names(&field.ty, env, &mut names);
+        }
+    }
+    let record_types = names
+        .into_iter()
+        .filter_map(|name| {
+            if let calcvba_bundle::ArrayElementType::Record(fields) =
+                lower.array_element_layout(&calcvba_bundle::VarTypeRef::Udt(name.clone()))
+            {
+                Some((name, fields))
+            } else {
+                None
+            }
+        })
+        .collect();
     let imports = lower.imports.into_inner().imports;
 
     let mut object_names = lower.retained_object_names.into_inner();
@@ -301,6 +346,7 @@ fn bind_one(
         .collect();
 
     Ok(CoreProgram {
+        record_types,
         long_ptr_width: core_long_ptr_width(manifest.conditional_compilation_target),
         globals: ids.globals.clone(),
         procs,

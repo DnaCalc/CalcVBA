@@ -1,6 +1,10 @@
 //! Linked once by CalcVBA developers, then finished and shipped. These exports
 //! retain helpers through linking; the finisher hides them in the final image.
 //! The runtime has no loader, dispatcher, interpreter or JIT dependency.
+#[cfg(windows)]
+mod foreign;
+#[cfg(windows)]
+mod values;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn cvb_identity_i32(value: i32) -> i32 {
@@ -78,7 +82,8 @@ pub static CVB_TEMPLATE_ABI: u64 =
 
 #[cfg(windows)]
 mod thread {
-    use std::sync::atomic::{AtomicPtr, Ordering};
+    use calcvba_rt_abi::native_export::{Context, WRONG_THREAD};
+    use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
     use windows_sys::Win32::{
         Foundation::{
             CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, GetLastError, SetLastError,
@@ -94,12 +99,14 @@ mod thread {
         },
     };
     static OWNER: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+    static LAST_ERROR: AtomicI32 = AtomicI32::new(0);
 
     #[unsafe(no_mangle)]
     pub extern "C" fn cvb_enter_scalar() -> i32 {
         // SAFETY: OS pseudo handles are valid in this process. The retained
         // real handle identifies the original thread even after termination.
         unsafe {
+            let saved_error = GetLastError();
             let mut owner = OWNER.load(Ordering::Acquire);
             if owner.is_null() {
                 let mut candidate = std::ptr::null_mut();
@@ -134,12 +141,140 @@ mod thread {
             if WaitForSingleObject(owner, 0) == WAIT_TIMEOUT
                 && GetThreadId(owner) == GetCurrentThreadId()
             {
+                SetLastError(saved_error);
                 0
             } else {
-                SetLastError(1444);
-                1444
+                LAST_ERROR.store(WRONG_THREAD, Ordering::Release);
+                SetLastError(WRONG_THREAD as u32);
+                WRONG_THREAD
             }
         }
+    }
+
+    /// # Safety
+    /// context belongs to this DLL and the accepted owning thread; source is
+    /// immutable UTF-8 image data that remains live until the DLL is unloaded.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn cvb_record_error(
+        context: *mut Context,
+        code: i32,
+        source: *const u8,
+        len: usize,
+    ) -> i32 {
+        // SAFETY: emitted wrappers call only after the thread check succeeds.
+        unsafe {
+            let explicit = (*context).error_number == code && code != 0;
+            if !explicit || (*context).custom_error & 1 == 0 {
+                (*context).error_source = source;
+                (*context).error_source_len = len;
+            }
+            if !explicit {
+                (*context).custom_error = 0;
+            }
+            (*context).error_number = code;
+        }
+        LAST_ERROR.store(code, Ordering::Release);
+        calcvba_rt_abi::native_export::hresult(code)
+    }
+
+    /// # Safety
+    /// context is uniquely owned by this calling VBA thread. Text spans immutable
+    /// UTF-8 image data; flags distinguishes omitted text from explicit empty text.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn cvb_raise(
+        context: *mut Context,
+        number: i32,
+        source: *const u8,
+        source_len: usize,
+        description: *const u8,
+        description_len: usize,
+        flags: u32,
+    ) -> i32 {
+        let number = if number == 0 { 5 } else { number };
+        // SAFETY: generated code retains this unique context and both constants.
+        unsafe {
+            (*context).error_number = number;
+            (*context).error_source = source;
+            (*context).error_source_len = source_len;
+            (*context).error_description = description;
+            (*context).error_description_len = description_len;
+            (*context).custom_error = flags;
+        }
+        number
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn cvb_last_dll_error() -> i32 {
+        // SAFETY: GetLastError reads only calling-thread state.
+        unsafe { GetLastError() as i32 }
+    }
+
+    /// # Safety
+    /// context is this image's state; nonnull outputs are writable BSTR* cells.
+    /// Returned BSTRs belong to the caller (SysFreeString).
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn cvb_get_last_error(
+        context: *const Context,
+        source: *mut *mut u16,
+        description: *mut *mut u16,
+    ) -> i32 {
+        // SAFETY: GetLastError reads only the current thread state.
+        let saved_error = unsafe { GetLastError() };
+        let wrong = cvb_enter_scalar() != 0;
+        if wrong {
+            return WRONG_THREAD;
+        }
+        let code = LAST_ERROR.load(Ordering::Acquire);
+        let text = if wrong || code == WRONG_THREAD {
+            "CalcVBA native export"
+        } else if code == 0 {
+            ""
+        } else {
+            // SAFETY: only the owner reads its source. Other threads only set
+            // the atomic code and never access or mutate these fields.
+            unsafe { image_text((*context).error_source, (*context).error_source_len) }
+        };
+        // SAFETY: the owner alone accesses context fields; foreign calls returned above.
+        let explicit_description =
+            unsafe { code == (*context).error_number && (*context).custom_error & 2 != 0 };
+        let message = if code == 0 {
+            ""
+        } else if code == WRONG_THREAD {
+            "Native VBA calls must run on the owning thread"
+        } else if explicit_description {
+            // SAFETY: explicit text is retained immutable UTF-8 image data.
+            unsafe {
+                image_text(
+                    (*context).error_description,
+                    (*context).error_description_len,
+                )
+            }
+        } else {
+            calcvba_runtime::vba_error::default_error_message(code)
+        };
+        // SAFETY: caller provided live optional output cells, never inputs.
+        unsafe {
+            if !source.is_null() {
+                source.write(calcvba_runtime::bstr::BStr::from(text).into_raw_bstr());
+            }
+            if !description.is_null() {
+                description.write(calcvba_runtime::bstr::BStr::from(message).into_raw_bstr());
+            }
+            SetLastError(if wrong {
+                WRONG_THREAD as u32
+            } else {
+                saved_error
+            });
+        }
+        code
+    }
+
+    unsafe fn image_text<'a>(pointer: *const u8, len: usize) -> &'a str {
+        if len == 0 {
+            return "";
+        }
+        // SAFETY: caller supplies a retained immutable UTF-8 span of len bytes.
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(pointer, len)) }
     }
     #[unsafe(no_mangle)]
     unsafe extern "system" fn DllMain(

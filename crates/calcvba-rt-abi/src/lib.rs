@@ -32,6 +32,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 use std::slice;
 pub mod automatic_events;
+pub mod native_export;
 
 /// Project-instance ids start above class route keys, matching vm3/vm2 allocation.
 pub const INSTANCE_ID_BASE: i32 = 0x1000_0000;

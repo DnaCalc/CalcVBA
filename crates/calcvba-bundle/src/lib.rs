@@ -170,6 +170,7 @@ pub enum DeclareParamType {
     LongPtr,
     Variant,
     Any,
+    Array,
 }
 
 /// A `Declare Lib` external-call descriptor, referenced by `NativeCallee::Declare`.

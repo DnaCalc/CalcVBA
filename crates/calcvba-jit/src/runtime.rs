@@ -1468,6 +1468,16 @@ pub(crate) unsafe fn coerce_call_arg_for_param(
     param_ty: &OxTy,
     value: &Variant,
 ) -> Result<Variant, i32> {
+    if let Some(target) = numeric_call_target(param_ty) {
+        let mut result = Variant::empty();
+        // SAFETY: the live call owns the source clone and private result.
+        let status = unsafe { rt_coerce_numeric_v(state, target, value, &mut result) };
+        return if status == ST_OK {
+            Ok(result)
+        } else {
+            Err(status)
+        };
+    }
     match param_ty {
         // SAFETY: the current compiled-run boundary owns the live unique state handle;
         // typed references and owned values remain live and nonaliasing for this call.
@@ -1477,6 +1487,21 @@ pub(crate) unsafe fn coerce_call_arg_for_param(
         OxTy::FixedStr(len) => unsafe { coerce_fixed_string_call_arg(state, *len, value) },
         _ => Ok(value.clone()),
     }
+}
+
+pub(crate) fn numeric_call_target(ty: &OxTy) -> Option<u32> {
+    Some(match ty {
+        OxTy::Byte => RT_NUMERIC_CHECKED_BYTE,
+        OxTy::Integer => RT_NUMERIC_CHECKED_INTEGER,
+        OxTy::Long => RT_NUMERIC_CHECKED_LONG,
+        OxTy::LongLong => RT_NUMERIC_CHECKED_LONGLONG,
+        OxTy::Single => RT_NUMERIC_CHECKED_SINGLE,
+        OxTy::Double => RT_NUMERIC_CHECKED_DOUBLE,
+        OxTy::Currency => RT_NUMERIC_CHECKED_CURRENCY,
+        OxTy::Date => RT_NUMERIC_CHECKED_DATE,
+        OxTy::Bool => RT_NUMERIC_CHECKED_BOOLEAN,
+        _ => return None,
+    })
 }
 
 pub(crate) fn hidden_me_receiver_param_count(func: &OxFunc) -> usize {
@@ -1644,15 +1669,11 @@ pub(crate) unsafe fn seed_jit_member_frame_args(
                 };
                 frame.locals[param_index] = value;
             }
-            JIT_CALL_ARG_BYVAL_VARIANT if !param_info.by_ref && matches!(param.ty, OxTy::Long) => {
-                let Some(value) = call_arg_long_i32_value(run, arg) else {
-                    return ST_FAULT;
-                };
-                frame.locals[param_index] = Variant::from_i32(value);
-            }
             JIT_CALL_ARG_BYVAL_VARIANT
                 if !param_info.by_ref
-                    && (is_jit_variant_carrier_ty(&param.ty) || param_info.variadic) =>
+                    && (is_jit_variant_carrier_ty(&param.ty)
+                        || numeric_call_target(&param.ty).is_some()
+                        || param_info.variadic) =>
             {
                 let param_array_aliases = if param_info.variadic {
                     param_array_aliases_for_call_arg(run, arg)

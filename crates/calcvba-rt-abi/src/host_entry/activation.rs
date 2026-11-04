@@ -1197,6 +1197,14 @@ pub fn kind(ty: ScalarType) -> u32 {
         ScalarType::Interface(_) => 3,
         ScalarType::Record => 8,
         ScalarType::Array => 9,
+        // Native numeric entries use their direct cells. They are deliberately
+        // not admitted to the retained activation ABI yet (zero is invalid).
+        ScalarType::Byte
+        | ScalarType::Integer
+        | ScalarType::LongLong
+        | ScalarType::Single
+        | ScalarType::Currency
+        | ScalarType::Date => 0,
     }
 }
 fn decode_kind(kind: u32) -> Option<ScalarType> {

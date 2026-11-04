@@ -43,8 +43,8 @@ pub use manifest::{
 pub use model::{
     BasProj, BasProjComReference, BasProjModule, BasProjModuleKind, BasProjNativeExport,
     BasProjNativeReference, BasProjProjectReference, BasProjProjectReferenceKind,
-    BasProjProperties, BuildTarget, CallingConvention, ClassModuleMetadata, Instancing,
-    NativeExportDescriptor, OutputType, RuntimeFlavor,
+    BasProjProperties, BuildTarget, CallingConvention, ClassModuleMetadata, ErrorPolicy,
+    Instancing, NativeExportDescriptor, OutputType, RuntimeFlavor, StringEncoding,
 };
 pub use parse::parse_basproj_xml;
 pub use vbp::{generate_basproj_from_vbp, load_vbp, load_vbp_from_str, parse_vbp};

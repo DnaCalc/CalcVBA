@@ -145,6 +145,23 @@ pub struct BasProjNativeExport {
     pub procedure: Option<String>,
     pub calling_convention: Option<CallingConvention>,
     pub ordinal: Option<u16>,
+    pub string_encoding: StringEncoding,
+    pub error_policy: ErrorPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StringEncoding {
+    #[default]
+    Bstr,
+    Utf16,
+    Ansi,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ErrorPolicy {
+    #[default]
+    Zero,
+    HResult,
 }
 
 /// Calling convention for native exports.
@@ -170,6 +187,8 @@ pub struct NativeExportDescriptor {
     pub procedure_name: String,
     pub calling_convention: CallingConvention,
     pub ordinal: Option<u16>,
+    pub string_encoding: StringEncoding,
+    pub error_policy: ErrorPolicy,
     /// Native export signature, when known (the clean path leaves these `None`;
     /// the legacy native-export validator that populated them was removed).
     pub kind: Option<crate::manifest::ExportKind>,

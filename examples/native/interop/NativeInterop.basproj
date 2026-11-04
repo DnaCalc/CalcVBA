@@ -1,0 +1,43 @@
+<Project Sdk="CalcVBA.Sdk/0.1.0">
+  <PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>NativeInterop</ProjectName></PropertyGroup>
+  <ItemGroup>
+    <Module Include="Interop.bas" />
+    <NativeExport Include="GrowMatrix"><Module>Interop</Module><Procedure>GrowMatrix</Procedure></NativeExport>
+    <NativeExport Include="StoreString"><Module>Interop</Module><Procedure>StoreString</Procedure></NativeExport>
+    <NativeExport Include="HoldObject"><Module>Interop</Module><Procedure>HoldObject</Procedure></NativeExport>
+    <Module Include="TextCompare.bas" />
+    <NativeExport Include="TextSame"><Module>TextCompare</Module><Procedure>TextSame</Procedure></NativeExport>
+    <NativeExport Include="VariantTruth"><Module>Interop</Module><Procedure>VariantTruth</Procedure></NativeExport>
+    <NativeExport Include="SmallRecord"><Module>Interop</Module><Procedure>SmallRecord</Procedure></NativeExport>
+    <NativeExport Include="ValueSuite"><Module>Interop</Module><Procedure>ValueSuite</Procedure></NativeExport>
+    <NativeExport Include="Bump"><Module>Interop</Module><Procedure>Bump</Procedure></NativeExport>
+    <NativeExport Include="BumpDouble"><Module>Interop</Module><Procedure>BumpDouble</Procedure></NativeExport>
+    <NativeExport Include="Flip"><Module>Interop</Module><Procedure>Flip</Procedure></NativeExport>
+    <NativeExport Include="NextValue"><Module>Interop</Module><Procedure>NextValue</Procedure></NativeExport>
+    <NativeExport Include="StaticValue"><Module>Interop</Module><Procedure>StaticValue</Procedure></NativeExport>
+    <NativeExport Include="Divide"><Module>Interop</Module><Procedure>Divide</Procedure></NativeExport>
+    <NativeExport Include="DivideHResult"><Module>Interop</Module><Procedure>Divide</Procedure><ErrorPolicy>HResult</ErrorPolicy></NativeExport>
+    <NativeExport Include="Mutate"><Module>Interop</Module><Procedure>Mutate</Procedure></NativeExport>
+    <NativeExport Include="Nested"><Module>Interop</Module><Procedure>Nested</Procedure></NativeExport>
+    <NativeExport Include="EchoString"><Module>Interop</Module><Procedure>EchoString</Procedure></NativeExport>
+    <NativeExport Include="MutateString"><Module>Interop</Module><Procedure>MutateString</Procedure></NativeExport>
+    <NativeExport Include="StringLength"><Module>Interop</Module><Procedure>StringLength</Procedure></NativeExport>
+    <NativeExport Include="AddVariant"><Module>Interop</Module><Procedure>AddVariant</Procedure></NativeExport>
+    <NativeExport Include="VariantText"><Module>Interop</Module><Procedure>VariantText</Procedure></NativeExport>
+    <NativeExport Include="EchoObject"><Module>Interop</Module><Procedure>EchoObject</Procedure></NativeExport>
+    <NativeExport Include="SameObject"><Module>Interop</Module><Procedure>SameObject</Procedure></NativeExport>
+    <NativeExport Include="ClearObject"><Module>Interop</Module><Procedure>ClearObject</Procedure></NativeExport>
+    <NativeExport Include="LengthAnsi"><Module>Interop</Module><Procedure>StringLength</Procedure><StringEncoding>Ansi</StringEncoding></NativeExport>
+    <NativeExport Include="LengthUtf16"><Module>Interop</Module><Procedure>StringLength</Procedure><StringEncoding>Utf16</StringEncoding></NativeExport>
+    <NativeExport Include="ChangeRecord"><Module>Interop</Module><Procedure>ChangeRecord</Procedure></NativeExport>
+    <NativeExport Include="EchoRecord"><Module>Interop</Module><Procedure>EchoRecord</Procedure></NativeExport>
+    <NativeExport Include="SumArray"><Module>Interop</Module><Procedure>SumArray</Procedure></NativeExport>
+    <NativeExport Include="ChangeArray"><Module>Interop</Module><Procedure>ChangeArray</Procedure></NativeExport>
+    <NativeExport Include="ReadMatrix"><Module>Interop</Module><Procedure>ReadMatrix</Procedure></NativeExport>
+    <NativeExport Include="AllocateArray"><Module>Interop</Module><Procedure>AllocateArray</Procedure></NativeExport>
+    <NativeExport Include="RaiseCustom"><Module>Interop</Module><Procedure>RaiseCustom</Procedure></NativeExport>
+    <NativeExport Include="ReadLastDllError"><Module>Interop</Module><Procedure>ReadLastDllError</Procedure></NativeExport>
+    <NativeExport Include="SameString"><Module>Interop</Module><Procedure>SameString</Procedure></NativeExport>
+    <NativeExport Include="JoinArray"><Module>Interop</Module><Procedure>JoinArray</Procedure></NativeExport>
+  </ItemGroup>
+</Project>

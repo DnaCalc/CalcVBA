@@ -54,6 +54,14 @@ pub fn build_native_library(
         .ok_or_else(|| native_error("empty native project"))?;
     let mut roots = Vec::new();
     for selected in &loaded.native_exports {
+        if ["CalcVbaGetLastError", "CalcVbaShutdown"]
+            .iter()
+            .any(|name| selected.exported_name.eq_ignore_ascii_case(name))
+        {
+            return Err(native_error(
+                "CalcVbaGetLastError and CalcVbaShutdown are reserved runtime exports",
+            ));
+        }
         let module = loaded
             .manifest
             .modules
@@ -134,14 +142,99 @@ pub fn build_native_library(
                 .map_err(native_error)?,
         );
     }
+    let mut value_helpers = std::collections::HashMap::new();
+    for (name, params) in calcvba_jit::native::value_helper_signatures() {
+        let mut signature = module.make_signature();
+        signature.params = params.iter().copied().map(AbiParam::new).collect();
+        signature.returns.push(AbiParam::new(types::I32));
+        value_helpers.insert(
+            *name,
+            module
+                .declare_helper(name, 1, &signature)
+                .map_err(native_error)?,
+        );
+    }
+    let mut foreign_states = std::collections::HashMap::new();
+    for descriptor in &program.external_calls {
+        let id = module
+            .declare_anonymous_data(true, false)
+            .map_err(native_error)?;
+        let mut data = cranelift_module::DataDescription::new();
+        data.define(vec![0; 16].into_boxed_slice());
+        data.set_align(8);
+        module.define_data(id, &data).map_err(native_error)?;
+        foreign_states.insert(descriptor.descriptor_id, id);
+    }
     let plans = calcvba_jit::native::compile_native_scalars(
         &mut module,
         program,
         &roots,
         &library_helpers,
         long_from_f64,
+        &value_helpers,
+        &foreign_states,
     )
-    .map_err(native_error)?;
+    .map_err(|error| {
+        let message = error.to_string();
+        for source in &loaded.manifest.modules {
+            for (index, line) in source.source.lines().enumerate() {
+                let words: Vec<_> = line
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .filter(|w| !w.is_empty())
+                    .collect();
+                for pair in words.windows(2) {
+                    if (pair[0].eq_ignore_ascii_case("Function")
+                        || pair[0].eq_ignore_ascii_case("Sub"))
+                        && message.contains(&format!("procedure {}:", pair[1]))
+                    {
+                        return native_error(format!(
+                            "{}:{}:1: {message}",
+                            source.module_name,
+                            index + 1
+                        ));
+                    }
+                }
+            }
+        }
+        native_error(message)
+    })?;
+    let state = module
+        .declare_anonymous_data(true, false)
+        .map_err(native_error)?;
+    let mut bytes = vec![0; calcvba_jit::native::native_state_size(program)];
+    bytes[..8].copy_from_slice(&u64::MAX.to_le_bytes());
+    let mut data = cranelift_module::DataDescription::new();
+    data.define(bytes.into_boxed_slice());
+    data.set_align(8);
+    module.define_data(state, &data).map_err(native_error)?;
+    let mut record_signature = module.make_signature();
+    record_signature.params = vec![
+        AbiParam::new(ptr),
+        AbiParam::new(types::I32),
+        AbiParam::new(ptr),
+        AbiParam::new(ptr),
+    ];
+    record_signature.returns.push(AbiParam::new(types::I32));
+    let record_error = module
+        .declare_helper("cvb_record_error", 1, &record_signature)
+        .map_err(native_error)?;
+    let mut error_signature = module.make_signature();
+    error_signature.params = vec![AbiParam::new(ptr); 3];
+    error_signature.returns.push(AbiParam::new(types::I32));
+    let get_last_error = module
+        .declare_helper("cvb_get_last_error", 1, &error_signature)
+        .map_err(native_error)?;
+    let runtime = calcvba_jit::native::NativeRuntime {
+        foreign_states: foreign_states.values().copied().collect(),
+        values: value_helpers,
+        context: state,
+        enter,
+        record_error,
+        get_last_error,
+        initializer: program
+            .global_initializer
+            .and_then(|id| plans.iter().find(|p| p.procedure == id).map(|p| p.function)),
+    };
     let mut exports = Vec::new();
     for (index, (selected, root)) in loaded.native_exports.iter().zip(&roots).enumerate() {
         let body = plans
@@ -152,11 +245,26 @@ pub fn build_native_library(
             &mut module,
             &format!("cvb$export${index}"),
             body,
-            enter,
+            &runtime,
+            calcvba_jit::native::NativeWrapperOptions {
+                hresult: selected.error_policy == calcvba_project::ErrorPolicy::HResult,
+                string_encoding: match selected.string_encoding {
+                    calcvba_project::StringEncoding::Bstr => 0,
+                    calcvba_project::StringEncoding::Utf16 => 1,
+                    calcvba_project::StringEncoding::Ansi => 2,
+                },
+                source: &loaded.manifest.project_name,
+            },
         )
         .map_err(native_error)?;
         exports.push((selected.exported_name.clone(), selected.ordinal, wrapper));
     }
+    let error_accessor = calcvba_jit::native::compile_last_error_wrapper(&mut module, &runtime)
+        .map_err(native_error)?;
+    exports.push(("CalcVbaGetLastError".into(), None, error_accessor));
+    let shutdown = calcvba_jit::native::compile_shutdown_wrapper(&mut module, program, &runtime)
+        .map_err(native_error)?;
+    exports.push(("CalcVbaShutdown".into(), None, shutdown));
     let mut native = module.finish(&template, &exports).map_err(native_error)?;
     native.image = image.to_bytes().map_err(native_error)?;
     let name = artifact_stem(&loaded.manifest.project_name);
@@ -168,12 +276,11 @@ pub fn build_native_library(
         let source = loaded
             .native_exports
             .iter()
-            .find(|e| e.exported_name == *name)
-            .expect("selected export");
-        map.push_str(&format!(
-            "{name}\t{ordinal}\t{}.{}\t{rva:#010x}\n",
-            source.module_name, source.procedure_name
-        ));
+            .find(|e| e.exported_name == *name);
+        let procedure = source
+            .map(|e| format!("{}.{}", e.module_name, e.procedure_name))
+            .unwrap_or_else(|| "runtime error accessor".into());
+        map.push_str(&format!("{name}\t{ordinal}\t{procedure}\t{rva:#010x}\n"));
     }
     // All compilation, relocation and PE checks succeeded before publishing.
     fs::create_dir_all(&options.out_dir).map_err(|source| BuildError::Io {

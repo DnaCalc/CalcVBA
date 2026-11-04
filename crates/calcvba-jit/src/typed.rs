@@ -364,8 +364,12 @@ pub(crate) fn compile_resumable_entries(
 
 pub(crate) fn machine_type(ty: ScalarType) -> ir::Type {
     match ty {
-        ScalarType::Double => types::F64,
-        ScalarType::Long | ScalarType::Boolean => types::I32,
+        ScalarType::Double | ScalarType::Date => types::F64,
+        ScalarType::Single => types::F32,
+        ScalarType::Long | ScalarType::Boolean | ScalarType::Byte | ScalarType::Integer => {
+            types::I32
+        }
+        ScalarType::LongLong | ScalarType::Currency => types::I64,
         ScalarType::HostObject
         | ScalarType::String
         | ScalarType::Variant
@@ -563,10 +567,30 @@ pub(crate) struct ScalarLower<'a> {
 pub(crate) enum PhysicalSlots {
     Stack(ir::StackSlot),
     Frame(Value),
+    /// Each cell contains a native address. ByRef parameters and globals point
+    /// at their canonical storage, preserving aliases through direct calls.
+    Native(ir::StackSlot),
 }
 impl ScalarLower<'_> {
     fn load_slot(&self, b: &mut FunctionBuilder<'_>, index: usize, ty: ScalarType) -> Value {
         match self.slots {
+            PhysicalSlots::Native(pointers) => {
+                let pointer = b.ins().stack_load(types::I64, pointers, (index * 8) as i32);
+                if matches!(ty, ScalarType::Variant | ScalarType::Record) {
+                    pointer
+                } else if matches!(ty, ScalarType::Boolean | ScalarType::Integer) {
+                    let value = b
+                        .ins()
+                        .load(types::I16, ir::MemFlagsData::new(), pointer, 0);
+                    b.ins().sextend(types::I32, value)
+                } else if ty == ScalarType::Byte {
+                    let value = b.ins().load(types::I8, ir::MemFlagsData::new(), pointer, 0);
+                    b.ins().uextend(types::I32, value)
+                } else {
+                    b.ins()
+                        .load(machine_type(ty), ir::MemFlagsData::new(), pointer, 0)
+                }
+            }
             PhysicalSlots::Stack(slots) => {
                 b.ins()
                     .stack_load(machine_type(ty), slots, (index * 8) as i32)
@@ -653,6 +677,17 @@ impl ScalarLower<'_> {
         value: Value,
     ) {
         match self.slots {
+            PhysicalSlots::Native(pointers) => {
+                let pointer = b.ins().stack_load(types::I64, pointers, (index * 8) as i32);
+                let value = if matches!(ty, ScalarType::Boolean | ScalarType::Integer) {
+                    b.ins().ireduce(types::I16, value)
+                } else if ty == ScalarType::Byte {
+                    b.ins().ireduce(types::I8, value)
+                } else {
+                    value
+                };
+                b.ins().store(ir::MemFlagsData::new(), value, pointer, 0);
+            }
             PhysicalSlots::Stack(slots) => {
                 b.ins().stack_store(value, slots, (index * 8) as i32);
             }
@@ -720,6 +755,11 @@ impl ScalarLower<'_> {
             OxOperand::Const(OxConst::F64(bits)) => b.ins().f64const(Ieee64::with_bits(*bits)),
             OxOperand::Const(OxConst::I16(value)) => b.ins().iconst(types::I32, i64::from(*value)),
             OxOperand::Const(OxConst::I32(value)) => b.ins().iconst(types::I32, i64::from(*value)),
+            OxOperand::Const(OxConst::I64(value) | OxConst::Currency(value)) => {
+                b.ins().iconst(types::I64, *value)
+            }
+            OxOperand::Const(OxConst::F32(bits)) => b.ins().f32const(Ieee32::with_bits(*bits)),
+            OxOperand::Const(OxConst::Date(bits)) => b.ins().f64const(Ieee64::with_bits(*bits)),
             OxOperand::Const(OxConst::Bool(value)) => {
                 b.ins().iconst(types::I32, if *value { -1 } else { 0 })
             }
@@ -766,7 +806,6 @@ impl ScalarLower<'_> {
                 );
                 b.ins().stack_load(types::I64, output, 0)
             }
-            _ => unreachable!("admitted operand"),
         };
         if from == ScalarType::Long && to == ScalarType::Double {
             b.ins().fcvt_from_sint(types::F64, value)
@@ -919,7 +958,7 @@ impl ScalarLower<'_> {
         };
         let index = self.layout.slot(dst).expect("admitted destination");
         match self.slots {
-            PhysicalSlots::Stack(_) => {
+            PhysicalSlots::Stack(_) | PhysicalSlots::Native(_) => {
                 let value = b.ins().stack_load(machine_type(plan.result), output, 0);
                 self.store_slot(b, index, plan.result, value);
             }

@@ -299,6 +299,9 @@ impl ProgramResolver {
         for global in &program.globals {
             this.harvest_record_layout_from_decl(&global.ty, global.array_element.as_ref());
         }
+        for (name, fields) in &program.record_types {
+            this.intern_record_layout(name, fields.clone());
+        }
         for class in &program.classes {
             for field in &class.fields {
                 this.harvest_record_layout_from_decl(&field.ty, field.array_element.as_ref());

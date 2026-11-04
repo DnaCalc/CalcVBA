@@ -38,7 +38,7 @@ fn patched_numeric_exports_roundtrip_through_vm3_and_jit_declare() {
     .unwrap();
     let bytes = std::fs::read(&output.dll_path).unwrap();
     let file = object::File::parse(bytes.as_slice()).unwrap();
-    assert_eq!(file.exports().unwrap().len(), 32);
+    assert_eq!(file.exports().unwrap().len(), 34);
     assert!(file.section_by_name(".cvbtext").is_some());
     let image = file.section_by_name(".cvbimg").unwrap();
     let parsed =
@@ -67,7 +67,7 @@ fn patched_numeric_exports_roundtrip_through_vm3_and_jit_declare() {
 }
 
 #[test]
-fn native_build_refuses_private_byref_state_and_unsupported_reachable_bodies() {
+fn native_build_refuses_private_optional_paramarray_and_unsupported_reachable_bodies() {
     let temp = Directory::new();
     let cases = [
         (
@@ -75,20 +75,28 @@ fn native_build_refuses_private_byref_state_and_unsupported_reachable_bodies() {
             "no Public procedure",
         ),
         (
-            "Public Function Selected(ByRef x As Long) As Long\nSelected=x\nEnd Function",
-            "ByVal",
+            "Public Function Selected(Optional ByVal x As Long = 0) As Long\nSelected=x\nEnd Function",
+            "optional signature",
         ),
         (
-            "Public counter As Long\nPublic Function Selected(ByVal x As Long) As Long\ncounter=x\nSelected=counter\nEnd Function",
-            "module state",
-        ),
-        (
-            "Public Function Selected(ByVal x As String) As String\nSelected=x\nEnd Function",
-            "ByVal",
+            "Public Function Selected(ParamArray values() As Variant) As Long\nSelected=1&\nEnd Function",
+            "ParamArray signature",
         ),
         (
             "Public Function Selected(ByVal x As Long) As Long\nSelected=Descendant(x)\nEnd Function\nPrivate Function Descendant(ByVal x As Long) As Long\nOn Error Resume Next\nDescendant=x\nEnd Function",
             "Descendant",
+        ),
+        (
+            "Public Function Selected(ByRef values() As String) As Long\nReDim values(0 To 1)\nSelected=1&\nEnd Function",
+            "ReDim on a ByRef String() boundary",
+        ),
+        (
+            "Public Function Selected(ByVal x As Long) As Long\nErr.Raise x, \"source\", CStr(x)\nEnd Function",
+            "typed Raise requires Long number/help and constant text",
+        ),
+        (
+            "Private Declare PtrSafe Sub Foreign Lib \"unused\" (ByRef value As Any)\nPublic Type Payload\ntext As String * 4\nEnd Type\nPublic Function Selected(ByVal x As Long) As Long\nDim value As Payload\nForeign value\nSelected=x\nEnd Function",
+            "UDT parameters require ANSI field marshalling",
         ),
     ];
     for (index, (source, message)) in cases.iter().enumerate() {
@@ -108,7 +116,52 @@ fn native_build_refuses_private_byref_state_and_unsupported_reachable_bodies() {
         .unwrap_err()
         .to_string();
         assert!(error.contains(message), "expected {message} in {error}");
+        if index > 0 {
+            assert!(
+                error.contains("Code:"),
+                "missing source declaration: {error}"
+            );
+        }
         assert!(!out.exists(), "refused build published artifacts");
+    }
+}
+
+#[test]
+fn every_numeric_boundary_width_matches_both_declare_backends_and_direct_bodies() {
+    let temp = Directory::new();
+    let output = build_native_library(&NativeLibraryBuildOptions {
+        project_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/native/widths/NativeWide.basproj"),
+        out_dir: temp.0.clone(),
+        template_path: None,
+    })
+    .unwrap();
+    let client = include_str!("support/native_wide_client.bas")
+        .replace("__DLL__", output.dll_path.to_str().unwrap());
+    let expected = include_str!("support/native_wide_expected.txt").trim();
+    let direct = format!(
+        "{}\nPublic Sub Main()\nDim observed As String\nobserved=WideSuite()\nEnd Sub\n",
+        include_str!("../../../examples/native/widths/Wide.bas")
+    );
+    let direct_expected = "255:255:-1:-1:9007199254740994:9007199254740994:81985529216486903:81985529216486903:1.75:1.75:12346:12346:45000.75:45000.75:45106.5";
+    for config in [
+        calcvba_engine::HostConfig::vm3(),
+        calcvba_engine::HostConfig::jit(),
+    ] {
+        let mut engine = calcvba_engine::Engine::new(config);
+        engine.set_host_policy(calcvba_hal::model::HostPolicy::native());
+        for (source, expected) in [(&client, expected), (&direct, direct_expected)] {
+            let values = engine
+                .execute_source_with_variant_snapshot_clean(source)
+                .unwrap();
+            assert!(
+                values
+                    .iter()
+                    .filter_map(|v| v.as_bstr())
+                    .any(|v| v.to_string() == expected),
+                "numeric boundary/direct results: {values:?}"
+            );
+        }
     }
 }
 
@@ -229,6 +282,96 @@ fn discarded_numeric_conversions_still_execute_and_propagate_errors() {
                 .filter_map(|value| value.as_bstr())
                 .any(|value| value.to_string() == "42|0|42|42|42"),
             "discarded conversions: {values:?}"
+        );
+    }
+}
+
+#[test]
+fn native_ownership_state_errors_and_arrays_roundtrip_through_both_declare_backends() {
+    let temp = Directory::new();
+    let output = build_native_library(&NativeLibraryBuildOptions {
+        project_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/native/interop/NativeInterop.basproj"),
+        out_dir: temp.0.clone(),
+        template_path: None,
+    })
+    .unwrap();
+    let source = include_str!("support/native_interop_client.bas")
+        .replace("__DLL__", output.dll_path.to_str().unwrap());
+    let expected = include_str!("support/native_interop_expected.txt").trim();
+    for config in [
+        calcvba_engine::HostConfig::vm3(),
+        calcvba_engine::HostConfig::jit(),
+    ] {
+        let mut engine = calcvba_engine::Engine::new(config);
+        engine.set_host_policy(calcvba_hal::model::HostPolicy::native());
+        let values = engine
+            .execute_source_with_variant_snapshot_clean(&source)
+            .unwrap();
+        assert!(
+            values
+                .iter()
+                .filter_map(|v| v.as_bstr())
+                .any(|v| v.to_string() == expected),
+            "native interop values: {values:?}"
+        );
+    }
+}
+
+#[test]
+fn the_same_owning_bodies_agree_in_native_vm3_and_jit() {
+    let source = include_str!("../../../examples/native/interop/Interop.bas");
+    let source = format!(
+        "{source}\nPublic Sub Main()\nDim observed As String\nobserved = ValueSuite()\nEnd Sub\n"
+    );
+    let expected = "19:6:13:24:12:3.5:1.75:False:<omega>:omega!:6:42:42:8.75:ab!:49:-2:3.5:3.75:3.75:6:7.5:left|right:right!:True:9:9:7";
+    for config in [
+        calcvba_engine::HostConfig::vm3(),
+        calcvba_engine::HostConfig::jit(),
+    ] {
+        let engine = calcvba_engine::Engine::new(config);
+        let values = engine
+            .execute_source_with_variant_snapshot_clean(&source)
+            .unwrap();
+        assert!(
+            values
+                .iter()
+                .filter_map(|v| v.as_bstr())
+                .any(|v| v.to_string() == expected),
+            "direct bodies: {values:?}"
+        );
+    }
+    // The C and Declare clients execute ValueSuite through its named AOT export
+    // and check this same literal, including every mutable result it observes.
+}
+
+#[test]
+fn ordinary_vba_xll_conversions_use_native_pointers_and_declares() {
+    let temp = Directory::new();
+    let output = build_native_library(&NativeLibraryBuildOptions {
+        project_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/native/xll/PlainXll.basproj"),
+        out_dir: temp.0.clone(),
+        template_path: None,
+    })
+    .unwrap();
+    let source = include_str!("support/native_xll_client.bas")
+        .replace("__DLL__", output.dll_path.to_str().unwrap());
+    for config in [
+        calcvba_engine::HostConfig::vm3(),
+        calcvba_engine::HostConfig::jit(),
+    ] {
+        let mut engine = calcvba_engine::Engine::new(config);
+        engine.set_host_policy(calcvba_hal::model::HostPolicy::native());
+        let values = engine
+            .execute_source_with_variant_snapshot_clean(&source)
+            .unwrap();
+        assert!(
+            values
+                .iter()
+                .filter_map(|v| v.as_bstr())
+                .any(|v| v.to_string() == "5.75|3.75|9|16385|1|0"),
+            "XLOPER12 conversions: {values:?}"
         );
     }
 }

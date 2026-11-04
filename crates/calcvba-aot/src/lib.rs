@@ -33,6 +33,7 @@ struct Function {
 struct Data {
     bytes: Vec<u8>,
     alignment: usize,
+    writable: bool,
 }
 pub struct PeModule {
     isa: Arc<dyn isa::TargetIsa>,
@@ -118,19 +119,29 @@ impl PeModule {
                 });
             }
         }
-        let layout = template
-            .layout(text.len())
-            .map_err(|e| Error(e.to_string()))?;
         let mut data = Vec::new();
+        let mut writable = Vec::new();
         let mut data_offsets = BTreeMap::new();
         for (id, value) in &self.data {
-            pad(&mut data, value.alignment);
+            let destination = if value.writable {
+                &mut writable
+            } else {
+                &mut data
+            };
+            pad(destination, value.alignment);
             data_offsets.insert(
                 *id,
-                u32::try_from(data.len()).map_err(|_| Error("data exceeds RVA range".into()))?,
+                (
+                    value.writable,
+                    u32::try_from(destination.len())
+                        .map_err(|_| Error("data exceeds RVA range".into()))?,
+                ),
             );
-            data.extend_from_slice(&value.bytes);
+            destination.extend_from_slice(&value.bytes);
         }
+        let layout = template
+            .layout_with_data(text.len(), writable.len())
+            .map_err(|e| Error(e.to_string()))?;
         let resolve = |name: &ModuleRelocTarget| -> Result<u32> {
             match name {
                 ModuleRelocTarget::User {
@@ -168,13 +179,16 @@ impl PeModule {
                     namespace: 1,
                     index,
                 } => {
-                    let offset = data_offsets
+                    let (writable, offset) = data_offsets
                         .get(&DataId::from_u32(*index))
                         .ok_or_else(|| Error("unresolved data".into()))?;
-                    layout
-                        .read_only_rva
-                        .checked_add(*offset)
-                        .ok_or_else(|| Error("data RVA overflow".into()))
+                    (if *writable {
+                        layout.data_rva
+                    } else {
+                        layout.read_only_rva
+                    })
+                    .checked_add(*offset)
+                    .ok_or_else(|| Error("data RVA overflow".into()))
                 }
                 ModuleRelocTarget::FunctionOffset(id, offset) => {
                     if self
@@ -244,6 +258,7 @@ impl PeModule {
         Ok(Program {
             text,
             read_only: data,
+            data: writable,
             exports,
             unwind,
             ..Program::default()
@@ -280,16 +295,20 @@ impl Module for PeModule {
         writable: bool,
         tls: bool,
     ) -> ModuleResult<DataId> {
-        if writable || tls {
-            return Err(error("writable/TLS data is not yet implemented"));
+        if tls {
+            return Err(error(
+                "TLS data is not implemented: VBA has one owning thread",
+            ));
         }
         self.declarations
             .declare_data(name, linkage, writable, tls)
             .map(|(id, _)| id)
     }
     fn declare_anonymous_data(&mut self, writable: bool, tls: bool) -> ModuleResult<DataId> {
-        if writable || tls {
-            return Err(error("writable/TLS data is not yet implemented"));
+        if tls {
+            return Err(error(
+                "TLS data is not implemented: VBA has one owning thread",
+            ));
         }
         self.declarations.declare_anonymous_data(writable, tls)
     }
@@ -392,6 +411,7 @@ impl Module for PeModule {
             Data {
                 bytes,
                 alignment: alignment as usize,
+                writable: self.declarations.get_data_decl(id).writable,
             },
         );
         Ok(())

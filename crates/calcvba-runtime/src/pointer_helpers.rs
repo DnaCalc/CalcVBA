@@ -6,6 +6,113 @@ use std::{
 
 use crate::{Variant, bstr::BStr};
 
+#[cfg(windows)]
+#[derive(Debug)]
+struct OwnedNativeRecord {
+    words: Vec<u64>,
+    layout: std::sync::Arc<crate::vba_record::VbaRecordLayout>,
+    strings: Vec<usize>,
+}
+#[cfg(windows)]
+impl OwnedNativeRecord {
+    fn from_record(record: &crate::vba_record::VbaRecord) -> Result<Self, String> {
+        use crate::vba_record::{VbaRecordFieldKind as F, VbaRecordLayout};
+        fn fields(
+            layout: &VbaRecordLayout,
+            base: usize,
+            strings: &mut Vec<usize>,
+        ) -> Result<(), String> {
+            fn field(kind: &F, offset: usize, strings: &mut Vec<usize>) -> Result<(), String> {
+                match kind {
+                    F::String => strings.push(offset),
+                    F::Record(layout) => fields(layout, offset, strings)?,
+                    F::FixedArray { element, bounds } => {
+                        let count = bounds
+                            .iter()
+                            .try_fold(1usize, |n, b| n.checked_mul(b.count as usize))
+                            .ok_or("native UDT array extent overflow")?;
+                        let stride = element.storage_shape()?.0;
+                        for index in 0..count {
+                            field(element, offset + index * stride, strings)?;
+                        }
+                    }
+                    F::Variant => {
+                        return Err(
+                            "VarPtr over a UDT Variant field requires Automation layout conversion"
+                                .into(),
+                        );
+                    }
+                    _ => {}
+                }
+                Ok(())
+            }
+            for item in layout.fields() {
+                field(item.kind(), base + item.offset(), strings)?;
+            }
+            Ok(())
+        }
+        let mut strings = Vec::new();
+        fields(record.layout(), 0, &mut strings)?;
+        let mut value = Self {
+            words: vec![0; record.memory_len().div_ceil(8)],
+            layout: record.layout().clone(),
+            strings,
+        };
+        let dst = value.words.as_mut_ptr().cast::<u8>();
+        // SAFETY: word-aligned staging covers this complete checked record. Raw
+        // string fields are nulled before any fallible clone owns the staging.
+        unsafe {
+            std::ptr::copy_nonoverlapping(record.data_ptr(), dst, record.memory_len());
+            for offset in &value.strings {
+                dst.add(*offset).cast::<BSTR>().write(std::ptr::null_mut());
+            }
+            for offset in &value.strings {
+                let src = record.data_ptr().add(*offset).cast::<BSTR>().read();
+                if src.is_null() {
+                    continue;
+                }
+                let len = windows_sys::Win32::Foundation::SysStringByteLen(src);
+                let copy = windows_sys::Win32::Foundation::SysAllocStringByteLen(src.cast(), len);
+                if copy.is_null() {
+                    return Err("native UDT BSTR allocation failed".into());
+                }
+                dst.add(*offset).cast::<BSTR>().write(copy);
+            }
+        }
+        Ok(value)
+    }
+    fn read(&self) -> Result<Variant, String> {
+        // SAFETY: native calls leave a complete same-layout record in this pin;
+        // clone returns independent canonical owners before the staging drops.
+        let record = unsafe {
+            crate::vba_record::VbaRecord::clone_from_raw(
+                self.words.as_ptr().cast(),
+                self.layout.clone(),
+            )
+        }?;
+        Ok(Variant::from_vba_record(record))
+    }
+}
+#[cfg(windows)]
+impl Drop for OwnedNativeRecord {
+    fn drop(&mut self) {
+        for offset in &self.strings {
+            // SAFETY: these raw OS BSTR owners were cloned with SysAllocString,
+            // or replaced by native code. No Rust BSTR accounting was attached.
+            unsafe {
+                SysFreeString(
+                    self.words
+                        .as_ptr()
+                        .cast::<u8>()
+                        .add(*offset)
+                        .cast::<BSTR>()
+                        .read(),
+                );
+            }
+        }
+    }
+}
+
 #[cfg(target_os = "windows")]
 use windows_sys::{
     Win32::Foundation::SysFreeString,
@@ -593,6 +700,8 @@ impl Drop for OwnedVariant {
 
 #[derive(Debug)]
 enum PointerEntry {
+    #[cfg(windows)]
+    Record(OwnedNativeRecord),
     #[cfg(target_os = "windows")]
     Bstr(OwnedBstr),
     #[cfg(target_os = "windows")]
@@ -622,6 +731,8 @@ enum PointerEntry {
 impl PointerEntry {
     fn as_ptr(&mut self) -> *mut c_void {
         match self {
+            #[cfg(windows)]
+            Self::Record(value) => value.words.as_mut_ptr().cast(),
             #[cfg(target_os = "windows")]
             Self::Bstr(value) => value.as_ptr(),
             #[cfg(target_os = "windows")]
@@ -899,7 +1010,18 @@ pub fn register_variant_pointer(value: &Variant) -> Result<i64, String> {
             return Err("VarPtr/ObjPtr over Decimal is not yet supported".to_string());
         }
         crate::VarType::Record => {
-            return Err("VarPtr/ObjPtr over COM records is not supported".to_string());
+            #[cfg(windows)]
+            {
+                PointerEntry::Record(OwnedNativeRecord::from_record(
+                    &value
+                        .as_vba_record()
+                        .ok_or("VarPtr over COM records is not supported")?,
+                )?)
+            }
+            #[cfg(not(windows))]
+            {
+                return Err("VarPtr over records is currently Windows-only".into());
+            }
         }
         crate::VarType::ProcRef => {
             return Err("VarPtr/ObjPtr over procedure references is not supported".to_string());
@@ -1053,6 +1175,18 @@ pub fn read_back_scalar_payload_variant(
         .lock()
         .map_err(|_| "pointer helper registry lock poisoned".to_string())?;
     guard.read_back_scalar_payload_variant(pointer, kind)
+}
+
+pub fn read_back_record(pointer: i64) -> Result<Variant, String> {
+    let guard = registry()
+        .lock()
+        .map_err(|_| "pointer helper registry lock poisoned".to_string())?;
+    #[cfg(windows)]
+    if let Some(PointerEntry::Record(record)) = guard.entries.get(&(pointer as usize)) {
+        return record.read();
+    }
+    let _ = (&guard, pointer);
+    Err("pointer helper registry does not contain a native UDT pin".into())
 }
 
 pub fn register_byte_buffer(bytes: Vec<u8>) -> Result<i64, String> {

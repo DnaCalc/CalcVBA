@@ -616,6 +616,7 @@ fn native_alias_storage_type(param_type: &str, value: &Variant) -> Option<&'stat
         "LongLong" | "LongPtr" => "LongLong",
         "Currency" => "Currency",
         "Date" => "Date",
+        "Array" => "Array",
         "String" if value.vtype() == VarType::String => "StringTemporary",
         // One boxed VARIANT, including its owned BSTR, must be shared just as
         // scalar cells are. Reuse the first raw pointer and read/clear the owner
@@ -818,6 +819,7 @@ enum NativeByRefStorage {
         words: Vec<u64>,
     },
     VariantCell(Box<windows_sys::Win32::System::Variant::VARIANT>),
+    ArrayCell(Box<windows_sys::Win32::System::Variant::VARIANT>),
 }
 
 #[cfg(target_os = "windows")]
@@ -857,7 +859,8 @@ impl NativeByRefStorage {
                 let cell = Box::new(buffer.as_mut_ptr());
                 Self::AnsiStringCell { buffer, cell }
             }
-            "Variant" => variant_cell_storage_from_variant(value)?,
+            "Variant" => Self::VariantCell(variant_cell_from_variant(value)?),
+            "Array" => array_cell_storage_from_variant(value)?,
             "Any" => any_byref_storage_from_variant(value)?,
             other => {
                 return Err(format!(
@@ -891,6 +894,15 @@ impl NativeByRefStorage {
             Self::VariantCell(cell) => FfiArg::Pointer(
                 (&mut **cell as *mut windows_sys::Win32::System::Variant::VARIANT).cast::<c_void>(),
             ),
+            Self::ArrayCell(cell) => {
+                // SAFETY: the boxed initialized VARIANT owns this SAFEARRAY*
+                // cell; the box and array remain live through native copyback.
+                FfiArg::Pointer(unsafe {
+                    (&mut cell.Anonymous.Anonymous.Anonymous.parray
+                        as *mut *mut windows_sys::Win32::System::Com::SAFEARRAY)
+                        .cast()
+                })
+            }
         }
     }
 
@@ -926,6 +938,34 @@ impl NativeByRefStorage {
             Self::VbaRecordCell { layout, words } => Variant::from_vba_record(unsafe {
                 VbaRecord::clone_from_native_words(words, layout.clone())?
             }),
+            Self::ArrayCell(cell) => {
+                // SAFETY: the call left a nullable live SAFEARRAY* in its cell.
+                // A ReDim may change the element type of an initially null cell.
+                let mut borrowed = unsafe { std::ptr::read(&**cell) };
+                // SAFETY: a nonnull descriptor is owned by cell until copyback
+                // and cleanup finish; Automation reports its exact element type.
+                unsafe {
+                    let array = borrowed.Anonymous.Anonymous.Anonymous.parray;
+                    if array.is_null() {
+                        return Ok(Variant::unallocated_array(
+                            borrowed.Anonymous.Anonymous.vt & 0xfff,
+                        ));
+                    }
+                    let mut kind = 0;
+                    if windows_sys::Win32::System::Ole::SafeArrayGetVartype(array, &mut kind) < 0 {
+                        return Err("native array has no Automation element type".into());
+                    }
+                    borrowed.Anonymous.Anonymous.vt = 0x2000 | kind;
+                    calcvba_com::variant_to_variant_value(
+                        &borrowed,
+                        &mut |_| Err("native array object binding is not implemented".into()),
+                        &mut |_| {},
+                        &mut |_, _, _| Err("native array object binding is not implemented".into()),
+                        "",
+                        "native_byref_array",
+                    )?
+                }
+            }
             // SAFETY: `cell` is this cell's live, initialized `Box<VARIANT>`, staged by
             // `variant_cell_storage_from_variant` and possibly written by the native
             // callee; `variant_to_variant_value` reads that live VARIANT back.
@@ -956,7 +996,7 @@ impl NativeByRefStorage {
 #[cfg(target_os = "windows")]
 impl Drop for NativeByRefStorage {
     fn drop(&mut self) {
-        if let Self::VariantCell(cell) = self {
+        if let Self::VariantCell(cell) | Self::ArrayCell(cell) = self {
             // SAFETY: `cell` is this storage's live, initialized `Box<VARIANT>`;
             // `VariantClear` releases its owned contents exactly once at drop.
             unsafe {
@@ -964,6 +1004,25 @@ impl Drop for NativeByRefStorage {
             }
         }
     }
+}
+
+#[cfg(windows)]
+fn array_cell_storage_from_variant(value: &Variant) -> Result<NativeByRefStorage, String> {
+    use windows_sys::Win32::System::Variant::VARIANT;
+    if value.vtype() == calcvba_runtime::VarType::Empty
+        || value.vtype() == calcvba_runtime::VarType::ArrayVariant && value.data_bytes() == [0; 8]
+    {
+        // SAFETY: zero-initialized VARIANT is VT_EMPTY with a null pointer.
+        let mut cell: Box<VARIANT> = Box::new(unsafe { std::mem::zeroed() });
+        cell.Anonymous.Anonymous.vt = 0x2000 | value.array_element_vartype().unwrap_or(12);
+        return Ok(NativeByRefStorage::ArrayCell(cell));
+    }
+    if value.vtype() != calcvba_runtime::VarType::ArrayVariant {
+        return Err("native array argument requires an array variable".into());
+    }
+    Ok(NativeByRefStorage::ArrayCell(variant_cell_from_variant(
+        value,
+    )?))
 }
 
 #[cfg(target_os = "windows")]
@@ -1010,7 +1069,9 @@ fn any_byref_storage_from_variant(value: &Variant) -> Result<NativeByRefStorage,
 }
 
 #[cfg(target_os = "windows")]
-fn variant_cell_storage_from_variant(value: &Variant) -> Result<NativeByRefStorage, String> {
+fn variant_cell_from_variant(
+    value: &Variant,
+) -> Result<Box<windows_sys::Win32::System::Variant::VARIANT>, String> {
     let mut cell: Box<windows_sys::Win32::System::Variant::VARIANT> =
         // SAFETY: an all-zero VARIANT is a valid VT_EMPTY value (VT_EMPTY == 0).
         Box::new(unsafe { std::mem::zeroed() });
@@ -1028,7 +1089,7 @@ fn variant_cell_storage_from_variant(value: &Variant) -> Result<NativeByRefStora
             &mut |_dispatch| {},
         )?;
     }
-    Ok(NativeByRefStorage::VariantCell(cell))
+    Ok(cell)
 }
 
 #[cfg(target_os = "windows")]

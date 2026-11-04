@@ -15,6 +15,7 @@ calcvba-oxir.workspace = true
 calcvba-aot.workspace = true
 calcvba-jit.workspace = true
 calcvba-pe.workspace = true
+calcvba-rt-abi.workspace = true
 calcvba-bundle.workspace = true
 cranelift-codegen.workspace = true
 cranelift-module.workspace = true

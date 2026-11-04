@@ -50,6 +50,9 @@ pub struct LabelId(pub usize);
 /// linearize into its own [`crate::Bundle`].
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct CoreProgram {
+    /// Declared UDT layouts, retained even when the project only passes a UDT
+    /// through parameters and never constructs a local of that type.
+    pub record_types: std::collections::BTreeMap<String, Vec<crate::ArrayElementType>>,
     /// VBA target pointer width for `LongPtr` lowering. Defaults to Win64/VBA7
     /// width for hand-built test IR; real binder output sets this from the
     /// manifest's conditional-compilation target.
@@ -479,6 +482,7 @@ pub enum PtrWritebackKind {
     Double,
     Currency,
     Date,
+    Record,
 }
 
 /// A `Declare` argument that is `StrPtr(x)` / `VarPtr(x)` over an l-value: after

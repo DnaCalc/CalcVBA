@@ -3,6 +3,27 @@
 use calcvba_project::*;
 
 #[test]
+fn native_boundary_encoding_and_error_policy_have_typed_defaults_and_options() {
+    for (metadata, encoding, policy) in [
+        ("", StringEncoding::Bstr, ErrorPolicy::Zero),
+        (
+            "<StringEncoding>Utf16</StringEncoding><ErrorPolicy>HResult</ErrorPolicy>",
+            StringEncoding::Utf16,
+            ErrorPolicy::HResult,
+        ),
+        (
+            "<StringEncoding>Ansi</StringEncoding>",
+            StringEncoding::Ansi,
+            ErrorPolicy::Zero,
+        ),
+    ] {
+        let project = parse_basproj_xml(&format!("<Project><ItemGroup><NativeExport Include=\"F\">{metadata}</NativeExport></ItemGroup></Project>")).unwrap();
+        assert_eq!(project.native_exports[0].string_encoding, encoding);
+        assert_eq!(project.native_exports[0].error_policy, policy);
+    }
+}
+
+#[test]
 fn native_export_names_and_source_paths_decode_xml_attribute_entities() {
     let project = parse_basproj_xml("<Project><ItemGroup><Module Include=\"M&amp;N.bas\"/><NativeExport Include=\"A&amp;B&#x2e;C\"><Module>M</Module><Procedure>F</Procedure></NativeExport></ItemGroup></Project>").unwrap();
     assert_eq!(project.modules[0].include, "M&N.bas");

@@ -121,14 +121,22 @@ no forms-runtime crate here yet.
 `calcvba-cli` exposes source/project/package execution and builds. A wrapped DLL
 runs the engine. NativeLibrary instead patches compiled code, named exports and
 Windows unwind information into the shipped template without a user linker.
-It currently admits ByVal Long/Double/Boolean Functions, direct local procedure
+It currently admits all VBA native numeric/Boolean boundary widths, Functions and Subs, direct local procedure
 calls, numeric CLng/CDbl/CBool conversions and typed Abs/Sqr helpers.
 Long integer division/modulo and Boolean/Long bitwise lowering is shared with VM3/JIT.
 Native code uses baseline x64 instructions, 32-argument signatures and at most 128 active
 procedure frames. One private result slot is reused for synchronous calls.
 Wrappers call their procedure directly; there
-is no interpreter or generic dispatch entry. Other widths, owning boundary
-types, module state and native EXE output remain unfinished. No XLL target,
+is no interpreter or generic dispatch entry. BSTR/UTF-16/ANSI inputs, native UDT
+layout, SAFEARRAYs, VARIANTs and COM references use direct value-operation helpers.
+Writable `.cvbdata` holds module state and the once-only initialization status.
+Each DLL retains the identity of its first calling thread; foreign threads return
+zero/E_WRONG_THREAD without touching VBA or caller storage. ErrorPolicy and
+CalcVbaGetLastError describe failures without unwinding through the foreign ABI.
+Native exits share one owning-value cleanup block. Wider numeric carriers are
+admitted to direct native cells; retained host activations keep their existing
+carrier set. Broader
+language coverage and native EXE output remain unfinished. No XLL target,
 registration metadata or conversion code belongs to CalcVBA.
 The existing bounded .vbp module-list importer is a compatibility adapter, not
 support for the VB6 project system or forms.

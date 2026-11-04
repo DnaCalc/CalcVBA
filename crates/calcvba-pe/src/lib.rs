@@ -45,6 +45,7 @@ pub struct Program {
 pub struct Layout {
     pub text_rva: u32,
     pub read_only_rva: u32,
+    pub data_rva: u32,
 }
 #[derive(Debug)]
 pub struct Patched {
@@ -117,16 +118,22 @@ impl<'a> Template<'a> {
     /// Read-only constants are placed before export/unwind metadata, so their
     /// RVA is known before compilation; later sections depend on final sizes.
     pub fn layout(&self, text_len: usize) -> Result<Layout> {
+        self.layout_with_data(text_len, 0)
+    }
+    pub fn layout_with_data(&self, text_len: usize, data_len: usize) -> Result<Layout> {
         let text_rva = self.image.next_rva_without_reloc()?;
-        let read_only_rva = image::align(
+        let data_rva = image::align(
             add(text_rva, text_len.max(1))?,
             self.image.section_alignment,
         )?;
-        // Data/image follow variable-sized metadata and are not yet addressable
-        // from generated code. Add a two-pass layout before admitting them.
+        let read_only_rva = image::align(
+            add(data_rva, data_len.max(1))?,
+            self.image.section_alignment,
+        )?;
         Ok(Layout {
             text_rva,
             read_only_rva,
+            data_rva,
         })
     }
     pub fn text_rva(&self) -> Result<u32> {
@@ -139,6 +146,9 @@ impl<'a> Template<'a> {
         }
         let mut writer = Writer::new(Image::parse(self.image.bytes)?)?;
         let text = writer.add(".cvbtext", &program.text, 0x60000020)?;
+        // Put mutable slots before the variable-sized export/unwind tables.
+        // Both data RVAs are then known before resolving code relocations.
+        let data_rva = writer.add(".cvbdata", &program.data, 0xc0000040)?;
         let rdata_rva = writer.next_rva()?;
         let mut rdata = program.read_only.clone();
         pad(&mut rdata, 4);
@@ -177,7 +187,6 @@ impl<'a> Template<'a> {
         }
         writer.set_directory(3, pdata, (functions.len() * 12) as u32);
         writer.add(".cvbrdat", &rdata, 0x40000040)?;
-        let data_rva = writer.add(".cvbdata", &program.data, 0xc0000040)?;
         for offset in &program.data_relocations {
             if (*offset as usize)
                 .checked_add(8)

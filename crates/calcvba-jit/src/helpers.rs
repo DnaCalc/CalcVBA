@@ -92,6 +92,7 @@ pub(crate) struct Imports {
     pub(crate) call_proc_ref_i32: ClifFuncId,
     pub(crate) lib_invoke_slot: ClifFuncId,
     pub(crate) declare_call_slot: ClifFuncId,
+    pub(crate) pointer_slot: ClifFuncId,
     pub(crate) arith_v_slot: ClifFuncId,
     pub(crate) concat_v_slot: ClifFuncId,
     pub(crate) neg_v_slot: ClifFuncId,
@@ -399,6 +400,10 @@ pub(crate) fn register_symbols(builder: &mut JITBuilder) {
     builder.symbol(
         "rt_jit_declare_call_to_slot",
         rt_jit_declare_call_to_slot as *const u8,
+    );
+    builder.symbol(
+        "rt_jit_pointer_to_slot",
+        rt_jit_pointer_to_slot as *const u8,
     );
     builder.symbol(
         "rt_jit_arith_v_to_slot",
@@ -1847,6 +1852,8 @@ pub(crate) fn declare_imports(module: &mut impl Module) -> Result<Imports, JitEr
     declare_call_slot_sig.params.push(AbiParam::new(ptr_ty));
     declare_call_slot_sig.params.push(AbiParam::new(types::I32));
     declare_call_slot_sig.params.push(AbiParam::new(types::I32));
+    declare_call_slot_sig.params.push(AbiParam::new(ptr_ty));
+    declare_call_slot_sig.params.push(AbiParam::new(types::I32));
     declare_call_slot_sig
         .returns
         .push(AbiParam::new(types::I32));
@@ -1856,6 +1863,15 @@ pub(crate) fn declare_imports(module: &mut impl Module) -> Result<Imports, JitEr
             Linkage::Import,
             &declare_call_slot_sig,
         )
+        .map_err(module_err)?;
+
+    let mut pointer_sig = module.make_signature();
+    for ty in [ptr_ty, ptr_ty, types::I32, ptr_ty, types::I32, types::I32] {
+        pointer_sig.params.push(AbiParam::new(ty));
+    }
+    pointer_sig.returns.push(AbiParam::new(types::I32));
+    let pointer_slot = module
+        .declare_function("rt_jit_pointer_to_slot", Linkage::Import, &pointer_sig)
         .map_err(module_err)?;
 
     let mut arith_v_slot_sig = module.make_signature();
@@ -2272,6 +2288,7 @@ pub(crate) fn declare_imports(module: &mut impl Module) -> Result<Imports, JitEr
         call_proc_ref_i32,
         lib_invoke_slot,
         declare_call_slot,
+        pointer_slot,
         arith_v_slot,
         concat_v_slot,
         neg_v_slot,
@@ -4572,9 +4589,17 @@ pub(crate) unsafe extern "C" fn rt_jit_declare_call_to_slot(
     args: *const JitCallArgDesc,
     dst_area: i32,
     dst_index: i32,
+    ptr_writebacks: *const calcvba_oxir::value::DeclarePtrWriteback,
+    writeback_count: i32,
 ) -> i32 {
     status_guard(|| {
-        if state.is_null() || run.is_null() || argc < 0 || dst_area < -1 || dst_index < -1 {
+        if state.is_null()
+            || run.is_null()
+            || argc < 0
+            || dst_area < -1
+            || dst_index < -1
+            || writeback_count < 0
+        {
             return ST_FAULT;
         }
         let dst = match (dst_area, dst_index) {
@@ -4685,6 +4710,19 @@ pub(crate) unsafe extern "C" fn rt_jit_declare_call_to_slot(
         let invoke = host
             .dynlink()
             .invoke_descriptor_arguments(&view, &call_arguments);
+        // Pins remain live until both ordinary and pointer write-backs finish.
+        struct Pins(Vec<i64>);
+        impl Drop for Pins {
+            fn drop(&mut self) {
+                calcvba_runtime::pointer_helpers::free_pins(&self.0);
+            }
+        }
+        let _pins = Pins(
+            call_arguments
+                .iter()
+                .filter_map(|arg| arg.value.as_i64())
+                .collect(),
+        );
         let last_dll_error = host.dynlink().last_dll_error();
         {
             // SAFETY: the host call returned, so the live execution state may be borrowed again.
@@ -4722,12 +4760,102 @@ pub(crate) unsafe extern "C" fn rt_jit_declare_call_to_slot(
             };
             *slot = value.clone();
         }
+        if writeback_count > 0 {
+            if ptr_writebacks.is_null() {
+                return ST_FAULT;
+            }
+            // SAFETY: compiled code supplies the borrowed program's live metadata.
+            let writebacks =
+                unsafe { std::slice::from_raw_parts(ptr_writebacks, writeback_count as usize) };
+            for wb in writebacks {
+                use calcvba_oxir::PtrWritebackKind as K;
+                use calcvba_runtime::pointer_helpers::{self as p, ScalarPointerKind as S};
+                let pointer = call_arguments
+                    .get(wb.arg_index)
+                    .and_then(|a| a.value.as_i64())
+                    .unwrap_or(0);
+                let value = match wb.kind {
+                    K::Record => p::read_back_record(pointer),
+                    K::String => p::read_back_string_payload_variant(pointer),
+                    K::ByteArray => p::read_back_byte_array_payload_variant(pointer),
+                    kind => p::read_back_scalar_payload_variant(
+                        pointer,
+                        match kind {
+                            K::Boolean => S::Boolean,
+                            K::Byte => S::Byte,
+                            K::Integer => S::Integer,
+                            K::Long => S::Long,
+                            K::LongLong => S::LongLong,
+                            K::LongPtr => S::LongPtr,
+                            K::Single => S::Single,
+                            K::Double => S::Double,
+                            K::Currency => S::Currency,
+                            K::Date => S::Date,
+                            _ => unreachable!(),
+                        },
+                    ),
+                };
+                let value = match value {
+                    Ok(v) => v,
+                    Err(message) => return raise_plan_error(state, run, message),
+                };
+                let (area, index) = place_addr(wb.target);
+                let Some(slot) = slot_mut(run, area, index) else {
+                    return ST_FAULT;
+                };
+                *slot = value;
+            }
+        }
         if let Some((area, index)) = dst {
             let Some(slot) = slot_mut(run, area, index) else {
                 return ST_FAULT;
             };
             *slot = ret;
         }
+        ST_OK
+    })
+}
+
+/// Pin a VBA value for one synchronous Declare call, using the same storage as VM3.
+/// # Safety
+/// The state, run and operand descriptor belong to the active compiled invocation.
+pub(crate) unsafe extern "C" fn rt_jit_pointer_to_slot(
+    state: *mut RawExecState,
+    run: *mut JitRun,
+    kind: i32,
+    arg: *const JitVariantOperandDesc,
+    dst_area: i32,
+    dst_index: i32,
+) -> i32 {
+    status_guard(|| {
+        if state.is_null() || run.is_null() || arg.is_null() || dst_area < 0 || dst_index < 0 {
+            return ST_FAULT;
+        }
+        // SAFETY: checked live handles and the compiler's one descriptor above.
+        let (run_ref, arg) = unsafe { (&*run, *arg) };
+        let value = match variant_operand_value_from_compiled_desc!(run_ref, arg) {
+            Some(v) => v,
+            None => return ST_FAULT,
+        };
+        use calcvba_runtime::pointer_helpers as p;
+        let pointer = match kind {
+            0 if value.vtype() == VarType::String => p::register_variant_pointer(&value),
+            0 => p::register_utf16_string(&arith::as_string(&value)),
+            1 => p::register_variant_pointer(&value),
+            2 => p::register_string_variant_pointer(&value),
+            3 => p::register_variant_var_variant_pointer(&value),
+            4 => p::register_object_variant_pointer(&value),
+            _ => return ST_FAULT,
+        };
+        let pointer = match pointer {
+            Ok(p) => p,
+            Err(message) => return raise_plan_error(state, run, message),
+        };
+        // SAFETY: the active run is unique outside host calls.
+        let Some(slot) = slot_mut(unsafe { &mut *run }, dst_area as u32, dst_index as u32) else {
+            return ST_FAULT;
+        };
+        *slot = Variant::from_i64(pointer);
         ST_OK
     })
 }
@@ -8025,16 +8153,10 @@ pub(crate) unsafe extern "C" fn rt_jit_direct_enter_proc_i32(
                     frame.locals[index] = value;
                 }
                 JIT_CALL_ARG_BYVAL_VARIANT
-                    if !param_info.by_ref && matches!(param.ty, OxTy::Long) =>
-                {
-                    let Some(value) = call_arg_long_i32_value(run, arg) else {
-                        return ST_FAULT;
-                    };
-                    frame.locals[index] = Variant::from_i32(value);
-                }
-                JIT_CALL_ARG_BYVAL_VARIANT
                     if !param_info.by_ref
-                        && (is_jit_variant_carrier_ty(&param.ty) || param_info.variadic) =>
+                        && (is_jit_variant_carrier_ty(&param.ty)
+                            || numeric_call_target(&param.ty).is_some()
+                            || param_info.variadic) =>
                 {
                     let param_array_aliases = if param_info.variadic {
                         param_array_aliases_for_call_arg(run, arg)
@@ -8240,16 +8362,10 @@ pub(crate) unsafe extern "C" fn rt_jit_call_extern_proc_i32(
                         frame.locals[index] = value;
                     }
                     JIT_CALL_ARG_BYVAL_VARIANT
-                        if !param_info.by_ref && matches!(param.ty, OxTy::Long) =>
-                    {
-                        let Some(value) = call_arg_long_i32_value(run, arg) else {
-                            return ST_FAULT;
-                        };
-                        frame.locals[index] = Variant::from_i32(value);
-                    }
-                    JIT_CALL_ARG_BYVAL_VARIANT
                         if !param_info.by_ref
-                            && (is_jit_variant_carrier_ty(&param.ty) || param_info.variadic) =>
+                            && (is_jit_variant_carrier_ty(&param.ty)
+                                || numeric_call_target(&param.ty).is_some()
+                                || param_info.variadic) =>
                     {
                         let param_array_aliases = if param_info.variadic {
                             param_array_aliases_for_call_arg(run, arg)
@@ -8517,16 +8633,10 @@ pub(crate) unsafe extern "C" fn rt_jit_call_proc_i32(
                         frame.locals[index] = value;
                     }
                     JIT_CALL_ARG_BYVAL_VARIANT
-                        if !param_info.by_ref && matches!(param.ty, OxTy::Long) =>
-                    {
-                        let Some(value) = call_arg_long_i32_value(run, arg) else {
-                            return ST_FAULT;
-                        };
-                        frame.locals[index] = Variant::from_i32(value);
-                    }
-                    JIT_CALL_ARG_BYVAL_VARIANT
                         if !param_info.by_ref
-                            && (is_jit_variant_carrier_ty(&param.ty) || param_info.variadic) =>
+                            && (is_jit_variant_carrier_ty(&param.ty)
+                                || numeric_call_target(&param.ty).is_some()
+                                || param_info.variadic) =>
                     {
                         let param_array_aliases = if param_info.variadic {
                             param_array_aliases_for_call_arg(run, arg)

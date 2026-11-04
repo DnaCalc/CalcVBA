@@ -1678,6 +1678,9 @@ impl<'h> Vm3<'h> {
             OxInst::Ptr { dst, kind, src } => {
                 let v = self.operand(src)?;
                 let pointer = match kind {
+                    PtrKind::Str if v.vtype() == VarType::String => {
+                        pointer_helpers::register_variant_pointer(&v)
+                    }
                     PtrKind::Str => pointer_helpers::register_utf16_string(&arith::as_string(&v)),
                     PtrKind::Var => pointer_helpers::register_variant_pointer(&v),
                     PtrKind::VarString => pointer_helpers::register_string_variant_pointer(&v),
@@ -4705,6 +4708,7 @@ impl<'h> Vm3<'h> {
                 .and_then(Variant::as_i64)
                 .unwrap_or(0);
             let value = match wb.kind {
+                PtrWritebackKind::Record => pointer_helpers::read_back_record(pointer),
                 PtrWritebackKind::String => {
                     pointer_helpers::read_back_string_payload_variant(pointer)
                 }

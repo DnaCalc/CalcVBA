@@ -207,6 +207,8 @@ pub(crate) fn build_loaded_project(
             procedure_name: procedure.clone(),
             calling_convention: ne.calling_convention.unwrap_or(CallingConvention::Stdcall),
             ordinal: ne.ordinal,
+            string_encoding: ne.string_encoding,
+            error_policy: ne.error_policy,
             kind: None,
             param_types: None,
             return_type: None,

@@ -1,0 +1,13 @@
+<Project>
+  <PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>PlainXll</ProjectName></PropertyGroup>
+  <ItemGroup>
+    <Module Include="PlainXll.bas"/>
+    <NativeExport Include="xlAutoOpen"><Module>PlainXll</Module><Procedure>xlAutoOpen</Procedure></NativeExport>
+    <NativeExport Include="xlAutoClose"><Module>PlainXll</Module><Procedure>xlAutoClose</Procedure></NativeExport>
+    <NativeExport Include="xlAutoFree12"><Module>PlainXll</Module><Procedure>xlAutoFree12</Procedure></NativeExport>
+    <NativeExport Include="AddDouble"><Module>PlainXll</Module><Procedure>AddDouble</Procedure></NativeExport>
+    <NativeExport Include="NativeTwice"><Module>PlainXll</Module><Procedure>NativeTwice</Procedure></NativeExport>
+    <NativeExport Include="OutstandingResults"><Module>PlainXll</Module><Procedure>OutstandingResults</Procedure></NativeExport>
+    <NativeExport Include="ConversionProbe"><Module>PlainXll</Module><Procedure>ConversionProbe</Procedure></NativeExport>
+  </ItemGroup>
+</Project>

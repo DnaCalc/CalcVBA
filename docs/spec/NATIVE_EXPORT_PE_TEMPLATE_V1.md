@@ -15,14 +15,46 @@ Owner direction (2026-11-03):
   compiled and connected along a direct path: a native-ABI wrapper calls the compiled procedure.
 
 Status: owner-directed design; N1-N5 implementation is tracked by bd-2pntk.
-N1 is implemented; N2 currently admits x64 ByVal Long/Double/Boolean Functions,
+N1 is implemented; N2 currently admits x64 ByVal/ByRef Byte, Integer, Long,
+LongLong/LongPtr, Single, Double, Currency, Date and Boolean Functions and Subs,
 direct calls across standard modules, numeric CLng/CDbl/CBool conversions and
 Double Abs/Sqr helpers. Long integer division/modulo and Boolean/Long bitwise
 operators use the shared VM3/JIT numeric lowering. Generated code targets baseline x64, not the build CPU's
 optional instructions. Calls have at most 32 parameters and 128 active native
 procedure frames; exceeding the depth returns VBA status 28 through the ordinary
-zero-on-error wrapper. Other numeric widths and all N3
-ownership/state/error APIs remain unfinished and are refused.
+zero-on-error wrapper. N3 now admits BSTR strings (and terminated UTF-16/ANSI
+ByVal inputs), native UDTs, typed SAFEARRAYs, Automation Variants and COM object
+references. Module/Static state initialize once, on the first owning-thread call,
+outside DllMain. ErrorPolicy=HResult and CalcVbaGetLastError are implemented.
+The interop fixture is called from C, VM3/JIT Declare and one reused Excel;
+ValueSuite also executes the same VBA bodies directly through VM3/JIT.
+
+The numeric-width fixture also checks casts, narrow storage, values above Double's
+exact integer range, and overflow through all three clients.
+Remaining refusals include Optional/ParamArray signatures,
+project classes, unsupported native Declare signatures, Variant array receivers,
+SAFEARRAYs of UDT, UDT Variant fields, fixed-string/array field access, and dynamic
+Err.Raise text or help fields. Diagnostics identify the construct and procedure's
+source declaration. ReDim on ByRef String() parameters is refused: an owned
+Excel probe showed that returning a replacement Unicode SAFEARRAY makes VBA
+Declare expand its UTF-16 bytes as ANSI ("abc" becomes six code units).
+Local String() ReDim and element updates through an existing boundary array work.
+Call CalcVbaShutdown on the owning thread before FreeLibrary
+to release module owners outside loader lock. It closes the context; later calls
+return error 5 and cannot initialize it again. The remaining N3 constructs are
+explicit refusals. Object Is currently compares interface addresses; canonical
+IUnknown identity across distinct interfaces remains unimplemented.
+General scalar/String/Variant/UDT pointers and ordinary native
+Declare calls are now compiled inside exported bodies. Declare admission rejects
+ByRef ANSI String, private/forced ByRef arguments, owning UDT marshalling and
+aggregate returns rather than guessing their layouts.
+
+N4 has a working ordinary VBA prototype in `examples/native/xll`: numeric
+XLOPER12 conversion, a VBA registration table, callback through DispCallFunc,
+and VBA xlAutoOpen/xlAutoClose/xlAutoFree12. An owned Excel loaded its `.xll`,
+called both worksheet functions and released every returned buffer. Rich
+Variant/array/reference conversions remain library work. The compiler and
+runtime contain no XLL-specific operation or registration metadata.
 
 ## 1. Declaration
 
@@ -77,12 +109,13 @@ Excel VBA `Declare` of the export round-trips exactly.
 **Returns**
 - Scalars return in registers.
 - `String` returns a `BSTR`; the caller frees it.
-- A 16-byte `Variant` result uses a hidden result pointer as the first argument;
+- An Automation `VARIANT` result (24 bytes on Windows x64) uses a hidden result pointer as the first argument;
   the callee also returns that pointer in RAX.
 - UDT results follow the Windows x64 aggregate rules: eligible plain 1-, 2-, 4-
   and 8-byte aggregates return in RAX; other aggregates use the hidden pointer
   and return it in RAX. Do not apply the hidden-pointer rule to every UDT.
-  These boundary types remain refused until N3 tests the C and VBA Declare ABI.
+  The fixture covers both a four-byte register result and a larger owning UDT
+  with a hidden result pointer. ByVal UDT parameters remain refused.
 
 **Unhandled VBA error in an export**
 - The export returns the type's zero value.
@@ -90,6 +123,15 @@ Excel VBA `Declare` of the export round-trips exactly.
 - The template exports `CalcVbaGetLastError` to read it, and `Err.LastDllError` semantics stay intact.
 - Optional per export: `ErrorPolicy=HResult`, where the export returns an HRESULT and the VBA
   result goes through a trailing out pointer.
+- The error accessor has C signature `int32_t CalcVbaGetLastError(BSTR*, BSTR*)`.
+  Either output can be null. Non-null outputs receive owning BSTRs; free them
+  with SysFreeString. Success clears the number. An explicit Err.Raise preserves
+  its source/description; default Source is the project name, as observed in Excel.
+- `int32_t CalcVbaShutdown(void)` releases owning module globals and returns a VBA
+  status number. Repeated shutdown is harmless. Calls from a foreign thread still
+  return 1444 and leave all owners intact. No VBA cleanup runs in DllMain.
+- VBA Declare's ANSI String() SAFEARRAY form (VT_EMPTY with FADF_BSTR) is converted
+  at element access. Ordinary VT_BSTR SAFEARRAYs retain Unicode contents.
 
 ## 3. Direct compiled path (AOT)
 
@@ -270,8 +312,8 @@ BSTR export must deliberately supply the BSTR pointer using the appropriate ABI.
 
 The .basproj signature comes from binding, including accessibility, standard
 module identity, parameter modes and exact types. Do not trust optional cached
-signature fields in NativeExportDescriptor. StringEncoding and ErrorPolicy are
-future metadata until implemented; reject them rather than silently ignoring them.
+signature fields in NativeExportDescriptor. Apply the bound StringEncoding and
+ErrorPolicy to the generated boundary; reject unknown metadata values.
 
 ## 10. Primary references and corrected historical claims
 

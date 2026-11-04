@@ -96,6 +96,45 @@ fn scalar_type(ty: &OxTy) -> Option<ScalarType> {
     }
 }
 
+fn native_scalar_type(ty: &OxTy) -> Option<ScalarType> {
+    scalar_type(ty).or(match ty {
+        OxTy::Byte => Some(ScalarType::Byte),
+        OxTy::Integer => Some(ScalarType::Integer),
+        OxTy::LongLong => Some(ScalarType::LongLong),
+        OxTy::Single => Some(ScalarType::Single),
+        OxTy::Currency => Some(ScalarType::Currency),
+        OxTy::Date => Some(ScalarType::Date),
+        _ => None,
+    })
+}
+fn extended_numeric(ty: ScalarType) -> bool {
+    matches!(
+        ty,
+        ScalarType::Byte
+            | ScalarType::Integer
+            | ScalarType::LongLong
+            | ScalarType::Single
+            | ScalarType::Currency
+            | ScalarType::Date
+    )
+}
+#[derive(Clone, Copy)]
+struct LayoutLimits {
+    arguments: usize,
+    slots: usize,
+    native_numbers: bool,
+}
+const HOST_LIMITS: LayoutLimits = LayoutLimits {
+    arguments: MAX_TYPED_ARGS,
+    slots: MAX_TYPED_SLOTS,
+    native_numbers: false,
+};
+const NATIVE_LIMITS: LayoutLimits = LayoutLimits {
+    arguments: 32,
+    slots: 4096,
+    native_numbers: true,
+};
+
 fn physical_operand_type(
     func: &OxFunc,
     physical: &[Option<ScalarType>],
@@ -244,6 +283,7 @@ pub struct ScalarLayout {
     pub assignment_iids: std::collections::HashMap<String, Option<[u8; 16]>>,
     unsupported_globals: std::collections::HashSet<usize>,
     owning: bool,
+    native_numbers: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallSignature {
@@ -289,7 +329,7 @@ impl ScalarLayout {
             None,
             false,
             Default::default(),
-            MAX_TYPED_ARGS,
+            HOST_LIMITS,
         )
     }
     pub fn with_program(func: &OxFunc, program: &calcvba_oxir::OxProgram) -> Result<Self, String> {
@@ -387,7 +427,7 @@ impl ScalarLayout {
             Some(program),
             true,
             external,
-            MAX_TYPED_ARGS,
+            HOST_LIMITS,
         )
     }
     /// Native exports have a generated ABI signature, rather than the host's
@@ -405,11 +445,20 @@ impl ScalarLayout {
                     .get(import.0)
                     .ok_or("invalid native builtin import")?;
                 let native = [
+                    NativeImplId::CByte,
+                    NativeImplId::CInt,
+                    NativeImplId::CLngLng,
+                    NativeImplId::CLngPtr,
+                    NativeImplId::CSng,
+                    NativeImplId::CCur,
+                    NativeImplId::CDate,
                     NativeImplId::Abs,
                     NativeImplId::Sqr,
                     NativeImplId::CLng,
                     NativeImplId::CDbl,
                     NativeImplId::CBool,
+                    NativeImplId::CStr,
+                    NativeImplId::Len,
                 ]
                 .into_iter()
                 .find(|id| {
@@ -424,9 +473,19 @@ impl ScalarLayout {
                 });
                 if let Some(native) = native {
                     let (parameter, result) = match native {
+                        NativeImplId::CByte => (ScalarType::Variant, ScalarType::Byte),
+                        NativeImplId::CInt => (ScalarType::Variant, ScalarType::Integer),
+                        NativeImplId::CLngLng | NativeImplId::CLngPtr => {
+                            (ScalarType::Variant, ScalarType::LongLong)
+                        }
+                        NativeImplId::CSng => (ScalarType::Variant, ScalarType::Single),
+                        NativeImplId::CCur => (ScalarType::Variant, ScalarType::Currency),
+                        NativeImplId::CDate => (ScalarType::Variant, ScalarType::Date),
                         NativeImplId::CLng => (ScalarType::Variant, ScalarType::Long),
                         NativeImplId::CDbl => (ScalarType::Variant, ScalarType::Double),
                         NativeImplId::CBool => (ScalarType::Variant, ScalarType::Boolean),
+                        NativeImplId::CStr => (ScalarType::Variant, ScalarType::String),
+                        NativeImplId::Len => (ScalarType::String, ScalarType::Long),
                         _ => (ScalarType::Double, ScalarType::Double),
                     };
                     external.insert(
@@ -450,7 +509,7 @@ impl ScalarLayout {
             Some(program),
             true,
             external,
-            32,
+            NATIVE_LIMITS,
         )
     }
     fn with_storage(
@@ -459,8 +518,20 @@ impl ScalarLayout {
         program: Option<&calcvba_oxir::OxProgram>,
         owning: bool,
         extern_calls: std::collections::HashMap<calcvba_oxir::ImportId, LinkedCall>,
-        argument_limit: usize,
+        limits: LayoutLimits,
     ) -> Result<Self, String> {
+        let LayoutLimits {
+            arguments: argument_limit,
+            slots: slot_limit,
+            native_numbers,
+        } = limits;
+        let storage_type = |ty: &OxTy| {
+            if native_numbers {
+                native_scalar_type(ty)
+            } else {
+                scalar_type(ty)
+            }
+        };
         let globals = program.map_or(&[][..], |p| &p.globals);
         let functions = program.map_or(&[][..], |p| &p.funcs);
         let record_layouts = program.map_or(&[][..], |p| &p.record_layouts);
@@ -690,7 +761,7 @@ impl ScalarLayout {
             }
         }
         let scalar = |ty: &OxTy| {
-            scalar_type(ty)
+            storage_type(ty)
                 .filter(|ty| {
                     owning
                         || !matches!(
@@ -710,7 +781,7 @@ impl ScalarLayout {
                 .len()
                 .saturating_add(func.temps.len())
                 .saturating_add(globals.len())
-                > MAX_TYPED_SLOTS
+                > slot_limit
         {
             return Err("typed entry exceeds argument/slot bounds".into());
         }
@@ -941,14 +1012,14 @@ impl ScalarLayout {
             if !owning && *ty == OxTy::Variant {
                 None
             } else {
-                scalar_type(ty)
+                storage_type(ty)
             }
         }));
         let global_base = physical.len();
         let unsupported_globals = globals
             .iter()
             .enumerate()
-            .filter(|(_, g)| scalar_type(&g.ty).is_none())
+            .filter(|(_, g)| storage_type(&g.ty).is_none())
             .map(|(i, _)| i)
             .collect();
         // Unused globals need not share the current frame's carrier family.
@@ -956,7 +1027,7 @@ impl ScalarLayout {
         physical.extend(
             globals
                 .iter()
-                .map(|g| Some(scalar_type(&g.ty).unwrap_or(ScalarType::Long))),
+                .map(|g| Some(storage_type(&g.ty).unwrap_or(ScalarType::Long))),
         );
         // Widening arithmetic is semantically Variant, but numeric operands
         // with at least one Double prove a Double payload. Specialize only compiler temporaries whose writers
@@ -1197,9 +1268,14 @@ impl ScalarLayout {
         if owning {
             for inst in func.blocks.iter().flat_map(|b| &b.instrs) {
                 if let OxInst::ValidateAssignment {
-                    target_type_name, ..
+                    target_type_name,
+                    target_kind,
+                    ..
                 } = inst
                 {
+                    if *target_kind == calcvba_bundle::AssignmentTargetKind::Scalar {
+                        continue;
+                    }
                     let bare = target_type_name
                         .rsplit('.')
                         .next()
@@ -1322,6 +1398,7 @@ impl ScalarLayout {
             assignment_iids,
             unsupported_globals,
             owning,
+            native_numbers,
         };
         if !owning
             && matches!(
@@ -1419,6 +1496,12 @@ impl ScalarLayout {
             OxOperand::Const(OxConst::F64(_)) => Ok(ScalarType::Double),
             OxOperand::Const(OxConst::I16(_) | OxConst::I32(_)) => Ok(ScalarType::Long),
             OxOperand::Const(OxConst::Bool(_)) => Ok(ScalarType::Boolean),
+            OxOperand::Const(OxConst::I64(_)) if self.native_numbers => Ok(ScalarType::LongLong),
+            OxOperand::Const(OxConst::F32(_)) if self.native_numbers => Ok(ScalarType::Single),
+            OxOperand::Const(OxConst::Currency(_)) if self.native_numbers => {
+                Ok(ScalarType::Currency)
+            }
+            OxOperand::Const(OxConst::Date(_)) if self.native_numbers => Ok(ScalarType::Date),
             OxOperand::Const(OxConst::Nothing) => Ok(ScalarType::HostObject),
             OxOperand::Const(OxConst::Str(_)) if self.owning => Ok(ScalarType::String),
             OxOperand::Const(OxConst::Empty | OxConst::Null) if self.owning => {
@@ -1473,6 +1556,76 @@ impl ScalarLayout {
         }
     }
     fn check(&self, inst: &OxInst) -> Result<(), String> {
+        if self.native_numbers
+            && let OxInst::Logical { dst, lhs, rhs, .. } = inst
+        {
+            self.slot(*dst)?;
+            for operand in [lhs, rhs] {
+                let ty = self.operand_type(operand)?;
+                if !matches!(
+                    ty,
+                    ScalarType::Long
+                        | ScalarType::Double
+                        | ScalarType::Boolean
+                        | ScalarType::Variant
+                ) && !extended_numeric(ty)
+                {
+                    return Err(
+                        "native logical operation requires numeric or Variant inputs".into(),
+                    );
+                }
+            }
+            return Ok(());
+        }
+        if self.native_numbers
+            && matches!(
+                inst,
+                OxInst::Ptr { .. }
+                    | OxInst::CallNative {
+                        callee: calcvba_oxir::OxNativeCallee::Declare { .. },
+                        ..
+                    }
+            )
+        {
+            return Ok(()); // The direct native backend checks the exact foreign signature.
+        }
+        if self.native_numbers {
+            let extended = |op: &OxOperand| self.operand_type(op).is_ok_and(extended_numeric);
+            let dst_extended = instruction_destination(inst).is_some_and(|dst| {
+                self.slot(dst)
+                    .is_ok_and(|i| extended_numeric(self.slots[i]))
+            });
+            let uses_extended = match inst {
+                OxInst::Assign { value, .. } => extended(value),
+                OxInst::Coerce { src, .. }
+                | OxInst::Box { src, .. }
+                | OxInst::Unbox { src, .. }
+                | OxInst::Truthy { src, .. }
+                | OxInst::Neg { src, .. }
+                | OxInst::Not { src, .. } => extended(src),
+                OxInst::Arith { lhs, rhs, .. }
+                | OxInst::Div { lhs, rhs, .. }
+                | OxInst::Compare { lhs, rhs, .. } => extended(lhs) || extended(rhs),
+                _ => false,
+            };
+            if (dst_extended || uses_extended)
+                && matches!(
+                    inst,
+                    OxInst::Assign { .. }
+                        | OxInst::Coerce { .. }
+                        | OxInst::Box { .. }
+                        | OxInst::Unbox { .. }
+                        | OxInst::Truthy { .. }
+                        | OxInst::Neg { .. }
+                        | OxInst::Not { .. }
+                        | OxInst::Arith { .. }
+                        | OxInst::Div { .. }
+                        | OxInst::Compare { .. }
+                )
+            {
+                return Ok(());
+            }
+        }
         if let Some(dst) = instruction_destination(inst)
             && self.literal_integer_temps.contains(&self.slot(dst)?)
             && !matches!(
@@ -1672,7 +1825,21 @@ impl ScalarLayout {
                         && !alias
                         && from == ScalarType::Variant
                         && *ty == ScalarType::HostObject;
-                    if (from != *ty && !private_variant && !private_object) || (alias && !by_ref) {
+                    let native_numeric = self.native_numbers
+                        && !alias
+                        && (extended_numeric(from)
+                            || matches!(
+                                from,
+                                ScalarType::Long | ScalarType::Double | ScalarType::Boolean
+                            ))
+                        && (extended_numeric(*ty)
+                            || matches!(
+                                ty,
+                                ScalarType::Long | ScalarType::Double | ScalarType::Boolean
+                            ));
+                    if (from != *ty && !private_variant && !private_object && !native_numeric)
+                        || (alias && !by_ref)
+                    {
                         return Err("typed call carrier/passing mismatch".into());
                     }
                 }
@@ -1798,6 +1965,13 @@ impl ScalarLayout {
             OxInst::StmtBoundary {
                 clear_temps_from, ..
             } if *clear_temps_from <= self.global_base - self.local_count => Ok(()),
+            OxInst::ValidateAssignment {
+                src,
+                intent:
+                    calcvba_bundle::AssignmentIntent::Let | calcvba_bundle::AssignmentIntent::Implicit,
+                target_kind: calcvba_bundle::AssignmentTargetKind::Scalar,
+                ..
+            } if self.operand_type(src)? == ScalarType::Record => Ok(()),
             OxInst::ValidateAssignment {
                 src,
                 intent: calcvba_bundle::AssignmentIntent::Set,
@@ -1969,11 +2143,10 @@ impl ScalarLayout {
                 if self.owning
                     && matches!(
                         self.slots[self.slot(*dst)?],
-                        ScalarType::Boolean | ScalarType::Variant
-                    )
-                    && self.operand_type(src)? == ScalarType::Boolean =>
+                        ScalarType::Boolean | ScalarType::Long | ScalarType::Variant
+                    ) =>
             {
-                Ok(())
+                self.operand_type(src).map(|_| ())
             }
             OxInst::Neg { dst, src, mode }
                 if self.owning

@@ -61,7 +61,7 @@ cargo run -p calcvba-cli -- build project.basproj --target WrappedComServer --ou
 
 `.oxi` packages contain the compiled project closure. WrappedComServer emits a
 runtime-backed Windows COM DLL, currently using VM3. NativeLibrary emits a
-Windows x64 DLL for admitted numeric exports. Native EXE outputs and JIT-backed
+Windows x64 DLL for admitted native exports. Native EXE outputs and JIT-backed
 COM wrappers remain unfinished.
 
 ```powershell
@@ -70,16 +70,36 @@ cargo run -p calcvba-cli -- build examples/native/scalars/NativeScalars.basproj 
 
 The installed CLI patches its embedded template without invoking Rust or a
 linker. Each named export calls a compiled procedure directly. The initial
-boundary supports ByVal Long, Double and Boolean, with direct procedure calls
+boundary supports ByVal/ByRef Byte, Integer, Long, LongLong/LongPtr, Single,
+Double, Currency, Date and Boolean, with direct procedure calls
 and typed Abs/Sqr library helpers. CLng/CDbl/CBool specialize numeric operands.
 Long integer division/modulo and Boolean/Long bitwise operators are compiled.
 Calls may cross standard modules, with up to 32 arguments and 128 active native
-frames. A depth or numeric failure returns zero. Generated code uses baseline
+frames. BSTR strings, terminated UTF-16/ANSI inputs, native UDTs, typed SAFEARRAYs,
+Automation Variants and COM object references have owning boundary operations.
+Module and Static state initialize on the first call, outside the loader lock.
+The DLL binds to that calling thread; calls from other threads leave caller
+storage alone and report error 1444. Unhandled errors return zero, or an HRESULT
+with a trailing result pointer under ErrorPolicy=HResult. CalcVbaGetLastError
+returns the number and optional caller-owned source/description BSTRs.
+Call CalcVbaShutdown on that thread before unloading to release module owners.
+Some reachable constructs are still refused; see the
+[native design](docs/spec/NATIVE_EXPORT_PE_TEMPLATE_V1.md) for limits.
+Generated code uses baseline
 x64 instructions; unsupported reachable code is refused.
 `scripts/build-native-template.ps1` rebuilds the shipped template for developers.
 `scripts/run-native-export-clients.ps1 -Excel` compares a single batch through
 C, CalcVBA Declare (both backends) and one owned Excel instance. CalcVBA has no
 XLL-specific target or runtime support.
+`scripts/run-native-interop-clients.ps1` checks the owning boundary cases. Its
+`-OracleSession` option submits the entire batch to an existing owned Excel
+started by `scripts/run-native-export-oracle-session.ps1`; a `stop` file closes it.
+`scripts/run-native-wide-clients.ps1` also checks narrow storage, 64-bit integer
+precision, floating/currency/date signatures, explicit casts and overflow.
+The [plain VBA XLL example](examples/native/xll) uses general native pointer and
+Declare support for its XLOPER12 UDT, registration table and callbacks.
+`scripts/run-native-xll-clients.ps1 -OracleSession <session>` checks both
+worksheet functions in that existing Excel and measures batch call costs.
 
 Hosts use [`calcvba-host-api`](crates/calcvba-host-api) and
 [`calcvba-host`](crates/calcvba-host). They supply application objects and type

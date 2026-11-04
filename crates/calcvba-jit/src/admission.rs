@@ -740,7 +740,7 @@ pub(crate) fn random_call_extern_shape(native_impl: NativeImplId) -> Option<&'st
 
 pub(crate) fn scalar_double_call_extern_shape(native_impl: NativeImplId) -> Option<&'static str> {
     match native_impl {
-        NativeImplId::StringRepeat => Some("String(Integer/Long/LongLong x2)"),
+        NativeImplId::StringRepeat => Some("String(count, character)"),
         _ => None,
     }
 }

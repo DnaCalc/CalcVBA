@@ -427,7 +427,12 @@ fn emit_item(
             for key in ctx.metadata.keys() {
                 if !matches!(
                     key.as_str(),
-                    "Module" | "Procedure" | "CallingConvention" | "Ordinal"
+                    "Module"
+                        | "Procedure"
+                        | "CallingConvention"
+                        | "Ordinal"
+                        | "StringEncoding"
+                        | "ErrorPolicy"
                 ) {
                     return Err(BasProjError::XmlParse(format!(
                         "unsupported NativeExport metadata {key}"
@@ -446,6 +451,25 @@ fn emit_item(
             };
             let module = ctx.meta_str("Module");
             let procedure = ctx.meta_str("Procedure");
+            let string_encoding = match ctx.meta_str("StringEncoding").as_deref() {
+                None | Some("Bstr") => StringEncoding::Bstr,
+                Some("Utf16") => StringEncoding::Utf16,
+                Some("Ansi") => StringEncoding::Ansi,
+                Some(other) => {
+                    return Err(BasProjError::XmlParse(format!(
+                        "invalid native StringEncoding {other}"
+                    )));
+                }
+            };
+            let error_policy = match ctx.meta_str("ErrorPolicy").as_deref() {
+                None | Some("Zero") => ErrorPolicy::Zero,
+                Some("HResult") => ErrorPolicy::HResult,
+                Some(other) => {
+                    return Err(BasProjError::XmlParse(format!(
+                        "invalid native ErrorPolicy {other}"
+                    )));
+                }
+            };
             let ordinal = ctx
                 .meta_str("Ordinal")
                 .map(|s| {
@@ -460,6 +484,8 @@ fn emit_item(
                 procedure,
                 calling_convention: cc,
                 ordinal,
+                string_encoding,
+                error_policy,
             });
         }
         _ => {}

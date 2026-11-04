@@ -2416,10 +2416,8 @@ fn declare_param_type(ty: &VarTypeRef) -> DeclareParamType {
             DeclareParamType::String
         }
         VarTypeRef::Variant => DeclareParamType::Variant,
-        VarTypeRef::Object(_)
-        | VarTypeRef::Udt(_)
-        | VarTypeRef::Array(_)
-        | VarTypeRef::FixedArray { .. } => DeclareParamType::Any,
+        VarTypeRef::Array(_) | VarTypeRef::FixedArray { .. } => DeclareParamType::Array,
+        VarTypeRef::Object(_) | VarTypeRef::Udt(_) => DeclareParamType::Any,
     }
 }
 

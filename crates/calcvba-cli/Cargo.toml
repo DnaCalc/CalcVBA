@@ -7,6 +7,8 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+calcvba-office.workspace = true
+serde_json.workspace = true
 calcvba-build.workspace = true
 calcvba-diagnostics.workspace = true
 calcvba-engine.workspace = true

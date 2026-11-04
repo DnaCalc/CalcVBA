@@ -1,4 +1,4 @@
-//! `oxvba` — command-line driver for the clean execution stack.
+//! `calcvba-cli` — command-line driver for the clean execution stack.
 //!
 //! The run subcommands execute VBA through `calcvba_bind` →
 //! `calcvba_oxir::elaborate` → `calcvba_vm3`:
@@ -11,6 +11,7 @@
 //! The run commands accept a platform host profile. The legacy compiler and host execution paths
 //! remain removed; `build` is the clean wrapper-artifact lane.
 
+mod office;
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
@@ -26,13 +27,19 @@ use calcvba_runtime::{VarType, Variant};
 fn main() {
     let cli_args: Vec<String> = env::args().skip(1).collect();
     match cli_args.first().map(String::as_str) {
+        Some(command @ ("inspect-vba" | "export-vba" | "write-vba")) => {
+            if let Err(error) = office::run(command, &cli_args[1..]) {
+                eprintln!("calcvba-cli: {error}");
+                std::process::exit(1);
+            }
+        }
         Some("run-project") => run_project(cli_args),
         Some("build") => run_build(cli_args),
         Some("run-image") => run_execute(cli_args),
         Some("run") | None => run_execute(cli_args),
         Some("help") | Some("--help") | Some("-h") => print_usage(),
         Some(other) => {
-            eprintln!("oxvba: unknown subcommand `{other}`");
+            eprintln!("calcvba-cli: unknown subcommand `{other}`");
             print_usage();
             std::process::exit(2);
         }
@@ -40,7 +47,7 @@ fn main() {
 }
 fn print_usage() {
     eprintln!(
-        "usage:\n  oxvba run <source.bas> [--backend vm3|jit] [--dump-values]\n  oxvba run-project [path] [--entry Module.Procedure] [--backend vm3|jit]\n  oxvba build <project> --target OxImage|NativeLibrary|WrappedComServer --out-dir <dir>\n  oxvba run-image <project.oxi> [--backend vm3|jit]\n\n  --profile <id>  --dump-bootstrap  --diagnostic-format human|json"
+        "usage:\n  calcvba-cli run <source.bas> [--backend vm3|jit] [--dump-values]\n  calcvba-cli run-project [path] [--entry Module.Procedure] [--backend vm3|jit]\n  calcvba-cli build <project> --target OxImage|NativeLibrary|WrappedComServer --out-dir <dir>\n  calcvba-cli run-image <project.oxi> [--backend vm3|jit]\n  calcvba-cli inspect-vba <workbook>\n  calcvba-cli export-vba <workbook> --out-dir <new-folder>\n  calcvba-cli write-vba <workbook> --project <project.basproj> --out <new-workbook>\n\n  --profile <id>  --dump-bootstrap  --diagnostic-format human|json"
     );
 }
 
@@ -57,7 +64,7 @@ fn run_execute(mut cli_args: Vec<String>) {
         None
     } else {
         Some(parse_run_args_from(cli_args).unwrap_or_else(|| {
-            eprintln!("usage: oxvba run <source.bas> [--diagnostic-format <human|json>] [bootstrap options]");
+            eprintln!("usage: calcvba-cli run <source.bas> [--diagnostic-format <human|json>] [bootstrap options]");
             std::process::exit(2);
         }))
     };
@@ -77,7 +84,7 @@ fn run_execute(mut cli_args: Vec<String>) {
                     OxDiagnosticPhase::Host,
                     format!("bootstrap failed: {err}"),
                 );
-                emit_diagnostic("oxvba", &diagnostic, diagnostic_format);
+                emit_diagnostic("calcvba-cli", &diagnostic, diagnostic_format);
                 std::process::exit(2);
             });
         engine.set_runtime_profile(resolved.runtime_profile);
@@ -105,7 +112,7 @@ fn run_execute(mut cli_args: Vec<String>) {
         }
         Err(err) => {
             emit_diagnostic(
-                "oxvba: execution failed",
+                "calcvba-cli: execution failed",
                 err.diagnostic(),
                 diagnostic_format,
             );
@@ -121,7 +128,7 @@ fn run_execute(mut cli_args: Vec<String>) {
 fn run_project(args: Vec<String>) {
     let parsed = parse_run_project_args_from(args).unwrap_or_else(|| {
         eprintln!(
-            "usage: oxvba run-project [path] [--entry <Module.Procedure>] [--diagnostic-format <human|json>] [bootstrap options]"
+            "usage: calcvba-cli run-project [path] [--entry <Module.Procedure>] [--diagnostic-format <human|json>] [bootstrap options]"
         );
         std::process::exit(2);
     });
@@ -151,7 +158,11 @@ fn run_project(args: Vec<String>) {
                 )
                 .with_help("Pass an explicit .basproj or .vbp path, or run from a directory containing exactly one project file."),
             };
-            emit_diagnostic("oxvba run-project", &diagnostic, parsed.diagnostic_format);
+            emit_diagnostic(
+                "calcvba-cli run-project",
+                &diagnostic,
+                parsed.diagnostic_format,
+            );
             std::process::exit(1);
         }
     };
@@ -160,7 +171,7 @@ fn run_project(args: Vec<String>) {
     // profile / policy declared in the project file).
     let loaded = load_project_for_bootstrap(&project_file).unwrap_or_else(|err| {
         emit_diagnostic(
-            "oxvba run-project",
+            "calcvba-cli run-project",
             &err.to_diagnostic(),
             parsed.diagnostic_format,
         );
@@ -178,7 +189,11 @@ fn run_project(args: Vec<String>) {
                     OxDiagnosticPhase::Host,
                     format!("bootstrap failed: {err}"),
                 );
-                emit_diagnostic("oxvba run-project", &diagnostic, parsed.diagnostic_format);
+                emit_diagnostic(
+                    "calcvba-cli run-project",
+                    &diagnostic,
+                    parsed.diagnostic_format,
+                );
                 std::process::exit(2);
             });
     engine.set_runtime_profile(resolved.runtime_profile);
@@ -193,7 +208,7 @@ fn run_project(args: Vec<String>) {
     )
     .unwrap_or_else(|err| {
         emit_diagnostic(
-            "oxvba run-project",
+            "calcvba-cli run-project",
             &err.to_diagnostic(),
             parsed.diagnostic_format,
         );
@@ -208,7 +223,7 @@ fn run_project(args: Vec<String>) {
         }
         Err(err) => {
             emit_diagnostic(
-                "oxvba run-project",
+                "calcvba-cli run-project",
                 err.diagnostic(),
                 parsed.diagnostic_format,
             );
@@ -224,7 +239,7 @@ fn run_project(args: Vec<String>) {
 fn run_build(args: Vec<String>) {
     let parsed = parse_build_args_from(args).unwrap_or_else(|| {
         eprintln!(
-            "usage: oxvba build <project.basproj|project.vbp> --target <WrappedComServer|OxImage|NativeLibrary> --out-dir <dir> [--diagnostic-format <human|json>]"
+            "usage: calcvba-cli build <project.basproj|project.vbp> --target <WrappedComServer|OxImage|NativeLibrary> --out-dir <dir> [--diagnostic-format <human|json>]"
         );
         std::process::exit(2);
     });
@@ -241,7 +256,7 @@ fn run_build(args: Vec<String>) {
             }
             Err(error) => {
                 emit_diagnostic(
-                    "oxvba build",
+                    "calcvba-cli build",
                     &OxDiagnostic::error(
                         "BUILD-E-NATIVE-EXPORT",
                         OxDiagnosticPhase::Host,
@@ -259,7 +274,7 @@ fn run_build(args: Vec<String>) {
             Ok(path) => println!("OXI:{}", path.display()),
             Err(err) => {
                 emit_diagnostic(
-                    "oxvba build",
+                    "calcvba-cli build",
                     &OxDiagnostic::error(
                         "BUILD-E-OXIMAGE",
                         OxDiagnosticPhase::Host,
@@ -295,7 +310,7 @@ fn run_build(args: Vec<String>) {
                 OxDiagnosticPhase::Host,
                 format!("WrappedComServer build failed: {err}"),
             );
-            emit_diagnostic("oxvba build", &diagnostic, parsed.diagnostic_format);
+            emit_diagnostic("calcvba-cli build", &diagnostic, parsed.diagnostic_format);
             std::process::exit(1);
         }
     }

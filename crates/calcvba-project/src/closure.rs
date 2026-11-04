@@ -177,7 +177,7 @@ fn build_node(
     if let Some(entry) = entry_override {
         crate::load::override_loaded_project_entry_point(&mut loaded, entry)?;
     }
-    let meta = module_metadata_by_name(basproj);
+    let meta = module_metadata_by_name(basproj, &loaded.manifest.modules);
 
     let modules = loaded
         .manifest
@@ -197,13 +197,22 @@ fn build_node(
     })
 }
 
-/// Per-module COM/document metadata keyed by module name (file stem), recovered
-/// from the `.basproj` items — the legacy `ModuleAttributes` drops these.
-fn module_metadata_by_name(basproj: &BasProj) -> HashMap<String, &BasProjModule> {
+/// Associate packaging metadata with the source's VB_Name, even when the
+/// source filename differs. Explicit source modules retain their item-list order; the injected
+/// startup helper has no packaging item.
+fn module_metadata_by_name<'a>(
+    basproj: &'a BasProj,
+    modules: &[legacy::ModuleUnit],
+) -> HashMap<String, &'a BasProjModule> {
     basproj
         .modules
         .iter()
-        .map(|bm| (module_name_of(&bm.include), bm))
+        .zip(
+            modules
+                .iter()
+                .filter(|module| !crate::load::is_startup_shim_module_name(&module.module_name)),
+        )
+        .map(|(bm, module)| (module.module_name.clone(), bm))
         .collect()
 }
 
@@ -239,13 +248,28 @@ fn adapt_module(m: &legacy::ModuleUnit, meta: &HashMap<String, &BasProjModule>) 
             vb_predeclared_id: m.attributes.vb_predeclared_id,
             vb_exposed: m.attributes.vb_exposed,
             option_private_module: m.attributes.option_private_module,
-            host_document_type: bm.and_then(|b| b.host_document_type.clone()),
+            host_document_type: bm.and_then(|b| b.host_document_type.clone()).or_else(|| {
+                if m.module_kind != legacy::ModuleKind::Document {
+                    return None;
+                }
+                let source = crate::load::source_string_attribute(&m.source, "VB_Base")?
+                    .to_ascii_lowercase();
+                if source.contains("00020819-0000-0000-c000-000000000046") {
+                    Some("Excel.Workbook".into())
+                } else if source.contains("00020820-0000-0000-c000-000000000046") {
+                    Some("Excel.Worksheet".into())
+                } else if source.contains("00020821-0000-0000-c000-000000000046") {
+                    Some("Excel.Chart".into())
+                } else {
+                    None
+                }
+            }),
             instancing: bm
                 .and_then(|b| b.instancing)
                 .map(adapt_model_instancing)
                 .or_else(|| m.attributes.instancing.map(adapt_manifest_instancing)),
             prog_id: bm.and_then(|b| b.prog_id.clone()),
-            description: bm.and_then(|b| b.description.clone()),
+            description: crate::load::source_string_attribute(&m.source, "VB_Description"),
         },
         source: m.source.clone(),
     }
@@ -396,7 +420,7 @@ mod tests {
             .map(|e| format!("    <EntryPoint>{e}</EntryPoint>\n"))
             .unwrap_or_default();
         let xml = format!(
-            "<Project Sdk=\"OxVba.Sdk/0.1.0\">\n\
+            "<Project Sdk=\"CalcVBA.Sdk/0.1.0\">\n\
              <PropertyGroup>\n\
              <OutputType>{output_type}</OutputType>\n\
              <ProjectName>{name}</ProjectName>\n\
@@ -584,8 +608,8 @@ mod tests {
 
         assert_eq!(
             widget.attributes.instancing,
-            Some(sym::Instancing::MultiUse),
-            "exported .cls MultiUse header metadata should survive normalization"
+            Some(sym::Instancing::PublicNotCreatable),
+            "VB_Creatable=False must survive the VBE export's MultiUse preamble"
         );
         std::fs::remove_dir_all(&root).ok();
     }

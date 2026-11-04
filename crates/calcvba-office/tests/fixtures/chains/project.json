@@ -1,0 +1,71 @@
+{
+  "name": "VBAProject",
+  "entry_module": "Api",
+  "modules": [
+    {
+      "name": "ThisWorkbook",
+      "kind": 100,
+      "source": "",
+      "source_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "host_type": "Excel.Workbook"
+    },
+    {
+      "name": "Sheet1",
+      "kind": 100,
+      "source": "",
+      "source_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "host_type": "Excel.Worksheet"
+    },
+    {
+      "name": "ChainOps",
+      "kind": 1,
+      "source": "Public Function ObjectChains(ByVal ws As Object) As String\r\n    Dim cell As Object, boxed As Variant\r\n    ws.Range(\"A1\").Value2 = 7#\r\n    ws.Range(\"A1\").Offset(1).Value = 12#\r\n    Set cell = ws.Range(\"A1\").Offset(1)\r\n    Set boxed = cell\r\n    boxed.Offset(0, 1).Value2 = boxed.Value + ws.Range(\"A1\").Value2\r\n    ws.Range(\"B3\").Formula = \"=A1+A2+B2\"\r\n    ObjectChains = ws.Range(\"A1\").Offset(1).Address(False, False)\r\n    ObjectChains = ObjectChains & \":\" & ws.Range(\"A2\").Value & \":\" & boxed.Offset(0, 1).Value2\r\n    ObjectChains = ObjectChains & \":\" & ws.Range(\"B3\").Value2\r\n    ObjectChains = ObjectChains & \":\" & (ws.Range(\"A1\") + 2#)\r\n    ObjectChains = ObjectChains & \":\" & ws.Range(\"A1\").Offset(RowOffset:=1).Address(False, False)\r\nEnd Function\r\nPublic Function VariantChains(ByVal ws As Variant) As String\r\n    Dim target As Variant\r\n    Set target = ws.Range(\"D1\")\r\n    target.Value2 = 3#\r\n    target.Offset(1, 0).Value2 = target.Value2 * 4#\r\n    ws.Cells(2, 5).Value2 = target.Offset(1).Value2 + 2#\r\n    VariantChains = ws.Cells(2, 5).Address(False, False) & \":\" & ws.Cells(2, 5).Value2\r\nEnd Function\r\nPublic Function ChainErrors(ByVal ws As Object) As String\r\n    Dim uninitialized As Object, plain As Variant, answer As Variant\r\n    On Error Resume Next\r\n    answer = uninitialized.Value\r\n    ChainErrors = Err.Number\r\n    Err.Clear\r\n    plain = 12\r\n    answer = plain.Value\r\n    ChainErrors = ChainErrors & \":\" & Err.Number\r\n    Err.Clear\r\n    answer = ws.NoSuchMember\r\n    ChainErrors = ChainErrors & \":\" & Err.Number\r\nEnd Function\r\nPublic Function ChainSnapshot(ByVal ws As Object) As String\r\n    ChainSnapshot = ws.Range(\"A1\").Value2 & \":\" & ws.Range(\"A2\").Value2\r\n    ChainSnapshot = ChainSnapshot & \":\" & ws.Range(\"B2\").Value2 & \":\" & ws.Range(\"B3\").Value2\r\n    ChainSnapshot = ChainSnapshot & \":\" & ws.Range(\"D1\").Value2 & \":\" & ws.Range(\"D2\").Value2 & \":\" & ws.Range(\"E2\").Value2\r\nEnd Function\r\n",
+      "source_sha256": "sha256:7167c2d6799536ba3e9b4d78b70f8bec3b4cfef1856c4712c2647034233c9b68",
+      "host_type": null
+    },
+    {
+      "name": "Api",
+      "kind": 1,
+      "source": "Public Function RunProbe() As String\r\n    Dim ws As Object\r\n    Set ws = ThisWorkbook.Worksheets(1)\r\n    RunProbe = ChainOps.ObjectChains(ws) & \";\" & ChainOps.VariantChains(ws)\r\n    RunProbe = RunProbe & \";\" & ChainOps.ChainErrors(ws) & \";\" & ChainOps.ChainSnapshot(ws)\r\n    ws.Range(\"A1\").NumberFormat = \"0.00\"\r\n    ws.Range(\"B2\").Interior.Color = 255\r\n    ws.Range(\"B2\").Font.Bold = True\r\n    ws.Range(\"H1\").Formula = \"=1/0\"\r\nEnd Function\r\n",
+      "source_sha256": "sha256:e2895f5af552395db408dc278d129f7b62b2b741c3de43ec14168c9623c53fd0",
+      "host_type": null
+    }
+  ],
+  "references": [
+    {
+      "name": "VBA",
+      "guid": "{000204EF-0000-0000-C000-000000000046}",
+      "major": 4,
+      "minor": 2,
+      "broken": false,
+      "path": "C:\\Program Files\\Common Files\\Microsoft Shared\\VBA\\VBA7.1\\VBE7.DLL"
+    },
+    {
+      "name": "Excel",
+      "guid": "{00020813-0000-0000-C000-000000000046}",
+      "major": 1,
+      "minor": 9,
+      "broken": false,
+      "path": "C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE"
+    },
+    {
+      "name": "stdole",
+      "guid": "{00020430-0000-0000-C000-000000000046}",
+      "major": 2,
+      "minor": 0,
+      "broken": false,
+      "path": "C:\\Windows\\System32\\stdole2.tlb"
+    },
+    {
+      "name": "Office",
+      "guid": "{2DF8D04C-5BFA-101B-BDE5-00AA0044DE52}",
+      "major": 2,
+      "minor": 8,
+      "broken": false,
+      "path": "C:\\Program Files\\Common Files\\Microsoft Shared\\OFFICE16\\MSO.DLL"
+    }
+  ],
+  "startup": null,
+  "expected_error": null,
+  "cancel_save": false
+}

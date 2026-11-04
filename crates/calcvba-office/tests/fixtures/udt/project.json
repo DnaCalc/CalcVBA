@@ -1,0 +1,64 @@
+{
+  "name": "VBAProject",
+  "entry_module": "Api",
+  "modules": [
+    {
+      "name": "ThisWorkbook",
+      "kind": 100,
+      "source": "",
+      "source_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "host_type": "Excel.Workbook"
+    },
+    {
+      "name": "Sheet1",
+      "kind": 100,
+      "source": "",
+      "source_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "host_type": "Excel.Worksheet"
+    },
+    {
+      "name": "Api",
+      "kind": 1,
+      "source": "Private Type RowData\r\n    Title As String\r\n    Amount As Double\r\n    Counts(1 To 2) As Long\r\n    Data() As Double\r\nEnd Type\r\nPublic Function RunProbe() As String\r\n    Dim ws As Object, row As RowData, copied As RowData\r\n    Set ws = ThisWorkbook.Worksheets(1)\r\n    row.Title = \"summary\"\r\n    row.Amount = 12.5\r\n    row.Counts(1) = 3\r\n    row.Counts(2) = 7\r\n    ReDim row.Data(1 To 2, 1 To 2)\r\n    row.Data(1, 1) = 1.25\r\n    row.Data(1, 2) = 2.5\r\n    row.Data(2, 1) = 3.75\r\n    row.Data(2, 2) = 5#\r\n    ReDim Preserve row.Data(1 To 2, 1 To 3)\r\n    copied = row\r\n    copied.Counts(1) = 9\r\n    copied.Data(1, 1) = 99#\r\n    ws.Range(\"A1\").Value2 = copied.Title\r\n    ws.Range(\"A2\").Value2 = copied.Amount\r\n    ws.Range(\"B1\").Value2 = row.Counts(1)\r\n    ws.Range(\"B2\").Value2 = copied.Counts(1)\r\n    ws.Range(\"D1:E1\").Value2 = row.Counts\r\n    ws.Range(\"G1:I2\").Value = row.Data\r\n    ws.Range(\"K1\").Value2 = copied.Data(1, 1)\r\n    ws.Range(\"K2\").Value2 = row.Data(1, 1)\r\n    ws.Range(\"K3\").Value2 = VarType(row.Counts)\r\n    ws.Range(\"K4\").Value2 = VarType(row.Data)\r\n    RunProbe = \"ok\"\r\nEnd Function\r\n",
+      "source_sha256": "sha256:f5ff60c3e6e4e45d12fa73eef4db09685329db1d0a0e5588d8f77d0ccdc391a5",
+      "host_type": null
+    }
+  ],
+  "references": [
+    {
+      "name": "VBA",
+      "guid": "{000204EF-0000-0000-C000-000000000046}",
+      "major": 4,
+      "minor": 2,
+      "broken": false,
+      "path": "C:\\Program Files\\Common Files\\Microsoft Shared\\VBA\\VBA7.1\\VBE7.DLL"
+    },
+    {
+      "name": "Excel",
+      "guid": "{00020813-0000-0000-C000-000000000046}",
+      "major": 1,
+      "minor": 9,
+      "broken": false,
+      "path": "C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE"
+    },
+    {
+      "name": "stdole",
+      "guid": "{00020430-0000-0000-C000-000000000046}",
+      "major": 2,
+      "minor": 0,
+      "broken": false,
+      "path": "C:\\Windows\\System32\\stdole2.tlb"
+    },
+    {
+      "name": "Office",
+      "guid": "{2DF8D04C-5BFA-101B-BDE5-00AA0044DE52}",
+      "major": 2,
+      "minor": 8,
+      "broken": false,
+      "path": "C:\\Program Files\\Common Files\\Microsoft Shared\\OFFICE16\\MSO.DLL"
+    }
+  ],
+  "startup": null,
+  "expected_error": null,
+  "cancel_save": false
+}

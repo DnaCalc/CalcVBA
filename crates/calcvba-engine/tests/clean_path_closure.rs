@@ -50,7 +50,7 @@ fn write_project(
         .map(|e| format!("    <EntryPoint>{e}</EntryPoint>\n"))
         .unwrap_or_default();
     let xml = format!(
-        "<Project Sdk=\"OxVba.Sdk/0.1.0\">\n\
+        "<Project Sdk=\"CalcVBA.Sdk/0.1.0\">\n\
          <PropertyGroup>\n\
          <OutputType>{output_type}</OutputType>\n\
          <ProjectName>{name}</ProjectName>\n\
@@ -286,7 +286,7 @@ fn class_method_indexed_put_on_com_field_mutates_dictionary() {
     let basproj = dir.join("App.basproj");
     std::fs::write(
         &basproj,
-        "<Project Sdk=\"OxVba.Sdk/0.1.0\">\n\
+        "<Project Sdk=\"CalcVBA.Sdk/0.1.0\">\n\
          <PropertyGroup>\n\
          <OutputType>Exe</OutputType>\n\
          <ProjectName>App</ProjectName>\n\

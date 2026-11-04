@@ -30,6 +30,7 @@ calcvba-eval.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+calcvba-office.workspace = true
 calcvba-runtime = { workspace = true, features = ["live-counters"] }
 calcvba-com = { workspace = true, features = ["fixture-typelibs"] }
 

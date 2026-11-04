@@ -361,35 +361,27 @@ fn owned_xlsm_project() {
         &std::fs::read(std::env::var("OXVBA_XLSM_PROJECT").unwrap()).unwrap(),
     )
     .unwrap();
-    let mut project = api::Project::module("CalcVbaHostSetup", SETUP);
-    project.name = snapshot["name"].as_str().unwrap().into();
-    let mut classes = Vec::new();
-    let mut documents = Vec::new();
-    for module in snapshot["modules"].as_array().unwrap() {
-        let name = module["name"].as_str().unwrap();
-        assert_ne!(name, "CalcVbaHostSetup");
-        project.modules.push(api::SourceModule {
-            name: name.into(),
-            source: module["source"].as_str().unwrap().into(),
-        });
-        match module["kind"].as_i64().unwrap() {
-            1 => {}
-            2 => classes.push(name.into()),
-            100 => documents.push((name.into(), module["host_type"].as_str().unwrap().into())),
-            kind => panic!("unsupported actual project module kind {kind}"),
-        }
-    }
-    for reference in snapshot["references"].as_array().unwrap() {
-        assert!(!reference["broken"].as_bool().unwrap());
-        project.references.push(api::TypeLibraryReference {
-            name: reference["name"].as_str().unwrap().into(),
-            libid: Some(reference["guid"].as_str().unwrap().into()),
-            major: Some(reference["major"].as_u64().unwrap() as u16),
-            minor: Some(reference["minor"].as_u64().unwrap() as u16),
-            lcid: Some(0),
-            import_library: None,
-        });
-    }
+    let office =
+        calcvba_office::OfficeFile::open(std::env::var("OXVBA_OWNED_EXCEL_WORKBOOK").unwrap())
+            .unwrap();
+    let mut manifest = office.project.to_manifest().unwrap();
+    assert_eq!(manifest.project_name, snapshot["name"].as_str().unwrap());
+    let documents = manifest
+        .modules
+        .iter()
+        .filter_map(|m| {
+            m.attributes
+                .host_document_type
+                .as_ref()
+                .map(|ty| (m.module_name.clone(), ty.clone()))
+        })
+        .collect::<Vec<_>>();
+    manifest.modules.push(calcvba_symbol::manifest::ModuleUnit {
+        module_name: "CalcVbaHostSetup".into(),
+        module_kind: calcvba_symbol::manifest::ModuleKind::Procedural,
+        attributes: calcvba_symbol::manifest::ModuleAttributes::named("CalcVbaHostSetup"),
+        source: SETUP.into(),
+    });
     let (_com, pointer) = owned_excel::attach();
     let host = HostBuilder::new()
         .profile(HalProfileId::Windows)
@@ -401,11 +393,10 @@ fn owned_xlsm_project() {
             .bind_native_dispatch_object_variant("Owned.ExcelWindow", pointer)
     }
     .unwrap();
-    let module = Provider::with_host(host.clone())
-        .with_class_modules(classes)
-        .with_document_modules(documents.clone())
-        .compile(&project)
-        .unwrap();
+    let module =
+        calcvba_host::Module::load_project(&manifest, &calcvba_symbol::CatalogTypeLibResolver)
+            .unwrap()
+            .with_host(host.clone());
     let interfaces = module
         .com_interfaces()
         .iter()

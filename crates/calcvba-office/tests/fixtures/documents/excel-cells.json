@@ -1,0 +1,49 @@
+[
+  {
+    "name": "Bootstrap",
+    "code_name": "Sheet1",
+    "rows": 1,
+    "columns": 2,
+    "cells": [
+      {
+        "row": 1,
+        "column": 1,
+        "value": {
+          "kind": "System.Double",
+          "value": 23.0
+        },
+        "formula": {
+          "kind": "String",
+          "units": [
+            50,
+            51
+          ]
+        },
+        "text": "23",
+        "number_format": "General",
+        "fill": 16777215,
+        "bold": false,
+        "merged": false
+      },
+      {
+        "row": 1,
+        "column": 2,
+        "value": {
+          "kind": "System.Double",
+          "value": 2.0
+        },
+        "formula": {
+          "kind": "String",
+          "units": [
+            50
+          ]
+        },
+        "text": "2",
+        "number_format": "General",
+        "fill": 16777215,
+        "bold": false,
+        "merged": false
+      }
+    ]
+  }
+]

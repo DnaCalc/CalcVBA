@@ -1,0 +1,64 @@
+{
+  "name": "VBAProject",
+  "entry_module": "Api",
+  "modules": [
+    {
+      "name": "ThisWorkbook",
+      "kind": 100,
+      "source": "",
+      "source_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "host_type": "Excel.Workbook"
+    },
+    {
+      "name": "Sheet1",
+      "kind": 100,
+      "source": "",
+      "source_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "host_type": "Excel.Worksheet"
+    },
+    {
+      "name": "Api",
+      "kind": 1,
+      "source": "Public Function RunProbe() As String\r\n    Dim book As Object, added As Object, removed As Object\r\n    Set book = ThisWorkbook\r\n    Set added = book.Worksheets.Add(After:=book.Worksheets(book.Worksheets.Count))\r\n    added.Name = \"Report\"\r\n    added.Range(\"A1\").Value2 = \"new sheet\"\r\n    Set removed = book.Worksheets.Add\r\n    removed.Name = \"Temporary\"\r\n    book.Application.DisplayAlerts = False\r\n    removed.Delete\r\n    book.Worksheets(1).Range(\"A1\").Value2 = book.Worksheets.Count\r\n    RunProbe = \"ok\"\r\nEnd Function\r\n",
+      "source_sha256": "sha256:26903337cc17177383e450fa3f8c8bfcf18ddc07c9f64650ad74beee590375f8",
+      "host_type": null
+    }
+  ],
+  "references": [
+    {
+      "name": "VBA",
+      "guid": "{000204EF-0000-0000-C000-000000000046}",
+      "major": 4,
+      "minor": 2,
+      "broken": false,
+      "path": "C:\\Program Files\\Common Files\\Microsoft Shared\\VBA\\VBA7.1\\VBE7.DLL"
+    },
+    {
+      "name": "Excel",
+      "guid": "{00020813-0000-0000-C000-000000000046}",
+      "major": 1,
+      "minor": 9,
+      "broken": false,
+      "path": "C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE"
+    },
+    {
+      "name": "stdole",
+      "guid": "{00020430-0000-0000-C000-000000000046}",
+      "major": 2,
+      "minor": 0,
+      "broken": false,
+      "path": "C:\\Windows\\System32\\stdole2.tlb"
+    },
+    {
+      "name": "Office",
+      "guid": "{2DF8D04C-5BFA-101B-BDE5-00AA0044DE52}",
+      "major": 2,
+      "minor": 8,
+      "broken": false,
+      "path": "C:\\Program Files\\Common Files\\Microsoft Shared\\OFFICE16\\MSO.DLL"
+    }
+  ],
+  "startup": null,
+  "expected_error": null,
+  "cancel_save": false
+}

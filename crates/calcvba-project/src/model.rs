@@ -8,7 +8,7 @@ use std::path::PathBuf;
 /// The intermediate representation of a parsed `.basproj` file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BasProj {
-    /// SDK identifier from `<Project Sdk="...">`, e.g. `"OxVba.Sdk/0.1.0"`.
+    /// SDK identifier from `<Project Sdk="...">`, e.g. `"CalcVBA.Sdk/0.1.0"`.
     pub sdk: String,
     /// Scalar properties from `<PropertyGroup>` elements.
     pub properties: BasProjProperties,
@@ -84,6 +84,8 @@ pub enum BasProjModuleKind {
     ClassModule,
     /// `<DocumentModule>` — code-behind `.cls` module.
     DocumentModule,
+    /// `<FormModule>` — a VBA UserForm `.frm` with its `.frx` companion.
+    FormModule,
 }
 
 /// A module item parsed from `.basproj`.
@@ -92,17 +94,11 @@ pub struct BasProjModule {
     pub kind: BasProjModuleKind,
     /// The `Include` attribute — relative path to the source file.
     pub include: String,
-    /// Class module metadata.
-    pub vb_predeclared_id: bool,
-    pub vb_exposed: bool,
-    pub vb_global_namespace: bool,
-    pub vb_creatable: bool,
     /// Document module metadata.
     pub host_document_type: Option<String>,
     /// COM server class metadata.
     pub instancing: Option<Instancing>,
     pub prog_id: Option<String>,
-    pub description: Option<String>,
 }
 
 /// A `<ProjectReference>` item.

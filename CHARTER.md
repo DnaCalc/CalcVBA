@@ -1,6 +1,6 @@
 # CalcVBA
 
-CalcVBA (the OxVba repository) is a portable, optimisable, integrable Rust
+CalcVBA (the DnaCalc/CalcVBA repository) is a portable, optimisable, integrable Rust
 implementation of VBA as used in Office, especially Excel. We control its
 implementation so it can serve two purposes:
 

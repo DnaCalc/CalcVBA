@@ -144,7 +144,7 @@ fn core_basproj(root: &Path, shape: HostShape, extra_core_module: Option<&str>) 
         .map(|module| format!("    <Module Include=\"{module}\" />\n"))
         .unwrap_or_default();
     format!(
-        r#"<Project Sdk="OxVba.Sdk/0.1.0">
+        r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <ProjectName>{}</ProjectName>
@@ -199,7 +199,7 @@ fn write_fake_host_project(temp: &Path) {
     std::fs::write(temp.join("Application.bas"), application_module()).expect("write Application");
     std::fs::write(
         temp.join("FakeExcelHost.basproj"),
-        r#"<Project Sdk="OxVba.Sdk/0.1.0">
+        r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <ProjectName>FakeExcelHost</ProjectName>
@@ -254,7 +254,7 @@ fn write_synthetic_project(
         std::fs::write(
             temp.join(&harness_project),
             format!(
-                r#"<Project Sdk="OxVba.Sdk/0.1.0">
+                r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>VbaWebHarness{}</ProjectName>
@@ -698,7 +698,7 @@ End Sub
     std::fs::write(
         &project,
         format!(
-            r#"<Project Sdk="OxVba.Sdk/0.1.0">
+            r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>VbaWebExtractedSpecs</ProjectName>

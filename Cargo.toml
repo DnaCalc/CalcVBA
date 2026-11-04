@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/calcvba-host-api",
+    "crates/calcvba-office",
     "crates/calcvba-diagnostics",
     "crates/calcvba-hal",
     "crates/calcvba-syntax",
@@ -56,6 +57,7 @@ unwrap_used = "allow"
 
 [workspace.dependencies]
 calcvba-host-api = { path = "crates/calcvba-host-api" }
+calcvba-office = { path = "crates/calcvba-office" }
 calcvba-syntax = { path = "crates/calcvba-syntax" }
 calcvba-diagnostics = { path = "crates/calcvba-diagnostics" }
 calcvba-hal = { path = "crates/calcvba-hal" }

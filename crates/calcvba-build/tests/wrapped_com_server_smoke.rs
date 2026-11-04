@@ -332,7 +332,7 @@ End Function
     );
     write(
         &project_path,
-        r#"<Project Sdk="OxVba.Sdk/0.1.0">
+        r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>ComServer</OutputType>
     <BuildTarget>WrappedComServer</BuildTarget>
@@ -352,44 +352,30 @@ End Function
       <Lcid>0</Lcid>
     </COMReference>
     <ClassModule Include="Calculator.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
       <Instancing>MultiUse</Instancing>
       <ProgId>DemoServer.Calculator</ProgId>
     </ClassModule>
     <ClassModule Include="Pinger.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
       <Instancing>MultiUse</Instancing>
       <ProgId>DemoServer.Pinger</ProgId>
     </ClassModule>
     <ClassModule Include="Counter.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
       <Instancing>MultiUse</Instancing>
       <ProgId>DemoServer.Counter</ProgId>
     </ClassModule>
     <ClassModule Include="Returner.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
       <Instancing>MultiUse</Instancing>
       <ProgId>DemoServer.Returner</ProgId>
     </ClassModule>
     <ClassModule Include="ObjectRelay.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
       <Instancing>MultiUse</Instancing>
       <ProgId>DemoServer.ObjectRelay</ProgId>
     </ClassModule>
     <ClassModule Include="OfficeAddin.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
       <Instancing>MultiUse</Instancing>
       <ProgId>DemoServer.OfficeAddin</ProgId>
     </ClassModule>
     <ClassModule Include="RtdTicker.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
       <Instancing>MultiUse</Instancing>
       <ProgId>DemoServer.RtdTicker</ProgId>
     </ClassModule>
@@ -791,7 +777,7 @@ End Sub
     );
     write(
         &project_path,
-        r#"<Project Sdk="OxVba.Sdk/0.1.0">
+        r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>ComServer</OutputType>
     <BuildTarget>WrappedComServer</BuildTarget>
@@ -811,8 +797,6 @@ End Sub
       <Lcid>0</Lcid>
     </COMReference>
     <ClassModule Include="ExcelAddin.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
       <Instancing>MultiUse</Instancing>
       <ProgId>OxVbaExcelAddinSmoke.ExcelAddin</ProgId>
     </ClassModule>
@@ -950,7 +934,7 @@ End Function
     );
     write(
         &project_path,
-        r#"<Project Sdk="OxVba.Sdk/0.1.0">
+        r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>ComServer</OutputType>
     <BuildTarget>WrappedComServer</BuildTarget>
@@ -970,8 +954,6 @@ End Function
       <Lcid>0</Lcid>
     </COMReference>
     <ClassModule Include="RibbonAddin.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
       <Instancing>MultiUse</Instancing>
       <ProgId>RibbonSmoke.RibbonAddin</ProgId>
     </ClassModule>
@@ -3893,5 +3875,35 @@ impl Drop for TestDir {
 }
 
 fn write(path: &Path, text: &str) {
+    // VBE exports carry class attributes in source, not in .basproj XML.
+    let text = if path.extension().is_some_and(|ext| ext == "cls")
+        && path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                matches!(
+                    name,
+                    "Calculator"
+                        | "Counter"
+                        | "ExcelAddin"
+                        | "ObjectRelay"
+                        | "OfficeAddin"
+                        | "Pinger"
+                        | "Returner"
+                        | "RibbonAddin"
+                        | "RtdTicker"
+                )
+            }) {
+        {
+            format!(
+                "Attribute VB_Name = \"{}\"\nAttribute VB_Exposed = True\nAttribute VB_Creatable = True\n{}",
+                path.file_stem().unwrap().to_string_lossy(),
+                text
+            )
+        }
+    } else {
+        text.to_owned()
+    };
+
     std::fs::write(path, text).expect("write test fixture");
 }

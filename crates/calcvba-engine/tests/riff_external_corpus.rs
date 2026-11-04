@@ -56,7 +56,7 @@ fn temp_project(harness_source: &str) -> PathBuf {
     std::fs::write(
         temp.join("RiffHarness.basproj"),
         format!(
-            r#"<Project Sdk="OxVba.Sdk/0.1.0">
+            r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>RiffHarness</ProjectName>

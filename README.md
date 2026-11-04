@@ -1,6 +1,6 @@
 # CalcVBA
 
-CalcVBA, in the OxVba repository, is a Rust implementation of Office VBA,
+CalcVBA, in the DnaCalc/CalcVBA repository, is a Rust implementation of Office VBA,
 especially Excel VBA. It supports embedding in DNA Calc and compiling VBA into
 other useful forms. The runtime is single threaded. Cross-platform support is
 practical where the host services exist; native COM interop is Windows specific.
@@ -111,6 +111,35 @@ VBA behaviour is decided by public specifications and reproducible black-box
 Office observations. VM3 is the reference interpreter for the JIT; observed
 Excel differences become regression tests. Existing engine behaviour is not a
 substitute for VBA compatibility.
+
+## Office files and source folders
+
+`calcvba-office` reads VBA directly from `.xlsm`, `.xlsb`, `.xlam`, `.xls`
+and standalone `vbaProject.bin` on supported Rust platforms. It preserves source
+attributes, module roles, ordered references, project properties and forms.
+Hosts can pass `project.to_manifest()` to `calcvba_host::Module::load_project`.
+External referenced VBA projects require the host's project graph and host
+object models still come from the host.
+
+```powershell
+cargo run -p calcvba-cli -- inspect-vba book.xlsm
+cargo run -p calcvba-cli -- export-vba book.xlsm --out-dir source
+# Edit the UTF-8 .bas/.cls/.frm files, retaining their Attribute lines.
+cargo run -p calcvba-cli -- write-vba book.xlsm --project source/VBAProject.basproj --out changed.xlsm
+```
+
+The folder uses `CalcVBA.Sdk` and VBE source/form formats. Its Codepage controls
+write-back conversion; characters that cannot round-trip are refused before
+output is written. Saving replaces source streams and invalidates compiled
+caches so Office recompiles. Locked projects, encrypted Office packages and signed
+write-back are refused. Existing output paths are refused. See the
+[project format](docs/spec/BASPROJ_SPEC_V1.md) for persistence details.
+
+`scripts/run-office-project-oracle.ps1` runs all 33 saved round 14–15 projects
+on VM3 and the JIT, then checks edited projects in all four Office formats and
+VBE form import. Pass a new `-Directory`, the built `xlsm_projects` test
+executable as `-RuntimeTestExecutable`, and the built CLI as `-CliPath`.
+The complete batch reuses one recorded, owned Excel process.
 
 ## License
 

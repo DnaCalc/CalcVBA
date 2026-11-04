@@ -193,7 +193,7 @@ fn parse_vbp_reference(value: &str) -> Option<VbpReference> {
 /// Generate `.basproj` XML from a parsed `VbpProject`.
 pub fn generate_basproj_from_vbp(vbp: &VbpProject) -> Result<String, String> {
     let mut xml = String::new();
-    xml.push_str("<Project Sdk=\"OxVba.Sdk/0.1.0\">\n");
+    xml.push_str("<Project Sdk=\"CalcVBA.Sdk/0.1.0\">\n");
 
     xml.push_str("  <PropertyGroup>\n");
     xml.push_str(&format!(

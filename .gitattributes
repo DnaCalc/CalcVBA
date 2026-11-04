@@ -48,5 +48,11 @@
 *.tlb binary
 *.xlam binary
 *.xlsm binary
+*.xlsb binary
+*.xls binary
+*.frx binary
+
+# Native VBE export reference retains its original CRLF and spacing.
+crates/calcvba-office/tests/formats/ExampleForm.frm binary
 
 # Captured UTF-16/terminal evidence is opaque transport, despite its suffix.

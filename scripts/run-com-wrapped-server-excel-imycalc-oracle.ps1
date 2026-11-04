@@ -66,6 +66,8 @@ End Function
 
     $classSource = @'
 Attribute VB_Name = "MyCalc"
+Attribute VB_Exposed = True
+Attribute VB_Creatable = True
 Option Explicit
 Implements IMyCalc
 Private Function IMyCalc_AddThem(ByVal leftValue As Double, ByVal rightValue As Double) As Double
@@ -74,7 +76,7 @@ End Function
 '@
 
     $serverBasproj = @'
-<Project Sdk="OxVba.Sdk/0.1.0">
+<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>ComServer</OutputType>
     <BuildTarget>WrappedComServer</BuildTarget>
@@ -83,8 +85,6 @@ End Function
   <ItemGroup>
     <ClassModule Include="IMyCalc.cls" />
     <ClassModule Include="MyCalc.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
       <ProgId>MyCalcServerLib.MyCalc</ProgId>
     </ClassModule>
   </ItemGroup>

@@ -1,0 +1,275 @@
+[
+  {
+    "name": "Bootstrap",
+    "code_name": "Sheet1",
+    "rows": 4,
+    "columns": 3,
+    "cells": [
+      {
+        "row": 1,
+        "column": 1,
+        "value": {
+          "kind": "String",
+          "units": [
+            103,
+            114,
+            111,
+            117,
+            112
+          ]
+        },
+        "formula": {
+          "kind": "String",
+          "units": [
+            103,
+            114,
+            111,
+            117,
+            112
+          ]
+        },
+        "text": "group",
+        "number_format": "General",
+        "fill": 16777215,
+        "bold": false,
+        "merged": false
+      },
+      {
+        "row": 1,
+        "column": 2,
+        "value": {
+          "kind": "Empty"
+        },
+        "formula": {
+          "kind": "String",
+          "units": []
+        },
+        "text": "",
+        "number_format": "General",
+        "fill": 16777215,
+        "bold": false,
+        "merged": false
+      },
+      {
+        "row": 1,
+        "column": 3,
+        "value": {
+          "kind": "System.Boolean",
+          "value": false
+        },
+        "formula": {
+          "kind": "String",
+          "units": [
+            70,
+            65,
+            76,
+            83,
+            69
+          ]
+        },
+        "text": "FALSE",
+        "number_format": "General",
+        "fill": 16777215,
+        "bold": false,
+        "merged": false
+      },
+      {
+        "row": 2,
+        "column": 1,
+        "value": {
+          "kind": "String",
+          "units": [
+            107,
+            101,
+            101,
+            112
+          ]
+        },
+        "formula": {
+          "kind": "String",
+          "units": [
+            107,
+            101,
+            101,
+            112
+          ]
+        },
+        "text": "keep",
+        "number_format": "General",
+        "fill": 16777215,
+        "bold": false,
+        "merged": false
+      },
+      {
+        "row": 2,
+        "column": 2,
+        "value": {
+          "kind": "Empty"
+        },
+        "formula": {
+          "kind": "String",
+          "units": []
+        },
+        "text": "",
+        "number_format": "General",
+        "fill": 16777215,
+        "bold": false,
+        "merged": false
+      },
+      {
+        "row": 2,
+        "column": 3,
+        "value": {
+          "kind": "System.Boolean",
+          "value": true
+        },
+        "formula": {
+          "kind": "String",
+          "units": [
+            84,
+            82,
+            85,
+            69
+          ]
+        },
+        "text": "TRUE",
+        "number_format": "General",
+        "fill": 16777215,
+        "bold": false,
+        "merged": false
+      },
+      {
+        "row": 3,
+        "column": 1,
+        "value": {
+          "kind": "String",
+          "units": [
+            115,
+            107,
+            105,
+            112
+          ]
+        },
+        "formula": {
+          "kind": "String",
+          "units": [
+            115,
+            107,
+            105,
+            112
+          ]
+        },
+        "text": "skip",
+        "number_format": "General",
+        "fill": 16777215,
+        "bold": false,
+        "merged": false
+      },
+      {
+        "row": 3,
+        "column": 2,
+        "value": {
+          "kind": "Empty"
+        },
+        "formula": {
+          "kind": "String",
+          "units": []
+        },
+        "text": "",
+        "number_format": "General",
+        "fill": 16777215,
+        "bold": false,
+        "merged": false
+      },
+      {
+        "row": 3,
+        "column": 3,
+        "value": {
+          "kind": "System.Boolean",
+          "value": false
+        },
+        "formula": {
+          "kind": "String",
+          "units": [
+            70,
+            65,
+            76,
+            83,
+            69
+          ]
+        },
+        "text": "FALSE",
+        "number_format": "General",
+        "fill": 16777215,
+        "bold": false,
+        "merged": false
+      },
+      {
+        "row": 4,
+        "column": 1,
+        "value": {
+          "kind": "String",
+          "units": [
+            107,
+            101,
+            101,
+            112
+          ]
+        },
+        "formula": {
+          "kind": "String",
+          "units": [
+            107,
+            101,
+            101,
+            112
+          ]
+        },
+        "text": "keep",
+        "number_format": "General",
+        "fill": 16777215,
+        "bold": false,
+        "merged": false
+      },
+      {
+        "row": 4,
+        "column": 2,
+        "value": {
+          "kind": "Empty"
+        },
+        "formula": {
+          "kind": "String",
+          "units": []
+        },
+        "text": "",
+        "number_format": "General",
+        "fill": 16777215,
+        "bold": false,
+        "merged": false
+      },
+      {
+        "row": 4,
+        "column": 3,
+        "value": {
+          "kind": "System.Boolean",
+          "value": false
+        },
+        "formula": {
+          "kind": "String",
+          "units": [
+            70,
+            65,
+            76,
+            83,
+            69
+          ]
+        },
+        "text": "FALSE",
+        "number_format": "General",
+        "fill": 16777215,
+        "bold": false,
+        "merged": false
+      }
+    ]
+  }
+]

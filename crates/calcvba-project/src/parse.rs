@@ -55,16 +55,14 @@ pub fn parse_basproj_xml(xml: &str) -> Result<BasProj, BasProjError> {
                     // element inside <NativeExport>)
                     _ if current_item.is_some() => {
                         let item = current_item.as_mut().expect("current item");
-                        if item.tag == "NativeExport" {
-                            // Presence matters for refused options even when
-                            // paired tags contain no non-whitespace text.
-                            item.set_metadata(&tag, "");
-                        }
+                        // Presence matters for refused source attributes and
+                        // export options, including paired empty elements.
+                        item.set_metadata(&tag, "");
                         current_item_metadata_name = Some(tag);
                     }
                     // Item elements inside ItemGroup
-                    "Module" | "ClassModule" | "DocumentModule" | "ProjectReference"
-                    | "COMReference" | "NativeReference" | "NativeExport"
+                    "Module" | "ClassModule" | "DocumentModule" | "FormModule"
+                    | "ProjectReference" | "COMReference" | "NativeReference" | "NativeExport"
                         if in_item_group =>
                     {
                         if tag == "NativeExport" {
@@ -96,8 +94,8 @@ pub fn parse_basproj_xml(xml: &str) -> Result<BasProj, BasProjError> {
                         }
                     }
                     // Self-closing item elements (e.g., <Module Include="..." />)
-                    "Module" | "ClassModule" | "DocumentModule" | "ProjectReference"
-                    | "COMReference" | "NativeReference" | "NativeExport"
+                    "Module" | "ClassModule" | "DocumentModule" | "FormModule"
+                    | "ProjectReference" | "COMReference" | "NativeReference" | "NativeExport"
                         if in_item_group =>
                     {
                         if tag == "NativeExport" {
@@ -237,13 +235,6 @@ impl ItemContext {
         self.metadata.insert(key.to_string(), value.to_string());
     }
 
-    fn meta_bool(&self, key: &str) -> bool {
-        self.metadata
-            .get(key)
-            .map(|v| v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    }
-
     fn meta_str(&self, key: &str) -> Option<String> {
         self.metadata.get(key).cloned()
     }
@@ -342,48 +333,52 @@ fn emit_item(
     native_refs: &mut Vec<BasProjNativeReference>,
     native_exports: &mut Vec<BasProjNativeExport>,
 ) -> Result<(), BasProjError> {
+    if matches!(
+        ctx.tag.as_str(),
+        "Module" | "ClassModule" | "DocumentModule" | "FormModule"
+    ) {
+        for key in ctx.metadata.keys() {
+            if key.to_ascii_lowercase().starts_with("vb") || key == "Description" {
+                return Err(BasProjError::XmlParse(format!(
+                    "{key} belongs in the source file's Attribute lines, not .basproj metadata"
+                )));
+            }
+        }
+    }
     match ctx.tag.as_str() {
         "Module" => {
             modules.push(BasProjModule {
                 kind: BasProjModuleKind::Module,
                 include: ctx.include,
-                vb_predeclared_id: false,
-                vb_exposed: false,
-                vb_global_namespace: false,
-                vb_creatable: false,
                 host_document_type: None,
                 instancing: None,
                 prog_id: None,
-                description: None,
             });
         }
-        "ClassModule" => {
-            let predeclared = ctx.meta_bool("VBPredeclaredId");
-            let exposed = ctx.meta_bool("VBExposed");
-            let global_ns = ctx.meta_bool("VBGlobalNamespace");
-            let creatable = ctx.meta_bool("VBCreatable");
-            let instancing = ctx.meta_str("Instancing").and_then(|s| match s.as_str() {
-                "Private" => Some(Instancing::Private),
-                "PublicNotCreatable" => Some(Instancing::PublicNotCreatable),
-                "MultiUse" => Some(Instancing::MultiUse),
-                "GlobalMultiUse" => Some(Instancing::GlobalMultiUse),
-                "SingleUse" => Some(Instancing::SingleUse),
-                "GlobalSingleUse" => Some(Instancing::GlobalSingleUse),
-                _ => None,
-            });
+        "ClassModule" | "FormModule" => {
+            let instancing = ctx
+                .meta_str("Instancing")
+                .map(|s| match s.as_str() {
+                    "Private" | "1" => Ok(Instancing::Private),
+                    "PublicNotCreatable" | "2" => Ok(Instancing::PublicNotCreatable),
+                    "SingleUse" | "3" => Ok(Instancing::SingleUse),
+                    "GlobalSingleUse" | "4" => Ok(Instancing::GlobalSingleUse),
+                    "MultiUse" | "5" => Ok(Instancing::MultiUse),
+                    "GlobalMultiUse" | "6" => Ok(Instancing::GlobalMultiUse),
+                    _ => Err(BasProjError::XmlParse(format!("invalid Instancing {s}"))),
+                })
+                .transpose()?;
             let prog_id = ctx.meta_str("ProgId");
-            let description = ctx.meta_str("Description");
             modules.push(BasProjModule {
-                kind: BasProjModuleKind::ClassModule,
+                kind: if ctx.tag == "FormModule" {
+                    BasProjModuleKind::FormModule
+                } else {
+                    BasProjModuleKind::ClassModule
+                },
                 include: ctx.include,
-                vb_predeclared_id: predeclared,
-                vb_exposed: exposed,
-                vb_global_namespace: global_ns,
-                vb_creatable: creatable,
                 host_document_type: None,
                 instancing,
                 prog_id,
-                description,
             });
         }
         "DocumentModule" => {
@@ -391,14 +386,9 @@ fn emit_item(
             modules.push(BasProjModule {
                 kind: BasProjModuleKind::DocumentModule,
                 include: ctx.include,
-                vb_predeclared_id: false,
-                vb_exposed: false,
-                vb_global_namespace: false,
-                vb_creatable: false,
                 host_document_type: doc_type,
                 instancing: None,
                 prog_id: None,
-                description: None,
             });
         }
         "ProjectReference" => {

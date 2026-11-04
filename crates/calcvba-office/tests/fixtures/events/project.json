@@ -1,0 +1,71 @@
+{
+  "name": "VBAProject",
+  "entry_module": "Api",
+  "modules": [
+    {
+      "name": "ThisWorkbook",
+      "kind": 100,
+      "source": "Private Sub Workbook_BeforeClose(Cancel As Boolean)\r\n    CloseCount = CloseCount + 1\r\n    Cancel = True\r\nEnd Sub\r\n",
+      "source_sha256": "sha256:99cbc8c523572e19f3aa1eccd553c7d331860cda4466cb6857efb12e7f3082c7",
+      "host_type": "Excel.Workbook"
+    },
+    {
+      "name": "Sheet1",
+      "kind": 100,
+      "source": "Private Sub Worksheet_Change(ByVal Target As Excel.Range)\r\n    DocCount = DocCount + 1\r\n    Journal = Journal & \"D\" & Target.Address(False, False) & \";\"\r\n    If Nested Then\r\n        If Target.Address(False, False) = \"A1\" Then Target.Offset(1).Value2 = 9#\r\n    End If\r\nEnd Sub\r\n",
+      "source_sha256": "sha256:2d716a5cee061d65b2e6c812fa40e3857612fc07dfa2c21fe3037be94e4487a0",
+      "host_type": "Excel.Worksheet"
+    },
+    {
+      "name": "Watcher",
+      "kind": 2,
+      "source": "Private WithEvents watched As Excel.Worksheet\r\nPublic Sub Connect(ByVal sh As Excel.Worksheet)\r\n    Set watched = sh\r\nEnd Sub\r\nPublic Sub Disconnect()\r\n    Set watched = Nothing\r\nEnd Sub\r\nPrivate Sub watched_Change(ByVal Target As Excel.Range)\r\n    WatchCount = WatchCount + 1\r\n    Journal = Journal & \"W\" & Target.Address(False, False) & \";\"\r\nEnd Sub\r\nPrivate Sub Class_Terminate()\r\n    TermCount = TermCount + 1\r\n    TermHasSource = Not (watched Is Nothing)\r\nEnd Sub\r\n",
+      "source_sha256": "sha256:a2e7a721cfe64f57c237f90c6fcc64023daafd5fc2d398c6a42bb6a489236fbc",
+      "host_type": null
+    },
+    {
+      "name": "Api",
+      "kind": 1,
+      "source": "Public Journal As String\r\nPublic DocCount As Long\r\nPublic WatchCount As Long\r\nPublic CloseCount As Long\r\nPublic TermCount As Long\r\nPublic TermHasSource As Boolean\r\nPublic Nested As Boolean\r\nPublic observer As Watcher\r\nPublic Function ResetIdle() As Long\r\n    DocCount = 0\r\n    Journal = \"\"\r\n    Nested = False\r\n    ResetIdle = 0\r\nEnd Function\r\nPublic Function ReadIdle() As String\r\n    ReadIdle = DocCount & \":\" & Journal\r\nEnd Function\r\nPublic Function Scenario(ByVal book As Excel.Workbook) As String\r\n    Dim sh As Excel.Worksheet\r\n    Set sh = book.Worksheets(1)\r\n    Set observer = New Watcher\r\n    observer.Connect sh\r\n    DocCount = 0\r\n    WatchCount = 0\r\n    Journal = \"\"\r\n    sh.Range(\"A1\").Value2 = 7#\r\n    Scenario = DocCount & \":\" & WatchCount & \":\" & Journal\r\n    Nested = True\r\n    Journal = \"\"\r\n    sh.Range(\"A1\").Value2 = 8#\r\n    Nested = False\r\n    Scenario = Scenario & \"|nested=\" & DocCount & \":\" & WatchCount & \":\" & Journal\r\n    observer.Connect sh\r\n    Journal = \"\"\r\n    sh.Range(\"A3\").Value2 = 10#\r\n    Scenario = Scenario & \"|rebind=\" & WatchCount & \":\" & Journal\r\n    observer.Disconnect\r\n    sh.Range(\"A4\").Value2 = 11#\r\n    observer.Connect sh\r\n    Set observer = Nothing\r\n    Journal = \"\"\r\n    sh.Range(\"A5\").Value2 = 12#\r\n    Scenario = Scenario & \"|release=\" & WatchCount & \":\" & TermCount & \":\" & TermHasSource & \":\" & Journal\r\n    book.Close SaveChanges:=False\r\n    Scenario = Scenario & \"|close=\" & CloseCount\r\nEnd Function\r\nPublic Function RunProbe() As String\r\n    RunProbe = Scenario(ThisWorkbook)\r\nEnd Function\r\n",
+      "source_sha256": "sha256:5dbde170ed9fc11adcd3787ac61fa4c8072e063214c84b9b2f4326622e030ca1",
+      "host_type": null
+    }
+  ],
+  "references": [
+    {
+      "name": "VBA",
+      "guid": "{000204EF-0000-0000-C000-000000000046}",
+      "major": 4,
+      "minor": 2,
+      "broken": false,
+      "path": "C:\\Program Files\\Common Files\\Microsoft Shared\\VBA\\VBA7.1\\VBE7.DLL"
+    },
+    {
+      "name": "Excel",
+      "guid": "{00020813-0000-0000-C000-000000000046}",
+      "major": 1,
+      "minor": 9,
+      "broken": false,
+      "path": "C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE"
+    },
+    {
+      "name": "stdole",
+      "guid": "{00020430-0000-0000-C000-000000000046}",
+      "major": 2,
+      "minor": 0,
+      "broken": false,
+      "path": "C:\\Windows\\System32\\stdole2.tlb"
+    },
+    {
+      "name": "Office",
+      "guid": "{2DF8D04C-5BFA-101B-BDE5-00AA0044DE52}",
+      "major": 2,
+      "minor": 8,
+      "broken": false,
+      "path": "C:\\Program Files\\Common Files\\Microsoft Shared\\OFFICE16\\MSO.DLL"
+    }
+  ],
+  "startup": null,
+  "expected_error": null,
+  "cancel_save": false
+}

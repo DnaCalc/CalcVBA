@@ -121,6 +121,21 @@ pub(crate) fn build_loaded_project(
     } else {
         load_explicit_modules(&basproj.modules, project_dir)?
     };
+    for module in &modules {
+        if matches!(
+            module.attributes.instancing,
+            Some(
+                crate::manifest::Instancing::SingleUse
+                    | crate::manifest::Instancing::GlobalSingleUse
+            )
+        ) && (output_type != OutputType::ComExe || !cfg!(windows))
+        {
+            return Err(BasProjError::ModuleSourceInvalid {
+                include: module.module_name.clone(),
+                message: "SingleUse and GlobalSingleUse require OutputType=ComExe on Windows (an out-of-process COM server)".into(),
+            });
+        }
+    }
     let cc_target = load_time_conditional_compilation_target(props);
     let cc_constants = cond_comp::base_cc_constants_for_target(&conditional_constants, cc_target);
     validate_top_level_mainline_policy(output_type, &modules, &cc_constants)?;
@@ -198,23 +213,38 @@ pub(crate) fn build_loaded_project(
         });
     }
 
-    // Collect class module metadata (instancing, prog_id, description)
     let mut class_module_metadata = BTreeMap::new();
-    for bm in &basproj.modules {
+    for (bm, module) in basproj.modules.iter().zip(
+        modules
+            .iter()
+            .filter(|module| !is_startup_shim_module_name(&module.module_name)),
+    ) {
+        let description = source_string_attribute(&module.source, "VB_Description");
         if bm.kind == BasProjModuleKind::ClassModule
-            && (bm.instancing.is_some() || bm.prog_id.is_some() || bm.description.is_some())
+            && (bm.instancing.is_some() || bm.prog_id.is_some() || description.is_some())
         {
-            let module_name = logical_include_file_stem(&bm.include)
-                .unwrap_or("Unknown")
-                .to_string();
             class_module_metadata.insert(
-                module_name,
+                module.module_name.clone(),
                 ClassModuleMetadata {
                     instancing: bm.instancing,
                     prog_id: bm.prog_id.clone(),
-                    description: bm.description.clone(),
+                    description,
                 },
             );
+        }
+    }
+    for module in &modules {
+        if module.module_kind == ModuleKind::Class
+            && let Some(description) = source_string_attribute(&module.source, "VB_Description")
+        {
+            class_module_metadata
+                .entry(module.module_name.clone())
+                .or_insert(ClassModuleMetadata {
+                    instancing: None,
+                    prog_id: None,
+                    description: None,
+                })
+                .description = Some(description);
         }
     }
 
@@ -809,7 +839,7 @@ fn strip_startup_entry_shims(modules: &mut Vec<ModuleUnit>) {
     modules.retain(|module| !is_startup_shim_module_name(&module.module_name));
 }
 
-fn is_startup_shim_module_name(module_name: &str) -> bool {
+pub(crate) fn is_startup_shim_module_name(module_name: &str) -> bool {
     module_name
         .to_ascii_lowercase()
         .starts_with(&STARTUP_ENTRY_SHIM_MODULE_PREFIX.to_ascii_lowercase())
@@ -968,7 +998,10 @@ fn collect_import_paths(xml: &str) -> Result<Vec<String>, BasProjError> {
 }
 
 fn normalize_loaded_module_source(module_kind: ModuleKind, source: String) -> String {
-    if !matches!(module_kind, ModuleKind::Class | ModuleKind::Document) {
+    if !matches!(
+        module_kind,
+        ModuleKind::Class | ModuleKind::Document | ModuleKind::Form
+    ) {
         return source;
     }
 
@@ -978,6 +1011,15 @@ fn normalize_loaded_module_source(module_kind: ModuleKind, source: String) -> St
     }
 
     let first = lines[0].trim().to_ascii_lowercase();
+    if first.starts_with("version ")
+        && let Some(at) = lines.iter().position(|line| {
+            line.trim_start()
+                .to_ascii_lowercase()
+                .starts_with("attribute vb_name")
+        })
+    {
+        return lines[at..].join("\n");
+    }
     if !(first.starts_with("version ") && first.ends_with(" class")) {
         return source;
     }
@@ -1026,6 +1068,7 @@ fn discover_modules_recursive(
             let module_kind = match ext {
                 "bas" => Some(ModuleKind::Procedural),
                 "cls" => Some(ModuleKind::Class),
+                "frm" => Some(ModuleKind::Form),
                 _ => None,
             };
             if let Some(kind) = module_kind {
@@ -1074,6 +1117,7 @@ fn load_explicit_modules(
             BasProjModuleKind::Module => ModuleKind::Procedural,
             BasProjModuleKind::ClassModule => ModuleKind::Class,
             BasProjModuleKind::DocumentModule => ModuleKind::Document,
+            BasProjModuleKind::FormModule => ModuleKind::Form,
         };
         let header_instancing = source_class_header_instancing(module_kind, &source);
         let source = normalize_loaded_module_source(module_kind, source);
@@ -1084,10 +1128,6 @@ fn load_explicit_modules(
                     message: err.to_string(),
                 }
             })?;
-        unit.attributes.vb_global_namespace |= bm.vb_global_namespace;
-        unit.attributes.vb_creatable |= bm.vb_creatable;
-        unit.attributes.vb_predeclared_id |= bm.vb_predeclared_id;
-        unit.attributes.vb_exposed |= bm.vb_exposed;
         unit.attributes.instancing = bm
             .instancing
             .map(project_manifest_instancing)
@@ -1120,6 +1160,49 @@ fn source_class_header_instancing(
         let trimmed = lines[idx].trim();
         if trimmed.eq_ignore_ascii_case("END") {
             break;
+        }
+        if let Some((key, value)) = trimmed.split_once('=')
+            && key.trim().eq_ignore_ascii_case("MultiUse")
+        {
+            let attribute = |name: &str| {
+                source.lines().find_map(|line| {
+                    let line = line.trim();
+                    if !line
+                        .get(..10)
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("Attribute "))
+                    {
+                        return None;
+                    }
+                    let (key, value) = line[10..].split_once('=')?;
+                    key.trim()
+                        .eq_ignore_ascii_case(name)
+                        .then(|| parse_bool_attribute(value.trim()))
+                        .flatten()
+                })
+            };
+            if let Some(exposed) = attribute("VB_Exposed") {
+                use crate::manifest::Instancing as I;
+                return Some(if !exposed {
+                    I::Private
+                } else if !attribute("VB_Creatable").unwrap_or(false) {
+                    I::PublicNotCreatable
+                } else {
+                    match (
+                        is_truthy_vb_header_value(
+                            value
+                                .split_once('\'')
+                                .map_or(value, |(head, _)| head)
+                                .trim(),
+                        ),
+                        attribute("VB_GlobalNameSpace").unwrap_or(false),
+                    ) {
+                        (true, false) => I::MultiUse,
+                        (true, true) => I::GlobalMultiUse,
+                        (false, false) => I::SingleUse,
+                        (false, true) => I::GlobalSingleUse,
+                    }
+                });
+            }
         }
         if let Some(instancing) = parse_class_header_instancing_line(trimmed) {
             return Some(instancing);
@@ -1242,6 +1325,29 @@ fn sanitize_inferred_project_name(raw: &str) -> String {
     candidate
 }
 
+pub(crate) fn source_string_attribute(source: &str, name: &str) -> Option<String> {
+    source.lines().find_map(|line| {
+        let line = line.trim();
+        if !line
+            .get(..10)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("Attribute "))
+        {
+            return None;
+        }
+        let (key, value) = line[10..].split_once('=')?;
+        if !key.trim().eq_ignore_ascii_case(name) {
+            return None;
+        }
+        Some(
+            value
+                .trim()
+                .strip_prefix('"')?
+                .strip_suffix('"')?
+                .replace("\"\"", "\""),
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1306,7 +1412,7 @@ mod tests {
         std::fs::write(&main_path, "Public Sub Main()\nEnd Sub\n").expect("write main module");
         std::fs::write(&startup_path, "Public Sub Run()\nEnd Sub\n").expect("write startup module");
         let xml = "\
-<Project Sdk=\"OxVba.Sdk/0.1.0\">
+<Project Sdk=\"CalcVBA.Sdk/0.1.0\">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>ProjectA</ProjectName>
@@ -1361,7 +1467,7 @@ mod tests {
         )
         .expect("write module");
         let xml = "\
-<Project Sdk=\"OxVba.Sdk/0.1.0\">
+<Project Sdk=\"CalcVBA.Sdk/0.1.0\">
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <ProjectName>ProjectA</ProjectName>
@@ -1407,7 +1513,7 @@ mod tests {
             .expect("write helper module");
         std::fs::write(&main_path, "Public Sub Main()\nEnd Sub\n").expect("write main module");
         let xml = "\
-<Project Sdk=\"OxVba.Sdk/0.1.0\">
+<Project Sdk=\"CalcVBA.Sdk/0.1.0\">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>ProjectA</ProjectName>
@@ -1451,7 +1557,7 @@ mod tests {
         std::fs::write(&script_path, "valueOut = 41\nSub Warmup()\nEnd Sub\n")
             .expect("write script module");
         let xml = "\
-<Project Sdk=\"OxVba.Sdk/0.1.0\">
+<Project Sdk=\"CalcVBA.Sdk/0.1.0\">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>ProjectA</ProjectName>
@@ -1508,7 +1614,7 @@ mod tests {
         std::fs::write(temp_root.join("Second.bas"), "valueOut = 2\n")
             .expect("write second module");
         let xml = "\
-<Project Sdk=\"OxVba.Sdk/0.1.0\">
+<Project Sdk=\"CalcVBA.Sdk/0.1.0\">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>ProjectA</ProjectName>
@@ -1549,7 +1655,7 @@ mod tests {
         )
         .expect("write script module");
         let xml = "\
-<Project Sdk=\"OxVba.Sdk/0.1.0\">
+<Project Sdk=\"CalcVBA.Sdk/0.1.0\">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>ProjectA</ProjectName>
@@ -1608,7 +1714,7 @@ mod tests {
         )
         .expect("write script module");
         let xml = "\
-<Project Sdk=\"OxVba.Sdk/0.1.0\">
+<Project Sdk=\"CalcVBA.Sdk/0.1.0\">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>ProjectA</ProjectName>
@@ -1689,7 +1795,7 @@ mod tests {
         )
         .expect("write script module");
         let xml = "\
-<Project Sdk=\"OxVba.Sdk/0.1.0\">
+<Project Sdk=\"CalcVBA.Sdk/0.1.0\">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>ProjectA</ProjectName>
@@ -1750,7 +1856,7 @@ mod tests {
             std::fs::write(temp_root.join("ScriptModule.bas"), "valueOut = 41\n")
                 .expect("write script module");
             let xml = format!(
-                "<Project Sdk=\"OxVba.Sdk/0.1.0\">\n  <PropertyGroup>\n    <OutputType>{output_type}</OutputType>\n    <ProjectName>{project_name}</ProjectName>\n  </PropertyGroup>\n  <ItemGroup>\n    <Module Include=\"ScriptModule.bas\" />\n  </ItemGroup>\n</Project>\n"
+                "<Project Sdk=\"CalcVBA.Sdk/0.1.0\">\n  <PropertyGroup>\n    <OutputType>{output_type}</OutputType>\n    <ProjectName>{project_name}</ProjectName>\n  </PropertyGroup>\n  <ItemGroup>\n    <Module Include=\"ScriptModule.bas\" />\n  </ItemGroup>\n</Project>\n"
             );
 
             let err = load_basproj_from_str(&xml, &temp_root)
@@ -1794,7 +1900,7 @@ mod tests {
         )
         .expect("write module");
         let xml = "\
-<Project Sdk=\"OxVba.Sdk/0.1.0\">
+<Project Sdk=\"CalcVBA.Sdk/0.1.0\">
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <ProjectName>ProjectLibrary</ProjectName>
@@ -1842,7 +1948,7 @@ mod tests {
         )
         .expect("write module");
         let xml = "\
-<Project Sdk=\"OxVba.Sdk/0.1.0\">
+<Project Sdk=\"CalcVBA.Sdk/0.1.0\">
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <ProjectName>ProjectLibrary</ProjectName>
@@ -1901,7 +2007,7 @@ mod tests {
         )
         .expect("write module");
         let xml = "\
-<Project Sdk=\"OxVba.Sdk/0.1.0\">
+<Project Sdk=\"CalcVBA.Sdk/0.1.0\">
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <ProjectName>ProjectLibrary</ProjectName>
@@ -1946,7 +2052,7 @@ mod tests {
         )
         .expect("write module");
         let windows_xml = "\
-<Project Sdk=\"OxVba.Sdk/0.1.0\">
+<Project Sdk=\"CalcVBA.Sdk/0.1.0\">
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <ProjectName>ProjectLibrary</ProjectName>
@@ -1964,7 +2070,7 @@ mod tests {
         );
 
         let mac_xml = "\
-<Project Sdk=\"OxVba.Sdk/0.1.0\">
+<Project Sdk=\"CalcVBA.Sdk/0.1.0\">
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <ProjectName>ProjectLibrary</ProjectName>
@@ -2007,7 +2113,7 @@ mod tests {
         )
         .expect("write module");
         let xml = "\
-<Project Sdk=\"OxVba.Sdk/0.1.0\">
+<Project Sdk=\"CalcVBA.Sdk/0.1.0\">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>ProjectExe</ProjectName>
@@ -2069,7 +2175,7 @@ mod tests {
         )
         .expect("write module");
         let xml = "\
-<Project Sdk=\"OxVba.Sdk/0.1.0\">
+<Project Sdk=\"CalcVBA.Sdk/0.1.0\">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>ProjectExe</ProjectName>
@@ -2124,7 +2230,7 @@ mod tests {
         )
         .expect("write addin module");
         let xml = "\
-<Project Sdk=\"OxVba.Sdk/0.1.0\">
+<Project Sdk=\"CalcVBA.Sdk/0.1.0\">
   <PropertyGroup>
     <OutputType>NativeLibrary</OutputType>
     <ProjectName>ProjectAddin</ProjectName>
@@ -2163,7 +2269,7 @@ mod tests {
         )
         .expect("write startup module");
         let xml = "\
-<Project Sdk=\"OxVba.Sdk/0.1.0\">
+<Project Sdk=\"CalcVBA.Sdk/0.1.0\">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>ProjectA</ProjectName>
@@ -2228,7 +2334,7 @@ mod tests {
 
         let loaded = load_basproj_from_str(
             "\
-<Project Sdk=\"OxVba.Sdk/0.1.0\">
+<Project Sdk=\"CalcVBA.Sdk/0.1.0\">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>SqliteFixture</ProjectName>

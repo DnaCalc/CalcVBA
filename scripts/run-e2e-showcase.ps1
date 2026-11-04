@@ -142,7 +142,7 @@ End Function
 '@
 $basproj = Join-Path $proj 'ShowcaseTwoModule.basproj'
 Write-Utf8NoBom $basproj @'
-<Project Sdk="OxVba.Sdk/0.1.0">
+<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>ShowcaseTwoModule</ProjectName>
@@ -179,7 +179,7 @@ End Sub
 '@
 $badProjFile = Join-Path $badProj 'BrokenProject.basproj'
 Write-Utf8NoBom $badProjFile @'
-<Project Sdk="OxVba.Sdk/0.1.0">
+<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>BrokenProject</ProjectName>
@@ -261,7 +261,7 @@ End Sub
 "@
 $accessBasproj = Join-Path $accessProj 'AccessJetShowcase.basproj'
 Write-Utf8NoBom $accessBasproj @'
-<Project Sdk="OxVba.Sdk/0.1.0">
+<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>AccessJetShowcase</ProjectName>
@@ -324,7 +324,7 @@ End Sub
 "@
         $earlyBasproj = Join-Path $earlyProj 'AccessJetMixedImportedShowcase.basproj'
         Write-Utf8NoBom $earlyBasproj @"
-<Project Sdk="OxVba.Sdk/0.1.0">
+<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>AccessJetMixedImportedShowcase</ProjectName>
@@ -376,7 +376,7 @@ End Sub
 "@
         $strictBasproj = Join-Path $strictProj 'AccessJetStrictEarlyBoundShowcase.basproj'
         Write-Utf8NoBom $strictBasproj @"
-<Project Sdk="OxVba.Sdk/0.1.0">
+<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>AccessJetStrictEarlyBoundShowcase</ProjectName>
@@ -421,7 +421,7 @@ if ($daoPreflightOk -and $acedaoTypelib) {
         Write-Utf8NoBom (Join-Path $ProjectDir 'AccessJetDaoMain.bas') $Source
         $basproj = Join-Path $ProjectDir "$ProjectName.basproj"
         Write-Utf8NoBom $basproj @"
-<Project Sdk="OxVba.Sdk/0.1.0">
+<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>$ProjectName</ProjectName>

@@ -6,6 +6,14 @@ executable tests describe what works; the implementation is not complete VBA.
 Runtime execution and callbacks belong on one owning VBA thread. The compiler
 may use parallel work internally.
 
+`calcvba-office` owns portable CFB/MS-OVBA and workbook-container I/O. Its
+reader produces compiler manifests without VBOM or an Office installation;
+UTF-8 `.basproj` folders retain VBE attributes and `.frm`/`.frx` resources.
+Write-back validates the project codepage, replaces source streams and removes
+or invalidates compiled caches. The original host workbook supplies its document
+objects. Locked projects and encrypted files are refused; signed write-back is
+not supported. Live checks use one recorded, owned Excel process across cases.
+
 ## Compiler and execution
 
 ```text

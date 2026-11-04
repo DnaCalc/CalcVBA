@@ -73,7 +73,7 @@ pub fn discover_project_file_in_dir(
 pub fn load_convention_project(project_dir: &Path) -> Result<LoadedProject, BasProjError> {
     let project_name = infer_project_name_from_path(project_dir);
     let xml = format!(
-        "<Project Sdk=\"OxVba.Sdk/0.1.0\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <ProjectName>{}</ProjectName>\n  </PropertyGroup>\n</Project>\n",
+        "<Project Sdk=\"CalcVBA.Sdk/0.1.0\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <ProjectName>{}</ProjectName>\n  </PropertyGroup>\n</Project>\n",
         xml_escape(&project_name)
     );
     load_basproj_from_str(&xml, project_dir)
@@ -101,7 +101,7 @@ mod tests {
         fs::write(temp_root.join("Module1.bas"), "Sub Main()\nEnd Sub\n").expect("module");
         fs::write(
             temp_root.join("App.basproj"),
-            "<Project Sdk=\"OxVba.Sdk/0.1.0\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <ProjectName>App</ProjectName>\n  </PropertyGroup>\n  <ItemGroup>\n    <Module Include=\"Module1.bas\" />\n  </ItemGroup>\n</Project>\n",
+            "<Project Sdk=\"CalcVBA.Sdk/0.1.0\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <ProjectName>App</ProjectName>\n  </PropertyGroup>\n  <ItemGroup>\n    <Module Include=\"Module1.bas\" />\n  </ItemGroup>\n</Project>\n",
         )
         .expect("basproj");
 
@@ -135,12 +135,12 @@ mod tests {
         fs::create_dir_all(&temp_root).expect("temp dir");
         fs::write(
             temp_root.join("One.basproj"),
-            "<Project Sdk=\"OxVba.Sdk/0.1.0\" />",
+            "<Project Sdk=\"CalcVBA.Sdk/0.1.0\" />",
         )
         .expect("first basproj");
         fs::write(
             temp_root.join("Two.basproj"),
-            "<Project Sdk=\"OxVba.Sdk/0.1.0\" />",
+            "<Project Sdk=\"CalcVBA.Sdk/0.1.0\" />",
         )
         .expect("second basproj");
 

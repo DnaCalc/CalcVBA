@@ -603,7 +603,7 @@ End Function
         );
         write(
             &project_path,
-            r#"<Project Sdk="OxVba.Sdk/0.1.0">
+            r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>ComServer</OutputType>
     <BuildTarget>WrappedComServer</BuildTarget>
@@ -629,60 +629,44 @@ End Function
       <Lcid>0</Lcid>
     </COMReference>
     <ClassModule Include="Calculator.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
       <Instancing>MultiUse</Instancing>
       <ProgId>DemoServer.Calculator</ProgId>
-      <Description>Calculator class</Description>
+
     </ClassModule>
     <ClassModule Include="Pinger.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
       <Instancing>MultiUse</Instancing>
       <ProgId>DemoServer.Pinger</ProgId>
-      <Description>Pinger class</Description>
+
     </ClassModule>
     <ClassModule Include="Counter.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
       <Instancing>MultiUse</Instancing>
       <ProgId>DemoServer.Counter</ProgId>
-      <Description>Counter class</Description>
+
     </ClassModule>
     <ClassModule Include="Returner.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
       <Instancing>MultiUse</Instancing>
       <ProgId>DemoServer.Returner</ProgId>
-      <Description>Returner class</Description>
+
     </ClassModule>
     <ClassModule Include="ObjectRelay.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
       <Instancing>MultiUse</Instancing>
       <ProgId>DemoServer.ObjectRelay</ProgId>
-      <Description>ObjectRelay class</Description>
+
     </ClassModule>
     <ClassModule Include="OfficeAddin.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
       <Instancing>MultiUse</Instancing>
       <ProgId>DemoServer.OfficeAddin</ProgId>
-      <Description>Office add-in class</Description>
+
     </ClassModule>
     <ClassModule Include="RibbonAddin.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
       <Instancing>MultiUse</Instancing>
       <ProgId>DemoServer.RibbonAddin</ProgId>
-      <Description>Ribbon add-in class</Description>
+
     </ClassModule>
     <ClassModule Include="RtdTicker.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
       <Instancing>MultiUse</Instancing>
       <ProgId>DemoServer.RtdTicker</ProgId>
-      <Description>RTD ticker class</Description>
+
     </ClassModule>
     <Module Include="RtdTimer.bas" />
   </ItemGroup>
@@ -932,7 +916,7 @@ End Sub
         );
         write(
             &project_path,
-            r#"<Project Sdk="OxVba.Sdk/0.1.0">
+            r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>ComServer</OutputType>
     <BuildTarget>WrappedComServer</BuildTarget>
@@ -946,8 +930,6 @@ End Sub
       <Lcid>0</Lcid>
     </COMReference>
     <ClassModule Include="OfficeAddin.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
       <Instancing>MultiUse</Instancing>
       <ProgId>DemoServer.OfficeAddin</ProgId>
     </ClassModule>
@@ -1006,7 +988,7 @@ End Sub
         );
         write(
             &project_path,
-            r#"<Project Sdk="OxVba.Sdk/0.1.0">
+            r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>ComServer</OutputType>
     <BuildTarget>WrappedComServer</BuildTarget>
@@ -1020,8 +1002,6 @@ End Sub
       <Lcid>0</Lcid>
     </COMReference>
     <ClassModule Include="OfficeAddin.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
       <Instancing>MultiUse</Instancing>
       <ProgId>DemoServer.OfficeAddin</ProgId>
     </ClassModule>
@@ -1083,7 +1063,7 @@ End Sub
         );
         write(
             &project_path,
-            r#"<Project Sdk="OxVba.Sdk/0.1.0">
+            r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>ComServer</OutputType>
     <BuildTarget>WrappedComServer</BuildTarget>
@@ -1097,8 +1077,6 @@ End Sub
       <Lcid>0</Lcid>
     </COMReference>
     <ClassModule Include="UpdateEventSink.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
       <Instancing>MultiUse</Instancing>
       <ProgId>DemoServer.UpdateEventSink</ProgId>
     </ClassModule>
@@ -1156,7 +1134,7 @@ End Sub
         write(&class_path, "Public Sub Ping()\nEnd Sub\n");
         write(
             &project_path,
-            r#"<Project Sdk="OxVba.Sdk/0.1.0">
+            r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <BuildTarget>WrappedComServer</BuildTarget>
@@ -1164,8 +1142,6 @@ End Sub
   </PropertyGroup>
   <ItemGroup>
     <ClassModule Include="Calculator.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
     </ClassModule>
   </ItemGroup>
 </Project>
@@ -1209,6 +1185,50 @@ End Sub
     }
 
     fn write(path: &Path, text: &str) {
+        // VBE exports carry class attributes in source, not in .basproj XML.
+        let text = if path.extension().is_some_and(|ext| ext == "cls")
+            && path
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    matches!(
+                        name,
+                        "Calculator"
+                            | "Counter"
+                            | "ObjectRelay"
+                            | "OfficeAddin"
+                            | "Pinger"
+                            | "Returner"
+                            | "RibbonAddin"
+                            | "RtdTicker"
+                            | "UpdateEventSink"
+                    )
+                }) {
+            {
+                let description: Option<&str> = match path.file_stem().unwrap().to_str().unwrap() {
+                    "Calculator" => Some("Calculator class"),
+                    "Counter" => Some("Counter class"),
+                    "ObjectRelay" => Some("ObjectRelay class"),
+                    "OfficeAddin" => Some("Office add-in class"),
+                    "Pinger" => Some("Pinger class"),
+                    "Returner" => Some("Returner class"),
+                    "RibbonAddin" => Some("Ribbon add-in class"),
+                    "RtdTicker" => Some("RTD ticker class"),
+                    _ => None,
+                };
+                let header = description
+                    .map(|d| format!("Attribute VB_Description = \"{d}\"\n"))
+                    .unwrap_or_default();
+                format!(
+                    "Attribute VB_Name = \"{}\"\nAttribute VB_Exposed = True\nAttribute VB_Creatable = True\n{header}{}",
+                    path.file_stem().unwrap().to_string_lossy(),
+                    text
+                )
+            }
+        } else {
+            text.to_owned()
+        };
+
         std::fs::write(path, text).expect("write test fixture");
     }
 }

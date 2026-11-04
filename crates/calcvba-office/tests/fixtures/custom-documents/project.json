@@ -1,0 +1,64 @@
+{
+  "name": "VBAProject",
+  "entry_module": "Api",
+  "modules": [
+    {
+      "name": "ThisWorkbook",
+      "kind": 100,
+      "source": "Public Function Decorate(ByVal value As String) As String\r\n    Decorate = \"[\" & value & \"]\"\r\nEnd Function\r\n",
+      "source_sha256": "sha256:7937bd27128cc1f2b0baaf3e052ca45a0cf9664796a497ec42c3890c49d006a3",
+      "host_type": "Excel.Workbook"
+    },
+    {
+      "name": "Sheet1",
+      "kind": 100,
+      "source": "Private SavedCaption As String\r\nPublic Total As Long\r\nPublic Link As Object\r\nPrivate Function Secret() As Long\r\n    Secret = 99\r\nEnd Function\r\nPublic Function Bump(ByRef value As Long) As Long\r\n    value = value + 4\r\n    Bump = value * 2\r\nEnd Function\r\nPublic Property Get Caption() As String\r\n    Caption = SavedCaption\r\nEnd Property\r\nPublic Property Let Caption(ByVal value As String)\r\n    SavedCaption = value\r\nEnd Property\r\n",
+      "source_sha256": "sha256:d756f8226c85a0a86000d9c90df32e1d292baedc0c34c9a2d7ec1fa5576eb535",
+      "host_type": "Excel.Worksheet"
+    },
+    {
+      "name": "Api",
+      "kind": 1,
+      "source": "Public Function RunProbe() As String\r\n    Dim book As Object, ws As Object, boxed As Variant, n As Long\r\n    Set book = ThisWorkbook\r\n    Set ws = Sheet1\r\n    Set boxed = Sheet1\r\n    n = 3\r\n    ws.Range(\"A1\").Value2 = ws.Bump(n)\r\n    ws.Range(\"A2\").Value2 = n\r\n    boxed.Caption = \"custom\"\r\n    ws.Range(\"A3\").Value2 = boxed.Caption\r\n    ws.Range(\"A4\").Value2 = book.Decorate(\"book\")\r\n    ws.Total = 3.5\r\n    ws.Range(\"A5\").Value2 = ws.Total\r\n    ws.Range(\"B1\").Value2 = (ws.Link Is Nothing)\r\n    Set ws.Link = ws.Range(\"D1\")\r\n    ws.Range(\"B2\").Value2 = (ws.Link Is ws.Range(\"D1\"))\r\n    Set ws.Link = Nothing\r\n    ws.Range(\"B3\").Value2 = (ws.Link Is Nothing)\r\n    On Error Resume Next\r\n    n = ws.SavedCaption\r\n    ws.Range(\"A6\").Value2 = Err.Number\r\n    Err.Clear\r\n    n = ws.Secret()\r\n    ws.Range(\"A7\").Value2 = Err.Number\r\n    On Error GoTo 0\r\n    RunProbe = \"ok\"\r\nEnd Function\r\n",
+      "source_sha256": "sha256:57c265f2773eaf8a0f62d02b5bb96ce67a1fc20104abf04ffd5d4a8168d0a976",
+      "host_type": null
+    }
+  ],
+  "references": [
+    {
+      "name": "VBA",
+      "guid": "{000204EF-0000-0000-C000-000000000046}",
+      "major": 4,
+      "minor": 2,
+      "broken": false,
+      "path": "C:\\Program Files\\Common Files\\Microsoft Shared\\VBA\\VBA7.1\\VBE7.DLL"
+    },
+    {
+      "name": "Excel",
+      "guid": "{00020813-0000-0000-C000-000000000046}",
+      "major": 1,
+      "minor": 9,
+      "broken": false,
+      "path": "C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE"
+    },
+    {
+      "name": "stdole",
+      "guid": "{00020430-0000-0000-C000-000000000046}",
+      "major": 2,
+      "minor": 0,
+      "broken": false,
+      "path": "C:\\Windows\\System32\\stdole2.tlb"
+    },
+    {
+      "name": "Office",
+      "guid": "{2DF8D04C-5BFA-101B-BDE5-00AA0044DE52}",
+      "major": 2,
+      "minor": 8,
+      "broken": false,
+      "path": "C:\\Program Files\\Common Files\\Microsoft Shared\\OFFICE16\\MSO.DLL"
+    }
+  ],
+  "startup": null,
+  "expected_error": null,
+  "cancel_save": false
+}

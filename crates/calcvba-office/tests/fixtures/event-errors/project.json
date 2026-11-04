@@ -1,0 +1,64 @@
+{
+  "name": "VBAProject",
+  "entry_module": "Api",
+  "modules": [
+    {
+      "name": "ThisWorkbook",
+      "kind": 100,
+      "source": "",
+      "source_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "host_type": "Excel.Workbook"
+    },
+    {
+      "name": "Sheet1",
+      "kind": 100,
+      "source": "Private Sub Worksheet_Change(ByVal Target As Excel.Range)\r\n    Dim result As Double\r\n    Hits = Hits + 1\r\n    result = 1# / 0#\r\n    Hits = Hits + 100\r\nEnd Sub\r\n",
+      "source_sha256": "sha256:e61203493c7592e1e039ed7566a968324ea5945f4e3abcbade9a3cdb8bfe366c",
+      "host_type": "Excel.Worksheet"
+    },
+    {
+      "name": "Api",
+      "kind": 1,
+      "source": "Public Hits As Long\r\nPublic Function RunProbe() As String\r\n    Dim ws As Object, caught As Long\r\n    Set ws = ThisWorkbook.Worksheets(1)\r\n    On Error Resume Next\r\n    ws.Range(\"A1\").Value2 = 7#\r\n    caught = Err.Number\r\n    On Error GoTo 0\r\n    ThisWorkbook.Application.EnableEvents = False\r\n    ws.Range(\"C1\").Value2 = Hits\r\n    ws.Range(\"C2\").Value2 = caught\r\n    ThisWorkbook.Application.EnableEvents = True\r\n    RunProbe = \"ok\"\r\nEnd Function\r\n",
+      "source_sha256": "sha256:7d41e0518f4b720e245f47e42dade47bfb9b75f48b1c9f3e6b2e67564b3f686a",
+      "host_type": null
+    }
+  ],
+  "references": [
+    {
+      "name": "VBA",
+      "guid": "{000204EF-0000-0000-C000-000000000046}",
+      "major": 4,
+      "minor": 2,
+      "broken": false,
+      "path": "C:\\Program Files\\Common Files\\Microsoft Shared\\VBA\\VBA7.1\\VBE7.DLL"
+    },
+    {
+      "name": "Excel",
+      "guid": "{00020813-0000-0000-C000-000000000046}",
+      "major": 1,
+      "minor": 9,
+      "broken": false,
+      "path": "C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE"
+    },
+    {
+      "name": "stdole",
+      "guid": "{00020430-0000-0000-C000-000000000046}",
+      "major": 2,
+      "minor": 0,
+      "broken": false,
+      "path": "C:\\Windows\\System32\\stdole2.tlb"
+    },
+    {
+      "name": "Office",
+      "guid": "{2DF8D04C-5BFA-101B-BDE5-00AA0044DE52}",
+      "major": 2,
+      "minor": 8,
+      "broken": false,
+      "path": "C:\\Program Files\\Common Files\\Microsoft Shared\\OFFICE16\\MSO.DLL"
+    }
+  ],
+  "startup": null,
+  "expected_error": 11,
+  "cancel_save": false
+}

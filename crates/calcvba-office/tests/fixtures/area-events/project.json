@@ -1,0 +1,64 @@
+{
+  "name": "VBAProject",
+  "entry_module": "Api",
+  "modules": [
+    {
+      "name": "ThisWorkbook",
+      "kind": 100,
+      "source": "",
+      "source_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "host_type": "Excel.Workbook"
+    },
+    {
+      "name": "Sheet1",
+      "kind": 100,
+      "source": "Private Sub Worksheet_Change(ByVal Target As Excel.Range)\r\n    Dim part As Excel.Range\r\n    Journal = Journal & Target.Areas.Count & \":\" & Target.Count & \":\"\r\n    For Each part In Target.Areas\r\n        Journal = Journal & part.Address(False, False) & \";\"\r\n    Next part\r\nEnd Sub\r\n",
+      "source_sha256": "sha256:0e2a56913d25485b7268639dbf992bfbf814ad197d8b45936eb5830e484b8a77",
+      "host_type": "Excel.Worksheet"
+    },
+    {
+      "name": "Api",
+      "kind": 1,
+      "source": "Public Journal As String\r\nPublic Function RunProbe() As String\r\n    Dim ws As Object\r\n    Set ws = ThisWorkbook.Worksheets(1)\r\n    Journal = \"\"\r\n    ws.Range(\"A1:A2,C1:C2\").Value2 = 5#\r\n    ThisWorkbook.Application.EnableEvents = False\r\n    ws.Range(\"E1\").Value2 = Journal\r\n    ThisWorkbook.Application.EnableEvents = True\r\n    RunProbe = \"ok\"\r\nEnd Function\r\n",
+      "source_sha256": "sha256:3406fa2003aed7bc7694582146c4e531fd48e8ba53c4f92eca82e33fd3426ad6",
+      "host_type": null
+    }
+  ],
+  "references": [
+    {
+      "name": "VBA",
+      "guid": "{000204EF-0000-0000-C000-000000000046}",
+      "major": 4,
+      "minor": 2,
+      "broken": false,
+      "path": "C:\\Program Files\\Common Files\\Microsoft Shared\\VBA\\VBA7.1\\VBE7.DLL"
+    },
+    {
+      "name": "Excel",
+      "guid": "{00020813-0000-0000-C000-000000000046}",
+      "major": 1,
+      "minor": 9,
+      "broken": false,
+      "path": "C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE"
+    },
+    {
+      "name": "stdole",
+      "guid": "{00020430-0000-0000-C000-000000000046}",
+      "major": 2,
+      "minor": 0,
+      "broken": false,
+      "path": "C:\\Windows\\System32\\stdole2.tlb"
+    },
+    {
+      "name": "Office",
+      "guid": "{2DF8D04C-5BFA-101B-BDE5-00AA0044DE52}",
+      "major": 2,
+      "minor": 8,
+      "broken": false,
+      "path": "C:\\Program Files\\Common Files\\Microsoft Shared\\OFFICE16\\MSO.DLL"
+    }
+  ],
+  "startup": null,
+  "expected_error": null,
+  "cancel_save": false
+}

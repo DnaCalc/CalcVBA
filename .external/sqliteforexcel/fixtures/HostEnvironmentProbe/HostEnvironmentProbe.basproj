@@ -1,4 +1,4 @@
-<Project Sdk="OxVba.Sdk/0.1.0">
+<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>HostEnvironmentProbe</ProjectName>

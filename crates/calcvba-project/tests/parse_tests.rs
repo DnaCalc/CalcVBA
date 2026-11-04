@@ -69,7 +69,7 @@ fn native_library_replaces_the_xll_specific_output_type() {
 // Use Case A: Embedded Host Module
 // ---------------------------------------------------------------------------
 
-const USE_CASE_A_XML: &str = r#"<Project Sdk="OxVba.Sdk/0.1.0">
+const USE_CASE_A_XML: &str = r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>HostModule</OutputType>
     <ProjectName>VBAProject</ProjectName>
@@ -101,7 +101,7 @@ const USE_CASE_A_XML: &str = r#"<Project Sdk="OxVba.Sdk/0.1.0">
 fn parse_use_case_a_host_module() {
     let basproj = parse_basproj_xml(USE_CASE_A_XML).unwrap();
 
-    assert_eq!(basproj.sdk, "OxVba.Sdk/0.1.0");
+    assert_eq!(basproj.sdk, "CalcVBA.Sdk/0.1.0");
     assert_eq!(basproj.properties.output_type, Some(OutputType::HostModule));
     assert!(basproj.properties.build_target.is_none());
     assert_eq!(
@@ -155,7 +155,7 @@ fn parse_use_case_a_host_module() {
 // Use Case B: Library with Native Exports
 // ---------------------------------------------------------------------------
 
-const USE_CASE_B_XML: &str = r#"<Project Sdk="OxVba.Sdk/0.1.0">
+const USE_CASE_B_XML: &str = r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <ProjectName>FinanceAddIn</ProjectName>
@@ -165,8 +165,6 @@ const USE_CASE_B_XML: &str = r#"<Project Sdk="OxVba.Sdk/0.1.0">
     <Module Include="AddInSetup.bas" />
     <Module Include="PricingFunctions.bas" />
     <ClassModule Include="PricingEngine.cls">
-      <VBExposed>True</VBExposed>
-      <VBPredeclaredId>True</VBPredeclaredId>
     </ClassModule>
   </ItemGroup>
   <ItemGroup>
@@ -207,10 +205,6 @@ fn parse_use_case_b_library_exports() {
     // Modules
     assert_eq!(basproj.modules.len(), 3);
     assert_eq!(basproj.modules[2].kind, BasProjModuleKind::ClassModule);
-    assert!(basproj.modules[2].vb_exposed);
-    assert!(basproj.modules[2].vb_predeclared_id);
-    assert!(!basproj.modules[2].vb_global_namespace);
-    assert!(!basproj.modules[2].vb_creatable);
 
     // Project references
     assert_eq!(basproj.project_references.len(), 1);
@@ -249,7 +243,7 @@ fn parse_use_case_b_library_exports() {
 // Use Case C: Standalone Executable
 // ---------------------------------------------------------------------------
 
-const USE_CASE_C_XML: &str = r#"<Project Sdk="OxVba.Sdk/0.1.0">
+const USE_CASE_C_XML: &str = r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>ReportGenerator</ProjectName>
@@ -291,7 +285,7 @@ fn parse_use_case_c_exe() {
 // Minimal convention-driven project
 // ---------------------------------------------------------------------------
 
-const MINIMAL_XML: &str = r#"<Project Sdk="OxVba.Sdk/0.1.0">
+const MINIMAL_XML: &str = r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
   </PropertyGroup>
@@ -301,7 +295,7 @@ const MINIMAL_XML: &str = r#"<Project Sdk="OxVba.Sdk/0.1.0">
 fn parse_minimal_project() {
     let basproj = parse_basproj_xml(MINIMAL_XML).unwrap();
 
-    assert_eq!(basproj.sdk, "OxVba.Sdk/0.1.0");
+    assert_eq!(basproj.sdk, "CalcVBA.Sdk/0.1.0");
     assert_eq!(basproj.properties.output_type, Some(OutputType::Exe));
     assert!(basproj.properties.build_target.is_none());
     assert!(basproj.properties.project_name.is_none());
@@ -579,7 +573,7 @@ fn load_use_case_b_exports() {
 
 #[test]
 fn duplicate_export_name_is_error() {
-    let xml = r#"<Project Sdk="OxVba.Sdk/0.1.0">
+    let xml = r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>Library</OutputType>
   </PropertyGroup>
@@ -613,7 +607,7 @@ fn duplicate_export_name_is_error() {
 
 #[test]
 fn missing_export_module_is_error() {
-    let xml = r#"<Project Sdk="OxVba.Sdk/0.1.0">
+    let xml = r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>Library</OutputType>
   </PropertyGroup>
@@ -695,7 +689,7 @@ fn auto_discover_modules() {
 
 #[test]
 fn missing_output_type_is_error() {
-    let xml = r#"<Project Sdk="OxVba.Sdk/0.1.0">
+    let xml = r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <ProjectName>NoOutput</ProjectName>
   </PropertyGroup>
@@ -725,7 +719,7 @@ fn invalid_project_enum_properties_are_errors() {
         ("RuntimeFlavor", "Turbo", "invalid RuntimeFlavor"),
     ] {
         let xml = format!(
-            r#"<Project Sdk="OxVba.Sdk/0.1.0">
+            r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>BadEnum</ProjectName>
@@ -749,7 +743,7 @@ fn invalid_project_enum_properties_are_errors() {
 
 #[test]
 fn addin_without_entry_point_loads_successfully() {
-    let xml = r#"<Project Sdk="OxVba.Sdk/0.1.0">
+    let xml = r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>NativeLibrary</OutputType>
     <ProjectName>MyAddin</ProjectName>
@@ -773,7 +767,7 @@ fn addin_without_entry_point_loads_successfully() {
 
 #[test]
 fn multiple_property_groups_merge() {
-    let xml = r#"<Project Sdk="OxVba.Sdk/0.1.0">
+    let xml = r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <ProjectName>First</ProjectName>
@@ -792,7 +786,7 @@ fn multiple_property_groups_merge() {
 
 #[test]
 fn parse_explicit_build_target_property() {
-    let xml = r#"<Project Sdk="OxVba.Sdk/0.1.0">
+    let xml = r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <BuildTarget>WrapperLibrary</BuildTarget>
@@ -812,7 +806,7 @@ fn parse_explicit_build_target_property() {
 fn parse_wrapped_com_server_build_target_and_compat_alias() {
     for spelling in ["WrappedComServer", "WrapperComServer"] {
         let xml = format!(
-            r#"<Project Sdk="OxVba.Sdk/0.1.0">
+            r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>ComServer</OutputType>
     <BuildTarget>{spelling}</BuildTarget>
@@ -838,7 +832,7 @@ fn parse_wrapped_com_server_build_target_and_compat_alias() {
 // ComServer OutputType parsing
 // ---------------------------------------------------------------------------
 
-const COM_SERVER_XML: &str = r#"<Project Sdk="OxVba.Sdk/0.1.0">
+const COM_SERVER_XML: &str = r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>ComServer</OutputType>
     <ProjectName>MyComLib</ProjectName>
@@ -846,15 +840,11 @@ const COM_SERVER_XML: &str = r#"<Project Sdk="OxVba.Sdk/0.1.0">
   <ItemGroup>
     <Module Include="Helpers.bas" />
     <ClassModule Include="Widget.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
       <Instancing>MultiUse</Instancing>
       <ProgId>MyComLib.Widget</ProgId>
-      <Description>A sample COM widget class</Description>
+
     </ClassModule>
     <ClassModule Include="Factory.cls">
-      <VBExposed>True</VBExposed>
-      <VBCreatable>True</VBCreatable>
       <Instancing>GlobalMultiUse</Instancing>
     </ClassModule>
   </ItemGroup>
@@ -874,17 +864,11 @@ fn parse_com_server_output_type() {
     // Widget class with full metadata
     let widget = &basproj.modules[1];
     assert_eq!(widget.kind, BasProjModuleKind::ClassModule);
-    assert!(widget.vb_exposed);
-    assert!(widget.vb_creatable);
     assert_eq!(
         widget.instancing,
         Some(calcvba_project::Instancing::MultiUse)
     );
     assert_eq!(widget.prog_id.as_deref(), Some("MyComLib.Widget"));
-    assert_eq!(
-        widget.description.as_deref(),
-        Some("A sample COM widget class")
-    );
 
     // Factory class with instancing only
     let factory = &basproj.modules[2];
@@ -893,7 +877,6 @@ fn parse_com_server_output_type() {
         Some(calcvba_project::Instancing::GlobalMultiUse)
     );
     assert!(factory.prog_id.is_none());
-    assert!(factory.description.is_none());
 }
 
 #[test]
@@ -903,10 +886,10 @@ fn load_com_server_project() {
     std::fs::create_dir_all(&tmp).unwrap();
 
     std::fs::write(tmp.join("Helpers.bas"), "Public Sub Helper()\nEnd Sub\n").unwrap();
-    std::fs::write(tmp.join("Widget.cls"), "Public Sub DoWork()\nEnd Sub\n").unwrap();
+    std::fs::write(tmp.join("Widget.cls"), "Attribute VB_Exposed = True\nAttribute VB_Creatable = True\nAttribute VB_Description = \"A sample COM widget class\"\nPublic Sub DoWork()\nEnd Sub\n").unwrap();
     std::fs::write(
         tmp.join("Factory.cls"),
-        "Public Function Create() As Object\nEnd Function\n",
+        "Attribute VB_Exposed = True\nAttribute VB_Creatable = True\nPublic Function Create() As Object\nEnd Function\n",
     )
     .unwrap();
 
@@ -966,8 +949,8 @@ fn all_instancing_variants_parse() {
         ),
     ] {
         let xml = format!(
-            r#"<Project Sdk="OxVba.Sdk/0.1.0">
-  <PropertyGroup><OutputType>ComServer</OutputType></PropertyGroup>
+            r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
+  <PropertyGroup><OutputType>ComExe</OutputType></PropertyGroup>
   <ItemGroup>
     <ClassModule Include="C.cls">
       <Instancing>{name}</Instancing>
@@ -1008,7 +991,7 @@ fn missing_project_reference_resolves_gracefully() {
 
     std::fs::write(tmp.join("Mod.bas"), "Public Sub M()\nEnd Sub\n").unwrap();
 
-    let xml = r#"<Project Sdk="OxVba.Sdk/0.1.0">
+    let xml = r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <ProjectName>TestProj</ProjectName>

@@ -3,9 +3,7 @@ use crate::{
     model::{CapabilityId, HalProfileId},
     traits::{DynLinkDescriptorView, DynamicLinkHal},
 };
-use calcvba_runtime::{
-    BindingHandle, DynLinkSymbol, RuntimeCallArgument, Variant, VbaRecord, VbaRecordLayout,
-};
+use calcvba_runtime::{BindingHandle, DynLinkSymbol, RuntimeCallArgument, Variant};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -582,14 +580,70 @@ fn invoke_m1_native(
         Some(_) => FfiReturnType::Long,
     };
 
-    let (raw_result, last_error) =
-        invoke_stdcall_with_last_error(proc_addr, &ffi_args, return_type).map_err(|msg| {
-            HalError::adapter_fault(host.profile, capability, "invoke_symbol", msg)
-        })?;
-    // The bridge captured the OS state before its CIF and argument cleanup.
-    host.last_dll_error.set(last_error as i32);
+    let (result, last_error) = if let Some(layout) = &descriptor.return_record_layout {
+        let mut record =
+            calcvba_runtime::pointer_helpers::AutomationRecord::empty_declared(layout.clone())
+                .map_err(|message| {
+                    HalError::adapter_fault(host.profile, capability, "invoke_symbol", message)
+                })?;
+        let bytes = layout
+            .declare_shape()
+            .map_err(|message| {
+                HalError::adapter_fault(host.profile, capability, "invoke_symbol", message)
+            })?
+            .0;
+        let call = calcvba_com::windows_ffi_bridge::PreparedNativeCall::aggregate_from_args(
+            proc_addr, &ffi_args, bytes,
+        );
+        // SAFETY: exact declared record metadata determines the native result ABI.
+        let error = unsafe { call.invoke_arguments(&ffi_args, record.as_mut_ptr().cast()) };
+        (
+            record.read().map_err(|message| {
+                HalError::adapter_fault(host.profile, capability, "invoke_symbol", message)
+            })?,
+            error,
+        )
+    } else if descriptor.return_type.as_deref() == Some("Variant") {
+        // SAFETY: zeroed Windows VARIANT is initialized VT_EMPTY storage.
+        let mut value: windows_sys::Win32::System::Variant::VARIANT = unsafe { std::mem::zeroed() };
+        let call = calcvba_com::windows_ffi_bridge::PreparedNativeCall::aggregate_from_args(
+            proc_addr,
+            &ffi_args,
+            std::mem::size_of_val(&value),
+        );
+        // SAFETY: the declared aggregate result and every retained argument match.
+        let error = unsafe {
+            call.invoke_arguments(
+                &ffi_args,
+                (&mut value as *mut windows_sys::Win32::System::Variant::VARIANT).cast(),
+            )
+        };
+        // SAFETY: convert a retained native result before releasing its owner.
+        let result =
+            unsafe { calcvba_com::variant_to_com_value(&value).and_then(|v| v.to_variant()) };
+        // SAFETY: consume the callee's owning result after copying it.
+        unsafe {
+            windows_sys::Win32::System::Variant::VariantClear(&mut value);
+        }
+        (
+            result.map_err(|message| {
+                HalError::adapter_fault(host.profile, capability, "invoke_symbol", message)
+            })?,
+            error,
+        )
+    } else {
+        let (raw_result, last_error) =
+            invoke_stdcall_with_last_error(proc_addr, &ffi_args, return_type).map_err(|msg| {
+                HalError::adapter_fault(host.profile, capability, "invoke_symbol", msg)
+            })?;
+        // The bridge captured the OS state before its CIF and argument cleanup.
 
-    let result = unmarshal_ffi_to_variant(raw_result, descriptor.return_type.as_deref());
+        (
+            unmarshal_ffi_to_variant(raw_result, descriptor.return_type.as_deref()),
+            last_error,
+        )
+    };
+    host.last_dll_error.set(last_error as i32);
     let mut writeback_values = args.to_vec();
     for cell in &byref_cells {
         writeback_values[cell.index] = cell.storage.read_back_variant().map_err(|msg| {
@@ -760,32 +814,6 @@ fn variant_from_ansi_payload(buffer: &[u8]) -> Variant {
 /// Decode a NUL-terminated ANSI string at `ptr` (capped at 1 MiB so a missing
 /// terminator cannot scan unbounded memory).
 #[cfg(target_os = "windows")]
-fn variant_from_ansi_c_str(ptr: *const u8) -> Variant {
-    use calcvba_runtime::bstr::BStr;
-    if ptr.is_null() {
-        return Variant::from_string(BStr::empty());
-    }
-    const CAP: usize = 1 << 20;
-    let mut len = 0usize;
-    // SAFETY: `ptr` was checked non-null above and, under the Declare ByRef-String
-    // contract (the only caller passes the LPSTR the native callee left in the ByRef
-    // cell), points at a NUL-terminated system-codepage ANSI string; each byte read
-    // at `ptr.add(len)` is inside that string because the scan stops at the
-    // terminator, and CAP bounds the walk if the callee broke the contract.
-    while len < CAP && unsafe { *ptr.add(len) } != 0 {
-        len += 1;
-    }
-    // SAFETY: every byte in `[ptr, ptr + len)` was just read by the terminator scan
-    // above (len < CAP), so the range is initialized, readable memory owned by the
-    // native callee's string for the duration of this borrow.
-    variant_from_ansi_bytes(unsafe { std::slice::from_raw_parts(ptr, len) })
-}
-
-/// A post-call read-back cell for one argument: declared-`ByRef` scalars, and
-/// `String` arguments in **either** direction (VBA converts a `Declare` String
-/// argument to an ANSI buffer for the call and converts the buffer back into
-/// the variable afterwards — even when declared `ByVal`).
-#[cfg(target_os = "windows")]
 struct NativeByRefCell {
     index: usize,
     storage: NativeByRefStorage,
@@ -807,19 +835,15 @@ enum NativeByRefStorage {
     /// mutate the payload in place; read-back decodes the full payload length
     /// back to Unicode (VBA's pre-sized-buffer idiom).
     AnsiBuffer(Vec<u8>),
-    /// `ByRef … As String`: an `LPSTR` cell initialized to the ANSI buffer. The
-    /// callee receives `&cell` (`LPSTR*`) and may overwrite the pointer itself;
-    /// read-back follows whichever pointer the cell finally holds.
+    /// ByRef String owns an ANSI byte BSTR cell. A conforming callee frees
+    /// its old BSTR before replacing it; copyback retains embedded NUL bytes.
     AnsiStringCell {
-        buffer: Vec<u8>,
-        cell: Box<*mut u8>,
+        cell: Box<*mut u16>,
     },
-    VbaRecordCell {
-        layout: Arc<VbaRecordLayout>,
-        words: Vec<u64>,
-    },
+    VbaRecordCell(calcvba_runtime::pointer_helpers::AutomationRecord),
     VariantCell(Box<windows_sys::Win32::System::Variant::VARIANT>),
     ArrayCell(Box<windows_sys::Win32::System::Variant::VARIANT>),
+    RecordArray(calcvba_runtime::pointer_helpers::AutomationRecordArray),
 }
 
 #[cfg(target_os = "windows")]
@@ -855,9 +879,22 @@ impl NativeByRefStorage {
                     .as_bstr()
                     .map(|text| text.as_str())
                     .unwrap_or_default();
-                let mut buffer = calcvba_com::windows_ffi_bridge::ansi_c_string(&text);
-                let cell = Box::new(buffer.as_mut_ptr());
-                Self::AnsiStringCell { buffer, cell }
+                let bytes = calcvba_com::windows_ffi_bridge::ansi_c_string(&text);
+                let len = bytes.len().saturating_sub(1);
+                // SAFETY: allocate an independent byte BSTR using its exact payload length.
+                let value = unsafe {
+                    windows_sys::Win32::Foundation::SysAllocStringByteLen(
+                        bytes.as_ptr().cast(),
+                        u32::try_from(len).map_err(|_| "ANSI String extent overflow")?,
+                    )
+                }
+                .cast_mut();
+                if len != 0 && value.is_null() {
+                    return Err("ANSI BSTR allocation failed".into());
+                }
+                Self::AnsiStringCell {
+                    cell: Box::new(value),
+                }
             }
             "Variant" => Self::VariantCell(variant_cell_from_variant(value)?),
             "Array" => array_cell_storage_from_variant(value)?,
@@ -886,14 +923,13 @@ impl NativeByRefStorage {
             Self::Date(value) => FfiArg::Pointer((&mut **value as *mut f64).cast::<c_void>()),
             Self::AnsiBuffer(buffer) => FfiArg::Pointer(buffer.as_mut_ptr().cast::<c_void>()),
             Self::AnsiStringCell { cell, .. } => {
-                FfiArg::Pointer((&mut **cell as *mut *mut u8).cast::<c_void>())
+                FfiArg::Pointer((&mut **cell as *mut *mut u16).cast::<c_void>())
             }
-            Self::VbaRecordCell { words, .. } => {
-                FfiArg::Pointer(words.as_mut_ptr().cast::<c_void>())
-            }
+            Self::VbaRecordCell(value) => FfiArg::Pointer(value.as_mut_ptr().cast()),
             Self::VariantCell(cell) => FfiArg::Pointer(
                 (&mut **cell as *mut windows_sys::Win32::System::Variant::VARIANT).cast::<c_void>(),
             ),
+            Self::RecordArray(value) => FfiArg::Pointer(value.as_cell_ptr()),
             Self::ArrayCell(cell) => {
                 // SAFETY: the boxed initialized VARIANT owns this SAFEARRAY*
                 // cell; the box and array remain live through native copyback.
@@ -918,26 +954,20 @@ impl NativeByRefStorage {
             Self::Currency(value) => Variant::from_currency_scaled_i64(**value),
             Self::Date(value) => Variant::from_date_f64(**value),
             Self::AnsiBuffer(buffer) => variant_from_ansi_payload(buffer),
-            Self::AnsiStringCell { buffer, cell } => {
-                if std::ptr::eq(*(*cell) as *const u8, buffer.as_ptr()) {
-                    variant_from_ansi_payload(buffer)
-                } else {
-                    // The callee replaced the pointer; read the replacement as a
-                    // NUL-terminated ANSI string. We deliberately do NOT free the
-                    // replacement (VBA frees its temp here, which crashes real VBA
-                    // whenever the callee stored a static/CRT-owned pointer — guest
-                    // code must never abort this host, so we accept the leak in the
-                    // callee-allocated case instead).
-                    variant_from_ansi_c_str((*(*cell)).cast_const())
+            Self::AnsiStringCell { cell } => {
+                // SAFETY: this cell owns the current ANSI byte BSTR, including
+                // a conforming callee replacement. The prefix retains NUL bytes.
+                unsafe {
+                    let len = windows_sys::Win32::Foundation::SysStringByteLen(**cell) as usize;
+                    variant_from_ansi_bytes(if len == 0 {
+                        &[]
+                    } else {
+                        std::slice::from_raw_parts((**cell).cast(), len)
+                    })
                 }
             }
-            // SAFETY: `words` is this cell's native-ABI image of a record laid out by
-            // `layout`: it was sized and staged by `vba_record_storage_from_variant`
-            // (which validated plain-native eligibility) and only mutated in place by
-            // the native callee, so it remains a live image for `clone_from_native_words`.
-            Self::VbaRecordCell { layout, words } => Variant::from_vba_record(unsafe {
-                VbaRecord::clone_from_native_words(words, layout.clone())?
-            }),
+            Self::VbaRecordCell(value) => value.read()?,
+            Self::RecordArray(value) => value.read()?,
             Self::ArrayCell(cell) => {
                 // SAFETY: the call left a nullable live SAFEARRAY* in its cell.
                 // A ReDim may change the element type of an initially null cell.
@@ -996,6 +1026,12 @@ impl NativeByRefStorage {
 #[cfg(target_os = "windows")]
 impl Drop for NativeByRefStorage {
     fn drop(&mut self) {
+        if let Self::AnsiStringCell { cell } = self {
+            // SAFETY: consume exactly this cell's current byte BSTR owner.
+            unsafe {
+                windows_sys::Win32::Foundation::SysFreeString(**cell);
+            }
+        }
         if let Self::VariantCell(cell) | Self::ArrayCell(cell) = self {
             // SAFETY: `cell` is this storage's live, initialized `Box<VARIANT>`;
             // `VariantClear` releases its owned contents exactly once at drop.
@@ -1009,6 +1045,13 @@ impl Drop for NativeByRefStorage {
 #[cfg(windows)]
 fn array_cell_storage_from_variant(value: &Variant) -> Result<NativeByRefStorage, String> {
     use windows_sys::Win32::System::Variant::VARIANT;
+    if let Some(array) = value.try_as_safearray()?
+        && array.vba_record_layout().is_some()
+    {
+        return Ok(NativeByRefStorage::RecordArray(
+            calcvba_runtime::pointer_helpers::AutomationRecordArray::from_array(&array)?,
+        ));
+    }
     if value.vtype() == calcvba_runtime::VarType::Empty
         || value.vtype() == calcvba_runtime::VarType::ArrayVariant && value.data_bytes() == [0; 8]
     {
@@ -1097,16 +1140,9 @@ fn vba_record_storage_from_variant(value: &Variant) -> Result<NativeByRefStorage
     let record = value.as_vba_record().ok_or_else(|| {
         "native ByRef As Any record marshaling requires a native VBA record value".to_string()
     })?;
-    let layout = record.layout().clone();
-    layout
-        .validate_byref_as_any_native_abi()
-        .map_err(|reason| {
-            format!("native ByRef As Any record marshaling is not supported: {reason}")
-        })?;
-    Ok(NativeByRefStorage::VbaRecordCell {
-        words: record.clone_into_native_words()?,
-        layout,
-    })
+    Ok(NativeByRefStorage::VbaRecordCell(
+        calcvba_runtime::pointer_helpers::AutomationRecord::from_declared_record(&record)?,
+    ))
 }
 
 #[cfg(all(not(target_os = "windows"), not(target_arch = "wasm32")))]

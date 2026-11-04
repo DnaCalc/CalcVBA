@@ -1,0 +1,13 @@
+<Project Sdk="CalcVBA.Sdk/0.1.0"><PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>NativeRecords</ProjectName></PropertyGroup><ItemGroup><Module Include="Records.bas"/>
+<NativeExport Include="ChangeRecord"><Module>Records</Module><Procedure>ChangeRecord</Procedure></NativeExport>
+<NativeExport Include="EchoRecord"><Module>Records</Module><Procedure>EchoRecord</Procedure></NativeExport>
+<NativeExport Include="ValueSuite"><Module>Records</Module><Procedure>ValueSuite</Procedure></NativeExport>
+<NativeExport Include="GrowStrings"><Module>Records</Module><Procedure>GrowStrings</Procedure></NativeExport>
+<NativeExport Include="AllocateStrings"><Module>Records</Module><Procedure>AllocateStrings</Procedure></NativeExport>
+<NativeExport Include="ClearAnsi"><Module>Records</Module><Procedure>ClearAnsi</Procedure></NativeExport>
+<NativeExport Include="AnsiText"><Module>Records</Module><Procedure>AnsiText</Procedure></NativeExport>
+<NativeExport Include="AllocateAnsiStrings"><Module>Records</Module><Procedure>AllocateStrings</Procedure><StringEncoding>Ansi</StringEncoding></NativeExport>
+<NativeExport Include="AllocateRecords"><Module>Records</Module><Procedure>AllocateRecords</Procedure></NativeExport>
+<NativeExport Include="RecordArrays"><Module>Records</Module><Procedure>RecordArrays</Procedure></NativeExport>
+<NativeExport Include="ArraySuite"><Module>Records</Module><Procedure>ArraySuite</Procedure></NativeExport>
+</ItemGroup></Project>

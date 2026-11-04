@@ -558,6 +558,37 @@ unsafe fn safe_array_to_com_value(psa: *mut SAFEARRAY) -> Result<ComValue, Strin
         bounds.push(SafeArrayBound { lower, count });
     }
 
+    if element_vt == VT_EMPTY && (*psa).fFeatures & 0x100 != 0 {
+        // VBA Declare's ANSI String() descriptor owns byte BSTRs rather than
+        // Unicode VT_BSTR elements. Decode their full byte lengths, including NULs.
+        let mut values = Vec::with_capacity(total_len);
+        let mut indices: Vec<_> = bounds.iter().map(|b| b.lower).collect();
+        for _ in 0..total_len {
+            let mut text = std::ptr::null();
+            let hr = SafeArrayGetElement(
+                psa,
+                indices.as_ptr(),
+                (&mut text as *mut windows_sys::core::BSTR).cast(),
+            );
+            if hr < 0 {
+                return Err(format!("ANSI String SAFEARRAY read failed: {hr:#x}"));
+            }
+            let len = SysStringByteLen(text) as usize;
+            let bytes = if len == 0 {
+                &[]
+            } else {
+                std::slice::from_raw_parts(text.cast::<u8>(), len)
+            };
+            let units = crate::windows_ffi_bridge::utf16_from_ansi(bytes);
+            SysFreeString(text);
+            values.push(ComValue::String(BStr::from_utf16_units(&units)?).to_variant()?);
+            advance_indices_row_major(&mut indices, &bounds);
+        }
+        return Ok(ComValue::ArrayIntent(SafeArray::from_typed_variants_nd(
+            bounds, VT_BSTR, values,
+        )?));
+    }
+
     if element_vt == VT_RECORD_VALUE {
         // SAFETY: `element_vt` came from SafeArrayGetVartype and proved the
         // SAFEARRAY record shape. The helper clones each record element into a
@@ -1015,6 +1046,11 @@ where
             "runtime error: 458 (Variable uses an Automation type not supported in Visual Basic)"
                 .to_string(),
         );
+    }
+    if element_vt == VT_EMPTY && (*psa).fFeatures & 0x100 != 0 {
+        // This form contains only owning ANSI byte BSTRs, so no object binding
+        // callback is needed for the shared length-aware conversion.
+        return safe_array_to_com_value(psa)?.to_variant();
     }
     // Collect per-dimension bounds.
     let mut bounds = Vec::with_capacity(dims as usize);

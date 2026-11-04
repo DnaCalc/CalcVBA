@@ -36,6 +36,7 @@ pub struct DynLinkDescriptorView<'a> {
     pub param_types: &'a [String],
     pub param_by_ref: &'a [bool],
     pub return_type: Option<Cow<'a, str>>,
+    pub return_record_layout: Option<std::sync::Arc<calcvba_runtime::vba_record::VbaRecordLayout>>,
 }
 
 impl DynLinkDescriptorView<'_> {
@@ -710,6 +711,7 @@ mod native_argument_tests {
             param_types: &["Long".into(), "Long".into()],
             param_by_ref: &[true, true],
             return_type: None,
+            return_record_layout: None,
         };
         let arg =
             |id| RuntimeCallArgument::by_ref(Variant::from_i32(1), RuntimeByRefSlot::new(id, None));

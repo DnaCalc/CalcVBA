@@ -1,6 +1,41 @@
 use super::*;
 
 pub(super) const HELPERS: &[(&str, &[ir::Type])] = &[
+    (
+        "cvb_fixed_string_coerce",
+        &[types::I64, types::I64, types::I32, types::I32],
+    ),
+    (
+        "cvb_declare_result",
+        &[types::I64, types::I64, types::I32, types::I32, types::I64],
+    ),
+    (
+        "cvb_record_array_get",
+        &[types::I64, types::I64, types::I32, types::I64, types::I64],
+    ),
+    (
+        "cvb_record_array_set",
+        &[types::I64, types::I64, types::I32, types::I64, types::I64],
+    ),
+    (
+        "cvb_record_array_redim",
+        &[
+            types::I64,
+            types::I32,
+            types::I64,
+            types::I32,
+            types::I32,
+            types::I64,
+        ],
+    ),
+    (
+        "cvb_fixed_string_get",
+        &[types::I64, types::I64, types::I32, types::I32],
+    ),
+    (
+        "cvb_fixed_string_set",
+        &[types::I64, types::I32, types::I64, types::I32],
+    ),
     ("cvb_object_is", &[types::I64; 3]),
     ("cvb_get_error_help", &[types::I64; 3]),
     (
@@ -64,7 +99,7 @@ pub(super) const HELPERS: &[(&str, &[ir::Type])] = &[
         &[types::I64, types::I32, types::I32, types::I64],
     ),
     (
-        "cvb_array_redim",
+        "cvb_array_redim_encoded",
         &[
             types::I64,
             types::I32,
@@ -72,6 +107,7 @@ pub(super) const HELPERS: &[(&str, &[ir::Type])] = &[
             types::I64,
             types::I32,
             types::I32,
+            types::I64,
         ],
     ),
     (
@@ -241,7 +277,6 @@ pub(super) fn owning(ty: ScalarType) -> bool {
 pub(super) struct Values<'a> {
     pub lower: ScalarLower<'a>,
     pub functions: &'a HashMap<&'static str, ClifFuncId>,
-    pub foreign_states: &'a HashMap<u32, DataId>,
     pub program: &'a OxProgram,
 }
 impl Values<'_> {
@@ -421,9 +456,29 @@ impl Values<'_> {
         module: &mut impl Module,
         b: &mut FunctionBuilder<'_>,
         inst: &OxInst,
+        foreign_state: Option<DataId>,
     ) -> bool {
         let layout = self.lower.layout;
         match inst {
+            OxInst::Coerce {
+                dst,
+                src,
+                target: calcvba_oxir::OxCoerceTarget::FixedStr(len),
+            } => {
+                let out = self.address(b, layout.slot(*dst).unwrap());
+                let source = self.cell(module, b, src);
+                let kind = b
+                    .ins()
+                    .iconst(types::I32, i64::from(kind_of_operand(layout, src)));
+                let len = b.ins().iconst(types::I32, i64::from(*len));
+                self.call(
+                    module,
+                    b,
+                    "cvb_fixed_string_coerce",
+                    &[out, source, kind, len],
+                );
+                return true;
+            }
             OxInst::Ptr { dst, kind, src } => {
                 let address = self.cell(module, b, src);
                 let value = if matches!(
@@ -450,13 +505,24 @@ impl Values<'_> {
                     .iter()
                     .find(|d| d.descriptor_id == *descriptor_id)
                     .unwrap();
-                let result = descriptor
-                    .return_type
-                    .as_ref()
-                    .map(declare_kind)
-                    .unwrap_or(Some(0))
-                    .unwrap();
-                let mut words = vec![result, args.len() as u32, 0, 0];
+                let result_record = descriptor.return_record_fields.as_ref().map(|fields| {
+                    vba_record_layout_for_fields(fields).expect("admitted return record")
+                });
+                let result = if result_record.is_some() {
+                    36
+                } else {
+                    descriptor
+                        .return_type
+                        .as_ref()
+                        .map(declare_kind)
+                        .unwrap_or(Some(0))
+                        .unwrap()
+                };
+                let mut words = vec![result, args.len() as u32, 0, 0, 0];
+                let mut schemas: Vec<(usize, Vec<u32>)> = Vec::new();
+                if let Some(record) = &result_record {
+                    schemas.push((4, record.boundary_schema()));
+                }
                 let vector = b.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot,
                     (args.len().max(1) * 8) as u32,
@@ -490,9 +556,23 @@ impl Values<'_> {
                             | if by_ref { 0x10000 } else { 0 }
                             | if writable { 0x20000 } else { 0 },
                     );
+                    words.push(0);
+                    if from == 36 {
+                        let OxOperand::Use(place) = &source else {
+                            unreachable!("admitted record argument")
+                        };
+                        let record = &layout.record_slots[&layout.slot(*place).unwrap()];
+                        schemas.push((6 + i * 2, record.boundary_schema()));
+                    }
                     b.ins().stack_store(cell, vector, (i * 8) as i32);
                 }
                 let mut metadata = vec![0u8; words.len() * 4];
+                for (slot, schema) in schemas {
+                    words[slot] = metadata.len() as u32;
+                    for word in schema {
+                        metadata.extend(word.to_le_bytes());
+                    }
+                }
                 words[2] = metadata.len() as u32;
                 metadata.extend_from_slice(descriptor.library.as_bytes());
                 metadata.push(0);
@@ -507,16 +587,28 @@ impl Values<'_> {
                     metadata[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
                 }
                 let metadata = data(module, b, metadata, 4);
-                let state = module.declare_data_in_func(self.foreign_states[descriptor_id], b.func);
+                let state = module.declare_data_in_func(
+                    foreign_state.expect("planned native call state"),
+                    b.func,
+                );
                 let state = b.ins().global_value(types::I64, state);
                 let arguments = b.ins().stack_addr(types::I64, vector, 0);
+                let output_size = result_record.as_ref().map_or(24, |r| {
+                    r.automation_shape()
+                        .expect("admitted return record")
+                        .0
+                        .max(24)
+                        .next_multiple_of(8)
+                });
                 let output = b.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot,
-                    8,
+                    output_size as u32,
                     3,
                 ));
                 let zero = b.ins().iconst(types::I64, 0);
-                b.ins().stack_store(zero, output, 0);
+                for offset in (0..output_size).step_by(8) {
+                    b.ins().stack_store(zero, output, offset as i32);
+                }
                 let output = b.ins().stack_addr(types::I64, output, 0);
                 self.call(
                     module,
@@ -524,10 +616,31 @@ impl Values<'_> {
                     "cvb_declare",
                     &[state, metadata, arguments, output],
                 );
-                if let Some(dst) = dst {
-                    let i = layout.slot(*dst).unwrap();
-                    let address = self.address(b, i);
-                    self.copy(module, b, address, self.slot_kind(i), output, result);
+                if result != 0 {
+                    let (destination, to) = if let Some(dst) = dst {
+                        let slot = layout.slot(*dst).unwrap();
+                        (self.address(b, slot), self.slot_kind(slot))
+                    } else {
+                        (b.ins().iconst(types::I64, 0), 0)
+                    };
+                    let descriptor = if let Some(record) = &result_record {
+                        data(
+                            module,
+                            b,
+                            record_descriptor(record).expect("admitted record result"),
+                            4,
+                        )
+                    } else {
+                        b.ins().iconst(types::I64, 0)
+                    };
+                    let to = b.ins().iconst(types::I32, i64::from(to));
+                    let from = b.ins().iconst(types::I32, i64::from(result));
+                    self.call(
+                        module,
+                        b,
+                        "cvb_declare_result",
+                        &[destination, output, to, from, descriptor],
+                    );
                 }
                 return true;
             }
@@ -556,6 +669,22 @@ impl Values<'_> {
                 let array = self.cell(module, b, array);
                 let vector = self.indices(module, b, indices);
                 let rank = b.ins().iconst(types::I32, indices.len() as i64);
+                if let Some((_, record)) = layout.array_record_slots.get(&slot) {
+                    let descriptor = data(
+                        module,
+                        b,
+                        record_descriptor(record).expect("admitted record array"),
+                        4,
+                    );
+                    let out = self.address(b, layout.slot(*dst).unwrap());
+                    self.call(
+                        module,
+                        b,
+                        "cvb_record_array_get",
+                        &[array, vector, rank, out, descriptor],
+                    );
+                    return true;
+                }
                 let kind = b
                     .ins()
                     .iconst(types::I32, i64::from(layout.array_slots[&slot]));
@@ -579,6 +708,22 @@ impl Values<'_> {
                 let array = self.address(b, slot);
                 let vector = self.indices(module, b, indices);
                 let rank = b.ins().iconst(types::I32, indices.len() as i64);
+                if let Some((_, record)) = layout.array_record_slots.get(&slot) {
+                    let descriptor = data(
+                        module,
+                        b,
+                        record_descriptor(record).expect("admitted record array"),
+                        4,
+                    );
+                    let source = self.cell(module, b, value);
+                    self.call(
+                        module,
+                        b,
+                        "cvb_record_array_set",
+                        &[array, vector, rank, source, descriptor],
+                    );
+                    return true;
+                }
                 let kind = b
                     .ins()
                     .iconst(types::I32, i64::from(layout.array_slots[&slot]));
@@ -650,11 +795,39 @@ impl Values<'_> {
                 let rank = b.ins().iconst(types::I32, upper_bounds.len() as i64);
                 let preserve = b.ins().iconst(types::I32, i64::from(*preserve));
                 let fixed = b.ins().iconst(types::I32, i64::from(*fixed));
+                if let Some((id, record)) = layout.array_record_slots.get(&slot) {
+                    let mut descriptor = record_descriptor(record).expect("admitted array record");
+                    let identity = format!("{}:{}:{record:?}", self.program.unit_name, id.0);
+                    let mut first = 0xcbf29ce484222325u64;
+                    let mut second = 0x84222325cbf29ce4u64;
+                    for byte in identity.as_bytes() {
+                        first = (first ^ u64::from(*byte)).wrapping_mul(0x100000001b3);
+                        second = (second ^ u64::from(*byte)).wrapping_mul(0x100000001b3);
+                    }
+                    descriptor.extend(first.to_le_bytes());
+                    descriptor.extend(second.to_le_bytes());
+                    let descriptor = data(module, b, descriptor, 4);
+                    self.call(
+                        module,
+                        b,
+                        "cvb_record_array_redim",
+                        &[array, rank, bounds, preserve, fixed, descriptor],
+                    );
+                    return true;
+                }
                 self.call(
                     module,
                     b,
-                    "cvb_array_redim",
-                    &[array, kind, rank, bounds, preserve, fixed],
+                    "cvb_array_redim_encoded",
+                    &[
+                        array,
+                        kind,
+                        rank,
+                        bounds,
+                        preserve,
+                        fixed,
+                        self.lower.runtime,
+                    ],
                 );
                 return true;
             }
@@ -678,10 +851,21 @@ impl Values<'_> {
                 let slot = layout.slot(*place).unwrap();
                 let field = &layout.record_slots[&slot].fields()[*index];
                 let record = self.cell(module, b, record);
-                let source = b.ins().iadd_imm(record, field.offset() as i64);
+                let source = b.ins().iadd_imm(
+                    record,
+                    layout.record_slots[&slot]
+                        .automation_field_offset(*index)
+                        .expect("admitted field") as i64,
+                );
                 let to = layout.slot(*dst).unwrap();
                 let out = self.address(b, to);
-                if layout.slots[to] == ScalarType::Record {
+                if let calcvba_runtime::vba_record::VbaRecordFieldKind::FixedString { len } =
+                    field.kind()
+                {
+                    let len = b.ins().iconst(types::I32, *len as i64);
+                    let kind = b.ins().iconst(types::I32, i64::from(self.slot_kind(to)));
+                    self.call(module, b, "cvb_fixed_string_get", &[out, source, len, kind]);
+                } else if layout.slots[to] == ScalarType::Record {
                     self.copy_record(module, b, to, out, source);
                 } else {
                     self.copy(
@@ -703,9 +887,23 @@ impl Values<'_> {
                 let slot = layout.slot(*record).unwrap();
                 let field = &layout.record_slots[&slot].fields()[*index];
                 let address = self.address(b, slot);
-                let out = b.ins().iadd_imm(address, field.offset() as i64);
+                let out = b.ins().iadd_imm(
+                    address,
+                    layout.record_slots[&slot]
+                        .automation_field_offset(*index)
+                        .expect("admitted field") as i64,
+                );
                 let src = self.cell(module, b, value);
-                if let calcvba_runtime::vba_record::VbaRecordFieldKind::Record(nested) =
+                if let calcvba_runtime::vba_record::VbaRecordFieldKind::FixedString { len } =
+                    field.kind()
+                {
+                    let len = b.ins().iconst(types::I32, *len as i64);
+                    let from = b.ins().iconst(
+                        types::I32,
+                        i64::from(kind(layout.operand_type(value).unwrap())),
+                    );
+                    self.call(module, b, "cvb_fixed_string_set", &[out, len, src, from]);
+                } else if let calcvba_runtime::vba_record::VbaRecordFieldKind::Record(nested) =
                     field.kind()
                 {
                     let descriptor = data(
@@ -958,11 +1156,9 @@ pub(super) fn validate_declare(
     if descriptor.ordinal_alias || args.len() != descriptor.param_count || args.len() > 32 {
         return Err("native Declare ordinal or argument shape is not yet admitted".into());
     }
-    if descriptor
-        .return_type
-        .as_ref()
-        .is_some_and(|k| matches!(k, D::String | D::Variant | D::Array | D::Any))
-    {
+    if descriptor.return_type.as_ref().is_some_and(|k| {
+        matches!(k, D::Array) || matches!(k, D::Any) && descriptor.return_record_fields.is_none()
+    }) {
         return Err("native Declare requires a scalar/pointer return".into());
     }
     for (i, arg) in args.iter().enumerate() {
@@ -980,9 +1176,6 @@ pub(super) fn validate_declare(
                     .into(),
             );
         }
-        if by_ref && expected == Some(8) {
-            return Err("native Declare ByRef ANSI String marshalling is not yet admitted".into());
-        }
         if !by_ref && expected == Some(8) && ty != ScalarType::String {
             return Err("native Declare String input requires a String carrier".into());
         }
@@ -999,9 +1192,6 @@ pub(super) fn validate_declare(
             ) || expected == Some(12))
         {
             return Err("native Declare ByVal aggregate/object carrier is not yet admitted".into());
-        }
-        if by_ref && ty == ScalarType::Record {
-            return Err("native Declare UDT parameters require ANSI field marshalling".into());
         }
     }
     Ok(())
@@ -1028,7 +1218,8 @@ pub(super) fn field_kind(
         F::Double => 5,
         F::Currency => 6,
         F::Date => 7,
-        F::String => 8,
+        F::String | F::FixedString { .. } => 8,
+        F::Variant => 12,
         F::Boolean => 11,
         F::Byte => 17,
         F::LongLong => 20,
@@ -1046,42 +1237,41 @@ pub(super) fn record_descriptor(
         base: usize,
         owners: &mut Vec<(u32, u32)>,
     ) -> Result<(), String> {
-        for field in layout.fields() {
-            match field.kind() {
-                F::String => owners.push(((base + field.offset()) as u32, 8)),
-                F::Record(nested) => fields(nested, base + field.offset(), owners)?,
+        fn field(kind: &F, offset: usize, owners: &mut Vec<(u32, u32)>) -> Result<(), String> {
+            match kind {
+                F::String => owners.push((offset as u32, 8)),
+                F::Variant => owners.push((offset as u32, 12)),
+                F::Record(nested) => fields(nested, offset, owners)?,
                 F::FixedArray { element, bounds } => {
                     let count = bounds
                         .iter()
                         .try_fold(1usize, |n, b| n.checked_mul(b.count as usize))
-                        .ok_or("record array size overflow")?;
-                    let stride = element.storage_shape()?.0;
+                        .ok_or("record array extent overflow")?;
+                    let (width, align) = element.automation_storage_shape()?;
                     for index in 0..count {
-                        let offset = base + field.offset() + index * stride;
-                        match element.as_ref() {
-                            F::String => owners.push((offset as u32, 8)),
-                            F::Record(nested) => fields(nested, offset, owners)?,
-                            F::Variant => return Err(
-                                "native UDT Variant field requires a 24-byte Automation conversion"
-                                    .into(),
-                            ),
-                            _ => {}
-                        }
+                        field(
+                            element,
+                            offset + index * width.next_multiple_of(align),
+                            owners,
+                        )?;
                     }
-                }
-                F::Variant => {
-                    return Err(
-                        "native UDT Variant field requires a 24-byte Automation conversion".into(),
-                    );
                 }
                 _ => {}
             }
+            Ok(())
+        }
+        for (index, item) in layout.fields().iter().enumerate() {
+            field(
+                item.kind(),
+                base + layout.automation_field_offset(index)?,
+                owners,
+            )?;
         }
         Ok(())
     }
     let mut owners = Vec::new();
     fields(layout, 0, &mut owners)?;
-    let mut bytes = (layout.size() as u32).to_le_bytes().to_vec();
+    let mut bytes = (layout.automation_shape()?.0 as u32).to_le_bytes().to_vec();
     bytes.extend_from_slice(&(owners.len() as u32).to_le_bytes());
     for (offset, kind) in owners {
         bytes.extend_from_slice(&offset.to_le_bytes());

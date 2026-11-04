@@ -927,14 +927,14 @@ impl ScanCtx<'_> {
                 }
             }
         }
-        let return_type = if is_function {
-            Some(declare_param_type(&declare_return_type(
-                node,
-                name_token,
-                &self.default_types,
-            )))
-        } else {
-            None
+        let return_ref =
+            is_function.then(|| declare_return_type(node, name_token, &self.default_types));
+        let return_type = return_ref.as_ref().map(declare_param_type);
+        let return_record_type = match return_ref {
+            Some(VarTypeRef::Udt(name) | VarTypeRef::Object(name)) if name != "object" => {
+                Some(name)
+            }
+            _ => None,
         };
 
         let descriptor_id = *self.next_descriptor_id;
@@ -954,6 +954,7 @@ impl ScanCtx<'_> {
             param_optional,
             param_param_array,
             return_type,
+            return_record_type,
         };
         self.declare(
             scope,

@@ -193,6 +193,10 @@ pub struct ExternalCallDescriptor {
     pub param_types: Vec<DeclareParamType>,
     pub param_by_ref: Vec<bool>,
     pub return_type: Option<DeclareParamType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_record_fields: Option<Vec<ArrayElementType>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_record_name: Option<String>,
 }
 
 // ── Procedure / source / hosting metadata ────────────────────────────────────

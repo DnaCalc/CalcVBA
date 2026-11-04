@@ -142,6 +142,7 @@ pub fn elaborate(program: &CoreProgram) -> Result<OxProgram> {
             program.long_ptr_width,
             &proc_return_types,
             &mut com,
+            &program.external_calls,
         )?);
     }
 
@@ -524,6 +525,7 @@ fn elaborate_proc(
     long_ptr_width: CoreLongPtrWidth,
     proc_return_types: &[Option<OxTy>],
     com: &mut ComInterner,
+    external_calls: &[calcvba_bundle::ExternalCallDescriptor],
 ) -> Result<OxFunc> {
     // The unified local index space is params first, then locals (the binder's
     // `LocalId` convention), so OxFunc.locals mirrors it 1:1.
@@ -563,6 +565,7 @@ fn elaborate_proc(
         com,
         global_tys,
         record_ids: &resolver.records,
+        external_calls,
     });
     // Pre-assign a block to every source label so forward references resolve.
     lo.assign_labels(&proc.body)?;
@@ -624,6 +627,7 @@ struct Lowerer<'a> {
     com: &'a mut ComInterner,
     global_tys: &'a [OxTy],
     record_ids: &'a HashMap<String, RecordLayoutId>,
+    external_calls: &'a [calcvba_bundle::ExternalCallDescriptor],
     long_ptr_width: CoreLongPtrWidth,
     proc_return_types: &'a [Option<OxTy>],
     object_field_types: &'a HashMap<(ClassId, i32), OxTy>,
@@ -639,6 +643,7 @@ struct LowererInputs<'a> {
     com: &'a mut ComInterner,
     global_tys: &'a [OxTy],
     record_ids: &'a HashMap<String, RecordLayoutId>,
+    external_calls: &'a [calcvba_bundle::ExternalCallDescriptor],
 }
 
 impl<'a> Lowerer<'a> {
@@ -664,6 +669,7 @@ impl<'a> Lowerer<'a> {
             com: inputs.com,
             global_tys: inputs.global_tys,
             record_ids: inputs.record_ids,
+            external_calls: inputs.external_calls,
             long_ptr_width: inputs.long_ptr_width,
             proc_return_types: inputs.proc_return_types,
             object_field_types: inputs.object_field_types,
@@ -2171,9 +2177,8 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Lower a call as an expression: emit it with a fresh result temp and return that
-    /// temp. Direct project procedure calls can preserve the callee return type; dynamic
-    /// and external calls remain conservatively `Variant` until their typed metadata is
-    /// threaded through this expression surface.
+    /// temp. Project procedures and Declare UDT returns preserve their declared
+    /// types; other external and dynamic results use Variant carriers.
     fn lower_call(
         &mut self,
         callee: &coreir::CoreCallee,
@@ -2184,6 +2189,18 @@ impl<'a> Lowerer<'a> {
                 .proc_return_types
                 .get(proc.0)
                 .and_then(Clone::clone)
+                .unwrap_or(OxTy::Variant),
+            coreir::CoreCallee::Declare { descriptor_id, .. } => self
+                .external_calls
+                .iter()
+                .find(|d| d.descriptor_id == *descriptor_id)
+                .and_then(|d| d.return_record_name.as_ref())
+                .and_then(|name| {
+                    self.record_ids
+                        .iter()
+                        .find(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
+                })
+                .map(|(_, id)| OxTy::Record(*id))
                 .unwrap_or(OxTy::Variant),
             _ => OxTy::Variant,
         };

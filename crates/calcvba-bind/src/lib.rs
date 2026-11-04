@@ -291,6 +291,14 @@ fn bind_one(
             record_names(&field.ty, env, &mut names);
         }
     }
+    for symbol in env.symbols.symbols() {
+        if let SymbolImpl::Declare(d) = &symbol.imp
+            && let Some(name) = &d.return_record_type
+            && env.is_udt(name)
+        {
+            names.insert(name.clone());
+        }
+    }
     let record_types = names
         .into_iter()
         .filter_map(|name| {
@@ -345,6 +353,7 @@ fn bind_one(
         .filter_map(|name| env.object_interface(name))
         .collect();
 
+    let external_calls = build_external_calls(env, &record_types);
     Ok(CoreProgram {
         record_types,
         long_ptr_width: core_long_ptr_width(manifest.conditional_compilation_target),
@@ -353,7 +362,7 @@ fn bind_one(
         classes,
         object_interfaces,
         event_routes,
-        external_calls: build_external_calls(env),
+        external_calls,
         com_class_exports: build_com_class_exports(manifest),
         entry: ids.entry(),
         global_initializer,
@@ -704,7 +713,10 @@ fn source_events(
 /// HAL decides at run time whether to actually call native code (it requires
 /// `allow_dynamic_link` + a non-deterministic policy on a matching host profile),
 /// so sandboxed/deterministic runs stay safe without any binder-side policy logic.
-fn build_external_calls(env: &ResolutionEnvironment) -> Vec<ExternalCallDescriptor> {
+fn build_external_calls(
+    env: &ResolutionEnvironment,
+    records: &std::collections::BTreeMap<String, Vec<calcvba_bundle::ArrayElementType>>,
+) -> Vec<ExternalCallDescriptor> {
     let mut out: Vec<ExternalCallDescriptor> = Vec::new();
     for sym in env.symbols.symbols() {
         let SymbolImpl::Declare(d) = &sym.imp else {
@@ -735,6 +747,13 @@ fn build_external_calls(env: &ResolutionEnvironment) -> Vec<ExternalCallDescript
             param_types: d.param_types.clone(),
             param_by_ref: d.param_by_ref.clone(),
             return_type: d.return_type,
+            return_record_name: d.return_record_type.clone().filter(|name| env.is_udt(name)),
+            return_record_fields: d.return_record_type.as_ref().and_then(|name| {
+                records
+                    .iter()
+                    .find(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
+                    .map(|(_, fields)| fields.clone())
+            }),
         });
     }
     out.sort_by_key(|d| d.descriptor_id);

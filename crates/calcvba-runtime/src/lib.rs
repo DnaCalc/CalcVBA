@@ -79,3 +79,6 @@ pub use vba_record::{
     MAX_VBA_RECORD_LAYOUT_GRAPH_VISITS, MAX_VBA_RECORD_SIZE, VbaRecord, VbaRecordFieldHandle,
     VbaRecordFieldKind, VbaRecordFieldLayout, VbaRecordFieldSpec, VbaRecordLayout,
 };
+
+#[cfg(windows)]
+pub mod automation_record;

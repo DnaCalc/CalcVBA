@@ -14,6 +14,10 @@ pub struct Context {
     pub custom_error: u32,
     /// Owned error text retained past the activation that raised it.
     pub error_owner: *mut core::ffi::c_void,
+    /// Borrowed String() boundary cells of the active public wrapper.
+    pub string_array_cells: *const usize,
+    pub string_array_count: usize,
+    pub string_array_encoding: u32,
 }
 
 pub const WRONG_THREAD: i32 = 1444;

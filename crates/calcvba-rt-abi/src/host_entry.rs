@@ -263,6 +263,13 @@ pub struct ScalarLayout {
     pub optional_parameters: Vec<bool>,
     pub param_array: Option<usize>,
     pub array_slots: std::collections::HashMap<usize, u16>,
+    pub array_record_slots: std::collections::HashMap<
+        usize,
+        (
+            calcvba_oxir::RecordLayoutId,
+            std::sync::Arc<calcvba_runtime::vba_record::VbaRecordLayout>,
+        ),
+    >,
     pub record_slots: std::collections::HashMap<
         usize,
         std::sync::Arc<calcvba_runtime::vba_record::VbaRecordLayout>,
@@ -1009,6 +1016,29 @@ impl ScalarLayout {
             if literal_integer_temps.contains(&(func.locals.len() + index)) {
                 return Some(ScalarType::Long);
             }
+            if native_numbers && matches!(ty, OxTy::FixedStr(_)) {
+                let destination = OxPlace::Temp(calcvba_oxir::TempId(index));
+                let writers: Vec<_> = func
+                    .blocks
+                    .iter()
+                    .flat_map(|b| &b.instrs)
+                    .filter(|i| instruction_destination(i) == Some(destination))
+                    .collect();
+                if !writers.is_empty()
+                    && writers.iter().all(|i| {
+                        matches!(
+                            i,
+                            OxInst::RecordGet { .. }
+                                | OxInst::Coerce {
+                                    target: calcvba_oxir::OxCoerceTarget::FixedStr(_),
+                                    ..
+                                }
+                        )
+                    })
+                {
+                    return Some(ScalarType::String);
+                }
+            }
             if !owning && *ty == OxTy::Variant {
                 None
             } else {
@@ -1175,6 +1205,7 @@ impl ScalarLayout {
         let parameters = slots[..func.param_count].to_vec();
         let mut record_slots = std::collections::HashMap::new();
         let mut array_slots = std::collections::HashMap::new();
+        let mut array_record_slots = std::collections::HashMap::new();
         for (index, ty) in func
             .locals
             .iter()
@@ -1190,6 +1221,15 @@ impl ScalarLayout {
                 record_slots.insert(index, calcvba_bundle::vba_record_layout_for_fields(fields)?);
             }
             if let OxTy::Array(element, _) = ty {
+                if let OxTy::Record(id) = element.as_ref() {
+                    let fields = record_layouts
+                        .get(id.0)
+                        .ok_or("missing array record layout")?;
+                    array_record_slots.insert(
+                        index,
+                        (*id, calcvba_bundle::vba_record_layout_for_fields(fields)?),
+                    );
+                }
                 use calcvba_runtime::safe_array::*;
                 let vt = match element.as_ref() {
                     OxTy::Variant => VT_VARIANT_VALUE,
@@ -1367,6 +1407,7 @@ impl ScalarLayout {
                 .iter()
                 .position(|l| l.param.is_some_and(|p| p.variadic)),
             record_slots,
+            array_record_slots,
             array_slots,
             result: result
                 .map(|id| slots.get(id.0).copied().ok_or("invalid return slot"))
@@ -2006,12 +2047,13 @@ impl ScalarLayout {
             }
             OxInst::Coerce { dst, src, target }
                 if self.owning
-                    && matches!(
+                    && (matches!(
                         target,
                         OxCoerceTarget::Numeric(N::Long | N::Double | N::Boolean)
                             | OxCoerceTarget::Str
                             | OxCoerceTarget::ImplicitVariant
-                    ) =>
+                    ) || (self.native_numbers
+                        && matches!(target, OxCoerceTarget::FixedStr(_)))) =>
             {
                 self.slot(*dst)?;
                 self.operand_type(src)?;

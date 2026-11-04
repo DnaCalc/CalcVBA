@@ -205,6 +205,42 @@ pub unsafe extern "C" fn cvb_value_copy(dst: *mut u8, src: *const u8, to: u32, f
     // SAFETY: forwards the exact live-cell contract documented on this export.
     boundary(|| unsafe { copy(dst, src, to, from) })
 }
+
+/// # Safety
+/// src is the initialized private native Declare result. A nonnull destination
+/// is an initialized exact carrier. A record descriptor is supplied for kind 36.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cvb_declare_result(
+    dst: *mut u8,
+    src: *mut u8,
+    to: u32,
+    from: u32,
+    descriptor: *const u32,
+) -> i32 {
+    boundary(|| {
+        // SAFETY: consume the result owner on success and failure; it never
+        // escapes a generated stack cell after an error branch.
+        unsafe {
+            let result = if dst.is_null() {
+                Ok(())
+            } else if from == 36 {
+                status(calcvba_runtime::automation_record::copy_record(
+                    dst, src, descriptor,
+                ))
+            } else {
+                copy(dst, src, to, from)
+            };
+            let cleanup = if from == 36 {
+                status(calcvba_runtime::automation_record::clear_record(
+                    src, descriptor,
+                ))
+            } else {
+                clear(src, from)
+            };
+            result.and(cleanup)
+        }
+    })
+}
 /// # Safety
 /// cell owns one initialized native value of kind and is writable.
 #[unsafe(no_mangle)]
@@ -506,6 +542,10 @@ pub unsafe extern "C" fn cvb_record_copy(
         // SAFETY: clone every owner before replacing any destination bytes.
         unsafe {
             let (size, fields) = record_shape(descriptor);
+            if fields.is_empty() {
+                ptr::copy(src, dst, size);
+                return Ok(());
+            }
             let mut words = vec![0u64; size.div_ceil(8)];
             let staging = words.as_mut_ptr().cast::<u8>();
             ptr::copy_nonoverlapping(src, staging, size);
@@ -624,7 +664,7 @@ pub unsafe extern "C" fn cvb_array_set(
 }
 
 // Lengths are explicit so embedded NULs survive VBA's ANSI Declare conversion.
-unsafe fn ansi_to_bstr(src: *const u8, len: i32) -> Result<*mut u16, i32> {
+pub(super) unsafe fn ansi_to_bstr(src: *const u8, len: i32) -> Result<*mut u16, i32> {
     if len == 0 {
         return Ok(ptr::null_mut());
     }
@@ -713,13 +753,14 @@ pub unsafe extern "C" fn cvb_array_bound(
 /// # Safety
 /// cell owns a nullable SAFEARRAY*; pairs spans rank (lower,upper) Long pairs.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn cvb_array_redim(
+pub unsafe extern "C" fn cvb_array_redim_encoded(
     cell: *mut *mut SAFEARRAY,
     kind: u32,
     rank: u32,
     pairs: *const i32,
     preserve: u32,
     fixed: u32,
+    context: *const calcvba_rt_abi::native_export::Context,
 ) -> i32 {
     boundary(|| {
         if rank == 0 || rank > 60 || kind == 36 {
@@ -756,7 +797,40 @@ pub unsafe extern "C" fn cvb_array_redim(
                 }
                 return status(SafeArrayRedim(old, bounds.last().expect("nonzero rank")));
             }
-            let value = SafeArrayCreate(kind as u16, rank, bounds.as_ptr());
+            let ansi = if kind != 8 {
+                false
+            } else {
+                let mut actual = 8;
+                if !old.is_null() {
+                    status(SafeArrayGetVartype(old, &mut actual))?;
+                }
+                let boundary_ansi = !context.is_null()
+                    && (*context).string_array_encoding == 2
+                    && std::slice::from_raw_parts(
+                        (*context).string_array_cells,
+                        (*context).string_array_count,
+                    )
+                    .contains(&(cell as usize));
+                boundary_ansi || (!old.is_null() && actual == 0 && (*old).fFeatures & 0x100 != 0)
+            };
+            let value = if ansi {
+                // Public SAFEARRAY APIs permit an ANSI byte-BSTR descriptor:
+                // VT_EMPTY metadata plus FADF_BSTR and pointer-sized elements.
+                let mut value = ptr::null_mut();
+                status(SafeArrayAllocDescriptorEx(0, rank, &mut value))?;
+                (*value).cbElements = std::mem::size_of::<*mut u16>() as u32;
+                (*value).fFeatures |= 0x100;
+                for (i, bound) in bounds.iter().rev().enumerate() {
+                    (*value).rgsabound.as_mut_ptr().add(i).write(*bound);
+                }
+                if let Err(error) = status(SafeArrayAllocData(value)) {
+                    SafeArrayDestroy(value);
+                    return Err(error);
+                }
+                value
+            } else {
+                SafeArrayCreate(kind as u16, rank, bounds.as_ptr())
+            };
             if value.is_null() {
                 return Err(7);
             }
@@ -816,6 +890,295 @@ pub unsafe extern "C" fn cvb_object_is(a: *mut c_void, b: *mut c_void, out: *mut
             let a = identity(a)?;
             let b = identity(b)?;
             out.write(if a.0 == b.0 { -1 } else { 0 });
+        }
+        Ok(())
+    })
+}
+
+/// # Safety
+/// src borrows a carrier of kind; out owns an initialized BSTR cell.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cvb_fixed_string_coerce(
+    out: *mut u8,
+    src: *const u8,
+    kind: u32,
+    len: u32,
+) -> i32 {
+    boundary(|| {
+        let mut units = vec![32u16; len as usize];
+        // SAFETY: the allocated field and both carriers have the declared extents.
+        unsafe {
+            let status = cvb_fixed_string_set(units.as_mut_ptr().cast(), len, src, kind);
+            if status != 0 {
+                return Err(status);
+            }
+            let value = BStr::from_utf16_units(&units).map_err(|_| 7)?;
+            clear(out, 8)?;
+            out.cast::<*mut u16>().write(value.into_raw_bstr());
+        }
+        Ok(())
+    })
+}
+
+/// # Safety
+/// src spans len UTF-16 units, possibly unaligned; out is initialized for kind.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cvb_fixed_string_get(
+    out: *mut u8,
+    src: *const u8,
+    len: u32,
+    kind: u32,
+) -> i32 {
+    boundary(|| {
+        // SAFETY: the compiler supplies the checked fixed-field extent.
+        unsafe {
+            let units: Vec<_> = (0..len as usize)
+                .map(|i| src.add(i * 2).cast::<u16>().read_unaligned())
+                .collect();
+            let text = BStr::from_utf16_units(&units).map_err(|_| 7)?;
+            if kind == 8 {
+                clear(out, 8)?;
+                out.cast::<*mut u16>().write(text.into_raw_bstr());
+            } else {
+                let source = text.raw_bstr();
+                copy(out, (&source as *const *mut u16).cast(), kind, 8)?;
+            }
+        }
+        Ok(())
+    })
+}
+
+/// # Safety
+/// dst spans len writable UTF-16 units; src is a borrowed exact carrier of kind.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cvb_fixed_string_set(
+    dst: *mut u8,
+    len: u32,
+    src: *const u8,
+    kind: u32,
+) -> i32 {
+    boundary(|| {
+        // SAFETY: prepare the complete conversion before mutating any field.
+        unsafe {
+            let mut text: *mut u16 = ptr::null_mut();
+            copy((&mut text as *mut *mut u16).cast(), src, 8, kind)?;
+            let actual = SysStringLen(text) as usize;
+            for i in 0..len as usize {
+                let unit = if i < actual { text.add(i).read() } else { 32 };
+                dst.add(i * 2).cast::<u16>().write_unaligned(unit);
+            }
+            SysFreeString(text);
+        }
+        Ok(())
+    })
+}
+
+/// # Safety
+/// array/index spans and the initialized record output match the descriptor.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cvb_record_array_get(
+    array: *const *mut SAFEARRAY,
+    indices: *const i32,
+    rank: u32,
+    out: *mut u8,
+    descriptor: *const u32,
+) -> i32 {
+    boundary(|| {
+        // SAFETY: the owned descriptor remains live through this synchronous read.
+        unsafe {
+            let array = array.read();
+            if array.is_null() || SafeArrayGetDim(array) != rank {
+                return Err(9);
+            }
+            if SafeArrayGetElemsize(array) != descriptor.read() {
+                return Err(13);
+            }
+            let mut data = ptr::null_mut();
+            status(SafeArrayPtrOfIndex(array, indices, &mut data))?;
+            status(calcvba_runtime::automation_record::copy_record(
+                out,
+                data.cast(),
+                descriptor,
+            ))
+        }
+    })
+}
+/// # Safety
+/// array/index spans and the borrowed record source match the descriptor.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cvb_record_array_set(
+    array: *const *mut SAFEARRAY,
+    indices: *const i32,
+    rank: u32,
+    source: *const u8,
+    descriptor: *const u32,
+) -> i32 {
+    boundary(|| {
+        // SAFETY: retain a complete clone before replacing an element owner.
+        unsafe {
+            let array = array.read();
+            if array.is_null() || SafeArrayGetDim(array) != rank {
+                return Err(9);
+            }
+            if SafeArrayGetElemsize(array) != descriptor.read() {
+                return Err(13);
+            }
+            let mut data = ptr::null_mut();
+            status(SafeArrayPtrOfIndex(array, indices, &mut data))?;
+            status(calcvba_runtime::automation_record::copy_record(
+                data.cast(),
+                source,
+                descriptor,
+            ))
+        }
+    })
+}
+
+unsafe fn clear_raw_record_elements(
+    array: *mut SAFEARRAY,
+    descriptor: *const u32,
+    retained_last_upper: Option<i32>,
+) -> Result<(), i32> {
+    // SAFETY: the generated type descriptor matches every contiguous native
+    // element. VBA raw UDT arrays have no Automation owner metadata.
+    unsafe {
+        let rank = SafeArrayGetDim(array);
+        let mut bounds = Vec::new();
+        let mut count = 1usize;
+        for dimension in 1..=rank {
+            let (mut lower, mut upper) = (0, 0);
+            status(SafeArrayGetLBound(array, dimension, &mut lower))?;
+            status(SafeArrayGetUBound(array, dimension, &mut upper))?;
+            count = count
+                .checked_mul(
+                    usize::try_from(i64::from(upper) - i64::from(lower) + 1).map_err(|_| 9)?,
+                )
+                .ok_or(6)?;
+            bounds.push((lower, upper));
+        }
+        let mut indices: Vec<_> = bounds.iter().map(|b| b.0).collect();
+        for _ in 0..count {
+            if retained_last_upper.is_none_or(|upper| indices.last().is_some_and(|i| *i > upper)) {
+                let mut element = ptr::null_mut();
+                status(SafeArrayPtrOfIndex(array, indices.as_ptr(), &mut element))?;
+                record_clear(element.cast(), descriptor)?;
+            }
+            for dimension in (0..indices.len()).rev() {
+                if indices[dimension] < bounds[dimension].1 {
+                    indices[dimension] += 1;
+                    break;
+                }
+                indices[dimension] = bounds[dimension].0;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// # Safety
+/// cell owns a nullable record SAFEARRAY; pairs spans rank lower/upper pairs.
+/// descriptor includes native owners followed by the compiled record identity.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cvb_record_array_redim(
+    cell: *mut *mut SAFEARRAY,
+    rank: u32,
+    pairs: *const i32,
+    preserve: u32,
+    fixed: u32,
+    descriptor: *const u32,
+) -> i32 {
+    boundary(|| {
+        if rank == 0 || rank > 60 {
+            return Err(9);
+        }
+        // SAFETY: the compiler validates record layout and all bounds spans.
+        unsafe {
+            let pairs = std::slice::from_raw_parts(pairs, rank as usize * 2);
+            let bounds: Vec<_> = pairs
+                .chunks_exact(2)
+                .map(|pair| {
+                    let count = u32::try_from(i64::from(pair[1]) - i64::from(pair[0]) + 1)
+                        .map_err(|_| 9)?;
+                    Ok(windows_sys::Win32::System::Com::SAFEARRAYBOUND {
+                        cElements: count,
+                        lLbound: pair[0],
+                    })
+                })
+                .collect::<Result<_, i32>>()?;
+            let old = cell.read();
+            if !old.is_null() {
+                if (*old).fFeatures & 0x10 != 0 || (*old).cLocks != 0 {
+                    return Err(10);
+                }
+                if SafeArrayGetElemsize(old) != descriptor.read() {
+                    return Err(13);
+                }
+                if preserve != 0 {
+                    if SafeArrayGetDim(old) != rank {
+                        return Err(9);
+                    }
+                    for (i, pair) in pairs.chunks_exact(2).enumerate() {
+                        let mut lower = 0;
+                        let mut upper = 0;
+                        status(SafeArrayGetLBound(old, i as u32 + 1, &mut lower))?;
+                        status(SafeArrayGetUBound(old, i as u32 + 1, &mut upper))?;
+                        if lower != pair[0] || (i + 1 != rank as usize && upper != pair[1]) {
+                            return Err(9);
+                        }
+                    }
+                    if (*old).fFeatures & 0x20 == 0 {
+                        clear_raw_record_elements(old, descriptor, Some(pairs[pairs.len() - 1]))?;
+                    }
+                    return status(SafeArrayRedim(old, bounds.last().expect("nonzero rank")));
+                }
+            }
+            if !old.is_null() && (*old).fFeatures == 0 {
+                // Office VBA's typed UDT arrays have neither VARTYPE nor
+                // IRecordInfo. Return the same raw descriptor form; VBA owns
+                // field destruction after this call.
+                let mut value = ptr::null_mut();
+                status(SafeArrayAllocDescriptor(rank, &mut value))?;
+                (*value).cbElements = descriptor.read();
+                let native_bounds =
+                    std::slice::from_raw_parts_mut((*value).rgsabound.as_mut_ptr(), rank as usize);
+                for (to, from) in native_bounds.iter_mut().zip(bounds.iter().rev()) {
+                    *to = *from;
+                }
+                if let Err(error) = status(SafeArrayAllocData(value)) {
+                    SafeArrayDestroyDescriptor(value);
+                    return Err(error);
+                }
+                if let Err(error) = clear_raw_record_elements(old, descriptor, None)
+                    .and_then(|()| status(SafeArrayDestroy(old)))
+                {
+                    SafeArrayDestroy(value);
+                    return Err(error);
+                }
+                cell.write(value);
+                return Ok(());
+            }
+            // Preserve an incoming VBA/host record identity when replacing its
+            // array. New native arrays use registration-free owning metadata.
+            let info = if old.is_null() {
+                calcvba_runtime::automation_record::create_record_info(descriptor)
+            } else {
+                let mut info = ptr::null_mut();
+                status(SafeArrayGetRecordInfo(old, &mut info))?;
+                info
+            };
+            let value = SafeArrayCreateEx(36, rank, bounds.as_ptr(), info);
+            calcvba_runtime::automation_record::release_record_info(info);
+            if value.is_null() {
+                return Err(7);
+            }
+            if let Err(error) = clear(cell.cast(), 0x2024) {
+                SafeArrayDestroy(value);
+                return Err(error);
+            }
+            if fixed != 0 {
+                (*value).fFeatures |= 0x10;
+            }
+            cell.write(value);
         }
         Ok(())
     })

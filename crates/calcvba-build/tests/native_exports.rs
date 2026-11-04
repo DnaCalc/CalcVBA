@@ -86,14 +86,6 @@ fn native_build_refuses_private_optional_paramarray_and_unsupported_reachable_bo
             "Public Function Selected(ByVal x As Long) As Long\nSelected=Descendant(x)\nEnd Function\nPrivate Function Descendant(ByVal x As Long) As Long\nOn Error Resume Next\nDescendant=x\nEnd Function",
             "Descendant",
         ),
-        (
-            "Public Function Selected(ByRef values() As String) As Long\nReDim values(0 To 1)\nSelected=1&\nEnd Function",
-            "ReDim on a ByRef String() boundary",
-        ),
-        (
-            "Private Declare PtrSafe Sub Foreign Lib \"unused\" (ByRef value As Any)\nPublic Type Payload\ntext As String * 4\nEnd Type\nPublic Function Selected(ByVal x As Long) As Long\nDim value As Payload\nForeign value\nSelected=x\nEnd Function",
-            "UDT parameters require ANSI field marshalling",
-        ),
     ];
     for (index, (source, message)) in cases.iter().enumerate() {
         let project = temp.0.join(format!("case{index}.basproj"));
@@ -368,6 +360,38 @@ fn ordinary_vba_xll_conversions_use_native_pointers_and_declares() {
                 .filter_map(|v| v.as_bstr())
                 .any(|v| v.to_string() == "5.75|3.75|9|16385|1|0"),
             "XLOPER12 conversions: {values:?}"
+        );
+    }
+}
+
+#[test]
+fn native_variant_fixed_string_records_and_string_redim_roundtrip() {
+    let temp = Directory::new();
+    let output = build_native_library(&NativeLibraryBuildOptions {
+        project_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/native/records/NativeRecords.basproj"),
+        out_dir: temp.0.clone(),
+        template_path: None,
+    })
+    .unwrap();
+    let source = include_str!("support/native_record_client.bas")
+        .replace("__DLL__", output.dll_path.to_str().unwrap());
+    let expected = include_str!("support/native_record_expected.txt").trim();
+    for config in [
+        calcvba_engine::HostConfig::vm3(),
+        calcvba_engine::HostConfig::jit(),
+    ] {
+        let mut engine = calcvba_engine::Engine::new(config);
+        engine.set_host_policy(calcvba_hal::model::HostPolicy::native());
+        let values = engine
+            .execute_source_with_variant_snapshot_clean(&source)
+            .unwrap();
+        assert!(
+            values
+                .iter()
+                .filter_map(|v| v.as_bstr())
+                .any(|v| v.to_string() == expected),
+            "{values:?}"
         );
     }
 }

@@ -26,6 +26,8 @@ $definitions=$definitions.Replace($launchAnchor,$launchAnchor+@'
     [ordered]@{pid=$process.Id;start_utc=$process.StartTime.ToUniversalTime().ToString('o');path=$process.Path;launches=1} |
         ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Directory 'launch.json') -Encoding utf8NoBOM
 '@)
+# Monitor startup can be delayed by concurrent compiler/linker work.
+$definitions=$definitions.Replace('`$deadline = [DateTime]::UtcNow.AddSeconds(10)'.Replace('`',''), '`$deadline = [DateTime]::UtcNow.AddSeconds(60)'.Replace('`',''))
 . ([scriptblock]::Create($definitions))
 $SafeMode=$true
 $OwnershipFile=Join-Path $Directory 'owned-excel.jsonl'
@@ -42,6 +44,7 @@ $script:guardianGeneration=0
 
 function Start-OfficeGuardian {
     $script:guardianGeneration++
+    if (Test-Path -LiteralPath $stopFile) { Remove-Item -LiteralPath $stopFile }
     $script:eventsFile=Join-Path $Directory ("guardian-events-$script:guardianGeneration.jsonl")
     if (Test-Path -LiteralPath $readyFile) { Remove-Item -LiteralPath $readyFile }
     $arguments=@('-NoLogo','-NoProfile','-NonInteractive','-STA','-File',(Join-Path $PSScriptRoot 'excel-vba-oracle-guardian.ps1'),
@@ -96,21 +99,13 @@ try {
     $identity=Add-OwnershipRecord -Process $owned -BeforePids $before -CaseId 'office-project'
     $identity | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $identityFile -Encoding utf8NoBOM
     $excel.Visible=$true; $excel.DisplayAlerts=$false; $excel.EnableEvents=$false
-    Start-OfficeGuardian
-    [void](Set-OfficePhase run 'session-ready')
+    # Start a PID-scoped monitor for each job; idle Excel needs no polling.
     [ordered]@{run_id=$RunId;pid=$owned.Id;hwnd=[string]$excel.Hwnd;launches=1;automation_security=[int]$excel.AutomationSecurity} |
         ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Directory 'ready.json') -Encoding utf8NoBOM
     [void][IO.Directory]::CreateDirectory((Join-Path $Directory 'jobs'))
     [void][IO.Directory]::CreateDirectory((Join-Path $Directory 'results'))
     $processed=[Collections.Generic.HashSet[string]]::new()
     while (-not (Test-Path -LiteralPath (Join-Path $Directory 'stop'))) {
-        # Each compile validates the complete current monitor log. Renew the
-        # owned monitor between jobs before heartbeat volume makes that slow.
-        if (-not $guardian.HasExited -and (Get-Item -LiteralPath $eventsFile).Length -gt 262144) {
-            Stop-Process -InputObject $guardian
-            [void]$guardian.WaitForExit(5000)
-        }
-        if ($guardian.HasExited) { Start-OfficeGuardian; [void](Set-OfficePhase run 'session-renewed') }
         foreach ($jobFile in @(Get-ChildItem -LiteralPath (Join-Path $Directory 'jobs') -Filter '*.json' | Sort-Object Name)) {
             if (-not $processed.Add($jobFile.Name)) { continue }
             $job=Get-Content -Raw -LiteralPath $jobFile.FullName | ConvertFrom-Json
@@ -118,6 +113,8 @@ try {
             $record=[ordered]@{id=[string]$job.id;compile_status='not-run';run_status='not-run';value=$null;error=$null;pid=$owned.Id;launches=1}
             $book=$null; $component=$null
             try {
+                Start-OfficeGuardian
+                [void](Set-OfficePhase run ('job-ready-'+$job.id))
                 $book=$excel.Workbooks.Add()
                 $component=$book.VBProject.VBComponents.Add(1)
                 $component.Name='OracleSelfTest'
@@ -136,6 +133,10 @@ try {
                 Release-ComObject $component
                 if ($book) { $book.Close($false); Release-ComObject $book }
                 $record | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $Directory ('results/'+$job.id+'.json')) -Encoding utf8NoBOM
+                if ($guardian -and -not $guardian.HasExited) {
+                    New-Item -ItemType File -Path $stopFile -Force | Out-Null
+                    if (-not $guardian.WaitForExit(5000)) { Stop-Process -InputObject $guardian; [void]$guardian.WaitForExit(5000) }
+                }
             }
         }
         Start-Sleep -Milliseconds 200

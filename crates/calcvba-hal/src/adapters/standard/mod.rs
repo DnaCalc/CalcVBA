@@ -2928,6 +2928,7 @@ mod tests {
             param_types: &[],
             param_by_ref: &[],
             return_type: None,
+            return_record_layout: None,
         };
         let err = host
             .bind_descriptor(&descriptor)
@@ -2963,6 +2964,7 @@ mod tests {
             param_types: &[],
             param_by_ref: &[],
             return_type: Some(std::borrow::Cow::Borrowed("Long")),
+            return_record_layout: None,
         };
         let err = host
             .invoke_descriptor_variants(&descriptor, &[])
@@ -2993,6 +2995,7 @@ mod tests {
             param_types: &[],
             param_by_ref: &[],
             return_type: None,
+            return_record_layout: None,
         };
         let err = host
             .bind_descriptor(&descriptor)
@@ -3024,6 +3027,7 @@ mod tests {
             param_types: &[],
             param_by_ref: &[],
             return_type: None,
+            return_record_layout: None,
         };
         let err = host
             .bind_descriptor(&descriptor)
@@ -3055,6 +3059,7 @@ mod tests {
             param_types: &[],
             param_by_ref: &[],
             return_type: None,
+            return_record_layout: None,
         };
         let err = host
             .bind_descriptor(&descriptor)
@@ -3103,6 +3108,7 @@ mod tests {
             param_types: &[],
             param_by_ref: &[],
             return_type: None,
+            return_record_layout: None,
         };
 
         let (result, writebacks) = host
@@ -3136,6 +3142,7 @@ mod tests {
             param_types: &[],
             param_by_ref: &[],
             return_type: None,
+            return_record_layout: None,
         };
         let binding = host
             .bind_descriptor(&descriptor)

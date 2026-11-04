@@ -1,0 +1,75 @@
+Attribute VB_Name = "Records"
+Option Explicit
+Private Declare PtrSafe Function ReallocateAnsi Lib "oleaut32" Alias "SysReAllocStringLen" (ByRef text As String, ByVal source As LongPtr, ByVal units As Long) As Long
+Private Declare PtrSafe Function AllocateAnsi Lib "oleaut32" Alias "SysAllocStringByteLen" (ByVal text As String, ByVal bytes As Long) As String
+Public Type RichRecord
+    tag As Byte
+    value As Variant
+    tail As Long
+    text As String * 4
+End Type
+
+Public Function ChangeRecord(ByRef record As RichRecord) As String
+    record.value = record.value + 5&
+    record.tail = record.tail + 1&
+    record.text = "abcdef"
+    ChangeRecord = CStr(record.value) & ":" & record.text & ":" & CStr(record.tail)
+End Function
+
+Public Function EchoRecord(ByRef record As RichRecord) As RichRecord
+    EchoRecord = record
+End Function
+
+Public Function ValueSuite() As String
+    Dim record As RichRecord, copied As RichRecord, description As String
+    record.tag = 7
+    record.value = "7"
+    record.tail = 9&
+    record.text = "q"
+    description = ChangeRecord(record)
+    copied = EchoRecord(record)
+    record.value = "changed"
+    ValueSuite = description & ":" & CStr(copied.value) & ":" & copied.text & ":" & CStr(copied.tail)
+End Function
+
+Public Function GrowStrings(ByRef values() As String) As Long
+    Dim last As Long, first As Long
+    first = LBound(values): last = UBound(values) + 1&
+    ReDim Preserve values(first To last)
+    values(last) = "new"
+    GrowStrings = Len(values(first)) + Len(values(first + 1&)) + Len(values(last))
+End Function
+
+Public Sub AllocateStrings(ByRef values() As String)
+    ReDim values(-2 To -1)
+    values(-2) = "left"
+    values(-1) = "right"
+End Sub
+
+Public Sub Main()
+End Sub
+
+Public Function ClearAnsi(ByRef text As String) As Long
+    ClearAnsi = ReallocateAnsi(text, 0^, 0&)
+End Function
+Public Function AnsiText() As String
+    AnsiText = AllocateAnsi("reply", 5&)
+End Function
+
+Public Sub AllocateRecords(ByRef values() As RichRecord)
+    ReDim values(-2 To -1)
+    values(-2).value = "7"
+    values(-2).text = "q"
+    values(-2).tail = 9&
+End Sub
+Public Function RecordArrays(ByRef values() As RichRecord) As String
+    ReDim Preserve values(-2 To 0)
+    values(0) = values(-2)
+    values(-2).value = "changed"
+    RecordArrays = CStr(values(0).value) & ":" & values(0).text & ":" & CStr(LBound(values)) & ":" & CStr(UBound(values))
+End Function
+Public Function ArraySuite() As String
+    Dim values() As RichRecord
+    AllocateRecords values
+    ArraySuite = RecordArrays(values)
+End Function

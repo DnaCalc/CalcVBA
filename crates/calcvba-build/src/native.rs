@@ -159,15 +159,28 @@ pub fn build_native_library(
         );
     }
     let mut foreign_states = std::collections::HashMap::new();
-    for descriptor in &program.external_calls {
-        let id = module
-            .declare_anonymous_data(true, false)
-            .map_err(native_error)?;
-        let mut data = cranelift_module::DataDescription::new();
-        data.define(vec![0; 16].into_boxed_slice());
-        data.set_align(8);
-        module.define_data(id, &data).map_err(native_error)?;
-        foreign_states.insert(descriptor.descriptor_id, id);
+    for (procedure, function) in program.funcs.iter().enumerate() {
+        for block in &function.blocks {
+            for (index, instruction) in block.instrs.iter().enumerate() {
+                if !matches!(
+                    instruction,
+                    calcvba_oxir::OxInst::CallNative {
+                        callee: calcvba_oxir::OxNativeCallee::Declare { .. },
+                        ..
+                    }
+                ) {
+                    continue;
+                }
+                let id = module
+                    .declare_anonymous_data(true, false)
+                    .map_err(native_error)?;
+                let mut data = cranelift_module::DataDescription::new();
+                data.define(vec![0; 16].into_boxed_slice());
+                data.set_align(8);
+                module.define_data(id, &data).map_err(native_error)?;
+                foreign_states.insert((procedure, block.id.0, index), id);
+            }
+        }
     }
     let plans = calcvba_jit::native::compile_native_scalars(
         &mut module,

@@ -902,7 +902,7 @@ impl Variant {
             .expect("Array Variant SAFEARRAY clone should succeed")
     }
 
-    pub(crate) fn try_as_safearray(&self) -> Result<Option<SafeArray>, String> {
+    pub fn try_as_safearray(&self) -> Result<Option<SafeArray>, String> {
         if self.vtype() != VarType::ArrayVariant {
             return Ok(None);
         }

@@ -4684,7 +4684,17 @@ pub(crate) unsafe extern "C" fn rt_jit_declare_call_to_slot(
             .return_type
             .as_ref()
             .map(|ty| std::borrow::Cow::Owned(format!("{ty:?}")));
+        let return_record_layout = match descriptor
+            .return_record_fields
+            .as_ref()
+            .map(|fields| calcvba_bundle::vba_record_layout_for_fields(fields))
+            .transpose()
+        {
+            Ok(layout) => layout,
+            Err(_) => return ST_FAULT,
+        };
         let view = DynLinkDescriptorView {
+            return_record_layout,
             descriptor_id: descriptor.descriptor_id,
             declared_name: &descriptor.declared_name,
             library: &descriptor.library,

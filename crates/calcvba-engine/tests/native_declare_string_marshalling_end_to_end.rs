@@ -450,20 +450,22 @@ End Sub
     }
 
     #[test]
-    fn get_pgmptr_byref_string_reads_replaced_pointer_on_vm3_and_jit() {
-        // `ByRef … As String` passes an `LPSTR*` cell. `_get_pgmptr` REPLACES the
-        // pointer with a CRT-owned copy of the program path, so the read-back must
-        // follow the replacement pointer (NUL-terminated ANSI) rather than the
-        // original buffer — and must not free the CRT's memory.
+    fn get_pgmptr_uses_an_explicit_borrowed_pointer_on_vm3_and_jit() {
+        // _get_pgmptr returns CRT-owned LPSTR storage, so the VBA declaration
+        // must use LongPtr. ByRef String requires an owning ANSI BSTR instead.
+        // Use the CRT initialized by this Rust/MSVC process; legacy msvcrt can
+        // have an uninitialized program-path global when loaded as another DLL.
         let source = r#"
-Private Declare PtrSafe Function GetProgramPath Lib "msvcrt" Alias "_get_pgmptr" (ByRef path As String) As Long
-
+Private Declare PtrSafe Function GetProgramPath Lib "ucrtbase" Alias "_get_pgmptr" (ByRef pointer As LongPtr) As Long
+Private Declare PtrSafe Function DecodePath Lib "kernel32" Alias "MultiByteToWideChar" (ByVal codepage As Long, ByVal flags As Long, ByVal source As LongPtr, ByVal bytes As Long, ByVal destination As LongPtr, ByVal units As Long) As Long
 Sub Main()
-    Dim path As String
+    Dim path As String, pointer As LongPtr, written As Long
     Dim status As Long
     Dim exeAt As Long
-
-    status = GetProgramPath(path)
+    status = GetProgramPath(pointer)
+    path = String$(1024, ChrW$(0))
+    written = DecodePath(0&, 0&, pointer, -1&, StrPtr(path), 1024&)
+    path = Left$(path, written - 1&)
     exeAt = InStr(1, LCase(path), ".exe")
 End Sub
 "#;
@@ -474,7 +476,32 @@ End Sub
                 snapshot
                     .iter()
                     .any(|value| value.as_i32().is_some_and(|at| at > 0)),
-                "_get_pgmptr should populate the ByRef String with the .exe path for jit_requested={jit_requested}; snapshot={snapshot:?}"
+                "_get_pgmptr should return a borrowed pointer to the .exe path for jit_requested={jit_requested}; snapshot={snapshot:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn byref_string_owns_an_ansi_bstr_that_oleaut_can_replace() {
+        let source = r#"
+Private Declare PtrSafe Function ClearString Lib "oleaut32" Alias "SysReAllocStringLen" (ByRef text As String, ByVal source As LongPtr, ByVal units As Long) As Long
+Sub Main()
+    Dim text As String, status As Long, length As Long
+    text = "initial"
+    status = ClearString(text, 0^, 0&)
+    length = Len(text)
+End Sub
+"#;
+        for jit_requested in [false, true] {
+            let snapshot = run_windows_host_backed(source, jit_requested);
+            assert!(contains_string(&snapshot, ""), "{snapshot:?}");
+            assert!(
+                snapshot.iter().any(|v| v.as_i32() == Some(1)),
+                "{snapshot:?}"
+            );
+            assert!(
+                snapshot.iter().any(|v| v.as_i32() == Some(0)),
+                "{snapshot:?}"
             );
         }
     }

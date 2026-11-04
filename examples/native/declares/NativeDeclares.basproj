@@ -1,0 +1,1 @@
+<Project><PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>NativeDeclares</ProjectName></PropertyGroup><ItemGroup><Module Include="Declares.bas"/><NativeExport Include="ForeignSuite"><Module>Declares</Module><Procedure>ForeignSuite</Procedure></NativeExport></ItemGroup></Project>

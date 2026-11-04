@@ -148,7 +148,16 @@ impl<'a> ProcLower<'a> {
                         },
                         args,
                     },
-                    VarTypeRef::Variant,
+                    binding
+                        .symbol
+                        .and_then(|id| self.g.env.symbols.symbol(id))
+                        .and_then(|s| match &s.imp {
+                            SymbolImpl::Declare(d) => d.return_record_type.clone(),
+                            _ => None,
+                        })
+                        .filter(|name| self.g.env.is_udt(name))
+                        .map(VarTypeRef::Udt)
+                        .unwrap_or(VarTypeRef::Variant),
                 ))
             }
             DispatchRoute::SpecialForm(SpecialForm::Array) => {

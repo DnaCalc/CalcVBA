@@ -32,4 +32,5 @@ pub struct DeclareSymbol {
     pub param_optional: Vec<bool>,
     pub param_param_array: bool,
     pub return_type: Option<DeclareParamType>,
+    pub return_record_type: Option<String>,
 }

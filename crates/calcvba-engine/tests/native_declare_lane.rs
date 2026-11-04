@@ -26,15 +26,6 @@ fn run(source: &str) -> Vec<Variant> {
         .expect("native declare probe should execute on the VM backend")
 }
 
-fn run_err(source: &str) -> String {
-    let mut engine = Engine::new(HostConfig::vm3());
-    engine.set_host_policy(HostPolicy::native());
-    match engine.execute_source_with_variant_snapshot_clean(source) {
-        Ok(snapshot) => panic!("native declare probe should have failed, got {snapshot:?}"),
-        Err(err) => format!("{err:?}"),
-    }
-}
-
 fn any_double_near(snapshot: &[Variant], expected: f64) -> bool {
     snapshot
         .iter()
@@ -399,22 +390,46 @@ fn byref_as_any_copies_general_nested_udt_records() {
 }
 
 #[test]
-fn byref_as_any_declines_udt_records_with_owning_fields() {
-    let error = run_err(
-        "Private Type Packet\n\
-         Text As String\n\
-         End Type\n\
-         Private Declare PtrSafe Sub RtlMoveMemoryAny Lib \"kernel32\" Alias \"RtlMoveMemory\" (ByRef Destination As Any, ByVal Source As LongPtr, ByVal Length As LongPtr)\n\
-         Sub Main()\n\
-         Dim dst As Packet\n\
-         RtlMoveMemoryAny dst, 0, 0\n\
-         End Sub",
-    );
-    assert!(
-        error.contains("native ByRef As Any record marshaling is not supported")
-            && error.contains("String fields"),
-        "expected deterministic ByRef As Any decline for String-containing UDT, got {error}"
-    );
+fn byref_as_any_preserves_and_replaces_udt_string_owners() {
+    let source = r#"
+Private Type Packet
+    Text As String
+End Type
+Private Declare PtrSafe Sub MoveNone Lib "kernel32" Alias "RtlMoveMemory" (ByRef Destination As Any, ByVal Source As LongPtr, ByVal Length As LongPtr)
+Private Declare PtrSafe Function ClearText Lib "oleaut32" Alias "SysReAllocStringLen" (ByRef Destination As Any, ByVal Source As LongPtr, ByVal Length As Long) As Long
+Public Preserved As String, Cleared As String, Status As Long
+Sub Main()
+    Dim packet As Packet
+    packet.Text = "initial"
+    MoveNone packet, 0^, 0^
+    Preserved = packet.Text
+    Status = ClearText(packet, 0^, 0&)
+    Cleared = packet.Text
+End Sub
+"#;
+    for config in [HostConfig::vm3(), HostConfig::jit()] {
+        let mut engine = Engine::new(config);
+        engine.set_host_policy(HostPolicy::native());
+        let snapshot = engine
+            .execute_source_with_variant_snapshot_clean(source)
+            .unwrap();
+        assert!(
+            snapshot
+                .iter()
+                .any(|value| value.as_bstr().is_some_and(|s| s.to_string() == "initial")),
+            "{snapshot:?}"
+        );
+        assert!(
+            snapshot
+                .iter()
+                .any(|value| value.as_bstr().is_some_and(|s| s.to_string().is_empty())),
+            "{snapshot:?}"
+        );
+        assert!(
+            snapshot.iter().any(|value| value.as_i32() == Some(1)),
+            "{snapshot:?}"
+        );
+    }
 }
 
 #[test]

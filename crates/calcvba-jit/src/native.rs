@@ -20,6 +20,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const MAX_NATIVE_CALL_DEPTH: i32 = 128;
 const DEPTH_OFFSET: i32 = 8;
 
+pub type NativeCallSite = (usize, usize, usize);
+
 fn conversion_target(id: NativeImplId) -> Option<ScalarType> {
     match id {
         NativeImplId::CByte => Some(ScalarType::Byte),
@@ -61,7 +63,11 @@ impl NativeScalar {
         if values::record_descriptor(layout).ok()?.len() != 8 {
             return None;
         }
-        match layout.size() {
+        match layout
+            .automation_shape()
+            .expect("admitted Automation layout")
+            .0
+        {
             1 => Some(types::I8),
             2 => Some(types::I16),
             4 => Some(types::I32),
@@ -71,7 +77,10 @@ impl NativeScalar {
     }
     fn result_size(&self) -> usize {
         if self.layout.result == ScalarType::Record {
-            self.layout.record_slots[&self.layout.return_slot].size()
+            self.layout.record_slots[&self.layout.return_slot]
+                .automation_shape()
+                .expect("admitted Automation layout")
+                .0
         } else if self.layout.result == ScalarType::Variant {
             24
         } else {
@@ -112,7 +121,7 @@ pub fn compile_native_scalars(
     library_helpers: &HashMap<NativeImplId, ClifFuncId>,
     long_from_f64: ClifFuncId,
     value_helpers: &HashMap<&'static str, ClifFuncId>,
-    foreign_states: &HashMap<u32, DataId>,
+    foreign_states: &HashMap<NativeCallSite, DataId>,
 ) -> Result<Vec<NativeScalar>, JitError> {
     calcvba_oxir::verify_program(program)
         .map_err(|e| JitError::unsupported(format!("invalid native OxIR: {e:?}")))?;
@@ -169,12 +178,6 @@ pub fn compile_native_scalars(
             return Err(problem(
                 func,
                 "ByVal UDT parameter requires native aggregate argument lowering",
-            ));
-        }
-        if layout.array_slots.values().any(|kind| *kind == 36) {
-            return Err(problem(
-                func,
-                "SAFEARRAY of UDT requires native record metadata",
             ));
         }
         for block in &func.blocks {
@@ -276,18 +279,7 @@ pub fn compile_native_scalars(
                     }
                     OxInst::ArraySet { array, .. } | OxInst::ArrayRedim { dst: array, .. } => {
                         let slot = layout.slot(*array).map_err(|e| problem(func, e))?;
-                        if matches!(inst, OxInst::ArrayRedim { .. })
-                            && layout.by_ref_parameters.get(slot) == Some(&true)
-                            && layout.array_slots.get(&slot) == Some(&8)
-                        {
-                            return Err(problem(
-                                func,
-                                "ReDim on a ByRef String() boundary requires an explicit ANSI/Unicode array encoding",
-                            ));
-                        }
-                        if layout.slots[layout.slot(*array).map_err(|e| problem(func, e))?]
-                            != ScalarType::Array
-                        {
+                        if layout.slots[slot] != ScalarType::Array {
                             return Err(problem(func, format!("Variant array receiver {inst:?}")));
                         }
                     }
@@ -378,7 +370,11 @@ pub fn compile_native_scalars(
             let size = if *ty == ScalarType::Variant {
                 24
             } else if let Some(record) = layout.record_slots.get(&i) {
-                record.size().next_multiple_of(8)
+                record
+                    .automation_shape()
+                    .expect("admitted Automation layout")
+                    .0
+                    .next_multiple_of(8)
             } else {
                 8
             };
@@ -502,7 +498,6 @@ pub fn compile_native_scalars(
                     call_conv: module.target_config().default_call_conv,
                 },
                 functions: value_helpers,
-                foreign_states,
                 program,
             };
             let lower = &values.lower;
@@ -542,8 +537,11 @@ pub fn compile_native_scalars(
             b.ins().jump(blocks[&func.entry], &[]);
             for block in &func.blocks {
                 b.switch_to_block(blocks[&block.id]);
-                for inst in &block.instrs {
-                    if values.instruction(module, &mut b, inst) {
+                for (instruction_index, inst) in block.instrs.iter().enumerate() {
+                    let foreign_state = foreign_states
+                        .get(&(plan.procedure.0, block.id.0, instruction_index))
+                        .copied();
+                    if values.instruction(module, &mut b, inst, foreign_state) {
                         continue;
                     }
                     if let OxInst::CallExtern { dst, import, args } = inst
@@ -715,7 +713,12 @@ pub fn compile_native_scalars(
                                         None
                                     };
                                     let size = if let Some(record) = record {
-                                        record.size().next_multiple_of(8) as u32
+                                        record
+                                            .automation_shape()
+                                            .expect("admitted Automation layout")
+                                            .0
+                                            .next_multiple_of(8)
+                                            as u32
                                     } else if *ty == ScalarType::Variant {
                                         24
                                     } else {
@@ -1046,7 +1049,9 @@ fn global_offsets(program: &OxProgram) -> Vec<usize> {
         } else if let OxTy::Record(id) = global.ty {
             vba_record_layout_for_fields(&program.record_layouts[id.0])
                 .expect("admitted global record")
-                .size()
+                .automation_shape()
+                .expect("admitted Automation layout")
+                .0
                 .next_multiple_of(8)
         } else {
             8
@@ -1198,6 +1203,65 @@ pub fn compile_native_wrapper(
         b.switch_to_block(accepted);
         let state = module.declare_data_in_func(runtime.context, b.func);
         let state = b.ins().global_value(types::I64, state);
+        let old_array_cells = b.ins().load(
+            types::I64,
+            ir::MemFlagsData::new(),
+            state,
+            std::mem::offset_of!(NativeContext, string_array_cells) as i32,
+        );
+        let old_array_count = b.ins().load(
+            types::I64,
+            ir::MemFlagsData::new(),
+            state,
+            std::mem::offset_of!(NativeContext, string_array_count) as i32,
+        );
+        let old_array_encoding = b.ins().load(
+            types::I32,
+            ir::MemFlagsData::new(),
+            state,
+            std::mem::offset_of!(NativeContext, string_array_encoding) as i32,
+        );
+        let string_arrays: Vec<_> = body
+            .layout
+            .parameters
+            .iter()
+            .enumerate()
+            .filter(|(i, ty)| {
+                **ty == ScalarType::Array && body.layout.array_slots.get(i) == Some(&8)
+            })
+            .map(|(i, _)| params[i])
+            .collect();
+        let array_cells = b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            (string_arrays.len().max(1) * 8) as u32,
+            3,
+        ));
+        for (i, value) in string_arrays.iter().enumerate() {
+            b.ins().stack_store(*value, array_cells, (i * 8) as i32);
+        }
+        let array_cells = b.ins().stack_addr(types::I64, array_cells, 0);
+        let array_count = b.ins().iconst(types::I64, string_arrays.len() as i64);
+        let array_encoding = b
+            .ins()
+            .iconst(types::I32, i64::from(options.string_encoding));
+        b.ins().store(
+            ir::MemFlagsData::new(),
+            array_cells,
+            state,
+            std::mem::offset_of!(NativeContext, string_array_cells) as i32,
+        );
+        b.ins().store(
+            ir::MemFlagsData::new(),
+            array_count,
+            state,
+            std::mem::offset_of!(NativeContext, string_array_count) as i32,
+        );
+        b.ins().store(
+            ir::MemFlagsData::new(),
+            array_encoding,
+            state,
+            std::mem::offset_of!(NativeContext, string_array_encoding) as i32,
+        );
         let empty_error = b.ins().iconst(types::I32, 0);
         b.ins().store(
             ir::MemFlagsData::new(),
@@ -1330,6 +1394,25 @@ pub fn compile_native_wrapper(
         let status = b.inst_results(call)[0];
         b.ins().jump(finish, &[status.into()]);
         b.switch_to_block(finish);
+        b.ins().store(
+            ir::MemFlagsData::new(),
+            old_array_cells,
+            state,
+            std::mem::offset_of!(NativeContext, string_array_cells) as i32,
+        );
+        b.ins().store(
+            ir::MemFlagsData::new(),
+            old_array_count,
+            state,
+            std::mem::offset_of!(NativeContext, string_array_count) as i32,
+        );
+        b.ins().store(
+            ir::MemFlagsData::new(),
+            old_array_encoding,
+            state,
+            std::mem::offset_of!(NativeContext, string_array_encoding) as i32,
+        );
+
         let status = b.block_params(finish)[0];
         for (i, (ty, by_ref)) in body
             .layout

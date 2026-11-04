@@ -884,6 +884,95 @@ unsafe fn invoke_c_abi_raw(proc_addr: usize, args: &[i64], _return_type: FfiRetu
 // Tests
 // ══════════════════════════════════════════════════════════════════════
 
+/// A fixed native signature prepared once by an owning runtime/import entry.
+/// Invocation borrows exact argument cells and performs no CIF construction.
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+pub struct PreparedNativeCall {
+    cif: LibffiCif,
+    address: usize,
+    arguments: usize,
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+impl PreparedNativeCall {
+    pub fn aggregate_return(address: usize, arguments: &[FfiReturnType], bytes: usize) -> Self {
+        // Win64 returns eligible 1/2/4/8-byte POD aggregates in RAX; larger
+        // aggregates use the hidden result pointer prepared by libffi.
+        Self {
+            cif: LibffiCif::new(
+                arguments.iter().copied().map(x64_return_type),
+                LibffiType::structure((0..bytes).map(|_| LibffiType::u8())),
+            ),
+            address,
+            arguments: arguments.len(),
+        }
+    }
+    pub fn aggregate_from_args(address: usize, arguments: &[FfiArg], bytes: usize) -> Self {
+        Self {
+            cif: LibffiCif::new(
+                arguments
+                    .iter()
+                    .map(PreparedX64Arg::from_ffi_arg)
+                    .map(|arg| arg.ffi_type()),
+                LibffiType::structure((0..bytes).map(|_| LibffiType::u8())),
+            ),
+            address,
+            arguments: arguments.len(),
+        }
+    }
+    /// # Safety
+    /// The prepared signature exactly matches arguments and native result storage.
+    pub unsafe fn invoke_arguments(&self, arguments: &[FfiArg], result: *mut c_void) -> u32 {
+        let prepared: Vec<_> = arguments.iter().map(PreparedX64Arg::from_ffi_arg).collect();
+        let mut cells: Vec<_> = prepared
+            .iter()
+            .map(|arg| match arg {
+                PreparedX64Arg::Long(v) => (v as *const i32).cast_mut().cast(),
+                PreparedX64Arg::Integer(v) | PreparedX64Arg::Boolean(v) => {
+                    (v as *const i16).cast_mut().cast()
+                }
+                PreparedX64Arg::Byte(v) => (v as *const u8).cast_mut().cast(),
+                PreparedX64Arg::Double(v) => (v as *const f64).cast_mut().cast(),
+                PreparedX64Arg::Single(v) => (v as *const f32).cast_mut().cast(),
+                PreparedX64Arg::LongLong(v) => (v as *const i64).cast_mut().cast(),
+                PreparedX64Arg::Pointer(v) => (v as *const *mut c_void).cast_mut().cast(),
+            })
+            .collect();
+        // SAFETY: the exact typed cells and their buffers remain live through this call.
+        unsafe { self.invoke_cells(&mut cells, result) }
+    }
+    /// The caller retains the loaded library for the lifetime of this plan.
+    pub fn new(address: usize, arguments: &[FfiReturnType], result: FfiReturnType) -> Self {
+        Self {
+            cif: LibffiCif::new(
+                arguments.iter().copied().map(x64_return_type),
+                x64_return_type(result),
+            ),
+            address,
+            arguments: arguments.len(),
+        }
+    }
+
+    /// # Safety
+    /// The loaded symbol's exact ABI must match the prepared signature. Each
+    /// cell contains its declared native value, including a pointer value for
+    /// pointer arguments. The result points to writable, aligned native storage.
+    /// All pointees and the loaded library remain live throughout the call.
+    pub unsafe fn invoke_cells(&self, arguments: &mut [*mut c_void], result: *mut c_void) -> u32 {
+        assert_eq!(arguments.len(), self.arguments);
+        // SAFETY: the caller supplies the exact retained signature and cells.
+        unsafe {
+            libffi::low::call_return_into(
+                self.cif.as_raw_ptr(),
+                LibffiCodePtr::from_ptr(self.address as *const c_void),
+                arguments.as_mut_ptr(),
+                result,
+            );
+            GetLastError()
+        }
+    }
+}
+
 #[cfg(test)]
 #[cfg(target_os = "windows")]
 mod tests {

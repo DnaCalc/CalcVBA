@@ -32,27 +32,38 @@ ValueSuite also executes the same VBA bodies directly through VM3/JIT.
 The numeric-width fixture also checks casts, narrow storage, values above Double's
 exact integer range, and overflow through all three clients.
 Remaining refusals include Optional/ParamArray signatures,
-project classes, unsupported native Declare signatures, Variant array receivers,
-SAFEARRAYs of UDT, UDT Variant fields and fixed-string/array field access. Diagnostics identify the construct and procedure's
-source declaration. ReDim on ByRef String() parameters is refused: an owned
-Excel probe showed that returning a replacement Unicode SAFEARRAY makes VBA
-Declare expand its UTF-16 bytes as ANSI ("abc" becomes six code units).
-Local String() ReDim and element updates through an existing boundary array work.
+project classes, unsupported native Declare signatures, Variant array receivers
+and fixed-array UDT field access.
+Diagnostics identify the construct and procedure's source declaration. Native UDTs
+include owning Variant fields and fixed strings, with native Automation layout
+separate from the runtime's canonical record layout. Record SAFEARRAYs carry
+registration-free IRecordInfo owners; ReDim Preserve retains their element owners.
+Office VBA's raw UDT array descriptors retain their original descriptor form,
+with removed owning fields cleared explicitly during ReDim.
+ByRef String() ReDim preserves an incoming array's Unicode or ANSI representation.
+For a null incoming array, StringEncoding=Ansi selects VBA Declare's ANSI descriptor;
+the default remains Unicode for direct native clients and local arrays.
 Call CalcVbaShutdown on the owning thread before FreeLibrary
 to release module owners outside loader lock. It closes the context; later calls
-return error 5 and cannot initialize it again. The remaining N3 constructs are
-explicit refusals. Object Is queries canonical IUnknown identity, releasing both
+return error 5 and cannot initialize it again. Object Is queries canonical IUnknown identity, releasing both
 temporary references on every path. Distinct interfaces of one object compare equal.
 General scalar/String/Variant/UDT pointers and ordinary native
-Declare calls are now compiled inside exported bodies. Declare admission rejects
-ByRef ANSI String, private/forced ByRef arguments, owning UDT marshalling and
-aggregate returns rather than guessing their layouts.
+Declare calls are compiled inside exported bodies. ByRef ANSI String uses an
+owning byte BSTR cell, including replacement by the callee. UDT Declare arguments
+convert Unicode fields to their ANSI representation; Variant fields retain Unicode.
+String, Variant and UDT returns use the Windows x64 return rules. Private/forced
+ByRef arguments and ByVal aggregate parameters remain refused.
+Each compiled Declare call site retains its library, type conversion plan and
+libffi CIF until CalcVbaShutdown; subsequent native calls reuse that preparation.
+The CalcVBA Declare caller still needs an allocated UDT array to retain its record
+prototype during marshaling. Excel and direct native clients also accept null
+incoming UDT arrays. This caller-side type retention gap keeps N3 open.
 
 N4 has a working ordinary VBA prototype in `examples/native/xll`: numeric
 XLOPER12 conversion, a VBA registration table, callback through DispCallFunc,
 and VBA xlAutoOpen/xlAutoClose/xlAutoFree12. An owned Excel loaded its `.xll`,
 called both worksheet functions and released every returned buffer. Rich
-Variant/array/reference conversions remain library work. The compiler and
+Variant/array/error/missing/reference conversions remain library work. The compiler and
 runtime contain no XLL-specific operation or registration metadata.
 
 ## 1. Declaration

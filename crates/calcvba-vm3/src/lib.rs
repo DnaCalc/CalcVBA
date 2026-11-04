@@ -4630,7 +4630,14 @@ impl<'h> Vm3<'h> {
             .iter()
             .map(|pt| format!("{pt:?}"))
             .collect();
+        let return_record_layout = descriptor
+            .return_record_fields
+            .as_ref()
+            .map(|fields| calcvba_bundle::vba_record_layout_for_fields(fields))
+            .transpose()
+            .map_err(|message| Vm3Error::Fault(Fault::new(5, message)))?;
         let view = DynLinkDescriptorView {
+            return_record_layout,
             descriptor_id: descriptor.descriptor_id,
             declared_name: &descriptor.declared_name,
             library: &descriptor.library,
@@ -5542,6 +5549,8 @@ mod interop_plan_tests {
             param_types: vec![DeclareParamType::Double],
             param_by_ref: vec![false],
             return_type: Some(DeclareParamType::Double),
+            return_record_fields: None,
+            return_record_name: None,
         };
         let plan = verified_declare_plan(&descriptor).expect("declare plan");
         assert!(
@@ -7582,6 +7591,8 @@ mod tests {
             param_types: vec![ty],
             param_by_ref: vec![by_ref],
             return_type: None,
+            return_record_fields: None,
+            return_record_name: None,
         }
     }
 

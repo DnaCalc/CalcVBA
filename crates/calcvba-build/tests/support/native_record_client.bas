@@ -1,4 +1,8 @@
 Option Explicit
+Private Type GridRecord
+    values(-1 To 1, 3 To 4) As Long
+End Type
+Private Declare PtrSafe Function NGrid Lib "__DLL__" Alias "GridBoundary" (ByRef value As GridRecord) As Long
 Private Declare PtrSafe Function NFixedSuite Lib "__DLL__" Alias "FixedFieldSuite" () As LongPtr
 Private Declare PtrSafe Function NFixedIndex Lib "__DLL__" Alias "FixedFieldIndex" (ByVal index As Long) As Long
 Private Declare PtrSafe Function NLastError Lib "__DLL__" Alias "CalcVbaGetLastError" (ByVal source As LongPtr, ByVal description As LongPtr) As Long
@@ -30,6 +34,13 @@ Private Function TakeString(ByVal pointer As LongPtr) As String
     FreeBStr pointer
 End Function
 Public Function ProbeNativeExports() As String
+    Dim grid As GridRecord, row As Long, column As Long
+    For column = 3& To 4&
+        For row = -1& To 1&
+            grid.values(row, column) = row + column * 10&
+        Next row
+    Next column
+    If NGrid(grid) <> 39& Or grid.values(0, 3) <> 555& Or grid.values(-1, 4) <> 39& Then Err.Raise 525&
     Dim record As RichRecord, copied As RichRecord, values() As String
     Dim description As String, suite As String, result As String, count As Long
     record.tag = 7: record.value = "7": record.tail = 9&: record.text = "q"

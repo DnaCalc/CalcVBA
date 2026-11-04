@@ -365,6 +365,53 @@ fn ordinary_vba_xll_conversions_use_native_pointers_and_declares() {
 }
 
 #[test]
+fn rich_xloper_values_match_on_native_and_both_vba_backends() {
+    let temp = Directory::new();
+    let output = build_native_library(&NativeLibraryBuildOptions {
+        project_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/native/xll/PlainXll.basproj"),
+        out_dir: temp.0.clone(),
+        template_path: None,
+    })
+    .unwrap();
+    let caller = include_str!("support/native_xll_rich_client.bas")
+        .replace("__DLL__", output.dll_path.to_str().unwrap());
+    let direct = format!(
+        "{}\n{}",
+        include_str!("../../../examples/native/xll/XlValues.bas"),
+        include_str!("support/native_xll_value_probe.bas").replacen("Option Explicit", "", 1)
+    );
+    for (source, expected) in [
+        (
+            caller.as_str(),
+            include_str!("support/native_xll_rich_expected.txt").trim(),
+        ),
+        (
+            direct.as_str(),
+            include_str!("support/native_xll_value_expected.txt").trim(),
+        ),
+    ] {
+        for config in [
+            calcvba_engine::HostConfig::vm3(),
+            calcvba_engine::HostConfig::jit(),
+        ] {
+            let mut engine = calcvba_engine::Engine::new(config);
+            engine.set_host_policy(calcvba_hal::model::HostPolicy::native());
+            let values = engine
+                .execute_source_with_variant_snapshot_clean(source)
+                .unwrap();
+            assert!(
+                values
+                    .iter()
+                    .filter_map(|v| v.as_bstr())
+                    .any(|v| v.to_string() == expected),
+                "{values:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn native_variant_fixed_string_records_and_string_redim_roundtrip() {
     let temp = Directory::new();
     let output = build_native_library(&NativeLibraryBuildOptions {

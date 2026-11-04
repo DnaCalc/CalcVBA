@@ -216,7 +216,7 @@ pub fn compile_native_scalars(
                             .get(import)
                             .ok_or_else(|| problem(func, "unplanned native library call"))?
                             .target;
-                        if !matches!(target,LinkedTarget::Builtin(native) if library_helpers.contains_key(&native) || conversion_target(native).is_some() || matches!(native, NativeImplId::Len | NativeImplId::CStr))
+                        if !matches!(target,LinkedTarget::Builtin(native) if library_helpers.contains_key(&native) || conversion_target(native).is_some() || matches!(native, NativeImplId::Len | NativeImplId::CStr | NativeImplId::VarType))
                             || args.iter().any(|arg| !matches!(arg, OxArg::ByVal(_)))
                         {
                             return Err(problem(
@@ -577,23 +577,37 @@ pub fn compile_native_scalars(
                         && let LinkedTarget::Builtin(native) =
                             plan.layout.extern_calls[import].target
                         && let [OxArg::ByVal(src)] = args.as_slice()
-                        && (matches!(native, NativeImplId::Len | NativeImplId::CStr)
-                            || (conversion_target(native).is_some()
-                                && (!plan.layout.operand_type(src).is_ok_and(basic_numeric)
-                                    || conversion_target(native).is_some_and(extended_numeric))))
+                        && (matches!(
+                            native,
+                            NativeImplId::Len | NativeImplId::CStr | NativeImplId::VarType
+                        ) || (conversion_target(native).is_some()
+                            && (!plan.layout.operand_type(src).is_ok_and(basic_numeric)
+                                || conversion_target(native).is_some_and(extended_numeric))))
                     {
                         let input = values.cell(module, &mut b, src);
                         let zero = b.ins().iconst(types::I64, 0);
                         for offset in [0, 8, 16] {
                             b.ins().stack_store(zero, call_output, offset);
                         }
-                        let to =
-                            conversion_target(native).unwrap_or(if native == NativeImplId::Len {
+                        let to = conversion_target(native).unwrap_or(
+                            if matches!(native, NativeImplId::Len | NativeImplId::VarType) {
                                 ScalarType::Long
                             } else {
                                 ScalarType::String
-                            });
-                        if native == NativeImplId::Len {
+                            },
+                        );
+                        if native == NativeImplId::VarType {
+                            let kind = b.ins().iconst(
+                                types::I32,
+                                i64::from(values::kind_of_operand(&plan.layout, src)),
+                            );
+                            values.call(
+                                module,
+                                &mut b,
+                                "cvb_value_type",
+                                &[call_output_ptr, input, kind],
+                            );
+                        } else if native == NativeImplId::Len {
                             values.call(
                                 module,
                                 &mut b,

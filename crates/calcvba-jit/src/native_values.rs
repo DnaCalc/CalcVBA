@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) const HELPERS: &[(&str, &[ir::Type])] = &[
+    ("cvb_value_type", &[types::I64, types::I64, types::I32]),
     (
         "cvb_fixed_string_coerce",
         &[types::I64, types::I64, types::I32, types::I32],
@@ -1267,7 +1268,7 @@ pub(super) fn validate_declare(
     Ok(())
 }
 
-fn kind_of_operand(layout: &ScalarLayout, operand: &OxOperand) -> u32 {
+pub(super) fn kind_of_operand(layout: &ScalarLayout, operand: &OxOperand) -> u32 {
     if let OxOperand::Use(place) = operand
         && layout.operand_type(operand) == Ok(ScalarType::Array)
     {

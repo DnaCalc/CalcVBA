@@ -60,12 +60,13 @@ Fixed-array UDT fields support checked multidimensional access, including owning
 String/Variant, fixed-string and nested record elements. Signed literal bounds
 retain their inline layout. The record suite compares C, VM3/JIT Declare and Excel.
 
-N4 has a working ordinary VBA prototype in `examples/native/xll`: numeric
-XLOPER12 conversion, a VBA registration table, callback through DispCallFunc,
-and VBA xlAutoOpen/xlAutoClose/xlAutoFree12. An owned Excel loaded its `.xll`,
-called both worksheet functions and released every returned buffer. Rich
-Variant/array/error/missing/reference conversions remain library work. The compiler and
-runtime contain no XLL-specific operation or registration metadata.
+N4's ordinary VBA library in `examples/native/xll` converts numeric Variants,
+counted Unicode strings, Boolean, errors, missing/nil, arrays and single/multiple
+area references. Registration, callbacks and buffer release remain ordinary VBA.
+The clients exercise both the native DLL and the same source on VM3/JIT and
+Excel VBA. Worksheet cases compare individually in Excel and DNA Calc's XLL
+host; the template README identifies host limitations and ownership rules.
+The compiler and runtime contain no XLL-specific operation or registration metadata.
 
 ## 1. Declaration
 

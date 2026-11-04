@@ -853,12 +853,17 @@ impl<'a> ProcLower<'a> {
                         CallSitePassing::ByRef => true,
                         CallSitePassing::Default => param_by_ref.get(i).copied().unwrap_or(false),
                     };
-                    if let Some((intrinsic, operand)) = self.pointer_call(expr) {
+                    if let Some((intrinsic, operand)) = self.pointer_expression_root(expr) {
                         let (kind, value, wb) = self.pointer_operand(intrinsic, operand)?;
-                        args.push(CoreArg::ByVal(CoreValue::Ptr {
-                            kind,
-                            value: Box::new(value),
-                        }));
+                        let value = if self.pointer_call(expr).is_some() {
+                            CoreValue::Ptr {
+                                kind,
+                                value: Box::new(value),
+                            }
+                        } else {
+                            self.bind_expr(expr)?.value
+                        };
+                        args.push(CoreArg::ByVal(value));
                         if let Some((target, kind)) = wb {
                             writebacks.push(PtrWriteback {
                                 arg_index: i,
@@ -933,6 +938,34 @@ impl<'a> ProcLower<'a> {
         }
     }
 
+    /// Retain the owner when a native argument addresses a field or element
+    /// inside its pin. Pointer differences are numbers, not writable addresses.
+    fn pointer_expression_root<'b>(
+        &self,
+        expr: SyntaxNode<'b>,
+    ) -> Option<(StructuralIntrinsic, SyntaxNode<'b>)> {
+        if let Some(pointer) = self.pointer_call(expr) {
+            return Some(pointer);
+        }
+        match expr.kind() {
+            SyntaxKind::ParenExpr => self.pointer_expression_root(expr.paren_inner()?),
+            SyntaxKind::BinaryExpr => {
+                let op = expr.binary_op_token()?.kind;
+                if !matches!(op, SyntaxKind::Plus | SyntaxKind::Minus) {
+                    return None;
+                }
+                let left = self.pointer_expression_root(expr.binary_lhs()?);
+                let right = self.pointer_expression_root(expr.binary_rhs()?);
+                match (left, right) {
+                    (Some(root), None) => Some(root),
+                    (None, Some(root)) if op == SyntaxKind::Plus => Some(root),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// Bind a pointer-helper operand: the `PtrKind` + the operand **value** the VM
     /// pins, plus an optional write-back target (the source l-value + payload kind)
     /// for use as a `Declare` argument. `VarPtr` of an array element points at the
@@ -959,6 +992,7 @@ impl<'a> ProcLower<'a> {
             // Write-back only into a simple variable (a slot the VM stores into).
             let writeback = if matches!(place, CorePlace::Local(_) | CorePlace::Global(_)) {
                 match kind {
+                    PtrKind::VarVariant => Some((place.clone(), PtrWritebackKind::Variant)),
                     PtrKind::Str | PtrKind::VarString => {
                         Some((place.clone(), PtrWritebackKind::String))
                     }
@@ -3144,6 +3178,7 @@ fn scalar_ptr_writeback_kind(
     ty: &VarTypeRef,
 ) -> Option<PtrWritebackKind> {
     match ty {
+        VarTypeRef::Variant => Some(PtrWritebackKind::Variant),
         VarTypeRef::Builtin(BuiltinType::Boolean) => Some(PtrWritebackKind::Boolean),
         VarTypeRef::Builtin(BuiltinType::Byte) => Some(PtrWritebackKind::Byte),
         VarTypeRef::Builtin(BuiltinType::Integer) => Some(PtrWritebackKind::Integer),

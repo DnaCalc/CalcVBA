@@ -2,6 +2,7 @@
   <PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>PlainXll</ProjectName></PropertyGroup>
   <ItemGroup>
     <Module Include="PlainXll.bas"/>
+    <Module Include="XlValues.bas"/>
     <NativeExport Include="xlAutoOpen"><Module>PlainXll</Module><Procedure>xlAutoOpen</Procedure></NativeExport>
     <NativeExport Include="xlAutoClose"><Module>PlainXll</Module><Procedure>xlAutoClose</Procedure></NativeExport>
     <NativeExport Include="xlAutoFree12"><Module>PlainXll</Module><Procedure>xlAutoFree12</Procedure></NativeExport>
@@ -9,5 +10,13 @@
     <NativeExport Include="NativeTwice"><Module>PlainXll</Module><Procedure>NativeTwice</Procedure></NativeExport>
     <NativeExport Include="OutstandingResults"><Module>PlainXll</Module><Procedure>OutstandingResults</Procedure></NativeExport>
     <NativeExport Include="ConversionProbe"><Module>PlainXll</Module><Procedure>ConversionProbe</Procedure></NativeExport>
+    <NativeExport Include="NativeEcho"><Module>PlainXll</Module><Procedure>NativeEcho</Procedure></NativeExport>
+    <NativeExport Include="NativeVariantEcho"><Module>PlainXll</Module><Procedure>NativeVariantEcho</Procedure></NativeExport>
+    <NativeExport Include="NativeKind"><Module>PlainXll</Module><Procedure>NativeKind</Procedure></NativeExport>
+    <NativeExport Include="NativeCoerce"><Module>PlainXll</Module><Procedure>NativeCoerce</Procedure></NativeExport>
+    <NativeExport Include="NativeCallerRow"><Module>PlainXll</Module><Procedure>NativeCallerRow</Procedure></NativeExport>
+    <NativeExport Include="NativeName"><Module>PlainXll</Module><Procedure>NativeName</Procedure></NativeExport>
+    <NativeExport Include="xlAddInManagerInfo12"><Module>PlainXll</Module><Procedure>xlAddInManagerInfo12</Procedure></NativeExport>
+    <NativeExport Include="OwnedBuffers"><Module>XlValues</Module><Procedure>XlOwnedBuffers</Procedure></NativeExport>
   </ItemGroup>
 </Project>

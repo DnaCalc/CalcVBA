@@ -466,6 +466,7 @@ impl ScalarLayout {
                     NativeImplId::CBool,
                     NativeImplId::CStr,
                     NativeImplId::Len,
+                    NativeImplId::VarType,
                 ]
                 .into_iter()
                 .find(|id| {
@@ -493,6 +494,7 @@ impl ScalarLayout {
                         NativeImplId::CBool => (ScalarType::Variant, ScalarType::Boolean),
                         NativeImplId::CStr => (ScalarType::Variant, ScalarType::String),
                         NativeImplId::Len => (ScalarType::String, ScalarType::Long),
+                        NativeImplId::VarType => (ScalarType::Variant, ScalarType::Long),
                         _ => (ScalarType::Double, ScalarType::Double),
                     };
                     external.insert(

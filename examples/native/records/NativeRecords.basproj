@@ -10,4 +10,4 @@
 <NativeExport Include="AllocateRecords"><Module>Records</Module><Procedure>AllocateRecords</Procedure></NativeExport>
 <NativeExport Include="RecordArrays"><Module>Records</Module><Procedure>RecordArrays</Procedure></NativeExport>
 <NativeExport Include="ArraySuite"><Module>Records</Module><Procedure>ArraySuite</Procedure></NativeExport>
-<NativeExport Include="FixedFieldSuite"><Module>Records</Module><Procedure>FixedFieldSuite</Procedure></NativeExport><NativeExport Include="FixedFieldIndex"><Module>Records</Module><Procedure>FixedFieldIndex</Procedure></NativeExport></ItemGroup></Project>
+<NativeExport Include="FixedFieldSuite"><Module>Records</Module><Procedure>FixedFieldSuite</Procedure></NativeExport><NativeExport Include="FixedFieldIndex"><Module>Records</Module><Procedure>FixedFieldIndex</Procedure></NativeExport><NativeExport Include="GridBoundary"><Module>Records</Module><Procedure>GridBoundary</Procedure></NativeExport></ItemGroup></Project>

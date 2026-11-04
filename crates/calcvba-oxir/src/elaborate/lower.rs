@@ -2605,13 +2605,10 @@ impl<'a> Lowerer<'a> {
                 Ok((OxOperand::local(LocalId(l.0)), ty))
             }
             coreir::CorePlace::Global(g) => {
-                // The lowerer does not yet hold the global type table, so a global load
-                // is conservatively typed `Variant` (sound; threading the global types
-                // into the lowerer is a noted refinement).
-                Ok((
-                    OxOperand::Use(OxPlace::Global(GlobalId(g.0))),
-                    OxTy::Variant,
-                ))
+                let ty = self.global_tys.get(g.0).cloned().ok_or_else(|| {
+                    ElaborateError::Malformed(format!("global index {} out of range", g.0))
+                })?;
+                Ok((OxOperand::Use(OxPlace::Global(GlobalId(g.0))), ty))
             }
             coreir::CorePlace::Index { array, indices } => {
                 // Fuse `obj.field(i…)`: read one element of the field-held array IN PLACE

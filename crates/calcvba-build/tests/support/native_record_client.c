@@ -19,6 +19,9 @@ int wmain(int argc, wchar_t **argv) {
     setvbuf(stdout,NULL,_IONBF,0);
     CHECK(argc == 2 && sizeof(RichRecord) == 48 && offsetof(RichRecord,value) == 8 && offsetof(RichRecord,tail) == 32 && offsetof(RichRecord,text) == 36);
     HMODULE dll = LoadLibraryW(argv[1]); CHECK(dll);
+    typedef LONG (*Grid)(LONG*);
+    Grid grid=(Grid)GetProcAddress(dll,"GridBoundary"); LONG coordinates[6]={29,30,31,39,40,41};
+    CHECK(grid && grid(coordinates)==39 && coordinates[1]==555 && coordinates[3]==39);
     Change change = (Change)GetProcAddress(dll,"ChangeRecord");
     Echo echo = (Echo)GetProcAddress(dll,"EchoRecord");
     Suite suite = (Suite)GetProcAddress(dll,"ValueSuite");

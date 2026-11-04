@@ -16,6 +16,13 @@ Public Type FixedFields
     fixedText(-2 To -1) As String * 3
     records(5 To 6) As RichRecord
 End Type
+Public Type GridRecord
+    values(-1 To 1, 3 To 4) As Long
+End Type
+Public Function GridBoundary(ByRef value As GridRecord) As Long
+    GridBoundary = value.values(-1, 4)
+    value.values(0, 3) = 555&
+End Function
 
 Public Function FixedFieldSuite() As String
     Dim value As FixedFields, copied As FixedFields, row As Long, column As Long

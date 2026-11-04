@@ -483,6 +483,7 @@ pub enum PtrWritebackKind {
     Currency,
     Date,
     Record,
+    Variant,
 }
 
 /// A `Declare` argument that is `StrPtr(x)` / `VarPtr(x)` over an l-value: after

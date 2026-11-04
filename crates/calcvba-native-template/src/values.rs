@@ -207,6 +207,28 @@ pub unsafe extern "C" fn cvb_value_copy(dst: *mut u8, src: *const u8, to: u32, f
 }
 
 /// # Safety
+/// src is a live cell of kind, and out is a writable Long result cell. Reading
+/// VarType never clones the BSTR, SAFEARRAY or object contained in a Variant.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cvb_value_type(out: *mut i32, src: *const u8, kind: u32) -> i32 {
+    boundary(|| {
+        // SAFETY: generated code supplies the exact initialized carrier.
+        unsafe {
+            let mut vt = if kind == 12 {
+                (*src.cast::<VARIANT>()).Anonymous.Anonymous.vt
+            } else {
+                kind as u16
+            } & !0x4000;
+            if vt & 0xfff == 13 {
+                vt = (vt & 0xf000) | 9;
+            }
+            out.write(i32::from(vt));
+        }
+        Ok(())
+    })
+}
+
+/// # Safety
 /// src is the initialized private native Declare result. A nonnull destination
 /// is an initialized exact carrier. A record descriptor is supplied for kind 36.
 #[unsafe(no_mangle)]

@@ -100,7 +100,10 @@ precision, floating/currency/date signatures, explicit casts and overflow.
 The [plain VBA XLL example](examples/native/xll) uses general native pointer and
 Declare support for its XLOPER12 UDT, registration table and callbacks.
 `scripts/run-native-xll-clients.ps1 -OracleSession <session>` checks both
-worksheet functions in that existing Excel and measures batch call costs.
+25 worksheet calls in that existing Excel and measures batch call costs.
+The ordinary VBA library converts rich Variants, arrays, errors, missing/nil
+and references; `-DnaCalcPath <dna-calc-desktop.exe>` also compares the shared
+cases in DNA Calc's XLL host.
 
 Hosts use [`calcvba-host-api`](crates/calcvba-host-api) and
 [`calcvba-host`](crates/calcvba-host). They supply application objects and type

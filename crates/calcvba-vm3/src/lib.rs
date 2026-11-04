@@ -4746,6 +4746,7 @@ impl<'h> Vm3<'h> {
                 .and_then(Variant::as_i64)
                 .unwrap_or(0);
             let value = match wb.kind {
+                PtrWritebackKind::Variant => pointer_helpers::read_back_variant(pointer),
                 PtrWritebackKind::Record => pointer_helpers::read_back_record(pointer),
                 PtrWritebackKind::String => {
                     pointer_helpers::read_back_string_payload_variant(pointer)

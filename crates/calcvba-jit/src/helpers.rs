@@ -4785,6 +4785,7 @@ pub(crate) unsafe extern "C" fn rt_jit_declare_call_to_slot(
                     .and_then(|a| a.value.as_i64())
                     .unwrap_or(0);
                 let value = match wb.kind {
+                    K::Variant => p::read_back_variant(pointer),
                     K::Record => p::read_back_record(pointer),
                     K::String => p::read_back_string_payload_variant(pointer),
                     K::ByteArray => p::read_back_byte_array_payload_variant(pointer),

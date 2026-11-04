@@ -646,6 +646,7 @@ examples/native/scalars/NativeInternals.bas	ok[] raised=false err=FinalErr { num
 examples/native/scalars/Operators.bas	err(VBA error 11) raised=true err=FinalErr { number: 11, source: "VBAProject", description: "Division by zero", last_dll_error: 0 }
 examples/native/scalars/Scalars.bas	err(bind: Variable not defined) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 examples/native/widths/Wide.bas	ok[] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
-examples/native/xll/PlainXll.bas	ok[Raw { tag: 20, bytes: [0, 0, 0, 0, 0, 0, 0, 0], reserved: [0, 0, 0] }, Raw { tag: 3, bytes: [0, 0, 0, 0, 0, 0, 0, 0], reserved: [0, 0, 0] }, Opaque { tag: 36 }, Opaque { tag: 36 }] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
+examples/native/xll/PlainXll.bas	err(bind: Sub or Function not defined) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
+examples/native/xll/XlValues.bas	ok[Raw { tag: 3, bytes: [0, 0, 0, 0, 0, 0, 0, 0], reserved: [0, 0, 0] }] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 examples/reflection_wrapper/business_calc/BusinessCalc.bas	err(VBA error 11) raised=true err=FinalErr { number: 11, source: "VBAProject", description: "Division by zero", last_dll_error: 0 }
 examples/reflection_wrapper/engineering_math/EngineeringMath.bas	ok[] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }

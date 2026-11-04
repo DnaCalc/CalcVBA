@@ -4,19 +4,8 @@ Option Explicit
 ' Ordinary VBA and Windows declarations. No compiler knowledge of Excel.
 Private Declare PtrSafe Function GetModuleHandleW Lib "kernel32" (ByVal name As LongPtr) As LongPtr
 Private Declare PtrSafe Function GetProcAddress Lib "kernel32" (ByVal moduleHandle As LongPtr, ByVal name As String) As LongPtr
-Private Declare PtrSafe Function CoTaskMemAlloc Lib "ole32" (ByVal count As LongPtr) As LongPtr
-Private Declare PtrSafe Sub CoTaskMemFree Lib "ole32" (ByVal address As LongPtr)
 Private Declare PtrSafe Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (ByVal destination As LongPtr, ByVal source As LongPtr, ByVal count As LongPtr)
 Private Declare PtrSafe Function DispCallFunc Lib "oleaut32" (ByVal instance As LongPtr, ByVal address As LongPtr, ByVal convention As Long, ByVal returnType As Integer, ByVal count As Long, ByVal types As LongPtr, ByVal arguments As LongPtr, ByRef result As Variant) As Long
-
-' x64 XLOPER12: 24-byte union, DWORD type, four bytes trailing padding.
-Public Type XLOPER12
-    payload0 As LongLong
-    payload1 As LongLong
-    payload2 As LongLong
-    xltype As Long
-    padding As Long
-End Type
 
 Private Type OperPointers
     p0 As LongPtr
@@ -51,8 +40,7 @@ End Type
 
 Private callback As LongPtr
 Private outstanding As Long
-Private firstRegistration As XLOPER12
-Private secondRegistration As XLOPER12
+Private registrationIds(1 To 7) As XLOPER12
 
 Private Function ExcelCall(ByVal functionNumber As Long, ByVal count As Long, ByRef args As OperPointers, ByRef result As XLOPER12) As Long
     Dim types As CallTypes, values As CallValues
@@ -80,24 +68,15 @@ Private Function ExcelCall(ByVal functionNumber As Long, ByVal count As Long, By
 End Function
 
 Private Function NumberOper(ByVal value As Double) As XLOPER12
-    CopyMemory VarPtr(NumberOper), VarPtr(value), 8^
-    NumberOper.xltype = 1&
+    NumberOper = XlNumber(value)
 End Function
 
 Private Function StringOper(ByVal value As String) As XLOPER12
-    Dim length As Integer, data As LongPtr
-    length = CInt(Len(value))
-    data = CoTaskMemAlloc(CLngPtr(length) * 2^ + 4^)
-    If data = 0^ Then Err.Raise 7&
-    CopyMemory data, VarPtr(length), 2^
-    CopyMemory data + 2^, StrPtr(value), CLngPtr(length) * 2^
-    StringOper.payload0 = data
-    StringOper.xltype = 2&
+    StringOper = XlString(value)
 End Function
 
 Private Sub FreeStringOper(ByRef value As XLOPER12)
-    CoTaskMemFree value.payload0
-    value.payload0 = 0^
+    XlFreeValue value
 End Sub
 
 ' Registration table kept in VBA: export, C API types, worksheet name, arguments.
@@ -112,6 +91,29 @@ Private Function RegistrationTable(ByVal index As Long) As RegistrationRow
         RegistrationTable.typeText = "QQ"
         RegistrationTable.worksheetName = "CalcVbaTwice"
         RegistrationTable.argumentNames = "value"
+    ElseIf index = 3& Then
+        RegistrationTable.exportName = "NativeEcho"
+        RegistrationTable.typeText = "QU"
+        RegistrationTable.worksheetName = "CalcVbaEcho"
+        RegistrationTable.argumentNames = "value"
+    ElseIf index = 4& Then
+        RegistrationTable.exportName = "NativeCoerce"
+        RegistrationTable.typeText = "QU"
+        RegistrationTable.worksheetName = "CalcVbaCoerce"
+        RegistrationTable.argumentNames = "reference"
+    ElseIf index = 5& Then
+        RegistrationTable.exportName = "NativeKind"
+        RegistrationTable.typeText = "JQ"
+        RegistrationTable.worksheetName = "CalcVbaKind"
+        RegistrationTable.argumentNames = "value"
+    ElseIf index = 6& Then
+        RegistrationTable.exportName = "NativeCallerRow"
+        RegistrationTable.typeText = "J"
+        RegistrationTable.worksheetName = "CalcVbaCallerRow"
+    ElseIf index = 7& Then
+        RegistrationTable.exportName = "NativeName"
+        RegistrationTable.typeText = "Q"
+        RegistrationTable.worksheetName = "CalcVbaName"
     Else
         Err.Raise 9&
     End If
@@ -146,31 +148,53 @@ Private Function RegisterFunction(ByRef dllName As XLOPER12, ByVal exportName As
     FreeStringOper name
     FreeStringOper arguments
     FreeStringOper category
-    If code <> 0& Then Err.Raise 5&, "PlainXll.RegisterFunction", "xlfRegister failed"
+    If code <> 0& Then RegisterFunction = XlError(15&)
 End Function
+
+Private Sub ExcelFree(ByRef value As XLOPER12)
+    Dim pointers As OperPointers, unused As XLOPER12, code As Long
+    pointers.p0 = VarPtr(value)
+    code = ExcelCall(16384&, 1&, pointers, unused)
+End Sub
 
 Public Function xlAutoOpen() As Long
     Dim dllName As XLOPER12, unused As XLOPER12, pointers As OperPointers
-    Dim code As Long
+    Dim code As Long, index As Long, id As XLOPER12, failed As Boolean
     callback = GetProcAddress(GetModuleHandleW(0^), "MdCallBack12")
     If callback = 0^ Then Err.Raise 513&, "PlainXll.xlAutoOpen", "Excel callback missing"
     code = ExcelCall(16393&, 0&, pointers, dllName)
-    If code <> 0& Then Err.Raise 514& + code, "PlainXll.xlAutoOpen", "xlGetName failed"
-    firstRegistration = RegisterRow(dllName, 1&)
-    secondRegistration = RegisterRow(dllName, 2&)
-    pointers.p0 = VarPtr(dllName)
-    code = ExcelCall(16384&, 1&, pointers, unused)
-    If firstRegistration.xltype <> 1& Then Err.Raise 600& + firstRegistration.xltype, "PlainXll.xlAutoOpen", "first registration failed"
-    If secondRegistration.xltype <> 1& Then Err.Raise 700& + secondRegistration.xltype, "PlainXll.xlAutoOpen", "second registration failed"
+    If code = 0& Then
+        For index = 1& To 7&
+            id = RegisterRow(dllName, index)
+            registrationIds(index) = id
+            If (id.xltype And 4095&) <> 1& Then
+                failed = True
+                Exit For
+            End If
+        Next index
+    Else
+        failed = True
+    End If
+    ExcelFree dllName
+    If failed Then
+        code = xlAutoClose()
+        Err.Raise 514&, "PlainXll.xlAutoOpen", "registration failed"
+    End If
     xlAutoOpen = 1&
 End Function
 
 Public Function xlAutoClose() As Long
-    Dim pointers As OperPointers, unused As XLOPER12, code As Long
-    pointers.p0 = VarPtr(firstRegistration)
-    code = ExcelCall(201&, 1&, pointers, unused)
-    pointers.p0 = VarPtr(secondRegistration)
-    code = ExcelCall(201&, 1&, pointers, unused)
+    Dim pointers As OperPointers, unused As XLOPER12, code As Long, index As Long
+    Dim id As XLOPER12, cleared As XLOPER12
+    For index = 1& To 7&
+        id = registrationIds(index)
+        If (id.xltype And 4095&) = 1& Then
+            pointers.p0 = VarPtr(id)
+            code = ExcelCall(201&, 1&, pointers, unused)
+            ExcelFree unused
+            registrationIds(index) = cleared
+        End If
+    Next index
     xlAutoClose = 1&
 End Function
 
@@ -189,15 +213,13 @@ Public Function NativeTwice(ByVal operand As LongPtr) As LongPtr
         result.xltype = 16&
     End If
     result.xltype = result.xltype Or 16384&
-    NativeTwice = CoTaskMemAlloc(32^)
-    If NativeTwice = 0^ Then Err.Raise 7&
-    CopyMemory NativeTwice, VarPtr(result), 32^
-    outstanding = outstanding + 1&
+    NativeTwice = XlReturn(result)
+    If NativeTwice <> 0^ Then outstanding = outstanding + 1&
 End Function
 
 Public Sub xlAutoFree12(ByVal operand As LongPtr)
-    CoTaskMemFree operand
-    outstanding = outstanding - 1&
+    XlReleaseReturn operand
+    If operand <> 0^ Then outstanding = outstanding - 1&
 End Sub
 
 Public Function OutstandingResults() As Long
@@ -213,3 +235,81 @@ End Function
 
 Public Sub Main()
 End Sub
+
+Public Function NativeEcho(ByVal operand As LongPtr) As LongPtr
+    Dim inputValue As XLOPER12, result As XLOPER12, value As Variant
+    CopyMemory VarPtr(inputValue), operand, 32^
+    value = XlToVariant(inputValue)
+    result = XlFromVariant(value)
+    NativeEcho = XlReturn(result)
+    If NativeEcho <> 0^ Then outstanding = outstanding + 1&
+End Function
+Public Function NativeVariantEcho(ByRef value As Variant) As LongPtr
+    Dim result As XLOPER12
+    result = XlFromVariant(value)
+    NativeVariantEcho = XlReturn(result)
+    If NativeVariantEcho <> 0^ Then outstanding = outstanding + 1&
+End Function
+Public Function NativeKind(ByVal operand As LongPtr) As Long
+    Dim inputValue As XLOPER12
+    CopyMemory VarPtr(inputValue), operand, 32^
+    NativeKind = inputValue.xltype And 4095&
+End Function
+
+Public Function NativeCoerce(ByVal operand As LongPtr) As LongPtr
+    Dim inputValue As XLOPER12, converted As XLOPER12, result As XLOPER12
+    Dim pointers As OperPointers, code As Long, value As Variant
+    CopyMemory VarPtr(inputValue), operand, 32^
+    pointers.p0 = VarPtr(inputValue)
+    code = ExcelCall(16386&, 1&, pointers, converted)
+    If code = 0& Then
+        value = XlToVariant(converted)
+        result = XlFromVariant(value)
+    Else
+        result = XlError(15&)
+    End If
+    ExcelFree converted
+    NativeCoerce = XlReturn(result)
+    If NativeCoerce <> 0^ Then outstanding = outstanding + 1&
+End Function
+
+Public Function NativeCallerRow() As Long
+    Dim caller As XLOPER12, rectangle As XlRectangle, pointers As OperPointers, code As Long
+    code = ExcelCall(89&, 0&, pointers, caller)
+    If code = 0& And XlReferenceCount(caller) > 0& Then
+        rectangle = XlReferenceArea(caller, 0&)
+        NativeCallerRow = rectangle.firstRow + 1&
+    End If
+    ExcelFree caller
+End Function
+
+Public Function NativeName() As LongPtr
+    Dim name As XLOPER12, result As XLOPER12, pointers As OperPointers, code As Long, value As Variant
+    code = ExcelCall(16393&, 0&, pointers, name)
+    If code = 0& Then
+        value = XlToVariant(name)
+        result = XlFromVariant(value)
+    Else
+        result = XlError(15&)
+    End If
+    ExcelFree name
+    NativeName = XlReturn(result)
+    If NativeName <> 0^ Then outstanding = outstanding + 1&
+End Function
+
+Public Function xlAddInManagerInfo12(ByVal action As LongPtr) As LongPtr
+    Dim inputValue As XLOPER12, result As XLOPER12, value As Variant
+    CopyMemory VarPtr(inputValue), action, 32^
+    value = XlToVariant(inputValue)
+    If VarType(value) = 5& Then
+        If CDbl(value) = 1# Then
+            result = XlString("CalcVBA ordinary VBA add-in template")
+        Else
+            result = XlError(15&)
+        End If
+    Else
+        result = XlError(15&)
+    End If
+    xlAddInManagerInfo12 = XlReturn(result)
+    If xlAddInManagerInfo12 <> 0^ Then outstanding = outstanding + 1&
+End Function

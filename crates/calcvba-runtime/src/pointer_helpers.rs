@@ -35,18 +35,33 @@ mod native_record_pin {
         }
     }
 
-    struct NativeValue(VARIANT);
+    pub(super) struct NativeValue(pub(super) VARIANT);
     impl NativeValue {
         fn empty() -> Self {
             // SAFETY: all-zero VARIANT is VT_EMPTY.
             Self(unsafe { std::mem::zeroed() })
         }
-        fn from_value(value: &Value) -> Result<Self, String> {
+        pub(super) fn from_value(value: &Value) -> Result<Self, String> {
             let mut result = Self::empty();
             // SAFETY: result owns fresh VT_EMPTY storage; each branch initializes
             // a complete matching payload before exposing the type tag.
             unsafe {
                 match value.vtype() {
+                    crate::VarType::ProcRef => {
+                        return Err(
+                            "procedure references cannot be marshaled as VARIANT values".into()
+                        );
+                    }
+                    crate::VarType::Error => {
+                        let code = value.as_error_code().ok_or("Error payload missing")?;
+                        result.0.Anonymous.Anonymous.vt = 10;
+                        result.0.Anonymous.Anonymous.Anonymous.scode =
+                            if (0..=65535).contains(&code) {
+                                (0x800a_0000u32 | code as u32) as i32
+                            } else {
+                                code
+                            };
+                    }
                     crate::VarType::String => {
                         let text = value.try_as_bstr()?.ok_or("String payload missing")?;
                         let bytes = text
@@ -114,7 +129,7 @@ mod native_record_pin {
                             }
                         }
                     }
-                    crate::VarType::Object | crate::VarType::Record | crate::VarType::ProcRef => {
+                    crate::VarType::Object | crate::VarType::Record => {
                         return Err(
                             "Record pointer Variant payload requires host object/record binding"
                                 .into(),
@@ -142,12 +157,22 @@ mod native_record_pin {
         }
     }
 
-    unsafe fn value_from_native(input: *const VARIANT) -> Result<Value, String> {
+    pub(super) unsafe fn value_from_native(input: *const VARIANT) -> Result<Value, String> {
         let mut value = NativeValue::empty();
         // SAFETY: copy/dereference the borrowed live VARIANT into a private owner.
         unsafe {
             checked(VariantCopyInd(&mut value.0, input))?;
             let kind = value.0.Anonymous.Anonymous.vt;
+            if kind == 10 {
+                let code = value.0.Anonymous.Anonymous.Anonymous.scode;
+                return Ok(Value::from_error_code(
+                    if code as u32 & 0xffff_0000 == 0x800a_0000 {
+                        code & 0xffff
+                    } else {
+                        code
+                    },
+                ));
+            }
             if kind == 8 {
                 return Ok(Value::from_string(BStr::clone_from_raw_bstr(
                     value.0.Anonymous.Anonymous.Anonymous.bstrVal.cast_mut(),
@@ -388,7 +413,32 @@ mod native_record_pin {
                     let (target, align) = shape(element, to)?;
                     let target = target.next_multiple_of(align);
                     for i in 0..count {
-                        project_field(element, src.add(i * source), dst.add(i * target), from, to)?;
+                        // Canonical arrays enumerate the last dimension fastest;
+                        // Office inline arrays store the first dimension fastest.
+                        let mut remainder = i;
+                        let mut native = 0;
+                        for bound in bounds.iter().rev() {
+                            native =
+                                native * bound.count as usize + remainder % bound.count as usize;
+                            remainder /= bound.count as usize;
+                        }
+                        let source_index = if from == Representation::Canonical {
+                            i
+                        } else {
+                            native
+                        };
+                        let target_index = if to == Representation::Canonical {
+                            i
+                        } else {
+                            native
+                        };
+                        project_field(
+                            element,
+                            src.add(source_index * source),
+                            dst.add(target_index * target),
+                            from,
+                            to,
+                        )?;
                     }
                 }
                 _ => ptr::copy_nonoverlapping(src, dst, kind.storage_shape()?.0),
@@ -748,13 +798,9 @@ type OwnedNativeRecord = AutomationRecord;
 #[cfg(target_os = "windows")]
 use windows_sys::{
     Win32::Foundation::SysFreeString,
-    Win32::System::Com::{SAFEARRAY, SAFEARRAYBOUND},
-    Win32::System::Ole::{
-        SafeArrayCreate, SafeArrayCreateVector, SafeArrayDestroy, SafeArrayPutElement,
-    },
     Win32::System::Variant::{
-        VARIANT, VT_ARRAY, VT_BOOL, VT_BSTR, VT_CY, VT_DATE, VT_EMPTY, VT_ERROR, VT_I4, VT_I8,
-        VT_NULL, VT_UI1, VT_UNKNOWN, VT_VARIANT, VariantClear,
+        VARIANT, VT_BOOL, VT_BSTR, VT_CY, VT_DATE, VT_EMPTY, VT_ERROR, VT_I4, VT_I8, VT_NULL,
+        VT_UI1, VT_UNKNOWN, VariantClear,
     },
     core::BSTR,
 };
@@ -856,60 +902,6 @@ impl Drop for TrackedBstrAccountingToken {
     }
 }
 
-/// Owns a SAFEARRAY returned by the Windows allocation APIs until its pointer
-/// is installed in an outer VARIANT. Keeping the raw allocation behind a drop
-/// guard makes every error and Rust-unwind exit destroy a partially populated
-/// array, including any BSTR/VARIANT elements already copied into it.
-#[cfg(target_os = "windows")]
-#[derive(Debug)]
-struct OwnedWindowsSafeArray(Option<std::ptr::NonNull<SAFEARRAY>>);
-
-#[cfg(target_os = "windows")]
-impl OwnedWindowsSafeArray {
-    fn from_created(raw: *mut SAFEARRAY) -> Option<Self> {
-        std::ptr::NonNull::new(raw).map(|raw| Self(Some(raw)))
-    }
-
-    fn as_const_ptr(&self) -> *const SAFEARRAY {
-        self.0
-            .expect("live Windows SAFEARRAY guard")
-            .as_ptr()
-            .cast_const()
-    }
-
-    /// Transfer this guard's native array into a fresh outer VARIANT.
-    ///
-    /// # Safety
-    /// `variant` must be a writable zero/VT_EMPTY cell with no owned payload.
-    unsafe fn transfer_into_variant(mut self, variant: *mut VARIANT) {
-        let raw = self.0.expect("live Windows SAFEARRAY guard").as_ptr();
-        // SAFETY: the caller guarantees a fresh writable VARIANT cell. Install
-        // a complete value before disarming the guard; these primitive writes
-        // and the following Option::take cannot fail or panic.
-        unsafe {
-            (*variant).Anonymous.Anonymous.Anonymous.parray = raw;
-            (*variant).Anonymous.Anonymous.vt = VT_ARRAY | VT_VARIANT;
-        }
-        let transferred = self.0.take();
-        debug_assert!(transferred.is_some());
-    }
-}
-
-#[cfg(target_os = "windows")]
-impl Drop for OwnedWindowsSafeArray {
-    fn drop(&mut self) {
-        let Some(raw) = self.0.take() else {
-            return;
-        };
-        // SAFETY: while armed, this guard is the sole owner of the SAFEARRAY
-        // returned by SafeArrayCreate/SafeArrayCreateVector. SafeArrayDestroy
-        // also clears every successfully copied VT_VARIANT element.
-        unsafe {
-            let _ = SafeArrayDestroy(raw.as_ptr().cast_const());
-        }
-    }
-}
-
 #[cfg(target_os = "windows")]
 #[derive(Debug)]
 // `VarPtr(String)` exposes a pointer to a BSTR cell. The helper therefore owns
@@ -988,6 +980,7 @@ unsafe impl Send for OwnedBstrCell {}
 struct OwnedVariant {
     cell: VARIANT,
     tracked_bstr: Option<TrackedBstrAccountingToken>,
+    original_object: Option<(Variant, usize)>,
 }
 
 #[cfg(target_os = "windows")]
@@ -1009,6 +1002,7 @@ impl OwnedVariant {
             // SAFETY: the all-zero bit pattern is a valid VT_EMPTY VARIANT.
             cell: unsafe { std::mem::zeroed() },
             tracked_bstr: None,
+            original_object: None,
         };
         // SAFETY: `&mut owner.cell` points to a writable VARIANT local that was
         // just zeroed to VT_EMPTY, so the callee overwrites no pre-owned
@@ -1017,15 +1011,16 @@ impl OwnedVariant {
         unsafe {
             set_windows_variant_from_variant(&mut owner.cell, value, &mut owner.tracked_bstr)?
         };
+        if value.vtype() == crate::VarType::Object {
+            // SAFETY: the just-projected object cell owns this IUnknown pointer.
+            let pointer = unsafe { owner.cell.Anonymous.Anonymous.Anonymous.punkVal } as usize;
+            owner.original_object = Some((value.clone(), pointer));
+        }
         Ok(owner)
     }
 
     fn as_ptr(&mut self) -> *mut c_void {
         (&mut self.cell as *mut VARIANT).cast()
-    }
-
-    fn as_const_ptr(&self) -> *const VARIANT {
-        &self.cell
     }
 }
 
@@ -1049,7 +1044,7 @@ fn advance_windows_safearray_indices(
     bounds: &[crate::safe_array::SafeArrayBound],
 ) -> Result<(), String> {
     let mut carry = true;
-    for (dimension, bound) in bounds.iter().enumerate() {
+    for (dimension, bound) in bounds.iter().enumerate().rev() {
         if !carry {
             break;
         }
@@ -1084,97 +1079,16 @@ unsafe fn set_windows_variant_array_arg(
     variant: *mut VARIANT,
     array: &crate::safe_array::SafeArray,
 ) -> Result<(), String> {
-    // A declared-but-unallocated array (`Dim a()` never `ReDim`'d, or a fixed
-    // shape whose storage is null) has a descriptor shape but no element
-    // payload. VBA still marshals an array of that shape, so synthesize
-    // default (`Empty`) elements sized to the bounds — an empty array when the
-    // descriptor carries no bounds either. These flow through the same
-    // SAFEARRAY-creation paths below as a real payload.
-    let values: Vec<Variant> = match array.try_variant_elements()? {
-        Some(values) => values,
-        None => {
-            let count = array
-                .bounds()
-                .map(|dims| dims.iter().map(|d| d.count as usize).product::<usize>())
-                .unwrap_or(0);
-            vec![Variant::empty(); count]
-        }
-    };
-
-    if let Some(bounds) = array.bounds()
-        && bounds.len() > 1
-    {
-        let dims = u32::try_from(bounds.len())
-            .map_err(|_| "SAFEARRAY dimension count exceeds supported u32 range".to_string())?;
-        let sa_bounds: Vec<SAFEARRAYBOUND> = bounds
-            .iter()
-            .map(|b| SAFEARRAYBOUND {
-                cElements: b.count,
-                lLbound: b.lower,
-            })
-            .collect();
-        let psa = OwnedWindowsSafeArray::from_created(SafeArrayCreate(
-            VT_VARIANT,
-            dims,
-            sa_bounds.as_ptr(),
-        ))
-        .ok_or_else(|| "SafeArrayCreate(VT_VARIANT) returned null".to_string())?;
-        let mut indices: Vec<i32> = bounds.iter().map(|b| b.lower).collect();
-        let value_count = values.len();
-        for (linear_index, value) in values.into_iter().enumerate() {
-            let element = OwnedVariant::from_variant(&value)?;
-            let hr = SafeArrayPutElement(
-                psa.as_const_ptr(),
-                indices.as_ptr(),
-                element.as_const_ptr().cast(),
-            );
-            // SafeArrayPutElement copies the VARIANT payload; the temporary
-            // still owns its source and accounting token and is cleared now.
-            drop(element);
-            if hr < 0 {
-                return Err(format!(
-                    "SafeArrayPutElement failed with HRESULT {:#010X} at indices {indices:?}",
-                    hr as u32
-                ));
-            }
-            if linear_index + 1 < value_count {
-                advance_windows_safearray_indices(&mut indices, &bounds)?;
-            }
-        }
-        // SAFETY: this function's caller supplies a fresh VT_EMPTY VARIANT.
-        unsafe { psa.transfer_into_variant(variant) };
-        return Ok(());
+    let source = Variant::from_safearray(array.clone());
+    let mut native = native_record_pin::NativeValue::from_value(&source)?;
+    // SAFETY: the caller supplies a fresh VT_EMPTY cell. Transfer the complete
+    // typed descriptor, retaining both element type and all original bounds.
+    unsafe {
+        *variant = native.0;
+        native.0.Anonymous.Anonymous.vt = 0;
     }
-
-    let len = u32::try_from(values.len())
-        .map_err(|_| "SAFEARRAY payload length exceeds supported u32 range".to_string())?;
-    let psa = OwnedWindowsSafeArray::from_created(SafeArrayCreateVector(VT_VARIANT, 0, len))
-        .ok_or_else(|| "SafeArrayCreateVector(VT_VARIANT) returned null".to_string())?;
-    for (offset, value) in values.iter().enumerate() {
-        let element = OwnedVariant::from_variant(value)?;
-        let index = match i32::try_from(offset) {
-            Ok(index) => index,
-            Err(_) => {
-                drop(element);
-                return Err("SAFEARRAY index exceeds supported i32 range".to_string());
-            }
-        };
-        let hr = SafeArrayPutElement(psa.as_const_ptr(), &index, element.as_const_ptr().cast());
-        // SafeArrayPutElement copies the VARIANT payload; clear the temporary
-        // and settle its transfer token independently of the SAFEARRAY copy.
-        drop(element);
-        if hr < 0 {
-            return Err(format!(
-                "SafeArrayPutElement failed with HRESULT {:#010X} at index {}",
-                hr as u32, index
-            ));
-        }
-    }
-    // SAFETY: this function's caller supplies a fresh VT_EMPTY VARIANT.
-    unsafe { psa.transfer_into_variant(variant) };
     Ok(())
 }
-
 #[cfg(target_os = "windows")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn set_windows_variant_from_variant(
@@ -1193,13 +1107,17 @@ unsafe fn set_windows_variant_from_variant(
         }
         crate::VarType::Error => {
             (*variant).Anonymous.Anonymous.vt = VT_ERROR;
-            (*variant).Anonymous.Anonymous.Anonymous.scode =
-                value.as_error_code().expect("error payload");
+            let code = value.as_error_code().expect("error payload");
+            (*variant).Anonymous.Anonymous.Anonymous.scode = if (0..=65535).contains(&code) {
+                (0x800a_0000u32 | code as u32) as i32
+            } else {
+                code
+            };
         }
         crate::VarType::Integer => {
-            (*variant).Anonymous.Anonymous.vt = VT_I4;
-            (*variant).Anonymous.Anonymous.Anonymous.lVal =
-                i32::from(value.as_i16().expect("integer payload"));
+            (*variant).Anonymous.Anonymous.vt = 2;
+            (*variant).Anonymous.Anonymous.Anonymous.iVal =
+                value.as_i16().expect("integer payload");
         }
         crate::VarType::Long => {
             (*variant).Anonymous.Anonymous.vt = VT_I4;
@@ -1361,6 +1279,25 @@ enum PointerEntry {
 }
 
 impl PointerEntry {
+    fn byte_len(&self) -> usize {
+        match self {
+            #[cfg(windows)]
+            Self::Record(value) => value.words.len() * 8,
+            #[cfg(windows)]
+            Self::Bstr(value) => value.0.as_ref().map_or(0, |b| b.payload_bytes().len() + 2),
+            #[cfg(windows)]
+            Self::BstrCell(_) => std::mem::size_of::<BSTR>(),
+            #[cfg(windows)]
+            Self::VariantCell(_) => std::mem::size_of::<VARIANT>(),
+            #[cfg(not(windows))]
+            Self::Utf16(value) => value.len() * 2,
+            Self::Bytes(value) => value.len(),
+            Self::I8(_) | Self::U8(_) => 1,
+            Self::I16(_) | Self::U16(_) | Self::Bool(_) => 2,
+            Self::I32(_) | Self::U32(_) | Self::F32(_) => 4,
+            Self::I64(_) | Self::U64(_) | Self::F64(_) | Self::ObjectIdentity(_) => 8,
+        }
+    }
     fn as_ptr(&mut self) -> *mut c_void {
         match self {
             #[cfg(windows)]
@@ -1396,6 +1333,21 @@ struct PointerRegistry {
 }
 
 impl PointerRegistry {
+    fn base(&self, pointer: i64) -> Option<usize> {
+        let pointer = pointer as usize;
+        if self.entries.contains_key(&pointer) {
+            return Some(pointer);
+        }
+        self.entries.iter().find_map(|(&base, entry)| {
+            pointer
+                .checked_sub(base)
+                .filter(|offset| *offset < entry.byte_len())
+                .map(|_| base)
+        })
+    }
+    fn entry(&self, pointer: i64) -> Option<&PointerEntry> {
+        self.base(pointer).and_then(|base| self.entries.get(&base))
+    }
     fn insert(&mut self, mut entry: PointerEntry) -> i64 {
         let addr = entry.as_ptr() as usize;
         self.entries.insert(addr, entry);
@@ -1406,7 +1358,7 @@ impl PointerRegistry {
         if pointer == 0 {
             return Ok(Variant::from_string(BStr::empty()));
         }
-        let Some(entry) = self.entries.get(&(pointer as usize)) else {
+        let Some(entry) = self.entry(pointer) else {
             return Err(format!(
                 "pointer helper registry does not contain string payload pointer {pointer}"
             ));
@@ -1465,7 +1417,7 @@ impl PointerRegistry {
                 crate::safe_array::SafeArray::from_variants(Vec::new()),
             ));
         }
-        let Some(entry) = self.entries.get(&(pointer as usize)) else {
+        let Some(entry) = self.entry(pointer) else {
             return Err(format!(
                 "pointer helper registry does not contain byte-array payload pointer {pointer}"
             ));
@@ -1490,7 +1442,7 @@ impl PointerRegistry {
         pointer: i64,
         kind: ScalarPointerKind,
     ) -> Result<Variant, String> {
-        let Some(entry) = self.entries.get(&(pointer as usize)) else {
+        let Some(entry) = self.entry(pointer) else {
             return Err(format!(
                 "pointer helper registry does not contain scalar payload pointer {pointer}"
             ));
@@ -1814,11 +1766,40 @@ pub fn read_back_record(pointer: i64) -> Result<Variant, String> {
         .lock()
         .map_err(|_| "pointer helper registry lock poisoned".to_string())?;
     #[cfg(windows)]
-    if let Some(PointerEntry::Record(record)) = guard.entries.get(&(pointer as usize)) {
+    if let Some(PointerEntry::Record(record)) = guard.entry(pointer) {
         return record.read();
     }
     let _ = (&guard, pointer);
     Err("pointer helper registry does not contain a native UDT pin".into())
+}
+
+pub fn read_back_variant(pointer: i64) -> Result<Variant, String> {
+    let guard = registry()
+        .lock()
+        .map_err(|_| "pointer helper registry lock poisoned".to_string())?;
+    #[cfg(windows)]
+    if let Some(PointerEntry::VariantCell(value)) = guard.entry(pointer) {
+        // SAFETY: this pin retains the initialized native VARIANT until copyback
+        // completes. Same-object reads preserve the canonical host binding.
+        unsafe {
+            let kind = value.cell.Anonymous.Anonymous.vt;
+            if matches!(kind, 9 | 13) {
+                let pointer = value.cell.Anonymous.Anonymous.Anonymous.punkVal as usize;
+                if pointer == 0 {
+                    return Ok(Variant::nothing());
+                }
+                if let Some((original, address)) = &value.original_object
+                    && pointer == *address
+                {
+                    return Ok(original.clone());
+                }
+                return Err("VarPtr Variant object replacement requires host binding".into());
+            }
+            return native_record_pin::value_from_native(&value.cell);
+        }
+    }
+    let _ = (&guard, pointer);
+    Err("pointer helper registry does not contain a native Variant pin".into())
 }
 
 pub fn register_byte_buffer(bytes: Vec<u8>) -> Result<i64, String> {
@@ -1843,8 +1824,10 @@ pub fn free_pins(addrs: &[i64]) {
         return;
     };
     for addr in addrs {
-        if *addr != 0 {
-            guard.entries.remove(&(*addr as usize));
+        if *addr != 0
+            && let Some(base) = guard.base(*addr)
+        {
+            guard.entries.remove(&base);
         }
     }
 }
@@ -1862,6 +1845,53 @@ pub fn live_pin_count() -> usize {
 // Test-support code exercising the documented production pointer-helper paths.
 #[allow(clippy::undocumented_unsafe_blocks)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn interior_variant_writeback_retains_payload_and_releases_its_pin() {
+        let pin = super::register_variant_var_variant_pointer(&crate::Variant::empty()).unwrap();
+        let native = super::lookup_pointer(pin)
+            .unwrap()
+            .cast::<windows_sys::Win32::System::Variant::VARIANT>();
+        // SAFETY: this test owns the live empty pin and transfers a fresh BSTR
+        // into its VARIANT. The registry releases it after readback.
+        unsafe {
+            (*native).Anonymous.Anonymous.vt = 8;
+            (*native).Anonymous.Anonymous.Anonymous.bstrVal =
+                windows_sys::Win32::Foundation::SysAllocStringLen([65u16, 0, 955].as_ptr(), 3);
+        }
+        let read = super::read_back_variant(pin + 8).unwrap();
+        assert_eq!(read.as_bstr().unwrap().to_utf16_units(), [65, 0, 955]);
+        super::free_pins(&[pin + 8]);
+        assert!(super::lookup_pointer(pin).is_none());
+        assert_eq!(read.as_bstr().unwrap().to_utf16_units(), [65, 0, 955]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn variant_pointer_tags_and_error_codes_match_automation() {
+        use windows_sys::Win32::System::Variant::VARIANT;
+        let integer =
+            super::register_variant_var_variant_pointer(&crate::Variant::from_i16(7)).unwrap();
+        let error =
+            super::register_variant_var_variant_pointer(&crate::Variant::from_error_code(2042))
+                .unwrap();
+        // SAFETY: both pins retain these initialized cells through inspection.
+        unsafe {
+            let value = super::lookup_pointer(integer).unwrap().cast::<VARIANT>();
+            assert_eq!((*value).Anonymous.Anonymous.vt, 2);
+            let value = super::lookup_pointer(error).unwrap().cast::<VARIANT>();
+            assert_eq!(
+                (*value).Anonymous.Anonymous.Anonymous.scode as u32,
+                0x800a07fa
+            );
+        }
+        assert_eq!(
+            super::read_back_variant(error).unwrap().as_error_code(),
+            Some(2042)
+        );
+        super::free_pins(&[integer, error]);
+    }
+
     use super::{
         ScalarPointerKind, free_pins, lookup_pointer, register_byte_buffer,
         register_object_variant_pointer, register_string_variant_pointer, register_utf16_string,

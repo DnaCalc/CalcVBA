@@ -1,4 +1,5 @@
 Option Explicit
+Private Declare PtrSafe Function CloseXll Lib "__DLL__" Alias "xlAutoClose" () As Long
 Private Declare PtrSafe Function AddDouble Lib "__DLL__" (ByVal left As Double, ByVal right As Double) As Double
 Private Declare PtrSafe Function ConversionProbe Lib "__DLL__" (ByVal value As Double) As Double
 Private Declare PtrSafe Function NativeTwice Lib "__DLL__" (ByVal operand As LongPtr) As LongPtr
@@ -13,6 +14,7 @@ Private Type XLOPER12
     padding As Long
 End Type
 Public Function ProbeNativeExports() As String
+    If CloseXll() <> 1& Then Err.Raise 5&, "XllProbe", "empty registration table close failed"
     Dim inputValue As XLOPER12, result As XLOPER12, address As LongPtr
     Dim observed As String
     observed = CStr(AddDouble(2.25#, 3.5#)) & "|" & CStr(ConversionProbe(3.75#))

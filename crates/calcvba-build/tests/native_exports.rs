@@ -38,7 +38,7 @@ fn patched_numeric_exports_roundtrip_through_vm3_and_jit_declare() {
     .unwrap();
     let bytes = std::fs::read(&output.dll_path).unwrap();
     let file = object::File::parse(bytes.as_slice()).unwrap();
-    assert_eq!(file.exports().unwrap().len(), 34);
+    assert_eq!(file.exports().unwrap().len(), 35);
     assert!(file.section_by_name(".cvbtext").is_some());
     let image = file.section_by_name(".cvbimg").unwrap();
     let parsed =
@@ -89,10 +89,6 @@ fn native_build_refuses_private_optional_paramarray_and_unsupported_reachable_bo
         (
             "Public Function Selected(ByRef values() As String) As Long\nReDim values(0 To 1)\nSelected=1&\nEnd Function",
             "ReDim on a ByRef String() boundary",
-        ),
-        (
-            "Public Function Selected(ByVal x As Long) As Long\nErr.Raise x, \"source\", CStr(x)\nEnd Function",
-            "typed Raise requires Long number/help and constant text",
         ),
         (
             "Private Declare PtrSafe Sub Foreign Lib \"unused\" (ByRef value As Any)\nPublic Type Payload\ntext As String * 4\nEnd Type\nPublic Function Selected(ByVal x As Long) As Long\nDim value As Payload\nForeign value\nSelected=x\nEnd Function",

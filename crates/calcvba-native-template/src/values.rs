@@ -125,7 +125,7 @@ unsafe fn clear(cell: *mut u8, kind: u32) -> Result<(), i32> {
     Ok(())
 }
 
-unsafe fn copy(dst: *mut u8, src: *const u8, to: u32, from: u32) -> Result<(), i32> {
+pub(super) unsafe fn copy(dst: *mut u8, src: *const u8, to: u32, from: u32) -> Result<(), i32> {
     // SAFETY: caller supplies live exact typed cells, permitting self-aliasing.
     unsafe {
         if to == from {
@@ -768,6 +768,54 @@ pub unsafe extern "C" fn cvb_array_redim(
                 (*value).fFeatures |= 0x10;
             }
             cell.write(value);
+        }
+        Ok(())
+    })
+}
+/// # Safety
+/// a and b are nullable, live COM interface pointers; out is a writable Boolean.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cvb_object_is(a: *mut c_void, b: *mut c_void, out: *mut i16) -> i32 {
+    boundary(|| {
+        struct Identity(*mut c_void);
+        impl Drop for Identity {
+            fn drop(&mut self) {
+                // SAFETY: QueryInterface retained exactly this reference.
+                unsafe { release(self.0) };
+            }
+        }
+        unsafe fn identity(pointer: *mut c_void) -> Result<Identity, i32> {
+            if pointer.is_null() {
+                return Ok(Identity(ptr::null_mut()));
+            }
+            const IID_IUNKNOWN: windows_sys::core::GUID = windows_sys::core::GUID {
+                data1: 0,
+                data2: 0,
+                data3: 0,
+                data4: [0xc0, 0, 0, 0, 0, 0, 0, 0x46],
+            };
+            // SAFETY: each incoming pointer exposes the standard IUnknown slots.
+            unsafe {
+                let table = *pointer.cast::<*const *const c_void>();
+                let query: unsafe extern "system" fn(
+                    *mut c_void,
+                    *const windows_sys::core::GUID,
+                    *mut *mut c_void,
+                ) -> i32 = std::mem::transmute(*table);
+                let mut value = ptr::null_mut();
+                status(query(pointer, &IID_IUNKNOWN, &mut value))?;
+                if value.is_null() {
+                    return Err(430);
+                }
+                Ok(Identity(value))
+            }
+        }
+        // SAFETY: each Identity releases its own temporary QI reference, even if
+        // the other query fails. No interface pointer is cached across calls.
+        unsafe {
+            let a = identity(a)?;
+            let b = identity(b)?;
+            out.write(if a.0 == b.0 { -1 } else { 0 });
         }
         Ok(())
     })

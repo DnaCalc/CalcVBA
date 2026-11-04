@@ -54,12 +54,16 @@ pub fn build_native_library(
         .ok_or_else(|| native_error("empty native project"))?;
     let mut roots = Vec::new();
     for selected in &loaded.native_exports {
-        if ["CalcVbaGetLastError", "CalcVbaShutdown"]
-            .iter()
-            .any(|name| selected.exported_name.eq_ignore_ascii_case(name))
+        if [
+            "CalcVbaGetLastError",
+            "CalcVbaGetLastErrorHelp",
+            "CalcVbaShutdown",
+        ]
+        .iter()
+        .any(|name| selected.exported_name.eq_ignore_ascii_case(name))
         {
             return Err(native_error(
-                "CalcVbaGetLastError and CalcVbaShutdown are reserved runtime exports",
+                "CalcVbaGetLastError, CalcVbaGetLastErrorHelp and CalcVbaShutdown are reserved runtime exports",
             ));
         }
         let module = loaded
@@ -262,6 +266,9 @@ pub fn build_native_library(
     let error_accessor = calcvba_jit::native::compile_last_error_wrapper(&mut module, &runtime)
         .map_err(native_error)?;
     exports.push(("CalcVbaGetLastError".into(), None, error_accessor));
+    let help_accessor = calcvba_jit::native::compile_last_error_help_wrapper(&mut module, &runtime)
+        .map_err(native_error)?;
+    exports.push(("CalcVbaGetLastErrorHelp".into(), None, help_accessor));
     let shutdown = calcvba_jit::native::compile_shutdown_wrapper(&mut module, program, &runtime)
         .map_err(native_error)?;
     exports.push(("CalcVbaShutdown".into(), None, shutdown));

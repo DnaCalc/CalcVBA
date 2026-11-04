@@ -82,6 +82,7 @@ The DLL binds to that calling thread; calls from other threads leave caller
 storage alone and report error 1444. Unhandled errors return zero, or an HRESULT
 with a trailing result pointer under ErrorPolicy=HResult. CalcVbaGetLastError
 returns the number and optional caller-owned source/description BSTRs.
+CalcVbaGetLastErrorHelp retrieves retained dynamic Err.Raise help file/context.
 Call CalcVbaShutdown on that thread before unloading to release module owners.
 Some reachable constructs are still refused; see the
 [native design](docs/spec/NATIVE_EXPORT_PE_TEMPLATE_V1.md) for limits.

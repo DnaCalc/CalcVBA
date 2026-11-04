@@ -202,3 +202,10 @@ Public Function ValueSuite() As String
     value = 1&: result = result & ":" & CStr(VariantTruth(value))
     ValueSuite = result
 End Function
+
+Public Function RaiseDynamic(ByVal number As Long, ByVal text As String) As Long
+    Dim source As Variant, description As Variant
+    source = "Native." & text
+    description = text & " failure"
+    Err.Raise number, source, description, text & ".chm", number + 7&
+End Function

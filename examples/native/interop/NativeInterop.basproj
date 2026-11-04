@@ -39,5 +39,6 @@
     <NativeExport Include="ReadLastDllError"><Module>Interop</Module><Procedure>ReadLastDllError</Procedure></NativeExport>
     <NativeExport Include="SameString"><Module>Interop</Module><Procedure>SameString</Procedure></NativeExport>
     <NativeExport Include="JoinArray"><Module>Interop</Module><Procedure>JoinArray</Procedure></NativeExport>
+    <NativeExport Include="RaiseDynamic"><Module>Interop</Module><Procedure>RaiseDynamic</Procedure></NativeExport>
   </ItemGroup>
 </Project>

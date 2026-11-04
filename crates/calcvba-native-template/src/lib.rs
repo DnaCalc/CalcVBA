@@ -2,6 +2,8 @@
 //! retain helpers through linking; the finisher hides them in the final image.
 //! The runtime has no loader, dispatcher, interpreter or JIT dependency.
 #[cfg(windows)]
+mod errors;
+#[cfg(windows)]
 mod foreign;
 #[cfg(windows)]
 mod values;
@@ -161,9 +163,14 @@ mod thread {
         source: *const u8,
         len: usize,
     ) -> i32 {
+        // SAFETY: error-owner destruction must not change Err.LastDllError.
+        let saved = unsafe { GetLastError() };
         // SAFETY: emitted wrappers call only after the thread check succeeds.
         unsafe {
             let explicit = (*context).error_number == code && code != 0;
+            if !explicit || (*context).custom_error & 0x100 == 0 {
+                super::errors::clear(context);
+            }
             if !explicit || (*context).custom_error & 1 == 0 {
                 (*context).error_source = source;
                 (*context).error_source_len = len;
@@ -174,6 +181,8 @@ mod thread {
             (*context).error_number = code;
         }
         LAST_ERROR.store(code, Ordering::Release);
+        // SAFETY: all owner cleanup has completed on this calling thread.
+        unsafe { SetLastError(saved) };
         calcvba_rt_abi::native_export::hresult(code)
     }
 
@@ -193,6 +202,7 @@ mod thread {
         let number = if number == 0 { 5 } else { number };
         // SAFETY: generated code retains this unique context and both constants.
         unsafe {
+            super::errors::clear(context);
             (*context).error_number = number;
             (*context).error_source = source;
             (*context).error_source_len = source_len;
@@ -255,16 +265,73 @@ mod thread {
         // SAFETY: caller provided live optional output cells, never inputs.
         unsafe {
             if !source.is_null() {
-                source.write(calcvba_runtime::bstr::BStr::from(text).into_raw_bstr());
+                let value = if code == (*context).error_number
+                    && (*context).custom_error & 0x101 == 0x101
+                {
+                    (&*(*context).error_owner.cast::<super::errors::ErrorText>())
+                        .source
+                        .clone()
+                } else {
+                    calcvba_runtime::bstr::BStr::from(text)
+                };
+                source.write(value.into_raw_bstr());
             }
             if !description.is_null() {
-                description.write(calcvba_runtime::bstr::BStr::from(message).into_raw_bstr());
+                let value = if code == (*context).error_number
+                    && (*context).custom_error & 0x102 == 0x102
+                {
+                    (&*(*context).error_owner.cast::<super::errors::ErrorText>())
+                        .description
+                        .clone()
+                } else {
+                    calcvba_runtime::bstr::BStr::from(message)
+                };
+                description.write(value.into_raw_bstr());
             }
             SetLastError(if wrong {
                 WRONG_THREAD as u32
             } else {
                 saved_error
             });
+        }
+        code
+    }
+
+    /// # Safety
+    /// The context belongs to this image. Nonnull outputs are writable BSTR*/Long*.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn cvb_get_error_help(
+        context: *const Context,
+        help_file: *mut *mut u16,
+        help_context: *mut i32,
+    ) -> i32 {
+        // SAFETY: read only the current thread's Win32 error state.
+        let saved = unsafe { GetLastError() };
+        if cvb_enter_scalar() != 0 {
+            return WRONG_THREAD;
+        }
+        let code = LAST_ERROR.load(Ordering::Acquire);
+        // SAFETY: only the accepted owning thread reads retained error owners.
+        unsafe {
+            let text = if code != 0
+                && code == (*context).error_number
+                && (*context).custom_error & 0x100 != 0
+            {
+                Some(&*(*context).error_owner.cast::<super::errors::ErrorText>())
+            } else {
+                None
+            };
+            if !help_file.is_null() {
+                help_file.write(
+                    text.map(|t| t.help_file.clone())
+                        .unwrap_or_else(calcvba_runtime::bstr::BStr::empty)
+                        .into_raw_bstr(),
+                );
+            }
+            if !help_context.is_null() {
+                help_context.write(text.map_or(0, |t| t.help_context));
+            }
+            SetLastError(saved);
         }
         code
     }

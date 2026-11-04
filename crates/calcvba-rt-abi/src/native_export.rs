@@ -12,6 +12,8 @@ pub struct Context {
     pub error_description_len: usize,
     pub error_number: i32,
     pub custom_error: u32,
+    /// Owned error text retained past the activation that raised it.
+    pub error_owner: *mut core::ffi::c_void,
 }
 
 pub const WRONG_THREAD: i32 = 1444;

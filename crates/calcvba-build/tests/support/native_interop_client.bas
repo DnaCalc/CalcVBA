@@ -1,4 +1,6 @@
 Option Explicit
+Private Declare PtrSafe Function NRaiseDynamic Lib "__DLL__" Alias "RaiseDynamic" (ByVal number As Long, ByVal text As LongPtr) As Long
+Private Declare PtrSafe Function NHelp Lib "__DLL__" Alias "CalcVbaGetLastErrorHelp" (ByRef helpFile As LongPtr, ByRef helpContext As Long) As Long
 Private Declare PtrSafe Function NGrowMatrix Lib "__DLL__" Alias "GrowMatrix" (ByRef values() As Double) As Double
 Private Declare PtrSafe Function NShutdown Lib "__DLL__" Alias "CalcVbaShutdown" () As Long
 Private Declare PtrSafe Function NStoreString Lib "__DLL__" Alias "StoreString" (ByVal value As LongPtr) As LongPtr
@@ -164,6 +166,20 @@ Public Function ProbeNativeExports() As String
     Set object = CreateObject("Scripting.Dictionary")
     AppendValue result, CLng(NHoldObject(ObjPtr(object)))
     Set object = Nothing
+    Dim helpFile As LongPtr, helpContext As Long
+    text = "dynamic"
+    AppendValue result, NRaiseDynamic(513&, StrPtr(text))
+    AppendValue result, NError(source, description)
+    returned = TakeString(source): text = TakeString(description)
+    If returned <> "Native.dynamic" Or text <> "dynamic failure" Then Err.Raise 527
+    AppendValue result, Len(returned): AppendValue result, Len(text)
+    AppendValue result, NHelp(helpFile, helpContext)
+    returned = TakeString(helpFile)
+    If returned <> "dynamic.chm" Or helpContext <> 520& Then Err.Raise 528
+    AppendValue result, Len(returned): AppendValue result, helpContext
+    If NNext(0&) <> 10& Or NHelp(helpFile, helpContext) <> 0& Then Err.Raise 529
+    returned = TakeString(helpFile)
+    If returned <> "" Or helpContext <> 0& Then Err.Raise 530
     AppendValue result, NShutdown()
     AppendValue result, NNext(0&)
     AppendValue result, NError(source, description)

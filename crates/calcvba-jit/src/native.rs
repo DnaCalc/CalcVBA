@@ -353,25 +353,6 @@ pub fn compile_native_scalars(
                     format!("unsupported terminator {:?}", block.terminator),
                 ));
             }
-            if let OxTerminator::Raise {
-                source,
-                description,
-                help_file,
-                help_context,
-                ..
-            } = &block.terminator
-                && (source
-                    .iter()
-                    .chain(description)
-                    .any(|op| !matches!(op, OxOperand::Const(OxConst::Str(_))))
-                    || help_file.is_some()
-                    || help_context.is_some())
-            {
-                return Err(problem(
-                    func,
-                    "Err.Raise with dynamic Source/Description or HelpFile/HelpContext is not yet admitted",
-                ));
-            }
         }
         let mut signature = module.make_signature();
         let ptr = module.target_config().pointer_type();
@@ -907,6 +888,8 @@ pub fn compile_native_scalars(
                         number,
                         source,
                         description,
+                        help_file,
+                        help_context,
                         ..
                     } => {
                         let number_cell = b.create_sized_stack_slot(StackSlotData::new(
@@ -927,24 +910,35 @@ pub fn compile_native_scalars(
                         let number = b.ins().stack_load(types::I32, number_cell, 0);
                         let mut text = Vec::new();
                         let mut flags = 0;
-                        for (index, operand) in [source, description].iter().enumerate() {
-                            if let Some(OxOperand::Const(OxConst::Str(value))) = operand {
-                                let pointer =
-                                    values::data(module, &mut b, value.as_bytes().to_vec(), 1);
-                                let len = b.ins().iconst(types::I64, value.len() as i64);
-                                text.extend([pointer, len]);
+                        for (index, operand) in [source, description, help_file, help_context]
+                            .iter()
+                            .enumerate()
+                        {
+                            if let Some(operand) = operand {
+                                let cell = values.cell(module, &mut b, operand);
+                                let kind = b.ins().iconst(
+                                    types::I32,
+                                    i64::from(values::kind(
+                                        plan.layout.operand_type(operand).unwrap(),
+                                    )),
+                                );
+                                text.extend([cell, kind]);
                                 flags |= 1 << index;
                             } else {
                                 let empty = b.ins().iconst(types::I64, 0);
-                                text.extend([empty, empty]);
+                                let kind = b.ins().iconst(types::I32, 0);
+                                text.extend([empty, kind]);
                             }
                         }
                         let flags = b.ins().iconst(types::I32, flags);
                         let helper =
-                            module.declare_func_in_func(value_helpers["cvb_raise"], b.func);
+                            module.declare_func_in_func(value_helpers["cvb_raise_dynamic"], b.func);
                         let call = b.ins().call(
                             helper,
-                            &[runtime, number, text[0], text[1], text[2], text[3], flags],
+                            &[
+                                runtime, number, text[0], text[1], text[2], text[3], text[4],
+                                text[5], text[6], text[7], flags,
+                            ],
                         );
                         let status = b.inst_results(call)[0];
                         b.ins().return_(&[status]);
@@ -1422,11 +1416,37 @@ pub fn compile_last_error_wrapper(
     module: &mut impl Module,
     runtime: &NativeRuntime,
 ) -> Result<ClifFuncId, JitError> {
+    compile_error_accessor(
+        module,
+        runtime,
+        "CalcVbaGetLastError",
+        runtime.get_last_error,
+    )
+}
+
+pub fn compile_last_error_help_wrapper(
+    module: &mut impl Module,
+    runtime: &NativeRuntime,
+) -> Result<ClifFuncId, JitError> {
+    compile_error_accessor(
+        module,
+        runtime,
+        "CalcVbaGetLastErrorHelp",
+        runtime.values["cvb_get_error_help"],
+    )
+}
+
+fn compile_error_accessor(
+    module: &mut impl Module,
+    runtime: &NativeRuntime,
+    name: &str,
+    helper: ClifFuncId,
+) -> Result<ClifFuncId, JitError> {
     let mut signature = module.make_signature();
     signature.params = vec![AbiParam::new(types::I64); 2];
     signature.returns.push(AbiParam::new(types::I32));
     let id = module
-        .declare_function("CalcVbaGetLastError", Linkage::Export, &signature)
+        .declare_function(name, Linkage::Export, &signature)
         .map_err(module_err)?;
     let mut context = module.make_context();
     context.func.signature = signature;
@@ -1439,7 +1459,7 @@ pub fn compile_last_error_wrapper(
         let params = b.block_params(entry).to_vec();
         let state = module.declare_data_in_func(runtime.context, b.func);
         let state = b.ins().global_value(types::I64, state);
-        let helper = module.declare_func_in_func(runtime.get_last_error, b.func);
+        let helper = module.declare_func_in_func(helper, b.func);
         let call = b.ins().call(helper, &[state, params[0], params[1]]);
         let value = b.inst_results(call)[0];
         b.ins().return_(&[value]);

@@ -33,8 +33,7 @@ The numeric-width fixture also checks casts, narrow storage, values above Double
 exact integer range, and overflow through all three clients.
 Remaining refusals include Optional/ParamArray signatures,
 project classes, unsupported native Declare signatures, Variant array receivers,
-SAFEARRAYs of UDT, UDT Variant fields, fixed-string/array field access, and dynamic
-Err.Raise text or help fields. Diagnostics identify the construct and procedure's
+SAFEARRAYs of UDT, UDT Variant fields and fixed-string/array field access. Diagnostics identify the construct and procedure's
 source declaration. ReDim on ByRef String() parameters is refused: an owned
 Excel probe showed that returning a replacement Unicode SAFEARRAY makes VBA
 Declare expand its UTF-16 bytes as ANSI ("abc" becomes six code units).
@@ -42,8 +41,8 @@ Local String() ReDim and element updates through an existing boundary array work
 Call CalcVbaShutdown on the owning thread before FreeLibrary
 to release module owners outside loader lock. It closes the context; later calls
 return error 5 and cannot initialize it again. The remaining N3 constructs are
-explicit refusals. Object Is currently compares interface addresses; canonical
-IUnknown identity across distinct interfaces remains unimplemented.
+explicit refusals. Object Is queries canonical IUnknown identity, releasing both
+temporary references on every path. Distinct interfaces of one object compare equal.
 General scalar/String/Variant/UDT pointers and ordinary native
 Declare calls are now compiled inside exported bodies. Declare admission rejects
 ByRef ANSI String, private/forced ByRef arguments, owning UDT marshalling and
@@ -127,6 +126,12 @@ Excel VBA `Declare` of the export round-trips exactly.
   Either output can be null. Non-null outputs receive owning BSTRs; free them
   with SysFreeString. Success clears the number. An explicit Err.Raise preserves
   its source/description; default Source is the project name, as observed in Excel.
+  Dynamic source, description, help file and help context arguments are converted
+  before retaining independent owners, so activation cleanup cannot invalidate them.
+- `int32_t CalcVbaGetLastErrorHelp(BSTR*, int32_t*)` returns the same error number
+  and optional help file/context. Free a returned BSTR with SysFreeString. Successful
+  exports and CalcVbaShutdown release retained text and reset these fields. Both
+  accessors leave output storage untouched on foreign-thread calls.
 - `int32_t CalcVbaShutdown(void)` releases owning module globals and returns a VBA
   status number. Repeated shutdown is harmless. Calls from a foreign thread still
   return 1444 and leave all owners intact. No VBA cleanup runs in DllMain.

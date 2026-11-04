@@ -1455,8 +1455,10 @@ impl ScalarLayout {
                             .as_ref()
                             .is_some_and(|o| layout.operand_type(o) != Ok(ScalarType::Long))
                         || [source, description, help_file].iter().any(|o| {
-                            o.as_ref()
-                                .is_some_and(|o| !matches!(o, OxOperand::Const(OxConst::Str(_))))
+                            o.as_ref().is_some_and(|o| {
+                                !layout.native_numbers
+                                    && !matches!(o, OxOperand::Const(OxConst::Str(_)))
+                            })
                         })
                     {
                         return Err(

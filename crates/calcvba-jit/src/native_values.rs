@@ -1,6 +1,24 @@
 use super::*;
 
 pub(super) const HELPERS: &[(&str, &[ir::Type])] = &[
+    ("cvb_object_is", &[types::I64; 3]),
+    ("cvb_get_error_help", &[types::I64; 3]),
+    (
+        "cvb_raise_dynamic",
+        &[
+            types::I64,
+            types::I32,
+            types::I64,
+            types::I32,
+            types::I64,
+            types::I32,
+            types::I64,
+            types::I32,
+            types::I64,
+            types::I32,
+            types::I32,
+        ],
+    ),
     ("cvb_declare", &[types::I64; 4]),
     ("cvb_declare_clear", &[types::I64]),
     ("cvb_value_truthy", &[types::I64, types::I64, types::I32]),
@@ -735,11 +753,8 @@ impl Values<'_> {
         if let OxInst::CompareObjectIs { dst, lhs, rhs } = inst {
             let a = self.operand(module, b, lhs, ScalarType::HostObject);
             let c = self.operand(module, b, rhs, ScalarType::HostObject);
-            let equal = b.ins().icmp(ir::condcodes::IntCC::Equal, a, c);
-            let value = b.ins().uextend(types::I32, equal);
-            let value = b.ins().ineg(value);
-            self.lower
-                .store_slot(b, layout.slot(*dst).unwrap(), ScalarType::Boolean, value);
+            let out = self.address(b, layout.slot(*dst).unwrap());
+            self.call(module, b, "cvb_object_is", &[a, c, out]);
             return true;
         }
         if matches!(inst, OxInst::ValidateAssignment { .. }) {

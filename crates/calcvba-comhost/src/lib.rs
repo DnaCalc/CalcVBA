@@ -41,12 +41,12 @@ use calcvba_runtime::{
 use windows_sys::Win32::Foundation::{ERROR_SUCCESS, HMODULE, SysStringByteLen};
 use windows_sys::Win32::System::Com::{
     DISPATCH_METHOD, DISPATCH_PROPERTYGET, DISPATCH_PROPERTYPUT, DISPATCH_PROPERTYPUTREF,
-    DISPPARAMS, EXCEPINFO, SAFEARRAY, SYS_WIN64,
+    DISPPARAMS, EXCEPINFO, SAFEARRAY, SYS_WIN64, SetErrorInfo,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleFileNameW;
 use windows_sys::Win32::System::Ole::{
-    LoadTypeLibEx, REGKIND_NONE, RegisterTypeLibForUser, SafeArrayGetDim, SafeArrayGetLBound,
-    SafeArrayGetUBound, UnRegisterTypeLibForUser,
+    CreateErrorInfo, LoadTypeLibEx, REGKIND_NONE, RegisterTypeLibForUser, SafeArrayGetDim,
+    SafeArrayGetLBound, SafeArrayGetUBound, UnRegisterTypeLibForUser,
 };
 use windows_sys::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_WRITE, REG_DWORD, REG_SZ, RegCloseKey, RegCreateKeyExW,
@@ -57,6 +57,9 @@ use windows_sys::Win32::System::Variant::{
     VARIANT, VT_ARRAY, VT_BYREF, VT_DISPATCH, VT_EMPTY, VT_I4, VT_UNKNOWN, VT_VARIANT, VariantClear,
 };
 use windows_sys::core::{BSTR, GUID};
+
+mod error_info;
+use error_info::{interface_supports_error_info, with_project_session};
 
 struct HostArtifacts {
     project_name: String,
@@ -205,6 +208,18 @@ const IID_NULL: GUID = GUID {
     data3: 0,
     data4: [0; 8],
 };
+const IID_IERRORINFO: GUID = GUID {
+    data1: 0x1CF2_B120,
+    data2: 0x547D,
+    data3: 0x101B,
+    data4: [0x8E, 0x65, 0x08, 0x00, 0x2B, 0x2B, 0xD1, 0x19],
+};
+const IID_ISUPPORTERRORINFO: GUID = GUID {
+    data1: 0xDF0B_3D60,
+    data2: 0x548F,
+    data3: 0x101B,
+    data4: [0x8E, 0x65, 0x08, 0x00, 0x2B, 0x2B, 0xD1, 0x19],
+};
 const IID_ICONNECTIONPOINTCONTAINER: GUID = GUID {
     data1: 0xB196_B284,
     data2: 0xBAB4,
@@ -233,8 +248,14 @@ static GLOBAL_REF_COUNT: AtomicU32 = AtomicU32::new(0);
 static DESCRIPTOR: OnceLock<Result<ComServerDescriptor, String>> = OnceLock::new();
 static mut MODULE_HANDLE: HMODULE = ptr::null_mut();
 
+enum SessionSlot {
+    Uninitialized,
+    Running,
+    Ready(Box<ProjectRuntimeSession>),
+}
+
 thread_local! {
-    static SESSION: RefCell<Option<ProjectRuntimeSession>> = const { RefCell::new(None) };
+    static SESSION: RefCell<SessionSlot> = const { RefCell::new(SessionSlot::Uninitialized) };
     static WRAPPERS: RefCell<HashMap<i32, Vec<*mut DispatchObject>>> = RefCell::new(HashMap::new());
 }
 
@@ -392,6 +413,33 @@ struct BoundedDualInterface {
 }
 
 #[repr(C)]
+struct SupportErrorInfoVtbl {
+    query_interface: unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> i32,
+    add_ref: unsafe extern "system" fn(*mut c_void) -> u32,
+    release: unsafe extern "system" fn(*mut c_void) -> u32,
+    interface_supports_error_info: unsafe extern "system" fn(*mut c_void, *const GUID) -> i32,
+}
+
+#[repr(C)]
+struct CreateErrorInfoVtbl {
+    query_interface: unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> i32,
+    add_ref: unsafe extern "system" fn(*mut c_void) -> u32,
+    release: unsafe extern "system" fn(*mut c_void) -> u32,
+    set_guid: unsafe extern "system" fn(*mut c_void, *const GUID) -> i32,
+    set_source: unsafe extern "system" fn(*mut c_void, *const u16) -> i32,
+    set_description: unsafe extern "system" fn(*mut c_void, *const u16) -> i32,
+    set_help_file: unsafe extern "system" fn(*mut c_void, *const u16) -> i32,
+    set_help_context: unsafe extern "system" fn(*mut c_void, u32) -> i32,
+}
+
+static SUPPORT_ERROR_INFO_VTBL: SupportErrorInfoVtbl = SupportErrorInfoVtbl {
+    query_interface: dual_query_interface,
+    add_ref: dual_add_ref,
+    release: dual_release,
+    interface_supports_error_info,
+};
+
+#[repr(C)]
 struct ImportedInterfaceFace {
     vtbl: *const c_void,
     owner: *mut DispatchObject,
@@ -407,6 +455,7 @@ struct ConnectionSink {
 struct DispatchObject {
     vtbl: *const IDispatchVtbl,
     dual: BoundedDualInterface,
+    error_info: BoundedDualInterface,
     imported_faces: Box<[ImportedInterfaceFace]>,
     cpc: ConnectionPointContainer,
     cp: ConnectionPoint,
@@ -805,14 +854,11 @@ unsafe extern "system" fn factory_create_instance(
         return E_FAIL;
     };
 
-    let runtime_object = match with_session(|session| {
-        session
-            .create_class_instance(&class.class_name)
-            .map_err(|err| err.to_string())
-    }) {
-        Ok(object) => object,
-        Err(_) => return E_FAIL,
-    };
+    let runtime_object =
+        match with_project_session(|session| session.create_class_instance(&class.class_name)) {
+            Ok(object) => object,
+            Err(hr) => return hr,
+        };
 
     let dispatch = allocate_dispatch_object(factory.class_index, runtime_object);
     let hr = dispatch_query_interface(dispatch, riid, out);
@@ -858,6 +904,11 @@ unsafe extern "system" fn dispatch_query_interface(
     if guid_eq(&*riid, &IID_IUNKNOWN) || guid_eq(&*riid, &IID_IDISPATCH) {
         dispatch_add_ref(this);
         *out = this;
+        S_OK
+    } else if guid_eq(&*riid, &IID_ISUPPORTERRORINFO) {
+        dispatch_add_ref(this);
+        *out = (&mut (*(this.cast::<DispatchObject>())).error_info as *mut BoundedDualInterface)
+            .cast();
         S_OK
     } else if supports_default_interface {
         dispatch_add_ref(this);
@@ -1149,7 +1200,7 @@ unsafe fn generated_server_object_aware_args(
     let params = &*params;
     let arg_count = params.cArgs as usize;
     let expected_count = member.parameter_types.len();
-    if arg_count != expected_count {
+    if arg_count > expected_count {
         return Err(format!(
             "expected {expected_count} argument(s) for {}, got {arg_count}",
             member.name
@@ -1158,7 +1209,16 @@ unsafe fn generated_server_object_aware_args(
     if arg_count > 0 && params.rgvarg.is_null() {
         return Err("IDispatch::Invoke DISPPARAMS had cArgs > 0 with null rgvarg".to_string());
     }
-    if params.cNamedArgs != 0 {
+    let property_put = matches!(
+        member.invoke_kind,
+        ComInvokeKind::PropertyPut | ComInvokeKind::PropertyPutRef
+    );
+    if params.cNamedArgs != 0
+        && !(property_put
+            && params.cNamedArgs == 1
+            && !params.rgdispidNamedArgs.is_null()
+            && *params.rgdispidNamedArgs == -3)
+    {
         return Err(
             "object-argument WrappedComServer Invoke currently supports positional arguments only"
                 .to_string(),
@@ -1166,8 +1226,8 @@ unsafe fn generated_server_object_aware_args(
     }
 
     let mut args = Vec::with_capacity(expected_count);
-    for (logical_index, param) in member.parameter_types.iter().enumerate() {
-        let com_index = expected_count - 1 - logical_index;
+    for (logical_index, param) in member.parameter_types.iter().take(arg_count).enumerate() {
+        let com_index = arg_count - 1 - logical_index;
         let variant = &*params.rgvarg.add(com_index);
         args.push(
             generated_server_variant_arg(*param, variant, session)
@@ -1177,17 +1237,16 @@ unsafe fn generated_server_object_aware_args(
     Ok(args)
 }
 
-// Object arguments need the generated-server resolver: a raw VT_DISPATCH only
-// becomes a project ObjectRef when it points at one of this shim's wrappers.
+// Recover local project identities before binding foreign Automation objects.
 unsafe fn generated_server_variant_arg(
     param: ComParamType,
     variant: &VARIANT,
     session: &mut ProjectRuntimeSession,
 ) -> Result<Variant, String> {
-    if matches!(param, ComParamType::Object | ComParamType::ByRefObject) {
-        generated_server_object_variant_arg(variant)
-    } else if variant_contains_dispatch_or_unknown(variant) {
-        generated_server_foreign_object_variant_arg(variant, session)
+    if matches!(param, ComParamType::Object | ComParamType::ByRefObject)
+        || variant_contains_dispatch_or_unknown(variant)
+    {
+        generated_server_object_variant_arg(variant, session)
     } else {
         calcvba_com::windows_variant::variant_to_com_value(variant)
             .and_then(|value| value.to_variant())
@@ -1207,13 +1266,17 @@ unsafe fn variant_contains_dispatch_or_unknown(variant: &VARIANT) -> bool {
     matches!(vt, VT_DISPATCH | VT_UNKNOWN)
 }
 
-unsafe fn generated_server_foreign_object_variant_arg(
+unsafe fn generated_server_object_variant_arg(
     variant: &VARIANT,
     session: &mut ProjectRuntimeSession,
 ) -> Result<Variant, String> {
     let dispatch = retained_dispatch_from_object_variant(variant)?;
     if dispatch.is_null() {
-        return Err("object argument was Nothing".to_string());
+        return Ok(Variant::nothing());
+    }
+    if let Ok(object) = object_ref_from_generated_interface(dispatch) {
+        release_unknown(dispatch);
+        return Ok(Variant::from_object_ref(object));
     }
     session
         .bind_native_dispatch_object_value("IDispatch", dispatch)
@@ -1243,7 +1306,11 @@ unsafe fn retained_dispatch_from_object_variant(variant: &VARIANT) -> Result<*mu
             return Ok(dispatch);
         }
         if base_vt == VT_UNKNOWN {
-            return Err("VT_BYREF|VT_UNKNOWN object Variant is not supported yet".to_string());
+            let unknown = variant.Anonymous.Anonymous.Anonymous.ppunkVal;
+            if unknown.is_null() {
+                return Err("VT_BYREF|VT_UNKNOWN carried null ppunkVal pointer".into());
+            }
+            return generated_dispatch_from_unknown((*unknown).cast());
         }
     }
     if vt == VT_DISPATCH {
@@ -1259,53 +1326,6 @@ unsafe fn retained_dispatch_from_object_variant(variant: &VARIANT) -> Result<*mu
         );
     }
     Err(format!("expected object VARIANT, got vt={vt}"))
-}
-
-unsafe fn generated_server_object_variant_arg(variant: &VARIANT) -> Result<Variant, String> {
-    let vt = variant.Anonymous.Anonymous.vt;
-    let by_ref = vt & VT_BYREF != 0;
-    let base_vt = vt & !VT_BYREF;
-    if base_vt == VT_VARIANT && by_ref {
-        let inner = variant.Anonymous.Anonymous.Anonymous.pvarVal;
-        if inner.is_null() {
-            return Err("ByRef Variant object argument has a null target".into());
-        }
-        return generated_server_object_variant_arg(&*inner);
-    }
-    let (interface, release_after) = match (by_ref, base_vt) {
-        (false, VT_DISPATCH) => (variant.Anonymous.Anonymous.Anonymous.pdispVal.cast(), false),
-        (true, VT_DISPATCH) => {
-            let ppdispatch = variant.Anonymous.Anonymous.Anonymous.ppdispVal;
-            if ppdispatch.is_null() {
-                return Err("VT_BYREF|VT_DISPATCH carried null ppdispVal pointer".to_string());
-            }
-            ((*ppdispatch).cast(), false)
-        }
-        (false, VT_UNKNOWN) => (
-            generated_dispatch_from_unknown(variant.Anonymous.Anonymous.Anonymous.punkVal.cast())?,
-            true,
-        ),
-        _ => {
-            return Err(format!(
-                "expected VT_DISPATCH object argument, got VARIANT vt={vt}"
-            ));
-        }
-    };
-    if interface.is_null() {
-        return Ok(Variant::nothing());
-    }
-    let result = object_ref_from_generated_interface(interface)
-        .map(Variant::from_object_ref)
-        .map_err(|hr| {
-            format!(
-                "object argument was not an OxVBA generated object interface: 0x{:08X}",
-                hr as u32
-            )
-        });
-    if release_after {
-        release_unknown(interface);
-    }
-    result
 }
 
 unsafe fn generated_dispatch_from_unknown(unknown: *mut c_void) -> Result<*mut c_void, String> {
@@ -1513,11 +1533,16 @@ unsafe extern "system" fn dual_slot8_object_arg_long_return(
         return E_POINTER;
     }
     *out = 0;
-    let object_arg = match object_ref_from_generated_interface(object) {
+    let object_arg = match with_session(|session| {
+        let mut value: VARIANT = std::mem::zeroed();
+        value.Anonymous.Anonymous.vt = VT_DISPATCH;
+        value.Anonymous.Anonymous.Anonymous.pdispVal = object.cast();
+        generated_server_object_variant_arg(&value, session)
+    }) {
         Ok(object_arg) => object_arg,
-        Err(hr) => return hr,
+        Err(_) => return DISP_E_TYPEMISMATCH,
     };
-    match invoke_bounded_dual_long_member(this, 8, vec![Variant::from_object_ref(object_arg)]) {
+    match invoke_bounded_dual_long_member(this, 8, vec![object_arg]) {
         Ok(value) => {
             *out = value;
             S_OK
@@ -1548,17 +1573,14 @@ unsafe fn invoke_bounded_dual_long_member(
             member.vtable_slot == Some(slot) && member_supports_bounded_dual_long_result(member)
         })
         .ok_or(E_NOTIMPL)?;
-    let value = with_session(|session| {
-        session
-            .invoke_member_values(
-                (*owner).object.clone(),
-                &member.name,
-                Some(project_member_kind(member.invoke_kind)),
-                args,
-            )
-            .map_err(|err| err.to_string())
-    })
-    .map_err(|_| E_FAIL)?;
+    let value = with_project_session(|session| {
+        session.invoke_member_values(
+            (*owner).object.clone(),
+            &member.name,
+            Some(project_member_kind(member.invoke_kind)),
+            args,
+        )
+    })?;
     value.as_i32().ok_or(DISP_E_TYPEMISMATCH)
 }
 
@@ -1577,17 +1599,14 @@ unsafe fn invoke_bounded_dual_double_member(
             member.vtable_slot == Some(slot) && member_supports_bounded_dual_scalar_method(member)
         })
         .ok_or(E_NOTIMPL)?;
-    let value = with_session(|session| {
-        session
-            .invoke_member_values(
-                (*owner).object.clone(),
-                &member.name,
-                Some(project_member_kind(member.invoke_kind)),
-                args,
-            )
-            .map_err(|err| err.to_string())
-    })
-    .map_err(|_| E_FAIL)?;
+    let value = with_project_session(|session| {
+        session.invoke_member_values(
+            (*owner).object.clone(),
+            &member.name,
+            Some(project_member_kind(member.invoke_kind)),
+            args,
+        )
+    })?;
     value.as_f64().ok_or(DISP_E_TYPEMISMATCH)
 }
 
@@ -1606,17 +1625,14 @@ unsafe fn invoke_bounded_dual_object_member(
             member.vtable_slot == Some(slot) && member_supports_bounded_dual_object_return(member)
         })
         .ok_or(E_NOTIMPL)?;
-    let value = with_session(|session| {
-        session
-            .invoke_member_values(
-                (*owner).object.clone(),
-                &member.name,
-                Some(project_member_kind(member.invoke_kind)),
-                args,
-            )
-            .map_err(|err| err.to_string())
-    })
-    .map_err(|_| E_FAIL)?;
+    let value = with_project_session(|session| {
+        session.invoke_member_values(
+            (*owner).object.clone(),
+            &member.name,
+            Some(project_member_kind(member.invoke_kind)),
+            args,
+        )
+    })?;
     let object = value.as_object_ref().ok_or(DISP_E_TYPEMISMATCH)?;
     resolve_runtime_object(object).map_err(|_| E_FAIL)
 }
@@ -1637,7 +1653,7 @@ unsafe fn invoke_bounded_dual_unit_member(
                 && member_supports_bounded_dual_long_property_put(member)
         })
         .ok_or(E_NOTIMPL)?;
-    with_session(|session| {
+    with_project_session(|session| {
         session
             .invoke_member_values(
                 (*owner).object.clone(),
@@ -1646,9 +1662,7 @@ unsafe fn invoke_bounded_dual_unit_member(
                 args,
             )
             .map(|_| ())
-            .map_err(|err| err.to_string())
     })
-    .map_err(|_| E_FAIL)
 }
 
 unsafe fn dual_owner(this: *mut c_void) -> Result<*mut DispatchObject, i32> {
@@ -2358,7 +2372,7 @@ unsafe fn invoke_imported_member(
     args: Vec<Variant>,
 ) -> Result<Variant, i32> {
     let owner = imported_owner(this)?;
-    with_session(|session| {
+    with_project_session(|session| {
         session
             .invoke_member_values(
                 (*owner).object.clone(),
@@ -2366,16 +2380,13 @@ unsafe fn invoke_imported_member(
                 Some(project_member_kind(method.invoke_kind)),
                 args,
             )
-            .map_err(|err| {
-                let message = err.to_string();
+            .inspect_err(|err| {
                 trace_line(&format!(
                     "imported member {} failed: {}",
-                    method.vba_name, message
+                    method.vba_name, err
                 ));
-                message
             })
     })
-    .map_err(|_| E_FAIL)
 }
 
 unsafe fn imported_slot_unit(this: *mut c_void, slot: u16) -> i32 {
@@ -3033,27 +3044,50 @@ fn with_session<R>(
     f: impl FnOnce(&mut ProjectRuntimeSession) -> Result<R, String>,
 ) -> Result<R, String> {
     SESSION.with(|slot| {
-        let needs_init = slot.borrow().is_none();
-        if needs_init {
-            let image_bytes = artifact_image_bytes()?;
-            let mut engine = Engine::new(comhost_host_config()?)
-                .with_runtime_profile(RuntimeProfileId::WindowsHeadless);
-            engine.enable_host_native_runtime();
-            let mut session = engine
-                .prepare_image_session_bytes(&image_bytes)
-                .map_err(|err| err.to_string())?;
-            session.set_project_event_sink(|source, event_id, args| {
-                // SAFETY: the runtime invokes this sink with descriptor-defined event payloads
-                // owned for the duration of the callback.
-                unsafe { fire_project_event(source, event_id, args) }
-            });
-            *slot.borrow_mut() = Some(session);
-        }
-        let mut borrowed = slot.borrow_mut();
-        let Some(session) = borrowed.as_mut() else {
-            return Err("failed to initialize OxVBA runtime session".to_string());
+        let previous = std::mem::replace(&mut *slot.borrow_mut(), SessionSlot::Running);
+        let mut session = match previous {
+            SessionSlot::Ready(session) => session,
+            SessionSlot::Running => {
+                return Err("COM re-entry requires a suspended VBA session".into());
+            }
+            SessionSlot::Uninitialized => {
+                let initialized = (|| {
+                    let image_bytes = artifact_image_bytes()?;
+                    let mut engine = Engine::new(comhost_host_config()?)
+                        .with_runtime_profile(RuntimeProfileId::WindowsHeadless);
+                    engine.enable_host_native_runtime();
+                    let mut session = engine
+                        .prepare_image_session_bytes(&image_bytes)
+                        .map_err(|err| err.to_string())?;
+                    session.set_reentrant_project_event_sink(|session, source, event_id, args| {
+                        SESSION.with(|slot| {
+                            *slot.borrow_mut() = SessionSlot::Ready(Box::new(session))
+                        });
+                        // SAFETY: the runtime invokes this sink with descriptor-defined event payloads
+                        // owned for the duration of the callback.
+                        let outcome = unsafe { fire_project_event(source, event_id, args) };
+                        let session = SESSION.with(|slot| {
+                            match std::mem::replace(&mut *slot.borrow_mut(), SessionSlot::Running) {
+                                SessionSlot::Ready(session) => *session,
+                                _ => unreachable!("synchronous event must return its session"),
+                            }
+                        });
+                        (session, outcome)
+                    });
+                    Ok(Box::new(session))
+                })();
+                match initialized {
+                    Ok(session) => session,
+                    Err(error) => {
+                        *slot.borrow_mut() = SessionSlot::Uninitialized;
+                        return Err(error);
+                    }
+                }
+            }
         };
-        f(session)
+        let result = f(&mut session);
+        *slot.borrow_mut() = SessionSlot::Ready(session);
+        result
     })
 }
 
@@ -3685,7 +3719,11 @@ fn project_member_kind(kind: ComInvokeKind) -> ProjectMemberKind {
 
 unsafe fn resolve_runtime_object(object: ObjectRef) -> Result<*mut c_void, String> {
     if !object.is_project_instance() {
-        return Err("runtime object result is not an OxVBA project instance".to_string());
+        return with_session(|session| {
+            session
+                .retain_native_dispatch_object(object)
+                .map_err(|e| e.to_string())
+        });
     }
     let class_index = usize::try_from(object.route_key())
         .map_err(|_| "runtime object carried a negative class index".to_string())?;
@@ -3734,6 +3772,10 @@ unsafe fn allocate_dispatch_object(class_index: usize, object: ObjectRef) -> *mu
             vtbl: dual_vtbl,
             owner: ptr::null_mut(),
         },
+        error_info: BoundedDualInterface {
+            vtbl: (&SUPPORT_ERROR_INFO_VTBL as *const SupportErrorInfoVtbl).cast(),
+            owner: ptr::null_mut(),
+        },
         imported_faces: Vec::new().into_boxed_slice(),
         cpc: ConnectionPointContainer {
             vtbl: &CONNECTION_POINT_CONTAINER_VTBL,
@@ -3751,6 +3793,7 @@ unsafe fn allocate_dispatch_object(class_index: usize, object: ObjectRef) -> *mu
         next_cookie: AtomicU32::new(1),
     }));
     (*raw).dual.owner = raw;
+    (*raw).error_info.owner = raw;
     let imported_vtbls = &(*raw).imported_vtbls;
     let mut imported_faces = Vec::with_capacity(imported_vtbls.len());
     for (interface_index, imported_vtbl) in imported_vtbls.iter().enumerate() {

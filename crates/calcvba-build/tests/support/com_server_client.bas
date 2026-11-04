@@ -4,6 +4,8 @@ Public Function ProbeNativeExports() As String
     Dim counter As __LIB__.Counter, item As __LIB__.PublicItem
     Dim anyObject As Object, stage As String
     Dim sink As EventClient, number As Long, text As String, data As Variant
+    Dim dictionary As Object, saved As Object
+    Dim scalar As __LIB__.ScalarErrors, bad As __LIB__.BadInitialize, quotient As Double
     Dim code As Long, description As String, errorSource As String, helpFile As String, helpContext As Long
     On Error GoTo Failed
     stage = "create"
@@ -41,6 +43,24 @@ Public Function ProbeNativeExports() As String
     Set item = anyObject
     If item.Ping() <> 42 Then Err.Raise 5, , "ByRef object result"
     Set anyObject = Nothing
+    stage = "foreign objects"
+    Set dictionary = CreateObject("Scripting.Dictionary")
+    dictionary.Add "first", 1
+    If first.ObjectCount(dictionary) <> 11 Or first.ObjectCount(dictionary, Empty) <> 1 Then Err.Raise 5, , "foreign optional Object"
+    Set saved = dictionary
+    first.KeepObject dictionary
+    If Not dictionary Is saved Then Err.Raise 5, , "foreign ByRef identity"
+    If dictionary.Count <> 2 Or dictionary("kept") <> 42 Then Err.Raise 5, , "foreign member call"
+    Set anyObject = first.EchoObject(dictionary)
+    If Not anyObject Is dictionary Then Err.Raise 5, , "foreign Object return"
+    Set first.Foreign = dictionary
+    Set anyObject = first.Foreign
+    If Not anyObject Is dictionary Then Err.Raise 5, , "foreign property"
+    Set first.Foreign = Nothing
+    If first.ObjectName(Application) <> Application.Name Then Err.Raise 5, , "foreign Excel Application"
+    first.ReplaceItem dictionary
+    If dictionary Is saved Or dictionary.Ping() <> 42 Or saved.Count <> 2 Then Err.Raise 5, , "foreign ByRef replacement"
+    Set dictionary = Nothing: Set saved = Nothing: Set anyObject = Nothing
     stage = "dual"
     Set counter = New __LIB__.Counter
     counter.Value = 123
@@ -53,9 +73,34 @@ Public Function ProbeNativeExports() As String
     Set sink = New EventClient
     Set sink.Source = first
     first.Fire 99
-    If sink.Seen <> 99 Then Err.Raise 5, , "WithEvents"
+    If sink.Seen <> 100 Or sink.ReadBack <> 12 Or first.Value <> 13 Then Err.Raise 5, , "WithEvents re-entry"
     Set sink.Source = Nothing
     Set sink = Nothing
+    stage = "factory error"
+    On Error Resume Next
+    Set bad = New __LIB__.BadInitialize
+    code = Err.Number: description = Err.Description: errorSource = Err.Source
+    helpFile = Err.HelpFile: helpContext = Err.HelpContext
+    Err.Clear
+    On Error GoTo Failed
+    If code <> 457 Or description <> "initialization failed" Or errorSource <> "BadInitialize" Or Right(helpFile, 8) <> "init.chm" Or helpContext <> 73 Then Err.Raise 5, , "factory details: " & CStr(code) & ":" & description & ":" & errorSource
+    stage = "dual error"
+    Set scalar = New __LIB__.ScalarErrors
+    On Error Resume Next
+    quotient = scalar.Divide(1, 0)
+    code = Err.Number: description = Err.Description
+    Err.Clear
+    On Error GoTo Failed
+    If code <> 11 Or description <> "Division by zero" Then Err.Raise 5, , "dual details: " & CStr(code) & ":" & description
+    On Error Resume Next
+    quotient = scalar.Divide(457, 1)
+    code = Err.Number: description = Err.Description: errorSource = Err.Source
+    helpFile = Err.HelpFile: helpContext = Err.HelpContext
+    Err.Clear
+    On Error GoTo Failed
+    If code <> 457 Or description <> "dual failure" Or errorSource <> "ScalarErrors" Or Right(helpFile, 8) <> "dual.chm" Or helpContext <> 81 Then Err.Raise 5, , "dual raised details"
+    If scalar.Divide(84, 2) <> 42 Then Err.Raise 5, , "dual recovery"
+    Set scalar = Nothing
     On Error Resume Next
     stage = "fault"
     first.MutateThenRaise number, text

@@ -470,6 +470,62 @@ impl ComHal for StandardHostServices {
         }
     }
 
+    fn retain_native_dispatch_object(
+        &self,
+        object: ObjectRef,
+    ) -> HalResult<*mut core::ffi::c_void> {
+        let capability = CapabilityId::ComActivationDispatch;
+        let operation = "retain_native_dispatch_object";
+        #[cfg(target_os = "windows")]
+        if self.native_com_enabled() {
+            self.ensure_thread_com_apartment(operation)?;
+            let dispatch = self
+                .com_bridge
+                .resolve_native_dispatch_for_object(object)
+                .map_err(|message| {
+                    HalError::adapter_fault(self.profile, capability, operation, message)
+                })?;
+            // SAFETY: the bridge retains this live same-apartment object. The
+            // caller receives a separate reference and cannot invalidate it.
+            unsafe {
+                calcvba_com::add_ref_dispatch(dispatch);
+            }
+            return Ok(dispatch.cast());
+        }
+        let _ = object;
+        Err(self.unsupported(capability, operation))
+    }
+
+    unsafe fn bind_native_dispatch_value(
+        &self,
+        type_hint: &str,
+        dispatch: *mut core::ffi::c_void,
+    ) -> HalResult<Variant> {
+        let capability = CapabilityId::ComActivationDispatch;
+        let operation = "bind_native_dispatch_value";
+        if !self.supports(capability) {
+            return Err(self.unsupported(capability, operation));
+        }
+        if !self.policy.allow_com_activation {
+            return Err(self.denied(capability, operation));
+        }
+        #[cfg(target_os = "windows")]
+        if self.native_com_enabled() {
+            self.ensure_thread_com_apartment(operation)?;
+            // SAFETY: the caller transfers one same-apartment dispatch reference.
+            return unsafe {
+                self.com_bridge
+                    .bind_native_dispatch_result(dispatch.cast(), type_hint)
+            }
+            .map(Variant::from_object_ref)
+            .map_err(|message| {
+                HalError::adapter_fault(self.profile, capability, operation, message)
+            });
+        }
+        let _ = (type_hint, dispatch);
+        Err(self.unsupported(capability, operation))
+    }
+
     unsafe fn prepare_typed_object(
         &self,
         object: ObjectRef,

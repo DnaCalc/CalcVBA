@@ -10,6 +10,7 @@ Attribute VB_Exposed = True
 Option Explicit
 Public Event Changed(ByVal value As Variant)
 Private mValue As Long
+Private mForeign As Object
 Private Sub Class_Initialize()
     mValue = 5
 End Sub
@@ -68,3 +69,22 @@ Public Sub MutateThenRaise(ByRef number As Long, ByRef text As String)
     text = "fault" & ChrW(&H3BB)
     RaiseError
 End Sub
+Public Function ObjectCount(ByVal value As Object, Optional ByVal extra As Variant) As Long
+    ObjectCount = value.Count
+    If IsMissing(extra) Then ObjectCount = ObjectCount + 10
+End Function
+Public Sub KeepObject(ByRef value As Object)
+    value.Add "kept", 42
+End Sub
+Public Function EchoObject(ByVal value As Object) As Object
+    Set EchoObject = value
+End Function
+Public Function ObjectName(ByVal value As Object) As String
+    ObjectName = value.Name
+End Function
+Public Property Set Foreign(ByVal value As Object)
+    Set mForeign = value
+End Property
+Public Property Get Foreign() As Object
+    Set Foreign = mForeign
+End Property

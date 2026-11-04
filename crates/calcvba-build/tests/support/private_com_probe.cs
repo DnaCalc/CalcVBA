@@ -11,6 +11,15 @@ public static class CalcVbaPrivateComProbe {
     [DllImport("ole32.dll")] private static extern int CoInitializeEx(IntPtr reserved,uint flags);
     [DllImport("ole32.dll")] private static extern void CoUninitialize();
     [DllImport("oleaut32.dll",CharSet=CharSet.Unicode)] private static extern int LoadTypeLibEx(string path,int mode,out ITypeLib value);
+    [ComImport,Guid("1CF2B120-547D-101B-8E65-08002B2BD119"),InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IErrorInfo {
+        [PreserveSig] int GetGUID(out Guid value);
+        [PreserveSig] int GetSource([MarshalAs(UnmanagedType.BStr)] out string value);
+        [PreserveSig] int GetDescription([MarshalAs(UnmanagedType.BStr)] out string value);
+        [PreserveSig] int GetHelpFile([MarshalAs(UnmanagedType.BStr)] out string value);
+        [PreserveSig] int GetHelpContext(out uint value);
+    }
+    [DllImport("oleaut32.dll")] private static extern int GetErrorInfo(uint reserved,out IErrorInfo value);
     private static IntPtr image;
     public static void Load(string path) { image=NativeLibrary.Load(path); }
     public static int Call(string name) { return Marshal.GetDelegateForFunctionPointer<ServerCall>(NativeLibrary.GetExport(image,name))(); }
@@ -49,6 +58,26 @@ public static class CalcVbaPrivateComProbe {
                 Check(Call("DllCanUnloadNow")==0,"COM references leaked");
             }
         } finally { CoUninitialize(); }
+    }
+    public static void FactoryError(string id) {
+        int initialized=CoInitializeEx(IntPtr.Zero,2); Check(initialized>=0,"STA initialization failed");
+        try {
+            GetFactory get=Marshal.GetDelegateForFunctionPointer<GetFactory>(NativeLibrary.GetExport(image,"DllGetClassObject"));
+            Guid clsid=new Guid(id), factoryId=new Guid("00000001-0000-0000-C000-000000000046"), dispatchId=new Guid("00020400-0000-0000-C000-000000000046");
+            IntPtr factory; Check(get(ref clsid,ref factoryId,out factory)==0,"failing class factory missing");
+            try {
+                IntPtr value; int hr=Slot<Create>(factory,3)(factory,IntPtr.Zero,ref dispatchId,out value);
+                Check(hr==unchecked((int)0x800A01C9)&&value==IntPtr.Zero,"factory fault HRESULT or output differs");
+                IErrorInfo error; Check(GetErrorInfo(0,out error)==0&&error!=null,"factory IErrorInfo missing");
+                try {
+                    string source,description,file;uint context;
+                    error.GetSource(out source);error.GetDescription(out description);error.GetHelpFile(out file);error.GetHelpContext(out context);
+                    Check(source=="BadInitialize"&&description=="initialization failed"&&file=="init.chm"&&context==73,"factory IErrorInfo details differ");
+                } finally {Marshal.ReleaseComObject(error);}
+                Check(GetErrorInfo(0,out error)==1&&error==null,"IErrorInfo was not consumed");
+            } finally {Slot<Release>(factory,2)(factory);}
+            Check(Call("DllCanUnloadNow")==0,"failed initialization leaked COM references");
+        } finally {CoUninitialize();}
     }
     public static Dictionary<string,int> TypeFlags(string path) {
         ITypeLib library; int hr=LoadTypeLibEx(path,2,out library); Check(hr==0,"LoadTypeLibEx failed");

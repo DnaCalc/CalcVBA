@@ -20,6 +20,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ptr::NonNull;
+use std::rc::Rc;
 
 use calcvba_bundle::{
     ArrayElementType, AssignmentIntent, AssignmentTargetKind, NativeImplId, ProjectMemberKind,
@@ -444,8 +445,12 @@ struct Frame {
     gosub_stack: Vec<BlockId>,
 }
 
+type ReentrantProjectEventSink<'h> =
+    Rc<dyn Fn(Vm3<'h>, ObjectRef, i32, Vec<Variant>) -> (Vm3<'h>, Result<(), String>) + 'h>;
+
 /// The vm3 interpreter over one or more typed OxIR programs.
 pub struct Vm3<'h> {
+    reentrant_project_event_sink: Option<ReentrantProjectEventSink<'h>>,
     typed_entries: Vec<Vec<Option<typed::TypedInterpreter<'h>>>>,
     /// Index into `programs` of the executing program (`0` for single-project activation).
     cur: usize,
@@ -467,6 +472,19 @@ pub struct Vm3<'h> {
 }
 
 impl<'h> Vm3<'h> {
+    fn idle(host: &'h dyn HostServices) -> Self {
+        Self {
+            reentrant_project_event_sink: None,
+            typed_entries: Vec::new(),
+            cur: 0,
+            exec: ExecState::new(host),
+            frames: Vec::new(),
+            for_each: HashMap::new(),
+            param_array_aliases: HashMap::new(),
+            as_new_slots: HashMap::new(),
+        }
+    }
+
     /// The currently-executing program's static IR (`programs[cur]`). A `&'h` copy, so callers
     /// can hold it across `&mut self` mutations exactly as the old `self.program` field allowed.
     #[inline]
@@ -730,6 +748,7 @@ impl<'h> Vm3<'h> {
             .map(|p| Self::build_loaded(p))
             .collect::<Result<_, _>>()?;
         let mut vm = Vm3 {
+            reentrant_project_event_sink: None,
             typed_entries,
             cur: entry,
             exec,
@@ -901,12 +920,25 @@ impl<'h> Vm3<'h> {
     where
         F: FnMut(ObjectRef, i32, Vec<Variant>) -> Result<(), String> + 'h,
     {
+        self.reentrant_project_event_sink = None;
         self.exec.events.project_event_sink = Some(Box::new(sink));
     }
 
     /// Remove the host event sink (W7).
     pub fn clear_project_event_sink(&mut self) {
         self.exec.events.project_event_sink = None;
+        self.reentrant_project_event_sink = None;
+    }
+
+    /// Transfer the suspended VM to a synchronous host event callback and recover
+    /// it on return. The callback may invoke members, including nested events,
+    /// while exclusively owning the same frames, globals and object state.
+    pub fn set_reentrant_project_event_sink<F>(&mut self, sink: F)
+    where
+        F: Fn(Self, ObjectRef, i32, Vec<Variant>) -> (Self, Result<(), String>) + 'h,
+    {
+        self.exec.events.project_event_sink = None;
+        self.reentrant_project_event_sink = Some(Rc::new(sink));
     }
 
     /// Build the VM for a SINGLE program and run its module-global initializer, but do NOT run
@@ -2347,7 +2379,15 @@ impl<'h> Vm3<'h> {
                 // the COM server forwards the event to its connection-point clients. Take the
                 // sink out across the call so it does not alias `&mut self` (a host sink calls
                 // back into the host, not the VM), then restore it.
-                if self.exec.events.project_event_sink.is_some() {
+                if let Some(sink) = self.reentrant_project_event_sink.clone() {
+                    let values = self.extern_args(args)?;
+                    let idle = Self::idle(self.exec.host);
+                    let suspended = std::mem::replace(self, idle);
+                    let (resumed, outcome) =
+                        sink(suspended, source_object.clone(), event_id, values);
+                    *self = resumed;
+                    outcome.map_err(|msg| Vm3Error::Fault(Fault::new(5, msg)))?;
+                } else if self.exec.events.project_event_sink.is_some() {
                     let values = self.extern_args(args)?;
                     let mut sink = self
                         .exec

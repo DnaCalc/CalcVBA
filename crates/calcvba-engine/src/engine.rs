@@ -377,6 +377,25 @@ impl ProjectRuntimeSession {
         self.vm.set_project_event_sink(sink);
     }
 
+    /// Yield exclusive session ownership while a synchronous COM event runs.
+    /// Returning the session resumes the suspended VBA activation with all
+    /// changes made by nested member calls retained.
+    pub fn set_reentrant_project_event_sink<F>(&mut self, sink: F)
+    where
+        F: Fn(Self, ObjectRef, i32, Vec<Variant>) -> (Self, Result<(), String>) + 'static,
+    {
+        let host_services = self.host_services.clone();
+        self.vm
+            .set_reentrant_project_event_sink(move |vm, source, event, args| {
+                let session = Self {
+                    vm,
+                    host_services: host_services.clone(),
+                };
+                let (session, outcome) = sink(session, source, event, args);
+                (session.vm, outcome)
+            });
+    }
+
     /// Remove the host event sink.
     pub fn clear_project_event_sink(&mut self) {
         self.vm.clear_project_event_sink();
@@ -400,9 +419,21 @@ impl ProjectRuntimeSession {
         unsafe {
             self.host_services
                 .com()
-                .bind_native_dispatch_object_variant(prog_id, dispatch)
+                .bind_native_dispatch_value(prog_id, dispatch)
         }
         .map_err(|err| PhaseDiagnostic::from_diagnostic(err.to_diagnostic()))
+    }
+
+    /// Transfer a retained native IDispatch to a COM result or ByRef cell.
+    #[cfg(target_os = "windows")]
+    pub fn retain_native_dispatch_object(
+        &self,
+        object: ObjectRef,
+    ) -> Result<*mut c_void, PhaseDiagnostic> {
+        self.host_services
+            .com()
+            .retain_native_dispatch_object(object)
+            .map_err(|err| PhaseDiagnostic::from_diagnostic(err.to_diagnostic()))
     }
 }
 
@@ -1470,5 +1501,99 @@ End Sub
             .expect("invoke Fire");
 
         assert_eq!(*seen.lock().expect("seen lock"), vec![(raw, 0, Some(42))]);
+    }
+
+    #[test]
+    fn package_session_event_reentry_retains_frames_and_nested_changes() {
+        let mut attrs = ModuleAttributes::named("Notifier");
+        attrs.vb_exposed = true;
+        attrs.vb_creatable = true;
+        let manifest = SymbolProjectManifest {
+            project_name: "ReentryServer".into(),
+            project_kind: ProjectKind::Library,
+            modules: vec![ModuleUnit {
+                module_name: "Notifier".into(),
+                module_kind: ModuleKind::Class,
+                attributes: attrs,
+                source: r#"
+Public Event Changed(ByVal value As Long)
+Private mValue As Long
+Public Property Get Value() As Long
+    Value = mValue
+End Property
+Public Property Let Value(ByVal value As Long)
+    mValue = value
+End Property
+Public Sub Fire(ByVal value As Long)
+    mValue = mValue + value
+    RaiseEvent Changed(value)
+    mValue = mValue + 10
+End Sub
+"#
+                .into(),
+            }],
+            references: Vec::new(),
+            reference_projects: Vec::new(),
+            conditional_constants: Default::default(),
+            conditional_compilation_target: Default::default(),
+        };
+        let engine = Engine::new(HostConfig::default());
+        let mut session = vm3_session_for(&engine, &manifest);
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let events = seen.clone();
+        session.set_reentrant_project_event_sink(move |mut session, source, _, args| {
+            let value = session
+                .invoke_member_values(
+                    source.clone(),
+                    "Value",
+                    Some(ProjectMemberKind::PropertyGet),
+                    vec![],
+                )
+                .unwrap()
+                .as_i32()
+                .unwrap();
+            events.borrow_mut().push(value);
+            session
+                .invoke_member_values(
+                    source.clone(),
+                    "Value",
+                    Some(ProjectMemberKind::PropertyLet),
+                    vec![Variant::from_i32(value + 1)],
+                )
+                .unwrap();
+            if args[0].as_i32() == Some(2) {
+                session
+                    .invoke_member_values(
+                        source,
+                        "Fire",
+                        Some(ProjectMemberKind::Method),
+                        vec![Variant::from_i32(1)],
+                    )
+                    .unwrap();
+            }
+            (session, Ok(()))
+        });
+        let object = session.create_class_instance("Notifier").unwrap();
+        session
+            .invoke_member_values(
+                object.clone(),
+                "Fire",
+                Some(ProjectMemberKind::Method),
+                vec![Variant::from_i32(2)],
+            )
+            .unwrap();
+        assert_eq!(*seen.borrow(), vec![2, 4]);
+        assert_eq!(
+            session
+                .invoke_member_values(
+                    object,
+                    "Value",
+                    Some(ProjectMemberKind::PropertyGet),
+                    vec![]
+                )
+                .unwrap()
+                .as_i32(),
+            Some(25)
+        );
     }
 }

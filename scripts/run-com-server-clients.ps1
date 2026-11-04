@@ -19,18 +19,21 @@ try {
     foreach($name in @('Calculator','Counter','PublicItem','PrivateItem','Globals')) {
         $project=$project.Replace('Include="'+$name+'.cls"','Include="'+(Join-Path $example ($name+'.cls'))+'"')
     }
+    $project=$project.Replace('</ItemGroup>',('<ClassModule Include="'+(Join-Path $support 'com_server_init_error.cls')+'" Name="BadInitialize" /><ClassModule Include="'+(Join-Path $support 'com_server_dual_error.cls')+'" Name="ScalarErrors" /></ItemGroup>'))
     $projectPath=Join-Path $OutDir 'Private.basproj'
     Set-Content -LiteralPath $projectPath $project -Encoding utf8NoBOM
     & $CliPath build $projectPath --target ComServer --out-dir $OutDir
     $descriptor=Get-Content -Raw (Join-Path $OutDir ($projectName+'.comserver.json')) | ConvertFrom-Json
-    if($descriptor.classes.Count -ne 4 -or @($descriptor.classes | Where-Object {$_.implemented_interfaces.Count}).Count){throw 'Unexpected private test descriptor'}
+    if($descriptor.classes.Count -ne 6 -or @($descriptor.classes | Where-Object {$_.implemented_interfaces.Count}).Count){throw 'Unexpected private test descriptor'}
     $dll=Join-Path $OutDir ($projectName+'.dll')
     $tlb=Join-Path $OutDir ($projectName+'.tlb')
     Add-Type -Path (Join-Path $support 'private_com_probe.cs')
     [CalcVbaPrivateComProbe]::Load($dll)
     $flags=[CalcVbaPrivateComProbe]::TypeFlags($tlb)
     if(($flags['Globals'] -band 1) -eq 0 -or ($flags['PublicItem'] -band 2) -ne 0 -or ($flags['Calculator'] -band 2) -eq 0 -or $flags.ContainsKey('PrivateItem')){throw 'Instancing type-library flags differ'}
-    [CalcVbaPrivateComProbe]::Factories([string[]]$descriptor.classes.clsid,[bool[]]$descriptor.classes.creatable)
+    $ordinaryClasses=@($descriptor.classes | Where-Object {$_.class_name -ne 'BadInitialize'})
+    [CalcVbaPrivateComProbe]::Factories([string[]]$ordinaryClasses.clsid,[bool[]]$ordinaryClasses.creatable)
+    [CalcVbaPrivateComProbe]::FactoryError([string]($descriptor.classes | Where-Object {$_.class_name -eq 'BadInitialize'}).clsid)
     Write-Output 'COM/factory:activation, identity, aggregation, locks and release pass'
     $expected='instances|ByRef|Variant|matrix|visibility|dual|global|events|error=457'
     $directClient=Join-Path $OutDir 'direct-client.bas'
@@ -44,6 +47,7 @@ try {
         @{name=$name;kind=2;source_path=(Join-Path $example ($name+'.cls'))}
     })
     $directModules+=@(@{name='EventClient';kind=2;source_path=$directEvent},@{name='OracleSelfTest';kind=1;source_path=$directClient})
+    $directModules+=@(@{name='BadInitialize';kind=2;source_path=(Join-Path $support 'com_server_init_error.cls')},@{name='ScalarErrors';kind=2;source_path=(Join-Path $support 'com_server_dual_error.cls')})
     $directModulesPath=Join-Path $OutDir 'direct-modules.json'
     $directModules | ConvertTo-Json | Set-Content -LiteralPath $directModulesPath
     $directDirectory=Join-Path $OutDir 'direct-excel'

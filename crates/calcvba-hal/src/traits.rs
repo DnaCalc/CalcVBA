@@ -395,6 +395,29 @@ pub trait ComHal {
             "bind_native_dispatch_object_variant",
         )
     }
+    /// Return an independently retained same-apartment IDispatch for a bound
+    /// object. The caller owns one reference and must release or transfer it.
+    fn retain_native_dispatch_object(
+        &self,
+        _object: ObjectRef,
+    ) -> HalResult<*mut core::ffi::c_void> {
+        variant_companion_not_overridden(
+            CapabilityId::ComActivationDispatch,
+            "retain_native_dispatch_object",
+        )
+    }
+    /// Bind an incoming argument/result by its COM identity, without assigning
+    /// it as a named host root. The type hint does not identify an instance.
+    /// # Safety
+    /// dispatch transfers one live same-apartment IDispatch reference.
+    unsafe fn bind_native_dispatch_value(
+        &self,
+        type_hint: &str,
+        dispatch: *mut core::ffi::c_void,
+    ) -> HalResult<Variant> {
+        // SAFETY: forwards the retained pointer contract to the host adapter.
+        unsafe { self.bind_native_dispatch_object_variant(type_hint, dispatch) }
+    }
     /// Retain an activated IDispatch for owning Object/Variant member dispatch.
     fn prepare_dynamic_object(
         &self,

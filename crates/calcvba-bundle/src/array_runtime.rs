@@ -20,6 +20,50 @@ use calcvba_runtime::vba_record::{
 };
 
 use crate::ArrayElementType;
+
+/// An unallocated UDT array still needs its declared record prototype when a
+/// native callee allocates its first SAFEARRAY. Its engine descriptor has no
+/// bounds or payload; the native boundary projects it as a null SAFEARRAY*.
+pub fn unallocated_typed_array(element: &ArrayElementType) -> Result<Variant, String> {
+    if let ArrayElementType::Record(fields) = element {
+        // Declaration itself does not allocate elements. Layouts outside the
+        // runtime's record limits must still raise at ReDim, inside VBA's error
+        // handling, rather than aborting activation before any statement runs.
+        if let Ok(layout) = vba_record_layout_for_fields(fields) {
+            return SafeArray::from_vba_records_nd(Vec::new(), layout, Vec::new())
+                .map(Variant::from_safearray);
+        }
+    }
+    Ok(Variant::unallocated_array(safearray_vartype_for_element(
+        element,
+    )))
+}
+
+#[test]
+fn unallocated_record_array_retains_layout_but_projects_a_null_native_pointer() {
+    let element = ArrayElementType::Record(vec![
+        ArrayElementType::Variant,
+        ArrayElementType::FixedString(3),
+    ]);
+    let value = unallocated_typed_array(&element).unwrap();
+    for value in [value.clone(), value] {
+        assert!(value.safearray_bounds_len().is_none());
+        let array = value.try_as_safearray().unwrap().unwrap();
+        assert!(array.bounds().is_none());
+        assert_eq!(array.len(), 0);
+        assert_eq!(
+            array.vba_record_layout().unwrap(),
+            vba_record_layout_for_fields(match &element {
+                ArrayElementType::Record(fields) => fields,
+                _ => unreachable!(),
+            })
+            .unwrap()
+        );
+        let wire = value.to_wire_bytes();
+        assert_eq!(&wire[..2], &0x2024u16.to_le_bytes());
+        assert_eq!(&wire[2..], &[0; 14]);
+    }
+}
 /// Choose the actual element type for ReDim. A Variant keeps its contained
 /// array's type unless the source explicitly supplies an As clause.
 pub fn resolve_redim_element(

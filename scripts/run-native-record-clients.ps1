@@ -36,29 +36,40 @@ try {
     $script:nativeSource = (Get-Content -LiteralPath (Join-Path $support 'native_record_client.bas') -Raw).Replace('__DLL__', $dll)
     $sourcePath = Join-Path $OutDir 'native-client.bas'
     Set-Content -LiteralPath $sourcePath $script:nativeSource -Encoding utf8NoBOM
+    $direct = (Get-Content -Raw examples/native/records/Records.bas) -replace '(?m)^Attribute .*\r?\n', ''
+    $direct = $direct.Replace('Public Sub Main()', "Public Sub Main()`n    Dim observed As String`n    observed = FixedFieldSuite()")
+    $direct += "`nPublic Function ProbeNativeExports() As String`n    ProbeNativeExports = FixedFieldSuite()`nEnd Function`n"
+    $directPath = Join-Path $OutDir 'direct.bas'
+    Set-Content -LiteralPath $directPath $direct -Encoding utf8NoBOM
+    $directExpected = '29:41:left:42:abc:q  :record'
     foreach ($backend in @('vm3','jit')) {
         $values = & $CliPath run $sourcePath --backend $backend --profile windows-headless --dump-values
         if (-not ($values -match [regex]::Escape('string:"' + $expected + '"'))) { throw "CalcVBA $backend mismatch: $values" }
         Write-Output "CalcVBA/${backend}:$expected"
+        $values = & $CliPath run $directPath --backend $backend --profile windows-headless --dump-values
+        if (-not ($values -match [regex]::Escape('string:"' + $directExpected + '"'))) { throw "CalcVBA direct $backend mismatch: $values" }
+        Write-Output "CalcVBA/direct/${backend}:$directExpected"
     }
     if ($OracleSession) {
         $OracleSession=(Resolve-Path -LiteralPath $OracleSession).Path
         $ready=Get-Content -Raw -LiteralPath (Join-Path $OracleSession 'ready.json') | ConvertFrom-Json
         if ($ready.launches -ne 1 -or $ready.pid -eq 3144) { throw 'Invalid owned oracle session' }
-        $jobId='interop_'+[Guid]::NewGuid().ToString('N')
-        [ordered]@{id=$jobId;source_path=$sourcePath;expected=$expected} | ConvertTo-Json |
-            Set-Content -LiteralPath (Join-Path $OracleSession ('jobs/'+$jobId+'.json')) -Encoding utf8NoBOM
-        $resultPath=Join-Path $OracleSession ('results/'+$jobId+'.json')
-        $deadline=[DateTime]::UtcNow.AddSeconds(180)
-        while (-not (Test-Path -LiteralPath $resultPath)) {
-            if ([DateTime]::UtcNow -gt $deadline) { throw 'Owned Excel comparison timed out' }
-            Start-Sleep -Milliseconds 100
+        foreach ($case in @(@{path=$sourcePath;expected=$expected}, @{path=$directPath;expected=$directExpected})) {
+            $jobId='interop_'+[Guid]::NewGuid().ToString('N')
+            [ordered]@{id=$jobId;source_path=$case.path;expected=$case.expected} | ConvertTo-Json |
+                Set-Content -LiteralPath (Join-Path $OracleSession ('jobs/'+$jobId+'.json')) -Encoding utf8NoBOM
+            $resultPath=Join-Path $OracleSession ('results/'+$jobId+'.json')
+            $deadline=[DateTime]::UtcNow.AddSeconds(180)
+            while (-not (Test-Path -LiteralPath $resultPath)) {
+                if ([DateTime]::UtcNow -gt $deadline) { throw 'Owned Excel comparison timed out' }
+                Start-Sleep -Milliseconds 100
+            }
+            $result=Get-Content -Raw -LiteralPath $resultPath | ConvertFrom-Json
+            if ($result.compile_status -ne 'ok' -or $result.run_status -ne 'ok' -or $result.value -cne $case.expected -or $result.error) {
+                throw ('Excel comparison failed: '+($result | ConvertTo-Json -Compress))
+            }
+            Write-Output "Excel/VBA:$($case.expected)"
         }
-        $result=Get-Content -Raw -LiteralPath $resultPath | ConvertFrom-Json
-        if ($result.compile_status -ne 'ok' -or $result.run_status -ne 'ok' -or $result.value -cne $expected -or $result.error) {
-            throw ('Excel comparison failed: '+($result | ConvertTo-Json -Compress))
-        }
-        Write-Output "Excel/VBA:$expected"
     }
 
 }

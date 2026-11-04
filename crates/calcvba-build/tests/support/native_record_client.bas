@@ -1,4 +1,7 @@
 Option Explicit
+Private Declare PtrSafe Function NFixedSuite Lib "__DLL__" Alias "FixedFieldSuite" () As LongPtr
+Private Declare PtrSafe Function NFixedIndex Lib "__DLL__" Alias "FixedFieldIndex" (ByVal index As Long) As Long
+Private Declare PtrSafe Function NLastError Lib "__DLL__" Alias "CalcVbaGetLastError" (ByVal source As LongPtr, ByVal description As LongPtr) As Long
 Private Declare PtrSafe Function NClearAnsi Lib "__DLL__" Alias "ClearAnsi" (ByVal text As LongPtr) As Long
 Private Declare PtrSafe Function NAnsiText Lib "__DLL__" Alias "AnsiText" () As LongPtr
 Private Type RichRecord
@@ -50,13 +53,19 @@ Public Function ProbeNativeExports() As String
     If ansi <> "reply" Then Err.Raise 517&
     result = result & "|" & CStr(Len(ansi))
     Dim records() As RichRecord
-    ReDim records(0 To 0)
     NAllocateRecords records
     description = TakeString(NRecordArrays(records))
     If description <> "7:q   :-2:0" Or records(0).value <> "7" Or records(-2).value <> "changed" Then Err.Raise 518&
     result = result & "|" & description
+    Erase records
+    NAllocateRecords records
+    If records(-2).value <> "7" Or records(-2).text <> "q   " Then Err.Raise 520&
     description = TakeString(NArraySuite())
     If description <> "7:q   :-2:0" Then Err.Raise 519&
+    If TakeString(NFixedSuite()) <> "29:41:left:42:abc:q  :record" Then Err.Raise 521&
+    If NFixedIndex(-1&) <> 29& Then Err.Raise 522&
+    If NFixedIndex(-2&) <> 0& Or NLastError(0^, 0^) <> 9& Then Err.Raise 523&
+    If NFixedIndex(2&) <> 0& Or NLastError(0^, 0^) <> 9& Then Err.Raise 524&
     result = result & "|" & description & "|" & CStr(NShutdown())
     ProbeNativeExports = result
 End Function

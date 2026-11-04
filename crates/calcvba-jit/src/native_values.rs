@@ -844,7 +844,10 @@ impl Values<'_> {
                 self.copy_record(module, b, index, out, src);
                 return true;
             }
-            OxInst::RecordGet { dst, record, index } => {
+            OxInst::RecordGet { dst, record, index }
+            | OxInst::RecordArrayGet {
+                dst, record, index, ..
+            } => {
                 let OxOperand::Use(place) = record else {
                     unreachable!("record operand")
                 };
@@ -857,10 +860,24 @@ impl Values<'_> {
                         .automation_field_offset(*index)
                         .expect("admitted field") as i64,
                 );
+                let (source, field) = if let OxInst::RecordArrayGet { indices, .. } = inst {
+                    let calcvba_runtime::vba_record::VbaRecordFieldKind::FixedArray {
+                        element,
+                        bounds,
+                    } = field.kind()
+                    else {
+                        unreachable!("admitted fixed array field")
+                    };
+                    (
+                        self.fixed_element_address(module, b, source, element, bounds, indices),
+                        element.as_ref(),
+                    )
+                } else {
+                    (source, field.kind())
+                };
                 let to = layout.slot(*dst).unwrap();
                 let out = self.address(b, to);
-                if let calcvba_runtime::vba_record::VbaRecordFieldKind::FixedString { len } =
-                    field.kind()
+                if let calcvba_runtime::vba_record::VbaRecordFieldKind::FixedString { len } = field
                 {
                     let len = b.ins().iconst(types::I32, *len as i64);
                     let kind = b.ins().iconst(types::I32, i64::from(self.slot_kind(to)));
@@ -874,7 +891,7 @@ impl Values<'_> {
                         out,
                         self.slot_kind(to),
                         source,
-                        field_kind(field.kind()).expect("admitted field"),
+                        field_kind(field).expect("admitted field"),
                     );
                 }
                 return true;
@@ -883,6 +900,12 @@ impl Values<'_> {
                 record,
                 index,
                 value,
+            }
+            | OxInst::RecordArraySet {
+                record,
+                index,
+                value,
+                ..
             } => {
                 let slot = layout.slot(*record).unwrap();
                 let field = &layout.record_slots[&slot].fields()[*index];
@@ -893,9 +916,23 @@ impl Values<'_> {
                         .automation_field_offset(*index)
                         .expect("admitted field") as i64,
                 );
+                let (out, field) = if let OxInst::RecordArraySet { indices, .. } = inst {
+                    let calcvba_runtime::vba_record::VbaRecordFieldKind::FixedArray {
+                        element,
+                        bounds,
+                    } = field.kind()
+                    else {
+                        unreachable!("admitted fixed array field")
+                    };
+                    (
+                        self.fixed_element_address(module, b, out, element, bounds, indices),
+                        element.as_ref(),
+                    )
+                } else {
+                    (out, field.kind())
+                };
                 let src = self.cell(module, b, value);
-                if let calcvba_runtime::vba_record::VbaRecordFieldKind::FixedString { len } =
-                    field.kind()
+                if let calcvba_runtime::vba_record::VbaRecordFieldKind::FixedString { len } = field
                 {
                     let len = b.ins().iconst(types::I32, *len as i64);
                     let from = b.ins().iconst(
@@ -904,7 +941,7 @@ impl Values<'_> {
                     );
                     self.call(module, b, "cvb_fixed_string_set", &[out, len, src, from]);
                 } else if let calcvba_runtime::vba_record::VbaRecordFieldKind::Record(nested) =
-                    field.kind()
+                    field
                 {
                     let descriptor = data(
                         module,
@@ -918,7 +955,7 @@ impl Values<'_> {
                         module,
                         b,
                         out,
-                        field_kind(field.kind()).expect("admitted field"),
+                        field_kind(field).expect("admitted field"),
                         src,
                         kind(layout.operand_type(value).unwrap()),
                     );
@@ -1104,6 +1141,39 @@ impl Values<'_> {
         );
         true
     }
+    fn fixed_element_address(
+        &self,
+        module: &mut impl Module,
+        b: &mut FunctionBuilder<'_>,
+        base: Value,
+        element: &calcvba_runtime::vba_record::VbaRecordFieldKind,
+        bounds: &[calcvba_runtime::safe_array::SafeArrayBound],
+        indices: &[OxOperand],
+    ) -> Value {
+        let mut offset = b.ins().iconst(types::I64, 0);
+        let (width, align) = element
+            .automation_storage_shape()
+            .expect("admitted field element");
+        let mut stride = width.next_multiple_of(align) as i64;
+        for (bound, index) in bounds.iter().zip(indices) {
+            let index = self.operand(module, b, index, ScalarType::Long);
+            let index = b.ins().sextend(types::I64, index);
+            let relative = b.ins().iadd_imm(index, -i64::from(bound.lower));
+            let valid = b.ins().icmp_imm(
+                ir::condcodes::IntCC::UnsignedLessThan,
+                relative,
+                i64::from(bound.count),
+            );
+            let ok = b.ins().iconst(types::I32, 0);
+            let error = b.ins().iconst(types::I32, 9);
+            let status = b.ins().select(valid, ok, error);
+            check_status(b, status);
+            let term = b.ins().imul_imm(relative, stride);
+            offset = b.ins().iadd(offset, term);
+            stride *= i64::from(bound.count);
+        }
+        b.ins().iadd(base, offset)
+    }
     fn indices(
         &self,
         module: &mut impl Module,
@@ -1226,6 +1296,19 @@ pub(super) fn field_kind(
         F::Record(_) => 36,
         _ => return Err(format!("native record field {kind:?} is not yet admitted")),
     })
+}
+
+pub(super) fn array_field_kind(
+    field: &calcvba_runtime::vba_record::VbaRecordFieldKind,
+    rank: usize,
+) -> Result<u32, String> {
+    if let calcvba_runtime::vba_record::VbaRecordFieldKind::FixedArray { element, bounds } = field
+        && rank == bounds.len()
+        && rank != 0
+    {
+        return field_kind(element);
+    }
+    Err("native record array field requires matching fixed bounds".into())
 }
 
 pub(super) fn record_descriptor(

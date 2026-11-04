@@ -2349,11 +2349,13 @@ fn fixed_array_bounds_from_bounds(
 }
 
 fn literal_i32(expr: SyntaxNode<'_>) -> Option<i32> {
-    let token = expr.first_significant_token()?;
-    if token.kind == SyntaxKind::IntLiteral {
-        return token.text.trim().parse::<i32>().ok();
+    use calcvba_bundle::coreir::CoreConst;
+    match crate::const_eval::fold_const_literal(expr)? {
+        CoreConst::I16(value) => Some(i32::from(value)),
+        CoreConst::I32(value) => Some(value),
+        CoreConst::I64(value) => i32::try_from(value).ok(),
+        _ => None,
     }
-    None
 }
 
 /// Trim a leading `New` keyword from a `TypeRef`'s text (`As New Foo` ⇒ `Foo`).

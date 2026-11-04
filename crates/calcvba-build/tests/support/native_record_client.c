@@ -58,6 +58,14 @@ int wmain(int argc, wchar_t **argv) {
     Allocate allocate_records=(Allocate)GetProcAddress(dll,"AllocateRecords"); RecordArrays record_arrays=(RecordArrays)GetProcAddress(dll,"RecordArrays"); Suite array_suite=(Suite)GetProcAddress(dll,"ArraySuite"); CHECK(allocate_records && record_arrays && array_suite);
     SAFEARRAY *records=NULL; allocate_records(&records); CHECK(records && records->cbElements==48); BSTR array_result=record_arrays(&records); CHECK(array_result && wcscmp(array_result,L"7:q   :-2:0")==0); SysFreeString(array_result);
     array_result=array_suite(); CHECK(array_result && wcscmp(array_result,L"7:q   :-2:0")==0); SysFreeString(array_result); CHECK(SafeArrayDestroy(records)==S_OK);
+    Suite fixed_suite=(Suite)GetProcAddress(dll,"FixedFieldSuite"); CHECK(fixed_suite);
+    BSTR fixed_result=fixed_suite();
+    if(!fixed_result || wcscmp(fixed_result,L"29:41:left:42:abc:q  :record")!=0) fwprintf(stderr,L"FixedFieldSuite: %s\n",fixed_result?fixed_result:L"<null>");
+    CHECK(fixed_result && wcscmp(fixed_result,L"29:41:left:42:abc:q  :record")==0); SysFreeString(fixed_result);
+    typedef LONG (*Index)(LONG); typedef LONG (*Error)(BSTR*,BSTR*);
+    Index fixed_index=(Index)GetProcAddress(dll,"FixedFieldIndex"); Error error=(Error)GetProcAddress(dll,"CalcVbaGetLastError");
+    CHECK(fixed_index && error && fixed_index(-1)==29);
+    CHECK(fixed_index(-2)==0 && error(NULL,NULL)==9); CHECK(fixed_index(2)==0 && error(NULL,NULL)==9);
     printf("7:q   :-2:0|7:q   :-2:0|%ld\n",shutdown()); SysFreeString(ansi); CHECK(SafeArrayDestroy(values)==S_OK);
     CHECK(FreeLibrary(dll)); return 0;
 }

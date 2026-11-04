@@ -6339,7 +6339,16 @@ pub(crate) unsafe extern "C" fn rt_jit_array_erase_variant_slot(
                     }
                 }
             }
-            None if was_array => Variant::unallocated_array(erased_element_vartype),
+            None if was_array => {
+                if let Some(layout) = current.as_safearray().and_then(|a| a.vba_record_layout()) {
+                    match SafeArray::from_vba_records_nd(Vec::new(), layout, Vec::new()) {
+                        Ok(array) => Variant::from_safearray(array),
+                        Err(_) => return ST_FAULT,
+                    }
+                } else {
+                    Variant::unallocated_array(erased_element_vartype)
+                }
+            }
             None => Variant::empty(),
         };
         // SAFETY: null was rejected and the replacement no longer borrows from `run`.

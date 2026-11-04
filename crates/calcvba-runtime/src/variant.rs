@@ -484,7 +484,6 @@ impl Variant {
             let element_vartype = self.array_element_vartype().unwrap_or(VT_VARIANT_VALUE);
             let mut out = [0u8; 16];
             out[0..2].copy_from_slice(&(0x2000u16 | element_vartype).to_le_bytes());
-            out[8..16].copy_from_slice(&self.data_bytes());
             return out;
         }
         self.core.to_wire_bytes()

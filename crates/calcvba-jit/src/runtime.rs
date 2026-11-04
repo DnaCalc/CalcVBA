@@ -817,10 +817,25 @@ pub(crate) fn default_slot_value_with_array_element(
             })?;
             Ok(Variant::from_vba_record(record))
         }
-        OxTy::Array(element, _) => Ok(Variant::unallocated_array(array_slot_vartype_for_slot(
-            element,
-            array_element,
-        ))),
+        OxTy::Array(element, _) => {
+            if let OxTy::Record(id) = element.as_ref() {
+                let fields = program
+                    .record_layout(*id)
+                    .ok_or_else(|| JitError::unsupported("missing array record layout"))?;
+                return calcvba_bundle::array_runtime::unallocated_typed_array(
+                    &ArrayElementType::Record(fields.to_vec()),
+                )
+                .map_err(JitError::Runtime);
+            }
+            if let Some(element @ ArrayElementType::Record(_)) = array_element {
+                return calcvba_bundle::array_runtime::unallocated_typed_array(element)
+                    .map_err(JitError::Runtime);
+            }
+            Ok(Variant::unallocated_array(array_slot_vartype_for_slot(
+                element,
+                array_element,
+            )))
+        }
     }
 }
 

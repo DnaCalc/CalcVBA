@@ -3474,6 +3474,21 @@ fn scanner_applies_option_base_to_single_bound_udt_fixed_array_fields() {
 }
 
 #[test]
+fn scanner_retains_signed_and_suffixed_udt_fixed_array_bounds() {
+    let src = "Private Type State\n    Values(-2& To +1&, (&H3) To 4^) As Long\nEnd Type\n";
+    let m = manifest("Proj", vec![module("Mod1", src)]);
+    let env = build_resolution_environment(&m, &NullTypeLibs).unwrap();
+    let fields = env.udt_field_list("State").unwrap();
+    let VarTypeRef::FixedArray { bounds, .. } = &fields[0].1 else {
+        panic!("signed bounds must retain the inline field layout");
+    };
+    assert_eq!(
+        bounds.iter().map(|b| (b.lower, b.len)).collect::<Vec<_>>(),
+        [(-2, 4), (3, 2)]
+    );
+}
+
+#[test]
 fn scanner_applies_deftype_to_variables_params_and_returns() {
     let src = "DefLng A-Z\r\n\
                Public fieldValue\r\n\

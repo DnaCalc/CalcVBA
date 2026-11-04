@@ -393,5 +393,19 @@ fn native_variant_fixed_string_records_and_string_redim_roundtrip() {
                 .any(|v| v.to_string() == expected),
             "{values:?}"
         );
+        let direct = include_str!("../../../examples/native/records/Records.bas").replace(
+            "Public Sub Main()",
+            "Public Sub Main()\n    Dim observed As String\n    observed = FixedFieldSuite()",
+        );
+        let values = engine
+            .execute_source_with_variant_snapshot_clean(&direct)
+            .unwrap();
+        assert!(
+            values
+                .iter()
+                .filter_map(|v| v.as_bstr())
+                .any(|v| v.to_string() == "29:41:left:42:abc:q  :record"),
+            "{values:?}"
+        );
     }
 }

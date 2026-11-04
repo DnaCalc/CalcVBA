@@ -32,8 +32,7 @@ ValueSuite also executes the same VBA bodies directly through VM3/JIT.
 The numeric-width fixture also checks casts, narrow storage, values above Double's
 exact integer range, and overflow through all three clients.
 Remaining refusals include Optional/ParamArray signatures,
-project classes, unsupported native Declare signatures, Variant array receivers
-and fixed-array UDT field access.
+project classes, unsupported native Declare signatures and Variant array receivers.
 Diagnostics identify the construct and procedure's source declaration. Native UDTs
 include owning Variant fields and fixed strings, with native Automation layout
 separate from the runtime's canonical record layout. Record SAFEARRAYs carry
@@ -55,9 +54,11 @@ String, Variant and UDT returns use the Windows x64 return rules. Private/forced
 ByRef arguments and ByVal aggregate parameters remain refused.
 Each compiled Declare call site retains its library, type conversion plan and
 libffi CIF until CalcVbaShutdown; subsequent native calls reuse that preparation.
-The CalcVBA Declare caller still needs an allocated UDT array to retain its record
-prototype during marshaling. Excel and direct native clients also accept null
-incoming UDT arrays. This caller-side type retention gap keeps N3 open.
+Unallocated typed UDT arrays retain their record prototype across initialization,
+copies and Erase, while projecting a null SAFEARRAY pointer at a native boundary.
+Fixed-array UDT fields support checked multidimensional access, including owning
+String/Variant, fixed-string and nested record elements. Signed literal bounds
+retain their inline layout. The record suite compares C, VM3/JIT Declare and Excel.
 
 N4 has a working ordinary VBA prototype in `examples/native/xll`: numeric
 XLOPER12 conversion, a VBA registration table, callback through DispCallFunc,

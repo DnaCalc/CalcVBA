@@ -405,9 +405,38 @@ impl ProgramResolver {
         if self.records.contains_key(&folded) {
             return;
         }
-        let id = RecordLayoutId(self.record_layouts.len());
-        self.record_layouts.push(fields);
+        let id = if let Some(index) = self
+            .record_layouts
+            .iter()
+            .position(|layout| *layout == fields)
+        {
+            RecordLayoutId(index)
+        } else {
+            let id = RecordLayoutId(self.record_layouts.len());
+            self.record_layouts.push(fields.clone());
+            id
+        };
         self.records.insert(folded, id);
+        for field in &fields {
+            self.intern_nested_record_layout(field);
+        }
+    }
+
+    fn intern_nested_record_layout(&mut self, field: &ArrayElementType) {
+        match field {
+            ArrayElementType::Record(fields) => {
+                if !self.record_layouts.contains(fields) {
+                    self.record_layouts.push(fields.clone());
+                }
+                for field in fields {
+                    self.intern_nested_record_layout(field);
+                }
+            }
+            ArrayElementType::FixedArray { element, .. } => {
+                self.intern_nested_record_layout(element)
+            }
+            _ => {}
+        }
     }
 }
 
@@ -556,6 +585,7 @@ fn elaborate_proc(
     // The binding types are recovered up front (the `locals` above, via the resolver);
     // the lowerer carries the COM interner so early-bound calls intern their members.
     let mut lo = Lowerer::new(LowererInputs {
+        record_layouts: &resolver.record_layouts,
         object_field_types: &resolver.object_field_types,
         locals,
         param_count: proc.params.len(),
@@ -627,6 +657,7 @@ struct Lowerer<'a> {
     com: &'a mut ComInterner,
     global_tys: &'a [OxTy],
     record_ids: &'a HashMap<String, RecordLayoutId>,
+    record_layouts: &'a [Vec<ArrayElementType>],
     external_calls: &'a [calcvba_bundle::ExternalCallDescriptor],
     long_ptr_width: CoreLongPtrWidth,
     proc_return_types: &'a [Option<OxTy>],
@@ -634,6 +665,7 @@ struct Lowerer<'a> {
 }
 
 struct LowererInputs<'a> {
+    record_layouts: &'a [Vec<ArrayElementType>],
     object_field_types: &'a HashMap<(ClassId, i32), OxTy>,
     locals: Vec<OxLocal>,
     param_count: usize,
@@ -669,6 +701,7 @@ impl<'a> Lowerer<'a> {
             com: inputs.com,
             global_tys: inputs.global_tys,
             record_ids: inputs.record_ids,
+            record_layouts: inputs.record_layouts,
             external_calls: inputs.external_calls,
             long_ptr_width: inputs.long_ptr_width,
             proc_return_types: inputs.proc_return_types,
@@ -713,6 +746,34 @@ impl<'a> Lowerer<'a> {
         self.record_ids
             .get(&name.to_ascii_lowercase())
             .map(|id| OxTy::Record(*id))
+    }
+
+    fn record_field_result_ty(&self, receiver: &OxTy, index: usize, array: bool) -> OxTy {
+        let OxTy::Record(id) = receiver else {
+            return OxTy::Variant;
+        };
+        let Some(mut field) = self
+            .record_layouts
+            .get(id.0)
+            .and_then(|fields| fields.get(index))
+        else {
+            return OxTy::Variant;
+        };
+        if array {
+            let ArrayElementType::FixedArray { element, .. } = field else {
+                return OxTy::Variant;
+            };
+            field = element;
+        }
+        if let ArrayElementType::Record(fields) = field
+            && let Some(index) = self
+                .record_layouts
+                .iter()
+                .position(|layout| layout == fields)
+        {
+            return OxTy::Record(RecordLayoutId(index));
+        }
+        OxTy::Variant
     }
 
     fn expected_new_record_ty(
@@ -2573,16 +2634,17 @@ impl<'a> Lowerer<'a> {
                 // record field without materializing the entire field as a temporary
                 // SAFEARRAY on every access.
                 if let coreir::CorePlace::RecordField { base, index } = array.as_ref() {
-                    let rec = self.lower_place_load(base)?.0;
+                    let (rec, receiver_ty) = self.lower_place_load(base)?;
                     let indices = self.lower_indices(indices)?;
-                    let t = self.new_temp(OxTy::Variant);
+                    let ty = self.record_field_result_ty(&receiver_ty, *index, true);
+                    let t = self.new_temp(ty.clone());
                     self.emit(OxInst::RecordArrayGet {
                         dst: OxPlace::Temp(t),
                         record: rec,
                         index: *index,
                         indices,
                     });
-                    return Ok((OxOperand::temp(t), OxTy::Variant));
+                    return Ok((OxOperand::temp(t), ty));
                 }
                 let (arr, arr_ty) = self.lower_place_load(array)?;
                 let indices = self.lower_indices(indices)?;
@@ -2600,17 +2662,15 @@ impl<'a> Lowerer<'a> {
                 Ok((OxOperand::temp(t), elem_ty))
             }
             coreir::CorePlace::RecordField { base, index } => {
-                let rec = self.lower_place_load(base)?.0;
-                let t = self.new_temp(OxTy::Variant);
+                let (rec, receiver_ty) = self.lower_place_load(base)?;
+                let ty = self.record_field_result_ty(&receiver_ty, *index, false);
+                let t = self.new_temp(ty.clone());
                 self.emit(OxInst::RecordGet {
                     dst: OxPlace::Temp(t),
                     record: rec,
                     index: *index,
                 });
-                // Field reads stay Variant-typed here because `CorePlace` does not carry the
-                // base record layout id. The authoritative inline field shape lives in
-                // `OxProgram::record_layouts` and is consumed by the record instructions.
-                Ok((OxOperand::temp(t), OxTy::Variant))
+                Ok((OxOperand::temp(t), ty))
             }
             coreir::CorePlace::Field { object, field } => {
                 let (obj, object_type) = self.lower_value(object)?;

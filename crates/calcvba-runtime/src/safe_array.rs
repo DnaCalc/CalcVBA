@@ -282,7 +282,9 @@ fn bounds_layout(dimensions: usize) -> Result<std::alloc::Layout, String> {
 }
 
 fn owner_layout(dimensions: usize) -> Result<std::alloc::Layout, String> {
-    let header = bounds_layout(dimensions)?;
+    // A zero-rank engine descriptor retains an unallocated UDT's prototype.
+    // Keep the full header allocated, including its unused inline bound.
+    let header = bounds_layout(dimensions.max(1))?;
     let total = core::mem::size_of::<RawSafeArrayOwnerPrefix>()
         .checked_add(header.size())
         .ok_or_else(|| "SAFEARRAY owner layout overflow".to_string())?;
@@ -321,6 +323,9 @@ fn default_bounds_for_len(len: usize) -> Result<Vec<SafeArrayBound>, String> {
 }
 
 fn bounds_total_len(bounds: &[SafeArrayBound]) -> Result<usize, String> {
+    if bounds.is_empty() {
+        return Ok(0);
+    }
     let mut total = 1usize;
     for bound in bounds {
         total = total
@@ -1731,7 +1736,7 @@ impl SafeArray {
         // Rebuild from bounds + element vartype + values, deriving canonical
         // feature flags and then restoring the descriptor's fixed-size bit.
         let fixed = self.is_fixed_size();
-        let bounds = self.bounds_for_shape();
+        let bounds = self.raw_bounds();
         if let Some(layout) = self.vba_record_layout() {
             let len = self.len();
             // SAFETY: this descriptor is live for the shared borrow.

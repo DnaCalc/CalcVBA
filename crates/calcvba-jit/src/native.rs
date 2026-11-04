@@ -272,6 +272,35 @@ pub fn compile_native_scalars(
                         values::field_kind(layout.record_slots[&slot].fields()[*index].kind())
                             .map_err(|e| problem(func, e))?;
                     }
+                    OxInst::RecordArrayGet {
+                        record,
+                        index,
+                        indices,
+                        ..
+                    } => {
+                        let OxOperand::Use(place) = record else {
+                            return Err(problem(func, "record array operand"));
+                        };
+                        let slot = layout.slot(*place).map_err(|e| problem(func, e))?;
+                        values::array_field_kind(
+                            layout.record_slots[&slot].fields()[*index].kind(),
+                            indices.len(),
+                        )
+                        .map_err(|e| problem(func, e))?;
+                    }
+                    OxInst::RecordArraySet {
+                        record,
+                        index,
+                        indices,
+                        ..
+                    } => {
+                        let slot = layout.slot(*record).map_err(|e| problem(func, e))?;
+                        values::array_field_kind(
+                            layout.record_slots[&slot].fields()[*index].kind(),
+                            indices.len(),
+                        )
+                        .map_err(|e| problem(func, e))?;
+                    }
                     OxInst::ArrayGet { array, .. } | OxInst::Bound { array, .. } => {
                         if layout.operand_type(array) != Ok(ScalarType::Array) {
                             return Err(problem(func, format!("Variant array receiver {inst:?}")));

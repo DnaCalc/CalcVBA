@@ -8,6 +8,39 @@ Public Type RichRecord
     tail As Long
     text As String * 4
 End Type
+Public Type FixedFields
+    tag As Byte
+    numbers(-1 To 1, 3 To 4) As Long
+    texts(2 To 3) As String
+    variants(0 To 1) As Variant
+    fixedText(-2 To -1) As String * 3
+    records(5 To 6) As RichRecord
+End Type
+
+Public Function FixedFieldSuite() As String
+    Dim value As FixedFields, copied As FixedFields, row As Long, column As Long
+    For column = 3& To 4&
+        For row = -1& To 1&
+            value.numbers(row, column) = row + column * 10&
+        Next row
+    Next column
+    value.texts(2) = "left": value.texts(3) = "right"
+    value.variants(0) = "42": value.variants(1) = 9&
+    value.fixedText(-2) = "abcdef": value.fixedText(-1) = "q"
+    Dim record As RichRecord
+    record.value = "record": record.text = "xy"
+    value.records(5) = record
+    copied = value
+    value.texts(2) = "changed": value.variants(0) = 0&
+    record = copied.records(5)
+    FixedFieldSuite = CStr(copied.numbers(-1, 3)) & ":" & CStr(copied.numbers(1, 4)) & ":" & copied.texts(2) & ":" & CStr(copied.variants(0)) & ":" & copied.fixedText(-2) & ":" & copied.fixedText(-1) & ":" & CStr(record.value)
+End Function
+
+Public Function FixedFieldIndex(ByVal index As Long) As Long
+    Dim value As FixedFields
+    value.numbers(-1, 3) = 29&
+    FixedFieldIndex = value.numbers(index, 3)
+End Function
 
 Public Function ChangeRecord(ByRef record As RichRecord) As String
     record.value = record.value + 5&

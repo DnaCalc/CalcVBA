@@ -477,16 +477,26 @@ impl<'h> Vm3<'h> {
     /// Initial slot value for a statically typed VBA variable. Dynamic array variables are
     /// arrays before allocation for `IsArray`, but have no SAFEARRAY descriptor/bounds until
     /// `ReDim`.
-    fn initial_value_for_slot(ty: &OxTy, array_element: Option<&ArrayElementType>) -> Variant {
+    fn initial_value_for_slot(
+        program: &OxProgram,
+        ty: &OxTy,
+        array_element: Option<&ArrayElementType>,
+    ) -> Result<Variant, Vm3Error> {
         match ty {
             OxTy::Array(element, _) => {
-                let element = array_element
-                    .cloned()
-                    .or_else(|| Self::array_element_type_for_ox_ty(element))
-                    .unwrap_or(ArrayElementType::Variant);
-                Variant::unallocated_array(safearray_vartype_for_element(&element))
+                let element = (match element.as_ref() {
+                    OxTy::Record(id) => program
+                        .record_layout(*id)
+                        .map(|fields| ArrayElementType::Record(fields.to_vec())),
+                    _ => None,
+                })
+                .or_else(|| array_element.cloned())
+                .or_else(|| Self::array_element_type_for_ox_ty(element))
+                .unwrap_or(ArrayElementType::Variant);
+                calcvba_bundle::array_runtime::unallocated_typed_array(&element)
+                    .map_err(|e| Vm3Error::Fault(Fault::new(7, e)))
             }
-            _ => Variant::empty(),
+            _ => Ok(Variant::empty()),
         }
     }
 
@@ -513,7 +523,7 @@ impl<'h> Vm3<'h> {
     /// class (the shape `ObjectRef::from_project_instance` requires, as vm2's `LoadedBundle`
     /// leaks them; bounded by class count), the `(binding,event)→handler` route table, and the
     /// zeroed module-global slots.
-    fn build_loaded(program: &'h OxProgram) -> LoadedProgram<'h> {
+    fn build_loaded(program: &'h OxProgram) -> Result<LoadedProgram<'h>, Vm3Error> {
         let class_descriptors: Vec<&'static RuntimeClassDescriptor> = program
             .classes
             .iter()
@@ -526,19 +536,19 @@ impl<'h> Vm3<'h> {
         for route in &program.event_routes {
             event_routes.insert((route.binding, route.event), route.handler);
         }
-        LoadedProgram {
+        Ok(LoadedProgram {
             program,
             globals: program
                 .globals
                 .iter()
                 .map(|global| {
-                    Self::initial_value_for_slot(&global.ty, global.array_element.as_ref())
+                    Self::initial_value_for_slot(program, &global.ty, global.array_element.as_ref())
                 })
-                .collect(),
+                .collect::<Result<_, _>>()?,
             class_descriptors,
             predeclared_singletons: HashMap::new(),
             event_routes,
-        }
+        })
     }
 
     fn build_runtime_class_descriptor(
@@ -715,7 +725,10 @@ impl<'h> Vm3<'h> {
             .collect();
         let mut exec = ExecState::new(host);
         exec.remaining_steps = steps;
-        exec.programs = programs.iter().map(|p| Self::build_loaded(p)).collect();
+        exec.programs = programs
+            .iter()
+            .map(|p| Self::build_loaded(p))
+            .collect::<Result<_, _>>()?;
         let mut vm = Vm3 {
             typed_entries,
             cur: entry,
@@ -732,7 +745,7 @@ impl<'h> Vm3<'h> {
         for i in 0..vm.exec.programs.len() {
             if let Some(init) = vm.exec.programs[i].program.global_initializer {
                 vm.cur = i;
-                let frame = vm.new_frame(init);
+                let frame = vm.new_frame(init)?;
                 vm.frames.push(frame);
                 let r = vm.run_loop(0);
                 // The initializer writes module globals; its own frame is discarded.
@@ -881,7 +894,7 @@ impl<'h> Vm3<'h> {
     /// `activate()` without running `Main`.
     pub fn run_entry(&mut self) -> Result<(), Vm3Error> {
         if let Some(entry) = self.cur_program().entry {
-            let frame = self.new_frame(entry);
+            let frame = self.new_frame(entry)?;
             self.frames.push(frame);
             // The entry frame is never popped — it stays as `frames[0]` for the snapshot.
             let r = self.run_loop(0);
@@ -961,7 +974,7 @@ impl<'h> Vm3<'h> {
             return result;
         }
         let base = self.frames.len();
-        let mut frame = self.new_frame(func);
+        let mut frame = self.new_frame(func)?;
         for (slot, value) in frame.locals.iter_mut().zip(args) {
             *slot = value;
         }
@@ -1067,7 +1080,7 @@ impl<'h> Vm3<'h> {
         self.exec.err_engine.last_dll_error
     }
 
-    fn new_frame(&self, func: FuncId) -> Frame {
+    fn new_frame(&self, func: FuncId) -> Result<Frame, Vm3Error> {
         self.new_frame_in(self.cur, func)
     }
 
@@ -1076,9 +1089,9 @@ impl<'h> Vm3<'h> {
     /// globals/code regardless of the resolving `cur`. Used to run a cross-project callee (an
     /// object method, or a referenced project's proc) whose ARGUMENTS are resolved in the
     /// caller's program (`cur`) BEFORE this frame runs — matching vm2's resolve-then-switch.
-    fn new_frame_in(&self, prog: usize, func: FuncId) -> Frame {
+    fn new_frame_in(&self, prog: usize, func: FuncId) -> Result<Frame, Vm3Error> {
         let f = &self.exec.programs[prog].program.funcs[func.0];
-        Frame {
+        Ok(Frame {
             prog,
             func,
             block: f.entry,
@@ -1086,8 +1099,14 @@ impl<'h> Vm3<'h> {
             locals: f
                 .locals
                 .iter()
-                .map(|local| Self::initial_value_for_slot(&local.ty, local.array_element.as_ref()))
-                .collect(),
+                .map(|local| {
+                    Self::initial_value_for_slot(
+                        self.exec.programs[prog].program,
+                        &local.ty,
+                        local.array_element.as_ref(),
+                    )
+                })
+                .collect::<Result<_, _>>()?,
             temps: HashMap::new(),
             aliases: HashMap::new(),
             dst: None,
@@ -1096,7 +1115,7 @@ impl<'h> Vm3<'h> {
             saved_error_mode: ErrorMode::None,
             saved_active_error: None,
             gosub_stack: Vec::new(),
-        }
+        })
     }
 
     /// The block-threaded dispatch loop: run the top frame until the frame at depth
@@ -1965,7 +1984,17 @@ impl<'h> Vm3<'h> {
                         self.store(array, Variant::from_safearray(array_value))?;
                     }
                     None if was_array => {
-                        self.store(array, Variant::unallocated_array(erased_element_vartype))?
+                        let value = if let Some(layout) =
+                            cur.as_safearray().and_then(|a| a.vba_record_layout())
+                        {
+                            Variant::from_safearray(
+                                SafeArray::from_vba_records_nd(Vec::new(), layout, Vec::new())
+                                    .map_err(|e| Vm3Error::Fault(Fault::new(13, e)))?,
+                            )
+                        } else {
+                            Variant::unallocated_array(erased_element_vartype)
+                        };
+                        self.store(array, value)?
                     }
                     None => self.store(array, Variant::empty())?,
                 }
@@ -2444,8 +2473,10 @@ impl<'h> Vm3<'h> {
         let mut locals: Vec<Variant> = callee
             .locals
             .iter()
-            .map(|local| Self::initial_value_for_slot(&local.ty, local.array_element.as_ref()))
-            .collect();
+            .map(|local| {
+                Self::initial_value_for_slot(program, &local.ty, local.array_element.as_ref())
+            })
+            .collect::<Result<_, _>>()?;
         let mut aliases = HashMap::new();
         let frame_index = self.frames.len();
         let mut pending_param_array_aliases = Vec::new();
@@ -3414,7 +3445,7 @@ impl<'h> Vm3<'h> {
         // Suppressed finalizers/callbacks must not overwrite the caller-visible Err object.
         let suppressed_err_engine = suppress.then(|| self.exec.err_engine.clone());
         let base = self.frames.len();
-        let mut frame = self.new_frame_in(target_prog, proc);
+        let mut frame = self.new_frame_in(target_prog, proc)?;
         if let Some(slot) = frame.locals.get_mut(0) {
             *slot = me;
         }
@@ -3511,7 +3542,7 @@ impl<'h> Vm3<'h> {
         // Suppressed finalizers/callbacks must not overwrite the caller-visible Err object.
         let suppressed_err_engine = suppress.then(|| self.exec.err_engine.clone());
         let base = self.frames.len();
-        let mut frame = self.new_frame_in(target_prog, proc);
+        let mut frame = self.new_frame_in(target_prog, proc)?;
         if let Some(slot) = frame.locals.get_mut(0) {
             *slot = me;
         }
@@ -4899,7 +4930,7 @@ impl<'h> Vm3<'h> {
         // Suppressed native callback handlers must not overwrite the caller-visible Err object.
         let suppressed_err_engine = suppress.then(|| self.exec.err_engine.clone());
         let base = self.frames.len();
-        let mut frame = self.new_frame_in(target_prog, proc);
+        let mut frame = self.new_frame_in(target_prog, proc)?;
         for (i, v) in args.into_iter().enumerate() {
             if let Some(slot) = frame.locals.get_mut(i) {
                 *slot = v;

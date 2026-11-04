@@ -70,9 +70,12 @@ try {
         Release-ComObject $reference
     }
     foreach ($module in @(Get-Content -Raw -LiteralPath $ModulesFile | ConvertFrom-Json)) {
-        $component=$book.VBProject.VBComponents.Add(1)
+        $kind=if($module.PSObject.Properties.Name -contains 'kind'){[int]$module.kind}else{1}
+        if($kind -notin @(1,2)){throw 'Only standard and class modules are supported'}
+        $component=$book.VBProject.VBComponents.Add($kind)
         $component.Name=[string]$module.name
         $source=(Get-Content -Raw -LiteralPath ([string]$module.source_path)) -replace '(?m)^Attribute .*\r?\n',''
+        $source=$source -replace '(?is)\AVERSION[^\r\n]*\r?\nBEGIN\r?\n.*?\r?\nEND\r?\n',''
         [void]$component.CodeModule.AddFromString($source)
         Release-ComObject $component
     }

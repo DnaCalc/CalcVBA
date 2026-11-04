@@ -7,6 +7,20 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+function ConvertTo-VbaStringExpression([string]$Value) {
+    $parts=[Collections.Generic.List[string]]::new()
+    $plain=[Text.StringBuilder]::new()
+    foreach($character in $Value.ToCharArray()) {
+        $unit=[int]$character
+        if($unit -ge 32 -and $unit -le 126) { [void]$plain.Append($character); continue }
+        if($plain.Length) { $parts.Add('"'+$plain.ToString().Replace('"','""')+'"'); [void]$plain.Clear() }
+        if($unit -gt 32767) { $unit-=65536 }
+        $parts.Add('ChrW('+$unit+'&)')
+    }
+    if($plain.Length) { $parts.Add('"'+$plain.ToString().Replace('"','""')+'"') }
+    if(-not $parts.Count) { return '""' }
+    return $parts -join ' & '
+}
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Push-Location $repoRoot
 try {
@@ -95,13 +109,13 @@ try {
         $vbaCases = [Collections.Generic.List[string]]::new()
         $vbaCases.Add('ReDim formulas(0 To '+($cases.Count-1)+'): ReDim expected(0 To '+($cases.Count-1)+')')
         for ($i=0; $i -lt $cases.Count; $i++) {
-            $formula = ([string]$cases[$i].formula).Replace('"','""')
+            $formula = ConvertTo-VbaStringExpression ([string]$cases[$i].formula)
             $value = $cases[$i].value
-            if ($value -is [string]) { $literal='"'+$value.Replace('"','""')+'"' }
+            if ($value -is [string]) { $literal=ConvertTo-VbaStringExpression $value }
             elseif ($value -is [bool]) { $literal=if($value){'True'}else{'False'} }
             elseif ($value.PSObject.Properties.Name -contains 'error') { $literal='CVErr(2042&)' }
             else { $literal=([double]$value).ToString('R',[Globalization.CultureInfo]::InvariantCulture)+'#' }
-            $vbaCases.Add('formulas('+$i+') = "'+$formula+'": expected('+$i+') = '+$literal)
+            $vbaCases.Add('formulas('+$i+') = '+$formula+': expected('+$i+') = '+$literal)
         }
         $loadSource=$loadSource.Replace("'__CASES__",($vbaCases -join "`n    "))
         $loadPath = Join-Path $OutDir 'excel-load.bas'

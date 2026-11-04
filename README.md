@@ -56,11 +56,15 @@ Use `--help` for current CLI options and `--diagnostic-format json` for tools.
 ```powershell
 cargo run -p calcvba-cli -- build project.basproj --target OxImage --out-dir out
 cargo run -p calcvba-cli -- run-image out/ProjectName.oxi --backend jit
-cargo run -p calcvba-cli -- build project.basproj --target WrappedComServer --out-dir out
+cargo run -p calcvba-cli -- build project.basproj --target ComServer --out-dir out
 ```
 
-`.oxi` packages contain the compiled project closure. WrappedComServer emits a
-runtime-backed Windows COM DLL, currently using VM3. NativeLibrary emits a
+`.oxi` packages contain the compiled project closure. ComServer emits a
+runtime-backed Windows COM DLL and type library, currently using VM3. The
+[COM DLL example](examples/comserver) checks source Instancing, class factories
+and an early-bound client in an existing owned Excel, with temporary private
+per-user registration. Explicit JIT selection is refused for this COM host.
+NativeLibrary emits a
 Windows x64 DLL for admitted native exports. Native EXE outputs and JIT-backed
 COM wrappers remain unfinished.
 

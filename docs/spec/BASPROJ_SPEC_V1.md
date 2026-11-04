@@ -39,6 +39,11 @@ can supply source files when explicit module items are absent.
 BuildTarget describes packaging: the historical Bundle spelling selects the
 current .oxi package; WrapperExe, WrapperLibrary and WrappedComServer describe
 runtime-backed outputs. CLI `build --target OxImage` explicitly selects .oxi.
+`OutputType=ComServer` defaults to WrappedComServer packaging. CLI
+`build --target ComServer` (or its WrappedComServer alias) emits an in-process
+DLL, type library, typed image and descriptor. This COM host uses VM3;
+RuntimeFlavor=Jit is explicitly refused. Class source attributes control
+Private, PublicNotCreatable, MultiUse and GlobalMultiUse exposure and creation.
 CLI `build --target NativeLibrary` requires `OutputType=NativeLibrary` and emits
 a Windows x64 DLL using the embedded prebuilt runtime template. It runs no Rust
 compiler or linker. Native EXE output remains unfinished.
@@ -163,5 +168,5 @@ GlobalSingleUse (4), MultiUse (5) and GlobalMultiUse (6). SingleUse and
 GlobalSingleUse require OutputType=ComExe on Windows: an out-of-process COM
 server. ComServer denotes an in-process COM server. A standalone EXE uses
 OutputType=Exe with a Public Sub Main in a standard `.bas` module. New
-ComServer, Exe and ComExe output work follows the Office-file work; parsing an
-output type does not claim its implementation is complete.
+ComServer has a runtime-backed DLL implementation; EXE and ComExe output remain
+unfinished. Parsing an output type does not claim its implementation is complete.

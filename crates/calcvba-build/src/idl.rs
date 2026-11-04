@@ -108,10 +108,17 @@ fn generate_class_idl(class: &ComClassDescriptor) -> String {
         idl.push_str("    };\n\n");
     }
 
+    let mut instancing_attributes = String::new();
+    if !class.creatable {
+        instancing_attributes.push_str(",\n        noncreatable");
+    }
+    if class.global_namespace {
+        instancing_attributes.push_str(",\n        appobject");
+    }
     idl.push_str(&format!(
         r#"    [
         uuid({clsid}),
-        helpstring("{help}")
+        helpstring("{help}"){instancing_attributes}
     ]
     coclass {class_name}
     {{
@@ -416,10 +423,20 @@ fn generate_dispatch_member_idl(member: &ComMemberDescriptor) -> String {
                 .filter(|name| !name.trim().is_empty())
                 .map(|name| sanitize_ident(name))
                 .unwrap_or_else(|| format!("arg{index}"));
-            if param.is_by_ref() {
-                format!("[in, out] {}* {name}", idl_type(*param))
+            let optional = if member
+                .parameter_optional
+                .get(index)
+                .copied()
+                .unwrap_or(false)
+            {
+                ", optional"
             } else {
-                format!("[in] {} {name}", idl_type(*param))
+                ""
+            };
+            if param.is_by_ref() {
+                format!("[in, out{optional}] {}* {name}", idl_type(*param))
+            } else {
+                format!("[in{optional}] {} {name}", idl_type(*param))
             }
         })
         .collect();

@@ -22,6 +22,8 @@ pub struct ComClassDescriptor {
     pub description: Option<String>,
     pub prog_id: String,
     pub creatable: bool,
+    #[serde(default)]
+    pub global_namespace: bool,
     pub clsid: String,
     pub default_interface_name: String,
     pub default_interface_iid: String,
@@ -165,6 +167,7 @@ impl ComServerDescriptor {
                     description: ty.description.clone(),
                     prog_id: prog_id.clone().unwrap_or(default_prog_id),
                     creatable: *creatable,
+                    global_namespace: ty.global_namespace,
                     clsid: deterministic_uuid(&surface.project_name, &class_name),
                     default_interface_name: format!("I{class_name}"),
                     default_interface_iid: deterministic_uuid(

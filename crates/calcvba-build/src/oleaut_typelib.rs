@@ -16,8 +16,9 @@ use windows_sys::Win32::System::Com::{
     TKIND_COCLASS, TKIND_DISPATCH, TKIND_INTERFACE, TYPEDESC, TYPEDESC_0,
 };
 use windows_sys::Win32::System::Ole::{
-    CreateTypeLib2, PARAMDESC, PARAMFLAG_FIN, PARAMFLAG_FOUT, PARAMFLAG_FRETVAL,
-    TYPEFLAG_FDISPATCHABLE, TYPEFLAG_FDUAL, TYPEFLAG_FNONEXTENSIBLE, TYPEFLAG_FOLEAUTOMATION,
+    CreateTypeLib2, PARAMDESC, PARAMFLAG_FIN, PARAMFLAG_FOPT, PARAMFLAG_FOUT, PARAMFLAG_FRETVAL,
+    TYPEFLAG_FAPPOBJECT, TYPEFLAG_FCANCREATE, TYPEFLAG_FDISPATCHABLE, TYPEFLAG_FDUAL,
+    TYPEFLAG_FNONEXTENSIBLE, TYPEFLAG_FOLEAUTOMATION,
 };
 use windows_sys::Win32::System::Variant::{
     VT_BOOL, VT_BSTR, VT_CY, VT_DATE, VT_DECIMAL, VT_DISPATCH, VT_EMPTY, VT_HRESULT, VT_I2, VT_I4,
@@ -291,6 +292,15 @@ impl OleAutEmitter {
     ) -> Result<(), ShimCompileError> {
         let created = self.create_typeinfo(&class.class_name, TKIND_COCLASS)?;
         created.set_guid(&class.clsid)?;
+        let mut flags = if class.creatable {
+            TYPEFLAG_FCANCREATE as u32
+        } else {
+            0
+        };
+        if class.global_namespace {
+            flags |= TYPEFLAG_FAPPOBJECT as u32;
+        }
+        created.set_type_flags(flags)?;
         created.set_doc_string(class.description.as_deref().unwrap_or(&class.class_name))?;
 
         let default = refs.get(&class.default_interface_name).ok_or_else(|| {
@@ -489,7 +499,17 @@ impl FuncDescBuilder {
                     .parameter_types
                     .iter()
                     .copied()
-                    .map(param_elemdesc)
+                    .enumerate()
+                    .map(|(index, param)| {
+                        optional_param_elemdesc(
+                            param,
+                            member
+                                .parameter_optional
+                                .get(index)
+                                .copied()
+                                .unwrap_or(false),
+                        )
+                    })
                     .collect::<Vec<_>>();
                 Self::new(
                     member.dispid,
@@ -533,7 +553,17 @@ impl FuncDescBuilder {
             .parameter_types
             .iter()
             .copied()
-            .map(param_elemdesc)
+            .enumerate()
+            .map(|(index, param)| {
+                optional_param_elemdesc(
+                    param,
+                    member
+                        .parameter_optional
+                        .get(index)
+                        .copied()
+                        .unwrap_or(false),
+                )
+            })
             .chain(retval)
             .collect::<Vec<_>>();
         let mut names = names_for_params(&member.name, &member.parameter_names);
@@ -591,6 +621,11 @@ impl FuncDescBuilder {
         funcdesc.invkind = invkind;
         funcdesc.callconv = CC_STDCALL;
         funcdesc.cParams = params.len() as i16;
+        // SAFETY: every parameter was initialized with the PARAMDESC union arm.
+        funcdesc.cParamsOpt = params
+            .iter()
+            .filter(|param| unsafe { param.Anonymous.paramdesc.wParamFlags & PARAMFLAG_FOPT != 0 })
+            .count() as i16;
         funcdesc.oVft = (usize::from(vtable_slot) * std::mem::size_of::<usize>()) as i16;
         funcdesc.elemdescFunc = vt_elemdesc(return_vt, 0);
         funcdesc.lprgelemdescParam = if params.is_empty() {
@@ -653,6 +688,17 @@ fn retval_wire_elemdesc(
         Some(wire_type) => wire_elemdesc(wire_type, IDLFLAG_FOUT | IDLFLAG_FRETVAL),
         None => value_elemdesc(ComParamType::Variant, IDLFLAG_FOUT | IDLFLAG_FRETVAL),
     })
+}
+
+fn optional_param_elemdesc(param: ComParamType, optional: bool) -> ELEMDESC {
+    let mut result = param_elemdesc(param);
+    if optional {
+        // SAFETY: param_elemdesc initializes the PARAMDESC union arm.
+        unsafe {
+            result.Anonymous.paramdesc.wParamFlags |= PARAMFLAG_FOPT;
+        }
+    }
+    result
 }
 
 fn param_elemdesc(param: ComParamType) -> ELEMDESC {

@@ -1035,12 +1035,19 @@ unsafe extern "system" fn dispatch_invoke(
         return DISP_E_MEMBERNOTFOUND;
     };
 
-    // Captured out of the `Result<_, String>` session closure so a guest fault's
-    // real VBA Err.Number survives to write_runtime_exception (marshalling errors
-    // leave it None -> the default 5).
-    let mut invoke_vba_code: Option<i32> = None;
-    let runtime_value = match with_session(|session| {
-        let args = if member_has_object_parameters(member) || disp_params_contain_object(params) {
+    let count = arg_count(params);
+    if count > member.parameter_types.len()
+        || (count..member.parameter_types.len())
+            .any(|i| !member.parameter_optional.get(i).copied().unwrap_or(false))
+    {
+        return 0x8002_000Eu32 as i32; // DISP_E_BADPARAMCOUNT
+    }
+    let aliases = host_argument_aliases(member, params);
+    let mut invoke_error = None;
+    let mut final_args = None;
+    let outcome = with_session(|session| {
+        let mut args = if member_has_object_parameters(member) || disp_params_contain_object(params)
+        {
             generated_server_object_aware_args(member, params, session)
                 .map_err(|message| format!("failed to marshal COM arguments: {message}"))?
         } else {
@@ -1059,27 +1066,36 @@ unsafe extern "system" fn dispatch_invoke(
             }
             args
         };
-        session
-            .invoke_member_values(
-                object.object.clone(),
-                &member.name,
-                Some(project_member_kind(member.invoke_kind)),
-                args,
-            )
-            .map_err(|err| {
-                invoke_vba_code = err.vba_code();
-                err.to_string()
-            })
-    }) {
+        args.resize_with(member.parameter_types.len(), || {
+            Variant::from_error_code(0x8002_0004u32 as i32)
+        });
+        let result = session.invoke_member_values_with_writebacks(
+            object.object.clone(),
+            &member.name,
+            Some(project_member_kind(member.invoke_kind)),
+            &mut args,
+            &aliases,
+        );
+        final_args = Some(args);
+        result.map_err(|error| {
+            let message = error.to_string();
+            invoke_error = Some(error);
+            message
+        })
+    });
+    if let Some(args) = final_args
+        && let Err(message) = write_back_host_arguments(member, params, &args)
+    {
+        return write_runtime_exception(Some(13), message, excep_info, arg_err, count);
+    }
+    let runtime_value = match outcome {
         Ok(value) => value,
         Err(message) => {
-            return write_runtime_exception(
-                invoke_vba_code,
-                message,
-                excep_info,
-                arg_err,
-                arg_count(params),
-            );
+            return if let Some(error) = invoke_error {
+                write_project_exception(&error, excep_info, arg_err, count)
+            } else {
+                write_runtime_exception(None, message, excep_info, arg_err, count)
+            };
         }
     };
 
@@ -1249,6 +1265,13 @@ unsafe fn generated_server_object_variant_arg(variant: &VARIANT) -> Result<Varia
     let vt = variant.Anonymous.Anonymous.vt;
     let by_ref = vt & VT_BYREF != 0;
     let base_vt = vt & !VT_BYREF;
+    if base_vt == VT_VARIANT && by_ref {
+        let inner = variant.Anonymous.Anonymous.Anonymous.pvarVal;
+        if inner.is_null() {
+            return Err("ByRef Variant object argument has a null target".into());
+        }
+        return generated_server_object_variant_arg(&*inner);
+    }
     let (interface, release_after) = match (by_ref, base_vt) {
         (false, VT_DISPATCH) => (variant.Anonymous.Anonymous.Anonymous.pdispVal.cast(), false),
         (true, VT_DISPATCH) => {
@@ -1269,7 +1292,7 @@ unsafe fn generated_server_object_variant_arg(variant: &VARIANT) -> Result<Varia
         }
     };
     if interface.is_null() {
-        return Err("object argument was Nothing".to_string());
+        return Ok(Variant::nothing());
     }
     let result = object_ref_from_generated_interface(interface)
         .map(Variant::from_object_ref)
@@ -4022,6 +4045,222 @@ unsafe fn invoke_dispatch_sink(
         &mut excep_info,
         &mut arg_err,
     )
+}
+
+struct NativeVariantOwner(VARIANT);
+
+impl NativeVariantOwner {
+    fn empty() -> Self {
+        // SAFETY: an all-zero native VARIANT is VT_EMPTY.
+        Self(unsafe { std::mem::zeroed() })
+    }
+}
+
+impl Drop for NativeVariantOwner {
+    fn drop(&mut self) {
+        // SAFETY: this owner retains each initialized native payload until transfer.
+        unsafe { VariantClear(&mut self.0) };
+    }
+}
+
+unsafe fn host_argument_aliases(
+    member: &ComMemberDescriptor,
+    params: *mut DISPPARAMS,
+) -> Vec<usize> {
+    let mut aliases: Vec<_> = (0..member.parameter_types.len()).collect();
+    if params.is_null() {
+        return aliases;
+    }
+    let count = (*params).cArgs as usize;
+    let mut identities = HashMap::new();
+    for (index, formal) in member.parameter_types.iter().enumerate().take(count) {
+        if !formal.is_by_ref() {
+            continue;
+        }
+        let mut argument = &*(*params).rgvarg.add(count - 1 - index);
+        // An Automation forwarding VARIANT can itself refer to a ByRef value.
+        for _ in 0..32 {
+            if argument.Anonymous.Anonymous.vt != (VT_BYREF | VT_VARIANT) {
+                break;
+            }
+            let inner = argument.Anonymous.Anonymous.Anonymous.pvarVal;
+            if inner.is_null() || (*inner).Anonymous.Anonymous.vt & VT_BYREF == 0 {
+                break;
+            }
+            argument = &*inner;
+        }
+        let vt = argument.Anonymous.Anonymous.vt;
+        if vt & VT_BYREF != 0 {
+            let key = (vt, argument.Anonymous.Anonymous.Anonymous.byref as usize);
+            aliases[index] = *identities.entry(key).or_insert(index);
+        }
+    }
+    aliases
+}
+
+unsafe fn transfer_host_writeback(target: &mut VARIANT, value: &mut VARIANT) -> Result<(), String> {
+    let vt = target.Anonymous.Anonymous.vt;
+    if vt & VT_BYREF == 0 {
+        return Ok(());
+    }
+    let pointer = target.Anonymous.Anonymous.Anonymous.byref.cast::<u8>();
+    if pointer.is_null() {
+        return Err("ByRef argument has a null target".into());
+    }
+    let base = vt & !VT_BYREF;
+    if base == VT_VARIANT {
+        let nested = &mut *pointer.cast::<VARIANT>();
+        if nested.Anonymous.Anonymous.vt & VT_BYREF != 0 {
+            return transfer_host_writeback(nested, value);
+        }
+        let mut old = NativeVariantOwner(*nested);
+        *nested = *value;
+        value.Anonymous.Anonymous.vt = VT_EMPTY;
+        if VariantClear(&mut old.0) < 0 {
+            std::mem::swap(nested, &mut old.0);
+            return Err("cannot release the caller's Variant".into());
+        }
+        return Ok(());
+    }
+    if value.Anonymous.Anonymous.vt != base {
+        let mut converted = NativeVariantOwner::empty();
+        let hr = windows_sys::Win32::System::Variant::VariantChangeType(
+            &mut converted.0,
+            value,
+            0,
+            base,
+        );
+        if hr < 0 {
+            return Err(format!("ByRef conversion failed: 0x{:08X}", hr as u32));
+        }
+        std::mem::swap(value, &mut converted.0);
+    }
+    let width = if base & VT_ARRAY != 0 {
+        std::mem::size_of::<*mut c_void>()
+    } else {
+        match base {
+            16 | 17 => 1,
+            2 | 11 | 18 => 2,
+            3 | 4 | 10 | 19 | 22 | 23 => 4,
+            5 | 6 | 7 | 20 | 21 => 8,
+            8 | 9 | 13 => std::mem::size_of::<*mut c_void>(),
+            14 => 16,
+            _ => return Err(format!("unsupported ByRef carrier {base}")),
+        }
+    };
+    let offset = if base == 14 { 0 } else { 8 };
+    let mut old = NativeVariantOwner::empty();
+    ptr::copy_nonoverlapping(
+        pointer,
+        (&mut old.0 as *mut VARIANT).cast::<u8>().add(offset),
+        width,
+    );
+    old.0.Anonymous.Anonymous.vt = base;
+    // Publish the new owner before releasing the old one: Release may call back
+    // into VBA and observe this very argument.
+    ptr::copy_nonoverlapping(
+        (value as *const VARIANT).cast::<u8>().add(offset),
+        pointer,
+        width,
+    );
+    if base == 14 {
+        pointer.cast::<u16>().write(0);
+    }
+    value.Anonymous.Anonymous.vt = VT_EMPTY;
+    if VariantClear(&mut old.0) < 0 {
+        let mut replacement = NativeVariantOwner::empty();
+        ptr::copy_nonoverlapping(
+            pointer,
+            (&mut replacement.0 as *mut VARIANT)
+                .cast::<u8>()
+                .add(offset),
+            width,
+        );
+        replacement.0.Anonymous.Anonymous.vt = base;
+        ptr::copy_nonoverlapping(
+            (&old.0 as *const VARIANT).cast::<u8>().add(offset),
+            pointer,
+            width,
+        );
+        old.0.Anonymous.Anonymous.vt = VT_EMPTY;
+        return Err("cannot release the caller's ByRef value".into());
+    }
+    Ok(())
+}
+
+unsafe fn write_back_host_arguments(
+    member: &ComMemberDescriptor,
+    params: *mut DISPPARAMS,
+    args: &[Variant],
+) -> Result<(), String> {
+    if params.is_null() {
+        return Ok(());
+    }
+    let count = (*params).cArgs as usize;
+    for (index, (formal, value)) in member
+        .parameter_types
+        .iter()
+        .zip(args)
+        .enumerate()
+        .take(count)
+    {
+        if !formal.is_by_ref() {
+            continue;
+        }
+        let target = &mut *(*params).rgvarg.add(count - 1 - index);
+        if target.Anonymous.Anonymous.vt & VT_BYREF == 0 {
+            continue;
+        }
+        let mut native = NativeVariantOwner::empty();
+        let status = write_runtime_value_to_variant(
+            value.clone(),
+            &mut native.0,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            0,
+        );
+        if status < 0 {
+            return Err("cannot marshal the final ByRef value".into());
+        }
+        transfer_host_writeback(target, &mut native.0)?;
+    }
+    Ok(())
+}
+
+unsafe fn write_project_exception(
+    error: &calcvba_engine::PhaseDiagnostic,
+    excep_info: *mut EXCEPINFO,
+    arg_err: *mut u32,
+    count: usize,
+) -> i32 {
+    let Some(fault) = error.vba_fault() else {
+        return write_runtime_exception(
+            error.vba_code(),
+            error.to_string(),
+            excep_info,
+            arg_err,
+            count,
+        );
+    };
+    if !excep_info.is_null() {
+        *excep_info = std::mem::zeroed();
+        let default_source = descriptor()
+            .map(|d| d.project_name.as_str())
+            .unwrap_or("CalcVBA");
+        (*excep_info).wCode = 0;
+        (*excep_info).scode = if (1..=65535).contains(&fault.code) {
+            (0x800a_0000u32 | fault.code as u32) as i32
+        } else {
+            fault.code
+        };
+        (*excep_info).bstrSource =
+            BStr::from(fault.source.as_deref().unwrap_or(default_source)).into_raw_bstr() as _;
+        (*excep_info).bstrDescription = BStr::from(fault.message.as_str()).into_raw_bstr() as _;
+        (*excep_info).bstrHelpFile =
+            BStr::from(fault.help_file.as_deref().unwrap_or("")).into_raw_bstr() as _;
+        (*excep_info).dwHelpContext = fault.help_context.unwrap_or(0) as u32;
+    }
+    0x8002_0009u32 as i32 // DISP_E_EXCEPTION
 }
 
 unsafe fn write_runtime_exception(

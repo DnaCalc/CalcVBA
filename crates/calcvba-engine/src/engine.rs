@@ -92,6 +92,7 @@ pub struct PhaseDiagnostic {
     /// fault. Consumers that surface the error across a VBA boundary (the COM
     /// server's `EXCEPINFO`) need the real code, not a flattened default.
     vba_code: Option<i32>,
+    vba_fault: Option<Box<calcvba_rt_abi::Fault>>,
 }
 
 impl PhaseDiagnostic {
@@ -107,11 +108,22 @@ impl PhaseDiagnostic {
             message,
             diagnostic: Box::new(diagnostic),
             vba_code: None,
+            vba_fault: None,
         }
     }
 
     pub(crate) fn with_vba_code(mut self, code: i32) -> Self {
         self.vba_code = Some(code);
+        self
+    }
+
+    pub fn vba_fault(&self) -> Option<&calcvba_rt_abi::Fault> {
+        self.vba_fault.as_deref()
+    }
+
+    fn with_vba_fault(mut self, fault: calcvba_rt_abi::Fault) -> Self {
+        self.vba_code = Some(fault.code);
+        self.vba_fault = Some(Box::new(fault));
         self
     }
 
@@ -195,8 +207,8 @@ fn vm3_runtime_diagnostic(err: calcvba_vm3::Vm3Error) -> PhaseDiagnostic {
     // A runtime fault carries the VBA Err.Number; keep it so consumers that
     // re-raise across a VBA boundary (the COM server EXCEPINFO) report the real
     // code (Err.Raise 457, subscript 9, overflow 6) instead of a flat default.
-    let vba_code = match &err {
-        calcvba_vm3::Vm3Error::Fault(fault) => Some(fault.code),
+    let vba_fault = match &err {
+        calcvba_vm3::Vm3Error::Fault(fault) => Some(fault.clone()),
         _ => None,
     };
     let diagnostic = PhaseDiagnostic::from_diagnostic(OxDiagnostic::error(
@@ -204,8 +216,8 @@ fn vm3_runtime_diagnostic(err: calcvba_vm3::Vm3Error) -> PhaseDiagnostic {
         OxDiagnosticPhase::Host,
         err.to_string(),
     ));
-    match vba_code {
-        Some(code) => diagnostic.with_vba_code(code),
+    match vba_fault {
+        Some(fault) => diagnostic.with_vba_fault(fault),
         None => diagnostic,
     }
 }
@@ -340,6 +352,20 @@ impl ProjectRuntimeSession {
     ) -> Result<Variant, PhaseDiagnostic> {
         self.vm
             .invoke_member_values(object, member_name, kind_hint, args)
+            .map_err(vm3_runtime_diagnostic)
+    }
+
+    /// Invoke host arguments, preserving ByRef aliases and values on success or fault.
+    pub fn invoke_member_values_with_writebacks(
+        &mut self,
+        object: ObjectRef,
+        member_name: &str,
+        kind_hint: Option<calcvba_bundle::ProjectMemberKind>,
+        args: &mut [Variant],
+        aliases: &[usize],
+    ) -> Result<Variant, PhaseDiagnostic> {
+        self.vm
+            .invoke_member_values_with_writebacks(object, member_name, kind_hint, args, aliases)
             .map_err(vm3_runtime_diagnostic)
     }
 
@@ -1243,6 +1269,75 @@ mod tests {
                 .any(|value| value.as_bstr().map(|s| s.as_str()).as_deref() == Some("VBAProject")),
             "expected Err.Source to default to VBAProject, got {values:?}"
         );
+    }
+
+    #[test]
+    fn session_byref_aliases_fault_values_and_error_details_survive() {
+        let mut attributes = ModuleAttributes::named("Probe");
+        attributes.vb_exposed = true;
+        attributes.vb_creatable = true;
+        let manifest = SymbolProjectManifest {
+            project_name: "ProbeServer".into(),
+            project_kind: ProjectKind::Library,
+            modules: vec![ModuleUnit {
+                module_name: "Probe".into(),
+                module_kind: ModuleKind::Class,
+                attributes,
+                source: r#"
+Public Sub AliasPair(ByRef first As Long, ByRef second As Long)
+    first = first + 1
+    second = second + 10
+End Sub
+Public Sub ChangeValue(ByVal value As Long)
+    value = 99
+End Sub
+Public Sub Fail(ByRef value As Long)
+    value = 67
+    Err.Raise 457, "Probe", "failure", "probe.chm", 91
+End Sub
+"#
+                .into(),
+            }],
+            references: Vec::new(),
+            reference_projects: Vec::new(),
+            conditional_constants: Default::default(),
+            conditional_compilation_target: Default::default(),
+        };
+        let engine = Engine::new(HostConfig::vm3());
+        let mut session = vm3_session_for(&engine, &manifest);
+        let object = session.create_class_instance("Probe").unwrap();
+        let mut args = [Variant::from_i32(2), Variant::from_i32(2)];
+        session
+            .invoke_member_values_with_writebacks(
+                object.clone(),
+                "AliasPair",
+                None,
+                &mut args,
+                &[0, 0],
+            )
+            .unwrap();
+        assert!(args.iter().all(|value| value.as_i32() == Some(13)));
+        let mut args = [Variant::from_i32(5)];
+        session
+            .invoke_member_values_with_writebacks(
+                object.clone(),
+                "ChangeValue",
+                None,
+                &mut args,
+                &[0],
+            )
+            .unwrap();
+        assert_eq!(args[0].as_i32(), Some(5));
+        let error = session
+            .invoke_member_values_with_writebacks(object, "Fail", None, &mut args, &[0])
+            .unwrap_err();
+        assert_eq!(args[0].as_i32(), Some(67));
+        let fault = error.vba_fault().unwrap();
+        assert_eq!(fault.code, 457);
+        assert_eq!(fault.message, "failure");
+        assert_eq!(fault.source.as_deref(), Some("Probe"));
+        assert_eq!(fault.help_file.as_deref(), Some("probe.chm"));
+        assert_eq!(fault.help_context, Some(91));
     }
 
     #[test]

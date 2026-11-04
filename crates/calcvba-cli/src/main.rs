@@ -47,7 +47,7 @@ fn main() {
 }
 fn print_usage() {
     eprintln!(
-        "usage:\n  calcvba-cli run <source.bas> [--backend vm3|jit] [--dump-values]\n  calcvba-cli run-project [path] [--entry Module.Procedure] [--backend vm3|jit]\n  calcvba-cli build <project> --target OxImage|NativeLibrary|WrappedComServer --out-dir <dir>\n  calcvba-cli run-image <project.oxi> [--backend vm3|jit]\n  calcvba-cli inspect-vba <workbook>\n  calcvba-cli export-vba <workbook> --out-dir <new-folder>\n  calcvba-cli write-vba <workbook> --project <project.basproj> --out <new-workbook>\n\n  --profile <id>  --dump-bootstrap  --diagnostic-format human|json"
+        "usage:\n  calcvba-cli run <source.bas> [--backend vm3|jit] [--dump-values]\n  calcvba-cli run-project [path] [--entry Module.Procedure] [--backend vm3|jit]\n  calcvba-cli build <project> --target OxImage|NativeLibrary|ComServer --out-dir <dir>\n  calcvba-cli run-image <project.oxi> [--backend vm3|jit]\n  calcvba-cli inspect-vba <workbook>\n  calcvba-cli export-vba <workbook> --out-dir <new-folder>\n  calcvba-cli write-vba <workbook> --project <project.basproj> --out <new-workbook>\n\n  --profile <id>  --dump-bootstrap  --diagnostic-format human|json"
     );
 }
 
@@ -239,7 +239,7 @@ fn run_project(args: Vec<String>) {
 fn run_build(args: Vec<String>) {
     let parsed = parse_build_args_from(args).unwrap_or_else(|| {
         eprintln!(
-            "usage: calcvba-cli build <project.basproj|project.vbp> --target <WrappedComServer|OxImage|NativeLibrary> --out-dir <dir> [--diagnostic-format <human|json>]"
+            "usage: calcvba-cli build <project.basproj|project.vbp> --target <ComServer|OxImage|NativeLibrary> --out-dir <dir> [--diagnostic-format <human|json>]"
         );
         std::process::exit(2);
     });
@@ -529,7 +529,11 @@ fn parse_build_args_from(args: Vec<String>) -> Option<BuildArgs> {
     let target = target?;
     let oximage = target.eq_ignore_ascii_case("OxImage") || target.eq_ignore_ascii_case("Bundle");
     let native_library = target.eq_ignore_ascii_case("NativeLibrary");
-    if !oximage && !native_library && !target.eq_ignore_ascii_case("WrappedComServer") {
+    if !oximage
+        && !native_library
+        && !target.eq_ignore_ascii_case("ComServer")
+        && !target.eq_ignore_ascii_case("WrappedComServer")
+    {
         return None;
     }
 
@@ -684,6 +688,25 @@ fn parse_exec_backend(value: &str) -> Option<ExecBackend> {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parse_com_server_target() {
+        let parsed = super::parse_build_args_from(
+            [
+                "build",
+                "Project.basproj",
+                "--target",
+                "ComServer",
+                "--out-dir",
+                "out",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        )
+        .unwrap();
+        assert!(!parsed.oximage && !parsed.native_library);
+    }
+
     use super::*;
 
     fn unique_temp_dir(tag: &str) -> PathBuf {

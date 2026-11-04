@@ -267,7 +267,10 @@ pub(crate) fn build_loaded_project(
         manifest,
         native_exports,
         output_type,
-        build_target: props.build_target.unwrap_or(BuildTarget::Bundle),
+        build_target: props.build_target.unwrap_or(match output_type {
+            OutputType::ComServer => BuildTarget::WrappedComServer,
+            _ => BuildTarget::Bundle,
+        }),
         runtime_flavor: props.runtime_flavor.unwrap_or(RuntimeFlavor::Lite),
         default_runtime_profile: props.default_runtime_profile.clone(),
         default_root_object: props

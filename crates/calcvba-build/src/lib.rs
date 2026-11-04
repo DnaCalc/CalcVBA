@@ -75,6 +75,8 @@ pub enum BuildError {
     InvalidOutputType { found: calcvba_project::OutputType },
     #[error("WrappedComServer requires BuildTarget=WrappedComServer, found {found:?}")]
     InvalidBuildTarget { found: calcvba_project::BuildTarget },
+    #[error("ComServer supports RuntimeFlavor=Lite (VM3); RuntimeFlavor=Jit is not implemented")]
+    UnsupportedComJit,
     #[error("project closure was empty for {path}")]
     EmptyProjectClosure { path: String },
     #[error("ComServer project {project_name} has no exposed class surface")]
@@ -211,6 +213,9 @@ fn validate_wrapped_com_server_project(
         return Err(BuildError::InvalidOutputType {
             found: loaded.output_type,
         });
+    }
+    if loaded.runtime_flavor == calcvba_project::RuntimeFlavor::Jit {
+        return Err(BuildError::UnsupportedComJit);
     }
     if loaded.build_target != calcvba_project::BuildTarget::WrappedComServer {
         return Err(BuildError::InvalidBuildTarget {
@@ -349,6 +354,85 @@ fn artifact_stem(project_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn com_server_source_instancing_reaches_descriptor_and_typelib() {
+        let temp = TestDir::new("com_server_source_instancing");
+        for (name, source) in [
+            (
+                "Calculator",
+                include_str!("../../../examples/comserver/Calculator.cls"),
+            ),
+            (
+                "Counter",
+                include_str!("../../../examples/comserver/Counter.cls"),
+            ),
+            (
+                "PublicItem",
+                include_str!("../../../examples/comserver/PublicItem.cls"),
+            ),
+            (
+                "PrivateItem",
+                include_str!("../../../examples/comserver/PrivateItem.cls"),
+            ),
+            (
+                "Globals",
+                include_str!("../../../examples/comserver/Globals.cls"),
+            ),
+        ] {
+            write(&temp.path.join(format!("{name}.cls")), source);
+        }
+        let project_path = temp.path.join("ComServer.basproj");
+        write(
+            &project_path,
+            include_str!("../../../examples/comserver/ComServer.basproj"),
+        );
+        let output = build_wrapped_com_server(&WrappedComServerBuildOptions {
+            project_path,
+            out_dir: temp.path.join("out"),
+            compile_dll: false,
+            comhost_dll_path: None,
+        })
+        .unwrap();
+        let descriptor: ComServerDescriptor =
+            serde_json::from_slice(&fs::read(output.descriptor_path).unwrap()).unwrap();
+        assert_eq!(descriptor.classes.len(), 4);
+        assert!(
+            !descriptor
+                .classes
+                .iter()
+                .any(|class| class.class_name == "PrivateItem")
+        );
+        let class = |name: &str| {
+            descriptor
+                .classes
+                .iter()
+                .find(|class| class.class_name == name)
+                .unwrap()
+        };
+        assert!(class("Calculator").creatable);
+        assert!(!class("PublicItem").creatable);
+        assert!(class("Globals").global_namespace);
+        assert!(!class("Calculator").global_namespace);
+        let idl = fs::read_to_string(output.idl_path).unwrap();
+        assert!(idl.contains("noncreatable\n    ]\n    coclass PublicItem"));
+        assert!(idl.contains("[in, optional] VARIANT value"));
+        assert!(idl.contains("appobject\n    ]\n    coclass Globals"));
+        let project_path = temp.path.join("ComServer.basproj");
+        let source = fs::read_to_string(&project_path).unwrap().replace(
+            "</PropertyGroup>",
+            "<RuntimeFlavor>Jit</RuntimeFlavor></PropertyGroup>",
+        );
+        write(&project_path, &source);
+        assert!(matches!(
+            build_wrapped_com_server(&WrappedComServerBuildOptions {
+                project_path,
+                out_dir: temp.path.join("jit"),
+                compile_dll: false,
+                comhost_dll_path: None,
+            }),
+            Err(BuildError::UnsupportedComJit)
+        ));
+    }
 
     #[test]
     fn wrapped_com_server_build_emits_package_descriptor_and_idl() {

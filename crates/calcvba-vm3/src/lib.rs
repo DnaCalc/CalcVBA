@@ -791,6 +791,36 @@ impl<'h> Vm3<'h> {
         kind_hint: Option<ProjectMemberKind>,
         args: Vec<Variant>,
     ) -> Result<Variant, Vm3Error> {
+        self.invoke_member_values_captured(object, name, kind_hint, args, None)
+    }
+
+    /// Invoke pre-marshaled host arguments and retain their final values,
+    /// including changes made before a fault. Equal alias indices share a ByRef cell.
+    pub fn invoke_member_values_with_writebacks(
+        &mut self,
+        object: ObjectRef,
+        name: &str,
+        kind_hint: Option<ProjectMemberKind>,
+        args: &mut [Variant],
+        aliases: &[usize],
+    ) -> Result<Variant, Vm3Error> {
+        self.invoke_member_values_captured(
+            object,
+            name,
+            kind_hint,
+            args.to_vec(),
+            Some((args, aliases)),
+        )
+    }
+
+    fn invoke_member_values_captured(
+        &mut self,
+        object: ObjectRef,
+        name: &str,
+        kind_hint: Option<ProjectMemberKind>,
+        args: Vec<Variant>,
+        capture: Option<(&mut [Variant], &[usize])>,
+    ) -> Result<Variant, Vm3Error> {
         if object.route_key() == VBA_COLLECTION_ROUTE_KEY {
             return self.dispatch_collection_values(&object, name, args);
         }
@@ -823,12 +853,13 @@ impl<'h> Vm3<'h> {
         })?;
         // Host args are already by-value (resolution-order is moot), but run in the object's
         // program (target_prog = obj_bundle).
-        self.run_proc_with_values(
+        self.run_proc_with_values_captured(
             obj_bundle,
             proc,
             Variant::from_object_ref(object),
             args,
             false,
+            capture,
         )
     }
 
@@ -3533,6 +3564,18 @@ impl<'h> Vm3<'h> {
         args: Vec<Variant>,
         suppress: bool,
     ) -> Result<Variant, Vm3Error> {
+        self.run_proc_with_values_captured(target_prog, proc, me, args, suppress, None)
+    }
+
+    fn run_proc_with_values_captured(
+        &mut self,
+        target_prog: usize,
+        proc: FuncId,
+        me: Variant,
+        args: Vec<Variant>,
+        suppress: bool,
+        capture: Option<(&mut [Variant], &[usize])>,
+    ) -> Result<Variant, Vm3Error> {
         self.guard_call_depth()?;
         // Preserve the caller's program across the nested run_loop: it leaves `cur` at the
         // callee's program (run_loop re-derives cur per iteration), so the caller's post-call
@@ -3553,6 +3596,28 @@ impl<'h> Vm3<'h> {
                 *slot = v;
             }
         }
+        if let Some((values, aliases)) = capture.as_ref() {
+            let func = &self.exec.programs[target_prog].program.funcs[proc.0];
+            if values.len() != aliases.len() || values.len() + 1 > func.param_count {
+                return Err(Vm3Error::Malformed(
+                    "host argument capture shape differs".into(),
+                ));
+            }
+            for (index, &first) in aliases.iter().enumerate() {
+                if first > index || aliases[first] != first {
+                    return Err(Vm3Error::Malformed(
+                        "host alias must name its first argument".into(),
+                    ));
+                }
+                let by_ref = |i: usize| func.locals[i + 1].param.as_ref().is_some_and(|p| p.by_ref);
+                if first < index && by_ref(index) && by_ref(first) {
+                    if func.locals[index + 1].ty != func.locals[first + 1].ty {
+                        return Err(Vm3Error::Malformed("host alias types differ".into()));
+                    }
+                    frame.aliases.insert(index + 1, Loc::Local(base, first + 1));
+                }
+            }
+        }
         let saved_err = self.exec.err_engine.enter_activation();
         frame.saved_error_mode = saved_err.error_mode;
         frame.saved_active_error = saved_err.active_error;
@@ -3566,6 +3631,24 @@ impl<'h> Vm3<'h> {
             .get(base)
             .and_then(|fr| fr.return_local.and_then(|rl| fr.locals.get(rl.0).cloned()))
             .unwrap_or_else(Variant::empty);
+        if let Some((values, _)) = capture
+            && let Some(frame) = self.frames.get(base)
+        {
+            for (index, value) in values.iter_mut().enumerate() {
+                let formal =
+                    &self.exec.programs[target_prog].program.funcs[proc.0].locals[index + 1];
+                if !formal.param.as_ref().is_some_and(|param| param.by_ref) {
+                    continue;
+                }
+                let slot = match frame.aliases.get(&(index + 1)) {
+                    Some(Loc::Local(_, slot)) => *slot,
+                    _ => index + 1,
+                };
+                if let Some(updated) = frame.locals.get(slot) {
+                    *value = updated.clone();
+                }
+            }
+        }
         let saved_err = self.frames.get(base).map(|fr| SavedErrState {
             error_mode: fr.saved_error_mode,
             active_error: fr.saved_active_error,

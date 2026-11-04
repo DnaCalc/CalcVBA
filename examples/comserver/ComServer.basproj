@@ -1,0 +1,13 @@
+<Project>
+  <PropertyGroup>
+    <OutputType>ComServer</OutputType>
+    <ProjectName>CalcVbaComExample</ProjectName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ClassModule Include="Calculator.cls"/>
+    <ClassModule Include="Counter.cls"/>
+    <ClassModule Include="PublicItem.cls"/>
+    <ClassModule Include="PrivateItem.cls"/>
+    <ClassModule Include="Globals.cls"/>
+  </ItemGroup>
+</Project>

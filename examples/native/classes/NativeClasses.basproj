@@ -1,0 +1,8 @@
+<Project>
+  <PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>NativeClasses</ProjectName></PropertyGroup>
+  <ItemGroup>
+    <Module Include="Counts.bas"/>
+    <ClassModule Include="Counter.cls"/>
+    <NativeExport Include="ClassSuite"><Module>Counts</Module><Procedure>ClassSuite</Procedure></NativeExport>
+  </ItemGroup>
+</Project>

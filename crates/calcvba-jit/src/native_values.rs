@@ -1,6 +1,34 @@
 use super::*;
 
 pub(super) const HELPERS: &[(&str, &[ir::Type])] = &[
+    ("cvb_class_new", &[types::I64; 5]),
+    ("cvb_as_new", &[types::I64; 5]),
+    ("cvb_class_route", &[types::I64; 2]),
+    (
+        "cvb_class_field",
+        &[
+            types::I64,
+            types::I64,
+            types::I32,
+            types::I64,
+            types::I32,
+            types::I32,
+        ],
+    ),
+    ("cvb_drain_terminations", &[types::I64]),
+    ("cvb_collection_new", &[types::I64]),
+    (
+        "cvb_object_type",
+        &[
+            types::I64,
+            types::I64,
+            types::I32,
+            types::I64,
+            types::I64,
+            types::I32,
+            types::I64,
+        ],
+    ),
     ("cvb_array_erase", &[types::I64, types::I64, types::I32]),
     ("cvb_frame_enter", &[types::I64]),
     ("cvb_frame_exit", &[types::I64]),
@@ -361,8 +389,96 @@ pub(super) struct Values<'a> {
     pub functions: &'a HashMap<&'static str, ClifFuncId>,
     pub program: &'a OxProgram,
     pub iterator_slots: BTreeSet<usize>,
+    pub class_entries: &'a HashMap<FuncId, ClifFuncId>,
+    pub as_new: HashMap<OxPlace, calcvba_oxir::inst::OxAsNew>,
 }
 impl Values<'_> {
+    fn object_type(
+        &self,
+        module: &mut impl Module,
+        b: &mut FunctionBuilder<'_>,
+        operand: &OxOperand,
+        name: &str,
+        assignment: bool,
+        dst: Option<OxPlace>,
+    ) {
+        let cell = self.cell(module, b, operand);
+        let kind = b.ins().iconst(
+            types::I32,
+            i64::from(kind_of_operand(self.lower.layout, operand)),
+        );
+        let text = data(module, b, name.as_bytes().to_vec(), 1);
+        let len = b.ins().iconst(types::I64, name.len() as i64);
+        let mode = b.ins().iconst(types::I32, i64::from(assignment));
+        let out = if let Some(dst) = dst {
+            self.address(b, self.lower.layout.slot(dst).unwrap())
+        } else {
+            b.ins().iconst(types::I64, 0)
+        };
+        self.call(
+            module,
+            b,
+            "cvb_object_type",
+            &[self.lower.runtime, cell, kind, text, len, mode, out],
+        );
+    }
+    pub fn class_new(
+        &self,
+        module: &mut impl Module,
+        b: &mut FunctionBuilder<'_>,
+        class: calcvba_oxir::ClassId,
+        out: Value,
+        ensure: bool,
+    ) {
+        let schema = &self.program.classes[class.0];
+        let mut bytes = Vec::new();
+        for value in [
+            class.0 as u32,
+            schema.name.len() as u32,
+            schema.implements.len() as u32,
+            schema.fields.len() as u32,
+        ] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend_from_slice(schema.name.as_bytes());
+        for name in &schema.implements {
+            bytes.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(name.as_bytes());
+        }
+        for field in &schema.fields {
+            bytes.extend_from_slice(&field.token.to_le_bytes());
+            let kind = if let Some(element) = &field.array_element {
+                u32::from(calcvba_bundle::safearray_vartype_for_element(element)) | 0x2000
+            } else {
+                kind(
+                    calcvba_rt_abi::host_entry::native_scalar_type(&field.ty)
+                        .expect("admitted class field"),
+                )
+            };
+            bytes.extend_from_slice(&kind.to_le_bytes());
+        }
+        let metadata = data(module, b, bytes, 4);
+        let mut entry = |procedure: Option<FuncId>| {
+            if let Some(procedure) = procedure {
+                let function = module.declare_func_in_func(self.class_entries[&procedure], b.func);
+                b.ins().func_addr(types::I64, function)
+            } else {
+                b.ins().iconst(types::I64, 0)
+            }
+        };
+        let initialize = entry(schema.initialize);
+        let terminate = entry(schema.terminate);
+        self.call(
+            module,
+            b,
+            if ensure {
+                "cvb_as_new"
+            } else {
+                "cvb_class_new"
+            },
+            &[self.lower.runtime, metadata, initialize, terminate, out],
+        );
+    }
     pub fn library_call(
         &self,
         module: &mut impl Module,
@@ -465,7 +581,13 @@ impl Values<'_> {
         operand: &OxOperand,
     ) -> Value {
         if let OxOperand::Use(place) = operand {
-            return self.address(b, self.lower.layout.slot(*place).unwrap());
+            let cell = self.address(b, self.lower.layout.slot(*place).unwrap());
+            if let Some(calcvba_oxir::inst::OxAsNew::ProjectClass { class }) =
+                self.as_new.get(place)
+            {
+                self.class_new(module, b, *class, cell, true);
+            }
+            return cell;
         }
         let ty = self.lower.layout.operand_type(operand).unwrap();
         if matches!(operand, OxOperand::Const(OxConst::Empty | OxConst::Null)) {
@@ -524,7 +646,9 @@ impl Values<'_> {
                 _ => b.ins().stack_load(machine_type(to), slot, 0),
             };
         }
-        if matches!(operand, OxOperand::Const(OxConst::Str(_))) {
+        if matches!(operand, OxOperand::Use(place) if self.as_new.contains_key(place))
+            || matches!(operand, OxOperand::Const(OxConst::Str(_)))
+        {
             let cell = self.cell(module, b, operand);
             b.ins().load(types::I64, ir::MemFlagsData::new(), cell, 0)
         } else if matches!(operand, OxOperand::Const(OxConst::Empty | OxConst::Null)) {
@@ -598,6 +722,64 @@ impl Values<'_> {
     ) -> bool {
         let layout = self.lower.layout;
         match inst {
+            OxInst::DrainTerminations => {
+                self.call(module, b, "cvb_drain_terminations", &[self.lower.runtime]);
+                return true;
+            }
+            OxInst::NewObject { dst, class } => {
+                let out = self.address(b, layout.slot(*dst).unwrap());
+                self.class_new(module, b, *class, out, false);
+                return true;
+            }
+            OxInst::NewExtern { dst, .. } => {
+                let out = self.address(b, layout.slot(*dst).unwrap());
+                self.call(module, b, "cvb_collection_new", &[out]);
+                return true;
+            }
+            OxInst::AsNew { .. } => return true,
+            OxInst::FieldGet { dst, object, field } => {
+                let object = self.operand(module, b, object, ScalarType::HostObject);
+                let slot = layout.slot(*dst).unwrap();
+                let out = self.address(b, slot);
+                let field = b.ins().iconst(types::I32, i64::from(*field));
+                let kind = b.ins().iconst(types::I32, i64::from(self.slot_kind(slot)));
+                let set = b.ins().iconst(types::I32, 0);
+                self.call(
+                    module,
+                    b,
+                    "cvb_class_field",
+                    &[self.lower.runtime, object, field, out, kind, set],
+                );
+                return true;
+            }
+            OxInst::FieldSet {
+                object,
+                field,
+                value,
+            } => {
+                let object = self.operand(module, b, object, ScalarType::HostObject);
+                let cell = self.cell(module, b, value);
+                let field = b.ins().iconst(types::I32, i64::from(*field));
+                let kind = b
+                    .ins()
+                    .iconst(types::I32, i64::from(kind_of_operand(layout, value)));
+                let set = b.ins().iconst(types::I32, 1);
+                self.call(
+                    module,
+                    b,
+                    "cvb_class_field",
+                    &[self.lower.runtime, object, field, cell, kind, set],
+                );
+                return true;
+            }
+            OxInst::TypeOfIs {
+                dst,
+                object,
+                type_name,
+            } => {
+                self.object_type(module, b, object, type_name, false, Some(*dst));
+                return true;
+            }
             OxInst::ForEachInit { iter, source } => {
                 let key = self.address(b, layout.slot(*iter).unwrap());
                 let source_cell = self.cell(module, b, source);
@@ -1295,6 +1477,7 @@ impl Values<'_> {
                     self.lower.store_slot(b, index, layout.slots[index], value);
                 }
             }
+            self.call(module, b, "cvb_drain_terminations", &[self.lower.runtime]);
             return true;
         }
         if let OxInst::CompareObjectIs { dst, lhs, rhs } = inst {
@@ -1302,6 +1485,16 @@ impl Values<'_> {
             let c = self.operand(module, b, rhs, ScalarType::HostObject);
             let out = self.address(b, layout.slot(*dst).unwrap());
             self.call(module, b, "cvb_object_is", &[a, c, out]);
+            return true;
+        }
+        if let OxInst::ValidateAssignment {
+            src,
+            target_kind: AssignmentTargetKind::Object,
+            target_type_name,
+            ..
+        } = inst
+        {
+            self.object_type(module, b, src, target_type_name, true, None);
             return true;
         }
         if matches!(inst, OxInst::ValidateAssignment { .. }) {

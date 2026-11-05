@@ -42,7 +42,7 @@ windows-sys = { version = "0.59", features = [
 
 [target.'cfg(target_os = "windows")'.dev-dependencies]
 windows-sys = { version = "0.59", features = [
-    "Win32_Foundation",
+    "Win32_Foundation", "Win32_System_LibraryLoader",
     "Win32_System_Com",
     "Win32_System_Ole",
     "Win32_System_Threading",

@@ -412,6 +412,13 @@ pub fn invoke_context_free(
             None => pure::var_type(args),
         },
         TypeName => {
+            if let [value] = args
+                && let Some(object) = value.as_object_ref()
+                && (object.is_project_instance() || object.native_collection_snapshot().is_some())
+                && let Some(descriptor) = object.try_class_descriptor()
+            {
+                return Ok(Variant::from_string(descriptor.name));
+            }
             if let Some(object) = args.first().and_then(Variant::as_object_ref)
                 && !object.is_project_instance()
                 && let Ok(Some(name)) = host.com().object_type_name(object)

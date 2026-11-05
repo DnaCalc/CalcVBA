@@ -238,9 +238,11 @@ function Start-OwnedExcelApplication {
     param(
         [Parameter(Mandatory = $true)][string]$ExcelExecutable,
         [Parameter(Mandatory = $true)]$BootstrapWorkbook,
-        [Parameter(Mandatory = $true)][string]$DiagnosticPath
+        [Parameter(Mandatory = $true)][string]$DiagnosticPath,
+        [switch]$NoDesktopInput
     )
     $startInfo = New-ExcelOracleProcessStartInfo -ExcelExecutable $ExcelExecutable -BootstrapWorkbook $BootstrapWorkbook -SafeMode:$SafeMode
+    if ($NoDesktopInput) { $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden }
     $process = [Diagnostics.Process]::Start($startInfo)
     if ($null -eq $process) { throw "excel-vba-oracle-worker: direct Excel bootstrap launch returned no process" }
     $processIdentity = [ordered]@{
@@ -345,7 +347,7 @@ function Start-OwnedExcelApplication {
                 }
                 continue
             }
-            if (-not $searchCoachDismissed -and $blockingWindows.Count -eq 1 -and
+            if (-not $NoDesktopInput -and -not $searchCoachDismissed -and $blockingWindows.Count -eq 1 -and
                 [string]$blockingWindows[0].ClassName -ceq 'Net UI Tool Window' -and
                 $startupText -ccontains 'Microsoft Search (Alt+Q)' -and
                 $startupText -ccontains 'Just start typing here to bring features to your fingertips and get help.' -and

@@ -170,6 +170,9 @@ pub fn compile_native_scalars(
         for record in layout.record_slots.values() {
             values::record_descriptor(record).map_err(|e| problem(func, e))?;
         }
+        for (_, proc, _) in &layout.class_calls {
+            pending.push(*proc);
+        }
         if layout
             .parameters
             .iter()
@@ -218,6 +221,100 @@ pub fn compile_native_scalars(
                         .map_err(|error| problem(func, error))?;
                 }
                 match inst {
+                    OxInst::AsNew {
+                        binding: calcvba_oxir::inst::OxAsNew::ProjectClass { class },
+                        ..
+                    }
+                    | OxInst::NewObject { class, .. } => {
+                        let class = &program.classes[class.0];
+                        if !class.as_new_fields.is_empty()
+                            || class.fields.iter().any(|field| {
+                                matches!(field.ty, OxTy::Record(_) | OxTy::FixedStr(_))
+                            })
+                        {
+                            return Err(problem(
+                                func,
+                                format!(
+                                    "native class {} has an unsupported field initializer",
+                                    class.name
+                                ),
+                            ));
+                        }
+                        pending.extend(class.initialize);
+                        pending.extend(class.terminate);
+                    }
+                    OxInst::NewExtern { import, .. } if layout.library_news.contains(import) => {}
+                    OxInst::ComCallLate { recv, args, .. }
+                        if layout.class_calls.iter().any(|(site, _, _)| site == inst) =>
+                    {
+                        if layout.operand_type(recv) != Ok(ScalarType::HostObject) {
+                            return Err(problem(
+                                func,
+                                format!(
+                                    "native class receiver requires an Object carrier at block {:?} instruction {index}",
+                                    block.id
+                                ),
+                            ));
+                        }
+                        for (site, procedure, _) in &layout.class_calls {
+                            if site != inst {
+                                continue;
+                            }
+                            let callee = &program.funcs[procedure.0];
+                            if args.len() + 1 != callee.param_count {
+                                return Err(problem(
+                                    func,
+                                    format!(
+                                        "native class call arity at block {:?} instruction {index}",
+                                        block.id
+                                    ),
+                                ));
+                            }
+                            for (argument, parameter) in
+                                args.iter().zip(&callee.locals[1..callee.param_count])
+                            {
+                                let (operand, alias) = match argument {
+                                    OxCallArg::Operand(operand) => (operand.clone(), false),
+                                    OxCallArg::ByRef(place) => (
+                                        OxOperand::Use(*place),
+                                        parameter.param.is_some_and(|p| p.by_ref),
+                                    ),
+                                    _ => {
+                                        return Err(problem(
+                                            func,
+                                            format!(
+                                                "native class call argument at block {:?} instruction {index}",
+                                                block.id
+                                            ),
+                                        ));
+                                    }
+                                };
+                                let from = layout
+                                    .operand_type(&operand)
+                                    .map_err(|error| problem(func, error))?;
+                                let to =
+                                    calcvba_rt_abi::host_entry::native_scalar_type(&parameter.ty)
+                                        .ok_or_else(|| {
+                                        problem(func, "native class parameter carrier")
+                                    })?;
+                                if from != to
+                                    && (alias
+                                        || !(to == ScalarType::Variant
+                                            || numeric(from) && numeric(to)))
+                                {
+                                    return Err(problem(
+                                        func,
+                                        format!(
+                                            "native class argument conversion from {from:?} to {to:?} at block {:?} instruction {index}",
+                                            block.id
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    OxInst::FieldGet { .. } | OxInst::FieldSet { .. } | OxInst::TypeOfIs { .. } => {
+                    }
                     OxInst::Coerce {
                         dst,
                         src,
@@ -366,15 +463,7 @@ pub fn compile_native_scalars(
                     | OxInst::Not { .. }
                     | OxInst::Truthy { .. }
                     | OxInst::StmtBoundary { .. }
-                    | OxInst::DrainTerminations => {
-                        if matches!(inst, OxInst::ValidateAssignment { target_type_name, target_kind: AssignmentTargetKind::Object, .. } if !target_type_name.eq_ignore_ascii_case("Object") && !target_type_name.is_empty())
-                        {
-                            return Err(problem(
-                                func,
-                                format!("nominal object assignment {inst:?}"),
-                            ));
-                        }
-                    }
+                    | OxInst::DrainTerminations => {}
                     _ => {
                         return Err(problem(
                             func,
@@ -459,6 +548,10 @@ pub fn compile_native_scalars(
         .unwrap_or(8)
         .max(24)
         .next_multiple_of(8) as u32;
+    let class_entries: HashMap<_, _> = plans
+        .values()
+        .map(|plan| (plan.procedure, plan.function))
+        .collect();
     for (index, plan) in &plans {
         let func = &program.funcs[*index];
         let mut context = module.make_context();
@@ -558,6 +651,35 @@ pub fn compile_native_scalars(
                 },
                 functions: value_helpers,
                 program,
+                class_entries: &class_entries,
+                as_new: program
+                    .funcs
+                    .iter()
+                    .flat_map(|function| function.blocks.iter().flat_map(|block| &block.instrs))
+                    .filter_map(|instruction| {
+                        if let OxInst::AsNew {
+                            place: place @ OxPlace::Global(_),
+                            binding,
+                        } = instruction
+                        {
+                            Some((*place, binding.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .chain(
+                        func.blocks
+                            .iter()
+                            .flat_map(|block| &block.instrs)
+                            .filter_map(|instruction| {
+                                if let OxInst::AsNew { place, binding } = instruction {
+                                    Some((*place, binding.clone()))
+                                } else {
+                                    None
+                                }
+                            }),
+                    )
+                    .collect(),
                 iterator_slots: func
                     .blocks
                     .iter()
@@ -772,6 +894,70 @@ pub fn compile_native_scalars(
                         }
                         continue;
                     }
+                    if let OxInst::ComCallLate {
+                        dst, recv, args, ..
+                    } = inst
+                    {
+                        let receiver = values.operand(module, &mut b, recv, ScalarType::HostObject);
+                        let slot = b.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            8,
+                            3,
+                        ));
+                        let address = b.ins().stack_addr(types::I64, slot, 0);
+                        values.call(module, &mut b, "cvb_class_route", &[receiver, address]);
+                        let route = b.ins().stack_load(types::I32, slot, 0);
+                        let end = b.create_block();
+                        for (site, procedure, class) in &plan.layout.class_calls {
+                            if site != inst {
+                                continue;
+                            }
+                            let selected = b.create_block();
+                            let next = b.create_block();
+                            let matches = b.ins().icmp_imm(
+                                ir::condcodes::IntCC::Equal,
+                                route,
+                                class.0 as i64,
+                            );
+                            b.ins().brif(matches, selected, &[], next, &[]);
+                            b.switch_to_block(selected);
+                            let callee = &plans[&procedure.0];
+                            let mut arguments = vec![OxArg::ByVal(recv.clone())];
+                            for (index, arg) in args.iter().enumerate() {
+                                arguments.push(match arg {
+                                    OxCallArg::Operand(operand) => OxArg::ByVal(operand.clone()),
+                                    OxCallArg::ByRef(place)
+                                        if callee.layout.by_ref_parameters[index + 1] =>
+                                    {
+                                        OxArg::ByRef(*place)
+                                    }
+                                    OxCallArg::ByRef(place) => OxArg::ByVal(OxOperand::Use(*place)),
+                                    _ => unreachable!("admitted class argument"),
+                                });
+                            }
+                            emit_native_call(
+                                module,
+                                &mut b,
+                                &values,
+                                &plans,
+                                *dst,
+                                &arguments,
+                                &callee.layout.parameters,
+                                &callee.layout.by_ref_parameters,
+                                callee.layout.result,
+                                callee.function,
+                                output_size,
+                                call_output,
+                                call_output_ptr,
+                            );
+                            b.ins().jump(end, &[]);
+                            b.switch_to_block(next);
+                        }
+                        let number = b.ins().iconst(types::I32, 438);
+                        lower.return_status(&mut b, number);
+                        b.switch_to_block(end);
+                        continue;
+                    }
                     let call_plan = match inst {
                         OxInst::CallProc { dst, proc, args } => {
                             let callee = &plans[&proc.0];
@@ -802,147 +988,21 @@ pub fn compile_native_scalars(
                     };
                     if let Some((dst, args, parameters, by_ref, result_type, function)) = call_plan
                     {
-                        let callee = plans.values().find(|plan| plan.function == function);
-                        let mut call_args = vec![runtime];
-                        let mut copies = Vec::new();
-                        for (argument_index, (arg, (ty, by_ref))) in
-                            args.iter().zip(parameters.iter().zip(by_ref)).enumerate()
-                        {
-                            let value = match (arg, by_ref) {
-                                (OxArg::ByRef(place), true) => {
-                                    values.address(&mut b, plan.layout.slot(*place).unwrap())
-                                }
-                                (OxArg::ByVal(op), true) => {
-                                    let record = if *ty == ScalarType::Record {
-                                        Some(
-                                            callee.unwrap().layout.record_slots[&argument_index]
-                                                .as_ref(),
-                                        )
-                                    } else {
-                                        None
-                                    };
-                                    let size = if let Some(record) = record {
-                                        record
-                                            .automation_shape()
-                                            .expect("admitted Automation layout")
-                                            .0
-                                            .next_multiple_of(8)
-                                            as u32
-                                    } else if *ty == ScalarType::Variant {
-                                        24
-                                    } else {
-                                        8
-                                    };
-                                    let slot = b.create_sized_stack_slot(StackSlotData::new(
-                                        StackSlotKind::ExplicitSlot,
-                                        size,
-                                        3,
-                                    ));
-                                    let empty = b.ins().iconst(types::I64, 0);
-                                    for offset in (0..size).step_by(8) {
-                                        b.ins().stack_store(empty, slot, offset as i32);
-                                    }
-                                    let pointer = b.ins().stack_addr(types::I64, slot, 0);
-                                    let source = values.cell(module, &mut b, op);
-                                    let descriptor = if let Some(record) = record {
-                                        Some(values.copy_record_layout(
-                                            module, &mut b, record, pointer, source,
-                                        ))
-                                    } else {
-                                        values.copy(
-                                            module,
-                                            &mut b,
-                                            pointer,
-                                            values::kind(*ty),
-                                            source,
-                                            values::kind(plan.layout.operand_type(op).unwrap()),
-                                        );
-                                        None
-                                    };
-                                    if values::owning(*ty) {
-                                        copies.push((pointer, *ty, descriptor));
-                                    }
-                                    pointer
-                                }
-                                (OxArg::ByVal(op), false) => {
-                                    values.operand(module, &mut b, op, *ty)
-                                }
-                                (OxArg::ByRef(place), false) => {
-                                    values.operand(module, &mut b, &OxOperand::Use(*place), *ty)
-                                }
-                                _ => unreachable!("admitted native call argument"),
-                            };
-                            call_args.push(value);
-                        }
-                        let empty = b.ins().iconst(types::I64, 0);
-                        for offset in (0..output_size).step_by(8) {
-                            b.ins().stack_store(empty, call_output, offset as i32);
-                        }
-                        call_args.push(call_output_ptr);
-                        let target = module.declare_func_in_func(function, b.func);
-                        let call = b.ins().call(target, &call_args);
-                        let status = b.inst_results(call)[0];
-                        for (pointer, ty, descriptor) in copies {
-                            if let Some(descriptor) = descriptor {
-                                let clear = module.declare_func_in_func(
-                                    value_helpers["cvb_record_clear"],
-                                    b.func,
-                                );
-                                b.ins().call(clear, &[pointer, descriptor]);
-                            } else {
-                                let kind = b.ins().iconst(types::I32, i64::from(values::kind(ty)));
-                                let clear = module
-                                    .declare_func_in_func(value_helpers["cvb_value_clear"], b.func);
-                                b.ins().call(clear, &[pointer, kind]);
-                            }
-                        }
-                        lower.check_status(&mut b, status);
-                        if let Some(dst) = dst {
-                            let index = plan.layout.slot(dst).unwrap();
-                            if result_type == ScalarType::Record {
-                                let address = values.address(&mut b, index);
-                                values.copy_record(module, &mut b, index, address, call_output_ptr);
-                            } else if values::owning(result_type) {
-                                let address = values.address(&mut b, index);
-                                let from = if let Some(callee) = callee {
-                                    values::kind(callee.layout.result)
-                                } else {
-                                    values::kind(result_type)
-                                };
-                                values.copy(
-                                    module,
-                                    &mut b,
-                                    address,
-                                    values.slot_kind(index),
-                                    call_output_ptr,
-                                    from,
-                                );
-                            } else {
-                                let result =
-                                    b.ins()
-                                        .stack_load(machine_type(result_type), call_output, 0);
-                                lower.store_slot(&mut b, index, result_type, result);
-                            }
-                        }
-                        if result_type == ScalarType::Record {
-                            let callee = callee.unwrap();
-                            values.clear_record_layout(
-                                module,
-                                &mut b,
-                                &callee.layout.record_slots[&callee.layout.return_slot],
-                                call_output_ptr,
-                            );
-                        } else if values::owning(result_type) {
-                            let kind = b
-                                .ins()
-                                .iconst(types::I32, i64::from(values::kind(result_type)));
-                            values.call(
-                                module,
-                                &mut b,
-                                "cvb_value_clear",
-                                &[call_output_ptr, kind],
-                            );
-                        }
+                        emit_native_call(
+                            module,
+                            &mut b,
+                            &values,
+                            &plans,
+                            dst,
+                            args,
+                            parameters,
+                            by_ref,
+                            result_type,
+                            function,
+                            output_size,
+                            call_output,
+                            call_output_ptr,
+                        );
                     } else {
                         lower.instruction(&mut b, inst);
                     }
@@ -1240,6 +1300,179 @@ fn global_offsets(program: &OxProgram) -> Vec<usize> {
     offsets.push(size);
     offsets
 }
+
+#[allow(clippy::too_many_arguments)]
+fn emit_native_call(
+    module: &mut impl Module,
+    b: &mut FunctionBuilder<'_>,
+    values: &values::Values<'_>,
+    plans: &BTreeMap<usize, NativeScalar>,
+    dst: Option<OxPlace>,
+    args: &[OxArg],
+    parameters: &[ScalarType],
+    by_ref: &[bool],
+    result_type: ScalarType,
+    function: ClifFuncId,
+    output_size: u32,
+    call_output: ir::StackSlot,
+    call_output_ptr: Value,
+) {
+    let callee = plans.values().find(|plan| plan.function == function);
+    let lower = &values.lower;
+    let mut call_args = vec![values.lower.runtime];
+    let mut copies = Vec::new();
+    for (argument_index, (arg, (ty, by_ref))) in
+        args.iter().zip(parameters.iter().zip(by_ref)).enumerate()
+    {
+        let operand = match arg {
+            OxArg::ByVal(operand) => operand.clone(),
+            OxArg::ByRef(place) => OxOperand::Use(*place),
+            _ => unreachable!("admitted native argument"),
+        };
+        let value = if !by_ref
+            && *ty == ScalarType::Variant
+            && values.lower.layout.operand_type(&operand) != Ok(ScalarType::Variant)
+        {
+            let slot =
+                b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 24, 3));
+            let empty = b.ins().iconst(types::I64, 0);
+            for offset in [0, 8, 16] {
+                b.ins().stack_store(empty, slot, offset);
+            }
+            let pointer = b.ins().stack_addr(types::I64, slot, 0);
+            let source = values.cell(module, b, &operand);
+            values.copy(
+                module,
+                b,
+                pointer,
+                12,
+                source,
+                values::kind(values.lower.layout.operand_type(&operand).unwrap()),
+            );
+            copies.push((pointer, ScalarType::Variant, None));
+            pointer
+        } else {
+            match (arg, by_ref) {
+                (OxArg::ByRef(place), true) => {
+                    values.address(b, values.lower.layout.slot(*place).unwrap())
+                }
+                (OxArg::ByVal(op), true) => {
+                    let record = if *ty == ScalarType::Record {
+                        Some(callee.unwrap().layout.record_slots[&argument_index].as_ref())
+                    } else {
+                        None
+                    };
+                    let size = if let Some(record) = record {
+                        record
+                            .automation_shape()
+                            .expect("admitted Automation layout")
+                            .0
+                            .next_multiple_of(8) as u32
+                    } else if *ty == ScalarType::Variant {
+                        24
+                    } else {
+                        8
+                    };
+                    let slot = b.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        size,
+                        3,
+                    ));
+                    let empty = b.ins().iconst(types::I64, 0);
+                    for offset in (0..size).step_by(8) {
+                        b.ins().stack_store(empty, slot, offset as i32);
+                    }
+                    let pointer = b.ins().stack_addr(types::I64, slot, 0);
+                    let source = values.cell(module, b, op);
+                    let descriptor = if let Some(record) = record {
+                        Some(values.copy_record_layout(module, b, record, pointer, source))
+                    } else {
+                        values.copy(
+                            module,
+                            b,
+                            pointer,
+                            values::kind(*ty),
+                            source,
+                            values::kind(values.lower.layout.operand_type(op).unwrap()),
+                        );
+                        None
+                    };
+                    if values::owning(*ty) {
+                        copies.push((pointer, *ty, descriptor));
+                    }
+                    pointer
+                }
+                (OxArg::ByVal(op), false) => values.operand(module, b, op, *ty),
+                (OxArg::ByRef(place), false) => {
+                    values.operand(module, b, &OxOperand::Use(*place), *ty)
+                }
+                _ => unreachable!("admitted native call argument"),
+            }
+        };
+        call_args.push(value);
+    }
+    let empty = b.ins().iconst(types::I64, 0);
+    for offset in (0..output_size).step_by(8) {
+        b.ins().stack_store(empty, call_output, offset as i32);
+    }
+    call_args.push(call_output_ptr);
+    let target = module.declare_func_in_func(function, b.func);
+    let call = b.ins().call(target, &call_args);
+    let status = b.inst_results(call)[0];
+    for (pointer, ty, descriptor) in copies {
+        if let Some(descriptor) = descriptor {
+            let clear = module.declare_func_in_func(values.functions["cvb_record_clear"], b.func);
+            b.ins().call(clear, &[pointer, descriptor]);
+        } else {
+            let kind = b.ins().iconst(types::I32, i64::from(values::kind(ty)));
+            let clear = module.declare_func_in_func(values.functions["cvb_value_clear"], b.func);
+            b.ins().call(clear, &[pointer, kind]);
+        }
+    }
+    lower.check_status(b, status);
+    if let Some(dst) = dst {
+        let index = values.lower.layout.slot(dst).unwrap();
+        if result_type == ScalarType::Record {
+            let address = values.address(b, index);
+            values.copy_record(module, b, index, address, call_output_ptr);
+        } else if values::owning(result_type) || values.lower.layout.slots[index] != result_type {
+            let address = values.address(b, index);
+            let from = if let Some(callee) = callee {
+                values::kind(callee.layout.result)
+            } else {
+                values::kind(result_type)
+            };
+            values.copy(
+                module,
+                b,
+                address,
+                values.slot_kind(index),
+                call_output_ptr,
+                from,
+            );
+        } else {
+            let result = b
+                .ins()
+                .stack_load(machine_type(result_type), call_output, 0);
+            lower.store_slot(b, index, result_type, result);
+        }
+    }
+    if result_type == ScalarType::Record {
+        let callee = callee.unwrap();
+        values.clear_record_layout(
+            module,
+            b,
+            &callee.layout.record_slots[&callee.layout.return_slot],
+            call_output_ptr,
+        );
+    } else if values::owning(result_type) {
+        let kind = b
+            .ins()
+            .iconst(types::I32, i64::from(values::kind(result_type)));
+        values.call(module, b, "cvb_value_clear", &[call_output_ptr, kind]);
+    }
+}
+
 pub fn native_state_size(program: &OxProgram) -> usize {
     std::mem::size_of::<NativeContext>() + global_offsets(program).last().copied().unwrap_or(0)
 }
@@ -1835,6 +2068,8 @@ pub fn compile_shutdown_wrapper(
             status = b.ins().select(status, status, next);
         }
         let zero = b.ins().iconst(types::I32, 0);
+        let drain = module.declare_func_in_func(runtime.values["cvb_drain_terminations"], b.func);
+        b.ins().call(drain, &[state]);
         let services = module.declare_func_in_func(runtime.values["cvb_services_clear"], b.func);
         b.ins().call(services, &[state]);
         b.ins()

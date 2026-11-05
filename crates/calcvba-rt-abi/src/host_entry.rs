@@ -96,7 +96,7 @@ fn scalar_type(ty: &OxTy) -> Option<ScalarType> {
     }
 }
 
-fn native_scalar_type(ty: &OxTy) -> Option<ScalarType> {
+pub fn native_scalar_type(ty: &OxTy) -> Option<ScalarType> {
     scalar_type(ty).or(match ty {
         OxTy::Byte => Some(ScalarType::Byte),
         OxTy::Integer => Some(ScalarType::Integer),
@@ -845,17 +845,21 @@ impl ScalarLayout {
         }
         if owning
             && classes.iter().flat_map(|class| &class.fields).any(|field| {
-                !matches!(
-                    field.ty,
-                    OxTy::Long
-                        | OxTy::Double
-                        | OxTy::Bool
-                        | OxTy::Str
-                        | OxTy::Variant
-                        | OxTy::Object(_)
-                        | OxTy::Array(_, _)
-                        | OxTy::Record(_)
-                )
+                if native_numbers {
+                    native_scalar_type(&field.ty).is_none()
+                } else {
+                    !matches!(
+                        field.ty,
+                        OxTy::Long
+                            | OxTy::Double
+                            | OxTy::Bool
+                            | OxTy::Str
+                            | OxTy::Variant
+                            | OxTy::Object(_)
+                            | OxTy::Array(_, _)
+                            | OxTy::Record(_)
+                    )
+                }
             })
         {
             return Err("typed source class field has no owning carrier".into());
@@ -1611,6 +1615,17 @@ impl ScalarLayout {
     fn check(&self, inst: &OxInst) -> Result<(), String> {
         if self.native_numbers {
             match inst {
+                OxInst::AsNew { place, .. } => {
+                    if self.slots[self.slot(*place)?] != ScalarType::HostObject {
+                        return Err("As New requires an Object cell".into());
+                    }
+                    return Ok(());
+                }
+                OxInst::TypeOfIs { dst, object, .. } => {
+                    self.slot(*dst)?;
+                    self.operand_type(object)?;
+                    return Ok(());
+                }
                 OxInst::ArrayErase { array, .. } => {
                     self.slot(*array)?;
                     return Ok(());

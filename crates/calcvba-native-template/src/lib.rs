@@ -2,6 +2,8 @@
 //! retain helpers through linking; the finisher hides them in the final image.
 //! The runtime has no loader, dispatcher, interpreter or JIT dependency.
 #[cfg(windows)]
+mod classes;
+#[cfg(windows)]
 mod errors;
 #[cfg(windows)]
 mod foreign;

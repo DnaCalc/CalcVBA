@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$Directory,
-    [string]$RunId=('native-interop-'+[Guid]::NewGuid().ToString('N'))
+    [string]$RunId=('native-interop-'+[Guid]::NewGuid().ToString('N')),
+    [switch]$Visible
 )
 $ErrorActionPreference='Stop'
 $PSNativeCommandUseErrorActionPreference=$true
@@ -61,13 +62,11 @@ function Set-OfficePhase([string]$Phase,[string]$Operation) {
     $control=Set-GuardianControl -Path $controlFile -CaseId 'office-project' -OperationId $Operation -Phase $Phase -AllowDismiss $true
     Wait-GuardianOperationArmed -EventsFile $eventsFile -Control $control -Process $guardian -ReadyRecord $guardianReady
 }
-function Invoke-OfficeCompile($Workbook,[string]$ModuleName,[switch]$Force) {
+function Invoke-OfficeCompile($Workbook,[string]$ModuleName,[switch]$Force,[switch]$ShowWindow) {
     $project=$Workbook.VBProject
     $component=$project.VBComponents.Item($ModuleName)
-    $Workbook.Activate()
-    $excel.VBE.MainWindow.Visible=$true
-    $component.CodeModule.CodePane.Show()
-    try { $excel.VBE.MainWindow.SetFocus() } catch { }
+    $excel.VBE.MainWindow.Visible=[bool]$ShowWindow
+    if ($ShowWindow) { $component.CodeModule.CodePane.Show() }
     Start-Sleep -Milliseconds 200
     $control=Get-VbeCompileControl -Vbe $excel.VBE
     if (-not $control.Enabled -and $Force) {
@@ -76,14 +75,14 @@ function Invoke-OfficeCompile($Workbook,[string]$ModuleName,[switch]$Force) {
         [void]$component.CodeModule.AddFromString($text)
         Start-Sleep -Milliseconds 100
     }
-    if (-not $control.Enabled) { throw "Visible VBE Compile is disabled for $ModuleName" }
+    if (-not $control.Enabled) { throw "VBE Compile is disabled for $ModuleName" }
     $op='compile-'+[Guid]::NewGuid().ToString('N')
     $armed=Set-OfficePhase compile $op
     $control.Execute()
     $events=@(Wait-GuardianEventFlush -EventsFile $eventsFile -OperationId $op -ArmRecord $armed -InvocationCompletedUtc ([DateTime]::UtcNow) -CompileControl $control)
     $dialogs=@($events | Where-Object event_type -eq 'dialog-observation')
-    if ($dialogs.Count -or $control.Enabled) { throw "Visible VBE compile failed: $($dialogs | ConvertTo-Json -Depth 10 -Compress)" }
-    [ordered]@{workbook=[string]$Workbook.FullName;module=$ModuleName;command_id=[int]$control.Id;passed=$true;forced=[bool]$Force} |
+    if ($dialogs.Count -or $control.Enabled) { throw "VBE compile failed: $($dialogs | ConvertTo-Json -Depth 10 -Compress)" }
+    [ordered]@{workbook=[string]$Workbook.FullName;module=$ModuleName;command_id=[int]$control.Id;passed=$true;forced=[bool]$Force;visible=[bool]$ShowWindow} |
         ConvertTo-Json -Compress | Add-Content -LiteralPath (Join-Path $Directory 'compiles.jsonl') -Encoding utf8NoBOM
     [void](Set-OfficePhase run ('run-'+[Guid]::NewGuid().ToString('N')))
     $excel.VBE.MainWindow.Visible=$false
@@ -93,12 +92,12 @@ function Invoke-OfficeCompile($Workbook,[string]$ModuleName,[switch]$Force) {
 try {
     $before=@(Get-ExcelProcessIds)
     $bootstrap=New-ExcelOracleBootstrapWorkbook -Path (Join-Path $Directory 'bootstrap.xlsx')
-    $launched=Start-OwnedExcelApplication -ExcelExecutable (Get-ExcelExecutablePath) -BootstrapWorkbook $bootstrap -DiagnosticPath (Join-Path $Directory 'attachment.json')
+    $launched=Start-OwnedExcelApplication -ExcelExecutable (Get-ExcelExecutablePath) -BootstrapWorkbook $bootstrap -DiagnosticPath (Join-Path $Directory 'attachment.json') -NoDesktopInput
     $owned=$launched.process; $excel=$launched.application; $native=$launched.native_window
     if ($owned.Id -eq 3144 -or $owned.Id -in $before -or (Get-ExcelPidFromApplication $excel) -ne $owned.Id) { throw 'Excel ownership mismatch' }
     $identity=Add-OwnershipRecord -Process $owned -BeforePids $before -CaseId 'office-project'
     $identity | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $identityFile -Encoding utf8NoBOM
-    $excel.Visible=$true; $excel.DisplayAlerts=$false; $excel.EnableEvents=$false
+    $excel.Visible=[bool]$Visible; $excel.DisplayAlerts=$false; $excel.EnableEvents=$false
     # Start a PID-scoped monitor for each job; idle Excel needs no polling.
     [ordered]@{run_id=$RunId;pid=$owned.Id;hwnd=[string]$excel.Hwnd;launches=1;automation_security=[int]$excel.AutomationSecurity} |
         ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Directory 'ready.json') -Encoding utf8NoBOM
@@ -116,11 +115,17 @@ try {
                 Start-OfficeGuardian
                 [void](Set-OfficePhase run ('job-ready-'+$job.id))
                 $book=$excel.Workbooks.Add()
+                if ($job.PSObject.Properties.Name -contains 'modules') {
+                    foreach ($path in $job.modules) {
+                        $imported=$book.VBProject.VBComponents.Import([IO.Path]::GetFullPath([string]$path))
+                        Release-ComObject $imported
+                    }
+                }
                 $component=$book.VBProject.VBComponents.Add(1)
                 $component.Name='OracleSelfTest'
                 $source=Get-Content -Raw -LiteralPath ([string]$job.source_path)
                 [void]$component.CodeModule.AddFromString($source)
-                Invoke-OfficeCompile -Workbook $book -ModuleName 'OracleSelfTest'
+                Invoke-OfficeCompile -Workbook $book -ModuleName 'OracleSelfTest' -ShowWindow:$Visible
                 $record.compile_status='ok'
                 $record.value=[string]$excel.Run("'"+$book.Name+"'!OracleSelfTest.ProbeNativeExports")
                 $record.run_status='ok'

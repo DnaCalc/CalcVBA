@@ -6,15 +6,16 @@ use calcvba_runtime::{VarType, Variant, bstr::BStr};
 use std::{ffi::c_void, ptr, sync::Arc};
 use windows_sys::Win32::System::Variant::{VARIANT, VariantClear};
 
-struct Runtime {
+pub(super) struct Runtime {
     // Drop the borrowing execution state before its retained host owner.
     exec: Box<ExecState<'static>>,
     _host: Arc<dyn HostServices>,
     frames: Vec<(u32, calcvba_rt_abi::SavedErrState, i32)>,
     iterators: std::collections::HashMap<usize, NativeIterator>,
+    pub(super) classes: super::classes::Classes,
 }
 
-unsafe fn runtime(context: *mut Context) -> *mut Runtime {
+pub(super) unsafe fn runtime(context: *mut Context) -> *mut Runtime {
     // SAFETY: generated wrappers have checked the DLL's owning thread. The
     // context retains this allocation until explicit same-thread shutdown.
     unsafe {
@@ -39,11 +40,30 @@ unsafe fn runtime(context: *mut Context) -> *mut Runtime {
                 _host: host,
                 iterators: Default::default(),
                 frames: Vec::new(),
+                classes: Default::default(),
             };
             (*context).services = Box::into_raw(Box::new(state)).cast();
         }
         (*context).services.cast()
     }
+}
+
+pub(super) unsafe fn foreign_type_matches(
+    context: *mut Context,
+    object: calcvba_runtime::ObjectRef,
+    name: &str,
+) -> Result<bool, i32> {
+    // SAFETY: the image retains its runtime and this independent object owner.
+    let host = unsafe { (*runtime(context))._host.clone() };
+    let bare = name.rsplit('.').next().unwrap_or(name);
+    host.com()
+        .object_type_name(object)
+        .map(|found| {
+            found.is_some_and(|found| {
+                found.eq_ignore_ascii_case(name) || found.eq_ignore_ascii_case(bare)
+            })
+        })
+        .map_err(|_| 13)
 }
 
 pub(super) unsafe fn shutdown(context: *mut Context) {
@@ -184,7 +204,11 @@ pub unsafe extern "C" fn cvb_services_clear(context: *mut Context) -> i32 {
     })
 }
 
-unsafe fn read(context: *mut Context, cell: *const u8, kind: u32) -> Result<Variant, i32> {
+pub(super) unsafe fn read(
+    context: *mut Context,
+    cell: *const u8,
+    kind: u32,
+) -> Result<Variant, i32> {
     // SAFETY: the emitted call retains an exact native cell for this operation.
     unsafe {
         let value = super::values::borrowed(cell, kind);
@@ -199,7 +223,18 @@ unsafe fn read(context: *mut Context, cell: *const u8, kind: u32) -> Result<Vari
             return read(context, (&indirect.0 as *const VARIANT).cast(), 12);
         }
         if vt & 0x2000 != 0 {
+            if data.parray.is_null() {
+                return Ok(Variant::unallocated_array(vt & 0x0fff));
+            }
             return read_array(context, data.parray);
+        }
+        if matches!(vt, 9 | 13) {
+            let object = calcvba_runtime::ObjectRef::from_raw_iunknown_addref(data.punkVal.cast());
+            if let Some(object) = object.filter(|object| {
+                object.is_project_instance() || object.native_collection_snapshot().is_some()
+            }) {
+                return Ok(Variant::from_object_ref(object));
+            }
         }
         // The COM value model deliberately normalizes narrow integer wire
         // arguments. Internal VBA values must retain their actual subtype.
@@ -365,7 +400,7 @@ unsafe fn read_array(
     }
 }
 
-unsafe fn write(
+pub(super) unsafe fn write(
     context: *mut Context,
     out: *mut u8,
     kind: u32,
@@ -377,6 +412,14 @@ unsafe fn write(
     // SAFETY: emitted code supplies writable initialized exact result storage.
     unsafe {
         let mut native: VARIANT = std::mem::zeroed();
+        if let Some(object) = value.as_object_ref().filter(|object| {
+            object.is_project_instance() || object.native_collection_snapshot().is_some()
+        }) {
+            let pointer = object.into_raw_iunknown();
+            let result = super::values::copy(out, std::ptr::from_ref(&pointer).cast(), kind, 9);
+            drop(calcvba_runtime::ObjectRef::from_raw_iunknown_owned(pointer));
+            return result;
+        }
         match value.vtype() {
             VarType::Integer => {
                 native.Anonymous.Anonymous.vt = 2;
@@ -631,7 +674,9 @@ pub unsafe extern "C" fn cvb_frame_exit(context: *mut Context) -> i32 {
                 runtime.exec.err_engine.restore(saved);
             }
         }
-        Ok(())
+        // SAFETY: all local owners were released before this frame exit helper.
+        let number = unsafe { super::classes::cvb_drain_terminations(context) };
+        if number == 0 { Ok(()) } else { Err(number) }
     })
 }
 

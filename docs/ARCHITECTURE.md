@@ -129,6 +129,9 @@ procedure frames. One private result slot is reused for synchronous calls.
 Wrappers call their procedure directly; there
 is no interpreter or generic dispatch entry. BSTR/UTF-16/ANSI inputs, native UDT
 layout, SAFEARRAYs, VARIANTs and COM references use direct value-operation helpers.
+Project class construction, fields, properties and methods use owning objects
+and compiled entries, including local `As New` recreation and same-thread
+Initialize/Terminate calls. Unsupported class field initializers are refused.
 Writable `.cvbdata` holds module state and the once-only initialization status.
 Each DLL retains the identity of its first calling thread; foreign threads return
 zero/E_WRONG_THREAD without touching VBA or caller storage. ErrorPolicy and

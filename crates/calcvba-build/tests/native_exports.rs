@@ -83,7 +83,7 @@ fn native_build_refuses_private_optional_paramarray_and_unsupported_reachable_bo
             "ParamArray signature",
         ),
         (
-            "Public Function Selected(ByVal x As Long) As Long\nSelected=Descendant(x)\nEnd Function\nPrivate Function Descendant(ByVal x As Long) As Long\nOn Error Resume Next\nDescendant=x\nEnd Function",
+            "Public Function Selected(ByVal x As Long) As Long\nSelected=Descendant(x)\nEnd Function\nPrivate Function Descendant(ByVal x As Long) As Long\nDim object As Object\nDescendant=object.Count+x\nEnd Function",
             "Descendant",
         ),
     ];

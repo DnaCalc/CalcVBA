@@ -18,6 +18,8 @@ pub struct Context {
     pub string_array_cells: *const usize,
     pub string_array_count: usize,
     pub string_array_encoding: u32,
+    /// Runtime library/host services, created on demand outside the loader lock.
+    pub services: *mut core::ffi::c_void,
 }
 
 pub const WRONG_THREAD: i32 = 1444;

@@ -1537,6 +1537,57 @@ pub unsafe fn live_object_typeinfo_name(
     name
 }
 
+/// Reflect a callable default property's declared type without executing it.
+/// VT_VARIANT (12) means its value must be read to learn the runtime subtype.
+/// # Safety
+/// dispatch must retain a live same-apartment IDispatch through this lookup.
+#[cfg(target_os = "windows")]
+pub unsafe fn live_object_default_vartype(
+    dispatch: *mut crate::windows_client::RawIDispatch,
+) -> Option<u16> {
+    if dispatch.is_null() {
+        return None;
+    }
+    // SAFETY: the caller retains dispatch; GetTypeInfo supplies one owned reference,
+    // released after extracting independently owned member metadata.
+    let members = unsafe {
+        let mut info = null_mut();
+        let table = (*dispatch).vtbl;
+        if ((*table).get_type_info)(dispatch.cast(), 0, 0x0400, &mut info) != COM_S_OK
+            || info.is_null()
+        {
+            return None;
+        }
+        let members = extract_members_from_typeinfo(info);
+        let info_table = *info.cast::<*const ITypeInfoVtbl>();
+        ((*info_table).release)(info);
+        members.ok()?
+    };
+    let member = members.into_iter().find(|member| {
+        member.token == 0
+            && member.invoke_kind == TypeLibMemberInvokeKind::PropertyGet
+            && (!member.requires_argument
+                || member.parameter_optional.len() == member.parameter_types.len()
+                    && member.parameter_optional.iter().all(|optional| *optional))
+    })?;
+    Some(match member.return_type? {
+        TypeLibParamType::Variant => 12,
+        TypeLibParamType::Integer => 2,
+        TypeLibParamType::Long => 3,
+        TypeLibParamType::Single => 4,
+        TypeLibParamType::Double => 5,
+        TypeLibParamType::Currency => 6,
+        TypeLibParamType::Date => 7,
+        TypeLibParamType::String => 8,
+        TypeLibParamType::Object => 9,
+        TypeLibParamType::Boolean => 11,
+        TypeLibParamType::Decimal => 14,
+        TypeLibParamType::Byte => 17,
+        TypeLibParamType::LongLong | TypeLibParamType::LongPtr => 20,
+        _ => return None,
+    })
+}
+
 // ── Typelib shape audit ──
 
 #[cfg(target_os = "windows")]

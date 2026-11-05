@@ -8,7 +8,7 @@ use windows_sys::Win32::{
     System::{Com::SAFEARRAY, Ole::*, Variant::*},
 };
 
-fn status(hr: i32) -> Result<(), i32> {
+pub(super) fn status(hr: i32) -> Result<(), i32> {
     if hr >= 0 {
         return Ok(());
     }
@@ -16,6 +16,7 @@ fn status(hr: i32) -> Result<(), i32> {
         0x80020005 => 13,
         0x8002000a => 6,
         0x8002000b => 9,
+        0x8002000d => 10,
         0x80020012 => 11,
         0x8007000e => 7,
         0x80070057 => 5,
@@ -23,7 +24,7 @@ fn status(hr: i32) -> Result<(), i32> {
     })
 }
 
-fn boundary(work: impl FnOnce() -> Result<(), i32>) -> i32 {
+pub(super) fn boundary(work: impl FnOnce() -> Result<(), i32>) -> i32 {
     // SAFETY: GetLastError reads only the calling thread's Win32 state.
     let saved = unsafe { windows_sys::Win32::Foundation::GetLastError() };
     let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)) {
@@ -38,9 +39,9 @@ fn boundary(work: impl FnOnce() -> Result<(), i32>) -> i32 {
     result
 }
 
-struct OwnedVariant(VARIANT);
+pub(super) struct OwnedVariant(pub(super) VARIANT);
 impl OwnedVariant {
-    fn empty() -> Self {
+    pub(super) fn empty() -> Self {
         // SAFETY: all-zero is VT_EMPTY, including the reserved union tail.
         Self(unsafe { std::mem::zeroed() })
     }
@@ -65,7 +66,7 @@ fn size(kind: u32) -> usize {
 }
 
 // No ownership is taken: the generated caller retains the source cell.
-unsafe fn borrowed(src: *const u8, kind: u32) -> VARIANT {
+pub(super) unsafe fn borrowed(src: *const u8, kind: u32) -> VARIANT {
     // SAFETY: emitted code supplies the exact live native carrier for kind.
     unsafe {
         if kind == 12 {
@@ -105,7 +106,7 @@ unsafe fn release(pointer: *mut c_void) {
     }
 }
 
-unsafe fn clear(cell: *mut u8, kind: u32) -> Result<(), i32> {
+pub(super) unsafe fn clear(cell: *mut u8, kind: u32) -> Result<(), i32> {
     // SAFETY: cell is initialized native storage of this exact kind.
     unsafe {
         match kind {
@@ -167,6 +168,19 @@ pub(super) unsafe fn copy(dst: *mut u8, src: *const u8, to: u32, from: u32) -> R
             }
         }
         let input = borrowed(src, from);
+        if input.Anonymous.Anonymous.vt & 0x4000 != 0 {
+            let mut indirect = OwnedVariant::empty();
+            status(VariantCopyInd(&mut indirect.0, &input))?;
+            return copy(dst, (&indirect.0 as *const VARIANT).cast(), to, 12);
+        }
+        if from == 12 && to & 0x2000 != 0 {
+            let vt = input.Anonymous.Anonymous.vt;
+            if vt & 0x2000 == 0 || (to & 0x0fff != 0 && u32::from(vt & 0x0fff) != to & 0x0fff) {
+                return Err(13);
+            }
+            let array = input.Anonymous.Anonymous.Anonymous.parray;
+            return copy(dst, (&array as *const *mut SAFEARRAY).cast(), to, to);
+        }
         if from == 12 && input.Anonymous.Anonymous.vt == 1 && to != 12 {
             return Err(94);
         }
@@ -378,6 +392,48 @@ pub unsafe extern "C" fn cvb_string_len(input: *const *mut u16, out: *mut i32) -
 }
 
 type Binary = unsafe extern "system" fn(*const VARIANT, *const VARIANT, *mut VARIANT) -> i32;
+
+/// # Safety
+/// metadata contains element count, result kind, lower bound, then input kinds;
+/// arguments retains exactly that many native cells and out is initialized.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cvb_array_literal(
+    metadata: *const u32,
+    arguments: *const *const u8,
+    out: *mut u8,
+) -> i32 {
+    boundary(|| {
+        // SAFETY: descriptors are compiler-generated, immutable and aligned.
+        unsafe {
+            let count = metadata.read();
+            let to = metadata.add(1).read();
+            let lower = metadata.add(2).read() as i32;
+            let array = SafeArrayCreateVector(VT_VARIANT, lower, count);
+            if array.is_null() {
+                return Err(7);
+            }
+            let mut result = OwnedVariant::empty();
+            result.0.Anonymous.Anonymous.vt = VT_ARRAY | VT_VARIANT;
+            result.0.Anonymous.Anonymous.Anonymous.parray = array;
+            for index in 0..count {
+                let mut value = OwnedVariant::empty();
+                copy(
+                    (&mut value.0 as *mut VARIANT).cast(),
+                    arguments.add(index as usize).read(),
+                    12,
+                    metadata.add(index as usize + 3).read(),
+                )?;
+                let coordinate = lower.checked_add(index as i32).ok_or(6)?;
+                status(SafeArrayPutElement(
+                    array,
+                    &coordinate,
+                    (&value.0 as *const VARIANT).cast(),
+                ))?;
+            }
+            copy(out, (&result.0 as *const VARIANT).cast(), to, 12)
+        }
+    })
+}
 unsafe fn binary(
     out: *mut u8,
     a: *const u8,

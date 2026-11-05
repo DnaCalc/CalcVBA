@@ -2081,8 +2081,8 @@ impl<'a> Lowerer<'a> {
         mode: calcvba_bundle::StringCompareMode,
         num: NumericMode,
     ) -> Result<(OxOperand, OxTy)> {
-        let (l, l_ty) = self.lower_value(lhs)?;
-        let (r, r_ty) = self.lower_value(rhs)?;
+        let (mut l, l_ty) = self.lower_value(lhs)?;
+        let (mut r, r_ty) = self.lower_value(rhs)?;
         let ty = match op {
             CoreBinOp::Add
             | CoreBinOp::Sub
@@ -2148,6 +2148,43 @@ impl<'a> Lowerer<'a> {
             | CoreBinOp::Le
             | CoreBinOp::Gt
             | CoreBinOp::Ge => {
+                // Office coerces a declared String when the other declaration
+                // is numeric. Emit a fallible coercion so invalid text remains
+                // error 13 rather than Variant subtype ordering.
+                let string = |ty: &OxTy| matches!(ty, OxTy::Str | OxTy::FixedStr(_));
+                let numeric = |ty: &OxTy| {
+                    matches!(
+                        ty,
+                        OxTy::Bool
+                            | OxTy::Byte
+                            | OxTy::Integer
+                            | OxTy::Long
+                            | OxTy::LongLong
+                            | OxTy::Single
+                            | OxTy::Double
+                            | OxTy::Currency
+                            | OxTy::Date
+                            | OxTy::Decimal
+                    )
+                };
+                let string_operand = if string(&l_ty) && numeric(&r_ty) {
+                    Some(&mut l)
+                } else if numeric(&l_ty) && string(&r_ty) {
+                    Some(&mut r)
+                } else {
+                    None
+                };
+                if let Some(operand) = string_operand {
+                    let converted = self.new_temp(OxTy::Double);
+                    self.emit(OxInst::Coerce {
+                        dst: OxPlace::Temp(converted),
+                        src: operand.clone(),
+                        target: OxCoerceTarget::Numeric(
+                            calcvba_bundle::NumericCoerceTarget::Double,
+                        ),
+                    });
+                    *operand = OxOperand::temp(converted);
+                }
                 let cop = bin_cmp(op).expect("cmp op");
                 self.emit(OxInst::Compare {
                     coercion: if l_ty == OxTy::Variant && r_ty == OxTy::Variant {

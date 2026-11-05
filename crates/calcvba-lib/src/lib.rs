@@ -46,8 +46,8 @@ impl LibError {
         Self::new(13, message)
     }
     /// Run-time error 6 — Overflow.
-    pub fn overflow(message: impl Into<String>) -> Self {
-        Self::new(6, message)
+    pub fn overflow(_detail: impl Into<String>) -> Self {
+        Self::new(6, "Overflow")
     }
     /// Run-time error 5 — Invalid procedure call or argument.
     pub fn invalid_call(message: impl Into<String>) -> Self {

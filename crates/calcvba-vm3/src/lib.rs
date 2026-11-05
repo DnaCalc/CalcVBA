@@ -395,10 +395,11 @@ fn is_cleared_temp(loc: Loc, frame_index: usize, first_temp: usize) -> bool {
     matches!(loc, Loc::Temp(frame, temp) if frame == frame_index && temp >= first_temp)
 }
 
-/// `For Each` iterator state: the snapshot of source elements (taken at loop entry,
-/// matching vm2) and the current position. Keyed in [`Vm3::for_each`] by the loop
+/// `For Each` retains an array storage location so element writes stay visible;
+/// object enumerators retain their materialized elements and current position. Keyed in [`Vm3::for_each`] by the loop
 /// variable's resolved [`Loc`], so concurrent/reentrant loops never alias.
 struct ForEachState {
+    array_source: Option<Loc>,
     elements: Vec<Variant>,
     position: usize,
 }
@@ -1317,25 +1318,18 @@ impl<'h> Vm3<'h> {
                     match arith::coerce_numeric(&num_v, calcvba_bundle::NumericCoerceTarget::Long) {
                         Ok(code_v) => {
                             let code = code_v.as_i32().unwrap_or(0);
-                            // §9071 inherit applies only to `Err.Raise` (inherit=true);
-                            // the legacy `Error <n>` statement (inherit=false) never
-                            // inherits — oracle-confirmed.
-                            let inherit = *inherit && self.exec.err_engine.err.inherit_fields;
-                            let message = match description {
-                                Some(op) => self.operand_string(op)?,
-                                None if inherit => self.exec.err_engine.err.description.clone(),
-                                None => default_error_message(code),
-                            };
-                            let source = match source {
-                                Some(op) => Some(self.operand_string(op)?),
-                                None if inherit => Some(self.exec.err_engine.err.source.clone()),
-                                None => None, // -> project name in `raise`
-                            };
-                            let help_file = match help_file {
-                                Some(op) => Some(self.operand_string(op)?),
-                                None if inherit => Some(self.exec.err_engine.err.help_file.clone()),
-                                None => None,
-                            };
+                            let description = description
+                                .as_ref()
+                                .map(|operand| self.operand_string(operand))
+                                .transpose()?;
+                            let source = source
+                                .as_ref()
+                                .map(|operand| self.operand_string(operand))
+                                .transpose()?;
+                            let help_file = help_file
+                                .as_ref()
+                                .map(|operand| self.operand_string(operand))
+                                .transpose()?;
                             let help_context = match help_context {
                                 Some(op) => {
                                     let v = self.operand(op)?;
@@ -1347,16 +1341,19 @@ impl<'h> Vm3<'h> {
                                     .map_err(Vm3Error::Fault)?;
                                     Some(coerced.as_i32().unwrap_or(0))
                                 }
-                                None if inherit => Some(self.exec.err_engine.err.help_context),
                                 None => None,
                             };
-                            self.route_fault(Fault {
+                            let fault = self.exec.err_engine.explicit_fault(
                                 code,
-                                message,
-                                source,
-                                help_file,
-                                help_context,
-                            })?;
+                                calcvba_rt_abi::RaiseFields {
+                                    source,
+                                    description,
+                                    help_file,
+                                    help_context,
+                                },
+                                *inherit,
+                            );
+                            self.route_fault(fault)?;
                         }
                         // A non-numeric raise code is itself a coercion fault (e.g. 13).
                         Err(e) => self.route_fault(Fault::from_arith(e))?,
@@ -1769,7 +1766,7 @@ impl<'h> Vm3<'h> {
                     PtrKind::VarVariant => {
                         pointer_helpers::register_variant_var_variant_pointer(&v)
                     }
-                    PtrKind::Obj => pointer_helpers::register_object_variant_pointer(&v),
+                    PtrKind::Obj => calcvba_rt_abi::object_variant_pointer(self.exec.host, &v),
                 }
                 .map_err(|e| Vm3Error::Fault(Fault::from_string(e)))?;
                 self.store(dst, Variant::from_i64(pointer))?;
@@ -1995,6 +1992,17 @@ impl<'h> Vm3<'h> {
                 }
             }
             OxInst::ArrayErase { array, element } => {
+                let location = self.resolve(array);
+                if self
+                    .for_each
+                    .values()
+                    .any(|iterator| iterator.array_source == Some(location))
+                {
+                    return Err(Vm3Error::Fault(Fault::new(
+                        10,
+                        calcvba_rt_abi::default_error_message(10),
+                    )));
+                }
                 // VBA `Erase` is reset-vs-deallocate decided by the array's *own* storage
                 // class, carried on the runtime SAFEARRAY's `FADF_FIXEDSIZE` bit (set at
                 // allocation, travelling with copies) — so the dispatch is purely runtime,
@@ -2044,7 +2052,18 @@ impl<'h> Vm3<'h> {
                 match reset {
                     Some(built) => {
                         let array_value = built.map_err(|e| Vm3Error::Fault(Fault::new(13, e)))?;
-                        self.store(array, Variant::from_safearray(array_value))?;
+                        let loc = self.resolve(array);
+                        let current = self
+                            .read_loc_mut(loc)?
+                            .ok_or_else(|| Vm3Error::Malformed("missing fixed array".into()))?;
+                        for index in 0..array_value.len() {
+                            let value = array_value
+                                .variant_element(index)
+                                .map_err(|error| Vm3Error::Fault(Fault::new(13, error)))?;
+                            current
+                                .set_safearray_element(index, &value)
+                                .map_err(|error| Vm3Error::Fault(Fault::new(13, error)))?;
+                        }
                     }
                     None if was_array => {
                         let value = if let Some(layout) =
@@ -2081,11 +2100,22 @@ impl<'h> Vm3<'h> {
             }
             OxInst::ForEachInit { iter, source } => {
                 let src = self.operand(source)?;
+                let array_source = if src.safearray_bounds_len().is_some() {
+                    match source {
+                        OxOperand::Use(place @ (OxPlace::Local(_) | OxPlace::Global(_))) => {
+                            Some(self.resolve(place))
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
                 let elements = self.foreach_elements(src, 0)?;
                 let key = self.resolve(iter);
                 self.for_each.insert(
                     key,
                     ForEachState {
+                        array_source,
                         elements,
                         position: 0,
                     },
@@ -2097,19 +2127,35 @@ impl<'h> Vm3<'h> {
                 has_value,
             } => {
                 let key = self.resolve(iter);
-                let next = self.for_each.get_mut(&key).and_then(|state| {
-                    let value = state.elements.get(state.position).cloned();
-                    if value.is_some() {
-                        state.position += 1;
+                let next = if let Some(state) = self.for_each.get(&key) {
+                    if state.position >= state.elements.len() {
+                        None
+                    } else if let Some(source) = state.array_source {
+                        self.read_loc_ref(source)?
+                            .and_then(|array| array.safearray_element(state.position))
+                            .transpose()
+                            .map_err(|error| Vm3Error::Fault(Fault::new(9, error)))?
+                    } else {
+                        state.elements.get(state.position).cloned()
                     }
-                    value
-                });
+                } else {
+                    None
+                };
+                if next.is_some() {
+                    self.for_each
+                        .get_mut(&key)
+                        .expect("active iterator")
+                        .position += 1;
+                }
                 match next {
                     Some(value) => {
                         self.store(item, value)?;
                         self.store(has_value, Variant::from_bool(true))?;
                     }
-                    None => self.store(has_value, Variant::from_bool(false))?,
+                    None => {
+                        self.for_each.remove(&key);
+                        self.store(has_value, Variant::from_bool(false))?;
+                    }
                 }
             }
 
@@ -5178,6 +5224,16 @@ impl<'h> Vm3<'h> {
 
     /// Write a resolved location (same dense/sparse contract as [`Self::read_loc`]).
     fn write_loc(&mut self, loc: Loc, v: Variant) -> Result<(), Vm3Error> {
+        if self
+            .for_each
+            .values()
+            .any(|iterator| iterator.array_source == Some(loc))
+        {
+            return Err(Vm3Error::Fault(Fault::new(
+                10,
+                calcvba_rt_abi::default_error_message(10),
+            )));
+        }
         self.param_array_aliases.remove(&loc);
         let old = match loc {
             Loc::Global(p, g) => {

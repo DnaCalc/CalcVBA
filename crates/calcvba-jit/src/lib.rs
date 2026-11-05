@@ -87,6 +87,7 @@ mod error;
 #[macro_use]
 mod runtime;
 mod helpers;
+mod library;
 mod lowering;
 pub mod native;
 mod typed;

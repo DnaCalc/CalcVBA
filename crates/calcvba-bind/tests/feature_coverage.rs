@@ -742,10 +742,7 @@ fn numeric_conversion_intrinsics_reject_invalid_vba_radix_strings() {
 fn conversion_intrinsic_overflow_is_error_6() {
     let err = run_result("Sub Main()\nDim x As Integer\nx = CInt(100000)\nEnd Sub")
         .expect_err("CInt overflow should be a runtime error");
-    assert!(
-        err.contains("does not fit in Integer"),
-        "unexpected diagnostic: {err}"
-    );
+    assert_eq!(err, "runtime error: 6 Overflow");
 }
 
 #[test]

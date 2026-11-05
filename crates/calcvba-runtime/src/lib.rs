@@ -18,6 +18,7 @@ pub mod object_owner;
 pub mod object_ref;
 pub mod pointer_helpers;
 pub mod safe_array;
+pub mod string_compare;
 pub mod value_types;
 pub mod variant;
 pub mod vba_date;

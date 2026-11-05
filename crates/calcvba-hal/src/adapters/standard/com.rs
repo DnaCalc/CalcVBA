@@ -797,6 +797,40 @@ impl ComHal for StandardHostServices {
         unreachable!("native COM is not available on this platform")
     }
 
+    fn object_default_value(&self, object: ObjectRef) -> HalResult<Option<Variant>> {
+        let capability = CapabilityId::ComActivationDispatch;
+        if !self.supports(capability) || !self.policy.allow_com_activation {
+            return Ok(None);
+        }
+        #[cfg(target_os = "windows")]
+        if self.native_com_enabled() {
+            self.ensure_thread_com_apartment("object_default_value")?;
+            let Ok(dispatch) = self
+                .com_bridge
+                .resolve_native_dispatch_for_object(object.clone())
+            else {
+                return Ok(None);
+            };
+            // SAFETY: the bridge retains this dispatch on the current COM apartment.
+            let kind = unsafe { calcvba_com::live_object_default_vartype(dispatch) };
+            if kind == Some(12) {
+                return self
+                    .dispatch_invoke_dynamic_variant(&calcvba_com::DynamicCallRequest {
+                        object,
+                        member: calcvba_com::DynamicMemberSelector::DefaultMember,
+                        args: Vec::new(),
+                        call_kind_hint: Some(calcvba_com::DynamicCallKind::PropertyGet),
+                    })
+                    .map(Some);
+            }
+            return Ok(kind
+                .and_then(calcvba_runtime::VarType::from_u16)
+                .map(Variant::zeroed));
+        }
+        let _ = object;
+        Ok(None)
+    }
+
     fn object_type_name(&self, object: ObjectRef) -> HalResult<Option<String>> {
         let capability = CapabilityId::ComActivationDispatch;
         if !self.supports(capability) || !self.policy.allow_com_activation {

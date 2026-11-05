@@ -561,35 +561,6 @@ pub fn concat(l: &Variant, r: &Variant) -> R {
 
 // ── Comparison ────────────────────────────────────────────────────────────────
 
-fn norm(s: String, mode: StringCompareMode) -> String {
-    match mode {
-        StringCompareMode::Text => s.to_ascii_lowercase(),
-        StringCompareMode::Binary => s,
-    }
-}
-
-/// Case-fold UTF-16 code units the same way [`norm`] folds a `String` — ASCII A–Z
-/// only — but at the code-unit level so lone surrogate halves survive. Comparing the
-/// lossy `as_string` would fold every unpaired surrogate to U+FFFD and make distinct
-/// surrogate strings (e.g. `ChrW(&HD800)` vs `ChrW(&HDC00)`) compare EQUAL, which
-/// contradicts VBA's binary UTF-16 code-unit string semantics (and FU#3's concat
-/// fidelity). Binary mode passes the units through verbatim.
-fn norm_units(units: &[u16], mode: StringCompareMode) -> Vec<u16> {
-    match mode {
-        StringCompareMode::Text => units
-            .iter()
-            .map(|&u| {
-                if (0x41..=0x5A).contains(&u) {
-                    u + 0x20
-                } else {
-                    u
-                }
-            })
-            .collect(),
-        StringCompareMode::Binary => units.to_vec(),
-    }
-}
-
 /// A `String`-subtype operand (the only kind compared lexically).
 fn cmp_is_string(v: &Variant) -> bool {
     v.vtype() == VarType::String
@@ -636,7 +607,11 @@ fn cmp_order(
         // `string_units` is `Some`.
         let lu = l.string_units().unwrap_or_default();
         let ru = r.string_units().unwrap_or_default();
-        return Ok(norm_units(&lu, mode).cmp(&norm_units(&ru, mode)));
+        return Ok(calcvba_runtime::string_compare::compare_utf16(
+            &lu,
+            &ru,
+            mode == StringCompareMode::Text,
+        ));
     }
     // Exact comparison for the wide integer / fixed-point carriers, before the
     // lossy f64 path below. LongLong/Currency/Decimal hold values that exceed
@@ -657,7 +632,11 @@ fn cmp_order(
     match (left_num, right_num) {
         (Ok(a), Ok(b)) => Ok(a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)),
         // A non-numeric operand falls back to a string comparison.
-        _ => Ok(norm(as_string(l), mode).cmp(&norm(as_string(r), mode))),
+        _ => Ok(calcvba_runtime::string_compare::compare_utf16(
+            &as_string(l).encode_utf16().collect::<Vec<_>>(),
+            &as_string(r).encode_utf16().collect::<Vec<_>>(),
+            mode == StringCompareMode::Text,
+        )),
     }
 }
 

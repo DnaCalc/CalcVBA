@@ -1,6 +1,75 @@
 use super::*;
 
 pub(super) const HELPERS: &[(&str, &[ir::Type])] = &[
+    ("cvb_array_erase", &[types::I64, types::I64, types::I32]),
+    ("cvb_frame_enter", &[types::I64]),
+    ("cvb_frame_exit", &[types::I64]),
+    ("cvb_error_control", &[types::I64, types::I32, types::I32]),
+    (
+        "cvb_error_get",
+        &[types::I64, types::I64, types::I32, types::I32],
+    ),
+    (
+        "cvb_error_set",
+        &[types::I64, types::I32, types::I64, types::I32],
+    ),
+    (
+        "cvb_fault_route",
+        &[types::I64, types::I32, types::I32, types::I64],
+    ),
+    (
+        "cvb_resume",
+        &[types::I64, types::I32, types::I32, types::I64],
+    ),
+    ("cvb_array_literal", &[types::I64; 3]),
+    (
+        "cvb_iter_init",
+        &[types::I64, types::I64, types::I64, types::I32],
+    ),
+    (
+        "cvb_iter_next",
+        &[types::I64, types::I64, types::I64, types::I32, types::I64],
+    ),
+    ("cvb_iter_clear", &[types::I64; 2]),
+    (
+        "cvb_value_unary",
+        &[
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I32,
+            types::I32,
+            types::I32,
+            types::I32,
+        ],
+    ),
+    (
+        "cvb_library",
+        &[
+            types::I64,
+            types::I32,
+            types::I32,
+            types::I64,
+            types::I64,
+            types::I64,
+        ],
+    ),
+    (
+        "cvb_value_binary",
+        &[
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I32,
+            types::I32,
+            types::I32,
+            types::I32,
+            types::I32,
+            types::I32,
+        ],
+    ),
+    ("cvb_services_clear", &[types::I64]),
     ("cvb_value_type", &[types::I64, types::I64, types::I32]),
     (
         "cvb_fixed_string_coerce",
@@ -271,6 +340,18 @@ pub(super) fn kind(ty: ScalarType) -> u32 {
         ScalarType::Void => 0,
     }
 }
+
+pub(super) fn validate_library_operand(
+    layout: &ScalarLayout,
+    operand: &OxOperand,
+) -> Result<(), &'static str> {
+    if layout.operand_type(operand) == Ok(ScalarType::Record)
+        || matches!(operand, OxOperand::Use(place) if layout.slot(*place).is_ok_and(|slot| layout.array_record_slots.contains_key(&slot)))
+    {
+        return Err("native record value requires a retained Automation record descriptor");
+    }
+    Ok(())
+}
 pub(super) fn owning(ty: ScalarType) -> bool {
     !numeric(ty) && ty != ScalarType::Void
 }
@@ -279,8 +360,64 @@ pub(super) struct Values<'a> {
     pub lower: ScalarLower<'a>,
     pub functions: &'a HashMap<&'static str, ClifFuncId>,
     pub program: &'a OxProgram,
+    pub iterator_slots: BTreeSet<usize>,
 }
 impl Values<'_> {
+    pub fn library_call(
+        &self,
+        module: &mut impl Module,
+        b: &mut FunctionBuilder<'_>,
+        native: u32,
+        string_alias: bool,
+        args: &[OxArg],
+        dst: Option<OxPlace>,
+    ) {
+        let inputs = crate::library::lower_arguments(b, args, |b, operand| {
+            Ok((
+                self.cell(module, b, operand),
+                kind_of_operand(self.lower.layout, operand),
+            ))
+        })
+        .expect("admitted library arguments");
+        let (out, to) = if let Some(dst) = dst {
+            let index = self.lower.layout.slot(dst).unwrap();
+            (self.address(b, index), self.slot_kind(index))
+        } else {
+            (b.ins().iconst(types::I64, 0), 0)
+        };
+        let mut descriptor = vec![inputs.len() as u32, to];
+        let pointers = b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            (inputs.len().max(1) * 8) as u32,
+            3,
+        ));
+        for (index, (cell, kind)) in inputs.into_iter().enumerate() {
+            b.ins().stack_store(cell, pointers, (index * 8) as i32);
+            descriptor.push(kind);
+        }
+        let metadata = data(
+            module,
+            b,
+            descriptor.into_iter().flat_map(u32::to_le_bytes).collect(),
+            4,
+        );
+        let arguments = b.ins().stack_addr(types::I64, pointers, 0);
+        let native = b.ins().iconst(types::I32, i64::from(native));
+        let string_alias = b.ins().iconst(types::I32, i64::from(string_alias));
+        self.call(
+            module,
+            b,
+            "cvb_library",
+            &[
+                self.lower.runtime,
+                native,
+                string_alias,
+                metadata,
+                arguments,
+                out,
+            ],
+        );
+    }
     pub fn address(&self, b: &mut FunctionBuilder<'_>, index: usize) -> Value {
         let PhysicalSlots::Native(pointers) = self.lower.slots else {
             unreachable!()
@@ -297,7 +434,7 @@ impl Values<'_> {
         let helper = module.declare_func_in_func(self.functions[name], b.func);
         let call = b.ins().call(helper, args);
         let status = b.inst_results(call)[0];
-        check_status(b, status);
+        self.lower.check_status(b, status);
     }
     pub fn clear(&self, module: &mut impl Module, b: &mut FunctionBuilder<'_>, index: usize) {
         let address = self.address(b, index);
@@ -461,6 +598,111 @@ impl Values<'_> {
     ) -> bool {
         let layout = self.lower.layout;
         match inst {
+            OxInst::ForEachInit { iter, source } => {
+                let key = self.address(b, layout.slot(*iter).unwrap());
+                let source_cell = self.cell(module, b, source);
+                let kind = b.ins().iconst(
+                    types::I32,
+                    i64::from(
+                        kind_of_operand(layout, source)
+                            | if matches!(
+                                source,
+                                OxOperand::Use(OxPlace::Local(_) | OxPlace::Global(_))
+                            ) {
+                                0x1000_0000
+                            } else {
+                                0
+                            },
+                    ),
+                );
+                self.call(
+                    module,
+                    b,
+                    "cvb_iter_init",
+                    &[self.lower.runtime, key, source_cell, kind],
+                );
+                return true;
+            }
+            OxInst::ForEachNext {
+                iter,
+                item,
+                has_value,
+            } => {
+                let key = self.address(b, layout.slot(*iter).unwrap());
+                let item_slot = layout.slot(*item).unwrap();
+                let item = self.address(b, item_slot);
+                let kind = b
+                    .ins()
+                    .iconst(types::I32, i64::from(self.slot_kind(item_slot)));
+                let has_value = self.address(b, layout.slot(*has_value).unwrap());
+                self.call(
+                    module,
+                    b,
+                    "cvb_iter_next",
+                    &[self.lower.runtime, key, item, kind, has_value],
+                );
+                return true;
+            }
+            OxInst::ArrayLiteral {
+                dst,
+                values,
+                lower_bound,
+                ..
+            } => {
+                let slot = layout.slot(*dst).unwrap();
+                let out = self.address(b, slot);
+                let mut metadata = vec![
+                    values.len() as u32,
+                    self.slot_kind(slot),
+                    *lower_bound as u32,
+                ];
+                let arguments = b.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    (values.len().max(1) * 8) as u32,
+                    3,
+                ));
+                for (index, value) in values.iter().enumerate() {
+                    let cell = self.cell(module, b, value);
+                    b.ins().stack_store(cell, arguments, (index * 8) as i32);
+                    metadata.push(kind_of_operand(layout, value));
+                }
+                let metadata = data(
+                    module,
+                    b,
+                    metadata.into_iter().flat_map(u32::to_le_bytes).collect(),
+                    4,
+                );
+                let arguments = b.ins().stack_addr(types::I64, arguments, 0);
+                self.call(module, b, "cvb_array_literal", &[metadata, arguments, out]);
+                return true;
+            }
+            OxInst::CallNative {
+                dst,
+                callee: OxNativeCallee::Builtin(native),
+                args,
+            } => {
+                let args: Vec<_> = args
+                    .iter()
+                    .map(|argument| match argument {
+                        OxCallArg::Operand(operand) => OxArg::ByVal(operand.clone()),
+                        OxCallArg::ByRef(place) => OxArg::ByRef(*place),
+                        OxCallArg::Omitted => OxArg::Omitted,
+                        OxCallArg::Const(value) => {
+                            OxArg::ByVal(OxOperand::Const(OxConst::I32(*value)))
+                        }
+                        _ => unreachable!("admitted builtin argument"),
+                    })
+                    .collect();
+                self.library_call(
+                    module,
+                    b,
+                    native_impl_index(*native).unwrap(),
+                    false,
+                    &args,
+                    *dst,
+                );
+                return true;
+            }
             OxInst::Coerce {
                 dst,
                 src,
@@ -645,19 +887,84 @@ impl Values<'_> {
                 }
                 return true;
             }
-            OxInst::ErrFieldGet {
-                dst,
-                field: ErrField::LastDllError,
-            } => {
-                let helper =
-                    module.declare_func_in_func(self.functions["cvb_last_dll_error"], b.func);
-                let call = b.ins().call(helper, &[]);
-                let value = b.inst_results(call)[0];
-                self.lower
-                    .store_slot(b, layout.slot(*dst).unwrap(), ScalarType::Long, value);
+            OxInst::ErrFieldGet { dst, field } => {
+                let out = self.address(b, layout.slot(*dst).unwrap());
+                let kind = b.ins().iconst(
+                    types::I32,
+                    i64::from(self.slot_kind(layout.slot(*dst).unwrap())),
+                );
+                let field = b.ins().iconst(types::I32, i64::from(raw_err_field(*field)));
+                self.call(
+                    module,
+                    b,
+                    "cvb_error_get",
+                    &[self.lower.runtime, out, kind, field],
+                );
                 return true;
             }
-
+            OxInst::ErlGet { dst } => {
+                let out = self.address(b, layout.slot(*dst).unwrap());
+                let kind = b.ins().iconst(
+                    types::I32,
+                    i64::from(self.slot_kind(layout.slot(*dst).unwrap())),
+                );
+                let field = b.ins().iconst(types::I32, 6);
+                self.call(
+                    module,
+                    b,
+                    "cvb_error_get",
+                    &[self.lower.runtime, out, kind, field],
+                );
+                return true;
+            }
+            OxInst::ErrFieldSet { field, src } => {
+                let input = self.cell(module, b, src);
+                let kind = b
+                    .ins()
+                    .iconst(types::I32, i64::from(kind_of_operand(layout, src)));
+                let field = b.ins().iconst(types::I32, i64::from(raw_err_field(*field)));
+                self.call(
+                    module,
+                    b,
+                    "cvb_error_set",
+                    &[self.lower.runtime, field, input, kind],
+                );
+                return true;
+            }
+            OxInst::SetErrorHandler(_) | OxInst::ClearErr | OxInst::SetLineNumber { .. } => {
+                let (action, argument) = match inst {
+                    OxInst::SetErrorHandler(handler) => match handler {
+                        calcvba_oxir::ErrorHandler::Goto0 => (0, 0),
+                        calcvba_oxir::ErrorHandler::ResumeNext => (1, 0),
+                        calcvba_oxir::ErrorHandler::GotoLabel(block) => (2, block.0 as i64),
+                        calcvba_oxir::ErrorHandler::GotoMinus1 => (3, 0),
+                    },
+                    OxInst::ClearErr => (4, 0),
+                    OxInst::SetLineNumber { line } => (5, i64::from(*line)),
+                    _ => unreachable!(),
+                };
+                let action = b.ins().iconst(types::I32, action);
+                let argument = b.ins().iconst(types::I32, argument);
+                self.call(
+                    module,
+                    b,
+                    "cvb_error_control",
+                    &[self.lower.runtime, action, argument],
+                );
+                return true;
+            }
+            OxInst::ArrayErase { array, .. } => {
+                let slot = layout.slot(*array).unwrap();
+                let cell = self.address(b, slot);
+                let kind = b.ins().iconst(types::I32, i64::from(self.slot_kind(slot)));
+                self.call(
+                    module,
+                    b,
+                    "cvb_array_erase",
+                    &[self.lower.runtime, cell, kind],
+                );
+                return true;
+            }
             OxInst::ArrayGet {
                 dst,
                 array,
@@ -970,6 +1277,10 @@ impl Values<'_> {
         } = inst
         {
             for index in layout.local_count + clear_temps_from..layout.global_base {
+                if self.iterator_slots.contains(&index) {
+                    let address = self.address(b, index);
+                    self.call(module, b, "cvb_iter_clear", &[self.lower.runtime, address]);
+                }
                 if owning(layout.slots[index]) {
                     self.clear(module, b, index);
                 } else {
@@ -1004,7 +1315,7 @@ impl Values<'_> {
             _ => false,
         };
         if !owning_copy
-            && !matches!(inst, OxInst::Logical { .. })
+            && !matches!(inst, OxInst::Logical { .. } | OxInst::Pow { .. })
             && !calcvba_rt_abi::host_entry::value::needs_helper(inst, layout)
         {
             return false;
@@ -1021,7 +1332,15 @@ impl Values<'_> {
             let kind = b
                 .ins()
                 .iconst(types::I32, i64::from(kind_of_operand(layout, src)));
-            self.call(module, b, "cvb_value_truthy", &[out, input, kind]);
+            let to = b.ins().iconst(types::I32, 11);
+            let family = b.ins().iconst(types::I32, 2);
+            let mode = b.ins().iconst(types::I32, 0);
+            self.call(
+                module,
+                b,
+                "cvb_value_unary",
+                &[self.lower.runtime, out, input, to, kind, family, mode],
+            );
             return true;
         }
         let (dst, src) = match inst {
@@ -1039,6 +1358,7 @@ impl Values<'_> {
             OxInst::Concat { dst, lhs, rhs }
             | OxInst::Logical { dst, lhs, rhs, .. }
             | OxInst::Arith { dst, lhs, rhs, .. }
+            | OxInst::Pow { dst, lhs, rhs }
             | OxInst::Div { dst, lhs, rhs }
             | OxInst::Compare { dst, lhs, rhs, .. } => {
                 let index = layout.slot(*dst).unwrap();
@@ -1055,55 +1375,60 @@ impl Values<'_> {
                     self.call(module, b, "cvb_string_concat", &[out, a, c]);
                     return true;
                 }
-                let ak = b.ins().iconst(types::I32, i64::from(kind(ak)));
-                let bk = b.ins().iconst(types::I32, i64::from(kind(bk)));
-                if let OxInst::Compare { op, mode, .. } = inst {
-                    let op = b.ins().iconst(
-                        types::I32,
-                        match op {
-                            CmpOp::Eq => 0,
-                            CmpOp::Ne => 1,
-                            CmpOp::Lt => 2,
-                            CmpOp::Le => 3,
-                            CmpOp::Gt => 4,
-                            CmpOp::Ge => 5,
-                        },
-                    );
-                    let mode = b
-                        .ins()
-                        .iconst(types::I32, i64::from(*mode == StringCompareMode::Text));
-                    let to = b.ins().iconst(types::I32, i64::from(self.slot_kind(index)));
-                    self.call(
-                        module,
-                        b,
-                        "cvb_value_compare",
-                        &[out, a, c, ak, bk, op, mode, to],
-                    );
-                } else {
-                    let to = b.ins().iconst(types::I32, i64::from(self.slot_kind(index)));
-                    let name = match inst {
-                        OxInst::Logical { op, .. } => match op {
-                            LogicalOp::And => "cvb_value_and",
-                            LogicalOp::Or => "cvb_value_or",
-                            LogicalOp::Xor => "cvb_value_xor",
-                            LogicalOp::Eqv => "cvb_value_eqv",
-                            LogicalOp::Imp => "cvb_value_imp",
-                        },
-                        OxInst::Concat { .. } => "cvb_value_concat",
-                        OxInst::Div { .. } => "cvb_value_div",
-                        OxInst::Arith {
-                            op: ArithOp::Add, ..
-                        } => "cvb_value_add",
-                        OxInst::Arith {
-                            op: ArithOp::Sub, ..
-                        } => "cvb_value_sub",
-                        OxInst::Arith {
-                            op: ArithOp::Mul, ..
-                        } => "cvb_value_mul",
-                        _ => unreachable!("admitted value operation"),
-                    };
-                    self.call(module, b, name, &[out, a, c, to, ak, bk]);
-                }
+                let ak = b
+                    .ins()
+                    .iconst(types::I32, i64::from(kind_of_operand(layout, lhs)));
+                let bk = b
+                    .ins()
+                    .iconst(types::I32, i64::from(kind_of_operand(layout, rhs)));
+                let (family, operation, mode) = match inst {
+                    OxInst::Arith { op, mode, .. } => (
+                        0,
+                        raw_arith_op(*op).expect("arithmetic operation"),
+                        raw_numeric_mode(*mode).unwrap(),
+                    ),
+                    OxInst::Div { .. } => (0, RT_ARITH_DIV, RT_NUMERIC_WIDENING),
+                    OxInst::Pow { .. } => (0, RT_ARITH_POW, RT_NUMERIC_WIDENING),
+                    OxInst::Logical { op, .. } => (1, raw_logical_op(*op), 0),
+                    OxInst::Compare {
+                        op, mode, coercion, ..
+                    } => {
+                        let coercion = match coercion {
+                            calcvba_bundle::ComparisonCoercion::Strict => 0,
+                            calcvba_bundle::ComparisonCoercion::String => 1,
+                            calcvba_bundle::ComparisonCoercion::Numeric => 2,
+                            calcvba_bundle::ComparisonCoercion::Variant => 3,
+                        };
+                        (
+                            2,
+                            raw_compare_op(*op),
+                            raw_string_compare_mode(*mode) | (coercion << 8),
+                        )
+                    }
+                    OxInst::Concat { .. } => (3, 0, 0),
+                    _ => unreachable!("admitted binary operation"),
+                };
+                let to = b.ins().iconst(types::I32, i64::from(self.slot_kind(index)));
+                let family = b.ins().iconst(types::I32, family);
+                let operation = b.ins().iconst(types::I32, i64::from(operation));
+                let mode = b.ins().iconst(types::I32, i64::from(mode));
+                self.call(
+                    module,
+                    b,
+                    "cvb_value_binary",
+                    &[
+                        self.lower.runtime,
+                        out,
+                        a,
+                        c,
+                        to,
+                        ak,
+                        bk,
+                        family,
+                        operation,
+                        mode,
+                    ],
+                );
                 return true;
             }
             OxInst::Neg { dst, src, .. } | OxInst::Not { dst, src } => {
@@ -1115,15 +1440,18 @@ impl Values<'_> {
                     types::I32,
                     i64::from(kind(layout.operand_type(src).unwrap())),
                 );
+                let (family, mode) = if let OxInst::Neg { mode, .. } = inst {
+                    (0, raw_numeric_mode(*mode).unwrap())
+                } else {
+                    (1, 0)
+                };
+                let family = b.ins().iconst(types::I32, family);
+                let mode = b.ins().iconst(types::I32, i64::from(mode));
                 self.call(
                     module,
                     b,
-                    if matches!(inst, OxInst::Neg { .. }) {
-                        "cvb_value_neg"
-                    } else {
-                        "cvb_value_not"
-                    },
-                    &[out, src_cell, to, from],
+                    "cvb_value_unary",
+                    &[self.lower.runtime, out, src_cell, to, from, family, mode],
                 );
                 return true;
             }
@@ -1168,7 +1496,7 @@ impl Values<'_> {
             let ok = b.ins().iconst(types::I32, 0);
             let error = b.ins().iconst(types::I32, 9);
             let status = b.ins().select(valid, ok, error);
-            check_status(b, status);
+            self.lower.check_status(b, status);
             let term = b.ins().imul_imm(relative, stride);
             offset = b.ins().iadd(offset, term);
             stride *= i64::from(bound.count);

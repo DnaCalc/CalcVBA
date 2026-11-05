@@ -8,6 +8,12 @@ mod values;
 pub fn value_helper_signatures() -> &'static [(&'static str, &'static [ir::Type])] {
     values::HELPERS
 }
+
+/// Dynamic Raise now requires the extended native context's runtime services.
+/// Refuse an older template/consumer pairing instead of reading beyond its context.
+pub fn value_helper_version(name: &str) -> u16 {
+    if name == "cvb_raise_dynamic" { 2 } else { 1 }
+}
 use crate::typed::{PhysicalSlots, ScalarLower, machine_type};
 use calcvba_oxir::OxArg;
 use calcvba_rt_abi::host_entry::{LinkedTarget, ScalarLayout, ScalarType};
@@ -125,11 +131,6 @@ pub fn compile_native_scalars(
 ) -> Result<Vec<NativeScalar>, JitError> {
     calcvba_oxir::verify_program(program)
         .map_err(|e| JitError::unsupported(format!("invalid native OxIR: {e:?}")))?;
-    if !program.classes.is_empty() {
-        return Err(JitError::unsupported(
-            "native exports do not yet support project classes",
-        ));
-    }
     let mut pending = roots.to_vec();
     pending.extend(program.global_initializer);
     let mut reached = BTreeSet::new();
@@ -182,6 +183,40 @@ pub fn compile_native_scalars(
         }
         for block in &func.blocks {
             for (index, inst) in block.instrs.iter().enumerate() {
+                let operands: Vec<OxOperand> = match inst {
+                    OxInst::CallExtern { args, .. } => args
+                        .iter()
+                        .filter_map(|argument| match argument {
+                            OxArg::ByVal(value) => Some(value.clone()),
+                            OxArg::ByRef(place) => Some(OxOperand::Use(*place)),
+                            OxArg::Omitted => None,
+                        })
+                        .collect(),
+                    OxInst::CallNative {
+                        callee: OxNativeCallee::Builtin(_),
+                        args,
+                        ..
+                    } => args
+                        .iter()
+                        .filter_map(|argument| match argument {
+                            OxCallArg::Operand(value) => Some(value.clone()),
+                            OxCallArg::ByRef(place) => Some(OxOperand::Use(*place)),
+                            _ => None,
+                        })
+                        .collect(),
+                    OxInst::ArrayLiteral { values, .. } => values.clone(),
+                    OxInst::ForEachInit { source, .. } => vec![source.clone()],
+                    OxInst::Box {
+                        src,
+                        from: OxTy::Record(_),
+                        ..
+                    } => vec![src.clone()],
+                    _ => Vec::new(),
+                };
+                for operand in operands {
+                    values::validate_library_operand(&layout, &operand)
+                        .map_err(|error| problem(func, error))?;
+                }
                 match inst {
                     OxInst::Coerce {
                         dst,
@@ -210,34 +245,34 @@ pub fn compile_native_scalars(
                         }
                         pending.push(*proc);
                     }
-                    OxInst::CallExtern { import, args, .. } => {
+                    OxInst::CallExtern { import, .. } => {
                         let target = layout
                             .extern_calls
                             .get(import)
                             .ok_or_else(|| problem(func, "unplanned native library call"))?
                             .target;
-                        if !matches!(target,LinkedTarget::Builtin(native) if library_helpers.contains_key(&native) || conversion_target(native).is_some() || matches!(native, NativeImplId::Len | NativeImplId::CStr | NativeImplId::VarType))
-                            || args.iter().any(|arg| !matches!(arg, OxArg::ByVal(_)))
-                        {
+                        if !matches!(target, LinkedTarget::Builtin(_)) {
                             return Err(problem(
                                 func,
                                 format!("unsupported native library call {inst:?}"),
                             ));
                         }
-                        if matches!(target, LinkedTarget::Builtin(native) if conversion_target(native).is_some())
-                            && !matches!(args.as_slice(), [OxArg::ByVal(_)])
-                        {
-                            return Err(problem(
-                                func,
-                                "native numeric conversions require one numeric ByVal argument",
-                            ));
-                        }
                     }
-                    OxInst::ErrFieldGet {
-                        field: ErrField::LastDllError,
+                    OxInst::ArrayErase { array, .. } => {
+                        values::validate_library_operand(&layout, &OxOperand::Use(*array))
+                            .map_err(|error| problem(func, error))?;
+                    }
+                    OxInst::ErrFieldGet { .. }
+                    | OxInst::ErrFieldSet { .. }
+                    | OxInst::ErlGet { .. }
+                    | OxInst::SetErrorHandler(_)
+                    | OxInst::ClearErr
+                    | OxInst::SetLineNumber { .. }
+                    | OxInst::NewRecord { .. }
+                    | OxInst::CallNative {
+                        callee: OxNativeCallee::Builtin(_),
                         ..
-                    }
-                    | OxInst::NewRecord { .. } => {}
+                    } => {}
                     OxInst::Ptr { src, kind, .. } => {
                         if layout.operand_type(src) == Ok(ScalarType::Array)
                             || (!matches!(
@@ -312,7 +347,10 @@ pub fn compile_native_scalars(
                             return Err(problem(func, format!("Variant array receiver {inst:?}")));
                         }
                     }
-                    OxInst::Box { .. }
+                    OxInst::ArrayLiteral { .. }
+                    | OxInst::ForEachInit { .. }
+                    | OxInst::ForEachNext { .. }
+                    | OxInst::Box { .. }
                     | OxInst::Unbox { .. }
                     | OxInst::Concat { .. }
                     | OxInst::CompareObjectIs { .. }
@@ -320,6 +358,7 @@ pub fn compile_native_scalars(
                     | OxInst::Assign { .. }
                     | OxInst::Coerce { .. }
                     | OxInst::Arith { .. }
+                    | OxInst::Pow { .. }
                     | OxInst::Div { .. }
                     | OxInst::Neg { .. }
                     | OxInst::Compare { .. }
@@ -333,19 +372,6 @@ pub fn compile_native_scalars(
                             return Err(problem(
                                 func,
                                 format!("nominal object assignment {inst:?}"),
-                            ));
-                        }
-                        if matches!(
-                            inst,
-                            OxInst::Arith {
-                                op: ArithOp::IntDiv | ArithOp::Mod,
-                                ..
-                            }
-                        ) && calcvba_rt_abi::host_entry::value::needs_helper(inst, &layout)
-                        {
-                            return Err(problem(
-                                func,
-                                format!("dynamic integer arithmetic {inst:?}"),
                             ));
                         }
                     }
@@ -368,6 +394,9 @@ pub fn compile_native_scalars(
                     | OxTerminator::FaultDispatch { .. }
                     | OxTerminator::Unreachable
                     | OxTerminator::Raise { .. }
+                    | OxTerminator::Resume
+                    | OxTerminator::ResumeNext
+                    | OxTerminator::ResumeLabel(_)
             ) {
                 return Err(problem(
                     func,
@@ -525,11 +554,25 @@ pub fn compile_native_scalars(
                     slots: PhysicalSlots::Native(pointers),
                     runtime,
                     call_conv: module.target_config().default_call_conv,
+                    fault_target: std::cell::Cell::new(None),
                 },
                 functions: value_helpers,
                 program,
+                iterator_slots: func
+                    .blocks
+                    .iter()
+                    .flat_map(|block| &block.instrs)
+                    .filter_map(|instruction| {
+                        if let OxInst::ForEachInit { iter, .. } = instruction {
+                            Some(plan.layout.slot(*iter).unwrap())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
             };
             let lower = &values.lower;
+            values.call(module, &mut b, "cvb_frame_enter", &[runtime]);
             for (i, ty) in plan.layout.parameters.iter().enumerate() {
                 if values::owning(*ty) && !plan.layout.by_ref_parameters[i] {
                     let dst = values.address(&mut b, i);
@@ -566,12 +609,35 @@ pub fn compile_native_scalars(
             b.ins().jump(blocks[&func.entry], &[]);
             for block in &func.blocks {
                 b.switch_to_block(blocks[&block.id]);
+                let fault_bridge = block.fault_target.map(|_| {
+                    let bridge = b.create_block();
+                    b.append_block_param(bridge, types::I32);
+                    bridge
+                });
+                lower.fault_target.set(fault_bridge);
                 for (instruction_index, inst) in block.instrs.iter().enumerate() {
                     let foreign_state = foreign_states
                         .get(&(plan.procedure.0, block.id.0, instruction_index))
                         .copied();
                     if values.instruction(module, &mut b, inst, foreign_state) {
                         continue;
+                    }
+                    if let OxInst::CallExtern { dst, import, args } = inst {
+                        let resolved = calcvba_rt_abi::library::resolve_import(program, *import)
+                            .map_err(|error| problem(func, error))?;
+                        let signature = &plan.layout.extern_calls[import].signature;
+                        let specialized = matches!(args.as_slice(), [OxArg::ByVal(operand)] if plan.layout.operand_type(operand).is_ok_and(numeric) && (conversion_target(resolved.implementation).is_some() || library_helpers.contains_key(&resolved.implementation) && signature.parameters == [ScalarType::Double]));
+                        if !specialized {
+                            values.library_call(
+                                module,
+                                &mut b,
+                                resolved.index,
+                                resolved.string_typed_alias,
+                                args,
+                                *dst,
+                            );
+                            continue;
+                        }
                     }
                     if let OxInst::CallExtern { dst, import, args } = inst
                         && let LinkedTarget::Builtin(native) =
@@ -681,7 +747,7 @@ pub fn compile_native_scalars(
                                 let helper = module.declare_func_in_func(long_from_f64, b.func);
                                 let call = b.ins().call(helper, &[runtime, input, call_output_ptr]);
                                 let status = b.inst_results(call)[0];
-                                check_status(&mut b, status);
+                                lower.check_status(&mut b, status);
                                 b.ins().stack_load(types::I32, call_output, 0)
                             }
                             (ScalarType::Long | ScalarType::Boolean, ScalarType::Double) => {
@@ -830,7 +896,7 @@ pub fn compile_native_scalars(
                                 b.ins().call(clear, &[pointer, kind]);
                             }
                         }
-                        check_status(&mut b, status);
+                        lower.check_status(&mut b, status);
                         if let Some(dst) = dst {
                             let index = plan.layout.slot(dst).unwrap();
                             if result_type == ScalarType::Record {
@@ -936,7 +1002,7 @@ pub fn compile_native_scalars(
                         description,
                         help_file,
                         help_context,
-                        ..
+                        inherit,
                     } => {
                         let number_cell = b.create_sized_stack_slot(StackSlotData::new(
                             StackSlotKind::ExplicitSlot,
@@ -955,7 +1021,7 @@ pub fn compile_native_scalars(
                         );
                         let number = b.ins().stack_load(types::I32, number_cell, 0);
                         let mut text = Vec::new();
-                        let mut flags = 0;
+                        let mut flags = if *inherit { 0x10 } else { 0 };
                         for (index, operand) in [source, description, help_file, help_context]
                             .iter()
                             .enumerate()
@@ -987,12 +1053,60 @@ pub fn compile_native_scalars(
                             ],
                         );
                         let status = b.inst_results(call)[0];
-                        b.ins().return_(&[status]);
+                        lower.return_status(&mut b, status);
+                    }
+                    OxTerminator::FaultDispatch {
+                        resume,
+                        resume_next,
+                    } => {
+                        lower.fault_target.set(None);
+                        emit_error_transfer(
+                            module,
+                            &mut b,
+                            &values,
+                            &blocks,
+                            func,
+                            "cvb_fault_route",
+                            (resume.0 as u32, resume_next.0 as u32),
+                        );
+                    }
+                    OxTerminator::Resume
+                    | OxTerminator::ResumeNext
+                    | OxTerminator::ResumeLabel(_) => {
+                        let (kind, label) = match block.terminator {
+                            OxTerminator::Resume => (0, 0),
+                            OxTerminator::ResumeNext => (1, 0),
+                            OxTerminator::ResumeLabel(label) => (2, label.0 as u32),
+                            _ => unreachable!(),
+                        };
+                        emit_error_transfer(
+                            module,
+                            &mut b,
+                            &values,
+                            &blocks,
+                            func,
+                            "cvb_resume",
+                            (kind, label),
+                        );
                     }
                     _ => {
                         let status = b.ins().iconst(types::I32, 5);
                         b.ins().return_(&[status]);
                     }
+                }
+
+                if let (Some(bridge), Some(target)) = (fault_bridge, block.fault_target) {
+                    lower.fault_target.set(None);
+                    b.switch_to_block(bridge);
+                    let number = b.block_params(bridge)[0];
+                    let action = b.ins().iconst(types::I32, 6);
+                    values.call(
+                        module,
+                        &mut b,
+                        "cvb_error_control",
+                        &[runtime, action, number],
+                    );
+                    b.ins().jump(blocks[&target], &[]);
                 }
             }
             b.seal_all_blocks();
@@ -1014,6 +1128,22 @@ pub fn compile_native_scalars(
             module.declare_func_in_func(value_helpers["cvb_value_clear"], &mut context.func);
         let record_cleanup =
             module.declare_func_in_func(value_helpers["cvb_record_clear"], &mut context.func);
+        let frame_exit =
+            module.declare_func_in_func(value_helpers["cvb_frame_exit"], &mut context.func);
+        let iterator_cleanup =
+            module.declare_func_in_func(value_helpers["cvb_iter_clear"], &mut context.func);
+        let iterator_slots: BTreeSet<_> = func
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instrs)
+            .filter_map(|instruction| {
+                if let OxInst::ForEachInit { iter, .. } = instruction {
+                    Some(plan.layout.slot(*iter).unwrap())
+                } else {
+                    None
+                }
+            })
+            .collect();
         let mut record_globals = HashMap::new();
         for (i, layout) in &plan.layout.record_slots {
             let id = module
@@ -1044,6 +1174,12 @@ pub fn compile_native_scalars(
         {
             let mut cursor = FuncCursor::new(&mut context.func);
             cursor.goto_bottom(exit);
+            for slot in iterator_slots {
+                let address = cursor
+                    .ins()
+                    .stack_load(types::I64, pointers, (slot * 8) as i32);
+                cursor.ins().call(iterator_cleanup, &[runtime, address]);
+            }
             for (i, ty) in plan.layout.slots[..plan.layout.global_base]
                 .iter()
                 .enumerate()
@@ -1070,6 +1206,7 @@ pub fn compile_native_scalars(
                     }
                 }
             }
+            cursor.ins().call(frame_exit, &[runtime]);
             cursor
                 .ins()
                 .store(ir::MemFlagsData::new(), depth, runtime, DEPTH_OFFSET);
@@ -1246,6 +1383,21 @@ pub fn compile_native_wrapper(
         b.switch_to_block(accepted);
         let state = module.declare_data_in_func(runtime.context, b.func);
         let state = b.ins().global_value(types::I64, state);
+        let default_source = module.declare_data_in_func(source_data, b.func);
+        let default_source = b.ins().global_value(types::I64, default_source);
+        let source_len = b.ins().iconst(types::I64, source.len() as i64);
+        b.ins().store(
+            ir::MemFlagsData::new(),
+            default_source,
+            state,
+            std::mem::offset_of!(NativeContext, error_source) as i32,
+        );
+        b.ins().store(
+            ir::MemFlagsData::new(),
+            source_len,
+            state,
+            std::mem::offset_of!(NativeContext, error_source_len) as i32,
+        );
         let old_array_cells = b.ins().load(
             types::I64,
             ir::MemFlagsData::new(),
@@ -1683,6 +1835,8 @@ pub fn compile_shutdown_wrapper(
             status = b.ins().select(status, status, next);
         }
         let zero = b.ins().iconst(types::I32, 0);
+        let services = module.declare_func_in_func(runtime.values["cvb_services_clear"], b.func);
+        b.ins().call(services, &[state]);
         b.ins()
             .store(ir::MemFlagsData::new(), zero, state, DEPTH_OFFSET);
         let null = b.ins().iconst(types::I64, 0);
@@ -1696,4 +1850,65 @@ pub fn compile_shutdown_wrapper(
         .define_function(id, &mut context)
         .map_err(module_err)?;
     Ok(id)
+}
+
+fn emit_error_transfer(
+    module: &mut impl Module,
+    b: &mut FunctionBuilder<'_>,
+    values: &values::Values<'_>,
+    blocks: &HashMap<calcvba_oxir::BlockId, ir::Block>,
+    func: &OxFunc,
+    helper: &str,
+    operands: (u32, u32),
+) {
+    let (first, second) = operands;
+    let output = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+    let pointer = b.ins().stack_addr(types::I64, output, 0);
+    let candidates: BTreeSet<_> = if helper == "cvb_fault_route" {
+        std::iter::once(second as usize)
+            .chain(
+                func.blocks
+                    .iter()
+                    .flat_map(|block| &block.instrs)
+                    .filter_map(|instruction| {
+                        if let OxInst::SetErrorHandler(calcvba_oxir::ErrorHandler::GotoLabel(
+                            label,
+                        )) = instruction
+                        {
+                            Some(label.0)
+                        } else {
+                            None
+                        }
+                    }),
+            )
+            .collect()
+    } else {
+        func.blocks
+            .iter()
+            .filter_map(|block| match (&block.terminator, first) {
+                (OxTerminator::FaultDispatch { resume, .. }, 0) => Some(resume.0),
+                (OxTerminator::FaultDispatch { resume_next, .. }, 1) => Some(resume_next.0),
+                (_, 2) => Some(second as usize),
+                _ => None,
+            })
+            .collect()
+    };
+    let first = b.ins().iconst(types::I32, i64::from(first));
+    let second = b.ins().iconst(types::I32, i64::from(second));
+    values.call(
+        module,
+        b,
+        helper,
+        &[values.lower.runtime, first, second, pointer],
+    );
+    let target = b.ins().stack_load(types::I32, output, 0);
+    let invalid = b.create_block();
+    let mut switch = cranelift_frontend::Switch::new();
+    for id in candidates {
+        switch.set_entry(id as u128, blocks[&calcvba_oxir::BlockId(id)]);
+    }
+    switch.emit(b, target, invalid);
+    b.switch_to_block(invalid);
+    let status = b.ins().iconst(types::I32, 5);
+    values.lower.return_status(b, status);
 }

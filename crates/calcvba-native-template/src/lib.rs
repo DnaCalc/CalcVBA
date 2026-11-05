@@ -6,6 +6,8 @@ mod errors;
 #[cfg(windows)]
 mod foreign;
 #[cfg(windows)]
+mod services;
+#[cfg(windows)]
 mod values;
 
 #[unsafe(no_mangle)]

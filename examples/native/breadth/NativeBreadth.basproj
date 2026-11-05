@@ -1,0 +1,22 @@
+<Project>
+  <PropertyGroup>
+    <OutputType>NativeLibrary</OutputType>
+    <ProjectName>NativeBreadth</ProjectName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Module Include="Breadth.bas"/>
+    <NativeExport Include="StringSuite"><Module>Breadth</Module><Procedure>StringSuite</Procedure></NativeExport>
+    <NativeExport Include="VariantSuite"><Module>Breadth</Module><Procedure>VariantSuite</Procedure></NativeExport>
+    <NativeExport Include="LibrarySuite"><Module>Breadth</Module><Procedure>LibrarySuite</Procedure></NativeExport>
+    <NativeExport Include="ArraySuite"><Module>Breadth</Module><Procedure>ArraySuite</Procedure></NativeExport>
+    <NativeExport Include="ErrorSuite"><Module>Breadth</Module><Procedure>ErrorSuite</Procedure></NativeExport>
+    <NativeExport Include="ResumeSuite"><Module>Breadth</Module><Procedure>ResumeSuite</Procedure></NativeExport>
+    <NativeExport Include="NestedErrorSuite"><Module>Breadth</Module><Procedure>NestedErrorSuite</Procedure></NativeExport>
+    <NativeExport Include="MixedSuite"><Module>Breadth</Module><Procedure>MixedSuite</Procedure></NativeExport>
+    <NativeExport Include="ArrayAllocationSuite"><Module>Breadth</Module><Procedure>ArrayAllocationSuite</Procedure></NativeExport>
+    <NativeExport Include="EraseSuite"><Module>Breadth</Module><Procedure>EraseSuite</Procedure></NativeExport>
+    <NativeExport Include="ErrorBoundsSuite"><Module>Breadth</Module><Procedure>ErrorBoundsSuite</Procedure></NativeExport>
+    <NativeExport Include="ActivationSuite"><Module>Breadth</Module><Procedure>ActivationSuite</Procedure></NativeExport>
+    <NativeExport Include="ForeignObjectSuite"><Module>Breadth</Module><Procedure>ForeignObjectSuite</Procedure></NativeExport>
+  </ItemGroup>
+</Project>

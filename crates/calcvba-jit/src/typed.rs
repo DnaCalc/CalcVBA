@@ -243,6 +243,7 @@ pub(crate) fn compile_resumable_entries(
                     slots: PhysicalSlots::Frame(frame),
                     runtime,
                     call_conv: module.target_config().default_call_conv,
+                    fault_target: std::cell::Cell::new(None),
                 };
                 b.switch_to_block(dispatch);
                 let current = b.ins().load(
@@ -494,6 +495,7 @@ pub(crate) fn compile_scalar_entries(
                     slots: PhysicalSlots::Stack(slots),
                     runtime,
                     call_conv: module.target_config().default_call_conv,
+                    fault_target: std::cell::Cell::new(None),
                 };
                 for (index, iid) in layout.parameter_iids.iter().enumerate() {
                     if let Some(iid) = iid {
@@ -562,6 +564,7 @@ pub(crate) struct ScalarLower<'a> {
     pub(crate) slots: PhysicalSlots,
     pub(crate) runtime: Value,
     pub(crate) call_conv: cranelift_codegen::isa::CallConv,
+    pub(crate) fault_target: std::cell::Cell<Option<ir::Block>>,
 }
 #[derive(Clone, Copy)]
 pub(crate) enum PhysicalSlots {
@@ -572,6 +575,23 @@ pub(crate) enum PhysicalSlots {
     Native(ir::StackSlot),
 }
 impl ScalarLower<'_> {
+    pub(crate) fn return_status(&self, b: &mut FunctionBuilder<'_>, status: Value) {
+        if let Some(target) = self.fault_target.get() {
+            b.ins().jump(target, &[status.into()]);
+        } else {
+            b.ins().return_(&[status]);
+        }
+    }
+    pub(crate) fn check_status(&self, b: &mut FunctionBuilder<'_>, status: Value) {
+        let failed = b.ins().icmp_imm(ir::condcodes::IntCC::NotEqual, status, 0);
+        let fail = b.create_block();
+        let next = b.create_block();
+        b.ins().brif(failed, fail, &[], next, &[]);
+        b.switch_to_block(fail);
+        self.return_status(b, status);
+        b.switch_to_block(next);
+    }
+
     fn load_slot(&self, b: &mut FunctionBuilder<'_>, index: usize, ty: ScalarType) -> Value {
         match self.slots {
             PhysicalSlots::Native(pointers) => {
@@ -666,7 +686,7 @@ impl ScalarLower<'_> {
         let next = b.create_block();
         b.ins().brif(failed, fail, &[], next, &[]);
         b.switch_to_block(fail);
-        b.ins().return_(&[status]);
+        self.return_status(b, status);
         b.switch_to_block(next);
     }
     pub(crate) fn store_slot(
@@ -738,7 +758,7 @@ impl ScalarLower<'_> {
         b.ins().brif(condition, fail, &[], next, &[]);
         b.switch_to_block(fail);
         let status = b.ins().iconst(types::I32, i64::from(number));
-        b.ins().return_(&[status]);
+        self.return_status(b, status);
         b.switch_to_block(next);
     }
     pub(crate) fn operand(
@@ -937,7 +957,7 @@ impl ScalarLower<'_> {
         let success = b.create_block();
         b.ins().brif(failed, fail, &[], success, &[]);
         b.switch_to_block(fail);
-        b.ins().return_(&[status]);
+        self.return_status(b, status);
         b.switch_to_block(success);
         let Some(dst) = dst else {
             if matches!(
@@ -1137,7 +1157,7 @@ impl ScalarLower<'_> {
                 let success = b.create_block();
                 b.ins().brif(failed, fail, &[], success, &[]);
                 b.switch_to_block(fail);
-                b.ins().return_(&[status]);
+                self.return_status(b, status);
                 b.switch_to_block(success);
                 let value = b.ins().stack_load(types::F64, result, 0);
                 self.finite(b, value);

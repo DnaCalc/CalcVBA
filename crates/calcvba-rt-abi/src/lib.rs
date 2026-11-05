@@ -32,7 +32,30 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 use std::slice;
 pub mod automatic_events;
+pub mod library;
 pub mod native_export;
+
+/// ObjPtr borrows the object's actual native Automation face when it has one.
+/// The source value and host binding retain its lifetime, as in VBA; no pointer
+/// registry ownership is added by observing an object's address.
+pub fn object_variant_pointer(host: &dyn HostServices, value: &Variant) -> Result<i64, String> {
+    #[cfg(target_os = "windows")]
+    if let Some(object) = value.as_object_ref()
+        && object.raw() != 0
+        && !object.is_project_instance()
+        && let Ok(pointer) = host.com().retain_native_dispatch_object(object)
+    {
+        let address = pointer as usize as i64;
+        // SAFETY: the adapter returned one owned dispatch reference. Release
+        // that extra reference; the original value/binding still owns the object.
+        unsafe {
+            calcvba_com::release_dispatch(pointer.cast());
+        }
+        return Ok(address);
+    }
+    let _ = host;
+    calcvba_runtime::pointer_helpers::register_object_variant_pointer(value)
+}
 
 /// Project-instance ids start above class route keys, matching vm3/vm2 allocation.
 pub const INSTANCE_ID_BASE: i32 = 0x1000_0000;
@@ -125,6 +148,15 @@ pub struct ErrState {
     pub help_file: String,
     pub help_context: i32,
     pub inherit_fields: bool,
+}
+
+/// Explicit Err.Raise fields; None preserves omission independently of empty text.
+#[derive(Default)]
+pub struct RaiseFields {
+    pub source: Option<String>,
+    pub description: Option<String>,
+    pub help_file: Option<String>,
+    pub help_context: Option<i32>,
 }
 
 /// Error-policy cells saved at an activation boundary.
@@ -3100,36 +3132,11 @@ pub unsafe extern "C" fn rt_raise_error_number(
                 }
             }
         };
-        let inherit = inherit_fields != 0 && exec.err_engine.err.inherit_fields;
-        let (message, source, help_file, help_context) = if inherit {
-            (
-                exec.err_engine.err.description.clone(),
-                Some(exec.err_engine.err.source.clone()),
-                Some(exec.err_engine.err.help_file.clone()),
-                Some(exec.err_engine.err.help_context),
-            )
-        } else {
-            (
-                default_error_message(number),
-                Some(default_source.to_owned()),
-                None,
-                None,
-            )
-        };
-        // SAFETY: the exported helper contract guarantees that non-null `state`
-        // is the live, uniquely borrowed execution state.
-        unsafe {
-            seat_fault(
-                state,
-                Fault {
-                    code: number,
-                    message,
-                    source,
-                    help_file,
-                    help_context,
-                },
-            )
-        }
+        let fault =
+            exec.err_engine
+                .explicit_fault(number, RaiseFields::default(), inherit_fields != 0);
+        exec.err_engine.raise(fault, default_source);
+        ST_FAULT
     })
 }
 
@@ -3341,6 +3348,33 @@ impl ErrEngine {
             ErrorHandler::ResumeNext => self.error_mode = ErrorMode::ResumeNext,
             ErrorHandler::Goto0 => self.error_mode = ErrorMode::None,
             ErrorHandler::GotoLabel(block) => self.error_mode = ErrorMode::Goto(*block),
+        }
+    }
+
+    /// Apply Err.Raise argument validation and omission rules before seating a fault.
+    pub fn explicit_fault(&self, number: i32, fields: RaiseFields, inherit: bool) -> Fault {
+        if number == 0 || number > 65535 {
+            return Fault::new(5, default_error_message(5));
+        }
+        let inherit = inherit && self.err.inherit_fields;
+        Fault {
+            code: number,
+            message: fields.description.unwrap_or_else(|| {
+                if inherit {
+                    self.err.description.clone()
+                } else {
+                    default_error_message(number)
+                }
+            }),
+            source: fields
+                .source
+                .or_else(|| inherit.then(|| self.err.source.clone())),
+            help_file: fields
+                .help_file
+                .or_else(|| inherit.then(|| self.err.help_file.clone())),
+            help_context: fields
+                .help_context
+                .or_else(|| inherit.then_some(self.err.help_context)),
         }
     }
 

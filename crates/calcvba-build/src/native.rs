@@ -25,6 +25,111 @@ fn native_error(message: impl ToString) -> BuildError {
     BuildError::NativeExport(message.to_string())
 }
 
+struct NativeBodyImports {
+    library_helpers:
+        std::collections::HashMap<calcvba_bundle::NativeImplId, cranelift_module::FuncId>,
+    long_from_f64: cranelift_module::FuncId,
+    value_helpers: std::collections::HashMap<&'static str, cranelift_module::FuncId>,
+    foreign_states:
+        std::collections::HashMap<calcvba_jit::native::NativeCallSite, cranelift_module::DataId>,
+}
+
+fn native_body_imports(
+    module: &mut calcvba_aot::PeModule,
+    program: &calcvba_oxir::OxProgram,
+) -> Result<NativeBodyImports, BuildError> {
+    let ptr = module.target_config().pointer_type();
+    let mut math_signature = module.make_signature();
+    math_signature.params = vec![
+        AbiParam::new(ptr),
+        AbiParam::new(types::F64),
+        AbiParam::new(ptr),
+    ];
+    math_signature.returns.push(AbiParam::new(types::I32));
+    let long_from_f64 = module
+        .declare_helper("cvb_long_from_f64", 1, &math_signature)
+        .map_err(native_error)?;
+    let mut library_helpers = std::collections::HashMap::new();
+    for (native, name) in [
+        (calcvba_bundle::NativeImplId::Abs, "cvb_abs_f64"),
+        (calcvba_bundle::NativeImplId::Sqr, "cvb_sqr_f64"),
+    ] {
+        library_helpers.insert(
+            native,
+            module
+                .declare_helper(name, 1, &math_signature)
+                .map_err(native_error)?,
+        );
+    }
+    let mut value_helpers = std::collections::HashMap::new();
+    for (name, params) in calcvba_jit::native::value_helper_signatures() {
+        let mut signature = module.make_signature();
+        signature.params = params.iter().copied().map(AbiParam::new).collect();
+        signature.returns.push(AbiParam::new(types::I32));
+        value_helpers.insert(
+            *name,
+            module
+                .declare_helper(
+                    name,
+                    calcvba_jit::native::value_helper_version(name),
+                    &signature,
+                )
+                .map_err(native_error)?,
+        );
+    }
+    let mut foreign_states = std::collections::HashMap::new();
+    for (procedure, function) in program.funcs.iter().enumerate() {
+        for block in &function.blocks {
+            for (index, instruction) in block.instrs.iter().enumerate() {
+                if !matches!(
+                    instruction,
+                    calcvba_oxir::OxInst::CallNative {
+                        callee: calcvba_oxir::OxNativeCallee::Declare { .. },
+                        ..
+                    }
+                ) {
+                    continue;
+                }
+                let id = module
+                    .declare_anonymous_data(true, false)
+                    .map_err(native_error)?;
+                let mut data = cranelift_module::DataDescription::new();
+                data.define(vec![0; 16].into_boxed_slice());
+                data.set_align(8);
+                module.define_data(id, &data).map_err(native_error)?;
+                foreign_states.insert((procedure, block.id.0, index), id);
+            }
+        }
+    }
+    Ok(NativeBodyImports {
+        library_helpers,
+        long_from_f64,
+        value_helpers,
+        foreign_states,
+    })
+}
+
+/// Compile procedure bodies without publishing a DLL. The conformance census
+/// uses exactly the same compiler and runtime imports as NativeLibrary builds.
+pub fn check_native_program(
+    program: &calcvba_oxir::OxProgram,
+    roots: &[calcvba_oxir::FuncId],
+) -> Result<(), BuildError> {
+    let mut module = calcvba_aot::PeModule::new().map_err(native_error)?;
+    let imports = native_body_imports(&mut module, program)?;
+    calcvba_jit::native::compile_native_scalars(
+        &mut module,
+        program,
+        roots,
+        &imports.library_helpers,
+        imports.long_from_f64,
+        &imports.value_helpers,
+        &imports.foreign_states,
+    )
+    .map_err(native_error)?;
+    Ok(())
+}
+
 /// Compile and patch entirely in this process. There is deliberately no cargo,
 /// linker invocation, runtime compiler or interpreter in the resulting DLL.
 pub fn build_native_library(
@@ -124,64 +229,12 @@ pub fn build_native_library(
         .declare_helper("cvb_enter_scalar", 2, &enter_signature)
         .map_err(native_error)?;
     let ptr = module.target_config().pointer_type();
-    let mut math_signature = module.make_signature();
-    math_signature.params = vec![
-        AbiParam::new(ptr),
-        AbiParam::new(types::F64),
-        AbiParam::new(ptr),
-    ];
-    math_signature.returns.push(AbiParam::new(types::I32));
-    let long_from_f64 = module
-        .declare_helper("cvb_long_from_f64", 1, &math_signature)
-        .map_err(native_error)?;
-    let mut library_helpers = std::collections::HashMap::new();
-    for (native, name) in [
-        (calcvba_bundle::NativeImplId::Abs, "cvb_abs_f64"),
-        (calcvba_bundle::NativeImplId::Sqr, "cvb_sqr_f64"),
-    ] {
-        library_helpers.insert(
-            native,
-            module
-                .declare_helper(name, 1, &math_signature)
-                .map_err(native_error)?,
-        );
-    }
-    let mut value_helpers = std::collections::HashMap::new();
-    for (name, params) in calcvba_jit::native::value_helper_signatures() {
-        let mut signature = module.make_signature();
-        signature.params = params.iter().copied().map(AbiParam::new).collect();
-        signature.returns.push(AbiParam::new(types::I32));
-        value_helpers.insert(
-            *name,
-            module
-                .declare_helper(name, 1, &signature)
-                .map_err(native_error)?,
-        );
-    }
-    let mut foreign_states = std::collections::HashMap::new();
-    for (procedure, function) in program.funcs.iter().enumerate() {
-        for block in &function.blocks {
-            for (index, instruction) in block.instrs.iter().enumerate() {
-                if !matches!(
-                    instruction,
-                    calcvba_oxir::OxInst::CallNative {
-                        callee: calcvba_oxir::OxNativeCallee::Declare { .. },
-                        ..
-                    }
-                ) {
-                    continue;
-                }
-                let id = module
-                    .declare_anonymous_data(true, false)
-                    .map_err(native_error)?;
-                let mut data = cranelift_module::DataDescription::new();
-                data.define(vec![0; 16].into_boxed_slice());
-                data.set_align(8);
-                module.define_data(id, &data).map_err(native_error)?;
-                foreign_states.insert((procedure, block.id.0, index), id);
-            }
-        }
-    }
+    let NativeBodyImports {
+        library_helpers,
+        long_from_f64,
+        value_helpers,
+        foreign_states,
+    } = native_body_imports(&mut module, program)?;
     let plans = calcvba_jit::native::compile_native_scalars(
         &mut module,
         program,
@@ -199,6 +252,17 @@ pub fn build_native_library(
                     .split(|c: char| !c.is_alphanumeric() && c != '_')
                     .filter(|w| !w.is_empty())
                     .collect();
+                for triple in words.windows(3) {
+                    if triple[0].eq_ignore_ascii_case("Property")
+                        && message.contains(&format!("procedure {}:", triple[2]))
+                    {
+                        return native_error(format!(
+                            "{}:{}:1: {message}",
+                            source.module_name,
+                            index + 1
+                        ));
+                    }
+                }
                 for pair in words.windows(2) {
                     if (pair[0].eq_ignore_ascii_case("Function")
                         || pair[0].eq_ignore_ascii_case("Sub"))
@@ -213,7 +277,13 @@ pub fn build_native_library(
                 }
             }
         }
-        native_error(message)
+        let origin = loaded
+            .manifest
+            .modules
+            .first()
+            .map(|source| source.module_name.as_str())
+            .unwrap_or("project");
+        native_error(format!("{origin}:1:1: {message}"))
     })?;
     let state = module
         .declare_anonymous_data(true, false)

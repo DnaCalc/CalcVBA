@@ -1467,6 +1467,17 @@ impl<'a> LowerFunc<'a> {
                     }
                     let lhs_float_lane = self.compare_float_lane(lhs)?;
                     let rhs_float_lane = self.compare_float_lane(rhs)?;
+                    if lhs_float_lane != rhs_float_lane
+                        && (lhs_float_lane.is_some() || rhs_float_lane.is_some())
+                    {
+                        return self.emit_variant_compare_slot_call(
+                            builder,
+                            module,
+                            *dst,
+                            (*op, *mode, *coercion),
+                            BinaryVariantOperands { lhs, rhs },
+                        );
+                    }
                     let lhs_lane = self.compare_i64_lane(lhs)?;
                     let rhs_lane = self.compare_i64_lane(rhs)?;
                     let cmp = if lhs_float_lane.is_some() || rhs_float_lane.is_some() {
@@ -2470,37 +2481,14 @@ impl<'a> LowerFunc<'a> {
         Ok(builder.ins().stack_addr(ptr_ty, slot, 0))
     }
 
-    fn lower_extern_arg(
-        &self,
-        builder: &mut FunctionBuilder<'_>,
-        arg: &OxArg,
-    ) -> Result<LoweredVariantOperand, JitError> {
-        let zero_i32 = builder.ins().iconst(types::I32, 0);
-        let zero_i64 = builder.ins().iconst(types::I64, 0);
-        match arg {
-            OxArg::ByVal(arg) => self.lower_variant_operand(builder, arg),
-            OxArg::ByRef(place) => self.lower_variant_operand(builder, &OxOperand::Use(*place)),
-            OxArg::Omitted => Ok(LoweredVariantOperand {
-                kind: builder
-                    .ins()
-                    .iconst(types::I32, i64::from(JIT_VARIANT_OPERAND_EMPTY)),
-                value: zero_i64,
-                area: zero_i32,
-                index: zero_i32,
-            }),
-        }
-    }
-
     fn lower_extern_args(
         &self,
         builder: &mut FunctionBuilder<'_>,
         args: &[OxArg],
     ) -> Result<Vec<LoweredVariantOperand>, JitError> {
-        let mut lowered = Vec::with_capacity(args.len());
-        for arg in args {
-            lowered.push(self.lower_extern_arg(builder, arg)?);
-        }
-        Ok(lowered)
+        crate::library::lower_arguments(builder, args, |builder, operand| {
+            self.lower_variant_operand(builder, operand)
+        })
     }
 
     fn lower_call_native_arg(
@@ -6890,6 +6878,11 @@ impl<'a> LowerFunc<'a> {
         args: &[calcvba_oxir::OxArg],
         native_impl: NativeImplId,
     ) -> Result<(), JitError> {
+        // Format's value, format string and calendar options all use the
+        // ordinary Variant library ABI; the binder has checked their names.
+        if native_impl == NativeImplId::Format && (1..=4).contains(&args.len()) {
+            return Ok(());
+        }
         if let Some(shape) = scalar_optional_fixed_call_extern_shape(native_impl)
             && args.len() > 1
         {
@@ -6987,6 +6980,18 @@ impl<'a> LowerFunc<'a> {
         args: &[OxCallArg],
         native_impl: NativeImplId,
     ) -> Result<(), JitError> {
+        // Bound library builtins use this same runtime entry regardless of
+        // whether their source spelling produced CallExtern or CallNative.
+        if !matches!(
+            native_impl,
+            NativeImplId::Like
+                | NativeImplId::MidStmt
+                | NativeImplId::CreateObject
+                | NativeImplId::GetObject
+                | NativeImplId::DebugPrint
+        ) {
+            return Ok(());
+        }
         let shape = match native_impl {
             NativeImplId::Like => "Like(Variant, Variant, compare-const)",
             NativeImplId::MidStmt => "MidStmt(target, start[, count], value)",
@@ -9296,45 +9301,13 @@ pub(crate) fn resolve_vba_library_import(
     program: &OxProgram,
     import: calcvba_oxir::ImportId,
 ) -> Result<(u32, NativeImplId, bool), JitError> {
-    let imp = program
-        .imports
-        .get(import.0)
-        .ok_or_else(|| JitError::Compile(format!("CallExtern import {} out of range", import.0)))?;
-    if !imp.unit.eq_ignore_ascii_case("VBA") {
-        return Err(JitError::unsupported(format!(
-            "JIT CallExtern could not resolve non-VBA import unit '{}'",
-            imp.unit
-        )));
-    }
-    let lib = vba_library_bundle();
-    let export = lib
-        .exports
-        .iter()
-        .find(|export| export.token.matches(&imp.token))
-        .ok_or_else(|| {
-            JitError::unsupported(format!(
-                "M4-4 CallExtern could not resolve VBA library import {}",
-                import.0
-            ))
-        })?;
-    let ExportTarget::Proc(proc) = export.target else {
-        return Err(JitError::unsupported(
-            "M4-4 CallExtern lowers only VBA library procedure imports",
-        ));
-    };
-    let Some(NativeBody::Library(id)) = lib.procedures.get(proc).and_then(|proc| proc.native)
-    else {
-        return Err(JitError::unsupported(
-            "M4-4 CallExtern lowers only NativeBody::Library VBA imports",
-        ));
-    };
-    let string_typed_alias = matches!(
-        &imp.token,
-        calcvba_bundle::ExportToken::ModuleFunc { member, .. }
-            if id.is_string_typed_library_alias(member)
-    );
-    let native_index = native_impl_index(id)?;
-    Ok((native_index, id, string_typed_alias))
+    let resolved =
+        calcvba_rt_abi::library::resolve_import(program, import).map_err(JitError::unsupported)?;
+    Ok((
+        resolved.index,
+        resolved.implementation,
+        resolved.string_typed_alias,
+    ))
 }
 
 pub(crate) fn resolve_cross_project_proc_import(

@@ -1,7 +1,6 @@
 //! Retained native error text, including dynamic Err.Raise arguments.
 use calcvba_rt_abi::native_export::Context;
 use calcvba_runtime::bstr::BStr;
-use std::ffi::c_void;
 
 pub(super) struct ErrorText {
     pub source: BStr,
@@ -70,12 +69,9 @@ pub unsafe extern "C" fn cvb_raise_dynamic(
                 help_file: text(help_file, help_file_kind, flags & 4 != 0)?,
                 help_context: number_context,
             };
-            let text = Box::into_raw(Box::new(text)).cast::<c_void>();
-            clear(context);
-            (*context).error_owner = text;
-            (*context).error_number = if number == 0 { 5 } else { number };
-            (*context).custom_error = flags | 0x100;
-            Ok::<_, i32>((*context).error_number)
+            Ok::<_, i32>(super::services::raise_explicit(
+                context, number, &text, flags,
+            ))
         }
     });
     // SAFETY: all temporary conversions are gone before restoring LastDllError.

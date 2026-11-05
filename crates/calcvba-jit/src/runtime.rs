@@ -668,6 +668,7 @@ pub(crate) unsafe extern "C" fn jit_proc_invoke(
 }
 
 pub(crate) struct JitForEachState {
+    pub(crate) array_source: Option<SlotAlias>,
     pub(crate) elements: Vec<Variant>,
     pub(crate) position: usize,
 }
@@ -1939,4 +1940,14 @@ pub(crate) fn call_return_variant(ty: &OxTy, value: &Variant) -> Option<Variant>
         OxTy::ProcRef => value.as_proc_ref().map(Variant::from_proc_ref),
         _ => None,
     }
+}
+
+pub(crate) fn array_is_iterating(run: &JitRun, area: u32, index: u32) -> bool {
+    let source =
+        current_frame_slot(run, area, index).and_then(|alias| resolve_slot_alias(run, alias));
+    source.is_some()
+        && run
+            .for_each
+            .values()
+            .any(|iterator| iterator.array_source == source)
 }

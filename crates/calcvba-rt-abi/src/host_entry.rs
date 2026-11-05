@@ -443,73 +443,81 @@ impl ScalarLayout {
         func: &OxFunc,
         program: &calcvba_oxir::OxProgram,
     ) -> Result<Self, String> {
-        use calcvba_bundle::{ExportToken, NativeImplId, ProjectMemberKind};
+        use calcvba_bundle::NativeImplId;
+        let numeric_operand = |operand: &OxOperand| {
+            let ty = match operand {
+                OxOperand::Use(OxPlace::Local(id)) => native_scalar_type(&func.locals[id.0].ty),
+                OxOperand::Use(OxPlace::Temp(id)) => native_scalar_type(&func.temps[id.0]),
+                OxOperand::Use(OxPlace::Global(id)) => {
+                    native_scalar_type(&program.globals[id.0].ty)
+                }
+                OxOperand::Const(
+                    OxConst::Bool(_)
+                    | OxConst::I16(_)
+                    | OxConst::I32(_)
+                    | OxConst::I64(_)
+                    | OxConst::F32(_)
+                    | OxConst::F64(_),
+                ) => Some(ScalarType::Double),
+                _ => None,
+            };
+            ty.is_some_and(|ty| {
+                extended_numeric(ty)
+                    || matches!(
+                        ty,
+                        ScalarType::Long | ScalarType::Double | ScalarType::Boolean
+                    )
+            })
+        };
         let mut external = std::collections::HashMap::new();
-        for inst in func.blocks.iter().flat_map(|b| &b.instrs) {
-            if let OxInst::CallExtern { import, .. } = inst {
-                let request = program
-                    .imports
-                    .get(import.0)
-                    .ok_or("invalid native builtin import")?;
-                let native = [
-                    NativeImplId::CByte,
-                    NativeImplId::CInt,
-                    NativeImplId::CLngLng,
-                    NativeImplId::CLngPtr,
-                    NativeImplId::CSng,
-                    NativeImplId::CCur,
-                    NativeImplId::CDate,
-                    NativeImplId::Abs,
-                    NativeImplId::Sqr,
-                    NativeImplId::CLng,
-                    NativeImplId::CDbl,
-                    NativeImplId::CBool,
-                    NativeImplId::CStr,
-                    NativeImplId::Len,
-                    NativeImplId::VarType,
-                ]
-                .into_iter()
-                .find(|id| {
-                    id.library_member().is_some_and(|(module, member)| {
-                        request.unit.eq_ignore_ascii_case("VBA")
-                            && request.token.matches(&ExportToken::ModuleFunc {
-                                module: module.into(),
-                                member: member.into(),
-                                kind: ProjectMemberKind::Method,
-                            })
-                    })
-                });
-                if let Some(native) = native {
-                    let (parameter, result) = match native {
-                        NativeImplId::CByte => (ScalarType::Variant, ScalarType::Byte),
-                        NativeImplId::CInt => (ScalarType::Variant, ScalarType::Integer),
-                        NativeImplId::CLngLng | NativeImplId::CLngPtr => {
-                            (ScalarType::Variant, ScalarType::LongLong)
-                        }
-                        NativeImplId::CSng => (ScalarType::Variant, ScalarType::Single),
-                        NativeImplId::CCur => (ScalarType::Variant, ScalarType::Currency),
-                        NativeImplId::CDate => (ScalarType::Variant, ScalarType::Date),
-                        NativeImplId::CLng => (ScalarType::Variant, ScalarType::Long),
-                        NativeImplId::CDbl => (ScalarType::Variant, ScalarType::Double),
-                        NativeImplId::CBool => (ScalarType::Variant, ScalarType::Boolean),
-                        NativeImplId::CStr => (ScalarType::Variant, ScalarType::String),
-                        NativeImplId::Len => (ScalarType::String, ScalarType::Long),
-                        NativeImplId::VarType => (ScalarType::Variant, ScalarType::Long),
-                        _ => (ScalarType::Double, ScalarType::Double),
-                    };
-                    external.insert(
-                        *import,
-                        LinkedCall {
-                            target: LinkedTarget::Builtin(native),
-                            signature: CallSignature {
-                                parameters: vec![parameter],
-                                by_ref: vec![false],
-                                optional: vec![false],
-                                result: Some(result),
+        for inst in func.blocks.iter().flat_map(|block| &block.instrs) {
+            if let OxInst::CallExtern { dst, import, args } = inst {
+                let native = crate::library::resolve_import(program, *import)?.implementation;
+                let result = match dst {
+                    Some(OxPlace::Local(id)) => native_scalar_type(&func.locals[id.0].ty),
+                    Some(OxPlace::Temp(id)) => native_scalar_type(&func.temps[id.0]),
+                    Some(OxPlace::Global(id)) => native_scalar_type(&program.globals[id.0].ty),
+                    None => None,
+                };
+                let numeric = match native {
+                    NativeImplId::Abs | NativeImplId::Sqr => Some(ScalarType::Double),
+                    NativeImplId::CByte => Some(ScalarType::Byte),
+                    NativeImplId::CInt => Some(ScalarType::Integer),
+                    NativeImplId::CLngLng | NativeImplId::CLngPtr => Some(ScalarType::LongLong),
+                    NativeImplId::CSng => Some(ScalarType::Single),
+                    NativeImplId::CCur => Some(ScalarType::Currency),
+                    NativeImplId::CDate => Some(ScalarType::Date),
+                    NativeImplId::CLng => Some(ScalarType::Long),
+                    NativeImplId::CDbl => Some(ScalarType::Double),
+                    NativeImplId::CBool => Some(ScalarType::Boolean),
+                    _ => None,
+                };
+                let math = matches!(native, NativeImplId::Abs | NativeImplId::Sqr)
+                    && matches!(result, None | Some(ScalarType::Double))
+                    && matches!(args.as_slice(), [calcvba_oxir::OxArg::ByVal(operand)] if numeric_operand(operand));
+                external.insert(
+                    *import,
+                    LinkedCall {
+                        target: LinkedTarget::Builtin(native),
+                        signature: CallSignature {
+                            parameters: vec![
+                                if math {
+                                    ScalarType::Double
+                                } else {
+                                    ScalarType::Variant
+                                };
+                                args.len()
+                            ],
+                            by_ref: vec![!math; args.len()],
+                            optional: vec![true; args.len()],
+                            result: if matches!(native, NativeImplId::Abs | NativeImplId::Sqr) {
+                                result.or(numeric)
+                            } else {
+                                numeric.or(result)
                             },
                         },
-                    );
-                }
+                    },
+                );
             }
         }
         Self::with_storage(
@@ -1601,6 +1609,85 @@ impl ScalarLayout {
         }
     }
     fn check(&self, inst: &OxInst) -> Result<(), String> {
+        if self.native_numbers {
+            match inst {
+                OxInst::ArrayErase { array, .. } => {
+                    self.slot(*array)?;
+                    return Ok(());
+                }
+                OxInst::ErrFieldSet { src, .. } => {
+                    self.operand_type(src)?;
+                    return Ok(());
+                }
+
+                OxInst::ArrayLiteral {
+                    dst,
+                    values,
+                    aliases,
+                    ..
+                } => {
+                    self.slot(*dst)?;
+                    if aliases.iter().any(Option::is_some) {
+                        return Err("native ArrayLiteral ByRef aliases are not admitted".into());
+                    }
+                    for value in values {
+                        self.operand_type(value)?;
+                    }
+                    return Ok(());
+                }
+                OxInst::ForEachInit { iter, source } => {
+                    self.slot(*iter)?;
+                    self.operand_type(source)?;
+                    return Ok(());
+                }
+                OxInst::ForEachNext {
+                    iter,
+                    item,
+                    has_value,
+                } => {
+                    self.slot(*iter)?;
+                    self.slot(*item)?;
+                    self.slot(*has_value)?;
+                    return Ok(());
+                }
+                OxInst::Arith { dst, lhs, rhs, .. } if value::needs_helper(inst, self) => {
+                    self.slot(*dst)?;
+                    self.operand_type(lhs)?;
+                    self.operand_type(rhs)?;
+                    return Ok(());
+                }
+                OxInst::CallNative {
+                    dst,
+                    callee: calcvba_oxir::OxNativeCallee::Builtin(_),
+                    args,
+                } => {
+                    if let Some(dst) = dst {
+                        self.slot(*dst)?;
+                    }
+                    for argument in args {
+                        match argument {
+                            calcvba_oxir::OxCallArg::Operand(operand) => {
+                                self.operand_type(operand)?;
+                            }
+                            calcvba_oxir::OxCallArg::ByRef(place) => {
+                                self.slot(*place)?;
+                            }
+                            calcvba_oxir::OxCallArg::Const(_)
+                            | calcvba_oxir::OxCallArg::Omitted => {}
+                            _ => return Err("native library named argument is not admitted".into()),
+                        }
+                    }
+                    return Ok(());
+                }
+                OxInst::Pow { dst, lhs, rhs } => {
+                    self.slot(*dst)?;
+                    self.operand_type(lhs)?;
+                    self.operand_type(rhs)?;
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
         if self.native_numbers
             && let OxInst::Logical { dst, lhs, rhs, .. } = inst
         {

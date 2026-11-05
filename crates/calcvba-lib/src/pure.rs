@@ -102,25 +102,6 @@ fn string_bytes(value: &Variant) -> LibResult<Vec<u8>> {
     }
 }
 
-/// Case-fold UTF-16 code units the same way [`norm_compare`] folds a `String` — ASCII A–Z
-/// only — but at the code-unit level so surrogate halves survive. Binary mode is verbatim.
-fn norm_compare_units(units: Vec<u16>, text: bool) -> Vec<u16> {
-    if text {
-        units
-            .into_iter()
-            .map(|u| {
-                if (0x41..=0x5A).contains(&u) {
-                    u + 0x20
-                } else {
-                    u
-                }
-            })
-            .collect()
-    } else {
-        units
-    }
-}
-
 pub fn left(args: &[Variant]) -> LibResult<Variant> {
     let units = string_units(need(args, 0)?)?;
     let n = as_usize(need(args, 1)?)?;
@@ -489,13 +470,15 @@ pub fn trim(args: &[Variant], left: bool, right: bool) -> LibResult<Variant> {
 /// `StrComp(s1, s2, [compare])` — optional trailing compare mode (0=binary, 1=text).
 pub fn str_comp(args: &[Variant]) -> LibResult<Variant> {
     let text = text_compare(args, 2)?;
-    let a = norm_compare_units(compare_units(need(args, 0)?)?, text);
-    let b = norm_compare_units(compare_units(need(args, 1)?)?, text);
-    Ok(vi32(match a.cmp(&b) {
-        std::cmp::Ordering::Less => -1,
-        std::cmp::Ordering::Equal => 0,
-        std::cmp::Ordering::Greater => 1,
-    }))
+    let a = compare_units(need(args, 0)?)?;
+    let b = compare_units(need(args, 1)?)?;
+    Ok(vi32(
+        match calcvba_runtime::string_compare::compare_utf16(&a, &b, text) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
+        },
+    ))
 }
 
 /// `Like` — supports `?`, `*`, `#`, `[charlist]` (with `!` negation and `a-z`

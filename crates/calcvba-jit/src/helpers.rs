@@ -2654,6 +2654,10 @@ pub(crate) unsafe extern "C" fn rt_jit_store_variant(
         };
         // SAFETY: the callback-capable lookup returned and no typed run borrow is live.
         let run = unsafe { &mut *run };
+        if array_is_iterating(run, dst_area, dst_index) {
+            // SAFETY: the checked entry retains the calling-thread execution state.
+            return unsafe { rt_raise_fixed_or_temporarily_locked_array(state) };
+        }
         let Some(slot) = slot_mut(run, dst_area, dst_index) else {
             return ST_FAULT;
         };
@@ -4396,19 +4400,16 @@ pub(crate) unsafe extern "C" fn raise_values(
             },
             None => inherit.then_some(exec.err_engine.err.help_context),
         };
-        let fault = Fault {
+        let fault = exec.err_engine.explicit_fault(
             code,
-            message: text(2).unwrap_or_else(|| {
-                if inherit {
-                    exec.err_engine.err.description.clone()
-                } else {
-                    calcvba_rt_abi::default_error_message(code)
-                }
-            }),
-            source: text(1).or_else(|| inherit.then(|| exec.err_engine.err.source.clone())),
-            help_file: text(3).or_else(|| inherit.then(|| exec.err_engine.err.help_file.clone())),
-            help_context,
-        };
+            calcvba_rt_abi::RaiseFields {
+                description: text(2),
+                source: text(1),
+                help_file: text(3),
+                help_context,
+            },
+            inherit,
+        );
         exec.err_engine.raise(fault, current_unit_source(run));
         ST_FAULT
     })
@@ -4855,7 +4856,15 @@ pub(crate) unsafe extern "C" fn rt_jit_pointer_to_slot(
             1 => p::register_variant_pointer(&value),
             2 => p::register_string_variant_pointer(&value),
             3 => p::register_variant_var_variant_pointer(&value),
-            4 => p::register_object_variant_pointer(&value),
+            4 => {
+                // SAFETY: the active compiled entry retains this state. Copy its
+                // host reference before any COM call; no mutable state borrow survives it.
+                let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
+                    return ST_FAULT;
+                };
+                let host = exec.host;
+                calcvba_rt_abi::object_variant_pointer(host, &value)
+            }
             _ => return ST_FAULT,
         };
         let pointer = match pointer {
@@ -6176,6 +6185,10 @@ pub(crate) unsafe extern "C" fn rt_jit_array_redim_to_slot(
             // SAFETY: null was rejected; this is a read-only guard before building the
             // replacement value or taking a mutable slot reference.
             let run_ref = unsafe { &*run };
+            if array_is_iterating(run_ref, dst_area, dst_index) {
+                // SAFETY: the checked entry retains the calling-thread execution state.
+                return unsafe { rt_raise_fixed_or_temporarily_locked_array(state) };
+            }
             let Some(current) = slot_ref(run_ref, dst_area, dst_index) else {
                 return ST_FAULT;
             };
@@ -6306,6 +6319,13 @@ pub(crate) unsafe extern "C" fn rt_jit_array_erase_variant_slot(
         };
         let was_array = current.vtype() == VarType::ArrayVariant;
         let erased_element_vartype = current.array_element_vartype().unwrap_or(VT_VARIANT_VALUE);
+        let fixed = current
+            .as_safearray()
+            .is_some_and(|array| array.is_fixed_size());
+        if array_is_iterating(run_ref, array_area, array_index) {
+            // SAFETY: the checked entry retains the calling-thread execution state.
+            return unsafe { rt_raise_fixed_or_temporarily_locked_array(state) };
+        }
         let replacement = match current.as_safearray().filter(|array| array.is_fixed_size()) {
             Some(array) => {
                 let bounds = array.bounds().unwrap_or_default();
@@ -6357,7 +6377,19 @@ pub(crate) unsafe extern "C" fn rt_jit_array_erase_variant_slot(
         let Some(slot) = slot_mut(run, array_area, array_index) else {
             return ST_FAULT;
         };
-        *slot = replacement;
+        if fixed {
+            let array = replacement.as_safearray().expect("fixed reset array");
+            for index in 0..array.len() {
+                let Ok(value) = array.variant_element(index) else {
+                    return ST_FAULT;
+                };
+                if slot.set_safearray_element(index, &value).is_err() {
+                    return ST_FAULT;
+                }
+            }
+        } else {
+            *slot = replacement;
+        }
         ST_OK
     })
 }
@@ -6771,6 +6803,13 @@ pub(crate) unsafe extern "C" fn rt_jit_for_each_init_variant_array(
         let source = unsafe { *source };
         // SAFETY: null was rejected and the source is cloned before mutating iterator state.
         let run_ref = unsafe { &*run };
+        let array_source =
+            if source.kind == JIT_VARIANT_OPERAND_PLACE && source.area as u32 != AREA_TEMP {
+                current_frame_slot(run_ref, source.area as u32, source.index as u32)
+                    .and_then(|alias| resolve_slot_alias(run_ref, alias))
+            } else {
+                None
+            };
         let Some(source) = variant_operand_value_from_compiled_desc!(run_ref, source) else {
             return ST_FAULT;
         };
@@ -6789,6 +6828,7 @@ pub(crate) unsafe extern "C" fn rt_jit_for_each_init_variant_array(
         run.for_each.insert(
             iter_alias,
             JitForEachState {
+                array_source,
                 elements,
                 position: 0,
             },
@@ -6817,13 +6857,29 @@ pub(crate) unsafe extern "C" fn rt_jit_for_each_next_variant_array(
         else {
             return ST_FAULT;
         };
-        let next = run.for_each.get_mut(&iter_alias).and_then(|state| {
-            let value = state.elements.get(state.position).cloned();
-            if value.is_some() {
-                state.position += 1;
+        let next = if let Some(state) = run.for_each.get(&iter_alias) {
+            if state.position >= state.elements.len() {
+                None
+            } else if let Some(source) = state.array_source {
+                match slot_alias_ref(run, source)
+                    .and_then(|array| array.safearray_element(state.position))
+                {
+                    Some(Ok(value)) => Some(value),
+                    Some(Err(_)) => return ST_FAULT,
+                    None => None,
+                }
+            } else {
+                state.elements.get(state.position).cloned()
             }
-            value
-        });
+        } else {
+            None
+        };
+        if next.is_some() {
+            run.for_each
+                .get_mut(&iter_alias)
+                .expect("active iterator")
+                .position += 1;
+        }
         match next {
             Some(value) => {
                 let Some(item_slot) = slot_mut(run, item_area, item_index) else {
@@ -6836,6 +6892,7 @@ pub(crate) unsafe extern "C" fn rt_jit_for_each_next_variant_array(
                 *has_slot = Variant::from_bool(true);
             }
             None => {
+                run.for_each.remove(&iter_alias);
                 let Some(has_slot) = slot_mut(run, has_area, has_index) else {
                     return ST_FAULT;
                 };

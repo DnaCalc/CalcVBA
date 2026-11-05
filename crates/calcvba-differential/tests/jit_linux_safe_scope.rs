@@ -190,9 +190,18 @@ End Sub
             continue;
         }
         let outcome = run(Executor::Jit, source);
+        // The scope matrix records the primary decline. Check the newer
+        // instruction context separately, without changing that matrix's data.
+        let unsupported = if label == "unsupported/native_declare" {
+            Some(outcome.unsupported.as_deref().expect("native declaration declines")
+                .strip_prefix("Main: CallNative { dst: Some(Temp(TempId(0))), callee: Declare { descriptor_id: 0, ptr_writebacks: [] }, args: [] }: ")
+                .expect("native decline retains the exact procedure and instruction context"))
+        } else {
+            outcome.unsupported.as_deref()
+        };
         rows.push(status(
             label,
-            outcome.unsupported.as_deref(),
+            unsupported,
             outcome.raised,
             outcome.result.is_ok(),
         ));

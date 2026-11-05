@@ -1894,12 +1894,15 @@ mod tests {
 
     use super::{
         ScalarPointerKind, free_pins, lookup_pointer, register_byte_buffer,
-        register_object_variant_pointer, register_string_variant_pointer, register_utf16_string,
-        register_variant_pointer, register_variant_var_variant_pointer,
+        register_object_variant_pointer, register_utf16_string, register_variant_pointer,
     };
     #[cfg(target_os = "windows")]
+    use super::{register_string_variant_pointer, register_variant_var_variant_pointer};
+    #[cfg(target_os = "windows")]
     use crate::live_counters::thread_live_handle_counts;
-    use crate::{Decimal96, ObjectRef, VarType, Variant, bstr::BStr};
+    #[cfg(target_os = "windows")]
+    use crate::{Decimal96, VarType};
+    use crate::{ObjectRef, Variant, bstr::BStr};
     #[cfg(target_os = "windows")]
     use windows_sys::{
         Win32::Foundation::{

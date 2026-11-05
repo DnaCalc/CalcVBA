@@ -60,13 +60,8 @@ impl TypedSlot {
             slots[i] = owner.borrow_slot().ok_or(13)?;
         }
         drop(crate::take_typed_fault(context, 0));
-        let value = match (self.callback)(context, &slots[..self.parameters.len()]) {
-            Ok(value) => {
-                drop(crate::take_typed_fault(context, 0));
-                value
-            }
-            Err(number) => return Err(number),
-        };
+        let value = (self.callback)(context, &slots[..self.parameters.len()])?;
+        drop(crate::take_typed_fault(context, 0));
         if value.ty().carrier() != self.result.carrier() {
             return Err(13);
         }

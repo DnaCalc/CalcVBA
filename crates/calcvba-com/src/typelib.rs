@@ -1,10 +1,14 @@
+#[cfg(any(target_os = "windows", test))]
+use calcvba_runtime::safe_array::SafeArray;
+#[cfg(target_os = "windows")]
+use calcvba_runtime::safe_array::VT_VARIANT_VALUE;
 use calcvba_runtime::{
     RUNTIME_CLASS_LIFECYCLE_NONE, RUNTIME_IDISPATCH_INTERFACE_IDENTITY, RuntimeClassDescriptor,
     RuntimeInterfaceDescriptor, RuntimeInterfaceId, RuntimeMemberDescriptor,
     RuntimeMemberInvokeKind, RuntimeParamDescriptor, RuntimeValueType,
-    safe_array::{SafeArray, VT_VARIANT_VALUE},
 };
 
+#[cfg(any(target_os = "windows", test))]
 const VT_RECORD_WIRE_VALUE: u16 = 36;
 const DISPID_NEWENUM: i32 = -4;
 
@@ -227,7 +231,9 @@ pub enum TypeLibWireType {
     },
 }
 
+#[cfg(any(target_os = "windows", test))]
 impl TypeLibWireType {
+    #[cfg(target_os = "windows")]
     pub(crate) fn safearray_element_vt(&self) -> Option<u16> {
         match self {
             Self::SafeArray { element_vt, .. } | Self::ByRefSafeArray { element_vt, .. } => {
@@ -238,10 +244,12 @@ impl TypeLibWireType {
         }
     }
 
+    #[cfg(target_os = "windows")]
     pub(crate) fn is_safearray_wire(&self) -> bool {
         matches!(self, Self::SafeArray { .. } | Self::SafeArrayVariant)
     }
 
+    #[cfg(target_os = "windows")]
     pub(crate) fn is_byref_safearray_wire(&self) -> bool {
         matches!(
             self,
@@ -297,6 +305,7 @@ impl TypeLibWireType {
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
 impl TypeLibParamType {
     /// Whether this semantic type is currently supported by the COM vtable
     /// marshaller. Keep this intentionally narrower than the full typelib
@@ -343,6 +352,7 @@ impl TypeLibParamType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(any(target_os = "windows", test))]
 pub(crate) enum TypeLibVtableSignatureIssue {
     UnsupportedParameterType(TypeLibParamType),
     UnsupportedReturnType(TypeLibParamType),
@@ -354,6 +364,7 @@ pub(crate) enum TypeLibVtableSignatureIssue {
     MissingRecordReturnInfo,
 }
 
+#[cfg(any(target_os = "windows", test))]
 pub(crate) fn validate_vtable_wire_signature(
     parameter_types: &[TypeLibParamType],
     parameter_wire_types: &[TypeLibWireType],

@@ -421,6 +421,197 @@ fn extended_owning_arguments_results_and_subs_preserve_exact_carriers() {
 }
 
 #[test]
+fn literal_variant_member_arguments_and_cvar_keep_their_value_types() {
+    for backend in backends() {
+        let project = api::Project::module(
+            "Api",
+            r#"
+Public Sub LongLiteral(ByVal root As HostValues.Range)
+    root.Value2 = 9&
+End Sub
+Public Sub DoubleLiteral(ByVal root As HostValues.Range)
+    root.Value2 = 3.5#
+End Sub
+Public Sub StringLiteral(ByVal root As HostValues.Range)
+    root.Value2 = "text"
+End Sub
+Public Sub BooleanLiteral(ByVal root As HostValues.Range)
+    root.Value2 = True
+End Sub
+Public Sub ObjectArgument(ByVal root As HostValues.Range)
+    root.Value2 = root
+End Sub
+Public Function Boxed(ByVal value As Variant) As Variant
+    Boxed = CVar(value)
+End Function
+"#,
+        );
+        let session = Provider::default()
+            .load_with_object_libraries(&project, &[library()], backend, api::HOST_API_ABI)
+            .unwrap();
+        let grid = Rc::new(RefCell::new(HashMap::new()));
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let root = range(grid.clone(), log.clone(), 1, 1, 1, 1, 1);
+        for (name, expected) in [
+            ("LongLiteral", api::Variant::from_i32(9)),
+            ("DoubleLiteral", api::Variant::from_f64(3.5)),
+            ("StringLiteral", api::Variant::from_string("text")),
+            ("BooleanLiteral", api::Variant::from_bool(true)),
+        ] {
+            let bound = session
+                .bind_values(
+                    "Api",
+                    name,
+                    &[api::ValueType::HostObject],
+                    api::ValueType::Void,
+                )
+                .unwrap();
+            let mut call = session
+                .begin_values(
+                    &bound,
+                    &[api::ValueSlot::Object(root.argument())],
+                    frame(),
+                    1000,
+                )
+                .unwrap();
+            assert!(matches!(finish(&mut *call, 1), api::Value::Empty));
+            assert_eq!(
+                grid.borrow().get(&(1, 1)),
+                Some(&expected),
+                "{backend:?}: {name}"
+            );
+        }
+        let bound = session
+            .bind_values(
+                "Api",
+                "ObjectArgument",
+                &[api::ValueType::HostObject],
+                api::ValueType::Void,
+            )
+            .unwrap();
+        let mut call = session
+            .begin_values(
+                &bound,
+                &[api::ValueSlot::Object(root.argument())],
+                frame(),
+                1000,
+            )
+            .unwrap();
+        assert!(matches!(finish(&mut *call, 1), api::Value::Empty));
+        assert_eq!(
+            grid.borrow().get(&(1, 1)).unwrap().vtype(),
+            calcvba_runtime::VarType::Object
+        );
+        assert_eq!(
+            &*log.borrow(),
+            &["Value2=", "Value2=", "Value2=", "Value2=", "Value2="]
+        );
+        let boxed = session
+            .bind_values(
+                "Api",
+                "Boxed",
+                &[api::ValueType::Variant],
+                api::ValueType::Variant,
+            )
+            .unwrap();
+        for input in [
+            api::Variant::from_i32(17),
+            api::Variant::from_string("text"),
+            api::Variant::null(),
+            api::Variant::empty(),
+            api::Variant::from_error_code(2042),
+        ] {
+            let mut call = session
+                .begin_values(&boxed, &[api::ValueSlot::Variant(&input)], frame(), 1000)
+                .unwrap();
+            let api::Value::Variant(value) = finish(&mut *call, 1) else {
+                panic!("Variant result");
+            };
+            assert_eq!(value, input, "{backend:?}");
+        }
+    }
+}
+
+#[test]
+fn byval_variant_members_capture_each_argument_before_later_effects() {
+    for backend in backends() {
+        let mut types = library();
+        types.interfaces[0].members.push(api::TypedObjectMember {
+            name: "Pair".into(),
+            slot: 8,
+            kind: api::TypedMemberKind::Method,
+            parameters: vec![api::ValueType::Variant, api::ValueType::Variant],
+            result: api::ValueType::String,
+            is_default: false,
+        });
+        let project = api::Project::module(
+            "Api",
+            r#"
+Public CurrentValue As Variant
+Private Function Mutate() As Long
+    CurrentValue = 19&
+    Mutate = 19&
+End Function
+Public Function Run(ByVal root As HostValues.Range) As String
+    CurrentValue = 7&
+    Run = root.Pair(CurrentValue, Mutate()) & ":" & CurrentValue
+End Function
+"#,
+        );
+        let session = Provider::default()
+            .load_with_object_libraries(&project, &[types], backend, api::HOST_API_ABI)
+            .unwrap();
+        let calls = Rc::new(std::cell::Cell::new(0));
+        let seen = calls.clone();
+        let mut slots = (0..8)
+            .map(|_| api::HostSlot::double(|_| panic!("no default or other member read")))
+            .collect::<Vec<_>>();
+        slots.push(
+            api::HostSlot::typed(
+                vec![api::ValueType::Variant, api::ValueType::Variant],
+                api::ValueType::String,
+                move |_, args| {
+                    let [
+                        api::ValueSlot::Variant(first),
+                        api::ValueSlot::Variant(second),
+                    ] = args
+                    else {
+                        return Err(13);
+                    };
+                    seen.set(seen.get() + 1);
+                    Ok(api::Value::String(
+                        format!("{}:{}", first.as_i32().unwrap(), second.as_i32().unwrap()).into(),
+                    ))
+                },
+            )
+            .unwrap(),
+        );
+        let root = api::HostObject::new(IID, slots);
+        let bound = session
+            .bind_values(
+                "Api",
+                "Run",
+                &[api::ValueType::HostObject],
+                api::ValueType::String,
+            )
+            .unwrap();
+        let mut call = session
+            .begin_values(
+                &bound,
+                &[api::ValueSlot::Object(root.argument())],
+                frame(),
+                1000,
+            )
+            .unwrap();
+        let api::Value::String(value) = finish(&mut *call, 1) else {
+            panic!("String result");
+        };
+        assert_eq!(value.as_str(), "7:19:19", "{backend:?}");
+        assert_eq!(calls.get(), 1);
+    }
+}
+
+#[test]
 fn scalar_api_refuses_extended_results_before_entering_the_body() {
     for backend in backends() {
         let session = load(&Provider::default(), backend);

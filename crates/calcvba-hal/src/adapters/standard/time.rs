@@ -41,7 +41,7 @@ fn clock_components_from_vba_serial(serial: f64) -> ClockComponents {
     }
 }
 
-#[cfg(any(test, not(target_os = "windows")))]
+#[cfg(test)]
 fn utc_clock_components() -> ClockComponents {
     clock_components_from_vba_serial(utc_system_time_to_vba_serial(std::time::SystemTime::now()))
 }
@@ -115,6 +115,8 @@ pub(super) fn system_time_to_local_vba_serial(time: std::time::SystemTime) -> f6
     };
     let seconds = duration.as_secs() as libc::time_t;
     let mut local = std::mem::MaybeUninit::<libc::tm>::uninit();
+    // SAFETY: both pointers remain live for the call; a non-null result means
+    // localtime_r initialized the complete tm output before assume_init reads it.
     let local = unsafe {
         if libc::localtime_r(&seconds, local.as_mut_ptr()).is_null() {
             return utc_system_time_to_vba_serial(time);

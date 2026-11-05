@@ -4,12 +4,9 @@
 //! The VM supplies the executor implementation and decides how a proc token maps
 //! to executable VBA code.
 
-use std::{
-    cell::RefCell,
-    fmt,
-    panic::{AssertUnwindSafe, catch_unwind},
-    ptr::NonNull,
-};
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::{cell::RefCell, fmt, ptr::NonNull};
 
 const MAX_CALLBACK_SLOTS: usize = 32;
 
@@ -43,7 +40,21 @@ impl fmt::Display for CallbackThunkError {
 struct CallbackSlot {
     owner: usize,
     proc_token: usize,
+    #[cfg_attr(
+        not(all(target_os = "windows", target_arch = "x86_64")),
+        expect(
+            dead_code,
+            reason = "Only Windows x64 thunks invoke the stored executor."
+        )
+    )]
     executor: NonNull<()>,
+    #[cfg_attr(
+        not(all(target_os = "windows", target_arch = "x86_64")),
+        expect(
+            dead_code,
+            reason = "Only Windows x64 thunks invoke the stored executor."
+        )
+    )]
     invoke: unsafe fn(NonNull<()>, usize, &[isize]) -> isize,
     ref_count: u32,
 }

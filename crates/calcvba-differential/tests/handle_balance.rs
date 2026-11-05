@@ -57,6 +57,8 @@ fn vm3_denied_pointer_call_preserves_full_err_and_releases_strings() {
     }
     assert!(before.balance_to(live_handle_counts()).is_zero());
 }
+/// Native-only: the JIT admits Declare calls only on Windows x64.
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 #[test]
 fn denied_scalar_native_call_matches_vm3_and_jit() {
     let _run = RUN.lock().unwrap();

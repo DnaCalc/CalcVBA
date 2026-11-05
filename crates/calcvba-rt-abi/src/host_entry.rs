@@ -26,6 +26,7 @@ pub fn owning_builtin(id: calcvba_bundle::NativeImplId) -> bool {
             | IsArray
             | VarType
             | CStr
+            | CVar
             | Left
             | Right
             | Mid
@@ -1110,6 +1111,14 @@ impl ScalarLayout {
             for block in &func.blocks {
                 for inst in &block.instrs {
                     let source_result = match inst {
+                        OxInst::CallNative {
+                            dst: Some(OxPlace::Temp(id)),
+                            callee:
+                                calcvba_oxir::OxNativeCallee::Builtin(
+                                    calcvba_bundle::NativeImplId::CreateObject,
+                                ),
+                            ..
+                        } if owning => Some((*id, Some(ScalarType::HostObject))),
                         OxInst::Not {
                             dst: OxPlace::Temp(id),
                             src,
@@ -2509,6 +2518,56 @@ fn call_signature(callee: &OxFunc) -> Result<CallSignature, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn owning_object_roots_keep_object_temporaries_and_declared_variant_locals() {
+        use calcvba_oxir::{BlockId, LocalId, OxBlock, OxLocal, OxProgram, TempId};
+        let call = |dst| OxInst::CallNative {
+            dst: Some(dst),
+            callee: calcvba_oxir::OxNativeCallee::Builtin(
+                calcvba_bundle::NativeImplId::CreateObject,
+            ),
+            args: vec![calcvba_oxir::OxCallArg::Operand(OxOperand::Const(
+                OxConst::Str("Host.Widget".into()),
+            ))],
+        };
+        let program = OxProgram {
+            funcs: vec![OxFunc {
+                name: "Main".into(),
+                kind: calcvba_bundle::ProcedureKind::Sub,
+                locals: vec![OxLocal {
+                    name: "declared".into(),
+                    ty: OxTy::Variant,
+                    array_element: None,
+                    param: None,
+                    escaped: false,
+                }],
+                temps: vec![OxTy::Variant],
+                param_count: 0,
+                return_local: None,
+                entry: BlockId(0),
+                blocks: vec![OxBlock {
+                    id: BlockId(0),
+                    fault_target: None,
+                    instrs: vec![
+                        call(OxPlace::Temp(TempId(0))),
+                        call(OxPlace::Local(LocalId(0))),
+                    ],
+                    terminator: OxTerminator::Return,
+                }],
+            }],
+            ..Default::default()
+        };
+        let layout = ScalarLayout::with_program(&program.funcs[0], &program).unwrap();
+        assert_eq!(
+            layout.operand_type(&OxOperand::temp(TempId(0))).unwrap(),
+            ScalarType::HostObject
+        );
+        assert_eq!(
+            layout.operand_type(&OxOperand::local(LocalId(0))).unwrap(),
+            ScalarType::Variant
+        );
+    }
+
     #[test]
     fn dynamic_adapter_keeps_callee_source_and_budget_abort_does_not_replace_err() {
         let host = calcvba_hal::adapters::builder::HostBuilder::new().build();

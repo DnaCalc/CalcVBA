@@ -719,7 +719,9 @@ fn decrypt(hex: &str) -> Result<Vec<u8>> {
     }
     let bytes = hex
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| {
             let s = std::str::from_utf8(c).map_err(invalid)?;
             u8::from_str_radix(s, 16).map_err(invalid)

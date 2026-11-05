@@ -2394,7 +2394,8 @@ impl<'a> Lowerer<'a> {
                 member,
                 ..
             } => {
-                let (recv, args, writebacks) = self.lower_com_receiver_and_args(args)?;
+                let (recv, args, writebacks) =
+                    self.lower_com_receiver_and_args(args, Some(member))?;
                 let method = self.com.intern(interface_name, member);
                 self.emit(OxInst::ComCallEarly {
                     dst,
@@ -2411,7 +2412,7 @@ impl<'a> Lowerer<'a> {
                 kind,
                 default_member,
             } => {
-                let (recv, args, writebacks) = self.lower_com_receiver_and_args(args)?;
+                let (recv, args, writebacks) = self.lower_com_receiver_and_args(args, None)?;
                 self.emit(OxInst::ComCallLate {
                     dst,
                     recv,
@@ -2433,12 +2434,38 @@ impl<'a> Lowerer<'a> {
     fn lower_com_receiver_and_args(
         &mut self,
         args: &[CoreArg],
+        member: Option<&calcvba_com::TypeLibMemberMetadata>,
     ) -> Result<(OxOperand, Vec<OxCallArg>, Vec<ArgWriteback>)> {
         let (recv_arg, rest) = args.split_first().ok_or_else(|| {
             ElaborateError::Malformed("COM dispatch requires a receiver argument".into())
         })?;
         let recv = self.lower_arg_value(recv_arg)?;
-        let (method_args, writebacks) = self.lower_call_args(rest)?;
+        let indices = member.map(calcvba_com::typed_slots::plan::visible_indices);
+        let mut method_args = Vec::with_capacity(rest.len());
+        let mut writebacks = Vec::new();
+        for (position, arg) in rest.iter().enumerate() {
+            let (mut lowered, pending) = self.lower_call_args(std::slice::from_ref(arg))?;
+            let mut arg = lowered
+                .pop()
+                .expect("one source argument lowers to one argument");
+            let variant = member
+                .zip(indices.as_ref())
+                .and_then(|(member, indices)| member.parameter_types.get(*indices.get(position)?))
+                == Some(&calcvba_com::TypeLibParamType::Variant);
+            if variant && let OxCallArg::Operand(value) = &mut arg {
+                // Capture each ByVal before evaluating later arguments. Assignment
+                // boxing retains object identity without reading a default member;
+                // ByRef places continue to alias their original storage.
+                let temp = OxPlace::Temp(self.new_temp(OxTy::Variant));
+                self.emit(OxInst::Assign {
+                    dst: temp,
+                    value: value.clone(),
+                });
+                *value = OxOperand::Use(temp);
+            }
+            method_args.push(arg);
+            writebacks.extend(pending);
+        }
         Ok((recv, method_args, writebacks))
     }
 

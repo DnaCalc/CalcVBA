@@ -373,6 +373,9 @@ End Sub
 ",
             expect: Expect::Match,
         },
+        // Native Declare execution and its policy error use the Windows x64
+        // JIT route. Linux's explicit decline is checked by jit_linux_safe_scope.
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         Case {
             family: "admission",
             label: "used_declare_still_declines",

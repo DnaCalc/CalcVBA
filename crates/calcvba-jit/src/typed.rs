@@ -854,7 +854,7 @@ impl ScalarLower<'_> {
         let header = self.operand(b, recv, ScalarType::HostObject);
         let null = b.ins().icmp_imm(ir::condcodes::IntCC::Equal, header, 0);
         self.fail_if(b, null, 91);
-        for (offset, chunk) in plan.iid.chunks_exact(8).enumerate() {
+        for (offset, chunk) in plan.iid.as_chunks::<8>().0.iter().enumerate() {
             let actual = b.ins().load(
                 types::I64,
                 ir::MemFlagsData::new(),
@@ -864,7 +864,7 @@ impl ScalarLower<'_> {
             let wrong = b.ins().icmp_imm(
                 ir::condcodes::IntCC::NotEqual,
                 actual,
-                i64::from_le_bytes(chunk.try_into().expect("IID")),
+                i64::from_le_bytes(*chunk),
             );
             self.fail_if(b, wrong, 438);
         }
@@ -1057,8 +1057,8 @@ impl ScalarLower<'_> {
                 let header = self.operand(b, recv, ScalarType::HostObject);
                 let null = b.ins().icmp_imm(ir::condcodes::IntCC::Equal, header, 0);
                 self.fail_if(b, null, 91);
-                for (offset, chunk) in plan.iid.chunks_exact(8).enumerate() {
-                    let expected = i64::from_le_bytes(chunk.try_into().expect("IID chunk"));
+                for (offset, chunk) in plan.iid.as_chunks::<8>().0.iter().enumerate() {
+                    let expected = i64::from_le_bytes(*chunk);
                     let actual = b.ins().load(
                         types::I64,
                         ir::MemFlagsData::new(),

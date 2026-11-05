@@ -862,6 +862,16 @@ End Function
         assert!(
             idl.contains("HRESULT EchoPing([in] IDispatch* other, [out, retval] long* result);")
         );
+        #[cfg(windows)]
+        assert_office_profile_descriptor(&descriptor, &idl);
+
+        assert!(!output.dll_target_path.exists());
+        assert!(!output.tlb_target_path.exists());
+    }
+
+    /// Native-only: Office interface metadata is resolved from registered Windows typelibs.
+    #[cfg(windows)]
+    fn assert_office_profile_descriptor(descriptor: &ComServerDescriptor, idl: &str) {
         let addin = descriptor
             .classes
             .iter()
@@ -977,11 +987,10 @@ End Function
         assert!(idl.contains("interface IDTExtensibility2;"));
         assert!(idl.contains("interface IRibbonExtensibility;"));
         assert!(idl.contains("interface IRtdServer;"));
-
-        assert!(!output.dll_target_path.exists());
-        assert!(!output.tlb_target_path.exists());
     }
 
+    /// Native-only: validation requires registered Windows Office interface metadata.
+    #[cfg(windows)]
     #[test]
     fn wrapped_com_server_rejects_incomplete_office_profile_implementation() {
         let temp =
@@ -1043,6 +1052,8 @@ End Sub
         }
     }
 
+    /// Native-only: validation requires registered Windows Office interface metadata.
+    #[cfg(windows)]
     #[test]
     fn wrapped_com_server_rejects_wrong_office_profile_method_arity() {
         let temp = TestDir::new("wrapped_com_server_rejects_wrong_office_profile_method_arity");

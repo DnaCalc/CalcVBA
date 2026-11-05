@@ -5,6 +5,7 @@ use crate::{
 };
 use calcvba_runtime::{BindingHandle, DynLinkSymbol, RuntimeCallArgument, Variant};
 use std::collections::BTreeMap;
+#[cfg(target_os = "windows")]
 use std::sync::Arc;
 
 use super::StandardHostServices;
@@ -32,9 +33,9 @@ pub(super) fn external_symbol_token(library: &str, alias: &str, name: &str) -> i
     let name = name.to_ascii_lowercase();
     for byte in library
         .bytes()
-        .chain([b'!'])
+        .chain(*b"!")
         .chain(alias.bytes())
-        .chain([b'!'])
+        .chain(*b"!")
         .chain(name.bytes())
     {
         hash ^= byte as u32;

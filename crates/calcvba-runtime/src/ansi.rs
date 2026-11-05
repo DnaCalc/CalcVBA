@@ -179,7 +179,7 @@ mod cp1252 {
         bytes
             .iter()
             .map(|&b| {
-                if b < 0x80 || b >= 0xA0 {
+                if !(0x80..0xA0).contains(&b) {
                     b as char
                 } else {
                     HIGH[(b - 0x80) as usize]

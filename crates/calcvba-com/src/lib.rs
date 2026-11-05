@@ -8,6 +8,8 @@ pub mod dynamic_object;
 #[cfg(any(test, feature = "fixture-typelibs"))]
 #[path = "fixtures/typelib_catalog.rs"]
 mod fixture_typelib_catalog;
+#[cfg(any(test, feature = "fixture-typelibs"))]
+pub use fixture_typelib_catalog::TEST_DISPID_COUNT;
 pub mod invoke_policy;
 pub mod miri_variant_mock;
 pub mod model;
@@ -76,6 +78,7 @@ pub use typelib::{
     runtime_class_descriptor_from_typelib_metadata,
 };
 pub use typelib_cache::TypeLibMetadataCacheState;
+#[cfg(target_os = "windows")]
 pub(crate) use typelib_catalog::map_member_metadata_to_spec;
 pub use typelib_catalog::{
     TypeLibMemberLookupResult, activation_prog_id_from_typelib_metadata, build_typelib_metadata,
@@ -175,11 +178,11 @@ pub use windows_test_dispatch::{
 pub use windows_test_dispatch::{
     IID_OXVBA_TEST_DISPATCH_EVENTS, IID_OXVBA_TEST_DISPATCH_EVENTS_STR,
     IID_OXVBA_TEST_DISPATCH_SOURCE_EVENTS, IID_OXVBA_TEST_DISPATCH_SOURCE_EVENTS_STR,
-    OXVBA_TEST_DISPATCH_PROGID, TEST_DISPID_COUNT, TEST_DISPID_ECHO_VARIANT,
-    TEST_DISPID_EXCEL_QUIT, TEST_DISPID_EXISTS, TEST_DISPID_FIRE_CHANGED,
-    TEST_DISPID_FIRE_CHANGED_PAIR, TEST_DISPID_FIRE_CHANGED_SOURCE_INTERFACE, TEST_DISPID_LOOKUP,
-    TEST_DISPID_LOOKUP_PAIR, TEST_DISPID_PING, TEST_DISPID_RAISE_EXCEPTION,
-    TEST_DISPID_RETURN_SMALLINT, TEST_DISPID_RETURN_UNSIGNED_WORD, TEST_DISPID_SET_INDEXED_VALUE,
+    OXVBA_TEST_DISPATCH_PROGID, TEST_DISPID_ECHO_VARIANT, TEST_DISPID_EXCEL_QUIT,
+    TEST_DISPID_EXISTS, TEST_DISPID_FIRE_CHANGED, TEST_DISPID_FIRE_CHANGED_PAIR,
+    TEST_DISPID_FIRE_CHANGED_SOURCE_INTERFACE, TEST_DISPID_LOOKUP, TEST_DISPID_LOOKUP_PAIR,
+    TEST_DISPID_PING, TEST_DISPID_RAISE_EXCEPTION, TEST_DISPID_RETURN_SMALLINT,
+    TEST_DISPID_RETURN_UNSIGNED_WORD, TEST_DISPID_SET_INDEXED_VALUE,
     TEST_DISPID_SET_INDEXED_VALUE_REF, TEST_DISPID_SET_VALUE, TEST_DISPID_SET_VALUE_REF,
     TEST_DISPID_SUM_PAIR, TEST_DISPID_VALUE, TEST_EVENT_CHANGED, TEST_EVENT_CHANGED_PAIR,
     TEST_NAMED_DISPID_INDEX, TEST_NAMED_DISPID_LHS, TEST_NAMED_DISPID_RHS, TEST_NAMED_DISPID_VALUE,

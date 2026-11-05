@@ -95,33 +95,46 @@ const IID_OXVBA_TEST_DISPATCH_SOURCE_EVENTS_STR: &str = "11111113-2222-3333-4444
 #[cfg(test)]
 const IID_EXCEL_APPLICATION_EVENTS_STR: &str = "00024413-0000-0000-C000-000000000046";
 #[cfg(test)]
+#[cfg(target_os = "windows")]
 const TEST_DISPID_FIRE_CHANGED: i32 = 3;
 #[cfg(test)]
+#[cfg(target_os = "windows")]
 const TEST_DISPID_FIRE_CHANGED_PAIR: i32 = 4;
 #[cfg(test)]
+#[cfg(target_os = "windows")]
 const TEST_DISPID_FIRE_CHANGED_SOURCE_INTERFACE: i32 = 11;
 #[cfg(test)]
+#[cfg(target_os = "windows")]
 const TEST_DISPID_LOOKUP: i32 = 6;
 #[cfg(test)]
 #[cfg(test)]
+#[cfg(target_os = "windows")]
 const TEST_DISPID_SUM_PAIR: i32 = 12;
 #[cfg(test)]
+#[cfg(target_os = "windows")]
 const TEST_DISPID_LOOKUP_PAIR: i32 = 13;
 #[cfg(test)]
+#[cfg(target_os = "windows")]
 const TEST_DISPID_SET_INDEXED_VALUE: i32 = 14;
 #[cfg(test)]
+#[cfg(target_os = "windows")]
 const TEST_DISPID_SET_INDEXED_VALUE_REF: i32 = 15;
 #[cfg(test)]
+#[cfg(target_os = "windows")]
 const TEST_DISPID_ECHO_VARIANT: i32 = 16;
 #[cfg(test)]
 const TEST_DISPID_RAISE_EXCEPTION: i32 = 17;
 #[cfg(test)]
+#[cfg(target_os = "windows")]
 const TEST_EVENT_CHANGED: i32 = 1;
 #[cfg(test)]
+#[cfg(target_os = "windows")]
 const TEST_EVENT_CHANGED_SOURCE_INTERFACE: i32 = 2;
 #[cfg(test)]
+#[cfg(target_os = "windows")]
 const TEST_EVENT_CHANGED_PAIR: i32 = 3;
 #[cfg(test)]
+#[cfg(target_os = "windows")]
 const TEST_EVENT_EXCEL_APP_QUIT: i32 = 10;
 
 #[derive(Clone)]
@@ -1669,15 +1682,19 @@ fn parse_excep_wcode(message: &str) -> Option<u16> {
 // production-side invariants are stated at the production unsafe sites.
 #[allow(clippy::undocumented_unsafe_blocks)]
 mod tests {
+    #[cfg(target_os = "windows")]
+    use std::sync::OnceLock;
     use std::{
         collections::VecDeque,
-        sync::{Arc, Mutex, OnceLock},
+        sync::{Arc, Mutex},
     };
 
-    use calcvba_com::{
-        ComInvokeArg, ComInvokeRequest, ComObjectToken, ComValue, DynamicObjectBridge,
-        DynamicObjectToken,
+    #[cfg(target_os = "windows")]
+    use crate::{
+        model::ComInvocationStrategy,
+        traits::{TypeLibCacheScope, TypeLibResolveRequest},
     };
+    use calcvba_com::{ComInvokeArg, ComInvokeRequest, DynamicObjectBridge, DynamicObjectToken};
     #[cfg(target_os = "windows")]
     use calcvba_com::{
         ComInvokeFailure, RawIDispatch, VariantResultValue,
@@ -1687,6 +1704,8 @@ mod tests {
         take_variant_result_value as com_take_variant_result_value,
         variant_to_com_value as com_variant_to_com_value,
     };
+    #[cfg(target_os = "windows")]
+    use calcvba_com::{ComObjectToken, ComValue};
     use calcvba_runtime::{ObjectRef, VarType, Variant, bstr::BStr};
     use proptest::prelude::*;
 
@@ -1694,11 +1713,10 @@ mod tests {
         callbacks::HostCallbacks,
         error::HalErrorKind,
         model::UiVirtualizationMode,
-        model::{ComInvocationStrategy, HalProfileId, HalRuntimeClass, HostPolicy},
+        model::{HalProfileId, HalRuntimeClass, HostPolicy},
         traits::{
             ComHal, DiagnosticsHal, DynLinkDescriptorView, DynamicLinkHal, EventPumpHal,
-            FileSystemHal, ProcessEnvHal, TimeLocaleHal, TypeLibCacheScope, TypeLibResolveRequest,
-            UiInteractionHal,
+            FileSystemHal, ProcessEnvHal, TimeLocaleHal, UiInteractionHal,
         },
     };
 
@@ -1708,6 +1726,7 @@ mod tests {
         VARIANT, VT_ARRAY, VT_DISPATCH, VT_UNKNOWN, VT_VARIANT, VariantClear,
     };
 
+    #[cfg(target_os = "windows")]
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
@@ -1735,7 +1754,9 @@ mod tests {
     }
 
     const TEST_DISPATCH_PROG_ID_NAME: &str = "OxVba.TestDispatch";
+    #[cfg(target_os = "windows")]
     const SCRIPTING_DICTIONARY_PROG_ID_NAME: &str = "Scripting.Dictionary";
+    #[cfg(target_os = "windows")]
     const MISSING_CLASS_PROG_ID_NAME: &str = "OxVba.DoesNotExist.Component";
 
     fn create_object_prop_test_prog_id_name(prog_id_seed: i32) -> String {
@@ -1781,6 +1802,7 @@ mod tests {
             })
     }
 
+    #[cfg(target_os = "windows")]
     fn release_object_test(
         host: &StandardHostServices,
         object: calcvba_runtime::ObjectRef,
@@ -1804,6 +1826,7 @@ mod tests {
             })
     }
 
+    #[cfg(target_os = "windows")]
     fn invalidate_typelib_cache_test(
         host: &StandardHostServices,
         scope: TypeLibCacheScope,
@@ -1871,10 +1894,12 @@ mod tests {
             &self,
             prog_id_name: &str,
         ) -> crate::error::HalResult<calcvba_runtime::ObjectRef>;
+        #[cfg(target_os = "windows")]
         fn release_object_test(
             &self,
             object: calcvba_runtime::ObjectRef,
         ) -> crate::error::HalResult<i32>;
+        #[cfg(target_os = "windows")]
         fn invalidate_typelib_cache_test(
             &self,
             scope: TypeLibCacheScope,
@@ -1901,6 +1926,7 @@ mod tests {
             create_object_test(self, prog_id_name)
         }
 
+        #[cfg(target_os = "windows")]
         fn release_object_test(
             &self,
             object: calcvba_runtime::ObjectRef,
@@ -1908,6 +1934,7 @@ mod tests {
             release_object_test(self, object)
         }
 
+        #[cfg(target_os = "windows")]
         fn invalidate_typelib_cache_test(
             &self,
             scope: TypeLibCacheScope,

@@ -2055,10 +2055,10 @@ pub(crate) fn parameter_name_token(node: SyntaxNode<'_>) -> Option<SyntaxToken<'
             SyntaxElement::Node(child) if child.kind() == SyntaxKind::TypeRef => {
                 in_type_ref = true;
             }
-            SyntaxElement::Token(token) if !token.kind.is_trivia() => {
-                if token.kind != SyntaxKind::TypeSuffix {
-                    after_modifier = false;
-                }
+            SyntaxElement::Token(token)
+                if !token.kind.is_trivia() && token.kind != SyntaxKind::TypeSuffix =>
+            {
+                after_modifier = false;
             }
             _ => {}
         }

@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use calcvba_engine::{Engine, HostConfig};
+#[cfg(target_os = "windows")]
 use calcvba_hal::model::HostPolicy;
 
 fn unique_root(tag: &str) -> PathBuf {

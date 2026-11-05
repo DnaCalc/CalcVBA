@@ -2596,16 +2596,11 @@ pub(crate) unsafe extern "C" fn rt_jit_load_bool(run: *mut JitRun, area: u32, in
         // SAFETY: null was rejected and the compiled call gives shared run access.
         let run = unsafe { &*run };
         match slot_ref(run, area, index) {
-            Some(value) => {
-                if value.as_bool().unwrap_or(false)
+            Some(value) => i32::from(
+                value.as_bool().unwrap_or(false)
                     || value.as_i32().is_some_and(|v| v != 0)
-                    || value.as_i16().is_some_and(|v| v != 0)
-                {
-                    1
-                } else {
-                    0
-                }
-            }
+                    || value.as_i16().is_some_and(|v| v != 0),
+            ),
             None => 0,
         }
     }))

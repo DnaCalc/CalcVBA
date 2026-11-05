@@ -4120,6 +4120,10 @@ pub unsafe fn release_typelib(ptlib: *mut c_void) {
 }
 
 #[cfg(not(target_os = "windows"))]
+/// This platform has no native type-library allocation to release.
+///
+/// # Safety
+/// The pointer is ignored and is never dereferenced on this platform.
 pub unsafe fn release_typelib(_ptlib: *mut std::ffi::c_void) {}
 
 // ── Non-Windows stubs ──

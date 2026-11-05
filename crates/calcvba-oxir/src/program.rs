@@ -185,6 +185,42 @@ pub struct OxProgram {
 }
 
 impl OxProgram {
+    /// The exact imported interface identity for a retained nominal type name.
+    pub fn named_interface_iid(&self, name: &str) -> Option<[u8; 16]> {
+        let exact = self
+            .com_interfaces
+            .iter()
+            .any(|interface| interface.name().eq_ignore_ascii_case(name));
+        let mut selected = None;
+        for interface in &self.com_interfaces {
+            if !(if exact {
+                interface.name().eq_ignore_ascii_case(name)
+            } else {
+                !name.contains('.')
+                    && interface
+                        .name()
+                        .rsplit('.')
+                        .next()
+                        .is_some_and(|bare| bare.eq_ignore_ascii_case(name))
+            }) {
+                continue;
+            }
+            let crate::com::ComInterface::Com(metadata) = interface else {
+                continue;
+            };
+            let iid = metadata.iid?;
+            let mut bytes = [0; 16];
+            bytes[..4].copy_from_slice(&iid.data1.to_le_bytes());
+            bytes[4..6].copy_from_slice(&iid.data2.to_le_bytes());
+            bytes[6..8].copy_from_slice(&iid.data3.to_le_bytes());
+            bytes[8..].copy_from_slice(&iid.data4);
+            if selected.is_some_and(|old| old != bytes) {
+                return None;
+            }
+            selected = Some(bytes);
+        }
+        selected
+    }
     /// An empty program.
     pub fn empty() -> Self {
         Self::default()

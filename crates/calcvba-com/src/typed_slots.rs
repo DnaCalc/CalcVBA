@@ -261,3 +261,55 @@ mod native {
         })
     }
 }
+
+/// Invoke one retained native member through the same owning wire lowering as
+/// JIT member tables. The factory already proved the native receiver and ABI.
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+pub fn invoke_prepared_native_member(
+    object: &calcvba_host_api::HostObject,
+    member: &TypeLibMemberMetadata,
+    arguments: &mut calcvba_host_api::object::planned_slots::MemberArguments<'_>,
+    context: &mut calcvba_host_api::TypedContext,
+) -> Result<calcvba_host_api::Value, calcvba_host_api::TypedFault> {
+    let fault = |message: &str| calcvba_host_api::TypedFault {
+        number: 13,
+        description: message.into(),
+        source: None,
+        help_file: None,
+        help_context: None,
+    };
+    let owner = object
+        .payload()
+        .and_then(|payload| payload.downcast_ref::<factory::NativeReceiver>())
+        .ok_or_else(|| fault("Object has no prepared native receiver"))?;
+    let prepared = owner
+        .library
+        .plans
+        .iter()
+        .flatten()
+        .find(|plan| plan.member == *member)
+        .ok_or_else(|| fault("Object has no retained native member plan"))?;
+    calcvba_host_api::with_native_call(context, || {
+        // SAFETY: factory-owned same-apartment receiver and immutable plan.
+        unsafe { native_values::invoke(owner, prepared, arguments) }
+    })
+}
+
+/// Return one owned IDispatch reference from a typed native object. The caller
+/// must release it on this thread. Portable host tables are explicitly refused.
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+pub fn retain_prepared_native_dispatch(
+    object: &calcvba_host_api::HostObject,
+) -> Result<*mut std::ffi::c_void, String> {
+    let owner = object
+        .payload()
+        .and_then(|payload| payload.downcast_ref::<factory::NativeReceiver>())
+        .ok_or("Object has no prepared native receiver")?;
+    // SAFETY: the private payload retains this same-apartment native interface.
+    unsafe {
+        crate::query_interface_pointer(
+            owner.pointer.as_ptr(),
+            &crate::windows_client::IID_IDISPATCH,
+        )
+    }
+}

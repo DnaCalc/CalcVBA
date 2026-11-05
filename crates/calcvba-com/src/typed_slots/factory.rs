@@ -15,6 +15,45 @@ pub(super) struct NativeReceiver {
     enumerator: Option<NativeMemberPlan>,
 }
 struct NativeServices(Rc<NativeReceiver>);
+
+fn native_input(
+    bridge: &WindowsComBridge,
+    object: &calcvba_runtime::ObjectRef,
+) -> Result<OwnedComInterface, String> {
+    if let Some(prepared) = HostObject::from_object_ref(object) {
+        let pointer = super::retain_prepared_native_dispatch(&prepared)?;
+        // SAFETY: the boundary helper transferred one native dispatch reference.
+        return Ok(unsafe { OwnedComInterface::from_owned(pointer) });
+    }
+    if !object.is_compat_object() {
+        // SAFETY: an ObjectRef owns a same-apartment IUnknown; clone transfers
+        // exactly one reference. The selected imported IID is queried by build.
+        return Ok(unsafe {
+            OwnedComInterface::from_owned(object.clone().into_raw_iunknown().cast())
+        });
+    }
+    let state = bridge
+        .shared_state()
+        .lock()
+        .map_err(|_| "COM state lock poisoned")?;
+    let binding = state
+        .bindings
+        .get(&ComObjectToken::new(object.raw()))
+        .ok_or("unbound native COM receiver")?;
+    if binding.native_owner_thread != std::thread::current().id() {
+        return Err("native COM receiver belongs to a different thread/apartment".into());
+    }
+    let pointer = binding.native_dispatch as *mut crate::RawIDispatch;
+    if pointer.is_null() {
+        return Err("native COM receiver has no native dispatch".into());
+    }
+    // SAFETY: the locked binding retains this same-apartment native object.
+    unsafe {
+        crate::add_ref_dispatch(pointer);
+        Ok(OwnedComInterface::from_owned(pointer.cast()))
+    }
+}
+
 impl calcvba_host_api::HostObjectServices for NativeServices {
     fn subscribe_event(
         &self,
@@ -74,28 +113,7 @@ impl WindowsComBridge {
         &self,
         object: calcvba_runtime::ObjectRef,
     ) -> Result<HostObject, String> {
-        let dispatch = {
-            let state = self
-                .shared_state()
-                .lock()
-                .map_err(|_| "COM state lock poisoned")?;
-            let binding = state
-                .bindings
-                .get(&ComObjectToken::new(object.raw()))
-                .ok_or("unbound dynamic COM receiver")?;
-            if binding.native_owner_thread != std::thread::current().id() {
-                return Err("dynamic COM receiver belongs to a different thread/apartment".into());
-            }
-            let pointer = binding.native_dispatch as *mut crate::RawIDispatch;
-            if pointer.is_null() {
-                return Err("dynamic COM receiver has no native dispatch".into());
-            }
-            // SAFETY: this same-thread binding retains the live native dispatch.
-            unsafe {
-                crate::add_ref_dispatch(pointer);
-                OwnedComInterface::from_owned(pointer.cast())
-            }
-        };
+        let dispatch = native_input(self, &object)?;
         let library = Rc::new(NativeLibrary {
             metadata: vec![],
             plans: vec![],
@@ -163,28 +181,7 @@ impl WindowsComBridge {
                     })
             })
             .collect::<Result<_, _>>()?;
-        let dispatch = {
-            let state = self
-                .shared_state()
-                .lock()
-                .map_err(|_| "COM state lock poisoned")?;
-            let binding = state
-                .bindings
-                .get(&ComObjectToken::new(object.raw()))
-                .ok_or("unbound typed COM receiver")?;
-            if binding.native_owner_thread != std::thread::current().id() {
-                return Err("typed COM receiver belongs to a different thread/apartment".into());
-            }
-            let pointer = binding.native_dispatch as *mut crate::RawIDispatch;
-            if pointer.is_null() {
-                return Err("typed COM receiver has no native dispatch".into());
-            }
-            // SAFETY: locked binding owns this same-apartment native reference.
-            unsafe {
-                crate::add_ref_dispatch(pointer);
-                OwnedComInterface::from_owned(pointer.cast())
-            }
-        };
+        let dispatch = native_input(self, &object)?;
         // SAFETY: retained same-apartment dispatch and validated selected members.
         unsafe { build(self.clone(), dispatch.as_ptr(), iid, &selected, library) }
     }

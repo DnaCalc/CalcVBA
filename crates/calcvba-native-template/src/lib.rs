@@ -8,6 +8,8 @@ mod errors;
 #[cfg(windows)]
 mod foreign;
 #[cfg(windows)]
+mod members;
+#[cfg(windows)]
 mod services;
 #[cfg(windows)]
 mod values;

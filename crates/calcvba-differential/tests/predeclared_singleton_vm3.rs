@@ -246,14 +246,16 @@ fn failed_predeclared_initialize_clears_default_slot_for_retry() {
         vec![],
     );
 
-    assert_contains_string(
-        run_project_closure(Executor::Vm3, &[app]),
-        "10|I;T;|I;T;I;|5",
-    );
+    for executor in [Executor::Vm3, Executor::Jit] {
+        assert_contains_string(
+            run_project_closure(executor, std::slice::from_ref(&app)),
+            "10|I;|I;I;|5",
+        );
+    }
 }
 
 #[test]
-fn failed_predeclared_initialize_preserves_replaced_default_slot() {
+fn failed_predeclared_initialize_clears_replaced_default_slot() {
     let counter = predeclared_class_module(
         "Counter",
         "Private n As Long\n\
@@ -301,10 +303,12 @@ fn failed_predeclared_initialize_preserves_replaced_default_slot() {
         vec![],
     );
 
-    assert_contains_string(
-        run_project_closure(Executor::Vm3, &[app]),
-        "10|I;I;T;|I;I;T;|5",
-    );
+    for executor in [Executor::Vm3, Executor::Jit] {
+        assert_contains_string(
+            run_project_closure(executor, std::slice::from_ref(&app)),
+            "10|I;I;T;|I;I;T;I;|5",
+        );
+    }
 }
 
 #[test]

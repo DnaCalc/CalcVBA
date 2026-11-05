@@ -33,3 +33,32 @@ pub fn hresult(code: i32) -> i32 {
         code => (0x800a0000 | (code as u32 & 0xffff)) as i32,
     }
 }
+
+/// Retained member-call metadata for native cells. This contains imported COM
+/// ABI descriptors and argument ownership facts, never executable source/IR.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NativeMemberCall {
+    pub receiver_kind: u32,
+    pub result_kind: u32,
+    pub binding: NativeMemberBinding,
+    pub arguments: Vec<NativeMemberArgument>,
+}
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum NativeMemberBinding {
+    Early {
+        member: Box<calcvba_com::TypeLibMemberMetadata>,
+        interfaces: Vec<calcvba_com::TypeLibInterfaceMetadata>,
+    },
+    Late {
+        name: Option<String>,
+        kind: calcvba_com::TypeLibMemberInvokeKind,
+    },
+    CallByName,
+}
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NativeMemberArgument {
+    pub kind: u32,
+    pub by_ref: bool,
+    pub omitted: bool,
+    pub name: Option<String>,
+}

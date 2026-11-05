@@ -131,7 +131,12 @@ is no interpreter or generic dispatch entry. BSTR/UTF-16/ANSI inputs, native UDT
 layout, SAFEARRAYs, VARIANTs and COM references use direct value-operation helpers.
 Project class construction, fields, properties and methods use owning objects
 and compiled entries, including local `As New` recreation and same-thread
-Initialize/Terminate calls. Unsupported class field initializers are refused.
+Initialize/Terminate calls. Collection and Implements calls use the same owning
+carriers. Early COM calls retain imported interface/vtable descriptors and share
+the JIT's native marshalling; late calls and CallByName share its COM services.
+TypeOf uses project identity or the imported COM IID. Unsupported class field
+initializers are refused. `scripts/test-native-excel-members.ps1` compares an
+Excel COMReference body on VM3, JIT, AOT and Office using an existing owned session.
 Writable `.cvbdata` holds module state and the once-only initialization status.
 Each DLL retains the identity of its first calling thread; foreign threads return
 zero/E_WRONG_THREAD without touching VBA or caller storage. ErrorPolicy and

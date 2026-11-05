@@ -11,6 +11,8 @@ description = "Developer-built runtime DLL for CalcVBA native PE exports; no com
 crate-type = ["cdylib"]
 
 [dependencies]
+calcvba-host-api.workspace = true
+serde_json.workspace = true
 calcvba-bundle = { path = "../calcvba-bundle" }
 calcvba-runtime.workspace = true
 calcvba-rt-abi.workspace = true

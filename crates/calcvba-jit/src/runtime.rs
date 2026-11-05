@@ -1282,6 +1282,21 @@ pub(crate) unsafe fn instantiate_as_new_for_jit(
             }
         }
         OxAsNew::ComClass { prog_id } => {
+            if !prog_id.starts_with("__jit_vba_collection:") {
+                let argument = Variant::from_string(prog_id.as_str());
+                let mut result = Variant::empty();
+                let native_id =
+                    native_impl_index(NativeImplId::CreateObject).map_err(|_| ST_FAULT)?;
+                // SAFETY: state remains uniquely owned; no run borrow spans host activation.
+                let status = unsafe {
+                    rt_lib_invoke_with_policy(state, native_id, &argument, 1, 0, &mut result)
+                };
+                return if status == ST_OK {
+                    Ok(result)
+                } else {
+                    Err(status)
+                };
+            }
             let Some(program_index) = prog_id
                 .strip_prefix("__jit_vba_collection:")
                 .and_then(|raw| raw.parse::<i32>().ok())

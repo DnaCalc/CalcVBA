@@ -27,7 +27,7 @@ fn assert_contains_string(outcome: RunOutcome, expected: &str) {
 }
 
 #[test]
-fn ordinary_new_initialize_failure_terminates_partial_instance_and_allows_retry() {
+fn ordinary_new_initialize_failure_skips_terminate_and_allows_retry() {
     let main = "Public result As Variant\n\
                 Public Log As String\n\
                 Public FailOnce As Boolean\n\
@@ -70,7 +70,7 @@ fn ordinary_new_initialize_failure_terminates_partial_instance_and_allows_retry(
             &[("Main", Procedural, main), ("Widget", Class, widget)],
             "VBAProject",
         ),
-        "10|I;T;|I;T;I;T;|5",
+        "10|I;|I;I;T;|5",
     );
 }
 

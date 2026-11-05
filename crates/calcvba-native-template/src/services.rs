@@ -13,6 +13,7 @@ pub(super) struct Runtime {
     frames: Vec<(u32, calcvba_rt_abi::SavedErrState, i32)>,
     iterators: std::collections::HashMap<usize, NativeIterator>,
     pub(super) classes: super::classes::Classes,
+    pub(super) members: super::members::Calls,
 }
 
 pub(super) unsafe fn runtime(context: *mut Context) -> *mut Runtime {
@@ -41,6 +42,7 @@ pub(super) unsafe fn runtime(context: *mut Context) -> *mut Runtime {
                 iterators: Default::default(),
                 frames: Vec::new(),
                 classes: Default::default(),
+                members: Default::default(),
             };
             (*context).services = Box::into_raw(Box::new(state)).cast();
         }
@@ -48,22 +50,44 @@ pub(super) unsafe fn runtime(context: *mut Context) -> *mut Runtime {
     }
 }
 
+pub(super) unsafe fn host(context: *mut Context) -> Arc<dyn HostServices> {
+    // SAFETY: the context retains its same-thread services until shutdown.
+    unsafe { (*runtime(context))._host.clone() }
+}
+
+pub(super) unsafe fn typed_fault(
+    context: *mut Context,
+    fault: calcvba_host_api::TypedFault,
+) -> Result<(), i32> {
+    // SAFETY: the active native frame owns this error state, after member owners
+    // have been released. No borrow spans a native/VBA callback.
+    unsafe {
+        let state = &mut *(*runtime(context)).exec;
+        let source = state.default_error_source.clone();
+        state.err_engine.raise(
+            calcvba_rt_abi::Fault {
+                code: fault.number,
+                message: fault.description,
+                source: fault.source,
+                help_file: fault.help_file,
+                help_context: fault.help_context,
+            },
+            source,
+        );
+        finish(context, calcvba_rt_abi::ST_FAULT)
+    }
+}
+
 pub(super) unsafe fn foreign_type_matches(
     context: *mut Context,
     object: calcvba_runtime::ObjectRef,
     name: &str,
+    iid: Option<[u8; 16]>,
 ) -> Result<bool, i32> {
-    // SAFETY: the image retains its runtime and this independent object owner.
-    let host = unsafe { (*runtime(context))._host.clone() };
-    let bare = name.rsplit('.').next().unwrap_or(name);
-    host.com()
-        .object_type_name(object)
-        .map(|found| {
-            found.is_some_and(|found| {
-                found.eq_ignore_ascii_case(name) || found.eq_ignore_ascii_case(bare)
-            })
-        })
-        .map_err(|_| 13)
+    // SAFETY: this independent host clone outlives the native nominal check.
+    let host = unsafe { host(context) };
+    calcvba_rt_abi::object_types::matches_type(host.as_ref(), &object, name, iid)
+        .map_err(|fault| fault.code)
 }
 
 pub(super) unsafe fn shutdown(context: *mut Context) {
@@ -446,6 +470,11 @@ pub(super) unsafe fn write(
                 // Resolver transfers a reference; the marshaller's retain hook
                 // is empty because its resulting VARIANT owns that reference.
                 let mut resolve = |object| {
+                    if let Some(prepared) = calcvba_host_api::HostObject::from_object_ref(&object) {
+                        return calcvba_com::typed_slots::retain_prepared_native_dispatch(
+                            &prepared,
+                        );
+                    }
                     host.com()
                         .retain_native_dispatch_object(object)
                         .map_err(|error| error.to_string())
@@ -525,6 +554,44 @@ pub unsafe extern "C" fn cvb_library(
             );
             finish(context, status)?;
             write(context, out, kind, &result)
+        }
+    })
+}
+
+/// # Safety
+/// Name is compiler-retained UTF-8, and out is an initialized Object cell on
+/// the image's owning thread. Activation occurs only while the cell is Nothing.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cvb_com_ensure(
+    context: *mut Context,
+    name: *const u8,
+    len: usize,
+    out: *mut u8,
+) -> i32 {
+    super::values::boundary(|| {
+        // SAFETY: all runtime borrows end before COM activation can reenter VBA.
+        unsafe {
+            if out.cast::<usize>().read() != 0 {
+                return Ok(());
+            }
+            let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name, len));
+            let input = Variant::from_string(name);
+            let mut result = Variant::empty();
+            let native = calcvba_bundle::NativeImplId::ALL
+                .iter()
+                .position(|id| *id == calcvba_bundle::NativeImplId::CreateObject)
+                .ok_or(5)? as u32;
+            let state = &raw mut *(*runtime(context)).exec;
+            let status = calcvba_rt_abi::rt_lib_invoke_with_policy(
+                calcvba_rt_abi::exec_state_as_raw(&mut *state),
+                native,
+                &input,
+                1,
+                0,
+                &mut result,
+            );
+            finish(context, status)?;
+            write(context, out, 9, &result)
         }
     })
 }

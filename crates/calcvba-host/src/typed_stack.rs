@@ -1178,6 +1178,9 @@ impl TypedStack {
                             return Err(fault.code);
                         }
                         let frame = self.pop();
+                        if let Some((_, Value::RuntimeObject(object))) = &frame.initialized {
+                            object.mark_initialization_failed();
+                        }
                         if let Some(id) = frame.termination {
                             drop(frame);
                             calcvba_runtime::finish_pending_termination(id);

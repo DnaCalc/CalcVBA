@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Shared runtime ABI substrate for vm3 and the Cranelift JIT."
 
 [dependencies]
+serde.workspace = true
 calcvba-host-api.workspace = true
 calcvba-bundle.workspace = true
 calcvba-com.workspace = true

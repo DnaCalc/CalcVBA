@@ -1043,7 +1043,7 @@ fn jit_project_local_object_terminates_after_callee_exit_before_caller_statement
 }
 
 #[test]
-fn jit_project_initialize_failure_terminates_partial_instance_and_retries() {
+fn jit_project_initialize_failure_skips_terminate_and_retries() {
     let modules = [
         (
             "Main",
@@ -1058,10 +1058,10 @@ fn jit_project_initialize_failure_terminates_partial_instance_and_retries() {
     ];
 
     let vm3 = run_modules(Executor::Vm3, &modules, "VBAProject");
-    assert_completed_prefix_i32("VM3", vm3, &[2, 2, 2, 5]);
+    assert_completed_prefix_i32("VM3", vm3, &[1, 2, 1, 5]);
 
     let jit = run_modules(Executor::Jit, &modules, "VBAProject");
-    assert_completed_prefix_i32("JIT", jit, &[2, 2, 2, 5]);
+    assert_completed_prefix_i32("JIT", jit, &[1, 2, 1, 5]);
 }
 
 #[test]

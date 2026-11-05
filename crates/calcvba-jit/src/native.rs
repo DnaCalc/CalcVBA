@@ -12,7 +12,11 @@ pub fn value_helper_signatures() -> &'static [(&'static str, &'static [ir::Type]
 /// Dynamic Raise now requires the extended native context's runtime services.
 /// Refuse an older template/consumer pairing instead of reading beyond its context.
 pub fn value_helper_version(name: &str) -> u16 {
-    if name == "cvb_raise_dynamic" { 2 } else { 1 }
+    if matches!(name, "cvb_raise_dynamic" | "cvb_object_type") {
+        2
+    } else {
+        1
+    }
 }
 use crate::typed::{PhysicalSlots, ScalarLower, machine_type};
 use calcvba_oxir::OxArg;
@@ -160,7 +164,6 @@ pub fn compile_native_scalars(
                 )
         }) || layout.optional_parameters.iter().any(|p| *p)
             || layout.param_array.is_some()
-            || !layout.host_calls.is_empty()
         {
             return Err(problem(
                 func,
@@ -244,10 +247,25 @@ pub fn compile_native_scalars(
                         pending.extend(class.terminate);
                     }
                     OxInst::NewExtern { import, .. } if layout.library_news.contains(import) => {}
+                    OxInst::AsNew {
+                        binding: calcvba_oxir::inst::OxAsNew::ExternClass { import },
+                        ..
+                    } if layout.library_news.contains(import) => {}
+                    OxInst::AsNew {
+                        binding: calcvba_oxir::inst::OxAsNew::ComClass { .. },
+                        ..
+                    } => {}
+                    OxInst::ComCallEarly { method, .. }
+                        if program
+                            .com_method(*method)
+                            .is_some_and(calcvba_com::typed_slots::plan::validate) => {}
                     OxInst::ComCallLate { recv, args, .. }
                         if layout.class_calls.iter().any(|(site, _, _)| site == inst) =>
                     {
-                        if layout.operand_type(recv) != Ok(ScalarType::HostObject) {
+                        if !matches!(
+                            layout.operand_type(recv),
+                            Ok(ScalarType::HostObject | ScalarType::Variant)
+                        ) {
                             return Err(problem(
                                 func,
                                 format!(
@@ -310,6 +328,28 @@ pub fn compile_native_scalars(
                                         ),
                                     ));
                                 }
+                            }
+                        }
+                    }
+                    OxInst::ComCallLate { recv, args, .. }
+                    | OxInst::CallByName {
+                        object: recv, args, ..
+                    } => {
+                        values::validate_library_operand(&layout, recv)
+                            .map_err(|error| problem(func, error))?;
+                        for argument in args {
+                            match argument {
+                                OxCallArg::Operand(operand)
+                                | OxCallArg::Named { value: operand, .. } => {
+                                    values::validate_library_operand(&layout, operand)
+                                        .map_err(|error| problem(func, error))?
+                                }
+                                OxCallArg::ByRef(place) => values::validate_library_operand(
+                                    &layout,
+                                    &OxOperand::Use(*place),
+                                )
+                                .map_err(|error| problem(func, error))?,
+                                _ => {}
                             }
                         }
                     }
@@ -898,14 +938,23 @@ pub fn compile_native_scalars(
                         dst, recv, args, ..
                     } = inst
                     {
-                        let receiver = values.operand(module, &mut b, recv, ScalarType::HostObject);
+                        let receiver = values.cell(module, &mut b, recv);
                         let slot = b.create_sized_stack_slot(StackSlotData::new(
                             StackSlotKind::ExplicitSlot,
                             8,
                             3,
                         ));
                         let address = b.ins().stack_addr(types::I64, slot, 0);
-                        values.call(module, &mut b, "cvb_class_route", &[receiver, address]);
+                        let kind = b.ins().iconst(
+                            types::I32,
+                            i64::from(values::kind_of_operand(&plan.layout, recv)),
+                        );
+                        values.call(
+                            module,
+                            &mut b,
+                            "cvb_member_route",
+                            &[runtime, receiver, kind, address],
+                        );
                         let route = b.ins().stack_load(types::I32, slot, 0);
                         let end = b.create_block();
                         for (site, procedure, class) in &plan.layout.class_calls {
@@ -953,8 +1002,8 @@ pub fn compile_native_scalars(
                             b.ins().jump(end, &[]);
                             b.switch_to_block(next);
                         }
-                        let number = b.ins().iconst(types::I32, 438);
-                        lower.return_status(&mut b, number);
+                        values.member_call(module, &mut b, inst);
+                        b.ins().jump(end, &[]);
                         b.switch_to_block(end);
                         continue;
                     }
@@ -1330,8 +1379,8 @@ fn emit_native_call(
             _ => unreachable!("admitted native argument"),
         };
         let value = if !by_ref
-            && *ty == ScalarType::Variant
-            && values.lower.layout.operand_type(&operand) != Ok(ScalarType::Variant)
+            && matches!(ty, ScalarType::Variant | ScalarType::HostObject)
+            && values.lower.layout.operand_type(&operand) != Ok(*ty)
         {
             let slot =
                 b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 24, 3));
@@ -1345,12 +1394,17 @@ fn emit_native_call(
                 module,
                 b,
                 pointer,
-                12,
+                values::kind(*ty),
                 source,
                 values::kind(values.lower.layout.operand_type(&operand).unwrap()),
             );
-            copies.push((pointer, ScalarType::Variant, None));
-            pointer
+            copies.push((pointer, *ty, None));
+            if *ty == ScalarType::Variant {
+                pointer
+            } else {
+                b.ins()
+                    .load(types::I64, ir::MemFlagsData::new(), pointer, 0)
+            }
         } else {
             match (arg, by_ref) {
                 (OxArg::ByRef(place), true) => {

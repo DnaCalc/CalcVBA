@@ -2803,13 +2803,31 @@ impl<'a> LowerFunc<'a> {
             let false_value = builder.ins().iconst(types::I32, 0);
             return self.emit_store_bool(builder, module, dst, false_value);
         }
-        if !is_project_object_static_ty(&operand_static_ty(self.program, self.func, object)?)
+        let iid = self.program.named_interface_iid(type_name);
+        let bare = type_name.rsplit('.').next().unwrap_or(type_name);
+        let known = iid.is_some()
+            || bare.eq_ignore_ascii_case("Collection")
+            || self.programs.iter().any(|program| {
+                program
+                    .classes
+                    .iter()
+                    .any(|class| class.name.eq_ignore_ascii_case(bare))
+            });
+        if !known
+            && !is_project_object_static_ty(&operand_static_ty(self.program, self.func, object)?)
             && self.programs.len() == 1
         {
             return Err(JitError::unsupported(format!(
-                "JIT project object/class instruction TypeOfIs is unsupported for {type_name}: currently supports only statically typed active-project class/interface receivers"
+                "JIT project object/class instruction TypeOfIs is unsupported for {type_name}: no retained class or COM interface identity"
             )));
         }
+        let iid = iid.unwrap_or([0; 16]);
+        let iid_low = builder
+            .ins()
+            .iconst(types::I64, i64::from_le_bytes(iid[..8].try_into().unwrap()));
+        let iid_high = builder
+            .ins()
+            .iconst(types::I64, i64::from_le_bytes(iid[8..].try_into().unwrap()));
         let operand = self.lower_variant_operand(builder, object)?;
         let operand_ptr = self.emit_variant_operand_descriptors(builder, module, &[operand])?;
         let ptr_ty = module.target_config().pointer_type();
@@ -2829,6 +2847,8 @@ impl<'a> LowerFunc<'a> {
                 operand_ptr,
                 name_ptr,
                 name_len,
+                iid_low,
+                iid_high,
                 area,
                 index,
             ],
@@ -3063,8 +3083,25 @@ impl<'a> LowerFunc<'a> {
                 self.return_if_not_ok(builder, status);
                 Ok(())
             }
-            OxAsNew::ExternClass { .. } | OxAsNew::ComClass { .. } => Err(JitError::unsupported(
-                "JIT AsNew supports active-project classes and built-in VBA.Collection only",
+            OxAsNew::ComClass { prog_id } => {
+                let (area, index) = place_addr(place);
+                let area = builder.ins().iconst(types::I32, i64::from(area));
+                let index = builder.ins().iconst(types::I32, index as i64);
+                let name = builder.ins().iconst(
+                    module.target_config().pointer_type(),
+                    prog_id.as_ptr() as i64,
+                );
+                let len = builder.ins().iconst(types::I32, prog_id.len() as i64);
+                let callee = self.import(builder, module, self.imports.as_new_com_class_slot);
+                let call = builder
+                    .ins()
+                    .call(callee, &[self.run, area, index, name, len]);
+                let status = builder.inst_results(call)[0];
+                self.return_if_not_ok(builder, status);
+                Ok(())
+            }
+            OxAsNew::ExternClass { .. } => Err(JitError::unsupported(
+                "JIT AsNew external project class requires a linked constructor",
             )),
         }
     }
@@ -3588,6 +3625,7 @@ impl<'a> LowerFunc<'a> {
             invoke_kind,
             args,
         } = inputs;
+        self.ensure_call_object_arguments(builder, module, args)?;
         if let Some(dst) = dst {
             self.ensure_variant_carrier_place(dst)?;
         }
@@ -3664,6 +3702,7 @@ impl<'a> LowerFunc<'a> {
             calltype,
             args,
         } = inputs;
+        self.ensure_call_object_arguments(builder, module, args)?;
         if let Some(dst) = dst {
             self.ensure_variant_carrier_place(dst)?;
         }
@@ -6434,6 +6473,48 @@ impl<'a> LowerFunc<'a> {
         Ok(())
     }
 
+    fn ensure_call_object_arguments(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        module: &mut impl Module,
+        args: &[OxCallArg],
+    ) -> Result<(), JitError> {
+        let places = args.iter().filter_map(|argument| match argument {
+            OxCallArg::ByRef(place)
+            | OxCallArg::Operand(OxOperand::Use(place))
+            | OxCallArg::Named {
+                value: OxOperand::Use(place),
+                ..
+            } => Some(*place),
+            _ => None,
+        });
+        self.ensure_object_places(builder, module, places)
+    }
+    fn ensure_object_places(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        module: &mut impl Module,
+        places: impl IntoIterator<Item = OxPlace>,
+    ) -> Result<(), JitError> {
+        for place in places {
+            if !matches!(place_ty(self.program, self.func, place)?, OxTy::Object(_)) {
+                continue;
+            }
+            let operand = self.lower_variant_operand(builder, &OxOperand::Use(place))?;
+            let pointer = self.emit_variant_operand_descriptors(builder, module, &[operand])?;
+            let (area, index) = place_addr(place);
+            let area = builder.ins().iconst(types::I32, i64::from(area));
+            let index = builder.ins().iconst(types::I32, index as i64);
+            let callee = self.import(builder, module, self.imports.store_variant);
+            let call = builder
+                .ins()
+                .call(callee, &[self.state, self.run, pointer, area, index]);
+            let status = builder.inst_results(call)[0];
+            self.return_if_not_ok(builder, status);
+        }
+        Ok(())
+    }
+
     fn lower_call_proc(
         &self,
         builder: &mut FunctionBuilder<'_>,
@@ -6442,6 +6523,15 @@ impl<'a> LowerFunc<'a> {
         proc: FuncId,
         args: &[calcvba_oxir::OxArg],
     ) -> Result<(), JitError> {
+        self.ensure_object_places(
+            builder,
+            module,
+            args.iter().filter_map(|arg| match arg {
+                calcvba_oxir::OxArg::ByVal(OxOperand::Use(place))
+                | calcvba_oxir::OxArg::ByRef(place) => Some(*place),
+                _ => None,
+            }),
+        )?;
         let callee = self
             .program
             .funcs
@@ -6755,6 +6845,7 @@ impl<'a> LowerFunc<'a> {
         native_impl: NativeImplId,
         args: &[OxCallArg],
     ) -> Result<(), JitError> {
+        self.ensure_call_object_arguments(builder, module, args)?;
         if native_impl == NativeImplId::TypeName
             && let Some(dst) = dst
             && let [OxCallArg::Operand(object)] = args

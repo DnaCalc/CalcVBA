@@ -34,6 +34,7 @@ use std::slice;
 pub mod automatic_events;
 pub mod library;
 pub mod native_export;
+pub mod object_types;
 
 /// ObjPtr borrows the object's actual native Automation face when it has one.
 /// The source value and host binding retain its lifetime, as in VBA; no pointer
@@ -253,7 +254,6 @@ struct ProcInvokeBridge {
 struct PredeclaredInitCallback {
     bridge: ProcInvokeBridge,
     proc: usize,
-    failed_identity: i32,
 }
 
 struct PredeclaredInitPlan {
@@ -2503,6 +2503,9 @@ pub unsafe extern "C" fn rt_project_new_object(
             // and no typed execution-state borrow is live while it may re-enter.
             let status = unsafe { (bridge.invoke)(bridge.ctx, program_index, init, &value, 0) };
             if status != ST_OK {
+                if let Some(object) = value.as_object_ref() {
+                    object.mark_initialization_failed();
+                }
                 return status;
             }
         }
@@ -2525,6 +2528,7 @@ fn variant_is_nothing(value: &Variant) -> bool {
     }
 }
 
+#[cfg(test)]
 fn object_identity(value: &Variant) -> i32 {
     value
         .as_object_ref()
@@ -2602,7 +2606,6 @@ pub unsafe extern "C" fn rt_project_predeclared_instance(
                         PredeclaredInitCallback {
                             bridge,
                             proc: init.0,
-                            failed_identity: instance_id,
                         }
                     }),
                 })
@@ -2613,17 +2616,15 @@ pub unsafe extern "C" fn rt_project_predeclared_instance(
             // SAFETY: the state borrow used to construct the plan ended above.
             Err(fault) => return unsafe { seat_fault(state, fault) },
         };
-        if let Some(PredeclaredInitCallback {
-            bridge,
-            proc,
-            failed_identity,
-        }) = callback
-        {
+        if let Some(PredeclaredInitCallback { bridge, proc }) = callback {
             // SAFETY: the installed bridge contract keeps its opaque context live.
             // The owned `Me` Variant is borrowed only for this synchronous call,
             // and no typed execution-state borrow is live while it may re-enter.
             let status = unsafe { (bridge.invoke)(bridge.ctx, program_index, proc, &value, 0) };
             if status != ST_OK {
+                if let Some(object) = value.as_object_ref() {
+                    object.mark_initialization_failed();
+                }
                 // SAFETY: the callback returned, so the state may be borrowed again.
                 let Some(exec) = (unsafe { state_from_raw(state) }) else {
                     return status;
@@ -2631,14 +2632,7 @@ pub unsafe extern "C" fn rt_project_predeclared_instance(
                 let Some(loaded) = exec.programs.get_mut(program_index) else {
                     return status;
                 };
-                let slot_still_points_to_failed_instance = loaded
-                    .predeclared_singletons
-                    .get(&class_index)
-                    .map(|current| object_identity(current) == failed_identity)
-                    .unwrap_or(false);
-                if slot_still_points_to_failed_instance {
-                    loaded.predeclared_singletons.remove(&class_index);
-                }
+                loaded.predeclared_singletons.remove(&class_index);
                 return status;
             }
         }
@@ -4697,7 +4691,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_predeclared_initializer_preserves_reentrant_replacement() {
+    fn failed_predeclared_initializer_clears_reentrant_replacement() {
         // SAFETY: all raw state, callback-context, and output pointers are derived
         // from live uniquely owned locals and the bridge is cleared before expiry.
         unsafe {
@@ -4725,13 +4719,7 @@ mod tests {
             assert_eq!(rt_clear_proc_invoker(raw_state), ST_OK);
             assert_eq!(status, ST_FAULT);
             assert_eq!(callback.replacement_status, ST_OK);
-            assert_eq!(
-                state.programs[0]
-                    .predeclared_singletons
-                    .get(&0)
-                    .and_then(Variant::as_i32),
-                Some(123)
-            );
+            assert!(state.programs[0].predeclared_singletons.is_empty());
         }
     }
 

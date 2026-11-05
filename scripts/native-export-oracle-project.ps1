@@ -3,7 +3,9 @@ param(
     [Parameter(Mandatory=$true)][string]$Directory,
     [Parameter(Mandatory=$true)][string]$ModulesFile,
     [string[]]$ReferencePaths=@(),
-    [string]$Entry='OracleSelfTest.ProbeNativeExports'
+    [string]$Entry='OracleSelfTest.ProbeNativeExports',
+    [string]$RunnerProject,
+    [string]$RunningObjectPath
 )
 $ErrorActionPreference='Stop'
 $scripts=Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'scripts'
@@ -48,6 +50,7 @@ $eventsFile=Join-Path $Directory 'guardian-events.jsonl'
 $readyFile=Join-Path $Directory 'guardian-ready.json'
 $stopFile=Join-Path $Directory 'guardian-stop'
 $guardian=$null; $excel=$null; $native=$null; $book=$null
+$runningTable=$null; $runningMoniker=$null; $runningCookie=0
 $record=[ordered]@{compile_status='not-run';run_status='not-run';value=$null;error=$null;pid=$owned.Id;launches=1}
 try {
     $enumeration=[ExcelOracleNativeMethods]::EnumerateOwnedWindows([uint32]$owned.Id)
@@ -62,6 +65,37 @@ try {
         Release-ComObject $application; Release-ComObject $candidate
     }
     if (-not $excel) { throw 'Cannot attach to the recorded owned Excel' }
+    if ($RunnerProject) {
+        if (-not $RunningObjectPath) { throw 'RunnerProject requires a unique RunningObjectPath' }
+        Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+[ComVisible(true), ClassInterface(ClassInterfaceType.AutoDispatch)]
+public class NativeOracleRunningExcel {
+    public object Application { get; set; }
+}
+public static class NativeOracleRunningObject {
+    [DllImport("ole32.dll")] public static extern int GetRunningObjectTable(int reserved, out IRunningObjectTable table);
+    [DllImport("ole32.dll", CharSet=CharSet.Unicode)] public static extern int CreateFileMoniker(string path, out IMoniker moniker);
+    static IRunningObjectTable table;
+    static IMoniker moniker;
+    public static int Register(object value, string path) {
+        Marshal.ThrowExceptionForHR(GetRunningObjectTable(0,out table));
+        Marshal.ThrowExceptionForHR(CreateFileMoniker(path,out moniker));
+        return table.Register(1,new NativeOracleRunningExcel { Application=value },moniker);
+    }
+    public static void Revoke(int cookie) { table.Revoke(cookie); Marshal.ReleaseComObject(moniker); Marshal.ReleaseComObject(table); }
+}
+'@
+        $runningCookie=[NativeOracleRunningObject]::Register($excel.PSObject.BaseObject,[IO.Path]::GetFullPath($RunningObjectPath))
+        $runner=Join-Path (Split-Path $scripts) 'target/debug/calcvba-cli.exe'
+        foreach ($backend in @('vm3','jit')) {
+            $output=& $runner run-project $RunnerProject --backend $backend --dump-values 2>&1
+            $output | Set-Content -LiteralPath (Join-Path $Directory ($backend+'.txt'))
+            if ($LASTEXITCODE -ne 0) { throw "Owned running-object $backend comparison failed: $output" }
+        }
+    }
     Start-OfficeGuardian
     [void](Set-OfficePhase run 'project-import')
     $book=$excel.Workbooks.Add()
@@ -87,6 +121,8 @@ try {
     $record.error=[string]$_
     if ($record.compile_status -eq 'not-run') { $record.compile_status='failed' } else { $record.run_status='failed' }
 } finally {
+    if ($runningCookie) { [NativeOracleRunningObject]::Revoke($runningCookie) }
+    Release-ComObject $runningMoniker; Release-ComObject $runningTable
     if ($book) { $book.Close($false); Release-ComObject $book }
     if ($guardian -and -not $guardian.HasExited) {
         New-Item -ItemType File -Path $stopFile -Force | Out-Null

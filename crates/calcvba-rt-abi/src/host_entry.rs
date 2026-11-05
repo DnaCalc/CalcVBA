@@ -871,7 +871,7 @@ impl ScalarLayout {
                     recv: OxOperand::Use(place),
                     name,
                     invoke_kind,
-                    default_member: false,
+                    default_member,
                     args,
                     ..
                 } = inst
@@ -885,14 +885,43 @@ impl ScalarLayout {
                         Some(OxTy::Object(calcvba_oxir::ObjClass::Class(id))) => Some(*id),
                         _ => None,
                     };
+                    let interface_name = match ty {
+                        Some(OxTy::Object(calcvba_oxir::ObjClass::Iface(id))) => {
+                            interfaces.get(id.0).map(|interface| interface.name())
+                        }
+                        _ => declared
+                            .and_then(|id| classes.get(id.0))
+                            .filter(|candidate| {
+                                classes.iter().any(|class| {
+                                    class
+                                        .implements
+                                        .iter()
+                                        .any(|name| name.eq_ignore_ascii_case(&candidate.name))
+                                })
+                            })
+                            .map(|class| class.name.as_str()),
+                    };
                     for (index, class) in classes.iter().enumerate() {
                         let id = calcvba_oxir::ClassId(index);
-                        if declared.is_some_and(|declared| declared != id) {
+                        if let Some(interface) = interface_name {
+                            if !class.name.eq_ignore_ascii_case(interface)
+                                && !class
+                                    .implements
+                                    .iter()
+                                    .any(|name| name.eq_ignore_ascii_case(interface))
+                            {
+                                continue;
+                            }
+                        } else if declared.is_some_and(|declared| declared != id) {
                             continue;
                         }
                         let method = class.methods.iter().find(|m| {
-                            (declared.is_some() || m.externally_visible)
-                                && m.name.eq_ignore_ascii_case(name)
+                            (declared.is_some() || interface_name.is_some() || m.externally_visible)
+                                && (if *default_member {
+                                    m.is_default_member
+                                } else {
+                                    m.name.eq_ignore_ascii_case(name)
+                                })
                                 && matches!(
                                     (m.kind, invoke_kind),
                                     (
@@ -911,7 +940,7 @@ impl ScalarLayout {
                                 )
                         });
                         let Some(method) = method else {
-                            if declared.is_some() {
+                            if declared.is_some() && interface_name.is_none() {
                                 return Err("unresolved typed source class member".into());
                             }
                             continue;
@@ -1615,6 +1644,36 @@ impl ScalarLayout {
     fn check(&self, inst: &OxInst) -> Result<(), String> {
         if self.native_numbers {
             match inst {
+                OxInst::CallByName {
+                    dst,
+                    object,
+                    name,
+                    calltype,
+                    args,
+                } => {
+                    for operand in [object, name, calltype] {
+                        self.operand_type(operand)?;
+                    }
+                    if let Some(dst) = dst {
+                        self.slot(*dst)?;
+                    }
+                    if args.len() > 32 {
+                        return Err("native CallByName exceeds 32 arguments".into());
+                    }
+                    for argument in args {
+                        match argument {
+                            calcvba_oxir::OxCallArg::Operand(operand)
+                            | calcvba_oxir::OxCallArg::Named { value: operand, .. } => {
+                                self.operand_type(operand)?;
+                            }
+                            calcvba_oxir::OxCallArg::ByRef(place) => {
+                                self.slot(*place)?;
+                            }
+                            _ => {}
+                        }
+                    }
+                    return Ok(());
+                }
                 OxInst::AsNew { place, .. } => {
                     if self.slots[self.slot(*place)?] != ScalarType::HostObject {
                         return Err("As New requires an Object cell".into());
@@ -1894,7 +1953,12 @@ impl ScalarLayout {
                 if !matches!(
                     self.operand_type(recv)?,
                     ScalarType::HostObject | ScalarType::Variant
-                ) || args.len() > MAX_TYPED_ARGS
+                ) || args.len()
+                    > if self.native_numbers {
+                        32
+                    } else {
+                        MAX_TYPED_ARGS
+                    }
                 {
                     return Err("invalid dynamic member receiver/arity".into());
                 }

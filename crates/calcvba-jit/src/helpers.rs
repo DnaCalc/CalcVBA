@@ -29,6 +29,7 @@ pub(crate) struct Imports {
     pub(crate) release: ClifFuncId,
     pub(crate) as_new_project_class_slot: ClifFuncId,
     pub(crate) as_new_collection_slot: ClifFuncId,
+    pub(crate) as_new_com_class_slot: ClifFuncId,
     pub(crate) new_collection_slot: ClifFuncId,
     pub(crate) new_object_slot: ClifFuncId,
     pub(crate) predeclared_slot: ClifFuncId,
@@ -187,6 +188,10 @@ pub(crate) fn register_symbols(builder: &mut JITBuilder) {
     builder.symbol(
         "rt_jit_as_new_project_class_slot",
         rt_jit_as_new_project_class_slot as *const u8,
+    );
+    builder.symbol(
+        "rt_jit_as_new_com_class_slot",
+        rt_jit_as_new_com_class_slot as *const u8,
     );
     builder.symbol(
         "rt_jit_as_new_collection_slot",
@@ -750,6 +755,18 @@ pub(crate) fn declare_imports(module: &mut impl Module) -> Result<Imports, JitEr
         )
         .map_err(module_err)?;
 
+    let mut as_new_com_class_sig = module.make_signature();
+    for ty in [ptr_ty, types::I32, types::I32, ptr_ty, types::I32] {
+        as_new_com_class_sig.params.push(AbiParam::new(ty));
+    }
+    as_new_com_class_sig.returns.push(AbiParam::new(types::I32));
+    let as_new_com_class_slot = module
+        .declare_function(
+            "rt_jit_as_new_com_class_slot",
+            Linkage::Import,
+            &as_new_com_class_sig,
+        )
+        .map_err(module_err)?;
     let mut new_collection_slot_sig = module.make_signature();
     for param in [ptr_ty, ptr_ty, types::I32, types::I32, types::I32] {
         new_collection_slot_sig.params.push(AbiParam::new(param));
@@ -1965,6 +1982,8 @@ pub(crate) fn declare_imports(module: &mut impl Module) -> Result<Imports, JitEr
     type_of_is_slot_sig.params.push(AbiParam::new(ptr_ty));
     type_of_is_slot_sig.params.push(AbiParam::new(ptr_ty));
     type_of_is_slot_sig.params.push(AbiParam::new(types::I32));
+    type_of_is_slot_sig.params.push(AbiParam::new(types::I64));
+    type_of_is_slot_sig.params.push(AbiParam::new(types::I64));
     type_of_is_slot_sig.params.push(AbiParam::new(types::I32));
     type_of_is_slot_sig.params.push(AbiParam::new(types::I32));
     type_of_is_slot_sig.returns.push(AbiParam::new(types::I32));
@@ -2225,6 +2244,7 @@ pub(crate) fn declare_imports(module: &mut impl Module) -> Result<Imports, JitEr
         release,
         as_new_project_class_slot,
         as_new_collection_slot,
+        as_new_com_class_slot,
         new_collection_slot,
         new_object_slot,
         predeclared_slot,
@@ -2844,6 +2864,40 @@ pub(crate) unsafe extern "C" fn rt_jit_as_new_project_class_slot(
             alias,
             OxAsNew::ProjectClass {
                 class: ClassId(class_index as usize),
+            },
+        );
+        ST_OK
+    })
+}
+
+pub(crate) unsafe extern "C" fn rt_jit_as_new_com_class_slot(
+    run: *mut JitRun,
+    area: u32,
+    index: u32,
+    name: *const u8,
+    len: i32,
+) -> i32 {
+    status_guard(|| {
+        if run.is_null() || name.is_null() || len < 0 {
+            return ST_FAULT;
+        }
+        // SAFETY: compiled constants remain live throughout this synchronous call.
+        let Ok(prog_id) =
+            std::str::from_utf8(unsafe { std::slice::from_raw_parts(name, len as usize) })
+        else {
+            return ST_FAULT;
+        };
+        // SAFETY: compiled entry uniquely owns the live run outside callbacks.
+        let run = unsafe { &mut *run };
+        let Some(alias) =
+            current_frame_slot(run, area, index).and_then(|alias| resolve_slot_alias(run, alias))
+        else {
+            return ST_FAULT;
+        };
+        run.as_new_slots.insert(
+            alias,
+            OxAsNew::ComClass {
+                prog_id: prog_id.to_owned(),
             },
         );
         ST_OK
@@ -4997,6 +5051,16 @@ pub(crate) unsafe extern "C" fn rt_jit_call_by_name_to_slot(
             // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
             _ => return unsafe { rt_raise_runtime_error_number(state, 5) },
         };
+        if kind != ProjectMemberKind::Method
+            && object.as_object_ref().is_some_and(|object| {
+                object.native_collection_snapshot().is_some()
+                    || object.is_project_instance()
+                        && object.route_key() == VBA_COLLECTION_ROUTE_KEY
+            })
+        {
+            // SAFETY: the active JIT entry owns this same-thread error state.
+            return unsafe { rt_raise_runtime_error_number(state, 438) };
+        }
         // SAFETY: the checked JIT entry owns the live unique state and run;
         // descriptors, member name, and destination metadata remain live.
         unsafe {
@@ -6801,27 +6865,71 @@ pub(crate) unsafe extern "C" fn rt_jit_for_each_init_variant_array(
         // SAFETY: null was rejected and the compiled caller writes one descriptor to
         // a stack slot that stays live for this helper call.
         let source = unsafe { *source };
-        // SAFETY: null was rejected and the source is cloned before mutating iterator state.
-        let run_ref = unsafe { &*run };
-        let array_source =
-            if source.kind == JIT_VARIANT_OPERAND_PLACE && source.area as u32 != AREA_TEMP {
+        // SAFETY: the source descriptor is retained by compiled code. As-New
+        // activation finishes before any iterator/frame borrow is taken.
+        let source_value = match unsafe { variant_operand_value_with_as_new(run, state, source) } {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        let (array_source, iter_alias) = {
+            // SAFETY: this short read-only run borrow ends before host callbacks.
+            let run_ref = unsafe { &*run };
+            let array_source = if source_value.as_safearray().is_some()
+                && source.kind == JIT_VARIANT_OPERAND_PLACE
+                && source.area as u32 != AREA_TEMP
+            {
                 current_frame_slot(run_ref, source.area as u32, source.index as u32)
                     .and_then(|alias| resolve_slot_alias(run_ref, alias))
             } else {
                 None
             };
-        let Some(source) = variant_operand_value_from_compiled_desc!(run_ref, source) else {
-            return ST_FAULT;
+            let Some(iter_alias) = current_frame_slot(run_ref, iter_area, iter_index)
+                .and_then(|alias| resolve_slot_alias(run_ref, alias))
+            else {
+                return ST_FAULT;
+            };
+            (array_source, iter_alias)
         };
-        let Some(array) = source.as_safearray() else {
-            // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
-            return unsafe { rt_raise_type_mismatch(state) };
-        };
-        let elements = array.variant_elements().unwrap_or_default();
-        let Some(iter_alias) = current_frame_slot(run_ref, iter_area, iter_index)
-            .and_then(|alias| resolve_slot_alias(run_ref, alias))
-        else {
-            return ST_FAULT;
+        let elements = if let Some(array) = source_value.as_safearray() {
+            array.variant_elements().unwrap_or_default()
+        } else if let Some(object) = source_value.as_object_ref() {
+            if let Some(values) = object.native_collection_snapshot() {
+                values
+            } else {
+                // SAFETY: the host outlives this invocation; no execution-state
+                // or frame reference spans its synchronous COM enumeration.
+                let host = {
+                    // SAFETY: the active entry uniquely owns the live state.
+                    let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
+                        return ST_FAULT;
+                    };
+                    exec.host
+                };
+                match host.com().enumerate_object(object) {
+                    Ok(values) => values,
+                    Err(error) => {
+                        // SAFETY: the active entry uniquely owns the live state.
+                        return unsafe {
+                            rt_raise_runtime_error_number(
+                                state,
+                                error.host_error_code.unwrap_or(13),
+                            )
+                        };
+                    }
+                }
+            }
+        } else {
+            // SAFETY: the active entry uniquely owns the live state.
+            return unsafe {
+                rt_raise_runtime_error_number(
+                    state,
+                    if source_value.vtype() == VarType::Object {
+                        91
+                    } else {
+                        13
+                    },
+                )
+            };
         };
         // SAFETY: null was rejected and immutable borrows ended before the map write.
         let run = unsafe { &mut *run };
@@ -7274,6 +7382,8 @@ pub(crate) unsafe extern "C" fn rt_jit_type_of_is_to_bool_slot(
     operand: *const JitVariantOperandDesc,
     type_name_ptr: *const u8,
     type_name_len: i32,
+    iid_low: u64,
+    iid_high: u64,
     dst_area: u32,
     dst_index: u32,
 ) -> i32 {
@@ -7310,20 +7420,29 @@ pub(crate) unsafe extern "C" fn rt_jit_type_of_is_to_bool_slot(
         } else {
             // SAFETY: the current compiled-run boundary owns the live unique state handle;
             // typed references and owned values remain live and nonaliasing for this call.
-            let object = match unsafe { variant_to_project_object_for_jit(state, &value) } {
-                Ok(object) => object,
-                Err(status) => return status,
+            let Some(object) = value.as_object_ref() else {
+                // SAFETY: live unique state for this synchronous helper.
+                return unsafe { rt_raise_runtime_error_number(state, 424) };
             };
-            if !object.is_project_instance() {
+            let mut iid = [0; 16];
+            iid[..8].copy_from_slice(&iid_low.to_le_bytes());
+            iid[8..].copy_from_slice(&iid_high.to_le_bytes());
+            // SAFETY: the compiled run owns the unique state; no callback is made.
+            let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
                 return ST_FAULT;
+            };
+            match calcvba_rt_abi::object_types::matches_type(
+                exec.host,
+                &object,
+                type_name,
+                (iid != [0; 16]).then_some(iid),
+            ) {
+                Ok(value) => value,
+                Err(fault) => {
+                    exec.err_engine.raise(fault, "OxVba");
+                    return ST_FAULT;
+                }
             }
-            let descriptor = object.class_descriptor();
-            let bare = type_name.rsplit('.').next().unwrap_or(type_name);
-            descriptor.name.eq_ignore_ascii_case(bare)
-                || descriptor
-                    .implements
-                    .iter()
-                    .any(|name| name.eq_ignore_ascii_case(bare))
         };
         // SAFETY: null run was rejected and the compiled destination identifies a
         // live Boolean carrier slot owned by this synchronous helper call.

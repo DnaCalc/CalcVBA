@@ -1213,6 +1213,18 @@ impl ObjectRef {
         unsafe { (*owner).identity.terminates_on_release }
     }
 
+    /// Class_Terminate is not scheduled when Class_Initialize failed.
+    pub fn mark_initialization_failed(&self) {
+        if self.is_project_instance() {
+            let owner = compat_owner_from_unknown(self.0.as_ptr());
+            // SAFETY: the private vtable proves this retained project box, and
+            // its lifecycle cells are used only on the owning VBA thread.
+            unsafe {
+                (*owner).terminated.set(true);
+            }
+        }
+    }
+
     pub fn class_descriptor(&self) -> &'static RuntimeClassDescriptor {
         debug_assert!(
             self.is_compat_object(),

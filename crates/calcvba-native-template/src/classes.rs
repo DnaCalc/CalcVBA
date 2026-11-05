@@ -21,6 +21,20 @@ pub unsafe extern "C" fn cvb_collection_new(out: *mut u8) -> i32 {
 }
 
 /// # Safety
+/// Cell is one initialized owning Object cell on the native calling thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cvb_collection_ensure(cell: *mut u8) -> i32 {
+    // SAFETY: the retained Object cell contains either Nothing or a live owner.
+    unsafe {
+        if cell.cast::<usize>().read() == 0 {
+            cvb_collection_new(cell)
+        } else {
+            0
+        }
+    }
+}
+
+/// # Safety
 /// Cell has the declared kind, name is immutable UTF-8 image data and out, when
 /// nonnull, is a writable native Boolean. Assignment mode validates Set.
 #[unsafe(no_mangle)]
@@ -39,17 +53,14 @@ pub unsafe extern "C" fn cvb_object_type(
             let value = super::services::read(context, cell, kind)?;
             let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name, len));
             let bare = name.rsplit('.').next().unwrap_or(name);
+            let mut iid = [0u8; 16];
+            std::ptr::copy_nonoverlapping(name.as_ptr().add(len), iid.as_mut_ptr(), 16);
+            let iid = (iid != [0; 16]).then_some(iid);
             let matches = if let Some(object) = value.as_object_ref() {
                 if bare.eq_ignore_ascii_case("Object") {
                     true
-                } else if let Some(descriptor) = object.try_class_descriptor() {
-                    descriptor.name.eq_ignore_ascii_case(bare)
-                        || descriptor
-                            .implements
-                            .iter()
-                            .any(|n| n.eq_ignore_ascii_case(bare))
                 } else {
-                    super::services::foreign_type_matches(context, object, name)?
+                    super::services::foreign_type_matches(context, object, name, iid)?
                 }
             } else {
                 assignment != 0 && value.vtype() == calcvba_runtime::VarType::Object
@@ -192,6 +203,7 @@ pub unsafe extern "C" fn cvb_class_new(
                 let mut result = [0u64; 3];
                 let number = initialize(context, object.raw_iunknown(), result.as_mut_ptr().cast());
                 if number != 0 {
+                    object.mark_initialization_failed();
                     return Err(number);
                 }
             }

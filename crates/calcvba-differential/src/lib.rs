@@ -22533,8 +22533,8 @@ End Sub
         ]);
         assert_eq!(
             snap.first(),
-            Some(&canon(&Variant::from_i32(1))),
-            "failed Class_Initialize should release the unassigned instance and run Terminate before the next statement: {snap:?}"
+            Some(&canon(&Variant::from_i32(0))),
+            "Office: failed Class_Initialize releases the unassigned instance without Class_Terminate: {snap:?}"
         );
         assert_eq!(
             snap.get(1),
@@ -22543,13 +22543,13 @@ End Sub
         );
         assert_eq!(
             snap.get(2),
-            Some(&canon(&Variant::from_i32(1))),
-            "statement after the caught initializer fault should observe Terminate: {snap:?}"
+            Some(&canon(&Variant::from_i32(0))),
+            "statement after the caught initializer fault should observe no Class_Terminate: {snap:?}"
         );
     }
 
     #[test]
-    fn vm3_class_initialize_failure_drains_child_fields_after_terminate() {
+    fn vm3_class_initialize_failure_drains_child_fields_without_parent_terminate() {
         use calcvba_symbol::manifest::ModuleKind::{Class, Procedural};
         let snap = run_obj_ok(&[
             (
@@ -22570,8 +22570,8 @@ End Sub
         ]);
         assert_eq!(
             snap.first(),
-            Some(&canon(&Variant::from_string("P;C;A;"))),
-            "failed parent initializer should run parent Terminate, then release child fields to the same drain fixpoint, before Main continues: {snap:?}"
+            Some(&canon(&Variant::from_string("C;A;"))),
+            "Office: failed parent initializer skips parent Terminate and releases initialized child fields before Main continues: {snap:?}"
         );
     }
 

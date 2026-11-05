@@ -2523,6 +2523,18 @@ impl<'h> Vm3<'h> {
                         )));
                     }
                 };
+                if invoke_kind != TypeLibMemberInvokeKind::Method
+                    && recv_v.as_object_ref().is_some_and(|object| {
+                        object.native_collection_snapshot().is_some()
+                            || object.is_project_instance()
+                                && object.route_key() == VBA_COLLECTION_ROUTE_KEY
+                    })
+                {
+                    return Err(Vm3Error::Fault(Fault::new(
+                        438,
+                        "Object doesn't support this property or method",
+                    )));
+                }
                 let ret = self.dispatch_member_by_name(recv_v, &member_name, invoke_kind, args)?;
                 if let Some(dst) = dst {
                     self.store(dst, ret)?;
@@ -3450,7 +3462,17 @@ impl<'h> Vm3<'h> {
         );
         let value = Variant::from_object_ref(object.clone());
         if let Some(init) = initialize {
-            self.run_proc_with_me(self.cur, init, Variant::from_object_ref(object), &[], false)?;
+            let result = self.run_proc_with_me(
+                self.cur,
+                init,
+                Variant::from_object_ref(object.clone()),
+                &[],
+                false,
+            );
+            if result.is_err() {
+                object.mark_initialization_failed();
+            }
+            result?;
         }
         Ok(value)
     }
@@ -3492,17 +3514,12 @@ impl<'h> Vm3<'h> {
         if let Some(init) = initialize
             && let Err(err) = self.run_proc_with_me(self.cur, init, value.clone(), &[], false)
         {
-            let failed_identity = object_identity(&value);
-            let slot_still_points_to_failed_instance = self.exec.programs[self.cur]
-                .predeclared_singletons
-                .get(&class_idx)
-                .map(|current| object_identity(current) == failed_identity)
-                .unwrap_or(false);
-            if slot_still_points_to_failed_instance {
-                self.exec.programs[self.cur]
-                    .predeclared_singletons
-                    .remove(&class_idx);
+            if let Some(object) = value.as_object_ref() {
+                object.mark_initialization_failed();
             }
+            self.exec.programs[self.cur]
+                .predeclared_singletons
+                .remove(&class_idx);
             return Err(err);
         }
         Ok(value)
@@ -3925,32 +3942,15 @@ impl<'h> Vm3<'h> {
             return Ok(false);
         }
         let obj = variant_to_object(&v)?;
-        let bare = type_name.rsplit('.').next().unwrap_or(type_name);
-        // A built-in `Collection` carries the reserved sentinel route key (it indexes no project
-        // class), so it must be matched by name before the `classes` lookup.
-        if obj.route_key() == VBA_COLLECTION_ROUTE_KEY {
-            return Ok(bare.eq_ignore_ascii_case("Collection"));
-        }
-        if obj.is_project_instance() {
-            return Ok(self
-                .exec
-                .programs
-                .get(obj.bundle_id() as usize)
-                .and_then(|lp| lp.program.classes.get(obj.route_key() as usize))
-                .is_some_and(|class| {
-                    class.name.eq_ignore_ascii_case(bare)
-                        || class
-                            .implements
-                            .iter()
-                            .any(|i| i.eq_ignore_ascii_case(bare))
-                }));
-        }
-        if let Ok(Some(name)) = self.exec.host.com().object_type_name(obj.clone())
-            && (name.eq_ignore_ascii_case(type_name) || name.eq_ignore_ascii_case(bare))
-        {
-            return Ok(true);
-        }
-        Ok(false)
+        calcvba_rt_abi::object_types::matches_type(
+            self.exec.host,
+            &obj,
+            type_name,
+            self.exec.programs[self.cur]
+                .program
+                .named_interface_iid(type_name),
+        )
+        .map_err(Vm3Error::Fault)
     }
 
     /// The class name of a project instance (else the host's COM name) — the

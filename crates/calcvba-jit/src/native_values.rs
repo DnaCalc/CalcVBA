@@ -1,6 +1,13 @@
 use super::*;
 
 pub(super) const HELPERS: &[(&str, &[ir::Type])] = &[
+    ("cvb_member", &[types::I64; 5]),
+    (
+        "cvb_member_route",
+        &[types::I64, types::I64, types::I32, types::I64],
+    ),
+    ("cvb_collection_ensure", &[types::I64]),
+    ("cvb_com_ensure", &[types::I64; 4]),
     ("cvb_class_new", &[types::I64; 5]),
     ("cvb_as_new", &[types::I64; 5]),
     ("cvb_class_route", &[types::I64; 2]),
@@ -393,6 +400,133 @@ pub(super) struct Values<'a> {
     pub as_new: HashMap<OxPlace, calcvba_oxir::inst::OxAsNew>,
 }
 impl Values<'_> {
+    pub fn member_call(
+        &self,
+        module: &mut impl Module,
+        b: &mut FunctionBuilder<'_>,
+        inst: &OxInst,
+    ) {
+        use calcvba_rt_abi::native_export::{
+            NativeMemberArgument, NativeMemberBinding, NativeMemberCall,
+        };
+        let (dst, receiver, binding, arguments) = match inst {
+            OxInst::ComCallEarly {
+                dst,
+                recv,
+                method,
+                args,
+                ..
+            } => (
+                *dst,
+                recv,
+                NativeMemberBinding::Early {
+                    member: Box::new(
+                        self.program
+                            .com_method(*method)
+                            .expect("admitted COM descriptor")
+                            .clone(),
+                    ),
+                    interfaces: self
+                        .program
+                        .com_interfaces
+                        .iter()
+                        .filter_map(|interface| {
+                            if let calcvba_oxir::ComInterface::Com(metadata) = interface {
+                                Some(metadata.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                },
+                args.clone(),
+            ),
+            OxInst::ComCallLate {
+                dst,
+                recv,
+                name,
+                default_member,
+                invoke_kind,
+                args,
+            } => (
+                *dst,
+                recv,
+                NativeMemberBinding::Late {
+                    name: (!default_member).then(|| name.clone()),
+                    kind: *invoke_kind,
+                },
+                args.clone(),
+            ),
+            OxInst::CallByName {
+                dst,
+                object,
+                name,
+                calltype,
+                args,
+            } => {
+                let mut arguments = vec![
+                    OxCallArg::Operand(name.clone()),
+                    OxCallArg::Operand(calltype.clone()),
+                ];
+                arguments.extend_from_slice(args);
+                (*dst, object, NativeMemberBinding::CallByName, arguments)
+            }
+            _ => unreachable!("native member instruction"),
+        };
+        let receiver_cell = self.cell(module, b, receiver);
+        let pointers = b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            (arguments.len().max(1) * 8) as u32,
+            3,
+        ));
+        let mut specifications = Vec::new();
+        for (index, argument) in arguments.iter().enumerate() {
+            let (operand, by_ref, omitted, name) = match argument {
+                OxCallArg::Operand(operand) => (operand.clone(), false, false, None),
+                OxCallArg::ByRef(place) => (OxOperand::Use(*place), true, false, None),
+                OxCallArg::Named { name, value } => {
+                    (value.clone(), false, false, Some(name.clone()))
+                }
+                OxCallArg::Const(value) => {
+                    (OxOperand::Const(OxConst::I32(*value)), false, false, None)
+                }
+                OxCallArg::Omitted => (OxOperand::Const(OxConst::Empty), false, true, None),
+            };
+            let cell = self.cell(module, b, &operand);
+            b.ins().stack_store(cell, pointers, (index * 8) as i32);
+            specifications.push(NativeMemberArgument {
+                kind: kind_of_operand(self.lower.layout, &operand),
+                by_ref,
+                omitted,
+                name,
+            });
+        }
+        let result_kind = dst
+            .map(|dst| self.slot_kind(self.lower.layout.slot(dst).unwrap()))
+            .unwrap_or(0);
+        let call = NativeMemberCall {
+            receiver_kind: kind_of_operand(self.lower.layout, receiver),
+            result_kind,
+            binding,
+            arguments: specifications,
+        };
+        let payload = serde_json::to_vec(&call).expect("native COM metadata serialization");
+        let mut bytes = (payload.len() as u32).to_le_bytes().to_vec();
+        bytes.extend(payload);
+        let metadata = data(module, b, bytes, 4);
+        let args = b.ins().stack_addr(types::I64, pointers, 0);
+        let out = if let Some(dst) = dst {
+            self.address(b, self.lower.layout.slot(dst).unwrap())
+        } else {
+            b.ins().iconst(types::I64, 0)
+        };
+        self.call(
+            module,
+            b,
+            "cvb_member",
+            &[self.lower.runtime, metadata, receiver_cell, args, out],
+        );
+    }
     fn object_type(
         &self,
         module: &mut impl Module,
@@ -407,7 +541,18 @@ impl Values<'_> {
             types::I32,
             i64::from(kind_of_operand(self.lower.layout, operand)),
         );
-        let text = data(module, b, name.as_bytes().to_vec(), 1);
+        let mut schema = name.as_bytes().to_vec();
+        let iid = self
+            .lower
+            .layout
+            .assignment_iids
+            .get(name)
+            .copied()
+            .flatten()
+            .or_else(|| self.program.named_interface_iid(name))
+            .unwrap_or([0; 16]);
+        schema.extend_from_slice(&iid);
+        let text = data(module, b, schema, 1);
         let len = b.ins().iconst(types::I64, name.len() as i64);
         let mode = b.ins().iconst(types::I32, i64::from(assignment));
         let out = if let Some(dst) = dst {
@@ -586,6 +731,22 @@ impl Values<'_> {
                 self.as_new.get(place)
             {
                 self.class_new(module, b, *class, cell, true);
+            } else if let Some(calcvba_oxir::inst::OxAsNew::ExternClass { import }) =
+                self.as_new.get(place)
+            {
+                assert!(self.lower.layout.library_news.contains(import));
+                self.call(module, b, "cvb_collection_ensure", &[cell]);
+            } else if let Some(calcvba_oxir::inst::OxAsNew::ComClass { prog_id }) =
+                self.as_new.get(place)
+            {
+                let name = data(module, b, prog_id.as_bytes().to_vec(), 1);
+                let len = b.ins().iconst(types::I64, prog_id.len() as i64);
+                self.call(
+                    module,
+                    b,
+                    "cvb_com_ensure",
+                    &[self.lower.runtime, name, len, cell],
+                );
             }
             return cell;
         }
@@ -722,6 +883,16 @@ impl Values<'_> {
     ) -> bool {
         let layout = self.lower.layout;
         match inst {
+            OxInst::ComCallEarly { .. } | OxInst::CallByName { .. } => {
+                self.member_call(module, b, inst);
+                return true;
+            }
+            OxInst::ComCallLate { .. }
+                if !layout.class_calls.iter().any(|(site, _, _)| site == inst) =>
+            {
+                self.member_call(module, b, inst);
+                return true;
+            }
             OxInst::DrainTerminations => {
                 self.call(module, b, "cvb_drain_terminations", &[self.lower.runtime]);
                 return true;

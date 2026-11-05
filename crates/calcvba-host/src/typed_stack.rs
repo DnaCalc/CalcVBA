@@ -717,7 +717,14 @@ impl TypedStack {
                     )?;
                     let frame = &mut self.frames.last_mut().ok_or(5)?.activation;
                     if let Some(dst) = dst {
-                        frame.write_owned_value(*dst, Value::Variant(value))?;
+                        let ty = frame
+                            .layout()
+                            .operand_type(&OxOperand::Use(*dst))
+                            .map_err(|_| 5)?;
+                        frame.write_owned_value(
+                            *dst,
+                            calcvba_rt_abi::host_entry::value::from_variant(ty, value)?,
+                        )?;
                     }
                     frame.set_pc(frame.pc() + 1);
                     return Ok(());
@@ -836,7 +843,16 @@ impl TypedStack {
                                 )?;
                                 let frame = &mut self.frames.last_mut().ok_or(5)?.activation;
                                 if let Some(dst) = dst {
-                                    frame.write_owned_value(*dst, Value::Variant(result))?;
+                                    let ty = frame
+                                        .layout()
+                                        .operand_type(&OxOperand::Use(*dst))
+                                        .map_err(|_| 5)?;
+                                    frame.write_owned_value(
+                                        *dst,
+                                        calcvba_rt_abi::host_entry::value::from_variant(
+                                            ty, result,
+                                        )?,
+                                    )?;
                                 }
                                 frame.set_pc(frame.pc() + 1);
                                 return Ok(());

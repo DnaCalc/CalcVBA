@@ -8077,6 +8077,9 @@ impl<'a> LowerFunc<'a> {
         operand: &OxOperand,
         native_impl: NativeImplId,
     ) -> Result<bool, JitError> {
+        if native_impl == NativeImplId::CVar && self.is_supported_variant_extern_operand(operand)? {
+            return Ok(true);
+        }
         match operand {
             OxOperand::Const(OxConst::Str(_)) => Ok(matches!(native_impl, NativeImplId::CDate)),
             OxOperand::Const(

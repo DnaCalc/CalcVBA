@@ -444,6 +444,14 @@ End Sub
 Public Function Boxed(ByVal value As Variant) As Variant
     Boxed = CVar(value)
 End Function
+Public Function LiteralBoxed() As Variant
+    LiteralBoxed = CVar("text")
+End Function
+Public Function LocalBoxed() As Variant
+    Dim value As String
+    value = "local"
+    LocalBoxed = CVar(value)
+End Function
 "#,
         );
         let session = Provider::default()
@@ -528,6 +536,16 @@ End Function
                 panic!("Variant result");
             };
             assert_eq!(value, input, "{backend:?}");
+        }
+        for (name, expected) in [("LiteralBoxed", "text"), ("LocalBoxed", "local")] {
+            let bound = session
+                .bind_values("Api", name, &[], api::ValueType::Variant)
+                .unwrap();
+            let mut call = session.begin_values(&bound, &[], frame(), 1000).unwrap();
+            let api::Value::Variant(value) = finish(&mut *call, 1) else {
+                panic!("Variant result");
+            };
+            assert_eq!(value.as_bstr().unwrap().as_str(), expected, "{backend:?}");
         }
     }
 }

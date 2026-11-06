@@ -198,6 +198,9 @@ pub fn synthesize_export_surface_from_core_program(program: &CoreProgram) -> Pro
                     implements: class.implements.clone(),
                 };
                 for method in &class.methods {
+                    if !method.externally_visible {
+                        continue;
+                    }
                     let Some(proc) = program.procs.get(method.proc.0) else {
                         continue;
                     };

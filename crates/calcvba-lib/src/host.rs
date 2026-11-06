@@ -353,6 +353,13 @@ pub fn file_input(args: &[Variant], host: &dyn HostServices) -> LibResult<Varian
         .fs()
         .input_fields_variant(req(args, 0)?, req(args, 1)?)?)
 }
+pub fn file_input_chars(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
+    let count = as_i32(need(args, 0)?)?;
+    let handle = as_i32(need(args, 1)?)?;
+    Ok(host
+        .fs()
+        .input_chars_variant(Variant::from_i32(handle), Variant::from_i32(count))?)
+}
 pub fn console_input(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
     Ok(host.console().input_fields_variant(req(args, 0)?)?)
 }
@@ -363,7 +370,9 @@ pub fn console_line_input(host: &dyn HostServices) -> LibResult<Variant> {
     Ok(host.console().line_input_variant()?)
 }
 pub fn file_eof(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
-    Ok(host.fs().eof_variant(req(args, 0)?)?)
+    Ok(Variant::from_bool(
+        as_f64(&host.fs().eof_variant(req(args, 0)?)?)? != 0.0,
+    ))
 }
 pub fn file_lof(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
     Ok(host.fs().lof_variant(req(args, 0)?)?)

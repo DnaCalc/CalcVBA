@@ -332,6 +332,13 @@ pub const fn intrinsic_entry(id: NativeImplId) -> IntrinsicEntry {
         FilePrint => e(FilePrint, &[], variadic(0), FileStatement),
         ConsolePrint => e(ConsolePrint, &["Print"], variadic(0), FileStatement),
         FileInput => e(FileInput, &[], variadic(0), FileStatement),
+        FileInputChars => e_params(
+            FileInputChars,
+            &["Input", "Input$"],
+            sig(2, 2),
+            &["Number", "FileNumber"],
+            Ordinary,
+        ),
         ConsoleInput => e(ConsoleInput, &[], variadic(0), FileStatement),
         FileLineInput => e(FileLineInput, &[], variadic(0), FileStatement),
         ConsoleLineInput => e(ConsoleLineInput, &[], variadic(0), FileStatement),
@@ -436,13 +443,9 @@ mod tests {
 
     #[test]
     fn migrated_library_member_name_matches_catalog_primary() {
-        // The `VBA`-bundle export/import name for a migrated id
-        // (`NativeImplId::library_member`) must equal the catalog's *primary* (first)
-        // user-facing name — the name `name_to_intrinsic` maps a source identifier to.
-        // If they diverged, a user-typed call (`Abs(x)`) would resolve to the id but
-        // the binder would import a member name the bundle never exported, breaking
-        // the cross-bundle link. This binds the two hand-written name sources (which
-        // live in different crates) together.
+        // Ordinary functions use the source primary as their bundle binding.
+        // Input expressions need a separate binding because FileSystem.Input
+        // already names the CSV statement in existing compiled packages.
         for id in ALL_INTRINSICS.iter().copied() {
             let Some((_module, member)) = id.library_member() else {
                 continue;
@@ -451,11 +454,33 @@ mod tests {
                 .names
                 .first()
                 .unwrap_or_else(|| panic!("migrated id {id:?} has no catalog name"));
+            let binding = if id == NativeImplId::FileInputChars {
+                "InputString"
+            } else {
+                primary
+            };
             assert!(
-                member.eq_ignore_ascii_case(primary),
-                "library_member name {member:?} != catalog primary {primary:?} for {id:?}",
+                member.eq_ignore_ascii_case(binding),
+                "library_member name {member:?} != binding {binding:?} for {id:?}",
             );
         }
+    }
+
+    #[test]
+    fn input_expression_and_statement_keep_distinct_library_bindings() {
+        use NativeImplId::{FileInput, FileInputChars};
+        assert_eq!(intrinsic_entry(FileInputChars).names, &["Input", "Input$"]);
+        assert_eq!(
+            FileInputChars.library_member(),
+            Some(("FileSystem", "InputString"))
+        );
+        assert_eq!(
+            FileInput.library_statement_member(),
+            Some(("FileSystem", "Input"))
+        );
+        assert_eq!(name_to_intrinsic("Input"), Some(FileInputChars));
+        assert_eq!(name_to_intrinsic("Input$"), Some(FileInputChars));
+        assert_eq!(name_to_intrinsic("InputString"), None);
     }
 
     #[test]

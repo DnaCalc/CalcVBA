@@ -74,7 +74,7 @@ impl Dll {
             let result = take(result);
             let source = take(source as *mut u16);
             let description = take(description as *mut u16);
-            assert_eq!(number, 0, "{source}: {description}");
+            assert_eq!(number, 0, "{name:?}: {source}: {description}");
             result
         }
     }
@@ -259,5 +259,84 @@ fn unshared_typed_aliases_and_dynamic_project_names_have_source_refusals() {
         .to_string();
         assert!(error.contains(expected), "{error}");
         assert!(error.contains("Code:"), "{error}");
+    }
+}
+
+#[test]
+fn temporary_arrays_character_input_and_nullable_fields_agree() {
+    let directory = Directory::new();
+    let support = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/support/native_members");
+    let input = directory.0.join("input.dat");
+    std::fs::write(&input, [97u8, 44, 98, 13, 10, 34, 99, 34, 0, 233]).unwrap();
+    let control = directory.0.join("control.dat");
+    std::fs::write(&control, [65u8, 26, 66, 0, 67]).unwrap();
+    let buffered = directory.0.join("buffered.dat");
+    let mut buffered_data = vec![66u8; 5000];
+    buffered_data[0] = 65;
+    buffered_data[1] = 26;
+    std::fs::write(&buffered, buffered_data).unwrap();
+    let source = std::fs::read_to_string(support.join("Expressions.bas"))
+        .unwrap()
+        .replace("@INPUT_PATH@", &input.to_string_lossy())
+        .replace("@CONTROL_PATH@", &control.to_string_lossy())
+        .replace("@BUFFERED_PATH@", &buffered.to_string_lossy());
+    std::fs::write(directory.0.join("Expressions.bas"), source).unwrap();
+    std::fs::copy(
+        support.join("Nullable.cls"),
+        directory.0.join("Nullable.cls"),
+    )
+    .unwrap();
+    // The array/Input results were captured with visible VBE Compile in the
+    // reused owned Excel. Text input skips NUL; binary input retains it.
+    let cases = [
+        ("ArraySuite", "2:0:b:left:1:IF:1:FD"),
+        (
+            "InputSuite",
+            "97@2,44@3,98@4,13@5,10@6,34@7,99@8,34@9,233@11,E62@11|zero=0:0|negative=5|handle=52|over=62:11:0#97@2,44@3,98@4,13@5,10@6,34@7,99@8,34@9,0@10,233@11,|zero=0:0|negative=5|handle=52|over=0:11:10",
+        ),
+        ("ObjectIndexSuite", "collection:8"),
+        ("ScopeSuite", "9:True:True|107:107|438:438"),
+        ("ByValFieldSuite", "8:field!:4294967297"),
+        (
+            "ControlSuite",
+            "65@2:True,E62@8:True,E62@8:True,E62@8:True,",
+        ),
+        (
+            "BufferedControlSuite",
+            "65@2:True,E62@515:True,E62@515:True,E62@515:True,",
+        ),
+    ];
+    let exports = cases.iter().map(|(name,_)| format!("<NativeExport Include=\"{name}\"><Module>Expressions</Module><Procedure>{name}</Procedure></NativeExport>")).collect::<String>();
+    let project = directory.0.join("Expressions.basproj");
+    std::fs::write(&project, format!("<Project><PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>Expressions</ProjectName></PropertyGroup><ItemGroup><Module Include=\"Expressions.bas\"/><ClassModule Include=\"Nullable.cls\"/>{exports}</ItemGroup></Project>")).unwrap();
+    let closure = calcvba_project::load_project_closure(&project).unwrap();
+    let expected = cases
+        .iter()
+        .map(|(_, value)| *value)
+        .collect::<Vec<_>>()
+        .join("#");
+    for config in [HostConfig::vm3(), HostConfig::jit()] {
+        let mut engine = Engine::new(config);
+        engine.set_host_policy(calcvba_hal::HostPolicy::native());
+        let values = engine
+            .execute_manifest_with_variant_snapshot(closure.last().unwrap())
+            .unwrap();
+        assert!(
+            values
+                .iter()
+                .filter_map(|v| v.as_bstr())
+                .any(|v| v.to_string() == expected),
+            "{values:?}"
+        );
+    }
+    let output = build_native_library(&NativeLibraryBuildOptions {
+        project_path: project,
+        out_dir: directory.0.join("out"),
+        template_path: None,
+    })
+    .unwrap();
+    let dll = Dll::load(&output.dll_path);
+    for (name, expected) in cases {
+        assert_eq!(dll.call(name), expected, "{name}");
     }
 }

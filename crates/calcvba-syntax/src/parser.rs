@@ -723,6 +723,11 @@ impl<'a> Parser<'a> {
 
     /// Parse a parenthesised argument list: `(expr, expr, ...)`.
     fn parse_arg_list(&mut self) {
+        let input_function = self.tokens[..self.pos]
+            .iter()
+            .rev()
+            .find(|(kind, _)| !kind.is_trivia() && *kind != SyntaxKind::TypeSuffix)
+            .is_some_and(|(_, text)| text.eq_ignore_ascii_case("Input"));
         self.start_node(SyntaxKind::ArgList);
         if self.at(SyntaxKind::LParen) {
             self.bump_lparen();
@@ -732,18 +737,20 @@ impl<'a> Parser<'a> {
         if !self.at(SyntaxKind::RParen) && !self.at_eof() {
             // First argument
             if !self.at(SyntaxKind::Comma) {
-                self.parse_bare_arg();
+                self.parse_function_arg(input_function, 0);
             }
 
+            let mut argument = 0;
             while self.at(SyntaxKind::Comma) || {
                 self.eat_expr_whitespace();
                 self.at(SyntaxKind::Comma)
             } {
                 self.bump(); // ,
+                argument += 1;
                 self.eat_expr_whitespace();
                 // Support empty argument slots: f(a,,b)
                 if !self.at(SyntaxKind::Comma) && !self.at(SyntaxKind::RParen) && !self.at_eof() {
-                    self.parse_bare_arg();
+                    self.parse_function_arg(input_function, argument);
                 }
                 self.eat_expr_whitespace();
             }
@@ -804,6 +811,22 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_bare_arg_with_optional_to(&mut self, allow_to: bool) {
+        self.parse_argument(allow_to, false);
+    }
+
+    fn parse_function_arg(&mut self, input_function: bool, position: usize) {
+        let named =
+            (self.at(SyntaxKind::Ident) || self.current().is_keyword()) && self.peek_is_colon_eq();
+        let file_number = input_function
+            && if named {
+                self.tokens[self.pos].1.eq_ignore_ascii_case("FileNumber")
+            } else {
+                position == 1
+            };
+        self.parse_argument(false, file_number);
+    }
+
+    fn parse_argument(&mut self, allow_to: bool, file_number: bool) {
         // Check for named argument: Ident := expr
         if (self.at(SyntaxKind::Ident) || self.current().is_keyword()) && self.peek_is_colon_eq() {
             self.bump(); // name
@@ -816,6 +839,10 @@ impl<'a> Parser<'a> {
         // keyword is kept as a leading token of the argument segment; the
         // binder honoring it is tracked separately.
         if self.at(SyntaxKind::KwByVal) || self.at(SyntaxKind::KwByRef) {
+            self.bump();
+            self.eat_expr_whitespace();
+        }
+        if file_number && self.at(SyntaxKind::Hash) {
             self.bump();
             self.eat_expr_whitespace();
         }
@@ -3749,6 +3776,22 @@ mod tests {
         assert!(p.errors().is_empty(), "unexpected errors: {:?}", p.errors());
         assert_eq!(collect_nodes(&p.syntax(), SyntaxKind::LabelStmt).len(), 2);
         assert_eq!(collect_nodes(&p.syntax(), SyntaxKind::GoToStmt).len(), 2);
+    }
+
+    #[test]
+    fn parses_input_function_file_markers_only_in_file_number_arguments() {
+        for expression in [
+            "Input(2, #f)",
+            "Input$(2, #f)",
+            "Input(FileNumber:=#f, Number:=2)",
+        ] {
+            let src = format!("Sub T()\nx = {expression}\nEnd Sub\n");
+            let p = parse(&src);
+            assert!(p.errors().is_empty(), "{expression}: {:?}", p.errors());
+            assert_eq!(p.syntax().text(), src);
+        }
+        let p = parse("Sub T()\nx = Other(2, #f)\nEnd Sub\n");
+        assert!(!p.errors().is_empty());
     }
 
     #[test]

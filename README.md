@@ -109,6 +109,12 @@ The ordinary VBA library converts rich Variants, arrays, errors, missing/nil
 and references; `-DnaCalcPath <dna-calc-desktop.exe>` also compares the shared
 cases in DNA Calc's XLL host.
 
+The [UDF wrapper generator](tools/calcvba-udf) reads bound signatures and writes
+ordinary VBA shims, a registration table, NativeExport entries and a native XLL:
+`cargo run -p calcvba-udf -- --project Functions.basproj --out generated`.
+`scripts/run-udf-wrapper-oracle.ps1 -OracleSession <session> -Directory <new-directory>`
+compares a COM-backed project with ordinary VBA in that existing Excel process.
+
 Hosts use [`calcvba-host-api`](crates/calcvba-host-api) and
 [`calcvba-host`](crates/calcvba-host). They supply application objects and type
 information; Excel's Range/Application/WorksheetFunction model belongs to the

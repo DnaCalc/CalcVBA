@@ -492,7 +492,7 @@ function Wait-GuardianReady {
         [Parameter(Mandatory = $true)][string]$ReadyFile,
         [Parameter(Mandatory = $true)][Diagnostics.Process]$Process
     )
-    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    $deadline = [DateTime]::UtcNow.AddSeconds(60)
     while ([DateTime]::UtcNow -lt $deadline) {
         if (Test-Path -LiteralPath $ReadyFile) {
             try {

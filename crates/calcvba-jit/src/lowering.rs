@@ -3629,6 +3629,10 @@ impl<'a> LowerFunc<'a> {
         if let Some(dst) = dst {
             self.ensure_variant_carrier_place(dst)?;
         }
+        let internal_receiver = matches!(
+            operand_static_ty(self.program, self.func, recv)?,
+            OxTy::Object(ObjClass::Class(_) | ObjClass::Iface(_))
+        );
         let recv = self.lower_variant_operand(builder, recv)?;
         let recv_ptr = self.emit_variant_operand_descriptors(builder, module, &[recv])?;
         let (lowered_args, arg_names) = self.lower_project_call_args(builder, args)?;
@@ -3651,9 +3655,12 @@ impl<'a> LowerFunc<'a> {
                 .map(|member| member as *const _ as i64)
                 .unwrap_or(0),
         );
-        let invoke_kind = builder
-            .ins()
-            .iconst(types::I32, i64::from(raw_member_invoke_kind(invoke_kind)));
+        let invoke_kind = builder.ins().iconst(
+            types::I32,
+            i64::from(
+                raw_member_invoke_kind(invoke_kind) | if internal_receiver { 0x100 } else { 0 },
+            ),
+        );
         let (area, index) = if let Some(dst) = dst {
             let (area, index) = place_addr(dst);
             (
@@ -4766,15 +4773,26 @@ impl<'a> LowerFunc<'a> {
             return Ok(());
         }
 
-        let mut index_values = Vec::with_capacity(indices.len());
-        for index in indices {
-            index_values.push(self.lower_operand_i32(builder, module, index)?);
-        }
-        let indices_ptr =
-            self.emit_i32_stack_values(builder, module, &index_values, "ArrayGet subscript")?;
+        let dynamic = *array_ty == OxTy::Variant;
+        let indices_ptr = if dynamic {
+            let operands = indices
+                .iter()
+                .map(|index| self.lower_variant_operand(builder, index))
+                .collect::<Result<Vec<_>, _>>()?;
+            self.emit_variant_operand_descriptors(builder, module, &operands)?
+        } else {
+            let mut index_values = Vec::with_capacity(indices.len());
+            for index in indices {
+                index_values.push(self.lower_operand_i32(builder, module, index)?);
+            }
+            self.emit_i32_stack_values(builder, module, &index_values, "ArrayGet subscript")?
+        };
         let dimensions = i32::try_from(indices.len())
             .map_err(|_| JitError::unsupported("M4-4 ArrayGet subscript count is too large"))?;
-        let dimensions = builder.ins().iconst(types::I32, i64::from(dimensions));
+        let dimensions = builder.ins().iconst(
+            types::I32,
+            i64::from(if dynamic { -dimensions } else { dimensions }),
+        );
         let (array_area, array_index) = place_addr(*array_place);
         let array_area = builder.ins().iconst(types::I32, i64::from(array_area));
         let array_index = builder.ins().iconst(types::I32, array_index as i64);
@@ -6978,6 +6996,12 @@ impl<'a> LowerFunc<'a> {
         args: &[calcvba_oxir::OxArg],
         native_impl: NativeImplId,
     ) -> Result<(), JitError> {
+        // File expressions and parser-bound file statements use the existing
+        // Variant library ABI, including zero-argument FreeFile. The runtime
+        // library performs its normal arity/coercion and host-policy checks.
+        if native_impl.module() == calcvba_bundle::native::LibraryModule::FileIo {
+            return Ok(());
+        }
         // Format's value, format string and calendar options all use the
         // ordinary Variant library ABI; the binder has checked their names.
         if native_impl == NativeImplId::Format && (1..=4).contains(&args.len()) {

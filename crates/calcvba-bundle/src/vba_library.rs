@@ -353,6 +353,7 @@ mod tests {
             matches!(
                 id,
                 FreeFile
+                    | FileInputChars
                     | FileCurDir
                     | FileLen
                     | FileGetAttr

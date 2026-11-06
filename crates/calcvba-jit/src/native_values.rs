@@ -61,6 +61,23 @@ pub(super) const HELPERS: &[(&str, &[ir::Type])] = &[
         &[types::I64, types::I32, types::I32, types::I64],
     ),
     ("cvb_array_literal", &[types::I64; 3]),
+    (
+        "cvb_variant_index",
+        &[
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I32,
+            types::I64,
+            types::I32,
+            types::I32,
+        ],
+    ),
+    (
+        "cvb_variant_array_bound",
+        &[types::I64, types::I32, types::I32, types::I64],
+    ),
     ("cvb_paramarray_literal", &[types::I64; 5]),
     (
         "cvb_paramarray_set",
@@ -1369,8 +1386,31 @@ impl Values<'_> {
                 };
                 let slot = layout.slot(*place).unwrap();
                 let array = self.cell(module, b, array);
-                let vector = self.indices(module, b, indices);
                 let rank = b.ins().iconst(types::I32, indices.len() as i64);
+                if layout.slots[slot] == ScalarType::Variant {
+                    let (kinds, vector) = self.variant_indices(module, b, indices);
+                    let dst = layout.slot(*dst).unwrap();
+                    let out = self.address(b, dst);
+                    let to = b.ins().iconst(types::I32, i64::from(self.slot_kind(dst)));
+                    let store = b.ins().iconst(types::I32, 0);
+                    self.call(
+                        module,
+                        b,
+                        "cvb_variant_index",
+                        &[
+                            self.lower.runtime,
+                            array,
+                            kinds,
+                            vector,
+                            rank,
+                            out,
+                            to,
+                            store,
+                        ],
+                    );
+                    return true;
+                }
+                let vector = self.indices(module, b, indices);
                 if let Some((_, record)) = layout.array_record_slots.get(&slot) {
                     let descriptor = data(
                         module,
@@ -1408,8 +1448,32 @@ impl Values<'_> {
             } => {
                 let slot = layout.slot(*array).unwrap();
                 let array = self.address(b, slot);
-                let vector = self.indices(module, b, indices);
                 let rank = b.ins().iconst(types::I32, indices.len() as i64);
+                if layout.slots[slot] == ScalarType::Variant {
+                    let (kinds, vector) = self.variant_indices(module, b, indices);
+                    let input = self.cell(module, b, value);
+                    let from = b
+                        .ins()
+                        .iconst(types::I32, i64::from(kind_of_operand(layout, value)));
+                    let store = b.ins().iconst(types::I32, 1);
+                    self.call(
+                        module,
+                        b,
+                        "cvb_variant_index",
+                        &[
+                            self.lower.runtime,
+                            array,
+                            kinds,
+                            vector,
+                            rank,
+                            input,
+                            from,
+                            store,
+                        ],
+                    );
+                    return true;
+                }
+                let vector = self.indices(module, b, indices);
                 if let Some((_, record)) = layout.array_record_slots.get(&slot) {
                     let descriptor = data(
                         module,
@@ -1447,6 +1511,7 @@ impl Values<'_> {
                 dimension,
                 which,
             } => {
+                let variant = layout.operand_type(array) == Ok(ScalarType::Variant);
                 let array = self.cell(module, b, array);
                 let dimension = if let Some(dimension) = dimension {
                     self.operand(module, b, dimension, ScalarType::Long)
@@ -1460,7 +1525,11 @@ impl Values<'_> {
                 self.call(
                     module,
                     b,
-                    "cvb_array_bound",
+                    if variant {
+                        "cvb_variant_array_bound"
+                    } else {
+                        "cvb_array_bound"
+                    },
                     &[array, dimension, upper, out],
                 );
                 return true;
@@ -1908,6 +1977,32 @@ impl Values<'_> {
             stride *= i64::from(bound.count);
         }
         b.ins().iadd(base, offset)
+    }
+    fn variant_indices(
+        &self,
+        module: &mut impl Module,
+        b: &mut FunctionBuilder<'_>,
+        indices: &[OxOperand],
+    ) -> (Value, Value) {
+        let pointers = b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            (indices.len().max(1) * 8) as u32,
+            3,
+        ));
+        let mut kinds = Vec::with_capacity(indices.len());
+        for (index, operand) in indices.iter().enumerate() {
+            let cell = self.cell(module, b, operand);
+            b.ins().stack_store(cell, pointers, (index * 8) as i32);
+            kinds.push(kind_of_operand(self.lower.layout, operand));
+        }
+        let kinds = data(
+            module,
+            b,
+            kinds.into_iter().flat_map(u32::to_le_bytes).collect(),
+            4,
+        );
+        let pointers = b.ins().stack_addr(types::I64, pointers, 0);
+        (kinds, pointers)
     }
     fn indices(
         &self,

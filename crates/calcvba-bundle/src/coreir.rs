@@ -586,8 +586,14 @@ pub enum CoreValue {
     },
     Bound {
         which: BoundWhich,
-        array: Box<CorePlace>,
+        array: Box<CoreValue>,
         dimension: Option<Box<CoreValue>>,
+    },
+    /// Read an element of an expression result. The receiver is evaluated once;
+    /// unlike a place, the result cannot be used as a caller-backed ByRef alias.
+    Index {
+        array: Box<CoreValue>,
+        indices: Vec<CoreValue>,
     },
     /// `AddressOf proc` — a reference to a project procedure. Materializes the
     /// procedure index; calling through it (in-VM or via a real OS callback) is the

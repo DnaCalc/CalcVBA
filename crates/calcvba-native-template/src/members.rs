@@ -26,6 +26,139 @@ fn fault(number: i32) -> TypedFault {
 }
 
 /// # Safety
+/// Array owns an initialized Variant; kinds/indices span rank native cells. Value is an
+/// initialized native cell of kind, writable for a get and borrowed for a store.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)] // Explicit native cell/vector ABI.
+pub unsafe extern "C" fn cvb_variant_index(
+    context: *mut Context,
+    array: *mut u8,
+    kinds: *const u32,
+    indices: *const *const u8,
+    rank: u32,
+    cell: *mut u8,
+    kind: u32,
+    store: u32,
+) -> i32 {
+    let result = (|| -> Result<(), TypedFault> {
+        // SAFETY: all cells are retained by the active compiled frame; no state
+        // borrow spans the host call or owning result conversion.
+        unsafe {
+            let native = super::values::borrowed(array, 12);
+            let tag = native.Anonymous.Anonymous.vt;
+            let mut actuals = (0..rank as usize)
+                .map(|index| value(context, indices.add(index).read(), kinds.add(index).read()))
+                .collect::<Result<Vec<_>, _>>()?;
+            if tag & 0x2000 != 0 {
+                let indices = actuals
+                    .iter()
+                    .map(|index| {
+                        calcvba_eval::arith::int(index)
+                            .map_err(|error| fault(error.code))
+                            .and_then(|index| i32::try_from(index).map_err(|_| fault(6)))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let pointer = native.Anonymous.Anonymous.Anonymous.parray;
+                let element = u32::from(tag & 0x0fff);
+                let status = if store == 0 {
+                    super::values::cvb_array_get(
+                        &pointer,
+                        indices.as_ptr(),
+                        rank,
+                        element,
+                        cell,
+                        kind,
+                    )
+                } else {
+                    super::values::cvb_array_set(
+                        &pointer,
+                        indices.as_ptr(),
+                        rank,
+                        element,
+                        cell,
+                        kind,
+                    )
+                };
+                return if status == 0 {
+                    Ok(())
+                } else {
+                    Err(fault(status))
+                };
+            }
+            if !matches!(tag, 9 | 13) {
+                return Err(fault(13));
+            }
+            let receiver = object(array, 12)?;
+            let member_kind = if store == 0 {
+                DynamicMemberKind::Get
+            } else {
+                let input = value(context, cell, kind)?;
+                let member_kind = if input.vtype() == calcvba_runtime::VarType::Object {
+                    DynamicMemberKind::Set
+                } else {
+                    DynamicMemberKind::Let
+                };
+                actuals.push(input);
+                member_kind
+            };
+            let arguments = (0..actuals.len())
+                .map(|alias| DynamicArgument {
+                    name: None,
+                    by_ref: false,
+                    alias,
+                })
+                .collect();
+            let call = DynamicMemberCall {
+                name: None,
+                kind: member_kind,
+                arguments,
+            };
+            let result = if receiver.native_collection_snapshot().is_some() {
+                calcvba_rt_abi::host_entry::collection::invoke(
+                    &receiver,
+                    "Item",
+                    &actuals,
+                    &call.arguments,
+                )
+                .map_err(fault)?
+            } else if receiver.is_project_instance() {
+                return Err(fault(438));
+            } else {
+                let host = super::services::host(context);
+                let prepared = host
+                    .com()
+                    .prepare_dynamic_object(receiver)
+                    .map_err(|error| TypedFault {
+                        number: error.host_error_code.unwrap_or(13),
+                        description: error.message,
+                        source: None,
+                        help_file: None,
+                        help_context: None,
+                    })?;
+                prepared.invoke_dynamic(
+                    &call,
+                    &mut actuals,
+                    &mut *context.cast::<TypedContext>(),
+                )?
+            };
+            if store == 0 {
+                super::services::write(context, cell, kind, &result).map_err(fault)?;
+            }
+            Ok(())
+        }
+    })();
+    match result {
+        Ok(()) => 0,
+        // SAFETY: only the active owning frame's error state is updated.
+        Err(error) => unsafe {
+            super::services::typed_fault(context, error)
+                .err()
+                .unwrap_or(5)
+        },
+    }
+}
+
+/// # Safety
 /// Receiver has its declared native kind and out is a writable class index.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn cvb_member_route(

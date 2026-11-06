@@ -238,6 +238,8 @@ native_impl_ids! {
 
     // ── Diagnostics ──────────────────────────────────────────
     DebugPrint,
+    /// Character input expression; distinct from the parser-bound Input # statement.
+    FileInputChars,
 }
 
 /// The `VBA`-typelib-style module a library function belongs to. Provenance for
@@ -285,9 +287,8 @@ impl NativeImplId {
             | FileChDir | FileLen | FileCopy | FileGetAttr | FileSetAttr | FileChDrive
             | FileDateTime | FileRead | FileWrite | FilePrint | ConsolePrint | FileInput
             | ConsoleInput | FileLineInput | ConsoleLineInput | FileEof | FileLof | FileSeek
-            | FileLoc | FilePut | FileGetInto | FileWidth | FileRename | FileLock | FileUnlock => {
-                M::FileIo
-            }
+            | FileLoc | FilePut | FileGetInto | FileWidth | FileRename | FileLock | FileUnlock
+            | FileInputChars => M::FileIo,
             Command
             | GetSetting
             | GetAllSettings
@@ -390,6 +391,9 @@ impl NativeImplId {
             LCase => "LCase",
             UCase => "UCase",
             Split => "Split",
+            // The statement already owns FileSystem.Input's internal token.
+            // Source Input/Input$ resolve here through the intrinsic catalogue.
+            FileInputChars => "InputString",
             Join => "Join",
             Replace => "Replace",
             Trim => "Trim",
@@ -612,6 +616,7 @@ impl NativeImplId {
             Format => &["Format$"],
             ErrorText => &["Error$"],
             Command => &["Command$"],
+            FileInputChars => &["Input$"],
             _ => &[],
         }
     }

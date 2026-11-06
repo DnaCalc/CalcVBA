@@ -238,6 +238,10 @@ pub trait FileSystemHal {
     fn read_bytes_variant(&self, _handle: Variant, _count: Variant) -> HalResult<Variant> {
         variant_companion_not_overridden(CapabilityId::FileSystemIo, "read_bytes_variant")
     }
+    /// VBA Input/Input$: character input, including sequential-file EOF semantics.
+    fn input_chars_variant(&self, _handle: Variant, _count: Variant) -> HalResult<Variant> {
+        variant_companion_not_overridden(CapabilityId::FileSystemIo, "input_chars_variant")
+    }
     /// Formatted write output with delimiter semantics (current VBA `Write #` lane).
     fn write_bytes_variant(&self, _handle: Variant, _data: Variant) -> HalResult<Variant> {
         variant_companion_not_overridden(CapabilityId::FileSystemIo, "write_bytes_variant")

@@ -485,11 +485,41 @@ pub fn compile_native_scalars(
                         .map_err(|e| problem(func, e))?;
                     }
                     OxInst::ArrayGet { array, .. } | OxInst::Bound { array, .. } => {
-                        if layout.operand_type(array) != Ok(ScalarType::Array) {
+                        if !matches!(
+                            layout.operand_type(array),
+                            Ok(ScalarType::Array | ScalarType::Variant)
+                        ) {
                             return Err(problem(func, format!("Variant array receiver {inst:?}")));
                         }
+                        if matches!(inst, OxInst::ArrayGet { .. })
+                            && layout.operand_type(array) == Ok(ScalarType::Variant)
+                            && program.classes.iter().any(|class| {
+                                class.methods.iter().any(|method| method.is_default_member)
+                            })
+                        {
+                            return Err(problem(
+                                func,
+                                "dynamic project default index requires a compiled member route",
+                            ));
+                        }
                     }
-                    OxInst::ArraySet { array, .. } | OxInst::ArrayRedim { dst: array, .. } => {
+                    OxInst::ArraySet { array, .. } => {
+                        let slot = layout.slot(*array).map_err(|e| problem(func, e))?;
+                        if !matches!(layout.slots[slot], ScalarType::Array | ScalarType::Variant) {
+                            return Err(problem(func, format!("Variant array receiver {inst:?}")));
+                        }
+                        if layout.slots[slot] == ScalarType::Variant
+                            && program.classes.iter().any(|class| {
+                                class.methods.iter().any(|method| method.is_default_member)
+                            })
+                        {
+                            return Err(problem(
+                                func,
+                                "dynamic project default index requires a compiled member route",
+                            ));
+                        }
+                    }
+                    OxInst::ArrayRedim { dst: array, .. } => {
                         let slot = layout.slot(*array).map_err(|e| problem(func, e))?;
                         if layout.slots[slot] != ScalarType::Array {
                             return Err(problem(func, format!("Variant array receiver {inst:?}")));

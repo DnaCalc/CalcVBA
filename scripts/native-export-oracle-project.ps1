@@ -113,7 +113,7 @@ public static class NativeOracleRunningObject {
         [void]$component.CodeModule.AddFromString($source)
         Release-ComObject $component
     }
-    Invoke-OfficeCompile -Workbook $book -ModuleName ($Entry.Split('.')[0])
+    Invoke-OfficeCompile -ShowWindow -Workbook $book -ModuleName ($Entry.Split('.')[0])
     $record.compile_status='ok'
     $record.value=$excel.Run("'"+$book.Name+"'!"+$Entry)
     $record.run_status='ok'

@@ -255,6 +255,9 @@ pub(super) unsafe fn read(
             return read_array(context, data.parray);
         }
         if matches!(vt, 9 | 13) {
+            if data.punkVal.is_null() {
+                return Ok(Variant::nothing());
+            }
             let object = calcvba_runtime::ObjectRef::from_raw_iunknown_addref(data.punkVal.cast());
             if let Some(object) = object.filter(|object| {
                 object.is_project_instance() || object.native_collection_snapshot().is_some()
@@ -447,6 +450,10 @@ pub(super) unsafe fn write(
             return result;
         }
         match value.vtype() {
+            VarType::Object if value.as_object_ref().is_none() => {
+                native.Anonymous.Anonymous.vt = 9;
+                native.Anonymous.Anonymous.Anonymous.pdispVal = std::ptr::null_mut();
+            }
             VarType::Integer => {
                 native.Anonymous.Anonymous.vt = 2;
                 native.Anonymous.Anonymous.Anonymous.iVal = value.as_i16().ok_or(13)?;

@@ -64,6 +64,10 @@ bodies return explicit errors. The ordinary Variant entry remains available.
 The source compiler is also the foundation for code transformation tools;
 there is currently no language-service/LSP or debugger crate in the workspace.
 
+`tools/calcvba-udf` reads bound signatures and generates ordinary VBA XLL shims
+and native export declarations. It uses the existing native builder; Excel's
+registration and value conversion remain VBA source outside the compiler.
+
 ## Embedding and project state
 
 `calcvba-host-api` defines source projects, ordered references, signatures,

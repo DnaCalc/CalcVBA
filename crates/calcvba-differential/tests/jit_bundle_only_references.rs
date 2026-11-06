@@ -104,6 +104,84 @@ fn assert_bundle_only_match(label: &str, programs: &[OxProgram]) {
 }
 
 #[test]
+fn qualified_defaults_coerce_and_dynamic_callers_cannot_recover_friend_members() {
+    let lib = project(
+        "Lib",
+        vec![exposed_class_module(
+            "Label",
+            r#"
+Private storedCaption As String
+Private child As Label
+Public Property Get Caption() As String
+    Caption=storedCaption
+End Property
+Attribute Caption.VB_UserMemId = 0
+Public Property Let Caption(ByVal value As String)
+    storedCaption=value
+End Property
+Friend Function RuntimeDispatch(ByVal opcode As Long) As Long
+    RuntimeDispatch=opcode+100
+End Function
+Private Function Hidden() As Long
+    Hidden=1000
+End Function
+Public Function InternalRead() As Long
+    InternalRead=Me.RuntimeDispatch(7)
+End Function
+Public Function ChildIsNothing() As Boolean
+    ChildIsNothing=(child Is Nothing)
+End Function
+"#,
+        )],
+    );
+    let (surface, lib_program) = compiled_reference(&lib);
+    let app = app_project(
+        r#"
+Public observed As String
+Private Function Text(ByVal value As String) As String
+    Text=value
+End Function
+Sub Main()
+    Dim label As Lib.Label, opaque As Object, n As Long
+    Set label=New Lib.Label
+    label.Caption="unchanged"
+    observed=label
+    observed=observed & ":" & Text(label) & ":" & CStr(label.InternalRead()) & ":" & CStr(label.ChildIsNothing())
+    Set opaque=label
+    On Error Resume Next
+    n=opaque.RuntimeDispatch(7)
+    observed=observed & "|" & CStr(Err.Number)
+    Err.Clear
+    n=CallByName(opaque,"RuntimeDispatch",vbMethod,7)
+    observed=observed & ":" & CStr(Err.Number)
+    Err.Clear
+    n=CallByName(opaque,"Hidden",vbMethod)
+    observed=observed & ":" & CStr(Err.Number)
+End Sub
+"#,
+    );
+    let app_program = compile_bundle_only_app(&app, std::slice::from_ref(&surface));
+    let expected =
+        calcvba_differential::Canon::Str("unchanged:unchanged:107:True|438:438:438".into());
+    for executor in [Executor::Vm3, Executor::Jit] {
+        let result = run_ox_programs(executor, &[lib_program.clone(), app_program.clone()]);
+        assert!(!result.raised, "{executor:?}: {result:?}");
+        assert_eq!(result.result.unwrap().first(), Some(&expected));
+    }
+    let unavailable = app_project(
+        "Sub Main()\nDim label As Lib.Label\nSet label=New Lib.Label\nDim n As Long\nn=label.RuntimeDispatch(7)\nEnd Sub\n",
+    );
+    assert!(
+        calcvba_bind::bind_program_with_project_surfaces(
+            &unavailable,
+            &CatalogTypeLibResolver,
+            &[surface]
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn jit_bundle_only_referenced_class_aggregates_match_vm3() {
     let lib = project(
         "Lib",

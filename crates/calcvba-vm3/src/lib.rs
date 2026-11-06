@@ -493,6 +493,29 @@ impl<'h> Vm3<'h> {
         self.exec.programs[self.cur].program
     }
 
+    fn project_typed_receiver(&self, operand: &OxOperand) -> bool {
+        let Some(frame) = self.frames.last() else {
+            return false;
+        };
+        let function = &self.cur_program().funcs[frame.func.0];
+        let ty = match operand {
+            OxOperand::Use(OxPlace::Local(id)) => function.locals.get(id.0).map(|local| &local.ty),
+            OxOperand::Use(OxPlace::Temp(id)) => function.temps.get(id.0),
+            OxOperand::Use(OxPlace::Global(id)) => self
+                .cur_program()
+                .globals
+                .get(id.0)
+                .map(|global| &global.ty),
+            _ => None,
+        };
+        matches!(
+            ty,
+            Some(OxTy::Object(
+                calcvba_oxir::ObjClass::Class(_) | calcvba_oxir::ObjClass::Iface(_)
+            ))
+        )
+    }
+
     /// Initial slot value for a statically typed VBA variable. Dynamic array variables are
     /// arrays before allocation for `IsArray`, but have no SAFEARRAY descriptor/bounds until
     /// `ReDim`.
@@ -2467,7 +2490,14 @@ impl<'h> Vm3<'h> {
                 let descriptor = descriptor.clone();
                 let member_name = descriptor.name.clone();
                 let ret = if object.is_project_instance() {
-                    self.dispatch_project_method(object, recv_v, &member_name, *invoke_kind, args)?
+                    self.dispatch_project_method(
+                        object,
+                        recv_v,
+                        &member_name,
+                        *invoke_kind,
+                        args,
+                        false,
+                    )?
                 } else {
                     if descriptor.invoke_kind != *invoke_kind {
                         return Err(Vm3Error::Malformed("early COM accessor mismatch".into()));
@@ -2492,7 +2522,13 @@ impl<'h> Vm3<'h> {
                 let ret = if *default_member {
                     self.dispatch_default_member(recv_v, *invoke_kind, args)?
                 } else {
-                    self.dispatch_member_by_name(recv_v, name, *invoke_kind, args)?
+                    self.dispatch_member_by_name(
+                        recv_v,
+                        name,
+                        *invoke_kind,
+                        args,
+                        !self.project_typed_receiver(recv),
+                    )?
                 };
                 if let Some(dst) = dst {
                     self.store(dst, ret)?;
@@ -2535,7 +2571,8 @@ impl<'h> Vm3<'h> {
                         "Object doesn't support this property or method",
                     )));
                 }
-                let ret = self.dispatch_member_by_name(recv_v, &member_name, invoke_kind, args)?;
+                let ret =
+                    self.dispatch_member_by_name(recv_v, &member_name, invoke_kind, args, true)?;
                 if let Some(dst) = dst {
                     self.store(dst, ret)?;
                 }
@@ -4080,9 +4117,12 @@ impl<'h> Vm3<'h> {
                 None
             }
         });
-        member.map(|m| m.proc).ok_or_else(|| {
-            Vm3Error::Fault(Fault::new(438, "Object doesn't support default member"))
-        })
+        member
+            .filter(|member| obj_bundle == self.cur || member.externally_visible)
+            .map(|m| m.proc)
+            .ok_or_else(|| {
+                Vm3Error::Fault(Fault::new(438, "Object doesn't support default member"))
+            })
     }
 
     fn dispatch_project_default_member(
@@ -4126,6 +4166,7 @@ impl<'h> Vm3<'h> {
         name: &str,
         invoke_kind: TypeLibMemberInvokeKind,
         args: &[OxCallArg],
+        public_only: bool,
     ) -> Result<Variant, Vm3Error> {
         // A built-in `Collection` carries the reserved sentinel route key; its members dispatch
         // to the shared keyed-Collection logic over the box-owned `CollectionData`, not a
@@ -4169,9 +4210,12 @@ impl<'h> Vm3<'h> {
                 None
             }
         });
-        let proc = member.map(|m| m.proc).ok_or_else(|| {
-            Vm3Error::Fault(Fault::new(438, format!("Object doesn't support '{name}'")))
-        })?;
+        let proc = member
+            .filter(|member| (!public_only && obj_bundle == self.cur) || member.externally_visible)
+            .map(|m| m.proc)
+            .ok_or_else(|| {
+                Vm3Error::Fault(Fault::new(438, format!("Object doesn't support '{name}'")))
+            })?;
         // ByRef args alias the caller's place (write-back); named arguments reorder by
         // the callee parameter names before the frame is seeded.
         let proc_args = self.project_call_args(obj_bundle, proc, args)?;
@@ -4595,10 +4639,11 @@ impl<'h> Vm3<'h> {
         name: &str,
         invoke_kind: TypeLibMemberInvokeKind,
         args: &[OxCallArg],
+        public_only: bool,
     ) -> Result<Variant, Vm3Error> {
         let object = variant_to_object(&recv_v)?;
         if object.is_project_instance() {
-            self.dispatch_project_method(object, recv_v, name, invoke_kind, args)
+            self.dispatch_project_method(object, recv_v, name, invoke_kind, args, public_only)
         } else {
             self.dispatch_com_method(
                 object,
@@ -4625,6 +4670,7 @@ impl<'h> Vm3<'h> {
         args: &[OxCallArg],
     ) -> Result<Variant, Vm3Error> {
         let mut call_args = Vec::with_capacity(args.len());
+        let mut identities = HashMap::new();
         for (index, arg) in args.iter().enumerate() {
             let (value, arg_name) = match arg {
                 OxCallArg::Operand(op) => (Some(self.operand(op)?), None),
@@ -4638,8 +4684,14 @@ impl<'h> Vm3<'h> {
             call_args.push(DynamicCallArg {
                 value: value.map(DynamicValue::from_variant),
                 name: arg_name,
-                by_ref: matches!(arg, OxCallArg::ByRef(_))
-                    .then(|| RuntimeByRefSlot::new(index as u32, None)),
+                by_ref: if let OxCallArg::ByRef(place) = arg {
+                    let id = *identities
+                        .entry(self.resolve(place))
+                        .or_insert(index as u32);
+                    Some(RuntimeByRefSlot::new(id, None))
+                } else {
+                    None
+                },
             });
         }
         let _plan = verified_late_dispatch_plan(&member, invoke_kind, args)?;

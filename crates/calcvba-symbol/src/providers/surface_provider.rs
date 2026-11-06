@@ -42,6 +42,11 @@ impl SurfaceProvider {
     }
 
     fn type_by_name(&self, name: &str) -> Option<&SurfaceType> {
+        let name = match name.split_once('.') {
+            Some((project, name)) if fold_identifier(project) == self.project_folded => name,
+            Some(_) => return None,
+            None => name,
+        };
         let folded = fold_identifier(name);
         self.surface
             .types

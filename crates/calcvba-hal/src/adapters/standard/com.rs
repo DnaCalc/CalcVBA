@@ -16,8 +16,8 @@ use calcvba_com::RawIDispatch;
 use calcvba_com::WindowsComBridgeDispatchError;
 use calcvba_com::{
     ComCallbackPayload, ComCallbackToken, ComInvokeRequest, ComMemberToken, ComObjectDescriptor,
-    ComObjectTransportKind, ComSubscriptionToken, DynamicCallKind, DynamicCallRequest,
-    DynamicMemberSelector, known_typelib_identity_for_prog_id_name,
+    ComObjectTransportKind, ComSubscriptionToken, DynamicCallRequest, DynamicMemberSelector,
+    known_typelib_identity_for_prog_id_name,
     legacy_runtime_arg_values as com_legacy_runtime_arg_values,
     platform::portable::{PortableDispatch, PortableObjectResult, PortableTypedCallResult},
 };
@@ -167,23 +167,10 @@ fn projection_member_token_by_name(
     )
 }
 
-fn portable_call_args(request: &DynamicCallRequest) -> Vec<Variant> {
-    request
-        .args
-        .iter()
-        .map(|arg| {
-            arg.value
-                .as_ref()
-                .map(|value| value.variant().clone())
-                .unwrap_or_else(Variant::empty)
-        })
-        .collect()
-}
-
 fn invoke_portable_dispatch(
     host: &StandardHostServices,
     request: &DynamicCallRequest,
-) -> HalResult<Option<Variant>> {
+) -> HalResult<Option<calcvba_runtime::RuntimeCallResult>> {
     let Some(dispatch) = portable_dispatch_for_object(host, &request.object)? else {
         return Ok(None);
     };
@@ -203,29 +190,15 @@ fn invoke_portable_dispatch(
             ));
         }
     };
-    let args = portable_call_args(request);
-    let object_result = match request.call_kind_hint {
-        Some(DynamicCallKind::PropertyGet) if args.is_empty() => dispatch.get_object(member_name),
-        Some(DynamicCallKind::Method) | None => dispatch.invoke_object(member_name, &args),
-        _ => None,
-    };
-    if let Some(object_result) = object_result {
-        return match object_result {
-            Ok(object_result) => portable_object_result_variant(host, object_result).map(Some),
-            Err(message) => Err(portable_dispatch_failure(host, message)),
-        };
+    let result = dispatch
+        .invoke_dynamic(member_name, request.call_kind_hint, &request.args)
+        .map_err(|message| portable_dispatch_failure(host, message))?;
+    match result {
+        PortableTypedCallResult::Value(result) => Ok(Some(result)),
+        PortableTypedCallResult::Object(object) => portable_object_result_variant(host, object)
+            .map(calcvba_runtime::RuntimeCallResult::value)
+            .map(Some),
     }
-    let result = match request.call_kind_hint {
-        Some(DynamicCallKind::PropertyGet) if args.is_empty() => dispatch.get(member_name),
-        Some(DynamicCallKind::PropertyLet | DynamicCallKind::PropertySet) => {
-            let value = args.last().cloned().unwrap_or_else(Variant::empty);
-            dispatch.put(member_name, value).map(|_| Variant::empty())
-        }
-        _ => dispatch.invoke(member_name, &args),
-    };
-    result
-        .map(Some)
-        .map_err(|message| portable_dispatch_failure(host, message))
 }
 
 fn portable_dispatch_failure(host: &StandardHostServices, message: String) -> HalError {
@@ -928,7 +901,7 @@ impl ComHal for StandardHostServices {
             return Err(self.denied(capability, "dispatch_invoke"));
         }
         if let Some(value) = invoke_portable_dispatch(self, request)? {
-            return Ok(value);
+            return Ok(value.value.unwrap_or_else(Variant::empty));
         }
         if !self.supports(capability) {
             return Err(self.unsupported(capability, "dispatch_invoke"));
@@ -1016,6 +989,28 @@ impl ComHal for StandardHostServices {
         let capability = CapabilityId::ComActivationDispatch;
         if !self.policy.allow_com_activation {
             return Err(self.denied(capability, "dispatch_invoke"));
+        }
+        if let Some(result) = invoke_portable_dispatch(self, request)? {
+            let mut writebacks = vec![None; request.args.len()];
+            for writeback in result.writebacks {
+                let mut found = false;
+                for (index, argument) in request.args.iter().enumerate() {
+                    if argument.by_ref == Some(writeback.slot) {
+                        writebacks[index] = Some(writeback.value.clone());
+                        found = true;
+                    }
+                }
+                if !found {
+                    return Err(portable_dispatch_failure(
+                        self,
+                        format!(
+                            "writeback slot {} is not a caller ByRef argument",
+                            writeback.slot.id
+                        ),
+                    ));
+                }
+            }
+            return Ok((result.value.unwrap_or_else(Variant::empty), writebacks));
         }
         let has_byref_args = request.args.iter().any(|arg| arg.by_ref.is_some());
         if !has_byref_args {

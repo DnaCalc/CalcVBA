@@ -464,6 +464,7 @@ pub fn invoke_context_free(
         FilePrint => host::file_print(args, host),
         ConsolePrint => host::console_print(args, host),
         FileInput => host::file_input(args, host),
+        FileInputChars => host::file_input_chars(args, host),
         ConsoleInput => host::console_input(args, host),
         FileLineInput => host::file_line_input(args, host),
         ConsoleLineInput => host::console_line_input(host),

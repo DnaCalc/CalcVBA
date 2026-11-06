@@ -5444,9 +5444,18 @@ fn collect_value_callees<'a>(value: &'a CoreValue, out: &mut Vec<&'a CoreCallee>
                 collect_value_callees(elem, out);
             }
         }
-        CoreValue::Bound { dimension, .. } => {
+        CoreValue::Bound {
+            array, dimension, ..
+        } => {
+            collect_value_callees(array, out);
             if let Some(dimension) = dimension {
                 collect_value_callees(dimension, out);
+            }
+        }
+        CoreValue::Index { array, indices } => {
+            collect_value_callees(array, out);
+            for index in indices {
+                collect_value_callees(index, out);
             }
         }
         CoreValue::Const(_)

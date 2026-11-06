@@ -38,8 +38,12 @@ impl PortableDispatch for Counter {
         self.0[0].fetch_add(1, Ordering::SeqCst);
         Ok(Variant::from_i32(7))
     }
-    fn invoke(&self, _: &str, _: &[Variant]) -> Result<Variant, String> {
-        Err("no methods".into())
+    fn invoke(&self, member: &str, args: &[Variant]) -> Result<Variant, String> {
+        if member.eq_ignore_ascii_case("Echo") && args.len() == 1 {
+            Ok(args[0].clone())
+        } else {
+            Err("no methods".into())
+        }
     }
     fn put(&self, _: &str, _: Variant) -> Result<(), String> {
         Err("read-only".into())
@@ -183,5 +187,106 @@ fn portable_typed_call_never_retries_a_late_only_object() {
         );
         assert_eq!(calls[0].load(Ordering::SeqCst), 0, "no dynamic retry");
         assert_eq!(calls[1].load(Ordering::SeqCst), 0);
+    }
+}
+
+struct ByRefReceiver;
+impl PortableDispatch for ByRefReceiver {
+    fn invoke_dynamic(
+        &self,
+        member: &str,
+        _: Option<calcvba_com::DynamicCallKind>,
+        args: &[DynamicCallArg],
+    ) -> Result<PortableTypedCallResult, String> {
+        if member.eq_ignore_ascii_case("Change") {
+            assert_eq!(args.len(), 3);
+            assert_eq!(args[0].by_ref, args[1].by_ref, "duplicate caller aliases");
+            let mut result = RuntimeCallResult::value(Variant::from_i32(321));
+            result.add_writeback(calcvba_runtime::RuntimeByRefWriteback::new(
+                args[0].by_ref.unwrap(),
+                Variant::from_i32(11),
+            ));
+            result.add_writeback(calcvba_runtime::RuntimeByRefWriteback::new(
+                args[2].by_ref.unwrap(),
+                Variant::from_bool(true),
+            ));
+            return Ok(PortableTypedCallResult::Value(result));
+        }
+        if member.eq_ignore_ascii_case("Observe") {
+            assert_eq!(args[0].name.as_deref(), Some("flag"));
+            assert_eq!(args[1].name.as_deref(), Some("value"));
+            assert_eq!(
+                args[0].value.as_ref().unwrap().variant().as_bool(),
+                Some(true)
+            );
+            assert_eq!(args[1].value.as_ref().unwrap().variant().as_i32(), Some(11));
+            return Ok(PortableTypedCallResult::Value(RuntimeCallResult::value(
+                Variant::from_i32(22),
+            )));
+        }
+        Err("unknown method".into())
+    }
+    fn invoke(&self, _: &str, _: &[Variant]) -> Result<Variant, String> {
+        Err("dynamic arguments required".into())
+    }
+    fn get(&self, _: &str) -> Result<Variant, String> {
+        Err("no properties".into())
+    }
+    fn put(&self, _: &str, _: Variant) -> Result<(), String> {
+        Err("no properties".into())
+    }
+    fn member_names(&self) -> Vec<String> {
+        vec!["Change".into(), "Observe".into()]
+    }
+}
+struct ByRefFactory;
+impl PortableObjectFactory for ByRefFactory {
+    fn create(&self) -> Box<dyn PortableDispatch> {
+        Box::new(ByRefReceiver)
+    }
+}
+
+#[test]
+fn portable_dynamic_calls_preserve_aliases_names_and_boolean_writebacks() {
+    let source = r#"
+Public observed As String
+Sub Main()
+    Dim obj As Object, number As Variant, cancel As Boolean, n As Long
+    Set obj=CreateObject("CalcForms.ByRef")
+    number=3
+    n=obj.Change(number,number,cancel)
+    observed=CStr(number) & ":" & CStr(cancel) & ":" & CStr(n)
+    n=obj.Observe(flag:=cancel,value:=number)
+    observed=observed & ":" & CStr(n)
+End Sub
+"#;
+    for config in [HostConfig::vm3(), HostConfig::jit()] {
+        let projection = Arc::new(PortableComProjection::new());
+        projection.register_object("CalcForms.ByRef", Arc::new(ByRefFactory));
+        let engine = Engine::new(config)
+            .with_runtime_profile(RuntimeProfileId::WindowsHeadless)
+            .with_portable_com_projection(projection);
+        let values = engine
+            .execute_source_with_variant_snapshot_clean(source)
+            .unwrap();
+        assert!(
+            values
+                .iter()
+                .filter_map(Variant::as_bstr)
+                .any(|value| value.to_string() == "11:True:321:22"),
+            "{values:?}"
+        );
+    }
+}
+
+#[test]
+fn legacy_portable_methods_accept_input_only_byref_arguments() {
+    let source = "Public observed As Long\nSub Main()\nDim obj As Object, number As Long\nSet obj=CreateObject(\"OxVba.TestDispatch\")\nnumber=7\nobserved=obj.Echo(number)+number\nEnd Sub\n";
+    for jit in [false, true] {
+        let (engine, _) = engine(jit, false);
+        let values = engine
+            .execute_source_with_variant_snapshot_clean(source)
+            .unwrap();
+        assert_eq!(long_at(&values, 0), 14);
     }
 }

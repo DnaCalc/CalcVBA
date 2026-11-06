@@ -195,7 +195,7 @@ impl<'a> ProcLower<'a> {
                     VarTypeRef::Variant,
                 ))
             }
-            // `UBound`/`LBound` take an array l-value plus an optional
+            // `UBound`/`LBound` take an array expression plus an optional
             // one-based dimension argument. Invalid dimensions must remain a
             // run-time error so VBA `On Error Resume Next` feature probes work.
             DispatchRoute::SpecialForm(sf @ (SpecialForm::UBound | SpecialForm::LBound)) => {
@@ -228,11 +228,11 @@ impl<'a> ProcLower<'a> {
                     ArgItem::Positional(e, _) => e,
                     _ => return Err(BindError::Malformed(format!("`{name}` array argument"))),
                 };
-                let (place, _) = self.bind_place(expr)?;
+                let array = self.bind_expr(expr)?;
                 Ok(value_bound(
                     CoreValue::Bound {
                         which,
-                        array: Box::new(place),
+                        array: Box::new(array.value),
                         dimension: dimension.map(Box::new),
                     },
                     builtin(BuiltinType::Long),
@@ -509,13 +509,30 @@ impl<'a> ProcLower<'a> {
             }
             return Ok(CoreArg::ByRef(place));
         }
-        let bound = self.bind_expr(expr)?;
+        let mut bound = self.bind_expr(expr)?;
+        if param.is_some_and(|param| {
+            matches!(
+                param.ty,
+                VarTypeRef::Builtin(_) | VarTypeRef::FixedString(_)
+            )
+        }) {
+            bound = self.bind_default_member_value_context(bound, expr.text().trim())?;
+        }
         let value = match param {
             Some(p) => {
                 let expected = self.g.resolve_udt_type(p.ty.clone());
                 let actual = self.g.resolve_udt_type(bound.ty.clone());
                 ensure_byval_type_compatible(&expected, &actual)?;
-                self.g.coerce(bound.value, &bound.ty, &p.ty)
+                if matches!(
+                    bound.value,
+                    CoreValue::Load(CorePlace::RecordField { .. } | CorePlace::Field { .. })
+                ) {
+                    // Aggregate field reads use a Variant carrier in OxIR. A
+                    // ByVal parameter must establish its declared scalar type.
+                    self.g.coerce_store(bound.value, &p.ty)
+                } else {
+                    self.g.coerce(bound.value, &bound.ty, &p.ty)
+                }
             }
             None => bound.value,
         };

@@ -41,6 +41,48 @@ pub enum PortableTypedCallResult {
 ///
 /// This portable host API carries retained [`Variant`] values.
 pub trait PortableDispatch: Send + Sync {
+    /// Dynamic calls retain names, omitted values and caller alias slots.
+    /// Override this to return ByRef writebacks. The default preserves the
+    /// existing value-only dispatch methods and their child-object ownership.
+    fn invoke_dynamic(
+        &self,
+        member: &str,
+        kind: Option<crate::DynamicCallKind>,
+        args: &[crate::DynamicCallArg],
+    ) -> Result<PortableTypedCallResult, String> {
+        use crate::DynamicCallKind;
+        let values = args
+            .iter()
+            .map(|arg| {
+                arg.value
+                    .as_ref()
+                    .map(|value| value.variant().clone())
+                    .unwrap_or_else(Variant::empty)
+            })
+            .collect::<Vec<_>>();
+        let object = match kind {
+            Some(DynamicCallKind::PropertyGet) if values.is_empty() => self.get_object(member),
+            Some(DynamicCallKind::Method) | None => self.invoke_object(member, &values),
+            _ => None,
+        };
+        if let Some(object) = object {
+            return object.map(PortableTypedCallResult::Object);
+        }
+        let result = match kind {
+            Some(DynamicCallKind::PropertyGet) if values.is_empty() => self.get(member),
+            Some(DynamicCallKind::PropertyLet | DynamicCallKind::PropertySet) => self
+                .put(
+                    member,
+                    values.last().cloned().unwrap_or_else(Variant::empty),
+                )
+                .map(|_| Variant::empty()),
+            _ => self.invoke(member, &values),
+        };
+        result
+            .map(calcvba_runtime::RuntimeCallResult::value)
+            .map(PortableTypedCallResult::Value)
+    }
+
     /// Explicit compiler-bound host subset. Implementations select their own
     /// fixed member identity/signature; no default name-based retry is allowed.
     /// This is a portable host adapter, not native COM transport evidence.

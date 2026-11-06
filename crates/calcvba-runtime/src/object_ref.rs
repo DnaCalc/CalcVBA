@@ -1002,7 +1002,16 @@ fn compat_field_get(owner: *mut CompatObjectBase, token: i32) -> Option<Variant>
     // SAFETY: the only caller (`ObjectRef::project_field_get`) guards with
     // `is_project_instance()` (a vtbl-identity check), so `owner` is a live `CompatObjectBase`
     // kept alive by that caller's retained `ObjectRef` for the duration of the borrow.
-    unsafe { (*owner).fields.borrow().get(&token).cloned() }
+    unsafe {
+        (*owner).fields.borrow().get(&token).cloned().or_else(|| {
+            (*owner)
+                .class_descriptor
+                .fields
+                .iter()
+                .find(|field| field.token == token && field.value_type == RuntimeValueType::Object)
+                .map(|_| Variant::nothing())
+        })
+    }
 }
 
 fn compat_field_set(owner: *mut CompatObjectBase, token: i32, value: Variant) {

@@ -805,6 +805,29 @@ pub(super) unsafe fn bstr_to_ansi(src: *mut u16) -> Result<*mut u16, i32> {
 /// # Safety
 /// array is a live SAFEARRAY* cell; out is a writable Long cell.
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn cvb_variant_array_bound(
+    value: *const u8,
+    dimension: u32,
+    upper: u32,
+    out: *mut i32,
+) -> i32 {
+    boundary(|| {
+        // SAFETY: the caller retains this initialized Variant and its array owner.
+        unsafe {
+            let native = borrowed(value, 12);
+            if native.Anonymous.Anonymous.vt & 0x2000 == 0 {
+                return Err(13);
+            }
+            let array = native.Anonymous.Anonymous.Anonymous.parray;
+            let result = cvb_array_bound(&array, dimension, upper, out);
+            if result == 0 { Ok(()) } else { Err(result) }
+        }
+    })
+}
+
+/// # Safety
+/// array is a live SAFEARRAY* cell; out is a writable Long cell.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn cvb_array_bound(
     array: *const *mut SAFEARRAY,
     dimension: u32,

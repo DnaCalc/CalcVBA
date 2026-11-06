@@ -488,15 +488,27 @@ impl<'a> ProcLower<'a> {
         if base.kind() == SyntaxKind::MemberExpr {
             return self.bind_member_call(base, node.index_arg_list());
         }
-        // `Func(args)(key)` / `obj.Factory()(key)` — index the default member of
-        // a value produced by another expression. This is common for Dictionary
-        // helpers that return an object and are immediately indexed.
-        if base.kind() == SyntaxKind::IndexExpr {
+        // A call or parenthesized expression may yield an array as well as an
+        // object. Variant receivers decide between indexing and dispatch at run time.
+        if matches!(base.kind(), SyntaxKind::IndexExpr | SyntaxKind::ParenExpr) {
             let recv = self.bind_expr(base)?;
             let args = self.bind_positional_values(
                 node.index_arg_list()
                     .ok_or_else(|| BindError::Malformed("default member index".into()))?,
             )?;
+            if !matches!(recv.ty, VarTypeRef::Object(_)) {
+                let ty = match &recv.ty {
+                    VarTypeRef::Array(element) => *element.clone(),
+                    _ => VarTypeRef::Variant,
+                };
+                return Ok(value_bound(
+                    CoreValue::Index {
+                        array: Box::new(recv.value),
+                        indices: args,
+                    },
+                    ty,
+                ));
+            }
             return Ok(value_bound(
                 self.late_default_member_call(
                     calcvba_bundle::ProjectMemberKind::PropertyGet,

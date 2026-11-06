@@ -215,6 +215,8 @@ impl FileSystemState {
 pub(super) struct FileHandleState {
     pub(super) mode: i32,
     pub(super) position: i32,
+    input_buffer_origin: i32,
+    input_text_eof: bool,
     pub(super) len: i32,
     pub(super) host_path: Option<PathBuf>,
     pub(super) data: Vec<u8>,
@@ -620,6 +622,8 @@ impl FileSystemHal for StandardHostServices {
                 FileHandleState {
                     mode,
                     position: initial_position,
+                    input_buffer_origin: initial_position,
+                    input_text_eof: false,
                     len: initial_len,
                     host_path,
                     data: initial_data,
@@ -748,6 +752,8 @@ impl FileSystemHal for StandardHostServices {
             FileHandleState {
                 mode,
                 position: initial_position,
+                input_buffer_origin: initial_position,
+                input_text_eof: false,
                 len: initial_len,
                 host_path,
                 data: initial_data,
@@ -1018,6 +1024,8 @@ impl FileSystemHal for StandardHostServices {
             } else {
                 position - 1
             };
+            entry.input_buffer_origin = entry.position;
+            entry.input_text_eof = false;
             let print_cursor = if entry.mode == MODE_APPEND {
                 entry.len.max(0) as usize
             } else {
@@ -1038,11 +1046,16 @@ impl FileSystemHal for StandardHostServices {
         let handle = self.variant_to_i32(&handle, capability, "eof", "handle")?;
         let mut state = self.borrow_fs(capability, "eof")?;
         let entry = self.fs_entry_mut(&mut state, handle, "eof")?;
-        Ok(Variant::from_i32(if entry.position >= entry.len {
-            1
-        } else {
-            0
-        }))
+        let text_end = entry.mode == 0
+            && (entry.input_text_eof
+                || entry.data.get(entry.position as usize).copied() == Some(26));
+        Ok(Variant::from_i32(
+            if entry.position >= entry.len || text_end {
+                1
+            } else {
+                0
+            },
+        ))
     }
 
     fn lof_variant(&self, handle: Variant) -> HalResult<Variant> {
@@ -1086,6 +1099,80 @@ impl FileSystemHal for StandardHostServices {
             end
         );
         Ok(Variant::from_i32(candidate))
+    }
+
+    fn input_chars_variant(&self, handle: Variant, count: Variant) -> HalResult<Variant> {
+        let capability = CapabilityId::FileSystemIo;
+        if !self.supports(capability) {
+            return Err(self.unsupported(capability, "input_chars"));
+        }
+        let handle_id = self.variant_to_i32(&handle, capability, "input_chars", "handle")?;
+        let count = self.variant_to_i32(&count, capability, "input_chars", "count")?;
+        let error = |code| {
+            HalError::adapter_fault(
+                self.profile,
+                capability,
+                "input_chars",
+                calcvba_runtime::default_error_message(code),
+            )
+            .with_host_error_code(code)
+        };
+        if count < 0 {
+            return Err(error(5));
+        }
+        let mut state = self.borrow_fs(capability, "input_chars")?;
+        let entry = self
+            .fs_entry_mut(&mut state, handle_id, "input_chars")
+            .map_err(|_| error(52))?;
+        if !matches!(entry.mode, 0 | MODE_BINARY) {
+            return Err(error(54));
+        }
+        if entry.mode == 0 && entry.input_text_eof && count != 0 {
+            return Err(error(62));
+        }
+        let mut bytes = Vec::new();
+        let mut cursor = entry.position as usize;
+        for _ in 0..count {
+            if entry.mode == 0 {
+                while cursor < entry.data.len() && entry.data[cursor] == 0 {
+                    cursor += 1;
+                }
+            }
+            if cursor >= entry.data.len() {
+                break;
+            }
+            let byte = entry.data[cursor];
+            if entry.mode == 0 && byte == 26 {
+                // Office's sequential text reader reports DOS EOF. Its Seek
+                // result after this failed read includes the buffered cursor;
+                // a later failed read retains that position until Seek resets it.
+                let origin = entry.input_buffer_origin as usize;
+                let block = origin + (cursor - origin) / 512 * 512;
+                let end = block.saturating_add(512).min(entry.data.len());
+                cursor = end.saturating_add(cursor - block).saturating_add(1);
+                entry.input_text_eof = true;
+                break;
+            }
+            bytes.push(byte);
+            cursor += 1;
+            #[cfg(windows)]
+            {
+                // SAFETY: this OS query classifies one byte in the process ANSI
+                // code page; it receives no pointers or mutable state.
+                if unsafe { windows_sys::Win32::Globalization::IsDBCSLeadByteEx(0, byte) } != 0
+                    && cursor < entry.data.len()
+                {
+                    bytes.push(entry.data[cursor]);
+                    cursor += 1;
+                }
+            }
+        }
+        entry.position = i32::try_from(cursor).map_err(|_| error(6))?;
+        let text = calcvba_runtime::ansi::ansi_decode(&bytes);
+        if entry.mode == 0 && text.encode_utf16().count() < count as usize {
+            return Err(error(62));
+        }
+        Ok(Variant::from_string(text))
     }
 
     fn read_bytes_variant(&self, handle: Variant, count: Variant) -> HalResult<Variant> {

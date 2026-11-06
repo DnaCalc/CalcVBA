@@ -2004,7 +2004,7 @@ impl<'a> Lowerer<'a> {
                 array,
                 dimension,
             } => {
-                let arr = self.lower_place_load(array)?.0;
+                let arr = self.lower_value(array)?.0;
                 let dim = match dimension {
                     Some(d) => Some(self.lower_value(d)?.0),
                     None => None,
@@ -2017,6 +2017,21 @@ impl<'a> Lowerer<'a> {
                     dimension: dim,
                 });
                 Ok((OxOperand::temp(t), OxTy::Long))
+            }
+            CoreValue::Index { array, indices } => {
+                let indices = self.lower_indices(indices)?;
+                let (array, ty) = self.lower_value(array)?;
+                let ty = match ty {
+                    OxTy::Array(element, _) => *element,
+                    _ => OxTy::Variant,
+                };
+                let temp = self.new_temp(ty.clone());
+                self.emit(OxInst::ArrayGet {
+                    dst: OxPlace::Temp(temp),
+                    array,
+                    indices,
+                });
+                Ok((OxOperand::temp(temp), ty))
             }
             CoreValue::NewRecord { fields } => Ok(self.lower_new_record_value(fields, None)),
             // A `VB_PredeclaredId` class → its lazily-created global singleton instance.
@@ -3823,7 +3838,7 @@ mod tests {
                 x.clone(),
                 CoreValue::Bound {
                     which: BoundWhich::Upper,
-                    array: Box::new(a()),
+                    array: Box::new(CoreValue::Load(a())),
                     dimension: None,
                 },
             ),

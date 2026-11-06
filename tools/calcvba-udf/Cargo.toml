@@ -1,0 +1,20 @@
+[package]
+name = "calcvba-udf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+calcvba-bind.workspace = true
+calcvba-build.workspace = true
+calcvba-bundle.workspace = true
+calcvba-project.workspace = true
+calcvba-symbol.workspace = true
+calcvba-syntax.workspace = true
+
+[dev-dependencies]
+calcvba-engine.workspace = true
+calcvba-hal.workspace = true

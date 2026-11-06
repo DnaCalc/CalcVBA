@@ -3710,6 +3710,7 @@ pub(crate) fn project_member_kind_from_raw(raw: i32) -> Option<ProjectMemberKind
 }
 
 pub(crate) struct ProjectMemberInvocation<'a> {
+    pub(crate) public_only: bool,
     pub(crate) name: &'a str,
     pub(crate) early_member: Option<&'a calcvba_com::TypeLibMemberMetadata>,
     pub(crate) kind: ProjectMemberKind,
@@ -3898,86 +3899,70 @@ pub(crate) unsafe fn invoke_project_default_member_values(
     if run.is_null() {
         return Err(ST_FAULT);
     }
-    // SAFETY: the current compiled-run boundary owns the live unique state handle;
-    // typed references and owned values remain live and nonaliasing for this call.
-    let object = unsafe { variant_to_project_object_for_jit(state, &recv_value) }?;
-    if !object.is_project_instance() {
-        // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
-        return Err(unsafe { rt_raise_runtime_error_number(state, 438) });
-    }
-    let program_index = object.bundle_id() as usize;
-    let Some(image) = ({
-        // SAFETY: null was rejected and this shared metadata borrow is bounded.
-        program_image(unsafe { &*run }, program_index)
-    }) else {
-        return Err(ST_FAULT);
-    };
-    let class_idx = object.route_key() as usize;
-    // SAFETY: installed from the owning CompiledImage for this run.
-    let program = unsafe { &*image.program };
-    let class = program
-        .classes
-        .get(class_idx)
-        // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
-        .ok_or_else(|| unsafe { rt_raise_runtime_error_number(state, 438) })?;
-    let member = project_default_member_for_jit(class, kind, values.is_empty())
-        // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
-        .ok_or_else(|| unsafe { rt_raise_runtime_error_number(state, 438) })?;
-    let args: Vec<JitCallArgDesc> = values
-        .iter()
-        .enumerate()
-        .map(|(index, _)| JitCallArgDesc {
+    // SAFETY: the active compiled entry owns this run; metadata is read before
+    // the temporary argument frame is pushed or any host callback can occur.
+    let program_index = unsafe { current_program_image(&*run) }.ok_or(ST_FAULT)?.0;
+    let args = (0..values.len())
+        .map(|index| JitCallArgDesc {
             kind: JIT_CALL_ARG_BYVAL_VARIANT,
             aux: JIT_VARIANT_OPERAND_PLACE,
             value: 0,
             area: AREA_TEMP as i32,
             index: index as i32,
         })
-        .collect();
+        .collect::<Vec<_>>();
     let names = vec![
         JitCallArgNameDesc {
             ptr: 0,
             len: -1,
-            _pad: 0,
+            _pad: 0
         };
         args.len()
     ];
+    let mut temps = values.to_vec();
+    temps.push(Variant::empty());
     let frame = JitFrame {
         program_index,
         locals: Vec::new(),
-        temps: values.to_vec(),
+        temps,
         aliases: Vec::new(),
         gosub_stack: Vec::new(),
         saved_err: RtSavedErrState::default(),
         current_line: 0,
     };
-    // SAFETY: preparation is complete and this push borrow ends before member entry.
+    // SAFETY: the push borrow ends before entering compiled VBA or host code.
     unsafe { &mut *run }.frames.push(frame);
-    // SAFETY: this helper inherits the live unique state handle; `run`, argument
-    // descriptors, names, and the owned receiver remain live and nonaliasing.
-    let result = unsafe {
-        invoke_project_member_with_me(
-            run,
+    // SAFETY: the temporary frame owns the arguments and result slot for this
+    // synchronous call; no run borrow spans the member entry.
+    let status = unsafe {
+        invoke_project_member_to_slot_for_jit(
             state,
-            program_index,
-            member.proc.0,
+            run,
             recv_value,
-            &args,
-            &names,
+            ProjectMemberInvocation {
+                public_only: true,
+                name: "",
+                early_member: None,
+                kind,
+                args: &args,
+                names: &names,
+                dst: Some((AREA_TEMP, values.len() as u32)),
+            },
         )
     };
-    // SAFETY: member entry returned and no typed run borrow spans it.
+    // SAFETY: the member returned and the temporary argument frame is still topmost.
     let run_ref = unsafe { &mut *run };
-    let Some(frame) = run_ref.frames.pop() else {
-        return Err(ST_FAULT);
-    };
-    // SAFETY: the current compiled-run boundary owns the live unique state handle;
-    // typed references and owned values remain live and nonaliasing for this call.
-    let cleanup_status = unsafe { after_jit_frame_pop(run_ref, state, &frame) };
-    if cleanup_status != ST_OK {
-        return Err(cleanup_status);
+    let frame = run_ref.frames.pop().ok_or(ST_FAULT)?;
+    let result = frame.temps[values.len()].clone();
+    // SAFETY: no member or host callback still borrows this completed frame.
+    let cleanup = unsafe { after_jit_frame_pop(run_ref, state, &frame) };
+    if status != ST_OK {
+        Err(status)
+    } else if cleanup != ST_OK {
+        Err(cleanup)
+    } else {
+        Ok(result)
     }
-    result
 }
 
 pub(crate) unsafe extern "C" fn rt_jit_project_member_get_to_slot(
@@ -4011,7 +3996,7 @@ pub(crate) unsafe extern "C" fn rt_jit_project_member_get_to_slot(
             (area, index) if area >= 0 && index >= 0 => Some((area as u32, index as u32)),
             _ => return ST_FAULT,
         };
-        let Some(kind) = project_member_kind_from_raw(invoke_kind) else {
+        let Some(kind) = project_member_kind_from_raw(invoke_kind & 0xff) else {
             return ST_FAULT;
         };
         let argc = argc as usize;
@@ -4053,6 +4038,7 @@ pub(crate) unsafe extern "C" fn rt_jit_project_member_get_to_slot(
                 run,
                 recv_value,
                 ProjectMemberInvocation {
+                    public_only: invoke_kind & 0x100 == 0,
                     name,
                     // SAFETY: compiled metadata is immutable and retained by the live CompiledImage.
                     early_member: early_member.as_ref(),
@@ -4077,6 +4063,7 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
     invocation: ProjectMemberInvocation<'_>,
 ) -> i32 {
     let ProjectMemberInvocation {
+        public_only,
         name,
         early_member,
         kind,
@@ -4102,6 +4089,7 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
                 run,
                 object,
                 ProjectMemberInvocation {
+                    public_only,
                     name,
                     early_member,
                     kind,
@@ -4116,7 +4104,13 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
         // SAFETY: the current compiled-run boundary owns the live unique state handle;
         // typed references and owned values remain live and nonaliasing for this call.
         let value = match unsafe {
-            dispatch_collection_member_for_jit(state, &*run, &object, name, args)
+            dispatch_collection_member_for_jit(
+                state,
+                &*run,
+                &object,
+                if name.is_empty() { "Item" } else { name },
+                args,
+            )
         } {
             Ok(value) => value,
             Err(status) => return status,
@@ -4171,6 +4165,16 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
             }
         })
     };
+    // A typed same-project call may use Friend/private implementation members.
+    // Dynamic names and callers in another project see only the public surface.
+    // SAFETY: this immutable frame lookup ends before entering the selected body.
+    let same_project = unsafe {
+        (*run)
+            .frames
+            .last()
+            .is_some_and(|frame| frame.program_index == program_index)
+    };
+    let member = member.filter(|member| member.externally_visible || !public_only && same_project);
     let Some(member) = member else {
         // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
         return unsafe { rt_raise_runtime_error_number(state, 438) };
@@ -4483,6 +4487,7 @@ pub(crate) unsafe fn invoke_foreign_member_to_slot_for_jit(
     invocation: ProjectMemberInvocation<'_>,
 ) -> i32 {
     let ProjectMemberInvocation {
+        public_only: _,
         name,
         early_member,
         kind,
@@ -4521,13 +4526,9 @@ pub(crate) unsafe fn invoke_foreign_member_to_slot_for_jit(
                 };
                 // Only an identity key during operand preparation; no pointer or
                 // borrow escapes to the host. Resolved caller aliases share it.
-                let id = if early_member.is_some() {
-                    *identities
-                        .entry(slot as *const Variant as usize)
-                        .or_insert(index as u32)
-                } else {
-                    index as u32
-                };
+                let id = *identities
+                    .entry(slot as *const Variant as usize)
+                    .or_insert(index as u32);
                 Some(RuntimeByRefSlot::new(id, None))
             } else {
                 None
@@ -5064,6 +5065,7 @@ pub(crate) unsafe extern "C" fn rt_jit_call_by_name_to_slot(
                 run,
                 object,
                 ProjectMemberInvocation {
+                    public_only: true,
                     name: &member_name,
                     early_member: None,
                     kind,
@@ -6520,13 +6522,33 @@ pub(crate) unsafe extern "C" fn rt_jit_array_get_variant_to_slot(
         if state.is_null() || run.is_null() {
             return ST_FAULT;
         }
-        if dimensions <= 0 || indices.is_null() {
+        if dimensions == 0 || dimensions == i32::MIN || indices.is_null() {
             return ST_FAULT;
         }
-        let dimensions = dimensions as usize;
-        // SAFETY: null was rejected and the compiled caller writes exactly `dimensions`
-        // subscripts to a stack slot that stays live for this helper call.
-        let indices = unsafe { std::slice::from_raw_parts(indices, dimensions) };
+        let dynamic = dimensions < 0;
+        let dimensions = dimensions.unsigned_abs() as usize;
+        let mut values = Vec::with_capacity(dimensions);
+        if dynamic {
+            // SAFETY: negative rank selects the retained Variant operand descriptors.
+            let operands = unsafe {
+                std::slice::from_raw_parts(indices.cast::<JitVariantOperandDesc>(), dimensions)
+            };
+            for operand in operands {
+                // SAFETY: the active compiled entry owns these live operand descriptors.
+                match unsafe { variant_operand_value_with_as_new(run, state, *operand) } {
+                    Ok(value) => values.push(value),
+                    Err(status) => return status,
+                }
+            }
+        } else {
+            // SAFETY: positive rank selects the original rank-sized Long vector.
+            values.extend(
+                unsafe { std::slice::from_raw_parts(indices, dimensions) }
+                    .iter()
+                    .copied()
+                    .map(Variant::from_i32),
+            );
+        }
         let array = {
             // SAFETY: this source borrow is bounded before possible default-member entry.
             let run_ref = unsafe { &*run };
@@ -6538,7 +6560,7 @@ pub(crate) unsafe extern "C" fn rt_jit_array_get_variant_to_slot(
         if array.vtype() != VarType::ArrayVariant {
             if array.as_object_ref().is_some() {
                 let recv_value = array.clone();
-                let args: Vec<Variant> = indices.iter().copied().map(Variant::from_i32).collect();
+                let args = values;
                 // SAFETY: the checked JIT entry owns the live unique state; `run`,
                 // the owned receiver, and `args` remain live for the call.
                 let value = match unsafe {
@@ -6566,7 +6588,22 @@ pub(crate) unsafe extern "C" fn rt_jit_array_get_variant_to_slot(
         }
         // SAFETY: the current compiled-run boundary owns the live unique state handle;
         // typed references and owned values remain live and nonaliasing for this call.
-        let flat = match unsafe { jit_flat_index(state, &array, indices) } {
+        let mut indices = Vec::with_capacity(dimensions);
+        for value in &values {
+            let index = match calcvba_eval::arith::int(value).and_then(|value| {
+                i32::try_from(value).map_err(|_| calcvba_eval::arith::ArithError {
+                    code: 6,
+                    message: "Overflow".into(),
+                })
+            }) {
+                Ok(index) => index,
+                // SAFETY: only the active owning entry's error state is updated.
+                Err(error) => return unsafe { rt_raise_runtime_error_number(state, error.code) },
+            };
+            indices.push(index);
+        }
+        // SAFETY: the retained array and converted subscript vector outlive this read.
+        let flat = match unsafe { jit_flat_index(state, &array, &indices) } {
             Ok(flat) => flat,
             Err(status) => return status,
         };

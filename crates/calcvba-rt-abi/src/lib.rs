@@ -297,13 +297,90 @@ pub struct LoadedProgram<'h> {
 /// Raw class-allocation fields share the same same-thread session lease as the
 /// typed global/Err pointers. No complete ExecState borrow spans a callback.
 pub struct TypedClassContext {
+    default_lease: std::rc::Weak<()>,
     next: *mut i32,
     pub draining: *mut bool,
     pub owner: calcvba_runtime::object_owner::RuntimeObjectOwner,
     descriptors: Vec<Vec<&'static RuntimeClassDescriptor>>,
     singletons: Vec<*mut HashMap<usize, Variant>>,
 }
+/// Canonical default slots without an allocator or a retained runtime owner.
+/// Hosts must lease the originating session before touching the raw maps.
+pub struct DefaultInstanceContext {
+    lease: std::rc::Weak<()>,
+    descriptors: Vec<Vec<&'static RuntimeClassDescriptor>>,
+    singletons: Vec<*mut HashMap<usize, Variant>>,
+}
+impl DefaultInstanceContext {
+    pub fn is_alive(&self) -> bool {
+        self.lease.upgrade().is_some()
+    }
+    pub fn find_predeclared_class(&self, name: &str) -> Option<(usize, usize)> {
+        let entry = self.descriptors.len().checked_sub(1)?;
+        let (unit_name, bare) = name
+            .rsplit_once('.')
+            .map_or((None, name), |(unit, class)| (Some(unit), class));
+        for (unit, classes) in self.descriptors.iter().enumerate() {
+            if unit_name.is_none() && unit != entry {
+                continue;
+            }
+            for (class, descriptor) in classes.iter().enumerate() {
+                if descriptor.predeclared
+                    && descriptor.name.eq_ignore_ascii_case(bare)
+                    && unit_name.is_none_or(|name| {
+                        descriptor
+                            .project_identity
+                            .is_some_and(|identity| identity.unit_name.eq_ignore_ascii_case(name))
+                    })
+                {
+                    return Some((unit, class));
+                }
+            }
+        }
+        None
+    }
+    /// # Safety
+    /// The originating session and its canonical maps remain live and leased on
+    /// this thread. No map borrow may span a callback or another map operation.
+    pub unsafe fn predeclared(&self, unit: usize, class: usize) -> Option<Variant> {
+        let map = *self.singletons.get(unit)?;
+        // SAFETY: the caller leases this exact canonical map.
+        unsafe { (&*map).get(&class).cloned() }
+    }
+    /// # Safety
+    /// Same live, same-thread map lease as predeclared. Expected retains the
+    /// object while its default owner is removed; this operation runs no VBA.
+    pub unsafe fn clear_predeclared_if_same(
+        &self,
+        unit: usize,
+        class: usize,
+        expected: &ObjectRef,
+    ) -> bool {
+        let Some(map) = self.singletons.get(unit).copied() else {
+            return false;
+        };
+        // SAFETY: these bounded map borrows end before releasing the old owner.
+        let matches = unsafe { (&*map).get(&class) }
+            .and_then(Variant::as_object_ref)
+            .is_some_and(|object| object.raw_iunknown() == expected.raw_iunknown());
+        if !matches {
+            return false;
+        }
+        // SAFETY: the preceding shared map borrow ended; no callback spans this
+        // exclusive removal. Dropping the owner can only queue termination.
+        let old = unsafe { (&mut *map).remove(&class) };
+        drop(old);
+        true
+    }
+}
 impl TypedClassContext {
+    pub fn default_instances(&self) -> DefaultInstanceContext {
+        DefaultInstanceContext {
+            lease: self.default_lease.clone(),
+            descriptors: self.descriptors.clone(),
+            singletons: self.singletons.clone(),
+        }
+    }
     /// # Safety
     /// The canonical session maps stay leased on this thread; no reference is retained.
     pub unsafe fn predeclared(&self, unit: usize, class: usize) -> Option<Variant> {
@@ -997,6 +1074,8 @@ unsafe fn maybe_drain_with_bridge(state: *mut RawExecState) -> Result<(), Fault>
 /// `For Each` cursors, and other engine-private execution mechanics stay in the owning
 /// engine. Cross-engine runtime state lives here.
 pub struct ExecState<'h> {
+    // Drop this lease before dropping the canonical maps and their owners.
+    default_instance_lease: Rc<()>,
     /// Optional host budget in OxIR basic-block entries, shared across calls.
     pub remaining_steps: Option<u64>,
     pub programs: Vec<LoadedProgram<'h>>,
@@ -1015,11 +1094,27 @@ pub struct ExecState<'h> {
 }
 
 impl<'h> ExecState<'h> {
+    pub fn default_instance_context(&mut self) -> DefaultInstanceContext {
+        DefaultInstanceContext {
+            lease: Rc::downgrade(&self.default_instance_lease),
+            descriptors: self
+                .programs
+                .iter()
+                .map(|p| p.class_descriptors.clone())
+                .collect(),
+            singletons: self
+                .programs
+                .iter_mut()
+                .map(|p| &raw mut p.predeclared_singletons)
+                .collect(),
+        }
+    }
     pub fn typed_class_context(&mut self) -> Option<TypedClassContext> {
         if self.programs.iter().all(|p| p.class_descriptors.is_empty()) {
             return None;
         }
         Some(TypedClassContext {
+            default_lease: Rc::downgrade(&self.default_instance_lease),
             next: &raw mut self.next_instance_id,
             draining: &raw mut self.draining,
             owner: self.object_owner.clone(),
@@ -1037,6 +1132,7 @@ impl<'h> ExecState<'h> {
     }
     pub fn new(host: &'h dyn HostServices) -> Self {
         Self {
+            default_instance_lease: Rc::new(()),
             object_owner: calcvba_runtime::object_owner::RuntimeObjectOwner::current(),
             remaining_steps: None,
             programs: Vec::new(),

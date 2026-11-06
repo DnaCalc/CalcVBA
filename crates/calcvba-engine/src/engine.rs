@@ -321,6 +321,10 @@ pub struct ProjectRuntimeSession {
     host_services: Arc<dyn HostServices>,
 }
 
+#[path = "default_instances.rs"]
+mod default_instances;
+pub use default_instances::DefaultInstanceAccess;
+
 impl ProjectRuntimeSession {
     /// Mint a project-class instance by name (running its `Class_Initialize`) in the entry
     /// program. A class the image doesn't declare is "can't create object" (429, surfaced as a
@@ -378,7 +382,7 @@ impl ProjectRuntimeSession {
     }
 
     /// Yield exclusive session ownership while a synchronous COM event runs.
-    /// Returning the session resumes the suspended VBA activation with all
+    /// Returning the same session resumes the suspended VBA activation with all
     /// changes made by nested member calls retained.
     pub fn set_reentrant_project_event_sink<F>(&mut self, sink: F)
     where

@@ -837,6 +837,22 @@ impl<'h> Vm3<'h> {
         self.invoke_member_values_captured(object, name, kind_hint, args, None)
     }
 
+    /// Release one host owner using the same WithEvents cleanup and finalizer
+    /// boundaries as a VBA slot overwrite. Other held owners keep it alive.
+    pub fn release_project_instance(&mut self, object: ObjectRef) {
+        let value = Variant::from_object_ref(object);
+        self.clear_withevents_owners_before_releasing_values(std::iter::once(&value));
+        drop(value);
+        self.maybe_drain();
+    }
+    /// Run queued finalizers after host storage released its owning values.
+    pub fn drain_object_terminations(&mut self) {
+        self.maybe_drain();
+    }
+    pub fn default_instance_context(&mut self) -> calcvba_rt_abi::DefaultInstanceContext {
+        self.exec.default_instance_context()
+    }
+
     /// Invoke pre-marshaled host arguments and retain their final values,
     /// including changes made before a fault. Equal alias indices share a ByRef cell.
     pub fn invoke_member_values_with_writebacks(

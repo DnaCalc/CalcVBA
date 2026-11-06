@@ -80,6 +80,11 @@ state and release it on disposal. The code cache shares code, never mutable
 VBA state. Handles check session ownership and generation before invocation.
 Reset replaces state; reload prepares replacement code before publishing it.
 
+The VM3-backed `ProjectRuntimeSession` also exposes a checked default-instance
+view for same-thread host callbacks. Lookup creates nothing, reset compares the
+expected identity, and explicit host release drains eligible finalizers while
+preserving held object/control references. The view expires with its runtime state.
+
 DNA Calc's `crates/calc-vba`, pinned at `953ece7f` when inspected on 2026-11-03,
 uses retained invocation frames, read views, instruction budgets, sliced resume,
 reload and generation checks. Old activations retain code/state until they

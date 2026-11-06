@@ -79,6 +79,41 @@ impl Dll {
         }
     }
 }
+
+#[test]
+fn variant_array_and_project_default_indexing_share_compiled_routes() {
+    let directory = Directory::new();
+    let support = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/support/native_members");
+    for name in ["Indexing.bas", "Indexed.cls"] {
+        std::fs::copy(support.join(name), directory.0.join(name)).unwrap();
+    }
+    let project = directory.0.join("Indexing.basproj");
+    std::fs::write(&project, r#"<Project><PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>Indexing</ProjectName></PropertyGroup><ItemGroup><Module Include="Indexing.bas"/><ClassModule Include="Indexed.cls"/><NativeExport Include="IndexSuite"><Module>Indexing</Module><Procedure>IndexSuite</Procedure></NativeExport></ItemGroup></Project>"#).unwrap();
+    let closure = calcvba_project::load_project_closure(&project).unwrap();
+    let expected = "blue:green|1:changed|True|entry|dictionary|13";
+    for config in [HostConfig::vm3(), HostConfig::jit()] {
+        let mut engine = Engine::new(config);
+        engine.set_host_policy(calcvba_hal::HostPolicy::native());
+        let values = engine
+            .execute_manifest_with_variant_snapshot(closure.last().unwrap())
+            .unwrap();
+        assert!(
+            values
+                .iter()
+                .filter_map(|v| v.as_bstr())
+                .any(|v| v.to_string() == expected),
+            "{values:?}"
+        );
+    }
+    let output = build_native_library(&NativeLibraryBuildOptions {
+        project_path: project,
+        out_dir: directory.0.join("out"),
+        template_path: None,
+    })
+    .unwrap();
+    let dll = Dll::load(&output.dll_path);
+    assert_eq!(dll.call("IndexSuite"), expected);
+}
 impl Drop for Dll {
     fn drop(&mut self) {
         // SAFETY: same-thread cleanup runs before the owned image is unloaded.
@@ -190,6 +225,7 @@ fn paramarray_storage_optional_and_gosub_bodies_agree() {
         ("GoSubSuite", "OIROIR|3"),
         ("OptionalSuite", "7:True:s|7:False:t|2:True:q"),
         ("NumericWidthSuite", "-12:-3:7:Long"),
+        ("TypedParameterSuite", "9:[zzz]:6:Byte:1:[zzzz]:Byte:9:7"),
     ];
     let exports=cases.iter().map(|(name,_)|format!("<NativeExport Include=\"{name}\"><Module>Parameters</Module><Procedure>{name}</Procedure></NativeExport>")).collect::<String>();
     std::fs::write(&project,format!("<Project><PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>NativeParameters</ProjectName></PropertyGroup><ItemGroup><Module Include=\"Parameters.bas\"/>{exports}</ItemGroup></Project>")).unwrap();
@@ -226,22 +262,16 @@ fn paramarray_storage_optional_and_gosub_bodies_agree() {
 }
 
 #[test]
-fn unshared_typed_aliases_and_dynamic_project_names_have_source_refusals() {
+fn dynamic_project_names_have_source_refusals() {
     let directory = Directory::new();
     let support = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/support/native_members");
     for name in ["ICounter.cls", "Worker.cls"] {
         std::fs::copy(support.join(name), directory.0.join(name)).unwrap();
     }
-    let cases = [
-        (
-            "Public Function Probe() As String\nDim number As Byte\nnumber=1\nChange number\nProbe=CStr(number)\nEnd Function\nPrivate Sub Change(ParamArray items() As Variant)\nitems(0)=300\nEnd Sub\n",
-            "ParamArray typed alias",
-        ),
-        (
-            "Public Function Probe() As String\nDim receiver As Worker, member As String\nSet receiver=New Worker\nmember=\"Echo\"\nProbe=CallByName(receiver,member,vbMethod)\nEnd Function\n",
-            "dynamic project CallByName",
-        ),
-    ];
+    let cases = [(
+        "Public Function Probe() As String\nDim receiver As Worker, member As String\nSet receiver=New Worker\nmember=\"Echo\"\nProbe=CallByName(receiver,member,vbMethod)\nEnd Function\n",
+        "dynamic project CallByName",
+    )];
     for (index, (source, expected)) in cases.iter().enumerate() {
         std::fs::write(
             directory.0.join("Code.bas"),

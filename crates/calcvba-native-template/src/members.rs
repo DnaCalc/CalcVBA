@@ -170,6 +170,10 @@ pub unsafe extern "C" fn cvb_member_route(
     super::values::boundary(|| {
         // SAFETY: the caller retains the receiver through the temporary owner.
         unsafe {
+            if kind == 12 && !matches!(cell.cast::<u16>().read(), 9 | 13) {
+                out.write(-1);
+                return Ok(());
+            }
             let reference = object(cell, kind).map_err(|fault| fault.number)?;
             out.write(if reference.is_project_instance() {
                 reference.route_key()

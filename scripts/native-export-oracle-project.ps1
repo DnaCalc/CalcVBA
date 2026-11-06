@@ -106,6 +106,14 @@ public static class NativeOracleRunningObject {
     foreach ($module in @(Get-Content -Raw -LiteralPath $ModulesFile | ConvertFrom-Json)) {
         $kind=if($module.PSObject.Properties.Name -contains 'kind'){[int]$module.kind}else{1}
         if($kind -notin @(1,2)){throw 'Only standard and class modules are supported'}
+        if ($module.PSObject.Properties.Name -contains 'import' -and $module.import) {
+            # Exported class files carry member attributes that AddFromString
+            # cannot set, including a default member's VB_UserMemId.
+            $component=$book.VBProject.VBComponents.Import([IO.Path]::GetFullPath([string]$module.source_path))
+            if ([string]$component.Name -cne [string]$module.name) { throw 'Imported module name mismatch' }
+            Release-ComObject $component
+            continue
+        }
         $component=$book.VBProject.VBComponents.Add($kind)
         $component.Name=[string]$module.name
         $source=(Get-Content -Raw -LiteralPath ([string]$module.source_path)) -replace '(?m)^Attribute .*\r?\n',''

@@ -12,7 +12,10 @@ pub fn value_helper_signatures() -> &'static [(&'static str, &'static [ir::Type]
 /// Dynamic Raise now requires the extended native context's runtime services.
 /// Refuse an older template/consumer pairing instead of reading beyond its context.
 pub fn value_helper_version(name: &str) -> u16 {
-    if matches!(name, "cvb_raise_dynamic" | "cvb_object_type") {
+    if matches!(
+        name,
+        "cvb_raise_dynamic" | "cvb_object_type" | "cvb_paramarray_literal"
+    ) {
         2
     } else {
         1
@@ -491,32 +494,11 @@ pub fn compile_native_scalars(
                         ) {
                             return Err(problem(func, format!("Variant array receiver {inst:?}")));
                         }
-                        if matches!(inst, OxInst::ArrayGet { .. })
-                            && layout.operand_type(array) == Ok(ScalarType::Variant)
-                            && program.classes.iter().any(|class| {
-                                class.methods.iter().any(|method| method.is_default_member)
-                            })
-                        {
-                            return Err(problem(
-                                func,
-                                "dynamic project default index requires a compiled member route",
-                            ));
-                        }
                     }
                     OxInst::ArraySet { array, .. } => {
                         let slot = layout.slot(*array).map_err(|e| problem(func, e))?;
                         if !matches!(layout.slots[slot], ScalarType::Array | ScalarType::Variant) {
                             return Err(problem(func, format!("Variant array receiver {inst:?}")));
-                        }
-                        if layout.slots[slot] == ScalarType::Variant
-                            && program.classes.iter().any(|class| {
-                                class.methods.iter().any(|method| method.is_default_member)
-                            })
-                        {
-                            return Err(problem(
-                                func,
-                                "dynamic project default index requires a compiled member route",
-                            ));
                         }
                     }
                     OxInst::ArrayRedim { dst: array, .. } => {
@@ -725,6 +707,7 @@ pub fn compile_native_scalars(
                 b.ins().stack_store(pointer, pointers, (i * 8) as i32);
             }
             let values = values::Values {
+                procedure: plan.procedure,
                 lower: ScalarLower {
                     layout: &plan.layout,
                     slots: PhysicalSlots::Native(pointers),
@@ -824,7 +807,16 @@ pub fn compile_native_scalars(
                     let foreign_state = foreign_states
                         .get(&(plan.procedure.0, block.id.0, instruction_index))
                         .copied();
-                    if values.instruction(module, &mut b, inst, foreign_state) {
+                    let indexed_member = calcvba_rt_abi::host_entry::index_member_call(inst)
+                        .filter(|_| {
+                            plan.layout
+                                .class_calls
+                                .iter()
+                                .any(|(site, _, _)| site == inst)
+                        });
+                    if indexed_member.is_none()
+                        && values.instruction(module, &mut b, inst, foreign_state)
+                    {
                         continue;
                     }
                     if let OxInst::CallExtern { dst, import, args } = inst {
@@ -985,7 +977,7 @@ pub fn compile_native_scalars(
                         object: recv,
                         args,
                         ..
-                    } = inst
+                    } = indexed_member.as_ref().unwrap_or(inst)
                     {
                         let receiver = values.cell(module, &mut b, recv);
                         let slot = b.create_sized_stack_slot(StackSlotData::new(
@@ -1012,11 +1004,34 @@ pub fn compile_native_scalars(
                             }
                             let selected = b.create_block();
                             let next = b.create_block();
-                            let matches = b.ins().icmp_imm(
+                            let mut matches = b.ins().icmp_imm(
                                 ir::condcodes::IntCC::Equal,
                                 route,
                                 class.0 as i64,
                             );
+                            if let OxInst::ArraySet { value, .. } = inst {
+                                let input = values.cell(module, &mut b, value);
+                                let kind = values::kind_of_operand(&plan.layout, value);
+                                let object = if kind == 12 {
+                                    let tag =
+                                        b.ins().load(types::I16, ir::MemFlagsData::new(), input, 0);
+                                    b.ins().icmp_imm(ir::condcodes::IntCC::Equal, tag, 9)
+                                } else {
+                                    b.ins().iconst(types::I8, i64::from(kind == 9))
+                                };
+                                let is_set =
+                                    program.classes[class.0].methods.iter().any(|method| {
+                                        method.proc == *procedure
+                                            && method.kind
+                                                == calcvba_bundle::ProjectMemberKind::PropertySet
+                                    });
+                                let kind_matches = if is_set {
+                                    object
+                                } else {
+                                    b.ins().icmp_imm(ir::condcodes::IntCC::Equal, object, 0)
+                                };
+                                matches = b.ins().band(matches, kind_matches);
+                            }
                             b.ins().brif(matches, selected, &[], next, &[]);
                             b.switch_to_block(selected);
                             let callee = &plans[&procedure.0];
@@ -1051,7 +1066,11 @@ pub fn compile_native_scalars(
                             b.ins().jump(end, &[]);
                             b.switch_to_block(next);
                         }
-                        values.member_call(module, &mut b, inst);
+                        if indexed_member.is_some() {
+                            assert!(values.instruction(module, &mut b, inst, foreign_state));
+                        } else {
+                            values.member_call(module, &mut b, inst);
+                        }
                         b.ins().jump(end, &[]);
                         b.switch_to_block(end);
                         continue;

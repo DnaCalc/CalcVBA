@@ -36,6 +36,31 @@ pub mod library;
 pub mod native_export;
 pub mod object_types;
 
+/// Copy-out to a declared caller slot. Conversion completes before either the
+/// caller or a ParamArray element is changed, including checked narrow types.
+pub fn coerce_declared_value(value: &Variant, ty: &OxTy) -> Result<Variant, ArithError> {
+    let numeric = match ty {
+        OxTy::Byte => Some(NumericCoerceTarget::Byte),
+        OxTy::Integer => Some(NumericCoerceTarget::Integer),
+        OxTy::Long => Some(NumericCoerceTarget::Long),
+        OxTy::LongLong => Some(NumericCoerceTarget::LongLong),
+        OxTy::Single => Some(NumericCoerceTarget::Single),
+        OxTy::Double => Some(NumericCoerceTarget::Double),
+        OxTy::Currency => Some(NumericCoerceTarget::Currency),
+        OxTy::Date => Some(NumericCoerceTarget::Date),
+        OxTy::Bool => Some(NumericCoerceTarget::Boolean),
+        _ => None,
+    };
+    if let Some(target) = numeric {
+        return arith::coerce_numeric(value, target);
+    }
+    match ty {
+        OxTy::Str => arith::coerce_string(value),
+        OxTy::FixedStr(len) => arith::coerce_fixed_string(value, *len as usize),
+        _ => Ok(value.clone()),
+    }
+}
+
 /// ObjPtr borrows the object's actual native Automation face when it has one.
 /// The source value and host binding retain its lifetime, as in VBA; no pointer
 /// registry ownership is added by observing an object's address.

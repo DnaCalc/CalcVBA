@@ -58,7 +58,7 @@ Public Function OptionalSuite() As String
 End Function
 Public Sub Main()
     Dim observed As String
-    observed=ParameterSuite() & "#" & FixedSuite() & "#" & GoSubSuite() & "#" & OptionalSuite() & "#" & NumericWidthSuite()
+    observed=ParameterSuite() & "#" & FixedSuite() & "#" & GoSubSuite() & "#" & OptionalSuite() & "#" & NumericWidthSuite() & "#" & TypedParameterSuite()
 End Sub
 Public Function NumericWidthSuite() As String
     Dim fraction As Double, first As Long, second As Long, nested As Variant
@@ -68,3 +68,21 @@ Public Function NumericWidthSuite() As String
     nested=CLng(CInt(7))
     NumericWidthSuite=CStr(first) & ":" & CStr(second) & ":" & CStr(nested) & ":" & TypeName(nested)
 End Function
+Public Function TypedParameterSuite() As String
+    Dim number As Byte, text As String * 3
+    number = 1: text = "a"
+    TypedChange number, text, number, (number)
+    TypedParameterSuite = CStr(number) & ":[" & text & "]:" & trace
+End Function
+Private Sub TypedChange(ParamArray items() As Variant)
+    On Error Resume Next
+    items(0) = 300
+    trace = CStr(Err.Number) & ":" & TypeName(items(0)) & ":" & CStr(items(0))
+    Err.Clear
+    items(1) = "zzzz"
+    trace = trace & ":[" & CStr(items(1)) & "]"
+    items(2) = 9
+    trace = trace & ":" & TypeName(items(0)) & ":" & CStr(items(0))
+    items(3) = 7
+    trace = trace & ":" & CStr(items(3))
+End Sub

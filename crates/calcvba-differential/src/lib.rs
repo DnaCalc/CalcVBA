@@ -11791,7 +11791,7 @@ End Sub
     fn jit_matches_vm3_paramarray_named_fixed_tail_global_fixed_string_alias_copyout() {
         assert_jit_matches_vm3_contains_canon(
             JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_FIXED_STRING_ALIAS_COPYOUT,
-            Canon::Str("abcdef".into()),
+            Canon::Str("abc".into()),
         );
         assert_jit_matches_vm3_contains(
             JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_FIXED_STRING_ALIAS_COPYOUT,
@@ -12031,7 +12031,7 @@ End Sub
     fn jit_matches_vm3_paramarray_named_fixed_tail_typed_fixed_string_alias_copyout() {
         assert_jit_matches_vm3_contains_canon(
             JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_FIXED_STRING_ALIAS_COPYOUT,
-            Canon::Str("abcdef".into()),
+            Canon::Str("abc".into()),
         );
         assert_jit_matches_vm3_contains(
             JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_FIXED_STRING_ALIAS_COPYOUT,
@@ -12236,7 +12236,7 @@ End Sub
     fn jit_matches_vm3_paramarray_typed_fixed_string_alias_copyout() {
         assert_jit_matches_vm3_contains_canon(
             JIT_PARAMARRAY_TYPED_FIXED_STRING_ALIAS_COPYOUT,
-            Canon::Str("abcdef".into()),
+            Canon::Str("abc".into()),
         );
     }
 

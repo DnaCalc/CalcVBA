@@ -429,6 +429,7 @@ pub(super) struct Values<'a> {
     pub lower: ScalarLower<'a>,
     pub functions: &'a HashMap<&'static str, ClifFuncId>,
     pub program: &'a OxProgram,
+    pub procedure: FuncId,
     pub iterator_slots: BTreeSet<usize>,
     pub class_entries: &'a HashMap<FuncId, ClifFuncId>,
     pub as_new: HashMap<OxPlace, calcvba_oxir::inst::OxAsNew>,
@@ -1070,6 +1071,27 @@ impl Values<'_> {
                     };
                     b.ins().stack_store(cell, alias_cells, (index * 8) as i32);
                     metadata.push(kind);
+                }
+                for index in 0..values.len() {
+                    let ty = aliases
+                        .get(index)
+                        .copied()
+                        .flatten()
+                        .and_then(|place| match place {
+                            OxPlace::Local(id) => self.program.funcs[self.procedure.0]
+                                .locals
+                                .get(id.0)
+                                .map(|l| &l.ty),
+                            OxPlace::Temp(id) => {
+                                self.program.funcs[self.procedure.0].temps.get(id.0)
+                            }
+                            OxPlace::Global(id) => self.program.globals.get(id.0).map(|g| &g.ty),
+                        });
+                    metadata.push(if let Some(OxTy::FixedStr(len)) = ty {
+                        *len
+                    } else {
+                        0
+                    });
                 }
                 let metadata = data(
                     module,

@@ -18,6 +18,45 @@ pub mod collection;
 mod iteration;
 mod member;
 pub mod value;
+
+/// The object-default interpretation of an index operation. Native lowering
+/// uses this only for a project object; arrays retain their ordinary path.
+pub fn index_member_call(inst: &OxInst) -> Option<OxInst> {
+    use calcvba_com::TypeLibMemberInvokeKind as Kind;
+    let (dst, recv, indices, value) = match inst {
+        OxInst::ArrayGet {
+            dst,
+            array,
+            indices,
+        } => (Some(*dst), array.clone(), indices, None),
+        OxInst::ArraySet {
+            array,
+            indices,
+            value,
+        } => (None, OxOperand::Use(*array), indices, Some(value)),
+        _ => return None,
+    };
+    let mut args: Vec<_> = indices
+        .iter()
+        .cloned()
+        .map(calcvba_oxir::OxCallArg::Operand)
+        .collect();
+    if let Some(value) = value {
+        args.push(calcvba_oxir::OxCallArg::Operand(value.clone()));
+    }
+    Some(OxInst::ComCallLate {
+        dst,
+        recv,
+        name: String::new(),
+        default_member: true,
+        invoke_kind: if value.is_some() {
+            Kind::PropertyPut
+        } else {
+            Kind::PropertyGet
+        },
+        args,
+    })
+}
 pub fn owning_builtin(id: calcvba_bundle::NativeImplId) -> bool {
     use calcvba_bundle::NativeImplId::*;
     matches!(
@@ -869,7 +908,9 @@ impl ScalarLayout {
         let mut class_calls = Vec::new();
         if owning {
             for inst in func.blocks.iter().flat_map(|b| &b.instrs) {
-                let translated = if let OxInst::CallByName {
+                let translated = if native_numbers && index_member_call(inst).is_some() {
+                    index_member_call(inst)
+                } else if let OxInst::CallByName {
                     dst,
                     object,
                     name: OxOperand::Const(OxConst::Str(name)),
@@ -915,6 +956,11 @@ impl ScalarLayout {
                         OxPlace::Temp(id) => func.temps.get(id.0),
                         OxPlace::Global(id) => globals.get(id.0).map(|g| &g.ty),
                     };
+                    if matches!(inst, OxInst::ArrayGet { .. } | OxInst::ArraySet { .. })
+                        && !matches!(ty, Some(OxTy::Variant | OxTy::Object(_)))
+                    {
+                        continue;
+                    }
                     let declared = match ty {
                         Some(OxTy::Object(calcvba_oxir::ObjClass::Class(id))) => Some(*id),
                         _ => None,
@@ -949,40 +995,49 @@ impl ScalarLayout {
                         } else if declared.is_some_and(|declared| declared != id) {
                             continue;
                         }
-                        let method = class.methods.iter().find(|m| {
-                            (if matches!(inst, OxInst::CallByName { .. }) {
-                                m.externally_visible
-                            } else {
-                                declared.is_some()
-                                    || interface_name.is_some()
-                                    || m.externally_visible
-                            }) && (if *default_member {
-                                m.is_default_member
-                            } else {
-                                m.name.eq_ignore_ascii_case(name)
-                            }) && matches!(
-                                (m.kind, invoke_kind),
-                                (
-                                    calcvba_bundle::ProjectMemberKind::Method,
-                                    calcvba_com::TypeLibMemberInvokeKind::Method
-                                ) | (
-                                    calcvba_bundle::ProjectMemberKind::PropertyGet,
-                                    calcvba_com::TypeLibMemberInvokeKind::PropertyGet
-                                ) | (
-                                    calcvba_bundle::ProjectMemberKind::PropertyLet,
-                                    calcvba_com::TypeLibMemberInvokeKind::PropertyPut
-                                ) | (
-                                    calcvba_bundle::ProjectMemberKind::PropertySet,
-                                    calcvba_com::TypeLibMemberInvokeKind::PropertyPutRef
-                                )
-                            )
-                        });
-                        let Some(method) = method else {
+                        let methods: Vec<_> = class
+                            .methods
+                            .iter()
+                            .filter(|m| {
+                                (if matches!(inst, OxInst::CallByName { .. }) {
+                                    m.externally_visible
+                                } else {
+                                    declared.is_some()
+                                        || interface_name.is_some()
+                                        || m.externally_visible
+                                }) && (if *default_member {
+                                    m.is_default_member
+                                } else {
+                                    m.name.eq_ignore_ascii_case(name)
+                                }) && (matches!(inst, OxInst::ArraySet { .. })
+                                    && matches!(
+                                        m.kind,
+                                        calcvba_bundle::ProjectMemberKind::PropertySet
+                                    )
+                                    || matches!(
+                                        (m.kind, invoke_kind),
+                                        (
+                                            calcvba_bundle::ProjectMemberKind::Method,
+                                            calcvba_com::TypeLibMemberInvokeKind::Method
+                                        ) | (
+                                            calcvba_bundle::ProjectMemberKind::PropertyGet,
+                                            calcvba_com::TypeLibMemberInvokeKind::PropertyGet
+                                        ) | (
+                                            calcvba_bundle::ProjectMemberKind::PropertyLet,
+                                            calcvba_com::TypeLibMemberInvokeKind::PropertyPut
+                                        ) | (
+                                            calcvba_bundle::ProjectMemberKind::PropertySet,
+                                            calcvba_com::TypeLibMemberInvokeKind::PropertyPutRef
+                                        )
+                                    ))
+                            })
+                            .collect();
+                        if methods.is_empty() {
                             if declared.is_some() && interface_name.is_none() {
                                 return Err("unresolved typed source class member".into());
                             }
                             continue;
-                        };
+                        }
                         if args.iter().any(|a| {
                             !matches!(
                                 a,
@@ -993,13 +1048,15 @@ impl ScalarLayout {
                         }) {
                             return Err("named source class arguments remain open".into());
                         }
-                        calls.insert(
-                            method.proc,
-                            call_signature(
-                                functions.get(method.proc.0).ok_or("invalid class method")?,
-                            )?,
-                        );
-                        class_calls.push((inst.clone(), method.proc, id));
+                        for method in methods {
+                            calls.insert(
+                                method.proc,
+                                call_signature(
+                                    functions.get(method.proc.0).ok_or("invalid class method")?,
+                                )?,
+                            );
+                            class_calls.push((inst.clone(), method.proc, id));
+                        }
                     }
                 }
             }
@@ -1683,6 +1740,12 @@ impl ScalarLayout {
             return Err("specialized temporary needs a proven Double writer".into());
         }
         if to == from
+            || (self.native_numbers
+                && matches!(
+                    (to, from),
+                    (ScalarType::HostObject, ScalarType::Variant)
+                        | (ScalarType::Variant, ScalarType::HostObject)
+                ))
             || (self.owning && !self.native_numbers && to == ScalarType::Variant)
             || (to == ScalarType::Double && from == ScalarType::Long)
             || (self.native_numbers
@@ -1769,13 +1832,7 @@ impl ScalarLayout {
                 } => {
                     self.slot(*dst)?;
                     for alias in aliases.iter().flatten() {
-                        let index = self.slot(*alias)?;
-                        if !matches!(self.slots[index], ScalarType::Variant) {
-                            return Err(
-                                "native ParamArray typed alias requires shared caller coercion"
-                                    .into(),
-                            );
-                        }
+                        self.slot(*alias)?;
                     }
                     for value in values {
                         self.operand_type(value)?;

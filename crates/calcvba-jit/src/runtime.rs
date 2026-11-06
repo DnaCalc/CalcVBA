@@ -675,6 +675,8 @@ pub(crate) struct JitForEachState {
 
 pub(crate) struct JitFrame {
     pub(crate) program_index: usize,
+    pub(crate) local_types: Vec<OxTy>,
+    pub(crate) temp_types: Vec<OxTy>,
     pub(crate) locals: Vec<Variant>,
     pub(crate) temps: Vec<Variant>,
     pub(crate) aliases: Vec<Option<SlotAlias>>,
@@ -744,6 +746,8 @@ pub(crate) fn new_jit_frame(
         .collect::<Result<Vec<_>, _>>()?;
     Ok(JitFrame {
         program_index,
+        local_types: func.locals.iter().map(|local| local.ty.clone()).collect(),
+        temp_types: func.temps.clone(),
         locals,
         temps,
         aliases: vec![None; func.locals.len()],
@@ -1115,31 +1119,59 @@ pub(crate) unsafe fn mirror_param_array_element_write(
     array_alias: SlotAlias,
     flat: usize,
     value: &Variant,
-) -> Result<(), i32> {
+) -> Result<bool, i32> {
     let Some(aliases) = run.param_array_aliases.get(&array_alias).cloned() else {
-        return Ok(());
+        return Ok(false);
     };
     let Some(Some(target)) = aliases.get(flat).copied() else {
-        return Ok(());
+        return Ok(false);
+    };
+    let ty = match target.area {
+        AREA_GLOBAL => {
+            let image = program_image(run, target.frame.ok_or(ST_FAULT)?).ok_or(ST_FAULT)?;
+            // SAFETY: the linked image retains its metadata for the live run.
+            unsafe { &*image.program }
+                .globals
+                .get(target.index as usize)
+                .map(|g| &g.ty)
+        }
+        AREA_LOCAL => run
+            .frames
+            .get(target.frame.ok_or(ST_FAULT)?)
+            .and_then(|frame| frame.local_types.get(target.index as usize)),
+        AREA_TEMP => run
+            .frames
+            .get(target.frame.ok_or(ST_FAULT)?)
+            .and_then(|frame| frame.temp_types.get(target.index as usize)),
+        _ => None,
+    }
+    .ok_or(ST_FAULT)?;
+    // SAFETY: the current compiled call owns the live error state.
+    let converted = unsafe { coerce_call_arg_for_param(state, ty, value) }?;
+    let element = if matches!(ty, OxTy::FixedStr(_)) {
+        // SAFETY: the current compiled call owns the live error state.
+        unsafe { coerce_string_call_arg(state, value) }?
+    } else {
+        converted.clone()
     };
     let Some(slot) = slot_alias_mut(run, target) else {
         return Err(ST_FAULT);
     };
-    *slot = value.clone();
+    *slot = converted;
 
     for (index, alias) in aliases.iter().enumerate() {
-        if index == flat || *alias != Some(target) {
+        if *alias != Some(target) {
             continue;
         }
         let Some(array) = slot_alias_mut(run, array_alias) else {
             return Err(ST_FAULT);
         };
         array
-            .set_safearray_element(index, value)
+            .set_safearray_element(index, &element)
             // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
             .map_err(|_| unsafe { rt_raise_type_mismatch(state) })?;
     }
-    Ok(())
+    Ok(true)
 }
 
 pub(crate) fn status_guard(work: impl FnOnce() -> i32) -> i32 {

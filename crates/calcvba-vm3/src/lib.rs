@@ -2972,6 +2972,9 @@ impl<'h> Vm3<'h> {
         if flat >= len {
             return Err(Vm3Error::Fault(Fault::new(9, "subscript out of range")));
         }
+        if self.mirror_param_array_element_write(loc, flat, value)? {
+            return Ok(true);
+        }
         let arr = self
             .read_loc_mut(loc)?
             .expect("location borrowed immutably just above is still present");
@@ -2980,7 +2983,6 @@ impl<'h> Vm3<'h> {
         {
             match result {
                 Ok(true) => {
-                    self.mirror_param_array_element_write(loc, flat, value)?;
                     return Ok(true);
                 }
                 Ok(false) => {}
@@ -2989,7 +2991,6 @@ impl<'h> Vm3<'h> {
         }
         arr.set_safearray_element(flat, value)
             .map_err(|e| Vm3Error::Fault(Fault::new(13, e)))?;
-        self.mirror_param_array_element_write(loc, flat, value)?;
         Ok(true)
     }
 
@@ -3005,25 +3006,43 @@ impl<'h> Vm3<'h> {
         array_loc: Loc,
         flat: usize,
         value: &Variant,
-    ) -> Result<(), Vm3Error> {
+    ) -> Result<bool, Vm3Error> {
         let Some(aliases) = self.param_array_aliases.get(&array_loc).cloned() else {
-            return Ok(());
+            return Ok(false);
         };
         let Some(Some(target)) = aliases.get(flat).copied() else {
-            return Ok(());
+            return Ok(false);
         };
-
-        self.write_loc(target, value.clone())?;
+        let ty = match target {
+            Loc::Global(p, g) => self.exec.programs[p].program.globals[g].ty.clone(),
+            Loc::Local(f, l) => {
+                let frame = &self.frames[f];
+                self.exec.programs[frame.prog].program.funcs[frame.func.0].locals[l]
+                    .ty
+                    .clone()
+            }
+            Loc::Temp(f, t) => {
+                let frame = &self.frames[f];
+                self.exec.programs[frame.prog].program.funcs[frame.func.0].temps[t].clone()
+            }
+        };
+        let converted = calcvba_rt_abi::coerce_declared_value(value, &ty).map_err(arith_fault)?;
+        let element = if matches!(ty, OxTy::FixedStr(_)) {
+            arith::coerce_string(value).map_err(arith_fault)?
+        } else {
+            converted.clone()
+        };
+        self.write_loc(target, converted)?;
 
         if let Some(arr) = self.read_loc_mut(array_loc)? {
             for (idx, alias) in aliases.iter().enumerate() {
-                if idx != flat && *alias == Some(target) {
-                    arr.set_safearray_element(idx, value)
+                if *alias == Some(target) {
+                    arr.set_safearray_element(idx, &element)
                         .map_err(|e| Vm3Error::Fault(Fault::new(13, e)))?;
                 }
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     fn prune_param_array_aliases_from_depth(&mut self, depth: usize) {

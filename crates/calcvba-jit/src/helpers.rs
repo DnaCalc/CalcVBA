@@ -3923,6 +3923,8 @@ pub(crate) unsafe fn invoke_project_default_member_values(
     temps.push(Variant::empty());
     let frame = JitFrame {
         program_index,
+        local_types: Vec::new(),
+        temp_types: vec![OxTy::Variant; temps.len()],
         locals: Vec::new(),
         temps,
         aliases: Vec::new(),
@@ -6674,10 +6676,18 @@ pub(crate) unsafe extern "C" fn rt_jit_array_set_i32_1d_slot(
         };
         // SAFETY: null was rejected and all immutable borrows ended before mutation.
         let run = unsafe { &mut *run };
+        let value_variant = Variant::from_i32(value);
+        // SAFETY: the checked call retains all aliases; conversion precedes mutation.
+        match unsafe {
+            mirror_param_array_element_write(state, run, array_alias, flat, &value_variant)
+        } {
+            Ok(true) => return ST_OK,
+            Ok(false) => {}
+            Err(status) => return status,
+        }
         let Some(array) = slot_mut(run, array_area, array_index) else {
             return ST_FAULT;
         };
-        let value_variant = Variant::from_i32(value);
         match array.set_safearray_i32_element(flat, value) {
             Some(Ok(true)) => {}
             Some(Ok(false)) => {
@@ -6693,12 +6703,7 @@ pub(crate) unsafe extern "C" fn rt_jit_array_set_i32_1d_slot(
         }
         // SAFETY: the current compiled-run boundary owns the live unique state handle;
         // typed references and owned values remain live and nonaliasing for this call.
-        match unsafe {
-            mirror_param_array_element_write(state, run, array_alias, flat, &value_variant)
-        } {
-            Ok(()) => ST_OK,
-            Err(status) => status,
-        }
+        ST_OK
     })
 }
 
@@ -6777,6 +6782,12 @@ pub(crate) unsafe extern "C" fn rt_jit_array_set_variant_slot(
         };
         // SAFETY: null was rejected and all immutable borrows ended before the mutable slot write.
         let run = unsafe { &mut *run };
+        // SAFETY: the checked call retains all aliases; conversion precedes mutation.
+        match unsafe { mirror_param_array_element_write(state, run, array_alias, flat, &value) } {
+            Ok(true) => return ST_OK,
+            Ok(false) => {}
+            Err(status) => return status,
+        }
         let Some(array) = slot_mut(run, array_area, array_index) else {
             return ST_FAULT;
         };
@@ -6787,12 +6798,7 @@ pub(crate) unsafe extern "C" fn rt_jit_array_set_variant_slot(
                 Ok(true) => {
                     // SAFETY: the checked JIT entry owns the live unique state;
                     // `run` and the initialized source Variant remain live.
-                    return match unsafe {
-                        mirror_param_array_element_write(state, run, array_alias, flat, &value)
-                    } {
-                        Ok(()) => ST_OK,
-                        Err(status) => status,
-                    };
+                    return ST_OK;
                 }
                 Ok(false) => {}
                 // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
@@ -6805,10 +6811,7 @@ pub(crate) unsafe extern "C" fn rt_jit_array_set_variant_slot(
         }
         // SAFETY: the current compiled-run boundary owns the live unique state handle;
         // typed references and owned values remain live and nonaliasing for this call.
-        match unsafe { mirror_param_array_element_write(state, run, array_alias, flat, &value) } {
-            Ok(()) => ST_OK,
-            Err(status) => status,
-        }
+        ST_OK
     })
 }
 

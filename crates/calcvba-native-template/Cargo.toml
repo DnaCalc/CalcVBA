@@ -16,6 +16,7 @@ serde_json.workspace = true
 calcvba-bundle = { path = "../calcvba-bundle" }
 calcvba-runtime.workspace = true
 calcvba-rt-abi.workspace = true
+calcvba-oxir.workspace = true
 calcvba-lib.workspace = true
 calcvba-eval.workspace = true
 calcvba-com.workspace = true

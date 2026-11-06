@@ -14,7 +14,7 @@ pub fn value_helper_signatures() -> &'static [(&'static str, &'static [ir::Type]
 pub fn value_helper_version(name: &str) -> u16 {
     if matches!(
         name,
-        "cvb_raise_dynamic" | "cvb_object_type" | "cvb_paramarray_literal"
+        "cvb_raise_dynamic" | "cvb_object_type" | "cvb_paramarray_literal" | "cvb_frame_enter"
     ) {
         2
     } else {
@@ -760,7 +760,18 @@ pub fn compile_native_scalars(
                     .collect(),
             };
             let lower = &values.lower;
-            values.call(module, &mut b, "cvb_frame_enter", &[runtime]);
+            let source = func
+                .name
+                .split_once("::")
+                .map_or(program.unit_name.as_str(), |(unit, _)| unit);
+            let source_text = values::data(module, &mut b, source.as_bytes().to_vec(), 1);
+            let source_len = b.ins().iconst(types::I64, source.len() as i64);
+            values.call(
+                module,
+                &mut b,
+                "cvb_frame_enter",
+                &[runtime, source_text, source_len],
+            );
             for (i, ty) in plan.layout.parameters.iter().enumerate() {
                 if values::owning(*ty) && !plan.layout.by_ref_parameters[i] {
                     let dst = values.address(&mut b, i);
@@ -1035,6 +1046,13 @@ pub fn compile_native_scalars(
                             b.ins().brif(matches, selected, &[], next, &[]);
                             b.switch_to_block(selected);
                             let callee = &plans[&procedure.0];
+                            if args.len() + 1 != callee.layout.parameters.len() {
+                                let status = b.ins().iconst(types::I32, 450);
+                                lower.check_status(&mut b, status);
+                                b.ins().jump(end, &[]);
+                                b.switch_to_block(next);
+                                continue;
+                            }
                             let mut arguments = vec![OxArg::ByVal(recv.clone())];
                             for (index, arg) in args.iter().enumerate() {
                                 arguments.push(match arg {
@@ -1484,7 +1502,7 @@ fn emit_native_call(
         {
             values.cell(module, b, &operand)
         } else if !by_ref
-            && matches!(ty, ScalarType::Variant | ScalarType::HostObject)
+            && !matches!(ty, ScalarType::Record | ScalarType::Array)
             && values.lower.layout.operand_type(&operand) != Ok(*ty)
         {
             let slot =
@@ -1507,8 +1525,21 @@ fn emit_native_call(
             if *ty == ScalarType::Variant {
                 pointer
             } else {
-                b.ins()
-                    .load(types::I64, ir::MemFlagsData::new(), pointer, 0)
+                match ty {
+                    ScalarType::Byte => {
+                        let value = b.ins().load(types::I8, ir::MemFlagsData::new(), pointer, 0);
+                        b.ins().uextend(types::I32, value)
+                    }
+                    ScalarType::Integer | ScalarType::Boolean => {
+                        let value = b
+                            .ins()
+                            .load(types::I16, ir::MemFlagsData::new(), pointer, 0);
+                        b.ins().sextend(types::I32, value)
+                    }
+                    _ => b
+                        .ins()
+                        .load(machine_type(*ty), ir::MemFlagsData::new(), pointer, 0),
+                }
             }
         } else {
             match (arg, by_ref) {

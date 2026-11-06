@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory=$true)][string]$Directory,
     [Parameter(Mandatory=$true)][string]$ModulesFile,
     [string[]]$ReferencePaths=@(),
+    [string]$ReferenceProjectsFile,
     [string]$Entry='OracleSelfTest.ProbeNativeExports',
     [string]$RunnerProject,
     [string]$RunningObjectPath
@@ -52,6 +53,24 @@ $stopFile=Join-Path $Directory 'guardian-stop'
 $guardian=$null; $excel=$null; $native=$null; $book=$null
 $runningTable=$null; $runningMoniker=$null; $runningCookie=0
 $record=[ordered]@{compile_status='not-run';run_status='not-run';value=$null;error=$null;pid=$owned.Id;launches=1}
+$referenceBooks=[Collections.Generic.List[object]]::new()
+function Add-OfficeModules($Workbook,$Modules) {
+    foreach ($module in @($Modules)) {
+        $kind=if($module.PSObject.Properties.Name -contains 'kind'){[int]$module.kind}else{1}
+        if($kind -notin @(1,2)){throw 'Only standard and class modules are supported'}
+        if ($module.PSObject.Properties.Name -contains 'import' -and $module.import) {
+            $component=$Workbook.VBProject.VBComponents.Import([IO.Path]::GetFullPath([string]$module.source_path))
+            if ([string]$component.Name -cne [string]$module.name) { throw 'Imported module name mismatch' }
+        } else {
+            $component=$Workbook.VBProject.VBComponents.Add($kind)
+            $component.Name=[string]$module.name
+            $source=(Get-Content -Raw -LiteralPath ([string]$module.source_path)) -replace '(?m)^Attribute .*\r?\n',''
+            $source=$source -replace '(?is)\AVERSION[^\r\n]*\r?\nBEGIN\r?\n.*?\r?\nEND\r?\n',''
+            [void]$component.CodeModule.AddFromString($source)
+        }
+        Release-ComObject $component
+    }
+}
 try {
     $enumeration=[ExcelOracleNativeMethods]::EnumerateOwnedWindows([uint32]$owned.Id)
     if (-not (Test-ExcelOracleWindowEnumerationAuthority -Enumeration $enumeration -ExpectedProcessId $owned.Id)) { throw 'Incomplete owned-window enumeration' }
@@ -98,29 +117,34 @@ public static class NativeOracleRunningObject {
     }
     Start-OfficeGuardian
     [void](Set-OfficePhase run 'project-import')
+    $sourceReferences=@{}
+    if ($ReferenceProjectsFile) {
+        foreach ($library in @(Get-Content -Raw -LiteralPath $ReferenceProjectsFile | ConvertFrom-Json)) {
+            $referenceBook=$excel.Workbooks.Add()
+            $referenceBooks.Add($referenceBook)
+            $referenceBook.VBProject.Name=[string]$library.name
+            foreach ($dependency in @($library.references)) {
+                if (-not $sourceReferences.ContainsKey([string]$dependency)) { throw 'Reference projects must be ordered dependencies first' }
+                $reference=$referenceBook.VBProject.References.AddFromFile($sourceReferences[[string]$dependency])
+                Release-ComObject $reference
+            }
+            Add-OfficeModules $referenceBook $library.modules
+            Invoke-OfficeCompile -ShowWindow -Workbook $referenceBook -ModuleName ([string]$library.modules[0].name)
+            $libraryPath=Join-Path $Directory ([string]$library.name+'.xlsm')
+            $referenceBook.SaveAs($libraryPath,52)
+            $sourceReferences[[string]$library.name]=$libraryPath
+        }
+    }
     $book=$excel.Workbooks.Add()
+    foreach ($path in $sourceReferences.Values) {
+        $reference=$book.VBProject.References.AddFromFile($path)
+        Release-ComObject $reference
+    }
     foreach ($path in $ReferencePaths) {
         $reference=$book.VBProject.References.AddFromFile((Resolve-Path -LiteralPath $path).Path)
         Release-ComObject $reference
     }
-    foreach ($module in @(Get-Content -Raw -LiteralPath $ModulesFile | ConvertFrom-Json)) {
-        $kind=if($module.PSObject.Properties.Name -contains 'kind'){[int]$module.kind}else{1}
-        if($kind -notin @(1,2)){throw 'Only standard and class modules are supported'}
-        if ($module.PSObject.Properties.Name -contains 'import' -and $module.import) {
-            # Exported class files carry member attributes that AddFromString
-            # cannot set, including a default member's VB_UserMemId.
-            $component=$book.VBProject.VBComponents.Import([IO.Path]::GetFullPath([string]$module.source_path))
-            if ([string]$component.Name -cne [string]$module.name) { throw 'Imported module name mismatch' }
-            Release-ComObject $component
-            continue
-        }
-        $component=$book.VBProject.VBComponents.Add($kind)
-        $component.Name=[string]$module.name
-        $source=(Get-Content -Raw -LiteralPath ([string]$module.source_path)) -replace '(?m)^Attribute .*\r?\n',''
-        $source=$source -replace '(?is)\AVERSION[^\r\n]*\r?\nBEGIN\r?\n.*?\r?\nEND\r?\n',''
-        [void]$component.CodeModule.AddFromString($source)
-        Release-ComObject $component
-    }
+    Add-OfficeModules $book (Get-Content -Raw -LiteralPath $ModulesFile | ConvertFrom-Json)
     Invoke-OfficeCompile -ShowWindow -Workbook $book -ModuleName ($Entry.Split('.')[0])
     $record.compile_status='ok'
     $record.value=$excel.Run("'"+$book.Name+"'!"+$Entry)
@@ -132,6 +156,11 @@ public static class NativeOracleRunningObject {
     if ($runningCookie) { [NativeOracleRunningObject]::Revoke($runningCookie) }
     Release-ComObject $runningMoniker; Release-ComObject $runningTable
     if ($book) { $book.Close($false); Release-ComObject $book }
+    for ($index=$referenceBooks.Count-1; $index -ge 0; $index--) {
+        $referenceBooks[$index].Close($false)
+        Release-ComObject $referenceBooks[$index]
+    }
+    if ($excel) { $excel.VBE.MainWindow.Visible=$false }
     if ($guardian -and -not $guardian.HasExited) {
         New-Item -ItemType File -Path $stopFile -Force | Out-Null
         if (-not $guardian.WaitForExit(5000)) { Stop-Process -InputObject $guardian; [void]$guardian.WaitForExit(5000) }

@@ -79,7 +79,8 @@ Double, Currency, Date and Boolean, with direct procedure calls
 and typed Abs/Sqr library helpers. CLng/CDbl/CBool specialize numeric operands.
 Long integer division/modulo and Boolean/Long bitwise operators are compiled.
 Calls may cross standard modules, with up to 32 arguments and 128 active native
-frames. BSTR strings, terminated UTF-16/ANSI inputs, native UDTs, typed SAFEARRAYs,
+frames. Referenced source projects link into the same image, retaining separate
+globals, class identities and error sources. BSTR strings, terminated UTF-16/ANSI inputs, native UDTs, typed SAFEARRAYs,
 Automation Variants and COM object references have owning boundary operations.
 Module and Static state initialize on the first call, outside the loader lock.
 The DLL binds to that calling thread; calls from other threads leave caller

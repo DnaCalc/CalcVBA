@@ -143,8 +143,9 @@ TypeOf uses project identity or the imported COM IID. Unsupported class field
 initializers are refused. `scripts/test-native-excel-members.ps1` compares an
 Excel COMReference body on VM3, JIT, AOT and Office using an existing owned session.
 Internal optional arguments and ParamArray packs are compiled directly. Native
-ParamArray aliases require Variant caller storage until typed copy-out coercion
-is shared. Fixed-length String defaults contain NULs; assignments pad or truncate.
+ParamArray aliases coerce to declared caller storage before changing either value;
+overflow leaves both unchanged and fixed String copy-out pads or truncates.
+Fixed-length String defaults contain NULs; assignments pad or truncate.
 GoSub uses a per-frame return stack and branches in compiled code.
 Writable `.cvbdata` holds module state and the once-only initialization status.
 Each DLL retains the identity of its first calling thread; foreign threads return

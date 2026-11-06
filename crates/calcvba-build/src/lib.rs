@@ -9,6 +9,7 @@ mod compile;
 mod identity;
 mod idl;
 mod native;
+mod native_link;
 pub use native::{
     NativeLibraryBuildOptions, NativeLibraryBuildOutput, build_native_library,
     check_native_program, write_native_template,

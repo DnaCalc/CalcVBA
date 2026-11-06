@@ -1,0 +1,1 @@
+<Project><PropertyGroup><ProjectName>Leaf</ProjectName><OutputType>Library</OutputType></PropertyGroup><ItemGroup><Module Include="Common.bas"/><ClassModule Include="Token.cls"/></ItemGroup></Project>

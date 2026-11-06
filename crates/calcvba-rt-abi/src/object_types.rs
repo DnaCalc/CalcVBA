@@ -11,6 +11,17 @@ pub fn matches_type(
     let bare = name.rsplit('.').next().unwrap_or(name);
     if object.is_project_instance() || object.native_collection_snapshot().is_some() {
         let descriptor = object.class_descriptor();
+        if let Some((unit, _)) = name.rsplit_once('.')
+            && let Some(identity) = descriptor.project_identity
+        {
+            return Ok(identity.unit_name.eq_ignore_ascii_case(unit)
+                && descriptor.name.eq_ignore_ascii_case(bare)
+                || descriptor.implements.iter().any(|implemented| {
+                    implemented.eq_ignore_ascii_case(name)
+                        || identity.unit_name.eq_ignore_ascii_case(unit)
+                            && implemented.eq_ignore_ascii_case(bare)
+                }));
+        }
         return Ok(descriptor.name.eq_ignore_ascii_case(bare)
             || descriptor
                 .implements

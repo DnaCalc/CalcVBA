@@ -10,7 +10,7 @@ pub(super) struct Runtime {
     // Drop the borrowing execution state before its retained host owner.
     exec: Box<ExecState<'static>>,
     _host: Arc<dyn HostServices>,
-    frames: Vec<(u32, calcvba_rt_abi::SavedErrState, i32, Vec<u32>)>,
+    frames: Vec<(u32, calcvba_rt_abi::SavedErrState, i32, Vec<u32>, String)>,
     iterators: std::collections::HashMap<usize, NativeIterator>,
     pub(super) classes: super::classes::Classes,
     pub(super) members: super::members::Calls,
@@ -714,7 +714,11 @@ pub unsafe extern "C" fn cvb_value_unary(
 /// # Safety
 /// The generated native frame owns this context on the calling thread.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn cvb_frame_enter(context: *mut Context) -> i32 {
+pub unsafe extern "C" fn cvb_frame_enter(
+    context: *mut Context,
+    source: *const u8,
+    length: usize,
+) -> i32 {
     super::values::boundary(|| {
         // SAFETY: generated frame entry runs before any callback-capable body operation.
         unsafe {
@@ -727,9 +731,12 @@ pub unsafe extern "C" fn cvb_frame_enter(context: *mut Context) -> i32 {
                 runtime.exec.err_engine.pending_fault = None;
             }
             let saved = runtime.exec.err_engine.enter_activation();
+            let source =
+                String::from_utf8_lossy(std::slice::from_raw_parts(source, length)).into_owned();
+            let previous = std::mem::replace(&mut runtime.exec.default_error_source, source);
             runtime
                 .frames
-                .push(((*context).depth, saved, 0, Vec::new()));
+                .push(((*context).depth, saved, 0, Vec::new(), previous));
         }
         Ok(())
     })
@@ -748,11 +755,12 @@ pub unsafe extern "C" fn cvb_frame_exit(context: *mut Context) -> i32 {
                 .last()
                 .is_some_and(|frame| frame.0 == (*context).depth)
             {
-                let (depth, saved, _, _) = runtime.frames.pop().ok_or(5)?;
+                let (depth, saved, _, _, source) = runtime.frames.pop().ok_or(5)?;
                 runtime
                     .param_arrays
                     .retain(|_, aliases| aliases.depth < depth);
                 runtime.exec.err_engine.restore(saved);
+                runtime.exec.default_error_source = source;
             }
         }
         // SAFETY: all local owners were released before this frame exit helper.

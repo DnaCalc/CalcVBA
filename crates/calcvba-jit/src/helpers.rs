@@ -6605,6 +6605,7 @@ pub(crate) unsafe extern "C" fn rt_jit_array_get_variant_to_slot(
             indices.push(index);
         }
         // SAFETY: the retained array and converted subscript vector outlive this read.
+        // SAFETY: the retained array and converted subscripts outlive this read.
         let flat = match unsafe { jit_flat_index(state, &array, &indices) } {
             Ok(flat) => flat,
             Err(status) => return status,
@@ -6720,13 +6721,33 @@ pub(crate) unsafe extern "C" fn rt_jit_array_set_variant_slot(
         if state.is_null() || run.is_null() || value.is_null() {
             return ST_FAULT;
         }
-        if dimensions <= 0 || indices.is_null() {
+        if dimensions == 0 || dimensions == i32::MIN || indices.is_null() {
             return ST_FAULT;
         }
-        let dimensions = dimensions as usize;
-        // SAFETY: null was rejected and the compiled caller writes exactly `dimensions`
-        // subscripts to a stack slot that stays live for this helper call.
-        let indices = unsafe { std::slice::from_raw_parts(indices, dimensions) };
+        let dynamic = dimensions < 0;
+        let dimensions = dimensions.unsigned_abs() as usize;
+        let mut subscripts = Vec::with_capacity(dimensions);
+        if dynamic {
+            // SAFETY: negative rank selects this many retained operand descriptors.
+            let operands = unsafe {
+                std::slice::from_raw_parts(indices.cast::<JitVariantOperandDesc>(), dimensions)
+            };
+            for operand in operands {
+                // SAFETY: the active compiled entry retains these exact descriptors.
+                match unsafe { variant_operand_value_with_as_new(run, state, *operand) } {
+                    Ok(value) => subscripts.push(value),
+                    Err(status) => return status,
+                }
+            }
+        } else {
+            // SAFETY: positive rank selects the original rank-sized Long vector.
+            subscripts.extend(
+                unsafe { std::slice::from_raw_parts(indices, dimensions) }
+                    .iter()
+                    .copied()
+                    .map(Variant::from_i32),
+            );
+        }
         // SAFETY: null was rejected and the compiled caller writes one descriptor to
         // a stack slot that stays live for this helper call.
         let value = unsafe { *value };
@@ -6744,10 +6765,12 @@ pub(crate) unsafe extern "C" fn rt_jit_array_set_variant_slot(
         if array.vtype() != VarType::ArrayVariant {
             if array.as_object_ref().is_some() {
                 let recv_value = array.clone();
-                let mut args: Vec<Variant> =
-                    indices.iter().copied().map(Variant::from_i32).collect();
+                let mut args = subscripts;
                 args.push(value);
-                let invoke_kind = if args.last().and_then(Variant::as_object_ref).is_some() {
+                let invoke_kind = if args
+                    .last()
+                    .is_some_and(|value| value.vtype() == VarType::Object)
+                {
                     ProjectMemberKind::PropertySet
                 } else {
                     ProjectMemberKind::PropertyLet
@@ -6766,7 +6789,22 @@ pub(crate) unsafe extern "C" fn rt_jit_array_set_variant_slot(
         }
         // SAFETY: the current compiled-run boundary owns the live unique state handle;
         // typed references and owned values remain live and nonaliasing for this call.
-        let flat = match unsafe { jit_flat_index(state, &array, indices) } {
+        let mut indices = Vec::with_capacity(dimensions);
+        for value in &subscripts {
+            let index = match calcvba_eval::arith::int(value).and_then(|value| {
+                i32::try_from(value).map_err(|_| calcvba_eval::arith::ArithError {
+                    code: 6,
+                    message: "Overflow".into(),
+                })
+            }) {
+                Ok(index) => index,
+                // SAFETY: only the owning entry's error state is updated.
+                Err(error) => return unsafe { rt_raise_runtime_error_number(state, error.code) },
+            };
+            indices.push(index);
+        }
+        // SAFETY: the retained array and converted subscripts outlive this read.
+        let flat = match unsafe { jit_flat_index(state, &array, &indices) } {
             Ok(flat) => flat,
             Err(status) => return status,
         };

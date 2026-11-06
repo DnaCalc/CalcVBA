@@ -3207,7 +3207,7 @@ impl<'h> Vm3<'h> {
                 if let Some(obj) = recv.as_object_ref() {
                     let mut argv = self.operands_to_values(indices)?;
                     argv.push(value.clone());
-                    let invoke_kind = if value.as_object_ref().is_some() {
+                    let invoke_kind = if value.vtype() == VarType::Object {
                         TypeLibMemberInvokeKind::PropertyPutRef
                     } else {
                         TypeLibMemberInvokeKind::PropertyPut

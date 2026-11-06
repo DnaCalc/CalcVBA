@@ -84,13 +84,13 @@ impl Dll {
 fn variant_array_and_project_default_indexing_share_compiled_routes() {
     let directory = Directory::new();
     let support = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/support/native_members");
-    for name in ["Indexing.bas", "Indexed.cls"] {
+    for name in ["Indexing.bas", "Indexed.cls", "Keyed.cls"] {
         std::fs::copy(support.join(name), directory.0.join(name)).unwrap();
     }
     let project = directory.0.join("Indexing.basproj");
-    std::fs::write(&project, r#"<Project><PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>Indexing</ProjectName></PropertyGroup><ItemGroup><Module Include="Indexing.bas"/><ClassModule Include="Indexed.cls"/><NativeExport Include="IndexSuite"><Module>Indexing</Module><Procedure>IndexSuite</Procedure></NativeExport></ItemGroup></Project>"#).unwrap();
+    std::fs::write(&project, r#"<Project><PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>Indexing</ProjectName></PropertyGroup><ItemGroup><Module Include="Indexing.bas"/><ClassModule Include="Indexed.cls"/><ClassModule Include="Keyed.cls"/><NativeExport Include="IndexSuite"><Module>Indexing</Module><Procedure>IndexSuite</Procedure></NativeExport></ItemGroup></Project>"#).unwrap();
     let closure = calcvba_project::load_project_closure(&project).unwrap();
-    let expected = "blue:green|1:changed|True|entry|dictionary|13";
+    let expected = "blue:green|1:changed|True:True|key:stored|entry|dictionary|13";
     for config in [HostConfig::vm3(), HostConfig::jit()] {
         let mut engine = Engine::new(config);
         engine.set_host_policy(calcvba_hal::HostPolicy::native());
@@ -108,7 +108,7 @@ fn variant_array_and_project_default_indexing_share_compiled_routes() {
     let output = build_native_library(&NativeLibraryBuildOptions {
         project_path: project,
         out_dir: directory.0.join("out"),
-        template_path: None,
+        template_path: std::env::var_os("CALCVBA_NATIVE_TEMPLATE_TEST").map(PathBuf::from),
     })
     .unwrap();
     let dll = Dll::load(&output.dll_path);
@@ -158,7 +158,7 @@ fn collection_interfaces_late_calls_and_failed_construction_agree() {
     let output = build_native_library(&NativeLibraryBuildOptions {
         project_path: project,
         out_dir: directory.0.join("out"),
-        template_path: None,
+        template_path: std::env::var_os("CALCVBA_NATIVE_TEMPLATE_TEST").map(PathBuf::from),
     })
     .unwrap();
     let dll = Dll::load(&output.dll_path);
@@ -201,7 +201,7 @@ fn imported_early_dictionary_members_agree() {
     let output = build_native_library(&NativeLibraryBuildOptions {
         project_path: project,
         out_dir: directory.0.join("out"),
-        template_path: None,
+        template_path: std::env::var_os("CALCVBA_NATIVE_TEMPLATE_TEST").map(PathBuf::from),
     })
     .unwrap();
     let dll = Dll::load(&output.dll_path);
@@ -252,7 +252,7 @@ fn paramarray_storage_optional_and_gosub_bodies_agree() {
     let output = build_native_library(&NativeLibraryBuildOptions {
         project_path: project,
         out_dir: directory.0.join("out"),
-        template_path: None,
+        template_path: std::env::var_os("CALCVBA_NATIVE_TEMPLATE_TEST").map(PathBuf::from),
     })
     .unwrap();
     let dll = Dll::load(&output.dll_path);
@@ -283,7 +283,7 @@ fn dynamic_project_names_have_source_refusals() {
         let error = build_native_library(&NativeLibraryBuildOptions {
             project_path: project,
             out_dir: directory.0.join(format!("out{index}")),
-            template_path: None,
+            template_path: std::env::var_os("CALCVBA_NATIVE_TEMPLATE_TEST").map(PathBuf::from),
         })
         .unwrap_err()
         .to_string();
@@ -362,7 +362,7 @@ fn temporary_arrays_character_input_and_nullable_fields_agree() {
     let output = build_native_library(&NativeLibraryBuildOptions {
         project_path: project,
         out_dir: directory.0.join("out"),
-        template_path: None,
+        template_path: std::env::var_os("CALCVBA_NATIVE_TEMPLATE_TEST").map(PathBuf::from),
     })
     .unwrap();
     let dll = Dll::load(&output.dll_path);

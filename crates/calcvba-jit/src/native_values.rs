@@ -37,7 +37,7 @@ pub(super) const HELPERS: &[(&str, &[ir::Type])] = &[
         ],
     ),
     ("cvb_array_erase", &[types::I64, types::I64, types::I32]),
-    ("cvb_frame_enter", &[types::I64]),
+    ("cvb_frame_enter", &[types::I64; 3]),
     ("cvb_frame_exit", &[types::I64]),
     (
         "cvb_gosub",

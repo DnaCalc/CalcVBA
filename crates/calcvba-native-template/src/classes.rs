@@ -106,7 +106,7 @@ unsafe fn definition(metadata: *const u8, terminate: usize) -> Definition {
             at = at.add(4);
             value
         };
-        let _class = word();
+        let class = word();
         let name_len = word() as usize;
         let implements_count = word();
         let field_count = word();
@@ -130,7 +130,12 @@ unsafe fn definition(metadata: *const u8, terminate: usize) -> Definition {
         // Like the VM/JIT descriptor pool, immutable class identities live for
         // the process lifetime. Strings borrow the loaded image's schema only
         // while copying into that pool; no pointer into the DLL escapes it.
-        let name = Box::leak(name.to_owned().into_boxed_str());
+        let (unit, display) = name.rsplit_once('.').unwrap_or(("", name));
+        let project_identity = (!unit.is_empty()).then(|| RuntimeProjectClassIdentity {
+            unit_name: Box::leak(unit.to_owned().into_boxed_str()),
+            class_index: class as usize,
+        });
+        let name = Box::leak(display.to_owned().into_boxed_str());
         let implements = Box::leak(
             implements
                 .into_iter()
@@ -141,7 +146,7 @@ unsafe fn definition(metadata: *const u8, terminate: usize) -> Definition {
         Definition {
             descriptor: Box::leak(Box::new(RuntimeClassDescriptor {
                 name,
-                project_identity: None,
+                project_identity,
                 predeclared: false,
                 lifecycle: RuntimeClassLifecycleDescriptor {
                     has_initialize: false,

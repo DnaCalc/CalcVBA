@@ -4903,15 +4903,26 @@ impl<'a> LowerFunc<'a> {
             return Ok(());
         }
 
-        let mut index_values = Vec::with_capacity(indices.len());
-        for index in indices {
-            index_values.push(self.lower_operand_i32(builder, module, index)?);
-        }
-        let indices_ptr =
-            self.emit_i32_stack_values(builder, module, &index_values, "ArraySet subscript")?;
+        let dynamic = *array_ty == OxTy::Variant;
+        let indices_ptr = if dynamic {
+            let operands = indices
+                .iter()
+                .map(|index| self.lower_variant_operand(builder, index))
+                .collect::<Result<Vec<_>, _>>()?;
+            self.emit_variant_operand_descriptors(builder, module, &operands)?
+        } else {
+            let mut values = Vec::with_capacity(indices.len());
+            for index in indices {
+                values.push(self.lower_operand_i32(builder, module, index)?);
+            }
+            self.emit_i32_stack_values(builder, module, &values, "ArraySet subscript")?
+        };
         let dimensions = i32::try_from(indices.len())
             .map_err(|_| JitError::unsupported("M4-4 ArraySet subscript count is too large"))?;
-        let dimensions = builder.ins().iconst(types::I32, i64::from(dimensions));
+        let dimensions = builder.ins().iconst(
+            types::I32,
+            i64::from(if dynamic { -dimensions } else { dimensions }),
+        );
         let value = self.lower_variant_operand(builder, value)?;
         let value_ptr = self.emit_variant_operand_descriptors(builder, module, &[value])?;
         let (array_area, array_index) = place_addr(array);

@@ -1,0 +1,1 @@
+<Project><PropertyGroup><ProjectName>RightLib</ProjectName><OutputType>Library</OutputType></PropertyGroup><ItemGroup><ProjectReference Include="Leaf.basproj"/><Module Include="RightCode.bas"/></ItemGroup></Project>

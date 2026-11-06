@@ -147,16 +147,9 @@ pub fn build_native_library(
         ));
     }
     let closure = calcvba_project::load_project_closure(&options.project_path)?;
-    if closure.len() != 1 {
-        return Err(native_error(
-            "native cross-project calls are not yet implemented",
-        ));
-    }
     let image = build_artifacts(&closure)?;
-    let program = image
-        .programs
-        .last()
-        .ok_or_else(|| native_error("empty native project"))?;
+    let linked = crate::native_link::link(&image.programs).map_err(native_error)?;
+    let program = &linked;
     let mut roots = Vec::new();
     for selected in &loaded.native_exports {
         if [

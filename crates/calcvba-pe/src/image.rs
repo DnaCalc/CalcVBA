@@ -19,6 +19,7 @@ pub struct Image<'a> {
     pub header_size: u32,
     pub preferred_base: u64,
     pub sections: Vec<Section>,
+    pub is_dll: bool,
 }
 impl<'a> Image<'a> {
     pub fn parse(bytes: &'a [u8]) -> Result<Self> {
@@ -34,9 +35,11 @@ impl<'a> Image<'a> {
         let optional = pe + 24;
         if optional_size < 240
             || get16(bytes, optional)? != 0x20b
-            || get16(bytes, pe + 22)? & 0x2000 == 0
+            || get16(bytes, pe + 22)? & 2 == 0
         {
-            return Err(refuse("expected PE32+ DLL with complete optional header"));
+            return Err(refuse(
+                "expected PE32+ executable with complete optional header",
+            ));
         }
         span(bytes, optional, optional_size)?;
         if get32(bytes, optional + 108)? != 16 {
@@ -131,6 +134,7 @@ impl<'a> Image<'a> {
             header_size,
             preferred_base: get64(bytes, optional + 24)?,
             sections,
+            is_dll: get16(bytes, pe + 22)? & 0x2000 != 0,
         };
         for i in 0..16 {
             let (rva, size) = image.directory(i)?;

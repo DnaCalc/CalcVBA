@@ -101,6 +101,9 @@ pub struct Template<'a> {
     pub manifest: Manifest,
 }
 impl<'a> Template<'a> {
+    pub fn is_dll(&self) -> bool {
+        self.image.is_dll
+    }
     pub fn parse(bytes: &'a [u8], expected_abi: u64) -> Result<Self> {
         let image = Image::parse(bytes)?;
         image.check_template(true)?;
@@ -202,6 +205,67 @@ impl<'a> Template<'a> {
             map,
         })
     }
+}
+
+/// Fill the executable startup's fixed compiled entries. All targets must be
+/// executable RVAs in this image; a DLL or an already-filled startup is refused.
+pub fn patch_executable_entries(
+    bytes: &mut [u8],
+    map: &[(String, u16, u32)],
+    main: &str,
+) -> Result<()> {
+    let (offset, entries, checksum) = {
+        let image = Image::parse(bytes)?;
+        if image.is_dll {
+            return Err(refuse("executable startup requires an EXE template"));
+        }
+        let section = image
+            .sections
+            .iter()
+            .find(|s| s.name == ".rdata")
+            .ok_or_else(|| refuse("executable template has no startup data"))?;
+        let data = image.section_data(".rdata")?;
+        let matches: Vec<_> = data
+            .windows(16)
+            .enumerate()
+            .filter(|(_, word)| *word == b"CVBEXE_ENTRY_V1!")
+            .map(|(at, _)| at)
+            .collect();
+        if matches.len() != 1 {
+            return Err(refuse(
+                "executable template must contain one startup record",
+            ));
+        }
+        let at = matches[0] + 16;
+        let mut entries = Vec::new();
+        for (index, name) in [main, "CalcVbaShutdown", "CalcVbaGetLastError"]
+            .iter()
+            .enumerate()
+        {
+            if image::get32(data, at + index * 4)? != 0 {
+                return Err(refuse("executable startup was already filled"));
+            }
+            let rva = map
+                .iter()
+                .find(|(export, _, _)| export == name)
+                .map(|(_, _, rva)| *rva)
+                .ok_or_else(|| refuse(format!("missing executable entry {name}")))?;
+            if !image.executable_rva(rva) {
+                return Err(refuse("executable startup target is not code"));
+            }
+            entries.push(rva);
+        }
+        (
+            section.raw_offset as usize + at,
+            entries,
+            image.optional + 64,
+        )
+    };
+    for (index, rva) in entries.into_iter().enumerate() {
+        image::put32(bytes, offset + index * 4, rva);
+    }
+    image::put32(bytes, checksum, 0);
+    Ok(())
 }
 
 fn validate_unwind(info: &[u8]) -> Result<()> {

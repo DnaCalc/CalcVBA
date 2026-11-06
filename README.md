@@ -94,6 +94,20 @@ Some reachable constructs are still refused; see the
 Generated code uses baseline
 x64 instructions; unsupported reachable code is refused.
 `scripts/build-native-template.ps1` rebuilds the shipped template for developers.
+Projects with `OutputType=Exe` and a parameterless `Sub Main` build to a standalone
+Windows executable with `--target Exe`. For example:
+
+```powershell
+cargo run -p calcvba-cli -- build examples/native/exe/Hello.basproj --target Exe --out-dir out
+./out/Hello.exe
+```
+
+The executable uses the same compiled procedure bodies and runtime helpers as
+native DLL output, including early-bound COM references. Startup calls Main,
+reports unhandled VBA errors to stderr, and releases project state on its owning
+thread. Debug.Print also writes to stderr. User builds need no Rust toolchain,
+linker, interpreter or JIT.
+
 `scripts/run-native-export-clients.ps1 -Excel` compares a single batch through
 C, CalcVBA Declare (both backends) and one owned Excel instance. CalcVBA has no
 XLL-specific target or runtime support.

@@ -49,7 +49,8 @@ Validation is ordinary executable code, not a formal proof.
 - `calcvba-jit`: Cranelift lowering, compiled entries and runtime helper calls.
 - `calcvba-aot`: Cranelift Module backend laying out direct native code for PE.
 - `calcvba-pe`: template finishing, helper manifest and checked PE patching.
-- `calcvba-native-template`: developer-built runtime DLL, with no compiler or VM.
+- `calcvba-native-template`: developer-built runtime DLL and EXE templates, with
+  no compiler or VM. EXE startup calls a patched native Main entry and shutdown.
 
 BSTR/VARIANT/SAFEARRAY/IUnknown-shaped carriers preserve VBA/Automation layout
 where implemented. Runtime ownership must survive calls, errors and teardown.

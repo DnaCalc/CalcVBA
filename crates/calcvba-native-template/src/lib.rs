@@ -15,6 +15,8 @@ mod parameters;
 mod services;
 #[cfg(windows)]
 mod values;
+#[cfg(windows)]
+include!(concat!(env!("OUT_DIR"), "/native_keepalive.rs"));
 
 #[unsafe(no_mangle)]
 pub extern "C" fn cvb_identity_i32(value: i32) -> i32 {

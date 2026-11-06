@@ -6,6 +6,7 @@ param(
     [string]$ReferenceProjectsFile,
     [string]$Entry='OracleSelfTest.ProbeNativeExports',
     [string]$RunnerProject,
+    [string]$RunnerExecutable,
     [string]$RunningObjectPath
 )
 $ErrorActionPreference='Stop'
@@ -113,6 +114,11 @@ public static class NativeOracleRunningObject {
             $output=& $runner run-project $RunnerProject --backend $backend --dump-values 2>&1
             $output | Set-Content -LiteralPath (Join-Path $Directory ($backend+'.txt'))
             if ($LASTEXITCODE -ne 0) { throw "Owned running-object $backend comparison failed: $output" }
+        }
+        if ($RunnerExecutable) {
+            $output=& $RunnerExecutable 2>&1
+            $output | Set-Content -LiteralPath (Join-Path $Directory 'exe.txt')
+            if ($LASTEXITCODE -ne 0) { throw "Owned running-object native EXE comparison failed: $output" }
         }
     }
     Start-OfficeGuardian

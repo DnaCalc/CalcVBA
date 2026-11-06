@@ -1,0 +1,7 @@
+<Project Sdk="CalcVBA.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><ProjectName>NativeHello</ProjectName></PropertyGroup>
+  <ItemGroup>
+    <Module Include="Hello.bas"/>
+    <COMReference Include="Scripting"><Guid>{420B2830-E718-11CF-893D-00A0C9054228}</Guid><VersionMajor>1</VersionMajor><VersionMinor>0</VersionMinor><Lcid>0</Lcid></COMReference>
+  </ItemGroup>
+</Project>

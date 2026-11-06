@@ -20,6 +20,17 @@ pub struct NativeLibraryBuildOutput {
     pub dll_path: PathBuf,
     pub map_path: PathBuf,
 }
+/// A standalone native build has the same template override and path options.
+pub type NativeExecutableBuildOptions = NativeLibraryBuildOptions;
+#[derive(Debug, Clone)]
+pub struct NativeExecutableBuildOutput {
+    pub exe_path: PathBuf,
+    pub map_path: PathBuf,
+}
+struct NativeBuildOutput {
+    image_path: PathBuf,
+    map_path: PathBuf,
+}
 
 fn native_error(message: impl ToString) -> BuildError {
     BuildError::NativeExport(message.to_string())
@@ -135,13 +146,41 @@ pub fn check_native_program(
 pub fn build_native_library(
     options: &NativeLibraryBuildOptions,
 ) -> Result<NativeLibraryBuildOutput, BuildError> {
-    let loaded = load_single_project(&options.project_path)?;
-    if loaded.output_type != OutputType::NativeLibrary {
-        return Err(native_error(
-            "NativeLibrary requires OutputType=NativeLibrary",
-        ));
+    let output = build_native_artifact(options, false)?;
+    Ok(NativeLibraryBuildOutput {
+        dll_path: output.image_path,
+        map_path: output.map_path,
+    })
+}
+
+/// Compile Sub Main and its reachable closure into the shipped executable
+/// template. No compiler, linker or interpreter runs inside the resulting EXE.
+pub fn build_native_executable(
+    options: &NativeExecutableBuildOptions,
+) -> Result<NativeExecutableBuildOutput, BuildError> {
+    let output = build_native_artifact(options, true)?;
+    Ok(NativeExecutableBuildOutput {
+        exe_path: output.image_path,
+        map_path: output.map_path,
+    })
+}
+
+fn build_native_artifact(
+    options: &NativeLibraryBuildOptions,
+    executable: bool,
+) -> Result<NativeBuildOutput, BuildError> {
+    let mut loaded = load_single_project(&options.project_path)?;
+    let required = if executable {
+        OutputType::Exe
+    } else {
+        OutputType::NativeLibrary
+    };
+    if loaded.output_type != required {
+        return Err(native_error(format!(
+            "{required:?} requires OutputType={required:?}"
+        )));
     }
-    if loaded.native_exports.is_empty() {
+    if !executable && loaded.native_exports.is_empty() {
         return Err(native_error(
             "NativeLibrary requires at least one NativeExport",
         ));
@@ -151,98 +190,148 @@ pub fn build_native_library(
     let linked = crate::native_link::link(&image.programs).map_err(native_error)?;
     let program = &linked;
     let mut roots = Vec::new();
-    for selected in &loaded.native_exports {
-        if [
-            "CalcVbaGetLastError",
-            "CalcVbaGetLastErrorHelp",
-            "CalcVbaShutdown",
-        ]
-        .iter()
-        .any(|name| selected.exported_name.eq_ignore_ascii_case(name))
-        {
+    if executable {
+        if !loaded.native_exports.is_empty() {
             return Err(native_error(
-                "CalcVbaGetLastError, CalcVbaGetLastErrorHelp and CalcVbaShutdown are reserved runtime exports",
+                "Exe selects Sub Main; NativeExport declarations require NativeLibrary",
             ));
         }
-        let module = loaded
-            .manifest
-            .modules
-            .iter()
-            .find(|m| m.module_name.eq_ignore_ascii_case(&selected.module_name))
-            .ok_or_else(|| {
-                native_error(format!(
-                    "export {}: absent module {}",
-                    selected.exported_name, selected.module_name
-                ))
-            })?;
-        if module.module_kind != calcvba_project::manifest::ModuleKind::Procedural {
-            return Err(native_error(format!(
-                "export {} must select a Public procedure in a standard module",
-                selected.exported_name
-            )));
-        }
-        let token = ExportToken::ModuleFunc {
-            module: selected.module_name.clone(),
-            member: selected.procedure_name.clone(),
-            kind: ProjectMemberKind::Method,
-        };
-        let target = program
-            .exports
-            .iter()
-            .find(|e| e.token.matches(&token))
-            .and_then(|e| {
-                if let ExportTarget::Proc(id) = e.target {
-                    Some(calcvba_oxir::FuncId(id))
-                } else {
-                    None
-                }
-            })
-            .ok_or_else(|| {
-                native_error(format!(
-                    "export {}: no Public procedure {}.{}",
-                    selected.exported_name, selected.module_name, selected.procedure_name
-                ))
-            })?;
-        let func = &program.funcs[target.0];
-        if let Some(parameter) = func.locals[..func.param_count]
-            .iter()
-            .filter_map(|local| local.param)
-            .find(|parameter| parameter.variadic || parameter.optional)
+        let entry = program
+            .entry
+            .ok_or_else(|| native_error("Exe requires Sub Main"))?;
+        let function = &program.funcs[entry.0];
+        if function.param_count != 0
+            || function.return_local.is_some()
+            || function.kind != calcvba_bundle::ProcedureKind::Sub
         {
-            let kind = if parameter.variadic {
-                "ParamArray signature"
-            } else {
-                "optional signature"
-            };
-            let line = module
-                .source
-                .lines()
-                .position(|line| {
-                    line.split_whitespace().any(|word| {
-                        word.eq_ignore_ascii_case("Function") || word.eq_ignore_ascii_case("Sub")
-                    }) && line
-                        .to_ascii_lowercase()
-                        .contains(&selected.procedure_name.to_ascii_lowercase())
-                })
-                .unwrap_or(0)
-                + 1;
-            return Err(native_error(format!(
-                "{}:{line}:1: native export procedure {}: {kind} requires a fixed foreign ABI",
-                module.module_name, func.name
-            )));
+            return Err(native_error("Exe entry must be a parameterless Sub"));
         }
-        roots.push(target);
+        let (module_name, procedure_name) = loaded
+            .entry_point
+            .as_deref()
+            .and_then(|name| name.rsplit_once('.'))
+            .map(|(module, procedure)| (module.to_owned(), procedure.to_owned()))
+            .unwrap_or_else(|| ("Main".into(), "Main".into()));
+        loaded
+            .native_exports
+            .push(calcvba_project::NativeExportDescriptor {
+                exported_name: "CalcVbaExeMain".into(),
+                module_name,
+                procedure_name,
+                calling_convention: calcvba_project::CallingConvention::Stdcall,
+                ordinal: None,
+                string_encoding: calcvba_project::StringEncoding::Bstr,
+                error_policy: calcvba_project::ErrorPolicy::HResult,
+                kind: None,
+                param_types: None,
+                return_type: None,
+            });
+        roots.push(entry);
+    }
+    if !executable {
+        for selected in &loaded.native_exports {
+            if [
+                "CalcVbaGetLastError",
+                "CalcVbaGetLastErrorHelp",
+                "CalcVbaShutdown",
+            ]
+            .iter()
+            .any(|name| selected.exported_name.eq_ignore_ascii_case(name))
+            {
+                return Err(native_error(
+                    "CalcVbaGetLastError, CalcVbaGetLastErrorHelp and CalcVbaShutdown are reserved runtime exports",
+                ));
+            }
+            let module = loaded
+                .manifest
+                .modules
+                .iter()
+                .find(|m| m.module_name.eq_ignore_ascii_case(&selected.module_name))
+                .ok_or_else(|| {
+                    native_error(format!(
+                        "export {}: absent module {}",
+                        selected.exported_name, selected.module_name
+                    ))
+                })?;
+            if module.module_kind != calcvba_project::manifest::ModuleKind::Procedural {
+                return Err(native_error(format!(
+                    "export {} must select a Public procedure in a standard module",
+                    selected.exported_name
+                )));
+            }
+            let token = ExportToken::ModuleFunc {
+                module: selected.module_name.clone(),
+                member: selected.procedure_name.clone(),
+                kind: ProjectMemberKind::Method,
+            };
+            let target = program
+                .exports
+                .iter()
+                .find(|e| e.token.matches(&token))
+                .and_then(|e| {
+                    if let ExportTarget::Proc(id) = e.target {
+                        Some(calcvba_oxir::FuncId(id))
+                    } else {
+                        None
+                    }
+                })
+                .ok_or_else(|| {
+                    native_error(format!(
+                        "export {}: no Public procedure {}.{}",
+                        selected.exported_name, selected.module_name, selected.procedure_name
+                    ))
+                })?;
+            let func = &program.funcs[target.0];
+            if let Some(parameter) = func.locals[..func.param_count]
+                .iter()
+                .filter_map(|local| local.param)
+                .find(|parameter| parameter.variadic || parameter.optional)
+            {
+                let kind = if parameter.variadic {
+                    "ParamArray signature"
+                } else {
+                    "optional signature"
+                };
+                let line = module
+                    .source
+                    .lines()
+                    .position(|line| {
+                        line.split_whitespace().any(|word| {
+                            word.eq_ignore_ascii_case("Function")
+                                || word.eq_ignore_ascii_case("Sub")
+                        }) && line
+                            .to_ascii_lowercase()
+                            .contains(&selected.procedure_name.to_ascii_lowercase())
+                    })
+                    .unwrap_or(0)
+                    + 1;
+                return Err(native_error(format!(
+                    "{}:{line}:1: native export procedure {}: {kind} requires a fixed foreign ABI",
+                    module.module_name, func.name
+                )));
+            }
+            roots.push(target);
+        }
     }
     let template_bytes = if let Some(path) = &options.template_path {
         fs::read(path).map_err(|source| BuildError::Io {
             path: path.display().to_string(),
             source,
         })?
+    } else if executable {
+        include_bytes!("../../../assets/native/calcvba-native-x64.exe").to_vec()
     } else {
         include_bytes!("../../../assets/native/calcvba-native-x64.dll").to_vec()
     };
     let template = calcvba_pe::Template::parse(&template_bytes, calcvba_pe::HELPER_ABI)
         .map_err(native_error)?;
+    if template.is_dll() == executable {
+        return Err(native_error(if executable {
+            "Exe requires an EXE native template"
+        } else {
+            "NativeLibrary requires a DLL native template"
+        }));
+    }
     let mut module = calcvba_aot::PeModule::new().map_err(native_error)?;
     let mut enter_signature = module.make_signature();
     enter_signature.returns.push(AbiParam::new(types::I32));
@@ -379,9 +468,14 @@ pub fn build_native_library(
     let mut native = module.finish(&template, &exports).map_err(native_error)?;
     native.image = image.to_bytes().map_err(native_error)?;
     let name = artifact_stem(&loaded.manifest.project_name);
-    let patched = template
-        .patch(&format!("{name}.dll"), &native)
+    let extension = if executable { "exe" } else { "dll" };
+    let mut patched = template
+        .patch(&format!("{name}.{extension}"), &native)
         .map_err(native_error)?;
+    if executable {
+        calcvba_pe::patch_executable_entries(&mut patched.bytes, &patched.map, "CalcVbaExeMain")
+            .map_err(native_error)?;
+    }
     let mut map = String::from("Export\tOrdinal\tProcedure\tWrapperRva\n");
     for (name, ordinal, rva) in &patched.map {
         let source = loaded
@@ -398,11 +492,14 @@ pub fn build_native_library(
         path: options.out_dir.display().to_string(),
         source,
     })?;
-    let dll_path = options.out_dir.join(format!("{name}.dll"));
+    let image_path = options.out_dir.join(format!("{name}.{extension}"));
     let map_path = options.out_dir.join(format!("{name}.map"));
-    write_bytes(&dll_path, &patched.bytes)?;
+    write_bytes(&image_path, &patched.bytes)?;
     write_bytes(&map_path, map.as_bytes())?;
-    Ok(NativeLibraryBuildOutput { dll_path, map_path })
+    Ok(NativeBuildOutput {
+        image_path,
+        map_path,
+    })
 }
 
 /// The compiled-in template is also available to packaging tools.

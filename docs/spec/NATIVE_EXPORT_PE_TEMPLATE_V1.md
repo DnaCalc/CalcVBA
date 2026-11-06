@@ -303,13 +303,20 @@ The current JIT includes helper shims and owning-entry machinery coupled to JIT
 execution. Extract reusable ABI pieces before admitting those operations in AOT;
 never embed the JIT merely to reuse a helper or silently execute an interpreter.
 
-The finisher/patcher accepts only unsigned AMD64 PE32+ DLL templates with normal
+The finisher/patcher accepts only unsigned AMD64 PE32+ DLL or EXE templates with normal
 file/section alignment, adequate spare headers, relocation data and no CFG.
 Reject malformed bounds, overlapping sections, unsupported relocation kinds,
 unresolved helpers, ABI/hash mismatches, duplicate names/ordinals, out-of-range
 relative displacements and export targets outside generated executable code.
 Patch an in-memory copy and publish the output only after validation succeeds.
 The output has no executable overlay and requests no runtime executable allocation.
+
+`OutputType=Exe` selects the EXE template and the project's parameterless Sub Main.
+The native builder emits the same procedure bodies and owning wrappers as DLL
+output. It fills a unique startup record with checked Main, shutdown and error
+entry RVAs. Startup reports unhandled errors and releases state on the owning
+thread. EXE builds refuse explicit NativeExport entries, a DLL template, missing
+Main or unsupported reachable bodies before publishing an executable.
 
 The helper manifest is versioned and stored in .cvbhlp. It contains the runtime
 ABI identifier and sorted (name, signature version, RVA) entries. Changing a

@@ -47,7 +47,7 @@ fn main() {
 }
 fn print_usage() {
     eprintln!(
-        "usage:\n  calcvba-cli run <source.bas> [--backend vm3|jit] [--dump-values]\n  calcvba-cli run-project [path] [--entry Module.Procedure] [--backend vm3|jit]\n  calcvba-cli build <project> --target OxImage|NativeLibrary|ComServer --out-dir <dir>\n  calcvba-cli run-image <project.oxi> [--backend vm3|jit]\n  calcvba-cli inspect-vba <workbook>\n  calcvba-cli export-vba <workbook> --out-dir <new-folder>\n  calcvba-cli write-vba <workbook> --project <project.basproj> --out <new-workbook>\n\n  --profile <id>  --dump-bootstrap  --diagnostic-format human|json"
+        "usage:\n  calcvba-cli run <source.bas> [--backend vm3|jit] [--dump-values]\n  calcvba-cli run-project [path] [--entry Module.Procedure] [--backend vm3|jit]\n  calcvba-cli build <project> --target OxImage|NativeLibrary|Exe|ComServer --out-dir <dir>\n  calcvba-cli run-image <project.oxi> [--backend vm3|jit]\n  calcvba-cli inspect-vba <workbook>\n  calcvba-cli export-vba <workbook> --out-dir <new-folder>\n  calcvba-cli write-vba <workbook> --project <project.basproj> --out <new-workbook>\n\n  --profile <id>  --dump-bootstrap  --diagnostic-format human|json"
     );
 }
 
@@ -239,20 +239,28 @@ fn run_project(args: Vec<String>) {
 fn run_build(args: Vec<String>) {
     let parsed = parse_build_args_from(args).unwrap_or_else(|| {
         eprintln!(
-            "usage: calcvba-cli build <project.basproj|project.vbp> --target <ComServer|OxImage|NativeLibrary> --out-dir <dir> [--diagnostic-format <human|json>]"
+            "usage: calcvba-cli build <project.basproj|project.vbp> --target <ComServer|OxImage|NativeLibrary|Exe> --out-dir <dir> [--diagnostic-format <human|json>]"
         );
         std::process::exit(2);
     });
 
-    if parsed.native_library {
-        match calcvba_build::build_native_library(&calcvba_build::NativeLibraryBuildOptions {
+    if parsed.native_library || parsed.native_executable {
+        let options = calcvba_build::NativeLibraryBuildOptions {
             project_path: parsed.project_path,
             out_dir: parsed.out_dir,
             template_path: None,
-        }) {
-            Ok(output) => {
-                println!("DLL:{}", output.dll_path.display());
-                println!("MAP:{}", output.map_path.display());
+        };
+        let output = if parsed.native_executable {
+            calcvba_build::build_native_executable(&options)
+                .map(|out| ("EXE", out.exe_path, out.map_path))
+        } else {
+            calcvba_build::build_native_library(&options)
+                .map(|out| ("DLL", out.dll_path, out.map_path))
+        };
+        match output {
+            Ok((kind, path, map)) => {
+                println!("{kind}:{}", path.display());
+                println!("MAP:{}", map.display());
             }
             Err(error) => {
                 emit_diagnostic(
@@ -440,6 +448,7 @@ struct BuildArgs {
     diagnostic_format: DiagnosticFormat,
     oximage: bool,
     native_library: bool,
+    native_executable: bool,
 }
 
 fn parse_run_args_from(args: Vec<String>) -> Option<RunArgs> {
@@ -529,8 +538,10 @@ fn parse_build_args_from(args: Vec<String>) -> Option<BuildArgs> {
     let target = target?;
     let oximage = target.eq_ignore_ascii_case("OxImage") || target.eq_ignore_ascii_case("Bundle");
     let native_library = target.eq_ignore_ascii_case("NativeLibrary");
+    let native_executable = target.eq_ignore_ascii_case("Exe");
     if !oximage
         && !native_library
+        && !native_executable
         && !target.eq_ignore_ascii_case("ComServer")
         && !target.eq_ignore_ascii_case("WrappedComServer")
     {
@@ -543,6 +554,7 @@ fn parse_build_args_from(args: Vec<String>) -> Option<BuildArgs> {
         diagnostic_format,
         oximage,
         native_library,
+        native_executable,
     })
 }
 
@@ -858,6 +870,26 @@ mod tests {
         assert_eq!(parsed.backend, ExecBackend::Jit);
         assert_eq!(parsed.diagnostic_format, DiagnosticFormat::Json);
         assert_eq!(parsed.input_path, Some(PathBuf::from(".")));
+    }
+
+    #[test]
+    fn parse_native_executable_build_target() {
+        let parsed = parse_build_args_from(
+            [
+                "build",
+                "Hello.basproj",
+                "--target",
+                "Exe",
+                "--out-dir",
+                "out",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        )
+        .expect("Exe target");
+        assert!(parsed.native_executable);
+        assert!(!parsed.native_library && !parsed.oximage);
     }
 
     #[test]

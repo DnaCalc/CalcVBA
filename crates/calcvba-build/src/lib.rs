@@ -11,8 +11,9 @@ mod idl;
 mod native;
 mod native_link;
 pub use native::{
-    NativeLibraryBuildOptions, NativeLibraryBuildOutput, build_native_library,
-    check_native_program, write_native_template,
+    NativeExecutableBuildOptions, NativeExecutableBuildOutput, NativeLibraryBuildOptions,
+    NativeLibraryBuildOutput, build_native_executable, build_native_library, check_native_program,
+    write_native_template,
 };
 #[cfg(target_os = "windows")]
 mod oleaut_typelib;

@@ -8,7 +8,11 @@ repository.workspace = true
 description = "Developer-built runtime DLL for CalcVBA native PE exports; no compiler or VM."
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "calcvba-native-exe-template"
+path = "src/exe_main.rs"
 
 [dependencies]
 calcvba-host-api.workspace = true

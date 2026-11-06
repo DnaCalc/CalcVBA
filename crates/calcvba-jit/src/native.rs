@@ -147,10 +147,10 @@ pub fn compile_native_scalars(
             .funcs
             .get(id.0)
             .ok_or_else(|| JitError::unsupported("native export refers to absent procedure"))?;
-        let layout =
+        let mut layout =
             ScalarLayout::with_native_program(func, program).map_err(|e| problem(func, e))?;
-        if layout.param_array.is_some() {
-            return Err(problem(func, "ParamArray signature is not yet admitted"));
+        if let Some(index) = layout.param_array {
+            layout.by_ref_parameters[index] = true;
         }
         if !layout.slots.iter().copied().all(|ty| {
             numeric(ty)
@@ -162,13 +162,8 @@ pub fn compile_native_scalars(
                         | ScalarType::Record
                         | ScalarType::Array
                 )
-        }) || layout.optional_parameters.iter().any(|p| *p)
-            || layout.param_array.is_some()
-        {
-            return Err(problem(
-                func,
-                "native path does not yet admit this carrier or optional signature",
-            ));
+        }) {
+            return Err(problem(func, "native path does not yet admit this carrier"));
         }
         for record in layout.record_slots.values() {
             values::record_descriptor(record).map_err(|e| problem(func, e))?;
@@ -260,8 +255,9 @@ pub fn compile_native_scalars(
                             .com_method(*method)
                             .is_some_and(calcvba_com::typed_slots::plan::validate) => {}
                     OxInst::ComCallLate { recv, args, .. }
-                        if layout.class_calls.iter().any(|(site, _, _)| site == inst) =>
-                    {
+                    | OxInst::CallByName {
+                        object: recv, args, ..
+                    } if layout.class_calls.iter().any(|(site, _, _)| site == inst) => {
                         if !matches!(
                             layout.operand_type(recv),
                             Ok(ScalarType::HostObject | ScalarType::Variant)
@@ -331,6 +327,22 @@ pub fn compile_native_scalars(
                             }
                         }
                     }
+                    OxInst::CallByName { name, calltype, .. }
+                        if !(program.classes.is_empty()
+                            || matches!(name, OxOperand::Const(OxConst::Str(_)))
+                                && matches!(
+                                    calltype,
+                                    OxOperand::Const(OxConst::I16(_) | OxConst::I32(_))
+                                )) =>
+                    {
+                        return Err(problem(
+                            func,
+                            format!(
+                                "native dynamic project CallByName is not yet admitted at block {:?} instruction {index}",
+                                block.id
+                            ),
+                        ));
+                    }
                     OxInst::ComCallLate { recv, args, .. }
                     | OxInst::CallByName {
                         object: recv, args, ..
@@ -368,10 +380,9 @@ pub fn compile_native_scalars(
                         layout.slots[layout.slot(*dst).map_err(|e| problem(func, e))?],
                     ) && numeric(layout.operand_type(src).map_err(|e| problem(func, e))?) => {}
                     OxInst::CallProc { proc, args, .. } => {
-                        if args
-                            .iter()
-                            .any(|arg| !matches!(arg, OxArg::ByVal(_) | OxArg::ByRef(_)))
-                        {
+                        if args.iter().any(|arg| {
+                            !matches!(arg, OxArg::ByVal(_) | OxArg::ByRef(_) | OxArg::Omitted)
+                        }) {
                             return Err(problem(
                                 func,
                                 format!(
@@ -526,6 +537,8 @@ pub fn compile_native_scalars(
                     | OxTerminator::Resume
                     | OxTerminator::ResumeNext
                     | OxTerminator::ResumeLabel(_)
+                    | OxTerminator::GoSub { .. }
+                    | OxTerminator::GoSubReturn
             ) {
                 return Err(problem(
                     func,
@@ -936,6 +949,12 @@ pub fn compile_native_scalars(
                     }
                     if let OxInst::ComCallLate {
                         dst, recv, args, ..
+                    }
+                    | OxInst::CallByName {
+                        dst,
+                        object: recv,
+                        args,
+                        ..
                     } = inst
                     {
                         let receiver = values.cell(module, &mut b, recv);
@@ -1179,6 +1198,24 @@ pub fn compile_native_scalars(
                             (resume.0 as u32, resume_next.0 as u32),
                         );
                     }
+                    OxTerminator::GoSub { target, ret } => {
+                        let push = b.ins().iconst(types::I32, 0);
+                        let ret = b.ins().iconst(types::I32, ret.0 as i64);
+                        let out = b.ins().iconst(types::I64, 0);
+                        values.call(module, &mut b, "cvb_gosub", &[runtime, push, ret, out]);
+                        b.ins().jump(blocks[target], &[]);
+                    }
+                    OxTerminator::GoSubReturn => {
+                        emit_error_transfer(
+                            module,
+                            &mut b,
+                            &values,
+                            &blocks,
+                            func,
+                            "cvb_gosub",
+                            (1, 0),
+                        );
+                    }
                     OxTerminator::Resume
                     | OxTerminator::ResumeNext
                     | OxTerminator::ResumeLabel(_) => {
@@ -1370,15 +1407,34 @@ fn emit_native_call(
     let lower = &values.lower;
     let mut call_args = vec![values.lower.runtime];
     let mut copies = Vec::new();
-    for (argument_index, (arg, (ty, by_ref))) in
-        args.iter().zip(parameters.iter().zip(by_ref)).enumerate()
-    {
+    for (argument_index, (ty, by_ref)) in parameters.iter().zip(by_ref).enumerate() {
+        let arg = args.get(argument_index).unwrap_or(&OxArg::Omitted);
+        if matches!(arg, OxArg::Omitted) {
+            let slot =
+                b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 24, 3));
+            let empty = b.ins().iconst(types::I64, 0);
+            for offset in [0, 8, 16] {
+                b.ins().stack_store(empty, slot, offset);
+            }
+            let tag = b.ins().iconst(types::I32, 10);
+            let missing = b.ins().iconst(types::I32, i64::from(0x80020004u32 as i32));
+            b.ins().stack_store(tag, slot, 0);
+            b.ins().stack_store(missing, slot, 8);
+            let pointer = b.ins().stack_addr(types::I64, slot, 0);
+            call_args.push(pointer);
+            copies.push((pointer, ScalarType::Variant, None));
+            continue;
+        }
         let operand = match arg {
             OxArg::ByVal(operand) => operand.clone(),
             OxArg::ByRef(place) => OxOperand::Use(*place),
             _ => unreachable!("admitted native argument"),
         };
-        let value = if !by_ref
+        let value = if callee
+            .is_some_and(|callee| callee.layout.param_array == Some(argument_index))
+        {
+            values.cell(module, b, &operand)
+        } else if !by_ref
             && matches!(ty, ScalarType::Variant | ScalarType::HostObject)
             && values.lower.layout.operand_type(&operand) != Ok(*ty)
         {
@@ -2107,7 +2163,7 @@ pub fn compile_shutdown_wrapper(
                 ("cvb_record_clear", vec![address, descriptor])
             } else {
                 let kind = match global.ty {
-                    OxTy::Str => 8,
+                    OxTy::Str | OxTy::FixedStr(_) => 8,
                     OxTy::Variant => 12,
                     OxTy::Object(_) => 9,
                     OxTy::Array(_, _) => 0x2000,
@@ -2170,6 +2226,17 @@ fn emit_error_transfer(
                         }
                     }),
             )
+            .collect()
+    } else if helper == "cvb_gosub" {
+        func.blocks
+            .iter()
+            .filter_map(|block| {
+                if let OxTerminator::GoSub { ret, .. } = block.terminator {
+                    Some(ret.0)
+                } else {
+                    None
+                }
+            })
             .collect()
     } else {
         func.blocks

@@ -39,6 +39,10 @@ pub(super) const HELPERS: &[(&str, &[ir::Type])] = &[
     ("cvb_array_erase", &[types::I64, types::I64, types::I32]),
     ("cvb_frame_enter", &[types::I64]),
     ("cvb_frame_exit", &[types::I64]),
+    (
+        "cvb_gosub",
+        &[types::I64, types::I32, types::I32, types::I64],
+    ),
     ("cvb_error_control", &[types::I64, types::I32, types::I32]),
     (
         "cvb_error_get",
@@ -57,6 +61,19 @@ pub(super) const HELPERS: &[(&str, &[ir::Type])] = &[
         &[types::I64, types::I32, types::I32, types::I64],
     ),
     ("cvb_array_literal", &[types::I64; 3]),
+    ("cvb_paramarray_literal", &[types::I64; 5]),
+    (
+        "cvb_paramarray_set",
+        &[
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I32,
+            types::I32,
+            types::I64,
+            types::I32,
+        ],
+    ),
     (
         "cvb_iter_init",
         &[types::I64, types::I64, types::I64, types::I32],
@@ -883,11 +900,11 @@ impl Values<'_> {
     ) -> bool {
         let layout = self.lower.layout;
         match inst {
-            OxInst::ComCallEarly { .. } | OxInst::CallByName { .. } => {
+            OxInst::ComCallEarly { .. } => {
                 self.member_call(module, b, inst);
                 return true;
             }
-            OxInst::ComCallLate { .. }
+            OxInst::ComCallLate { .. } | OxInst::CallByName { .. }
                 if !layout.class_calls.iter().any(|(site, _, _)| site == inst) =>
             {
                 self.member_call(module, b, inst);
@@ -1000,7 +1017,7 @@ impl Values<'_> {
                 dst,
                 values,
                 lower_bound,
-                ..
+                aliases,
             } => {
                 let slot = layout.slot(*dst).unwrap();
                 let out = self.address(b, slot);
@@ -1019,6 +1036,24 @@ impl Values<'_> {
                     b.ins().stack_store(cell, arguments, (index * 8) as i32);
                     metadata.push(kind_of_operand(layout, value));
                 }
+                let alias_cells = b.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    (values.len().max(1) * 8) as u32,
+                    3,
+                ));
+                for index in 0..values.len() {
+                    let alias = aliases.get(index).copied().flatten();
+                    let (cell, kind) = if let Some(place) = alias {
+                        (
+                            self.cell(module, b, &OxOperand::Use(place)),
+                            self.slot_kind(layout.slot(place).unwrap()),
+                        )
+                    } else {
+                        (b.ins().iconst(types::I64, 0), 0)
+                    };
+                    b.ins().stack_store(cell, alias_cells, (index * 8) as i32);
+                    metadata.push(kind);
+                }
                 let metadata = data(
                     module,
                     b,
@@ -1026,7 +1061,13 @@ impl Values<'_> {
                     4,
                 );
                 let arguments = b.ins().stack_addr(types::I64, arguments, 0);
-                self.call(module, b, "cvb_array_literal", &[metadata, arguments, out]);
+                let aliases = b.ins().stack_addr(types::I64, alias_cells, 0);
+                self.call(
+                    module,
+                    b,
+                    "cvb_paramarray_literal",
+                    &[self.lower.runtime, metadata, arguments, aliases, out],
+                );
                 return true;
             }
             OxInst::CallNative {
@@ -1395,8 +1436,8 @@ impl Values<'_> {
                 self.call(
                     module,
                     b,
-                    "cvb_array_set",
-                    &[array, vector, rank, kind, input, from],
+                    "cvb_paramarray_set",
+                    &[self.lower.runtime, array, vector, rank, kind, input, from],
                 );
                 return true;
             }
@@ -1675,6 +1716,7 @@ impl Values<'_> {
             OxInst::Assign { dst, .. } | OxInst::Coerce { dst, .. } => {
                 owning(layout.slots[layout.slot(*dst).unwrap()])
                     || extended_numeric(layout.slots[layout.slot(*dst).unwrap()])
+                    || matches!(inst,OxInst::Assign {value,..} if layout.operand_type(value).is_ok_and(extended_numeric))
             }
             _ => false,
         };

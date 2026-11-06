@@ -105,6 +105,7 @@ pub fn native_scalar_type(ty: &OxTy) -> Option<ScalarType> {
         OxTy::Single => Some(ScalarType::Single),
         OxTy::Currency => Some(ScalarType::Currency),
         OxTy::Date => Some(ScalarType::Date),
+        OxTy::FixedStr(_) => Some(ScalarType::String),
         _ => None,
     })
 }
@@ -868,6 +869,38 @@ impl ScalarLayout {
         let mut class_calls = Vec::new();
         if owning {
             for inst in func.blocks.iter().flat_map(|b| &b.instrs) {
+                let translated = if let OxInst::CallByName {
+                    dst,
+                    object,
+                    name: OxOperand::Const(OxConst::Str(name)),
+                    calltype,
+                    args,
+                } = inst
+                {
+                    let kind = match calltype {
+                        OxOperand::Const(OxConst::I16(value)) => Some(i32::from(*value)),
+                        OxOperand::Const(OxConst::I32(value)) => Some(*value),
+                        _ => None,
+                    };
+                    kind.and_then(|kind| match kind {
+                        1 => Some(calcvba_com::TypeLibMemberInvokeKind::Method),
+                        2 => Some(calcvba_com::TypeLibMemberInvokeKind::PropertyGet),
+                        4 => Some(calcvba_com::TypeLibMemberInvokeKind::PropertyPut),
+                        8 => Some(calcvba_com::TypeLibMemberInvokeKind::PropertyPutRef),
+                        _ => None,
+                    })
+                    .map(|invoke_kind| OxInst::ComCallLate {
+                        dst: *dst,
+                        recv: object.clone(),
+                        name: name.clone(),
+                        invoke_kind,
+                        default_member: false,
+                        args: args.clone(),
+                    })
+                } else {
+                    None
+                };
+                let lookup = translated.as_ref().unwrap_or(inst);
                 if let OxInst::ComCallLate {
                     recv: OxOperand::Use(place),
                     name,
@@ -875,7 +908,7 @@ impl ScalarLayout {
                     default_member,
                     args,
                     ..
-                } = inst
+                } = lookup
                 {
                     let ty = match place {
                         OxPlace::Local(id) => func.locals.get(id.0).map(|l| &l.ty),
@@ -917,28 +950,32 @@ impl ScalarLayout {
                             continue;
                         }
                         let method = class.methods.iter().find(|m| {
-                            (declared.is_some() || interface_name.is_some() || m.externally_visible)
-                                && (if *default_member {
-                                    m.is_default_member
-                                } else {
-                                    m.name.eq_ignore_ascii_case(name)
-                                })
-                                && matches!(
-                                    (m.kind, invoke_kind),
-                                    (
-                                        calcvba_bundle::ProjectMemberKind::Method,
-                                        calcvba_com::TypeLibMemberInvokeKind::Method
-                                    ) | (
-                                        calcvba_bundle::ProjectMemberKind::PropertyGet,
-                                        calcvba_com::TypeLibMemberInvokeKind::PropertyGet
-                                    ) | (
-                                        calcvba_bundle::ProjectMemberKind::PropertyLet,
-                                        calcvba_com::TypeLibMemberInvokeKind::PropertyPut
-                                    ) | (
-                                        calcvba_bundle::ProjectMemberKind::PropertySet,
-                                        calcvba_com::TypeLibMemberInvokeKind::PropertyPutRef
-                                    )
+                            (if matches!(inst, OxInst::CallByName { .. }) {
+                                m.externally_visible
+                            } else {
+                                declared.is_some()
+                                    || interface_name.is_some()
+                                    || m.externally_visible
+                            }) && (if *default_member {
+                                m.is_default_member
+                            } else {
+                                m.name.eq_ignore_ascii_case(name)
+                            }) && matches!(
+                                (m.kind, invoke_kind),
+                                (
+                                    calcvba_bundle::ProjectMemberKind::Method,
+                                    calcvba_com::TypeLibMemberInvokeKind::Method
+                                ) | (
+                                    calcvba_bundle::ProjectMemberKind::PropertyGet,
+                                    calcvba_com::TypeLibMemberInvokeKind::PropertyGet
+                                ) | (
+                                    calcvba_bundle::ProjectMemberKind::PropertyLet,
+                                    calcvba_com::TypeLibMemberInvokeKind::PropertyPut
+                                ) | (
+                                    calcvba_bundle::ProjectMemberKind::PropertySet,
+                                    calcvba_com::TypeLibMemberInvokeKind::PropertyPutRef
                                 )
+                            )
                         });
                         let Some(method) = method else {
                             if declared.is_some() && interface_name.is_none() {
@@ -1533,6 +1570,7 @@ impl ScalarLayout {
                 | OxTerminator::Return
                 | OxTerminator::FaultDispatch { .. }
                 | OxTerminator::Unreachable => {}
+                OxTerminator::GoSub { .. } | OxTerminator::GoSubReturn if native_numbers => {}
                 OxTerminator::Resume | OxTerminator::ResumeNext | OxTerminator::ResumeLabel(_)
                     if owning => {}
                 OxTerminator::Raise {
@@ -1644,7 +1682,27 @@ impl ScalarLayout {
         if self.specialized_variant_temps.contains(&slot) && from != to {
             return Err("specialized temporary needs a proven Double writer".into());
         }
-        if to == from || (to == ScalarType::Double && from == ScalarType::Long) {
+        if to == from
+            || (self.owning && !self.native_numbers && to == ScalarType::Variant)
+            || (to == ScalarType::Double && from == ScalarType::Long)
+            || (self.native_numbers
+                && to == ScalarType::Long
+                && matches!(from, ScalarType::Integer | ScalarType::Byte))
+            || (self.native_numbers
+                && to == ScalarType::Variant
+                && matches!(
+                    from,
+                    ScalarType::Long
+                        | ScalarType::Double
+                        | ScalarType::Boolean
+                        | ScalarType::Integer
+                        | ScalarType::Byte
+                        | ScalarType::LongLong
+                        | ScalarType::Single
+                        | ScalarType::Currency
+                        | ScalarType::Date
+                ))
+        {
             Ok(())
         } else {
             Err("typed narrowing/coercion requires the dynamic runtime".into())
@@ -1710,8 +1768,14 @@ impl ScalarLayout {
                     ..
                 } => {
                     self.slot(*dst)?;
-                    if aliases.iter().any(Option::is_some) {
-                        return Err("native ArrayLiteral ByRef aliases are not admitted".into());
+                    for alias in aliases.iter().flatten() {
+                        let index = self.slot(*alias)?;
+                        if !matches!(self.slots[index], ScalarType::Variant) {
+                            return Err(
+                                "native ParamArray typed alias requires shared caller coercion"
+                                    .into(),
+                            );
+                        }
                     }
                     for value in values {
                         self.operand_type(value)?;

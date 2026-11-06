@@ -58,7 +58,7 @@ try {
     foreach ($window in @($enumeration.Windows | Sort-Object @{Expression={if($_.ClassName -eq 'EXCEL7'){0}else{1}}},Hwnd)) {
         $candidate=$null; $application=$null
         $hr=[ExcelOracleNativeMethods]::TryGetNativeObjectFromWindow([IntPtr][int64]$window.Hwnd,[ref]$candidate)
-        if ($candidate) { $application=$candidate.Application }
+        if ($candidate) { try { $application=$candidate.Application } catch { Release-ComObject $candidate; continue } }
         $applicationPid=if($application){Get-ExcelPidFromApplication $application}else{0}
         $decision=Resolve-ExcelOracleAttachmentCandidate -Enumeration $enumeration -ExpectedProcessId $owned.Id -Candidate $window -HResult $hr -NativeObjectPresent ($null -ne $candidate) -ApplicationPresent ($null -ne $application) -ApplicationPid $applicationPid
         if ($decision.attached) { $excel=$application; $native=$candidate; break }

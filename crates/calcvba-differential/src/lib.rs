@@ -15262,10 +15262,10 @@ End Sub
         assert_eq!(
             jit.result.expect("jit result"),
             vec![
-                Canon::Str("   ".into()),
+                Canon::Str("\0\0\0".into()),
                 Canon::Str("ab ".into()),
                 Canon::Str("abc".into()),
-                Canon::Str("   ".into()),
+                Canon::Str("\0\0\0".into()),
                 Canon::Str("ab ".into()),
                 Canon::Str("abc".into())
             ]
@@ -15294,10 +15294,10 @@ End Sub
         assert_eq!(
             jit.result.expect("jit result"),
             vec![
-                Canon::Str("   ".into()),
+                Canon::Str("\0\0\0".into()),
                 Canon::Str("ab ".into()),
                 Canon::Str("abc".into()),
-                Canon::Str("   ".into()),
+                Canon::Str("\0\0\0".into()),
                 Canon::Str("ab ".into()),
                 Canon::Str("abc".into())
             ]

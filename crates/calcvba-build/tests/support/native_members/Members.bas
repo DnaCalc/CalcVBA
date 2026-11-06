@@ -49,7 +49,7 @@ Public Function ConstructorFaultSuite() As String
 End Function
 Public Sub Main()
     Dim observed As String
-    observed = MemberSuite() & "#" & ConstructorFaultSuite() & "#" & NothingSuite()
+    observed = MemberSuite() & "#" & ConstructorFaultSuite() & "#" & NothingSuite() & "#" & ProjectCallByNameSuite()
 End Sub
 
 Public Function NothingSuite() As String
@@ -58,4 +58,11 @@ Public Function NothingSuite() As String
     value = receiver.Count
     NothingSuite = CStr(Err.Number)
     Err.Clear
+End Function
+
+Public Function ProjectCallByNameSuite() As String
+    Dim receiver As Object
+    Set receiver=New Worker
+    CallByName receiver,"Name",vbLet,"named"
+    ProjectCallByNameSuite=CStr(CallByName(receiver,"Name",vbGet)) & ":" & CStr(CallByName(receiver,"Echo",vbMethod))
 End Function

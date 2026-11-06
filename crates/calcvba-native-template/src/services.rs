@@ -10,10 +10,11 @@ pub(super) struct Runtime {
     // Drop the borrowing execution state before its retained host owner.
     exec: Box<ExecState<'static>>,
     _host: Arc<dyn HostServices>,
-    frames: Vec<(u32, calcvba_rt_abi::SavedErrState, i32)>,
+    frames: Vec<(u32, calcvba_rt_abi::SavedErrState, i32, Vec<u32>)>,
     iterators: std::collections::HashMap<usize, NativeIterator>,
     pub(super) classes: super::classes::Classes,
     pub(super) members: super::members::Calls,
+    pub(super) param_arrays: super::parameters::Arrays,
 }
 
 pub(super) unsafe fn runtime(context: *mut Context) -> *mut Runtime {
@@ -43,6 +44,7 @@ pub(super) unsafe fn runtime(context: *mut Context) -> *mut Runtime {
                 frames: Vec::new(),
                 classes: Default::default(),
                 members: Default::default(),
+                param_arrays: Default::default(),
             };
             (*context).services = Box::into_raw(Box::new(state)).cast();
         }
@@ -718,7 +720,9 @@ pub unsafe extern "C" fn cvb_frame_enter(context: *mut Context) -> i32 {
                 runtime.exec.err_engine.pending_fault = None;
             }
             let saved = runtime.exec.err_engine.enter_activation();
-            runtime.frames.push(((*context).depth, saved, 0));
+            runtime
+                .frames
+                .push(((*context).depth, saved, 0, Vec::new()));
         }
         Ok(())
     })
@@ -737,7 +741,10 @@ pub unsafe extern "C" fn cvb_frame_exit(context: *mut Context) -> i32 {
                 .last()
                 .is_some_and(|frame| frame.0 == (*context).depth)
             {
-                let (_, saved, _) = runtime.frames.pop().ok_or(5)?;
+                let (depth, saved, _, _) = runtime.frames.pop().ok_or(5)?;
+                runtime
+                    .param_arrays
+                    .retain(|_, aliases| aliases.depth < depth);
                 runtime.exec.err_engine.restore(saved);
             }
         }
@@ -954,6 +961,31 @@ pub unsafe extern "C" fn cvb_array_erase(_context: *mut Context, cell: *mut u8, 
                     coordinates.as_ptr(),
                     value,
                 ))?;
+            }
+            Ok(())
+        }
+    })
+}
+
+/// # Safety
+/// The native activation owns context. For pop, out is a writable block index;
+/// push records only a compiler-validated return block in the current frame.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cvb_gosub(
+    context: *mut Context,
+    pop: u32,
+    value: u32,
+    out: *mut u32,
+) -> i32 {
+    super::values::boundary(|| {
+        // SAFETY: no callback occurs while the active frame is borrowed.
+        unsafe {
+            let stack = &mut (*runtime(context)).frames.last_mut().ok_or(5)?.3;
+            if pop == 0 {
+                stack.try_reserve(1).map_err(|_| 7)?;
+                stack.push(value);
+            } else {
+                out.write(stack.pop().ok_or(3)?);
             }
             Ok(())
         }

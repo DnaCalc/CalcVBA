@@ -35,7 +35,7 @@ fn every_saved_workbook_compiles_and_binds_on_vm3_and_jit() {
                 .unwrap();
             session
                 .bind_values(&bound, &[], calcvba_host_api::ValueType::String)
-                .unwrap();
+                .unwrap_or_else(|e| panic!("{} / {backend:?}: {e}", path.display()));
         }
         count += 1;
     }

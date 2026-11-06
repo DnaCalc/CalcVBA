@@ -210,6 +210,34 @@ pub fn build_native_library(
                     selected.exported_name, selected.module_name, selected.procedure_name
                 ))
             })?;
+        let func = &program.funcs[target.0];
+        if let Some(parameter) = func.locals[..func.param_count]
+            .iter()
+            .filter_map(|local| local.param)
+            .find(|parameter| parameter.variadic || parameter.optional)
+        {
+            let kind = if parameter.variadic {
+                "ParamArray signature"
+            } else {
+                "optional signature"
+            };
+            let line = module
+                .source
+                .lines()
+                .position(|line| {
+                    line.split_whitespace().any(|word| {
+                        word.eq_ignore_ascii_case("Function") || word.eq_ignore_ascii_case("Sub")
+                    }) && line
+                        .to_ascii_lowercase()
+                        .contains(&selected.procedure_name.to_ascii_lowercase())
+                })
+                .unwrap_or(0)
+                + 1;
+            return Err(native_error(format!(
+                "{}:{line}:1: native export procedure {}: {kind} requires a fixed foreign ABI",
+                module.module_name, func.name
+            )));
+        }
         roots.push(target);
     }
     let template_bytes = if let Some(path) = &options.template_path {

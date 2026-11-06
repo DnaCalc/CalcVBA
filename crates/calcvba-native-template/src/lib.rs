@@ -10,6 +10,8 @@ mod foreign;
 #[cfg(windows)]
 mod members;
 #[cfg(windows)]
+mod parameters;
+#[cfg(windows)]
 mod services;
 #[cfg(windows)]
 mod values;

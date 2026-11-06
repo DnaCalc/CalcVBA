@@ -58,6 +58,10 @@ End Function
 Public Function ReadAddress(ByVal root As HostValues.Range) As String
     ReadAddress = root.Cells(2, 3).Address
 End Function
+Public Function CopyAddress(ByVal root As HostValues.Range) As Variant
+    root.Value2 = root.Address
+    CopyAddress = root.Value2
+End Function
 Private Sub ReplaceText(ByRef text As String, ByVal root As HostValues.Range)
     text = root.Address
 End Sub
@@ -1073,5 +1077,37 @@ fn variant_byref_aliases_keep_actual_cells_and_writes_after_child_fault() {
         };
         assert_eq!(value, api::Variant::from_f64(44.0));
         assert_eq!(&*log.borrow(), &["Value2"]);
+    }
+}
+
+#[test]
+fn string_getter_result_boxes_into_variant_property_argument() {
+    for backend in backends() {
+        let session = load(&Provider::default(), backend);
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let grid = Rc::new(RefCell::new(HashMap::new()));
+        let root = range(grid.clone(), log.clone(), 2, 3, 1, 1, 1);
+        let bound = session
+            .bind_values(
+                "Api",
+                "CopyAddress",
+                &[api::ValueType::HostObject],
+                api::ValueType::Variant,
+            )
+            .unwrap();
+        let mut call = session
+            .begin_values(
+                &bound,
+                &[api::ValueSlot::Object(root.argument())],
+                frame(),
+                1000,
+            )
+            .unwrap();
+        let api::Value::Variant(value) = finish(&mut *call, 1) else {
+            panic!("Variant expected")
+        };
+        assert_eq!(value.as_bstr().unwrap().to_string(), "$C$2");
+        assert_eq!(grid.borrow().get(&(2, 3)), Some(&value));
+        assert_eq!(&*log.borrow(), &["Address", "Value2=", "Value2"]);
     }
 }

@@ -1,4 +1,4 @@
-//! vm3 fixed-length scalar strings should default to their space-filled length.
+//! vm3 fixed-length scalar strings should default to their NUL-filled length.
 
 use calcvba_differential::{Canon, Executor, canon, run};
 use calcvba_runtime::Variant;
@@ -23,22 +23,22 @@ fn value(source: &str) -> Canon {
 }
 
 #[test]
-fn local_fixed_length_string_defaults_to_spaces() {
+fn local_fixed_length_string_defaults_to_nuls() {
     assert_eq!(
         first_value(
             "Public r As Variant\nSub Main()\n    Dim fixed As String * 3\n    r = CStr(Len(fixed)) & \":\" & fixed\nEnd Sub\n"
         ),
-        s("3:   ")
+        s("3:\0\0\0")
     );
 }
 
 #[test]
-fn module_fixed_length_string_defaults_to_spaces() {
+fn module_fixed_length_string_defaults_to_nuls() {
     assert_eq!(
         first_value(
             "Public r As Variant\nPublic fixed As String * 4\nSub Main()\n    r = CStr(Len(fixed)) & \":\" & fixed\nEnd Sub\n"
         ),
-        s("4:    ")
+        s("4:\0\0\0\0")
     );
 }
 

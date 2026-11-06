@@ -187,6 +187,12 @@ pub fn needs_helper(inst: &OxInst, layout: &ScalarLayout) -> bool {
                     && !(from == ScalarType::Long && layout.slots[i] == ScalarType::Double)
             })
         }),
+        OxInst::Assign { dst, value } => layout.operand_type(value).is_ok_and(|from| {
+            from != ScalarType::Variant
+                && layout
+                    .slot(*dst)
+                    .is_ok_and(|i| layout.slots[i] == ScalarType::Variant)
+        }),
         OxInst::Arith { dst, lhs, rhs, .. }
         | OxInst::Compare { dst, lhs, rhs, .. }
         | OxInst::Div { dst, lhs, rhs } => {
@@ -295,6 +301,7 @@ pub unsafe extern "C" fn evaluate(
         }
         let result = (|| -> Result<(OxPlace, Value), i32> {
             let (dst, result) = match inst {
+                OxInst::Assign { dst, value } => (*dst, read(value)?),
                 OxInst::CallNative {
                     dst: Some(dst),
                     callee:

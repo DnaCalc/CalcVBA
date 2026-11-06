@@ -3573,7 +3573,7 @@ fn jit_defaults_supported_carrier_slots() {
         outcome.values[3]
             .as_bstr()
             .map(|text| text.as_str().to_string()),
-        Some("    ".to_string())
+        Some("\0\0\0\0".to_string())
     );
     assert_eq!(outcome.values[4].vtype(), VarType::Empty);
     assert_eq!(

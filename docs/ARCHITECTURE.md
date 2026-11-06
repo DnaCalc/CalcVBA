@@ -133,10 +133,15 @@ Project class construction, fields, properties and methods use owning objects
 and compiled entries, including local `As New` recreation and same-thread
 Initialize/Terminate calls. Collection and Implements calls use the same owning
 carriers. Early COM calls retain imported interface/vtable descriptors and share
-the JIT's native marshalling; late calls and CallByName share its COM services.
+the JIT's native marshalling; late COM calls share its host services. Literal
+project CallByName calls select compiled members.
 TypeOf uses project identity or the imported COM IID. Unsupported class field
 initializers are refused. `scripts/test-native-excel-members.ps1` compares an
 Excel COMReference body on VM3, JIT, AOT and Office using an existing owned session.
+Internal optional arguments and ParamArray packs are compiled directly. Native
+ParamArray aliases require Variant caller storage until typed copy-out coercion
+is shared. Fixed-length String defaults contain NULs; assignments pad or truncate.
+GoSub uses a per-frame return stack and branches in compiled code.
 Writable `.cvbdata` holds module state and the once-only initialization status.
 Each DLL retains the identity of its first calling thread; foreign threads return
 zero/E_WRONG_THREAD without touching VBA or caller storage. ErrorPolicy and

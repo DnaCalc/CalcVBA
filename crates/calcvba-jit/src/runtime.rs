@@ -801,7 +801,7 @@ pub(crate) fn default_slot_value_with_array_element(
         OxTy::Decimal => Ok(Variant::from_decimal96(Decimal96::default())),
         OxTy::Variant | OxTy::ProcRef => Ok(Variant::empty()),
         OxTy::Str => Ok(Variant::from_string(String::new())),
-        OxTy::FixedStr(len) => Ok(Variant::from_string(" ".repeat(*len as usize))),
+        OxTy::FixedStr(len) => Ok(Variant::from_string("\0".repeat(*len as usize))),
         OxTy::Object(_) => Ok(Variant::nothing()),
         OxTy::Record(id) => {
             let fields = program.record_layout(*id).ok_or_else(|| {

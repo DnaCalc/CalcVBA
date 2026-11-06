@@ -101,10 +101,11 @@ fn collection_interfaces_late_calls_and_failed_construction_agree() {
         std::fs::copy(entry.path(), directory.0.join(entry.file_name())).unwrap();
     }
     let project = directory.0.join("Members.basproj");
-    std::fs::write(&project,r#"<Project><PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>NativeMembers</ProjectName></PropertyGroup><ItemGroup><Module Include="Members.bas"/><ClassModule Include="ICounter.cls"/><ClassModule Include="Worker.cls"/><ClassModule Include="OtherWorker.cls"/><ClassModule Include="BadCtor.cls"/><NativeExport Include="MemberSuite"><Module>Members</Module><Procedure>MemberSuite</Procedure></NativeExport><NativeExport Include="ConstructorFaultSuite"><Module>Members</Module><Procedure>ConstructorFaultSuite</Procedure></NativeExport><NativeExport Include="NothingSuite"><Module>Members</Module><Procedure>NothingSuite</Procedure></NativeExport></ItemGroup></Project>"#).unwrap();
+    std::fs::write(&project,r#"<Project><PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>NativeMembers</ProjectName></PropertyGroup><ItemGroup><Module Include="Members.bas"/><ClassModule Include="ICounter.cls"/><ClassModule Include="Worker.cls"/><ClassModule Include="OtherWorker.cls"/><ClassModule Include="BadCtor.cls"/><NativeExport Include="MemberSuite"><Module>Members</Module><Procedure>MemberSuite</Procedure></NativeExport><NativeExport Include="ConstructorFaultSuite"><Module>Members</Module><Procedure>ConstructorFaultSuite</Procedure></NativeExport><NativeExport Include="NothingSuite"><Module>Members</Module><Procedure>NothingSuite</Procedure></NativeExport><NativeExport Include="ProjectCallByNameSuite"><Module>Members</Module><Procedure>ProjectCallByNameSuite</Procedure></NativeExport></ItemGroup></Project>"#).unwrap();
     let closure = calcvba_project::load_project_closure(&project).unwrap();
     // Captured by VBE Compile and execution in the reused owned Excel process.
-    let expected = "15:5|35:7:True|Collection:3:a:a23:2:0|z:3|1:9|438:3#513:Nothing:1:0#91";
+    let expected =
+        "15:5|35:7:True|Collection:3:a:a23:2:0|z:3|1:9|438:3#513:Nothing:1:0#91#named:worker";
     for config in [HostConfig::vm3(), HostConfig::jit()] {
         let mut engine = Engine::new(config);
         engine.set_host_policy(calcvba_hal::HostPolicy::native());
@@ -128,10 +129,11 @@ fn collection_interfaces_late_calls_and_failed_construction_agree() {
     let dll = Dll::load(&output.dll_path);
     assert_eq!(
         format!(
-            "{}#{}#{}",
+            "{}#{}#{}#{}",
             dll.call("MemberSuite"),
             dll.call("ConstructorFaultSuite"),
-            dll.call("NothingSuite")
+            dll.call("NothingSuite"),
+            dll.call("ProjectCallByNameSuite")
         ),
         expected
     );
@@ -169,4 +171,93 @@ fn imported_early_dictionary_members_agree() {
     .unwrap();
     let dll = Dll::load(&output.dll_path);
     assert_eq!(dll.call("EarlyOwnDictionarySuite"), expected);
+}
+
+#[test]
+fn paramarray_storage_optional_and_gosub_bodies_agree() {
+    let directory = Directory::new();
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/support/native_members/Parameters.bas"),
+        directory.0.join("Parameters.bas"),
+    )
+    .unwrap();
+    let project = directory.0.join("Parameters.basproj");
+    // VBE Compile and execution in the same recorded owned Excel session.
+    let cases = [
+        ("ParameterSuite", "13:15:b:0:4:11:13|0:-1"),
+        ("FixedSuite", "3:[\0\0\0]:abc:[x  ]:4:[xy  ]"),
+        ("GoSubSuite", "OIROIR|3"),
+        ("OptionalSuite", "7:True:s|7:False:t|2:True:q"),
+        ("NumericWidthSuite", "-12:-3:7:Long"),
+    ];
+    let exports=cases.iter().map(|(name,_)|format!("<NativeExport Include=\"{name}\"><Module>Parameters</Module><Procedure>{name}</Procedure></NativeExport>")).collect::<String>();
+    std::fs::write(&project,format!("<Project><PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>NativeParameters</ProjectName></PropertyGroup><ItemGroup><Module Include=\"Parameters.bas\"/>{exports}</ItemGroup></Project>")).unwrap();
+    let closure = calcvba_project::load_project_closure(&project).unwrap();
+    let expected = cases
+        .iter()
+        .map(|(_, expected)| *expected)
+        .collect::<Vec<_>>()
+        .join("#");
+    for config in [HostConfig::vm3(), HostConfig::jit()] {
+        let mut engine = Engine::new(config);
+        engine.set_host_policy(calcvba_hal::HostPolicy::native());
+        let values = engine
+            .execute_manifest_with_variant_snapshot(closure.last().unwrap())
+            .unwrap();
+        assert!(
+            values
+                .iter()
+                .filter_map(|value| value.as_bstr())
+                .any(|value| value.to_string() == expected),
+            "{values:?}"
+        );
+    }
+    let output = build_native_library(&NativeLibraryBuildOptions {
+        project_path: project,
+        out_dir: directory.0.join("out"),
+        template_path: None,
+    })
+    .unwrap();
+    let dll = Dll::load(&output.dll_path);
+    for (name, expected) in cases {
+        assert_eq!(dll.call(name), expected, "{name}");
+    }
+}
+
+#[test]
+fn unshared_typed_aliases_and_dynamic_project_names_have_source_refusals() {
+    let directory = Directory::new();
+    let support = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/support/native_members");
+    for name in ["ICounter.cls", "Worker.cls"] {
+        std::fs::copy(support.join(name), directory.0.join(name)).unwrap();
+    }
+    let cases = [
+        (
+            "Public Function Probe() As String\nDim number As Byte\nnumber=1\nChange number\nProbe=CStr(number)\nEnd Function\nPrivate Sub Change(ParamArray items() As Variant)\nitems(0)=300\nEnd Sub\n",
+            "ParamArray typed alias",
+        ),
+        (
+            "Public Function Probe() As String\nDim receiver As Worker, member As String\nSet receiver=New Worker\nmember=\"Echo\"\nProbe=CallByName(receiver,member,vbMethod)\nEnd Function\n",
+            "dynamic project CallByName",
+        ),
+    ];
+    for (index, (source, expected)) in cases.iter().enumerate() {
+        std::fs::write(
+            directory.0.join("Code.bas"),
+            format!("Attribute VB_Name = \"Code\"\n{source}"),
+        )
+        .unwrap();
+        let project = directory.0.join("Refused.basproj");
+        std::fs::write(&project,"<Project><PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>Refused</ProjectName></PropertyGroup><ItemGroup><Module Include=\"Code.bas\"/><ClassModule Include=\"ICounter.cls\"/><ClassModule Include=\"Worker.cls\"/><NativeExport Include=\"Probe\"><Module>Code</Module><Procedure>Probe</Procedure></NativeExport></ItemGroup></Project>").unwrap();
+        let error = build_native_library(&NativeLibraryBuildOptions {
+            project_path: project,
+            out_dir: directory.0.join(format!("out{index}")),
+            template_path: None,
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains(expected), "{error}");
+        assert!(error.contains("Code:"), "{error}");
+    }
 }

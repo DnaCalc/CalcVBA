@@ -2070,9 +2070,9 @@ fn default_value_for_type(
 )> {
     let value = match ty {
         VarTypeRef::Builtin(BuiltinType::String) => CoreValue::Const(CoreConst::Str(String::new())),
-        VarTypeRef::FixedString(_) => types::coerce_store_with(
+        VarTypeRef::FixedString(len) => types::coerce_store_with(
             type_ctx,
-            CoreValue::Const(CoreConst::Str(String::new())),
+            CoreValue::Const(CoreConst::Str("\0".repeat(*len as usize))),
             ty,
         ),
         VarTypeRef::Builtin(BuiltinType::Boolean) => CoreValue::Const(CoreConst::Bool(false)),

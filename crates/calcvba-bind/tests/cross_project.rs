@@ -1060,6 +1060,7 @@ fn cross_project_default_member_property_let_assigned_value_is_byval_even_when_d
                     name,
                     kind: Some(calcvba_bundle::ProjectMemberKind::PropertyLet),
                     default_member: false,
+                    ..
                 } if name == "Value"
             ) && args.len() == 2
             {
@@ -1128,6 +1129,7 @@ fn cross_project_default_member_property_set_assigned_object_is_byval_even_when_
                     name,
                     kind: Some(calcvba_bundle::ProjectMemberKind::PropertySet),
                     default_member: false,
+                    ..
                 } if name == "Item"
             ) && args.len() == 3
             {
@@ -1199,6 +1201,7 @@ fn cross_project_named_property_set_reorders_index_args_before_value() {
                     name,
                     kind: Some(calcvba_bundle::ProjectMemberKind::PropertySet),
                     default_member: false,
+                    ..
                 } if name == "Item"
             ) && args.len() == 4
             {

@@ -1033,7 +1033,10 @@ impl ScalarLayout {
                             })
                             .collect();
                         if methods.is_empty() {
-                            if declared.is_some() && interface_name.is_none() {
+                            if declared.is_some()
+                                && interface_name.is_none()
+                                && !matches!(inst, OxInst::CallByName { .. })
+                            {
                                 return Err("unresolved typed source class member".into());
                             }
                             continue;

@@ -2940,6 +2940,7 @@ impl<'a> ProcLower<'a> {
                 name: name.to_string(),
                 kind: Some(kind),
                 default_member: false,
+                return_type: None,
             },
             args,
         }
@@ -2959,6 +2960,7 @@ impl<'a> ProcLower<'a> {
                 name: String::new(),
                 kind: Some(kind),
                 default_member: true,
+                return_type: None,
             },
             args,
         }

@@ -2286,7 +2286,7 @@ impl<'a> Parser<'a> {
                         }
                     }
                 }
-                self.eat_to_eol();
+                self.eat_to_statement_end();
                 self.parse_block(&[SyntaxKind::KwCase, SyntaxKind::KwEnd]);
                 self.finish_node();
             } else {

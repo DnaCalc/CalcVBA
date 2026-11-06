@@ -278,6 +278,7 @@ fn lib_apply_program() -> CoreProgram {
                     name: "GetVal".into(),
                     kind: Some(ProjectMemberKind::Method),
                     default_member: false,
+                    return_type: None,
                 },
                 args: vec![CoreArg::ByVal(CoreValue::Load(CorePlace::Local(LocalId(
                     0,
@@ -436,6 +437,7 @@ fn lib_apply_global_arg_program() -> CoreProgram {
                         name: "Echo".into(),
                         kind: Some(ProjectMemberKind::Method),
                         default_member: false,
+                        return_type: None,
                     },
                     args: vec![
                         CoreArg::ByVal(CoreValue::Load(CorePlace::Local(LocalId(0)))),
@@ -666,6 +668,7 @@ fn app_new_extern_program() -> CoreProgram {
                         name: "Val".into(),
                         kind: Some(ProjectMemberKind::Method),
                         default_member: false,
+                        return_type: None,
                     },
                     args: vec![CoreArg::ByVal(CoreValue::Load(CorePlace::Local(LocalId(
                         0,
@@ -778,6 +781,7 @@ fn app_predeclared_extern_program() -> CoreProgram {
                     name: "Val".into(),
                     kind: Some(ProjectMemberKind::Method),
                     default_member: false,
+                    return_type: None,
                 },
                 args: vec![CoreArg::ByVal(CoreValue::PredeclaredExtern { import: 0 })],
             },

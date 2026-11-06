@@ -2421,6 +2421,7 @@ fn property_set_assigned_object_is_byval_after_byref_index_arg() {
                     name,
                     kind: Some(calcvba_bundle::ProjectMemberKind::PropertySet),
                     default_member: false,
+                    ..
                 } if name == "Item"
             ) && args.len() == 3
         })
@@ -2742,6 +2743,7 @@ fn default_member_property_set_assigned_object_is_byval_after_byref_index_arg() 
                     name,
                     kind: Some(calcvba_bundle::ProjectMemberKind::PropertySet),
                     default_member: false,
+                    ..
                 } if name == "Item"
             ) && args.len() == 3
         })
@@ -2801,6 +2803,7 @@ fn bare_default_member_property_let_assigned_value_is_byval_even_when_declared_b
                     name,
                     kind: Some(calcvba_bundle::ProjectMemberKind::PropertyLet),
                     default_member: false,
+                    ..
                 } if name == "Value"
             ) && args.len() == 2
         })
@@ -5625,6 +5628,7 @@ fn late_bound_property_put_on_object() {
                 name,
                 kind: Some(calcvba_bundle::ProjectMemberKind::PropertyLet),
                 default_member: false,
+                ..
             }
                 if name.eq_ignore_ascii_case("Value")
         )),

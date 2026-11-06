@@ -370,3 +370,56 @@ fn temporary_arrays_character_input_and_nullable_fields_agree() {
         assert_eq!(dll.call(name), expected, "{name}");
     }
 }
+
+#[test]
+fn chained_project_receivers_and_inline_cases_agree() {
+    let directory = Directory::new();
+    let support = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/support/native_members");
+    for name in [
+        "Chains.bas",
+        "IChain.cls",
+        "ChainCore.cls",
+        "ChainControl.cls",
+    ] {
+        std::fs::copy(support.join(name), directory.0.join(name)).unwrap();
+    }
+    let project = directory.0.join("Chains.basproj");
+    std::fs::write(&project, r#"<Project><PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>Chains</ProjectName></PropertyGroup><ItemGroup><Module Include="Chains.bas"/><ClassModule Include="IChain.cls"/><ClassModule Include="ChainCore.cls"/><ClassModule Include="ChainControl.cls"/><NativeExport Include="ChainSuite"><Module>Chains</Module><Procedure>ChainSuite</Procedure></NativeExport><NativeExport Include="CaseSuite"><Module>Chains</Module><Procedure>CaseSuite</Procedure></NativeExport></ItemGroup></Project>"#).unwrap();
+    let closure = calcvba_project::load_project_closure(&project).unwrap();
+    for config in [HostConfig::vm3(), HostConfig::jit()] {
+        let engine = Engine::new(config);
+        let values = engine
+            .execute_manifest_with_variant_snapshot(closure.last().unwrap())
+            .unwrap();
+        assert!(
+            values
+                .iter()
+                .filter_map(|v| v.as_bstr())
+                .any(|v| v.to_string() == "42:42:438:438:438"),
+            "{values:?}"
+        );
+        let mut cases = closure.last().unwrap().clone();
+        cases.modules[0].source = cases.modules[0]
+            .source
+            .replace("observed = ChainSuite()", "observed = CaseSuite()");
+        let values = engine
+            .execute_manifest_with_variant_snapshot(&cases)
+            .unwrap();
+        assert!(
+            values
+                .iter()
+                .filter_map(|v| v.as_bstr())
+                .any(|v| v.to_string() == "4:8:8:12:16:"),
+            "{values:?}"
+        );
+    }
+    let output = build_native_library(&NativeLibraryBuildOptions {
+        project_path: project,
+        out_dir: directory.0.join("out"),
+        template_path: None,
+    })
+    .unwrap();
+    let dll = Dll::load(&output.dll_path);
+    assert_eq!(dll.call("ChainSuite"), "42:42:438:438:438");
+    assert_eq!(dll.call("CaseSuite"), "4:8:8:12:16:");
+}

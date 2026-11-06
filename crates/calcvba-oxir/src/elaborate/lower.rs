@@ -585,6 +585,7 @@ fn elaborate_proc(
     // The binding types are recovered up front (the `locals` above, via the resolver);
     // the lowerer carries the COM interner so early-bound calls intern their members.
     let mut lo = Lowerer::new(LowererInputs {
+        resolver,
         record_layouts: &resolver.record_layouts,
         object_field_types: &resolver.object_field_types,
         locals,
@@ -625,6 +626,7 @@ struct ArgWriteback {
 }
 
 struct Lowerer<'a> {
+    resolver: &'a ProgramResolver,
     /// Blocks indexed by [`BlockId`]; `None` = reserved but not yet finalized. Every
     /// reserved id is filled exactly once, so the final vector has `id == position`.
     blocks: Vec<Option<OxBlock>>,
@@ -665,6 +667,7 @@ struct Lowerer<'a> {
 }
 
 struct LowererInputs<'a> {
+    resolver: &'a ProgramResolver,
     record_layouts: &'a [Vec<ArrayElementType>],
     object_field_types: &'a HashMap<(ClassId, i32), OxTy>,
     locals: Vec<OxLocal>,
@@ -683,6 +686,7 @@ impl<'a> Lowerer<'a> {
         // Entry = block 0, epilogue = block 1; both reserved up front.
         let blocks = vec![None, None];
         Self {
+            resolver: inputs.resolver,
             blocks,
             cur: BlockId(0),
             instrs: Vec::new(),
@@ -2298,6 +2302,10 @@ impl<'a> Lowerer<'a> {
         args: &[CoreArg],
     ) -> Result<(OxOperand, OxTy)> {
         let ty = match callee {
+            coreir::CoreCallee::LateDispatch {
+                return_type: Some(ty),
+                ..
+            } => lower_declared_var_type_with_longptr_width(ty, self.resolver, self.long_ptr_width),
             coreir::CoreCallee::VbaProc { proc } => self
                 .proc_return_types
                 .get(proc.0)
@@ -2426,6 +2434,7 @@ impl<'a> Lowerer<'a> {
                 name,
                 kind,
                 default_member,
+                ..
             } => {
                 let (recv, args, writebacks) = self.lower_com_receiver_and_args(args, None)?;
                 self.emit(OxInst::ComCallLate {
@@ -3422,6 +3431,7 @@ mod tests {
                     name: "DoThing".to_string(),
                     kind: Some(ProjectMemberKind::PropertyLet),
                     default_member: false,
+                    return_type: None,
                 },
                 args: vec![CoreArg::ByVal(CoreValue::Load(CorePlace::Local(
                     CoreLocalId(0),

@@ -19,7 +19,15 @@ pub(crate) fn builtin(b: BuiltinType) -> VarTypeRef {
     VarTypeRef::Builtin(b)
 }
 
-pub(crate) fn value_bound(value: CoreValue, ty: VarTypeRef) -> Bound {
+pub(crate) fn value_bound(mut value: CoreValue, ty: VarTypeRef) -> Bound {
+    if let CoreValue::Call {
+        callee: calcvba_bundle::coreir::CoreCallee::LateDispatch { return_type, .. },
+        ..
+    } = &mut value
+        && matches!(ty, VarTypeRef::Object(_))
+    {
+        *return_type = Some(ty.clone());
+    }
     Bound {
         value,
         ty,

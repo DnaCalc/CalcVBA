@@ -665,6 +665,8 @@ pub enum CoreCallee {
         name: String,
         kind: Option<ProjectMemberKind>,
         default_member: bool,
+        /// Declared project member result, retained for chained receivers.
+        return_type: Option<VarTypeRef>,
     },
     /// A `Declare Lib` external call (descriptor in `CoreProgram::external_calls`).
     /// `ptr_writebacks` carries the pointer-helper arguments whose pinned buffer is

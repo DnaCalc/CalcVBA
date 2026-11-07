@@ -584,6 +584,7 @@ impl FuncDescBuilder {
 
     fn default_vtable(member: &ComMemberDescriptor) -> Self {
         let retval = retval_elemdesc(member.return_type, member.invoke_kind);
+        let has_retval = retval.is_some();
         let params = member
             .parameter_types
             .iter()
@@ -602,7 +603,7 @@ impl FuncDescBuilder {
             .chain(retval)
             .collect::<Vec<_>>();
         let mut names = names_for_params(&member.name, &member.parameter_names);
-        if returns_value(member.invoke_kind) {
+        if has_retval {
             names.push("result".to_string());
         }
         Self::new(
@@ -618,6 +619,7 @@ impl FuncDescBuilder {
 
     fn implemented_vtable(method: &ComImplementedInterfaceMethodDescriptor) -> Self {
         let retval = retval_wire_elemdesc(method.return_wire_type.as_ref(), method.invoke_kind);
+        let has_retval = retval.is_some();
         let params = method
             .parameter_wire_types
             .iter()
@@ -625,7 +627,7 @@ impl FuncDescBuilder {
             .chain(retval)
             .collect::<Vec<_>>();
         let mut names = names_for_params(&method.name, &method.parameter_names);
-        if returns_value(method.invoke_kind) {
+        if has_retval {
             names.push("result".to_string());
         }
         Self::new(
@@ -703,7 +705,10 @@ fn retval_elemdesc(
     return_type: Option<ComParamType>,
     invoke_kind: ComInvokeKind,
 ) -> Option<ELEMDESC> {
-    if !returns_value(invoke_kind) {
+    // A Sub (a method without a result type) has no [out, retval] parameter.
+    if !returns_value(invoke_kind)
+        || (return_type.is_none() && invoke_kind == ComInvokeKind::Method)
+    {
         return None;
     }
     Some(pointer_elemdesc(
@@ -716,7 +721,9 @@ fn retval_wire_elemdesc(
     return_type: Option<&ComWireType>,
     invoke_kind: ComInvokeKind,
 ) -> Option<ELEMDESC> {
-    if !returns_value(invoke_kind) {
+    if !returns_value(invoke_kind)
+        || (return_type.is_none() && invoke_kind == ComInvokeKind::Method)
+    {
         return None;
     }
     Some(match return_type {

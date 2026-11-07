@@ -43,6 +43,10 @@ fn declaration(ty: ComParamType) -> Result<(&'static str, &'static str), BuildEr
         ByRefString => ("ByRef", "String"),
         ByRefLongLong => ("ByRef", "LongLong"),
         ByRefLongPtr => ("ByRef", "LongPtr"),
+        Variant => ("ByVal", "Variant"),
+        ByRefVariant => ("ByRef", "Variant"),
+        Object => ("ByVal", "Object"),
+        ByRefObject => ("ByRef", "Object"),
         _ => {
             return Err(error(format!(
                 "ComExe Automation boundary {ty:?} is not implemented"
@@ -82,7 +86,7 @@ pub(super) fn prepare(
     }
     let descriptor = crate::build_com_descriptor(root)?;
     let mut source = String::from(
-        "Option Explicit\nPublic Sub CvbComRelease(ByRef instance As Object)\nSet instance = Nothing\nEnd Sub\n",
+        "Option Explicit\nPublic Sub CvbComRelease(ByRef instance As Object)\nSet instance = Nothing\nEnd Sub\nPrivate Function CvbComIsMissing(ByVal v As Variant) As Boolean\nIf IsError(v) Then CvbComIsMissing = (CStr(v) = \"Error 448\")\nEnd Function\n",
     );
     loaded.native_exports.push(export("CvbComRelease".into()));
     let mut server = NativeComServer {
@@ -107,9 +111,28 @@ pub(super) fn prepare(
         loaded.native_exports.push(export(constructor.clone()));
         let mut entries = Vec::new();
         for (member_index, member) in class.members.iter().enumerate() {
-            if member.parameter_optional.iter().any(|optional| *optional) {
+            // An omitted Optional Variant arrives as the Automation Missing value (Error 448).
+            // The generated entry tests each one and calls the member without it, so the
+            // member's own IsMissing and default handling decide, exactly as for a VBA caller.
+            let mut optional = Vec::new();
+            for (index, flag) in member.parameter_optional.iter().enumerate() {
+                if !*flag {
+                    continue;
+                }
+                if !matches!(
+                    member.parameter_types.get(index),
+                    Some(ComParamType::Variant)
+                ) {
+                    return Err(error(format!(
+                        "ComExe {}.{}: Optional parameter {} is not a Variant; only Optional Variant Automation parameters are implemented",
+                        class.class_name, member.name, index
+                    )));
+                }
+                optional.push(index);
+            }
+            if optional.len() > 4 {
                 return Err(error(format!(
-                    "ComExe {}.{}: Optional Automation parameters are not implemented",
+                    "ComExe {}.{}: more than four Optional parameters are not implemented",
                     class.class_name, member.name
                 )));
             }
@@ -118,51 +141,132 @@ pub(super) fn prepare(
             }
             let name = format!("CvbComEntry{class_index}_{member_index}");
             let mut params = format!("ByVal instance As {}", class.class_name);
-            let mut args = Vec::new();
             for (index, ty) in member.parameter_types.iter().enumerate() {
                 let (passing, ty) = declaration(*ty)?;
                 params.push_str(&format!(", {passing} arg{index} As {ty}"));
-                args.push(format!("arg{index}"));
             }
-            let target = format!("instance.{}", member.name);
-            let call = match member.invoke_kind {
-                ComInvokeKind::Method => format!("{target}({})", args.join(", ")),
-                ComInvokeKind::PropertyGet => {
-                    if args.is_empty() {
-                        target
-                    } else {
-                        format!("{target}({})", args.join(", "))
+            let function = member.return_type;
+            let object_result = match function {
+                Some(ty) => {
+                    let (passing, ty) = declaration(ty)?;
+                    if passing != "ByVal" {
+                        return Err(error("ComExe retval cannot be ByRef"));
                     }
+                    ty == "Object"
                 }
-                ComInvokeKind::PropertyPut | ComInvokeKind::PropertyPutRef => {
-                    let value = args
-                        .pop()
-                        .ok_or_else(|| error("property put has no value"))?;
-                    let target = if args.is_empty() {
-                        target
-                    } else {
-                        format!("{target}({})", args.join(", "))
-                    };
-                    format!("{target} = {value}")
-                }
+                None => false,
             };
-            if let Some(ty) = member.return_type {
-                let (passing, ty) = declaration(ty)?;
-                if passing != "ByVal" {
-                    return Err(error("ComExe retval cannot be ByRef"));
+            // One statement per combination of omitted optional arguments.
+            let statement = |omitted: &[usize]| -> Result<String, BuildError> {
+                let mut args: Vec<String> = (0..member.parameter_types.len())
+                    .map(|index| {
+                        if omitted.contains(&index) {
+                            String::new()
+                        } else {
+                            format!("arg{index}")
+                        }
+                    })
+                    .collect();
+                let target = format!("instance.{}", member.name);
+                let trim = |args: &mut Vec<String>| {
+                    while args.last().is_some_and(String::is_empty) {
+                        args.pop();
+                    }
+                };
+                let call = match member.invoke_kind {
+                    ComInvokeKind::Method | ComInvokeKind::PropertyGet => {
+                        trim(&mut args);
+                        if args.is_empty() && member.invoke_kind == ComInvokeKind::PropertyGet {
+                            target
+                        } else {
+                            format!("{target}({})", args.join(", "))
+                        }
+                    }
+                    ComInvokeKind::PropertyPut | ComInvokeKind::PropertyPutRef => {
+                        let value = args
+                            .pop()
+                            .ok_or_else(|| error("property put has no value"))?;
+                        trim(&mut args);
+                        let target = if args.is_empty() {
+                            target
+                        } else {
+                            format!("{target}({})", args.join(", "))
+                        };
+                        let set = if member.invoke_kind == ComInvokeKind::PropertyPutRef {
+                            "Set "
+                        } else {
+                            ""
+                        };
+                        format!("{set}{target} = {value}")
+                    }
+                };
+                Ok(if function.is_some() {
+                    // An Object result is assigned with Set; Let into an Object never completes.
+                    let set = if object_result { "Set " } else { "" };
+                    format!("{set}{name} = {call}")
+                } else if member.invoke_kind == ComInvokeKind::Method {
+                    format!("Call {call}")
+                } else {
+                    call
+                })
+            };
+            let mut body = String::new();
+            if optional.is_empty() {
+                body.push_str(&statement(&[])?);
+                body.push('\n');
+            } else {
+                for (position, index) in optional.iter().enumerate() {
+                    body.push_str(&format!(
+                        "Dim missing{position} As Boolean\nmissing{position} = CvbComIsMissing(arg{index})\n"
+                    ));
                 }
+                for mask in (0..(1usize << optional.len())).rev() {
+                    let omitted: Vec<usize> = optional
+                        .iter()
+                        .enumerate()
+                        .filter(|(position, _)| mask & (1 << position) != 0)
+                        .map(|(_, index)| *index)
+                        .collect();
+                    let condition = if mask == 0 {
+                        "True".to_string()
+                    } else {
+                        optional
+                            .iter()
+                            .enumerate()
+                            .map(|(position, _)| {
+                                if mask & (1 << position) != 0 {
+                                    format!("missing{position}")
+                                } else {
+                                    format!("Not missing{position}")
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" And ")
+                    };
+                    let keyword = if mask == (1 << optional.len()) - 1 {
+                        "If"
+                    } else if mask == 0 {
+                        "Else"
+                    } else {
+                        "ElseIf"
+                    };
+                    if keyword == "Else" {
+                        body.push_str("Else\n");
+                    } else {
+                        body.push_str(&format!("{keyword} {condition} Then\n"));
+                    }
+                    body.push_str(&statement(&omitted)?);
+                    body.push('\n');
+                }
+                body.push_str("End If\n");
+            }
+            if let Some(ty) = function {
+                let (_, ty) = declaration(ty)?;
                 source.push_str(&format!(
-                    "Public Function {name}({params}) As {ty}\n{name} = {call}\nEnd Function\n"
+                    "Public Function {name}({params}) As {ty}\n{body}End Function\n"
                 ));
             } else {
-                let prefix = if member.invoke_kind == ComInvokeKind::Method {
-                    "Call "
-                } else {
-                    ""
-                };
-                source.push_str(&format!(
-                    "Public Sub {name}({params})\n{prefix}{call}\nEnd Sub\n"
-                ));
+                source.push_str(&format!("Public Sub {name}({params})\n{body}End Sub\n"));
             }
             loaded.native_exports.push(export(name.clone()));
             receiver_exports.insert(name.clone());

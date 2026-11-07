@@ -1454,6 +1454,8 @@ impl<'a> LowerFunc<'a> {
                 OxTy::Bool => {
                     if self.operand_is_static_string_source(lhs)?
                         || self.operand_is_static_string_source(rhs)?
+                        || self.operand_is_object_source(lhs)?
+                        || self.operand_is_object_source(rhs)?
                     {
                         return self.emit_variant_compare_slot_call(
                             builder,
@@ -2215,6 +2217,16 @@ impl<'a> LowerFunc<'a> {
             OxOperand::Use(place) => Ok(matches!(
                 place_ty(self.program, self.func, *place)?,
                 OxTy::Str | OxTy::FixedStr(_)
+            )),
+            OxOperand::Const(_) => Ok(false),
+        }
+    }
+
+    fn operand_is_object_source(&self, operand: &OxOperand) -> Result<bool, JitError> {
+        match operand {
+            OxOperand::Use(place) => Ok(matches!(
+                place_ty(self.program, self.func, *place)?,
+                OxTy::Object(_)
             )),
             OxOperand::Const(_) => Ok(false),
         }

@@ -162,3 +162,9 @@ Public Function ArrayPtrShapeSuite() As String
     buf(3) = 0
     ArrayPtrShapeSuite = CStr(lstrlenA(VarPtr(buf(1)))) & ":" & CStr(LBound(buf)) & ":" & CStr(UBound(buf)) & ":" & CStr(VarType(buf)) & ":" & TypeName(buf)
 End Function
+Public Function ObjectCompareSuite() As String
+    Dim o As Object
+    On Error Resume Next
+    If o = 1 Then ObjectCompareSuite = "t"
+    ObjectCompareSuite = ObjectCompareSuite & CStr(Err.Number)
+End Function

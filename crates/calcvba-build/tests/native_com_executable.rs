@@ -137,7 +137,7 @@ fn com_executable_has_compiled_factories_dual_slots_and_matching_class_bodies() 
         .unwrap()
         .replace(
             "Echo(ByVal text As String) As String",
-            "Echo(ByVal text As String) As Variant",
+            "Echo(ByVal text As String, Optional ByVal extra As Long) As String",
         );
     std::fs::write(directory.0.join("Counter.cls"), invalid).unwrap();
     std::fs::copy(
@@ -152,6 +152,9 @@ fn com_executable_has_compiled_factories_dual_slots_and_matching_class_bodies() 
     })
     .unwrap_err()
     .to_string();
-    assert!(refused.contains("Automation boundary Variant"), "{refused}");
+    assert!(
+        refused.contains("Optional parameter 1 is not a Variant"),
+        "{refused}"
+    );
     assert!(!directory.0.join("refused").exists());
 }

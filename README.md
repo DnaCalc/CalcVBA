@@ -67,15 +67,23 @@ per-user registration. Explicit JIT selection is refused for this COM host.
 NativeLibrary emits a Windows x64 DLL for admitted native exports. Exe emits a
 standalone compiled executable. ComExe emits a compiled local COM server with
 class factories, a dual Automation interface and an owning STA message loop.
-Its public boundaries currently support scalar numeric/Boolean values and BSTRs,
-including ByRef parameters. Optional parameters, Variant/Object boundaries,
-exported events and custom interfaces are refused.
+Its public boundaries support scalar numeric/Boolean values, BSTRs and Variants
+(ByVal, ByRef, results and properties, including arrays), including ByRef
+parameters, Optional Variant parameters (an omitted one arrives as Missing and the
+member's own IsMissing decides), and Object parameters and results that are
+foreign COM objects. Returning a project instance (`Set Self = Me`) fails with
+E_NOINTERFACE, and passing a server's own object back into one of its Object
+parameters keeps that instance alive until shutdown; both are open. Optional
+parameters of other types, exported events and custom interfaces are refused.
 
 ```powershell
 cargo run -p calcvba-cli -- build examples/native/scalars/NativeScalars.basproj --target NativeLibrary --out-dir out
 cargo run -p calcvba-cli -- build examples/native/comexe/NativeCounter.basproj --target ComExe --out-dir out
 ```
 
+`scripts/test-native-com-exe-variant.ps1 -ServerDirectory out -Directory temp/comexe-variant-proof`
+checks the private Boxer server (`examples/native/comexe/Boxer.basproj`:
+Variant, Optional Variant and Object boundaries) with an early-bound C# client.
 `scripts/test-native-com-exe.ps1 -ServerDirectory out -Directory temp/comexe-proof`
 checks the private Counter server with early-bound C#, VM3, JIT and AOT clients,
 then unregisters its HKCU entries. Add `-OracleSession <owned-session>` to check

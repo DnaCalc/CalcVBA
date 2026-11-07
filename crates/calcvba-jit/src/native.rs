@@ -296,6 +296,14 @@ pub fn compile_native_scalars(
                                         OxOperand::Use(*place),
                                         parameter.param.is_some_and(|p| p.by_ref),
                                     ),
+                                    // An omitted Optional Variant is passed as Missing.
+                                    OxCallArg::Omitted
+                                        if calcvba_rt_abi::host_entry::native_scalar_type(
+                                            &parameter.ty,
+                                        ) == Some(ScalarType::Variant) =>
+                                    {
+                                        continue;
+                                    }
                                     _ => {
                                         return Err(problem(
                                             func,
@@ -1060,6 +1068,7 @@ pub fn compile_native_scalars(
                                         OxArg::ByRef(*place)
                                     }
                                     OxCallArg::ByRef(place) => OxArg::ByVal(OxOperand::Use(*place)),
+                                    OxCallArg::Omitted => OxArg::Omitted,
                                     _ => unreachable!("admitted class argument"),
                                 });
                             }

@@ -1,0 +1,9 @@
+<Project Sdk="CalcVBA.Sdk/0.1.0">
+  <PropertyGroup>
+    <OutputType>ComExe</OutputType>
+    <ProjectName>CalcVbaNativeBoxer</ProjectName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ClassModule Include="Boxer.cls"><Instancing>MultiUse</Instancing></ClassModule>
+  </ItemGroup>
+</Project>

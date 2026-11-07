@@ -141,6 +141,21 @@ pub(super) const HELPERS: &[(&str, &[ir::Type])] = &[
     ("cvb_services_clear", &[types::I64]),
     ("cvb_value_type", &[types::I64, types::I64, types::I32]),
     (
+        "cvb_variant_changed",
+        &[
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I32,
+            types::I64,
+            types::I32,
+        ],
+    ),
+    (
+        "cvb_validate_assignment",
+        &[types::I64, types::I64, types::I32, types::I32, types::I32],
+    ),
+    (
         "cvb_fixed_string_coerce",
         &[types::I64, types::I64, types::I32, types::I32],
     ),
@@ -918,6 +933,28 @@ impl Values<'_> {
     ) -> bool {
         let layout = self.lower.layout;
         match inst {
+            OxInst::VariantChanged {
+                dst,
+                current,
+                original,
+            } => {
+                let out = self.address(b, layout.slot(*dst).unwrap());
+                let a = self.cell(module, b, current);
+                let ak = b
+                    .ins()
+                    .iconst(types::I32, i64::from(kind_of_operand(layout, current)));
+                let c = self.cell(module, b, original);
+                let ck = b
+                    .ins()
+                    .iconst(types::I32, i64::from(kind_of_operand(layout, original)));
+                self.call(
+                    module,
+                    b,
+                    "cvb_variant_changed",
+                    &[self.lower.runtime, out, a, ak, c, ck],
+                );
+                return true;
+            }
             OxInst::ComCallEarly { .. } => {
                 self.member_call(module, b, inst);
                 return true;
@@ -1792,15 +1829,47 @@ impl Values<'_> {
         }
         if let OxInst::ValidateAssignment {
             src,
-            target_kind: AssignmentTargetKind::Object,
+            intent,
+            target_kind,
             target_type_name,
             ..
         } = inst
         {
-            self.object_type(module, b, src, target_type_name, true, None);
-            return true;
-        }
-        if matches!(inst, OxInst::ValidateAssignment { .. }) {
+            let input = self.cell(module, b, src);
+            let kind = b
+                .ins()
+                .iconst(types::I32, i64::from(kind_of_operand(layout, src)));
+            let intent_id = match intent {
+                calcvba_bundle::AssignmentIntent::Implicit => 0,
+                calcvba_bundle::AssignmentIntent::Let => 1,
+                calcvba_bundle::AssignmentIntent::Set => 2,
+            };
+            let variant_source = matches!(src, OxOperand::Use(_))
+                && crate::admission::operand_static_ty(
+                    self.program,
+                    &self.program.funcs[self.procedure.0],
+                    src,
+                )
+                .is_ok_and(|ty| ty == OxTy::Variant);
+            let intent_id = intent_id | if variant_source { 0x100 } else { 0 };
+            let target_id = match target_kind {
+                AssignmentTargetKind::Scalar => 0,
+                AssignmentTargetKind::Variant => 1,
+                AssignmentTargetKind::Object => 2,
+            };
+            let intent_id = b.ins().iconst(types::I32, intent_id);
+            let target_id = b.ins().iconst(types::I32, target_id);
+            self.call(
+                module,
+                b,
+                "cvb_validate_assignment",
+                &[self.lower.runtime, input, kind, intent_id, target_id],
+            );
+            if *intent == calcvba_bundle::AssignmentIntent::Set
+                && *target_kind == AssignmentTargetKind::Object
+            {
+                self.object_type(module, b, src, target_type_name, true, None);
+            }
             return true;
         }
         let owning_copy = match inst {
@@ -2120,6 +2189,9 @@ pub(super) fn validate_declare(
 }
 
 pub(super) fn kind_of_operand(layout: &ScalarLayout, operand: &OxOperand) -> u32 {
+    if layout.is_integer_literal_operand(operand) {
+        return 2;
+    }
     if let OxOperand::Use(place) = operand
         && layout.operand_type(operand) == Ok(ScalarType::Array)
     {

@@ -3384,6 +3384,7 @@ impl TypeLibResolver for WidgetTypeLibs {
             members: Vec::new(),
             events: Vec::new(),
             coclass_names: Vec::new(),
+            coclass_prog_ids: Vec::new(),
         })
     }
 }
@@ -4153,6 +4154,7 @@ impl TypeLibResolver for ScopedEventTypeLibs {
                 coclass: Some("Application".into()),
             }],
             coclass_names: vec!["Application".into(), "Workbook".into()],
+            coclass_prog_ids: Vec::new(),
         })
     }
 }
@@ -4234,6 +4236,7 @@ impl TypeLibResolver for ScopedWorkbookEventTypeLibs {
             members: Vec::new(),
             events,
             coclass_names: vec!["Application".into(), "Workbook".into()],
+            coclass_prog_ids: Vec::new(),
         })
     }
 }
@@ -4533,6 +4536,7 @@ impl TypeLibResolver for DefaultValueTypeLibs {
             ],
             events: Vec::new(),
             coclass_names: Vec::new(),
+            coclass_prog_ids: Vec::new(),
         })
     }
 }
@@ -4658,6 +4662,7 @@ impl TypeLibResolver for ApplicationTypeLibs {
             ],
             events: Vec::new(),
             coclass_names: vec!["Application".into()],
+            coclass_prog_ids: Vec::new(),
         })
     }
 }
@@ -4740,6 +4745,7 @@ impl TypeLibResolver for ChainedComTypeLibs {
                 ],
                 events: Vec::new(),
                 coclass_names: vec!["Workbooks".into()],
+                coclass_prog_ids: Vec::new(),
             });
         }
         if request.reference_name.eq_ignore_ascii_case("Excel")
@@ -4773,6 +4779,7 @@ impl TypeLibResolver for ChainedComTypeLibs {
                 )],
                 events: Vec::new(),
                 coclass_names: vec!["Workbook".into()],
+                coclass_prog_ids: Vec::new(),
             });
         }
         if request.reference_name.eq_ignore_ascii_case("Excel") {
@@ -4812,6 +4819,7 @@ impl TypeLibResolver for ChainedComTypeLibs {
                 ],
                 events: Vec::new(),
                 coclass_names: vec!["Application".into(), "Workbook".into()],
+                coclass_prog_ids: Vec::new(),
             });
         }
         None

@@ -1,4 +1,5 @@
 Sub Main()
+    ' Office For Each advances the first declared dimension first.
     Dim score As Long
     Dim observed As Double
     Dim item
@@ -43,7 +44,7 @@ Sub Main()
     For Each item In abyte
         observed = observed * 10# + item
     Next
-    If observed = 12345678# Then score = score + 2
+    If observed = 15372648# Then score = score + 2
 
     ai(1, 1, 1) = 1
     ai(1, 1, 2) = 2
@@ -57,7 +58,7 @@ Sub Main()
     For Each item In ai
         observed = observed * 10# + item
     Next
-    If observed = 12345678# Then score = score + 4
+    If observed = 15372648# Then score = score + 4
 
     al(1, 1, 1) = 1
     al(1, 1, 2) = 2
@@ -71,7 +72,7 @@ Sub Main()
     For Each item In al
         observed = observed * 10# + item
     Next
-    If observed = 12345678# Then score = score + 8
+    If observed = 15372648# Then score = score + 8
 
     all(1, 1, 1) = 1^
     all(1, 1, 2) = 2^
@@ -85,7 +86,7 @@ Sub Main()
     For Each item In all
         observed = observed * 10# + item
     Next
-    If observed = 12345678# Then score = score + 16
+    If observed = 15372648# Then score = score + 16
 
     asng(1, 1, 1) = 1!
     asng(1, 1, 2) = 2!
@@ -99,7 +100,7 @@ Sub Main()
     For Each item In asng
         observed = observed * 10# + item
     Next
-    If observed = 12345678# Then score = score + 32
+    If observed = 15372648# Then score = score + 32
 
     adbl(1, 1, 1) = 1#
     adbl(1, 1, 2) = 2#
@@ -113,7 +114,7 @@ Sub Main()
     For Each item In adbl
         observed = observed * 10# + item
     Next
-    If observed = 12345678# Then score = score + 64
+    If observed = 15372648# Then score = score + 64
 
     acur(1, 1, 1) = 1@
     acur(1, 1, 2) = 2@
@@ -127,7 +128,7 @@ Sub Main()
     For Each item In acur
         observed = observed * 10# + CDbl(item)
     Next
-    If observed = 12345678# Then score = score + 128
+    If observed = 15372648# Then score = score + 128
 
     adate(1, 1, 1) = CDate(1#)
     adate(1, 1, 2) = CDate(2#)
@@ -141,7 +142,7 @@ Sub Main()
     For Each item In adate
         observed = observed * 10# + CDbl(item)
     Next
-    If observed = 12345678# Then score = score + 256
+    If observed = 15372648# Then score = score + 256
 
     astr(1, 1, 1) = "1"
     astr(1, 1, 2) = "2"
@@ -155,5 +156,5 @@ Sub Main()
     For Each item In astr
         observed = observed * 10# + CDbl(item)
     Next
-    If observed = 12345678# Then score = score + 512
+    If observed = 15372648# Then score = score + 512
 End Sub

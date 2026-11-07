@@ -2,7 +2,7 @@
 #[cfg(target_os = "windows")]
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "windows")]
-use windows_sys::Win32::System::Com::{CLSCTX_SERVER, CLSIDFromProgID, CoCreateInstance};
+use windows_sys::Win32::System::Com::{CLSCTX_SERVER, CoCreateInstance};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Variant::VARIANT;
 
@@ -243,26 +243,10 @@ pub struct RawIConnectionPoint {
 
 #[cfg(target_os = "windows")]
 pub fn activate_dispatch_by_prog_id(prog_id: &str) -> Result<*mut RawIDispatch, String> {
-    let wide: Vec<u16> = prog_id.encode_utf16().chain(std::iter::once(0)).collect();
-    let mut clsid = windows_sys::core::GUID {
-        data1: 0,
-        data2: 0,
-        data3: 0,
-        data4: [0; 8],
-    };
-    // SAFETY: `wide` is a NUL-terminated UTF-16 buffer built just above and alive
-    // across the call, and `&mut clsid` is a live out-slot for one GUID that
-    // CLSIDFromProgID writes on success.
-    let hr = unsafe { CLSIDFromProgID(wide.as_ptr(), &mut clsid) };
-    if hr < 0 {
-        return Err(format!(
-            "CLSIDFromProgID failed for `{prog_id}` with HRESULT {:#010X}",
-            hr as u32
-        ));
-    }
+    let clsid = crate::windows_typelib_loader::registered_clsid_from_prog_id(prog_id)?;
 
     let mut dispatch_ptr: *mut core::ffi::c_void = std::ptr::null_mut();
-    // SAFETY: `clsid` was populated by the successful CLSIDFromProgID call above,
+    // SAFETY: `clsid` was parsed from the registered class identity above,
     // `IID_IDISPATCH` is a 'static GUID, and `&mut dispatch_ptr` is a live out-slot.
     // An uninitialized COM apartment is not UB here: CoCreateInstance then fails
     // with an HRESULT (e.g. CO_E_NOTINITIALIZED), which the hr/null checks below
@@ -297,22 +281,7 @@ pub fn activate_dispatch_by_prog_id(prog_id: &str) -> Result<*mut RawIDispatch, 
 #[cfg(target_os = "windows")]
 pub fn get_active_dispatch_by_prog_id(prog_id: &str) -> Result<*mut RawIDispatch, String> {
     use windows_sys::Win32::System::Ole::GetActiveObject;
-    let wide: Vec<u16> = prog_id.encode_utf16().chain(std::iter::once(0)).collect();
-    let mut clsid = windows_sys::core::GUID {
-        data1: 0,
-        data2: 0,
-        data3: 0,
-        data4: [0; 8],
-    };
-    // SAFETY: `wide` is a NUL-terminated UTF-16 buffer alive across the call, and
-    // `&mut clsid` is a live out-slot for one GUID CLSIDFromProgID writes on success.
-    let hr = unsafe { CLSIDFromProgID(wide.as_ptr(), &mut clsid) };
-    if hr < 0 {
-        return Err(format!(
-            "CLSIDFromProgID failed for `{prog_id}` with HRESULT {:#010X}",
-            hr as u32
-        ));
-    }
+    let clsid = crate::windows_typelib_loader::registered_clsid_from_prog_id(prog_id)?;
     let mut unknown_ptr: *mut core::ffi::c_void = std::ptr::null_mut();
     // SAFETY: `clsid` was populated above, `pvReserved` must be null, and `&mut unknown_ptr`
     // is a live out-slot. GetActiveObject returns S_OK + a retained IUnknown when an instance

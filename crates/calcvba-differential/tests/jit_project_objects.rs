@@ -146,20 +146,20 @@ Public r As Long
 Private kept As Object
 Private boxed As Variant
 Sub Main()
-    Dim local As Object
+    Dim ownObject As Object
     Set kept = New Widget
-    Set local = kept
+    Set ownObject = kept
     Set boxed = kept
     If TypeName(kept) = "Widget" Then r = r + 1
-    If TypeName(local) = "Widget" Then r = r + 2
+    If TypeName(ownObject) = "Widget" Then r = r + 2
     If TypeName(boxed) = "Widget" Then r = r + 4
-    If IsObject(kept) And IsObject(local) And IsObject(boxed) Then r = r + 8
-    If kept Is local Then r = r + 16
+    If IsObject(kept) And IsObject(ownObject) And IsObject(boxed) Then r = r + 8
+    If kept Is ownObject Then r = r + 16
     If IsArray(boxed) = False Then r = r + 32
     Set kept = Nothing
     If TypeName(kept) = "Nothing" Then r = r + 64
     If IsObject(kept) Then r = r + 128
-    Set local = Nothing
+    Set ownObject = Nothing
     Set boxed = Nothing
 End Sub
 "#,

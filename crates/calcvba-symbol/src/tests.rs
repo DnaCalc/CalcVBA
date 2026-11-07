@@ -904,6 +904,7 @@ fn widget_blob() -> TypeLibMetadataBlob {
             coclass: None,
         }],
         coclass_names: Vec::new(),
+        coclass_prog_ids: Vec::new(),
     }
 }
 
@@ -1128,6 +1129,23 @@ fn library_level_coclass_resolves_bare_and_qualified_names() {
 }
 
 struct ExcelHostTypeLibs;
+
+#[test]
+fn coclass_activation_uses_registered_progid_instead_of_library_name() {
+    let mut blob = widget_blob();
+    blob.identity.reference_name = "CounterTypes".into();
+    blob.identity.requested_coclass = None;
+    blob.activation_prog_id = None;
+    blob.coclass_names = vec!["Counter".into()];
+    blob.coclass_prog_ids = vec![("Counter".into(), "CounterServer.Counter".into())];
+    let provider = ComTypeLibProvider::new(blob);
+    for name in ["Counter", "CounterTypes.Counter"] {
+        assert_eq!(
+            provider.resolve_coclass(name).as_deref(),
+            Some("CounterServer.Counter")
+        );
+    }
+}
 
 impl TypeLibResolver for ExcelHostTypeLibs {
     fn resolve(&self, request: &calcvba_com::TypeLibResolveRequest) -> Option<TypeLibMetadataBlob> {

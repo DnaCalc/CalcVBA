@@ -684,6 +684,7 @@ impl calcvba_symbol::TypeLibResolver for SpreadsheetTypes {
             members,
             events: vec![],
             coclass_names: vec![class.into()],
+            coclass_prog_ids: Vec::new(),
         })
     }
 }

@@ -184,7 +184,16 @@ impl ComTypeLibProvider {
         self.blob.coclass_names.iter().find_map(|coclass| {
             let folded_coclass = fold_identifier(coclass);
             if folded == folded_coclass || folded == format!("{reference}.{folded_coclass}") {
-                Some(format!("{}.{}", self.blob.identity.reference_name, coclass))
+                Some(
+                    self.blob
+                        .coclass_prog_ids
+                        .iter()
+                        .find(|(name, _)| name.eq_ignore_ascii_case(coclass))
+                        .map(|(_, prog_id)| prog_id.clone())
+                        .unwrap_or_else(|| {
+                            format!("{}.{}", self.blob.identity.reference_name, coclass)
+                        }),
+                )
             } else {
                 None
             }

@@ -515,6 +515,7 @@ pub fn compile_native_scalars(
                     | OxInst::Concat { .. }
                     | OxInst::CompareObjectIs { .. }
                     | OxInst::ValidateAssignment { .. }
+                    | OxInst::VariantChanged { .. }
                     | OxInst::Assign { .. }
                     | OxInst::Coerce { .. }
                     | OxInst::Arith { .. }
@@ -1519,7 +1520,7 @@ fn emit_native_call(
                 pointer,
                 values::kind(*ty),
                 source,
-                values::kind(values.lower.layout.operand_type(&operand).unwrap()),
+                values::kind_of_operand(values.lower.layout, &operand),
             );
             copies.push((pointer, *ty, None));
             if *ty == ScalarType::Variant {
@@ -1583,7 +1584,7 @@ fn emit_native_call(
                             pointer,
                             values::kind(*ty),
                             source,
-                            values::kind(values.lower.layout.operand_type(op).unwrap()),
+                            values::kind_of_operand(values.lower.layout, op),
                         );
                         None
                     };

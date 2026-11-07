@@ -134,6 +134,12 @@ pub(crate) fn opt(args: &[Variant], index: usize) -> Option<&Variant> {
 /// directly (the `coerce_to` table has no path for them) and routes the rest
 /// (`Integer`/`Long`/`Byte`/`Boolean`/`Date`/`Empty`) through `Double`.
 pub(crate) fn as_f64(value: &Variant) -> LibResult<f64> {
+    if value.vtype() == VarType::Object && value.as_object_ref().is_none() {
+        return Err(LibError::new(
+            91,
+            "Object variable or With block variable not set",
+        ));
+    }
     if value.vtype() == VarType::Null {
         return Err(LibError::invalid_use_of_null());
     }

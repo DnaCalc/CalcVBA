@@ -13429,7 +13429,7 @@ End Sub
     fn jit_matches_vm3_for_each_boolean_array_dynamic_multidim_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_BOOLEAN_ARRAY_DYNAMIC_MULTIDIM_ORDER,
-            Variant::from_f64(122_121.0),
+            Variant::from_f64(112_221.0),
         );
     }
 
@@ -13461,7 +13461,7 @@ End Sub
     fn jit_matches_vm3_for_each_boolean_array_fixed_multidim_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_BOOLEAN_ARRAY_FIXED_MULTIDIM_ORDER,
-            Variant::from_f64(122_121.0),
+            Variant::from_f64(112_221.0),
         );
     }
 
@@ -13490,7 +13490,7 @@ End Sub
     fn jit_matches_vm3_for_each_byte_array_dynamic_multidim_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_BYTE_ARRAY_DYNAMIC_MULTIDIM_ORDER,
-            Variant::from_f64(111_213_212_223.0),
+            Variant::from_f64(112_112_221_323.0),
         );
     }
 
@@ -13519,7 +13519,7 @@ End Sub
     fn jit_matches_vm3_for_each_byte_array_fixed_multidim_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_BYTE_ARRAY_FIXED_MULTIDIM_ORDER,
-            Variant::from_f64(111_213_212_223.0),
+            Variant::from_f64(112_112_221_323.0),
         );
     }
 
@@ -13551,7 +13551,7 @@ End Sub
     fn jit_matches_vm3_for_each_integer_array_dynamic_multidim_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_INTEGER_ARRAY_DYNAMIC_MULTIDIM_ORDER,
-            Variant::from_f64(111_213_212_223.0),
+            Variant::from_f64(112_112_221_323.0),
         );
     }
 
@@ -13583,7 +13583,7 @@ End Sub
     fn jit_matches_vm3_for_each_integer_array_fixed_multidim_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_INTEGER_ARRAY_FIXED_MULTIDIM_ORDER,
-            Variant::from_f64(111_213_212_223.0),
+            Variant::from_f64(112_112_221_323.0),
         );
     }
 
@@ -13615,7 +13615,7 @@ End Sub
     fn jit_matches_vm3_for_each_long_array_dynamic_multidim_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_LONG_ARRAY_DYNAMIC_MULTIDIM_ORDER,
-            Variant::from_f64(111_213_212_223.0),
+            Variant::from_f64(112_112_221_323.0),
         );
     }
 
@@ -13623,7 +13623,7 @@ End Sub
     fn jit_matches_vm3_for_each_long_array_dynamic_3d_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_LONG_ARRAY_DYNAMIC_3D_ORDER,
-            Variant::from_f64(12_345_678.0),
+            Variant::from_f64(15_372_648.0),
         );
     }
 
@@ -13660,7 +13660,7 @@ End Sub
     fn jit_matches_vm3_for_each_long_array_fixed_multidim_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_LONG_ARRAY_FIXED_MULTIDIM_ORDER,
-            Variant::from_f64(111_213_212_223.0),
+            Variant::from_f64(112_112_221_323.0),
         );
     }
 
@@ -13668,7 +13668,7 @@ End Sub
     fn jit_matches_vm3_for_each_long_array_fixed_3d_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_LONG_ARRAY_FIXED_3D_ORDER,
-            Variant::from_f64(12_345_678.0),
+            Variant::from_f64(15_372_648.0),
         );
     }
 
@@ -13788,7 +13788,7 @@ End Sub
     fn jit_matches_vm3_for_each_longlong_array_dynamic_multidim_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_LONGLONG_ARRAY_DYNAMIC_MULTIDIM_ORDER,
-            Variant::from_f64(111_213_212_223.0),
+            Variant::from_f64(112_112_221_323.0),
         );
     }
 
@@ -13820,7 +13820,7 @@ End Sub
     fn jit_matches_vm3_for_each_longlong_array_fixed_multidim_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_LONGLONG_ARRAY_FIXED_MULTIDIM_ORDER,
-            Variant::from_f64(111_213_212_223.0),
+            Variant::from_f64(112_112_221_323.0),
         );
     }
 
@@ -13852,7 +13852,7 @@ End Sub
     fn jit_matches_vm3_for_each_single_array_dynamic_multidim_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_SINGLE_ARRAY_DYNAMIC_MULTIDIM_ORDER,
-            Variant::from_f64(111_213_212_223.0),
+            Variant::from_f64(112_112_221_323.0),
         );
     }
 
@@ -13884,7 +13884,7 @@ End Sub
     fn jit_matches_vm3_for_each_single_array_fixed_multidim_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_SINGLE_ARRAY_FIXED_MULTIDIM_ORDER,
-            Variant::from_f64(111_213_212_223.0),
+            Variant::from_f64(112_112_221_323.0),
         );
     }
 
@@ -13916,7 +13916,7 @@ End Sub
     fn jit_matches_vm3_for_each_double_array_dynamic_multidim_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_DOUBLE_ARRAY_DYNAMIC_MULTIDIM_ORDER,
-            Variant::from_f64(111_213_212_223.0),
+            Variant::from_f64(112_112_221_323.0),
         );
     }
 
@@ -13948,7 +13948,7 @@ End Sub
     fn jit_matches_vm3_for_each_double_array_fixed_multidim_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_DOUBLE_ARRAY_FIXED_MULTIDIM_ORDER,
-            Variant::from_f64(111_213_212_223.0),
+            Variant::from_f64(112_112_221_323.0),
         );
     }
 
@@ -13980,7 +13980,7 @@ End Sub
     fn jit_matches_vm3_for_each_currency_array_dynamic_multidim_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_CURRENCY_ARRAY_DYNAMIC_MULTIDIM_ORDER,
-            Variant::from_f64(111_213_212_223.0),
+            Variant::from_f64(112_112_221_323.0),
         );
     }
 
@@ -14012,7 +14012,7 @@ End Sub
     fn jit_matches_vm3_for_each_currency_array_fixed_multidim_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_CURRENCY_ARRAY_FIXED_MULTIDIM_ORDER,
-            Variant::from_f64(111_213_212_223.0),
+            Variant::from_f64(112_112_221_323.0),
         );
     }
 
@@ -14044,7 +14044,7 @@ End Sub
     fn jit_matches_vm3_for_each_date_array_dynamic_multidim_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_DATE_ARRAY_DYNAMIC_MULTIDIM_ORDER,
-            Variant::from_f64(111_213_212_223.0),
+            Variant::from_f64(112_112_221_323.0),
         );
     }
 
@@ -14076,7 +14076,7 @@ End Sub
     fn jit_matches_vm3_for_each_date_array_fixed_multidim_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_DATE_ARRAY_FIXED_MULTIDIM_ORDER,
-            Variant::from_f64(111_213_212_223.0),
+            Variant::from_f64(112_112_221_323.0),
         );
     }
 
@@ -14108,7 +14108,7 @@ End Sub
     fn jit_matches_vm3_for_each_string_array_dynamic_multidim_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_STRING_ARRAY_DYNAMIC_MULTIDIM_ORDER,
-            Variant::from_f64(111_213_212_223.0),
+            Variant::from_f64(112_112_221_323.0),
         );
     }
 
@@ -14148,7 +14148,7 @@ End Sub
     fn jit_matches_vm3_for_each_string_array_fixed_multidim_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_STRING_ARRAY_FIXED_MULTIDIM_ORDER,
-            Variant::from_f64(111_213_212_223.0),
+            Variant::from_f64(112_112_221_323.0),
         );
     }
 
@@ -14196,7 +14196,7 @@ End Sub
     fn jit_matches_vm3_for_each_fixed_string_array_dynamic_multidim_width_bundle() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_DYNAMIC_MULTIDIM_WIDTH_BUNDLE,
-            Variant::from_i32(22530),
+            Variant::from_i32(22_454),
         );
     }
 
@@ -14204,7 +14204,7 @@ End Sub
     fn jit_matches_vm3_for_each_fixed_string_array_dynamic_multidim_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_DYNAMIC_MULTIDIM_ORDER,
-            Variant::from_i32(13141),
+            Variant::from_i32(13_119),
         );
     }
 
@@ -14212,7 +14212,7 @@ End Sub
     fn jit_matches_vm3_for_each_fixed_string_array_dynamic_3d_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_DYNAMIC_3D_ORDER,
-            Variant::from_i32(28129),
+            Variant::from_i32(28_111),
         );
     }
 
@@ -14228,7 +14228,7 @@ End Sub
     fn jit_matches_vm3_for_each_fixed_string_array_dynamic_3d_width_bundle() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_DYNAMIC_3D_WIDTH_BUNDLE,
-            Variant::from_i32(48694),
+            Variant::from_i32(48_484),
         );
     }
 
@@ -14236,7 +14236,7 @@ End Sub
     fn jit_matches_vm3_for_each_fixed_string_array_dynamic_4d_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_DYNAMIC_4D_ORDER,
-            Variant::from_i32(61272),
+            Variant::from_i32(61_958),
         );
     }
 
@@ -14252,7 +14252,7 @@ End Sub
     fn jit_matches_vm3_for_each_fixed_string_array_dynamic_4d_width_bundle() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_DYNAMIC_4D_WIDTH_BUNDLE,
-            Variant::from_i32(110078),
+            Variant::from_i32(110_115),
         );
     }
 
@@ -14292,7 +14292,7 @@ End Sub
     fn jit_matches_vm3_for_each_fixed_string_array_fixed_multidim_width_bundle() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_FIXED_MULTIDIM_WIDTH_BUNDLE,
-            Variant::from_i32(22530),
+            Variant::from_i32(22_454),
         );
     }
 
@@ -14300,7 +14300,7 @@ End Sub
     fn jit_matches_vm3_for_each_fixed_string_array_fixed_multidim_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_FIXED_MULTIDIM_ORDER,
-            Variant::from_i32(13141),
+            Variant::from_i32(13_119),
         );
     }
 
@@ -14308,7 +14308,7 @@ End Sub
     fn jit_matches_vm3_for_each_fixed_string_array_fixed_3d_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_FIXED_3D_ORDER,
-            Variant::from_i32(28129),
+            Variant::from_i32(28_111),
         );
     }
 
@@ -14324,7 +14324,7 @@ End Sub
     fn jit_matches_vm3_for_each_fixed_string_array_fixed_3d_width_bundle() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_FIXED_3D_WIDTH_BUNDLE,
-            Variant::from_i32(48694),
+            Variant::from_i32(48_484),
         );
     }
 
@@ -14332,7 +14332,7 @@ End Sub
     fn jit_matches_vm3_for_each_fixed_string_array_fixed_4d_order() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_FIXED_4D_ORDER,
-            Variant::from_i32(61272),
+            Variant::from_i32(61_958),
         );
     }
 
@@ -14348,7 +14348,7 @@ End Sub
     fn jit_matches_vm3_for_each_fixed_string_array_fixed_4d_width_bundle() {
         assert_jit_matches_vm3_contains(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_FIXED_4D_WIDTH_BUNDLE,
-            Variant::from_i32(110078),
+            Variant::from_i32(110_115),
         );
     }
 

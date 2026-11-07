@@ -1010,6 +1010,16 @@ impl Variant {
         unsafe { SafeArray::raw_safearray_bounds_len(bytes_to_raw_safearray(self.data_bytes())) }
     }
 
+    /// Read the next VBA For Each element without cloning the array payload.
+    pub fn safearray_enumeration_element(&self, ordinal: usize) -> Option<Result<Variant, String>> {
+        let (bounds, length) = self.safearray_bounds_len()?;
+        if ordinal >= length {
+            return None;
+        }
+        let index = crate::safe_array::vba_enumeration_index(&bounds, ordinal)?;
+        self.safearray_element(index)
+    }
+
     pub fn from_com_record(value: ComRecord) -> Self {
         Self::from_record_payload(RecordPayload::Com(value))
     }

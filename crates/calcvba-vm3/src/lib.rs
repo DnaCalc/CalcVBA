@@ -516,6 +516,24 @@ impl<'h> Vm3<'h> {
         )
     }
 
+    fn operand_is_variant(&self, operand: &OxOperand) -> bool {
+        let Some(frame) = self.frames.last() else {
+            return false;
+        };
+        let function = &self.cur_program().funcs[frame.func.0];
+        let ty = match operand {
+            OxOperand::Use(OxPlace::Local(id)) => function.locals.get(id.0).map(|local| &local.ty),
+            OxOperand::Use(OxPlace::Temp(id)) => function.temps.get(id.0),
+            OxOperand::Use(OxPlace::Global(id)) => self
+                .cur_program()
+                .globals
+                .get(id.0)
+                .map(|global| &global.ty),
+            _ => None,
+        };
+        ty == Some(&OxTy::Variant)
+    }
+
     /// Initial slot value for a statically typed VBA variable. Dynamic array variables are
     /// arrays before allocation for `IsArray`, but have no SAFEARRAY descriptor/bounds until
     /// `ReDim`.
@@ -2171,7 +2189,7 @@ impl<'h> Vm3<'h> {
                         None
                     } else if let Some(source) = state.array_source {
                         self.read_loc_ref(source)?
-                            .and_then(|array| array.safearray_element(state.position))
+                            .and_then(|array| array.safearray_enumeration_element(state.position))
                             .transpose()
                             .map_err(|error| Vm3Error::Fault(Fault::new(9, error)))?
                     } else {
@@ -3440,7 +3458,11 @@ impl<'h> Vm3<'h> {
         let is_object = matches!(value.vtype(), VarType::Object);
         match intent {
             Intent::Set if !is_object => Err(Vm3Error::Fault(Fault::new(
-                424,
+                if matches!(src, OxOperand::Use(_)) && self.operand_is_variant(src) {
+                    13
+                } else {
+                    424
+                },
                 format!("Object required: {target_name}"),
             ))),
             Intent::Let
@@ -4489,7 +4511,7 @@ impl<'h> Vm3<'h> {
             )));
         }
         if let Some(arr) = src.as_safearray() {
-            return Ok(arr.variant_elements().unwrap_or_default());
+            return Ok(arr.enumeration_elements().unwrap_or_default());
         }
         let Some(obj) = src.as_object_ref() else {
             return Err(Vm3Error::Fault(Fault::new(

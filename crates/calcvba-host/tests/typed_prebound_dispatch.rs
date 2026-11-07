@@ -87,6 +87,7 @@ impl calcvba_symbol::TypeLibResolver for Types {
             members,
             events: vec![],
             coclass_names: vec!["Native".into()],
+            coclass_prog_ids: Vec::new(),
         })
     }
 }

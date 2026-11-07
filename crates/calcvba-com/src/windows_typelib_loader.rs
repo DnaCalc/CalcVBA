@@ -28,8 +28,6 @@ use std::ptr::null_mut;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Foundation::ERROR_NO_MORE_ITEMS;
 #[cfg(target_os = "windows")]
-use windows_sys::Win32::System::Com::CLSIDFromProgID;
-#[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Registry::{
     HKEY, HKEY_CLASSES_ROOT, KEY_READ, REG_SZ, RegCloseKey, RegEnumKeyExW, RegOpenKeyExW,
     RegQueryValueExW,
@@ -2086,30 +2084,48 @@ pub fn resolve_typelib_identity_from_registry(
 }
 
 #[cfg(target_os = "windows")]
+pub(crate) fn registered_clsid_from_prog_id(
+    prog_id: &str,
+) -> Result<windows_sys::core::GUID, String> {
+    if prog_id.is_empty() || prog_id.contains(['\\', '\0']) {
+        return Err(format!("invalid ProgID `{prog_id}`"));
+    }
+    // CLSIDFromProgID can register an OLE 1 identity for an unknown name.
+    // Activation and metadata discovery must only read existing registration.
+    let text = reg_query_default_string(&format!("{prog_id}\\CLSID")).map_err(|error| {
+        if error.ends_with("0x00000002") || error.ends_with("0x00000003") {
+            format!("Class not registered (HRESULT 0x80040154) resolving `{prog_id}`: {error}")
+        } else {
+            error
+        }
+    })?;
+    let id = calcvba_runtime::RuntimeGuid::parse(text.trim())
+        .ok_or_else(|| format!("invalid registered CLSID for `{prog_id}`"))?;
+    Ok(windows_sys::core::GUID {
+        data1: id.data1,
+        data2: id.data2,
+        data3: id.data3,
+        data4: id.data4,
+    })
+}
+
+#[cfg(all(test, target_os = "windows"))]
+#[test]
+fn unknown_progid_lookups_leave_registration_absent() {
+    let name = format!("CalcVBA.ReadOnlyLookupMissing{}", std::process::id());
+    let key = format!("{name}\\CLSID");
+    assert!(reg_query_default_string(&key).is_err());
+    assert!(registered_clsid_from_prog_id(&name).is_err());
+    assert!(crate::windows_client::activate_dispatch_by_prog_id(&name).is_err());
+    assert!(crate::windows_client::get_active_dispatch_by_prog_id(&name).is_err());
+    assert!(reg_query_default_string(&key).is_err());
+}
+
+#[cfg(target_os = "windows")]
 pub fn resolve_typelib_identity_from_prog_id(
     prog_id_name: &str,
 ) -> Result<TypeLibResolvedIdentity, String> {
-    let wide_prog_id: Vec<u16> = prog_id_name
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    let mut clsid = windows_sys::core::GUID {
-        data1: 0,
-        data2: 0,
-        data3: 0,
-        data4: [0; 8],
-    };
-    // SAFETY: `wide_prog_id` is a live NUL-terminated UTF-16 buffer and `clsid` a
-    // live local; CLSIDFromProgID only reads the string and writes the GUID
-    // through the out pointer.
-    let hr = unsafe { CLSIDFromProgID(wide_prog_id.as_ptr(), &mut clsid) };
-    if hr < 0 {
-        return Err(format!(
-            "CLSIDFromProgID failed for `{prog_id_name}` with HRESULT 0x{:08X}",
-            hr as u32
-        ));
-    }
-
+    let clsid = registered_clsid_from_prog_id(prog_id_name)?;
     let clsid_text = guid_to_string(&clsid);
     let libid_text = reg_query_default_string(&format!("CLSID\\{clsid_text}\\TypeLib"))?;
     let version_text = reg_query_default_string(&format!("CLSID\\{clsid_text}\\Version"))?;
@@ -3888,7 +3904,53 @@ pub fn build_metadata_blob_from_typelib(
         members,
         events,
         coclass_names,
+        coclass_prog_ids: enumerate_typelib_coclass_prog_ids(ptlib),
     })
+}
+
+#[cfg(target_os = "windows")]
+fn enumerate_typelib_coclass_prog_ids(ptlib: *mut c_void) -> Vec<(String, String)> {
+    use windows_sys::Win32::System::Com::{CoTaskMemFree, ProgIDFromCLSID};
+    let mut names = Vec::new();
+    // SAFETY: the loader retains the typelib; each type attribute, ITypeInfo and
+    // task-allocated ProgID is released before advancing. This only reads COM
+    // registration; ProgIDFromCLSID never creates a registration.
+    unsafe {
+        let table = *(ptlib as *const *const ITypeLibVtbl);
+        for index in 0..((*table).get_type_info_count)(ptlib) {
+            let mut kind = 0;
+            if ((*table).get_type_info_type)(ptlib, index, &mut kind) != COM_S_OK
+                || kind != TKIND_COCLASS
+            {
+                continue;
+            }
+            let mut info = null_mut();
+            if ((*table).get_type_info)(ptlib, index, &mut info) != COM_S_OK || info.is_null() {
+                continue;
+            }
+            let table = *(info as *const *const ITypeInfoVtbl);
+            let mut attribute = null_mut();
+            if ((*table).get_type_attr)(info, &mut attribute) == COM_S_OK && !attribute.is_null() {
+                let mut text = null_mut();
+                if ProgIDFromCLSID(&(*attribute).guid, &mut text) == COM_S_OK && !text.is_null() {
+                    let mut length = 0;
+                    while *text.add(length) != 0 {
+                        length += 1;
+                    }
+                    if let Some(name) = typeinfo_name(info) {
+                        names.push((
+                            name,
+                            String::from_utf16_lossy(std::slice::from_raw_parts(text, length)),
+                        ));
+                    }
+                    CoTaskMemFree(text.cast());
+                }
+                ((*table).release_type_attr)(info, attribute);
+            }
+            ((*table).release)(info);
+        }
+    }
+    names
 }
 /// Read authoritative enum/module constants without activating an object or
 /// interpreting dependency-specific names. COM owns every descriptor until its
@@ -4104,6 +4166,7 @@ pub unsafe fn build_metadata_blob_from_dispatch(
         members: Vec::new(),
         events,
         coclass_names,
+        coclass_prog_ids: Vec::new(),
     })
 }
 

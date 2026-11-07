@@ -1,4 +1,5 @@
 Sub Main()
+    ' Office For Each advances the first declared dimension first.
     Dim score As Long
     Dim expected As Long
     Dim i As Long
@@ -19,10 +20,10 @@ Sub Main()
     Dim adate(1 To 2, 1 To 2, 1 To 2, 1 To 2) As Date
     Dim astr(1 To 2, 1 To 2, 1 To 2, 1 To 2) As String
 
-    For i = 1 To 2
-        For j = 1 To 2
-            For k = 1 To 2
-                For l = 1 To 2
+    For l = 1 To 2
+        For k = 1 To 2
+            For j = 1 To 2
+                For i = 1 To 2
                     n = n + 1
                     abool(i, j, k, l) = ((n Mod 2) = 0)
                     abyte(i, j, k, l) = n

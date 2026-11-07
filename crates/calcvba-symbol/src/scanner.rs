@@ -290,6 +290,11 @@ impl ScanCtx<'_> {
                         continue;
                     };
                     let name = normalize_identifier_token(token.text);
+                    if name.eq_ignore_ascii_case("local") {
+                        return Err(SymbolModelError::Syntax(
+                            "reserved identifier `local` in declaration".into(),
+                        ));
+                    }
                     validate_fixed_string_length(declarator, name)?;
                     let declared_type = declared_var_type_with_default(
                         declarator,

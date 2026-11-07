@@ -51,6 +51,9 @@ pub struct TypeLibMetadataBlob {
     /// could not resolve. The symbol provider owns `<reference_name>.<coclass>` for each
     /// of these, so every coclass in the referenced library is bindable by name.
     pub coclass_names: Vec<String>,
+    /// Registered activation names read from each coclass's CLSID. A typelib
+    /// namespace (or a source reference alias) need not equal its ProgID prefix.
+    pub coclass_prog_ids: Vec<(String, String)>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeLibConstantMetadata {
@@ -1218,6 +1221,7 @@ mod tests {
             ],
             events: Vec::new(),
             coclass_names: Vec::new(),
+            coclass_prog_ids: Vec::new(),
         };
 
         let descriptor = runtime_class_descriptor_from_typelib_metadata(&metadata);

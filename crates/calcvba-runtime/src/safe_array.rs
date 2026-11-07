@@ -1392,6 +1392,20 @@ impl SafeArray {
             .expect("SAFEARRAY payload should decode into canonical Variants")
     }
 
+    /// VBA For Each advances the first declared dimension first. The owned
+    /// array's indexing storage keeps the last dimension contiguous.
+    pub fn enumeration_elements(&self) -> Option<Vec<Variant>> {
+        let values = self.variant_elements()?;
+        let bounds = self.bounds_for_shape();
+        Some(
+            (0..values.len())
+                .map(|ordinal| {
+                    values[vba_enumeration_index(&bounds, ordinal).expect("array ordinal")].clone()
+                })
+                .collect(),
+        )
+    }
+
     pub(crate) fn try_variant_elements(&self) -> Result<Option<Vec<Variant>>, String> {
         // SAFETY: `self.0` is this value's live descriptor, so reading
         // `pv_data` is valid; the null (shape-only) case is handled just below.
@@ -3251,4 +3265,19 @@ mod proptests {
             prop_assert_eq!(recovered_tag, tag);
         }
     }
+}
+
+/// Convert a VBA For Each ordinal to the owned array's indexing offset.
+pub fn vba_enumeration_index(bounds: &[SafeArrayBound], mut ordinal: usize) -> Option<usize> {
+    let mut index = 0usize;
+    for bound in bounds {
+        let count = bound.count as usize;
+        if count == 0 {
+            return None;
+        }
+        let coordinate = ordinal % count;
+        ordinal /= count;
+        index = index.checked_mul(count)?.checked_add(coordinate)?;
+    }
+    (ordinal == 0).then_some(index)
 }

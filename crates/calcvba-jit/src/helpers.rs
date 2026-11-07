@@ -5773,10 +5773,12 @@ pub(crate) unsafe extern "C" fn rt_jit_validate_assignment(
             return ST_FAULT;
         };
         let is_object = matches!(value.vtype(), VarType::Object) || jit_is_nothing(&value);
+        let variant_source = intent & 0x100 != 0;
+        let intent = intent & 0xff;
         match intent {
             // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
             JIT_ASSIGN_INTENT_SET if !is_object => unsafe {
-                rt_raise_runtime_error_number(state, 424)
+                rt_raise_runtime_error_number(state, if variant_source { 13 } else { 424 })
             },
             JIT_ASSIGN_INTENT_LET
                 if target_kind == JIT_ASSIGN_TARGET_VARIANT
@@ -6964,7 +6966,7 @@ pub(crate) unsafe extern "C" fn rt_jit_for_each_init_variant_array(
             (array_source, iter_alias)
         };
         let elements = if let Some(array) = source_value.as_safearray() {
-            array.variant_elements().unwrap_or_default()
+            array.enumeration_elements().unwrap_or_default()
         } else if let Some(object) = source_value.as_object_ref() {
             if let Some(values) = object.native_collection_snapshot() {
                 values
@@ -7043,7 +7045,7 @@ pub(crate) unsafe extern "C" fn rt_jit_for_each_next_variant_array(
                 None
             } else if let Some(source) = state.array_source {
                 match slot_alias_ref(run, source)
-                    .and_then(|array| array.safearray_element(state.position))
+                    .and_then(|array| array.safearray_enumeration_element(state.position))
                 {
                     Some(Ok(value)) => Some(value),
                     Some(Err(_)) => return ST_FAULT,

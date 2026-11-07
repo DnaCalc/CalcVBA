@@ -129,7 +129,7 @@ pub unsafe extern "C" fn cvb_iter_init(
             } else {
                 let source = read(context, input, kind_value)?;
                 let values = if let Some(array) = source.as_safearray() {
-                    array.variant_elements().unwrap_or_default()
+                    array.enumeration_elements().unwrap_or_default()
                 } else if let Some(object) = source.as_object_ref() {
                     if let Some(values) = object.native_collection_snapshot() {
                         values
@@ -707,6 +707,65 @@ pub unsafe extern "C" fn cvb_value_unary(
             };
             finish(context, status)?;
             write(context, out, to, &result)
+        }
+    })
+}
+
+/// # Safety
+/// Inputs have the declared native kinds, and out owns a writable Boolean cell.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cvb_variant_changed(
+    context: *mut Context,
+    out: *mut i16,
+    current: *const u8,
+    current_kind: u32,
+    original: *const u8,
+    original_kind: u32,
+) -> i32 {
+    super::values::boundary(|| {
+        // SAFETY: each value is materialized before comparing or writing output.
+        unsafe {
+            let current = read(context, current, current_kind)?;
+            let original = read(context, original, original_kind)?;
+            out.write(if calcvba_rt_abi::variant_changed(&current, &original) {
+                -1
+            } else {
+                0
+            });
+        }
+        Ok(())
+    })
+}
+
+/// # Safety
+/// Source retains an initialized native cell; intent and target are compiler IDs.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cvb_validate_assignment(
+    context: *mut Context,
+    source: *const u8,
+    kind: u32,
+    intent: u32,
+    target: u32,
+) -> i32 {
+    super::values::boundary(|| {
+        let variant_source = intent & 0x100 != 0;
+        let intent = intent & 0xff;
+        if kind == 36 {
+            return if intent == 2 || target == 2 {
+                Err(424)
+            } else {
+                Ok(())
+            };
+        }
+        // SAFETY: the compiled caller retains source through this value read.
+        let value = unsafe { read(context, source, kind)? };
+        let object = value.vtype() == calcvba_runtime::VarType::Object;
+        match (intent, target, object) {
+            (2, _, false) => Err(if variant_source { 13 } else { 424 }),
+            (1, 2, false) => Err(424),
+            (1, 2, true) => Err(91),
+            (1, 1, true) if value.as_object_ref().is_none() => Err(91),
+            _ => Ok(()),
         }
     })
 }

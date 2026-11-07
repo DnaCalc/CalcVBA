@@ -423,3 +423,51 @@ fn chained_project_receivers_and_inline_cases_agree() {
     assert_eq!(dll.call("ChainSuite"), "42:42:438:438:438");
     assert_eq!(dll.call("CaseSuite"), "4:8:8:12:16:");
 }
+
+#[test]
+fn execution_census_integer_array_and_copyout_regressions_agree() {
+    let directory = Directory::new();
+    let source = include_str!("support/native_execution_regressions.bas");
+    std::fs::write(directory.0.join("ExecutionRegressions.bas"), source).unwrap();
+    let project = directory.0.join("ExecutionRegressions.basproj");
+    let cases = [
+        ("ExecutionSuite", "2:3:11:13:13:91:91:91:91"),
+        (
+            "ArrayOrderSuite",
+            "13:23:14:24:|135:235:145:245:136:236:146:246:",
+        ),
+        ("RandomAritySuite", "True:True:True:True"),
+        ("CounterSuite", "2:5:3:4"),
+        ("NestedCallSuite", "2:10:3:10"),
+    ];
+    let exports = cases.iter().map(|(name, _)| format!("<NativeExport Include=\"{name}\"><Module>ExecutionRegressions</Module><Procedure>{name}</Procedure></NativeExport>")).collect::<String>();
+    std::fs::write(&project, format!(r#"<Project><PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>ExecutionRegressions</ProjectName></PropertyGroup><ItemGroup><Module Include="ExecutionRegressions.bas"/>{exports}</ItemGroup></Project>"#)).unwrap();
+    for (name, expected) in cases {
+        let source = source.replace(
+            "observed = ExecutionSuite()",
+            &format!("observed = {name}()"),
+        );
+        for config in [HostConfig::vm3(), HostConfig::jit()] {
+            let values = Engine::new(config)
+                .execute_source_with_variant_snapshot_clean(&source)
+                .unwrap();
+            assert!(
+                values
+                    .iter()
+                    .filter_map(|v| v.as_bstr())
+                    .any(|v| v.to_string() == expected),
+                "{name}: {values:?}"
+            );
+        }
+    }
+    let output = build_native_library(&NativeLibraryBuildOptions {
+        project_path: project,
+        out_dir: directory.0.join("out"),
+        template_path: None,
+    })
+    .unwrap();
+    let dll = Dll::load(&output.dll_path);
+    for (name, expected) in cases {
+        assert_eq!(dll.call(name), expected, "{name}");
+    }
+}

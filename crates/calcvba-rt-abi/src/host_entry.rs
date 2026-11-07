@@ -536,29 +536,47 @@ impl ScalarLayout {
                 let math = matches!(native, NativeImplId::Abs | NativeImplId::Sqr)
                     && matches!(result, None | Some(ScalarType::Double))
                     && matches!(args.as_slice(), [calcvba_oxir::OxArg::ByVal(operand)] if numeric_operand(operand));
-                external.insert(
-                    *import,
-                    LinkedCall {
-                        target: LinkedTarget::Builtin(native),
-                        signature: CallSignature {
-                            parameters: vec![
-                                if math {
-                                    ScalarType::Double
-                                } else {
-                                    ScalarType::Variant
-                                };
-                                args.len()
-                            ],
-                            by_ref: vec![!math; args.len()],
-                            optional: vec![true; args.len()],
-                            result: if matches!(native, NativeImplId::Abs | NativeImplId::Sqr) {
-                                result.or(numeric)
+                let mut linked = LinkedCall {
+                    target: LinkedTarget::Builtin(native),
+                    signature: CallSignature {
+                        parameters: vec![
+                            if math {
+                                ScalarType::Double
                             } else {
-                                numeric.or(result)
-                            },
+                                ScalarType::Variant
+                            };
+                            args.len()
+                        ],
+                        by_ref: vec![!math; args.len()],
+                        optional: vec![true; args.len()],
+                        result: if matches!(native, NativeImplId::Abs | NativeImplId::Sqr) {
+                            result.or(numeric)
+                        } else {
+                            numeric.or(result)
                         },
                     },
-                );
+                };
+                if let Some(previous) = external.get(import) {
+                    let previous: &LinkedCall = previous;
+                    let count = linked
+                        .signature
+                        .parameters
+                        .len()
+                        .max(previous.signature.parameters.len());
+                    if linked
+                        .signature
+                        .parameters
+                        .iter()
+                        .chain(&previous.signature.parameters)
+                        .any(|ty| *ty != ScalarType::Double)
+                    {
+                        linked.signature.parameters = vec![ScalarType::Variant; count];
+                        linked.signature.by_ref = vec![true; count];
+                    }
+                    linked.signature.optional = vec![true; count];
+                    linked.signature.result = linked.signature.result.or(previous.signature.result);
+                }
+                external.insert(*import, linked);
             }
         }
         Self::with_storage(
@@ -1683,6 +1701,17 @@ impl ScalarLayout {
         self.slots.get(index).ok_or("typed slot out of bounds")?;
         Ok(index)
     }
+    /// Integer literal temporaries may use a Long physical carrier, while their
+    /// Variant subtype remains Integer (including the implicit For step).
+    pub fn is_integer_literal_operand(&self, value: &OxOperand) -> bool {
+        match value {
+            OxOperand::Const(OxConst::I16(_)) => true,
+            OxOperand::Use(place) => self
+                .slot(*place)
+                .is_ok_and(|slot| self.literal_integer_temps.contains(&slot)),
+            _ => false,
+        }
+    }
     pub fn operand_type(&self, value: &OxOperand) -> Result<ScalarType, String> {
         match value {
             OxOperand::Use(p) => Ok(self.slots[self.slot(*p)?]),
@@ -2333,6 +2362,20 @@ impl ScalarLayout {
                 Ok(())
             }
             OxInst::DrainTerminations => Ok(()),
+            OxInst::VariantChanged {
+                dst,
+                current,
+                original,
+            } if self.native_numbers => {
+                if self.slots[self.slot(*dst)?] != ScalarType::Boolean {
+                    return Err("VariantChanged requires Boolean output".into());
+                }
+                self.operand_type(current)?;
+                self.operand_type(original).map(|_| ())
+            }
+            OxInst::ValidateAssignment { src, .. } if self.native_numbers => {
+                self.operand_type(src).map(|_| ())
+            }
             OxInst::Assign { dst, value } => self.accepts(*dst, value),
             OxInst::Box { dst, src, .. }
                 if self.owning && self.slots[self.slot(*dst)?] == ScalarType::Variant =>

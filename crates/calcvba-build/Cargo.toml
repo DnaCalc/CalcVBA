@@ -26,6 +26,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+calcvba-syntax.workspace = true
 calcvba-engine.workspace = true
 calcvba-hal.workspace = true
 object = { version = "0.38", default-features = false, features = ["read", "pe", "std"] }

@@ -10,6 +10,8 @@ fn fixture() -> PathBuf {
 fn inspect_and_folder_write_back_work_in_a_copied_cli() {
     let root = std::env::temp_dir().join(format!("calcvba-office-cli-{}", std::process::id()));
     std::fs::create_dir(&root).unwrap();
+    let root = root.canonicalize().unwrap();
+    assert!(root.starts_with(std::env::temp_dir().canonicalize().unwrap()));
     let cli = root.join(if cfg!(windows) {
         "calcvba.exe"
     } else {
@@ -87,5 +89,18 @@ fn inspect_and_folder_write_back_work_in_a_copied_cli() {
         .unwrap();
     assert!(!refused.status.success());
     assert_eq!(std::fs::read(output).unwrap(), original);
-    std::fs::remove_dir_all(root).unwrap();
+    // Windows may retain the just-exited copied executable briefly. Retry only
+    // cleanup of this test's owned directory; all editing assertions stay above.
+    let mut cleanup = std::fs::remove_dir_all(&root);
+    for _ in 0..20 {
+        if !cleanup
+            .as_ref()
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::PermissionDenied)
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        cleanup = std::fs::remove_dir_all(&root);
+    }
+    cleanup.unwrap();
 }

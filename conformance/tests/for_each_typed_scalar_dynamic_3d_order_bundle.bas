@@ -1,4 +1,5 @@
 Sub Main()
+    ' Office For Each advances the first declared dimension first.
     Dim score As Long
     Dim observed As Double
     Dim item
@@ -45,7 +46,7 @@ Sub Main()
     For Each item In abyte
         observed = observed * 10# + item
     Next
-    If observed = 12345678# Then score = score + 2
+    If observed = 15372648# Then score = score + 2
 
     ReDim ai(1 To 2, 1 To 2, 1 To 2)
     ai(1, 1, 1) = 1
@@ -60,7 +61,7 @@ Sub Main()
     For Each item In ai
         observed = observed * 10# + item
     Next
-    If observed = 12345678# Then score = score + 4
+    If observed = 15372648# Then score = score + 4
 
     ReDim al(1 To 2, 1 To 2, 1 To 2)
     al(1, 1, 1) = 1
@@ -75,7 +76,7 @@ Sub Main()
     For Each item In al
         observed = observed * 10# + item
     Next
-    If observed = 12345678# Then score = score + 8
+    If observed = 15372648# Then score = score + 8
 
     ReDim all(1 To 2, 1 To 2, 1 To 2)
     all(1, 1, 1) = 1^
@@ -90,7 +91,7 @@ Sub Main()
     For Each item In all
         observed = observed * 10# + item
     Next
-    If observed = 12345678# Then score = score + 16
+    If observed = 15372648# Then score = score + 16
 
     ReDim asng(1 To 2, 1 To 2, 1 To 2)
     asng(1, 1, 1) = 1!
@@ -105,7 +106,7 @@ Sub Main()
     For Each item In asng
         observed = observed * 10# + item
     Next
-    If observed = 12345678# Then score = score + 32
+    If observed = 15372648# Then score = score + 32
 
     ReDim adbl(1 To 2, 1 To 2, 1 To 2)
     adbl(1, 1, 1) = 1#
@@ -120,7 +121,7 @@ Sub Main()
     For Each item In adbl
         observed = observed * 10# + item
     Next
-    If observed = 12345678# Then score = score + 64
+    If observed = 15372648# Then score = score + 64
 
     ReDim acur(1 To 2, 1 To 2, 1 To 2)
     acur(1, 1, 1) = 1@
@@ -135,7 +136,7 @@ Sub Main()
     For Each item In acur
         observed = observed * 10# + CDbl(item)
     Next
-    If observed = 12345678# Then score = score + 128
+    If observed = 15372648# Then score = score + 128
 
     ReDim adate(1 To 2, 1 To 2, 1 To 2)
     adate(1, 1, 1) = CDate(1#)
@@ -150,7 +151,7 @@ Sub Main()
     For Each item In adate
         observed = observed * 10# + CDbl(item)
     Next
-    If observed = 12345678# Then score = score + 256
+    If observed = 15372648# Then score = score + 256
 
     ReDim astr(1 To 2, 1 To 2, 1 To 2)
     astr(1, 1, 1) = "1"
@@ -165,5 +166,5 @@ Sub Main()
     For Each item In astr
         observed = observed * 10# + CDbl(item)
     Next
-    If observed = 12345678# Then score = score + 512
+    If observed = 15372648# Then score = score + 512
 End Sub

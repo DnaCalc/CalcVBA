@@ -131,6 +131,7 @@ pub fn build_typelib_metadata(identity: &TypeLibResolvedIdentity) -> TypeLibMeta
             members: Vec::new(),
             events: Vec::new(),
             coclass_names: Vec::new(),
+            coclass_prog_ids: Vec::new(),
         },
     }
 }

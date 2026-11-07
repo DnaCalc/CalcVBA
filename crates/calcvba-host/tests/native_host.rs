@@ -52,6 +52,7 @@ impl TypeLibResolver for HostTypes {
             members: vec![member],
             events: vec![],
             coclass_names: vec!["Calculator".into()],
+            coclass_prog_ids: Vec::new(),
         })
     }
 }

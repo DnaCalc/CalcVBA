@@ -152,6 +152,7 @@ impl TypeLibResolver for ApplicationTypeLibs {
                 ],
                 events: Vec::new(),
                 coclass_names: vec!["Workbooks".into()],
+                coclass_prog_ids: Vec::new(),
             });
         }
         Some(TypeLibMetadataBlob {
@@ -206,6 +207,7 @@ impl TypeLibResolver for ApplicationTypeLibs {
             ],
             events: Vec::new(),
             coclass_names: vec!["Application".into()],
+            coclass_prog_ids: Vec::new(),
         })
     }
 }

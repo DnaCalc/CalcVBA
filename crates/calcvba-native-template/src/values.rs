@@ -173,6 +173,12 @@ pub(super) unsafe fn copy(dst: *mut u8, src: *const u8, to: u32, from: u32) -> R
             status(VariantCopyInd(&mut indirect.0, &input))?;
             return copy(dst, (&indirect.0 as *const VARIANT).cast(), to, 12);
         }
+        if matches!(to, 2 | 3 | 4 | 5 | 6 | 7 | 8 | 11 | 14 | 17 | 20)
+            && matches!(input.Anonymous.Anonymous.vt, 9 | 13)
+            && input.Anonymous.Anonymous.Anonymous.punkVal.is_null()
+        {
+            return Err(91);
+        }
         if from == 12 && to & 0x2000 != 0 {
             let vt = input.Anonymous.Anonymous.vt;
             if vt & 0x2000 == 0 || (to & 0x0fff != 0 && u32::from(vt & 0x0fff) != to & 0x0fff) {

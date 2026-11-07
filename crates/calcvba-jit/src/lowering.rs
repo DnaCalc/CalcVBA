@@ -3795,9 +3795,12 @@ impl<'a> LowerFunc<'a> {
     ) -> Result<(), JitError> {
         let operands = [self.lower_variant_operand(builder, src)?];
         let operand_ptr = self.emit_variant_operand_descriptors(builder, module, &operands)?;
-        let intent = builder
-            .ins()
-            .iconst(types::I32, i64::from(raw_assignment_intent(intent)));
+        let variant_source = matches!(src, OxOperand::Use(_))
+            && operand_static_ty(self.program, self.func, src)? == OxTy::Variant;
+        let intent = builder.ins().iconst(
+            types::I32,
+            i64::from(raw_assignment_intent(intent) | if variant_source { 0x100 } else { 0 }),
+        );
         let target_kind = builder.ins().iconst(
             types::I32,
             i64::from(raw_assignment_target_kind(target_kind)),
@@ -8141,6 +8144,7 @@ impl<'a> LowerFunc<'a> {
             OxOperand::Use(place) => {
                 let ty = place_ty(self.program, self.func, *place)?;
                 Ok(is_m4_4_variant_operand_ty(ty)
+                    || matches!(ty, OxTy::Object(_))
                     || (matches!(native_impl, NativeImplId::CDate) && matches!(ty, OxTy::Str)))
             }
             _ => Ok(false),

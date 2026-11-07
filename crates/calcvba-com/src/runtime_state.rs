@@ -706,6 +706,7 @@ mod tests {
             }],
             events: Vec::new(),
             coclass_names: Vec::new(),
+            coclass_prog_ids: Vec::new(),
         };
 
         let binding =
@@ -769,6 +770,7 @@ mod tests {
                 coclass: Some("Widget".to_string()),
             }],
             coclass_names: Vec::new(),
+            coclass_prog_ids: Vec::new(),
         };
 
         let binding =
@@ -826,6 +828,7 @@ mod tests {
             }],
             events: Vec::new(),
             coclass_names: Vec::new(),
+            coclass_prog_ids: Vec::new(),
         };
 
         let specs = member_specs_from_typelib_metadata(&metadata);

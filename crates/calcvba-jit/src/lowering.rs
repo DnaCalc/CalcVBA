@@ -7962,7 +7962,9 @@ impl<'a> LowerFunc<'a> {
             NativeImplId::Int | NativeImplId::Fix => {
                 self.is_supported_numeric_or_variant_unary_extern_operand(operand, true)
             }
-            NativeImplId::Sgn => self.is_supported_numeric_unary_extern_operand(operand, false),
+            NativeImplId::Sgn => {
+                self.is_supported_numeric_or_variant_unary_extern_operand(operand, false)
+            }
             NativeImplId::CVErr => self.is_supported_numeric_unary_extern_operand(operand, false),
             NativeImplId::Hex | NativeImplId::Oct | NativeImplId::Str => {
                 self.is_supported_non_null_numeric_unary_extern_operand(operand)
@@ -8149,7 +8151,7 @@ impl<'a> LowerFunc<'a> {
             return Ok(true);
         }
         match operand {
-            OxOperand::Const(OxConst::Str(_)) => Ok(matches!(native_impl, NativeImplId::CDate)),
+            OxOperand::Const(OxConst::Str(_)) => Ok(native_impl != NativeImplId::CVar),
             OxOperand::Const(
                 OxConst::Null
                 | OxConst::Empty
@@ -8166,7 +8168,7 @@ impl<'a> LowerFunc<'a> {
                 let ty = place_ty(self.program, self.func, *place)?;
                 Ok(is_m4_4_variant_operand_ty(ty)
                     || matches!(ty, OxTy::Object(_))
-                    || (matches!(native_impl, NativeImplId::CDate) && matches!(ty, OxTy::Str)))
+                    || (native_impl != NativeImplId::CVar && matches!(ty, OxTy::Str)))
             }
             _ => Ok(false),
         }

@@ -155,3 +155,10 @@ Public Function ArrayPtrSuite() As String
     buf(2) = 0
     ArrayPtrSuite = CStr(lstrlenA(VarPtr(buf(0)))) & ":" & CStr(buf(1))
 End Function
+Public Function ArrayPtrShapeSuite() As String
+    Dim buf(1 To 3) As Byte
+    buf(1) = 65
+    buf(2) = 66
+    buf(3) = 0
+    ArrayPtrShapeSuite = CStr(lstrlenA(VarPtr(buf(1)))) & ":" & CStr(LBound(buf)) & ":" & CStr(UBound(buf)) & ":" & CStr(VarType(buf)) & ":" & TypeName(buf)
+End Function

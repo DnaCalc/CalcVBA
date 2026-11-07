@@ -445,6 +445,7 @@ fn execution_census_integer_array_and_copyout_regressions_agree() {
         ),
         ("ObjectLetSuite", "424:424:424"),
         ("ArrayPtrSuite", "2:66"),
+        ("ArrayPtrShapeSuite", "2:1:3:8209:Byte()"),
     ];
     let exports = cases.iter().map(|(name, _)| format!("<NativeExport Include=\"{name}\"><Module>ExecutionRegressions</Module><Procedure>{name}</Procedure></NativeExport>")).collect::<String>();
     std::fs::write(&project, format!(r#"<Project><PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>ExecutionRegressions</ProjectName></PropertyGroup><ItemGroup><Module Include="ExecutionRegressions.bas"/>{exports}</ItemGroup></Project>"#)).unwrap();

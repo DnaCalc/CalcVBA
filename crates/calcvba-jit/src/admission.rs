@@ -629,7 +629,7 @@ pub(crate) fn scalar_unary_call_extern_shape(native_impl: NativeImplId) -> Optio
             "Int/Fix(Null/Empty/Boolean/Integer/Long/LongLong/Single/Double/Currency/Date/Variant)",
         ),
         NativeImplId::Sgn => {
-            Some("Sgn(Null/Empty/Boolean/Integer/Long/LongLong/Single/Double/Currency)")
+            Some("Sgn(Null/Empty/Boolean/Integer/Long/LongLong/Single/Double/Currency/Variant)")
         }
         NativeImplId::CVErr => {
             Some("CVErr(Null/Empty/Boolean/Integer/Long/LongLong/Single/Double/Currency)")
@@ -769,6 +769,7 @@ pub(crate) fn variant_quad_call_extern_shape(native_impl: NativeImplId) -> Optio
         NativeImplId::Fv | NativeImplId::Pv | NativeImplId::Pmt => {
             Some("FV/PV/PMT(Variant/scalar const x4)")
         }
+        NativeImplId::Rate | NativeImplId::NPer => Some("Rate/NPer(Variant/scalar const x4)"),
         _ => None,
     }
 }

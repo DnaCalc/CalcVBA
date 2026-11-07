@@ -1,6 +1,8 @@
 //! Compile every procedure in each individual conformance .bas module. Class
 //! fixture suffixes retain their module kind. Missing project/reference context
 //! stays a source diagnostic; these counts do not claim complete project execution.
+#[path = "census/project.rs"]
+mod project;
 use calcvba_symbol::manifest::{
     ModuleAttributes, ModuleKind, ModuleUnit, ProjectKind, SymbolProjectManifest,
 };
@@ -120,18 +122,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
         };
-        let compiled =
-            calcvba_bind::bind_program(&manifest, &calcvba_symbol::CatalogTypeLibResolver)
+        // A project's `Main` is compiled with its sibling modules and referenced projects.
+        let context = project::project_context(path)?;
+        let compiled = match &context {
+            None => calcvba_bind::bind_program(&manifest, &calcvba_symbol::CatalogTypeLibResolver)
                 .map_err(|error| format!("bind: {error}"))
-                .and_then(|core| {
-                    calcvba_oxir::elaborate::elaborate(&core)
+                .map(|core| vec![core]),
+            Some(context) => {
+                let directory = std::env::temp_dir().join(format!(
+                    "cvb-native-census-{}-{}",
+                    std::process::id(),
+                    rows.len()
+                ));
+                let loaded = context
+                    .write(&directory, &std::fs::read_to_string(path)?, false)
+                    .and_then(|file| {
+                        calcvba_project::load_project_closure(&file).map_err(|e| e.to_string())
+                    })
+                    .map_err(|error| format!("bind: {error}"))
+                    .and_then(|closure| {
+                        calcvba_bind::bind_projects(
+                            &closure,
+                            &calcvba_symbol::CatalogTypeLibResolver,
+                        )
+                        .map_err(|error| format!("bind: {error}"))
+                    });
+                let _ = std::fs::remove_dir_all(&directory);
+                loaded
+            }
+        }
+        .and_then(|cores| {
+            cores
+                .iter()
+                .map(|core| {
+                    calcvba_oxir::elaborate::elaborate(core)
                         .map_err(|error| format!("elaborate: {error}"))
-                });
+                })
+                .collect::<Result<Vec<_>, _>>()
+        });
         let (status, category, detail) = match compiled {
             Err(detail) => ("source-refused", "source diagnostic".into(), detail),
-            Ok(program) => {
-                let roots: Vec<_> = (0..program.funcs.len()).map(calcvba_oxir::FuncId).collect();
-                match calcvba_build::check_native_program(&program, &roots) {
+            Ok(programs) => {
+                let checked = if let [program] = programs.as_slice() {
+                    let roots: Vec<_> =
+                        (0..program.funcs.len()).map(calcvba_oxir::FuncId).collect();
+                    calcvba_build::check_native_program(program, &roots)
+                } else {
+                    calcvba_build::check_native_image(&programs)
+                };
+                match checked {
                     Ok(()) => ("native", String::new(), String::new()),
                     Err(error) => {
                         let detail = error.to_string();

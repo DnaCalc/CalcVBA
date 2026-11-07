@@ -9,6 +9,9 @@ use calcvba_symbol::manifest::{
     ModuleAttributes, ModuleKind, ModuleUnit, ProjectKind, SymbolProjectManifest,
 };
 use calcvba_syntax::{SyntaxKind, SyntaxNode};
+#[path = "census/project.rs"]
+mod project;
+use project::{PROBE, project_context};
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
@@ -40,7 +43,6 @@ impl Row {
     }
 }
 const OBSERVED: &str = "CvbCensusObserved";
-const PROBE: &str = "CvbCensusProbe";
 const VALUE_HELPER: &str = r#"
 Private Function CvbCensusValue(ByVal v As Variant) As String
     Dim item As Variant, text As String, dimension As Long, lo As Long, hi As Long
@@ -86,6 +88,61 @@ fn unsupported_snapshot(ty: &VarTypeRef) -> bool {
         }
         _ => false,
     }
+}
+/// Field names of the plain `Type` block `type_name` when every field is a scalar
+/// or variable-length String; anything richer needs per-field snapshots by hand.
+fn udt_fields(source: &str, type_name: &str) -> Option<Vec<String>> {
+    let mut lines = source.lines().map(str::trim);
+    while let Some(line) = lines.next() {
+        let mut words = line.split_whitespace();
+        let mut first = words.next()?;
+        if first.eq_ignore_ascii_case("public") || first.eq_ignore_ascii_case("private") {
+            first = words.next().unwrap_or("");
+        }
+        if !first.eq_ignore_ascii_case("type")
+            || !words
+                .next()
+                .is_some_and(|n| n.eq_ignore_ascii_case(type_name))
+        {
+            continue;
+        }
+        let mut fields = Vec::new();
+        for field in lines.by_ref() {
+            let lower = field.to_ascii_lowercase();
+            if lower.starts_with("end type") {
+                return (!fields.is_empty()).then_some(fields);
+            }
+            if field.is_empty() || field.starts_with('\'') {
+                continue;
+            }
+            let (name, ty) = field.split_once(char::is_whitespace)?;
+            let ty = ty
+                .trim()
+                .strip_prefix("As ")
+                .or_else(|| ty.trim().strip_prefix("as "))?;
+            let scalar = matches!(
+                ty.trim().to_ascii_lowercase().as_str(),
+                "boolean"
+                    | "byte"
+                    | "integer"
+                    | "long"
+                    | "longlong"
+                    | "longptr"
+                    | "single"
+                    | "double"
+                    | "currency"
+                    | "date"
+                    | "string"
+                    | "variant"
+            );
+            if !ident(name) || !scalar {
+                return None;
+            }
+            fields.push(name.to_string());
+        }
+        return None;
+    }
+    None
 }
 fn ident(name: &str) -> bool {
     !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
@@ -169,9 +226,18 @@ fn instrument(source: &str, procedure: &CoreProc, globals: &[String]) -> Result<
     let block = node.body_block().ok_or("procedure body unavailable")?;
     let mut names = Vec::new();
     for local in &procedure.locals {
+        if let VarTypeRef::Udt(type_name) = &local.ty {
+            let fields = udt_fields(source, type_name).ok_or(
+                "record local has array, nested record or fixed-string fields; the census snapshots plain scalar fields only",
+            )?;
+            if ident(&local.name) {
+                names.extend(fields.iter().map(|field| format!("{}.{field}", local.name)));
+            }
+            continue;
+        }
         if unsupported_snapshot(&local.ty) {
             return Err(
-                "record/fixed-string-array snapshot is not a legal Office Variant argument".into(),
+                "fixed-length-string arrays cannot be passed to the Variant snapshot helper; Office needs a per-rank element loop".into(),
             );
         }
         if ident(&local.name) {
@@ -461,46 +527,90 @@ fn worker(path: &Path, directory: &Path) -> Result<Vec<Row>, Box<dyn std::error:
         .to_string_lossy()
         .ends_with(".class")
     {
-        return Ok(vec![Row::skipped(
-            path,
-            "",
-            "class module needs its source project",
-        )]);
+        // A class module has no entry of its own; its project's Main row runs it.
+        return Ok(Vec::new());
     }
     let source = std::fs::read_to_string(path)?;
-    let core = match calcvba_bind::bind_program(
-        &manifest(source.clone()),
-        &calcvba_symbol::CatalogTypeLibResolver,
-    ) {
-        Ok(core) => core,
+    let project = project_context(path)?;
+    let bound = match &project {
+        None => calcvba_bind::bind_program(
+            &manifest(source.clone()),
+            &calcvba_symbol::CatalogTypeLibResolver,
+        )
+        .map(|core| vec![core])
+        .map_err(|e| e.to_string()),
+        Some(project) => (|| {
+            let root = project.write(&directory.join("bind"), &source, false)?;
+            let closure =
+                calcvba_project::load_project_closure(&root).map_err(|e| e.to_string())?;
+            calcvba_bind::bind_projects(&closure, &calcvba_symbol::CatalogTypeLibResolver)
+                .map_err(|e| e.to_string())
+        })(),
+    };
+    let cores = match bound {
+        Ok(cores) => cores,
         Err(error) => {
-            return Ok(vec![Row::skipped(
-                path,
-                "",
-                format!("source diagnostic: {error}"),
-            )]);
+            let detail = if source.to_ascii_lowercase().contains("dispatchinvoke(")
+                && error.contains("Sub or Function not defined")
+            {
+                "source calls DispatchInvoke, an OxVba scaffold function that Office VBA does not define".to_string()
+            } else {
+                format!("source diagnostic: {error}")
+            };
+            return Ok(vec![Row::skipped(path, "", detail)]);
         }
     };
-    let program = calcvba_oxir::elaborate::elaborate(&core).map_err(|e| e.to_string())?;
-    let roots: Vec<_> = (0..program.funcs.len()).map(calcvba_oxir::FuncId).collect();
-    let refusal = calcvba_build::check_native_program(&program, &roots)
-        .err()
-        .map(|e| e.to_string());
-    let effect = if !program.external_calls.is_empty() {
+    let Some(core) = cores.last() else {
+        return Ok(vec![Row::skipped(path, "", "empty project closure")]);
+    };
+    let programs: Vec<_> = cores
+        .iter()
+        .map(calcvba_oxir::elaborate::elaborate)
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+    let refusal = if let [program] = programs.as_slice() {
+        let roots: Vec<_> = (0..program.funcs.len()).map(calcvba_oxir::FuncId).collect();
+        calcvba_build::check_native_program(program, &roots)
+    } else {
+        calcvba_build::check_native_image(&programs)
+    }
+    .err()
+    .map(|e| e.to_string());
+    // Declares of these operating-system routines are deterministic and run through
+    // the native host policy; every other Declare needs its own controlled fixture.
+    let deterministic_declares = programs.iter().flat_map(|p| &p.external_calls).all(|call| {
+        let symbol = if call.alias.is_empty() {
+            &call.declared_name
+        } else {
+            &call.alias
+        };
+        matches!(
+            call.library.to_ascii_lowercase().as_str(),
+            "kernel32" | "oleaut32"
+        ) && ["lstrlena", "lstrlenw", "varr8fromi4", "rtlmovememory"]
+            .contains(&symbol.to_ascii_lowercase().as_str())
+    });
+    let has_declares = programs.iter().any(|p| !p.external_calls.is_empty());
+    let effect = if has_declares && !deterministic_declares {
         Some("Declare requires a separately controlled native fixture".into())
     } else {
-        program
-            .funcs
+        programs
             .iter()
-            .flat_map(|f| &f.blocks)
-            .flat_map(|b| &b.instrs)
-            .find_map(|inst| match inst {
+            .flat_map(|program| program.funcs.iter().map(move |f| (program, f)))
+            .flat_map(|(program, f)| {
+                f.blocks
+                    .iter()
+                    .flat_map(move |b| b.instrs.iter().map(move |i| (program, i)))
+            })
+            .find_map(|(program, inst)| match inst {
                 OxInst::CallExtern { import, .. } => {
-                    match calcvba_rt_abi::library::resolve_import(&program, *import) {
+                    match calcvba_rt_abi::library::resolve_import(program, *import) {
                         Ok(resolved) if !pure_builtin(resolved.implementation) => Some(format!(
                             "host-dependent or nondeterministic builtin {:?}",
                             resolved.implementation
                         )),
+                        // A call into another project of the closure links at build time.
+                        Err(_) if programs.len() > 1 => None,
                         Err(_) => Some("library import requires its controlled fixture".into()),
                         _ => None,
                     }
@@ -518,10 +628,39 @@ fn worker(path: &Path, directory: &Path) -> Result<Vec<Row>, Box<dyn std::error:
         .globals
         .iter()
         .filter(|g| ident(&g.name) && !unsupported_snapshot(&g.ty))
+        // A project's globals belong to several modules; only the entry module's own
+        // can be named unqualified from the probe.
+        .filter(|g| {
+            project.is_none()
+                || source
+                    .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .any(|word| word.eq_ignore_ascii_case(&g.name))
+        })
         .map(|g| g.name.clone())
         .collect();
+    let entry_procedures: Vec<String> = {
+        let parsed = calcvba_syntax::parse(&source);
+        parsed
+            .syntax()
+            .child_nodes()
+            .into_iter()
+            .filter_map(|node| node.proc_name_token().map(|t| t.text.to_string()))
+            .collect()
+    };
     let mut rows = Vec::new();
     for (index, procedure) in core.procs.iter().enumerate() {
+        // The hidden module initializer is not a source procedure; it runs inside every entry.
+        if procedure.name.starts_with("__vba_") {
+            continue;
+        }
+        // A project's other procedures have their own rows from their own files.
+        if project.is_some()
+            && !entry_procedures
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case(&procedure.name))
+        {
+            continue;
+        }
         let mut row = Row::skipped(path, &procedure.name, "");
         if let Some(reason) = refusal.as_ref().or(effect.as_ref()) {
             row.detail = reason.clone();
@@ -553,14 +692,28 @@ fn worker(path: &Path, directory: &Path) -> Result<Vec<Row>, Box<dyn std::error:
         };
         let case = directory.join(index.to_string());
         std::fs::create_dir_all(&case)?;
-        std::fs::write(case.join("Code.bas"), instrumented)?;
-        let project = case.join("Census.basproj");
-        std::fs::write(
-            &project,
-            format!(
-                r#"<Project><PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>Census</ProjectName></PropertyGroup><ItemGroup><Module Include="Code.bas"/><NativeExport Include="CensusProbe"><Module>Code</Module><Procedure>{PROBE}</Procedure></NativeExport></ItemGroup></Project>"#
-            ),
-        )?;
+        let project_file = match &project {
+            None => {
+                std::fs::write(case.join("Code.bas"), instrumented)?;
+                let file = case.join("Census.basproj");
+                std::fs::write(
+                    &file,
+                    format!(
+                        r#"<Project><PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>Census</ProjectName></PropertyGroup><ItemGroup><Module Include="Code.bas"/><NativeExport Include="CensusProbe"><Module>Code</Module><Procedure>{PROBE}</Procedure></NativeExport></ItemGroup></Project>"#
+                    ),
+                )?;
+                file
+            }
+            Some(project) => match project.write(&case, &instrumented, true) {
+                Ok(file) => file,
+                Err(error) => {
+                    row.detail = error;
+                    rows.push(row);
+                    continue;
+                }
+            },
+        };
+        let project = project_file;
         let result = (|| -> Result<(), String> {
             let image_path = build_oximage(&project, &case).map_err(|e| e.to_string())?;
             let mut image =
@@ -580,7 +733,11 @@ fn worker(path: &Path, directory: &Path) -> Result<Vec<Row>, Box<dyn std::error:
                 .position(|g| g.name.eq_ignore_ascii_case(OBSERVED))
                 .ok_or("observed global absent")?;
             let run = |config| {
-                Engine::new(config)
+                let mut engine = Engine::new(config);
+                if has_declares {
+                    engine.set_host_policy(calcvba_hal::HostPolicy::native());
+                }
+                engine
                     .execute_image_with_variant_snapshot(&image)
                     .map_err(|e| e.to_string())
                     .and_then(|values| {

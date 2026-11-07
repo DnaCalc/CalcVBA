@@ -1264,6 +1264,13 @@ enum PointerEntry {
     #[cfg(not(target_os = "windows"))]
     Utf16(Box<[u16]>),
     Bytes(Box<[u8]>),
+    /// The byte payload of a pinned array with the shape it came from, so a write-back
+    /// restores the array's bounds and element type instead of a flat Variant array.
+    ByteArray {
+        bytes: Box<[u8]>,
+        bounds: Vec<crate::safe_array::SafeArrayBound>,
+        element_vt: u16,
+    },
     I8(Box<i8>),
     U8(Box<u8>),
     I16(Box<i16>),
@@ -1292,6 +1299,7 @@ impl PointerEntry {
             #[cfg(not(windows))]
             Self::Utf16(value) => value.len() * 2,
             Self::Bytes(value) => value.len(),
+            Self::ByteArray { bytes, .. } => bytes.len(),
             Self::I8(_) | Self::U8(_) => 1,
             Self::I16(_) | Self::U16(_) | Self::Bool(_) => 2,
             Self::I32(_) | Self::U32(_) | Self::F32(_) => 4,
@@ -1311,6 +1319,7 @@ impl PointerEntry {
             #[cfg(not(target_os = "windows"))]
             Self::Utf16(value) => value.as_mut_ptr().cast(),
             Self::Bytes(value) => value.as_mut_ptr().cast(),
+            Self::ByteArray { bytes, .. } => bytes.as_mut_ptr().cast(),
             Self::I8(value) => (&mut **value as *mut i8).cast(),
             Self::U8(value) => (&mut **value as *mut u8).cast(),
             Self::I16(value) => (&mut **value as *mut i16).cast(),
@@ -1431,6 +1440,16 @@ impl PointerRegistry {
                         .collect(),
                 ),
             )),
+            PointerEntry::ByteArray {
+                bytes,
+                bounds,
+                element_vt,
+            } => crate::safe_array::SafeArray::from_typed_variants_nd(
+                bounds.clone(),
+                *element_vt,
+                bytes.iter().map(|byte| Variant::from_u8(*byte)).collect(),
+            )
+            .map(Variant::from_safearray),
             other => Err(format!(
                 "pointer helper entry {other:?} cannot be read back as a byte-array payload"
             )),
@@ -1662,6 +1681,15 @@ fn byte_array_variant_pointer_entry(
                 ));
             }
         }
+    }
+    // Byte and Variant-of-Byte arrays keep their bounds and element type on write-back.
+    let element_vt = array.element_vartype();
+    if let (Some(bounds), true) = (array.bounds(), matches!(element_vt, 12 | 17)) {
+        return Ok(PointerEntry::ByteArray {
+            bytes: bytes.into_boxed_slice(),
+            bounds,
+            element_vt,
+        });
     }
     Ok(PointerEntry::Bytes(bytes.into_boxed_slice()))
 }

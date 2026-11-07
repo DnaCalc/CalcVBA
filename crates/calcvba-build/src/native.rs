@@ -141,6 +141,14 @@ pub fn check_native_program(
     Ok(())
 }
 
+/// As [`check_native_program`] for a project closure: links the programs the way
+/// the native build does, then checks every function of the linked program.
+pub fn check_native_image(programs: &[calcvba_oxir::OxProgram]) -> Result<(), BuildError> {
+    let linked = crate::native_link::link(programs).map_err(native_error)?;
+    let roots: Vec<_> = (0..linked.funcs.len()).map(calcvba_oxir::FuncId).collect();
+    check_native_program(&linked, &roots)
+}
+
 /// Compile and patch entirely in this process. There is deliberately no cargo,
 /// linker invocation, runtime compiler or interpreter in the resulting DLL.
 pub fn build_native_library(

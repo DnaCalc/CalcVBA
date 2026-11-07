@@ -9,5 +9,6 @@ try {
     New-Item -ItemType Directory -Force $OutDir | Out-Null
     cargo run -p calcvba-pe --release -- finish target/release/calcvba_native_template.dll (Join-Path $OutDir 'calcvba-native-x64.dll')
     cargo run -p calcvba-pe --release -- finish target/release/calcvba-native-exe-template.exe (Join-Path $OutDir 'calcvba-native-x64.exe')
+    cargo run -p calcvba-pe --release -- finish target/release/calcvba-native-com-exe-template.exe (Join-Path $OutDir 'calcvba-native-com-x64.exe')
 }
 finally { Pop-Location }

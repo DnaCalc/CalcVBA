@@ -7,6 +7,7 @@ fn main() {
         println!("cargo:rustc-cdylib-link-arg=/INCREMENTAL:NO");
         for flag in ["/FILEALIGN:4096", "/GUARD:NO", "/INCREMENTAL:NO"] {
             println!("cargo:rustc-link-arg-bin=calcvba-native-exe-template={flag}");
+            println!("cargo:rustc-link-arg-bin=calcvba-native-com-exe-template={flag}");
         }
         let root = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
         let contract = root.join("../../assets/native/helpers-v1.txt");
@@ -20,10 +21,14 @@ fn main() {
         let mut source = String::from("pub fn retain_native_helpers() { unsafe extern \"C\" {\n");
         for name in &names {
             println!("cargo:rustc-link-arg-bin=calcvba-native-exe-template=/EXPORT:{name}");
+            println!("cargo:rustc-link-arg-bin=calcvba-native-com-exe-template=/EXPORT:{name}");
             source.push_str(&format!("fn {name}();\n"));
         }
         println!(
             "cargo:rustc-link-arg-bin=calcvba-native-exe-template=/EXPORT:cvb_template_abi,DATA"
+        );
+        println!(
+            "cargo:rustc-link-arg-bin=calcvba-native-com-exe-template=/EXPORT:cvb_template_abi,DATA"
         );
         source.push_str("}\nstd::hint::black_box([\n");
         for name in &names {

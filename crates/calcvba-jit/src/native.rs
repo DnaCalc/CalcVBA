@@ -1705,6 +1705,9 @@ pub struct NativeWrapperOptions<'a> {
     pub hresult: bool,
     pub string_encoding: u32,
     pub source: &'a str,
+    /// The first ABI parameter is an Automation wrapper whose second word
+    /// retains the native project instance. Only ComExe emits this wrapper.
+    pub com_receiver: bool,
 }
 
 pub fn compile_native_wrapper(
@@ -1718,6 +1721,7 @@ pub fn compile_native_wrapper(
         hresult,
         string_encoding,
         source,
+        com_receiver,
     } = options;
     let aggregate = body.layout.has_result
         && matches!(body.layout.result, ScalarType::Variant | ScalarType::Record);
@@ -1770,8 +1774,9 @@ pub fn compile_native_wrapper(
         b.switch_to_block(entry);
         b.append_block_params_for_function_params(entry);
         let all_params = b.block_params(entry).to_vec();
-        let params =
-            &all_params[usize::from(hidden)..usize::from(hidden) + body.layout.parameters.len()];
+        let mut params = all_params
+            [usize::from(hidden)..usize::from(hidden) + body.layout.parameters.len()]
+            .to_vec();
         let caller_out = if hidden {
             Some(all_params[0])
         } else if hresult && body.layout.has_result {
@@ -1805,6 +1810,11 @@ pub fn compile_native_wrapper(
             b.ins().return_(&[]);
         }
         b.switch_to_block(accepted);
+        if com_receiver {
+            params[0] = b
+                .ins()
+                .load(types::I64, ir::MemFlagsData::new(), params[0], 8);
+        }
         let state = module.declare_data_in_func(runtime.context, b.func);
         let state = b.ins().global_value(types::I64, state);
         let default_source = module.declare_data_in_func(source_data, b.func);

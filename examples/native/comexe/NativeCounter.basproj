@@ -1,0 +1,9 @@
+<Project Sdk="CalcVBA.Sdk/0.1.0">
+  <PropertyGroup>
+    <OutputType>ComExe</OutputType>
+    <ProjectName>CalcVbaNativeCounter27</ProjectName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ClassModule Include="Counter.cls"><Instancing>MultiUse</Instancing></ClassModule>
+  </ItemGroup>
+</Project>

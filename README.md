@@ -64,13 +64,22 @@ runtime-backed Windows COM DLL and type library, currently using VM3. The
 [COM DLL example](examples/comserver) checks source Instancing, class factories
 and an early-bound client in an existing owned Excel, with temporary private
 per-user registration. Explicit JIT selection is refused for this COM host.
-NativeLibrary emits a
-Windows x64 DLL for admitted native exports. Native EXE outputs and JIT-backed
-COM wrappers remain unfinished.
+NativeLibrary emits a Windows x64 DLL for admitted native exports. Exe emits a
+standalone compiled executable. ComExe emits a compiled local COM server with
+class factories, a dual Automation interface and an owning STA message loop.
+Its public boundaries currently support scalar numeric/Boolean values and BSTRs,
+including ByRef parameters. Optional parameters, Variant/Object boundaries,
+exported events and custom interfaces are refused.
 
 ```powershell
 cargo run -p calcvba-cli -- build examples/native/scalars/NativeScalars.basproj --target NativeLibrary --out-dir out
+cargo run -p calcvba-cli -- build examples/native/comexe/NativeCounter.basproj --target ComExe --out-dir out
 ```
+
+`scripts/test-native-com-exe.ps1 -ServerDirectory out -Directory temp/comexe-proof`
+checks the private Counter server with early-bound C#, VM3, JIT and AOT clients,
+then unregisters its HKCU entries. Add `-OracleSession <owned-session>` to check
+the same server with Office in an existing owned Excel session.
 
 The installed CLI patches its embedded template without invoking Rust or a
 linker. Each named export calls a compiled procedure directly. The initial
@@ -94,6 +103,15 @@ Some reachable constructs are still refused; see the
 Generated code uses baseline
 x64 instructions; unsupported reachable code is refused.
 `scripts/build-native-template.ps1` rebuilds the shipped template for developers.
+The execution census runs deterministic parameterless conformance procedures on
+VM3, JIT and AOT, recording agreed/disagreed/not-run results with local values,
+globals, returns and errors. It excludes host-dependent calls and bounds each
+owned worker; missing project context remains explicit:
+
+```powershell
+cargo run -p calcvba-build --example native_execution_census -- conformance temp/execution-census
+```
+
 Projects with `OutputType=Exe` and a parameterless `Sub Main` build to a standalone
 Windows executable with `--target Exe`. For example:
 

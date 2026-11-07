@@ -640,6 +640,7 @@ examples/basic/projects/simple/Math.bas	ok[] raised=false err=FinalErr { number:
 examples/basic/strings.bas	ok[Str("OxVBA"), Str("OxVBA")] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 examples/native/breadth/Breadth.bas	ok[] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 examples/native/classes/Counts.bas	err(bind: unsupported construct: New counter (only project classes are creatable)) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
+examples/native/comexe/Client.bas	err(bind: unsupported construct: New CalcVbaNativeCounter27Lib.Counter (only project classes are creatable)) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 examples/native/declares/Declares.bas	err(VBA error 5) raised=true err=FinalErr { number: 5, source: "VBAProject", description: "operation blocked by host policy", last_dll_error: 0 }
 examples/native/exe/Hello.bas	err(bind: unsupported construct: New Scripting.Dictionary (only project classes are creatable)) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 examples/native/interop/Interop.bas	ok[Raw { tag: 3, bytes: [0, 0, 0, 0, 0, 0, 0, 0], reserved: [0, 0, 0] }, Str(""), Opaque { tag: 9 }, Raw { tag: 3, bytes: [0, 0, 0, 0, 0, 0, 0, 0], reserved: [0, 0, 0] }] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }

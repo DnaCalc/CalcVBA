@@ -25,6 +25,23 @@ pub struct Context {
 pub const WRONG_THREAD: i32 = 1444;
 pub const E_WRONG_THREAD: i32 = 0x8001010eu32 as i32;
 
+/// Native COM hosting metadata contains entry names and identities, never VBA
+/// instructions. The EXE resolves these compiled exports in its own image.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NativeComServer {
+    pub classes: Vec<NativeComClass>,
+}
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NativeComClass {
+    pub name: String,
+    pub clsid: String,
+    pub iid: String,
+    pub constructor: String,
+    pub release: String,
+    pub entries: Vec<String>,
+    pub single_use: bool,
+}
+
 pub fn hresult(code: i32) -> i32 {
     match code {
         0 => 0,

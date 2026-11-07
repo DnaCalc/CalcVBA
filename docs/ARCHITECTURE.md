@@ -159,8 +159,15 @@ zero/E_WRONG_THREAD without touching VBA or caller storage. ErrorPolicy and
 CalcVbaGetLastError describe failures without unwinding through the foreign ABI.
 Native exits share one owning-value cleanup block. Wider numeric carriers are
 admitted to direct native cells; retained host activations keep their existing
-carrier set. Broader
-language coverage and native EXE output remain unfinished. No XLL target,
+carrier set. Exe enters compiled Sub Main directly. ComExe supplies native class
+factories and dual vtables; Automation invokes those same compiled entries through
+type information. Constructors, methods, finalizers and message dispatch run on
+the owning STA. The server loads metadata and a TLB, without an executable OxImage.
+Public scalar/BSTR boundaries include ByRef arguments; optional parameters,
+Variant/Object boundaries, exported events and custom interfaces are refused.
+The private Counter example tests early-bound and Automation clients with
+temporary HKCU registration and exact owned-process cleanup. Broader
+language coverage remains unfinished. No XLL target,
 registration metadata or conversion code belongs to CalcVBA.
 The existing bounded .vbp module-list importer is a compatibility adapter, not
 support for the VB6 project system or forms.

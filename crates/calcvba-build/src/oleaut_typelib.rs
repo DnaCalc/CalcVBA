@@ -59,6 +59,19 @@ pub fn emit_typelib_with_oleaut(
     unsafe { emitter.emit(descriptor) }
 }
 
+pub(crate) fn emit_native_typelib(
+    descriptor: &ComServerDescriptor,
+    path: &Path,
+) -> Result<(), ShimCompileError> {
+    // SAFETY: same owning OleAut builder and stable descriptor storage as the
+    // ordinary emitter. Compiled ComExe thunks implement every admitted slot.
+    unsafe {
+        let mut emitter = OleAutEmitter::create(descriptor, path)?;
+        emitter.native_dual = true;
+        emitter.emit(descriptor)
+    }
+}
+
 #[repr(C)]
 struct IUnknownVtbl {
     query_interface: unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> i32,
@@ -118,6 +131,7 @@ struct ICreateTypeInfoVtbl {
 
 struct OleAutEmitter {
     typelib: ComPtr<ICreateTypeLib2Vtbl>,
+    native_dual: bool,
 }
 
 impl OleAutEmitter {
@@ -155,7 +169,10 @@ impl OleAutEmitter {
             (vtbl.set_doc_string)(typelib.ptr, doc.as_ptr()),
         )?;
         check_hr("ICreateTypeLib2::SetLcid", (vtbl.set_lcid)(typelib.ptr, 0))?;
-        Ok(Self { typelib })
+        Ok(Self {
+            typelib,
+            native_dual: false,
+        })
     }
 
     unsafe fn emit(&mut self, descriptor: &ComServerDescriptor) -> Result<(), ShimCompileError> {
@@ -191,7 +208,8 @@ impl OleAutEmitter {
         &self,
         class: &ComClassDescriptor,
     ) -> Result<CreatedClassInterfaces, ShimCompileError> {
-        let default_interface = if class_supports_bounded_dual_interface(class) {
+        let default_interface = if self.native_dual || class_supports_bounded_dual_interface(class)
+        {
             self.create_dual_default_interface(class)?
         } else {
             self.create_dispatch_interface(
@@ -263,6 +281,20 @@ impl OleAutEmitter {
         created.set_doc_string(&format!("{} Interface", class.class_name))?;
         for (index, member) in class.members.iter().enumerate() {
             let mut builder = FuncDescBuilder::default_vtable(member);
+            if self.native_dual && member.invoke_kind != ComInvokeKind::Method {
+                if class.members[..index]
+                    .iter()
+                    .any(|earlier| earlier.dispid == member.dispid)
+                {
+                    // OleAut names a property once across all its accessors.
+                    builder.names.clear();
+                } else if matches!(
+                    member.invoke_kind,
+                    ComInvokeKind::PropertyPut | ComInvokeKind::PropertyPutRef
+                ) {
+                    builder.names.pop(); // The assignment value is unnamed.
+                }
+            }
             created.add_func_desc(index as u32, &mut builder)?;
         }
         created.lay_out()?;
@@ -401,6 +433,9 @@ impl CreatedTypeInfo {
         let mut names = builder.names_ptrs();
         let hr = (self.create.vtbl().add_func_desc)(self.create.ptr, index, &mut builder.funcdesc);
         check_hr("ICreateTypeInfo::AddFuncDesc", hr)?;
+        if names.is_empty() {
+            return Ok(());
+        }
         let hr = (self.create.vtbl().set_func_and_param_names)(
             self.create.ptr,
             index,

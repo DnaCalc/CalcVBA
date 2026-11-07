@@ -146,7 +146,7 @@ pub fn check_native_program(
 pub fn build_native_library(
     options: &NativeLibraryBuildOptions,
 ) -> Result<NativeLibraryBuildOutput, BuildError> {
-    let output = build_native_artifact(options, false)?;
+    let output = build_native_artifact(options, OutputType::NativeLibrary)?;
     Ok(NativeLibraryBuildOutput {
         dll_path: output.image_path,
         map_path: output.map_path,
@@ -158,7 +158,18 @@ pub fn build_native_library(
 pub fn build_native_executable(
     options: &NativeExecutableBuildOptions,
 ) -> Result<NativeExecutableBuildOutput, BuildError> {
-    let output = build_native_artifact(options, true)?;
+    let output = build_native_artifact(options, OutputType::Exe)?;
+    Ok(NativeExecutableBuildOutput {
+        exe_path: output.image_path,
+        map_path: output.map_path,
+    })
+}
+
+/// Build an out-of-process Automation server containing compiled VBA entries.
+pub fn build_native_com_executable(
+    options: &NativeExecutableBuildOptions,
+) -> Result<NativeExecutableBuildOutput, BuildError> {
+    let output = build_native_artifact(options, OutputType::ComExe)?;
     Ok(NativeExecutableBuildOutput {
         exe_path: output.image_path,
         map_path: output.map_path,
@@ -167,14 +178,11 @@ pub fn build_native_executable(
 
 fn build_native_artifact(
     options: &NativeLibraryBuildOptions,
-    executable: bool,
+    required: OutputType,
 ) -> Result<NativeBuildOutput, BuildError> {
     let mut loaded = load_single_project(&options.project_path)?;
-    let required = if executable {
-        OutputType::Exe
-    } else {
-        OutputType::NativeLibrary
-    };
+    let executable = required != OutputType::NativeLibrary;
+    let com_executable = required == OutputType::ComExe;
     if loaded.output_type != required {
         return Err(native_error(format!(
             "{required:?} requires OutputType={required:?}"
@@ -185,12 +193,20 @@ fn build_native_artifact(
             "NativeLibrary requires at least one NativeExport",
         ));
     }
-    let closure = calcvba_project::load_project_closure(&options.project_path)?;
+    let mut closure = calcvba_project::load_project_closure(&options.project_path)?;
+    let com = if com_executable {
+        Some(crate::native_com::prepare(
+            &mut loaded,
+            closure.last_mut().expect("root project"),
+        )?)
+    } else {
+        None
+    };
     let image = build_artifacts(&closure)?;
     let linked = crate::native_link::link(&image.programs).map_err(native_error)?;
     let program = &linked;
     let mut roots = Vec::new();
-    if executable {
+    if required == OutputType::Exe {
         if !loaded.native_exports.is_empty() {
             return Err(native_error(
                 "Exe selects Sub Main; NativeExport declarations require NativeLibrary",
@@ -228,7 +244,7 @@ fn build_native_artifact(
             });
         roots.push(entry);
     }
-    if !executable {
+    if required != OutputType::Exe {
         for selected in &loaded.native_exports {
             if [
                 "CalcVbaGetLastError",
@@ -318,6 +334,8 @@ fn build_native_artifact(
             path: path.display().to_string(),
             source,
         })?
+    } else if com_executable {
+        include_bytes!("../../../assets/native/calcvba-native-com-x64.exe").to_vec()
     } else if executable {
         include_bytes!("../../../assets/native/calcvba-native-x64.exe").to_vec()
     } else {
@@ -451,6 +469,9 @@ fn build_native_artifact(
                     calcvba_project::StringEncoding::Ansi => 2,
                 },
                 source: &loaded.manifest.project_name,
+                com_receiver: com
+                    .as_ref()
+                    .is_some_and(|com| com.receiver_exports.contains(&selected.exported_name)),
             },
         )
         .map_err(native_error)?;
@@ -472,7 +493,7 @@ fn build_native_artifact(
     let mut patched = template
         .patch(&format!("{name}.{extension}"), &native)
         .map_err(native_error)?;
-    if executable {
+    if required == OutputType::Exe {
         calcvba_pe::patch_executable_entries(&mut patched.bytes, &patched.map, "CalcVbaExeMain")
             .map_err(native_error)?;
     }
@@ -496,6 +517,9 @@ fn build_native_artifact(
     let map_path = options.out_dir.join(format!("{name}.map"));
     write_bytes(&image_path, &patched.bytes)?;
     write_bytes(&map_path, map.as_bytes())?;
+    if let Some(com) = com {
+        crate::native_com::write(&options.out_dir, &name, &com)?;
+    }
     Ok(NativeBuildOutput {
         image_path,
         map_path,

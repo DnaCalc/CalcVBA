@@ -101,7 +101,61 @@ fn collect_exits(node: SyntaxNode<'_>, offsets: &mut Vec<usize>) {
         collect_exits(child, offsets);
     }
 }
+fn scalar_argument(ty: &VarTypeRef) -> Option<(&'static str, &'static str)> {
+    use calcvba_bundle::BuiltinType::*;
+    match ty {
+        VarTypeRef::Builtin(builtin) => Some(match builtin {
+            Boolean => ("Boolean", "True"),
+            Byte => ("Byte", "7"),
+            Integer => ("Integer", "3"),
+            Long => ("Long", "7"),
+            LongLong => ("LongLong", "7"),
+            LongPtr => ("LongPtr", "7"),
+            Single => ("Single", "1.5"),
+            Double => ("Double", "2.5"),
+            Currency => ("Currency", "12.5"),
+            Date => ("Date", "#1/2/2020#"),
+            String => ("String", "\"abc\""),
+        }),
+        VarTypeRef::Variant => Some(("Variant", "5")),
+        _ => None,
+    }
+}
+/// Declarations and call arguments for a procedure's parameters. A
+/// `ParamArray` tail is left empty; every other parameter gets a fixed, typed
+/// value so the same body runs identically on all three backends.
+fn arguments(procedure: &CoreProc) -> Result<(String, Vec<String>), String> {
+    let mut declarations = String::new();
+    let mut names = Vec::new();
+    for (index, param) in procedure.params.iter().enumerate() {
+        if param.variadic {
+            continue;
+        }
+        let name = format!("CvbCensusArg{index}");
+        if let Some((ty, value)) = scalar_argument(&param.ty) {
+            declarations.push_str(&format!("    Dim {name} As {ty}\n    {name} = {value}\n"));
+        } else if let VarTypeRef::Array(element) = &param.ty {
+            let Some((ty, _)) = scalar_argument(element) else {
+                return Err(format!(
+                    "parameter {} is an array of records or objects; the census has no deterministic value for it",
+                    param.name
+                ));
+            };
+            declarations.push_str(&format!(
+                "    Dim {name}() As {ty}\n    ReDim {name}(0 To 1)\n"
+            ));
+        } else {
+            return Err(format!(
+                "parameter {} is an object, record or fixed-length string; its value needs the owning project's context",
+                param.name
+            ));
+        }
+        names.push(name);
+    }
+    Ok((declarations, names))
+}
 fn instrument(source: &str, procedure: &CoreProc, globals: &[String]) -> Result<String, String> {
+    let (argument_declarations, argument_names) = arguments(procedure)?;
     let parsed = calcvba_syntax::parse(source);
     let root = parsed.syntax();
     let node = root
@@ -174,10 +228,18 @@ fn instrument(source: &str, procedure: &CoreProc, globals: &[String]) -> Result<
         } else {
             ""
         };
-        format!("{set}discarded = {}()", procedure.name)
+        format!(
+            "{set}discarded = {}({})",
+            procedure.name,
+            argument_names.join(", ")
+        )
     } else {
-        format!("Call {}()", procedure.name)
+        format!("Call {}({})", procedure.name, argument_names.join(", "))
     };
+    let argument_snapshot = argument_names
+        .iter()
+        .map(|name| format!(" & \"|{name}=\" & CvbCensusValue({name})"))
+        .collect::<String>();
     let global_snapshot = globals
         .iter()
         .map(|name| format!(" & \"|g:{name}=\" & CvbCensusValue({name})"))
@@ -186,9 +248,9 @@ fn instrument(source: &str, procedure: &CoreProc, globals: &[String]) -> Result<
         r#"
 Public Function {PROBE}() As String
     Dim discarded As Variant
-    On Error GoTo failed
+{argument_declarations}    On Error GoTo failed
     {call}
-    {OBSERVED} = "ok:error=" & CStr(CvbCensusError) & ":" & CvbCensusCaptured & "|return=" & CvbCensusValue(discarded){global_snapshot}
+    {OBSERVED} = "ok:error=" & CStr(CvbCensusError) & ":" & CvbCensusCaptured & "|return=" & CvbCensusValue(discarded){argument_snapshot}{global_snapshot}
     {PROBE} = {OBSERVED}
     Exit Function
 failed:
@@ -466,8 +528,18 @@ fn worker(path: &Path, directory: &Path) -> Result<Vec<Row>, Box<dyn std::error:
             rows.push(row);
             continue;
         }
-        if !procedure.params.is_empty() || !ident(&procedure.name) {
-            row.detail = "requires arguments or host/project entry context".into();
+        if matches!(
+            procedure.kind,
+            calcvba_bundle::ProcedureKind::PropertyLet | calcvba_bundle::ProcedureKind::PropertySet
+        ) {
+            row.detail =
+                "property setter is not callable as a procedure; it needs an assignment through its module"
+                    .into();
+            rows.push(row);
+            continue;
+        }
+        if !ident(&procedure.name) {
+            row.detail = "procedure name is not a plain identifier".into();
             rows.push(row);
             continue;
         }

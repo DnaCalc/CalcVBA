@@ -252,6 +252,7 @@ pub(super) const HELPERS: &[(&str, &[ir::Type])] = &[
         "cvb_array_bound",
         &[types::I64, types::I32, types::I32, types::I64],
     ),
+    ("cvb_array_data", &[types::I64, types::I64]),
     (
         "cvb_array_redim_encoded",
         &[
@@ -1194,6 +1195,12 @@ impl Values<'_> {
             }
             OxInst::Ptr { dst, kind, src } => {
                 let address = self.cell(module, b, src);
+                if layout.operand_type(src) == Ok(ScalarType::Array) {
+                    // `VarPtr(a(i))`: the address of the array's element storage.
+                    let out = self.address(b, layout.slot(*dst).unwrap());
+                    self.call(module, b, "cvb_array_data", &[address, out]);
+                    return true;
+                }
                 let value = if matches!(
                     kind,
                     calcvba_oxir::PtrKind::Str | calcvba_oxir::PtrKind::Obj

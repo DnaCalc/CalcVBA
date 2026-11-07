@@ -425,7 +425,8 @@ pub fn compile_native_scalars(
                         ..
                     } => {}
                     OxInst::Ptr { src, kind, .. } => {
-                        if layout.operand_type(src) == Ok(ScalarType::Array)
+                        if (layout.operand_type(src) == Ok(ScalarType::Array)
+                            && !matches!(kind, calcvba_oxir::PtrKind::Var))
                             || (!matches!(
                                 kind,
                                 calcvba_oxir::PtrKind::Str | calcvba_oxir::PtrKind::Obj

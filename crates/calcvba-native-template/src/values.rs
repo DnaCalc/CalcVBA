@@ -858,6 +858,23 @@ pub unsafe extern "C" fn cvb_array_bound(
 }
 
 /// # Safety
+/// array is a live SAFEARRAY* cell; out is a writable pointer-width cell.
+/// Stores the address of the array's first element (`VarPtr(a(0))`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cvb_array_data(array: *const *mut SAFEARRAY, out: *mut i64) -> i32 {
+    boundary(|| {
+        // SAFETY: the cell holds the retained descriptor; its data pointer is read once.
+        unsafe {
+            let array = array.read();
+            if array.is_null() {
+                return Err(9);
+            }
+            out.write((*array).pvData as i64);
+            Ok(())
+        }
+    })
+}
+/// # Safety
 /// cell owns a nullable SAFEARRAY*; pairs spans rank (lower,upper) Long pairs.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn cvb_array_redim_encoded(

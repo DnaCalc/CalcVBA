@@ -1,6 +1,7 @@
 Attribute VB_Name = "ExecutionRegressions"
 Option Explicit
 Public observed As String
+Private Declare PtrSafe Function lstrlenA Lib "kernel32" (ByVal lpString As LongPtr) As Long
 Public Sub Main()
     observed = ExecutionSuite()
 End Sub
@@ -135,3 +136,22 @@ End Function
 Private Sub MutateFirst(ParamArray items() As Variant)
     items(0)(0) = 99
 End Sub
+Public Function ObjectLetSuite() As String
+    Dim o As Object, a% As Object
+    On Error Resume Next
+    o = vbNullString
+    ObjectLetSuite = CStr(Err.Number)
+    Err.Clear
+    o = 1
+    ObjectLetSuite = ObjectLetSuite & ":" & CStr(Err.Number)
+    Err.Clear
+    a = 1
+    ObjectLetSuite = ObjectLetSuite & ":" & CStr(Err.Number)
+End Function
+Public Function ArrayPtrSuite() As String
+    Dim buf(0 To 2) As Byte
+    buf(0) = 65
+    buf(1) = 66
+    buf(2) = 0
+    ArrayPtrSuite = CStr(lstrlenA(VarPtr(buf(0)))) & ":" & CStr(buf(1))
+End Function

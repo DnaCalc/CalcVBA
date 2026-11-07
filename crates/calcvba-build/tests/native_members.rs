@@ -443,6 +443,8 @@ fn execution_census_integer_array_and_copyout_regressions_agree() {
             "DisagreementSuite",
             "424:424:91:9:9:5:99:2:6:6:6:True:False",
         ),
+        ("ObjectLetSuite", "424:424:424"),
+        ("ArrayPtrSuite", "2:66"),
     ];
     let exports = cases.iter().map(|(name, _)| format!("<NativeExport Include=\"{name}\"><Module>ExecutionRegressions</Module><Procedure>{name}</Procedure></NativeExport>")).collect::<String>();
     std::fs::write(&project, format!(r#"<Project><PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>ExecutionRegressions</ProjectName></PropertyGroup><ItemGroup><Module Include="ExecutionRegressions.bas"/>{exports}</ItemGroup></Project>"#)).unwrap();
@@ -452,7 +454,9 @@ fn execution_census_integer_array_and_copyout_regressions_agree() {
             &format!("observed = {name}()"),
         );
         for config in [HostConfig::vm3(), HostConfig::jit()] {
-            let values = Engine::new(config)
+            let mut engine = Engine::new(config);
+            engine.set_host_policy(calcvba_hal::HostPolicy::native());
+            let values = engine
                 .execute_source_with_variant_snapshot_clean(&source)
                 .unwrap();
             assert!(

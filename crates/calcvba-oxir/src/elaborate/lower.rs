@@ -1066,7 +1066,14 @@ impl<'a> Lowerer<'a> {
                         target_type_name: target_type_name.clone(),
                     });
                 }
-                self.store_to_place(place, src)?;
+                // An explicit `Let` into an Object target never completes: the check above always
+                // raises 91 (Variant/Object source) or 424, so no store is emitted. This keeps
+                // verified OxIR free of Integer/String-into-Object copies that no backend runs.
+                if !(*intent == AssignmentIntent::Let
+                    && *target_kind == AssignmentTargetKind::Object)
+                {
+                    self.store_to_place(place, src)?;
+                }
                 self.finish_to(OxTerminator::Jump(s_next), s_next);
                 Ok(())
             }

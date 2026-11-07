@@ -878,6 +878,9 @@ pub unsafe extern "C" fn cvb_array_redim_encoded(
             let pairs = std::slice::from_raw_parts(pairs, rank as usize * 2);
             let mut bounds = Vec::new();
             for pair in pairs.chunks_exact(2) {
+                if pair[1] < pair[0] {
+                    return Err(9);
+                }
                 let count = i64::from(pair[1]) - i64::from(pair[0]) + 1;
                 let count = u32::try_from(count).map_err(|_| 9)?;
                 bounds.push(windows_sys::Win32::System::Com::SAFEARRAYBOUND {
@@ -1204,6 +1207,9 @@ pub unsafe extern "C" fn cvb_record_array_redim(
             let bounds: Vec<_> = pairs
                 .chunks_exact(2)
                 .map(|pair| {
+                    if pair[1] < pair[0] {
+                        return Err(9);
+                    }
                     let count = u32::try_from(i64::from(pair[1]) - i64::from(pair[0]) + 1)
                         .map_err(|_| 9)?;
                     Ok(windows_sys::Win32::System::Com::SAFEARRAYBOUND {

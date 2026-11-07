@@ -86,3 +86,52 @@ End Function
 Private Function AddThree(ByRef value As Variant) As Variant
     AddThree = value + 3
 End Function
+Public Function DisagreementSuite() As String
+    Dim emptyVar As Variant, nothingObj As Object, dyn() As Long, elemArr As Variant
+    Dim big As Double, inf As Double, nan As Double
+    Dim multiplyError As Long, divideError As Long, a As Boolean, b As Boolean, compareError As Long
+    On Error Resume Next
+    With emptyVar
+        .Foo = 1
+    End With
+    DisagreementSuite = CStr(Err.Number)
+    Err.Clear
+    With emptyVar
+        With .inner
+            .Foo = 1
+        End With
+    End With
+    DisagreementSuite = DisagreementSuite & ":" & CStr(Err.Number)
+    Err.Clear
+    With nothingObj
+        .Foo = 1
+    End With
+    DisagreementSuite = DisagreementSuite & ":" & CStr(Err.Number)
+    Err.Clear
+    ReDim dyn(3 To 2)
+    DisagreementSuite = DisagreementSuite & ":" & CStr(Err.Number)
+    Err.Clear
+    ReDim dyn(0 To 0)
+    dyn(0) = 5
+    ReDim Preserve dyn(0 To -1)
+    DisagreementSuite = DisagreementSuite & ":" & CStr(Err.Number) & ":" & CStr(dyn(0))
+    Err.Clear
+    elemArr = Array(5)
+    MutateFirst elemArr
+    DisagreementSuite = DisagreementSuite & ":" & CStr(elemArr(0)) & ":" & CStr(VarType(elemArr(0)))
+    Err.Clear
+    big = 1E+308
+    inf = big * big
+    multiplyError = Err.Number
+    Err.Clear
+    nan = inf / inf
+    divideError = Err.Number
+    Err.Clear
+    a = (inf > 0)
+    b = (nan <> nan)
+    compareError = Err.Number
+    DisagreementSuite = DisagreementSuite & ":" & CStr(multiplyError) & ":" & CStr(divideError) & ":" & CStr(compareError) & ":" & CStr(a) & ":" & CStr(b)
+End Function
+Private Sub MutateFirst(ParamArray items() As Variant)
+    items(0)(0) = 99
+End Sub

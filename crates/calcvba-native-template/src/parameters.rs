@@ -89,6 +89,26 @@ pub unsafe extern "C" fn cvb_paramarray_set(
             let flat = indices.read().checked_sub(lower).ok_or(9)? as usize;
             if let Some(Some((target, target_kind, fixed_len))) = aliases.targets.get(flat).copied()
             {
+                if target_kind == 12 && fixed_len == 0 {
+                    super::values::copy(target as *mut u8, value, 12, from)?;
+                    for (index, alias) in aliases.targets.iter().enumerate() {
+                        if *alias == Some((target, target_kind, fixed_len)) {
+                            let coordinate = lower.checked_add(index as i32).ok_or(6)?;
+                            let status = super::values::cvb_array_set(
+                                array,
+                                &coordinate,
+                                1,
+                                kind,
+                                value,
+                                from,
+                            );
+                            if status != 0 {
+                                return Err(status);
+                            }
+                        }
+                    }
+                    return Ok(());
+                }
                 let input = super::services::read(context, value, from)?;
                 let ty = match target_kind {
                     2 => OxTy::Integer,

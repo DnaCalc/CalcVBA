@@ -2000,8 +2000,20 @@ pub unsafe extern "C" fn rt_arith_v(
             }
         };
         match result {
-            // SAFETY: the exported helper contract guarantees live unique state and aligned, initialized, uniquely writable typed output storage.
-            Ok(value) => unsafe { write_out(state, out, value) },
+            Ok(value) => {
+                let non_finite_double = value.vtype() == VarType::Double
+                    && value.as_f64().is_some_and(|f| !f.is_finite());
+                // SAFETY: the exported helper contract guarantees live unique state and aligned, initialized, uniquely writable typed output storage.
+                let status = unsafe { write_out(state, out, value) };
+                if status != ST_OK {
+                    return status;
+                }
+                if non_finite_double {
+                    // SAFETY: the exported helper contract guarantees that non-null `state` is the live, uniquely borrowed execution state.
+                    return unsafe { seat_fault(state, Fault::from_arith(ArithError::overflow())) };
+                }
+                ST_OK
+            }
             // SAFETY: the exported helper contract guarantees that non-null `state` is the live, uniquely borrowed execution state.
             Err(err) => unsafe { seat_fault(state, Fault::from_arith(err)) },
         }

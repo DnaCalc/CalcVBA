@@ -234,12 +234,6 @@ impl<'p> TypedInterpreter<'p> {
             } => {
                 let ty = self.layout.slots[self.layout.slot(*dst).expect("admitted place")];
                 let bits = frame.read(value, ty)?;
-                if matches!(inst, OxInst::Coerce { .. })
-                    && ty == ScalarType::Double
-                    && !bits.as_double().is_finite()
-                {
-                    return Err(6);
-                }
                 (*dst, bits)
             }
             OxInst::ComCallEarly {
@@ -299,10 +293,12 @@ impl<'p> TypedInterpreter<'p> {
                         ArithOp::Mul => a * b,
                         _ => unreachable!("admitted arithmetic"),
                     };
+                    // SAFETY: `frame` owns all admitted slots for this procedure.
+                    unsafe { frame.write(*dst, ScalarBits::double(value))? };
                     if !value.is_finite() {
                         return Err(6);
                     }
-                    ScalarBits::double(value)
+                    return Ok(());
                 } else {
                     let (a, b) = (a.as_long(), b.as_long());
                     let result = match op {
@@ -333,10 +329,12 @@ impl<'p> TypedInterpreter<'p> {
                     return Err(11);
                 }
                 let value = a / b;
+                // SAFETY: `frame` owns all admitted slots for this procedure.
+                unsafe { frame.write(*dst, ScalarBits::double(value))? };
                 if !value.is_finite() {
                     return Err(6);
                 }
-                (*dst, ScalarBits::double(value))
+                return Ok(());
             }
             OxInst::Neg { dst, src, .. } => {
                 let ty = self.layout.slots[self.layout.slot(*dst).expect("admitted place")];
@@ -372,6 +370,9 @@ impl<'p> TypedInterpreter<'p> {
                     };
                 }
                 let result = if ty == ScalarType::Double {
+                    if a.as_double().is_nan() || b.as_double().is_nan() {
+                        return Err(6);
+                    }
                     compare!(a.as_double(), b.as_double())
                 } else {
                     compare!(a.as_long(), b.as_long())

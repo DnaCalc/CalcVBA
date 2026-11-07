@@ -47,6 +47,9 @@ pub enum BindError {
     /// VBA's compile diagnostic for non-Variant/non-Object `For Each` loop variables.
     #[error("For Each control variable must be Variant or Object")]
     ForEachControlVariableMustBeVariantOrObject,
+    /// VBA's compile diagnostic when `For Each` iterates over a UDT or fixed-length String array.
+    #[error("For Each may not be used on array of user-defined type or fixed-length strings")]
+    ForEachOnUdtOrFixedStringArray,
     /// Too many arguments were supplied for a procedure/property call.
     #[error("Wrong number of arguments or invalid property assignment")]
     WrongNumberOfArgumentsOrInvalidPropertyAssignment,
@@ -173,6 +176,14 @@ impl BindError {
             )
             .with_help(
                 "Use a Variant loop variable for arrays, or a Variant/Object loop variable for collections.",
+            ),
+            BindError::ForEachOnUdtOrFixedStringArray => Diagnostic::error(
+                "BIND-E-FOREACH-UDT-OR-FIXED-STRING-ARRAY",
+                DiagnosticPhase::Bind,
+                "For Each may not be used on array of user-defined type or fixed-length strings",
+            )
+            .with_help(
+                "Use an indexed For loop over UDT or fixed-length String arrays, or use a dynamic String array.",
             ),
             BindError::WrongNumberOfArgumentsOrInvalidPropertyAssignment => Diagnostic::error(
                 "BIND-E-WRONG-NUMBER-OF-ARGUMENTS",

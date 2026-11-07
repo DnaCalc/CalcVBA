@@ -769,7 +769,8 @@ impl<'a> ProcLower<'a> {
                 .foreach_collection()
                 .ok_or_else(|| BindError::Malformed("missing For Each collection".into()))?;
             let source = self.bind_expr(source_node)?;
-            validate_for_each_control_variable(&item_ty, &source.value, &source.ty)?;
+            let resolved_source_ty = self.g.resolve_udt_type(source.ty.clone());
+            validate_for_each_control_variable(&item_ty, &source.value, &resolved_source_ty)?;
             let body = self.bind_loop_body(node.body_block(), LoopContext::For)?;
             Ok(vec![CoreStmt::ForEach {
                 item,
@@ -2284,6 +2285,14 @@ fn validate_for_each_control_variable(
     source: &CoreValue,
     source_ty: &VarTypeRef,
 ) -> Result<(), BindError> {
+    if let VarTypeRef::Array(element) | VarTypeRef::FixedArray { element, .. } = source_ty
+        && matches!(
+            element.as_ref(),
+            VarTypeRef::Udt(_) | VarTypeRef::FixedString(_)
+        )
+    {
+        return Err(BindError::ForEachOnUdtOrFixedStringArray);
+    }
     let source_is_array = matches!(source, CoreValue::ArrayLiteral { .. })
         || matches!(
             source_ty,

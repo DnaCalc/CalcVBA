@@ -668,6 +668,12 @@ pub unsafe extern "C" fn cvb_value_binary(
                 },
                 _ => return Err(5),
             };
+            if family == 0
+                && result.vtype() == VarType::Double
+                && result.as_f64().is_some_and(|f| !f.is_finite())
+            {
+                write(context, out, to, &result)?;
+            }
             finish(context, status)?;
             write(context, out, to, &result)
         }

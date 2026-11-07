@@ -1207,9 +1207,6 @@ impl ScalarLower<'_> {
             } => {
                 let ty = self.layout.slots[self.layout.slot(*dst).expect("admitted slot")];
                 let value = self.operand(b, value, ty);
-                if matches!(inst, OxInst::Coerce { .. }) && ty == ScalarType::Double {
-                    self.finite(b, value);
-                }
                 (*dst, value)
             }
             OxInst::Arith {
@@ -1225,8 +1222,10 @@ impl ScalarLower<'_> {
                         ArithOp::Mul => b.ins().fmul(a, c),
                         _ => unreachable!("admitted arithmetic"),
                     };
+                    let slot = self.layout.slot(*dst).expect("admitted destination");
+                    self.store_slot(b, slot, self.layout.slots[slot], value);
                     self.finite(b, value);
-                    value
+                    return;
                 } else {
                     let a = b.ins().sextend(types::I64, a);
                     let c = b.ins().sextend(types::I64, c);
@@ -1256,8 +1255,10 @@ impl ScalarLower<'_> {
                 let bad = b.ins().fcmp(ir::condcodes::FloatCC::Equal, c, zero);
                 self.fail_if(b, bad, 11);
                 let value = b.ins().fdiv(a, c);
+                let slot = self.layout.slot(*dst).expect("admitted destination");
+                self.store_slot(b, slot, self.layout.slots[slot], value);
                 self.finite(b, value);
-                (*dst, value)
+                return;
             }
             OxInst::Neg { dst, src, .. } => {
                 let ty = self.layout.slots[self.layout.slot(*dst).expect("admitted destination")];
@@ -1283,6 +1284,8 @@ impl ScalarLower<'_> {
                 let a = self.operand(b, lhs, ty);
                 let c = self.operand(b, rhs, ty);
                 let value = if ty == ScalarType::Double {
+                    let bad = b.ins().fcmp(ir::condcodes::FloatCC::Unordered, a, c);
+                    self.fail_if(b, bad, 6);
                     b.ins().fcmp(float_compare_cc(*op), a, c)
                 } else {
                     b.ins().icmp(int_compare_cc(*op), a, c)

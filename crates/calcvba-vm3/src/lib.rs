@@ -556,6 +556,7 @@ impl<'h> Vm3<'h> {
                 calcvba_bundle::array_runtime::unallocated_typed_array(&element)
                     .map_err(|e| Vm3Error::Fault(Fault::new(7, e)))
             }
+            OxTy::Object(_) => Ok(Variant::nothing()),
             _ => Ok(Variant::empty()),
         }
     }
@@ -5288,7 +5289,13 @@ impl<'h> Vm3<'h> {
         out: Result<Variant, ArithError>,
     ) -> Result<(), Vm3Error> {
         let v = out.map_err(|e| Vm3Error::Fault(Fault::from_arith(e)))?;
-        self.store(dst, v)
+        let non_finite_double =
+            v.vtype() == VarType::Double && v.as_f64().is_some_and(|f| !f.is_finite());
+        self.store(dst, v)?;
+        if non_finite_double {
+            return Err(Vm3Error::Fault(Fault::from_arith(ArithError::overflow())));
+        }
+        Ok(())
     }
 
     /// Resolve an [`OxPlace`] against the top frame to a concrete frame-stack [`Loc`],
@@ -5893,16 +5900,13 @@ fn invoke_kind_to_dynamic(k: TypeLibMemberInvokeKind) -> DynamicCallKind {
 }
 
 /// Coerce a value to an object reference (mirrors vm2's `variant_to_object`): an unset object
-/// reference (`Object`/`Empty`/`Null` with no instance) is "Object variable not set" (91),
+/// reference (`Object` with no instance) is "Object variable not set" (91),
 /// distinct from a non-object value (424); a bare integer is a legacy compat-identity handle.
 fn variant_to_object(value: &Variant) -> Result<ObjectRef, Vm3Error> {
     if let Some(object) = value.as_object_ref() {
         return Ok(object);
     }
-    if matches!(
-        value.vtype(),
-        VarType::Object | VarType::Empty | VarType::Null
-    ) {
+    if value.vtype() == VarType::Object {
         return Err(Vm3Error::Fault(Fault::new(
             91,
             "Object variable or With block variable not set",

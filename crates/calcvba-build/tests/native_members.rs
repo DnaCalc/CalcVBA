@@ -439,6 +439,10 @@ fn execution_census_integer_array_and_copyout_regressions_agree() {
         ("RandomAritySuite", "True:True:True:True"),
         ("CounterSuite", "2:5:3:4"),
         ("NestedCallSuite", "2:10:3:10"),
+        (
+            "DisagreementSuite",
+            "424:424:91:9:9:5:99:2:6:6:6:True:False",
+        ),
     ];
     let exports = cases.iter().map(|(name, _)| format!("<NativeExport Include=\"{name}\"><Module>ExecutionRegressions</Module><Procedure>{name}</Procedure></NativeExport>")).collect::<String>();
     std::fs::write(&project, format!(r#"<Project><PropertyGroup><OutputType>NativeLibrary</OutputType><ProjectName>ExecutionRegressions</ProjectName></PropertyGroup><ItemGroup><Module Include="ExecutionRegressions.bas"/>{exports}</ItemGroup></Project>"#)).unwrap();

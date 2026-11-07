@@ -3086,10 +3086,7 @@ pub(crate) unsafe fn variant_to_project_object_for_jit(
     if let Some(object) = value.as_object_ref() {
         return Ok(object);
     }
-    if matches!(
-        value.vtype(),
-        VarType::Object | VarType::Empty | VarType::Null
-    ) {
+    if value.vtype() == VarType::Object {
         // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
         return Err(unsafe { rt_raise_runtime_error_number(state, 91) });
     }

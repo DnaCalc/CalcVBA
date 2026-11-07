@@ -14160,195 +14160,188 @@ End Sub
         );
     }
 
+    fn assert_jit_matches_vm3_fixed_string_for_each_compile_error(source: &str) {
+        let vm3 = run(Executor::Vm3, source);
+        let jit = run(Executor::Jit, source);
+        assert!(vm3.unsupported.is_none(), "vm3 unsupported: {vm3:?}");
+        assert!(jit.unsupported.is_none(), "jit unsupported: {jit:?}");
+        assert!(!vm3.raised, "vm3 should fail at bind time: {vm3:?}");
+        assert!(!jit.raised, "jit should fail at bind time: {jit:?}");
+        assert_eq!(jit.result, vm3.result);
+        assert_eq!(
+            vm3.result,
+            Err(
+                "bind: For Each may not be used on array of user-defined type or fixed-length strings"
+                    .to_string()
+            )
+        );
+    }
+
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_dynamic_basic() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_DYNAMIC_BASIC,
-            Variant::from_i32(9651),
         );
     }
 
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_dynamic_item_after_completion_bundle() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_DYNAMIC_ITEM_AFTER_COMPLETION_BUNDLE,
-            Variant::from_i32(7),
         );
     }
 
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_dynamic_width_bundle() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_DYNAMIC_WIDTH_BUNDLE,
-            Variant::from_i32(16542),
         );
     }
 
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_dynamic_multidim_item_after_completion_bundle() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_DYNAMIC_MULTIDIM_ITEM_AFTER_COMPLETION_BUNDLE,
-            Variant::from_i32(7),
         );
     }
 
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_dynamic_multidim_width_bundle() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_DYNAMIC_MULTIDIM_WIDTH_BUNDLE,
-            Variant::from_i32(22_454),
         );
     }
 
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_dynamic_multidim_order() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_DYNAMIC_MULTIDIM_ORDER,
-            Variant::from_i32(13_119),
         );
     }
 
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_dynamic_3d_order() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_DYNAMIC_3D_ORDER,
-            Variant::from_i32(28_111),
         );
     }
 
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_dynamic_3d_item_after_completion_bundle() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_DYNAMIC_3D_ITEM_AFTER_COMPLETION_BUNDLE,
-            Variant::from_i32(7),
         );
     }
 
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_dynamic_3d_width_bundle() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_DYNAMIC_3D_WIDTH_BUNDLE,
-            Variant::from_i32(48_484),
         );
     }
 
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_dynamic_4d_order() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_DYNAMIC_4D_ORDER,
-            Variant::from_i32(61_958),
         );
     }
 
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_dynamic_4d_item_after_completion_bundle() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_DYNAMIC_4D_ITEM_AFTER_COMPLETION_BUNDLE,
-            Variant::from_i32(7),
         );
     }
 
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_dynamic_4d_width_bundle() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_DYNAMIC_4D_WIDTH_BUNDLE,
-            Variant::from_i32(110_115),
         );
     }
 
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_fixed_basic() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_FIXED_BASIC,
-            Variant::from_i32(9651),
         );
     }
 
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_fixed_item_after_completion_bundle() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_FIXED_ITEM_AFTER_COMPLETION_BUNDLE,
-            Variant::from_i32(7),
         );
     }
 
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_fixed_width_bundle() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_FIXED_WIDTH_BUNDLE,
-            Variant::from_i32(16542),
         );
     }
 
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_fixed_multidim_item_after_completion_bundle() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_FIXED_MULTIDIM_ITEM_AFTER_COMPLETION_BUNDLE,
-            Variant::from_i32(7),
         );
     }
 
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_fixed_multidim_width_bundle() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_FIXED_MULTIDIM_WIDTH_BUNDLE,
-            Variant::from_i32(22_454),
         );
     }
 
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_fixed_multidim_order() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_FIXED_MULTIDIM_ORDER,
-            Variant::from_i32(13_119),
         );
     }
 
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_fixed_3d_order() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_FIXED_3D_ORDER,
-            Variant::from_i32(28_111),
         );
     }
 
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_fixed_3d_item_after_completion_bundle() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_FIXED_3D_ITEM_AFTER_COMPLETION_BUNDLE,
-            Variant::from_i32(7),
         );
     }
 
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_fixed_3d_width_bundle() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_FIXED_3D_WIDTH_BUNDLE,
-            Variant::from_i32(48_484),
         );
     }
 
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_fixed_4d_order() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_FIXED_4D_ORDER,
-            Variant::from_i32(61_958),
         );
     }
 
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_fixed_4d_item_after_completion_bundle() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_FIXED_4D_ITEM_AFTER_COMPLETION_BUNDLE,
-            Variant::from_i32(7),
         );
     }
 
     #[test]
     fn jit_matches_vm3_for_each_fixed_string_array_fixed_4d_width_bundle() {
-        assert_jit_matches_vm3_contains(
+        assert_jit_matches_vm3_fixed_string_for_each_compile_error(
             JIT_FOR_EACH_FIXED_STRING_ARRAY_FIXED_4D_WIDTH_BUNDLE,
-            Variant::from_i32(110_115),
         );
     }
 

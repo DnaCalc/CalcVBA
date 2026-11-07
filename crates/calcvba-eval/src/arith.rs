@@ -630,7 +630,7 @@ fn cmp_order(
         return right_num.map(|_| std::cmp::Ordering::Equal);
     }
     match (left_num, right_num) {
-        (Ok(a), Ok(b)) => Ok(a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)),
+        (Ok(a), Ok(b)) => a.partial_cmp(&b).ok_or_else(ArithError::overflow),
         // A non-numeric operand falls back to a string comparison.
         _ => Ok(calcvba_runtime::string_compare::compare_utf16(
             &as_string(l).encode_utf16().collect::<Vec<_>>(),

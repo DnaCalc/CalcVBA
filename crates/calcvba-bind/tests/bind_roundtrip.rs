@@ -5746,6 +5746,26 @@ fn file_io_lowers_to_vba_filesystem_externs() {
     );
 }
 
+#[test]
+fn for_each_over_fixed_length_string_array_is_rejected() {
+    let fixed_dim = "Sub Main()\n    Dim a(1 To 2) As String * 4\n    Dim item As Variant\n    For Each item In a\n    Next item\nEnd Sub\n";
+    let err = bind_program(&manifest(fixed_dim), &NullTypeLibs).unwrap_err();
+    assert!(
+        err.to_string().contains(
+            "For Each may not be used on array of user-defined type or fixed-length strings"
+        ),
+        "unexpected error: {err}"
+    );
+    let dyn_redim = "Sub Main()\n    Dim a() As String * 4\n    ReDim a(1 To 2)\n    Dim item As Variant\n    For Each item In a\n    Next item\nEnd Sub\n";
+    let err = bind_program(&manifest(dyn_redim), &NullTypeLibs).unwrap_err();
+    assert!(
+        err.to_string().contains(
+            "For Each may not be used on array of user-defined type or fixed-length strings"
+        ),
+        "unexpected error: {err}"
+    );
+}
+
 /// True if any statement still lowers a *migrated* file id to `CoreCallee::Native`.
 fn contains_file_native(program: &CoreProgram) -> bool {
     fn value_native(v: &CoreValue) -> Option<NativeImplId> {

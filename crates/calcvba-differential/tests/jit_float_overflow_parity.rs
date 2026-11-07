@@ -61,15 +61,12 @@ fn jit_single_overflow_matches_vm3() {
 
 #[test]
 fn jit_double_overflow_matches_vm3() {
-    // This compares the existing generic route only. Excel raises error 6 and
-    // preserves the overflowed assignment under Resume Next; the full store/
-    // fault-order correction remains CORE-3 bd-59co.2.4.3. The admitted typed
-    // scalar family separately proves unhandled overflow on both backends.
     for src in [
         double("    a = 1E308\n    b = a + a\n"),
         double("    a = 1E308\n    b = a * 10\n"),
     ] {
         assert_jit_matches_vm3(&src);
+        assert_both_overflow(&src);
     }
 }
 

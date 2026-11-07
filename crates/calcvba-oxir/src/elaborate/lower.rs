@@ -997,6 +997,54 @@ impl<'a> Lowerer<'a> {
                 target_name,
                 target_type_name,
             } => {
+                if *intent != AssignmentIntent::Set
+                    && *target_kind != AssignmentTargetKind::Object
+                    && matches!(self.place_static_ty(place), Some(OxTy::Double))
+                {
+                    let inner = match value {
+                        CoreValue::Coerce {
+                            value: inner,
+                            to: coreir::CoerceTarget::Numeric(NumericCoerceTarget::Double),
+                        } => inner.as_ref(),
+                        other => other,
+                    };
+                    if let CoreValue::Binary {
+                        op: op @ (CoreBinOp::Add | CoreBinOp::Sub | CoreBinOp::Mul | CoreBinOp::Div),
+                        lhs,
+                        rhs,
+                        num,
+                        ..
+                    } = inner
+                        && (*op == CoreBinOp::Div
+                            || matches!(
+                                *num,
+                                NumericMode::Widening
+                                    | NumericMode::Checked(NumericCoerceTarget::Double)
+                            ))
+                    {
+                        let (l, _) = self.lower_value(lhs)?;
+                        let (r, _) = self.lower_value(rhs)?;
+                        let dst = self.simple_place(place)?;
+                        if *op == CoreBinOp::Div {
+                            self.emit(OxInst::Div {
+                                dst,
+                                lhs: l,
+                                rhs: r,
+                            });
+                        } else {
+                            let aop = arith_op(*op).expect("arith op");
+                            self.emit(OxInst::Arith {
+                                dst,
+                                op: aop,
+                                lhs: l,
+                                rhs: r,
+                                mode: NumericMode::Checked(NumericCoerceTarget::Double),
+                            });
+                        }
+                        self.finish_to(OxTerminator::Jump(s_next), s_next);
+                        return Ok(());
+                    }
+                }
                 let expected_ty = self.expected_new_record_ty(place, target_type_name.as_str());
                 let (src, src_ty) = match value {
                     CoreValue::NewRecord { fields } => {

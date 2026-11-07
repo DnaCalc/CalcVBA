@@ -471,7 +471,7 @@ pub unsafe extern "C" fn evaluate(
                 let bits = slot.bits();
                 // SAFETY: the shared kernel produced the exact checked carrier;
                 // its owned result remains live through this retaining store.
-                unsafe {
+                let status = unsafe {
                     write_slot(
                         raw,
                         layout.slot(dst).expect("admitted destination"),
@@ -479,7 +479,23 @@ pub unsafe extern "C" fn evaluate(
                         &bits,
                     )
                 }
-                .map_or_else(|e| e, |()| 0)
+                .map_or_else(|e| e, |()| 0);
+                if status != 0 {
+                    return status;
+                }
+                if matches!(inst, OxInst::Arith { .. } | OxInst::Div { .. })
+                    && match &value {
+                        Value::Double(f) => !f.is_finite(),
+                        Value::Variant(v) => {
+                            v.vtype() == VarType::Double
+                                && v.as_f64().is_some_and(|f| !f.is_finite())
+                        }
+                        _ => false,
+                    }
+                {
+                    return 6;
+                }
+                0
             }
             Err(error) => error,
         }

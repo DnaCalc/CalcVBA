@@ -946,12 +946,7 @@ pub fn compile_native_scalars(
                         let from = plan.layout.operand_type(src).expect("admitted conversion");
                         let input = lower.operand(&mut b, src, from);
                         let value = match (from, to) {
-                            (from, to) if from == to => {
-                                if to == ScalarType::Double {
-                                    lower.finite(&mut b, input);
-                                }
-                                input
-                            }
+                            (from, to) if from == to => input,
                             (ScalarType::Double, ScalarType::Long) => {
                                 let helper = module.declare_func_in_func(long_from_f64, b.func);
                                 let call = b.ins().call(helper, &[runtime, input, call_output_ptr]);

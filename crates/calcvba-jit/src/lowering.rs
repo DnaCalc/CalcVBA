@@ -1253,10 +1253,8 @@ impl<'a> LowerFunc<'a> {
                         ArithOp::Mul => builder.ins().fmul(lhs, rhs),
                         _ => unreachable!("checked Double op above"),
                     };
-                    // Generic Double overflow fault/store ordering remains a
-                    // recorded VBA gap under CORE-3; admitted primary entries
-                    // have their own unhandled scalar-fault convention.
-                    self.emit_store_f64(builder, module, *dst, value)
+                    self.emit_store_f64(builder, module, *dst, value)?;
+                    self.emit_overflow_if_not_finite(builder, module, value, false)
                 }
                 ty => Err(JitError::unsupported(format!(
                     "M4-4 lowers checked arithmetic only for current Long/Integer/Byte/LongLong/Currency/Single/Double destinations, got {ty:?} at {dst:?}"
@@ -1485,16 +1483,31 @@ impl<'a> LowerFunc<'a> {
                             (Some(FloatCompareLane::Single), Some(FloatCompareLane::Single)) => {
                                 let lhs = self.lower_operand_f32(builder, module, lhs)?;
                                 let rhs = self.lower_operand_f32(builder, module, rhs)?;
+                                let ordered =
+                                    builder
+                                        .ins()
+                                        .fcmp(ir::condcodes::FloatCC::Ordered, lhs, rhs);
+                                self.emit_overflow_unless(builder, module, ordered)?;
                                 builder.ins().fcmp(float_compare_cc(*op), lhs, rhs)
                             }
                             (Some(FloatCompareLane::Double), Some(FloatCompareLane::Double)) => {
                                 let lhs = self.lower_operand_f64(builder, module, lhs)?;
                                 let rhs = self.lower_operand_f64(builder, module, rhs)?;
+                                let ordered =
+                                    builder
+                                        .ins()
+                                        .fcmp(ir::condcodes::FloatCC::Ordered, lhs, rhs);
+                                self.emit_overflow_unless(builder, module, ordered)?;
                                 builder.ins().fcmp(float_compare_cc(*op), lhs, rhs)
                             }
                             (Some(FloatCompareLane::Date), Some(FloatCompareLane::Date)) => {
                                 let lhs = self.lower_operand_date_f64(builder, module, lhs)?;
                                 let rhs = self.lower_operand_date_f64(builder, module, rhs)?;
+                                let ordered =
+                                    builder
+                                        .ins()
+                                        .fcmp(ir::condcodes::FloatCC::Ordered, lhs, rhs);
+                                self.emit_overflow_unless(builder, module, ordered)?;
                                 builder.ins().fcmp(float_compare_cc(*op), lhs, rhs)
                             }
                             _ => {
@@ -4230,14 +4243,22 @@ impl<'a> LowerFunc<'a> {
         let is_finite = builder
             .ins()
             .fcmp(ir::condcodes::FloatCC::LessThanOrEqual, abs, max);
+        self.emit_overflow_unless(builder, module, is_finite)
+    }
 
+    fn emit_overflow_unless(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        module: &mut impl Module,
+        ok_cond: Value,
+    ) -> Result<(), JitError> {
         let seat_block = builder.create_block();
         let merge_block = builder.create_block();
         builder.append_block_param(merge_block, types::I32);
         let ok_status = builder.ins().iconst(types::I32, i64::from(ST_OK));
         builder
             .ins()
-            .brif(is_finite, merge_block, &[ok_status.into()], seat_block, &[]);
+            .brif(ok_cond, merge_block, &[ok_status.into()], seat_block, &[]);
 
         builder.switch_to_block(seat_block);
         builder.seal_block(seat_block);

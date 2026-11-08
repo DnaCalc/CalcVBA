@@ -360,6 +360,7 @@ pub(crate) fn read_project(bytes: &[u8], limits: &ReadLimits) -> Result<Project>
         properties.codepage,
     )?;
     check_protection(&project_stream)?;
+    let classes = declared_classes(&project_stream)?;
     properties.help_file = if let Some(path) = project_stream
         .lines()
         .find_map(|line| line.strip_prefix("HelpFile=\"")?.strip_suffix('"'))
@@ -413,6 +414,17 @@ pub(crate) fn read_project(bytes: &[u8], limits: &ReadLimits) -> Result<Project>
             }
         }
     }
+    // A PROJECT Class= line names a class module of the directory: never a procedural module,
+    // never a module the directory lacks.
+    for class in &classes {
+        match modules.iter().find(|m| m.name.to_lowercase() == *class) {
+            None => return Err(invalid("PROJECT class is absent from the module directory")),
+            Some(module) if module.kind == ModuleKind::Standard => {
+                return Err(invalid("PROJECT class conflicts with the module directory"));
+            }
+            Some(_) => {}
+        }
+    }
     let project = Project {
         properties,
         references,
@@ -423,6 +435,34 @@ pub(crate) fn read_project(bytes: &[u8], limits: &ReadLimits) -> Result<Project>
     };
     project.validate()?;
     Ok(project)
+}
+
+/// The module names PROJECT declares as classes (lower case), after checking that no module is
+/// declared twice by any of its Module=, Class=, Document= and BaseClass= lines.
+fn declared_classes(project_stream: &str) -> Result<std::collections::BTreeSet<String>> {
+    let mut names = std::collections::BTreeSet::new();
+    let mut classes = std::collections::BTreeSet::new();
+    for line in project_stream.lines() {
+        if line.starts_with('[') {
+            break;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let name = match key {
+            "Module" | "Class" | "BaseClass" => value,
+            "Document" => value.split('/').next().unwrap_or_default(),
+            _ => continue,
+        }
+        .to_lowercase();
+        if name.is_empty() || !names.insert(name.clone()) {
+            return Err(invalid("ambiguous PROJECT module identity"));
+        }
+        if key == "Class" {
+            classes.insert(name);
+        }
+    }
+    Ok(classes)
 }
 
 pub(crate) fn write_project(project: &Project) -> Result<Vec<u8>> {

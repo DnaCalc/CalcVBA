@@ -7,18 +7,26 @@ authors.workspace = true
 repository.workspace = true
 description = "Portable Office VBA project reading, source folders and write-back"
 
+[features]
+# Office files and source folders on disk: the OPC package (zip), compound workbooks and the
+# VBE source-folder format, for CalcVBA's own tools. A host that keeps the package itself passes
+# the vbaProject.bin part as a blob and builds without this feature.
+default = ["files"]
+files = ["dep:zip", "dep:quick-xml", "dep:calcvba-project"]
+
 [dependencies]
 cfb = "0.10"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "2", default-features = false, features = ["deflate"], optional = true }
 codepage = "0.1.3"
 encoding_rs = { version = "0.8.44", default-features = false, features = ["alloc"] }
 calcvba-symbol.workspace = true
-calcvba-project.workspace = true
-quick-xml.workspace = true
+calcvba-project = { workspace = true, optional = true }
+quick-xml = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true

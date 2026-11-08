@@ -27,6 +27,7 @@ impl Default for ReadLimits {
     }
 }
 
+#[cfg(feature = "files")]
 #[derive(Debug, Clone)]
 enum Container {
     Zip { original: Vec<u8>, part: String },
@@ -34,6 +35,7 @@ enum Container {
     Project,
 }
 
+#[cfg(feature = "files")]
 /// A workbook together with its standalone VBA project. Loading never executes VBA.
 #[derive(Debug, Clone)]
 pub struct OfficeFile {
@@ -41,6 +43,7 @@ pub struct OfficeFile {
     container: Container,
     documents: std::collections::BTreeMap<String, String>,
 }
+#[cfg(feature = "files")]
 fn documents(project: &Project) -> std::collections::BTreeMap<String, String> {
     project
         .modules
@@ -54,6 +57,7 @@ fn documents(project: &Project) -> std::collections::BTreeMap<String, String> {
         })
         .collect()
 }
+#[cfg(feature = "files")]
 impl OfficeFile {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
@@ -177,6 +181,7 @@ impl OfficeFile {
     }
 }
 
+#[cfg(feature = "files")]
 fn zip_bytes<R: Read + std::io::Seek>(
     zip: &mut zip::ZipArchive<R>,
     name: &str,
@@ -194,6 +199,7 @@ fn zip_bytes<R: Read + std::io::Seek>(
     }
     Ok(bytes)
 }
+#[cfg(feature = "files")]
 fn relationship(bytes: &[u8], suffix: &str, parent: &str) -> Result<Option<String>> {
     let mut reader = quick_xml::Reader::from_reader(bytes);
     let mut result = None;
@@ -292,12 +298,14 @@ pub(crate) fn stream(cfb: &mut Compound, path: impl AsRef<Path>, limit: usize) -
     }
     Ok(bytes)
 }
+#[cfg(feature = "files")]
 fn extract_project(cfb: &mut Compound, root: &str, limit: usize) -> Result<Vec<u8>> {
     let mut out =
         cfb::CompoundFile::create_with_version(cfb::Version::V3, Cursor::new(Vec::new()))?;
     copy_storage(cfb, root, &mut out, "/", limit)?;
     Ok(out.into_inner().into_inner())
 }
+#[cfg(feature = "files")]
 fn copy_storage(
     source: &mut Compound,
     root: &str,
@@ -602,6 +610,7 @@ pub(crate) fn check_protection(project: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "files")]
 pub(crate) fn export_form(project: &Project, module: &crate::Module) -> Result<(String, Vec<u8>)> {
     let mut source = cfb::CompoundFile::open(Cursor::new(project.original.clone()))?;
     let root = Path::new(&project.root).join(&module.name);
@@ -663,6 +672,7 @@ pub(crate) fn export_form(project: &Project, module: &crate::Module) -> Result<(
     Ok((header.join("\r\n") + "\r\n" + &module.source, frx))
 }
 
+#[cfg(feature = "files")]
 pub(crate) fn import_form(
     out: &mut Compound,
     name: &str,

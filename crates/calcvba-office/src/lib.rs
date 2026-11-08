@@ -4,16 +4,20 @@
 
 pub mod compression;
 mod directory;
+#[cfg(feature = "files")]
 mod folder;
 mod storage;
 use calcvba_symbol::manifest as sym;
 use std::collections::{BTreeMap, BTreeSet};
-pub use storage::{OfficeFile, ReadLimits};
+#[cfg(feature = "files")]
+pub use storage::OfficeFile;
+pub use storage::ReadLimits;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("Office VBA I/O: {0}")]
     Io(#[from] std::io::Error),
+    #[cfg(feature = "files")]
     #[error("Office package: {0}")]
     Zip(#[from] zip::result::ZipError),
     #[error("invalid Office VBA project: {0}")]
@@ -107,6 +111,11 @@ impl Module {
             })
             .collect::<Vec<_>>()
             .join("\r\n")
+    }
+    /// Byte offset of the compressed source in the module's stream (MS-OVBA MODULEOFFSET):
+    /// the compiled performance cache comes before it.
+    pub fn text_offset(&self) -> u32 {
+        self.text_offset
     }
     pub fn attribute(&self, name: &str) -> Option<&str> {
         self.source.lines().find_map(|line| {
@@ -239,8 +248,93 @@ pub struct Project {
     pub(crate) original: Vec<u8>,
 }
 impl Project {
+    /// Reads a `vbaProject.bin` blob: the compound storage, the `dir` stream, the code page,
+    /// the references and every module's decompressed source. Nothing is compiled or run.
     pub fn read_bin(bytes: &[u8]) -> Result<Self> {
         storage::read_project(bytes, &ReadLimits::default())
+    }
+    /// [`Project::read_bin`] under the caller's size limits.
+    pub fn read_bin_with_limits(bytes: &[u8], limits: &ReadLimits) -> Result<Self> {
+        storage::read_project(bytes, limits)
+    }
+    /// Sets the code (the body without `Attribute` lines) of the module `name`, adding a
+    /// standard or class module of that name when the project has none. An existing module
+    /// keeps its kind, stream and `Attribute` lines; a new one gets the attributes the VBE
+    /// writes for its kind. [`Project::to_bin`] then writes the changed project.
+    pub fn put_module(&mut self, name: &str, kind: ModuleKind, code: &str) -> Result<()> {
+        let mut changed = self.clone();
+        changed.put_module_unchecked(name, kind, code)?;
+        changed.validate()?;
+        *self = changed;
+        Ok(())
+    }
+    fn put_module_unchecked(&mut self, name: &str, kind: ModuleKind, code: &str) -> Result<()> {
+        if !valid_name(name) {
+            return Err(invalid(format!("module name {name:?}")));
+        }
+        if code.lines().any(|line| {
+            line.trim_start()
+                .get(..10)
+                .is_some_and(|p| p.eq_ignore_ascii_case("Attribute "))
+        }) {
+            return Err(invalid("module code must not carry Attribute lines"));
+        }
+        let body = code.replace("\r\n", "\n").replace('\n', "\r\n");
+        if let Some(module) = self
+            .modules
+            .iter_mut()
+            .find(|m| m.name.eq_ignore_ascii_case(name))
+        {
+            if module.kind != kind {
+                return Err(Error::Unsupported(format!(
+                    "module {} is a {:?} module, not {kind:?}",
+                    module.name, module.kind
+                )));
+            }
+            let attributes = module
+                .source
+                .lines()
+                .filter(|line| {
+                    line.trim_start()
+                        .to_ascii_lowercase()
+                        .starts_with("attribute ")
+                })
+                .map(|line| format!("{line}\r\n"))
+                .collect::<String>();
+            module.source = attributes + &body;
+        } else {
+            let attributes = match kind {
+                ModuleKind::Standard => format!("Attribute VB_Name = \"{name}\"\r\n"),
+                ModuleKind::Class => format!(
+                    "Attribute VB_Name = \"{name}\"\r\n\
+                     Attribute VB_Base = \"0{{FCFB3D2A-A0FA-1068-A738-08002B3371B5}}\"\r\n\
+                     Attribute VB_GlobalNameSpace = False\r\n\
+                     Attribute VB_Creatable = False\r\n\
+                     Attribute VB_PredeclaredId = False\r\n\
+                     Attribute VB_Exposed = False\r\n\
+                     Attribute VB_TemplateDerived = False\r\n\
+                     Attribute VB_Customizable = False\r\n"
+                ),
+                ModuleKind::Document | ModuleKind::Form => {
+                    return Err(Error::Unsupported(format!(
+                        "a new {kind:?} module needs its host document or designer"
+                    )));
+                }
+            };
+            self.modules.push(Module {
+                name: name.into(),
+                stream_name: name.into(),
+                kind,
+                description: String::new(),
+                help_context: 0,
+                read_only: false,
+                private: false,
+                source: attributes + &body,
+                document_version: None,
+                text_offset: 0,
+            });
+        }
+        Ok(())
     }
     pub fn to_bin(&self) -> Result<Vec<u8>> {
         storage::write_project(self)

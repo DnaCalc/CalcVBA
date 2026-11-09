@@ -1673,7 +1673,11 @@ pub fn str_fn(args: &[Variant]) -> LibResult<Variant> {
     } else {
         body
     };
-    Ok(vstr(if n >= 0.0 { format!(" {body}") } else { body }))
+    Ok(vstr(if n.is_sign_negative() {
+        body
+    } else {
+        format!(" {body}")
+    }))
 }
 /// FIDELITY: parses a leading numeric prefix.
 pub fn val(args: &[Variant]) -> LibResult<Variant> {

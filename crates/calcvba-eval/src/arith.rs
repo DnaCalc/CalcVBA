@@ -262,42 +262,75 @@ pub fn neg(v: &Variant, mode: NumericMode) -> R {
         NumericMode::Checked(ty) if is_integer_target(ty) => {
             coerce_numeric(&Variant::from_i64(typed::checked_i64_neg(int(v)?)?), ty)
         }
+        // Exact scaled negation: going through f64 loses the last Currency digit near the limits.
+        NumericMode::Checked(NumericCoerceTarget::Currency) => {
+            checked_currency(-currency_operand(v)?)
+        }
         NumericMode::Checked(ty) => coerce_numeric(&Variant::from_f64(-num(v)?), ty),
         NumericMode::Widening if is_object_nothing(v) => Err(ArithError::object_not_set()),
         NumericMode::Widening => rt::neg(v).map_err(ArithError::from),
     }
 }
 
-/// The result tag for `\` / `Mod`: the binder always emits `Checked(Long|LongLong)`.
-fn int_result_type(mode: NumericMode) -> NumericCoerceTarget {
+/// The result tag for `\` / `Mod`. The binder emits `Checked(ty)` for typed operands; in the
+/// Variant regime the result takes the wider integer subtype of the operands (`Byte` < `Integer`
+/// < `Long` < `LongLong`, `Empty` counting as `Integer` and any non-integer subtype as `Long`).
+fn int_result_type(mode: NumericMode, l: &Variant, r: &Variant) -> NumericCoerceTarget {
     match mode {
         NumericMode::Checked(ty) => ty,
-        NumericMode::Widening => NumericCoerceTarget::Long,
+        NumericMode::Widening => {
+            let rank = |v: &Variant| match v.vtype() {
+                VarType::Byte => 0,
+                VarType::Integer | VarType::Empty => 1,
+                VarType::LongLong => 3,
+                _ => 2,
+            };
+            match rank(l).max(rank(r)) {
+                0 => NumericCoerceTarget::Byte,
+                1 => NumericCoerceTarget::Integer,
+                2 => NumericCoerceTarget::Long,
+                _ => NumericCoerceTarget::LongLong,
+            }
+        }
     }
+}
+
+/// An operand of `\` or `Mod`, rounded to an integer and range-checked for the operation's
+/// integer width: `Long` unless the operation is `LongLong`. An operand outside that range is
+/// Overflow (error 6) before any division by zero is considered.
+fn int_div_operand(v: &Variant, mode: NumericMode) -> Result<i64, ArithError> {
+    let value = int(v)?;
+    let wide = matches!(mode, NumericMode::Checked(NumericCoerceTarget::LongLong));
+    if !wide && (value < i64::from(i32::MIN) || value > i64::from(i32::MAX)) {
+        return Err(ArithError::overflow());
+    }
+    Ok(value)
 }
 
 pub fn int_div(l: &Variant, r: &Variant, mode: NumericMode) -> R {
     if is_null(l) || is_null(r) {
         return Ok(Variant::null());
     }
-    let b = int(r)?;
+    let a = int_div_operand(l, mode)?;
+    let b = int_div_operand(r, mode)?;
     if b == 0 {
         return Err(ArithError::div_by_zero());
     }
-    let q = typed::checked_i64_binop(CheckedIntBinOp::Div, int(l)?, b)?;
-    coerce_numeric(&Variant::from_i64(q), int_result_type(mode))
+    let q = typed::checked_i64_binop(CheckedIntBinOp::Div, a, b)?;
+    coerce_numeric(&Variant::from_i64(q), int_result_type(mode, l, r))
 }
 
 pub fn modulo(l: &Variant, r: &Variant, mode: NumericMode) -> R {
     if is_null(l) || is_null(r) {
         return Ok(Variant::null());
     }
-    let b = int(r)?;
+    let a = int_div_operand(l, mode)?;
+    let b = int_div_operand(r, mode)?;
     if b == 0 {
         return Err(ArithError::div_by_zero());
     }
-    let m = typed::checked_i64_binop(CheckedIntBinOp::Rem, int(l)?, b)?;
-    coerce_numeric(&Variant::from_i64(m), int_result_type(mode))
+    let m = typed::checked_i64_binop(CheckedIntBinOp::Rem, a, b)?;
+    coerce_numeric(&Variant::from_i64(m), int_result_type(mode, l, r))
 }
 
 // ── Widening (Variant regime) arithmetic ──────────────────────────────────────
@@ -431,6 +464,53 @@ fn as_date(v: Variant) -> Variant {
     }
 }
 
+/// A numeric zero carrying the subtype of `other`, for an `Empty` operand: Office adds, subtracts
+/// and multiplies `Empty` as a zero of the other operand's type (`Empty + CByte(3)` is a `Byte`).
+fn typed_zero_like(other: &Variant) -> Option<Variant> {
+    Some(match other.vtype() {
+        VarType::Byte => Variant::from_u8(0),
+        VarType::Integer => Variant::from_i16(0),
+        VarType::Long => Variant::from_i32(0),
+        VarType::LongLong => Variant::from_i64(0),
+        VarType::Single => Variant::from_f32(0.0),
+        VarType::Double => Variant::from_f64(0.0),
+        VarType::Currency => Variant::from_currency_scaled_i64(0),
+        _ => return None,
+    })
+}
+
+/// Replace an `Empty` operand by a typed zero of the other operand, when the other is numeric.
+fn resolve_empty(l: &Variant, r: &Variant) -> (Variant, Variant) {
+    let l2 = if l.vtype() == VarType::Empty {
+        typed_zero_like(r).unwrap_or_else(|| l.clone())
+    } else {
+        l.clone()
+    };
+    let r2 = if r.vtype() == VarType::Empty {
+        typed_zero_like(l).unwrap_or_else(|| r.clone())
+    } else {
+        r.clone()
+    };
+    (l2, r2)
+}
+
+/// Does exactly one side carry a numeric `String`? Office converts it to `Double`.
+fn has_string_operand(l: &Variant, r: &Variant) -> bool {
+    (l.vtype() == VarType::String) != (r.vtype() == VarType::String)
+}
+
+fn currency_pair_with_float_or_text(l: &Variant, r: &Variant) -> bool {
+    let currency = |v: &Variant| v.vtype() == VarType::Currency;
+    let convertible = |v: &Variant| {
+        exact_currency_operand(v).is_some()
+            || matches!(
+                v.vtype(),
+                VarType::Single | VarType::Double | VarType::String
+            )
+    };
+    (currency(l) || currency(r)) && convertible(l) && convertible(r)
+}
+
 /// VBA `+`: string operands concatenate; otherwise numeric (integer-preserving). A
 /// `Date` operand makes the result a `Date`.
 fn widening_add(l: &Variant, r: &Variant) -> R {
@@ -449,6 +529,10 @@ fn widening_add(l: &Variant, r: &Variant) -> R {
         if l.vtype() == VarType::String || r.vtype() == VarType::String {
             return Err(ArithError::type_mismatch());
         }
+        if typed_zero_like(l).is_some() || typed_zero_like(r).is_some() {
+            let (l2, r2) = resolve_empty(l, r);
+            return widening_add(&l2, &r2);
+        }
         let raw = Variant::from_f64(num(l)? + num(r)?);
         return Ok(if is_date(l) || is_date(r) {
             as_date(raw)
@@ -456,12 +540,10 @@ fn widening_add(l: &Variant, r: &Variant) -> R {
             raw
         });
     }
-    let raw = if l.vtype() == VarType::String || r.vtype() == VarType::String {
-        Variant::from_f64(num(l)? + num(r)?)
-    } else if has_currency_exact_lane(l, r)
-        && (l.vtype() == VarType::Currency || r.vtype() == VarType::Currency)
-    {
+    let raw = if currency_pair_with_float_or_text(l, r) {
         currency_add(l, r)?
+    } else if l.vtype() == VarType::String || r.vtype() == VarType::String {
+        Variant::from_f64(num(l)? + num(r)?)
     } else {
         rt::add(l, r).map_err(ArithError::from)?
     };
@@ -479,10 +561,16 @@ fn widening_sub(l: &Variant, r: &Variant) -> R {
         return Ok(Variant::null());
     }
     reject_object_nothing(l, r)?;
-    let raw = if has_currency_exact_lane(l, r)
-        && (l.vtype() == VarType::Currency || r.vtype() == VarType::Currency)
+    if (l.vtype() == VarType::Empty || r.vtype() == VarType::Empty)
+        && (typed_zero_like(l).is_some() || typed_zero_like(r).is_some())
     {
+        let (l2, r2) = resolve_empty(l, r);
+        return widening_sub(&l2, &r2);
+    }
+    let raw = if currency_pair_with_float_or_text(l, r) {
         currency_sub(l, r)?
+    } else if has_string_operand(l, r) {
+        Variant::from_f64(num(l)? - num(r)?)
     } else {
         rt::sub(l, r).map_err(ArithError::from)?
     };
@@ -497,10 +585,20 @@ fn widening_mul(l: &Variant, r: &Variant) -> R {
     if is_null(l) || is_null(r) {
         return Ok(Variant::null());
     }
+    if (l.vtype() == VarType::Empty || r.vtype() == VarType::Empty)
+        && (typed_zero_like(l).is_some() || typed_zero_like(r).is_some())
+    {
+        let (l2, r2) = resolve_empty(l, r);
+        return widening_mul(&l2, &r2);
+    }
     if has_currency_exact_lane(l, r)
         && (l.vtype() == VarType::Currency || r.vtype() == VarType::Currency)
     {
         return currency_mul(l, r);
+    }
+    if has_string_operand(l, r) {
+        reject_object_nothing(l, r)?;
+        return Ok(Variant::from_f64(num(l)? * num(r)?));
     }
     widen(l, r, rt::mul)
 }
@@ -517,7 +615,12 @@ fn numeric(l: &Variant, r: &Variant, f: impl Fn(f64, f64) -> R) -> R {
 pub fn div(l: &Variant, r: &Variant) -> R {
     numeric(l, r, |a, b| {
         if b == 0.0 {
-            Err(ArithError::div_by_zero())
+            // 0 / 0 is Overflow (error 6) in Office; any other division by zero is error 11.
+            if a == 0.0 {
+                Err(ArithError::overflow())
+            } else {
+                Err(ArithError::div_by_zero())
+            }
         } else {
             Ok(Variant::from_f64(a / b))
         }
@@ -525,6 +628,10 @@ pub fn div(l: &Variant, r: &Variant) -> R {
 }
 pub fn pow(l: &Variant, r: &Variant) -> R {
     numeric(l, r, |a, b| {
+        // Zero raised to a negative power is an invalid procedure call in Office (error 5).
+        if a == 0.0 && b < 0.0 {
+            return Err(ArithError::invalid_call());
+        }
         let value = a.powf(b);
         if value.is_nan() {
             Err(ArithError::invalid_call())

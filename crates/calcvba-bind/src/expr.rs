@@ -271,7 +271,12 @@ impl<'a> ProcLower<'a> {
             // Unary minus is fixed-typed arithmetic: `-ai` (Integer) overflows at
             // `-(-32768)`; the numeric regime rides on the op.
             SyntaxKind::Minus => {
-                let ty = operand.ty.clone();
+                // Negating a `Byte` yields an `Integer` in Office (`-CByte(200)` is -200).
+                let ty = if matches!(operand.ty, VarTypeRef::Builtin(BuiltinType::Byte)) {
+                    builtin(BuiltinType::Integer)
+                } else {
+                    operand.ty.clone()
+                };
                 let value = CoreValue::Unary {
                     op: CoreUnOp::Negate,
                     expr: Box::new(operand.value),
@@ -339,18 +344,9 @@ impl<'a> ProcLower<'a> {
         {
             return Err(BindError::TypeMismatch);
         }
-        // `\` and `Mod` always yield an integer (`LongLong` when either side is 64-bit,
-        // else `Long`); the VM rounds the operands. Every other op's result type comes
-        // from the promotion lattice.
-        let ty = if matches!(op, CoreBinOp::IntDiv | CoreBinOp::Mod) {
-            if self.g.is_longlong(&lhs.ty) || self.g.is_longlong(&rhs.ty) {
-                builtin(BuiltinType::LongLong)
-            } else {
-                builtin(BuiltinType::Long)
-            }
-        } else {
-            self.g.result_type(op, &lhs.ty, &rhs.ty)
-        };
+        // Every op's result type comes from the promotion lattice (`\` and `Mod` yield the
+        // wider integer operand type, `LongLong` when either side is 64-bit).
+        let ty = self.g.result_type(op, &lhs.ty, &rhs.ty);
         // The numeric regime (checked-fixed vs widening) rides on the op itself, so the
         // VM and the JIT type the arithmetic without a separate coercion node.
         let value = CoreValue::Binary {

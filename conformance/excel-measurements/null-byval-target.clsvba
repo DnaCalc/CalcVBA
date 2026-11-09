@@ -1,0 +1,18 @@
+Public Function MString(ByVal x As String) As String
+  MString = "ok"
+End Function
+Public Function MCurrency(ByVal x As Currency) As String
+  MCurrency = "ok"
+End Function
+Public Function MSingle(ByVal x As Single) As String
+  MSingle = "ok"
+End Function
+Public Function MLong(ByVal x As Long) As String
+  MLong = "ok"
+End Function
+Public Function MBoolean(ByVal x As Boolean) As String
+  MBoolean = "ok"
+End Function
+Public Function MInteger(ByVal x As Integer) As String
+  MInteger = "ok"
+End Function

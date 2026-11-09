@@ -2163,6 +2163,15 @@ impl<'a> Lowerer<'a> {
             | CoreBinOp::Mul
             | CoreBinOp::IntDiv
             | CoreBinOp::Mod => numeric_result_type(num),
+            // `Byte`, `Integer` and `Single` operands divide to a `Single` in Office.
+            CoreBinOp::Div
+                if matches!(
+                    num,
+                    NumericMode::Checked(calcvba_bundle::NumericCoerceTarget::Single)
+                ) =>
+            {
+                OxTy::Single
+            }
             CoreBinOp::Div | CoreBinOp::Pow => OxTy::Double,
             CoreBinOp::Concat => OxTy::Str,
             CoreBinOp::Eq
@@ -2193,6 +2202,19 @@ impl<'a> Lowerer<'a> {
                     lhs: l,
                     rhs: r,
                     mode: num,
+                });
+            }
+            CoreBinOp::Div if ty == OxTy::Single => {
+                let wide = self.new_temp(OxTy::Double);
+                self.emit(OxInst::Div {
+                    dst: OxPlace::Temp(wide),
+                    lhs: l,
+                    rhs: r,
+                });
+                self.emit(OxInst::Coerce {
+                    dst,
+                    src: OxOperand::temp(wide),
+                    target: OxCoerceTarget::Numeric(calcvba_bundle::NumericCoerceTarget::Single),
                 });
             }
             CoreBinOp::Div => {

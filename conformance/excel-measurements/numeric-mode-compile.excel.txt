@@ -1,0 +1,691 @@
+# Excel 16.0 build 20527 VBE Debug > Compile outcomes (one module per case). Format: '### id<TAB>status<TAB>dialog' then the module source.
+### asg.Byte.from.Integer	ok	
+Function Run() As String
+  Dim bR As Byte, iA As Integer
+  On Error Resume Next
+  bR = iA
+  Run = "ran"
+End Function
+### asg.Byte.from.Long	ok	
+Function Run() As String
+  Dim bR As Byte, lA As Long
+  On Error Resume Next
+  bR = lA
+  Run = "ran"
+End Function
+### asg.Byte.from.LongLong	compile-error	Type mismatch
+Function Run() As String
+  Dim bR As Byte, qA As LongLong
+  On Error Resume Next
+  bR = qA
+  Run = "ran"
+End Function
+### asg.Byte.from.Single	ok	
+Function Run() As String
+  Dim bR As Byte, sA As Single
+  On Error Resume Next
+  bR = sA
+  Run = "ran"
+End Function
+### asg.Byte.from.Double	ok	
+Function Run() As String
+  Dim bR As Byte, dA As Double
+  On Error Resume Next
+  bR = dA
+  Run = "ran"
+End Function
+### asg.Byte.from.Currency	ok	
+Function Run() As String
+  Dim bR As Byte, cA As Currency
+  On Error Resume Next
+  bR = cA
+  Run = "ran"
+End Function
+### asg.Integer.from.Byte	ok	
+Function Run() As String
+  Dim iR As Integer, bA As Byte
+  On Error Resume Next
+  iR = bA
+  Run = "ran"
+End Function
+### asg.Integer.from.Long	ok	
+Function Run() As String
+  Dim iR As Integer, lA As Long
+  On Error Resume Next
+  iR = lA
+  Run = "ran"
+End Function
+### asg.Integer.from.LongLong	compile-error	Type mismatch
+Function Run() As String
+  Dim iR As Integer, qA As LongLong
+  On Error Resume Next
+  iR = qA
+  Run = "ran"
+End Function
+### asg.Integer.from.Single	ok	
+Function Run() As String
+  Dim iR As Integer, sA As Single
+  On Error Resume Next
+  iR = sA
+  Run = "ran"
+End Function
+### asg.Integer.from.Double	ok	
+Function Run() As String
+  Dim iR As Integer, dA As Double
+  On Error Resume Next
+  iR = dA
+  Run = "ran"
+End Function
+### asg.Integer.from.Currency	ok	
+Function Run() As String
+  Dim iR As Integer, cA As Currency
+  On Error Resume Next
+  iR = cA
+  Run = "ran"
+End Function
+### asg.Long.from.Byte	ok	
+Function Run() As String
+  Dim lR As Long, bA As Byte
+  On Error Resume Next
+  lR = bA
+  Run = "ran"
+End Function
+### asg.Long.from.Integer	ok	
+Function Run() As String
+  Dim lR As Long, iA As Integer
+  On Error Resume Next
+  lR = iA
+  Run = "ran"
+End Function
+### asg.Long.from.LongLong	compile-error	Type mismatch
+Function Run() As String
+  Dim lR As Long, qA As LongLong
+  On Error Resume Next
+  lR = qA
+  Run = "ran"
+End Function
+### asg.Long.from.Single	ok	
+Function Run() As String
+  Dim lR As Long, sA As Single
+  On Error Resume Next
+  lR = sA
+  Run = "ran"
+End Function
+### asg.Long.from.Double	ok	
+Function Run() As String
+  Dim lR As Long, dA As Double
+  On Error Resume Next
+  lR = dA
+  Run = "ran"
+End Function
+### asg.Long.from.Currency	ok	
+Function Run() As String
+  Dim lR As Long, cA As Currency
+  On Error Resume Next
+  lR = cA
+  Run = "ran"
+End Function
+### asg.LongLong.from.Byte	ok	
+Function Run() As String
+  Dim qR As LongLong, bA As Byte
+  On Error Resume Next
+  qR = bA
+  Run = "ran"
+End Function
+### asg.LongLong.from.Integer	ok	
+Function Run() As String
+  Dim qR As LongLong, iA As Integer
+  On Error Resume Next
+  qR = iA
+  Run = "ran"
+End Function
+### asg.LongLong.from.Long	ok	
+Function Run() As String
+  Dim qR As LongLong, lA As Long
+  On Error Resume Next
+  qR = lA
+  Run = "ran"
+End Function
+### asg.LongLong.from.Single	ok	
+Function Run() As String
+  Dim qR As LongLong, sA As Single
+  On Error Resume Next
+  qR = sA
+  Run = "ran"
+End Function
+### asg.LongLong.from.Double	ok	
+Function Run() As String
+  Dim qR As LongLong, dA As Double
+  On Error Resume Next
+  qR = dA
+  Run = "ran"
+End Function
+### asg.LongLong.from.Currency	ok	
+Function Run() As String
+  Dim qR As LongLong, cA As Currency
+  On Error Resume Next
+  qR = cA
+  Run = "ran"
+End Function
+### asg.Single.from.Byte	ok	
+Function Run() As String
+  Dim sR As Single, bA As Byte
+  On Error Resume Next
+  sR = bA
+  Run = "ran"
+End Function
+### asg.Single.from.Integer	ok	
+Function Run() As String
+  Dim sR As Single, iA As Integer
+  On Error Resume Next
+  sR = iA
+  Run = "ran"
+End Function
+### asg.Single.from.Long	ok	
+Function Run() As String
+  Dim sR As Single, lA As Long
+  On Error Resume Next
+  sR = lA
+  Run = "ran"
+End Function
+### asg.Single.from.LongLong	ok	
+Function Run() As String
+  Dim sR As Single, qA As LongLong
+  On Error Resume Next
+  sR = qA
+  Run = "ran"
+End Function
+### asg.Single.from.Double	ok	
+Function Run() As String
+  Dim sR As Single, dA As Double
+  On Error Resume Next
+  sR = dA
+  Run = "ran"
+End Function
+### asg.Single.from.Currency	ok	
+Function Run() As String
+  Dim sR As Single, cA As Currency
+  On Error Resume Next
+  sR = cA
+  Run = "ran"
+End Function
+### asg.Double.from.Byte	ok	
+Function Run() As String
+  Dim dR As Double, bA As Byte
+  On Error Resume Next
+  dR = bA
+  Run = "ran"
+End Function
+### asg.Double.from.Integer	ok	
+Function Run() As String
+  Dim dR As Double, iA As Integer
+  On Error Resume Next
+  dR = iA
+  Run = "ran"
+End Function
+### asg.Double.from.Long	ok	
+Function Run() As String
+  Dim dR As Double, lA As Long
+  On Error Resume Next
+  dR = lA
+  Run = "ran"
+End Function
+### asg.Double.from.LongLong	ok	
+Function Run() As String
+  Dim dR As Double, qA As LongLong
+  On Error Resume Next
+  dR = qA
+  Run = "ran"
+End Function
+### asg.Double.from.Single	ok	
+Function Run() As String
+  Dim dR As Double, sA As Single
+  On Error Resume Next
+  dR = sA
+  Run = "ran"
+End Function
+### asg.Double.from.Currency	ok	
+Function Run() As String
+  Dim dR As Double, cA As Currency
+  On Error Resume Next
+  dR = cA
+  Run = "ran"
+End Function
+### asg.Currency.from.Byte	ok	
+Function Run() As String
+  Dim cR As Currency, bA As Byte
+  On Error Resume Next
+  cR = bA
+  Run = "ran"
+End Function
+### asg.Currency.from.Integer	ok	
+Function Run() As String
+  Dim cR As Currency, iA As Integer
+  On Error Resume Next
+  cR = iA
+  Run = "ran"
+End Function
+### asg.Currency.from.Long	ok	
+Function Run() As String
+  Dim cR As Currency, lA As Long
+  On Error Resume Next
+  cR = lA
+  Run = "ran"
+End Function
+### asg.Currency.from.LongLong	compile-error	Type mismatch
+Function Run() As String
+  Dim cR As Currency, qA As LongLong
+  On Error Resume Next
+  cR = qA
+  Run = "ran"
+End Function
+### asg.Currency.from.Single	ok	
+Function Run() As String
+  Dim cR As Currency, sA As Single
+  On Error Resume Next
+  cR = sA
+  Run = "ran"
+End Function
+### asgq.Byte.add1	compile-error	Type mismatch
+Function Run() As String
+  Dim bR As Byte, qA As LongLong
+  On Error Resume Next
+  bR = qA + 1
+  Run = "ran"
+End Function
+### asgq.Byte.mul2	compile-error	Type mismatch
+Function Run() As String
+  Dim bR As Byte, qA As LongLong
+  On Error Resume Next
+  bR = qA * 2
+  Run = "ran"
+End Function
+### asgq.Byte.addq	compile-error	Type mismatch
+Function Run() As String
+  Dim bR As Byte, qA As LongLong
+  On Error Resume Next
+  bR = qA + qA
+  Run = "ran"
+End Function
+### asgq.Byte.neg	compile-error	Type mismatch
+Function Run() As String
+  Dim bR As Byte, qA As LongLong
+  On Error Resume Next
+  bR = -qA
+  Run = "ran"
+End Function
+### asgq.Byte.abs	compile-error	Type mismatch
+Function Run() As String
+  Dim bR As Byte, qA As LongLong
+  On Error Resume Next
+  bR = Abs(qA)
+  Run = "ran"
+End Function
+### asgq.Byte.lit	ok	
+Function Run() As String
+  Dim bR As Byte, qA As LongLong
+  On Error Resume Next
+  bR = 3
+  Run = "ran"
+End Function
+### asgq.Byte.clnglng	compile-error	Type mismatch
+Function Run() As String
+  Dim bR As Byte, qA As LongLong
+  On Error Resume Next
+  bR = CLngLng(3)
+  Run = "ran"
+End Function
+### asgq.Byte.cvar	ok	
+Function Run() As String
+  Dim bR As Byte, qA As LongLong
+  On Error Resume Next
+  bR = CVar(qA)
+  Run = "ran"
+End Function
+### asgq.Integer.add1	compile-error	Type mismatch
+Function Run() As String
+  Dim iR As Integer, qA As LongLong
+  On Error Resume Next
+  iR = qA + 1
+  Run = "ran"
+End Function
+### asgq.Integer.mul2	compile-error	Type mismatch
+Function Run() As String
+  Dim iR As Integer, qA As LongLong
+  On Error Resume Next
+  iR = qA * 2
+  Run = "ran"
+End Function
+### asgq.Integer.addq	compile-error	Type mismatch
+Function Run() As String
+  Dim iR As Integer, qA As LongLong
+  On Error Resume Next
+  iR = qA + qA
+  Run = "ran"
+End Function
+### asgq.Integer.neg	compile-error	Type mismatch
+Function Run() As String
+  Dim iR As Integer, qA As LongLong
+  On Error Resume Next
+  iR = -qA
+  Run = "ran"
+End Function
+### asgq.Integer.abs	compile-error	Type mismatch
+Function Run() As String
+  Dim iR As Integer, qA As LongLong
+  On Error Resume Next
+  iR = Abs(qA)
+  Run = "ran"
+End Function
+### asgq.Integer.lit	ok	
+Function Run() As String
+  Dim iR As Integer, qA As LongLong
+  On Error Resume Next
+  iR = 3
+  Run = "ran"
+End Function
+### asgq.Integer.clnglng	compile-error	Type mismatch
+Function Run() As String
+  Dim iR As Integer, qA As LongLong
+  On Error Resume Next
+  iR = CLngLng(3)
+  Run = "ran"
+End Function
+### asgq.Integer.cvar	ok	
+Function Run() As String
+  Dim iR As Integer, qA As LongLong
+  On Error Resume Next
+  iR = CVar(qA)
+  Run = "ran"
+End Function
+### asgq.Long.add1	compile-error	Type mismatch
+Function Run() As String
+  Dim lR As Long, qA As LongLong
+  On Error Resume Next
+  lR = qA + 1
+  Run = "ran"
+End Function
+### asgq.Long.mul2	compile-error	Type mismatch
+Function Run() As String
+  Dim lR As Long, qA As LongLong
+  On Error Resume Next
+  lR = qA * 2
+  Run = "ran"
+End Function
+### asgq.Long.addq	compile-error	Type mismatch
+Function Run() As String
+  Dim lR As Long, qA As LongLong
+  On Error Resume Next
+  lR = qA + qA
+  Run = "ran"
+End Function
+### asgq.Long.neg	compile-error	Type mismatch
+Function Run() As String
+  Dim lR As Long, qA As LongLong
+  On Error Resume Next
+  lR = -qA
+  Run = "ran"
+End Function
+### asgq.Long.abs	compile-error	Type mismatch
+Function Run() As String
+  Dim lR As Long, qA As LongLong
+  On Error Resume Next
+  lR = Abs(qA)
+  Run = "ran"
+End Function
+### asgq.Long.lit	ok	
+Function Run() As String
+  Dim lR As Long, qA As LongLong
+  On Error Resume Next
+  lR = 3
+  Run = "ran"
+End Function
+### asgq.Long.clnglng	compile-error	Type mismatch
+Function Run() As String
+  Dim lR As Long, qA As LongLong
+  On Error Resume Next
+  lR = CLngLng(3)
+  Run = "ran"
+End Function
+### asgq.Long.cvar	ok	
+Function Run() As String
+  Dim lR As Long, qA As LongLong
+  On Error Resume Next
+  lR = CVar(qA)
+  Run = "ran"
+End Function
+### asgq.Single.add1	ok	
+Function Run() As String
+  Dim sR As Single, qA As LongLong
+  On Error Resume Next
+  sR = qA + 1
+  Run = "ran"
+End Function
+### asgq.Single.mul2	ok	
+Function Run() As String
+  Dim sR As Single, qA As LongLong
+  On Error Resume Next
+  sR = qA * 2
+  Run = "ran"
+End Function
+### asgq.Single.addq	ok	
+Function Run() As String
+  Dim sR As Single, qA As LongLong
+  On Error Resume Next
+  sR = qA + qA
+  Run = "ran"
+End Function
+### asgq.Single.neg	ok	
+Function Run() As String
+  Dim sR As Single, qA As LongLong
+  On Error Resume Next
+  sR = -qA
+  Run = "ran"
+End Function
+### asgq.Single.abs	ok	
+Function Run() As String
+  Dim sR As Single, qA As LongLong
+  On Error Resume Next
+  sR = Abs(qA)
+  Run = "ran"
+End Function
+### asgq.Single.lit	ok	
+Function Run() As String
+  Dim sR As Single, qA As LongLong
+  On Error Resume Next
+  sR = 3
+  Run = "ran"
+End Function
+### asgq.Single.clnglng	ok	
+Function Run() As String
+  Dim sR As Single, qA As LongLong
+  On Error Resume Next
+  sR = CLngLng(3)
+  Run = "ran"
+End Function
+### asgq.Single.cvar	ok	
+Function Run() As String
+  Dim sR As Single, qA As LongLong
+  On Error Resume Next
+  sR = CVar(qA)
+  Run = "ran"
+End Function
+### asgq.Double.add1	ok	
+Function Run() As String
+  Dim dR As Double, qA As LongLong
+  On Error Resume Next
+  dR = qA + 1
+  Run = "ran"
+End Function
+### asgq.Double.mul2	ok	
+Function Run() As String
+  Dim dR As Double, qA As LongLong
+  On Error Resume Next
+  dR = qA * 2
+  Run = "ran"
+End Function
+### asgq.Double.addq	ok	
+Function Run() As String
+  Dim dR As Double, qA As LongLong
+  On Error Resume Next
+  dR = qA + qA
+  Run = "ran"
+End Function
+### asgq.Double.neg	ok	
+Function Run() As String
+  Dim dR As Double, qA As LongLong
+  On Error Resume Next
+  dR = -qA
+  Run = "ran"
+End Function
+### asgq.Double.abs	ok	
+Function Run() As String
+  Dim dR As Double, qA As LongLong
+  On Error Resume Next
+  dR = Abs(qA)
+  Run = "ran"
+End Function
+### asgq.Double.lit	ok	
+Function Run() As String
+  Dim dR As Double, qA As LongLong
+  On Error Resume Next
+  dR = 3
+  Run = "ran"
+End Function
+### asgq.Double.clnglng	ok	
+Function Run() As String
+  Dim dR As Double, qA As LongLong
+  On Error Resume Next
+  dR = CLngLng(3)
+  Run = "ran"
+End Function
+### asgq.Double.cvar	ok	
+Function Run() As String
+  Dim dR As Double, qA As LongLong
+  On Error Resume Next
+  dR = CVar(qA)
+  Run = "ran"
+End Function
+### asgq.Currency.add1	compile-error	Type mismatch
+Function Run() As String
+  Dim cR As Currency, qA As LongLong
+  On Error Resume Next
+  cR = qA + 1
+  Run = "ran"
+End Function
+### asgq.Currency.mul2	compile-error	Type mismatch
+Function Run() As String
+  Dim cR As Currency, qA As LongLong
+  On Error Resume Next
+  cR = qA * 2
+  Run = "ran"
+End Function
+### asgq.Currency.addq	compile-error	Type mismatch
+Function Run() As String
+  Dim cR As Currency, qA As LongLong
+  On Error Resume Next
+  cR = qA + qA
+  Run = "ran"
+End Function
+### asgq.Currency.neg	compile-error	Type mismatch
+Function Run() As String
+  Dim cR As Currency, qA As LongLong
+  On Error Resume Next
+  cR = -qA
+  Run = "ran"
+End Function
+### asgq.Currency.abs	compile-error	Type mismatch
+Function Run() As String
+  Dim cR As Currency, qA As LongLong
+  On Error Resume Next
+  cR = Abs(qA)
+  Run = "ran"
+End Function
+### asgq.Currency.lit	ok	
+Function Run() As String
+  Dim cR As Currency, qA As LongLong
+  On Error Resume Next
+  cR = 3
+  Run = "ran"
+End Function
+### asgq.Currency.clnglng	compile-error	Type mismatch
+Function Run() As String
+  Dim cR As Currency, qA As LongLong
+  On Error Resume Next
+  cR = CLngLng(3)
+  Run = "ran"
+End Function
+### asgq.Currency.cvar	ok	
+Function Run() As String
+  Dim cR As Currency, qA As LongLong
+  On Error Resume Next
+  cR = CVar(qA)
+  Run = "ran"
+End Function
+### call.byval_ll_to_long	compile-error	Type mismatch
+Function F(ByVal x As Long) As Long
+  F = x
+End Function
+Function Run() As String
+  Dim q As LongLong
+  q = 3
+  Run = CStr(F(q))
+End Function
+### call.byref_ll_to_long	compile-error	ByRef argument type mismatch
+Function F(x As Long) As Long
+  F = x
+End Function
+Function Run() As String
+  Dim q As LongLong
+  q = 3
+  Run = CStr(F(q))
+End Function
+### call.byref_long_to_ll	compile-error	ByRef argument type mismatch
+Function F(x As LongLong) As LongLong
+  F = x
+End Function
+Function Run() As String
+  Dim q As Long
+  q = 3
+  Run = CStr(F(q))
+End Function
+### call.byref_int_to_long	compile-error	ByRef argument type mismatch
+Function F(x As Long) As Long
+  F = x
+End Function
+Function Run() As String
+  Dim q As Integer
+  q = 3
+  Run = CStr(F(q))
+End Function
+### call.byref_dbl_to_long	compile-error	ByRef argument type mismatch
+Function F(x As Long) As Long
+  F = x
+End Function
+Function Run() As String
+  Dim q As Double
+  q = 3
+  Run = CStr(F(q))
+End Function
+### call.ret_ll_as_long	compile-error	Type mismatch
+Function F() As Long
+  Dim q As LongLong
+  q = 3
+  F = q
+End Function
+Function Run() As String
+  Run = CStr(F())
+End Function
+### call.const_ll_to_long	compile-error	Type mismatch
+Const C As LongLong = 3
+Function Run() As String
+  Dim l As Long
+  l = C
+  Run = CStr(l)
+End Function
+### call.select_ll	compile-error	Type mismatch
+Function Run() As String
+  Dim q As LongLong, l As Long
+  q = 3: l = q \ 1
+  Run = CStr(l)
+End Function

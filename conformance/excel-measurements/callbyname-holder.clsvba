@@ -1,0 +1,63 @@
+Private m_I As Integer
+Private m_L As Long
+Private m_S As Single
+Private m_D As Double
+Private m_B As Byte
+Private m_C As Currency
+Private m_Bo As Boolean
+Private m_St As String
+Private m_Dt As Date
+Public Property Let PI(ByVal v As Integer)
+  m_I = v
+End Property
+Public Property Get PI() As Integer
+  PI = m_I
+End Property
+Public Property Let PL(ByVal v As Long)
+  m_L = v
+End Property
+Public Property Get PL() As Long
+  PL = m_L
+End Property
+Public Property Let PS(ByVal v As Single)
+  m_S = v
+End Property
+Public Property Get PS() As Single
+  PS = m_S
+End Property
+Public Property Let PD(ByVal v As Double)
+  m_D = v
+End Property
+Public Property Get PD() As Double
+  PD = m_D
+End Property
+Public Property Let PB(ByVal v As Byte)
+  m_B = v
+End Property
+Public Property Get PB() As Byte
+  PB = m_B
+End Property
+Public Property Let PC(ByVal v As Currency)
+  m_C = v
+End Property
+Public Property Get PC() As Currency
+  PC = m_C
+End Property
+Public Property Let PBo(ByVal v As Boolean)
+  m_Bo = v
+End Property
+Public Property Get PBo() As Boolean
+  PBo = m_Bo
+End Property
+Public Property Let PSt(ByVal v As String)
+  m_St = v
+End Property
+Public Property Get PSt() As String
+  PSt = m_St
+End Property
+Public Property Let PDt(ByVal v As Date)
+  m_Dt = v
+End Property
+Public Property Get PDt() As Date
+  PDt = m_Dt
+End Property

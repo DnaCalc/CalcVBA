@@ -42,12 +42,13 @@ fn cstr_of_null_raises_invalid_use_of_null() {
 }
 
 #[test]
-fn empty_plus_numeric_promotes_to_double_but_empty_plus_string_is_mismatch() {
+fn empty_plus_numeric_takes_the_numeric_subtype_but_empty_plus_string_is_mismatch() {
     assert_eq!(
         value(
             "    Dim e As Variant\n    r = CStr(VarType(e + 1)) & \":\" & TypeName(e + 1) & \":\" & CStr(e + 1) & \":\" & CStr(VarType(1 + e))"
         ),
-        canon(&Variant::from_string("5:Double:1:5"))
+        // Measured against Excel 16.0 build 20527: Empty acts as a zero of the other operand's type.
+        canon(&Variant::from_string("2:Integer:1:2"))
     );
     assert_eq!(error_number("    Dim e As Variant\n    r = e + \"5\""), 13);
 }

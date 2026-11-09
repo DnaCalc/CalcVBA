@@ -586,7 +586,7 @@ conformance/tests/stdlib_math_primitives.bas	err(VBA error 5) raised=true err=Fi
 conformance/tests/stdlib_math_transcendental_identity.bas	ok[Float { tag: 5, bits: 0 }, Float { tag: 5, bits: 4607182418800017408 }, Float { tag: 5, bits: 0 }, Float { tag: 5, bits: 4607182418800017408 }] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/tests/stdlib_numeric_expansion.bas	ok[Str("1F"), Str("21"), Float { tag: 5, bits: 4609254701104630741 }, Float { tag: 5, bits: 13865525992074447140 }] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/tests/stdlib_random_financial_expansion.bas	err(bind: Wrong number of arguments or invalid property assignment) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
-conformance/tests/stdlib_rnd_isolated.bas	ok[Float { tag: 5, bits: 4629841154425225216 }, Float { tag: 5, bits: 4618441417868443648 }] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
+conformance/tests/stdlib_rnd_isolated.bas	ok[Single(1107558400), Single(1086324736)] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/tests/stdlib_slice_ops.bas	ok[Str("12"), Str("45"), Str("234")] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/tests/stdlib_string_expansion_core.bas	ok[Str("    "), Str("AAA"), Str("B"), Raw { tag: 3, bytes: [66, 0, 0, 0, 0, 0, 0, 0], reserved: [0, 0, 0] }, Str("777")] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/tests/stdlib_time_serial_value.bas	ok[Float { tag: 7, bits: 4586370784521979749 }, Float { tag: 7, bits: 4586370784521979749 }] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
@@ -652,5 +652,5 @@ examples/native/scalars/Scalars.bas	err(bind: Variable not defined) raised=false
 examples/native/widths/Wide.bas	ok[] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 examples/native/xll/PlainXll.bas	err(bind: Sub or Function not defined) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 examples/native/xll/XlValues.bas	ok[Raw { tag: 3, bytes: [0, 0, 0, 0, 0, 0, 0, 0], reserved: [0, 0, 0] }] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
-examples/reflection_wrapper/business_calc/BusinessCalc.bas	err(VBA error 11) raised=true err=FinalErr { number: 11, source: "VBAProject", description: "Division by zero", last_dll_error: 0 }
+examples/reflection_wrapper/business_calc/BusinessCalc.bas	err(VBA error 6) raised=true err=FinalErr { number: 6, source: "VBAProject", description: "Overflow", last_dll_error: 0 }
 examples/reflection_wrapper/engineering_math/EngineeringMath.bas	ok[] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }

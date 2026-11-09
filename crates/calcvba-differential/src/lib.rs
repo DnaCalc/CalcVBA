@@ -15686,8 +15686,8 @@ End Sub
 
     #[test]
     fn jit_matches_vm3_stdlib_rnd_isolated() {
-        assert_jit_matches_vm3_contains(JIT_STDLIB_RND_ISOLATED, Variant::from_f64(33.0));
-        assert_jit_matches_vm3_contains(JIT_STDLIB_RND_ISOLATED, Variant::from_f64(6.0));
+        assert_jit_matches_vm3_contains(JIT_STDLIB_RND_ISOLATED, Variant::from_f32(33.0));
+        assert_jit_matches_vm3_contains(JIT_STDLIB_RND_ISOLATED, Variant::from_f32(6.0));
     }
 
     #[test]

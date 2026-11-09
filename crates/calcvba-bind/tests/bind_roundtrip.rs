@@ -2043,14 +2043,22 @@ fn byref_variant_to_scalar_is_bind_error() {
     );
 }
 
+/// Office accepts a typed variable for a ByRef Variant parameter (measured, Excel 16.0 build
+/// 20527: conformance/excel-measurements/numeric-mode-matrix.bas passes every numeric type to
+/// `Rz(e As Long, val As Variant)`). The engine binds it with a temporary copy; Office aliases
+/// the variable and coerces writes back to its type (bd-n12y6).
 #[test]
-fn byref_variant_requires_variant_lvalue() {
-    let src = "Sub Main()\n    Dim x As Long\n    Capture x\nEnd Sub\n\nSub Capture(ByRef target As Variant)\n    target = 7\nEnd Sub\n";
-    let err = bind_error(src);
-    assert!(
-        err.contains("ByRefTypeMismatch") && err.contains("Variant") && err.contains("Long"),
-        "unexpected error: {err}"
-    );
+fn byref_variant_accepts_typed_variable() {
+    let src = "Sub Main()
+    Dim x As Long
+    Capture x
+End Sub
+
+Sub Capture(ByRef target As Variant)
+    target = 7
+End Sub
+";
+    bind(src);
 }
 
 #[test]

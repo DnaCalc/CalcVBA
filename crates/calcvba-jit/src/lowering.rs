@@ -1031,6 +1031,21 @@ impl<'a> LowerFunc<'a> {
                         (ArithOp::Mul, NumericMode::Checked(NumericCoerceTarget::Integer)) => {
                             self.imports.mul_i16_slot
                         }
+                        // `\` and `Mod` keep the Integer/Byte result type of narrow operands; the
+                        // runtime helper rounds, range-checks and tags the result.
+                        (
+                            ArithOp::IntDiv | ArithOp::Mod,
+                            NumericMode::Checked(NumericCoerceTarget::Integer),
+                        ) => {
+                            return self.emit_variant_arith_slot_call(
+                                builder,
+                                module,
+                                *dst,
+                                *op,
+                                *mode,
+                                BinaryVariantOperands { lhs, rhs },
+                            );
+                        }
                         _ => {
                             return Err(JitError::unsupported(format!(
                                 "M4-4 lowers only checked Long/Integer/Byte/LongLong/Currency add/sub/mul, got {op:?} {mode:?}",
@@ -1067,6 +1082,21 @@ impl<'a> LowerFunc<'a> {
                         }
                         (ArithOp::Mul, NumericMode::Checked(NumericCoerceTarget::Byte)) => {
                             self.imports.mul_u8_slot
+                        }
+                        // `\` and `Mod` keep the Integer/Byte result type of narrow operands; the
+                        // runtime helper rounds, range-checks and tags the result.
+                        (
+                            ArithOp::IntDiv | ArithOp::Mod,
+                            NumericMode::Checked(NumericCoerceTarget::Byte),
+                        ) => {
+                            return self.emit_variant_arith_slot_call(
+                                builder,
+                                module,
+                                *dst,
+                                *op,
+                                *mode,
+                                BinaryVariantOperands { lhs, rhs },
+                            );
                         }
                         _ => {
                             return Err(JitError::unsupported(format!(

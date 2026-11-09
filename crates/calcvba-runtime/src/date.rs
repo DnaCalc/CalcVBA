@@ -5,7 +5,78 @@
 
 pub fn parse_date_literal_serial_bits(text: &str) -> Option<u64> {
     let inner = text.strip_prefix('#')?.strip_suffix('#')?.trim();
-    parse_date_text_serial_bits(inner)
+    // A source literal is always month/day/year, never the host locale's order, and may end
+    // in a time (`#6/15/2005 8:30:00 AM#`, `#13:45#`).
+    let mut tokens: Vec<&str> = inner.split_whitespace().collect();
+    let mut time = None;
+    if let Some(last) = tokens.last().copied() {
+        let ampm = last.eq_ignore_ascii_case("am") || last.eq_ignore_ascii_case("pm");
+        if ampm && tokens.len() >= 2 && tokens[tokens.len() - 2].contains(':') {
+            time = parse_time_of_day(tokens[tokens.len() - 2], Some(last));
+            tokens.truncate(tokens.len() - 2);
+        } else if last.contains(':') {
+            time = parse_time_of_day(last, None);
+            tokens.pop();
+        }
+        if time.is_none() && (ampm || last.contains(':')) {
+            return None;
+        }
+    }
+    let date_text = tokens.join(" ");
+    let date_serial = if date_text.is_empty() {
+        0.0
+    } else if let Some(serial) = parse_month_day_year_slashes(&date_text) {
+        serial
+    } else {
+        parse_date_text_serial(&date_text)?
+    };
+    Some((date_serial + time.unwrap_or(0.0)).to_bits())
+}
+
+/// `m/d/yyyy` with numeric parts, always in month-day-year order.
+fn parse_month_day_year_slashes(text: &str) -> Option<f64> {
+    let parts: Vec<&str> = text.split('/').collect();
+    let [month, day, year] = parts.as_slice() else {
+        return None;
+    };
+    let month = month.trim().parse::<i32>().ok()?;
+    let day = day.trim().parse::<i32>().ok()?;
+    let year = year.trim().parse::<i32>().ok()?;
+    packed_date_to_ole_serial(year.saturating_mul(10_000) + month.saturating_mul(100) + day)
+}
+
+/// `h:mm[:ss]` with an optional AM/PM marker, as a fraction of a day.
+fn parse_time_of_day(text: &str, ampm: Option<&str>) -> Option<f64> {
+    let parts: Vec<&str> = text.split(':').collect();
+    if !(2..=3).contains(&parts.len()) {
+        return None;
+    }
+    let mut hour = parts[0].parse::<u32>().ok()?;
+    let minute = parts[1].parse::<u32>().ok()?;
+    let second = parts.get(2).map_or(Some(0), |s| s.parse::<u32>().ok())?;
+    if minute > 59 || second > 59 {
+        return None;
+    }
+    match ampm.map(str::to_ascii_lowercase).as_deref() {
+        Some("am") => {
+            if !(1..=12).contains(&hour) {
+                return None;
+            }
+            hour %= 12;
+        }
+        Some("pm") => {
+            if !(1..=12).contains(&hour) {
+                return None;
+            }
+            hour = hour % 12 + 12;
+        }
+        _ => {
+            if hour > 23 {
+                return None;
+            }
+        }
+    }
+    Some(f64::from(hour * 3600 + minute * 60 + second) / 86_400.0)
 }
 
 pub fn parse_date_text_serial_bits(text: &str) -> Option<u64> {
@@ -144,10 +215,18 @@ mod tests {
     }
 
     #[test]
-    fn date_literals_reject_ambiguous_numeric_orders() {
-        assert_eq!(parse_date_literal_serial_bits("#2/3/2026#"), None);
-        assert_eq!(parse_date_literal_serial_bits("#12/11/2026#"), None);
-        assert!(parse_date_literal_serial_bits("#1/1/2026#").is_some());
+    fn date_literals_are_month_day_year_and_take_a_time() {
+        // A source literal is never read in the host locale's order.
+        let feb3 = parse_date_literal_serial_bits("#2/3/2026#");
+        assert_eq!(feb3, Some(46_056.0f64.to_bits()));
+        let near = |text: &str, want: f64| {
+            let got = f64::from_bits(parse_date_literal_serial_bits(text).expect(text));
+            assert!((got - want).abs() < 1e-9, "{text}: {got} vs {want}");
+        };
+        near("#6/15/2005 8:30:00 AM#", 38_518.0 + 8.5 / 24.0);
+        near("#12/31/1999 11:59:59 PM#", 36_525.0 + 86_399.0 / 86_400.0);
+        near("#13:30#", 13.5 / 24.0);
+        assert_eq!(parse_date_literal_serial_bits("#1/1/2026 13:00 PM#"), None);
     }
 
     #[test]

@@ -149,6 +149,11 @@ impl<'a> ProcLower<'a> {
         // A declared scalar variable holds its declared type: coerce the value to the
         // target type on store (unconditionally — the value's static type is not a
         // reliable proxy for its run-time tag). No-op for Object/Variant/array.
+        if intent == AssignmentIntent::Let
+            && types::is_rejected_longlong_narrowing(self.g.type_ctx, &val.ty, &target_ty)
+        {
+            return Err(BindError::TypeMismatch);
+        }
         let value = self.g.coerce_store(val.value, &target_ty);
         Ok(vec![CoreStmt::Assign {
             place,

@@ -1749,6 +1749,15 @@ pub(crate) unsafe fn seed_jit_member_frame_args(
                 if param_info.variadic && value.safearray_bounds_len().is_none() {
                     return ST_FAULT;
                 }
+                // A late-bound call passing Null to a ByVal scalar parameter is a Type mismatch
+                // (error 13) in Office; early-bound calls report 94 at the call site.
+                if value.vtype() == VarType::Null
+                    && (numeric_call_target(&param.ty).is_some()
+                        || matches!(param.ty, OxTy::Str | OxTy::FixedStr(_)))
+                {
+                    // SAFETY: the live state handle is valid for this call.
+                    return unsafe { rt_raise_type_mismatch(state) };
+                }
                 frame.locals[param_index] =
                     // SAFETY: the current compiled-run boundary owns the live unique state handle;
                     // typed references and owned values remain live and nonaliasing for this call.
@@ -1767,6 +1776,18 @@ pub(crate) unsafe fn seed_jit_member_frame_args(
                 // An omitted ByRef optional gets a private Missing cell, with
                 // no caller alias or copy-out destination.
                 frame.locals[param_index] = value;
+            }
+            // A Null variable passed to a ByVal scalar parameter of a late-bound call.
+            JIT_CALL_ARG_BYREF_ALIAS | JIT_CALL_ARG_BYREF_COPY
+                if !param_info.by_ref
+                    && !param_info.variadic
+                    && (numeric_call_target(&param.ty).is_some()
+                        || matches!(param.ty, OxTy::Str | OxTy::FixedStr(_)))
+                    && call_arg_variant_value(run, arg)
+                        .is_some_and(|value| value.vtype() == VarType::Null) =>
+            {
+                // SAFETY: the live state handle is valid for this call.
+                return unsafe { rt_raise_type_mismatch(state) };
             }
             JIT_CALL_ARG_BYREF_COPY if param_info.by_ref => {
                 if is_jit_variant_carrier_ty(&param.ty) {

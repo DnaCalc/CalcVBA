@@ -503,6 +503,7 @@ impl<'a> ProcLower<'a> {
             && !forced_by_val
             && !self.is_object_default_member_index_expr(expr)
             && let Ok((place, place_ty)) = self.bind_place(expr)
+            && !self.byref_variant_takes_temporary(param, &place_ty)
         {
             if let Some(param) = param {
                 self.ensure_byref_type_compatible(&param.ty, &place_ty)?;
@@ -523,6 +524,9 @@ impl<'a> ProcLower<'a> {
                 let expected = self.g.resolve_udt_type(p.ty.clone());
                 let actual = self.g.resolve_udt_type(bound.ty.clone());
                 ensure_byval_type_compatible(&expected, &actual)?;
+                if types::is_rejected_longlong_narrowing(self.g.type_ctx, &actual, &expected) {
+                    return Err(BindError::TypeMismatch);
+                }
                 if matches!(
                     bound.value,
                     CoreValue::Load(CorePlace::RecordField { .. } | CorePlace::Field { .. })
@@ -551,6 +555,19 @@ impl<'a> ProcLower<'a> {
             return None;
         }
         self.bind_place(expr).map(|(place, _)| place).ok()
+    }
+
+    /// A typed (non-Variant, non-array) variable passed to a ByRef `Variant` parameter is
+    /// accepted by Office VBA: the callee gets a temporary Variant holding a copy, so writes to
+    /// the parameter do not reach the caller's variable. Every other ByRef pairing must match.
+    fn byref_variant_takes_temporary(&self, param: Option<&Param>, actual: &VarTypeRef) -> bool {
+        let Some(param) = param else {
+            return false;
+        };
+        let expected = canonical_byref_type(self.g.resolve_udt_type(param.ty.clone()));
+        let actual = canonical_byref_type(self.g.resolve_udt_type(actual.clone()));
+        matches!(expected, VarTypeRef::Variant)
+            && matches!(actual, VarTypeRef::Builtin(_) | VarTypeRef::Object(_))
     }
 
     fn ensure_byref_type_compatible(

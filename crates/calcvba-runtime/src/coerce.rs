@@ -373,31 +373,14 @@ fn format_vba_currency(scaled: i64) -> String {
     }
 }
 
-/// Format an f64 value the way VBA does: use enough decimal places but
-/// trim trailing zeros. Integers are shown without a decimal point.
-/// Round `v` to `sig` significant decimal digits.
-fn round_to_sig_digits(v: f64, sig: i32) -> f64 {
-    if v == 0.0 || !v.is_finite() {
-        return v;
-    }
-    let magnitude = v.abs().log10().floor() as i32;
-    let decimals = (sig - 1) - magnitude;
-    let factor = 10f64.powi(decimals);
-    (v * factor).round() / factor
-}
-
-/// Format a `Single` the way VBA's `CStr`/`Str`/`Print` does: to the ~7
-/// significant digits of `Single` precision, shortest form. The variant stores a
-/// widened `f64`, and formatting that widened value directly leaks the f32's
-/// imprecision as spurious digits (`CStr(CSng(0.1))` -> "0.10000000149011612").
-/// VBA's `Single`->string conversion (`VarBstrFromR4`) is `%.7g`-style, so
-/// rounding to 7 significant digits before formatting reproduces it
-/// (`CSng(0.1)` -> "0.1", `CSng(1/3)` -> "0.3333333").
-fn format_vba_single(v: f32) -> String {
-    format_vba_f64(round_to_sig_digits(f64::from(v), 7))
-}
-
-fn format_vba_f64(v: f64) -> String {
+/// Render a floating-point value the way VBA's `CStr`, `Str`, `&` and `Print` do
+/// (`VarBstrFromR8`/`VarBstrFromR4`, measured against Excel 16.0 build 20527).
+///
+/// The value is rounded to `digits` significant decimal digits (15 for `Double`, 7 for
+/// `Single`) with trailing zeros dropped. It prints as plain digits when the integer part has at
+/// most `digits` digits and the fraction at most `digits` places; otherwise as `d.dddE+XX` with
+/// at least two exponent digits. Negative zero keeps its sign ("-0").
+fn format_vba_float(v: f64, digits: usize) -> String {
     if v.is_nan() {
         return "NaN".to_string();
     }
@@ -408,13 +391,81 @@ fn format_vba_f64(v: f64) -> String {
             "-Infinity".to_string()
         };
     }
-    // If the value is a whole number, format without decimal point
-    if v == v.trunc() && v.abs() < 1e15 {
-        return format!("{}", v as i64);
+    let sign = if v.is_sign_negative() { "-" } else { "" };
+    if v == 0.0 {
+        return format!("{sign}0");
     }
-    // Otherwise, use enough precision and trim trailing zeros
-    let s = format!("{v}");
-    s
+    // Exact decimal expansion, then round half away from zero at `digits` places
+    // (Office prints 100000000000000.5 as 100000000000001).
+    let exact = format!("{:.*e}", 60, v.abs());
+    let (mantissa, exponent) = exact.split_once('e').unwrap_or((&exact, "0"));
+    let mut exp10: i32 = exponent.parse().unwrap_or(0);
+    let mut kept: Vec<u8> = mantissa
+        .bytes()
+        .filter(u8::is_ascii_digit)
+        .map(|b| b - b'0')
+        .collect();
+    let round_up = kept.get(digits).is_some_and(|d| *d >= 5);
+    kept.truncate(digits);
+    if round_up {
+        let mut i = kept.len();
+        loop {
+            if i == 0 {
+                kept.insert(0, 1);
+                kept.truncate(digits);
+                exp10 += 1;
+                break;
+            }
+            i -= 1;
+            if kept[i] == 9 {
+                kept[i] = 0;
+            } else {
+                kept[i] += 1;
+                break;
+            }
+        }
+    }
+    let all_digits: String = kept.iter().map(|d| char::from(b'0' + d)).collect();
+    let sig = all_digits.trim_end_matches('0');
+    let sig = if sig.is_empty() { "0" } else { sig };
+    let n_sig = sig.len() as i32;
+    let max = digits as i32;
+    let int_digits = exp10 + 1;
+    let decimals = if exp10 >= 0 {
+        (n_sig - 1 - exp10).max(0)
+    } else {
+        -exp10 - 1 + n_sig
+    };
+    if (exp10 < 0 || int_digits <= max) && decimals <= max {
+        if exp10 >= 0 {
+            let int_len = int_digits as usize;
+            if sig.len() <= int_len {
+                format!("{sign}{sig}{}", "0".repeat(int_len - sig.len()))
+            } else {
+                format!("{sign}{}.{}", &sig[..int_len], &sig[int_len..])
+            }
+        } else {
+            format!("{sign}0.{}{sig}", "0".repeat((-exp10 - 1) as usize))
+        }
+    } else {
+        let frac = if sig.len() > 1 {
+            format!(".{}", &sig[1..])
+        } else {
+            String::new()
+        };
+        let exp_sign = if exp10 < 0 { '-' } else { '+' };
+        format!("{sign}{}{frac}E{exp_sign}{:02}", &sig[..1], exp10.abs())
+    }
+}
+
+/// `Single` to string: seven significant digits (see [`format_vba_float`]).
+fn format_vba_single(v: f32) -> String {
+    format_vba_float(f64::from(v), 7)
+}
+
+/// `Double` to string: fifteen significant digits (see [`format_vba_float`]).
+fn format_vba_f64(v: f64) -> String {
+    format_vba_float(v, 15)
 }
 
 /// Render a `Variant` the way VBA's `Print`/`Debug.Print` displays it.

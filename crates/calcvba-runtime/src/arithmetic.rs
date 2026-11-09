@@ -12,12 +12,24 @@ fn widen_double(
     rhs: &Variant,
     f: impl Fn(f64, f64) -> f64,
 ) -> Result<Variant, String> {
+    // A `Single` combined with `Byte`, `Integer`, `Boolean` or another `Single` stays `Single` in
+    // Office (it becomes `Double` when the result no longer fits, and for `Long`/`LongLong`).
+    let single_lane = |v: &Variant| {
+        matches!(
+            v.vtype(),
+            VarType::Single | VarType::Byte | VarType::Integer | VarType::Boolean
+        )
+    };
+    let single_result = single_lane(lhs)
+        && single_lane(rhs)
+        && (lhs.vtype() == VarType::Single || rhs.vtype() == VarType::Single);
     let l = coerce_to(lhs, VarType::Double)?;
     let r = coerce_to(rhs, VarType::Double)?;
-    Ok(Variant::from_f64(f(
-        l.as_f64().unwrap_or(0.0),
-        r.as_f64().unwrap_or(0.0),
-    )))
+    let value = f(l.as_f64().unwrap_or(0.0), r.as_f64().unwrap_or(0.0));
+    if single_result && value.is_finite() && value.abs() <= f64::from(f32::MAX) {
+        return Ok(Variant::from_f32(value as f32));
+    }
+    Ok(Variant::from_f64(value))
 }
 
 fn i64_or_double(v: Option<i64>, lossy: impl Fn() -> f64) -> Variant {

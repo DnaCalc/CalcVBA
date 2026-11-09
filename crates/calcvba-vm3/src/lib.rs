@@ -3657,6 +3657,34 @@ impl<'h> Vm3<'h> {
     /// error state (saved on the frame we pushed) and truncate back to `base` either way.
     /// `suppress` (used for `Class_Terminate`) swallows a raised VBA fault; a structural
     /// `Malformed` always propagates.
+    /// Is local `li` of `proc` a ByVal parameter of a scalar (non-Variant, non-Object) type?
+    fn byval_scalar_param(&self, target_prog: usize, proc: FuncId, li: usize) -> bool {
+        self.exec
+            .programs
+            .get(target_prog)
+            .and_then(|lp| lp.program.funcs.get(proc.0))
+            .and_then(|f| f.locals.get(li))
+            .is_some_and(|local| {
+                local
+                    .param
+                    .as_ref()
+                    .is_some_and(|p| !p.by_ref && !p.variadic)
+                    && matches!(
+                        local.ty,
+                        OxTy::Str
+                            | OxTy::Bool
+                            | OxTy::Byte
+                            | OxTy::Integer
+                            | OxTy::Long
+                            | OxTy::LongLong
+                            | OxTy::Single
+                            | OxTy::Double
+                            | OxTy::Currency
+                            | OxTy::Date
+                    )
+            })
+    }
+
     fn run_proc_with_me(
         &mut self,
         target_prog: usize,
@@ -3687,6 +3715,12 @@ impl<'h> Vm3<'h> {
                 OxArg::ByVal(op) => {
                     let param_array_aliases = self.param_array_aliases_for_operand(op);
                     let v = self.operand(op)?;
+                    // A late-bound call passing Null to a ByVal scalar parameter is a Type
+                    // mismatch (error 13) in Office; early-bound calls report 94 in the binder.
+                    if v.vtype() == VarType::Null && self.byval_scalar_param(target_prog, proc, li)
+                    {
+                        return Err(Vm3Error::Fault(Fault::new(13, "Type mismatch")));
+                    }
                     if let Some(slot) = frame.locals.get_mut(li) {
                         *slot = v;
                     }
@@ -3697,6 +3731,11 @@ impl<'h> Vm3<'h> {
                 }
                 OxArg::ByRef(place) => {
                     let loc = self.resolve(place);
+                    if self.byval_scalar_param(target_prog, proc, li)
+                        && self.read_loc(loc).is_ok_and(|v| v.vtype() == VarType::Null)
+                    {
+                        return Err(Vm3Error::Fault(Fault::new(13, "Type mismatch")));
+                    }
                     frame.aliases.insert(li, loc);
                 }
                 OxArg::Omitted => {
@@ -3790,6 +3829,9 @@ impl<'h> Vm3<'h> {
         // Host args follow `me` at locals 1.. as direct values — no caller-operand resolution,
         // no ByRef aliasing (the host marshals by value).
         for (i, v) in args.into_iter().enumerate() {
+            if v.vtype() == VarType::Null && self.byval_scalar_param(target_prog, proc, i + 1) {
+                return Err(Vm3Error::Fault(Fault::new(13, "Type mismatch")));
+            }
             if let Some(slot) = frame.locals.get_mut(i + 1) {
                 *slot = v;
             }

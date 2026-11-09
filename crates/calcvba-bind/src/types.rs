@@ -231,6 +231,25 @@ pub(crate) fn is_longlong_with(ctx: TypeContext, ty: &VarTypeRef) -> bool {
         || (matches!(ty, VarTypeRef::Builtin(BuiltinType::LongPtr)) && ctx.longptr_is_64())
 }
 
+/// Office rejects an implicit `LongLong` -> `Byte`/`Integer`/`Long`/`Currency` conversion in a
+/// store, argument or return at compile time (type mismatch); `Single` and `Double` accept it.
+pub(crate) fn is_rejected_longlong_narrowing(
+    ctx: TypeContext,
+    from: &VarTypeRef,
+    to: &VarTypeRef,
+) -> bool {
+    matches!(from, VarTypeRef::Builtin(BuiltinType::LongLong))
+        && matches!(
+            typed_numeric(ctx, to),
+            Some(
+                BuiltinType::Byte
+                    | BuiltinType::Integer
+                    | BuiltinType::Long
+                    | BuiltinType::Currency
+            )
+        )
+}
+
 fn is_fixed_integer(ty: &VarTypeRef) -> bool {
     matches!(
         ty,
@@ -271,43 +290,130 @@ pub(crate) fn result_type_with(
                 builtin(BuiltinType::Long)
             }
         }
-        IntDiv | Mod => builtin(BuiltinType::Long),
-        Div | Pow => {
+        IntDiv | Mod => int_div_result(ctx, lhs, rhs),
+        Div => div_result(ctx, lhs, rhs),
+        Pow => {
             if is_variant(lhs) || is_variant(rhs) {
                 VarTypeRef::Variant
             } else {
                 builtin(BuiltinType::Double)
             }
         }
-        Add | Sub | Mul => arith_result(ctx, lhs, rhs),
+        Add | Sub | Mul => arith_result(ctx, op, lhs, rhs),
     }
 }
 
-/// Numeric-widening result for `+`/`-`/`*` (Variant when either side isn't a
-/// plain numeric builtin — safe over-approximation).
-fn arith_result(ctx: TypeContext, lhs: &VarTypeRef, rhs: &VarTypeRef) -> VarTypeRef {
-    match (numeric_rank(ctx, lhs), numeric_rank(ctx, rhs)) {
-        (Some(a), Some(b)) => builtin(rank_to_builtin(a.max(b))),
-        _ => VarTypeRef::Variant,
-    }
-}
-
-fn numeric_rank(ctx: TypeContext, ty: &VarTypeRef) -> Option<u8> {
+/// The numeric builtin behind a typed operand, if it is one of the seven VBA numeric types.
+fn typed_numeric(ctx: TypeContext, ty: &VarTypeRef) -> Option<BuiltinType> {
     match ty {
         VarTypeRef::Builtin(b) => match b {
-            BuiltinType::Byte => Some(0),
-            BuiltinType::Integer => Some(1),
-            BuiltinType::Long => Some(2),
-            BuiltinType::LongPtr if !ctx.longptr_is_64() => Some(2),
-            BuiltinType::LongLong | BuiltinType::LongPtr => Some(3),
-            BuiltinType::Currency => Some(4),
-            BuiltinType::Single => Some(5),
-            BuiltinType::Double => Some(6),
-            // Boolean/String/Date aren't ranked for `+`/`-`/`*` widening.
+            BuiltinType::Byte
+            | BuiltinType::Integer
+            | BuiltinType::Long
+            | BuiltinType::LongLong
+            | BuiltinType::Single
+            | BuiltinType::Double
+            | BuiltinType::Currency => Some(*b),
+            BuiltinType::LongPtr => Some(if ctx.longptr_is_64() {
+                BuiltinType::LongLong
+            } else {
+                BuiltinType::Long
+            }),
             _ => None,
         },
         _ => None,
     }
+}
+
+fn is_integer_builtin(b: BuiltinType) -> bool {
+    matches!(
+        b,
+        BuiltinType::Byte | BuiltinType::Integer | BuiltinType::Long | BuiltinType::LongLong
+    )
+}
+
+/// Result type of typed `+`, `-` and `*` as measured against Excel VBA (16.0 build 20527,
+/// conformance/excel-measurements/numeric-mode-matrix.excel.txt): the wider integer type; a
+/// `Double` operand gives `Double` (but `Currency` for `+`/`-` with `Currency`); `Currency` wins
+/// over the other types except that `Currency * Single` is `Double`; `Single` with `Long` or
+/// `LongLong` is `Double`, otherwise `Single`. A non-numeric operand makes the result `Variant`.
+fn arith_result(ctx: TypeContext, op: CoreBinOp, lhs: &VarTypeRef, rhs: &VarTypeRef) -> VarTypeRef {
+    use BuiltinType::*;
+    let (Some(l), Some(r)) = (typed_numeric(ctx, lhs), typed_numeric(ctx, rhs)) else {
+        return VarTypeRef::Variant;
+    };
+    let either = |t: BuiltinType| l == t || r == t;
+    let additive = matches!(op, CoreBinOp::Add | CoreBinOp::Sub);
+    let result = if either(Double) {
+        if either(Currency) && additive {
+            Currency
+        } else {
+            Double
+        }
+    } else if either(Currency) {
+        if either(Single) && !additive {
+            Double
+        } else {
+            Currency
+        }
+    } else if either(Single) {
+        if either(Long) || either(LongLong) {
+            Double
+        } else {
+            Single
+        }
+    } else {
+        rank_to_builtin(rank_of_integer(l).max(rank_of_integer(r)))
+    };
+    builtin(result)
+}
+
+fn rank_of_integer(b: BuiltinType) -> u8 {
+    match b {
+        BuiltinType::Byte => 0,
+        BuiltinType::Integer => 1,
+        BuiltinType::Long => 2,
+        _ => 3,
+    }
+}
+
+/// `/`: `Double`, except `Single` when both operands are `Byte`, `Integer` or `Single` and at
+/// least one is `Single`.
+fn div_result(ctx: TypeContext, lhs: &VarTypeRef, rhs: &VarTypeRef) -> VarTypeRef {
+    use BuiltinType::*;
+    let (Some(l), Some(r)) = (typed_numeric(ctx, lhs), typed_numeric(ctx, rhs)) else {
+        return VarTypeRef::Variant;
+    };
+    let small = |t: BuiltinType| matches!(t, Byte | Integer | Single);
+    if small(l) && small(r) && (l == Single || r == Single) {
+        builtin(Single)
+    } else {
+        builtin(Double)
+    }
+}
+
+/// `\` and `Mod`: the wider of the two integer operand types, where a `Single`, `Double` or
+/// `Currency` operand counts as `Long`, so `Byte \ Byte` is `Byte` and `Byte \ Integer` is
+/// `Integer`. Non-numeric operands keep the engine's long-standing `Long` answer.
+fn int_div_result(ctx: TypeContext, lhs: &VarTypeRef, rhs: &VarTypeRef) -> VarTypeRef {
+    if is_longlong_with(ctx, lhs) || is_longlong_with(ctx, rhs) {
+        return builtin(BuiltinType::LongLong);
+    }
+    // A Variant operand decides the result subtype at run time.
+    if is_variant(lhs) || is_variant(rhs) {
+        return VarTypeRef::Variant;
+    }
+    let (Some(l), Some(r)) = (typed_numeric(ctx, lhs), typed_numeric(ctx, rhs)) else {
+        return builtin(BuiltinType::Long);
+    };
+    let rank = |t: BuiltinType| {
+        if is_integer_builtin(t) {
+            rank_of_integer(t)
+        } else {
+            2
+        }
+    };
+    builtin(rank_to_builtin(rank(l).max(rank(r))))
 }
 
 fn rank_to_builtin(rank: u8) -> BuiltinType {
@@ -315,10 +421,7 @@ fn rank_to_builtin(rank: u8) -> BuiltinType {
         0 => BuiltinType::Byte,
         1 => BuiltinType::Integer,
         2 => BuiltinType::Long,
-        3 => BuiltinType::LongLong,
-        4 => BuiltinType::Currency,
-        5 => BuiltinType::Single,
-        _ => BuiltinType::Double,
+        _ => BuiltinType::LongLong,
     }
 }
 

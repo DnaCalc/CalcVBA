@@ -88,6 +88,9 @@ struct RawSafeArrayOwnerPrefix {
     magic: u32,
     version: u16,
     element_vt: u16,
+    // The rank `alloc_header` allocated this owner for. `Drop` rebuilds the
+    // allocation layout from this value, never from the mutable `c_dims`.
+    alloc_dims: u32,
     // Non-null only for OxVba-owned native record SAFEARRAYs. This is not an
     // IRecordInfo pointer and must not be projected as one at COM boundaries.
     record_layout: *const VbaRecordLayout,
@@ -265,6 +268,12 @@ unsafe fn free_raw_bstr(ptr: *mut u16) {
     let _ = unsafe { BStr::from_raw_bstr(ptr) };
 }
 
+/// Largest SAFEARRAY rank OxVba-owned descriptors carry: the `cDims` field of
+/// the Automation SAFEARRAY is 16 bits, so the rank is stored exactly and a
+/// larger rank is rejected before any allocation. VBA source limits (60
+/// dimensions) are enforced above this layer.
+pub const MAX_SAFEARRAY_RANK: usize = u16::MAX as usize;
+
 fn bounds_layout(dimensions: usize) -> Result<std::alloc::Layout, String> {
     if dimensions == 0 {
         return Err("SAFEARRAY must have at least one dimension".to_string());
@@ -323,6 +332,13 @@ fn default_bounds_for_len(len: usize) -> Result<Vec<SafeArrayBound>, String> {
 }
 
 fn bounds_total_len(bounds: &[SafeArrayBound]) -> Result<usize, String> {
+    // Reject a hostile rank before any payload or descriptor is allocated.
+    if bounds.len() > MAX_SAFEARRAY_RANK {
+        return Err(format!(
+            "SAFEARRAY rank {} exceeds the {MAX_SAFEARRAY_RANK}-dimension limit",
+            bounds.len()
+        ));
+    }
     if bounds.is_empty() {
         return Ok(0);
     }
@@ -1054,8 +1070,12 @@ fn alloc_header(
     pv_data: *mut core::ffi::c_void,
     record_layout: Option<Arc<VbaRecordLayout>>,
 ) -> Result<NonNull<RawSafeArray>, String> {
-    let c_dims = u16::try_from(bounds.len())
-        .map_err(|_| "SAFEARRAY dimension count exceeds u16 capacity".to_string())?;
+    let c_dims = u16::try_from(bounds.len()).map_err(|_| {
+        format!(
+            "SAFEARRAY rank {} exceeds the {MAX_SAFEARRAY_RANK}-dimension limit",
+            bounds.len()
+        )
+    })?;
     let cb_elements = u32::try_from(cb_elements)
         .map_err(|_| "SAFEARRAY cbElements exceeds u32 capacity".to_string())?;
     let f_features = if element_vt == VT_RECORD_VALUE {
@@ -1091,6 +1111,7 @@ fn alloc_header(
                 magic: OXVBA_SAFEARRAY_OWNER_MAGIC,
                 version: OXVBA_SAFEARRAY_OWNER_VERSION,
                 element_vt,
+                alloc_dims: u32::from(c_dims),
                 record_layout: record_layout
                     .map(Arc::into_raw)
                     .unwrap_or(core::ptr::null()),
@@ -1284,10 +1305,10 @@ impl SafeArray {
         Self::from_bounds_and_variants(bounds, VT_VARIANT_VALUE, Some(values))
     }
 
-    pub fn dimensions(&self) -> u8 {
+    pub fn dimensions(&self) -> u16 {
         // SAFETY: `self.0` is the descriptor `alloc_header` produced and this
         // value owns until `Drop`, so reading its `c_dims` field is valid.
-        unsafe { (*self.0.as_ptr()).c_dims as u8 }
+        unsafe { (*self.0.as_ptr()).c_dims }
     }
 
     pub fn element_vartype(&self) -> u16 {
@@ -1807,10 +1828,15 @@ impl Drop for SafeArray {
             // the elements and the buffer are released exactly once.
             unsafe { free_payload(kind, data, len) };
         }
-        if let Ok(layout) = owner_layout(self.dimensions() as usize) {
-            // SAFETY: `self.0` is this value's own live OxVba descriptor allocated by
-            // `alloc_header`, satisfying `validated_header_prefix`'s contract.
-            let prefix = unsafe { validated_header_prefix(self.0.as_ptr()) };
+        // SAFETY: `self.0` is this value's own live OxVba descriptor allocated by
+        // `alloc_header`, satisfying `validated_header_prefix`'s contract.
+        let prefix = unsafe { validated_header_prefix(self.0.as_ptr()) };
+        // The layout comes from the rank recorded at allocation time.
+        // SAFETY: a validated prefix is live and initialized.
+        let alloc_dims = prefix.map_or(self.dimensions() as usize, |p| unsafe {
+            (*p).alloc_dims as usize
+        });
+        if let Ok(layout) = owner_layout(alloc_dims) {
             if let Some(prefix) = prefix {
                 // SAFETY: `validated_header_prefix` returned `Some`, so `prefix` points
                 // at the live owner prefix; reading `record_layout` is in-bounds.
@@ -1834,7 +1860,7 @@ impl Drop for SafeArray {
             };
             crate::live_counters::safearray_freed();
             // SAFETY: `owner` is the pointer `alloc_zeroed` returned in
-            // `alloc_header`, and `owner_layout(self.dimensions())` recomputes
+            // `alloc_header`, and `owner_layout(alloc_dims)` recomputes
             // the layout used there (`c_dims` was written from `bounds.len()`);
             // nothing touches the allocation after this point.
             unsafe { std::alloc::dealloc(owner, layout) };
@@ -2370,6 +2396,60 @@ mod tests {
         assert_eq!(array.effective_len(), 6);
         assert_eq!(array.bounds().as_ref(), Some(&bounds));
         assert_eq!(array.variant_elements().as_ref(), Some(&values));
+    }
+
+    fn unit_bounds(rank: usize) -> Vec<SafeArrayBound> {
+        vec![SafeArrayBound { lower: 0, count: 1 }; rank]
+    }
+
+    #[test]
+    fn safe_array_dimension_layout_keeps_exact_rank_at_boundaries() {
+        for rank in [1usize, 2, 60, 61, 127, 128, 254, 255, 256, 257, 1000, 65535] {
+            let before = thread_live_handle_counts();
+            let array =
+                SafeArray::from_shape_and_variants(unit_bounds(rank), vec![Variant::from_i32(7)])
+                    .unwrap_or_else(|e| panic!("rank {rank}: {e}"));
+            assert_eq!(array.dimensions() as usize, rank);
+            assert_eq!(array.bounds().map(|b| b.len()), Some(rank));
+            let clone = array.clone();
+            assert_eq!(clone.dimensions() as usize, rank);
+            assert_eq!(clone, array);
+            drop(clone);
+            drop(array);
+            assert_eq!(thread_live_handle_counts(), before, "rank {rank} drifted");
+        }
+    }
+
+    #[test]
+    fn safe_array_dimension_layout_rejects_oversized_rank_before_allocation() {
+        let before = thread_live_handle_counts();
+        let payloads = payload_allocation_events();
+        for rank in [65536usize, 65537, 70000] {
+            assert!(
+                SafeArray::from_shape_and_variants(unit_bounds(rank), vec![Variant::from_i32(1)])
+                    .is_err(),
+                "rank {rank}"
+            );
+            assert!(
+                SafeArray::from_shape(unit_bounds(rank)).is_err(),
+                "rank {rank}"
+            );
+        }
+        assert_eq!(thread_live_handle_counts(), before);
+        assert_eq!(payload_allocation_events(), payloads);
+    }
+
+    #[test]
+    fn safe_array_dimension_layout_drop_uses_allocation_rank() {
+        // A descriptor whose c_dims is rewritten after allocation must still
+        // free with the layout it was allocated with.
+        let array =
+            SafeArray::from_shape_and_variants(unit_bounds(300), vec![Variant::from_i32(1)])
+                .expect("rank 300");
+        // SAFETY: the descriptor is live and owned; only c_dims is rewritten
+        // and Drop must not read it for the layout.
+        unsafe { (*array.0.as_ptr()).c_dims = 44 };
+        drop(array);
     }
 
     #[test]

@@ -1243,13 +1243,9 @@ impl<'a> Parser<'a> {
 
         // End Property
         self.eat_trivia();
-        if self.at(SyntaxKind::KwEnd) {
-            self.bump();
-            self.eat_whitespace();
-            if self.at(SyntaxKind::KwProperty) {
-                self.bump();
-            }
-        }
+        self.expect(SyntaxKind::KwEnd);
+        self.eat_whitespace();
+        self.expect(SyntaxKind::KwProperty);
         self.eat_to_eol();
 
         self.finish_node();
@@ -3081,6 +3077,70 @@ impl<'a> Parser<'a> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn procedure_terminators_are_required_and_matched() {
+        for (source, what) in [
+            (
+                "Sub S()
+  x = 1
+",
+                "missing End Sub",
+            ),
+            (
+                "Function F()
+  F = 1
+",
+                "missing End Function",
+            ),
+            (
+                "Property Get P()
+  P = 1
+",
+                "missing End Property",
+            ),
+            (
+                "Sub S()
+End Function
+",
+                "End Function closing a Sub",
+            ),
+            (
+                "Function F()
+End Sub
+",
+                "End Sub closing a Function",
+            ),
+            (
+                "Property Get P()
+End
+",
+                "End without Property",
+            ),
+        ] {
+            let parsed = parse(source);
+            assert!(!parsed.errors().is_empty(), "{what}: no parse error");
+            assert_eq!(parsed.syntax().text(), source, "{what}: text not lossless");
+        }
+        for source in [
+            "Sub S()
+End Sub
+",
+            "Function F()
+  F = 1
+End Function
+",
+            "Property Get P()
+  P = 1
+End Property
+",
+            "Property Let P(v)
+End Property
+",
+        ] {
+            assert!(parse(source).errors().is_empty(), "{source}");
+        }
+    }
+
     use super::*;
     use std::sync::Arc;
 

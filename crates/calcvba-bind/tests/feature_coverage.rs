@@ -1738,20 +1738,15 @@ fn scalar_numeric_month_day_date_const_carrier_executes() {
     assert_eq!(snap, vec![Variant::from_date_f64(46_081.0)]);
 }
 
+/// A source Date literal is always month/day/year (Office never reads it in the host locale's
+/// order), so `#2/3/2026#` is 3 February 2026.
 #[test]
-fn scalar_ambiguous_numeric_date_literal_rejected() {
-    let err = run_result("Sub Main()\nDim stamp As Date\nstamp = #2/3/2026#\nEnd Sub")
-        .expect_err("ambiguous numeric Date literal should be rejected");
-    assert!(
-        err.contains("date literal `#2/3/2026#`"),
-        "unexpected error: {err}"
-    );
-}
-
-#[test]
-fn scalar_string_date_store_coerces_deterministic_text() {
-    let snap = run("Sub Main()\nDim stamp As Date\nstamp = \"2026-02-28\"\nEnd Sub");
-    assert_eq!(snap, vec![Variant::from_date_f64(46_081.0)]);
+fn scalar_numeric_date_literal_is_month_day_year() {
+    let snap = run("Sub Main()
+Dim stamp As Date
+stamp = #2/3/2026#
+End Sub");
+    assert_eq!(snap, vec![Variant::from_date_f64(46_056.0)]);
 }
 
 #[test]

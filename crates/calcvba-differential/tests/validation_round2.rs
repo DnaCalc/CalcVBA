@@ -69,3 +69,19 @@ End Sub
         &canon(&Variant::from_i32(7)),
     );
 }
+
+#[test]
+fn enum_member_initialised_with_a_library_qualified_constant() {
+    both(
+        "Public r As Variant
+Public Enum CompareMethod
+    BinaryCompare = VBA.vbBinaryCompare
+    TextCompare = VBA.vbTextCompare
+End Enum
+Sub Main()
+    r = CompareMethod.TextCompare * 10 + CompareMethod.BinaryCompare
+End Sub
+",
+        &canon(&Variant::from_i32(10)),
+    );
+}

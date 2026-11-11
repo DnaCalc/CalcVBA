@@ -820,10 +820,23 @@ fn eval_inner(
             if let Some(sym) = resolve_qualified_const_symbol(symbols, scope, node) {
                 return eval_resolved_const(sym, values, const_syms);
             }
-            match resolve_external_qualified_const(symbols, scope, external_projects, node) {
-                Some(value) => ConstEval::Value(value),
-                None => ConstEval::Unresolvable,
+            if let Some(value) =
+                resolve_external_qualified_const(symbols, scope, external_projects, node)
+            {
+                return ConstEval::Value(value);
             }
+            // `VBA.vbTextCompare` (or `VBA.VbCompareMethod.vbTextCompare`): a library constant
+            // named through its library, unless a project module of that name shadows it.
+            if let Some(parts) = qualified_ident_parts(node)
+                && let [library, .., member] = parts.as_slice()
+                && parts.len() <= 3
+                && library.eq_ignore_ascii_case("VBA")
+                && !module_qualifier_shadowed(symbols, scope, library)
+                && let Some(value) = vba_library::library_constant(member)
+            {
+                return ConstEval::Value(value);
+            }
+            ConstEval::Unresolvable
         }
         SyntaxKind::BinaryExpr => {
             let (Some(op_tok), Some(lhs_n), Some(rhs_n)) =

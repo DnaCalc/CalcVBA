@@ -347,9 +347,10 @@ fn failed_jit_reload_preserves_the_old_generation() {
     let handle = session
         .bind_typed::<(f64, f64), f64>("Math", "Add2")
         .unwrap();
+    // Filter is a built-in the JIT does not lower yet (Environ is, since 61237cec).
     let unsupported = Module::load(
         "Bad",
-        "Public Function F()\nF = Environ(\"TEMP\")\nEnd Function\n",
+        "Public Function F()\nF = UBound(Filter(Array(\"a\", \"b\"), \"a\"))\nEnd Function\n",
     )
     .unwrap();
     assert!(matches!(

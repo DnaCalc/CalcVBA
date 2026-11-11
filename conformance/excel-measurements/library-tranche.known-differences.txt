@@ -257,8 +257,6 @@ Vm3	Second.1_1_2000
 Vm3	Second.2_29_2000
 Vm3	Second.3_1_1900
 Vm3	Sin.15
-Vm3	Sin.6
-Vm3	Sin.8
 Vm3	StrComp.2.0
 Vm3	StrComp.2.1
 Vm3	StrComp.2.2

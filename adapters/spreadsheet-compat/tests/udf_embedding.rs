@@ -115,7 +115,7 @@ fn runtime_errors_remain_distinct_from_worksheet_error_values() {
 fn unsupported_jit_code_is_rejected_before_execution_without_fallback() {
     let module = Module::load(
         "Errors",
-        "Public Function Boom()\nIf False Then Boom = Environ(\"TEMP\")\nErr.Raise 13, \"UdfTest\", \"bad value\"\nEnd Function\n",
+        "Public Function Boom()\nIf False Then Boom = UBound(Filter(Array(\"a\"), \"a\"))\nErr.Raise 13, \"UdfTest\", \"bad value\"\nEnd Function\n",
     )
     .unwrap();
     assert!(matches!(

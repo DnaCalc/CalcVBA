@@ -2885,7 +2885,7 @@ impl<'h> Vm3<'h> {
             if upper < lower {
                 return Err(Vm3Error::Fault(Fault::new(
                     9,
-                    "array upper bound below lower bound",
+                    "subscript out of range",
                 )));
             }
             let span = i64::from(upper) - i64::from(lower) + 1;
@@ -3394,7 +3394,7 @@ impl<'h> Vm3<'h> {
                     if illegal {
                         return Err(Vm3Error::Fault(Fault::new(
                             9,
-                            "ReDim Preserve may only resize the last dimension",
+                            "subscript out of range",
                         )));
                     }
                     let mut out = try_build_default_elements(element, count)?;
@@ -3464,7 +3464,7 @@ impl<'h> Vm3<'h> {
                 } else {
                     424
                 },
-                format!("Object required: {target_name}"),
+                "Object required",
             ))),
             Intent::Let
                 if target_kind == Kind::Variant
@@ -3481,7 +3481,7 @@ impl<'h> Vm3<'h> {
             )),
             Intent::Let if target_kind == Kind::Object => Err(Vm3Error::Fault(Fault::new(
                 424,
-                format!("Object required: {target_name}"),
+                "Object required",
             ))),
             Intent::Set if value.vtype() == VarType::Object && is_nothing(&value) => Ok(()),
             // Strict `Set` type check (error 13): when the target's declared type is a known
@@ -4559,7 +4559,7 @@ impl<'h> Vm3<'h> {
         let Some(obj) = src.as_object_ref() else {
             return Err(Vm3Error::Fault(Fault::new(
                 13,
-                "For Each can only iterate over a collection object or an array",
+                "Type mismatch",
             )));
         };
         if let Some(values) = obj.native_collection_snapshot() {

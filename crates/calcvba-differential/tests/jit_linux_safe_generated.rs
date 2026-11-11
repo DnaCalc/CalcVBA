@@ -427,23 +427,18 @@ End Property
 
 #[test]
 #[cfg(not(target_os = "windows"))]
-fn unsupported_scope_declines_are_explicit() {
-    let source = "\
-Public r As Long
+fn native_declare_compiles_and_raises_like_vm3_on_linux() {
+    let source = "Public r As Long
 Declare PtrSafe Function NativeGetTickCount Lib \"kernel32\" Alias \"GetTickCount\" () As Long
 Sub Main()
   r = NativeGetTickCount()
 End Sub
 ";
     let jit = run(Executor::Jit, source);
-    let unsupported = jit
-        .unsupported
-        .as_deref()
-        .expect("native Declare should remain an explicit JIT decline on Linux");
-    assert!(
-        !unsupported.trim().is_empty(),
-        "unsupported reason should be classified"
-    );
+    assert!(jit.unsupported.is_none(), "{:?}", jit.unsupported);
+    let vm3 = run(Executor::Vm3, source);
+    assert_eq!(vm3.raised, jit.raised);
+    assert_eq!(vm3.err, jit.err);
 }
 
 #[test]

@@ -7015,9 +7015,8 @@ impl<'a> LowerFunc<'a> {
         args: &[OxCallArg],
         ptr_writebacks: &[calcvba_oxir::value::DeclarePtrWriteback],
     ) -> Result<(), JitError> {
-        if !cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-            return Err(JitError::unsupported("native/COM calls start in M4-9"));
-        }
+        // Every platform lowers the call; the runtime helper verifies the plan and the host
+        // dynlink policy decides at run time (off Windows or x64 it raises, as the interpreter does).
         if let Some(dst) = dst {
             self.ensure_variant_carrier_place(dst)?;
         }
@@ -7076,7 +7075,13 @@ impl<'a> LowerFunc<'a> {
         // File expressions and parser-bound file statements use the existing
         // Variant library ABI, including zero-argument FreeFile. The runtime
         // library performs its normal arity/coercion and host-policy checks.
-        if native_impl.module() == calcvba_bundle::native::LibraryModule::FileIo {
+        // Host-sensitive Interaction built-ins (Shell, Environ, Dir, ...) take the same path: the
+        // runtime library applies the host policy and the argument checks.
+        if matches!(
+            native_impl.module(),
+            calcvba_bundle::native::LibraryModule::FileIo
+                | calcvba_bundle::native::LibraryModule::Interaction
+        ) {
             return Ok(());
         }
         // Format's value, format string and calendar options all use the
@@ -7126,7 +7131,7 @@ impl<'a> LowerFunc<'a> {
         if args.len() == 2
             && let Some(shape) = variant_double_call_extern_shape(native_impl)
         {
-            return self.validate_call_extern_variant_double_shape(dst, args, shape);
+            return self.validate_call_extern_variant_double_shape(dst, args, native_impl, shape);
         }
         if args.len() == 3
             && let Some(shape) = variant_triple_call_extern_shape(native_impl)
@@ -7578,6 +7583,7 @@ impl<'a> LowerFunc<'a> {
         &self,
         dst: Option<OxPlace>,
         args: &[calcvba_oxir::OxArg],
+        native_impl: NativeImplId,
         shape: &'static str,
     ) -> Result<(), JitError> {
         self.validate_call_extern_variant_destination(dst, shape)?;
@@ -7593,7 +7599,12 @@ impl<'a> LowerFunc<'a> {
                     "M4-4 CallExtern {shape} subset lowers only supported ByVal Variant arguments"
                 )));
             };
-            if !self.is_supported_variant_extern_operand(operand)? {
+            // Join's first argument is the array to join (a String or Variant array local).
+            let join_array = native_impl == NativeImplId::Join
+                && std::ptr::eq(arg, &args[0])
+                && matches!(operand, OxOperand::Use(place)
+                    if matches!(place_ty(self.program, self.func, *place)?, OxTy::Array(_, _)));
+            if !join_array && !self.is_supported_variant_extern_operand(operand)? {
                 return Err(JitError::unsupported(format!(
                     "M4-4 CallExtern {shape} subset lowers only supported ByVal Variant arguments, got {operand:?}"
                 )));

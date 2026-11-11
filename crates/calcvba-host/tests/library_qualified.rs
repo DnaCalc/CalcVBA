@@ -51,3 +51,26 @@ fn library_qualified_join_and_cdate_link() {
         assert_eq!(qualified, 43832.0, "{backend:?}");
     }
 }
+
+const MORE: &str = "Public Function Repeated() As Double
+    Repeated = Len(VBA.String(3, \"x\")) + Len(VBA.Space(2)) + VBA.Asc(\"A\") + VBA.Year(DateSerial(2024, 5, 6))
+End Function
+";
+
+#[test]
+fn library_qualified_string_math_and_date_functions_link() {
+    for backend in support::backends() {
+        let session = Provider::default()
+            .load(
+                &api::Project::module("Api", MORE),
+                backend,
+                api::HOST_API_ABI,
+            )
+            .expect("project loads");
+        assert_eq!(
+            call(&*session, "Repeated"),
+            3.0 + 2.0 + 65.0 + 2024.0,
+            "{backend:?}"
+        );
+    }
+}

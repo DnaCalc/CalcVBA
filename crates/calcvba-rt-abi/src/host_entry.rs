@@ -90,6 +90,63 @@ pub fn owning_builtin(id: calcvba_bundle::NativeImplId) -> bool {
             | CLng
             | CLngLng
             | CSng
+            | LenB
+            | LeftB
+            | RightB
+            | Chr
+            | Asc
+            | ChrW
+            | AscW
+            | Space
+            | StringRepeat
+            | StrReverse
+            | StrConv
+            | Format
+            | FormatNumber
+            | FormatCurrency
+            | FormatPercent
+            | FormatDateTime
+            | Filter
+            | Int
+            | Fix
+            | Sgn
+            | Round
+            | Sin
+            | Cos
+            | Log
+            | Exp
+            | Atn
+            | Tan
+            | DateSerial
+            | TimeSerial
+            | DateValue
+            | TimeValue
+            | DateAdd
+            | DateDiff
+            | Year
+            | Month
+            | Day
+            | Weekday
+            | Hour
+            | Minute
+            | Second
+            | MonthName
+            | WeekdayName
+            | DatePart
+            | Hex
+            | Oct
+            | Str
+            | Val
+            | CVErr
+            | CDec
+            | IsNumeric
+            | IsError
+            | IsDate
+            | IsObject
+            | IsNull
+            | IsEmpty
+            | TypeName
+            | Rgb
             | CreateObject
     )
 }

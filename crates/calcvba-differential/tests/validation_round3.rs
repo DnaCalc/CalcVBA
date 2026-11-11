@@ -11,8 +11,16 @@ fn outcome(executor: Executor, source: &str) -> RunOutcome {
 fn both_agree(source: &str) -> RunOutcome {
     let vm3 = outcome(Executor::Vm3, source);
     let jit = outcome(Executor::Jit, source);
-    assert!(vm3.unsupported.is_none(), "vm3 unsupported: {:?}", vm3.unsupported);
-    assert!(jit.unsupported.is_none(), "jit unsupported: {:?}", jit.unsupported);
+    assert!(
+        vm3.unsupported.is_none(),
+        "vm3 unsupported: {:?}",
+        vm3.unsupported
+    );
+    assert!(
+        jit.unsupported.is_none(),
+        "jit unsupported: {:?}",
+        jit.unsupported
+    );
     assert_eq!(vm3.result, jit.result);
     assert_eq!(vm3.raised, jit.raised);
     assert_eq!(vm3.err, jit.err);
@@ -43,7 +51,9 @@ fn declare_call_compiles_on_the_jit_and_raises_like_the_interpreter() {
 
 #[test]
 fn host_sensitive_interaction_builtins_compile_and_agree() {
-    let o = both_agree("Sub Main()\n    Dim a\n    Dim b\n    a = Shell(7)\n    b = Environ(4)\nEnd Sub\n");
+    let o = both_agree(
+        "Sub Main()\n    Dim a\n    Dim b\n    a = Shell(7)\n    b = Environ(4)\nEnd Sub\n",
+    );
     assert!(o.raised || o.result.is_ok());
 }
 
@@ -102,13 +112,15 @@ End Sub
         assert_eq!(first(&o), canon(&Variant::from_string("A")));
     }
     // A Variant that cannot be converted raises the same error on both.
-    let o = both_agree("Sub Main()
+    let o = both_agree(
+        "Sub Main()
     Dim v As Variant
     Dim s As String
     v = \"abc\"
     s = Chr(v)
 End Sub
-");
+",
+    );
     assert!(o.raised);
 }
 

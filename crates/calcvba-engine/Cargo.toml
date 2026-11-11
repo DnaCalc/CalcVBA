@@ -16,6 +16,7 @@ calcvba-symbol.workspace = true
 calcvba-bind.workspace = true
 calcvba-bundle.workspace = true
 calcvba-oxir.workspace = true
+calcvba-lib.workspace = true
 calcvba-vm3.workspace = true
 calcvba-jit.workspace = true
 thiserror.workspace = true

@@ -13,6 +13,11 @@
 //! host/locale and Excel evidence is governed by system clause `LIB-VBA-001`.
 
 mod format;
+pub mod triage;
+pub use triage::{
+    Prediction, PredictionSource, capabilities_of, predicted_capabilities,
+    predicted_capabilities_lexical,
+};
 mod host;
 mod pure;
 /// Unboxed numeric kernels shared by Variant callers and native exports.

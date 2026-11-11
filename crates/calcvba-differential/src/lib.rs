@@ -281,6 +281,48 @@ fn run_with_project_locked(executor: Executor, source: &str, project_name: &str)
     outcome.with_current_thread_handle_balance(before)
 }
 
+/// Run `source` as project `"Main"` under `executor` on an engine that `configure` has
+/// prepared first, for example to install a `calcvba_hal::PolicyHost` or a host policy.
+/// `configure` runs once, on the engine that executes the program.
+pub fn run_with_engine_setup(
+    executor: Executor,
+    source: &str,
+    configure: &dyn Fn(&mut Engine),
+) -> RunOutcome {
+    use calcvba_symbol::manifest as sym;
+    let manifest = sym::SymbolProjectManifest {
+        project_name: "Main".to_string(),
+        project_kind: sym::ProjectKind::Source,
+        modules: vec![sym::ModuleUnit {
+            module_name: "Main".to_string(),
+            module_kind: sym::ModuleKind::Procedural,
+            attributes: sym::ModuleAttributes::named("Main"),
+            source: source.to_string(),
+        }],
+        references: Vec::new(),
+        reference_projects: Vec::new(),
+        conditional_constants: std::collections::BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let _balance_guard = balance_measurement_lock()
+        .lock()
+        .expect("balance measurement lock poisoned");
+    let before = current_thread_live_handle_counts();
+    let outcome = match executor {
+        Executor::Vm3 => {
+            let mut engine = vm3_oracle_engine();
+            configure(&mut engine);
+            RunOutcome::from_snapshot(engine.execute_manifest_snapshot_with_err_vm3(&manifest))
+        }
+        Executor::Jit => {
+            let mut engine = jit_candidate_engine();
+            configure(&mut engine);
+            RunOutcome::from_snapshot(engine.execute_manifest_snapshot_with_err_jit(&manifest))
+        }
+    };
+    outcome.with_current_thread_handle_balance(before)
+}
+
 /// Run a multi-module project under `executor` (e.g. a procedural `Main` plus a class module),
 /// capturing the same observable as [`run_with_project`]. Needed to exercise project classes
 /// (`New`/`Class_Initialize`/`Class_Terminate`/`Implements`), which a single `.bas` standard

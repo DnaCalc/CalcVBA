@@ -496,17 +496,33 @@ pub fn dir(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
 }
 
 // ── COM ──
+/// The text the activation policy sees: the ProgID, class or path, when it is a string.
+fn activation_target(value: &Variant) -> String {
+    value
+        .as_bstr()
+        .map(|text| text.as_str().to_string())
+        .unwrap_or_default()
+}
+
 pub fn create_object(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
-    Ok(host.com().create_object_variant(req(args, 0)?)?)
+    let prog_id = req(args, 0)?;
+    host.authorize_com_activation("create_object", &activation_target(&prog_id))?;
+    Ok(host.com().create_object_variant(prog_id)?)
 }
 
 /// `GetObject([pathname], [class])`. The mode (running instance / new instance / file
 /// bind) is decided by the argument shape, which the HAL resolves: an omitted `pathname`
 /// arrives as `Empty`, distinguishing it from a present `""`.
 pub fn get_object(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
-    Ok(host
-        .com()
-        .get_object_variant(arg_or_empty(args, 0), arg_or_empty(args, 1))?)
+    let (pathname, class) = (arg_or_empty(args, 0), arg_or_empty(args, 1));
+    let class_text = activation_target(&class);
+    let target = if class_text.is_empty() {
+        activation_target(&pathname)
+    } else {
+        class_text
+    };
+    host.authorize_com_activation("get_object", &target)?;
+    Ok(host.com().get_object_variant(pathname, class)?)
 }
 
 // Variant → typed-handle conversions, ported from the legacy VM

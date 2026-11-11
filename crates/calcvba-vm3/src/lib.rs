@@ -2883,10 +2883,7 @@ impl<'h> Vm3<'h> {
             let upper_v = self.operand(upper_op)?;
             let upper = subscript_to_long(arith::int(&upper_v).map_err(arith_fault)?)?;
             if upper < lower {
-                return Err(Vm3Error::Fault(Fault::new(
-                    9,
-                    "subscript out of range",
-                )));
+                return Err(Vm3Error::Fault(Fault::new(9, "subscript out of range")));
             }
             let span = i64::from(upper) - i64::from(lower) + 1;
             if span > i64::from(u32::MAX) {
@@ -3392,10 +3389,7 @@ impl<'h> Vm3<'h> {
                             _ => false,
                         };
                     if illegal {
-                        return Err(Vm3Error::Fault(Fault::new(
-                            9,
-                            "subscript out of range",
-                        )));
+                        return Err(Vm3Error::Fault(Fault::new(9, "subscript out of range")));
                     }
                     let mut out = try_build_default_elements(element, count)?;
                     for (old_flat, value) in old_elems.into_iter().enumerate() {
@@ -3479,10 +3473,9 @@ impl<'h> Vm3<'h> {
             Intent::Let if target_kind == Kind::Object && is_object => Err(Vm3Error::Fault(
                 Fault::new(91, format!("Object variable requires Set: {target_name}")),
             )),
-            Intent::Let if target_kind == Kind::Object => Err(Vm3Error::Fault(Fault::new(
-                424,
-                "Object required",
-            ))),
+            Intent::Let if target_kind == Kind::Object => {
+                Err(Vm3Error::Fault(Fault::new(424, "Object required")))
+            }
             Intent::Set if value.vtype() == VarType::Object && is_nothing(&value) => Ok(()),
             // Strict `Set` type check (error 13): when the target's declared type is a known
             // project class/interface, a project-instance source must be that class or
@@ -4557,10 +4550,7 @@ impl<'h> Vm3<'h> {
             return Ok(arr.enumeration_elements().unwrap_or_default());
         }
         let Some(obj) = src.as_object_ref() else {
-            return Err(Vm3Error::Fault(Fault::new(
-                13,
-                "Type mismatch",
-            )));
+            return Err(Vm3Error::Fault(Fault::new(13, "Type mismatch")));
         };
         if let Some(values) = obj.native_collection_snapshot() {
             return Ok(values);

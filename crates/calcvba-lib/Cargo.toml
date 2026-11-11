@@ -12,5 +12,6 @@ calcvba-bundle.workspace = true
 calcvba-runtime.workspace = true
 calcvba-hal.workspace = true
 calcvba-com.workspace = true
+calcvba-oxir.workspace = true
 [lints]
 workspace = true

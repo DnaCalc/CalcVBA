@@ -2,6 +2,7 @@
 
 pub mod adapters;
 pub mod callbacks;
+pub mod capability;
 pub mod dynamic_bridge;
 pub mod error;
 pub mod model;
@@ -9,6 +10,10 @@ pub mod output_tap;
 pub mod project;
 pub mod traits;
 
+pub use capability::{
+    AuditCount, AuditHandle, AuditRecord, AuditSnapshot, Capability, CapabilitySet, Decision,
+    POLICY_DENIED_CODE, PolicyHost, PolicyMode,
+};
 pub use dynamic_bridge::HalComDynamicBridge;
 pub use error::{HalError, HalErrorKind, HalResult};
 pub use model::{

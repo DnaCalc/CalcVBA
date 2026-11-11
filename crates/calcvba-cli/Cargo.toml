@@ -12,6 +12,9 @@ serde_json.workspace = true
 calcvba-build.workspace = true
 calcvba-diagnostics.workspace = true
 calcvba-engine.workspace = true
+calcvba-hal.workspace = true
+calcvba-symbol.workspace = true
+calcvba-lib.workspace = true
 calcvba-project.workspace = true
 calcvba-runtime.workspace = true
 [lints]

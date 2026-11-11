@@ -103,6 +103,13 @@ pub trait HostServices {
     fn time_locale(&self) -> &dyn TimeLocaleHal;
     fn dynlink(&self) -> &dyn DynamicLinkHal;
     fn diag(&self) -> &dyn DiagnosticsHal;
+    /// Policy hook the library calls before `CreateObject`, `GetObject` and `New` of an
+    /// external class reach the COM facet. `op` is `create_object` or `get_object`, `target`
+    /// the ProgID (or file path). The default allows everything; `capability::PolicyHost`
+    /// denies or audits it. Gating activation here keeps every other COM method untouched.
+    fn authorize_com_activation(&self, _op: &'static str, _target: &str) -> HalResult<()> {
+        Ok(())
+    }
     fn project_catalog(&self) -> Option<&dyn ProjectCatalogHal> {
         None
     }

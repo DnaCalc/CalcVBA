@@ -24,9 +24,95 @@ use calcvba_engine::{
 };
 use calcvba_runtime::{VarType, Variant};
 
+/// `--policy safe|full` wraps the host in the capability policy (and its audit log). Without
+/// the flag, behaviour is unchanged.
+static POLICY_MODE: std::sync::OnceLock<calcvba_hal::PolicyMode> = std::sync::OnceLock::new();
+
+fn extract_policy_flag(args: Vec<String>) -> Vec<String> {
+    let mut out = Vec::with_capacity(args.len());
+    let mut iter = args.into_iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--policy" {
+            let value = iter.next().unwrap_or_default();
+            match calcvba_hal::PolicyMode::from_name(&value) {
+                Some(mode) => {
+                    let _ = POLICY_MODE.set(mode);
+                }
+                None => {
+                    eprintln!("calcvba-cli: --policy takes `safe` or `full`");
+                    std::process::exit(2);
+                }
+            }
+        } else {
+            out.push(arg);
+        }
+    }
+    out
+}
+
+/// Install the policy wrapper last: later `set_*` calls rebuild the host.
+fn apply_policy(engine: &mut Engine) {
+    if let Some(mode) = POLICY_MODE.get().copied() {
+        engine.wrap_host_services(|inner| {
+            calcvba_hal::PolicyHost::with_mode(inner, mode).into_host()
+        });
+    }
+}
+
+/// `triage <project|source.bas>`: print the predicted capabilities as JSON. Executes nothing.
+fn run_triage(args: Vec<String>) {
+    let Some(path) = args.get(1).map(PathBuf::from) else {
+        eprintln!("usage: calcvba-cli triage <project.basproj|project.vbp|dir|source.bas>");
+        std::process::exit(2);
+    };
+    let is_bas = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("bas"));
+    let result = if is_bas {
+        let source = fs::read_to_string(&path).unwrap_or_else(|err| {
+            eprintln!("calcvba-cli triage: {}: {err}", path.display());
+            std::process::exit(1);
+        });
+        calcvba_engine::triage::predict_source(&source)
+    } else {
+        let file = resolve_project_file(Some(&path)).unwrap_or_else(|_| {
+            eprintln!(
+                "calcvba-cli triage: no .basproj or .vbp project at {}",
+                path.display()
+            );
+            std::process::exit(1);
+        });
+        let closure =
+            calcvba_project::load_project_closure_with_entry(&file, None).unwrap_or_else(|err| {
+                eprintln!("calcvba-cli triage: {}", err.to_diagnostic().message);
+                std::process::exit(1);
+            });
+        calcvba_engine::triage::predict_project_closure(&closure)
+    };
+    let prediction = &result.prediction;
+    let details: serde_json::Map<String, serde_json::Value> = prediction
+        .details
+        .iter()
+        .map(|(cap, set)| (cap.name().to_string(), serde_json::json!(set)))
+        .collect();
+    let json = serde_json::json!({
+        "project": path.display().to_string(),
+        "source": prediction.source.name(),
+        "fallback_reason": result.fallback_reason,
+        "procedures": prediction.procedures,
+        "capabilities": prediction.capabilities.iter().map(|c| c.name()).collect::<Vec<_>>(),
+        "details": details,
+        "dynamic": prediction.dynamic,
+        "com_progid_unknown": prediction.com_progid_unknown,
+    });
+    println!("{}", serde_json::to_string_pretty(&json).expect("json"));
+}
+
 fn main() {
-    let cli_args: Vec<String> = env::args().skip(1).collect();
+    let cli_args: Vec<String> = extract_policy_flag(env::args().skip(1).collect());
     match cli_args.first().map(String::as_str) {
+        Some("triage") => run_triage(cli_args),
         Some(command @ ("inspect-vba" | "export-vba" | "write-vba")) => {
             if let Err(error) = office::run(command, &cli_args[1..]) {
                 eprintln!("calcvba-cli: {error}");
@@ -47,7 +133,8 @@ fn main() {
 }
 fn print_usage() {
     eprintln!(
-        "usage:\n  calcvba-cli run <source.bas> [--backend vm3|jit] [--dump-values]\n  calcvba-cli run-project [path] [--entry Module.Procedure] [--backend vm3|jit]\n  calcvba-cli build <project> --target OxImage|NativeLibrary|Exe|ComExe|ComServer --out-dir <dir>\n  calcvba-cli run-image <project.oxi> [--backend vm3|jit]\n  calcvba-cli inspect-vba <workbook>\n  calcvba-cli export-vba <workbook> --out-dir <new-folder>\n  calcvba-cli write-vba <workbook> --project <project.basproj> --out <new-workbook>\n\n  --profile <id>  --dump-bootstrap  --diagnostic-format human|json"
+        "usage:\n  calcvba-cli run <source.bas> [--backend vm3|jit] [--dump-values]\n  calcvba-cli run-project [path] [--entry Module.Procedure] [--backend vm3|jit]\n  calcvba-cli build <project> --target OxImage|NativeLibrary|Exe|ComExe|ComServer --out-dir <dir>\n  calcvba-cli run-image <project.oxi> [--backend vm3|jit]\n  calcvba-cli triage <project|source.bas>   (predicted capabilities as JSON)
+  calcvba-cli inspect-vba <workbook>\n  calcvba-cli export-vba <workbook> --out-dir <new-folder>\n  calcvba-cli write-vba <workbook> --project <project.basproj> --out <new-workbook>\n\n  --profile <id>  --policy safe|full  --dump-bootstrap  --diagnostic-format human|json"
     );
 }
 
@@ -93,6 +180,7 @@ fn run_execute(mut cli_args: Vec<String>) {
             println!("BOOTSTRAP:{}", resolved.fingerprint());
         }
     }
+    apply_policy(&mut engine);
     let source = args
         .as_ref()
         .map(|a| a.source.clone())
@@ -198,6 +286,7 @@ fn run_project(args: Vec<String>) {
             });
     engine.set_runtime_profile(resolved.runtime_profile);
     engine.set_host_policy(resolved.policy.clone());
+    apply_policy(&mut engine);
     if parsed.dump_bootstrap {
         println!("BOOTSTRAP:{}", resolved.fingerprint());
     }

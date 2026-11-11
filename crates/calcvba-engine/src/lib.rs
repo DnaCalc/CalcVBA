@@ -2,6 +2,7 @@
 
 pub mod engine;
 pub mod runner;
+pub mod triage;
 
 pub use engine::{
     DefaultInstanceAccess, DiagnosticPhase, Engine, ExecBackend, FinalErr, HostConfig,

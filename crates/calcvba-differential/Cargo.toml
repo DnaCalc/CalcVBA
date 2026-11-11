@@ -9,6 +9,7 @@ description = "Differential oracle harness: runs a program under two executors a
 
 [dependencies]
 calcvba-engine.workspace = true
+calcvba-hal.workspace = true
 calcvba-jit.workspace = true
 calcvba-oxir.workspace = true
 calcvba-runtime = { workspace = true, features = ["live-counters"] }
@@ -21,7 +22,6 @@ criterion = "0.5"
 calcvba-bind.workspace = true
 calcvba-bundle.workspace = true
 calcvba-com = { workspace = true, features = ["fixture-typelibs"] }
-calcvba-hal.workspace = true
 calcvba-project.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]

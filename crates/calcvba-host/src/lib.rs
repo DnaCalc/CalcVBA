@@ -218,6 +218,16 @@ impl Module {
         root.reference_programs = modules.into_iter().map(|m| m.program).collect();
         Ok(root)
     }
+    /// The capabilities this module's code can request, read from its bound OxIR (and its
+    /// reference programs). A static over-approximation; see `calcvba_lib::triage`.
+    pub fn predicted_capabilities(&self) -> calcvba_lib::Prediction {
+        let mut programs = self.programs().into_iter();
+        let mut total = calcvba_lib::predicted_capabilities(programs.next().expect("a program"));
+        for program in programs {
+            total.merge(&calcvba_lib::predicted_capabilities(program));
+        }
+        total
+    }
     fn programs(&self) -> Vec<&OxProgram> {
         self.reference_programs
             .iter()

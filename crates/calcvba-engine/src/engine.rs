@@ -627,6 +627,16 @@ impl Engine {
         self.host_services.policy()
     }
 
+    /// Replace the host services with a wrapper around the current ones, for example
+    /// `calcvba_hal::PolicyHost`. Later `set_*` calls that rebuild the host discard the wrapper,
+    /// so install it last.
+    pub fn wrap_host_services(
+        &mut self,
+        wrap: impl FnOnce(Arc<dyn HostServices>) -> Arc<dyn HostServices>,
+    ) {
+        self.host_services = wrap(self.host_services.clone());
+    }
+
     pub fn host_services(&self) -> Arc<dyn HostServices> {
         self.host_services.clone()
     }

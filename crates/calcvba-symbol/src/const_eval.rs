@@ -407,9 +407,8 @@ fn coerce_declared_param_default_value(
     let SymbolImpl::DeclaredType(ty) = &symbol.imp else {
         return Some(value);
     };
-    if let Some(value) = coerce_const_to_declared_type(value.clone(), ty, target) {
-        return Some(value);
-    }
+    // An `Enum` is carried as `Object(name)`: test it first, because the object rule below folds a
+    // zero default to `Nothing` (a `Long` enum member `= 0` then raised error 91 when omitted).
     if let VarTypeRef::Object(name) = ty
         && is_declared_enum_type(symbols, scope, name)
     {
@@ -419,7 +418,7 @@ fn coerce_declared_param_default_value(
             target,
         );
     }
-    None
+    coerce_const_to_declared_type(value, ty, target)
 }
 
 fn is_declared_enum_type(symbols: &SymbolTable, scope: ScopeId, name: &str) -> bool {

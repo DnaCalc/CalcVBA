@@ -208,6 +208,14 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Consume the rest of a loop header or `Next`/`Loop`/`Wend` clause, stopping at a `:` so that
+    /// statements after it on the same physical line (`For i = 1 To 3: s = s + i: Next i`) still parse.
+    fn eat_to_clause_end(&mut self) {
+        while !self.at_eof() && !self.at(SyntaxKind::Newline) && !self.at(SyntaxKind::Colon) {
+            self.bump();
+        }
+    }
+
     /// Enter a procedure body after its header (modifiers, keyword, name,
     /// params, return type). A single-line procedure puts its whole body and
     /// `End <kw>` after a `:` on the same physical line
@@ -2094,7 +2102,7 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        self.eat_to_eol();
+        self.eat_to_clause_end();
 
         // Body
         self.parse_block(&[SyntaxKind::KwNext]);
@@ -2143,7 +2151,7 @@ impl<'a> Parser<'a> {
                 self.error("`Next` without matching `For`".into());
             }
         }
-        self.eat_to_eol();
+        self.eat_to_clause_end();
     }
 
     // ── Do statement ────────────────────────────────────────
@@ -2162,7 +2170,7 @@ impl<'a> Parser<'a> {
                 self.parse_expr();
             }
         }
-        self.eat_to_eol();
+        self.eat_to_clause_end();
 
         // Body
         self.parse_block(&[SyntaxKind::KwLoop]);
@@ -2179,7 +2187,7 @@ impl<'a> Parser<'a> {
                     self.parse_expr();
                 }
             }
-            self.eat_to_eol();
+            self.eat_to_clause_end();
         } else {
             self.error("expected `Loop`".into());
         }
@@ -2197,7 +2205,7 @@ impl<'a> Parser<'a> {
         if self.is_expr_start() {
             self.parse_expr();
         }
-        self.eat_to_eol();
+        self.eat_to_clause_end();
 
         // Body
         self.parse_block(&[SyntaxKind::KwWend]);
@@ -2206,7 +2214,7 @@ impl<'a> Parser<'a> {
         self.eat_trivia();
         if self.at(SyntaxKind::KwWend) {
             self.bump();
-            self.eat_to_eol();
+            self.eat_to_clause_end();
         }
 
         self.finish_node();

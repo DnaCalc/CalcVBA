@@ -2063,13 +2063,16 @@ impl<'a> ProcLower<'a> {
     /// (coerced to the declared type), else the declared-type zero value, else
     /// `Missing` (a `Variant` optional with no default — an `Object` yields `Nothing`).
     fn omitted_optional_arg(&self, proc_sym: SymbolId, index: usize, param: &Param) -> CoreArg {
+        // A parameter typed with a module `Enum` is carried as `Object(name)` until resolved; it is a
+        // `Long` (an `Object` here made the default store raise error 91).
+        let ty = self.g.resolve_udt_type(param.ty.clone());
         if let Some(c) = self.g.env.optional_default(proc_sym, index) {
-            return CoreArg::ByVal(self.g.coerce_store(CoreValue::Const(c.clone()), &param.ty));
+            return CoreArg::ByVal(self.g.coerce_store(CoreValue::Const(c.clone()), &ty));
         }
         if !param.optional {
             return CoreArg::Omitted;
         }
-        match &param.ty {
+        match &ty {
             VarTypeRef::Variant => CoreArg::Omitted, // the `Missing` marker
             VarTypeRef::Object(_) => CoreArg::ByVal(CoreValue::Const(CoreConst::Nothing)),
             ty => CoreArg::ByVal(self.g.coerce_store(zero_const(ty), ty)),

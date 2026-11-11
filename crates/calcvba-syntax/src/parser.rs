@@ -1845,6 +1845,9 @@ impl<'a> Parser<'a> {
 
         let kind = self.current();
         match kind {
+            // A VBE export keeps a member's metadata as a statement at the top of its body
+            // (`Attribute Item.VB_UserMemId = 0`); it is not executable.
+            SyntaxKind::KwAttribute => self.parse_attribute_stmt(),
             SyntaxKind::KwIf => self.parse_if_stmt(),
             SyntaxKind::KwFor => self.parse_for_stmt(),
             SyntaxKind::KwDo => self.parse_do_stmt(),

@@ -52,3 +52,20 @@ fn single_line_loops_keep_statements_after_the_closing_keyword() {
         &canon(&Variant::from_i32(70)),
     );
 }
+
+#[test]
+fn member_attribute_statement_inside_a_procedure_body_is_ignored() {
+    both(
+        "Public r As Variant
+Function F() As Long
+Attribute F.VB_Description = \"demo\"
+Attribute F.VB_UserMemId = 0
+    F = 7
+End Function
+Sub Main()
+    r = F()
+End Sub
+",
+        &canon(&Variant::from_i32(7)),
+    );
+}

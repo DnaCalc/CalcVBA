@@ -8285,6 +8285,9 @@ impl<'a> LowerFunc<'a> {
                         | OxTy::Single
                         | OxTy::Double
                         | OxTy::Currency
+                        // A Variant temp (a nested expression or a library result such as
+                        // CInt) goes through the same runtime coercion as VM3.
+                        | OxTy::Variant
                 ))
             }
             _ => Ok(false),
@@ -8335,9 +8338,10 @@ impl<'a> LowerFunc<'a> {
     ) -> Result<bool, JitError> {
         match operand {
             OxOperand::Const(OxConst::I16(_) | OxConst::I32(_) | OxConst::I64(_)) => Ok(true),
+            // A Variant temp (Len(x) - 1, CInt(..)) is coerced by the runtime library as in VM3.
             OxOperand::Use(place) => Ok(matches!(
                 place_ty(self.program, self.func, *place)?,
-                OxTy::Byte | OxTy::Integer | OxTy::Long | OxTy::LongLong
+                OxTy::Byte | OxTy::Integer | OxTy::Long | OxTy::LongLong | OxTy::Variant
             )),
             _ => Ok(false),
         }

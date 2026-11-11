@@ -58,3 +58,78 @@ fn fault_descriptions_agree_between_backends() {
         assert!(o.raised, "{source}");
     }
 }
+
+#[test]
+fn sin_and_chr_take_variant_temporaries() {
+    // Sin(phase * PI2) and Chr(CInt("&H" & t)) (Riff, VBA-Web): the argument is a Variant temp.
+    let o = both_agree(
+        "Const PI2 As Double = 6.283185307179586
+Public r As Variant
+Function F(ByVal phase As Double) As Double
+    Dim s As Double
+    s = Sin(phase * PI2)
+    F = s
+End Function
+Sub Main()
+    r = F(0.25)
+End Sub
+",
+    );
+    assert_eq!(first(&o), canon(&Variant::from_f64(1.0)));
+    for source in [
+        "Public r As Variant
+Function F(ByVal t As String) As String
+    Dim s As String
+    s = VBA.Chr(VBA.CInt(\"&H\" & t))
+    F = s
+End Function
+Sub Main()
+    r = F(\"41\")
+End Sub
+",
+        "Public r As Variant
+Function F(ByVal t As String) As String
+    Dim s As String
+    s = Chr(CInt(\"&H\" & t))
+    F = s
+End Function
+Sub Main()
+    r = F(\"41\")
+End Sub
+",
+    ] {
+        let o = both_agree(source);
+        assert_eq!(first(&o), canon(&Variant::from_string("A")));
+    }
+    // A Variant that cannot be converted raises the same error on both.
+    let o = both_agree("Sub Main()
+    Dim v As Variant
+    Dim s As String
+    v = \"abc\"
+    s = Chr(v)
+End Sub
+");
+    assert!(o.raised);
+}
+
+#[test]
+fn left_and_right_take_a_variant_length_temporary() {
+    // VBA-Web JoinUrl: Right(s, Len(s) - 1) has a Variant-typed length temp.
+    let o = both_agree(
+        "Public r As Variant
+Function F(ByVal s As String) As String
+    If Left(s, 1) = \"/\" Then
+        s = Right(s, Len(s) - 1)
+    End If
+    If Right(s, 1) = \"/\" Then
+        s = Left(s, Len(s) - 1)
+    End If
+    F = s
+End Function
+Sub Main()
+    r = F(\"/a/b/\")
+End Sub
+",
+    );
+    assert_eq!(first(&o), canon(&Variant::from_string("a/b")));
+}

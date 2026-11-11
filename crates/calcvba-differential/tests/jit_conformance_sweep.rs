@@ -29,7 +29,10 @@ fn source(path: &Path) -> String {
 #[test]
 #[ignore = "survey"]
 fn sweep_conformance_bas_files_on_both_executors() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../conformance");
+    // VBA_SWEEP_DIR points the survey at another tree (e.g. DNA Calc's corpus modules).
+    let root = std::env::var_os("VBA_SWEEP_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../conformance"));
     let mut files = Vec::new();
     collect(&root, &mut files);
     let (mut same, mut declined, mut differ, mut both_unsupported) = (0, 0, 0, 0);
@@ -49,7 +52,7 @@ fn sweep_conformance_bas_files_on_both_executors() {
         }
         if let Some(why) = &j.unsupported {
             declined += 1;
-            println!("DECLINE\t{name}\t{}", why.chars().take(200).collect::<String>());
+            println!("DECLINE\t{name}\t{}", why.chars().take(1500).collect::<String>());
             continue;
         }
         if v.result == j.result && v.raised == j.raised && v.err == j.err {

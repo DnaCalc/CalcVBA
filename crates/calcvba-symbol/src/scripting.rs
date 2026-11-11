@@ -241,6 +241,15 @@ Public Function NewDictionary() As Object
 End Function
 "#;
 
+/// The Scripting library's CompareMethod constants, added when a project uses them unqualified
+/// and declares none of its own.
+const COMPARE_METHOD_SOURCE: &str = r#"Public Enum CompareMethod
+    BinaryCompare = 0
+    TextCompare = 1
+    DatabaseCompare = 2
+End Enum
+"#;
+
 /// The manifest with built-in Scripting.Dictionary uses rewritten, or the manifest itself when
 /// it has none.
 pub fn with_builtin_scripting(manifest: &SymbolProjectManifest) -> Cow<'_, SymbolProjectManifest> {
@@ -287,11 +296,24 @@ pub fn with_builtin_scripting(manifest: &SymbolProjectManifest) -> Cow<'_, Symbo
             attributes: ModuleAttributes::named(CLASS_NAME),
             source: DICTIONARY_CLASS_SOURCE.into(),
         });
+        let lowered: Vec<String> = out
+            .modules
+            .iter()
+            .map(|m| m.source.to_ascii_lowercase())
+            .collect();
+        let uses_constants = lowered
+            .iter()
+            .any(|s| s.contains("textcompare") || s.contains("binarycompare"));
+        let declares_constants = lowered.iter().any(|s| s.contains("enum comparemethod"));
+        let mut factory = FACTORY_SOURCE.to_string();
+        if uses_constants && !declares_constants {
+            factory.push_str(COMPARE_METHOD_SOURCE);
+        }
         out.modules.push(ModuleUnit {
             module_name: FACTORY_NAME.into(),
             module_kind: ModuleKind::Procedural,
             attributes: ModuleAttributes::named(FACTORY_NAME),
-            source: FACTORY_SOURCE.into(),
+            source: factory,
         });
     }
     // The Scripting library is then needed only if something else of it is still used.

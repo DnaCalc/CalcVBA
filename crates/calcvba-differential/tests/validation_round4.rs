@@ -211,3 +211,19 @@ End Sub
         &canon(&Variant::from_i32(42)),
     );
 }
+
+#[test]
+fn dictionary_compare_method_constants_resolve_unqualified() {
+    both(
+        "Public r As Variant
+Sub Main()
+    Dim d As Object
+    Set d = CreateObject(\"Scripting.Dictionary\")
+    d.CompareMode = TextCompare
+    d.Add \"A\", 1
+    r = d.Exists(\"a\") & d.CompareMode & BinaryCompare
+End Sub
+",
+        &canon(&Variant::from_string("True10")),
+    );
+}

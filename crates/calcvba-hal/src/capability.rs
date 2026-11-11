@@ -388,6 +388,9 @@ pub struct PolicyHost {
     inner: Arc<dyn HostServices>,
     deny: CapabilitySet,
     audit: AuditHandle,
+    /// ProgID prefixes of classes the embedder itself serves (its object model). Activating one
+    /// reaches no operating-system service, so it is neither gated nor logged.
+    host_progid_prefixes: Vec<String>,
 }
 
 impl PolicyHost {
@@ -413,7 +416,15 @@ impl PolicyHost {
             inner,
             deny,
             audit: AuditHandle::default(),
+            host_progid_prefixes: Vec::new(),
         }
+    }
+
+    /// Classes whose ProgID starts with `prefix` (compared without regard to case) are the
+    /// embedder's own objects: activation passes through unlogged.
+    pub fn with_host_progid_prefix(mut self, prefix: &str) -> Self {
+        self.host_progid_prefixes.push(prefix.to_ascii_lowercase());
+        self
     }
 
     /// The host as the shared handle an engine or embedder holds.
@@ -522,6 +533,14 @@ impl HostServices for PolicyHost {
         self.inner.project_mutation()
     }
     fn authorize_com_activation(&self, op: &'static str, target: &str) -> HalResult<()> {
+        let lowered = target.to_ascii_lowercase();
+        if self
+            .host_progid_prefixes
+            .iter()
+            .any(|prefix| lowered.starts_with(prefix.as_str()))
+        {
+            return self.inner.authorize_com_activation(op, target);
+        }
         self.check(Capability::ComActivate, op, target.to_string())?;
         self.inner.authorize_com_activation(op, target)
     }
@@ -1576,6 +1595,18 @@ mod tests {
         assert_eq!(snapshot.records.len(), 1);
         assert_eq!(snapshot.records[0].detail, "Excel.Application");
         assert_eq!(snapshot.records[0].decision, Decision::Allowed);
+    }
+
+    #[test]
+    fn embedder_classes_pass_unlogged() {
+        let host = PolicyHost::safe(recorder()).with_host_progid_prefix("DnaCalc.");
+        host.authorize_com_activation("create_object", "DnaCalc.Application")
+            .expect("host class");
+        assert_eq!(host.audit().drain().total, 0);
+        assert!(
+            host.authorize_com_activation("create_object", "Scripting.Dictionary")
+                .is_err()
+        );
     }
 
     #[test]

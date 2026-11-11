@@ -2547,10 +2547,19 @@ impl<'a> Parser<'a> {
 
     /// A dotted/banged name path with no trailing index — used by ReDim targets.
     fn parse_name_path(&mut self) {
+        // `ReDim .field(...)` inside `With`: the path starts at the With receiver.
+        if self.at(SyntaxKind::Dot) {
+            self.bump();
+            self.eat_whitespace();
+        }
         if self.at(SyntaxKind::Ident) || self.current().is_keyword() {
             self.bump();
             if self.at(SyntaxKind::TypeSuffix) {
                 self.bump();
+            }
+            // `m(i).field`: an index group inside the path, before a further member.
+            if self.at(SyntaxKind::LParen) && self.paren_group_then_member() {
+                self.parse_arg_list();
             }
             while self.at(SyntaxKind::Dot) || self.at(SyntaxKind::Bang) {
                 self.bump();
@@ -2560,11 +2569,47 @@ impl<'a> Parser<'a> {
                     if self.at(SyntaxKind::TypeSuffix) {
                         self.bump();
                     }
+                    if self.at(SyntaxKind::LParen) && self.paren_group_then_member() {
+                        self.parse_arg_list();
+                    }
                 } else {
                     break;
                 }
             }
         }
+    }
+
+    /// At `(`: whether the balanced parenthesised group is followed by `.` or `!`.
+    fn paren_group_then_member(&self) -> bool {
+        let mut i = self.pos;
+        let mut depth = 0usize;
+        while let Some((kind, _)) = self.tokens.get(i) {
+            match kind {
+                SyntaxKind::LParen => depth += 1,
+                SyntaxKind::RParen => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        i += 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        if depth != 0 {
+            return false;
+        }
+        while self
+            .tokens
+            .get(i)
+            .is_some_and(|(kind, _)| *kind == SyntaxKind::Whitespace)
+        {
+            i += 1;
+        }
+        self.tokens
+            .get(i)
+            .is_some_and(|(kind, _)| matches!(kind, SyntaxKind::Dot | SyntaxKind::Bang))
     }
 
     fn parse_erase_stmt(&mut self) {

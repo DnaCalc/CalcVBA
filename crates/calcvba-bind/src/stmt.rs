@@ -1037,6 +1037,7 @@ impl<'a> ProcLower<'a> {
             .any(|t| t.kind == SyntaxKind::KwPreserve);
         let mut out = Vec::new();
         let mut segments: Vec<&str> = Vec::new();
+        let mut indices: Vec<Option<SyntaxNode<'_>>> = Vec::new();
         let mut last_variant = false;
         for el in node.children() {
             match el {
@@ -1047,15 +1048,28 @@ impl<'a> ProcLower<'a> {
                     ) =>
                 {
                     segments.push(t.text);
+                    indices.push(None);
+                }
+                // An index group inside the path (`m(i).field`) belongs to the segment before it.
+                SyntaxElement::Node(n) if n.kind() == SyntaxKind::ArgList => {
+                    if let Some(last) = indices.last_mut() {
+                        *last = Some(n);
+                    }
                 }
                 // `.`/`!` are path separators — keep accumulating segments.
                 SyntaxElement::Token(t) if matches!(t.kind, SyntaxKind::Dot | SyntaxKind::Bang) => {
+                    // A leading `.` names the With receiver: an empty first segment.
+                    if segments.is_empty() {
+                        segments.push("");
+                        indices.push(None);
+                    }
                 }
                 SyntaxElement::Node(n) if n.kind() == SyntaxKind::ArrayBounds => {
-                    let (statement, variant) = self.redim_one(&segments, n, preserve)?;
+                    let (statement, variant) = self.redim_one(&segments, &indices, n, preserve)?;
                     out.push(statement);
                     last_variant = variant;
                     segments.clear();
+                    indices.clear();
                 }
                 SyntaxElement::Node(n) if n.kind() == SyntaxKind::TypeRef => {
                     let ty = calcvba_symbol::scanner::type_ref_node(n);
@@ -1074,7 +1088,10 @@ impl<'a> ProcLower<'a> {
                     *element_type = requested;
                     *explicit_element = true;
                 }
-                SyntaxElement::Token(t) if t.kind == SyntaxKind::Comma => segments.clear(),
+                SyntaxElement::Token(t) if t.kind == SyntaxKind::Comma => {
+                    segments.clear();
+                    indices.clear();
+                }
                 _ => {}
             }
         }
@@ -1086,13 +1103,14 @@ impl<'a> ProcLower<'a> {
     fn redim_target(
         &mut self,
         segments: &[&str],
+        indices: &[Option<SyntaxNode<'_>>],
         preserve: bool,
     ) -> Result<(CorePlace, calcvba_bundle::ArrayElementType, bool), BindError> {
         match segments {
             [] => Err(BindError::Malformed("ReDim target".into())),
             [name] => self.redim_simple_target(name, preserve),
             _ => {
-                let (place, ty) = self.redim_dotted_place(segments)?;
+                let (place, ty) = self.redim_dotted_place(segments, indices)?;
                 // Only Local/Global/Field places are valid array storage — a
                 // WithEvents member is not re-dimmable.
                 if matches!(place, CorePlace::WithEvents { .. }) {
@@ -1166,13 +1184,23 @@ impl<'a> ProcLower<'a> {
     fn redim_dotted_place(
         &mut self,
         segments: &[&str],
+        indices: &[Option<SyntaxNode<'_>>],
     ) -> Result<(CorePlace, calcvba_symbol::signature::VarTypeRef), BindError> {
         use calcvba_symbol::signature::VarTypeRef;
         let (first, rest) = segments
             .split_first()
             .expect("dotted path has >= 2 segments");
         // Leading receiver: `Me`, or a resolved local/global/field variable.
-        let (mut recv, mut ty): (CoreValue, VarTypeRef) = if fold_identifier(first) == "me" {
+        let (mut recv, mut ty): (CoreValue, VarTypeRef) = if first.is_empty() {
+            let receiver = self
+                .with_stack
+                .last()
+                .ok_or_else(|| BindError::Malformed("`.field` outside With".into()))?;
+            let place = receiver.place.clone().ok_or_else(|| {
+                BindError::Unsupported("ReDim of a field of a non-place With receiver".into())
+            })?;
+            (CoreValue::Load(place), receiver.ty.clone())
+        } else if fold_identifier(first) == "me" {
             let me = self
                 .me_value()
                 .ok_or_else(|| BindError::Malformed("`Me` outside a class module".into()))?;
@@ -1195,8 +1223,20 @@ impl<'a> ProcLower<'a> {
                 })?;
             (CoreValue::Load(place), ty)
         };
+        // An index group on the leading segment (`m(i).field`) selects an array element.
+        if let Some(Some(arglist)) = indices.first() {
+            let CoreValue::Load(base) = &recv else {
+                return Err(BindError::Unsupported(
+                    "ReDim through an index on a non-place receiver".into(),
+                ));
+            };
+            let (element_place, element_ty) =
+                self.redim_index_place(base.clone(), &ty, *arglist)?;
+            recv = CoreValue::Load(element_place);
+            ty = element_ty;
+        }
         let mut place = CorePlace::Local(LocalId(0)); // overwritten on the first segment below
-        for seg in rest {
+        for (position, seg) in rest.iter().enumerate() {
             // A field of a UDT receiver (`o.Lines`) is a fixed-index record
             // element — the same `RecordField` shape `udt_field_place` builds,
             // threaded through the dotted ReDim path so a UDT array field is a
@@ -1220,6 +1260,12 @@ impl<'a> ProcLower<'a> {
                     index,
                 };
                 ty = self.g.resolve_udt_type(field_ty);
+                if let Some(Some(arglist)) = indices.get(position + 1) {
+                    let (element_place, element_ty) =
+                        self.redim_index_place(place.clone(), &ty, *arglist)?;
+                    place = element_place;
+                    ty = element_ty;
+                }
                 recv = CoreValue::Load(place.clone());
                 continue;
             }
@@ -1246,13 +1292,36 @@ impl<'a> ProcLower<'a> {
         Ok((place, ty))
     }
 
+    /// The element of an array place selected by the index group of a ReDim path segment.
+    fn redim_index_place(
+        &mut self,
+        base: CorePlace,
+        ty: &VarTypeRef,
+        arglist: SyntaxNode<'_>,
+    ) -> Result<(CorePlace, VarTypeRef), BindError> {
+        let element_ty = match ty {
+            VarTypeRef::Array(inner) => self.g.resolve_udt_type((**inner).clone()),
+            VarTypeRef::FixedArray { element, .. } => self.g.resolve_udt_type((**element).clone()),
+            _ => VarTypeRef::Variant,
+        };
+        let indices = self.bind_positional_values(arglist)?;
+        Ok((
+            CorePlace::Index {
+                array: Box::new(base),
+                indices,
+            },
+            element_ty,
+        ))
+    }
+
     fn redim_one(
         &mut self,
         segments: &[&str],
+        indices: &[Option<SyntaxNode<'_>>],
         bounds_node: SyntaxNode<'_>,
         preserve: bool,
     ) -> Result<(CoreStmt, bool), BindError> {
-        let (array, element_type, variant) = self.redim_target(segments, preserve)?;
+        let (array, element_type, variant) = self.redim_target(segments, indices, preserve)?;
         let bounds = self.bind_array_bounds(bounds_node)?;
         Ok((
             CoreStmt::ReDim {
@@ -1399,7 +1468,8 @@ impl<'a> ProcLower<'a> {
             // A fixed-size array allocates via ReDim.
             if let Some(bounds_node) = declarator.array_bounds() {
                 if !bounds_node.children_of(SyntaxKind::Bound).is_empty() {
-                    let (array, element_type, _) = self.redim_target(&[name.text], false)?;
+                    let (array, element_type, _) =
+                        self.redim_target(&[name.text], &[None], false)?;
                     let bounds = self.bind_array_bounds(bounds_node)?;
                     out.push(CoreStmt::ReDim {
                         explicit_element: false,

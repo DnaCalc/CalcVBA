@@ -2854,7 +2854,8 @@ impl<'a> LowerFunc<'a> {
         type_name: &str,
     ) -> Result<(), JitError> {
         self.ensure_bool_place(dst)?;
-        if matches!(object, OxOperand::Const(OxConst::Nothing)) {
+        // A constant is never an object, so `TypeOf <constant> Is <type>` is False (as in VM3).
+        if matches!(object, OxOperand::Const(_)) {
             let false_value = builder.ins().iconst(types::I32, 0);
             return self.emit_store_bool(builder, module, dst, false_value);
         }

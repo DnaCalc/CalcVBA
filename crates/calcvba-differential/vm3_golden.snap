@@ -26,9 +26,9 @@ conformance/com/office/excel/excel_workbook_range_smoke.bas	err(bind: Sub or Fun
 conformance/divergences/for_loop.bas	ok[Raw { tag: 2, bytes: [5, 0, 0, 0, 0, 0, 0, 0], reserved: [0, 0, 0] }] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/divergences/if_statement.bas	ok[Raw { tag: 2, bytes: [1, 0, 0, 0, 0, 0, 0, 0], reserved: [0, 0, 0] }] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/integration/projects/INTP-001/main/Main.proc.bas	ok[Raw { tag: 3, bytes: [15, 0, 0, 0, 0, 0, 0, 0], reserved: [0, 0, 0] }] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
-conformance/integration/projects/INTP-002/main/Main.proc.bas	err(bind: Variable not defined) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
+conformance/integration/projects/INTP-002/main/Main.proc.bas	err(bind: Variable not defined: MathLib) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/integration/projects/INTP-002/main/MathLib.proc.bas	ok[] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
-conformance/integration/projects/INTP-003/main/Main.proc.bas	err(bind: Variable not defined) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
+conformance/integration/projects/INTP-003/main/Main.proc.bas	err(bind: Variable not defined: LibMath) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/integration/projects/INTP-003/references/LibMath/MathApi.proc.bas	ok[] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/integration/projects/INTP-004/main/Main.proc.bas	ok[Raw { tag: 3, bytes: [11, 0, 0, 0, 0, 0, 0, 0], reserved: [0, 0, 0] }] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/integration/projects/INTP-004/references/LibShadow/Ping.proc.bas	ok[] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
@@ -39,15 +39,15 @@ conformance/integration/projects/INTP-008/main/Main.proc.bas	err(bind: symbol mo
 conformance/integration/projects/INTP-009/main/Main.proc.bas	err(bind: malformed construct: RaiseEvent outside a class module) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/integration/projects/INTP-010/main/Main.proc.bas	err(VBA error 5) raised=true err=FinalErr { number: 5, source: "VBAProject", description: "operation blocked by host policy", last_dll_error: 0 }
 conformance/integration/projects/INTP-011/main/ArrayTools.proc.bas	ok[] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
-conformance/integration/projects/INTP-011/main/Main.proc.bas	err(bind: Variable not defined) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
+conformance/integration/projects/INTP-011/main/Main.proc.bas	err(bind: Variable not defined: MathTools) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/integration/projects/INTP-011/main/MathTools.proc.bas	ok[] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/integration/projects/INTP-011/references/LibMath/Boost.proc.bas	ok[] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/integration/projects/INTP-016/main/Adder.class.bas	ok[] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/integration/projects/INTP-016/main/Counter.class.bas	ok[] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/integration/projects/INTP-016/main/Main.proc.bas	err(bind: unsupported construct: New counter (only project classes are creatable)) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
-conformance/integration/projects/INTP-017/main/Main.proc.bas	err(bind: Variable not defined) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
+conformance/integration/projects/INTP-017/main/Main.proc.bas	err(bind: Variable not defined: Utils) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/integration/projects/INTP-017/main/Utils.proc.bas	ok[] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
-conformance/integration/projects/INTP-019/main/Main.proc.bas	err(bind: Variable not defined) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
+conformance/integration/projects/INTP-019/main/Main.proc.bas	err(bind: Variable not defined: LibA) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/integration/projects/INTP-019/references/LibA/Util.proc.bas	ok[] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/integration/projects/INTP-019/references/LibB/Util.proc.bas	ok[] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/integration/projects/INTP-019/references/LibC/Calc.proc.bas	ok[] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
@@ -442,7 +442,7 @@ conformance/tests/on_error_resume_continue.bas	ok[Raw { tag: 2, bytes: [2, 0, 0,
 conformance/tests/on_error_resume_next.bas	ok[Raw { tag: 3, bytes: [5, 0, 0, 0, 0, 0, 0, 0], reserved: [0, 0, 0] }] raised=false err=FinalErr { number: 5, source: "VBAProject", description: "Invalid procedure call or argument", last_dll_error: 0 }
 conformance/tests/operator_arithmetic_object_plus_error.bas	err(VBA error 91) raised=true err=FinalErr { number: 91, source: "VBAProject", description: "Object variable or With block variable not set", last_dll_error: 0 }
 conformance/tests/operator_comparison_object_long_error.bas	err(VBA error 91) raised=true err=FinalErr { number: 91, source: "VBAProject", description: "Object variable or With block variable not set", last_dll_error: 0 }
-conformance/tests/option_explicit_error.bas	err(bind: Variable not defined) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
+conformance/tests/option_explicit_error.bas	err(bind: Variable not defined: z) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/tests/option_explicit_ok.bas	ok[Raw { tag: 2, bytes: [3, 0, 0, 0, 0, 0, 0, 0], reserved: [0, 0, 0] }] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/tests/params_byref.bas	ok[Raw { tag: 2, bytes: [2, 0, 0, 0, 0, 0, 0, 0], reserved: [0, 0, 0] }] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/tests/params_byref_error.bas	ok[] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
@@ -642,13 +642,13 @@ examples/native/breadth/Breadth.bas	ok[] raised=false err=FinalErr { number: 0, 
 examples/native/classes/Counts.bas	err(bind: unsupported construct: New counter (only project classes are creatable)) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 examples/native/comexe/Client.bas	err(bind: unsupported construct: New CalcVbaNativeCounter27Lib.Counter (only project classes are creatable)) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 examples/native/declares/Declares.bas	err(VBA error 5) raised=true err=FinalErr { number: 5, source: "VBAProject", description: "operation blocked by host policy", last_dll_error: 0 }
-examples/native/exe/Hello.bas	err(bind: unsupported construct: New Scripting.Dictionary (only project classes are creatable)) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
+examples/native/exe/Hello.bas	ok[Str("native-exe:41:42:1"), Raw { tag: 3, bytes: [2, 0, 0, 0, 0, 0, 0, 0], reserved: [0, 0, 0] }, Opaque { tag: 9 }] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 examples/native/interop/Interop.bas	ok[Raw { tag: 3, bytes: [0, 0, 0, 0, 0, 0, 0, 0], reserved: [0, 0, 0] }, Str(""), Opaque { tag: 9 }, Raw { tag: 3, bytes: [0, 0, 0, 0, 0, 0, 0, 0], reserved: [0, 0, 0] }] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 examples/native/interop/TextCompare.bas	ok[] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 examples/native/records/Records.bas	ok[] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 examples/native/scalars/NativeInternals.bas	ok[] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 examples/native/scalars/Operators.bas	err(VBA error 11) raised=true err=FinalErr { number: 11, source: "VBAProject", description: "Division by zero", last_dll_error: 0 }
-examples/native/scalars/Scalars.bas	err(bind: Variable not defined) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
+examples/native/scalars/Scalars.bas	err(bind: Variable not defined: NativeInternals) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 examples/native/widths/Wide.bas	ok[] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 examples/native/xll/PlainXll.bas	err(bind: Sub or Function not defined) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 examples/native/xll/XlValues.bas	ok[Raw { tag: 3, bytes: [0, 0, 0, 0, 0, 0, 0, 0], reserved: [0, 0, 0] }] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }

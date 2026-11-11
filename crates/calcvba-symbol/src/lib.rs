@@ -19,6 +19,7 @@ pub mod predeclared;
 pub mod provider;
 pub mod providers;
 pub mod scanner;
+pub mod scripting;
 pub mod signature;
 pub mod structural;
 pub mod surface;

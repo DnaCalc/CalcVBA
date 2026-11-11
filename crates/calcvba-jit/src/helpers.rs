@@ -4100,6 +4100,32 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
         };
     }
     if object.route_key() == VBA_COLLECTION_ROUTE_KEY {
+        let is_new_enum =
+            vba_collection_native_method_for_jit(if name.is_empty() { "Item" } else { name })
+                == Some(calcvba_bundle::NativeMethodId::CollectionNewEnum);
+        if is_new_enum {
+            // The enumerator is a snapshot of the collection, as in VM3.
+            let Some(snapshot) = object.with_native_collection(|data| data.clone()) else {
+                return ST_FAULT;
+            };
+            // SAFETY: no typed run borrow is live; the run root is valid for this call.
+            let created = new_collection_variant_for_jit(unsafe { &mut *run }, object.bundle_id());
+            let Ok(enumerator) = created else {
+                return ST_FAULT;
+            };
+            if let Some(handle) = enumerator.as_object_ref() {
+                let _ = handle.with_native_collection(|data| *data = snapshot);
+            }
+            if let Some((area, index)) = dst {
+                // SAFETY: as above.
+                let run = unsafe { &mut *run };
+                let Some(slot) = slot_mut(run, area, index) else {
+                    return ST_FAULT;
+                };
+                *slot = enumerator;
+            }
+            return ST_OK;
+        }
         // SAFETY: the current compiled-run boundary owns the live unique state handle;
         // typed references and owned values remain live and nonaliasing for this call.
         let value = match unsafe {
@@ -6923,6 +6949,82 @@ pub(crate) unsafe extern "C" fn rt_jit_bound_to_slot(
     })
 }
 
+/// `For Each` over a project class: run its `VB_UserMemId = -4` member (a property or a
+/// method) and enumerate what it returns.
+///
+/// # Safety
+/// `run` and `state` are the matching live execution roots; no borrow of either is held.
+unsafe fn project_enumerator_elements(
+    run: *mut JitRun,
+    state: *mut RawExecState,
+    object: ObjectRef,
+    depth: usize,
+) -> Result<Vec<Variant>, i32> {
+    if depth > 8 {
+        // SAFETY: inherited live state contract.
+        return Err(unsafe { rt_raise_runtime_error_number(state, 438) });
+    }
+    let program_index = object.bundle_id() as usize;
+    let class_idx = object.route_key() as usize;
+    let proc = {
+        // SAFETY: this shared metadata borrow ends before the member is entered.
+        let run_ref = unsafe { &*run };
+        let Some(image) = program_image(run_ref, program_index) else {
+            return Err(ST_FAULT);
+        };
+        if image.program.is_null() {
+            return Err(ST_FAULT);
+        }
+        // SAFETY: installed from the owning CompiledImage for this run.
+        let program = unsafe { &*image.program };
+        let member = program.classes.get(class_idx).and_then(|class| {
+            class
+                .methods
+                .iter()
+                .find(|m| m.is_enumerator_member && m.kind == ProjectMemberKind::PropertyGet)
+                .or_else(|| {
+                    class
+                        .methods
+                        .iter()
+                        .find(|m| m.is_enumerator_member && m.kind == ProjectMemberKind::Method)
+                })
+        });
+        match member {
+            Some(member) => member.proc.0,
+            // SAFETY: inherited live state contract.
+            None => return Err(unsafe { rt_raise_runtime_error_number(state, 438) }),
+        }
+    };
+    // SAFETY: inherited live roots; the owned receiver outlives the call.
+    let result = unsafe {
+        invoke_project_member_with_me(
+            run,
+            state,
+            program_index,
+            proc,
+            Variant::from_object_ref(object),
+            &[],
+            &[],
+        )
+    }?;
+    if let Some(array) = result.as_safearray() {
+        return Ok(array.enumeration_elements().unwrap_or_default());
+    }
+    let Some(next) = result.as_object_ref() else {
+        // SAFETY: inherited live state contract.
+        return Err(unsafe { rt_raise_runtime_error_number(state, 13) });
+    };
+    if let Some(values) = next.native_collection_snapshot() {
+        return Ok(values);
+    }
+    if next.is_project_instance() {
+        // SAFETY: inherited live roots.
+        return unsafe { project_enumerator_elements(run, state, next, depth + 1) };
+    }
+    // SAFETY: inherited live state contract.
+    Err(unsafe { rt_raise_runtime_error_number(state, 438) })
+}
+
 pub(crate) unsafe extern "C" fn rt_jit_for_each_init_variant_array(
     state: *mut RawExecState,
     run: *mut JitRun,
@@ -6967,6 +7069,13 @@ pub(crate) unsafe extern "C" fn rt_jit_for_each_init_variant_array(
         } else if let Some(object) = source_value.as_object_ref() {
             if let Some(values) = object.native_collection_snapshot() {
                 values
+            } else if object.is_project_instance() {
+                // SAFETY: the live run and state roots span the synchronous enumerator call;
+                // no run, frame or state borrow is held across it.
+                match unsafe { project_enumerator_elements(run, state, object, 0) } {
+                    Ok(values) => values,
+                    Err(status) => return status,
+                }
             } else {
                 // SAFETY: the host outlives this invocation; no execution-state
                 // or frame reference spans its synchronous COM enumeration.

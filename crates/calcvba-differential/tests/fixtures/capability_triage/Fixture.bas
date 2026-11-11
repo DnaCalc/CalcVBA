@@ -43,7 +43,7 @@ End Function
 
 Public Function Activate() As String
     Dim o As Object
-    Set o = CreateObject("Scripting.Dictionary")
+    Set o = CreateObject("WinHttp.WinHttpRequest.5.1")
     Activate = "done"
 End Function
 
@@ -96,7 +96,7 @@ End Function
 Public Function ActivateResume() As String
     On Error Resume Next
     Dim o As Object
-    Set o = CreateObject("Scripting.Dictionary")
+    Set o = CreateObject("WinHttp.WinHttpRequest.5.1")
     ActivateResume = "done"
 End Function
 

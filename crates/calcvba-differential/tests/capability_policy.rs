@@ -188,13 +188,13 @@ const ROWS: &[Row] = &[
         label: "CreateObject",
         capability: Capability::ComActivate,
         decls: "",
-        stmt: "Set o = CreateObject(\"Scripting.Dictionary\")",
+        stmt: "Set o = CreateObject(\"WinHttp.WinHttpRequest.5.1\")",
     },
     Row {
         label: "GetObject",
         capability: Capability::ComActivate,
         decls: "",
-        stmt: "Set o = GetObject(\"\", \"Scripting.Dictionary\")",
+        stmt: "Set o = GetObject(\"\", \"WinHttp.WinHttpRequest.5.1\")",
     },
     // ui.keys
     Row {
@@ -558,11 +558,32 @@ fn triage_prediction_covers_every_observed_capability_on_both_backends() {
             .filter(|c| c.capability == Capability::ComActivate)
             .map(|c| c.detail.as_str())
             .collect();
-        assert_eq!(observed_com, ["Scripting.Dictionary"], "{executor:?}");
+        assert_eq!(observed_com, ["WinHttp.WinHttpRequest.5.1"], "{executor:?}");
         let unconfirmed: Vec<_> = predicted_com
             .iter()
             .filter(|d| !observed_com.contains(&d.as_str()))
             .collect();
         assert_eq!(unconfirmed, ["Uncalled.Class"]);
+    }
+}
+
+/// Scripting.Dictionary is served by the engine itself: it works in Safe mode, asks the host
+/// for nothing, and is not predicted as a COM activation.
+#[test]
+fn scripting_dictionary_needs_no_capability_in_safe_mode() {
+    let program = "Public r As Variant\nSub Main()\n  Dim d As Object\n  Set d = CreateObject(\"Scripting.Dictionary\")\n  d.Add \"a\", 4\n  r = d(\"a\")\nEnd Sub\n";
+    for executor in [Executor::Vm3, Executor::Jit] {
+        let (outcome, records) = run_policy(executor, program, &PolicyHost::safe, false);
+        assert!(
+            outcome.unsupported.is_none() && !outcome.raised,
+            "{executor:?}: {:?}",
+            outcome.result
+        );
+        assert_eq!(
+            outcome.result.as_ref().unwrap()[0],
+            calcvba_differential::canon(&calcvba_runtime::Variant::from_i16(4)),
+            "{executor:?}"
+        );
+        assert!(records.is_empty(), "{executor:?}: {records:?}");
     }
 }

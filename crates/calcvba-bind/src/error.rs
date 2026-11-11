@@ -18,7 +18,7 @@ pub enum BindError {
     /// VBA's compile diagnostic for an undeclared variable under an explicit
     /// declaration context, and for `ReDim Preserve` names that are not already
     /// declared.
-    #[error("Variable not defined")]
+    #[error("Variable not defined: {name}")]
     VariableNotDefined { name: String },
     /// A bare name resolved to multiple equally viable project-level candidates.
     #[error("ambiguous name detected: {name}")]
@@ -114,7 +114,7 @@ impl BindError {
             BindError::VariableNotDefined { name } => Diagnostic::error(
                 "BIND-E-VARIABLE-NOT-DEFINED",
                 DiagnosticPhase::Bind,
-                "Variable not defined",
+                format!("Variable not defined: {name}"),
             )
             .with_help(format!("Declare `{name}` before using it.")),
             BindError::AmbiguousName { name } => Diagnostic::error(

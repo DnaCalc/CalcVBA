@@ -128,7 +128,13 @@ pub(crate) fn assign_repr_preserving(dst_ty: &OxTy, src_ty: &OxTy) -> bool {
     if dst_ty == src_ty {
         return true;
     }
-    matches!((dst_ty, src_ty), (OxTy::Object(_), OxTy::Object(_)))
+    match (dst_ty, src_ty) {
+        (OxTy::Object(_), OxTy::Object(_)) => true,
+        // A fixed array assigned to a dynamic array (a typed dynamic-array function result,
+        // a dynamic local) is the same SAFEARRAY representation; the executors copy it.
+        (OxTy::Array(dst_el, _), OxTy::Array(src_el, _)) => dst_el == src_el,
+        _ => false,
+    }
 }
 
 pub(crate) fn place_ty(

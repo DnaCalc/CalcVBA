@@ -1210,7 +1210,7 @@ fn call_keyword_module_qualified_sub_with_attached_parens_runs() {
 #[test]
 fn redim_preserve_does_not_declare_undeclared_name() {
     let err = bind_error_display("Option Explicit\nSub Main()\n    ReDim Preserve a(1)\nEnd Sub\n");
-    assert_eq!(err, "Variable not defined");
+    assert_eq!(err, "Variable not defined: a");
 }
 
 #[test]

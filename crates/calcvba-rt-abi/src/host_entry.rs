@@ -77,6 +77,19 @@ pub fn owning_builtin(id: calcvba_bundle::NativeImplId) -> bool {
             | Replace
             | Len
             | InStr
+            | InStrRev
+            | StrComp
+            | Join
+            | Split
+            | CDate
+            | CBool
+            | CByte
+            | CCur
+            | CDbl
+            | CInt
+            | CLng
+            | CLngLng
+            | CSng
             | CreateObject
     )
 }

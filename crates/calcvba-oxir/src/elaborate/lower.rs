@@ -182,8 +182,89 @@ pub fn elaborate(program: &CoreProgram) -> Result<OxProgram> {
         exports: program.exports.clone(),
         imports: program.imports.clone(),
     };
+    retype_compound_byref_temps(&mut ox_program);
     normalize_assigns(&mut ox_program);
     Ok(ox_program)
+}
+
+/// A compound ByRef argument (`vs(i).Z`, `t.N`) is copied into a temp typed `Variant` (a record
+/// field has no static scalar type at that point). When the callee declares the parameter with a
+/// scalar type, type the temp (and its change-detection snapshot) by the parameter, so a backend
+/// that needs the exact type for a ByRef alias finds it. The copy-in and copy-out assignments
+/// then convert through `Unbox` and `Box` in [`normalize_assigns`].
+fn retype_compound_byref_temps(program: &mut OxProgram) {
+    use crate::value::{OxArg, OxOperand, OxPlace};
+    let param_tys: Vec<Option<Vec<OxTy>>> = program
+        .funcs
+        .iter()
+        .map(|func| {
+            let params: Vec<&crate::program::OxLocal> =
+                func.locals.iter().filter(|l| l.param.is_some()).collect();
+            // Only plain procedures: every parameter is one local, no ParamArray.
+            if params
+                .iter()
+                .any(|l| l.param.as_ref().is_some_and(|p| p.variadic))
+            {
+                return None;
+            }
+            Some(params.iter().map(|l| l.ty.clone()).collect())
+        })
+        .collect();
+    let scalar = |ty: &OxTy| {
+        matches!(
+            ty,
+            OxTy::Bool
+                | OxTy::Byte
+                | OxTy::Integer
+                | OxTy::Long
+                | OxTy::LongLong
+                | OxTy::Single
+                | OxTy::Double
+                | OxTy::Currency
+                | OxTy::Date
+        )
+    };
+    for func in &mut program.funcs {
+        let mut retype: Vec<(usize, OxTy)> = Vec::new();
+        for block in &func.blocks {
+            for inst in &block.instrs {
+                let OxInst::CallProc { proc, args, .. } = inst else {
+                    continue;
+                };
+                let Some(Some(params)) = param_tys.get(proc.0) else {
+                    continue;
+                };
+                if params.len() != args.len() {
+                    continue;
+                }
+                for (arg, ty) in args.iter().zip(params) {
+                    if let OxArg::ByRef(OxPlace::Temp(t)) = arg
+                        && scalar(ty)
+                        && func.temps.get(t.0) == Some(&OxTy::Variant)
+                    {
+                        retype.push((t.0, ty.clone()));
+                    }
+                }
+            }
+        }
+        for (temp, ty) in retype {
+            func.temps[temp] = ty.clone();
+            // The change-detection snapshot copied from it.
+            for block in &func.blocks {
+                for inst in &block.instrs {
+                    if let OxInst::Assign {
+                        dst: OxPlace::Temp(orig),
+                        value: OxOperand::Use(OxPlace::Temp(src)),
+                    } = inst
+                        && src.0 == temp
+                    {
+                        let orig = orig.0;
+                        func.temps[orig] = ty.clone();
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn proc_return_ty(

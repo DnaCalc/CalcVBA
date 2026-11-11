@@ -1,0 +1,192 @@
+array_bounds_error.bas	ERR	9	Subscript out of range	VBAProject
+array_explicit_lower_bound.bas	OK	x=2:11
+array_multidim_indexing.bas	OK	x=2:17
+array_option_base_one_bounds.bas	OK	x=2:4	y=2:9
+array_store_load.bas	OK	x=2:7
+array_zero_index.bas	OK	x=2:3
+assignment_set_let_basic.bas	COMPILE	Compile error:  Object required
+byref_typed_mismatch_error.bas	COMPILE	Compile error:  ByRef argument type mismatch
+call_coercion_mixed_variant_to_long.bas	OK	v=2:5
+class_lifecycle_initialize_fail.bas	OK	x=2:1
+class_lifecycle_resume_next_ok.bas	OK	x=2:3
+class_lifecycle_terminate_fail.bas	OK	x=2:1
+coercion_arg_object_to_long_error.bas	ERR	91	Object variable or With block variable not set	VBAProject
+coercion_assign_object_to_long_error.bas	ERR	91	Object variable or With block variable not set	VBAProject
+coercion_cverr_abs_normalization.bas	ERR	5	Invalid procedure call or argument	VBAProject
+coercion_cverr_range_predicates.bas	ERR	5	Invalid procedure call or argument	VBAProject
+coercion_null_empty_error_predicates.bas	OK	a=11:true	b=11:true	c=11:true	d=11:false	e=11:false
+conditional_compilation_basic.bas	OK	x=2:8
+consolidate_error_intrinsics_mix.bas	OK	x=3:12	y=10:4	z=11:true
+consolidate_for_gosub_mix.bas	OK	total=2:30	i=2:5
+consolidate_for_select_call.bas	OK	total=2:32	i=2:6
+consolidate_gosub_error_mix.bas	OK	x=2:10	y=3:77
+consolidate_nested_call_chain.bas	OK	x=2:10
+consolidate_select_conversion.bas	OK	x=2:7	y=2:20
+consolidate_while_byref_mix.bas	OK	x=2:128	count=2:7
+conversion_cint_basic.bas	OK	x=2:5
+conversion_cint_to_object_error.bas	ERR	91	Object variable or With block variable not set	VBAProject
+conversion_clng_cint_chain.bas	OK	a=2:7	b=3:10	c=2:8
+conversion_extended_scalar_subset.bas	OK	a=4:401C000000000000	b=17:8	c=6:9	d=14:10
+conversion_nested_clng_cint.bas	OK	x=3:7
+conversion_val_str_subset.bas	OK	x=5:4022000000000000
+declaration_collision_proc_name_error.bas	OK	helper=2:1
+declare_function_stub_basic.bas	COMPILE	Cannot run the macro ''Book40'!DnaRunAll'. The macro may not be available in this workbook or all macros may be disabled.
+declare_sub_stub_basic.bas	COMPILE	Cannot run the macro ''Book41'!DnaRunAll'. The macro may not be available in this workbook or all macros may be disabled.
+default_type_defobj_implicit_error.bas	ERR	91	Object variable or With block variable not set	VBAProject
+default_type_param_defobj_error.bas	COMPILE	Compile error:  Type mismatch
+diagnostic_phase_compile_wins.bas	COMPILE	Compile error:  Label not defined
+do_exit_do.bas	OK	x=2:4
+do_loop_until_basic.bas	OK	x=2:3
+do_loop_while_basic.bas	OK	x=2:3
+do_until_basic.bas	OK	x=2:3
+do_while_basic.bas	OK	x=2:3
+do_while_exit_condition.bas	OK	x=2:64	count=2:6
+duplicate_dim_error.bas	COMPILE	Compile error:  Duplicate declaration in current scope
+duplicate_label_error.bas	COMPILE	Compile error:  Duplicate declaration in current scope
+enum_arithmetic_use.bas	OK	x=3:6	y=3:9
+enum_basic.bas	OK	x=3:5
+enum_select_case_use.bas	OK	x=2:20	c=3:2
+erase_array_basic.bas	OK	x=0:
+err_clear_basic.bas	OK	x=3:0
+err_clear_full_surface_reset.bas	OK	n=3:0	d=8:	s=8:	h=3:0	f=8:	l=3:0
+err_proc_call_boundary_clears.bas	OK	x=3:7
+err_resume_next_clears.bas	OK	x=3:20
+err_surface_fields_subset.bas	OK	n=3:9	d=8:0053007500620073006300720069007000740020006F007500740020006F0066002000720061006E00670065	s=8:00560042004100500072006F006A006500630074	h=3:1000009	f=8:0043003A005C00500072006F006700720061006D002000460069006C00650073005C0043006F006D006D006F006E002000460069006C00650073005C004D006900630072006F0073006F006600740020005300680061007200650064005C005600420041005C0056004200410037002E0031005C0031003000330033005C00560062004C00520036002E00630068006D	l=3:0
+error_goto_label_resume_next.bas	OK	x=2:20	y=3:42
+error_nested_mode_transitions.bas	OK	a=3:5	b=3:20	c=3:0	d=3:6
+error_raise_custom_clear_cycle.bas	OK	a=3:100	b=3:0	c=3:200
+financial_algorithm_npv_irr_mirr_subset.bas	COMPILE	Compile error:  Type mismatch: array or user-defined type expected
+financial_algorithm_rate_nper_subset.bas	OK	a=5:3F9DEE162ADA59CE	b=5:4024000000000000
+financial_tolerance_mixed_modes.bas	ERR	5	Invalid procedure call or argument	VBAProject
+financial_tolerance_non_convergence.bas	ERR	5	Invalid procedure call or argument	VBAProject
+for_basic.bas	OK	x=2:6	i=2:4
+for_each_array_literal_basic.bas	OK	x=2:3	v=0:
+for_each_array_variable_basic.bas	OK	x=2:6	v=0:
+for_exit_for_basic.bas	OK	x=2:1	i=2:1
+for_nested_select_case.bas	OK	total=2:21	i=2:5
+for_step_negative.bas	OK	x=2:3	i=2:-1
+for_step_positive.bas	OK	x=2:6	i=2:7
+for_zero_iter.bas	OK	x=2:5	i=2:5
+function_call_basic.bas	OK	x=2:9
+function_return_explicit_as_precedence_error.bas	COMPILE	Cannot run the macro ''Book79'!DnaRunAll'. The macro may not be available in this workbook or all macros may be disabled.
+gosub_basic.bas	OK	x=2:4
+gosub_loop_accumulate.bas	OK	x=2:60	i=2:4
+gosub_missing_label_error.bas	COMPILE	Compile error:  Label not defined
+gosub_nested_labels.bas	OK	x=2:15
+gosub_repeated.bas	OK	x=2:5
+goto_label_basic.bas	OK	x=2:3
+goto_line_number_statement_basic.bas	OK	x=2:5
+goto_missing_label_error.bas	COMPILE	Compile error:  Label not defined
+goto_numeric_basic.bas	OK	x=2:5
+if_and.bas	OK	x=2:7
+if_else_path.bas	OK	x=2:20
+if_elseif_else_path.bas	OK	x=2:99
+if_elseif_path.bas	OK	x=2:30
+if_false.bas	OK	x=2:0
+if_ge.bas	OK	x=2:5
+if_lt.bas	OK	x=2:4
+if_neq.bas	OK	x=2:11
+if_or_not.bas	OK	x=2:9
+if_true.bas	OK	x=2:7
+introspection_vartype_isnumeric_tags.bas	OK	a=3:8	b=3:1	c=3:10	d=3:2	e=11:false	f=11:false	g=11:false	h=11:true
+jit_intrinsic_math_subset.bas	OK	x=2:1
+line_continuation_basic.bas	OK	x=2:3
+module_const_basic.bas	OK	x=2:7
+nested_if_for.bas	OK	x=2:5	i=2:3
+object_collection_add_item.bas	OK	item=3:9	defaultItem=3:9
+object_collection_count_chain.bas	OK	firstCount=3:1	secondCount=3:2
+object_collection_remove_count.bas	OK	remainingCount=3:1
+object_identity_is_nothing.bas	OK	sameNothing=11:true	isNothing=11:true
+object_identity_is_same_and_different.bas	OK	same=11:true	different=11:false
+on_error_default_fail.bas	ERR	9	Subscript out of range	VBAProject
+on_error_goto_label_missing_label_error.bas	COMPILE	Compile error:  Label not defined
+on_error_goto_label_resume.bas	OK	x=2:100
+on_error_goto_label_then_goto_zero_error.bas	ERR	4	Application-defined or object-defined error	VBAProject
+on_error_goto_zero_fail.bas	ERR	3	Return without GoSub	VBAProject
+on_error_resume_continue.bas	OK	x=2:2
+on_error_resume_next.bas	OK	x=3:5
+operator_arithmetic_object_plus_error.bas	ERR	91	Object variable or With block variable not set	VBAProject
+operator_comparison_object_long_error.bas	ERR	91	Object variable or With block variable not set	VBAProject
+option_explicit_error.bas	COMPILE	Compile error:  Variable not defined
+option_explicit_ok.bas	OK	y=2:3
+params_byref.bas	OK	x=2:2
+params_byref_error.bas	OK	
+params_byref_nested_modify.bas	OK	x=2:111
+params_byref_swap.bas	OK	a=2:10	b=2:5
+params_byval.bas	OK	x=2:1
+params_named_bind.bas	OK	x=2:9
+params_named_optional_omit.bas	OK	x=2:7
+params_named_positional_after_named_error.bas	COMPILE	Compile error:  Syntax error
+params_optional_default.bas	OK	x=2:7
+params_optional_override.bas	OK	x=2:9
+params_paramarray_empty.bas	OK	x=3:-1
+params_paramarray_named_error.bas	COMPILE	Compile error:  Argument in ParamArray may not be named
+params_paramarray_pack.bas	OK	x=3:2
+proc_call_chain.bas	OK	x=2:1
+proc_call_local_scope.bas	OK	x=2:2
+property_get_declaration_basic.bas	OK	x=2:4
+property_get_expression_basic.bas	OK	x=2:9
+property_let_byref_route.bas	OK	x=2:1
+property_set_byref_route.bas	COMPILE	Compile error:  Invalid use of property
+redim_expand_allows_new_index.bas	OK	x=2:5
+redim_preserve_illegal_non_last_dim_error.bas	ERR	9	Subscript out of range	VBAProject
+redim_preserve_keeps_values.bas	OK	x=2:7
+redim_preserve_multidim_last_dimension.bas	OK	x=2:7
+redim_preserve_shrink_expand_clears_tail.bas	OK	x=0:
+redim_shrink_bounds_error.bas	ERR	9	Subscript out of range	VBAProject
+redim_without_preserve_resets.bas	OK	x=0:
+regression_cverr_error_resume_bridge.bas	OK	a=3:11	b=3:20	c=0:	d=0:	e=11:false
+regression_cverr_predicate_domain.bas	OK	a=11:true	b=11:true	c=11:false	d=3:0	x=0:
+resume_label_basic.bas	OK	x=3:6
+resume_next_statement_ok.bas	OK	x=2:1
+resume_statement_basic.bas	OK	x=2:2
+select_case_basic.bas	OK	x=2:20
+select_case_else.bas	OK	x=2:99
+select_case_is_range.bas	OK	x=2:22
+select_case_multi.bas	OK	x=2:30
+smoke.bas	OK	x=2:15
+stdlib_advanced_instrrev_like.bas	OK	x=3:4	y=2:1
+stdlib_advanced_replace_trim.bas	OK	x=8:00310036003700340035	y=8:003400350036	z=8:003300320031
+stdlib_advanced_split_join.bas	ERR	13	Type mismatch	VBAProject
+stdlib_advanced_strcomp.bas	OK	x=2:-1	y=2:0
+stdlib_array_introspection_bounds.bas	OK	l=3:0	u=3:2
+stdlib_array_introspection_types.bas	OK	t1=3:8204	t2=8:00560061007200690061006E007400280029
+stdlib_date_add_diff.bas	ERR	5	Invalid procedure call or argument	VBAProject
+stdlib_date_serial_value.bas	OK	a=7:40E6802000000000	b=7:40E6802000000000
+stdlib_date_string_policy.bas	OK	a=2:2000	b=2:1	c=2:1	d=11:true	e=11:false
+stdlib_datetime_expansion.bas	OK	y=2:2024	m=2:2	dd=2:3	w=2:7
+stdlib_error_cverr_identity.bas	OK	x=10:17
+stdlib_error_err_raise_fail.bas	ERR	9	Subscript out of range	VBAProject
+stdlib_error_err_raise_resume.bas	OK	x=3:11
+stdlib_financial_zero_rate.bas	OK	a=5:C026000000000000	b=5:C026000000000000	c=5:C008000000000000
+stdlib_format_core.bas	OK	a=3:5	b=3:3
+stdlib_instr_case_ops.bas	OK	x=3:3	y=8:003700380039	z=8:003600350034
+stdlib_len_basic.bas	COMPILE	Compile error:  Variable required - can't assign to this expression
+stdlib_math_primitives.bas	ERR	5	Invalid procedure call or argument	VBAProject
+stdlib_math_transcendental_identity.bas	OK	a=5:0000000000000000	b=5:3FF0000000000000	c=5:0000000000000000	d=5:3FF0000000000000
+stdlib_numeric_expansion.bas	OK	a=8:00310046	b=8:00320031	c=5:3FF75CBAD2A40BD5	d=5:C06C3E6D558B0925
+stdlib_random_financial_expansion.bas	COMPILE	Compile error:  Type mismatch: array or user-defined type expected
+stdlib_rnd_isolated.bas	OK	a=4:4040800000000000	b=4:4018000000000000
+stdlib_slice_ops.bas	OK	a=8:00310032	b=8:00340035	c=8:003200330034
+stdlib_string_expansion_core.bas	OK	a=8:0020002000200020	b=8:004100410041	c=8:0042	d=2:66	e=8:003700370037
+stdlib_time_serial_value.bas	OK	a=7:3FA60FEDCBA98765	b=7:3FA60FEDCBA98765
+stdlib_variant_predicates.bas	OK	d=11:true	n=11:true	o=11:false
+string_compare_option_binary.bas	OK	x=3:3	y=2:-1
+string_compare_option_text.bas	OK	x=3:3	y=2:-1
+string_join_array_tag_count.bas	OK	y=8:00310030003200300033
+string_mid_statement_mutation.bas	OK	x=8:00310039003900340035
+string_slice_ops_dollar.bas	OK	x=8:00310032	y=8:00340035	z=8:003200330034
+string_vbnullstring_basic.bas	OK	s=8:
+string_vbnullstring_long_error.bas	ERR	13	Type mismatch	VBAProject
+string_vbnullstring_object_error.bas	ERR	91	Object variable or With block variable not set	VBAProject
+string_vbnullstring_predicates.bas	OK	v=8:	a=11:false	b=11:false	c=11:false
+subtract.bas	OK	x=2:16
+typechar_explicit_as_precedence_error.bas	COMPILE	Compile error:  Syntax error
+typed_fastpath_hotloop.bas	OK	x=3:300	i=3:101
+udt_declaration_basic.bas	OK	x=2:9
+udt_field_access_basic.bas	OK	x=2:7
+udt_whole_assignment_copy.bas	OK	ax=2:7	ay=2:9	bx=2:7	by=2:9	x=2:9
+udt_whole_assignment_overwrite.bas	OK	xa=2:7	xb=2:6	ya=2:7	yb=2:6
+while_nested_if_chain.bas	OK	x=2:12	y=2:211
+while_wend_basic.bas	OK	x=2:3
+with_block_basic.bas	ERR	424	Object required	VBAProject

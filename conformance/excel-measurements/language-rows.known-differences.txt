@@ -1,0 +1,35 @@
+# <Executor>	<file>	reason: basic-language rows the engine answers differently from Excel 16.0 build 20527 (language_rows_excel.rs)
+Vm3	assignment_set_let_basic.bas	Excel refused to compile; engine ran it
+Vm3	conversion_cint_to_object_error.bas	Excel raised 91; engine raised 424
+Vm3	declare_function_stub_basic.bas	Excel refused to compile; engine ran it
+Vm3	declare_sub_stub_basic.bas	Excel refused to compile; engine ran it
+Vm3	default_type_defobj_implicit_error.bas	Excel raised 91; engine raised 424
+Vm3	err_surface_fields_subset.bas	s: engine Str("Main"), Excel Str("VBAProject")
+Vm3	financial_algorithm_rate_nper_subset.bas	a: engine Double bits 3f9dee162ada5919, Excel 3f9dee162ada59ce
+Vm3	stdlib_advanced_strcomp.bas	x: engine VarType 3, Excel VarType 2
+Vm3	stdlib_date_string_policy.bas	a: engine VarType 3, Excel VarType 2
+Vm3	stdlib_datetime_expansion.bas	y: engine VarType 3, Excel VarType 2
+Vm3	stdlib_len_basic.bas	Excel refused to compile; engine ran it
+Vm3	stdlib_numeric_expansion.bas	d: engine Double bits c06c3e6d558b0924, Excel c06c3e6d558b0925
+Vm3	stdlib_string_expansion_core.bas	d: engine VarType 3, Excel VarType 2
+Vm3	string_compare_option_binary.bas	y: engine VarType 3, Excel VarType 2
+Vm3	string_compare_option_text.bas	y: engine VarType 3, Excel VarType 2
+Vm3	string_vbnullstring_object_error.bas	Excel raised 91; engine raised 424
+Vm3	typechar_explicit_as_precedence_error.bas	Excel refused to compile; engine ran it
+Jit	assignment_set_let_basic.bas	Excel refused to compile; engine ran it
+Jit	conversion_cint_to_object_error.bas	Excel raised 91; engine raised 424
+Jit	declare_function_stub_basic.bas	Excel refused to compile; engine ran it
+Jit	declare_sub_stub_basic.bas	Excel refused to compile; engine ran it
+Jit	default_type_defobj_implicit_error.bas	Excel raised 91; engine raised 424
+Jit	err_surface_fields_subset.bas	s: engine Str("Main"), Excel Str("VBAProject")
+Jit	financial_algorithm_rate_nper_subset.bas	a: engine Double bits 3f9dee162ada5919, Excel 3f9dee162ada59ce
+Jit	stdlib_advanced_strcomp.bas	x: engine VarType 3, Excel VarType 2
+Jit	stdlib_date_string_policy.bas	a: engine VarType 3, Excel VarType 2
+Jit	stdlib_datetime_expansion.bas	y: engine VarType 3, Excel VarType 2
+Jit	stdlib_len_basic.bas	Excel refused to compile; engine ran it
+Jit	stdlib_numeric_expansion.bas	d: engine Double bits c06c3e6d558b0924, Excel c06c3e6d558b0925
+Jit	stdlib_string_expansion_core.bas	d: engine VarType 3, Excel VarType 2
+Jit	string_compare_option_binary.bas	y: engine VarType 3, Excel VarType 2
+Jit	string_compare_option_text.bas	y: engine VarType 3, Excel VarType 2
+Jit	string_vbnullstring_object_error.bas	Excel raised 91; engine raised 424
+Jit	typechar_explicit_as_precedence_error.bas	Excel refused to compile; engine ran it

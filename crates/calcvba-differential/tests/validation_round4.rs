@@ -227,3 +227,54 @@ End Sub
         &canon(&Variant::from_string("True10")),
     );
 }
+
+/// dc-tey4.3: VBA-JSON's `json_StringIsLargeNumber` selects on a `String` variable with numeric
+/// `Case` values. Office converts the declared String to a number for each comparison (as it
+/// does for `c = 49`), so "49" matches `Case 48 To 57`, `Case 49` and `Case Is >= 40`.
+#[test]
+fn select_case_on_a_string_variable_compares_numerically() {
+    both(
+        "Public r As Variant
+Sub Main()
+    Dim c As String, s As String
+    c = 49
+    Select Case c
+    Case 46, 48 To 57
+        s = s & \"a\"
+    Case Else
+        s = s & \"x\"
+    End Select
+    Select Case c
+    Case 49
+        s = s & \"b\"
+    End Select
+    Select Case c
+    Case Is >= 40
+        s = s & \"c\"
+    End Select
+    c = 7
+    Select Case c
+    Case 46, 48 To 57
+        s = s & \"x\"
+    Case Else
+        s = s & \"d\"
+    End Select
+    r = s
+End Sub",
+        &Canon::Str("abcd".into()),
+    );
+}
+
+#[test]
+fn select_case_on_non_numeric_string_against_numbers_is_type_mismatch() {
+    both_error(
+        "Sub Main()
+    Dim c As String
+    c = \"abc\"
+    Select Case c
+    Case 49
+    End Select
+End Sub",
+        13,
+    );
+}

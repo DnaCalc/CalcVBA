@@ -1777,7 +1777,7 @@ impl<'a> Lowerer<'a> {
         let select_pad = self.cur_fault;
         let (sel, sel_ty) = self.lower_value(selector)?;
         // Evaluate the selector once into a temp so each case can compare against it.
-        let sel_t = self.new_temp(sel_ty);
+        let sel_t = self.new_temp(sel_ty.clone());
         self.emit(OxInst::Assign {
             dst: OxPlace::Temp(sel_t),
             value: sel,
@@ -1786,7 +1786,7 @@ impl<'a> Lowerer<'a> {
 
         for block in cases {
             self.cur_fault = select_pad;
-            let matched = self.lower_case_match(&sel_op, &block.clauses, compare_mode)?;
+            let matched = self.lower_case_match(&sel_op, &sel_ty, &block.clauses, compare_mode)?;
             // The case-match is a Compare/Logical result that can be Null (a Null
             // selector), so coerce to a Boolean for the Branch invariant (a Null match
             // is then falsy, falling through to the next case / Case Else like vm2).
@@ -1921,12 +1921,13 @@ impl<'a> Lowerer<'a> {
     fn lower_case_match(
         &mut self,
         sel: &OxOperand,
+        sel_ty: &OxTy,
         clauses: &[coreir::CaseClause],
         compare_mode: calcvba_bundle::StringCompareMode,
     ) -> Result<OxOperand> {
         let mut acc: Option<OxOperand> = None;
         for clause in clauses {
-            let clause_bool = self.lower_case_clause(sel, clause, compare_mode)?;
+            let clause_bool = self.lower_case_clause(sel, sel_ty, clause, compare_mode)?;
             acc = Some(match acc {
                 None => clause_bool,
                 Some(prev) => {
@@ -1944,44 +1945,94 @@ impl<'a> Lowerer<'a> {
         Ok(acc.unwrap_or(OxOperand::Const(OxConst::Bool(false))))
     }
 
+    /// The operands of one Select Case comparison. As for a binary comparison, Office
+    /// coerces a declared String to a number when the other side is declared numeric
+    /// (`Dim c As String` ... `Select Case c` / `Case 48 To 57`); invalid text stays
+    /// error 13 through the fallible coercion.
+    fn case_operands(
+        &mut self,
+        sel: &OxOperand,
+        sel_ty: &OxTy,
+        val: OxOperand,
+        val_ty: &OxTy,
+    ) -> (OxOperand, OxOperand) {
+        let string = |ty: &OxTy| matches!(ty, OxTy::Str | OxTy::FixedStr(_));
+        let numeric = |ty: &OxTy| {
+            matches!(
+                ty,
+                OxTy::Bool
+                    | OxTy::Byte
+                    | OxTy::Integer
+                    | OxTy::Long
+                    | OxTy::LongLong
+                    | OxTy::Single
+                    | OxTy::Double
+                    | OxTy::Currency
+                    | OxTy::Date
+                    | OxTy::Decimal
+            )
+        };
+        let to_double = |this: &mut Self, operand: &OxOperand| {
+            let converted = this.new_temp(OxTy::Double);
+            this.emit(OxInst::Coerce {
+                dst: OxPlace::Temp(converted),
+                src: operand.clone(),
+                target: OxCoerceTarget::Numeric(calcvba_bundle::NumericCoerceTarget::Double),
+            });
+            OxOperand::temp(converted)
+        };
+        if string(sel_ty) && numeric(val_ty) {
+            (to_double(self, sel), val)
+        } else if numeric(sel_ty) && string(val_ty) {
+            let val = to_double(self, &val);
+            (sel.clone(), val)
+        } else {
+            (sel.clone(), val)
+        }
+    }
+
     fn lower_case_clause(
         &mut self,
         sel: &OxOperand,
+        sel_ty: &OxTy,
         clause: &coreir::CaseClause,
         mode: calcvba_bundle::StringCompareMode,
     ) -> Result<OxOperand> {
         match clause {
             coreir::CaseClause::Value(v) => {
-                let (val, _) = self.lower_value(v)?;
+                let (val, val_ty) = self.lower_value(v)?;
+                let (sel, val) = self.case_operands(sel, sel_ty, val, &val_ty);
                 let t = self.new_temp(OxTy::Variant);
                 self.emit(OxInst::Compare {
                     coercion: calcvba_bundle::ComparisonCoercion::Strict,
                     dst: OxPlace::Temp(t),
                     op: CmpOp::Eq,
-                    lhs: sel.clone(),
+                    lhs: sel,
                     rhs: val,
                     mode,
                 });
                 Ok(OxOperand::temp(t))
             }
             coreir::CaseClause::Range { lo, hi } => {
-                let (lo_op, _) = self.lower_value(lo)?;
+                let (lo_op, lo_ty) = self.lower_value(lo)?;
+                let (sel_lo, lo_op) = self.case_operands(sel, sel_ty, lo_op, &lo_ty);
                 let ge = self.new_temp(OxTy::Variant);
                 self.emit(OxInst::Compare {
                     coercion: calcvba_bundle::ComparisonCoercion::Strict,
                     dst: OxPlace::Temp(ge),
                     op: CmpOp::Ge,
-                    lhs: sel.clone(),
+                    lhs: sel_lo,
                     rhs: lo_op,
                     mode,
                 });
-                let (hi_op, _) = self.lower_value(hi)?;
+                let (hi_op, hi_ty) = self.lower_value(hi)?;
+                let (sel_hi, hi_op) = self.case_operands(sel, sel_ty, hi_op, &hi_ty);
                 let le = self.new_temp(OxTy::Variant);
                 self.emit(OxInst::Compare {
                     coercion: calcvba_bundle::ComparisonCoercion::Strict,
                     dst: OxPlace::Temp(le),
                     op: CmpOp::Le,
-                    lhs: sel.clone(),
+                    lhs: sel_hi,
                     rhs: hi_op,
                     mode,
                 });
@@ -1995,7 +2046,8 @@ impl<'a> Lowerer<'a> {
                 Ok(OxOperand::temp(both))
             }
             coreir::CaseClause::Is { op, value } => {
-                let (val, _) = self.lower_value(value)?;
+                let (val, val_ty) = self.lower_value(value)?;
+                let (sel, val) = self.case_operands(sel, sel_ty, val, &val_ty);
                 let cmp = bin_cmp(*op).ok_or(ElaborateError::Malformed(
                     "Case Is with a non-comparison operator".into(),
                 ))?;
@@ -2004,7 +2056,7 @@ impl<'a> Lowerer<'a> {
                     coercion: calcvba_bundle::ComparisonCoercion::Strict,
                     dst: OxPlace::Temp(t),
                     op: cmp,
-                    lhs: sel.clone(),
+                    lhs: sel,
                     rhs: val,
                     mode,
                 });

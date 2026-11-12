@@ -182,9 +182,16 @@ impl TypedStack {
                 context,
             );
         }
-        for value in &mut values {
-            *value =
-                calcvba_rt_abi::host_entry::value::resolve_default(value.clone(), layout, context)?;
+        // These functions inspect object identity/type. Resolving a default getter here
+        // would inspect its result instead, or fail for objects without a default member.
+        if !matches!(native, N::TypeName | N::IsObject) {
+            for value in &mut values {
+                *value = calcvba_rt_abi::host_entry::value::resolve_default(
+                    value.clone(),
+                    layout,
+                    context,
+                )?;
+            }
         }
         let result = calcvba_host_api::with_native_call(context, || {
             calcvba_lib::invoke_context_free(native, &values, host)

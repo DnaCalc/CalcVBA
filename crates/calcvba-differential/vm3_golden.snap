@@ -25,6 +25,7 @@ conformance/com/office/excel/excel_unsupported_event_sink_boundary.bas	ok[Opaque
 conformance/com/office/excel/excel_workbook_range_smoke.bas	err(bind: Sub or Function not defined) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/divergences/for_loop.bas	ok[Raw { tag: 2, bytes: [5, 0, 0, 0, 0, 0, 0, 0], reserved: [0, 0, 0] }] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/divergences/if_statement.bas	ok[Raw { tag: 2, bytes: [1, 0, 0, 0, 0, 0, 0, 0], reserved: [0, 0, 0] }] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
+conformance/excel-measurements/language-probe.bas	err(bind: expected variable or procedure, not module: Main) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/integration/projects/INTP-001/main/Main.proc.bas	ok[Raw { tag: 3, bytes: [15, 0, 0, 0, 0, 0, 0, 0], reserved: [0, 0, 0] }] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/integration/projects/INTP-002/main/Main.proc.bas	err(bind: Variable not defined: MathLib) raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }
 conformance/integration/projects/INTP-002/main/MathLib.proc.bas	ok[] raised=false err=FinalErr { number: 0, source: "", description: "", last_dll_error: 0 }

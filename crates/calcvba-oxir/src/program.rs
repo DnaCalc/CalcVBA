@@ -128,6 +128,9 @@ pub struct OxClassField {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OxClass {
     pub name: String,
+    /// Public type name of an engine-supplied class; ordinary classes use `name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_type_name: Option<String>,
     /// True for a `VB_PredeclaredId = True` class whose name denotes a singleton
     /// default instance.
     #[serde(default)]
@@ -142,6 +145,12 @@ pub struct OxClass {
     /// Display names of `Implements`ed interfaces (for `TypeOf`/`Set` and typed
     /// interface dispatch).
     pub implements: Vec<String>,
+}
+
+impl OxClass {
+    pub fn type_name(&self) -> &str {
+        self.runtime_type_name.as_deref().unwrap_or(&self.name)
+    }
 }
 
 /// A complete compilation unit in OxIR — the typed, CFG-structured program shape.

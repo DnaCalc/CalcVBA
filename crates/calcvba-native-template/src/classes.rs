@@ -146,6 +146,7 @@ unsafe fn definition(metadata: *const u8, terminate: usize) -> Definition {
         Definition {
             descriptor: Box::leak(Box::new(RuntimeClassDescriptor {
                 name,
+                runtime_type_name: None,
                 project_identity,
                 predeclared: false,
                 lifecycle: RuntimeClassLifecycleDescriptor {

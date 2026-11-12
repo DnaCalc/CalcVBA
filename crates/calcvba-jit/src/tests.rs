@@ -3437,6 +3437,7 @@ fn unsupported_project_object_instruction_program(inst: OxInst) -> OxProgram {
         funcs: vec![main],
         classes: vec![OxClass {
             name: "Widget".to_string(),
+            runtime_type_name: None,
             predeclared: true,
             initialize: None,
             terminate: None,
@@ -15155,6 +15156,7 @@ fn jit_fake_entry_reenters_as_new_and_registration_clears_before_context_drop() 
         funcs: vec![initializer],
         classes: vec![OxClass {
             name: "Widget".to_string(),
+            runtime_type_name: None,
             predeclared: false,
             initialize: Some(FuncId(0)),
             terminate: None,

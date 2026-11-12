@@ -2,6 +2,7 @@
 use calcvba_runtime::{ObjectRef, Variant, object_ref::*};
 static DESCRIPTOR: RuntimeClassDescriptor = RuntimeClassDescriptor {
     name: "Collection",
+    runtime_type_name: None,
     project_identity: None,
     predeclared: false,
     lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,

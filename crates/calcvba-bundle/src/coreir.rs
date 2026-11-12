@@ -195,6 +195,8 @@ pub struct CoreClassField {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreClass {
     pub name: String,
+    /// Public type name of an engine-supplied class whose source identity is private.
+    pub runtime_type_name: Option<String>,
     /// True for a `VB_PredeclaredId = True` class whose name denotes a singleton
     /// default instance.
     pub predeclared: bool,

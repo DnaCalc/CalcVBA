@@ -332,6 +332,7 @@ mod tests {
         OxProgram {
             classes: vec![OxClass {
                 name: "Widget".to_string(),
+                runtime_type_name: None,
                 predeclared: false,
                 initialize: None,
                 terminate: None,
@@ -352,6 +353,17 @@ mod tests {
             unit_name: "ClassSample".to_string(),
             ..OxProgram::empty()
         }
+    }
+
+    #[test]
+    fn public_class_type_name_roundtrips_separately_from_source_identity() {
+        let mut program = sample_class_field_program();
+        program.classes[0].runtime_type_name = Some("PublicWidget".into());
+        let bytes = serde_json::to_vec(&program).unwrap();
+        let restored: OxProgram = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(restored, program);
+        assert_eq!(restored.classes[0].name, "Widget");
+        assert_eq!(restored.classes[0].type_name(), "PublicWidget");
     }
 
     fn class_receiver_func(name: &str) -> OxFunc {

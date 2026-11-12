@@ -24,6 +24,13 @@ const CLASS_NAME: &str = "DnaScriptingDictionary";
 const FACTORY_NAME: &str = "DnaScripting";
 const PROGID: &str = "Scripting.Dictionary";
 
+/// Only the engine's injected implementation has a public name distinct from its
+/// private source name. A user class with the same name retains its own identity.
+pub fn runtime_type_name(module: &ModuleUnit) -> Option<&'static str> {
+    (module.module_name == CLASS_NAME && module.source == DICTIONARY_CLASS_SOURCE)
+        .then_some("Dictionary")
+}
+
 /// The Dictionary class, as VBA source.
 pub const DICTIONARY_CLASS_SOURCE: &str = r#"Option Explicit
 Private pKeys() As Variant
@@ -476,6 +483,19 @@ fn create_object_end(chars: &[char], mut i: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_name_applies_only_to_the_injected_dictionary_implementation() {
+        let mut module = ModuleUnit {
+            module_name: CLASS_NAME.into(),
+            module_kind: ModuleKind::Class,
+            attributes: ModuleAttributes::named(CLASS_NAME),
+            source: DICTIONARY_CLASS_SOURCE.into(),
+        };
+        assert_eq!(runtime_type_name(&module), Some("Dictionary"));
+        module.source = "Option Explicit\n".into();
+        assert_eq!(runtime_type_name(&module), None);
+    }
 
     #[test]
     fn rewrites_progid_and_type_names_outside_strings_and_comments() {

@@ -428,7 +428,7 @@ pub fn invoke_context_free(
                 && (object.is_project_instance() || object.native_collection_snapshot().is_some())
                 && let Some(descriptor) = object.try_class_descriptor()
             {
-                return Ok(Variant::from_string(descriptor.name));
+                return Ok(Variant::from_string(descriptor.type_name()));
             }
             if let Some(object) = args.first().and_then(Variant::as_object_ref)
                 && !object.is_project_instance()

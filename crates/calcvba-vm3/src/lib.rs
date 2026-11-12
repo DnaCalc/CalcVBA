@@ -79,6 +79,7 @@ const VBA_COLLECTION_ROUTE_KEY: i32 = i32::MIN;
 /// so `New Collection` needs no per-instance descriptor leak.
 static VBA_COLLECTION_DESCRIPTOR: RuntimeClassDescriptor = RuntimeClassDescriptor {
     name: "Collection",
+    runtime_type_name: None,
     project_identity: None,
     predeclared: false,
     lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
@@ -694,6 +695,7 @@ impl<'h> Vm3<'h> {
             Box::leak(interface_descriptors.into_boxed_slice());
         &*Box::leak(Box::new(RuntimeClassDescriptor {
             name,
+            runtime_type_name: class.runtime_type_name.as_deref().map(leak_runtime_str),
             project_identity: Some(project_identity),
             predeclared: class.predeclared,
             lifecycle,
@@ -4097,7 +4099,7 @@ impl<'h> Vm3<'h> {
                 .programs
                 .get(object.bundle_id() as usize)
                 .and_then(|lp| lp.program.classes.get(object.route_key() as usize))
-                .map(|c| c.name.clone());
+                .map(|c| c.type_name().to_owned());
         }
         self.exec
             .host
@@ -6311,6 +6313,7 @@ mod tests {
             unit_name: "T".into(),
             classes: vec![CoreClass {
                 name: "Widget".into(),
+                runtime_type_name: None,
                 predeclared: false,
                 initialize: None,
                 terminate: None,
@@ -6727,6 +6730,7 @@ mod tests {
             unit_name: "T".into(),
             classes: vec![CoreClass {
                 name: "Widget".into(),
+                runtime_type_name: None,
                 predeclared: false,
                 initialize: None,
                 terminate: None,
@@ -6841,6 +6845,7 @@ mod tests {
             unit_name: "T".into(),
             classes: vec![CoreClass {
                 name: "Widget".into(),
+                runtime_type_name: None,
                 predeclared: true,
                 initialize: Some(ProcId(4)),
                 terminate: Some(ProcId(5)),
@@ -7094,6 +7099,7 @@ mod tests {
             classes: vec![
                 CoreClass {
                     name: "CBox".into(),
+                    runtime_type_name: None,
                     predeclared: false,
                     initialize: None,
                     terminate: None,
@@ -7125,6 +7131,7 @@ mod tests {
                 },
                 CoreClass {
                     name: "IShape".into(),
+                    runtime_type_name: None,
                     predeclared: false,
                     initialize: None,
                     terminate: None,

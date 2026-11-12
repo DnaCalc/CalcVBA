@@ -772,6 +772,7 @@ fn build_runtime_class_descriptor(
         Box::leak(interface_descriptors.into_boxed_slice());
     &*Box::leak(Box::new(RuntimeClassDescriptor {
         name,
+        runtime_type_name: class.runtime_type_name.as_deref().map(leak_runtime_str),
         project_identity: Some(project_identity),
         predeclared: class.predeclared,
         lifecycle,
@@ -4689,6 +4690,7 @@ mod tests {
             unit_name: "LifecycleTest".to_string(),
             classes: vec![calcvba_oxir::OxClass {
                 name: "Widget".to_string(),
+                runtime_type_name: None,
                 predeclared,
                 initialize,
                 terminate,

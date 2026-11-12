@@ -40,6 +40,7 @@ pub(crate) const VBA_COLLECTION_ROUTE_KEY: i32 = i32::MIN;
 
 pub(crate) static VBA_COLLECTION_DESCRIPTOR: RuntimeClassDescriptor = RuntimeClassDescriptor {
     name: "Collection",
+    runtime_type_name: None,
     project_identity: None,
     predeclared: false,
     lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,

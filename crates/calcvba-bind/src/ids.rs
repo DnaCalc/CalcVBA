@@ -348,6 +348,7 @@ impl IdAllocator {
             }
             classes.push(CoreClass {
                 name: display,
+                runtime_type_name: None,
                 predeclared,
                 initialize,
                 terminate,

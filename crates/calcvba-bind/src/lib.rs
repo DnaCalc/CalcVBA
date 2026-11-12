@@ -253,6 +253,14 @@ fn bind_one(
     };
 
     let mut classes = ids.classes.clone();
+    for class in &mut classes {
+        class.runtime_type_name = manifest.modules.iter().find_map(|module| {
+            (module.module_name == class.name)
+                .then(|| calcvba_symbol::scripting::runtime_type_name(module))
+                .flatten()
+                .map(str::to_owned)
+        });
+    }
     // Hidden class initializers are wired only through class metadata; exports,
     // event routes, and source-proc maps continue to come from `ids`.
     lower.attach_synthetic_class_initializers(&mut classes, &mut procs)?;

@@ -5135,7 +5135,7 @@ pub(crate) unsafe extern "C" fn rt_jit_project_type_name_to_slot(
             if !object.is_project_instance() {
                 return ST_FAULT;
             }
-            Variant::from_string(object.class_descriptor().name)
+            Variant::from_string(object.class_descriptor().type_name())
         } else {
             // Ordinary host objects and nonobjects keep the shared library's
             // TypeName semantics, including Empty, Null, Nothing and arrays.

@@ -772,6 +772,7 @@ pub fn runtime_class_descriptor_from_typelib_metadata(
     );
     Box::leak(Box::new(RuntimeClassDescriptor {
         name: class_name,
+        runtime_type_name: None,
         project_identity: None,
         predeclared: false,
         lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,

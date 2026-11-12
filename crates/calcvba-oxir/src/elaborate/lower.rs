@@ -288,6 +288,7 @@ fn lower_class(
 ) -> OxClass {
     OxClass {
         name: c.name.clone(),
+        runtime_type_name: c.runtime_type_name.clone(),
         predeclared: c.predeclared,
         initialize: c.initialize.map(|p| FuncId(p.0)),
         terminate: c.terminate.map(|p| FuncId(p.0)),
@@ -3769,6 +3770,7 @@ mod tests {
             ],
             classes: vec![CoreClass {
                 name: "Widget".into(),
+                runtime_type_name: None,
                 predeclared: false,
                 initialize: None,
                 terminate: None,

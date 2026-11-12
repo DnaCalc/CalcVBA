@@ -41,6 +41,64 @@ fn run(
     }
     panic!("did not finish")
 }
+
+#[test]
+fn type_information_keeps_objects_without_reading_their_default_member() {
+    let source = r#"
+Public Function ClassValue() As Object
+    Set ClassValue = New Widget
+End Function
+Public Function Kind(value) As String
+    Kind = TypeName(value) & "|" & VBA.TypeName(value) & "|" & CStr(IsObject(value))
+End Function
+Public Function DictionaryValue() As Object
+    Dim value As New Scripting.Dictionary
+    Set DictionaryValue = value
+End Function
+"#;
+    let mut project = api::Project::module("Api", source);
+    project.modules.push(api::SourceModule {
+        name: "Widget".into(),
+        source: "Public Property Get Value() As Long\nAttribute Value.VB_UserMemId = 0\n Err.Raise 5\nEnd Property\n".into(),
+    });
+    for backend in [api::Backend::Interpreter, api::Backend::Jit] {
+        if backend == api::Backend::Jit && !cfg!(feature = "jit") {
+            continue;
+        }
+        let session = Provider::default()
+            .with_class_modules(vec!["Widget".into()])
+            .load(&project, backend, api::HOST_API_ABI)
+            .unwrap();
+        for (name, expected) in [
+            ("ClassValue", "Widget|Widget|True"),
+            ("DictionaryValue", "Dictionary|Dictionary|True"),
+        ] {
+            let handle = session
+                .bind("Api", name, api::ProcedureKind::Function)
+                .unwrap();
+            let object = session.call_bound(&handle, &[], 10000).unwrap();
+            let result = run(
+                session.as_ref(),
+                "Kind",
+                &[api::ValueSlot::Variant(&object)],
+                api::ValueType::String,
+            );
+            assert!(
+                matches!(&result, api::Value::String(s) if s.as_str() == expected),
+                "{backend:?} {name}: {result:?}"
+            );
+            let handle = session
+                .bind("Api", "Kind", api::ProcedureKind::Function)
+                .unwrap();
+            let result = session.call_bound(&handle, &[object], 10000).unwrap();
+            assert_eq!(
+                result.as_bstr().unwrap().as_str(),
+                expected,
+                "{backend:?} {name}"
+            );
+        }
+    }
+}
 #[test]
 fn source_class_lifecycle_uses_original_object_in_both_typed_backends() {
     let mut backends = vec![api::Backend::Interpreter];

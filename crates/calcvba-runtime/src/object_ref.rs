@@ -375,6 +375,8 @@ pub struct RuntimeProjectClassIdentity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeClassDescriptor {
     pub name: &'static str,
+    /// Public type name of an engine-supplied class, separate from its nominal identity.
+    pub runtime_type_name: Option<&'static str>,
     pub project_identity: Option<RuntimeProjectClassIdentity>,
     pub predeclared: bool,
     pub lifecycle: RuntimeClassLifecycleDescriptor,
@@ -495,6 +497,10 @@ impl RuntimeInterfaceDescriptor {
 }
 
 impl RuntimeClassDescriptor {
+    pub fn type_name(&self) -> &'static str {
+        self.runtime_type_name.unwrap_or(self.name)
+    }
+
     /// Validate Linux-testable descriptor facts that future COM export code must be able to trust.
     pub fn validate_com_export_shape(&self) -> Result<(), RuntimeDescriptorIssue> {
         let mut seen_guids = BTreeSet::new();
@@ -528,6 +534,7 @@ fn runtime_iunknown_interface_descriptor() -> &'static RuntimeInterfaceDescripto
 
 pub const COMPAT_OBJECT_CLASS_DESCRIPTOR: RuntimeClassDescriptor = RuntimeClassDescriptor {
     name: "OxVba.CompatObject",
+    runtime_type_name: None,
     project_identity: None,
     predeclared: false,
     lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
@@ -1675,6 +1682,7 @@ mod tests {
         };
         static TEST_CLASS: RuntimeClassDescriptor = RuntimeClassDescriptor {
             name: "Project.Widget",
+            runtime_type_name: None,
             project_identity: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
@@ -1705,6 +1713,7 @@ mod tests {
         // semantics â€” and box teardown reclaims it (no VM-side store, no leak).
         static TEST_CLASS: RuntimeClassDescriptor = RuntimeClassDescriptor {
             name: "VBA.Collection",
+            runtime_type_name: None,
             project_identity: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
@@ -1768,6 +1777,7 @@ mod tests {
         };
         static TEST_CLASS: RuntimeClassDescriptor = RuntimeClassDescriptor {
             name: "Project.Widget",
+            runtime_type_name: None,
             project_identity: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
@@ -1832,6 +1842,7 @@ mod tests {
         };
         static TEST_CLASS: RuntimeClassDescriptor = RuntimeClassDescriptor {
             name: "Project.Widget",
+            runtime_type_name: None,
             project_identity: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
@@ -1903,6 +1914,7 @@ mod tests {
         };
         static TEST_CLASS: RuntimeClassDescriptor = RuntimeClassDescriptor {
             name: "Project.Widget",
+            runtime_type_name: None,
             project_identity: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
@@ -2093,6 +2105,7 @@ mod tests {
         };
         static TEST_CLASS: RuntimeClassDescriptor = RuntimeClassDescriptor {
             name: "Project.Widget",
+            runtime_type_name: None,
             project_identity: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
@@ -2454,6 +2467,7 @@ mod tests {
         };
         static TEST_CLASS: RuntimeClassDescriptor = RuntimeClassDescriptor {
             name: "Project.Widget",
+            runtime_type_name: None,
             project_identity: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
@@ -2521,6 +2535,7 @@ mod tests {
         };
         static TEST_CLASS: RuntimeClassDescriptor = RuntimeClassDescriptor {
             name: "Project.Widget",
+            runtime_type_name: None,
             project_identity: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,

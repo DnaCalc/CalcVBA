@@ -18,8 +18,8 @@
 //! `AppActivate`, and COM activation (`CreateObject`, `GetObject`, `New` of an external class)
 //! through [`HostServices::authorize_com_activation`]. Handle operations (`Print #`, `Get`,
 //! `EOF`), `MsgBox`/`InputBox`, `Now`/`Timer`, `Debug.Print` and `DoEvents` pass through
-//! unlogged: after a denied open no handle exists. Typed COM member calls after activation
-//! are not visible to the policy.
+//! unlogged: after a denied open no handle exists. Native type-library loading and COM member
+//! dispatch are also gated while the owning host is compiling or executing.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -186,12 +186,14 @@ pub struct AuditSnapshot {
     /// The first [`MAX_RECORDS`] full records since the last drain.
     pub records: Vec<AuditRecord>,
     pub counts: Vec<AuditCount>,
+    /// Exact totals per capability, independent of the bounded detail map.
+    pub capability_counts: Vec<AuditCount>,
     pub total: u64,
     pub denied: u64,
     /// Records past the cap (counted in `counts`, not kept in `records`).
     pub dropped_records: u64,
     /// Requests whose `(capability, detail)` key was past the key cap (counted only in
-    /// `total` and `denied`).
+    /// `total`, `denied` and `capability_counts`).
     pub dropped_keys: u64,
 }
 
@@ -199,14 +201,14 @@ impl AuditSnapshot {
     /// The capabilities requested since the last drain, allowed or denied.
     pub fn requested(&self) -> CapabilitySet {
         let mut set = CapabilitySet::EMPTY;
-        for count in &self.counts {
+        for count in &self.capability_counts {
             set.insert(count.capability);
         }
         set
     }
     pub fn denied_set(&self) -> CapabilitySet {
         let mut set = CapabilitySet::EMPTY;
-        for count in &self.counts {
+        for count in &self.capability_counts {
             if count.denied > 0 {
                 set.insert(count.capability);
             }
@@ -227,6 +229,7 @@ struct AuditState {
     seq: u64,
     records: Vec<AuditRecord>,
     counts: BTreeMap<(Capability, String), (u64, u64)>,
+    capability_counts: BTreeMap<Capability, (u64, u64)>,
     total: u64,
     denied: u64,
     dropped_records: u64,
@@ -255,6 +258,12 @@ impl AuditHandle {
         if denied {
             state.denied += 1;
             state.denials_ever += 1;
+        }
+        let totals = state.capability_counts.entry(capability).or_default();
+        if denied {
+            totals.1 += 1;
+        } else {
+            totals.0 += 1;
         }
         let key = (capability, detail.clone());
         if let Some(entry) = state.counts.get_mut(&key) {
@@ -300,6 +309,15 @@ impl AuditHandle {
         let snapshot = AuditSnapshot {
             records: std::mem::take(&mut state.records),
             counts,
+            capability_counts: std::mem::take(&mut state.capability_counts)
+                .into_iter()
+                .map(|(capability, (allowed, denied))| AuditCount {
+                    capability,
+                    detail: String::new(),
+                    allowed,
+                    denied,
+                })
+                .collect(),
             total: state.total,
             denied: state.denied,
             dropped_records: state.dropped_records,
@@ -388,9 +406,6 @@ pub struct PolicyHost {
     inner: Arc<dyn HostServices>,
     deny: CapabilitySet,
     audit: AuditHandle,
-    /// ProgID prefixes of classes the embedder itself serves (its object model). Activating one
-    /// reaches no operating-system service, so it is neither gated nor logged.
-    host_progid_prefixes: Vec<String>,
 }
 
 impl PolicyHost {
@@ -416,15 +431,7 @@ impl PolicyHost {
             inner,
             deny,
             audit: AuditHandle::default(),
-            host_progid_prefixes: Vec::new(),
         }
-    }
-
-    /// Classes whose ProgID starts with `prefix` (compared without regard to case) are the
-    /// embedder's own objects: activation passes through unlogged.
-    pub fn with_host_progid_prefix(mut self, prefix: &str) -> Self {
-        self.host_progid_prefixes.push(prefix.to_ascii_lowercase());
-        self
     }
 
     /// The host as the shared handle an engine or embedder holds.
@@ -532,13 +539,39 @@ impl HostServices for PolicyHost {
     fn project_mutation(&self) -> Option<&dyn ProjectMutationHal> {
         self.inner.project_mutation()
     }
+    fn is_host_class(&self, target: &str) -> bool {
+        self.inner.is_host_class(target)
+    }
+    fn enter_com_policy(&self) -> calcvba_com::ComPolicyScope {
+        let parent = self.inner.enter_com_policy();
+        let denied = self.deny.contains(Capability::ComActivate);
+        let audit = self.audit.clone();
+        calcvba_com::ComPolicyScope::enter(move |op, detail| {
+            audit.record(
+                Capability::ComActivate,
+                op,
+                truncate(detail.to_owned()),
+                if denied {
+                    Decision::Denied
+                } else {
+                    Decision::Allowed
+                },
+                denied.then_some(429),
+            );
+            if denied {
+                Err(format!(
+                    "{POLICY_DENIED_CODE}: ActiveX component can't create object"
+                ))
+            } else {
+                Ok(())
+            }
+        })
+        .with_parent(parent)
+    }
     fn authorize_com_activation(&self, op: &'static str, target: &str) -> HalResult<()> {
-        let lowered = target.to_ascii_lowercase();
-        if self
-            .host_progid_prefixes
-            .iter()
-            .any(|prefix| lowered.starts_with(prefix.as_str()))
-        {
+        // Only CreateObject of a class the inner host resolves internally is exempt.
+        // GetObject may bind an arbitrary moniker regardless of its class argument.
+        if op == "create_object" && self.inner.is_host_class(target) {
             return self.inner.authorize_com_activation(op, target);
         }
         self.check(Capability::ComActivate, op, target.to_string())?;
@@ -900,6 +933,10 @@ mod tests {
         }
     }
     impl HostServices for Recorder {
+        fn is_host_class(&self, target: &str) -> bool {
+            target.eq_ignore_ascii_case("DnaCalc.Application")
+        }
+
         fn profile(&self) -> HalProfileId {
             self.null.profile()
         }
@@ -1599,7 +1636,7 @@ mod tests {
 
     #[test]
     fn embedder_classes_pass_unlogged() {
-        let host = PolicyHost::safe(recorder()).with_host_progid_prefix("DnaCalc.");
+        let host = PolicyHost::safe(recorder());
         host.authorize_com_activation("create_object", "DnaCalc.Application")
             .expect("host class");
         assert_eq!(host.audit().drain().total, 0);
@@ -1607,6 +1644,66 @@ mod tests {
             host.authorize_com_activation("create_object", "Scripting.Dictionary")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn getobject_and_unregistered_prefix_classes_are_never_exempt() {
+        let host = PolicyHost::safe(recorder());
+        for (op, target) in [
+            ("get_object", "DnaCalc.Application"),
+            ("create_object", "DnaCalc.Attacker"),
+        ] {
+            assert!(
+                host.authorize_com_activation(op, target).is_err(),
+                "{op}: {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn safe_policy_covers_foreign_dispatch_and_compiler_type_libraries() {
+        let host = PolicyHost::safe(recorder());
+        {
+            let _scope = host.enter_com_policy();
+            assert!(calcvba_com::authorize_native_com("com.dispatch", "foreign object").is_err());
+            assert!(
+                calcvba_com::authorize_native_com("typelib.load", "\\\\server\\share\\evil.dll")
+                    .is_err()
+            );
+            let full = PolicyHost::full(recorder());
+            let _nested = full.enter_com_policy();
+            assert!(calcvba_com::authorize_native_com("com.dispatch", "foreign object").is_err());
+        }
+        let snapshot = host.audit().drain();
+        assert_eq!(snapshot.denied, 3);
+        assert!(snapshot.denied_set().contains(Capability::ComActivate));
+        assert!(calcvba_com::authorize_native_com("com.dispatch", "restored").is_ok());
+    }
+
+    #[test]
+    fn audit_saturation_retains_every_capability_and_denial() {
+        let audit = AuditHandle::default();
+        for i in 0..MAX_KEYS {
+            audit.record(
+                Capability::FsRead,
+                "read",
+                i.to_string(),
+                Decision::Allowed,
+                None,
+            );
+        }
+        audit.record(
+            Capability::Process,
+            "shell",
+            "blocked".into(),
+            Decision::Denied,
+            Some(70),
+        );
+        let snapshot = audit.drain();
+        assert!(snapshot.requested().contains(Capability::Process));
+        assert!(snapshot.denied_set().contains(Capability::Process));
+        assert_eq!(snapshot.total, MAX_KEYS as u64 + 1);
+        assert!(audit.drain().requested().is_empty());
     }
 
     #[test]

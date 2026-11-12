@@ -50,6 +50,7 @@ impl Provider {
     }
     /// Prepare compiler-owned metadata without publishing any callable address.
     pub fn compile_graph(&self, graph: &api::ProjectGraph) -> Result<Module, api::Error> {
+        let _policy = self.host.enter_com_policy();
         if !self.class_modules.is_empty() || !self.document_modules.is_empty() {
             return Err(api::Error::UnsupportedSignature(
                 "class module selection currently requires a single project".into(),
@@ -107,6 +108,7 @@ impl Provider {
         Ok(module.with_host(self.host.clone()))
     }
     pub fn compile(&self, project: &api::Project) -> Result<Module, api::Error> {
+        let _policy = self.host.enter_com_policy();
         let mut classes = std::collections::HashSet::new();
         for name in &self.class_modules {
             if !classes.insert(name.to_ascii_lowercase())

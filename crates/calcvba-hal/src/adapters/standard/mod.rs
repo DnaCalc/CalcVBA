@@ -1256,6 +1256,21 @@ impl StandardHostServices {
 
     #[cfg(target_os = "windows")]
     fn com_dispatch_adapter_fault(&self, message: String) -> HalError {
+        if message.starts_with(crate::POLICY_DENIED_CODE) {
+            let description = "ActiveX component can't create object";
+            let mut error = HalError::policy_denied(
+                self.profile,
+                CapabilityId::ComActivationDispatch,
+                "native_com",
+            )
+            .with_host_error_code(429)
+            .with_host_error_info(crate::error::HostErrorInfo {
+                description: Some(description.into()),
+                ..Default::default()
+            });
+            error.message = description.into();
+            return error;
+        }
         let hresult = parse_hresult_hex(&message);
         let arg_err = parse_arg_err(&message);
         // A dispatch failure that was rendered to a string (the `Message` lane —

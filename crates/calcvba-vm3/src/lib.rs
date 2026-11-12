@@ -1246,6 +1246,7 @@ impl<'h> Vm3<'h> {
     /// recursion is bounded by the frame ceiling (error 28), never a host stack
     /// overflow — and the model mirrors vm2's iterative dispatch.
     fn run_loop(&mut self, base: usize) -> Result<(), Vm3Error> {
+        let _policy = self.exec.host.enter_com_policy();
         while self.frames.len() > base {
             let top = self.frames.len() - 1;
             // Re-target `cur` to the executing frame's program each iteration: a cross-program

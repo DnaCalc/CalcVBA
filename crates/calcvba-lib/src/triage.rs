@@ -428,6 +428,7 @@ enum Tok {
     Word(String),
     Str(String),
     Dot,
+    Colon,
     Other,
     Newline,
 }
@@ -483,6 +484,9 @@ fn tokenize(source: &str) -> Vec<Tok> {
             } else {
                 out.push(Tok::Word(word));
             }
+        } else if c == ':' {
+            out.push(Tok::Colon);
+            i += 1;
         } else if c == '.' {
             out.push(Tok::Dot);
             i += 1;
@@ -503,15 +507,29 @@ pub fn predicted_capabilities_lexical(sources: &[&str]) -> Prediction {
         let mut i = 0;
         while i < toks.len() {
             let after_dot = i > 0 && toks[i - 1] == Tok::Dot;
+            let vba_qualified = after_dot && {
+                let mut start = i;
+                while start >= 2
+                    && toks[start - 1] == Tok::Dot
+                    && matches!(toks[start - 2], Tok::Word(_))
+                {
+                    start -= 2;
+                }
+                matches!(&toks[start], Tok::Word(w) if w == "vba")
+            };
             if let Tok::Word(word) = &toks[i]
-                && !after_dot
+                && (!after_dot || vba_qualified)
             {
                 {
-                    if word == "declare" {
+                    if word == "new" {
+                        // Both `Set x = New Class` and deferred `As New Class`.
+                        // Project classes may add false positives; fallback is conservative.
+                        prediction.add(Capability::ComActivate, "New");
+                    } else if word == "declare" {
                         // Declare [PtrSafe] Function|Sub name Lib "lib" [Alias "sym"]
                         let line_end = toks[i..]
                             .iter()
-                            .position(|t| *t == Tok::Newline)
+                            .position(|t| matches!(t, Tok::Newline | Tok::Colon))
                             .map_or(toks.len(), |p| i + p);
                         let strings: Vec<&str> = toks[i..line_end]
                             .iter()
@@ -542,7 +560,7 @@ pub fn predicted_capabilities_lexical(sources: &[&str]) -> Prediction {
                     } else if word == "open" && at_start {
                         let line_end = toks[i..]
                             .iter()
-                            .position(|t| *t == Tok::Newline)
+                            .position(|t| matches!(t, Tok::Newline | Tok::Colon))
                             .map_or(toks.len(), |p| i + p);
                         let mut cap = Capability::FsWrite;
                         let words: Vec<&str> = toks[i..line_end]
@@ -562,7 +580,7 @@ pub fn predicted_capabilities_lexical(sources: &[&str]) -> Prediction {
                         // `Name a As b` as a statement; a variable called Name is not followed by As.
                         let line_end = toks[i..]
                             .iter()
-                            .position(|t| *t == Tok::Newline)
+                            .position(|t| matches!(t, Tok::Newline | Tok::Colon))
                             .map_or(toks.len(), |p| i + p);
                         if toks[i..line_end].contains(&Tok::Word("as".into())) {
                             prediction.add(Capability::FsWrite, "Name");
@@ -573,9 +591,9 @@ pub fn predicted_capabilities_lexical(sources: &[&str]) -> Prediction {
                     }
                 }
             }
-            at_start = matches!(toks[i], Tok::Newline)
+            at_start = matches!(toks[i], Tok::Newline | Tok::Colon)
                 || (matches!(&toks[i], Tok::Other) && at_start)
-                || matches!(&toks[i], Tok::Word(w) if at_start && (w == "then" || w == "else"));
+                || matches!(&toks[i], Tok::Word(w) if w == "then" || w == "else");
             i += 1;
         }
     }
@@ -594,6 +612,30 @@ mod tests {
         let caps: Vec<_> = p.capabilities.iter().map(|c| c.name()).collect();
         assert_eq!(caps, ["fs.read", "env", "ffi", "com.activate"]);
         assert!(p.details[&Capability::Ffi].contains("kernel32!GetTickCount"));
+    }
+
+    #[test]
+    fn lexical_scan_tracks_qualified_builtins_new_and_statement_boundaries() {
+        for (source, cap) in [
+            ("x = VBA.Interaction.Shell(\"x\")", Capability::Process),
+            (
+                "Dim x As New WinHttp.WinHttpRequest",
+                Capability::ComActivate,
+            ),
+            ("x = 1: Open \"a\" For Input As #1", Capability::FsRead),
+            (
+                "If True Then Open \"a\" For Output As #1",
+                Capability::FsWrite,
+            ),
+        ] {
+            let p = predicted_capabilities_lexical(&[source]);
+            assert!(p.capabilities.contains(&cap), "{source}");
+        }
+        assert!(
+            predicted_capabilities_lexical(&["x.Shell \"x\" ' VBA.Interaction.Shell"])
+                .capabilities
+                .is_empty()
+        );
     }
 
     #[test]

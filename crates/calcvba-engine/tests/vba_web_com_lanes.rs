@@ -387,7 +387,7 @@ fn application_host_manifest() -> SymbolProjectManifest {
 }
 
 #[test]
-fn vba_web_dictionary_createobject_is_policy_gated() {
+fn vba_web_winhttp_createobject_is_policy_gated() {
     let policy = HostPolicy {
         allow_com_activation: false,
         ..HostPolicy::default()
@@ -395,7 +395,7 @@ fn vba_web_dictionary_createobject_is_policy_gated() {
     let err = run_source_with_policy(
         "Sub Main()\n\
          Dim d As Object\n\
-         Set d = CreateObject(\"Scripting.Dictionary\")\n\
+         Set d = CreateObject(\"WinHttp.WinHttpRequest.5.1\")\n\
          End Sub\n",
         policy,
     )

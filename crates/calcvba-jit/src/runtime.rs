@@ -204,6 +204,7 @@ impl<'p> CompiledImage<'p> {
     where
         'p: 'h,
     {
+        let _policy = session.exec.host.enter_com_policy();
         if session.exec.programs.len() != self.programs.len()
             || session
                 .exec

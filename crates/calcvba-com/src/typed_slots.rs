@@ -271,6 +271,15 @@ pub fn invoke_prepared_native_member(
     arguments: &mut calcvba_host_api::object::planned_slots::MemberArguments<'_>,
     context: &mut calcvba_host_api::TypedContext,
 ) -> Result<calcvba_host_api::Value, calcvba_host_api::TypedFault> {
+    crate::authorize_native_com("com.invoke", &member.name).map_err(|_| {
+        calcvba_host_api::TypedFault {
+            number: 429,
+            description: "ActiveX component can't create object".into(),
+            source: None,
+            help_file: None,
+            help_context: None,
+        }
+    })?;
     let fault = |message: &str| calcvba_host_api::TypedFault {
         number: 13,
         description: message.into(),

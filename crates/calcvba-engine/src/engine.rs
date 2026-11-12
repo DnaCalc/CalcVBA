@@ -840,6 +840,7 @@ impl Engine {
             .iter()
             .map(|manifest| self.manifest_with_runtime_conditional_target(manifest))
             .collect();
+        let _policy = self.host_services.enter_com_policy();
         let programs = match calcvba_bind::bind_projects(&closure, &*self.typelib_resolver) {
             Ok(p) => p,
             Err(e) => {
@@ -929,6 +930,7 @@ impl Engine {
             .iter()
             .map(|manifest| self.manifest_with_runtime_conditional_target(manifest))
             .collect();
+        let _policy = self.host_services.enter_com_policy();
         let programs = match calcvba_bind::bind_projects(&closure, &*self.typelib_resolver) {
             Ok(p) => p,
             Err(e) => return Vm3Snapshot::Failed(format!("bind: {e}")),
@@ -1096,6 +1098,7 @@ impl Engine {
         manifest: &calcvba_symbol::manifest::SymbolProjectManifest,
     ) -> Vm3Snapshot {
         let manifest = self.manifest_with_runtime_conditional_target(manifest);
+        let _policy = self.host_services.enter_com_policy();
         let program = match calcvba_bind::bind_program(&manifest, &*self.typelib_resolver) {
             Ok(p) => p,
             Err(e) => return Vm3Snapshot::Failed(format!("bind: {e}")),
@@ -1137,6 +1140,7 @@ impl Engine {
         manifest: &calcvba_symbol::manifest::SymbolProjectManifest,
     ) -> SnapshotOutcome {
         let manifest = self.manifest_with_runtime_conditional_target(manifest);
+        let _policy = self.host_services.enter_com_policy();
         let program = match calcvba_bind::bind_program(&manifest, &*self.typelib_resolver) {
             Ok(p) => p,
             Err(e) => return SnapshotOutcome::Failed(format!("bind: {e}")),
@@ -1212,6 +1216,7 @@ impl Engine {
         globals_only: bool,
     ) -> SnapshotOutcome {
         let manifest = self.manifest_with_runtime_conditional_target(manifest);
+        let _policy = self.host_services.enter_com_policy();
         let program = match calcvba_bind::bind_program(&manifest, &*self.typelib_resolver) {
             Ok(p) => p,
             Err(e) => return SnapshotOutcome::Failed(format!("bind: {e}")),

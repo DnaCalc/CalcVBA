@@ -103,10 +103,17 @@ pub trait HostServices {
     fn time_locale(&self) -> &dyn TimeLocaleHal;
     fn dynlink(&self) -> &dyn DynamicLinkHal;
     fn diag(&self) -> &dyn DiagnosticsHal;
-    /// Policy hook the library calls before `CreateObject`, `GetObject` and `New` of an
-    /// external class reach the COM facet. `op` is `create_object` or `get_object`, `target`
-    /// the ProgID (or file path). The default allows everything; `capability::PolicyHost`
-    /// denies or audits it. Gating activation here keeps every other COM method untouched.
+    /// Install this host's policy while compiling or executing native COM routes.
+    fn enter_com_policy(&self) -> calcvba_com::ComPolicyScope {
+        calcvba_com::ComPolicyScope::unrestricted()
+    }
+    /// True only for an exact class resolved internally, without native COM fallback.
+    /// Never applies to GetObject.
+    fn is_host_class(&self, _target: &str) -> bool {
+        false
+    }
+    /// Policy hook before CreateObject/GetObject or New reaches the COM facet.
+    /// The default permits it; PolicyHost denies or audits native activation.
     fn authorize_com_activation(&self, _op: &'static str, _target: &str) -> HalResult<()> {
         Ok(())
     }

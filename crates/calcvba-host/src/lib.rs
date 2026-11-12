@@ -304,6 +304,7 @@ pub struct Session<'a> {
     automatic: Rc<events::AutomaticEvents>,
 }
 struct TypedActivation<'a> {
+    _policy: calcvba_com::ComPolicyScope,
     _executing: Ref<'a, ()>,
     depth: &'a Cell<u32>,
     context: &'a Cell<*mut calcvba_host_api::TypedContext>,
@@ -636,6 +637,7 @@ impl<'a> Session<'a> {
         self.typed_context.set(pointer);
         self.typed_depth.set(self.typed_depth.get() + 1);
         Ok(TypedActivation {
+            _policy: self.host.enter_com_policy(),
             _executing: executing,
             depth: &self.typed_depth,
             context: &self.typed_context,
@@ -857,6 +859,7 @@ impl<'a> Session<'a> {
         bound: &BoundProcedure,
         args: &[calcvba_host_api::ValueSlot<'_>],
     ) -> Result<typed_stack::TypedStack, Error> {
+        let _policy = self.host.enter_com_policy();
         let _object_scope = self.object_owner.borrow().enter();
         // Reject the complete reachable typed call graph before any body effect.
         let root = self.module.reference_programs.len();

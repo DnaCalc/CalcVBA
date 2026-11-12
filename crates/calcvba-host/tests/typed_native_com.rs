@@ -11,6 +11,51 @@ use std::{rc::Rc, sync::Arc};
 mod native_identity;
 
 #[test]
+fn a_foreign_native_object_cannot_dispatch_in_safe_on_either_backend() {
+    for backend in backends() {
+        let native = host();
+        let (pointer, observed) = native_identity::create();
+        // SAFETY: the fixture transfers one owned same-apartment IDispatch reference.
+        let raw = unsafe {
+            native
+                .com()
+                .bind_native_dispatch_object_variant("Owned.Identity", pointer.cast())
+        }
+        .unwrap();
+        let foreign = native
+            .com()
+            .prepare_dynamic_object(raw.as_object_ref().unwrap())
+            .unwrap();
+        let safe = calcvba_hal::PolicyHost::safe(native.clone());
+        let audit = safe.audit();
+        let module = Provider::with_host(safe.into_host()).compile(&api::Project::module("Api",
+            "Public Function Probe(ByVal o As Object) As Long\n On Error Resume Next\n Dim n As Long\n n = o.Count\n Probe = Err.Number\nEnd Function\n")).unwrap();
+        let session = module.into_session(backend).unwrap();
+        assert!(matches!(
+            call_values_sliced(
+                &session,
+                "Probe",
+                &[api::ValueSlot::Object(foreign.argument())],
+                api::ValueType::Long
+            ),
+            api::Value::Long(429)
+        ));
+        assert_eq!(observed.calls.get(), 0);
+        assert_eq!(observed.invokes.get(), 0);
+        assert!(
+            audit
+                .drain()
+                .denied_set()
+                .contains(calcvba_hal::Capability::ComActivate)
+        );
+        native
+            .com()
+            .release_object_variant(raw.as_object_ref().unwrap())
+            .unwrap();
+    }
+}
+
+#[test]
 fn distinct_native_interfaces_share_retained_identity_and_failed_qi_does_not_leak() {
     use calcvba_symbol::TypeLibResolver;
     for backend in backends() {

@@ -106,6 +106,8 @@ impl WindowsComBridge {
         member: &crate::TypeLibMemberMetadata,
         args: &[crate::DynamicCallArg],
     ) -> Result<RuntimeCallResult, WindowsComBridgeDispatchError> {
+        crate::authorize_native_com("com.invoke", &member.name)
+            .map_err(WindowsComBridgeDispatchError::Message)?;
         let spec = crate::map_member_metadata_to_spec(member);
         let caller_slots: std::collections::HashSet<u32> = args
             .iter()
@@ -602,6 +604,7 @@ impl WindowsComBridge {
         ),
         String,
     > {
+        crate::authorize_native_com("com.subscribe", "native event subscription")?;
         // SAFETY: forwarded caller contract — this method's `# Safety` requires a
         // COM-initialized thread and a live object/event binding owned by this bridge,
         // which is what the shared subscribe path requires.
@@ -677,6 +680,8 @@ impl WindowsComBridge {
         request: &ComInvokeRequest,
         prefer_vtable: bool,
     ) -> Result<Option<Variant>, WindowsComBridgeDispatchError> {
+        crate::authorize_native_com("com.dispatch", "native dispatch")
+            .map_err(WindowsComBridgeDispatchError::Message)?;
         let positional_values = legacy_runtime_arg_values(request.args.as_slice());
         validate_named_arg_order(request.args.as_slice())
             .map_err(WindowsComBridgeDispatchError::Message)?;
@@ -757,6 +762,8 @@ impl WindowsComBridge {
         request: &ComInvokeRequest,
         prefer_vtable: bool,
     ) -> Result<Option<RuntimeCallResult>, WindowsComBridgeDispatchError> {
+        crate::authorize_native_com("com.dispatch", "native dispatch")
+            .map_err(WindowsComBridgeDispatchError::Message)?;
         validate_named_arg_order(request.args.as_slice())
             .map_err(WindowsComBridgeDispatchError::Message)?;
         let mut try_vtable_invoke =
@@ -917,6 +924,8 @@ impl WindowsComBridge {
         request: &DynamicCallRequest,
         prefer_vtable: bool,
     ) -> Result<Option<Variant>, WindowsComBridgeDispatchError> {
+        crate::authorize_native_com("com.dispatch", "dynamic native dispatch")
+            .map_err(WindowsComBridgeDispatchError::Message)?;
         // `prefer_vtable` is threaded through every re-dispatch below: the
         // Token/DefaultMember/Name→token selectors route back through
         // `dispatch_invoke_variant` (which honors the vtable fast path once the

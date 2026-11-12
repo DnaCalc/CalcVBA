@@ -516,10 +516,13 @@ pub fn create_object(args: &[Variant], host: &dyn HostServices) -> LibResult<Var
 pub fn get_object(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
     let (pathname, class) = (arg_or_empty(args, 0), arg_or_empty(args, 1));
     let class_text = activation_target(&class);
-    let target = if class_text.is_empty() {
-        activation_target(&pathname)
-    } else {
+    let path_text = activation_target(&pathname);
+    let target = if path_text.is_empty() {
         class_text
+    } else if class_text.is_empty() {
+        path_text
+    } else {
+        format!("{path_text} [class: {class_text}]")
     };
     host.authorize_com_activation("get_object", &target)?;
     Ok(host.com().get_object_variant(pathname, class)?)

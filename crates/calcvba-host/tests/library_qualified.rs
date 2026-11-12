@@ -74,3 +74,33 @@ fn library_qualified_string_math_and_date_functions_link() {
         );
     }
 }
+
+#[test]
+fn safe_compilation_audits_and_denies_workbook_selected_native_type_libraries() {
+    let safe =
+        calcvba_hal::PolicyHost::safe(calcvba_hal::adapters::builder::HostBuilder::new().build());
+    let audit = safe.audit();
+    let mut project =
+        api::Project::module("Api", "Public Function F() As Long\n F = 1\nEnd Function\n");
+    project.references.push(api::TypeLibraryReference {
+        name: "UntrustedReference".into(),
+        libid: None,
+        major: Some(1),
+        minor: Some(0),
+        lcid: None,
+        import_library: Some("untrusted-workbook-reference.dll".into()),
+    });
+    let _compiled = Provider::with_host(safe.into_host()).compile(&project);
+    let snapshot = audit.drain();
+    assert!(
+        snapshot
+            .denied_set()
+            .contains(calcvba_hal::Capability::ComActivate)
+    );
+    assert!(
+        snapshot
+            .records
+            .iter()
+            .any(|record| record.op.starts_with("typelib."))
+    );
+}

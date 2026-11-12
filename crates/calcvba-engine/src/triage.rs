@@ -15,6 +15,9 @@ pub struct ClosurePrediction {
 
 /// Predict the capabilities of `closure` (leaf-first, entry last). Never executes anything.
 pub fn predict_project_closure(closure: &[SymbolProjectManifest]) -> ClosurePrediction {
+    // Triage must never load workbook-selected native type libraries.
+    let _scope =
+        calcvba_com::ComPolicyScope::enter(|_, _| Err("native COM disabled for triage".into()));
     let lexical = |reason: String| {
         let sources: Vec<&str> = closure
             .iter()

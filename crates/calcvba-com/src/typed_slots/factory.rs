@@ -60,6 +60,7 @@ impl calcvba_host_api::HostObjectServices for NativeServices {
         descriptor: &calcvba_host_api::object::EventDescriptor,
         callback: calcvba_host_api::object::EventCallback,
     ) -> Result<calcvba_host_api::object::EventSubscription, i32> {
+        crate::authorize_native_com("com.subscribe", &descriptor.name).map_err(|_| 429)?;
         super::events::subscribe_automatic(self.0.clone(), descriptor, callback)
     }
     fn invoke_dynamic(
@@ -68,9 +69,18 @@ impl calcvba_host_api::HostObjectServices for NativeServices {
         arguments: &mut [calcvba_runtime::Variant],
         context: &mut calcvba_host_api::TypedContext,
     ) -> Result<calcvba_runtime::Variant, calcvba_host_api::TypedFault> {
+        crate::authorize_native_com("com.dispatch", call.name.as_deref().unwrap_or("default"))
+            .map_err(|_| calcvba_host_api::TypedFault {
+                number: 429,
+                description: "ActiveX component can\'t create object".into(),
+                source: None,
+                help_file: None,
+                help_context: None,
+            })?;
         super::native_values::invoke_dynamic(&self.0, call, arguments, context)
     }
     fn resolve_interface(&self, wanted: calcvba_host_api::InterfaceId) -> Result<HostObject, i32> {
+        crate::authorize_native_com("com.interface", "QueryInterface").map_err(|_| 429)?;
         let owner = &self.0;
         let index = owner
             .library
@@ -102,6 +112,7 @@ impl calcvba_host_api::HostObjectServices for NativeServices {
         &self,
         context: &mut calcvba_host_api::TypedContext,
     ) -> Result<calcvba_host_api::HostEnumerator, i32> {
+        crate::authorize_native_com("com.enumerate", "For Each").map_err(|_| 429)?;
         let plan = self.0.enumerator.as_ref().ok_or(438)?;
         super::native_values::prepare_enumerator(self.0.clone(), plan, context)
     }
@@ -297,6 +308,8 @@ unsafe fn build(
             let lcid = member.parameter_optional_defaults.last() == Some(&D::Lcid);
             slots.push(
                 HostSlot::typed(parameters, result, move |context, args| {
+                    crate::authorize_native_com("com.invoke", "native typed slot")
+                        .map_err(|_| 429)?;
                     crate::windows_vtable::clear_thread_error_info();
                     let value = calcvba_host_api::with_native_call(context, || {
                         // SAFETY: retained QI'd receiver and exact checked scalar ABI.
@@ -323,6 +336,7 @@ unsafe fn build(
         } else {
             let plan = (**plan).clone();
             slots.push(HostSlot::planned(move |context, args| {
+                crate::authorize_native_com("com.invoke", &plan.member.name).map_err(|_| 429)?;
                 let value = calcvba_host_api::with_native_call(context, || {
                     // SAFETY: retained QI'd receiver and immutable admitted descriptor.
                     unsafe { super::native_values::invoke(&owner, &plan, args) }

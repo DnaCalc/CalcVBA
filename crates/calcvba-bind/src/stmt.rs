@@ -1057,12 +1057,13 @@ impl<'a> ProcLower<'a> {
                     }
                 }
                 // `.`/`!` are path separators — keep accumulating segments.
-                SyntaxElement::Token(t) if matches!(t.kind, SyntaxKind::Dot | SyntaxKind::Bang) => {
+                SyntaxElement::Token(t)
+                    if matches!(t.kind, SyntaxKind::Dot | SyntaxKind::Bang)
+                        && segments.is_empty() =>
+                {
                     // A leading `.` names the With receiver: an empty first segment.
-                    if segments.is_empty() {
-                        segments.push("");
-                        indices.push(None);
-                    }
+                    segments.push("");
+                    indices.push(None);
                 }
                 SyntaxElement::Node(n) if n.kind() == SyntaxKind::ArrayBounds => {
                     let (statement, variant) = self.redim_one(&segments, &indices, n, preserve)?;

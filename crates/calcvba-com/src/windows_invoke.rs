@@ -2279,6 +2279,7 @@ pub unsafe fn enumerate_object_with_shared_state(
     prog_id_hint: &str,
     com_state: &std::sync::Arc<std::sync::Mutex<crate::WindowsComClientState>>,
 ) -> Result<Vec<Variant>, String> {
+    crate::authorize_native_com("com.enumerate", prog_id_hint)?;
     // Resolve the live bound dispatch; a projection-only binding (native == 0) or
     // an unknown handle has nothing to enumerate.
     let dispatch = crate::resolve_bound_native_dispatch_shared(com_state, object)?;

@@ -81,6 +81,14 @@ pub fn resolve_known_typelib_identity(
         return Some(identity);
     }
 
+    crate::authorize_native_com(
+        "typelib.resolve",
+        request
+            .importlib_hint
+            .as_deref()
+            .unwrap_or(&request.reference_name),
+    )
+    .ok()?;
     if let Some(coclass_name) = request.requested_coclass.as_deref() {
         let prog_id_name = format!("{}.{}", request.reference_name.trim(), coclass_name.trim());
         if let Ok(identity) =
@@ -111,6 +119,7 @@ pub fn resolve_typelib_identity_for_prog_id_name(
     prog_id_name: &str,
 ) -> Option<TypeLibResolvedIdentity> {
     known_typelib_identity_for_prog_id_name(prog_id_name).or_else(|| {
+        crate::authorize_native_com("typelib.resolve", prog_id_name).ok()?;
         crate::windows_typelib_loader::resolve_typelib_identity_from_prog_id(prog_id_name).ok()
     })
 }
@@ -121,7 +130,10 @@ pub fn build_typelib_metadata(identity: &TypeLibResolvedIdentity) -> TypeLibMeta
         return crate::fixture_typelib_catalog::build_typelib_metadata(identity);
     }
 
-    match try_live_typelib_metadata(identity) {
+    match crate::authorize_native_com("typelib.load", &identity.importlib)
+        .ok()
+        .and_then(|()| try_live_typelib_metadata(identity))
+    {
         Some(blob) => blob,
         None => TypeLibMetadataBlob {
             constants: Vec::new(),
@@ -148,6 +160,7 @@ pub fn resolve_typelib_interface_metadata_from_identity(
     identity: &TypeLibResolvedIdentity,
     interface_name: &str,
 ) -> Option<TypeLibInterfaceMetadata> {
+    crate::authorize_native_com("typelib.interface", &identity.importlib).ok()?;
     #[cfg(target_os = "windows")]
     {
         resolve_live_typelib_interface_metadata(identity, interface_name)

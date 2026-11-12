@@ -1509,6 +1509,7 @@ unsafe fn qualified_typeinfo_binding_name(ptinfo: *mut c_void) -> Option<String>
 pub unsafe fn live_object_typeinfo_name(
     dispatch: *mut crate::windows_client::RawIDispatch,
 ) -> Option<String> {
+    crate::authorize_native_com("com.typeinfo", "live_object_typeinfo_name").ok()?;
     if dispatch.is_null() {
         return None;
     }
@@ -1543,6 +1544,7 @@ pub unsafe fn live_object_typeinfo_name(
 pub unsafe fn live_object_default_vartype(
     dispatch: *mut crate::windows_client::RawIDispatch,
 ) -> Option<u16> {
+    crate::authorize_native_com("com.typeinfo", "live_object_default_vartype").ok()?;
     if dispatch.is_null() {
         return None;
     }
@@ -1993,6 +1995,7 @@ pub fn load_typelib_from_registry(
     minor: u16,
     lcid: u32,
 ) -> Result<*mut c_void, String> {
+    crate::authorize_native_com("typelib.load.registry", &guid_to_string(libid))?;
     let mut ptlib: *mut c_void = std::ptr::null_mut();
     // SAFETY: FFI into oleaut32. `libid` is a live reference for the duration of
     // the call and `ptlib` a live out-slot; on success LoadRegTypeLib writes one
@@ -2015,6 +2018,7 @@ pub fn load_typelib_from_registry(
 /// Loads a type library from a file path.
 #[cfg(target_os = "windows")]
 pub fn load_typelib_from_path(path: &str) -> Result<*mut c_void, String> {
+    crate::authorize_native_com("typelib.load.path", path)?;
     let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
     let mut ptlib: *mut c_void = std::ptr::null_mut();
     // SAFETY: FFI into oleaut32. `wide` is a live NUL-terminated UTF-16 path and
@@ -2037,6 +2041,7 @@ pub fn load_typelib_from_path(path: &str) -> Result<*mut c_void, String> {
 pub fn resolve_typelib_identity_from_registry(
     request: &crate::typelib::TypeLibResolveRequest,
 ) -> Result<TypeLibResolvedIdentity, String> {
+    crate::authorize_native_com("typelib.resolve", "resolve_typelib_identity_from_registry")?;
     // Try loading via LIBID if provided
     if let Some(ref libid_str) = request.libid_hint {
         let guid = crate::windows_client::parse_guid_canonical(libid_str)
@@ -2125,6 +2130,7 @@ fn unknown_progid_lookups_leave_registration_absent() {
 pub fn resolve_typelib_identity_from_prog_id(
     prog_id_name: &str,
 ) -> Result<TypeLibResolvedIdentity, String> {
+    crate::authorize_native_com("typelib.resolve", "resolve_typelib_identity_from_prog_id")?;
     let clsid = registered_clsid_from_prog_id(prog_id_name)?;
     let clsid_text = guid_to_string(&clsid);
     let libid_text = reg_query_default_string(&format!("CLSID\\{clsid_text}\\TypeLib"))?;
@@ -3329,6 +3335,7 @@ pub unsafe fn live_member_metadata_from_dispatch(
     dispid: i32,
     invoke_kind: TypeLibMemberInvokeKind,
 ) -> Option<TypeLibMemberMetadata> {
+    crate::authorize_native_com("com.typeinfo", "live_member_metadata_from_dispatch").ok()?;
     if dispatch.is_null() {
         return None;
     }
@@ -4055,6 +4062,7 @@ pub unsafe fn build_metadata_blob_from_dispatch(
     dispatch: *mut crate::windows_client::RawIDispatch,
     prog_id_name: &str,
 ) -> Option<TypeLibMetadataBlob> {
+    crate::authorize_native_com("com.typeinfo", "build_metadata_blob_from_dispatch").ok()?;
     if dispatch.is_null() {
         return None;
     }
@@ -4195,6 +4203,7 @@ pub unsafe fn release_typelib(_ptlib: *mut std::ffi::c_void) {}
 pub fn resolve_typelib_identity_from_registry(
     request: &crate::typelib::TypeLibResolveRequest,
 ) -> Result<TypeLibResolvedIdentity, String> {
+    crate::authorize_native_com("typelib.resolve", "resolve_typelib_identity_from_registry")?;
     Err(format!(
         "live typelib loading not available on this platform for `{}`",
         request.reference_name
@@ -4205,6 +4214,7 @@ pub fn resolve_typelib_identity_from_registry(
 pub fn resolve_typelib_identity_from_prog_id(
     prog_id_name: &str,
 ) -> Result<TypeLibResolvedIdentity, String> {
+    crate::authorize_native_com("typelib.resolve", "resolve_typelib_identity_from_prog_id")?;
     Err(format!(
         "live ProgID typelib resolution not available on this platform for `{}`",
         prog_id_name.trim()

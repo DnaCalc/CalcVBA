@@ -278,3 +278,27 @@ End Sub",
         13,
     );
 }
+
+/// dc-tey4.3: a late-bound call on a project class object passes a Variant variable as an alias;
+/// a ByVal parameter takes a copy. The JIT used to fault ("FaultDispatch reached with no pending
+/// fault") where the interpreter answered; VBA-Dictionary's `Exists(Key)` does exactly this.
+#[test]
+fn late_bound_call_passes_a_variant_variable_to_a_byval_parameter() {
+    use calcvba_differential::run_modules;
+    use calcvba_symbol::manifest::ModuleKind::{Class, Procedural};
+    let class = "Public Function M(ByVal K As Variant) As Boolean\n M = (K = \"a\")\nEnd Function\n\
+                 Public Function V(ByVal K As Variant) As Variant\n V = VarType(K)\nEnd Function\n\
+                 Public Function S(ByVal K As String) As String\n S = K & \"!\"\nEnd Function\n";
+    let main = "Public r As Variant\nSub Main()\n Dim d As Object, k As Variant\n Set d = New Dict\n\
+                 k = \"a\"\n r = d.M(k) & d.V(k) & d.S(k)\nEnd Sub";
+    for executor in [Executor::Vm3, Executor::Jit] {
+        let o = run_modules(
+            executor,
+            &[("Main", Procedural, main), ("Dict", Class, class)],
+            "VBAProject",
+        );
+        assert!(o.unsupported.is_none(), "{executor:?}: {:?}", o.unsupported);
+        let snap = o.result.unwrap_or_else(|e| panic!("{executor:?}: {e}; {:?}", o.err));
+        assert_eq!(snap[0], Canon::Str("True8a!".into()), "{executor:?}");
+    }
+}

@@ -1733,7 +1733,9 @@ pub(crate) unsafe fn seed_jit_member_frame_args(
                 };
                 frame.locals[param_index] = value;
             }
-            JIT_CALL_ARG_BYVAL_VARIANT
+            // A late-bound call passes a variable as an alias (the callee may be ByRef); a ByVal
+            // parameter takes a copy of its value, as for a ByVal Variant operand.
+            JIT_CALL_ARG_BYVAL_VARIANT | JIT_CALL_ARG_BYREF_ALIAS | JIT_CALL_ARG_BYREF_COPY
                 if !param_info.by_ref
                     && (is_jit_variant_carrier_ty(&param.ty)
                         || numeric_call_target(&param.ty).is_some()

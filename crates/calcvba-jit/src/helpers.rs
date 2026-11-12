@@ -7017,6 +7017,9 @@ unsafe fn project_enumerator_elements(
     if let Some(values) = next.native_collection_snapshot() {
         return Ok(values);
     }
+    if next.is_project_instance() && next.route_key() == VBA_COLLECTION_ROUTE_KEY {
+        return Ok(Vec::new());
+    }
     if next.is_project_instance() {
         // SAFETY: inherited live roots.
         return unsafe { project_enumerator_elements(run, state, next, depth + 1) };
@@ -7069,6 +7072,10 @@ pub(crate) unsafe extern "C" fn rt_jit_for_each_init_variant_array(
         } else if let Some(object) = source_value.as_object_ref() {
             if let Some(values) = object.native_collection_snapshot() {
                 values
+            } else if object.is_project_instance() && object.route_key() == VBA_COLLECTION_ROUTE_KEY
+            {
+                // A built-in Collection that never had an item added has no native state yet.
+                Vec::new()
             } else if object.is_project_instance() {
                 // SAFETY: the live run and state roots span the synchronous enumerator call;
                 // no run, frame or state borrow is held across it.

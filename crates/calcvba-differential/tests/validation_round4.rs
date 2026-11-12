@@ -325,3 +325,30 @@ fn literal_to_a_byref_variant_parameter_of_a_class_method() {
         assert_eq!(snap[0], Canon::Str("TrueTrueFalseokokchanged".into()), "{executor:?}");
     }
 }
+
+/// dc-tey4.3: `For Each` over a built-in Collection that never had an item added runs zero times.
+/// The JIT raised 438 (no native state yet, so the enumerator lookup failed); VBA-JSON round-trips
+/// `[]` through exactly this.
+#[test]
+fn for_each_over_an_empty_collection_runs_zero_times() {
+    both(
+        "Public r As Variant
+Function F(j As Variant) As String
+    Dim v As Variant, s As String
+    For Each v In j
+        s = s & \"x\"
+    Next v
+    F = \"n\" & s
+End Function
+Sub Main()
+    Dim c As New Collection, w As Variant, t As String
+    For Each w In c
+        t = t & \"y\"
+    Next w
+    r = t & F(c)
+    c.Add 1
+    r = r & F(c)
+End Sub",
+        &Canon::Str("nnx".into()),
+    );
+}

@@ -302,3 +302,26 @@ fn late_bound_call_passes_a_variant_variable_to_a_byval_parameter() {
         assert_eq!(snap[0], Canon::Str("True8a!".into()), "{executor:?}");
     }
 }
+
+/// dc-tey4.3: a literal passed to a ByRef Variant parameter of a project class method is a private
+/// copy. The JIT used to fault ("FaultDispatch reached with no pending fault"); VBA-Dictionary's
+/// `d.Exists("a")` (`Exists(Key As Variant)`) does exactly this.
+#[test]
+fn literal_to_a_byref_variant_parameter_of_a_class_method() {
+    use calcvba_differential::run_modules;
+    use calcvba_symbol::manifest::ModuleKind::{Class, Procedural};
+    let class = "Public Function E1(Key As Variant) As Boolean\n E1 = (Key = \"a\")\nEnd Function\n\
+                 Public Function E2(Key As Variant) As String\n Key = \"changed\"\n E2 = \"ok\"\nEnd Function\n";
+    let main = "Public r As Variant\nSub Main()\n Dim d As New Dict, k As Variant\n k = \"a\"\n\
+                 r = d.E1(\"a\") & d.E1(k) & d.E1(\"b\") & d.E2(\"x\") & d.E2(k) & k\nEnd Sub";
+    for executor in [Executor::Vm3, Executor::Jit] {
+        let o = run_modules(
+            executor,
+            &[("Main", Procedural, main), ("Dict", Class, class)],
+            "VBAProject",
+        );
+        assert!(o.unsupported.is_none(), "{executor:?}: {:?}", o.unsupported);
+        let snap = o.result.unwrap_or_else(|e| panic!("{executor:?}: {e}; {:?}", o.err));
+        assert_eq!(snap[0], Canon::Str("TrueTrueFalseokokchanged".into()), "{executor:?}");
+    }
+}

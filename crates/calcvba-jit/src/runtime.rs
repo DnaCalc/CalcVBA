@@ -1792,6 +1792,24 @@ pub(crate) unsafe fn seed_jit_member_frame_args(
                 // SAFETY: the live state handle is valid for this call.
                 return unsafe { rt_raise_type_mismatch(state) };
             }
+            // A literal or computed operand passed to a ByRef Variant parameter is a private copy
+            // (no caller place to alias), as for an explicit ByRef copy argument.
+            JIT_CALL_ARG_BYVAL_VARIANT
+                if param_info.by_ref
+                    && !param_info.variadic
+                    && is_jit_variant_carrier_ty(&param.ty) =>
+            {
+                let Some(value) = call_arg_variant_value(run, arg) else {
+                    return ST_FAULT;
+                };
+                // SAFETY: the current compiled-run boundary owns the live unique state handle;
+                // typed references and owned values remain live and nonaliasing for this call.
+                frame.locals[param_index] =
+                    match unsafe { coerce_call_arg_for_param(state, &param.ty, &value) } {
+                        Ok(value) => value,
+                        Err(status) => return status,
+                    };
+            }
             JIT_CALL_ARG_BYREF_COPY if param_info.by_ref => {
                 if is_jit_variant_carrier_ty(&param.ty) {
                     let Some(value) = call_arg_variant_value(run, arg) else {

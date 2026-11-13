@@ -1789,9 +1789,9 @@ fn checked_align_to(value: usize, align: usize) -> Result<usize, String> {
 }
 
 impl VbaRecordLayout {
-    /// Windows x64 Automation records use a 24-byte VARIANT, while the engine's
-    /// canonical VariantCore stays 16 bytes. Never expose canonical offsets at
-    /// an Automation boundary when a record contains Variant fields.
+    /// The record's Automation layout. Variant fields are the platform `VARIANT`, the same
+    /// width as the engine's own cell; the separate shape remains only until records are
+    /// stored in their Automation layout (dc-yqq0.5).
     pub fn automation_shape(&self) -> Result<(usize, usize), String> {
         let mut size = 0usize;
         let mut align = 1usize;
@@ -1826,7 +1826,10 @@ impl VbaRecordLayout {
 impl VbaRecordFieldKind {
     pub fn automation_storage_shape(&self) -> Result<(usize, usize), String> {
         match self {
-            Self::Variant => Ok((24, 8)),
+            Self::Variant => Ok((
+                core::mem::size_of::<VariantCore>(),
+                core::mem::align_of::<VariantCore>(),
+            )),
             Self::Record(layout) => layout.automation_shape(),
             Self::FixedArray { element, bounds } => {
                 let (size, align) = element.automation_storage_shape()?;
@@ -1878,7 +1881,10 @@ impl VbaRecordLayout {
 impl VbaRecordFieldKind {
     pub fn declare_storage_shape(&self) -> Result<(usize, usize), String> {
         match self {
-            Self::Variant => Ok((24, 8)),
+            Self::Variant => Ok((
+                core::mem::size_of::<VariantCore>(),
+                core::mem::align_of::<VariantCore>(),
+            )),
             Self::FixedString { len } => Ok((*len, 1)),
             Self::Record(layout) => layout.declare_shape(),
             Self::FixedArray { element, bounds } => {

@@ -140,7 +140,7 @@ mod native_record_pin {
                         ptr::copy_nonoverlapping(
                             bytes.as_ptr(),
                             (&mut result.0 as *mut VARIANT).cast(),
-                            16,
+                            bytes.len(),
                         );
                     }
                 }
@@ -232,7 +232,9 @@ mod native_record_pin {
                     "Record pointer Variant copyback requires host object/record binding".into(),
                 );
             }
-            let mut bytes = [0u8; 16];
+            // Header and the first eight union bytes only: the rest of the union carries no
+            // value for these types, and VBA leaves unused union bytes uncleared.
+            let mut bytes = [0u8; crate::variant::WIRE_SIZE];
             ptr::copy_nonoverlapping((&value.0 as *const VARIANT).cast(), bytes.as_mut_ptr(), 16);
             Value::from_wire_bytes(bytes)
         }
@@ -2289,8 +2291,8 @@ mod tests {
         let decimal_raw = lookup_pointer(decimal_ptr)
             .expect("lookup decimal variant")
             .cast::<u8>();
-        let bytes = unsafe { std::slice::from_raw_parts(decimal_raw, 16) };
-        let mut wire = [0u8; 16];
+        let bytes = unsafe { std::slice::from_raw_parts(decimal_raw, crate::variant::WIRE_SIZE) };
+        let mut wire = [0u8; crate::variant::WIRE_SIZE];
         wire.copy_from_slice(bytes);
         let decimal_variant = Variant::from_wire_bytes(wire).expect("decimal compat-slot wire");
         assert_eq!(decimal_variant.vtype(), VarType::Decimal);

@@ -61,7 +61,7 @@ fn unallocated_record_array_retains_layout_but_projects_a_null_native_pointer() 
         );
         let wire = value.to_wire_bytes();
         assert_eq!(&wire[..2], &0x2024u16.to_le_bytes());
-        assert_eq!(&wire[2..], &[0; 14]);
+        assert!(wire[2..].iter().all(|byte| *byte == 0));
     }
 }
 /// Choose the actual element type for ReDim. A Variant keeps its contained

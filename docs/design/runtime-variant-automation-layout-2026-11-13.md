@@ -122,7 +122,14 @@ binding, which is also what COM receives, with no conversion.
 | C. `windows_sys::VARIANT` on Windows, own type elsewhere | No layout of our own on Windows | Two truths; Drop/Clone would differ by platform |
 
 **Choice: B**, one portable definition, with compile-time asserts on Windows that size and every
-field offset equal `windows_sys::Win32::System::Variant::VARIANT`. `Variant` stays
+field offset equal `windows_sys::Win32::System::Variant::VARIANT`.
+
+*As built (step 4a):* the cell has the platform size and layout, but the payload stays the sealed
+byte carrier: the existing eight bytes plus a zeroed union tail (`BRECORD.pRecInfo` on 64-bit,
+empty on 32-bit), with pointers stored at native width in the low bytes. That gives the exact
+layout and correct 32-bit cells with a small diff. The typed union (B's provenance benefit) is
+done when the value types move into `calcvba-automation`, after records and arrays (steps 5-6)
+have rewritten the pointer payloads. `Variant` stays
 `repr(transparent)` over it. Addresses that VBA code sees as integers (`VarPtr`, `StrPtr`,
 `ObjPtr`) use `expose_provenance` / `with_exposed_provenance` at that boundary only.
 
@@ -362,8 +369,9 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
    1908`, `native_values.rs:806, 1316`) and `native-template/src/foreign.rs:127` use them.
 3. **COM-correct vtables.** `extern "system"`, `REFIID` by pointer, for every runtime and
    `HostObject` vtable.
-4. **The cell.** The union in `calcvba-automation`, platform size, `VT_UNKNOWN`, `VT_BYREF`
-   cells, `VT_ARRAY | vt` tags, the wire decoder, size and offset tests, specs corrected
+4. **The cell.** Platform size (4a), `VT_ARRAY | vt` tags (4b), `VT_UNKNOWN` (4c), the wire
+   decoder, size and offset tests, specs corrected. `VT_BYREF` cells moved to step 7, where
+   ByRef binding and address-of change together
    (`OXVBA_REPRESENTATION_LAYOUT_DOCTRINE_V1.md:17-20`, `VBA_TYPE_SYSTEM_V1.md`,
    `OXVBA_POINTER_HELPERS_CONTRACT_V1.md`). VM3 hot paths move from clone to borrow as they
    are touched. Miri on `calcvba-runtime`, `calcvba-automation`, `calcvba-jit` and the

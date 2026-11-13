@@ -13,19 +13,25 @@ fn assert_safe_core_reads(value: &Variant) {
     assert!(format!("{core:?}").contains("VariantCore"));
 
     let wire = core.to_wire_bytes();
+    assert_eq!(wire.len(), calcvba_automation::abi::VARIANT_SIZE);
     assert_eq!(&wire[8..16], &bytes);
+    assert!(wire[16..].iter().all(|byte| *byte == 0));
     let decoded = VariantCore::from_wire_bytes(wire).expect("initialized core wire bytes");
     assert_eq!(decoded, core);
 }
 
 #[test]
 fn variant_core_full_initialization_external_api_and_runtime_paths() {
-    assert_eq!(core::mem::size_of::<VariantData>(), 8);
+    // The platform's Automation VARIANT: 24 bytes on 64-bit targets, 16 on 32-bit.
+    use calcvba_automation::abi::{PAYLOAD_SIZE, VARIANT_ALIGN, VARIANT_SIZE};
+    assert_eq!(core::mem::size_of::<VariantData>(), PAYLOAD_SIZE);
     assert_eq!(core::mem::align_of::<VariantData>(), 8);
-    assert_eq!(core::mem::size_of::<VariantCore>(), 16);
-    assert_eq!(core::mem::align_of::<VariantCore>(), 8);
-    assert_eq!(core::mem::size_of::<Variant>(), 16);
-    assert_eq!(core::mem::align_of::<Variant>(), 8);
+    assert_eq!(core::mem::size_of::<VariantCore>(), VARIANT_SIZE);
+    assert_eq!(core::mem::align_of::<VariantCore>(), VARIANT_ALIGN);
+    assert_eq!(core::mem::size_of::<Variant>(), VARIANT_SIZE);
+    assert_eq!(core::mem::align_of::<Variant>(), VARIANT_ALIGN);
+    #[cfg(target_pointer_width = "64")]
+    assert_eq!(core::mem::size_of::<Variant>(), 24);
 
     // This integration target consumes calcvba-runtime through its public API, as
     // an external crate does. Short scalar migration constructors zero every
@@ -61,14 +67,16 @@ fn variant_core_full_initialization_external_api_and_runtime_paths() {
     assert_eq!(raw_core.reserved2(), 0x5678);
     assert_eq!(raw_core.reserved3(), 0x9ABC);
     assert_eq!(raw_core.data_bytes(), [1, 2, 3, 4, 5, 6, 7, 8]);
+    let wire = raw_core.to_wire_bytes();
     assert_eq!(
-        raw_core.to_wire_bytes(),
+        wire[..16],
         [
             0x0E, 0x00, 0x34, 0x12, 0x78, 0x56, 0xBC, 0x9A, 1, 2, 3, 4, 5, 6, 7, 8,
         ]
     );
-    // SAFETY: `VariantCore` is asserted above to be a 16-byte `repr(C)` value.
-    // Its four header words and its eight-byte `VariantData` contain no padding,
+    assert!(wire[16..].iter().all(|byte| *byte == 0));
+    // SAFETY: `VariantCore` is asserted above to be a `repr(C)` value of the platform size.
+    // Its four header words and its `VariantData` (eight bytes plus the union tail) contain no padding,
     // and every byte was initialized by `from_parts`, so the raw ABI read is valid.
     let raw_memory = unsafe {
         core::slice::from_raw_parts(

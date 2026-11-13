@@ -105,8 +105,16 @@ impl VarType {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VariantData {
     bytes: [u8; 8],
+    /// The rest of the platform union: `BRECORD.pRecInfo` on 64-bit targets (eight bytes),
+    /// empty where pointers are 32-bit. Zero for every type except `VT_RECORD`.
+    tail: [u8; PAYLOAD_TAIL],
     not_send_sync: core::marker::PhantomData<*mut core::ffi::c_void>,
 }
+
+/// Bytes of the value union after the first eight.
+pub const PAYLOAD_TAIL: usize = calcvba_automation::abi::PAYLOAD_SIZE - 8;
+/// Bytes of a whole cell, and of its wire form: the platform `VARIANT` size.
+pub const WIRE_SIZE: usize = calcvba_automation::abi::VARIANT_SIZE;
 
 impl VariantData {
     /// Construct a fully initialized raw payload from all eight ABI bytes.
@@ -120,6 +128,7 @@ impl VariantData {
     pub const fn from_bytes(bytes: [u8; 8]) -> Self {
         Self {
             bytes,
+            tail: [0; PAYLOAD_TAIL],
             not_send_sync: core::marker::PhantomData,
         }
     }
@@ -173,9 +182,15 @@ impl VariantData {
     pub const fn bytes(self) -> [u8; 8] {
         self.bytes
     }
+
+    /// The union bytes after the first eight (see [`PAYLOAD_TAIL`]).
+    pub const fn tail(self) -> [u8; PAYLOAD_TAIL] {
+        self.tail
+    }
 }
 
-/// Exact 16-byte VBA/COM-shaped Variant core.
+/// The platform's Automation `VARIANT`: 24 bytes on 64-bit targets, 16 where pointers are
+/// 32-bit (`calcvba_automation::abi`).
 ///
 /// The fields are private so safe downstream code must use fully initialized
 /// constructors. This changes only Rust source access: `repr(C)`, size,
@@ -239,6 +254,7 @@ impl PartialEq for VariantCore {
             && self.reserved2 == other.reserved2
             && self.reserved3 == other.reserved3
             && self.data_bytes() == other.data_bytes()
+            && self.data.tail() == other.data.tail()
     }
 }
 
@@ -304,13 +320,14 @@ impl VariantCore {
         self.data.bytes()
     }
 
-    pub fn to_wire_bytes(&self) -> [u8; 16] {
-        let mut out = [0u8; 16];
+    pub fn to_wire_bytes(&self) -> [u8; WIRE_SIZE] {
+        let mut out = [0u8; WIRE_SIZE];
         out[0..2].copy_from_slice(&(self.vtype as u16).to_le_bytes());
         out[2..4].copy_from_slice(&self.reserved1.to_le_bytes());
         out[4..6].copy_from_slice(&self.reserved2.to_le_bytes());
         out[6..8].copy_from_slice(&self.reserved3.to_le_bytes());
         out[8..16].copy_from_slice(&self.data_bytes());
+        out[16..].copy_from_slice(&self.data.tail());
         out
     }
 
@@ -320,7 +337,7 @@ impl VariantCore {
     /// The result is still a non-owning byte carrier. Pointer payloads are not
     /// recovered or dereferenced here; safe owning [`Variant`] admission rejects
     /// them, while trusted live-pointer recovery is explicitly unsafe.
-    pub fn from_wire_bytes(bytes: [u8; 16]) -> Result<Self, String> {
+    pub fn from_wire_bytes(bytes: [u8; WIRE_SIZE]) -> Result<Self, String> {
         let vtype_raw = u16::from_le_bytes([bytes[0], bytes[1]]);
         let Some(vtype) = VarType::from_u16(vtype_raw) else {
             return Err(format!("unsupported VARENUM value: 0x{vtype_raw:04X}"));
@@ -333,6 +350,11 @@ impl VariantCore {
         if vtype != VarType::Decimal && (reserved1 != 0 || reserved2 != 0 || reserved3 != 0) {
             return Err(format!(
                 "malformed VARIANT wire bytes: non-zero reserved words for {vtype:?}"
+            ));
+        }
+        if bytes[16..].iter().any(|byte| *byte != 0) {
+            return Err(format!(
+                "malformed VARIANT wire bytes: non-zero union tail for {vtype:?}"
             ));
         }
         Ok(Self::from_parts(
@@ -479,10 +501,10 @@ impl Variant {
         (self as *const Self).cast_mut().cast()
     }
 
-    pub fn to_wire_bytes(&self) -> [u8; 16] {
+    pub fn to_wire_bytes(&self) -> [u8; WIRE_SIZE] {
         if self.vtype() == VarType::ArrayVariant && self.safearray_bounds_len().is_none() {
             let element_vartype = self.array_element_vartype().unwrap_or(VT_VARIANT_VALUE);
-            let mut out = [0u8; 16];
+            let mut out = [0u8; WIRE_SIZE];
             out[0..2].copy_from_slice(&(0x2000u16 | element_vartype).to_le_bytes());
             return out;
         }
@@ -495,7 +517,7 @@ impl Variant {
     /// String, Object, ArrayVariant, and Record tags are rejected even when their
     /// address bytes are zero. Callers with a live process-local source must use
     /// [`Self::from_trusted_wire_bytes`] and satisfy its unsafe preconditions.
-    pub fn from_wire_bytes(bytes: [u8; 16]) -> Result<Self, String> {
+    pub fn from_wire_bytes(bytes: [u8; WIRE_SIZE]) -> Result<Self, String> {
         let core = VariantCore::from_wire_bytes(bytes)?;
         match core.vtype {
             VarType::String | VarType::Object | VarType::ArrayVariant | VarType::Record => {
@@ -517,7 +539,7 @@ impl Variant {
     /// encoded in the wire bytes must have been produced by `Variant::to_wire_bytes`
     /// in this process and the source allocation/object must still be live for the
     /// whole call. Arbitrary or stale pointer bytes are undefined behavior.
-    pub unsafe fn from_trusted_wire_bytes(bytes: [u8; 16]) -> Result<Self, String> {
+    pub unsafe fn from_trusted_wire_bytes(bytes: [u8; WIRE_SIZE]) -> Result<Self, String> {
         let core = VariantCore::from_wire_bytes(bytes)?;
         match core.vtype {
             VarType::String => {
@@ -1611,11 +1633,20 @@ mod tests {
 
     #[test]
     fn com_variant_layout_shape() {
-        assert_eq!(core::mem::size_of::<VariantCore>(), 16);
+        assert_eq!(
+            core::mem::size_of::<VariantCore>(),
+            calcvba_automation::abi::VARIANT_SIZE
+        );
         assert_eq!(core::mem::align_of::<VariantCore>(), 8);
-        assert_eq!(core::mem::size_of::<VariantData>(), 8);
+        assert_eq!(
+            core::mem::size_of::<VariantData>(),
+            calcvba_automation::abi::PAYLOAD_SIZE
+        );
         assert_eq!(core::mem::align_of::<VariantData>(), 8);
-        assert_eq!(core::mem::size_of::<Variant>(), 16);
+        assert_eq!(
+            core::mem::size_of::<Variant>(),
+            calcvba_automation::abi::VARIANT_SIZE
+        );
         assert_eq!(core::mem::align_of::<Variant>(), 8);
         // SAFETY (all five): `offset_of` calls the closure with `base` pointing to
         // live, aligned `MaybeUninit<VariantCore>` storage; `addr_of!` computes the
@@ -1697,7 +1728,7 @@ mod tests {
 
         assert_eq!(u16::from_le_bytes([wire[0], wire[1]]), 0x2000 | VT_I4_VALUE);
         assert_eq!(&wire[2..8], &[0, 0, 0, 0, 0, 0]);
-        assert_eq!(&wire[8..16], &[0; 8]);
+        assert!(wire[8..].iter().all(|byte| *byte == 0));
     }
 
     unsafe fn clone_test_record(

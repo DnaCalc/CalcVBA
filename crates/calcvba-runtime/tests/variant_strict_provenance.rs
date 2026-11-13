@@ -71,7 +71,10 @@ fn assert_safe_wire_rejects_pointer_carrier(value: &Variant) {
 
 #[test]
 fn variant_strict_provenance_pointer_carriers_roundtrip_mutate_and_balance() {
-    assert_eq!(core::mem::size_of::<VariantCore>(), 16);
+    assert_eq!(
+        core::mem::size_of::<VariantCore>(),
+        calcvba_automation::abi::VARIANT_SIZE
+    );
     assert_eq!(core::mem::align_of::<VariantCore>(), 8);
     let before = live_handle_counts();
     assert_eq!(before, LiveHandleCounts::default());

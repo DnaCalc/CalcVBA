@@ -32,7 +32,7 @@
 //! | `Record(_)` | `*const RecordPayload` (value semantics) | `Record` |
 //! | `Array(t, _)` | `*mut SAFEARRAY` | `ArrayVariant` |
 //! | `ProcRef` | `usize` proc index | `ProcRef` |
-//! | `Variant` | the 16-byte `#[repr(C)]` Variant | identity |
+//! | `Variant` | the platform `VARIANT` (24 bytes on 64-bit, 16 on 32-bit) | identity |
 //!
 //! **`Bool` is the one type whose box/unbox is *not* a pure move** (`i8` register
 //! form vs `i16` `-1`/`0` Variant payload); it must be excluded from
@@ -122,7 +122,7 @@ pub enum OxTy {
     ProcRef,
 
     // ── The dynamic top ──
-    /// The literal 16-byte `#[repr(C)]` Variant — the dynamic top type. Empty /
+    /// The platform `VARIANT` (24 bytes on 64-bit targets, 16 on 32-bit) — the dynamic top type. Empty /
     /// Null / Error inhabit only this type; `Nothing` is an `Object` with a null
     /// pointer, and is therefore *not* a separate type.
     Variant,
@@ -196,7 +196,7 @@ mod tests {
         assert!(OxTy::Object(ObjClass::Untyped).is_pointer_repr());
         assert!(OxTy::Array(Box::new(OxTy::Long), ArrayShape::Dynamic).is_pointer_repr());
         assert!(!OxTy::Long.is_pointer_repr());
-        assert!(!OxTy::Variant.is_pointer_repr()); // 16-byte struct, not a pointer
+        assert!(!OxTy::Variant.is_pointer_repr()); // a VARIANT cell, not a pointer
 
         assert!(OxTy::Str.is_owning());
         assert!(OxTy::Variant.is_owning());

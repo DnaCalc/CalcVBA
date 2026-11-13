@@ -15,7 +15,8 @@ is not addressable.
 ### VARIANT
 
 `Variant` is the canonical execution cell and must remain layout-compatible with
-Windows `VARIANT`, including the 16-byte discriminant/data/`DECIMAL` overlay,
+Windows `VARIANT`: 24 bytes on 64-bit targets and 16 where pointers are 32-bit, with the
+`BRECORD` union arm and the `DECIMAL` overlay of the header,
 VARENUM tags, payload ownership, `VARIANT_BOOL`, `CY`, `DATE`, object, BSTR, and
 SAFEARRAY pointer payloads.
 

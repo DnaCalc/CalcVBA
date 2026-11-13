@@ -1518,6 +1518,20 @@ impl<'a> ProcLower<'a> {
             Some(slot) => *slot = CoreArg::ByVal(rhs.clone()),
             None => args.push(CoreArg::ByVal(rhs.clone())),
         }
+        // A bare indexed property of a class module is an implicit `Me.Prop(index) = rhs`, as for the
+        // unindexed form (VBA-KeyedCollection's `LetSet(Item) = value`, a private Property Let of the class).
+        if self
+            .g
+            .ids
+            .procs
+            .get(proc_id.0)
+            .and_then(|info| info.class_name.as_deref())
+            .is_some()
+            && let Some(recv) = self.me_value()
+        {
+            let call = self.late_member_call(name, kind, recv, args);
+            return Ok(Some(vec![CoreStmt::Eval(call)]));
+        }
         Ok(Some(vec![CoreStmt::Eval(CoreValue::Call {
             callee: CoreCallee::VbaProc { proc: proc_id },
             args,
@@ -2850,8 +2864,11 @@ impl<'a> ProcLower<'a> {
                 .udt_field(udt, member)
                 .map(|(i, t)| (i, t.clone()))
         {
-            let base = match &recv.value {
-                CoreValue::Load(p) => p.clone(),
+            // A leading-dot member inside `With <udt place>` reads through the place the
+            // With subject was bound to (`With m(h)` then `.buf(i)`).
+            let base = match (&recv.value, &recv.place) {
+                (CoreValue::Load(p), _) => p.clone(),
+                (CoreValue::WithTemp(_), Some(p)) => p.clone(),
                 _ => {
                     return Err(BindError::Unsupported(format!(
                         "UDT field `.{member}` on a non-place receiver"

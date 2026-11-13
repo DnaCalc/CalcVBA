@@ -357,6 +357,8 @@ impl<'a> Parser<'a> {
                 // `Base` is special in `Option Base`; in declarations and
                 // expressions VBA still accepts it as an ordinary identifier.
                 | SyntaxKind::KwBase
+                // `Compare` is special in `Option Compare`; `compare = StrComp(...)` is an ordinary variable.
+                | SyntaxKind::KwCompare
                 // `Explicit` is special in `Option Explicit`, but it is not in
                 // VBA's reserved-identifier set and remains a legal name in
                 // declarations, statements, and expressions.
@@ -534,6 +536,10 @@ impl<'a> Parser<'a> {
 
         // ── Infix / postfix loop ───────────────────────────
         loop {
+            let had_whitespace = matches!(
+                self.current(),
+                SyntaxKind::Whitespace | SyntaxKind::LineContinuation
+            );
             self.eat_expr_whitespace();
 
             let kind = self.current();
@@ -545,6 +551,12 @@ impl<'a> Parser<'a> {
             match kind {
                 SyntaxKind::Dot | SyntaxKind::Bang => {
                     if min_bp > 30 {
+                        break;
+                    }
+                    // A statement callee followed by white space and a leading dot
+                    // (`Zero .pass` inside `With`) is a call whose first argument is
+                    // the With member, not a member access on the callee.
+                    if !allow_index_postfix && had_whitespace && kind == SyntaxKind::Dot {
                         break;
                     }
                     self.start_node_at(cp, SyntaxKind::MemberExpr);
@@ -2325,7 +2337,8 @@ impl<'a> Parser<'a> {
         if self.is_expr_start() {
             self.parse_expr();
         }
-        self.eat_to_eol();
+        // Stop at a `:` so `With x: .a = 0: End With` on one line still parses.
+        self.eat_to_clause_end();
 
         self.parse_block(&[SyntaxKind::KwEnd]);
 
@@ -2341,7 +2354,7 @@ impl<'a> Parser<'a> {
         } else {
             self.error("expected `End With`".into());
         }
-        self.eat_to_eol();
+        self.eat_to_clause_end();
 
         self.finish_node();
     }
@@ -2974,6 +2987,16 @@ impl<'a> Parser<'a> {
     /// True if the current statement-leading contextual keyword is being used as
     /// an identifier (assignment / member / call), not a statement keyword.
     fn peek_keyword_used_as_name(&self) -> bool {
+        // `Open .Path For Binary ...` inside `With`: a keyword, white space, then a leading
+        // dot starts the statement's operand. Only an attached dot (`Open.Path`) is a member access.
+        if self.peek_next_non_trivia() == SyntaxKind::Dot
+            && self
+                .tokens
+                .get(self.pos + 1)
+                .is_some_and(|(k, _)| k.is_trivia())
+        {
+            return false;
+        }
         matches!(
             self.peek_next_non_trivia(),
             SyntaxKind::Eq
@@ -3109,9 +3132,35 @@ impl<'a> Parser<'a> {
     fn lookahead_is_assignment(&self) -> bool {
         let mut j = self.pos;
         let mut paren_depth: i32 = 0;
+        // `Check Err.Number = 0, Message`: a name, white space, then another name or literal before the
+        // first `=` is a call whose first argument holds the comparison, not an assignment.
+        let mut previous = SyntaxKind::Whitespace;
+        let mut after_whitespace = false;
 
         while j < self.tokens.len() {
             let k = self.tokens[j].0;
+            if paren_depth == 0 && after_whitespace {
+                let value_start = matches!(
+                    k,
+                    SyntaxKind::Ident
+                        | SyntaxKind::BracketedIdent
+                        | SyntaxKind::KwMe
+                        | SyntaxKind::IntLiteral
+                        | SyntaxKind::FloatLiteral
+                        | SyntaxKind::HexLiteral
+                        | SyntaxKind::OctLiteral
+                        | SyntaxKind::StringLiteral
+                        | SyntaxKind::KwTrue
+                        | SyntaxKind::KwFalse
+                );
+                let value_end = matches!(
+                    previous,
+                    SyntaxKind::Ident | SyntaxKind::BracketedIdent | SyntaxKind::RParen | SyntaxKind::TypeSuffix
+                );
+                if value_start && value_end {
+                    return false;
+                }
+            }
             match k {
                 SyntaxKind::Newline | SyntaxKind::Eof | SyntaxKind::Comment | SyntaxKind::Colon => {
                     return false;
@@ -3120,6 +3169,12 @@ impl<'a> Parser<'a> {
                 SyntaxKind::RParen => paren_depth -= 1,
                 SyntaxKind::Eq if paren_depth == 0 => return true,
                 _ => {}
+            }
+            if k == SyntaxKind::Whitespace || k == SyntaxKind::LineContinuation {
+                after_whitespace = true;
+            } else {
+                after_whitespace = false;
+                previous = k;
             }
             j += 1;
         }

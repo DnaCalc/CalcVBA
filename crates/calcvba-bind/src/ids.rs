@@ -193,7 +193,7 @@ impl IdAllocator {
                         };
                         alloc.globals.push(CoreGlobal {
                             name: alloc_name(env, sym.name),
-                            ty: declared_var_type(&sym.imp),
+                            ty: normalize_declared_type(env, declared_var_type(&sym.imp)),
                             array_element,
                         });
                         alloc.global_of.insert(sym_id, gid);
@@ -411,8 +411,14 @@ impl IdAllocator {
 
         // Map proc symbol → proc id (project-member resolution targets this).
         let proc_sym = symbols.find_in_scope(module_scope, SymbolNamespace::Procedure, &logical)?;
+        // An exported `Attribute X.VB_UserMemId = -4` names the member, not one accessor: only the
+        // Get of a property (or a Function) is the enumerator, never its Let/Set (VBA-KeyedCollection's
+        // EnumHelper declares `EnumVariant` as Property Set and Property Get).
         let is_enumerator_member = has_user_mem_id_decl(decl, -4)
-            || has_exported_member_user_mem_id(module_syntax, &logical, -4);
+            || (!matches!(
+                member_kind,
+                Some(ProjectMemberKind::PropertyLet | ProjectMemberKind::PropertySet)
+            ) && has_exported_member_user_mem_id(module_syntax, &logical, -4));
         if let Some(sym) = proc_sym {
             match member_kind {
                 Some(mk) => {
@@ -481,7 +487,7 @@ impl IdAllocator {
             };
             self.globals.push(CoreGlobal {
                 name: format!("{logical}#{}", alloc_name(env, sym.name)),
-                ty: declared_var_type(&sym.imp),
+                ty: normalize_declared_type(env, declared_var_type(&sym.imp)),
                 array_element,
             });
             self.global_of.insert(sym_id, gid);

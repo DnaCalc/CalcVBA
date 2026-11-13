@@ -1978,7 +1978,7 @@ fn simple_redim_target_tokens(node: SyntaxNode<'_>) -> Vec<SyntaxToken<'_>> {
     targets
 }
 
-fn normalize_identifier_token(text: &str) -> &str {
+pub(crate) fn normalize_identifier_token(text: &str) -> &str {
     text.strip_prefix('[')
         .and_then(|v| v.strip_suffix(']'))
         .unwrap_or(text)

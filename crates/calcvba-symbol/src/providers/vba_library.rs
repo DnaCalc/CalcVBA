@@ -119,6 +119,27 @@ impl Provider for VbaLibraryProvider {
         if parts.len() == 2 && fold_identifier(parts[0]) == "vba" {
             return self.resolve(parts[1]);
         }
+        // `Math.Abs(x)`, `Strings.Left(s, 2)`: a VBA library module named without the `VBA.` prefix. A
+        // project module of that name is found first (the project provider comes before this one).
+        // `VbVarType.vbString`: a library constant named through its enum, without the `VBA.` prefix.
+        if parts.len() == 2 && fold_identifier(parts[0]).starts_with("vb") {
+            let binding = self.resolve(parts[1])?;
+            return matches!(binding.route, DispatchRoute::ConstValue(_)).then_some(binding);
+        }
+        if parts.len() == 2 && is_vba_library_module(parts[0]) {
+            let owner = fold_identifier(parts[0]);
+            let binding = self.resolve(parts[1])?;
+            let matches_owner = match &binding.route {
+                DispatchRoute::Native(id) => id
+                    .library_member()
+                    .is_some_and(|(module, _)| fold_identifier(module) == owner),
+                DispatchRoute::ExternMember { owner: module, .. } => {
+                    fold_identifier(module) == owner
+                }
+                _ => false,
+            };
+            return matches_owner.then_some(binding);
+        }
         if parts.len() == 3 && fold_identifier(parts[0]) == "vba" {
             let owner = fold_identifier(parts[1]);
             let binding = self.resolve(parts[2])?;
@@ -129,6 +150,8 @@ impl Provider for VbaLibraryProvider {
                 DispatchRoute::ExternMember { owner: module, .. } => {
                     fold_identifier(module) == owner
                 }
+                // `VBA.VbCompareMethod.vbTextCompare`: a library constant named through its enum.
+                DispatchRoute::ConstValue(_) => owner.starts_with("vb"),
                 _ => false,
             };
             return matches_owner.then_some(binding);
@@ -144,6 +167,23 @@ impl Provider for VbaLibraryProvider {
         let bare = folded.strip_prefix("vba.").unwrap_or(&folded);
         (bare == "collection").then(|| (VBA_UNIT.to_string(), "Collection".to_string()))
     }
+}
+
+/// The names of the VBA library's modules (`VBA.Math`, `VBA.Strings`, ...), usable as qualifiers.
+fn is_vba_library_module(name: &str) -> bool {
+    matches!(
+        fold_identifier(name).as_str(),
+        "math"
+            | "strings"
+            | "conversion"
+            | "datetime"
+            | "interaction"
+            | "information"
+            | "filesystem"
+            | "financial"
+            | "fileio"
+            | "random"
+    )
 }
 
 fn is_collection_type(type_name: &str) -> bool {

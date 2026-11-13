@@ -120,7 +120,7 @@ impl<'a> ProcLower<'a> {
             .ok_or_else(|| BindError::Malformed("assignment target".into()))?;
         let value_node = node
             .assign_value()
-            .ok_or_else(|| BindError::Malformed("assignment value".into()))?;
+            .ok_or_else(|| BindError::Malformed(format!("assignment value in `{}`", node.text().trim())))?;
         let mut val = self.bind_expr(value_node)?;
         if intent == AssignmentIntent::Let
             && let Some(stmts) = self.try_mid_assignment(target_node, &val.value)?
@@ -280,7 +280,15 @@ impl<'a> ProcLower<'a> {
         };
         let name = match base.kind() {
             SyntaxKind::IdentExpr => base.ident_name_token().map(|token| token.text),
-            SyntaxKind::MemberExpr => base.member_name_token().map(|token| token.text),
+            // Only the library-qualified statement (`VBA.Mid$(s, 1) = x`) is the Mid statement; a
+            // member named Mid of an object (`sb.Mid(3) = "x"`) is a Property Let call.
+            SyntaxKind::MemberExpr
+                if base
+                    .member_receiver()
+                    .is_some_and(|recv| recv.text().trim().eq_ignore_ascii_case("vba")) =>
+            {
+                base.member_name_token().map(|token| token.text)
+            }
             _ => None,
         };
         let Some(name) = name else {

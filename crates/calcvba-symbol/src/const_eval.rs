@@ -22,7 +22,7 @@ use crate::model::{
     SymbolTable, Visibility,
 };
 use crate::providers::vba_library;
-use crate::scanner::parameter_name_token;
+use crate::scanner::{normalize_identifier_token, parameter_name_token};
 use crate::signature::{BuiltinType, SignatureId, VarTypeRef};
 
 #[derive(Debug, Clone)]
@@ -119,7 +119,40 @@ fn fold_const_values_with_enum_policy(
         external_projects,
         &mut values,
     )?;
-    // 3) Fold `Enum` members (sequential auto-increment, reading earlier values).
+    // 3) Fold `Enum` members (sequential auto-increment, reading earlier values). A member may
+    // name a member or `Const` of a module declared later (VbaRegex's `PSF_NONE =
+    // RegexNumericConstants.LONG_MIN`): fold to a fixed point first, deferring what is not yet
+    // available, then make the final pass under the requested policy.
+    loop {
+        let before = values.len();
+        for (module_scope, root) in module_roots {
+            let mode = module_modes
+                .get(module_scope)
+                .copied()
+                .unwrap_or(StringCompareMode::Binary);
+            fold_enums(
+                symbols,
+                *module_scope,
+                *root,
+                &mut values,
+                external_projects,
+                mode,
+                EnumInitializerPolicy::DeferInvalid,
+            )?;
+        }
+        resolve_const_worklist(
+            symbols,
+            &pending,
+            &const_syms,
+            &module_modes,
+            target,
+            external_projects,
+            &mut values,
+        )?;
+        if values.len() == before {
+            break;
+        }
+    }
     for (module_scope, root) in module_roots {
         let mode = module_modes
             .get(module_scope)
@@ -498,9 +531,12 @@ fn fold_enums(
             let Some(name_tok) = member.declarator_name() else {
                 continue;
             };
-            let Ok(Some(sym)) =
-                symbols.find_in_scope(module_scope, SymbolNamespace::Local, name_tok.text)
-            else {
+            // A hidden member (`[_opMin]`) is declared without its brackets.
+            let Ok(Some(sym)) = symbols.find_in_scope(
+                module_scope,
+                SymbolNamespace::Local,
+                normalize_identifier_token(name_tok.text),
+            ) else {
                 continue;
             };
             let value = match member.first_expr_child() {

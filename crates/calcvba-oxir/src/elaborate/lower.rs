@@ -2932,7 +2932,7 @@ impl<'a> Lowerer<'a> {
                 // SAFEARRAY on every access.
                 if let coreir::CorePlace::RecordField { base, index } = array.as_ref() {
                     let (rec, receiver_ty) = self.lower_place_load(base)?;
-                    let indices = self.lower_indices(indices)?;
+                    let indices = self.lower_record_array_indices(indices)?;
                     let ty = self.record_field_result_ty(&receiver_ty, *index, true);
                     let t = self.new_temp(ty.clone());
                     self.emit(OxInst::RecordArrayGet {
@@ -3063,7 +3063,7 @@ impl<'a> Lowerer<'a> {
                 // it back. Compound record bases still use the existing materialize,
                 // mutate, recursive-writeback path through `mutable_base_place`.
                 if let coreir::CorePlace::RecordField { base, index } = array.as_ref() {
-                    let indices = self.lower_indices(indices)?;
+                    let indices = self.lower_record_array_indices(indices)?;
                     let (rec, compound) = self.mutable_base_place(base)?;
                     self.emit(OxInst::RecordArraySet {
                         record: rec,
@@ -3145,6 +3145,28 @@ impl<'a> Lowerer<'a> {
             self.store_to_place(place, OxOperand::Use(record))?;
         }
         Ok(())
+    }
+
+    /// Subscripts of a record-field array access (`rec.f(i)`): the fused record-array
+    /// instructions take Long subscripts, so a subscript that was read out of a record
+    /// field (`rCtx.Buses(rVoices(i).busID)`, carried as a Variant) is coerced to Long.
+    fn lower_record_array_indices(&mut self, indices: &[CoreValue]) -> Result<Vec<OxOperand>> {
+        let mut out = Vec::with_capacity(indices.len());
+        for i in indices {
+            let (op, ty) = self.lower_value(i)?;
+            if ty == OxTy::Variant {
+                let t = self.new_temp(OxTy::Long);
+                self.emit(OxInst::Coerce {
+                    dst: OxPlace::Temp(t),
+                    src: op,
+                    target: OxCoerceTarget::Numeric(calcvba_bundle::NumericCoerceTarget::Long),
+                });
+                out.push(OxOperand::temp(t));
+            } else {
+                out.push(op);
+            }
+        }
+        Ok(out)
     }
 
     fn lower_indices(&mut self, indices: &[CoreValue]) -> Result<Vec<OxOperand>> {

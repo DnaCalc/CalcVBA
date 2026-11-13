@@ -1183,9 +1183,11 @@ impl<'a> ProcLower<'a> {
     // ── Resolution helpers ──────────────────────────────────
 
     fn resolve(&self, name: &str) -> Option<Binding> {
-        self.g
-            .env
-            .resolve(&ResolutionContext::at(self.info.proc_scope), name)
+        // Declarations are scanned without their brackets (`[_opMin]` declares `_opMin`).
+        self.g.env.resolve(
+            &ResolutionContext::at(self.info.proc_scope),
+            unbracket_identifier(name),
+        )
     }
 
     /// Resolve a bare identifier that may carry a type-declaration suffix (`Left$`,

@@ -69,7 +69,15 @@ impl ProjectProvider {
                     .entry(member.name_folded.clone())
                     .or_default()
                     .push(entry);
-                if scan.exposes_unqualified_members && is_project_public_member(entry) {
+                // A class module's Public Enum, Enum member and Type are project-wide names (vba-test's
+                // `TestResultType` lives in the TestSuite class); its procedures and fields are not.
+                if (scan.exposes_unqualified_members
+                    || matches!(
+                        member.kind,
+                        SymbolKind::Enum | SymbolKind::EnumMember | SymbolKind::Type
+                    ))
+                    && is_project_public_member(entry)
+                {
                     provider
                         .public
                         .entry(member.name_folded.clone())
@@ -121,10 +129,13 @@ impl ProjectProvider {
             .get(&owner)
             .and_then(|module| module.get(&member))
             .or_else(|| self.enums.get(&owner).and_then(|enum_| enum_.get(&member)))?;
+        // An Event and a Property may share a name (vba-test's `TestSuite.Result`); a member read
+        // takes the property, the event only when nothing else of that name supports the access.
         candidates
             .iter()
             .copied()
-            .find(|entry| supports_want(*entry, want))
+            .filter(|entry| supports_want(*entry, want))
+            .min_by_key(|entry| entry.kind == SymbolKind::Event)
             .map(|entry| binding_for_want(entry, want))
     }
 
@@ -144,7 +155,8 @@ impl ProjectProvider {
         candidates
             .iter()
             .copied()
-            .find(|entry| is_project_public_member(*entry) && supports_want(*entry, want))
+            .filter(|entry| is_project_public_member(*entry) && supports_want(*entry, want))
+            .min_by_key(|entry| entry.kind == SymbolKind::Event)
             .map(|entry| binding_for_want(entry, want))
     }
 }

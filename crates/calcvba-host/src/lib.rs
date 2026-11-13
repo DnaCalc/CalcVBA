@@ -132,8 +132,32 @@ impl Module {
         // program run entry or diagnostic entry-local snapshot. Initialization
         // remains the separate compiler-owned global initializer.
         program.entry = None;
-        calcvba_oxir::verify_program(&program)
-            .map_err(|e| Error::Compile(format!("invalid program: {e:?}")))?;
+        calcvba_oxir::verify_program(&program).map_err(|e| {
+            // Name the procedures the verifier points at by index.
+            let text = format!("{e:?}");
+            let named: Vec<String> = program
+                .funcs
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| text.contains(&format!("func: {i},")))
+                .map(|(i, f)| format!("{i}={}", f.name))
+                .collect();
+            let mut at = Vec::new();
+            for (i, f) in program.funcs.iter().enumerate() {
+                for (b, block) in f.blocks.iter().enumerate() {
+                    for (j, inst) in block.instrs.iter().enumerate() {
+                        if text.contains(&format!("func: {i}, block: {b}, inst: {j},")) {
+                            at.push(format!("{}#{b}.{j}: {inst:?}", f.name));
+                        }
+                    }
+                }
+            }
+            Error::Compile(format!(
+                "invalid program: {text} (procedures {}; instructions {})",
+                named.join(", "),
+                at.join("; ")
+            ))
+        })?;
         if program.funcs.iter().any(|f| {
             f.blocks
                 .iter()

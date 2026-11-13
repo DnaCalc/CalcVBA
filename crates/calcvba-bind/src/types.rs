@@ -9,7 +9,8 @@
 //! `Variant` therefore never produces a wrong result — at worst a redundant
 //! `Coerce` on assignment to a typed variable.
 
-use calcvba_bundle::coreir::{CoerceTarget, CoreBinOp, CoreValue};
+use calcvba_bundle::coreir::{CoerceTarget, CoreArg, CoreBinOp, CoreCallee, CoreConst, CoreValue};
+use calcvba_bundle::native::NativeImplId;
 use calcvba_bundle::{ArrayElementType, AssignmentTargetKind, NumericCoerceTarget, NumericMode};
 use calcvba_symbol::cond_comp::{ConditionalCompilationPointerWidth, ConditionalCompilationTarget};
 use calcvba_symbol::signature::{BuiltinType, VarTypeRef};
@@ -201,6 +202,32 @@ pub(crate) fn coerce_store_with(ctx: TypeContext, value: CoreValue, to: &VarType
 
 /// Coerce `value` (of type `from`) to type `to`, wrapping in a `Coerce` node only
 /// when a scalar conversion is actually needed (skips identity conversions).
+fn is_string_into_byte_array(from: &VarTypeRef, to: &VarTypeRef) -> bool {
+    matches!(from, VarTypeRef::Builtin(BuiltinType::String))
+        && matches!(to, VarTypeRef::Array(inner) if matches!(**inner, VarTypeRef::Builtin(BuiltinType::Byte)))
+}
+
+/// `bytes = "text"` (a String stored into a Byte array) copies the string's UTF-16LE bytes, as
+/// VBA does; lowered to StrConv with the internal UTF-16 mode. Any other pairing is unchanged.
+pub(crate) fn string_into_byte_array(
+    value: CoreValue,
+    from: &VarTypeRef,
+    to: &VarTypeRef,
+) -> CoreValue {
+    if !is_string_into_byte_array(from, to) {
+        return value;
+    }
+    CoreValue::Call {
+        callee: CoreCallee::Native(NativeImplId::StrConv),
+        args: vec![
+            CoreArg::ByVal(value),
+            CoreArg::ByVal(CoreValue::Const(CoreConst::I32(
+                calcvba_bundle::STRCONV_UTF16_BYTES,
+            ))),
+        ],
+    }
+}
+
 pub(crate) fn coerce_with(
     ctx: TypeContext,
     value: CoreValue,
@@ -209,6 +236,9 @@ pub(crate) fn coerce_with(
 ) -> CoreValue {
     if from == to {
         return value;
+    }
+    if is_string_into_byte_array(from, to) {
+        return string_into_byte_array(value, from, to);
     }
     // An array value is never numerically coercible — passing an array argument to a
     // parameter (`f(arr)`) copies the array, it does not coerce its elements. Without

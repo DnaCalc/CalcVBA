@@ -782,6 +782,8 @@ pub(crate) fn variant_string_optional_call_extern_shape(
         NativeImplId::InStrRev => Some("InStrRev(Variant, Variant[, start[, compare]])"),
         NativeImplId::StrComp => Some("StrComp(Variant, Variant, compare)"),
         NativeImplId::Replace => Some("Replace(Variant x3[, start[, count[, compare]]])"),
+        // Split with a limit (two arguments take the Variant-pair path).
+        NativeImplId::Split => Some("Split(Variant, Variant, limit[, compare])"),
         _ => None,
     }
 }

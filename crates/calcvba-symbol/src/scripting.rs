@@ -300,7 +300,13 @@ pub fn with_builtin_scripting(manifest: &SymbolProjectManifest) -> Cow<'_, Symbo
         out.modules.push(ModuleUnit {
             module_name: CLASS_NAME.into(),
             module_kind: ModuleKind::Class,
-            attributes: ModuleAttributes::named(CLASS_NAME),
+            // Scripting.Dictionary is a public type: public members of a project's
+            // public classes (VBA-Web's `UrlSegments As Dictionary`) may use it.
+            attributes: {
+                let mut attributes = ModuleAttributes::named(CLASS_NAME);
+                attributes.vb_exposed = true;
+                attributes
+            },
             source: DICTIONARY_CLASS_SOURCE.into(),
         });
         let lowered: Vec<String> = out
@@ -430,7 +436,7 @@ fn rewrite_line(line: &str, bare: bool) -> String {
                     && !after_dot
                     && starts_with_ci(&chars, i, "Dictionary")
                     && chars.get(i + 10).is_none_or(|n| !is_ident(*n) && *n != '.')
-                    && matches!(previous_word(&out).as_str(), "as" | "new")
+                    && matches!(previous_word(&out).as_str(), "as" | "new" | "is")
                 {
                     out.push_str(CLASS_NAME);
                     i += 10;
@@ -489,7 +495,13 @@ mod tests {
         let mut module = ModuleUnit {
             module_name: CLASS_NAME.into(),
             module_kind: ModuleKind::Class,
-            attributes: ModuleAttributes::named(CLASS_NAME),
+            // Scripting.Dictionary is a public type: public members of a project's
+            // public classes (VBA-Web's `UrlSegments As Dictionary`) may use it.
+            attributes: {
+                let mut attributes = ModuleAttributes::named(CLASS_NAME);
+                attributes.vb_exposed = true;
+                attributes
+            },
             source: DICTIONARY_CLASS_SOURCE.into(),
         };
         assert_eq!(runtime_type_name(&module), Some("Dictionary"));

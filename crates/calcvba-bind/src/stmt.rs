@@ -154,7 +154,8 @@ impl<'a> ProcLower<'a> {
         {
             return Err(BindError::TypeMismatch);
         }
-        let value = self.g.coerce_store(val.value, &target_ty);
+        let stored = types::string_into_byte_array(val.value, &val.ty, &target_ty);
+        let value = self.g.coerce_store(stored, &target_ty);
         Ok(vec![CoreStmt::Assign {
             place,
             value,
@@ -260,7 +261,9 @@ impl<'a> ProcLower<'a> {
         val = self.bind_default_member_value_context(val, value_label)?;
         Ok(Some(vec![CoreStmt::Error(ErrorOp::SetErrField {
             field,
-            value: self.g.coerce_store(val.value, &target_ty),
+            value: self
+                .g
+                .coerce_store(types::string_into_byte_array(val.value, &val.ty, &target_ty), &target_ty),
         })]))
     }
 
@@ -1338,6 +1341,29 @@ impl<'a> ProcLower<'a> {
         ))
     }
 
+    /// One array bound as a Long: a bound that is not already an integral built-in (a Variant
+    /// from `Int(..)`, a Double from `n / 2`) is converted, as VBA rounds it (dc-tey4.4).
+    fn bind_array_bound_value(&mut self, expr: SyntaxNode<'_>) -> Result<CoreValue, BindError> {
+        let bound = self.bind_expr(expr)?;
+        let integral = matches!(
+            bound.ty,
+            VarTypeRef::Builtin(
+                BuiltinType::Byte
+                    | BuiltinType::Integer
+                    | BuiltinType::Long
+                    | BuiltinType::LongLong
+                    | BuiltinType::LongPtr
+                    | BuiltinType::Boolean
+            )
+        );
+        if integral {
+            return Ok(bound.value);
+        }
+        Ok(self
+            .g
+            .coerce(bound.value, &bound.ty, &VarTypeRef::Builtin(BuiltinType::Long)))
+    }
+
     /// Lower an `ArrayBounds` node to `CoreBound`s (each `lower To upper`, or
     /// `<Option Base> To upper` for a single bound).
     fn bind_array_bounds(
@@ -1353,11 +1379,11 @@ impl<'a> ProcLower<'a> {
                 // its lower bound; an explicit `lo To hi` overrides it.
                 1 => (
                     CoreValue::Const(CoreConst::I32(self.info.option_base)),
-                    self.bind_expr(exprs[0])?.value,
+                    self.bind_array_bound_value(exprs[0])?,
                 ),
                 _ => {
-                    let lo_val = self.bind_expr(exprs[0])?.value;
-                    let up = self.bind_expr(exprs[1])?.value;
+                    let lo_val = self.bind_array_bound_value(exprs[0])?;
+                    let up = self.bind_array_bound_value(exprs[1])?;
                     (lo_val, up)
                 }
             };

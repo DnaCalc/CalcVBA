@@ -507,10 +507,19 @@ fn build_event_routes(
             active_project_name.as_deref(),
             source_name,
         ) else {
-            return Err(BindError::Unresolved {
-                name: source_name.clone(),
-                context: "WithEvents source type".to_string(),
-            });
+            // A COM source type no loaded typelib describes (a library reference the
+            // project names but this host does not provide, e.g. WinHttpRequest with the
+            // Safe policy). No object of that type can be created here, so no event can
+            // fire and there are no routes to bind; a use of the field is refused where
+            // it runs (late-bound member call on an unavailable type), not at load.
+            if source_name.contains('.') {
+                // A qualified name (`Project.Class`) that does not resolve is a real error.
+                return Err(BindError::Unresolved {
+                    name: source_name.clone(),
+                    context: "WithEvents source type".to_string(),
+                });
+            }
+            continue;
         };
         for (ev_name_folded, event) in events {
             let handler_name = format!("{field_name}_{ev_name_folded}");

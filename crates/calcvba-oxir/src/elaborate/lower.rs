@@ -222,6 +222,7 @@ fn retype_compound_byref_temps(program: &mut OxProgram) {
                 | OxTy::Double
                 | OxTy::Currency
                 | OxTy::Date
+                | OxTy::Str
         )
     };
     for func in &mut program.funcs {

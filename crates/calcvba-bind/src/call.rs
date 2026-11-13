@@ -4,11 +4,12 @@
 //! (the `Err` object for now; objects/COM arrive in a later phase).
 
 use calcvba_bundle::coreir::{
-    BoundWhich, CoreArg, CoreCallee, CoreConst, CorePlace, CoreStmt, CoreValue, ErrField, PtrKind,
+    BoundWhich, CoreArg, CoreCallee, CoreConst, CoreIfArm, CorePlace, CoreStmt, CoreValue, ErrField,
+    PtrKind,
     PtrWriteback, PtrWritebackKind,
 };
 use calcvba_bundle::native::NativeImplId;
-use calcvba_bundle::{BundleImport, ExportToken, ProjectMemberKind, StringCompareMode};
+use calcvba_bundle::{AssignmentIntent, BundleImport, ExportToken, ProjectMemberKind, StringCompareMode};
 use calcvba_com::{OptionalParamDefault, TypeLibMemberMetadata, TypeLibParamType, TypeLibWireType};
 use calcvba_symbol::binding::{Binding, DispatchRoute, SpecialForm};
 use calcvba_symbol::model::{
@@ -566,8 +567,17 @@ impl<'a> ProcLower<'a> {
         };
         let expected = canonical_byref_type(self.g.resolve_udt_type(param.ty.clone()));
         let actual = canonical_byref_type(self.g.resolve_udt_type(actual.clone()));
-        matches!(expected, VarTypeRef::Variant)
-            && matches!(actual, VarTypeRef::Builtin(_) | VarTypeRef::Object(_))
+        let generic_object = |ty: &VarTypeRef| {
+            matches!(ty, VarTypeRef::Object(name) if name.eq_ignore_ascii_case("Object"))
+        };
+        (matches!(expected, VarTypeRef::Variant)
+            && matches!(actual, VarTypeRef::Builtin(_) | VarTypeRef::Object(_)))
+            // A class-typed object variable passed to a ByRef `As Object` parameter: the
+            // callee gets a temporary holding the same object (dc-tey4.4, VBA-Web's
+            // `CreateFromHttp ..., Me.Http`).
+            || (generic_object(&expected)
+                && matches!(&actual, VarTypeRef::Object(_))
+                && !generic_object(&actual))
     }
 
     fn ensure_byref_type_compatible(
@@ -1464,6 +1474,15 @@ impl<'a> ProcLower<'a> {
         }
         if let DispatchRoute::Value = binding.route
             && let Some(sym) = binding.symbol
+            && matches!(self.symbol_type(sym), VarTypeRef::Variant)
+            && let Ok(place) = self.place_by_name(name)
+            && let Some(stmts) =
+                self.bind_variant_index_store(place, name, target.index_arg_list(), kind, rhs)?
+        {
+            return Ok(Some(stmts));
+        }
+        if let DispatchRoute::Value = binding.route
+            && let Some(sym) = binding.symbol
             && let ty @ VarTypeRef::Object(_) = self.symbol_type(sym)
             && self.is_late_bound_receiver(&ty)
         {
@@ -1595,6 +1614,45 @@ impl<'a> ProcLower<'a> {
                     self.late_member_call(&m, kind, recv.value, args),
                 )]))
             }
+            // `recv.field(index…) = rhs` where the field holds an object: the object's default
+            // member Property Let/Set (`Me.UrlSegments(Key) = Value`), not an array store.
+            Some(Binding {
+                route: DispatchRoute::Value,
+                symbol: Some(sym),
+                ..
+            }) if matches!(
+                self.g.resolve_udt_type(self.symbol_type(sym)),
+                VarTypeRef::Object(_)
+            ) && self
+                .resolve_default_member_kind(
+                    &self.g.resolve_udt_type(self.symbol_type(sym)),
+                    Some(kind),
+                )
+                .is_some() =>
+            {
+                let ty = self.g.resolve_udt_type(self.symbol_type(sym));
+                let default_binding = self
+                    .resolve_default_member_kind(&ty, Some(kind))
+                    .expect("checked by the guard");
+                let (field_place, _) = self.member_place(recv.value, sym)?;
+                self.bind_default_member_indexed_property_let_on(
+                    CoreValue::Load(field_place),
+                    member,
+                    &ty,
+                    default_binding,
+                    arglist,
+                    kind,
+                    rhs,
+                )
+            }
+            Some(Binding {
+                route: DispatchRoute::Value,
+                symbol: Some(sym),
+                ..
+            }) if matches!(self.symbol_type(sym), VarTypeRef::Variant) => {
+                let (field_place, _) = self.member_place(recv.value, sym)?;
+                self.bind_variant_index_store(field_place, member, arglist, kind, rhs)
+            }
             // An untyped / foreign receiver: a late-bound indexed property put.
             None if self.is_late_bound_receiver(&recv.ty) => {
                 let mut args = self.bind_late_dispatch_args(arglist)?;
@@ -1608,6 +1666,86 @@ impl<'a> ProcLower<'a> {
         }
     }
 
+    /// `v(index…) = rhs` where `v` is a non-array Variant (a local, a module variable or an
+    /// object's field) whose index is not statically integral (VBA-Web's `web_pBody(Key) = Value`
+    /// with a Dictionary in the Variant). What `v` holds decides at run time: an object takes its
+    /// default member Let/Set, an array a subscripted store with the index converted to Long.
+    /// Written as an explicit branch so both executors lower it (the JIT subscripts only with
+    /// integral operands).
+    fn bind_variant_index_store(
+        &mut self,
+        place: CorePlace,
+        target_name: &str,
+        arglist: Option<SyntaxNode<'_>>,
+        kind: ProjectMemberKind,
+        rhs: &CoreValue,
+    ) -> Result<Option<Vec<CoreStmt>>, BindError> {
+        let Some(arglist) = arglist else {
+            return Ok(None);
+        };
+        let mut indices = Vec::new();
+        let mut integral = true;
+        for item in arglist.arg_items() {
+            let ArgItem::Positional(expr, _) = item else {
+                return Ok(None);
+            };
+            let bound = self.bind_expr(expr)?;
+            if !matches!(
+                bound.ty,
+                VarTypeRef::Builtin(
+                    BuiltinType::Byte
+                        | BuiltinType::Integer
+                        | BuiltinType::Long
+                        | BuiltinType::Boolean
+                )
+            ) {
+                integral = false;
+            }
+            indices.push(self.g.coerce(
+                bound.value,
+                &bound.ty,
+                &VarTypeRef::Builtin(BuiltinType::Long),
+            ));
+        }
+        if integral {
+            return Ok(None); // an ordinary subscripted store
+        }
+        let mut object_args = self.bind_late_dispatch_args(Some(arglist))?;
+        object_args.push(CoreArg::ByVal(rhs.clone()));
+        let object_branch = CoreStmt::Eval(self.late_default_member_call(
+            kind,
+            CoreValue::Load(place.clone()),
+            object_args,
+        ));
+        let intent = if kind == ProjectMemberKind::PropertySet {
+            AssignmentIntent::Set
+        } else {
+            AssignmentIntent::Let
+        };
+        let array_branch = CoreStmt::Assign {
+            place: CorePlace::Index {
+                array: Box::new(place.clone()),
+                indices,
+            },
+            value: rhs.clone(),
+            intent,
+            target_kind: types::assignment_target_kind(&VarTypeRef::Variant),
+            target_name: target_name.to_string(),
+            target_type_name: types::type_name(&VarTypeRef::Variant),
+        };
+        let is_object = CoreValue::Call {
+            callee: CoreCallee::Native(NativeImplId::IsObject),
+            args: vec![CoreArg::ByVal(CoreValue::Load(place))],
+        };
+        Ok(Some(vec![CoreStmt::If {
+            arms: vec![CoreIfArm {
+                condition: is_object,
+                body: vec![object_branch],
+            }],
+            else_body: vec![array_branch],
+        }]))
+    }
+
     fn bind_default_member_indexed_property_let(
         &mut self,
         receiver_name: &str,
@@ -1618,6 +1756,28 @@ impl<'a> ProcLower<'a> {
         rhs: &CoreValue,
     ) -> Result<Option<Vec<CoreStmt>>, BindError> {
         let recv = CoreValue::Load(self.place_by_name(receiver_name)?);
+        self.bind_default_member_indexed_property_let_on(
+            recv,
+            receiver_name,
+            receiver_ty,
+            default_binding,
+            arglist,
+            kind,
+            rhs,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn bind_default_member_indexed_property_let_on(
+        &mut self,
+        recv: CoreValue,
+        receiver_name: &str,
+        receiver_ty: &VarTypeRef,
+        default_binding: Binding,
+        arglist: Option<SyntaxNode<'_>>,
+        kind: ProjectMemberKind,
+        rhs: &CoreValue,
+    ) -> Result<Option<Vec<CoreStmt>>, BindError> {
         match &default_binding.route {
             DispatchRoute::ProjectMember { .. } => {
                 let sym = default_binding
@@ -1736,10 +1896,15 @@ impl<'a> ProcLower<'a> {
                     _ => ProjectMemberKind::PropertyGet,
                 };
                 let signature = self.project_property_accessor_signature(sym, kind, &member)?;
-                let ret = signature.return_type.unwrap_or(VarTypeRef::Variant);
+                let ret = self
+                    .g
+                    .resolve_udt_type(signature.return_type.unwrap_or(VarTypeRef::Variant));
                 let dispatch = self.interface_dispatch_name(receiver_ty, &member);
                 Ok(Some(value_bound(
-                    self.late_member_call(&dispatch, kind, receiver_value, Vec::new()),
+                    self.g.coerce_store(
+                        self.late_member_call(&dispatch, kind, receiver_value, Vec::new()),
+                        &ret,
+                    ),
                     ret,
                 )))
             }
@@ -2285,7 +2450,7 @@ impl<'a> ProcLower<'a> {
             return Ok(None);
         };
         let part_refs = parts.iter().map(String::as_str).collect::<Vec<_>>();
-        match self.g.env.resolve_qualified(&part_refs) {
+        match self.resolve_qualified_scoped(&part_refs) {
             // A qualified member can be a proc (call), a `Const`/`Enum` value, or a
             // module variable (place) — lower it the same way a bare name resolves.
             Some(binding) => Ok(Some(self.finish_value_or_call(member, &binding, arglist)?)),
@@ -2309,7 +2474,7 @@ impl<'a> ProcLower<'a> {
             return Ok(None);
         };
         let part_refs = parts.iter().map(String::as_str).collect::<Vec<_>>();
-        match self.g.env.resolve_qualified(&part_refs) {
+        match self.resolve_qualified_scoped(&part_refs) {
             Some(binding) => Ok(Some(
                 self.finish_value_or_call_statement(member, &binding, arglist)?,
             )),
@@ -2327,7 +2492,34 @@ impl<'a> ProcLower<'a> {
     ) -> Option<Binding> {
         let parts = self.qualified_namespace_member_parts(node, member)?;
         let part_refs = parts.iter().map(String::as_str).collect::<Vec<_>>();
-        self.g.env.resolve_qualified(&part_refs)
+        self.resolve_qualified_scoped(&part_refs)
+    }
+
+    /// `env.resolve_qualified` sees only public members. `EnumName.Member` of an Enum the
+    /// caller's own module declares Private (VBA-Web's `web_WinHttpRequestOption` in a class)
+    /// is visible from that module: resolve the owner and the member through the scope chain.
+    fn resolve_qualified_scoped(&self, parts: &[&str]) -> Option<Binding> {
+        if let Some(binding) = self.g.env.resolve_qualified(parts) {
+            return Some(binding);
+        }
+        let [owner, member] = parts else {
+            return None;
+        };
+        let kind_of = |binding: &Binding| {
+            binding
+                .symbol
+                .and_then(|id| self.g.env.symbols.symbol(id))
+                .map(|symbol| (symbol.kind, symbol.scope))
+        };
+        let owner_binding = self.resolve(owner)?;
+        let (SymbolKind::Enum, enum_scope) = kind_of(&owner_binding)? else {
+            return None;
+        };
+        let member_binding = self.resolve(member)?;
+        let (SymbolKind::EnumMember, member_scope) = kind_of(&member_binding)? else {
+            return None;
+        };
+        (member_scope == enum_scope).then_some(member_binding)
     }
 
     fn qualified_namespace_member_parts(
@@ -2533,12 +2725,17 @@ impl<'a> ProcLower<'a> {
                             name: member.to_string(),
                         });
                     }
-                    let ty = signature
-                        .and_then(|sig| sig.return_type)
-                        .unwrap_or(VarTypeRef::Variant);
+                    let ty = self.g.resolve_udt_type(
+                        signature
+                            .and_then(|sig| sig.return_type)
+                            .unwrap_or(VarTypeRef::Variant),
+                    );
                     let dispatch = self.interface_dispatch_name(&recv.ty, member);
                     Ok(value_bound(
-                        self.late_member_call(&dispatch, kind, recv.value, Vec::new()),
+                        self.g.coerce_store(
+                            self.late_member_call(&dispatch, kind, recv.value, Vec::new()),
+                            &ty,
+                        ),
                         ty,
                     ))
                 }
@@ -2717,12 +2914,17 @@ impl<'a> ProcLower<'a> {
                             name: member.to_string(),
                         });
                     }
-                    let ty = signature
-                        .and_then(|s| s.return_type)
-                        .unwrap_or(VarTypeRef::Variant);
+                    let ty = self.g.resolve_udt_type(
+                        signature
+                            .and_then(|s| s.return_type)
+                            .unwrap_or(VarTypeRef::Variant),
+                    );
                     let dispatch = self.interface_dispatch_name(&recv.ty, member);
                     Ok(value_bound(
-                        self.late_member_call(&dispatch, kind, recv.value, method_args),
+                        self.g.coerce_store(
+                            self.late_member_call(&dispatch, kind, recv.value, method_args),
+                            &ty,
+                        ),
                         ty,
                     ))
                 }
@@ -2731,7 +2933,40 @@ impl<'a> ProcLower<'a> {
                     let sym = binding
                         .symbol
                         .ok_or_else(|| self.unresolved(member, "member array"))?;
-                    let (field_place, _ty) = self.member_place(recv.value, sym)?;
+                    let (field_place, field_ty) = self.member_place(recv.value, sym)?;
+                    // `recv.field(i)` on an Object-typed field is the DEFAULT-MEMBER call of that
+                    // object (`Me.UrlSegments(key)`), not an array subscript.
+                    if let ty @ VarTypeRef::Object(_) = self.g.resolve_udt_type(field_ty)
+                        && let Some(arglist) = arglist
+                    {
+                        if let Some(default) = self.resolve_default_member(&ty)
+                            && let DispatchRoute::ProjectMember { kind } = &default.route
+                            && let Some(default_sym) = default.symbol
+                        {
+                            let kind = match kind {
+                                ProjectMemberKind::Method => ProjectMemberKind::Method,
+                                _ => ProjectMemberKind::PropertyGet,
+                            };
+                            let name = self
+                                .symbol_display_name(default_sym)
+                                .unwrap_or_else(|| member.to_string());
+                            let signature =
+                                self.project_property_accessor_signature(default_sym, kind, &name)?;
+                            let args = self.bind_proc_args(Some(arglist), &signature, default_sym)?;
+                            let ret = self.g.resolve_udt_type(
+                                signature.return_type.unwrap_or(VarTypeRef::Variant),
+                            );
+                            let dispatch = self.interface_dispatch_name(&ty, &name);
+                            let object = CoreValue::Load(field_place);
+                            return Ok(value_bound(
+                                self.g.coerce_store(
+                                    self.late_member_call(&dispatch, kind, object, args),
+                                    &ret,
+                                ),
+                                ret,
+                            ));
+                        }
+                    }
                     let indices = match arglist {
                         Some(a) => self.bind_positional_values(a)?,
                         None => Vec::new(),

@@ -674,6 +674,18 @@ pub fn str_conv(args: &[Variant]) -> LibResult<Variant> {
     const VB_UNICODE: i32 = 64;
     const VB_FROM_UNICODE: i32 = 128;
 
+    // Internal mode of the binder's `Byte() = String` store: the UTF-16LE bytes of the text.
+    if mode == calcvba_bundle::STRCONV_UTF16_BYTES {
+        let bytes = as_str(need(args, 0)?)?
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .map(Variant::from_u8)
+            .collect();
+        let array =
+            SafeArray::from_typed_variants(VT_UI1_VALUE, bytes).map_err(LibError::type_mismatch)?;
+        return Ok(Variant::from_safearray(array));
+    }
+
     if mode & VB_UNICODE != 0 && mode & VB_FROM_UNICODE != 0 {
         return Err(LibError::invalid_call(
             "vbUnicode and vbFromUnicode are mutually exclusive",

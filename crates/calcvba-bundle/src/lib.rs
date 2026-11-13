@@ -27,7 +27,7 @@ pub use array_runtime::{
     safearray_vartype_for_element, vba_record_field_kind, vba_record_layout_for_fields,
 };
 pub use isa::{CallArg, DeclarePtrWriteback, NativeCallee, Op, ProcArg};
-pub use native::{LibraryModule, NativeBody, NativeImplId, NativeMethodId};
+pub use native::{LibraryModule, STRCONV_UTF16_BYTES, NativeBody, NativeImplId, NativeMethodId};
 pub use vartype::{BuiltinType, FixedArrayBound, VarTypeRef};
 pub use vba_library::vba_library_bundle;
 

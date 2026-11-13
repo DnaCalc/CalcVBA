@@ -857,3 +857,7 @@ pub enum NativeMethodId {
     /// `Collection.[_NewEnum]`.
     CollectionNewEnum,
 }
+
+/// Internal `StrConv` mode the binder uses for a `Byte() = String` store: the text's UTF-16LE
+/// bytes. Outside the range of VBA's documented `vbStrConv` bits.
+pub const STRCONV_UTF16_BYTES: i32 = 0x4000_0000;

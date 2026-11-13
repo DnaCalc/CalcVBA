@@ -7085,6 +7085,18 @@ impl<'a> LowerFunc<'a> {
         ) {
             return Ok(());
         }
+        // The clock built-ins take no argument; the runtime library reads the host clock.
+        if args.is_empty()
+            && matches!(
+                native_impl,
+                NativeImplId::Now
+                    | NativeImplId::DateNow
+                    | NativeImplId::TimeNow
+                    | NativeImplId::Timer
+            )
+        {
+            return Ok(());
+        }
         // Format's value, format string and calendar options all use the
         // ordinary Variant library ABI; the binder has checked their names.
         if native_impl == NativeImplId::Format && (1..=4).contains(&args.len()) {
@@ -7723,6 +7735,22 @@ impl<'a> LowerFunc<'a> {
                 self.validate_call_extern_byval_string_operand(&args[1], shape, "string2")?;
                 self.validate_call_extern_byval_fixed_integer_operand(&args[2], shape, "compare")?;
             }
+            NativeImplId::Split => {
+                if !(3..=4).contains(&args.len()) {
+                    return Err(JitError::unsupported(format!(
+                        "M4-4 CallExtern {shape} subset requires three or four arguments, got {}",
+                        args.len()
+                    )));
+                }
+                self.validate_call_extern_byval_string_operand(&args[0], shape, "expression")?;
+                self.validate_call_extern_byval_string_operand(&args[1], shape, "delimiter")?;
+                self.validate_call_extern_optional_fixed_integer_operand(&args[2], shape, "limit")?;
+                if args.len() == 4 {
+                    self.validate_call_extern_byval_fixed_integer_operand(
+                        &args[3], shape, "compare",
+                    )?;
+                }
+            }
             NativeImplId::Replace => {
                 if !(4..=6).contains(&args.len()) {
                     return Err(JitError::unsupported(format!(
@@ -7847,7 +7875,13 @@ impl<'a> LowerFunc<'a> {
                     )));
                 }
                 self.validate_call_extern_byval_string_operand(&args[0], shape, "interval")?;
-                self.validate_call_extern_byval_variant_operand(&args[1], shape, "number")?;
+                // The count may also be a fixed-integer local (`DateAdd("s", seconds, Now)`).
+                if self
+                    .validate_call_extern_byval_fixed_integer_operand(&args[1], shape, "number")
+                    .is_err()
+                {
+                    self.validate_call_extern_byval_variant_operand(&args[1], shape, "number")?;
+                }
                 self.validate_call_extern_byval_date_operand(&args[2], shape, "date")?;
             }
             NativeImplId::DateDiff => {
@@ -8021,6 +8055,12 @@ impl<'a> LowerFunc<'a> {
             }
             NativeImplId::CVErr => self.is_supported_numeric_unary_extern_operand(operand, false),
             NativeImplId::Hex | NativeImplId::Oct | NativeImplId::Str => {
+                // A Byte (an element of a Byte array) takes the same runtime path as Integer.
+                if let OxOperand::Use(place) = operand
+                    && matches!(place_ty(self.program, self.func, *place)?, OxTy::Byte)
+                {
+                    return Ok(true);
+                }
                 self.is_supported_non_null_numeric_unary_extern_operand(operand)
             }
             NativeImplId::Round

@@ -262,11 +262,8 @@ impl core::fmt::Debug for VariantCore {
 impl PartialEq for VariantCore {
     fn eq(&self, other: &Self) -> bool {
         self.vt == other.vt
-            && self.reserved1 == other.reserved1
-            && self.reserved2 == other.reserved2
-            && self.reserved3 == other.reserved3
-            && self.data_bytes() == other.data_bytes()
-            && self.data.tail() == other.data.tail()
+            && self.value_reserved() == other.value_reserved()
+            && self.value_bytes() == other.value_bytes()
     }
 }
 
@@ -337,6 +334,49 @@ impl VariantCore {
         self.vt
     }
 
+    /// How many of the eight low union bytes this type gives meaning to. As in COM, the rest of
+    /// the union, and the reserved words of every type except Decimal, carry no value.
+    pub const fn value_width(&self) -> usize {
+        match self.vtype() {
+            VarType::Empty | VarType::Null => 0,
+            VarType::SignedByte | VarType::Byte => 1,
+            VarType::Integer | VarType::Boolean | VarType::UnsignedInteger => 2,
+            VarType::Long
+            | VarType::Single
+            | VarType::Error
+            | VarType::UnsignedLong
+            | VarType::UnsignedInt => 4,
+            VarType::String | VarType::Object | VarType::ArrayVariant | VarType::Record => {
+                core::mem::size_of::<*const ()>()
+            }
+            VarType::LongLong
+            | VarType::UnsignedLongLong
+            | VarType::Double
+            | VarType::Currency
+            | VarType::Date
+            | VarType::Decimal
+            | VarType::ProcRef => 8,
+        }
+    }
+
+    /// The union bytes this type uses (the others read as zero): the basis of equality.
+    pub fn value_bytes(&self) -> [u8; 8] {
+        let mut out = [0u8; 8];
+        let width = self.value_width();
+        out[..width].copy_from_slice(&self.data_bytes()[..width]);
+        out
+    }
+
+    /// The header words this type uses: `DECIMAL`'s scale, sign and `Hi32` for Decimal, none
+    /// (zero) for every other type.
+    pub const fn value_reserved(&self) -> [u16; 3] {
+        if self.vt == VarType::Decimal as u16 {
+            [self.reserved1, self.reserved2, self.reserved3]
+        } else {
+            [0; 3]
+        }
+    }
+
     pub const fn reserved1(&self) -> u16 {
         self.reserved1
     }
@@ -364,32 +404,24 @@ impl VariantCore {
         out
     }
 
-    /// Decode an untrusted raw core after validating its tag and reserved-word
-    /// shape.
+    /// Decode an untrusted raw core after validating its tag.
+    ///
+    /// Reserved words (except Decimal's) and union bytes beyond the type's member carry no
+    /// value, as in COM (see [`Self::value_bytes`]).
     ///
     /// The result is still a non-owning byte carrier. Pointer payloads are not
     /// recovered or dereferenced here; safe owning [`Variant`] admission rejects
     /// them, while trusted live-pointer recovery is explicitly unsafe.
     pub fn from_wire_bytes(bytes: [u8; WIRE_SIZE]) -> Result<Self, String> {
         let vtype_raw = u16::from_le_bytes([bytes[0], bytes[1]]);
-        let Some(vtype) = VarType::from_u16(vtype_raw) else {
+        if VarType::from_u16(vtype_raw).is_none() {
             return Err(format!("unsupported VARENUM value: 0x{vtype_raw:04X}"));
-        };
+        }
         let reserved1 = u16::from_le_bytes([bytes[2], bytes[3]]);
         let reserved2 = u16::from_le_bytes([bytes[4], bytes[5]]);
         let reserved3 = u16::from_le_bytes([bytes[6], bytes[7]]);
         let mut payload = [0u8; 8];
         payload.copy_from_slice(&bytes[8..16]);
-        if vtype != VarType::Decimal && (reserved1 != 0 || reserved2 != 0 || reserved3 != 0) {
-            return Err(format!(
-                "malformed VARIANT wire bytes: non-zero reserved words for {vtype:?}"
-            ));
-        }
-        if bytes[16..].iter().any(|byte| *byte != 0) {
-            return Err(format!(
-                "malformed VARIANT wire bytes: non-zero union tail for {vtype:?}"
-            ));
-        }
         Ok(Self::from_raw_parts(
             vtype_raw, reserved1, reserved2, reserved3, payload,
         ))
@@ -529,6 +561,16 @@ impl Variant {
 
     pub fn data_bytes(&self) -> [u8; 8] {
         self.core.data_bytes()
+    }
+
+    /// See [`VariantCore::value_bytes`].
+    pub fn value_bytes(&self) -> [u8; 8] {
+        self.core.value_bytes()
+    }
+
+    /// See [`VariantCore::value_reserved`].
+    pub fn value_reserved(&self) -> [u16; 3] {
+        self.core.value_reserved()
     }
 
     pub fn as_variant_cell_ptr(&self) -> *mut core::ffi::c_void {
@@ -1344,9 +1386,7 @@ impl core::fmt::Debug for Variant {
 impl PartialEq for Variant {
     fn eq(&self, other: &Self) -> bool {
         if self.vtype() != other.vtype()
-            || self.reserved1() != other.reserved1()
-            || self.reserved2() != other.reserved2()
-            || self.reserved3() != other.reserved3()
+            || self.core.value_reserved() != other.core.value_reserved()
         {
             return false;
         }
@@ -1365,7 +1405,7 @@ impl PartialEq for Variant {
                 (None, None) => true,
                 _ => false,
             },
-            _ => self.data_bytes() == other.data_bytes(),
+            _ => self.core.value_bytes() == other.core.value_bytes(),
         }
     }
 }
@@ -1917,14 +1957,23 @@ mod tests {
     }
 
     #[test]
-    fn variant_wire_rejects_non_decimal_reserved_words() {
+    fn a_value_is_its_type_member_only() {
+        // A Long is its four union bytes; bytes outside the member have no meaning in a
+        // VARIANT, so they do not affect reading or equality.
         let mut wire = Variant::from_i32(42).to_wire_bytes();
         wire[2..4].copy_from_slice(&1u16.to_le_bytes());
+        wire[12..16].copy_from_slice(&[0x9A, 0x02, 0, 0]);
+        wire[16..].fill(0xCC);
+        let value = Variant::from_wire_bytes(wire).expect("a Long VARIANT");
+        assert_eq!(value.as_i32(), Some(42));
+        assert_eq!(value, Variant::from_i32(42));
+        assert_ne!(value, Variant::from_i32(43));
 
-        assert_eq!(
-            Variant::from_wire_bytes(wire).expect_err("reserved words must be zero"),
-            "malformed VARIANT wire bytes: non-zero reserved words for Long"
-        );
+        // Decimal's header words are its scale, sign and Hi32: they do count.
+        let a = Variant::from_decimal96(Decimal96::from_parts(1, 0, 0, 1, false));
+        let b = Variant::from_decimal96(Decimal96::from_parts(1, 0, 0, 2, false));
+        assert_ne!(a, b);
+        assert_ne!(a.value_reserved(), b.value_reserved());
     }
 
     #[test]

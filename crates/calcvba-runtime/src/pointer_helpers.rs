@@ -232,10 +232,12 @@ mod native_record_pin {
                     "Record pointer Variant copyback requires host object/record binding".into(),
                 );
             }
-            // Header and the first eight union bytes only: the rest of the union carries no
-            // value for these types, and VBA leaves unused union bytes uncleared.
             let mut bytes = [0u8; crate::variant::WIRE_SIZE];
-            ptr::copy_nonoverlapping((&value.0 as *const VARIANT).cast(), bytes.as_mut_ptr(), 16);
+            ptr::copy_nonoverlapping(
+                (&value.0 as *const VARIANT).cast(),
+                bytes.as_mut_ptr(),
+                bytes.len(),
+            );
             Value::from_wire_bytes(bytes)
         }
     }

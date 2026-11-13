@@ -134,11 +134,11 @@ pub fn canon(v: &Variant) -> Canon {
             Canon::Opaque { tag }
         }
         // Every other value type (Integer/Long/LongLong/Byte/Currency/Error/Decimal/…)
-        // is compared by its raw payload and reserved words.
+        // is compared by the payload bytes and header words its type uses.
         _ => Canon::Raw {
             tag,
-            bytes: v.data_bytes(),
-            reserved: [v.reserved1(), v.reserved2(), v.reserved3()],
+            bytes: v.value_bytes(),
+            reserved: v.value_reserved(),
         },
     }
 }

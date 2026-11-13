@@ -81,3 +81,12 @@ UDT.TWithVar=Len=30 LenB=40 v=8 b=32
 UDT.TNested=Len=90 LenB=112 t=8 arr1=48 arr2=72 s=96
 UDT.FieldVariantVt=&H8
 FOREACH.LongItem=&H3
+UDTMEM.ObjectField=Len=10 LenB=24 b=16
+UDTMEM.ObjectFieldHoldsPtr=True
+UDTMEM.ClassField=Len=9 LenB=16
+UDTMEM.DynArrayField=Len=10 LenB=24 b=16
+UDTMEM.DynArrayFieldHoldsPtr=True
+UDTMEM.FixedArrayOrder=Len=25 LenB=28 f00=4 f10=8 f01=12
+UDTMEM.FixedString=Len=9 LenB=12 b=7 l=8 bytes=00780079007A0000
+UDTMEM.DynUdtArray=fFeatures=&H0 cbElements=16 vtPrefix=&H0 recInfo=False stride=16
+UDTMEM.FixedUdtArray=fFeatures=&H12 cbElements=16 vtPrefix=&H0 recInfo=False

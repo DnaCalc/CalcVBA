@@ -79,6 +79,14 @@ holds `LenB(s)`.
 String * 3 f}`: `Len` 90, `LenB` 112, `t` at 8, `arr(1)` at 48, `arr(2)` at 72, `s` at 96.
 `VarPtr(fixedString)` gives the address of a temporary, not of the field.
 
+**UDT memory** (captured 2026-11-13, `temp/variant-layout-probe/UdtProbe.bas`): `{Byte; Object; Byte}`
+is `Len` 10, `LenB` 24, the Object field an 8-byte pointer at 8 holding `ObjPtr`; `{Byte; Collection}`
+`LenB` 16; `{Byte; Long(); Byte}` `LenB` 24, the dynamic-array field an 8-byte `SAFEARRAY*` at 8;
+a `f(0 To 1, 0 To 2) As Long` field stores `f(0,0)` at 4, `f(1,0)` at 8, `f(0,1)` at 12 (first
+dimension fastest); `{Byte; String * 3; Byte; Long}` puts the string at 1, the Byte at 7, the Long at
+8 (`LenB` 12). A dynamic array of a UDT has `fFeatures` 0, no `vt` prefix and no `IRecordInfo`;
+a fixed one `&H12` (`FADF_STATIC | FADF_FIXEDSIZE`); `cbElements` = `LenB` of the UDT.
+
 **Records in Variants.** A `Type` from a standard module cannot be put in a Variant at all:
 "Only user-defined types defined in public object modules can be coerced to or from a variant
 or passed to late-bound functions" (compile error). In Excel VBA, `VT_RECORD` arises only from
@@ -134,6 +142,14 @@ have rewritten the pointer payloads. `Variant` stays
 `ObjPtr`) use `expose_provenance` / `with_exposed_provenance` at that boundary only.
 
 ### 3.2 Records
+
+*Revised 2026-11-13 after the UDT probe (section 2).* VBA itself never uses `IRecordInfo` for its own
+`Type`s: a UDT value is plain memory in VBA's layout, cannot enter a Variant, and UDT arrays are plain
+SAFEARRAYs without `FADF_RECORD`. So step 5 is: (a) UDT memory in VBA's layout (pointer-sized
+Object and dynamic-array fields, first-dimension-fastest fixed arrays); (b) `VT_RECORD` cells, which
+only type-library records from COM produce, as real `BRECORD`s; (c) the compile error for a `Type`
+in a Variant. A CalcVBA `IRecordInfo` for VBA `Type`s is needed only where CalcVBA exposes a public
+UDT through COM, and is not part of step 5. The text below is the original design.
 
 `VT_RECORD` holds `pvRecord` (the record data in Automation layout) and `pRecInfo` (a real
 `IRecordInfo`). Today's boxed `RecordPayload::{Com, Vba}` (`variant.rs:372-404`) and the
@@ -378,11 +394,16 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
    `OXVBA_POINTER_HELPERS_CONTRACT_V1.md`). VM3 hot paths move from clone to borrow as they
    are touched. Miri on `calcvba-runtime`, `calcvba-automation`, `calcvba-jit` and the
    `calcvba-com` mock (`scripts/run-miri.sh`).
-5. **Records.** `BRECORD`, Automation layout in place, portable `IRecordInfo`;
-   `automation_shape` and `com_record.rs` deleted; the Variant-assignment compile error for
-   standard-module `Type`s.
-6. **SAFEARRAYs.** oleaut32 allocation on Windows, the standard prefix elsewhere, `IRecordInfo`
-   at the `FADF_RECORD` slot; VM3 and the JIT re-read `pvData` after every foreign call.
+5. **Records** (revised, see 3.2). 5a: UDT memory in VBA's layout (pointer-sized Object and
+   dynamic-array fields, first-dimension-fastest fixed arrays; the duplicate `automation_shape`
+   goes). 5b: `VT_RECORD` cells as real `BRECORD`s with oleaut's protocol (measured: `VariantClear`
+   calls `RecordClear`, frees `pvRecord` with `CoTaskMemFree` and `Release`s; `VariantCopy` calls
+   `GetSize`, allocates, `RecordCopy`, `AddRef`), replacing `ComRecord`. 5c: the compile error for a
+   standard-module `Type` in a Variant, a ByVal Variant or a late-bound argument.
+6. **SAFEARRAYs.** oleaut32 allocation on Windows, the standard prefix elsewhere; VM3 and the JIT
+   re-read `pvData` after every foreign call. UDT arrays as VBA has them: `fFeatures` 0 (dynamic) or
+   `FADF_STATIC | FADF_FIXEDSIZE` (fixed), no `vt` prefix, no `IRecordInfo`; the record layout
+   pointer CalcVBA keeps at `psa - 8` today moves out of the descriptor.
 7. **Address-of and storage** (section 4), with `VT_BYREF` binding for ByRef Variant
    parameters; the pin registry deleted.
 8. **One COM marshaller** (5.1), replacing stack A with stack B's model; `ComValue` and the

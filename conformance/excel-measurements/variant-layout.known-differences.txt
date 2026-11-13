@@ -82,3 +82,12 @@ Vm3	WRITE.UdtField
 Vm3	WRITE.VariantElement
 Vm3	WRITE.VariantPayload
 Jit	DECLINED
+Vm3	UDTMEM.ClassField
+Vm3	UDTMEM.DynArrayField
+Vm3	UDTMEM.DynArrayFieldHoldsPtr
+Vm3	UDTMEM.DynUdtArray
+Vm3	UDTMEM.FixedArrayOrder
+Vm3	UDTMEM.FixedString
+Vm3	UDTMEM.FixedUdtArray
+Vm3	UDTMEM.ObjectField
+Vm3	UDTMEM.ObjectFieldHoldsPtr

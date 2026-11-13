@@ -4,6 +4,7 @@
 Option Explicit
 
 Private Declare PtrSafe Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (ByVal dst As LongPtr, ByVal src As LongPtr, ByVal n As LongPtr)
+Private Declare PtrSafe Function VarPtrArray Lib "VBE7" Alias "VarPtr" (ByRef a() As Any) As LongPtr
 
 Private Type TSimple
     n As Long
@@ -27,6 +28,35 @@ End Type
 Private Type TRec
     a As Long
     s As String
+End Type
+
+Private Type TObjField
+    a As Byte
+    o As Object
+    b As Byte
+End Type
+
+Private Type TDynField
+    a As Byte
+    d() As Long
+    b As Byte
+End Type
+
+Private Type TFixField
+    a As Byte
+    f(0 To 1, 0 To 2) As Long
+End Type
+
+Private Type TFixedStr
+    a As Byte
+    s As String * 3
+    b As Byte
+    l As Long
+End Type
+
+Private Type TClassField
+    a As Byte
+    c As Collection
 End Type
 
 Private Function HexAt(ByVal p As LongPtr, ByVal n As Long) As String
@@ -351,6 +381,36 @@ Private Function CUdt(ByVal which As String) As String
 E:  CUdt = "ERR" & Err.Number
 End Function
 
+Private Function UdtArrayInfo(ByVal pp As LongPtr) As String
+    Dim psa As LongPtr, fFeatures As Integer, cbElements As Long, vtPrefix As Long, recInfo As LongPtr
+    psa = PtrAt(pp)
+    If psa = 0 Then UdtArrayInfo = "null": Exit Function
+    CopyMemory VarPtr(fFeatures), psa + 2, 2
+    CopyMemory VarPtr(cbElements), psa + 4, 4
+    CopyMemory VarPtr(vtPrefix), psa - 4, 4
+    CopyMemory VarPtr(recInfo), psa - 8, LenB(recInfo)
+    UdtArrayInfo = "fFeatures=&H" & Hex$(fFeatures) & " cbElements=" & cbElements & " vtPrefix=&H" & Hex$(vtPrefix) & " recInfo=" & (recInfo <> 0)
+End Function
+
+Private Function CUdtMem(ByVal which As String) As String
+    On Error GoTo E
+    Dim t1 As TObjField, t2 As TDynField, t3 As TFixField, t4 As TFixedStr, t5 As TClassField
+    Dim ra() As TRec, fa(0 To 1) As TRec
+    Select Case which
+        Case "ObjectField": CUdtMem = "Len=" & Len(t1) & " LenB=" & LenB(t1) & " b=" & (VarPtr(t1.b) - VarPtr(t1))
+        Case "ObjectFieldHoldsPtr": Set t1.o = New Collection: CUdtMem = CStr(PtrAt(VarPtr(t1) + 8) = ObjPtr(t1.o))
+        Case "ClassField": CUdtMem = "Len=" & Len(t5) & " LenB=" & LenB(t5)
+        Case "DynArrayField": CUdtMem = "Len=" & Len(t2) & " LenB=" & LenB(t2) & " b=" & (VarPtr(t2.b) - VarPtr(t2))
+        Case "DynArrayFieldHoldsPtr": ReDim t2.d(0 To 3): CUdtMem = CStr(PtrAt(VarPtr(t2) + 8) <> 0)
+        Case "FixedArrayOrder": CUdtMem = "Len=" & Len(t3) & " LenB=" & LenB(t3) & " f00=" & (VarPtr(t3.f(0, 0)) - VarPtr(t3)) & " f10=" & (VarPtr(t3.f(1, 0)) - VarPtr(t3)) & " f01=" & (VarPtr(t3.f(0, 1)) - VarPtr(t3))
+        Case "FixedString": t4.s = "xyz": CUdtMem = "Len=" & Len(t4) & " LenB=" & LenB(t4) & " b=" & (VarPtr(t4.b) - VarPtr(t4)) & " l=" & (VarPtr(t4.l) - VarPtr(t4)) & " bytes=" & HexAt(VarPtr(t4), 8)
+        Case "DynUdtArray": ReDim ra(0 To 2): CUdtMem = UdtArrayInfo(VarPtrArray(ra)) & " stride=" & (VarPtr(ra(1)) - VarPtr(ra(0)))
+        Case "FixedUdtArray": CUdtMem = UdtArrayInfo(VarPtrArray(fa))
+    End Select
+    Exit Function
+E:  CUdtMem = "ERR" & Err.Number
+End Function
+
 Private Function CForEach() As String
     On Error GoTo E
     Dim la(0 To 1) As Long, item As Variant
@@ -406,5 +466,8 @@ Public Function RunAll() As String
         Add out, "UDT." & k, CUdt(k)
     Next k
     Add out, "FOREACH.LongItem", CForEach()
+    For Each k In Array("ObjectField", "ObjectFieldHoldsPtr", "ClassField", "DynArrayField", "DynArrayFieldHoldsPtr", "FixedArrayOrder", "FixedString", "DynUdtArray", "FixedUdtArray")
+        Add out, "UDTMEM." & k, CUdtMem(k)
+    Next k
     RunAll = out
 End Function

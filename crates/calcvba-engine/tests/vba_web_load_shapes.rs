@@ -42,7 +42,8 @@ fn run_with(
         .map_err(|d| format!("{:?}: {}", d.phase(), d.message()))
 }
 
-const MAIN: &str = "Public verdict As Long\nSub Main()\nDim c As New Cls\nverdict = c.Go()\nEnd Sub\n";
+const MAIN: &str =
+    "Public verdict As Long\nSub Main()\nDim c As New Cls\nverdict = c.Go()\nEnd Sub\n";
 
 #[test]
 fn qualified_private_enum_member_in_value_position() {
@@ -113,18 +114,28 @@ const HEX_CLASS: &str = "Public Function Go() As String\n    Dim b() As Byte\n  
 
 #[test]
 fn hex_of_byte_array_element_jit() {
-    let main = "Public verdict As String\nSub Main()\nDim c As New Cls\nverdict = c.Go()\nEnd Sub\n";
+    let main =
+        "Public verdict As String\nSub Main()\nDim c As New Cls\nverdict = c.Go()\nEnd Sub\n";
     let v = run_with(HostConfig::jit(), HEX_CLASS, main).expect("runs");
-    assert!(v.iter().any(|x| x.as_bstr().map(|s| s.as_str()) == Some("4162".into())), "{v:?}");
+    assert!(
+        v.iter()
+            .any(|x| x.as_bstr().map(|s| s.as_str()) == Some("4162".into())),
+        "{v:?}"
+    );
 }
 
 const PROP_CLASS: &str = "Public Enum Fmt\n    A = 0\n    B = 1\nEnd Enum\nPrivate pF As Fmt\nPrivate pC As String\nPublic Property Get F() As Fmt\n    F = pF\nEnd Property\nPublic Property Get C() As String\n    C = pC\nEnd Property\nPublic Property Get Content() As String\n    Content = Name2(Me.F, Me.C)\nEnd Property\nPublic Function Name2(Format As Fmt, Optional Custom As String) As String\n    Select Case Format\n    Case Fmt.B\n        Name2 = \"b\"\n    Case Else\n        Name2 = \"a\" & Custom\n    End Select\nEnd Function\nPublic Function Go() As String\n    pF = B\n    Go = Me.Content\nEnd Function\n";
 
 #[test]
 fn enum_property_and_string_property_as_byref_arguments_jit() {
-    let main = "Public verdict As String\nSub Main()\nDim c As New Cls\nverdict = c.Go()\nEnd Sub\n";
+    let main =
+        "Public verdict As String\nSub Main()\nDim c As New Cls\nverdict = c.Go()\nEnd Sub\n";
     let v = run_with(HostConfig::jit(), &PROP_CLASS.replace("\\\n", "\n"), main).expect("runs");
-    assert!(v.iter().any(|x| x.as_bstr().map(|s| s.as_str()) == Some("b".into())), "{v:?}");
+    assert!(
+        v.iter()
+            .any(|x| x.as_bstr().map(|s| s.as_str()) == Some("b".into())),
+        "{v:?}"
+    );
 }
 
 const FIELD_DEFAULT_CLASS: &str = "Public Items As Collection\nPublic Function Go() As Long\n    Dim d As Object\n    Set d = CreateObject(\"Scripting.Dictionary\")\n    Set Items = New Collection\n    Items.Add 41\n    Go = Me.Items(1) + 1\nEnd Function\n";
@@ -143,7 +154,10 @@ fn variant_holding_object_or_array_indexed_store_both_executors() {
     let main = "Public verdict As Long\nSub Main()\nDim c As New Cls\nverdict = c.Go()\nEnd Sub\n";
     for config in [HostConfig::vm3(), HostConfig::jit()] {
         let v = run_with(config, VARIANT_INDEX_CLASS, main).expect("runs");
-        assert!(v.iter().any(|x| x.as_i32() == Some(41 + 1 + 2 + 5)), "{v:?}");
+        assert!(
+            v.iter().any(|x| x.as_i32() == Some(41 + 1 + 2 + 5)),
+            "{v:?}"
+        );
     }
 }
 

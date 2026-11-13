@@ -298,7 +298,9 @@ fn late_bound_call_passes_a_variant_variable_to_a_byval_parameter() {
             "VBAProject",
         );
         assert!(o.unsupported.is_none(), "{executor:?}: {:?}", o.unsupported);
-        let snap = o.result.unwrap_or_else(|e| panic!("{executor:?}: {e}; {:?}", o.err));
+        let snap = o
+            .result
+            .unwrap_or_else(|e| panic!("{executor:?}: {e}; {:?}", o.err));
         assert_eq!(snap[0], Canon::Str("True8a!".into()), "{executor:?}");
     }
 }
@@ -321,8 +323,14 @@ fn literal_to_a_byref_variant_parameter_of_a_class_method() {
             "VBAProject",
         );
         assert!(o.unsupported.is_none(), "{executor:?}: {:?}", o.unsupported);
-        let snap = o.result.unwrap_or_else(|e| panic!("{executor:?}: {e}; {:?}", o.err));
-        assert_eq!(snap[0], Canon::Str("TrueTrueFalseokokchanged".into()), "{executor:?}");
+        let snap = o
+            .result
+            .unwrap_or_else(|e| panic!("{executor:?}: {e}; {:?}", o.err));
+        assert_eq!(
+            snap[0],
+            Canon::Str("TrueTrueFalseokokchanged".into()),
+            "{executor:?}"
+        );
     }
 }
 

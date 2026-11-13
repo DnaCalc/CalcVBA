@@ -28,11 +28,19 @@ End Function
 fn module_level_enum_variable_loads_and_holds_a_long() {
     for backend in support::backends() {
         let session = Provider::default()
-            .load(&api::Project::module("Api", SOURCE), backend, api::HOST_API_ABI)
+            .load(
+                &api::Project::module("Api", SOURCE),
+                backend,
+                api::HOST_API_ABI,
+            )
             .unwrap_or_else(|e| panic!("{backend:?}: {e:?}"));
-        let bound = session.bind_slots("Api", "Go", &[], api::ScalarType::Double).unwrap();
+        let bound = session
+            .bind_slots("Api", "Go", &[], api::ScalarType::Double)
+            .unwrap();
         let frame = api::InvocationFrame::new(1, None, std::rc::Rc::new(0u64));
-        let mut invocation = session.begin_invocation(&bound, &[], frame, 10_000).unwrap();
+        let mut invocation = session
+            .begin_invocation(&bound, &[], frame, 10_000)
+            .unwrap();
         let mut result = None;
         for _ in 0..100_000 {
             match invocation.resume(1).unwrap() {

@@ -2,24 +2,34 @@
 //! `Module::load_project` and prints the full diagnostic (dc-tey4.5, Wasabi/Riff).
 
 use calcvba_host::Module;
-use calcvba_symbol::manifest as sym;
 use calcvba_symbol::CatalogTypeLibResolver;
+use calcvba_symbol::manifest as sym;
 
 #[test]
 #[ignore]
 fn survey_project_from_files() {
-    let Ok(files) = std::env::var("VBA_FILES") else { return };
+    let Ok(files) = std::env::var("VBA_FILES") else {
+        return;
+    };
     let modules: Vec<sym::ModuleUnit> = files
         .split(';')
         .map(|spec| {
             let mut parts = spec.splitn(3, ':');
-            let (name, kind, path) = (parts.next().unwrap(), parts.next().unwrap(), parts.next().unwrap());
+            let (name, kind, path) = (
+                parts.next().unwrap(),
+                parts.next().unwrap(),
+                parts.next().unwrap(),
+            );
             let bytes = std::fs::read(path).unwrap();
             let source: String = String::from_utf8(bytes.clone())
                 .unwrap_or_else(|_| bytes.iter().map(|b| char::from(*b)).collect());
             sym::ModuleUnit {
                 module_name: name.into(),
-                module_kind: if kind == "class" { sym::ModuleKind::Class } else { sym::ModuleKind::Procedural },
+                module_kind: if kind == "class" {
+                    sym::ModuleKind::Class
+                } else {
+                    sym::ModuleKind::Procedural
+                },
                 attributes: sym::ModuleAttributes::named(name),
                 source,
             }

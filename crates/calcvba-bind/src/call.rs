@@ -4,12 +4,13 @@
 //! (the `Err` object for now; objects/COM arrive in a later phase).
 
 use calcvba_bundle::coreir::{
-    BoundWhich, CoreArg, CoreCallee, CoreConst, CoreIfArm, CorePlace, CoreStmt, CoreValue, ErrField,
-    PtrKind,
-    PtrWriteback, PtrWritebackKind,
+    BoundWhich, CoreArg, CoreCallee, CoreConst, CoreIfArm, CorePlace, CoreStmt, CoreValue,
+    ErrField, PtrKind, PtrWriteback, PtrWritebackKind,
 };
 use calcvba_bundle::native::NativeImplId;
-use calcvba_bundle::{AssignmentIntent, BundleImport, ExportToken, ProjectMemberKind, StringCompareMode};
+use calcvba_bundle::{
+    AssignmentIntent, BundleImport, ExportToken, ProjectMemberKind, StringCompareMode,
+};
 use calcvba_com::{OptionalParamDefault, TypeLibMemberMetadata, TypeLibParamType, TypeLibWireType};
 use calcvba_symbol::binding::{Binding, DispatchRoute, SpecialForm};
 use calcvba_symbol::model::{
@@ -567,9 +568,7 @@ impl<'a> ProcLower<'a> {
         };
         let expected = canonical_byref_type(self.g.resolve_udt_type(param.ty.clone()));
         let actual = canonical_byref_type(self.g.resolve_udt_type(actual.clone()));
-        let generic_object = |ty: &VarTypeRef| {
-            matches!(ty, VarTypeRef::Object(name) if name.eq_ignore_ascii_case("Object"))
-        };
+        let generic_object = |ty: &VarTypeRef| matches!(ty, VarTypeRef::Object(name) if name.eq_ignore_ascii_case("Object"));
         (matches!(expected, VarTypeRef::Variant)
             && matches!(actual, VarTypeRef::Builtin(_) | VarTypeRef::Object(_)))
             // A class-typed object variable passed to a ByRef `As Object` parameter: the
@@ -2955,34 +2954,32 @@ impl<'a> ProcLower<'a> {
                     // object (`Me.UrlSegments(key)`), not an array subscript.
                     if let ty @ VarTypeRef::Object(_) = self.g.resolve_udt_type(field_ty)
                         && let Some(arglist) = arglist
+                        && let Some(default) = self.resolve_default_member(&ty)
+                        && let DispatchRoute::ProjectMember { kind } = &default.route
+                        && let Some(default_sym) = default.symbol
                     {
-                        if let Some(default) = self.resolve_default_member(&ty)
-                            && let DispatchRoute::ProjectMember { kind } = &default.route
-                            && let Some(default_sym) = default.symbol
-                        {
-                            let kind = match kind {
-                                ProjectMemberKind::Method => ProjectMemberKind::Method,
-                                _ => ProjectMemberKind::PropertyGet,
-                            };
-                            let name = self
-                                .symbol_display_name(default_sym)
-                                .unwrap_or_else(|| member.to_string());
-                            let signature =
-                                self.project_property_accessor_signature(default_sym, kind, &name)?;
-                            let args = self.bind_proc_args(Some(arglist), &signature, default_sym)?;
-                            let ret = self.g.resolve_udt_type(
-                                signature.return_type.unwrap_or(VarTypeRef::Variant),
-                            );
-                            let dispatch = self.interface_dispatch_name(&ty, &name);
-                            let object = CoreValue::Load(field_place);
-                            return Ok(value_bound(
-                                self.g.coerce_store(
-                                    self.late_member_call(&dispatch, kind, object, args),
-                                    &ret,
-                                ),
-                                ret,
-                            ));
-                        }
+                        let kind = match kind {
+                            ProjectMemberKind::Method => ProjectMemberKind::Method,
+                            _ => ProjectMemberKind::PropertyGet,
+                        };
+                        let name = self
+                            .symbol_display_name(default_sym)
+                            .unwrap_or_else(|| member.to_string());
+                        let signature =
+                            self.project_property_accessor_signature(default_sym, kind, &name)?;
+                        let args = self.bind_proc_args(Some(arglist), &signature, default_sym)?;
+                        let ret = self
+                            .g
+                            .resolve_udt_type(signature.return_type.unwrap_or(VarTypeRef::Variant));
+                        let dispatch = self.interface_dispatch_name(&ty, &name);
+                        let object = CoreValue::Load(field_place);
+                        return Ok(value_bound(
+                            self.g.coerce_store(
+                                self.late_member_call(&dispatch, kind, object, args),
+                                &ret,
+                            ),
+                            ret,
+                        ));
                     }
                     let indices = match arglist {
                         Some(a) => self.bind_positional_values(a)?,

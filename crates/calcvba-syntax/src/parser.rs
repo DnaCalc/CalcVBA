@@ -3155,7 +3155,10 @@ impl<'a> Parser<'a> {
                 );
                 let value_end = matches!(
                     previous,
-                    SyntaxKind::Ident | SyntaxKind::BracketedIdent | SyntaxKind::RParen | SyntaxKind::TypeSuffix
+                    SyntaxKind::Ident
+                        | SyntaxKind::BracketedIdent
+                        | SyntaxKind::RParen
+                        | SyntaxKind::TypeSuffix
                 );
                 if value_start && value_end {
                     return false;

@@ -118,9 +118,9 @@ impl<'a> ProcLower<'a> {
         let target_node = node
             .assign_target()
             .ok_or_else(|| BindError::Malformed("assignment target".into()))?;
-        let value_node = node
-            .assign_value()
-            .ok_or_else(|| BindError::Malformed(format!("assignment value in `{}`", node.text().trim())))?;
+        let value_node = node.assign_value().ok_or_else(|| {
+            BindError::Malformed(format!("assignment value in `{}`", node.text().trim()))
+        })?;
         let mut val = self.bind_expr(value_node)?;
         if intent == AssignmentIntent::Let
             && let Some(stmts) = self.try_mid_assignment(target_node, &val.value)?
@@ -261,9 +261,10 @@ impl<'a> ProcLower<'a> {
         val = self.bind_default_member_value_context(val, value_label)?;
         Ok(Some(vec![CoreStmt::Error(ErrorOp::SetErrField {
             field,
-            value: self
-                .g
-                .coerce_store(types::string_into_byte_array(val.value, &val.ty, &target_ty), &target_ty),
+            value: self.g.coerce_store(
+                types::string_into_byte_array(val.value, &val.ty, &target_ty),
+                &target_ty,
+            ),
         })]))
     }
 
@@ -1367,9 +1368,11 @@ impl<'a> ProcLower<'a> {
         if integral {
             return Ok(bound.value);
         }
-        Ok(self
-            .g
-            .coerce(bound.value, &bound.ty, &VarTypeRef::Builtin(BuiltinType::Long)))
+        Ok(self.g.coerce(
+            bound.value,
+            &bound.ty,
+            &VarTypeRef::Builtin(BuiltinType::Long),
+        ))
     }
 
     /// Lower an `ArrayBounds` node to `CoreBound`s (each `lower To upper`, or

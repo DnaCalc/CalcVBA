@@ -45,12 +45,18 @@ fn call_statement_with_a_with_member_argument() {
 #[test]
 #[ignore]
 fn survey_project_from_files() {
-    let Ok(files) = std::env::var("VBA_FILES") else { return };
+    let Ok(files) = std::env::var("VBA_FILES") else {
+        return;
+    };
     let modules: Vec<ModuleUnit> = files
         .split(';')
         .map(|spec| {
             let mut parts = spec.splitn(3, ':');
-            let (name, kind, path) = (parts.next().unwrap(), parts.next().unwrap(), parts.next().unwrap());
+            let (name, kind, path) = (
+                parts.next().unwrap(),
+                parts.next().unwrap(),
+                parts.next().unwrap(),
+            );
             let bytes = std::fs::read(path).unwrap();
             let source: String = match String::from_utf8(bytes.clone()) {
                 Ok(s) => s,
@@ -58,7 +64,11 @@ fn survey_project_from_files() {
             };
             ModuleUnit {
                 module_name: name.into(),
-                module_kind: if kind == "class" { ModuleKind::Class } else { ModuleKind::Procedural },
+                module_kind: if kind == "class" {
+                    ModuleKind::Class
+                } else {
+                    ModuleKind::Procedural
+                },
                 attributes: ModuleAttributes::named(name),
                 source,
             }
@@ -95,16 +105,41 @@ const CONN: &str = "Private Type Conn\n    buf() As Byte\n    n As Long\nEnd Typ
 #[test]
 fn with_array_element_udt_indexes_an_array_field() {
     for (name, body, expected) in [
-        ("varptr_index", "With m(h)\n  verdict = VarPtr(.buf(0)) <> 0\nEnd With", -1),
-        ("ubound", "With m(h)\n  verdict = UBound(.buf) + 1\nEnd With", 5),
-        ("index_read", "With m(h)\n  verdict = .buf(1) + 21\nEnd With", 21),
-        ("index_write", "With m(h)\n  .buf(1) = 7\n  verdict = .buf(1)\nEnd With", 7),
-        ("redim_field", "With m(h)\n  ReDim .buf(0 To 9)\n  verdict = UBound(.buf)\nEnd With", 9),
+        (
+            "varptr_index",
+            "With m(h)\n  verdict = VarPtr(.buf(0)) <> 0\nEnd With",
+            -1,
+        ),
+        (
+            "ubound",
+            "With m(h)\n  verdict = UBound(.buf) + 1\nEnd With",
+            5,
+        ),
+        (
+            "index_read",
+            "With m(h)\n  verdict = .buf(1) + 21\nEnd With",
+            21,
+        ),
+        (
+            "index_write",
+            "With m(h)\n  .buf(1) = 7\n  verdict = .buf(1)\nEnd With",
+            7,
+        ),
+        (
+            "redim_field",
+            "With m(h)\n  ReDim .buf(0 To 9)\n  verdict = UBound(.buf)\nEnd With",
+            9,
+        ),
     ] {
-        let src = format!("{CONN}Sub Main()\n  Dim h As Long\n  h = 2\n  ReDim m(h).buf(0 To 4)\n{body}\nEnd Sub\n");
+        let src = format!(
+            "{CONN}Sub Main()\n  Dim h As Long\n  h = 2\n  ReDim m(h).buf(0 To 4)\n{body}\nEnd Sub\n"
+        );
         for (label, config) in [("vm3", HostConfig::vm3()), ("jit", HostConfig::jit())] {
             let v = run_with(config, &src).unwrap_or_else(|e| panic!("{name} {label}: {e}"));
-            assert!(v.iter().any(|x| x.as_i32() == Some(expected)), "{name} {label}: {v:?}");
+            assert!(
+                v.iter().any(|x| x.as_i32() == Some(expected)),
+                "{name} {label}: {v:?}"
+            );
         }
     }
 }
@@ -127,7 +162,9 @@ fn collection_field_of_an_array_element_udt_adds_and_counts() {
 #[test]
 fn for_each_over_a_collection_field_of_an_array_element_udt() {
     // Wasabi: `For Each mw In m_Connections(handle).Middlewares` with `Dim mw As Object`
-    let src = format!("{ITEMS}Sub Main()\n    Dim mw As Object\n    Dim h As Long\n    h = 1\n    Fill h\n    For Each mw In m(h).Items\n        verdict = verdict + 1\n    Next mw\nEnd Sub\n");
+    let src = format!(
+        "{ITEMS}Sub Main()\n    Dim mw As Object\n    Dim h As Long\n    h = 1\n    Fill h\n    For Each mw In m(h).Items\n        verdict = verdict + 1\n    Next mw\nEnd Sub\n"
+    );
     both(&src, |v| v.iter().any(|x| x.as_i32() == Some(2)));
 }
 
@@ -290,19 +327,48 @@ fn enum_initialisers_name_members_of_modules_declared_later() {
     let ast = "Public Const MAX_AST_CODE As Long = 40\n";
     let main = "Public verdict As Long\nSub Main()\n    verdict = Go()\nEnd Sub\n";
     for (name, user, expected) in [
-        ("long_min", "Private Enum E\n    PSF_NONE = Consts.LONG_MIN\nEnd Enum\nPublic Function Go() As Long\n    Go = PSF_NONE\nEnd Function\n", i32::MIN),
-        ("long_max", "Private Enum E\n    H = Consts.LONG_MAX\nEnd Enum\nPublic Function Go() As Long\n    Go = H\nEnd Function\n", i32::MAX),
-        ("neg_const", "Private Enum E\n    A = -(Ast.MAX_AST_CODE + 1)\n    B = A\nEnd Enum\nPublic Function Go() As Long\n    Go = B\nEnd Function\n", -41),
-        ("not_member", "Private Enum E\n    X = Consts.LONG_ALL_BUT_FIRST_BIT\nEnd Enum\nPublic Function Go() As Long\n    Go = X\nEnd Function\n", i32::MAX),
+        (
+            "long_min",
+            "Private Enum E\n    PSF_NONE = Consts.LONG_MIN\nEnd Enum\nPublic Function Go() As Long\n    Go = PSF_NONE\nEnd Function\n",
+            i32::MIN,
+        ),
+        (
+            "long_max",
+            "Private Enum E\n    H = Consts.LONG_MAX\nEnd Enum\nPublic Function Go() As Long\n    Go = H\nEnd Function\n",
+            i32::MAX,
+        ),
+        (
+            "neg_const",
+            "Private Enum E\n    A = -(Ast.MAX_AST_CODE + 1)\n    B = A\nEnd Enum\nPublic Function Go() As Long\n    Go = B\nEnd Function\n",
+            -41,
+        ),
+        (
+            "not_member",
+            "Private Enum E\n    X = Consts.LONG_ALL_BUT_FIRST_BIT\nEnd Enum\nPublic Function Go() As Long\n    Go = X\nEnd Function\n",
+            i32::MAX,
+        ),
     ] {
         for order in [0, 1] {
             let modules: Vec<(&str, &str)> = if order == 0 {
-                vec![("Main", main), ("User", user), ("Consts", consts), ("Ast", ast)]
+                vec![
+                    ("Main", main),
+                    ("User", user),
+                    ("Consts", consts),
+                    ("Ast", ast),
+                ]
             } else {
-                vec![("Main", main), ("Consts", consts), ("Ast", ast), ("User", user)]
+                vec![
+                    ("Main", main),
+                    ("Consts", consts),
+                    ("Ast", ast),
+                    ("User", user),
+                ]
             };
             let v = run_modules(&modules).unwrap_or_else(|e| panic!("{name} order {order}: {e}"));
-            assert!(v.iter().any(|x| x.as_i32() == Some(expected)), "{name} order {order}: {v:?}");
+            assert!(
+                v.iter().any(|x| x.as_i32() == Some(expected)),
+                "{name} order {order}: {v:?}"
+            );
         }
     }
 }

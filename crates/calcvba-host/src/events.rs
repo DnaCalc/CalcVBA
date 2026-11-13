@@ -296,7 +296,7 @@ impl AutomaticEvents {
 // The native IID is data from the imported source descriptor; no registration,
 // object-name lookup or type discovery occurs at delivery.
 fn parse_iid(text: &str) -> Result<calcvba_com::ComInterfaceIid, i32> {
-    let id = calcvba_runtime::RuntimeGuid::parse(text).ok_or(13)?;
+    let id = calcvba_runtime::Guid::parse(text).ok_or(13)?;
     Ok(calcvba_com::ComInterfaceIid {
         data1: id.data1,
         data2: id.data2,

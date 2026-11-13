@@ -446,10 +446,8 @@ fn owned_xlsm_project() {
                 })
                 .unwrap();
             let native = route.native.as_ref().unwrap();
-            let iid = calcvba_runtime::RuntimeGuid::parse(
-                native.connection_point_iid.as_deref().unwrap(),
-            )
-            .unwrap();
+            let iid = calcvba_runtime::Guid::parse(native.connection_point_iid.as_deref().unwrap())
+                .unwrap();
             let mut bytes = [0; 16];
             bytes[..4].copy_from_slice(&iid.data1.to_le_bytes());
             bytes[4..6].copy_from_slice(&iid.data2.to_le_bytes());

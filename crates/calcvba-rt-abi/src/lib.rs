@@ -17,12 +17,11 @@ use calcvba_oxir::{
     BlockId, ErrorHandler, FuncId, OxProgram, OxTy, inst::OxAsNew, program::OxClassMethod,
 };
 use calcvba_runtime::object_ref::{
-    ObjectRef, RUNTIME_IDISPATCH_INTERFACE_IDENTITY, RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR,
+    Guid, ObjectRef, RUNTIME_IDISPATCH_INTERFACE_IDENTITY, RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR,
     RuntimeClassActivationDescriptor, RuntimeClassAsNewFieldDescriptor, RuntimeClassDescriptor,
-    RuntimeClassFieldDescriptor, RuntimeClassLifecycleDescriptor, RuntimeGuid,
-    RuntimeInterfaceDescriptor, RuntimeInterfaceId, RuntimeInterfaceIdentity, RuntimeInterfaceKind,
-    RuntimeMemberDescriptor, RuntimeMemberInvokeKind, RuntimeParamDescriptor,
-    RuntimeProjectClassIdentity, RuntimeValueType,
+    RuntimeClassFieldDescriptor, RuntimeClassLifecycleDescriptor, RuntimeInterfaceDescriptor,
+    RuntimeInterfaceId, RuntimeInterfaceIdentity, RuntimeInterfaceKind, RuntimeMemberDescriptor,
+    RuntimeMemberInvokeKind, RuntimeParamDescriptor, RuntimeProjectClassIdentity, RuntimeValueType,
 };
 use calcvba_runtime::{VarType, Variant};
 use std::collections::HashMap;
@@ -620,7 +619,7 @@ fn fnv1a64(seed: u64, input: &str) -> u64 {
     hash
 }
 
-fn runtime_project_interface_guid(unit_name: &str, interface_name: &str) -> RuntimeGuid {
+fn runtime_project_interface_guid(unit_name: &str, interface_name: &str) -> Guid {
     let key = format!(
         "oxvba:project-interface:{}:{}",
         unit_name.to_ascii_lowercase(),
@@ -628,7 +627,7 @@ fn runtime_project_interface_guid(unit_name: &str, interface_name: &str) -> Runt
     );
     let hi = fnv1a64(PROJECT_INTERFACE_GUID_OFFSET, &key);
     let lo = fnv1a64(!PROJECT_INTERFACE_GUID_OFFSET, &key);
-    RuntimeGuid::new(
+    Guid::new(
         (hi >> 32) as u32,
         (hi >> 16) as u16,
         hi as u16,

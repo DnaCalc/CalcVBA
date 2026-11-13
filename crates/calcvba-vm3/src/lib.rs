@@ -50,10 +50,10 @@ use calcvba_rt_abi::{
     variant_changed,
 };
 use calcvba_runtime::object_ref::{
-    ObjectRef, RUNTIME_CLASS_LIFECYCLE_NONE, RUNTIME_IDISPATCH_INTERFACE_IDENTITY,
+    Guid, ObjectRef, RUNTIME_CLASS_LIFECYCLE_NONE, RUNTIME_IDISPATCH_INTERFACE_IDENTITY,
     RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR, RuntimeClassActivationDescriptor,
     RuntimeClassAsNewFieldDescriptor, RuntimeClassDescriptor, RuntimeClassFieldDescriptor,
-    RuntimeClassLifecycleDescriptor, RuntimeGuid, RuntimeInterfaceDescriptor, RuntimeInterfaceId,
+    RuntimeClassLifecycleDescriptor, RuntimeInterfaceDescriptor, RuntimeInterfaceId,
     RuntimeInterfaceIdentity, RuntimeInterfaceKind, RuntimeMemberDescriptor,
     RuntimeMemberInvokeKind, RuntimeParamDescriptor, RuntimeProjectClassIdentity, RuntimeValueType,
 };
@@ -220,7 +220,7 @@ fn fnv1a64(seed: u64, input: &str) -> u64 {
     hash
 }
 
-fn runtime_project_interface_guid(unit_name: &str, interface_name: &str) -> RuntimeGuid {
+fn runtime_project_interface_guid(unit_name: &str, interface_name: &str) -> Guid {
     let key = format!(
         "oxvba:project-interface:{}:{}",
         unit_name.to_ascii_lowercase(),
@@ -229,7 +229,7 @@ fn runtime_project_interface_guid(unit_name: &str, interface_name: &str) -> Runt
     let hi = fnv1a64(PROJECT_INTERFACE_GUID_OFFSET, &key);
     let lo = fnv1a64(!PROJECT_INTERFACE_GUID_OFFSET, &key);
     let lo_bytes = lo.to_be_bytes();
-    RuntimeGuid::new((hi >> 32) as u32, (hi >> 16) as u16, hi as u16, lo_bytes)
+    Guid::new((hi >> 32) as u32, (hi >> 16) as u16, hi as u16, lo_bytes)
 }
 
 fn runtime_array_element_type(element: &ArrayElementType) -> RuntimeValueType {
@@ -6085,7 +6085,7 @@ mod tests {
     use calcvba_oxir::ty::OxTy;
     use calcvba_runtime::DynLinkSymbol;
     use calcvba_runtime::object_ref::{
-        RUNTIME_E_NOINTERFACE, RawRuntimeIUnknown, RawRuntimeIUnknownVtbl, RuntimeGuid,
+        Guid, IUnknownVtbl, RUNTIME_E_NOINTERFACE, RawRuntimeIUnknown,
     };
     use calcvba_runtime::variant::VarType;
 
@@ -7828,15 +7828,15 @@ mod tests {
         }
     }
 
-    static FAKE_FOREIGN_VTBL: RawRuntimeIUnknownVtbl = RawRuntimeIUnknownVtbl {
+    static FAKE_FOREIGN_VTBL: IUnknownVtbl = IUnknownVtbl {
         query_interface: fake_foreign_query_interface,
         add_ref: fake_foreign_add_ref,
         release: fake_foreign_release,
     };
 
-    unsafe extern "C" fn fake_foreign_query_interface(
+    unsafe extern "system" fn fake_foreign_query_interface(
         _this: *mut c_void,
-        _iid: RuntimeGuid,
+        _iid: *const Guid,
         ppv: *mut *mut c_void,
     ) -> i32 {
         if !ppv.is_null() {
@@ -7848,13 +7848,13 @@ mod tests {
         RUNTIME_E_NOINTERFACE
     }
 
-    unsafe extern "C" fn fake_foreign_add_ref(this: *mut c_void) -> u32 {
+    unsafe extern "system" fn fake_foreign_add_ref(this: *mut c_void) -> u32 {
         let object = this.cast::<FakeForeignObject>();
         // SAFETY: the fake vtable is installed only on FakeForeignObject boxes.
         unsafe { (*object).ref_count.fetch_add(1, Ordering::AcqRel) + 1 }
     }
 
-    unsafe extern "C" fn fake_foreign_release(this: *mut c_void) -> u32 {
+    unsafe extern "system" fn fake_foreign_release(this: *mut c_void) -> u32 {
         let object = this.cast::<FakeForeignObject>();
         // SAFETY: the fake vtable is installed only on FakeForeignObject boxes.
         let previous = unsafe { (*object).ref_count.fetch_sub(1, Ordering::AcqRel) };

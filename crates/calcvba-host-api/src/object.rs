@@ -1,8 +1,6 @@
 //! Same-thread host-owned object tables. This ABI is independent of native COM.
 use crate::{ScalarBits, Slot, TypedContext};
-use calcvba_runtime::{
-    RUNTIME_GUID_IUNKNOWN, RawRuntimeIUnknown, RawRuntimeIUnknownVtbl, RuntimeGuid,
-};
+use calcvba_runtime::{Guid, IUnknownVtbl, RUNTIME_GUID_IUNKNOWN, RawRuntimeIUnknown};
 use std::{
     marker::PhantomData,
     panic::{AssertUnwindSafe, catch_unwind},
@@ -351,16 +349,16 @@ impl ObjectArg<'_> {
     }
 }
 
-static UNKNOWN_VTABLE: RawRuntimeIUnknownVtbl = RawRuntimeIUnknownVtbl {
+static UNKNOWN_VTABLE: IUnknownVtbl = IUnknownVtbl {
     query_interface: query_unknown,
     add_ref,
     release,
 };
 // SAFETY CONTRACT: this is the complete-allocation pointer minted by the
 // HostObject factory; native references remain on its creating thread.
-unsafe extern "C" fn query_unknown(
+unsafe extern "system" fn query_unknown(
     this: *mut core::ffi::c_void,
-    iid: RuntimeGuid,
+    riid: *const Guid,
     output: *mut *mut core::ffi::c_void,
 ) -> i32 {
     if output.is_null() {
@@ -370,7 +368,8 @@ unsafe extern "C" fn query_unknown(
     unsafe {
         output.write(std::ptr::null_mut());
     }
-    if this.is_null() || iid != RUNTIME_GUID_IUNKNOWN {
+    // SAFETY: a non-null REFIID points at the caller's GUID for the duration of the call.
+    if this.is_null() || riid.is_null() || unsafe { riid.read() } != RUNTIME_GUID_IUNKNOWN {
         return 0x8000_4002u32 as i32;
     }
     // SAFETY: inherited retained same-thread allocation contract.
@@ -382,7 +381,7 @@ unsafe extern "C" fn query_unknown(
 }
 // SAFETY CONTRACT: this is a live complete ObjectStorage allocation from Rc;
 // the native caller owns a reference and all operations stay on this thread.
-unsafe extern "C" fn add_ref(this: *mut core::ffi::c_void) -> u32 {
+unsafe extern "system" fn add_ref(this: *mut core::ffi::c_void) -> u32 {
     let pointer = this.cast::<ObjectStorage>();
     // SAFETY: pointer was obtained from Rc::as_ptr and a strong owner is live.
     unsafe {
@@ -394,7 +393,7 @@ unsafe extern "C" fn add_ref(this: *mut core::ffi::c_void) -> u32 {
 }
 // SAFETY CONTRACT: consume exactly one retained native reference, on the owner
 // thread, using the complete pointer supplied by this object's IUnknown.
-unsafe extern "C" fn release(this: *mut core::ffi::c_void) -> u32 {
+unsafe extern "system" fn release(this: *mut core::ffi::c_void) -> u32 {
     // SAFETY: caller transfers one native strong reference back into Rc.
     let owner = unsafe { Rc::from_raw(this.cast::<ObjectStorage>()) };
     let remaining = Rc::strong_count(&owner) - 1;
@@ -540,7 +539,11 @@ mod tests {
         assert_eq!(
             // SAFETY: retained native owner and initialized output cell span QI.
             unsafe {
-                (table.query_interface)(raw.cast_mut().cast(), RUNTIME_GUID_IUNKNOWN, &mut identity)
+                (table.query_interface)(
+                    raw.cast_mut().cast(),
+                    &RUNTIME_GUID_IUNKNOWN,
+                    &mut identity,
+                )
             },
             0
         );
@@ -554,7 +557,7 @@ mod tests {
             unsafe {
                 (table.query_interface)(
                     raw.cast_mut().cast(),
-                    RuntimeGuid::new(9, 0, 0, [0; 8]),
+                    &Guid::new(9, 0, 0, [0; 8]),
                     &mut identity,
                 )
             },

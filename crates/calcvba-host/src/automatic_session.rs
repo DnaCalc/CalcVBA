@@ -82,7 +82,7 @@ impl OwnedSession {
                                 && native
                                     .connection_point_iid
                                     .as_deref()
-                                    .and_then(calcvba_runtime::RuntimeGuid::parse)
+                                    .and_then(calcvba_runtime::Guid::parse)
                                     .is_some_and(|iid| {
                                         let mut bytes = [0; 16];
                                         bytes[..4].copy_from_slice(&iid.data1.to_le_bytes());

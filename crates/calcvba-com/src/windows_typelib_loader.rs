@@ -2104,7 +2104,7 @@ pub(crate) fn registered_clsid_from_prog_id(
             error
         }
     })?;
-    let id = calcvba_runtime::RuntimeGuid::parse(text.trim())
+    let id = calcvba_runtime::Guid::parse(text.trim())
         .ok_or_else(|| format!("invalid registered CLSID for `{prog_id}`"))?;
     Ok(windows_sys::core::GUID {
         data1: id.data1,

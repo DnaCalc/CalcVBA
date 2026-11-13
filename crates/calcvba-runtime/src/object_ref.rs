@@ -9,6 +9,8 @@ use crate::Variant;
 
 pub const RUNTIME_S_OK: i32 = 0;
 pub const RUNTIME_E_NOINTERFACE: i32 = 0x8000_4002u32 as i32;
+/// `E_POINTER`: a required out or in pointer was null.
+pub const RUNTIME_E_POINTER: i32 = 0x8000_4003u32 as i32;
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -20,106 +22,19 @@ pub enum RuntimeInterfaceId {
     Unsupported,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(C)]
-pub struct RuntimeGuid {
-    pub data1: u32,
-    pub data2: u16,
-    pub data3: u16,
-    pub data4: [u8; 8],
-}
+pub use calcvba_automation::com::{Guid, IUnknownVtbl};
 
-impl RuntimeGuid {
-    pub const fn new(data1: u32, data2: u16, data3: u16, data4: [u8; 8]) -> Self {
-        Self {
-            data1,
-            data2,
-            data3,
-            data4,
-        }
-    }
-
-    pub fn parse(input: &str) -> Option<Self> {
-        let trimmed = input.trim();
-        let body = trimmed
-            .strip_prefix('{')
-            .and_then(|inner| inner.strip_suffix('}'))
-            .unwrap_or(trimmed);
-        let mut parts = body.split('-');
-        let data1 = parse_hex_u32(parts.next()?, 8)?;
-        let data2 = parse_hex_u16(parts.next()?, 4)?;
-        let data3 = parse_hex_u16(parts.next()?, 4)?;
-        let data4_hi = parts.next()?;
-        let data4_lo = parts.next()?;
-        if parts.next().is_some() || data4_hi.len() != 4 || data4_lo.len() != 12 {
-            return None;
-        }
-        let mut data4 = [0u8; 8];
-        data4[0] = parse_hex_u8(&data4_hi[0..2])?;
-        data4[1] = parse_hex_u8(&data4_hi[2..4])?;
-        for index in 0..6 {
-            let start = index * 2;
-            data4[index + 2] = parse_hex_u8(&data4_lo[start..start + 2])?;
-        }
-        Some(Self::new(data1, data2, data3, data4))
-    }
-
-    pub fn to_canonical_string(self) -> String {
-        format!(
-            "{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
-            self.data1,
-            self.data2,
-            self.data3,
-            self.data4[0],
-            self.data4[1],
-            self.data4[2],
-            self.data4[3],
-            self.data4[4],
-            self.data4[5],
-            self.data4[6],
-            self.data4[7]
-        )
-    }
-}
-
-impl core::fmt::Display for RuntimeGuid {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(&self.to_canonical_string())
-    }
-}
-
-fn parse_hex_u32(input: &str, expected_len: usize) -> Option<u32> {
-    if input.len() != expected_len {
-        return None;
-    }
-    u32::from_str_radix(input, 16).ok()
-}
-
-fn parse_hex_u16(input: &str, expected_len: usize) -> Option<u16> {
-    if input.len() != expected_len {
-        return None;
-    }
-    u16::from_str_radix(input, 16).ok()
-}
-
-fn parse_hex_u8(input: &str) -> Option<u8> {
-    if input.len() != 2 {
-        return None;
-    }
-    u8::from_str_radix(input, 16).ok()
-}
-
-pub const RUNTIME_GUID_IUNKNOWN: RuntimeGuid =
-    RuntimeGuid::new(0x0000_0000, 0x0000, 0x0000, [0xC0, 0, 0, 0, 0, 0, 0, 0x46]);
-pub const RUNTIME_GUID_IDISPATCH: RuntimeGuid =
-    RuntimeGuid::new(0x0002_0400, 0x0000, 0x0000, [0xC0, 0, 0, 0, 0, 0, 0, 0x46]);
-pub const RUNTIME_GUID_ICONNECTIONPOINTCONTAINER: RuntimeGuid = RuntimeGuid::new(
+pub const RUNTIME_GUID_IUNKNOWN: Guid =
+    Guid::new(0x0000_0000, 0x0000, 0x0000, [0xC0, 0, 0, 0, 0, 0, 0, 0x46]);
+pub const RUNTIME_GUID_IDISPATCH: Guid =
+    Guid::new(0x0002_0400, 0x0000, 0x0000, [0xC0, 0, 0, 0, 0, 0, 0, 0x46]);
+pub const RUNTIME_GUID_ICONNECTIONPOINTCONTAINER: Guid = Guid::new(
     0xB196_B284,
     0xBAB4,
     0x101A,
     [0xB6, 0x9C, 0x00, 0xAA, 0x00, 0x34, 0x1D, 0x07],
 );
-pub const RUNTIME_GUID_ICONNECTIONPOINT: RuntimeGuid = RuntimeGuid::new(
+pub const RUNTIME_GUID_ICONNECTIONPOINT: Guid = Guid::new(
     0xB196_B286,
     0xBAB4,
     0x101A,
@@ -140,7 +55,7 @@ pub enum RuntimeInterfaceKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RuntimeInterfaceIdentity {
     pub id: RuntimeInterfaceId,
-    pub guid: RuntimeGuid,
+    pub guid: Guid,
     pub name: &'static str,
     pub kind: RuntimeInterfaceKind,
     pub major_version: Option<u16>,
@@ -151,7 +66,7 @@ pub struct RuntimeInterfaceIdentity {
 impl RuntimeInterfaceIdentity {
     pub const fn new(
         id: RuntimeInterfaceId,
-        guid: RuntimeGuid,
+        guid: Guid,
         name: &'static str,
         kind: RuntimeInterfaceKind,
         major_version: Option<u16>,
@@ -170,7 +85,7 @@ impl RuntimeInterfaceIdentity {
     }
 
     pub const fn custom(
-        guid: RuntimeGuid,
+        guid: Guid,
         name: &'static str,
         kind: RuntimeInterfaceKind,
         major_version: Option<u16>,
@@ -397,7 +312,7 @@ pub enum RuntimeDescriptorIssue {
     DuplicateInterfaceGuid {
         class: &'static str,
         interface: &'static str,
-        guid: RuntimeGuid,
+        guid: Guid,
     },
     BadMemberArity {
         interface: &'static str,
@@ -723,16 +638,8 @@ fn runtime_interface_descriptor_key(interface: &RuntimeInterfaceDescriptor) -> u
 }
 
 #[repr(C)]
-pub struct RawRuntimeIUnknownVtbl {
-    pub query_interface:
-        unsafe extern "C" fn(this: *mut c_void, iid: RuntimeGuid, ppv: *mut *mut c_void) -> i32,
-    pub add_ref: unsafe extern "C" fn(this: *mut c_void) -> u32,
-    pub release: unsafe extern "C" fn(this: *mut c_void) -> u32,
-}
-
-#[repr(C)]
 pub struct RawRuntimeIUnknown {
-    pub vtbl: *const RawRuntimeIUnknownVtbl,
+    pub vtbl: *const IUnknownVtbl,
 }
 
 #[repr(C)]
@@ -754,25 +661,30 @@ struct CompatObjectBase {
     terminated: Cell<bool>,
 }
 
-static COMPAT_OBJECT_VTBL: RawRuntimeIUnknownVtbl = RawRuntimeIUnknownVtbl {
+static COMPAT_OBJECT_VTBL: IUnknownVtbl = IUnknownVtbl {
     query_interface: compat_query_interface,
     add_ref: compat_add_ref,
     release: compat_release,
 };
 
-unsafe extern "C" fn compat_query_interface(
+unsafe extern "system" fn compat_query_interface(
     this: *mut c_void,
-    iid: RuntimeGuid,
+    riid: *const Guid,
     ppv: *mut *mut c_void,
 ) -> i32 {
     if ppv.is_null() {
-        return RUNTIME_E_NOINTERFACE;
+        return RUNTIME_E_POINTER;
     }
     // SAFETY: per the QueryInterface ABI, `ppv` (checked non-null above) points to a writable
     // out-slot owned by the caller for the duration of this call.
     unsafe {
         *ppv = core::ptr::null_mut();
     }
+    if riid.is_null() {
+        return RUNTIME_E_POINTER;
+    }
+    // SAFETY: a non-null REFIID points at the caller's GUID for the duration of the call.
+    let iid = unsafe { riid.read() };
     let owner = compat_owner_from_this(this);
     // SAFETY: this vtable entry is only installed via `COMPAT_OBJECT_VTBL`, which is only
     // attached to `CompatObjectBase` boxes minted by `from_compat_object` (`#[repr(C)]` with
@@ -938,7 +850,7 @@ pub(crate) fn discard_pending_owner(id: u64) {
     }
 }
 
-unsafe extern "C" fn compat_add_ref(this: *mut c_void) -> u32 {
+unsafe extern "system" fn compat_add_ref(this: *mut c_void) -> u32 {
     let owner = compat_owner_from_this(this);
     // SAFETY: this vtable entry only exists on `CompatObjectBase` boxes (`COMPAT_OBJECT_VTBL` is
     // installed solely by `from_compat_object`; `#[repr(C)]` puts `unknown` first), and the
@@ -946,7 +858,7 @@ unsafe extern "C" fn compat_add_ref(this: *mut c_void) -> u32 {
     unsafe { (*owner).ref_count.fetch_add(1, Ordering::AcqRel) + 1 }
 }
 
-unsafe extern "C" fn compat_release(this: *mut c_void) -> u32 {
+unsafe extern "system" fn compat_release(this: *mut c_void) -> u32 {
     let owner = compat_owner_from_this(this);
     // SAFETY: as in `compat_add_ref`, `this` is a live `CompatObjectBase` kept alive by the
     // reference the caller is releasing right now.
@@ -1395,7 +1307,7 @@ impl ObjectRef {
 
     pub fn query_interface_descriptor_by_guid(
         &self,
-        guid: RuntimeGuid,
+        guid: Guid,
     ) -> Option<&'static RuntimeInterfaceDescriptor> {
         let class_descriptor = self.try_class_descriptor()?;
         if guid == RUNTIME_GUID_IUNKNOWN {
@@ -1421,7 +1333,7 @@ impl ObjectRef {
 
     pub fn query_interface_projection_by_guid(
         &self,
-        guid: RuntimeGuid,
+        guid: Guid,
     ) -> Option<RuntimeInterfaceProjection> {
         let descriptor = self.query_interface_descriptor_by_guid(guid)?;
         Some(RuntimeInterfaceProjection {
@@ -1546,12 +1458,12 @@ mod tests {
     use core::sync::atomic::{AtomicU32, Ordering};
 
     use super::{
-        ObjectRef, RUNTIME_CLASS_LIFECYCLE_NONE, RUNTIME_E_NOINTERFACE, RUNTIME_GUID_IDISPATCH,
-        RUNTIME_GUID_IUNKNOWN, RUNTIME_IDISPATCH_INTERFACE_IDENTITY,
+        Guid, IUnknownVtbl, ObjectRef, RUNTIME_CLASS_LIFECYCLE_NONE, RUNTIME_E_NOINTERFACE,
+        RUNTIME_GUID_IDISPATCH, RUNTIME_GUID_IUNKNOWN, RUNTIME_IDISPATCH_INTERFACE_IDENTITY,
         RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR, RUNTIME_S_OK, RawRuntimeIUnknown,
-        RawRuntimeIUnknownVtbl, RuntimeApartmentModel, RuntimeClassDescriptor,
-        RuntimeDescriptorIssue, RuntimeDispatchPlanCache, RuntimeGuid, RuntimeInterfaceDescriptor,
-        RuntimeInterfaceId, RuntimeInterfaceIdentity, RuntimeInterfaceKind, RuntimeLifetimePolicy,
+        RuntimeApartmentModel, RuntimeClassDescriptor, RuntimeDescriptorIssue,
+        RuntimeDispatchPlanCache, RuntimeInterfaceDescriptor, RuntimeInterfaceId,
+        RuntimeInterfaceIdentity, RuntimeInterfaceKind, RuntimeLifetimePolicy,
         RuntimeMemberDescriptor, RuntimeMemberInvokeKind, RuntimeParamDescriptor, RuntimeValueType,
     };
 
@@ -1591,11 +1503,11 @@ mod tests {
         let raw_unknown = object.raw_iunknown();
         assert_eq!(
             core::mem::size_of::<RawRuntimeIUnknown>(),
-            core::mem::size_of::<*const RawRuntimeIUnknownVtbl>()
+            core::mem::size_of::<*const IUnknownVtbl>()
         );
         assert_eq!(
             core::mem::align_of::<RawRuntimeIUnknown>(),
-            core::mem::align_of::<*const RawRuntimeIUnknownVtbl>()
+            core::mem::align_of::<*const IUnknownVtbl>()
         );
 
         unsafe {
@@ -1605,7 +1517,7 @@ mod tests {
                 raw_unknown,
                 "ObjectRef must expose a pointer to the first field of the compat object box"
             );
-            let first_word = raw_unknown.cast::<*const RawRuntimeIUnknownVtbl>().read();
+            let first_word = raw_unknown.cast::<*const IUnknownVtbl>().read();
             assert!(
                 core::ptr::eq(first_word, &super::COMPAT_OBJECT_VTBL),
                 "the first machine word of the exposed IUnknown must be the runtime vtable"
@@ -1645,21 +1557,21 @@ mod tests {
 
     #[test]
     fn runtime_guid_parses_and_formats_canonical_identity() {
-        let parsed = RuntimeGuid::parse("{00020400-0000-0000-c000-000000000046}")
+        let parsed = Guid::parse("{00020400-0000-0000-c000-000000000046}")
             .expect("IDispatch GUID should parse with braces and mixed case");
         assert_eq!(parsed, RUNTIME_GUID_IDISPATCH);
         assert_eq!(parsed.to_string(), "00020400-0000-0000-C000-000000000046");
         assert_eq!(
-            RuntimeGuid::parse("00000000-0000-0000-C000-000000000046"),
+            Guid::parse("00000000-0000-0000-C000-000000000046"),
             Some(RUNTIME_GUID_IUNKNOWN)
         );
-        assert!(RuntimeGuid::parse("00020400-0000-0000-C000").is_none());
-        assert!(RuntimeGuid::parse("not-a-guid").is_none());
+        assert!(Guid::parse("00020400-0000-0000-C000").is_none());
+        assert!(Guid::parse("not-a-guid").is_none());
     }
 
     #[test]
     fn runtime_interface_identity_carries_custom_iid_metadata() {
-        const CUSTOM_GUID: RuntimeGuid = RuntimeGuid::new(
+        const CUSTOM_GUID: Guid = Guid::new(
             0x1111_1111,
             0x2222,
             0x3333,
@@ -1747,7 +1659,7 @@ mod tests {
 
     #[test]
     fn interface_projections_share_runtime_object_identity() {
-        const CUSTOM_GUID: RuntimeGuid = RuntimeGuid::new(
+        const CUSTOM_GUID: Guid = Guid::new(
             0x2222_2222,
             0x3333,
             0x4444,
@@ -2426,7 +2338,7 @@ mod tests {
 
     #[test]
     fn descriptor_backed_object_supports_raw_query_interface_projection() {
-        const CUSTOM_GUID: RuntimeGuid = RuntimeGuid::new(
+        const CUSTOM_GUID: Guid = Guid::new(
             0x3333_3333,
             0x4444,
             0x5555,
@@ -2486,7 +2398,7 @@ mod tests {
         let dispatch_hr = unsafe {
             ((*(*object.raw_iunknown()).vtbl).query_interface)(
                 object.raw_iunknown().cast(),
-                RUNTIME_GUID_IDISPATCH,
+                &RUNTIME_GUID_IDISPATCH,
                 &mut dispatch_out,
             )
         };
@@ -2498,7 +2410,7 @@ mod tests {
         let custom_hr = unsafe {
             ((*(*object.raw_iunknown()).vtbl).query_interface)(
                 object.raw_iunknown().cast(),
-                CUSTOM_GUID,
+                &CUSTOM_GUID,
                 &mut custom_out,
             )
         };
@@ -2566,7 +2478,7 @@ mod tests {
         let hr = unsafe {
             ((*(*object.raw_iunknown()).vtbl).query_interface)(
                 object.raw_iunknown().cast(),
-                RUNTIME_GUID_IUNKNOWN,
+                &RUNTIME_GUID_IUNKNOWN,
                 &mut unknown_out,
             )
         };
@@ -2587,7 +2499,7 @@ mod tests {
         let hr = unsafe {
             ((*vtbl).query_interface)(
                 object.raw_iunknown().cast(),
-                RUNTIME_GUID_IUNKNOWN,
+                &RUNTIME_GUID_IUNKNOWN,
                 &mut out,
             )
         };
@@ -2600,7 +2512,7 @@ mod tests {
         let hr = unsafe {
             ((*vtbl).query_interface)(
                 object.raw_iunknown().cast(),
-                RuntimeGuid::new(
+                &Guid::new(
                     0xFFFF_FFFF,
                     0xFFFF,
                     0xFFFF,
@@ -2620,15 +2532,15 @@ mod tests {
         ref_count: AtomicU32,
     }
 
-    static FAKE_FOREIGN_VTBL: RawRuntimeIUnknownVtbl = RawRuntimeIUnknownVtbl {
+    static FAKE_FOREIGN_VTBL: IUnknownVtbl = IUnknownVtbl {
         query_interface: fake_foreign_query_interface,
         add_ref: fake_foreign_add_ref,
         release: fake_foreign_release,
     };
 
-    unsafe extern "C" fn fake_foreign_query_interface(
+    unsafe extern "system" fn fake_foreign_query_interface(
         _this: *mut c_void,
-        _iid: RuntimeGuid,
+        _iid: *const Guid,
         ppv: *mut *mut c_void,
     ) -> i32 {
         if !ppv.is_null() {
@@ -2639,12 +2551,12 @@ mod tests {
         RUNTIME_E_NOINTERFACE
     }
 
-    unsafe extern "C" fn fake_foreign_add_ref(this: *mut c_void) -> u32 {
+    unsafe extern "system" fn fake_foreign_add_ref(this: *mut c_void) -> u32 {
         let object = this.cast::<FakeForeignObject>();
         unsafe { (*object).ref_count.fetch_add(1, Ordering::AcqRel) + 1 }
     }
 
-    unsafe extern "C" fn fake_foreign_release(this: *mut c_void) -> u32 {
+    unsafe extern "system" fn fake_foreign_release(this: *mut c_void) -> u32 {
         let object = this.cast::<FakeForeignObject>();
         let previous = unsafe { (*object).ref_count.fetch_sub(1, Ordering::AcqRel) };
         let remaining = previous.saturating_sub(1);

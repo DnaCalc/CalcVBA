@@ -112,7 +112,7 @@ impl ComInterfaceIid {
 
 impl ComInterfaceIid {
     pub fn parse(text: &str) -> Option<Self> {
-        let iid = calcvba_runtime::RuntimeGuid::parse(text)?;
+        let iid = calcvba_runtime::Guid::parse(text)?;
         Some(Self {
             data1: iid.data1,
             data2: iid.data2,

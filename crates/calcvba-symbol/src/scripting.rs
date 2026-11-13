@@ -1,8 +1,11 @@
-//! `Scripting.Dictionary`, served by the engine itself.
+//! `Scripting.Dictionary`, served by the engine itself where the platform's is not used.
 //!
-//! The Dictionary is safe: it touches nothing outside its own memory. Instead of activating
-//! the COM class (which needs Windows and the `com.activate` capability), the binder entry
-//! points call [`with_builtin_scripting`], which rewrites a manifest that uses it:
+//! On Windows, `Scripting.Dictionary` is the Scripting runtime's COM class, as in Excel
+//! ([`DictionarySource::Native`]). Elsewhere, and for hosts that may not activate COM classes,
+//! the engine serves its own implementation ([`DictionarySource::Engine`]); the resolver's
+//! [`TypeLibResolver::dictionary_source`](crate::TypeLibResolver::dictionary_source) chooses.
+//! The engine Dictionary is safe: it touches nothing outside its own memory. With it, the
+//! binder entry points call [`with_builtin_scripting`], which rewrites a manifest that uses it:
 //!
 //! - `CreateObject("Scripting.Dictionary")` becomes `DnaScripting.NewDictionary()`;
 //! - the type name `Scripting.Dictionary` (and a bare `Dictionary` after `As` or `New` when
@@ -259,7 +262,13 @@ End Enum
 
 /// The manifest with built-in Scripting.Dictionary uses rewritten, or the manifest itself when
 /// it has none.
-pub fn with_builtin_scripting(manifest: &SymbolProjectManifest) -> Cow<'_, SymbolProjectManifest> {
+pub fn with_builtin_scripting(
+    manifest: &SymbolProjectManifest,
+    source: crate::DictionarySource,
+) -> Cow<'_, SymbolProjectManifest> {
+    if source == crate::DictionarySource::Native {
+        return Cow::Borrowed(manifest);
+    }
     let has_scripting_ref = manifest.references.iter().any(|reference| match reference {
         ProjectReference::TypeLibrary { name, guid, .. } => {
             name.eq_ignore_ascii_case("Scripting")

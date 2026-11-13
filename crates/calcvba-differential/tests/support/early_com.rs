@@ -56,6 +56,9 @@ struct FixtureTypes {
     fault: DescriptorFault,
 }
 impl TypeLibResolver for FixtureTypes {
+    fn dictionary_source(&self) -> calcvba_symbol::DictionarySource {
+        calcvba_symbol::DictionarySource::platform_default()
+    }
     fn resolve(&self, request: &TypeLibResolveRequest) -> Option<TypeLibMetadataBlob> {
         if !request.reference_name.eq_ignore_ascii_case("EarlyHost") {
             return None;

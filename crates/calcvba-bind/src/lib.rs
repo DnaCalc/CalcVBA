@@ -77,7 +77,8 @@ pub fn bind_program(
     manifest: &SymbolProjectManifest,
     typelibs: &dyn TypeLibResolver,
 ) -> Result<CoreProgram, BindError> {
-    let manifest = &*calcvba_symbol::scripting::with_builtin_scripting(manifest);
+    let manifest =
+        &*calcvba_symbol::scripting::with_builtin_scripting(manifest, typelibs.dictionary_source());
     let env = build_resolution_environment(manifest, typelibs)?;
     bind_one(&env, manifest)
 }
@@ -103,7 +104,8 @@ pub fn bind_program_with_procedures(
         model::Visibility,
         scanner::{decl_visibility, option_private_module},
     };
-    let manifest = &*calcvba_symbol::scripting::with_builtin_scripting(manifest);
+    let manifest =
+        &*calcvba_symbol::scripting::with_builtin_scripting(manifest, typelibs.dictionary_source());
     let env = build_resolution_environment(manifest, typelibs)?;
     let core = bind_one(&env, manifest)?;
     let mut procedures = Vec::new();
@@ -182,7 +184,10 @@ pub fn bind_projects(
                 manifest.project_name
             )));
         }
-        let manifest = &*calcvba_symbol::scripting::with_builtin_scripting(manifest);
+        let manifest = &*calcvba_symbol::scripting::with_builtin_scripting(
+            manifest,
+            typelibs.dictionary_source(),
+        );
         let env = build_resolution_environment(manifest, typelibs)?;
         programs.push(bind_one(&env, manifest)?);
     }

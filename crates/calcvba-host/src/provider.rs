@@ -15,6 +15,7 @@ pub struct Provider {
     object_libraries: Vec<api::TypedObjectLibrary>,
     class_modules: Vec<String>,
     document_modules: Vec<(String, String)>,
+    dictionary: Option<calcvba_symbol::DictionarySource>,
 }
 impl Default for Provider {
     fn default() -> Self {
@@ -24,6 +25,7 @@ impl Default for Provider {
             object_libraries: vec![],
             class_modules: vec![],
             document_modules: vec![],
+            dictionary: None,
         }
     }
 }
@@ -33,6 +35,12 @@ impl Provider {
             host,
             ..Self::default()
         }
+    }
+    /// Where `Scripting.Dictionary` comes from (see
+    /// [`calcvba_symbol::TypeLibResolver::dictionary_source`]); unset, the resolver decides.
+    pub fn with_dictionary_source(mut self, source: calcvba_symbol::DictionarySource) -> Self {
+        self.dictionary = Some(source);
+        self
     }
     /// Explicit source module kinds, supplied by the host rather than inferred from text.
     pub fn with_class_modules(mut self, names: Vec<String>) -> Self {
@@ -94,7 +102,7 @@ impl Provider {
                     });
             }
         }
-        let resolver = Libraries(&self.object_libraries, &*self.resolver);
+        let resolver = Libraries(&self.object_libraries, &*self.resolver, self.dictionary);
         let mut module = Module::load_project_graph(&manifests, &resolver).map_err(error)?;
         // Reuse the normal compiler retention pass for every unit, including
         // untyped Object/Variant defaults absent from source declarations.
@@ -214,7 +222,7 @@ impl Provider {
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
         };
-        let resolver = Libraries(&libraries, &*self.resolver);
+        let resolver = Libraries(&libraries, &*self.resolver, self.dictionary);
         let mut module = Module::load_project(&manifest, &resolver).map_err(error)?;
         // An untyped Object/Variant can arrive from any explicitly supplied
         // host interface, even when no source declaration mentions that type.
@@ -279,6 +287,7 @@ impl api::RuntimeProvider for Provider {
             resolver: self.resolver.clone(),
             class_modules: self.class_modules.clone(),
             document_modules: self.document_modules.clone(),
+            dictionary: self.dictionary,
             object_libraries: self
                 .object_libraries
                 .iter()
@@ -316,6 +325,7 @@ impl api::RuntimeProvider for Provider {
             resolver: self.resolver.clone(),
             class_modules: self.class_modules.clone(),
             document_modules: self.document_modules.clone(),
+            dictionary: self.dictionary,
             object_libraries: self
                 .object_libraries
                 .iter()
@@ -362,6 +372,7 @@ impl api::RuntimeProvider for Provider {
                 resolver: self.resolver.clone(),
                 class_modules: self.class_modules.clone(),
                 document_modules: self.document_modules.clone(),
+                dictionary: self.dictionary,
                 object_libraries: self.object_libraries.clone(),
             },
         }))
@@ -748,8 +759,15 @@ pub(crate) fn interface_id(iid: ComInterfaceIid) -> api::InterfaceId {
     bytes[8..].copy_from_slice(&iid.data4);
     bytes
 }
-struct Libraries<'a>(&'a [api::TypedObjectLibrary], &'a dyn TypeLibResolver);
+struct Libraries<'a>(
+    &'a [api::TypedObjectLibrary],
+    &'a dyn TypeLibResolver,
+    Option<calcvba_symbol::DictionarySource>,
+);
 impl TypeLibResolver for Libraries<'_> {
+    fn dictionary_source(&self) -> calcvba_symbol::DictionarySource {
+        self.2.unwrap_or_else(|| self.1.dictionary_source())
+    }
     fn interface_iid(
         &self,
         request: &calcvba_com::TypeLibResolveRequest,

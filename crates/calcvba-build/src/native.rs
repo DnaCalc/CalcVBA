@@ -210,7 +210,11 @@ fn build_native_artifact(
     } else {
         None
     };
-    let image = build_artifacts(&closure)?;
+    // Native images call the platform's Scripting runtime, as Excel does.
+    let image = build_artifacts(
+        &closure,
+        calcvba_symbol::DictionarySource::platform_default(),
+    )?;
     let linked = crate::native_link::link(&image.programs).map_err(native_error)?;
     let program = &linked;
     let mut roots = Vec::new();

@@ -247,6 +247,7 @@ fn real_dictionary_variant_members_and_array_values_use_only_native_slots() {
     for backend in backends() {
         let host = host();
         let module = Provider::with_host(host.clone())
+            .with_dictionary_source(calcvba_symbol::DictionarySource::platform_default())
             .compile(&project(
                 r#"
 Public Sub AddValue(ByVal d As Scripting.Dictionary, ByVal key As Variant, ByVal value As Variant)
@@ -480,7 +481,10 @@ Describe:
 End Function
 "#,
         );
-        let module = Provider::with_host(host.clone()).compile(&project).unwrap();
+        let module = Provider::with_host(host.clone())
+            .with_dictionary_source(calcvba_symbol::DictionarySource::platform_default())
+            .compile(&project)
+            .unwrap();
         let members: Vec<_> = module
             .com_interfaces()
             .iter()
@@ -1229,6 +1233,9 @@ fn owned_excel_imported_version_and_build_use_typed_slots() {
 struct FixtureTypes;
 struct ComplexFixtureTypes;
 impl calcvba_symbol::TypeLibResolver for ComplexFixtureTypes {
+    fn dictionary_source(&self) -> calcvba_symbol::DictionarySource {
+        calcvba_symbol::DictionarySource::platform_default()
+    }
     fn resolve(
         &self,
         request: &calcvba_com::TypeLibResolveRequest,
@@ -1617,6 +1624,9 @@ End Function
     }
 }
 impl calcvba_symbol::TypeLibResolver for FixtureTypes {
+    fn dictionary_source(&self) -> calcvba_symbol::DictionarySource {
+        calcvba_symbol::DictionarySource::platform_default()
+    }
     fn resolve(
         &self,
         request: &calcvba_com::TypeLibResolveRequest,

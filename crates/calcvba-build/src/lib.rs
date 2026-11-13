@@ -128,7 +128,7 @@ pub fn build_wrapped_com_server(
     let project_name = root_manifest.project_name.clone();
     let artifact_stem = artifact_stem(&project_name);
 
-    let ox_image = build_artifacts(&closure)?;
+    let ox_image = build_artifacts(&closure, calcvba_symbol::DictionarySource::Engine)?;
     let oxi_path = options.out_dir.join(format!("{artifact_stem}.oxi"));
     write_bytes(
         &oxi_path,
@@ -184,7 +184,7 @@ pub fn build_oximage(project_path: &Path, out_dir: &Path) -> Result<PathBuf, Bui
         .ok_or_else(|| BuildError::EmptyProjectClosure {
             path: project_path.display().to_string(),
         })?;
-    let image = build_artifacts(&closure)?;
+    let image = build_artifacts(&closure, calcvba_symbol::DictionarySource::Engine)?;
     let bytes = image
         .to_bytes()
         .map_err(|err| BuildError::Elaborate(err.to_string()))?;
@@ -232,8 +232,9 @@ fn validate_wrapped_com_server_project(
 /// VM3 and JIT execute this artifact; backend-specific admission happens when run.
 fn build_artifacts(
     closure: &[calcvba_symbol::manifest::SymbolProjectManifest],
+    dictionary: calcvba_symbol::DictionarySource,
 ) -> Result<calcvba_oxir::OxImage, BuildError> {
-    let typelibs = calcvba_symbol::CatalogTypeLibResolver;
+    let typelibs = BuildTypes(dictionary);
     let programs = calcvba_bind::bind_projects(closure, &typelibs)?;
     let ox_programs: Vec<calcvba_oxir::OxProgram> = programs
         .iter()
@@ -351,6 +352,28 @@ fn artifact_stem(project_name: &str) -> String {
         "OxVbaComServer".to_string()
     } else {
         out
+    }
+}
+
+/// The catalog resolver, with the build lane's choice of `Scripting.Dictionary`.
+struct BuildTypes(calcvba_symbol::DictionarySource);
+
+impl calcvba_symbol::TypeLibResolver for BuildTypes {
+    fn resolve(
+        &self,
+        request: &calcvba_com::TypeLibResolveRequest,
+    ) -> Option<calcvba_com::TypeLibMetadataBlob> {
+        calcvba_symbol::CatalogTypeLibResolver.resolve(request)
+    }
+    fn interface_iid(
+        &self,
+        request: &calcvba_com::TypeLibResolveRequest,
+        blob: &calcvba_com::TypeLibMetadataBlob,
+    ) -> Option<calcvba_com::ComInterfaceIid> {
+        calcvba_symbol::CatalogTypeLibResolver.interface_iid(request, blob)
+    }
+    fn dictionary_source(&self) -> calcvba_symbol::DictionarySource {
+        self.0
     }
 }
 

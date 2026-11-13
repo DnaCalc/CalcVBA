@@ -35,6 +35,8 @@ fn run_referenced(source: &str, jit: bool, references: Vec<sym::ProjectReference
         let mut policy = HostPolicy::native();
         policy.com_invocation_strategy = ComInvocationStrategy::DispatchOnly;
         engine.set_host_policy(policy);
+        // Windows parity runs use the platform's Scripting runtime, as Excel does.
+        engine.set_dictionary_source(calcvba_symbol::DictionarySource::platform_default());
         let manifest = sym::SymbolProjectManifest {
             project_name: "Main".into(),
             project_kind: sym::ProjectKind::Source,

@@ -20,7 +20,7 @@ use calcvba_hal::{
     traits::HostServices,
 };
 use calcvba_runtime::{ObjectRef, Variant};
-use calcvba_symbol::{CatalogTypeLibResolver, TypeLibResolver};
+use calcvba_symbol::{CatalogTypeLibResolver, DictionarySource, TypeLibResolver};
 
 use crate::runner::RuntimeProfileId;
 
@@ -309,6 +309,7 @@ pub struct Engine {
     host_callbacks: Option<Arc<dyn HostCallbacks>>,
     portable_com_projection: Option<Arc<PortableComProjection>>,
     typelib_resolver: Arc<dyn TypeLibResolver>,
+    dictionary_source: Option<DictionarySource>,
     host_services: Arc<dyn HostServices>,
 }
 
@@ -480,6 +481,7 @@ impl Engine {
             host_callbacks: None,
             portable_com_projection: None,
             typelib_resolver: Arc::new(CatalogTypeLibResolver),
+            dictionary_source: None,
             host_services: build_host_services(
                 runtime_profile.hal_profile(),
                 runtime_profile.runtime_class(),
@@ -580,6 +582,13 @@ impl Engine {
         self
     }
 
+    /// Where `Scripting.Dictionary` comes from (see
+    /// [`TypeLibResolver::dictionary_source`]); unset, the resolver decides. A policy that may not
+    /// activate COM classes always gets the engine class.
+    pub fn set_dictionary_source(&mut self, source: DictionarySource) {
+        self.dictionary_source = Some(source);
+    }
+
     pub fn set_typelib_resolver(&mut self, resolver: Arc<dyn TypeLibResolver>) {
         self.typelib_resolver = resolver;
     }
@@ -625,6 +634,16 @@ impl Engine {
 
     pub fn host_policy(&self) -> &HostPolicy {
         self.host_services.policy()
+    }
+
+    /// The resolver the binder sees: this engine's, except that `Scripting.Dictionary` is the
+    /// engine class whenever this engine's policy may not activate COM classes.
+    fn bind_types(&self) -> BindTypes<'_> {
+        BindTypes {
+            inner: &*self.typelib_resolver,
+            com_activation: self.host_policy().allow_com_activation,
+            dictionary: self.dictionary_source,
+        }
     }
 
     /// Replace the host services with a wrapper around the current ones, for example
@@ -841,7 +860,7 @@ impl Engine {
             .map(|manifest| self.manifest_with_runtime_conditional_target(manifest))
             .collect();
         let _policy = self.host_services.enter_com_policy();
-        let programs = match calcvba_bind::bind_projects(&closure, &*self.typelib_resolver) {
+        let programs = match calcvba_bind::bind_projects(&closure, &self.bind_types()) {
             Ok(p) => p,
             Err(e) => {
                 return Err(PhaseDiagnostic::from_diagnostic(OxDiagnostic::error(
@@ -931,7 +950,7 @@ impl Engine {
             .map(|manifest| self.manifest_with_runtime_conditional_target(manifest))
             .collect();
         let _policy = self.host_services.enter_com_policy();
-        let programs = match calcvba_bind::bind_projects(&closure, &*self.typelib_resolver) {
+        let programs = match calcvba_bind::bind_projects(&closure, &self.bind_types()) {
             Ok(p) => p,
             Err(e) => return Vm3Snapshot::Failed(format!("bind: {e}")),
         };
@@ -1099,7 +1118,7 @@ impl Engine {
     ) -> Vm3Snapshot {
         let manifest = self.manifest_with_runtime_conditional_target(manifest);
         let _policy = self.host_services.enter_com_policy();
-        let program = match calcvba_bind::bind_program(&manifest, &*self.typelib_resolver) {
+        let program = match calcvba_bind::bind_program(&manifest, &self.bind_types()) {
             Ok(p) => p,
             Err(e) => return Vm3Snapshot::Failed(format!("bind: {e}")),
         };
@@ -1141,7 +1160,7 @@ impl Engine {
     ) -> SnapshotOutcome {
         let manifest = self.manifest_with_runtime_conditional_target(manifest);
         let _policy = self.host_services.enter_com_policy();
-        let program = match calcvba_bind::bind_program(&manifest, &*self.typelib_resolver) {
+        let program = match calcvba_bind::bind_program(&manifest, &self.bind_types()) {
             Ok(p) => p,
             Err(e) => return SnapshotOutcome::Failed(format!("bind: {e}")),
         };
@@ -1217,7 +1236,7 @@ impl Engine {
     ) -> SnapshotOutcome {
         let manifest = self.manifest_with_runtime_conditional_target(manifest);
         let _policy = self.host_services.enter_com_policy();
-        let program = match calcvba_bind::bind_program(&manifest, &*self.typelib_resolver) {
+        let program = match calcvba_bind::bind_program(&manifest, &self.bind_types()) {
             Ok(p) => p,
             Err(e) => return SnapshotOutcome::Failed(format!("bind: {e}")),
         };
@@ -1253,6 +1272,37 @@ impl Engine {
                     SnapshotOutcome::Failed(err.to_string())
                 }
             }
+        }
+    }
+}
+
+/// See [`Engine::bind_types`].
+struct BindTypes<'a> {
+    inner: &'a dyn TypeLibResolver,
+    com_activation: bool,
+    dictionary: Option<DictionarySource>,
+}
+
+impl TypeLibResolver for BindTypes<'_> {
+    fn resolve(
+        &self,
+        request: &calcvba_com::TypeLibResolveRequest,
+    ) -> Option<calcvba_com::TypeLibMetadataBlob> {
+        self.inner.resolve(request)
+    }
+    fn interface_iid(
+        &self,
+        request: &calcvba_com::TypeLibResolveRequest,
+        blob: &calcvba_com::TypeLibMetadataBlob,
+    ) -> Option<calcvba_com::ComInterfaceIid> {
+        self.inner.interface_iid(request, blob)
+    }
+    fn dictionary_source(&self) -> DictionarySource {
+        if self.com_activation {
+            self.dictionary
+                .unwrap_or_else(|| self.inner.dictionary_source())
+        } else {
+            DictionarySource::Engine
         }
     }
 }

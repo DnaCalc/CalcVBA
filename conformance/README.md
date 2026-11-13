@@ -13,3 +13,9 @@ Captured Excel return values and their VBA probes live under `oracle/`.
 
 Run `./scripts/check.ps1` for the ordinary repository check. Live Excel
 comparisons are opt-in; see the root README and `scripts/README.md`.
+
+Third-party corpus VBA runs under the Safe capability policy unless approved.
+Riff and Wasabi (`.external/vba-corpus/`, and DnaCalc's
+`crates/calc-vba/tests/corpus/`, approved in its `policy-approvals.json`) may run
+unguarded, with real `Declare` and COM calls, in tests on the Windows development
+machine: owner decision 2026-11-13, until something gives reason for concern.

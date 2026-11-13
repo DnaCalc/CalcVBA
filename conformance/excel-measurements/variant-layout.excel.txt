@@ -1,0 +1,83 @@
+STRIDE.Variant=24
+STRIDE.Long=4 a3-a0=12
+STRIDE.String=8
+STRIDE.UdtWithVariant=40
+BYTES.Long=0300000000000000 0500000000000000
+BYTES.Double=0500000000000000 000000000000F83F
+BYTES.Decimal=0E00010006000000 396C362F819F4EB1
+BYTES.Currency=0600000000000000 983A000000000000
+BYTES.Date=0700000000000000 000000000000F03F
+BYTES.LongLong=1400000000000000 0700000000000000
+VT.Empty=&H0
+VT.Null=&H1
+VT.Integer=&H2
+VT.Long=&H3
+VT.Single=&H4
+VT.Double=&H5
+VT.Currency=&H6
+VT.Date=&H7
+VT.String=&H8
+VT.Boolean=&HB
+VT.Byte=&H11
+VT.LongLong=&H14
+VT.Decimal=&HE
+VT.Error=&HA
+VT.Nothing=&H9
+VT.Collection=&H9
+PAYLOAD.Boolean=FFFF
+PAYLOAD.Error=FA070A80
+PAYLOAD.Nothing=0000000000000000
+PAYLOAD.Integer=FEFF
+MISSING=&HA scode=04000280 IsMissing=True
+ARRAY.ArrayFn=vt=&H200C cDims=1 fFeatures=&H880 cbElements=24 vtPrefix=&HC
+ARRAY.Long=vt=&H2003 cDims=1 fFeatures=&H80 cbElements=4 vtPrefix=&H3
+ARRAY.Variant=vt=&H200C cDims=1 fFeatures=&H880 cbElements=24 vtPrefix=&HC
+ARRAY.String=vt=&H2008 cDims=1 fFeatures=&H180 cbElements=8 vtPrefix=&H8
+ARRAY.Double=vt=&H2005 cDims=1 fFeatures=&H80 cbElements=8 vtPrefix=&H5
+ARRAY.UnallocatedLong=vt=&H2003 null
+ARRAY.DynamicVariant=vt=&H200C cDims=1 fFeatures=&H880 cbElements=24 vtPrefix=&HC
+BIND.Long=&H4003 refIsTarget=True cellIsTarget=False TypeName=Long VarType=3
+BIND.String=&H4008 refIsTarget=True cellIsTarget=False TypeName=String VarType=8
+BIND.Double=&H4005 refIsTarget=True cellIsTarget=False TypeName=Double VarType=5
+BIND.Boolean=&H400B refIsTarget=True cellIsTarget=False TypeName=Boolean VarType=11
+BIND.Variant=&H2 refIsTarget=False cellIsTarget=True TypeName=Integer VarType=2
+BIND.LongElement=&H4003 refIsTarget=True cellIsTarget=False TypeName=Long VarType=3
+BIND.VariantElement=&H0 refIsTarget=False cellIsTarget=True TypeName=Empty VarType=0
+BIND.UdtLongField=&H4003 refIsTarget=True cellIsTarget=False TypeName=Long VarType=3
+BIND.UdtStringField=&H4008 refIsTarget=True cellIsTarget=False TypeName=String VarType=8
+BIND.Expression=&H3 refIsTarget=False cellIsTarget=False TypeName=Long VarType=3
+BIND.Parenthesised=&H3 refIsTarget=False cellIsTarget=False TypeName=Long VarType=3
+BIND.LongArray=&H6003 refIsTarget=False cellIsTarget=False TypeName=Long() VarType=8195
+BIND.ObjectVar=&H4009 refIsTarget=True cellIsTarget=False TypeName=Collection VarType=9
+BIND.TypedObjectVar=&H4009 refIsTarget=False cellIsTarget=False TypeName=Collection VarType=9 *ref=ObjPtr:True
+BIND.ByValLong=&H3
+ASSIGN.LongFromString=12
+ASSIGN.LongFrom2_5=2
+ASSIGN.LongFrom3_5=4
+ASSIGN.LongFromText=ERR13 n=1
+ASSIGN.LongFromNull=ERR94 n=1
+ASSIGN.LongOverflow=ERR6 n=1
+ASSIGN.StringFrom42=42
+ASSIGN.VariantFromText=String:text
+ASSIGN.UdtField=9
+ASSIGN.LongElement=8
+NESTED.Long=outer=inner:True
+NESTED.Variant=outer=inner:True outer=caller:True
+OBJBACK.SetNothing=True
+OBJBACK.SetNew=True
+COPY.Double24=Double:12345.678
+COPY.Decimal24=Decimal:1.25
+COPY.Decimal16=Decimal:1.25
+COPY.String24=String:shared sameBSTR=True
+WRITE.Long=77
+WRITE.StoredPointerTwice=78
+WRITE.VariantPayload=77
+WRITE.VariantElement=77
+WRITE.UdtField=77
+WRITE.LongArrayBlock=1,2,3,4
+BSTR.Prefix=10 LenB=10 nullStrPtr=0
+UDT.TSimple=Len=12 LenB=16
+UDT.TWithVar=Len=30 LenB=40 v=8 b=32
+UDT.TNested=Len=90 LenB=112 t=8 arr1=48 arr2=72 s=96
+UDT.FieldVariantVt=&H8
+FOREACH.LongItem=&H3

@@ -22,6 +22,7 @@ pub fn value_helper_version(name: &str) -> u16 {
     }
 }
 use crate::typed::{PhysicalSlots, ScalarLower, machine_type};
+use calcvba_automation::abi::{PAYLOAD_OFFSET, VARIANT_SIZE};
 use calcvba_oxir::OxArg;
 use calcvba_rt_abi::host_entry::{LinkedTarget, ScalarLayout, ScalarType};
 use calcvba_rt_abi::native_export::Context as NativeContext;
@@ -95,7 +96,7 @@ impl NativeScalar {
                 .expect("admitted Automation layout")
                 .0
         } else if self.layout.result == ScalarType::Variant {
-            24
+            VARIANT_SIZE
         } else {
             8
         }
@@ -590,7 +591,7 @@ pub fn compile_native_scalars(
         for (i, ty) in layout.slots.iter().enumerate() {
             offsets.push(storage_size);
             let size = if *ty == ScalarType::Variant {
-                24
+                VARIANT_SIZE
             } else if let Some(record) = layout.record_slots.get(&i) {
                 record
                     .automation_shape()
@@ -621,7 +622,7 @@ pub fn compile_native_scalars(
         .map(NativeScalar::result_size)
         .max()
         .unwrap_or(8)
-        .max(24)
+        .max(VARIANT_SIZE)
         .next_multiple_of(8) as u32;
     let class_entries: HashMap<_, _> = plans
         .values()
@@ -1444,7 +1445,7 @@ fn global_offsets(program: &OxProgram) -> Vec<usize> {
     for global in &program.globals {
         offsets.push(size);
         size += if global.ty == OxTy::Variant {
-            24
+            VARIANT_SIZE
         } else if let OxTy::Record(id) = global.ty {
             vba_record_layout_for_fields(&program.record_layouts[id.0])
                 .expect("admitted global record")
@@ -1483,16 +1484,19 @@ fn emit_native_call(
     for (argument_index, (ty, by_ref)) in parameters.iter().zip(by_ref).enumerate() {
         let arg = args.get(argument_index).unwrap_or(&OxArg::Omitted);
         if matches!(arg, OxArg::Omitted) {
-            let slot =
-                b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 24, 3));
+            let slot = b.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                VARIANT_SIZE as u32,
+                3,
+            ));
             let empty = b.ins().iconst(types::I64, 0);
-            for offset in [0, 8, 16] {
+            for offset in (0..VARIANT_SIZE as i32).step_by(8) {
                 b.ins().stack_store(empty, slot, offset);
             }
             let tag = b.ins().iconst(types::I32, 10);
             let missing = b.ins().iconst(types::I32, i64::from(0x80020004u32 as i32));
             b.ins().stack_store(tag, slot, 0);
-            b.ins().stack_store(missing, slot, 8);
+            b.ins().stack_store(missing, slot, PAYLOAD_OFFSET as i32);
             let pointer = b.ins().stack_addr(types::I64, slot, 0);
             call_args.push(pointer);
             copies.push((pointer, ScalarType::Variant, None));
@@ -1511,10 +1515,13 @@ fn emit_native_call(
             && !matches!(ty, ScalarType::Record | ScalarType::Array)
             && values.lower.layout.operand_type(&operand) != Ok(*ty)
         {
-            let slot =
-                b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 24, 3));
+            let slot = b.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                VARIANT_SIZE as u32,
+                3,
+            ));
             let empty = b.ins().iconst(types::I64, 0);
-            for offset in [0, 8, 16] {
+            for offset in (0..VARIANT_SIZE as i32).step_by(8) {
                 b.ins().stack_store(empty, slot, offset);
             }
             let pointer = b.ins().stack_addr(types::I64, slot, 0);
@@ -1565,7 +1572,7 @@ fn emit_native_call(
                             .0
                             .next_multiple_of(8) as u32
                     } else if *ty == ScalarType::Variant {
-                        24
+                        VARIANT_SIZE as u32
                     } else {
                         8
                     };
@@ -1905,11 +1912,11 @@ pub fn compile_native_wrapper(
         );
         let output = b.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot,
-            body.result_size().max(24).next_multiple_of(8) as u32,
+            body.result_size().max(VARIANT_SIZE).next_multiple_of(8) as u32,
             3,
         ));
         let empty = b.ins().iconst(types::I64, 0);
-        for offset in (0..body.result_size().max(24).next_multiple_of(8)).step_by(8) {
+        for offset in (0..body.result_size().max(VARIANT_SIZE).next_multiple_of(8)).step_by(8) {
             b.ins().stack_store(empty, output, offset as i32);
         }
         let output_ptr = b.ins().stack_addr(types::I64, output, 0);

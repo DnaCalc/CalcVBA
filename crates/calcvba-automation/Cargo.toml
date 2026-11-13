@@ -1,0 +1,21 @@
+[package]
+name = "calcvba-automation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Automation value layouts (VARIANT, BSTR, SAFEARRAY, IRecordInfo) shared by CalcVBA and other in-process libraries."
+
+[dependencies]
+
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+] }
+
+[lints]
+workspace = true

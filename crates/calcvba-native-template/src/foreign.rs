@@ -1,5 +1,6 @@
 //! Individual native Declare calls. Fixed signatures are prepared once per
 //! compiled call site; accepted calls and callbacks remain on the owning VBA thread.
+use calcvba_automation::abi::VARIANT_SIZE;
 use calcvba_com::windows_ffi_bridge::{
     self as ffi, FfiReturnType, OwnedLibrary, PreparedNativeCall,
 };
@@ -124,7 +125,7 @@ impl Import {
                     layout.declare_shape().map_err(|_| 13)?.0,
                 )
             } else if result_kind == 12 {
-                PreparedNativeCall::aggregate_return(address, &types, 24)
+                PreparedNativeCall::aggregate_return(address, &types, VARIANT_SIZE)
             } else {
                 PreparedNativeCall::new(address, &types, scalar(result_kind)?)
             };

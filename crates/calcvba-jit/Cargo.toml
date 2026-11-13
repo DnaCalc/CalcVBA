@@ -14,6 +14,7 @@ cranelift-frontend.workspace = true
 cranelift-jit.workspace = true
 cranelift-module.workspace = true
 cranelift-native.workspace = true
+calcvba-automation.workspace = true
 calcvba-bundle.workspace = true
 calcvba-com.workspace = true
 calcvba-eval.workspace = true

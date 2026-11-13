@@ -5,6 +5,7 @@ members = [
     "crates/calcvba-diagnostics",
     "crates/calcvba-hal",
     "crates/calcvba-syntax",
+    "crates/calcvba-automation",
     "crates/calcvba-runtime",
     "crates/calcvba-jit",
     "crates/calcvba-pe",
@@ -62,6 +63,7 @@ calcvba-office = { path = "crates/calcvba-office" }
 calcvba-syntax = { path = "crates/calcvba-syntax" }
 calcvba-diagnostics = { path = "crates/calcvba-diagnostics" }
 calcvba-hal = { path = "crates/calcvba-hal" }
+calcvba-automation = { path = "crates/calcvba-automation" }
 calcvba-runtime = { path = "crates/calcvba-runtime" }
 calcvba-jit = { path = "crates/calcvba-jit" }
 calcvba-pe = { path = "crates/calcvba-pe" }

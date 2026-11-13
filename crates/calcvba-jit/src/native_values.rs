@@ -803,7 +803,7 @@ impl Values<'_> {
         }
         let ty = self.lower.layout.operand_type(operand).unwrap();
         if matches!(operand, OxOperand::Const(OxConst::Empty | OxConst::Null)) {
-            let mut bytes = vec![0; 24];
+            let mut bytes = vec![0; VARIANT_SIZE];
             bytes[0] = u8::from(matches!(operand, OxOperand::Const(OxConst::Null)));
             return data(module, b, bytes, 8);
         }
@@ -1313,11 +1313,11 @@ impl Values<'_> {
                 );
                 let state = b.ins().global_value(types::I64, state);
                 let arguments = b.ins().stack_addr(types::I64, vector, 0);
-                let output_size = result_record.as_ref().map_or(24, |r| {
+                let output_size = result_record.as_ref().map_or(VARIANT_SIZE, |r| {
                     r.automation_shape()
                         .expect("admitted return record")
                         .0
-                        .max(24)
+                        .max(VARIANT_SIZE)
                         .next_multiple_of(8)
                 });
                 let output = b.create_sized_stack_slot(StackSlotData::new(

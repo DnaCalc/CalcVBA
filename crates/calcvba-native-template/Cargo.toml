@@ -19,6 +19,7 @@ name = "calcvba-native-com-exe-template"
 path = "src/com_exe_main.rs"
 
 [dependencies]
+calcvba-automation.workspace = true
 calcvba-host-api.workspace = true
 serde_json.workspace = true
 calcvba-bundle = { path = "../calcvba-bundle" }

@@ -10,7 +10,8 @@ use windows_sys::{
     Win32::{
         Foundation::{SysAllocStringByteLen, SysFreeString, SysStringByteLen},
         System::{
-            Com::{CoTaskMemAlloc, CoTaskMemFree},
+            Com::{CoTaskMemAlloc, CoTaskMemFree, SAFEARRAY},
+            Ole::{SafeArrayCopy, SafeArrayDestroy},
             Variant::{VARIANT, VariantClear, VariantCopyInd},
         },
     },
@@ -20,6 +21,28 @@ use windows_sys::{
 const E_NOINTERFACE: i32 = 0x80004002u32 as i32;
 const E_NOTIMPL: i32 = 0x80004001u32 as i32;
 const E_OUTOFMEMORY: i32 = 0x8007000eu32 as i32;
+
+/// AddRef through the interface's own IUnknown (null is Nothing).
+unsafe fn interface_add_ref(pointer: *mut c_void) {
+    if !pointer.is_null() {
+        // SAFETY: a live interface pointer; slot 1 of every COM vtable is AddRef.
+        unsafe {
+            let table = *pointer.cast::<*const unsafe extern "system" fn(*mut c_void) -> u32>();
+            (*table.add(1))(pointer);
+        }
+    }
+}
+
+/// Release through the interface's own IUnknown (null is Nothing).
+unsafe fn interface_release(pointer: *mut c_void) {
+    if !pointer.is_null() {
+        // SAFETY: a live interface pointer owning one reference; slot 2 is Release.
+        unsafe {
+            let table = *pointer.cast::<*const unsafe extern "system" fn(*mut c_void) -> u32>();
+            (*table.add(2))(pointer);
+        }
+    }
+}
 
 unsafe fn shape<'a>(descriptor: *const u32) -> (usize, &'a [u32]) {
     // SAFETY: the caller supplies a compiler-generated or retained descriptor.
@@ -49,6 +72,19 @@ pub unsafe fn clear_record(cell: *mut u8, descriptor: *const u32) -> i32 {
                         return hr;
                     }
                 }
+                9 | 13 => {
+                    let value = cell.cast::<*mut c_void>().replace(ptr::null_mut());
+                    interface_release(value);
+                }
+                kind if kind & 0x2000 != 0 => {
+                    let value = cell.cast::<*mut SAFEARRAY>().replace(ptr::null_mut());
+                    if !value.is_null() {
+                        let hr = SafeArrayDestroy(value);
+                        if hr < 0 {
+                            return hr;
+                        }
+                    }
+                }
                 _ => return 0x80070057u32 as i32,
             }
         }
@@ -74,13 +110,32 @@ pub unsafe fn copy_record(dst: *mut u8, src: *const u8, descriptor: *const u32) 
             ptr::write_bytes(
                 stage.add(field[0] as usize),
                 0,
-                if field[1] == 12 { 24 } else { 8 },
+                if field[1] == 12 {
+                    std::mem::size_of::<VARIANT>()
+                } else {
+                    std::mem::size_of::<*mut c_void>()
+                },
             );
         }
         for field in fields.chunks_exact(2) {
             let offset = field[0] as usize;
             let hr = if field[1] == 12 {
                 VariantCopyInd(stage.add(offset).cast(), src.add(offset).cast())
+            } else if matches!(field[1], 9 | 13) {
+                let value = src.add(offset).cast::<*mut c_void>().read();
+                interface_add_ref(value);
+                stage.add(offset).cast::<*mut c_void>().write(value);
+                0
+            } else if field[1] & 0x2000 != 0 {
+                let value = src.add(offset).cast::<*mut SAFEARRAY>().read();
+                let mut copy = ptr::null_mut();
+                let hr = if value.is_null() {
+                    0
+                } else {
+                    SafeArrayCopy(value, &mut copy)
+                };
+                stage.add(offset).cast::<*mut SAFEARRAY>().write(copy);
+                hr
             } else {
                 let source = src.add(offset).cast::<*mut u16>().read();
                 let len = SysStringByteLen(source);

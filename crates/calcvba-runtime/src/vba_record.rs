@@ -1,5 +1,5 @@
 use crate::{
-    Variant, VariantCore,
+    ObjectRef, RawRuntimeIUnknown, Variant, VariantCore,
     bstr::{BStr, borrow_raw_bstr},
     safe_array::{SafeArray, SafeArrayBound},
 };
@@ -32,10 +32,13 @@ impl VbaRecordLayout {
                 F::FixedString { .. } => 0x1008,
                 F::Record(_) => 36,
                 F::FixedArray { .. } => 0x2000,
+                F::Object => 9,
+                F::DynamicArray { .. } => 0x6000,
             };
             words.push(tag);
             match kind {
                 F::FixedString { len } => words.push(*len as u32),
+                F::DynamicArray { element } => field(element, words),
                 F::Record(layout) => record(layout, words),
                 F::FixedArray { element, bounds } => {
                     words.push(bounds.len() as u32);
@@ -267,6 +270,13 @@ pub enum VbaRecordFieldKind {
         element: Box<VbaRecordFieldKind>,
         bounds: Vec<SafeArrayBound>,
     },
+    /// An object reference (`As Object`, `As Collection`, a class): the interface pointer, as
+    /// in VBA (null is `Nothing`).
+    Object,
+    /// A dynamic array (`d() As Long`): the `SAFEARRAY*`, as in VBA (null while unallocated).
+    DynamicArray {
+        element: Box<VbaRecordFieldKind>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -478,6 +488,11 @@ impl VbaRecordLayout {
         Ok(())
     }
 
+    /// VBA's `Len` of a value of this type: the sum of its fields' unpadded lengths.
+    pub fn vba_len(&self) -> usize {
+        self.fields().iter().map(|field| field.kind.vba_len()).sum()
+    }
+
     pub fn supports_lset_byte_overlay(&self) -> bool {
         self.fields()
             .iter()
@@ -486,10 +501,57 @@ impl VbaRecordLayout {
 }
 
 impl VbaRecordFieldKind {
+    /// The SAFEARRAY element `VARTYPE` for an array of this kind (`VT_I4` for Long, `VT_RECORD`
+    /// for a UDT, ...). Objects are stored in Variant arrays by this runtime (dc-yqq0.6).
+    pub fn array_element_vartype(&self) -> Result<u16, String> {
+        use crate::safe_array::*;
+        Ok(match self {
+            Self::Variant | Self::Object => VT_VARIANT_VALUE,
+            Self::Integer => VT_I2_VALUE,
+            Self::Long => VT_I4_VALUE,
+            Self::LongLong => VT_I8_VALUE,
+            Self::Byte => VT_UI1_VALUE,
+            Self::Single => VT_R4_VALUE,
+            Self::Double => VT_R8_VALUE,
+            Self::Currency => VT_CY_VALUE,
+            Self::Date => VT_DATE_VALUE,
+            Self::String | Self::FixedString { .. } => VT_BSTR_VALUE,
+            Self::Boolean => VT_BOOL_VALUE,
+            Self::Record(_) => VT_RECORD_VALUE,
+            Self::FixedArray { .. } | Self::DynamicArray { .. } => {
+                return Err("array of arrays".to_string());
+            }
+        })
+    }
+
+    /// VBA's `Len` contribution of this field: the unpadded storage, counting a Variant as a
+    /// whole `VARIANT`, a String, object or dynamic array as one pointer, and a `String * n`
+    /// as `n` (Excel x64: `{Long; Variant; Integer}` is 30, `{Byte; Object; Byte}` 10,
+    /// `{Byte; String * 3; Byte; Long}` 9).
+    pub fn vba_len(&self) -> usize {
+        let pointer = core::mem::size_of::<*const ()>();
+        match self {
+            Self::Variant => core::mem::size_of::<VariantCore>(),
+            Self::String | Self::Object | Self::DynamicArray { .. } => pointer,
+            Self::FixedString { len } => *len,
+            Self::Record(layout) => layout.vba_len(),
+            Self::FixedArray { element, bounds } => {
+                element.vba_len() * fixed_array_total_len(bounds).unwrap_or(0)
+            }
+            _ => self.storage_shape().map_or(0, |(size, _)| size),
+        }
+    }
+
     pub fn file_len(&self) -> Result<usize, String> {
         let len = match self {
             Self::Variant => {
                 return Err("Variant record field file length is not implemented".to_string());
+            }
+            Self::Object | Self::DynamicArray { .. } => {
+                return Err(
+                    "object or dynamic-array record field file length is not implemented"
+                        .to_string(),
+                );
             }
             Self::String => {
                 return Err(
@@ -521,6 +583,7 @@ impl VbaRecordFieldKind {
                 core::mem::size_of::<VariantCore>(),
                 core::mem::align_of::<VariantCore>(),
             ),
+            Self::Object | Self::DynamicArray { .. } => pointer_shape,
             Self::Integer => (core::mem::size_of::<i16>(), core::mem::align_of::<i16>()),
             Self::Long => (core::mem::size_of::<i32>(), core::mem::align_of::<i32>()),
             Self::LongLong => (core::mem::size_of::<i64>(), core::mem::align_of::<i64>()),
@@ -599,12 +662,15 @@ impl VbaRecordFieldKind {
             Self::Variant => {
                 Err("Variant fields carry nested VARIANT state, not plain native bytes".into())
             }
+            Self::Object | Self::DynamicArray { .. } => {
+                Err("object and dynamic-array fields carry owned pointers, not plain bytes".into())
+            }
         }
     }
 
     fn supports_lset_byte_overlay(&self) -> bool {
         match self {
-            Self::Variant | Self::String => false,
+            Self::Variant | Self::String | Self::Object | Self::DynamicArray { .. } => false,
             Self::Record(layout) => layout.supports_lset_byte_overlay(),
             Self::FixedArray { element, .. } => element.supports_lset_byte_overlay(),
             Self::Integer
@@ -819,6 +885,21 @@ impl VbaRecord {
             VbaRecordFieldKind::FixedArray { bounds, .. } => {
                 Ok(Some((bounds.clone(), fixed_array_total_len(bounds)?)))
             }
+            VbaRecordFieldKind::DynamicArray { element } => {
+                let element_vt = element.array_element_vartype()?;
+                // SAFETY: the field holds this record's owned SAFEARRAY* (or null).
+                let raw = unsafe {
+                    *self
+                        .field_ptr_by_index(index)?
+                        .cast::<*mut core::ffi::c_void>()
+                };
+                if raw.is_null() {
+                    return Ok(None);
+                }
+                // SAFETY: a live descriptor owned by this record for the view's lifetime.
+                let view = unsafe { Variant::borrowed_array_view(raw, element_vt) };
+                Ok(view.safearray_bounds_len())
+            }
             _ => Ok(None),
         }
     }
@@ -850,6 +931,21 @@ impl VbaRecord {
                         element,
                     )?
                 }))
+            }
+            VbaRecordFieldKind::DynamicArray { element } => {
+                let element_vt = element.array_element_vartype()?;
+                // SAFETY: the field holds this record's owned SAFEARRAY* (or null).
+                let raw = unsafe {
+                    *self
+                        .field_ptr_by_index(index)?
+                        .cast::<*mut core::ffi::c_void>()
+                };
+                if raw.is_null() {
+                    return Ok(None);
+                }
+                // SAFETY: a live descriptor owned by this record for the view's lifetime.
+                let view = unsafe { Variant::borrowed_array_view(raw, element_vt) };
+                Ok(view.safearray_element(flat).transpose()?)
             }
             _ => Ok(None),
         }
@@ -894,6 +990,23 @@ impl VbaRecord {
                         value,
                     )?;
                 }
+                Ok(Some(()))
+            }
+            VbaRecordFieldKind::DynamicArray { element } => {
+                let element_vt = element.array_element_vartype()?;
+                // SAFETY: the field holds this record's owned SAFEARRAY* (or null); `&mut self`
+                // gives exclusive access, and element writes keep the descriptor in place.
+                let raw = unsafe {
+                    *self
+                        .field_mut_ptr_by_index(index)?
+                        .cast::<*mut core::ffi::c_void>()
+                };
+                if raw.is_null() {
+                    return Ok(None);
+                }
+                // SAFETY: `raw` is the field's live, non-null descriptor of `element_vt` elements, owned by this record and outliving the view.
+                let mut view = unsafe { Variant::borrowed_array_view(raw, element_vt) };
+                view.set_safearray_element(flat, value)?;
                 Ok(Some(()))
             }
             _ => Ok(None),
@@ -1200,6 +1313,31 @@ unsafe fn clone_field_into_live(
                 drop(unsafe { BStr::from_raw_bstr(previous) });
             }
         }
+        VbaRecordFieldKind::Object => {
+            // SAFETY: `src` holds the field's interface pointer (null for Nothing); the copy
+            // takes its own reference before the destination is replaced.
+            let raw = unsafe { *src.cast::<*mut RawRuntimeIUnknown>() };
+            // SAFETY: `raw` is a live interface pointer or null.
+            let copy = unsafe { ObjectRef::from_raw_iunknown_addref(raw) }
+                .map_or(ptr::null_mut(), ObjectRef::into_raw_iunknown);
+            // SAFETY: `dst` is a live pointer slot; the reference it held is released.
+            let previous = unsafe { dst.cast::<*mut RawRuntimeIUnknown>().replace(copy) };
+            // SAFETY: `previous` is the reference the slot owned, released once.
+            drop(unsafe { ObjectRef::from_raw_iunknown_owned(previous) });
+        }
+        VbaRecordFieldKind::DynamicArray { .. } => {
+            // SAFETY: `src` holds the field's owned SAFEARRAY* (null while unallocated).
+            let raw = unsafe { *src.cast::<*mut core::ffi::c_void>() };
+            // SAFETY: `raw` is a live CalcVBA SAFEARRAY descriptor or null.
+            let copy = match unsafe { SafeArray::try_clone_from_raw_safearray(raw) }? {
+                Some(array) => array.into_raw_safearray_ptr(),
+                None => ptr::null_mut(),
+            };
+            // SAFETY: `dst` is a live pointer slot that owned its previous descriptor.
+            let previous = unsafe { dst.cast::<*mut core::ffi::c_void>().replace(copy) };
+            // SAFETY: `previous` is the descriptor the slot owned, destroyed once.
+            drop(unsafe { SafeArray::from_raw_safearray_owned(previous) });
+        }
         VbaRecordFieldKind::Record(_) | VbaRecordFieldKind::FixedArray { .. } => {
             // SAFETY: forwards this function's live-source contract. Preparation
             // completes recursively in an owned guard before the one-shot swap.
@@ -1232,6 +1370,18 @@ unsafe fn drop_field_at(ptr: *mut u8, kind: &VbaRecordFieldKind) {
                 // SAFETY: string fields own the BSTR pointer stored in the record slot.
                 let _ = unsafe { BStr::from_raw_bstr(raw) };
             }
+        }
+        VbaRecordFieldKind::Object => {
+            // SAFETY: the slot owns one reference to this interface pointer (or is null).
+            let raw = unsafe { *ptr.cast::<*mut RawRuntimeIUnknown>() };
+            // SAFETY: the reference the slot owned, released once as the record drops.
+            drop(unsafe { ObjectRef::from_raw_iunknown_owned(raw) });
+        }
+        VbaRecordFieldKind::DynamicArray { .. } => {
+            // SAFETY: the slot owns this SAFEARRAY descriptor (or is null).
+            let raw = unsafe { *ptr.cast::<*mut core::ffi::c_void>() };
+            // SAFETY: the descriptor the slot owned, destroyed once as the record drops.
+            drop(unsafe { SafeArray::from_raw_safearray_owned(raw) });
         }
         VbaRecordFieldKind::Record(layout) => {
             for field in layout.fields() {
@@ -1311,6 +1461,26 @@ unsafe fn read_field_variant_at(
         }
         // SAFETY: Boolean is stored as a VBA `i16` (0 / -1); slot is an aligned `i16`.
         VbaRecordFieldKind::Boolean => Variant::from_bool(unsafe { *ptr.cast::<i16>() != 0 }),
+        VbaRecordFieldKind::Object => {
+            // SAFETY: the slot holds the field's interface pointer (null for Nothing); the
+            // returned Variant takes its own reference.
+            let raw = unsafe { *ptr.cast::<*mut RawRuntimeIUnknown>() };
+            // SAFETY: `raw` is a live interface pointer or null.
+            match unsafe { ObjectRef::from_raw_iunknown_addref(raw) } {
+                Some(object) => Variant::from_object_ref(object),
+                None => Variant::nothing(),
+            }
+        }
+        VbaRecordFieldKind::DynamicArray { element } => {
+            // SAFETY: the slot holds the field's owned SAFEARRAY* (null while unallocated);
+            // reading the field as a value copies the array, as VBA does.
+            let raw = unsafe { *ptr.cast::<*mut core::ffi::c_void>() };
+            // SAFETY: `raw` is a live CalcVBA SAFEARRAY descriptor or null.
+            match unsafe { SafeArray::try_clone_from_raw_safearray(raw) }? {
+                Some(array) => Variant::from_safearray(array),
+                None => Variant::unallocated_array(element.array_element_vartype()?),
+            }
+        }
         VbaRecordFieldKind::Record(layout) => {
             // SAFETY: the nested record slot at `ptr` is a live payload laid out by
             // `layout`; `clone_record_from_ptr` deep-copies it without consuming it.
@@ -1341,33 +1511,19 @@ fn materialize_fixed_array(
     element: &VbaRecordFieldKind,
     values: Vec<Variant>,
 ) -> Result<SafeArray, String> {
-    use crate::safe_array::*;
-    let vartype = match element {
-        VbaRecordFieldKind::Variant => VT_VARIANT_VALUE,
-        VbaRecordFieldKind::Integer => VT_I2_VALUE,
-        VbaRecordFieldKind::Long => VT_I4_VALUE,
-        VbaRecordFieldKind::LongLong => VT_I8_VALUE,
-        VbaRecordFieldKind::Byte => VT_UI1_VALUE,
-        VbaRecordFieldKind::Single => VT_R4_VALUE,
-        VbaRecordFieldKind::Double => VT_R8_VALUE,
-        VbaRecordFieldKind::Currency => VT_CY_VALUE,
-        VbaRecordFieldKind::Date => VT_DATE_VALUE,
-        VbaRecordFieldKind::String | VbaRecordFieldKind::FixedString { .. } => VT_BSTR_VALUE,
-        VbaRecordFieldKind::Boolean => VT_BOOL_VALUE,
-        VbaRecordFieldKind::Record(layout) => {
-            let records = values
-                .into_iter()
-                .map(|value| {
-                    value
-                        .as_vba_record()
-                        .ok_or_else(|| "fixed record-array element is not a record".to_string())
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            return SafeArray::from_vba_records_nd(bounds.to_vec(), layout.clone(), records)
-                .map(|array| array.with_fixed_size(true));
-        }
-        VbaRecordFieldKind::FixedArray { .. } => return Err("nested fixed-array element".into()),
-    };
+    if let VbaRecordFieldKind::Record(layout) = element {
+        let records = values
+            .into_iter()
+            .map(|value| {
+                value
+                    .as_vba_record()
+                    .ok_or_else(|| "fixed record-array element is not a record".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        return SafeArray::from_vba_records_nd(bounds.to_vec(), layout.clone(), records)
+            .map(|array| array.with_fixed_size(true));
+    }
+    let vartype = element.array_element_vartype()?;
     SafeArray::from_typed_variants_nd(bounds.to_vec(), vartype, values)
         .map(|array| array.with_fixed_size(true))
 }
@@ -1454,6 +1610,34 @@ unsafe fn write_field_variant_at(
                 .ok_or_else(|| "Date record field requires Date value".to_string())?;
             // SAFETY: Date stores an `f64` serial; slot is an aligned `f64`.
             unsafe { ptr.cast::<f64>().write(value) };
+        }
+        VbaRecordFieldKind::Object => {
+            if value.vtype() != crate::VarType::Object {
+                return Err("Object record field requires an object reference".to_string());
+            }
+            let raw = value
+                .as_object_ref()
+                .map_or(ptr::null_mut(), ObjectRef::into_raw_iunknown);
+            // SAFETY: `ptr` is a live pointer slot; the new reference is owned before the
+            // previous one is released.
+            let previous = unsafe { ptr.cast::<*mut RawRuntimeIUnknown>().replace(raw) };
+            // SAFETY: `previous` is the reference the slot owned, released once.
+            drop(unsafe { ObjectRef::from_raw_iunknown_owned(previous) });
+        }
+        VbaRecordFieldKind::DynamicArray { element } => {
+            if value.vtype() != crate::VarType::ArrayVariant
+                || value.array_element_vartype() != Some(element.array_element_vartype()?)
+            {
+                return Err("Type mismatch".to_string());
+            }
+            let raw = match value.try_as_safearray()? {
+                Some(array) => array.into_raw_safearray_ptr(),
+                None => ptr::null_mut(),
+            };
+            // SAFETY: `ptr` is a live pointer slot that owned its previous descriptor.
+            let previous = unsafe { ptr.cast::<*mut core::ffi::c_void>().replace(raw) };
+            // SAFETY: `previous` is the descriptor the slot owned, destroyed once.
+            drop(unsafe { SafeArray::from_raw_safearray_owned(previous) });
         }
         VbaRecordFieldKind::String => {
             if value.vtype() != crate::VarType::String {
@@ -1943,6 +2127,66 @@ mod tests {
         let decoded = VbaRecordLayout::from_boundary_schema(&schema[1..]).unwrap();
         assert_eq!(decoded.automation_shape().unwrap(), (48, 8));
         assert_eq!(decoded.declare_shape().unwrap(), (40, 8));
+    }
+
+    /// VBA's x64 UDT memory: an Object field is an interface pointer and a dynamic-array field
+    /// a SAFEARRAY*; a copy shares the object and copies the array.
+    #[test]
+    fn object_and_dynamic_array_fields_are_pointers_with_value_copy() {
+        let handles_before = thread_live_handle_counts();
+        {
+            let layout = Arc::new(
+                VbaRecordLayout::new(vec![
+                    Field::named("tag", Kind::Byte),
+                    Field::named("c", Kind::Object),
+                    Field::named(
+                        "d",
+                        Kind::DynamicArray {
+                            element: Box::new(Kind::Variant),
+                        },
+                    ),
+                ])
+                .unwrap(),
+            );
+            assert_eq!((layout.size(), layout.vba_len()), (24, 17));
+            let mut record = VbaRecord::new_default(layout.clone()).unwrap();
+            assert!(record.read_field_variant(1).unwrap() == Variant::nothing());
+            assert_eq!(record.array_field_bounds_len(2).unwrap(), None);
+            record
+                .write_field_variant(
+                    1,
+                    &Variant::from_object_ref(ObjectRef::from_compat_identity(7)),
+                )
+                .unwrap();
+            let array = SafeArray::from_variants(vec![Variant::from_i32(1), Variant::from_i32(2)]);
+            record
+                .write_field_variant(2, &Variant::from_safearray(array))
+                .unwrap();
+            let mut copy = record.try_clone().unwrap();
+            copy.write_array_field_element(2, 1, &Variant::from_i32(9))
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                record.read_array_field_element(2, 1).unwrap(),
+                Some(Variant::from_i32(2))
+            );
+            assert_eq!(
+                copy.read_array_field_element(2, 1).unwrap(),
+                Some(Variant::from_i32(9))
+            );
+            let identity = |r: &VbaRecord| {
+                r.read_field_variant(1)
+                    .unwrap()
+                    .as_object_ref()
+                    .map(|o| o.compat_identity())
+            };
+            assert_eq!(identity(&record), Some(7));
+            assert_eq!(identity(&copy), Some(7));
+            copy.write_field_variant(1, &Variant::nothing()).unwrap();
+            assert!(copy.read_field_variant(1).unwrap() == Variant::nothing());
+            assert_eq!(identity(&record), Some(7));
+        }
+        assert_eq!(thread_live_handle_counts(), handles_before);
     }
 
     fn pointer_projection_count() -> usize {

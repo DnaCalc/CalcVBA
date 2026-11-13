@@ -462,6 +462,8 @@ pub(crate) fn is_m4_4_dynamic_array_ty_for_element(ty: &OxTy, element: &ArrayEle
         ArrayElementType::Integer => is_m4_4_dynamic_integer_array_ty(ty),
         ArrayElementType::Byte => is_m4_4_dynamic_byte_array_ty(ty),
         ArrayElementType::Boolean => is_m4_4_dynamic_boolean_array_ty(ty),
+        // Only UDT fields carry these kinds; no array has them as its element type.
+        ArrayElementType::Object | ArrayElementType::DynamicArray(_) => false,
     }
 }
 
@@ -488,6 +490,8 @@ pub(crate) fn is_m4_4_fixed_array_ty_for_element(ty: &OxTy, element: &ArrayEleme
         ArrayElementType::Integer => is_m4_4_fixed_integer_array_ty(ty),
         ArrayElementType::Byte => is_m4_4_fixed_byte_array_ty(ty),
         ArrayElementType::Boolean => is_m4_4_fixed_boolean_array_ty(ty),
+        // Only UDT fields carry these kinds; no array has them as its element type.
+        ArrayElementType::Object | ArrayElementType::DynamicArray(_) => false,
     }
 }
 

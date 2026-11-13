@@ -27,8 +27,8 @@ const VBA_DATE_MAX_EXCLUSIVE_SERIAL: f64 = 2_958_466.0; // 10000-01-01
 
 pub fn len(args: &[Variant]) -> LibResult<Variant> {
     let value = need(args, 0)?;
-    if let Some(bytes) = value.vba_record_file_len() {
-        return Ok(vi32(bytes.map_err(LibError::from)? as i32));
+    if let Some(len) = value.vba_record_len() {
+        return Ok(vi32(len as i32));
     }
     // Count UTF-16 CODE UNITS (VBA's string length): read them directly off a String
     // Variant's BSTR so a lone/paired surrogate half counts as one unit each (a UTF-8

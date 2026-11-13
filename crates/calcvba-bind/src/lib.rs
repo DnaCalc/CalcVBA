@@ -1057,7 +1057,11 @@ impl Lower<'_> {
                     bounds,
                 }
             }
-            VarTypeRef::Array(_) => calcvba_bundle::ArrayElementType::Variant,
+            // VBA stores these UDT fields as pointers: an interface pointer and a SAFEARRAY*.
+            VarTypeRef::Object(_) => calcvba_bundle::ArrayElementType::Object,
+            VarTypeRef::Array(element) => calcvba_bundle::ArrayElementType::DynamicArray(Box::new(
+                self.array_field_layout(&element),
+            )),
             other => crate::types::array_element_of_with(self.type_ctx, &other),
         }
     }

@@ -2474,7 +2474,10 @@ fn lset_record_layout_is_byte_copyable(layout: &ArrayElementType) -> bool {
 
 fn lset_record_field_is_byte_copyable(field: &ArrayElementType) -> bool {
     match field {
-        ArrayElementType::Variant | ArrayElementType::String => false,
+        ArrayElementType::Variant
+        | ArrayElementType::String
+        | ArrayElementType::Object
+        | ArrayElementType::DynamicArray(_) => false,
         ArrayElementType::Record(fields) => fields.iter().all(lset_record_field_is_byte_copyable),
         ArrayElementType::FixedArray { element, .. } => lset_record_field_is_byte_copyable(element),
         ArrayElementType::Integer

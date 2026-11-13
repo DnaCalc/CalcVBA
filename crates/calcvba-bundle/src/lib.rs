@@ -117,6 +117,11 @@ pub enum ArrayElementType {
         element: Box<ArrayElementType>,
         bounds: Vec<FixedArrayBound>,
     },
+    /// An object-typed UDT field (`As Object`, `As Collection`, a class): an interface pointer
+    /// in the record, as in VBA.
+    Object,
+    /// A dynamic-array UDT field (`d() As Long`): a `SAFEARRAY*` in the record, as in VBA.
+    DynamicArray(Box<ArrayElementType>),
 }
 
 /// Assignment intent on a `ValidateAssignment` (Let vs Set vs implicit).

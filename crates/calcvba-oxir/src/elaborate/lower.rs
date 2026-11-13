@@ -847,10 +847,20 @@ impl<'a> Lowerer<'a> {
             return OxTy::Variant;
         };
         if array {
-            let ArrayElementType::FixedArray { element, .. } = field else {
-                return OxTy::Variant;
-            };
-            field = element;
+            match field {
+                ArrayElementType::FixedArray { element, .. }
+                | ArrayElementType::DynamicArray(element) => field = element,
+                _ => return OxTy::Variant,
+            }
+        } else if let ArrayElementType::DynamicArray(element) = field {
+            // A dynamic-array field holds a typed SAFEARRAY*, as in VBA.
+            return OxTy::Array(
+                Box::new(self.ox_ty_for_array_element(element)),
+                ArrayShape::Dynamic,
+            );
+        } else if matches!(field, ArrayElementType::Object) {
+            // An object field holds an interface pointer: reading it yields an object reference.
+            return OxTy::Object(ObjClass::Untyped);
         }
         if let ArrayElementType::Record(fields) = field
             && let Some(index) = self
@@ -861,6 +871,32 @@ impl<'a> Lowerer<'a> {
             return OxTy::Record(RecordLayoutId(index));
         }
         OxTy::Variant
+    }
+
+    /// The OxIR element type of an array built from `element`, as the runtime builds it: object
+    /// elements are Variant arrays (dc-yqq0.6), UDT elements their interned record layout.
+    fn ox_ty_for_array_element(&self, element: &ArrayElementType) -> OxTy {
+        match element {
+            ArrayElementType::Integer => OxTy::Integer,
+            ArrayElementType::Long => OxTy::Long,
+            ArrayElementType::LongLong => OxTy::LongLong,
+            ArrayElementType::Byte => OxTy::Byte,
+            ArrayElementType::Single => OxTy::Single,
+            ArrayElementType::Double => OxTy::Double,
+            ArrayElementType::Currency => OxTy::Currency,
+            ArrayElementType::Date => OxTy::Date,
+            ArrayElementType::String | ArrayElementType::FixedString(_) => OxTy::Str,
+            ArrayElementType::Boolean => OxTy::Bool,
+            ArrayElementType::Record(fields) => self
+                .record_layouts
+                .iter()
+                .position(|layout| layout == fields)
+                .map_or(OxTy::Variant, |index| OxTy::Record(RecordLayoutId(index))),
+            ArrayElementType::Variant
+            | ArrayElementType::Object
+            | ArrayElementType::DynamicArray(_)
+            | ArrayElementType::FixedArray { .. } => OxTy::Variant,
+        }
     }
 
     fn expected_new_record_ty(

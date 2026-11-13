@@ -28,6 +28,8 @@ impl Drop for Directory {
 fn evaluate(config: HostConfig, source: &str) -> String {
     let mut engine = Engine::new(config);
     engine.set_host_policy(calcvba_hal::HostPolicy::native());
+    // The exports receive Windows COM objects, so callers use the Scripting runtime too.
+    engine.set_dictionary_source(calcvba_symbol::DictionarySource::platform_default());
     let values = engine
         .execute_source_with_variant_snapshot_clean(source)
         .unwrap();
@@ -69,6 +71,11 @@ fn conformance_bodies_agree_in_vm3_jit_and_aot() {
         ("ResumeSuite", "11:10|6:20|13:30|0|5"),
         ("NestedErrorSuite", "519|Nested.Source|nested fault|0"),
         ("MixedSuite", "True|True|True|True|aXYde|0|err=13"),
+        // Object fields are shared by a UDT copy, dynamic-array fields copied (Excel x64).
+        (
+            "RecordPointerFieldSuite",
+            "5:9:x:y:2:True:2:1:25:32:True:False:2",
+        ),
     ];
     for (name, expected) in cases {
         let (setup, argument) = if name == "ForeignObjectSuite" {

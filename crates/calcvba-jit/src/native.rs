@@ -189,6 +189,11 @@ pub fn compile_native_scalars(
         for block in &func.blocks {
             for (index, inst) in block.instrs.iter().enumerate() {
                 let operands: Vec<OxOperand> = match inst {
+                    OxInst::CallExtern { import, args, .. }
+                        if record_length_call(&layout, *import, args).is_some() =>
+                    {
+                        Vec::new()
+                    }
                     OxInst::CallExtern { args, .. } => args
                         .iter()
                         .filter_map(|argument| match argument {
@@ -839,6 +844,20 @@ pub fn compile_native_scalars(
                     if indexed_member.is_none()
                         && values.instruction(module, &mut b, inst, foreign_state)
                     {
+                        continue;
+                    }
+                    if let OxInst::CallExtern {
+                        dst: Some(dst),
+                        import,
+                        args,
+                    } = inst
+                        && let Some(length) = record_length_call(&plan.layout, *import, args)
+                    {
+                        let constant = OxInst::Assign {
+                            dst: *dst,
+                            value: OxOperand::Const(calcvba_oxir::OxConst::I32(length)),
+                        };
+                        values.instruction(module, &mut b, &constant, foreign_state);
                         continue;
                     }
                     if let OxInst::CallExtern { dst, import, args } = inst {
@@ -2370,4 +2389,26 @@ fn emit_error_transfer(
     b.switch_to_block(invalid);
     let status = b.ins().iconst(types::I32, 5);
     values.lower.return_status(b, status);
+}
+
+/// `Len(udt)` / `LenB(udt)` of a UDT variable: a constant of its type (VBA's unpadded `Len` and
+/// the record's memory size), so the native lane needs no record descriptor for the call.
+fn record_length_call(
+    layout: &ScalarLayout,
+    import: calcvba_oxir::ImportId,
+    args: &[OxArg],
+) -> Option<i32> {
+    let LinkedTarget::Builtin(native) = layout.extern_calls.get(&import)?.target else {
+        return None;
+    };
+    let [OxArg::ByVal(OxOperand::Use(place))] = args else {
+        return None;
+    };
+    let record = layout.record_slots.get(&layout.slot(*place).ok()?)?;
+    let length = match native {
+        NativeImplId::Len => record.vba_len(),
+        NativeImplId::LenB => record.size(),
+        _ => return None,
+    };
+    i32::try_from(length).ok()
 }

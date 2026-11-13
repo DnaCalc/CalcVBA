@@ -999,6 +999,27 @@ impl Variant {
         ))
     }
 
+    /// A non-owning array view of a SAFEARRAY descriptor owned elsewhere (a record's
+    /// dynamic-array field), for in-place element access. It is never dropped.
+    ///
+    /// # Safety
+    /// `raw` is a live, non-null CalcVBA SAFEARRAY descriptor with element type `element_vt`
+    /// that outlives the view.
+    pub(crate) unsafe fn borrowed_array_view(
+        raw: *mut core::ffi::c_void,
+        element_vt: u16,
+    ) -> core::mem::ManuallyDrop<Self> {
+        core::mem::ManuallyDrop::new(Self {
+            core: VariantCore::from_raw_parts(
+                0x2000 | element_vt,
+                0,
+                0,
+                0,
+                raw_safearray_ptr_to_bytes(raw),
+            ),
+        })
+    }
+
     pub fn as_safearray(&self) -> Option<SafeArray> {
         self.try_as_safearray()
             .expect("Array Variant SAFEARRAY clone should succeed")
@@ -1182,6 +1203,14 @@ impl Variant {
         match self.as_record_payload()? {
             RecordPayload::Com(_) => None,
             RecordPayload::Vba(record) => Some(record.file_len()),
+        }
+    }
+
+    /// VBA's `Len` of a UDT value (see [`VbaRecordLayout::vba_len`]).
+    pub fn vba_record_len(&self) -> Option<usize> {
+        match self.as_record_payload()? {
+            RecordPayload::Com(_) => None,
+            RecordPayload::Vba(record) => Some(record.layout().vba_len()),
         }
     }
 

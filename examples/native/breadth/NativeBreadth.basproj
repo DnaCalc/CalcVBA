@@ -18,5 +18,6 @@
     <NativeExport Include="ErrorBoundsSuite"><Module>Breadth</Module><Procedure>ErrorBoundsSuite</Procedure></NativeExport>
     <NativeExport Include="ActivationSuite"><Module>Breadth</Module><Procedure>ActivationSuite</Procedure></NativeExport>
     <NativeExport Include="ForeignObjectSuite"><Module>Breadth</Module><Procedure>ForeignObjectSuite</Procedure></NativeExport>
+    <NativeExport Include="RecordPointerFieldSuite"><Module>Breadth</Module><Procedure>RecordPointerFieldSuite</Procedure></NativeExport>
   </ItemGroup>
 </Project>

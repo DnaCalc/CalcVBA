@@ -1697,6 +1697,45 @@ impl Values<'_> {
                         .automation_field_offset(*index)
                         .expect("admitted field") as i64,
                 );
+                if let OxInst::RecordArrayGet { indices, .. } = inst
+                    && let calcvba_runtime::vba_record::VbaRecordFieldKind::DynamicArray { element } =
+                        field.kind()
+                {
+                    // `t.d(i)`: the field is the array's SAFEARRAY* cell, as for an array local.
+                    let vector = self.indices(module, b, indices);
+                    let rank = b.ins().iconst(types::I32, indices.len() as i64);
+                    let dst = layout.slot(*dst).unwrap();
+                    let out = self.address(b, dst);
+                    if let calcvba_runtime::vba_record::VbaRecordFieldKind::Record(nested) =
+                        element.as_ref()
+                    {
+                        let descriptor = data(
+                            module,
+                            b,
+                            record_descriptor(nested).expect("admitted record array field"),
+                            4,
+                        );
+                        self.call(
+                            module,
+                            b,
+                            "cvb_record_array_get",
+                            &[source, vector, rank, out, descriptor],
+                        );
+                    } else {
+                        let kind = b.ins().iconst(
+                            types::I32,
+                            i64::from(element.array_element_vartype().expect("admitted field")),
+                        );
+                        let to = b.ins().iconst(types::I32, i64::from(self.slot_kind(dst)));
+                        self.call(
+                            module,
+                            b,
+                            "cvb_array_get",
+                            &[source, vector, rank, kind, out, to],
+                        );
+                    }
+                    return true;
+                }
                 let (source, field) = if let OxInst::RecordArrayGet { indices, .. } = inst {
                     let calcvba_runtime::vba_record::VbaRecordFieldKind::FixedArray {
                         element,
@@ -1753,6 +1792,46 @@ impl Values<'_> {
                         .automation_field_offset(*index)
                         .expect("admitted field") as i64,
                 );
+                if let OxInst::RecordArraySet { indices, .. } = inst
+                    && let calcvba_runtime::vba_record::VbaRecordFieldKind::DynamicArray { element } =
+                        field.kind()
+                {
+                    // `t.d(i) = v`: write through the field's SAFEARRAY* cell.
+                    let vector = self.indices(module, b, indices);
+                    let rank = b.ins().iconst(types::I32, indices.len() as i64);
+                    let input = self.cell(module, b, value);
+                    if let calcvba_runtime::vba_record::VbaRecordFieldKind::Record(nested) =
+                        element.as_ref()
+                    {
+                        let descriptor = data(
+                            module,
+                            b,
+                            record_descriptor(nested).expect("admitted record array field"),
+                            4,
+                        );
+                        self.call(
+                            module,
+                            b,
+                            "cvb_record_array_set",
+                            &[out, vector, rank, input, descriptor],
+                        );
+                    } else {
+                        let kind = b.ins().iconst(
+                            types::I32,
+                            i64::from(element.array_element_vartype().expect("admitted field")),
+                        );
+                        let from = b
+                            .ins()
+                            .iconst(types::I32, i64::from(kind_of_operand(layout, value)));
+                        self.call(
+                            module,
+                            b,
+                            "cvb_paramarray_set",
+                            &[self.lower.runtime, out, vector, rank, kind, input, from],
+                        );
+                    }
+                    return true;
+                }
                 let (out, field) = if let OxInst::RecordArraySet { indices, .. } = inst {
                     let calcvba_runtime::vba_record::VbaRecordFieldKind::FixedArray {
                         element,
@@ -1788,13 +1867,14 @@ impl Values<'_> {
                     );
                     self.call(module, b, "cvb_record_copy", &[out, src, descriptor]);
                 } else {
+                    // `kind_of_operand` keeps an array value's element type (`0x2000 | vt`).
                     self.copy(
                         module,
                         b,
                         out,
                         field_kind(field).expect("admitted field"),
                         src,
-                        kind(layout.operand_type(value).unwrap()),
+                        kind_of_operand(layout, value),
                     );
                 }
                 return true;
@@ -2225,6 +2305,9 @@ pub(super) fn field_kind(
         F::Byte => 17,
         F::LongLong => 20,
         F::Record(_) => 36,
+        // An interface-pointer cell and a SAFEARRAY* cell, as VBA stores these UDT fields.
+        F::Object => 9,
+        F::DynamicArray { element } => 0x2000 | u32::from(element.array_element_vartype()?),
         _ => return Err(format!("native record field {kind:?} is not yet admitted")),
     })
 }
@@ -2235,6 +2318,12 @@ pub(super) fn array_field_kind(
 ) -> Result<u32, String> {
     if let calcvba_runtime::vba_record::VbaRecordFieldKind::FixedArray { element, bounds } = field
         && rank == bounds.len()
+        && rank != 0
+    {
+        return field_kind(element);
+    }
+    // A dynamic-array field's rank is checked against its SAFEARRAY when the element is read.
+    if let calcvba_runtime::vba_record::VbaRecordFieldKind::DynamicArray { element } = field
         && rank != 0
     {
         return field_kind(element);
@@ -2270,6 +2359,12 @@ pub(super) fn record_descriptor(
                         )?;
                     }
                 }
+                // Owner kinds are the cell's Automation VARTYPE, as `clear_record` reads them.
+                F::Object => owners.push((offset as u32, 9)),
+                F::DynamicArray { element } => owners.push((
+                    offset as u32,
+                    0x2000 | u32::from(element.array_element_vartype()?),
+                )),
                 _ => {}
             }
             Ok(())

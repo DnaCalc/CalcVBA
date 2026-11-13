@@ -445,6 +445,11 @@ mod native_record_pin {
                         )?;
                     }
                 }
+                // The projection borrows object and array pointers: it holds no reference of
+                // its own and never releases them. Direct record passing (dc-yqq0.7) removes it.
+                Field::Object | Field::DynamicArray { .. } => {
+                    ptr::copy_nonoverlapping(src, dst, core::mem::size_of::<*const ()>())
+                }
                 _ => ptr::copy_nonoverlapping(src, dst, kind.storage_shape()?.0),
             }
         }

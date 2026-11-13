@@ -395,15 +395,18 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
    are touched. Miri on `calcvba-runtime`, `calcvba-automation`, `calcvba-jit` and the
    `calcvba-com` mock (`scripts/run-miri.sh`).
 5. **Records** (revised, see 3.2). 5a: UDT memory in VBA's layout (pointer-sized Object and
-   dynamic-array fields, first-dimension-fastest fixed arrays; the duplicate `automation_shape`
-   goes). 5b: `VT_RECORD` cells as real `BRECORD`s with oleaut's protocol (measured: `VariantClear`
+   dynamic-array fields; the duplicate `automation_shape` goes). Element order moved to step 6:
+   VM3's `flat_index` is C-order (last dimension fastest) for every array, so multi-dimensional
+   SAFEARRAYs and fixed-array fields change together there. 5b: `VT_RECORD` cells as real `BRECORD`s with oleaut's protocol (measured: `VariantClear`
    calls `RecordClear`, frees `pvRecord` with `CoTaskMemFree` and `Release`s; `VariantCopy` calls
    `GetSize`, allocates, `RecordCopy`, `AddRef`), replacing `ComRecord`. 5c: the compile error for a
    standard-module `Type` in a Variant, a ByVal Variant or a late-bound argument.
 6. **SAFEARRAYs.** oleaut32 allocation on Windows, the standard prefix elsewhere; VM3 and the JIT
    re-read `pvData` after every foreign call. UDT arrays as VBA has them: `fFeatures` 0 (dynamic) or
    `FADF_STATIC | FADF_FIXEDSIZE` (fixed), no `vt` prefix, no `IRecordInfo`; the record layout
-   pointer CalcVBA keeps at `psa - 8` today moves out of the descriptor.
+   pointer CalcVBA keeps at `psa - 8` today moves out of the descriptor. Elements of every
+   multi-dimensional array, and of fixed-array UDT fields, stored first dimension fastest as VBA
+   does (today C-order); `For Each` order and the boundary conversions follow.
 7. **Address-of and storage** (section 4), with `VT_BYREF` binding for ByRef Variant
    parameters; the pin registry deleted.
 8. **One COM marshaller** (5.1), replacing stack A with stack B's model; `ComValue` and the

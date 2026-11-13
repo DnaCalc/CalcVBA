@@ -246,7 +246,10 @@ fn runtime_array_element_type(element: &ArrayElementType) -> RuntimeValueType {
         ArrayElementType::String | ArrayElementType::FixedString(_) => RuntimeValueType::String,
         ArrayElementType::Boolean => RuntimeValueType::Boolean,
         ArrayElementType::Record(_) => RuntimeValueType::Record,
-        ArrayElementType::FixedArray { .. } => RuntimeValueType::Array,
+        ArrayElementType::FixedArray { .. } | ArrayElementType::DynamicArray(_) => {
+            RuntimeValueType::Array
+        }
+        ArrayElementType::Object => RuntimeValueType::Object,
     }
 }
 

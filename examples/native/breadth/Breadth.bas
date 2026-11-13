@@ -1,6 +1,13 @@
 Attribute VB_Name = "Breadth"
 Option Explicit
 
+Private Type TPointerFields
+    tag As Byte
+    c As Collection
+    d() As Long
+    names() As String
+End Type
+
 Public Function StringSuite() As String
     Dim text As String, data As Variant
     text = "  a" & ChrW(&H3BB) & "b  "
@@ -220,4 +227,24 @@ End Function
 
 Public Function ForeignObjectSuite(ByVal foreign As Object) As String
     ForeignObjectSuite = CStr(VarType(foreign)) & ":" & CStr(foreign Is Nothing) & "|" & ActivationSuite()
+End Function
+
+Public Function RecordPointerFieldSuite() As String
+    Dim t As TPointerFields, u As TPointerFields, out As String
+    Set t.c = New Collection
+    t.c.Add 1
+    ReDim t.d(0 To 2)
+    t.d(1) = 5
+    ReDim t.names(1 To 2)
+    t.names(2) = "x"
+    u = t
+    u.d(1) = 9
+    u.names(2) = "y"
+    u.c.Add 2
+    out = t.d(1) & ":" & u.d(1) & ":" & t.names(2) & ":" & u.names(2) & ":" & t.c.Count & ":" & (t.c Is u.c)
+    out = out & ":" & UBound(u.d) & ":" & LBound(u.names) & ":" & Len(t) & ":" & LenB(t)
+    Set t.c = Nothing
+    Erase u.d
+    out = out & ":" & (t.c Is Nothing) & ":" & (u.c Is Nothing) & ":" & UBound(t.d)
+    RecordPointerFieldSuite = out
 End Function

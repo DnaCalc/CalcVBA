@@ -142,6 +142,10 @@ pub fn safearray_vartype_for_element(element_type: &ArrayElementType) -> u16 {
         ArrayElementType::Date => VT_DATE_VALUE,
         ArrayElementType::String | ArrayElementType::FixedString(_) => VT_BSTR_VALUE,
         ArrayElementType::Boolean => VT_BOOL_VALUE,
+        // The runtime stores object arrays as Variant arrays (`ReDim` of `As Object` builds
+        // VT_VARIANT), so an object element matches that; VT_DISPATCH arrays come with the
+        // SAFEARRAY step (dc-yqq0.6).
+        ArrayElementType::Object | ArrayElementType::DynamicArray(_) => VT_VARIANT_VALUE,
     }
 }
 
@@ -188,6 +192,10 @@ pub fn default_array_element(element_type: &ArrayElementType) -> Result<Variant,
         ArrayElementType::String => Variant::from_string(""),
         ArrayElementType::FixedString(len) => Variant::from_utf16_units(&vec![0; *len]),
         ArrayElementType::Boolean => Variant::from_bool(false),
+        ArrayElementType::Object => Variant::nothing(),
+        ArrayElementType::DynamicArray(element) => {
+            Variant::unallocated_array(safearray_vartype_for_element(element))
+        }
         // A UDT-record element can fail to lay out or allocate for guest-legal
         // types (a record above the 64 KiB size limit, a zero-sized fixed-array
         // or string field, excessive nesting depth). These used to `expect()`
@@ -253,6 +261,10 @@ pub fn vba_record_field_kind(
                 bounds,
             }
         }
+        ArrayElementType::Object => VbaRecordFieldKind::Object,
+        ArrayElementType::DynamicArray(element) => VbaRecordFieldKind::DynamicArray {
+            element: Box::new(vba_record_field_kind(element)?),
+        },
     };
     Ok(kind)
 }

@@ -8101,7 +8101,11 @@ impl<'a> LowerFunc<'a> {
             NativeImplId::StrReverse => self.is_supported_variant_extern_operand(operand),
             NativeImplId::Val => self.is_supported_variant_extern_operand(operand),
             NativeImplId::Len | NativeImplId::LenB => {
-                self.is_supported_variant_extern_operand(operand)
+                // A UDT variable is a runtime record cell here, read by the same library
+                // helper as on VM3 (VBA's `Len`/`LenB` of a UDT).
+                Ok(self.is_supported_variant_extern_operand(operand)?
+                    || matches!(operand, OxOperand::Use(place)
+                        if matches!(place_ty(self.program, self.func, *place)?, OxTy::Record(_))))
             }
             NativeImplId::Format => self.is_supported_variant_extern_operand(operand),
             NativeImplId::IsArray

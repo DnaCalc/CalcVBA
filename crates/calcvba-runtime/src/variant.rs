@@ -36,7 +36,7 @@ pub enum VarType {
 }
 
 impl VarType {
-    pub fn from_u16(value: u16) -> Option<Self> {
+    pub const fn from_u16(value: u16) -> Option<Self> {
         match value {
             0x0000 => Some(Self::Empty),
             0x0001 => Some(Self::Null),
@@ -59,11 +59,21 @@ impl VarType {
             0x0015 => Some(Self::UnsignedLongLong),
             0x0017 => Some(Self::UnsignedInt),
             0x0024 => Some(Self::Record),
-            0x200C => Some(Self::ArrayVariant),
+            raw if raw & 0xF000 == 0x2000 && is_array_element_vartype(raw & 0x0FFF) => {
+                Some(Self::ArrayVariant)
+            }
             0xFFF0 => Some(Self::ProcRef),
             _ => None,
         }
     }
+}
+
+/// Element types a `VT_ARRAY` tag may carry (a SAFEARRAY's `vt`).
+const fn is_array_element_vartype(vt: u16) -> bool {
+    matches!(
+        vt,
+        0x02..=0x0E | 0x10..=0x15 | 0x16 | 0x17 | 0x24
+    )
 }
 
 /// Fully initialized eight-byte payload of [`VariantCore`].
@@ -228,7 +238,9 @@ impl VariantData {
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct VariantCore {
-    vtype: VarType,
+    /// The raw `VARTYPE`: an Automation tag, `VT_ARRAY | element` for arrays, or one of the
+    /// engine's internal tags ([`VarType::ProcRef`]).
+    vt: u16,
     reserved1: u16,
     reserved2: u16,
     reserved3: u16,
@@ -238,7 +250,7 @@ pub struct VariantCore {
 impl core::fmt::Debug for VariantCore {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("VariantCore")
-            .field("vtype", &self.vtype)
+            .field("vt", &format_args!("{:#06X}", self.vt))
             .field("reserved1", &self.reserved1)
             .field("reserved2", &self.reserved2)
             .field("reserved3", &self.reserved3)
@@ -249,7 +261,7 @@ impl core::fmt::Debug for VariantCore {
 
 impl PartialEq for VariantCore {
     fn eq(&self, other: &Self) -> bool {
-        self.vtype == other.vtype
+        self.vt == other.vt
             && self.reserved1 == other.reserved1
             && self.reserved2 == other.reserved2
             && self.reserved3 == other.reserved3
@@ -291,8 +303,21 @@ impl VariantCore {
         reserved3: u16,
         bytes: [u8; 8],
     ) -> Self {
+        Self::from_raw_parts(vtype as u16, reserved1, reserved2, reserved3, bytes)
+    }
+
+    /// As [`Self::from_parts`], with the raw `VARTYPE` (e.g. `VT_ARRAY | VT_I4`). The tag must
+    /// decode with [`VarType::from_u16`].
+    pub const fn from_raw_parts(
+        vt: u16,
+        reserved1: u16,
+        reserved2: u16,
+        reserved3: u16,
+        bytes: [u8; 8],
+    ) -> Self {
+        assert!(VarType::from_u16(vt).is_some(), "unsupported VARTYPE");
         Self {
-            vtype,
+            vt,
             reserved1,
             reserved2,
             reserved3,
@@ -301,7 +326,15 @@ impl VariantCore {
     }
 
     pub const fn vtype(&self) -> VarType {
-        self.vtype
+        match VarType::from_u16(self.vt) {
+            Some(vtype) => vtype,
+            None => panic!("VariantCore holds an unsupported VARTYPE"),
+        }
+    }
+
+    /// The raw `VARTYPE`, including `VT_ARRAY`'s element type.
+    pub const fn raw_vt(&self) -> u16 {
+        self.vt
     }
 
     pub const fn reserved1(&self) -> u16 {
@@ -322,7 +355,7 @@ impl VariantCore {
 
     pub fn to_wire_bytes(&self) -> [u8; WIRE_SIZE] {
         let mut out = [0u8; WIRE_SIZE];
-        out[0..2].copy_from_slice(&(self.vtype as u16).to_le_bytes());
+        out[0..2].copy_from_slice(&self.vt.to_le_bytes());
         out[2..4].copy_from_slice(&self.reserved1.to_le_bytes());
         out[4..6].copy_from_slice(&self.reserved2.to_le_bytes());
         out[6..8].copy_from_slice(&self.reserved3.to_le_bytes());
@@ -357,8 +390,8 @@ impl VariantCore {
                 "malformed VARIANT wire bytes: non-zero union tail for {vtype:?}"
             ));
         }
-        Ok(Self::from_parts(
-            vtype, reserved1, reserved2, reserved3, payload,
+        Ok(Self::from_raw_parts(
+            vtype_raw, reserved1, reserved2, reserved3, payload,
         ))
     }
 }
@@ -464,9 +497,10 @@ impl Variant {
         } else {
             element_vartype
         };
-        Self::from_core(VariantCore::from_parts(
-            VarType::ArrayVariant,
-            element_vartype,
+        // An unallocated typed array is `VT_ARRAY | vt` with a null SAFEARRAY*, as in VBA.
+        Self::from_core(VariantCore::from_raw_parts(
+            0x2000 | element_vartype,
+            0,
             0,
             0,
             [0; 8],
@@ -502,11 +536,11 @@ impl Variant {
     }
 
     pub fn to_wire_bytes(&self) -> [u8; WIRE_SIZE] {
+        // An unallocated array (no bounds) is `VT_ARRAY | vt` with a null SAFEARRAY*, as in VBA,
+        // even when the engine keeps a bounds-less descriptor to remember a record layout.
         if self.vtype() == VarType::ArrayVariant && self.safearray_bounds_len().is_none() {
-            let element_vartype = self.array_element_vartype().unwrap_or(VT_VARIANT_VALUE);
-            let mut out = [0u8; WIRE_SIZE];
-            out[0..2].copy_from_slice(&(0x2000u16 | element_vartype).to_le_bytes());
-            return out;
+            return VariantCore::from_raw_parts(self.core.raw_vt(), 0, 0, 0, [0; 8])
+                .to_wire_bytes();
         }
         self.core.to_wire_bytes()
     }
@@ -519,11 +553,11 @@ impl Variant {
     /// [`Self::from_trusted_wire_bytes`] and satisfy its unsafe preconditions.
     pub fn from_wire_bytes(bytes: [u8; WIRE_SIZE]) -> Result<Self, String> {
         let core = VariantCore::from_wire_bytes(bytes)?;
-        match core.vtype {
+        match core.vtype() {
             VarType::String | VarType::Object | VarType::ArrayVariant | VarType::Record => {
                 Err(format!(
                     "pointer-carrying VARIANT wire bytes for {:?} require trusted in-process provenance",
-                    core.vtype
+                    core.vtype()
                 ))
             }
             _ => Ok(Self::from_core(core)),
@@ -541,7 +575,7 @@ impl Variant {
     /// whole call. Arbitrary or stale pointer bytes are undefined behavior.
     pub unsafe fn from_trusted_wire_bytes(bytes: [u8; WIRE_SIZE]) -> Result<Self, String> {
         let core = VariantCore::from_wire_bytes(bytes)?;
-        match core.vtype {
+        match core.vtype() {
             VarType::String => {
                 let ptr = bytes_to_raw_bstr(core.data_bytes());
                 // SAFETY: guaranteed by this unsafe fn's caller.
@@ -911,9 +945,14 @@ impl Variant {
     }
 
     pub fn from_safearray(value: SafeArray) -> Self {
+        // The tag carries the element type: `VT_ARRAY | vt`, as Automation stores it.
+        let vt = 0x2000 | value.element_vartype();
         let raw = value.into_raw_safearray_ptr();
-        Self::from_core(VariantCore::from_bytes(
-            VarType::ArrayVariant,
+        Self::from_core(VariantCore::from_raw_parts(
+            vt,
+            0,
+            0,
+            0,
             raw_safearray_ptr_to_bytes(raw),
         ))
     }
@@ -940,13 +979,7 @@ impl Variant {
         if self.vtype() != VarType::ArrayVariant {
             return None;
         }
-        match self.as_safearray() {
-            Some(array) => Some(array.element_vartype()),
-            None => Some(match self.reserved1() {
-                0 => VT_VARIANT_VALUE,
-                element_vartype => element_vartype,
-            }),
-        }
+        Some(self.core.raw_vt() & 0x0FFF)
     }
 
     pub fn set_safearray_element(&mut self, index: usize, value: &Variant) -> Result<(), String> {
@@ -1654,7 +1687,7 @@ mod tests {
         assert_eq!(
             offset_of::<VariantCore, _>(|base|
                 // SAFETY: see above — address-of only, no read.
-                unsafe { core::ptr::addr_of!((*base).vtype) }),
+                unsafe { core::ptr::addr_of!((*base).vt) }),
             0
         );
         assert_eq!(
@@ -1719,6 +1752,29 @@ mod tests {
                 .and_then(|array| array.variant_elements()),
             Some(vec![Variant::from_i32(2)])
         );
+    }
+
+    #[test]
+    fn array_cells_carry_vt_array_with_their_element_type() {
+        // Excel x64: a Long() in a Variant is &H2003, an Array(...) result &H200C (variant-layout oracle).
+        let longs = Variant::from_safearray(
+            SafeArray::from_typed_variants(VT_I4_VALUE, vec![Variant::from_i32(1)]).unwrap(),
+        );
+        assert_eq!(longs.vtype(), VarType::ArrayVariant);
+        assert_eq!(longs.core().raw_vt(), 0x2003);
+        assert_eq!(longs.array_element_vartype(), Some(VT_I4_VALUE));
+        assert_eq!(
+            u16::from_le_bytes([longs.to_wire_bytes()[0], longs.to_wire_bytes()[1]]),
+            0x2003
+        );
+        let variants = Variant::from_safearray(SafeArray::from_variants(vec![Variant::empty()]));
+        assert_eq!(variants.core().raw_vt(), 0x200C);
+        let unallocated = Variant::unallocated_array(VT_I4_VALUE);
+        assert_eq!(unallocated.core().raw_vt(), 0x2003);
+        assert_eq!(unallocated.reserved1(), 0);
+        assert_eq!(unallocated.array_element_vartype(), Some(VT_I4_VALUE));
+        assert_eq!(VarType::from_u16(0x2003), Some(VarType::ArrayVariant));
+        assert_eq!(VarType::from_u16(0x2001), None);
     }
 
     #[test]

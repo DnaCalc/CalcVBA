@@ -369,9 +369,11 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
    1908`, `native_values.rs:806, 1316`) and `native-template/src/foreign.rs:127` use them.
 3. **COM-correct vtables.** `extern "system"`, `REFIID` by pointer, for every runtime and
    `HostObject` vtable.
-4. **The cell.** Platform size (4a), `VT_ARRAY | vt` tags (4b), `VT_UNKNOWN` (4c), the wire
-   decoder, size and offset tests, specs corrected. `VT_BYREF` cells moved to step 7, where
-   ByRef binding and address-of change together
+4. **The cell.** Platform size (4a), `VT_ARRAY | vt` tags (4b: the cell stores the raw
+   `VARTYPE`, `vtype()` still classifies every array as `ArrayVariant`), the wire decoder, size
+   and offset tests, specs corrected. `VT_BYREF` cells moved to step 7, where ByRef binding and
+   address-of change together. `VT_UNKNOWN` moved to step 8: only the COM marshaller produces and
+   consumes it, and step 8 rewrites that marshaller
    (`OXVBA_REPRESENTATION_LAYOUT_DOCTRINE_V1.md:17-20`, `VBA_TYPE_SYSTEM_V1.md`,
    `OXVBA_POINTER_HELPERS_CONTRACT_V1.md`). VM3 hot paths move from clone to borrow as they
    are touched. Miri on `calcvba-runtime`, `calcvba-automation`, `calcvba-jit` and the
@@ -384,7 +386,9 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
 7. **Address-of and storage** (section 4), with `VT_BYREF` binding for ByRef Variant
    parameters; the pin registry deleted.
 8. **One COM marshaller** (5.1), replacing stack A with stack B's model; `ComValue` and the
-   legacy transports deleted; JIT WithEvents.
+   legacy transports deleted; JIT WithEvents; `VT_UNKNOWN` kept distinct from `VT_DISPATCH`
+   (`VarType` reports 13). With it the interpreter lanes can run the OS `Scripting.Dictionary`,
+   so `TypeLibResolver::dictionary_source`'s default becomes the platform default.
 9. **Declare** (5.2): direct addresses, ANSI BSTR temporaries, prepared CIFs, the shared
    interop plan, `AddressOf` in the JIT.
 10. **Inbound** (5.3): native template services by borrow and move; comhost on `DispInvoke`

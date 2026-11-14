@@ -39,8 +39,9 @@ pub enum AddressKind {
 /// Storage inside a record, an array's payload or a cell's payload.
 #[derive(Debug, Clone)]
 pub enum Storage {
-    /// A scalar, Decimal or other plain value.
-    Plain,
+    /// A scalar of this `VARTYPE` (0 for storage no `VARTYPE` describes, such as the inline
+    /// characters of a fixed-length string field).
+    Plain(u16),
     /// A BSTR pointer.
     Bstr,
     /// An interface pointer (null for `Nothing`).
@@ -76,12 +77,30 @@ const TYPE_MISMATCH: i32 = 13;
 /// `root` is a live engine cell, and nothing else accesses the storage it reaches while the
 /// returned location is in use.
 pub unsafe fn locate(root: *mut Variant, path: &[AddressStep]) -> Result<Location, i32> {
-    let mut at = Location::Cell(root);
+    // SAFETY: `root` is a live engine cell.
+    let mut at = Location::Cell(unsafe { through_variant_reference(root) });
     for step in path {
         // SAFETY: `at` addresses live storage reached from `root`, per the caller.
         at = unsafe { step_into(at, step)? };
+        if let Location::Cell(cell) = at {
+            // SAFETY: a cell reached on the path is live.
+            at = Location::Cell(unsafe { through_variant_reference(cell) });
+        }
     }
     Ok(at)
+}
+
+/// The cell a `VT_BYREF | VT_VARIANT` reference refers to (a ByRef parameter bound to a Variant
+/// element or field is that cell, as in VBA); any other cell is itself.
+///
+/// # Safety
+/// `cell` is a live engine cell.
+unsafe fn through_variant_reference(cell: *mut Variant) -> *mut Variant {
+    // SAFETY: forwarded from the caller.
+    match unsafe { &*cell }.byref_target() {
+        Some((0x0C, target)) => target.cast(),
+        _ => cell,
+    }
 }
 
 /// # Safety
@@ -162,7 +181,7 @@ fn array_element(array: &SafeArray, subscripts: &[i64]) -> Result<Location, i32>
             VT_VARIANT_VALUE => Location::Cell(element.cast()),
             VT_BSTR_VALUE => Location::Memory(element, Storage::Bstr),
             VT_DISPATCH_VALUE | VT_UNKNOWN_VALUE => Location::Memory(element, Storage::Object),
-            _ => Location::Memory(element, Storage::Plain),
+            vt => Location::Memory(element, Storage::Plain(vt)),
         },
     })
 }
@@ -197,7 +216,11 @@ fn field_location(ptr: *mut u8, kind: &VbaRecordFieldKind) -> Location {
                 element: element.clone(),
             },
         ),
-        _ => Location::Memory(ptr, Storage::Plain),
+        VbaRecordFieldKind::FixedString { .. } => Location::Memory(ptr, Storage::Plain(0)),
+        other => Location::Memory(
+            ptr,
+            Storage::Plain(other.array_element_vartype().unwrap_or(0)),
+        ),
     }
 }
 
@@ -213,6 +236,10 @@ impl Location {
             (Self::Cell(cell), AddressKind::Value) => {
                 // SAFETY: a live engine cell.
                 let cell_ref = unsafe { &**cell };
+                // A typed parameter bound to an element or field is that storage.
+                if let Some((_, target)) = cell_ref.byref_target() {
+                    return Some(target.expose_provenance());
+                }
                 // A UDT variable's address is its record memory.
                 if let Some((data, _)) = cell_ref.engine_record_memory() {
                     return Some(data.expose_provenance());
@@ -236,6 +263,43 @@ impl Location {
             }
             (Self::Memory(_, _), AddressKind::Bstr) => None,
             (Self::Memory(ptr, _), _) => Some(ptr.expose_provenance()),
+        }
+    }
+
+    /// The `VT_BYREF` cell a ByRef parameter bound to this storage gets, as VBA passes an array
+    /// element or UDT field: `VT_BYREF | VT_VARIANT` for a Variant cell (the parameter is that
+    /// cell) when `variant_cell`, else `VT_BYREF | vt` at a typed cell's payload or at the
+    /// storage itself. `None` for storage with no reference form here (a record, a fixed array
+    /// or a fixed-length string field), which the caller passes as a copy.
+    ///
+    /// # Safety
+    /// The location is live and outlives the reference.
+    pub unsafe fn reference(&self, variant_cell: bool) -> Option<Variant> {
+        // SAFETY: the targets below are this live storage, per the caller.
+        unsafe {
+            match self {
+                Self::Cell(cell) if variant_cell => Some(Variant::by_ref(0x0C, cell.cast())),
+                Self::Cell(cell) => {
+                    let cell_ref = &**cell;
+                    if cell_ref.byref_target().is_some() {
+                        return Some(cell_ref.clone_reference());
+                    }
+                    let vt = cell_ref.core().raw_vt();
+                    (vt != 0 && cell_ref.vtype() != VarType::Record)
+                        .then(|| Variant::by_ref(vt, Variant::payload_ptr(*cell)))
+                }
+                Self::Memory(ptr, Storage::Plain(vt)) if *vt != 0 => {
+                    Some(Variant::by_ref(*vt, *ptr))
+                }
+                Self::Memory(ptr, Storage::Bstr) => Some(Variant::by_ref(0x08, *ptr)),
+                Self::Memory(ptr, Storage::Object) => Some(Variant::by_ref(0x09, *ptr)),
+                Self::Memory(ptr, Storage::DynamicArray { element }) => {
+                    let vt = element.array_element_vartype().ok()?;
+                    (element.array_record_layout().is_none())
+                        .then(|| Variant::by_ref(0x2000 | vt, *ptr))
+                }
+                Self::Memory(..) => None,
+            }
         }
     }
 

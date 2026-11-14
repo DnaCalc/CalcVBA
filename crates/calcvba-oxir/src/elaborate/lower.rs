@@ -103,7 +103,30 @@ type Result<T> = std::result::Result<T, ElaborateError>;
 /// names into typed identities is built from the program itself (its project-class
 /// table), so callers supply only the program.
 pub fn elaborate(program: &CoreProgram) -> Result<OxProgram> {
-    let resolver = ProgramResolver::new(program);
+    elaborate_with(program, &ElaborateOptions::default())
+}
+
+/// How [`elaborate_with`] lowers what a backend cannot run yet.
+#[derive(Debug, Clone)]
+pub struct ElaborateOptions {
+    /// Pass array elements and UDT fields ByRef as `VT_BYREF` references (`MakeRef`), as VBA
+    /// does. The native lane has no reference cells until step 10 of the VARIANT-layout
+    /// programme, so native builds turn this off and keep copy-in and copy-out.
+    pub byref_references: bool,
+}
+
+impl Default for ElaborateOptions {
+    fn default() -> Self {
+        Self {
+            byref_references: true,
+        }
+    }
+}
+
+/// [`elaborate`] with explicit [`ElaborateOptions`].
+pub fn elaborate_with(program: &CoreProgram, options: &ElaborateOptions) -> Result<OxProgram> {
+    let mut resolver = ProgramResolver::new(program);
+    resolver.byref_references = options.byref_references;
 
     let globals = program
         .globals
@@ -358,6 +381,8 @@ struct ProgramResolver {
     record_layouts: Vec<Vec<ArrayElementType>>,
     com_interfaces: HashMap<String, IfaceId>,
     object_field_types: HashMap<(ClassId, i32), OxTy>,
+    /// See [`ElaborateOptions::byref_references`].
+    byref_references: bool,
 }
 
 impl ProgramResolver {
@@ -369,6 +394,7 @@ impl ProgramResolver {
             .map(|(i, c)| (c.name.to_ascii_lowercase(), ClassId(i)))
             .collect();
         let mut this = Self {
+            byref_references: true,
             object_field_types: HashMap::new(),
             classes,
             records: HashMap::new(),
@@ -2756,6 +2782,19 @@ impl<'a> Lowerer<'a> {
     ) -> Result<(OxPlace, Option<ArgWriteback>)> {
         if Self::is_simple_place(place) {
             Ok((self.simple_place(place)?, None))
+        } else if self.resolver.byref_references
+            && let Some(ty) = self.byref_reference_ty(place)
+        {
+            // An array element or UDT field passed ByRef is referred to, as in VBA: the
+            // callee reads and writes the storage itself (no copy, no write-back).
+            let (base, path) = self.lower_addr_place(place)?;
+            let t = self.new_temp(ty);
+            self.emit(OxInst::MakeRef {
+                dst: OxPlace::Temp(t),
+                base,
+                path,
+            });
+            Ok((OxPlace::Temp(t), None))
         } else {
             // Copy the place's current value into a fresh temp (the aliased ByRef slot), and
             // a SECOND `original` snapshot temp captured at copy-in, so the post-call
@@ -3254,6 +3293,64 @@ impl<'a> Lowerer<'a> {
             | coreir::CorePlace::PredeclaredExtern { .. } => {
                 Err(unimpl("pointer helper over a non-addressable place"))
             }
+        }
+    }
+
+    /// The type of the element or UDT field `place` names when it can be passed ByRef as a
+    /// `VT_BYREF` reference: a scalar, String, object or Variant element or field, or a
+    /// dynamic-array field, reached from a variable through elements and UDT fields. `None`
+    /// for anything else (a record, a fixed-array field, a fixed-length string, a class field),
+    /// which keeps copy-in and copy-out.
+    fn byref_reference_ty(&self, place: &coreir::CorePlace) -> Option<OxTy> {
+        enum Shape {
+            Ty(OxTy),
+            Field(ArrayElementType),
+        }
+        fn shape(this: &Lowerer<'_>, place: &coreir::CorePlace) -> Option<Shape> {
+            Some(match place {
+                coreir::CorePlace::Local(l) => Shape::Ty(this.locals.get(l.0)?.ty.clone()),
+                coreir::CorePlace::Global(g) => Shape::Ty(this.global_tys.get(g.0)?.clone()),
+                coreir::CorePlace::Index { array, .. } => match shape(this, array)? {
+                    Shape::Ty(OxTy::Array(element, _)) => Shape::Ty(*element),
+                    Shape::Ty(OxTy::Variant) => Shape::Ty(OxTy::Variant),
+                    Shape::Field(
+                        ArrayElementType::FixedArray { element, .. }
+                        | ArrayElementType::DynamicArray(element),
+                    ) => Shape::Field(*element),
+                    _ => return None,
+                },
+                coreir::CorePlace::RecordField { base, index } => match shape(this, base)? {
+                    Shape::Ty(OxTy::Record(id)) => {
+                        Shape::Field(this.record_layouts.get(id.0)?.get(*index)?.clone())
+                    }
+                    Shape::Field(ArrayElementType::Record(fields)) => {
+                        Shape::Field(fields.get(*index)?.clone())
+                    }
+                    _ => return None,
+                },
+                _ => return None,
+            })
+        }
+        match shape(self, place)? {
+            Shape::Ty(
+                OxTy::Record(_) | OxTy::FixedStr(_) | OxTy::Array(_, ArrayShape::Fixed { .. }),
+            ) => None,
+            Shape::Ty(ty) => Some(ty),
+            Shape::Field(
+                ArrayElementType::Record(_)
+                | ArrayElementType::FixedArray { .. }
+                | ArrayElementType::FixedString(_),
+            ) => None,
+            Shape::Field(ArrayElementType::DynamicArray(element)) => {
+                (!matches!(*element, ArrayElementType::Record(_))).then(|| {
+                    OxTy::Array(
+                        Box::new(self.ox_ty_for_array_element(&element)),
+                        ArrayShape::Dynamic,
+                    )
+                })
+            }
+            Shape::Field(ArrayElementType::Object) => Some(OxTy::Object(ObjClass::Untyped)),
+            Shape::Field(element) => Some(self.ox_ty_for_array_element(&element)),
         }
     }
 

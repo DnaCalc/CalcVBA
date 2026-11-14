@@ -1563,7 +1563,8 @@ fn verify_inst_places(
         }
         OxInst::AddrOf {
             dst, base, path, ..
-        } => {
+        }
+        | OxInst::MakeRef { dst, base, path } => {
             check_place(fi, bi, site, dst, locals, globals, temps, errors);
             match base {
                 OxAddrBase::Place(place) => {

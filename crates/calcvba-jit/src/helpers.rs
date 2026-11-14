@@ -2343,6 +2343,30 @@ pub(crate) fn declare_imports(module: &mut impl Module) -> Result<Imports, JitEr
     })
 }
 
+/// A slot's value for a typed load: a `VT_BYREF` reference (a ByRef parameter bound to an
+/// array element or UDT field) reads its target.
+fn read_slot(slot: &Variant) -> std::borrow::Cow<'_, Variant> {
+    if slot.byref_target().is_some() {
+        std::borrow::Cow::Owned(slot.clone())
+    } else {
+        std::borrow::Cow::Borrowed(slot)
+    }
+}
+
+/// A typed store: into a `VT_BYREF` reference it writes the target (the binder gives a typed
+/// parameter only a reference of its own type), else it replaces the slot.
+fn store_typed_slot(slot: &mut Variant, value: Variant) -> i32 {
+    if slot.byref_target().is_some() {
+        // SAFETY: a reference's target is the caller's live storage, not borrowed here.
+        return match unsafe { slot.write_through(value) } {
+            Ok(()) => ST_OK,
+            Err(_) => ST_FAULT,
+        };
+    }
+    *slot = value;
+    ST_OK
+}
+
 pub(crate) unsafe extern "C" fn rt_jit_load_i32(run: *mut JitRun, area: u32, index: u32) -> i32 {
     catch_unwind(AssertUnwindSafe(|| {
         if run.is_null() {
@@ -2350,7 +2374,7 @@ pub(crate) unsafe extern "C" fn rt_jit_load_i32(run: *mut JitRun, area: u32, ind
         }
         // SAFETY: null was rejected and the compiled call gives unique run ownership.
         let run = unsafe { &*run };
-        match slot_ref(run, area, index) {
+        match slot_ref(run, area, index).map(read_slot) {
             Some(value) => value
                 .as_i32()
                 .or_else(|| value.as_i16().map(i32::from))
@@ -2370,7 +2394,7 @@ pub(crate) unsafe extern "C" fn rt_jit_load_i64(run: *mut JitRun, area: u32, ind
         }
         // SAFETY: null was rejected and the compiled call gives shared run access.
         let run = unsafe { &*run };
-        match slot_ref(run, area, index) {
+        match slot_ref(run, area, index).map(read_slot) {
             Some(value) => value
                 .as_i64()
                 .or_else(|| value.as_currency_scaled_i64())
@@ -2400,6 +2424,7 @@ pub(crate) unsafe extern "C" fn rt_jit_load_f64(run: *mut JitRun, area: u32, ind
         // SAFETY: null was rejected and the compiled call gives shared run access.
         let run = unsafe { &*run };
         slot_ref(run, area, index)
+            .map(read_slot)
             .and_then(|value| value.as_f64().or_else(|| value.as_date_f64()))
             .unwrap_or(0.0)
     }))
@@ -2414,7 +2439,8 @@ pub(crate) unsafe extern "C" fn rt_jit_load_f32(run: *mut JitRun, area: u32, ind
         // SAFETY: null was rejected and the compiled call gives shared run access.
         let run = unsafe { &*run };
         slot_ref(run, area, index)
-            .and_then(Variant::as_f32)
+            .map(read_slot)
+            .and_then(|value| value.as_f32())
             .unwrap_or(0.0)
     }))
     .unwrap_or(0.0)
@@ -2435,8 +2461,7 @@ pub(crate) unsafe extern "C" fn rt_jit_store_i32(
         let Some(slot) = slot_mut(run, area, index) else {
             return ST_FAULT;
         };
-        *slot = Variant::from_i32(value);
-        ST_OK
+        store_typed_slot(slot, Variant::from_i32(value))
     })
 }
 
@@ -2455,8 +2480,7 @@ pub(crate) unsafe extern "C" fn rt_jit_store_i64(
         let Some(slot) = slot_mut(run, area, index) else {
             return ST_FAULT;
         };
-        *slot = Variant::from_i64(value);
-        ST_OK
+        store_typed_slot(slot, Variant::from_i64(value))
     })
 }
 
@@ -2475,8 +2499,7 @@ pub(crate) unsafe extern "C" fn rt_jit_store_currency_i64(
         let Some(slot) = slot_mut(run, area, index) else {
             return ST_FAULT;
         };
-        *slot = Variant::from_currency_scaled_i64(value);
-        ST_OK
+        store_typed_slot(slot, Variant::from_currency_scaled_i64(value))
     })
 }
 
@@ -2495,8 +2518,7 @@ pub(crate) unsafe extern "C" fn rt_jit_store_f64(
         let Some(slot) = slot_mut(run, area, index) else {
             return ST_FAULT;
         };
-        *slot = Variant::from_f64(value);
-        ST_OK
+        store_typed_slot(slot, Variant::from_f64(value))
     })
 }
 
@@ -2515,8 +2537,7 @@ pub(crate) unsafe extern "C" fn rt_jit_store_date_f64(
         let Some(slot) = slot_mut(run, area, index) else {
             return ST_FAULT;
         };
-        *slot = Variant::from_date_f64(value);
-        ST_OK
+        store_typed_slot(slot, Variant::from_date_f64(value))
     })
 }
 
@@ -2535,8 +2556,7 @@ pub(crate) unsafe extern "C" fn rt_jit_store_f32(
         let Some(slot) = slot_mut(run, area, index) else {
             return ST_FAULT;
         };
-        *slot = Variant::from_f32(value);
-        ST_OK
+        store_typed_slot(slot, Variant::from_f32(value))
     })
 }
 
@@ -2558,8 +2578,7 @@ pub(crate) unsafe extern "C" fn rt_jit_store_u8(
         let Some(slot) = slot_mut(run, area, index) else {
             return ST_FAULT;
         };
-        *slot = Variant::from_u8(value);
-        ST_OK
+        store_typed_slot(slot, Variant::from_u8(value))
     })
 }
 
@@ -2581,8 +2600,7 @@ pub(crate) unsafe extern "C" fn rt_jit_store_i16(
         let Some(slot) = slot_mut(run, area, index) else {
             return ST_FAULT;
         };
-        *slot = Variant::from_i16(value);
-        ST_OK
+        store_typed_slot(slot, Variant::from_i16(value))
     })
 }
 
@@ -2593,7 +2611,7 @@ pub(crate) unsafe extern "C" fn rt_jit_load_bool(run: *mut JitRun, area: u32, in
         }
         // SAFETY: null was rejected and the compiled call gives shared run access.
         let run = unsafe { &*run };
-        match slot_ref(run, area, index) {
+        match slot_ref(run, area, index).map(read_slot) {
             Some(value) => i32::from(
                 value.as_bool().unwrap_or(false)
                     || value.as_i32().is_some_and(|v| v != 0)
@@ -2620,8 +2638,7 @@ pub(crate) unsafe extern "C" fn rt_jit_store_bool(
         let Some(slot) = slot_mut(run, area, index) else {
             return ST_FAULT;
         };
-        *slot = Variant::from_bool(value != 0);
-        ST_OK
+        store_typed_slot(slot, Variant::from_bool(value != 0))
     })
 }
 
@@ -4924,11 +4941,13 @@ pub(crate) unsafe extern "C" fn rt_jit_addr_of_to_slot(
             return ST_FAULT;
         }
         // SAFETY: compiled code passes an instruction of the program it borrows.
-        let calcvba_oxir::OxInst::AddrOf {
-            kind, base, path, ..
-        } = (unsafe { &*inst })
-        else {
-            return ST_FAULT;
+        let (kind, base, path) = match unsafe { &*inst } {
+            calcvba_oxir::OxInst::AddrOf {
+                kind, base, path, ..
+            } => (Some(kind), base, path),
+            // `MakeRef`: the same storage, stored as a `VT_BYREF` reference.
+            calcvba_oxir::OxInst::MakeRef { base, path, .. } => (None, base, path),
+            _ => return ST_FAULT,
         };
         let operand_count = usize::from(matches!(base, OxAddrBase::ObjectField { .. }))
             + path
@@ -5008,6 +5027,22 @@ pub(crate) unsafe extern "C" fn rt_jit_addr_of_to_slot(
             Ok(location) => location,
             // SAFETY: only the active owning entry's error state is updated.
             Err(number) => return unsafe { rt_raise_runtime_error_number(state, number) },
+        };
+        let Some(kind) = kind else {
+            // A ByRef element or field argument: the callee reads and writes the storage
+            // itself (VM3's `MakeRef` does the same).
+            // SAFETY: the storage lives at least for the statement the reference is for.
+            let Some(reference) = (unsafe { location.reference(true) }) else {
+                return ST_FAULT;
+            };
+            // SAFETY: the active run is unique outside host calls.
+            let Some(slot) = slot_mut(unsafe { &mut *run }, dst_area as u32, dst_index as u32)
+            else {
+                return ST_FAULT;
+            };
+            // A fresh statement temporary: replace it, never write through it.
+            *slot = reference;
+            return ST_OK;
         };
         let address = match kind {
             // SAFETY: the location was just found live.
@@ -5520,7 +5555,7 @@ pub(crate) unsafe fn jit_array_element_value(
     array: &Variant,
     indices: &[i32],
 ) -> Result<Variant, i32> {
-    if array.vtype() != VarType::ArrayVariant {
+    if !array.holds_array() {
         // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
         return Err(unsafe { rt_raise_expected_array(state) });
     }
@@ -5554,7 +5589,7 @@ pub(crate) unsafe fn jit_array_element_set(
     indices: &[i32],
     value: &Variant,
 ) -> Result<(), i32> {
-    if array.vtype() != VarType::ArrayVariant {
+    if !array.holds_array() {
         // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
         return Err(unsafe { rt_raise_expected_array(state) });
     }
@@ -6255,7 +6290,7 @@ pub(crate) unsafe fn jit_flat_index(
     indices: &[i32],
 ) -> Result<usize, i32> {
     let Some((bounds, len)) = value.safearray_bounds_len() else {
-        return if value.vtype() == VarType::ArrayVariant {
+        return if value.holds_array() {
             // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
             Err(unsafe { rt_raise_array_has_no_bounds(state) })
         } else {
@@ -6319,7 +6354,7 @@ pub(crate) unsafe fn jit_flat_index_1d(
     index: i32,
 ) -> Result<usize, i32> {
     let Some((bounds, len)) = value.safearray_bounds_len() else {
-        return if value.vtype() == VarType::ArrayVariant {
+        return if value.holds_array() {
             // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
             Err(unsafe { rt_raise_array_has_no_bounds(state) })
         } else {
@@ -6617,7 +6652,7 @@ pub(crate) unsafe extern "C" fn rt_jit_array_get_i32_1d_to_slot(
         let Some(array) = slot_ref(run_ref, array_area, array_index) else {
             return ST_FAULT;
         };
-        if array.vtype() != VarType::ArrayVariant {
+        if !array.holds_array() {
             // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
             return unsafe { rt_raise_expected_array(state) };
         }
@@ -6703,7 +6738,7 @@ pub(crate) unsafe extern "C" fn rt_jit_array_get_variant_to_slot(
             };
             array.clone()
         };
-        if array.vtype() != VarType::ArrayVariant {
+        if !array.holds_array() {
             if array.as_object_ref().is_some() {
                 let recv_value = array.clone();
                 let args = values;
@@ -6813,7 +6848,7 @@ pub(crate) unsafe extern "C" fn rt_jit_array_set_i32_1d_slot(
         let Some(array) = slot_ref(run_ref, array_area, array_index) else {
             return ST_FAULT;
         };
-        if array.vtype() != VarType::ArrayVariant {
+        if !array.holds_array() {
             // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
             return unsafe { rt_raise_expected_array(state) };
         }
@@ -6915,7 +6950,7 @@ pub(crate) unsafe extern "C" fn rt_jit_array_set_variant_slot(
             };
             (value, array.clone())
         };
-        if array.vtype() != VarType::ArrayVariant {
+        if !array.holds_array() {
             if array.as_object_ref().is_some() {
                 let recv_value = array.clone();
                 let mut args = subscripts;
@@ -7028,7 +7063,7 @@ pub(crate) unsafe extern "C" fn rt_jit_bound_to_slot(
             return ST_FAULT;
         };
         let Some((bounds, _len)) = src.safearray_bounds_len() else {
-            return if src.vtype() == VarType::ArrayVariant {
+            return if src.holds_array() {
                 // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
                 unsafe { rt_raise_array_has_no_bounds(state) }
             } else {

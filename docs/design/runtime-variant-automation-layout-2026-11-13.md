@@ -500,6 +500,24 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
    `byref_variant_references`) and the `BIND`/`ASSIGN` cases of the Excel comparison match on both
    backends; the JIT now runs that comparison too. Still copies: typed array elements and UDT fields
    (7b2), class-typed objects (VBA uses a temporary there), fixed-length strings.
+   *As built 2026-11-14 (7b2).* `OxInst::MakeRef { dst, base, path }` puts a `VT_BYREF` reference
+   to an array element or UDT field (scalar, String, object, Variant or dynamic-array field) in a
+   statement temporary that is passed as the argument; the elaborator's `byref_reference_ty`
+   decides which places qualify, and records, fixed-array fields, fixed-length strings and class
+   fields keep copy-in and copy-out. The runtime walker gives the reference
+   (`Location::reference`); VM3 and the JIT build it from the same path, a reference already in a
+   slot is passed on unchanged to a nested call, and the JIT's array helpers accept a
+   `VT_BYREF | VT_ARRAY` slot (`Variant::holds_array`). So `VarPtr(n)` in the callee is the
+   element's address, writes are visible through the array before the call returns, and
+   `ReDim Preserve` on a ByRef dynamic-array field changes the field. Excel probe
+   `temp/variant-layout-probe/byref7b2` (engine test `byref_element_references`) matches on both
+   backends. Four layout cases remain different on both backends: `BIND.TypedObjectVar`,
+   `BSTR.Prefix` (step 9), and the two UDT-array descriptor probes, which read through the VBE7
+   `ArrPtr` alias (step 9). The native lane has no reference cells yet, so native builds
+   elaborate with `ElaborateOptions { byref_references: false }` and keep copy-in and copy-out
+   until step 10. The JIT's ParamArray element write goes through `store_slot`, so a ParamArray
+   built from elements writes to them. Not yet done: VBA also locks the arrays on a reference's
+   path for the call (first part of 7c).
 8. **One COM marshaller** (5.1), replacing stack A with stack B's model; `ComValue` and the
    legacy transports deleted; JIT WithEvents; `VT_UNKNOWN` kept distinct from `VT_DISPATCH`
    (`VarType` reports 13). With it the interpreter lanes can run the OS `Scripting.Dictionary`,

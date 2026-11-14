@@ -1160,6 +1160,16 @@ impl Variant {
         ))
     }
 
+    /// A copy of a `VT_BYREF` cell that refers to the same target (a reference passed on to a
+    /// nested call is the same reference). Any other cell clones as usual.
+    pub fn clone_reference(&self) -> Self {
+        if self.vtype() == VarType::ByRef {
+            Self::from_core(self.core)
+        } else {
+            self.clone()
+        }
+    }
+
     /// The target type (`vt` without `VT_BYREF`, `VT_ARRAY` kept) and address of a `VT_BYREF`
     /// cell.
     pub fn byref_target(&self) -> Option<(u16, *mut u8)> {
@@ -1439,6 +1449,12 @@ impl Variant {
         if let Some(mut array) = view {
             array.set_fixed_size(fixed);
         }
+    }
+
+    /// Whether this is an array cell or a `VT_BYREF | VT_ARRAY` reference to one (an array
+    /// element or UDT field passed ByRef): element access works the same on both.
+    pub fn holds_array(&self) -> bool {
+        self.array_descriptor().is_some()
     }
 
     pub fn array_element_vartype(&self) -> Option<u16> {

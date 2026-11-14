@@ -467,6 +467,15 @@ pub enum OxInst {
         base: OxAddrBase,
         path: Vec<OxAddrStep>,
     },
+    /// `dst :=` a `VT_BYREF` reference to the array element or UDT field `base` + `path`
+    /// names, for passing it ByRef: the callee reads and writes the storage itself, as in VBA
+    /// (a Variant element is `VT_BYREF | VT_VARIANT`, the element cell; a typed one
+    /// `VT_BYREF | vt`). The elaborator emits it only for storage that has a reference form.
+    MakeRef {
+        dst: OxPlace,
+        base: OxAddrBase,
+        path: Vec<OxAddrStep>,
+    },
     ErrFieldGet {
         dst: OxPlace,
         field: ErrField,
@@ -554,6 +563,7 @@ impl OxInst {
             | OxInst::CompareObjectIs { .. }
             | OxInst::TypeOfIs { .. }
             | OxInst::AddrOf { .. }
+            | OxInst::MakeRef { .. }
             | OxInst::AddRef { .. } => true,
 
             // `Unbox` is fallible only when it re-checks the tag.

@@ -1809,7 +1809,8 @@ impl<'a> LowerFunc<'a> {
             }
             OxInst::AddrOf {
                 dst, base, path, ..
-            } => {
+            }
+            | OxInst::MakeRef { dst, base, path } => {
                 // The helper reads the path's shape from this instruction (the compiled
                 // image borrows the OxProgram for its entire lifetime); the object and the
                 // subscripts are evaluated here, in path order, as operand descriptors.

@@ -155,8 +155,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cores
                 .iter()
                 .map(|core| {
-                    calcvba_oxir::elaborate::elaborate(core)
-                        .map_err(|error| format!("elaborate: {error}"))
+                    calcvba_oxir::elaborate::elaborate_with(
+                        core,
+                        &calcvba_oxir::elaborate::ElaborateOptions {
+                            byref_references: false,
+                        },
+                    )
+                    .map_err(|error| format!("elaborate: {error}"))
                 })
                 .collect::<Result<Vec<_>, _>>()
         });

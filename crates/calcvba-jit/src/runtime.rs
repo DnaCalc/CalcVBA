@@ -997,6 +997,10 @@ pub(crate) fn byref_variant_reference(
         return None;
     }
     let cell = slot_alias_mut(run, alias)?;
+    // A slot that already holds a reference (an element passed ByRef) is passed on as it is.
+    if cell.byref_target().is_some() {
+        return None;
+    }
     let vt = cell.core().raw_vt();
     // SAFETY: the caller's slot is stable storage that outlives the callee's activation, and
     // a typed variable's cell keeps its declared type `vt`.
@@ -1195,7 +1199,11 @@ pub(crate) unsafe fn mirror_param_array_element_write(
     let Some(slot) = slot_alias_mut(run, target) else {
         return Err(ST_FAULT);
     };
-    *slot = converted;
+    // An argument that is an element or field is a reference: the write reaches it.
+    let status = crate::helpers::store_slot(state, slot, converted);
+    if status != ST_OK {
+        return Err(status);
+    }
 
     for (index, alias) in aliases.iter().enumerate() {
         if *alias != Some(target) {

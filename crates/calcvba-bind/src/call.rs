@@ -620,8 +620,8 @@ impl<'a> ProcLower<'a> {
     /// ByRef `Variant` parameter is referred to, not copied: the callee gets a
     /// `VT_BYREF | vt` cell pointing at it, and its writes reach the variable (Excel: a Long
     /// is `&H4003`, `"12"` written through it is 12). A fixed-length string is converted,
-    /// so it is a copy. A typed array element or UDT field is still a copy until such
-    /// arguments become references too (dc-yqq0.7, step 7b2).
+    /// so it is a copy. An array element or UDT field is a reference too (`MakeRef`); a
+    /// typed class field is still a copy.
     fn byref_variant_takes_temporary(
         &self,
         param: Option<&Param>,
@@ -635,10 +635,12 @@ impl<'a> ProcLower<'a> {
         let raw_actual = self.g.resolve_udt_type(actual.clone());
         let actual = canonical_byref_type(raw_actual.clone());
         let generic_object = |ty: &VarTypeRef| matches!(ty, VarTypeRef::Object(name) if name.eq_ignore_ascii_case("Object"));
-        let compound = !matches!(place, CorePlace::Local(_) | CorePlace::Global(_));
+        // A class field is still copied in and out (it has no reference form yet).
+        let class_field = matches!(place, CorePlace::Field { .. });
         (matches!(expected, VarTypeRef::Variant)
             && (matches!(raw_actual, VarTypeRef::FixedString(_))
-                || (compound && matches!(raw_actual, VarTypeRef::Builtin(_) | VarTypeRef::Object(_)))))
+                || (class_field
+                    && matches!(raw_actual, VarTypeRef::Builtin(_) | VarTypeRef::Object(_)))))
             // A class-typed object variable passed to a ByRef `As Object` parameter: the
             // callee gets a temporary holding the same object (dc-tey4.4, VBA-Web's
             // `CreateFromHttp ..., Me.Http`).

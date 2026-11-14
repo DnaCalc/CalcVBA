@@ -241,6 +241,11 @@ fn relocate_places(inst: &mut OxInst, base: usize) {
             base: address_base,
             path,
             ..
+        }
+        | MakeRef {
+            dst,
+            base: address_base,
+            path,
         } => {
             place(dst, base);
             match address_base {

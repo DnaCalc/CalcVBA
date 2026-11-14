@@ -565,7 +565,14 @@ fn worker(path: &Path, directory: &Path) -> Result<Vec<Row>, Box<dyn std::error:
     };
     let programs: Vec<_> = cores
         .iter()
-        .map(calcvba_oxir::elaborate::elaborate)
+        .map(|core| {
+            calcvba_oxir::elaborate::elaborate_with(
+                core,
+                &calcvba_oxir::elaborate::ElaborateOptions {
+                    byref_references: false,
+                },
+            )
+        })
         .collect::<Result<_, _>>()
         .map_err(|e| e.to_string())?;
     let refusal = if let [program] = programs.as_slice() {

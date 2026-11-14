@@ -1828,6 +1828,29 @@ impl<'h> Vm3<'h> {
                 let pointer = self.address_of(*kind, base, path)?;
                 self.store(dst, Variant::from_i64(pointer))?;
             }
+            // A ByRef argument that is an array element or UDT field: a reference to it, so
+            // the callee reads and writes the storage itself (the JIT's
+            // `rt_jit_make_ref_to_slot` does the same).
+            OxInst::MakeRef { dst, base, path } => {
+                let steps = self.address_steps(path)?;
+                let root = self.address_root(base)?;
+                let fault = |number: i32| {
+                    Vm3Error::Fault(Fault::new(number, default_error_message(number)))
+                };
+                // SAFETY: `root` is a live, stable engine cell; no Rust reference to it is held.
+                let location =
+                    unsafe { calcvba_runtime::address::locate(root, &steps) }.map_err(fault)?;
+                // SAFETY: the storage lives at least for the statement the reference is for.
+                let reference = unsafe { location.reference(true) }.ok_or_else(|| {
+                    Vm3Error::Malformed("MakeRef over storage with no reference form".into())
+                })?;
+                // The destination is a fresh statement temporary: replace, never write through.
+                let loc = self.resolve(dst);
+                let slot = self
+                    .read_loc_mut(loc)?
+                    .ok_or_else(|| Vm3Error::Malformed(format!("MakeRef destination {loc:?}")))?;
+                *slot = reference;
+            }
             // A statement boundary drives finalization timing: run any parked
             // `Class_Terminate`s released by the previous statement (the error model takes its
             // `Resume` seeds from `FaultDispatch`, not from here).
@@ -5446,7 +5469,24 @@ impl<'h> Vm3<'h> {
         base: &OxAddrBase,
         path: &[OxAddrStep],
     ) -> Result<i64, Vm3Error> {
-        use calcvba_runtime::address::{self, AddressKind, AddressStep, Location};
+        use calcvba_runtime::address;
+        let steps = self.address_steps(path)?;
+        let root = self.address_root(base)?;
+        let fault =
+            |number: i32| Vm3Error::Fault(Fault::new(number, default_error_message(number)));
+        // SAFETY: `root` is a live, stable engine cell (a frame slot, a global or a boxed
+        // class field) and no Rust reference to it is held across this call.
+        let location = unsafe { address::locate(root, &steps) }.map_err(fault)?;
+        self.address_from(kind, location)
+    }
+
+    /// The subscripts of an `AddrOf`/`MakeRef` path, evaluated as element access evaluates
+    /// them.
+    fn address_steps(
+        &mut self,
+        path: &[OxAddrStep],
+    ) -> Result<Vec<calcvba_runtime::address::AddressStep>, Vm3Error> {
+        use calcvba_runtime::address::AddressStep;
         let mut steps = Vec::with_capacity(path.len());
         for step in path {
             steps.push(match step {
@@ -5463,7 +5503,12 @@ impl<'h> Vm3<'h> {
                 OxAddrStep::Field(index) => AddressStep::Field(*index),
             });
         }
-        let root = match base {
+        Ok(steps)
+    }
+
+    /// The engine cell an `AddrOf`/`MakeRef` path starts from.
+    fn address_root(&mut self, base: &OxAddrBase) -> Result<*mut Variant, Vm3Error> {
+        Ok(match base {
             OxAddrBase::Place(place) => {
                 let loc = self.resolve(place);
                 self.read_loc_mut(loc)?
@@ -5479,12 +5524,18 @@ impl<'h> Vm3<'h> {
                     .project_field_cell(*field)
                     .ok_or_else(|| Vm3Error::Fault(Fault::new(13, "type mismatch")))?
             }
-        };
+        })
+    }
+
+    /// The pointer a helper of `kind` returns for a located piece of storage.
+    fn address_from(
+        &mut self,
+        kind: PtrKind,
+        location: calcvba_runtime::address::Location,
+    ) -> Result<i64, Vm3Error> {
+        use calcvba_runtime::address::{AddressKind, Location};
         let fault =
             |number: i32| Vm3Error::Fault(Fault::new(number, default_error_message(number)));
-        // SAFETY: `root` is a live, stable engine cell (a frame slot, a global or a boxed
-        // class field) and no Rust reference to it is held across this call.
-        let location = unsafe { address::locate(root, &steps) }.map_err(fault)?;
         let address = match kind {
             PtrKind::Var | PtrKind::VarString => {
                 // SAFETY: the location was just found live.
@@ -5591,6 +5642,11 @@ impl<'h> Vm3<'h> {
         let Some(cell) = self.read_loc_mut(loc)? else {
             return Ok(None);
         };
+        // A slot that already holds a reference (an element passed ByRef) is passed on as
+        // it is: the parameter aliases it, as VBA passes the same cell to a nested call.
+        if cell.byref_target().is_some() {
+            return Ok(None);
+        }
         let vt = cell.core().raw_vt();
         let target = Variant::payload_ptr(cell);
         // SAFETY: the caller's cell is stable storage (a frame slot or a global) that outlives

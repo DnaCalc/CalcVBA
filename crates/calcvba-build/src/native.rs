@@ -211,9 +211,14 @@ fn build_native_artifact(
         None
     };
     // Native images call the platform's Scripting runtime, as Excel does.
+    // The native lane has no `VT_BYREF` cells yet (step 10): elements and fields passed
+    // ByRef keep copy-in and copy-out there.
     let image = build_artifacts(
         &closure,
         calcvba_symbol::DictionarySource::platform_default(),
+        &calcvba_oxir::elaborate::ElaborateOptions {
+            byref_references: false,
+        },
     )?;
     let linked = crate::native_link::link(&image.programs).map_err(native_error)?;
     let program = &linked;

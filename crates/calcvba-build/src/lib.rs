@@ -128,7 +128,11 @@ pub fn build_wrapped_com_server(
     let project_name = root_manifest.project_name.clone();
     let artifact_stem = artifact_stem(&project_name);
 
-    let ox_image = build_artifacts(&closure, calcvba_symbol::DictionarySource::Engine)?;
+    let ox_image = build_artifacts(
+        &closure,
+        calcvba_symbol::DictionarySource::Engine,
+        &calcvba_oxir::elaborate::ElaborateOptions::default(),
+    )?;
     let oxi_path = options.out_dir.join(format!("{artifact_stem}.oxi"));
     write_bytes(
         &oxi_path,
@@ -184,7 +188,11 @@ pub fn build_oximage(project_path: &Path, out_dir: &Path) -> Result<PathBuf, Bui
         .ok_or_else(|| BuildError::EmptyProjectClosure {
             path: project_path.display().to_string(),
         })?;
-    let image = build_artifacts(&closure, calcvba_symbol::DictionarySource::Engine)?;
+    let image = build_artifacts(
+        &closure,
+        calcvba_symbol::DictionarySource::Engine,
+        &calcvba_oxir::elaborate::ElaborateOptions::default(),
+    )?;
     let bytes = image
         .to_bytes()
         .map_err(|err| BuildError::Elaborate(err.to_string()))?;
@@ -233,12 +241,13 @@ fn validate_wrapped_com_server_project(
 fn build_artifacts(
     closure: &[calcvba_symbol::manifest::SymbolProjectManifest],
     dictionary: calcvba_symbol::DictionarySource,
+    options: &calcvba_oxir::elaborate::ElaborateOptions,
 ) -> Result<calcvba_oxir::OxImage, BuildError> {
     let typelibs = BuildTypes(dictionary);
     let programs = calcvba_bind::bind_projects(closure, &typelibs)?;
     let ox_programs: Vec<calcvba_oxir::OxProgram> = programs
         .iter()
-        .map(calcvba_oxir::elaborate::elaborate)
+        .map(|program| calcvba_oxir::elaborate::elaborate_with(program, options))
         .collect::<Result<_, _>>()
         .map_err(|err| BuildError::Elaborate(err.to_string()))?;
     Ok(calcvba_oxir::OxImage::new(ox_programs))

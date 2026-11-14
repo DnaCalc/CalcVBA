@@ -2,6 +2,7 @@
 pub mod access_policy;
 #[cfg(target_os = "windows")]
 pub mod automation;
+pub mod call;
 pub use access_policy::{ComPolicyScope, authorize_native_com};
 
 pub mod ansi;

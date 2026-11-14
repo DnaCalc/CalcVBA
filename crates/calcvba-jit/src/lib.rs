@@ -12,10 +12,7 @@ use calcvba_bundle::{
     array_element_type_for_vartype, default_array_element, redim_safearray_from_elements,
     safearray_vartype_for_element, vba_library_bundle, vba_record_layout_for_fields,
 };
-use calcvba_com::{
-    DynamicCallArg, DynamicCallKind, DynamicCallRequest, DynamicMemberSelector, DynamicValue,
-    TypeLibMemberInvokeKind,
-};
+use calcvba_com::{DynamicCallArg, DynamicValue, TypeLibMemberInvokeKind};
 use calcvba_eval::{
     arith,
     collection::{CollectionError, CollectionMethod, dispatch_collection},

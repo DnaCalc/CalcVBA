@@ -128,6 +128,85 @@ pub trait HostServices {
     }
 }
 
+/// The object call for runtime-handle objects (portable objects, and foreign objects until they
+/// are all their interface pointers): the dynamic request, then each returned ByRef value written
+/// through its reference. [`ComHal::invoke_object`]'s default.
+pub fn invoke_object_by_request<H: ComHal + ?Sized>(
+    hal: &H,
+    object: &ObjectRef,
+    member: calcvba_com::call::ComMember<'_>,
+    kind: calcvba_com::call::ComCallKind,
+    args: &[calcvba_com::call::ComArg<'_>],
+) -> HalResult<Variant> {
+    use calcvba_com::call::{ComArgValue, ComCallKind, ComMember};
+    use calcvba_com::{DynamicCallKind, DynamicMemberSelector, DynamicValue};
+    let call_args = args
+        .iter()
+        .enumerate()
+        .map(|(index, arg)| calcvba_com::DynamicCallArg {
+            value: match arg.value {
+                ComArgValue::Value(value) => Some(DynamicValue::from_variant(value.clone())),
+                // Cloning a reference reads its target.
+                ComArgValue::Reference(reference) => {
+                    Some(DynamicValue::from_variant(reference.clone()))
+                }
+                ComArgValue::Missing => None,
+            },
+            name: arg.name.map(str::to_string),
+            by_ref: matches!(arg.value, ComArgValue::Reference(_))
+                .then(|| calcvba_runtime::RuntimeByRefSlot::new(index as u32, None)),
+        })
+        .collect();
+    let request = DynamicCallRequest {
+        object: object.clone(),
+        member: match member {
+            ComMember::Name(name) => DynamicMemberSelector::Name(name.to_string()),
+            ComMember::Id(0) => DynamicMemberSelector::DefaultMember,
+            ComMember::Id(id) => DynamicMemberSelector::Token(id),
+        },
+        args: call_args,
+        call_kind_hint: Some(match kind {
+            ComCallKind::Method => DynamicCallKind::Method,
+            ComCallKind::Get => DynamicCallKind::PropertyGet,
+            ComCallKind::Let => DynamicCallKind::PropertyLet,
+            ComCallKind::Set => DynamicCallKind::PropertySet,
+        }),
+    };
+    let (value, writebacks) = hal.dispatch_invoke_dynamic_variant_with_writebacks(&request)?;
+    for (arg, written) in args.iter().zip(writebacks) {
+        if let (ComArgValue::Reference(reference), Some(written)) = (arg.value, written) {
+            write_through_reference(reference, written)?;
+        }
+    }
+    Ok(value)
+}
+
+/// Stores a value a callee returned for a ByRef argument through its `VT_BYREF` reference,
+/// coerced to the target's type first (VBA error 13 when it does not convert).
+pub fn write_through_reference(reference: &Variant, value: Variant) -> HalResult<()> {
+    let fault = |detail: String| {
+        HalError::adapter_fault(
+            HalProfileId::Null,
+            CapabilityId::ComActivationDispatch,
+            "invoke_object",
+            detail,
+        )
+        .with_host_error_code(13)
+    };
+    let Some((vt, _)) = reference.byref_target() else {
+        return Err(fault("ByRef argument is not a reference".into()));
+    };
+    let value = if vt == 0x0C || vt & 0x2000 != 0 {
+        value
+    } else {
+        let target = calcvba_runtime::VarType::from_u16(vt)
+            .ok_or_else(|| fault(format!("reference target {vt:#06X}")))?;
+        calcvba_runtime::coerce::coerce_to(&value, target).map_err(fault)?
+    };
+    // SAFETY: the reference was built by the caller for this call and its target is live.
+    unsafe { reference.write_through(value) }.map_err(fault)
+}
+
 fn variant_companion_not_overridden<T>(
     capability: CapabilityId,
     operation: &'static str,
@@ -521,6 +600,38 @@ pub trait ComHal {
     /// original object argument. None leaves an object without this reflection intact.
     fn object_default_value(&self, _object: ObjectRef) -> HalResult<Option<Variant>> {
         Ok(None)
+    }
+    /// Call a member of a COM object over the runtime cell (step 8 of the VARIANT-layout
+    /// programme): ByVal argument cells are borrowed, ByRef arguments are `VT_BYREF` references
+    /// the callee writes through, and the result moves into the returned cell.
+    ///
+    /// The default serves objects that are still runtime handles (portable objects, and foreign
+    /// objects until they are all their interface pointers): it sends the dynamic request and
+    /// writes each returned ByRef value through its reference.
+    fn invoke_object(
+        &self,
+        object: &ObjectRef,
+        member: calcvba_com::call::ComMember<'_>,
+        kind: calcvba_com::call::ComCallKind,
+        args: &[calcvba_com::call::ComArg<'_>],
+    ) -> HalResult<Variant> {
+        invoke_object_by_request(self, object, member, kind, args)
+    }
+    /// A `For Each` over a COM object, one item at a time. The default enumerates through
+    /// [`Self::enumerate_object`].
+    fn object_enumerator(
+        &self,
+        object: &ObjectRef,
+    ) -> HalResult<Box<dyn calcvba_com::call::ComEnumerator>> {
+        struct Items(std::vec::IntoIter<Variant>);
+        impl calcvba_com::call::ComEnumerator for Items {
+            fn next_item(&mut self) -> Result<Option<Variant>, calcvba_com::call::ComFault> {
+                Ok(self.0.next())
+            }
+        }
+        Ok(Box::new(Items(
+            self.enumerate_object(object.clone())?.into_iter(),
+        )))
     }
     fn dispatch_invoke_variant(&self, _request: &ComInvokeRequest) -> HalResult<Variant> {
         variant_companion_not_overridden(

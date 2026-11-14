@@ -4444,15 +4444,6 @@ pub(crate) unsafe fn raise_collection_error_for_jit(
     }
 }
 
-pub(crate) fn project_member_kind_to_dynamic(kind: ProjectMemberKind) -> DynamicCallKind {
-    match kind {
-        ProjectMemberKind::Method => DynamicCallKind::Method,
-        ProjectMemberKind::PropertyGet => DynamicCallKind::PropertyGet,
-        ProjectMemberKind::PropertyLet => DynamicCallKind::PropertyLet,
-        ProjectMemberKind::PropertySet => DynamicCallKind::PropertySet,
-    }
-}
-
 fn interop_invoke_kind_from_com(kind: TypeLibMemberInvokeKind) -> InteropInvokeKind {
     match kind {
         TypeLibMemberInvokeKind::Method => InteropInvokeKind::Method,
@@ -4627,14 +4618,6 @@ pub(crate) unsafe extern "C" fn raise_values(
     })
 }
 
-pub(crate) fn foreign_member_selector_for_jit(name: &str) -> DynamicMemberSelector {
-    if name.is_empty() {
-        DynamicMemberSelector::DefaultMember
-    } else {
-        DynamicMemberSelector::Name(name.to_string())
-    }
-}
-
 // SAFETY CONTRACT: `state` must be null or the exact live, uniquely borrowed,
 // same-thread handle produced by `exec_state_as_raw`; `run` must be the matching
 // stable run root, and the invocation's text and descriptor slices must remain
@@ -4656,6 +4639,15 @@ pub(crate) unsafe fn invoke_foreign_member_to_slot_for_jit(
     } = invocation;
     if run.is_null() || args.len() != names.len() {
         return ST_FAULT;
+    }
+    if early_member.is_none() {
+        if let Err(message) = verified_late_dispatch_plan_for_jit(name, kind, args, names) {
+            return raise_plan_error(state, run, message);
+        }
+        // SAFETY: forwarded from this function's contract.
+        return unsafe {
+            invoke_late_bound_for_jit(state, run, object, name, kind, args, names, dst)
+        };
     }
     let mut call_args = Vec::with_capacity(args.len());
     {
@@ -4709,7 +4701,10 @@ pub(crate) unsafe fn invoke_foreign_member_to_slot_for_jit(
         };
         exec.host
     };
-    let result = if let Some(member) = early_member {
+    let Some(member) = early_member else {
+        return ST_FAULT;
+    };
+    let result = {
         if interop_invoke_kind_from_project(kind)
             != interop_invoke_kind_from_com(member.invoke_kind)
         {
@@ -4734,18 +4729,6 @@ pub(crate) unsafe fn invoke_foreign_member_to_slot_for_jit(
                 }
                 Ok((result.value.unwrap_or_else(Variant::empty), writebacks))
             })
-    } else {
-        if let Err(message) = verified_late_dispatch_plan_for_jit(name, kind, args, names) {
-            return raise_plan_error(state, run, message);
-        }
-        let request = DynamicCallRequest {
-            object,
-            member: foreign_member_selector_for_jit(name),
-            args: call_args,
-            call_kind_hint: Some(project_member_kind_to_dynamic(kind)),
-        };
-        host.com()
-            .dispatch_invoke_dynamic_variant_with_writebacks(&request)
     };
     let (value, writebacks) = match result {
         Ok(result) => result,
@@ -4790,6 +4773,137 @@ pub(crate) unsafe fn invoke_foreign_member_to_slot_for_jit(
         }
     }
     ST_OK
+}
+
+/// A late-bound call on a COM object (VM3's `dispatch_com_method` does the same): ByVal
+/// arguments are the slots' values, borrowed by the call; a ByRef argument is the `VT_BYREF`
+/// reference to its slot, which the callee writes through; the result goes to `dst`.
+///
+/// # Safety
+/// As [`invoke_foreign_member_to_slot_for_jit`].
+#[allow(clippy::too_many_arguments)]
+unsafe fn invoke_late_bound_for_jit(
+    state: *mut RawExecState,
+    run: *mut JitRun,
+    object: ObjectRef,
+    name: &str,
+    kind: ProjectMemberKind,
+    args: &[JitCallArgDesc],
+    names: &[JitCallArgNameDesc],
+    dst: Option<(u32, u32)>,
+) -> i32 {
+    let mut cells = Vec::with_capacity(args.len());
+    let mut arg_names = Vec::with_capacity(args.len());
+    {
+        // SAFETY: this preparation borrow ends before the host call.
+        let run_mut = unsafe { &mut *run };
+        for (arg, name) in args.iter().copied().zip(names.iter().copied()) {
+            // SAFETY: names are compiled descriptors backed by the live OxProgram.
+            match unsafe { call_arg_name_preserved(name) } {
+                Ok(name) => arg_names.push(name),
+                Err(status) => return status,
+            }
+            cells.push(if arg.kind == JIT_CALL_ARG_OMITTED {
+                None
+            } else if arg.kind == JIT_CALL_ARG_BYREF_ALIAS {
+                if arg.area < 0 || arg.index < 0 {
+                    return ST_FAULT;
+                }
+                match com_reference_for_jit(run_mut, arg.area as u32, arg.index as u32) {
+                    Some(reference) => Some(reference),
+                    None => return ST_FAULT,
+                }
+            } else {
+                match call_arg_variant_value(run_mut, arg) {
+                    Some(value) => Some(value),
+                    None => return ST_FAULT,
+                }
+            });
+        }
+    }
+    let call_args: Vec<_> = args
+        .iter()
+        .zip(&cells)
+        .zip(&arg_names)
+        .map(|((arg, cell), name)| calcvba_com::call::ComArg {
+            value: match cell {
+                Some(reference) if arg.kind == JIT_CALL_ARG_BYREF_ALIAS => {
+                    calcvba_com::call::ComArgValue::Reference(reference)
+                }
+                Some(value) => calcvba_com::call::ComArgValue::Value(value),
+                None => calcvba_com::call::ComArgValue::Missing,
+            },
+            name: name.as_deref(),
+        })
+        .collect();
+    let host = {
+        // SAFETY: copying the host reference ends this typed state borrow before a host call
+        // that may synchronously re-enter VBA.
+        let exec = match unsafe { jit_exec_state_mut(state) } {
+            Some(exec) => exec,
+            None => return ST_FAULT,
+        };
+        exec.host
+    };
+    let member = if name.is_empty() {
+        calcvba_com::call::ComMember::Id(0)
+    } else {
+        calcvba_com::call::ComMember::Name(name)
+    };
+    let call_kind = match kind {
+        ProjectMemberKind::Method => calcvba_com::call::ComCallKind::Method,
+        ProjectMemberKind::PropertyGet => calcvba_com::call::ComCallKind::Get,
+        ProjectMemberKind::PropertyLet => calcvba_com::call::ComCallKind::Let,
+        ProjectMemberKind::PropertySet => calcvba_com::call::ComCallKind::Set,
+    };
+    let value = match host
+        .com()
+        .invoke_object(&object, member, call_kind, &call_args)
+    {
+        Ok(value) => value,
+        Err(err) => {
+            // SAFETY: the host call returned; the live execution state may be borrowed again.
+            let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
+                return ST_FAULT;
+            };
+            exec.err_engine
+                .raise(Fault::from_hal(err), current_unit_source(run));
+            return ST_FAULT;
+        }
+    };
+    drop(call_args);
+    drop(cells);
+    if let Some((area, index)) = dst {
+        // SAFETY: the host call returned and no typed run borrow spans it.
+        let run = unsafe { &mut *run };
+        let Some(slot) = slot_mut(run, area, index) else {
+            return ST_FAULT;
+        };
+        let status = store_slot(state, slot, value);
+        if status != ST_OK {
+            return status;
+        }
+    }
+    ST_OK
+}
+
+/// The `VT_BYREF` cell a COM call gets for the slot `(area, index)` (VM3's `com_reference`):
+/// a slot already holding a reference is passed on, a typed variable is `VT_BYREF | vt` to its
+/// storage, and a Variant variable is `VT_BYREF | VT_VARIANT` to its cell.
+fn com_reference_for_jit(run: &mut JitRun, area: u32, index: u32) -> Option<Variant> {
+    let alias =
+        current_frame_slot(run, area, index).and_then(|alias| resolve_slot_alias(run, alias))?;
+    if let Some(reference) = byref_variant_reference(run, alias, &OxTy::Variant) {
+        return Some(reference);
+    }
+    let cell = slot_alias_mut(run, alias)?;
+    if cell.byref_target().is_some() {
+        return Some(cell.clone_reference());
+    }
+    let cell: *mut Variant = cell;
+    // SAFETY: frame slots and globals are stable storage that outlives the call; no Rust
+    // reference to the cell is held across it.
+    Some(unsafe { Variant::by_ref(0x0C, cell.cast()) })
 }
 
 /// Execute a verified x64 Declare plan through the host dynlink HAL.
@@ -7588,17 +7702,13 @@ unsafe fn arithmetic_value_for_jit(
                 };
                 exec.host
             };
-            let request = DynamicCallRequest {
-                object,
-                member: DynamicMemberSelector::DefaultMember,
-                args: Vec::new(),
-                call_kind_hint: Some(DynamicCallKind::PropertyGet),
-            };
-            match host
-                .com()
-                .dispatch_invoke_dynamic_variant_with_writebacks(&request)
-            {
-                Ok((result, _)) => result,
+            match host.com().invoke_object(
+                &object,
+                calcvba_com::call::ComMember::Id(0),
+                calcvba_com::call::ComCallKind::Get,
+                &[],
+            ) {
+                Ok(result) => result,
                 Err(error) => {
                     // SAFETY: host callback returned; reacquire state only now.
                     let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {

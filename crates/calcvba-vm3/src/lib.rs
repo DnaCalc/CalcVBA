@@ -28,8 +28,8 @@ use calcvba_bundle::{
     safearray_vartype_for_element, vba_record_layout_for_fields,
 };
 use calcvba_com::{
-    ComMemberToken, ComSubscriptionToken, DynamicCallArg, DynamicCallKind, DynamicCallRequest,
-    DynamicMemberSelector, DynamicValue, TypeLibMemberInvokeKind,
+    ComMemberToken, ComSubscriptionToken, DynamicCallArg, DynamicMemberSelector, DynamicValue,
+    TypeLibMemberInvokeKind,
 };
 use calcvba_eval::arith::{self, ArithError};
 use calcvba_eval::collection::{CollectionError, CollectionMethod, dispatch_collection};
@@ -4833,26 +4833,17 @@ impl<'h> Vm3<'h> {
         args: Vec<Variant>,
     ) -> Result<Variant, Vm3Error> {
         let _plan = verified_late_dispatch_plan(&member, invoke_kind, &[])?;
-        let request = DynamicCallRequest {
-            object,
-            member,
-            args: args
-                .into_iter()
-                .map(|value| DynamicCallArg {
-                    value: Some(DynamicValue::from_variant(value)),
-                    name: None,
-                    by_ref: None,
-                })
-                .collect(),
-            call_kind_hint: Some(invoke_kind_to_dynamic(invoke_kind)),
-        };
-        let (ret, _) = self
-            .exec
+        let call_args: Vec<_> = args.iter().map(calcvba_com::call::ComArg::value).collect();
+        self.exec
             .host
             .com()
-            .dispatch_invoke_dynamic_variant_with_writebacks(&request)
-            .map_err(|e| Vm3Error::Fault(Fault::from_hal(e)))?;
-        Ok(ret)
+            .invoke_object(
+                &object,
+                com_member(&member),
+                com_call_kind(invoke_kind),
+                &call_args,
+            )
+            .map_err(|e| Vm3Error::Fault(Fault::from_hal(e)))
     }
 
     fn dispatch_member_by_name(
@@ -4891,51 +4882,55 @@ impl<'h> Vm3<'h> {
         invoke_kind: TypeLibMemberInvokeKind,
         args: &[OxCallArg],
     ) -> Result<Variant, Vm3Error> {
-        let mut call_args = Vec::with_capacity(args.len());
-        let mut identities = HashMap::new();
-        for (index, arg) in args.iter().enumerate() {
-            let (value, arg_name) = match arg {
-                OxCallArg::Operand(op) => (Some(self.operand(op)?), None),
-                OxCallArg::ByRef(place) => (Some(self.read(place)?), None),
-                OxCallArg::Named { name, value } => {
-                    (Some(self.operand(value)?), Some(name.clone()))
-                }
-                OxCallArg::Omitted => (None, None),
-                OxCallArg::Const(n) => (Some(Variant::from_i32(*n)), None),
-            };
-            call_args.push(DynamicCallArg {
-                value: value.map(DynamicValue::from_variant),
-                name: arg_name,
-                by_ref: if let OxCallArg::ByRef(place) = arg {
-                    let id = *identities
-                        .entry(self.resolve(place))
-                        .or_insert(index as u32);
-                    Some(RuntimeByRefSlot::new(id, None))
-                } else {
-                    None
-                },
+        let _plan = verified_late_dispatch_plan(&member, invoke_kind, args)?;
+        // The argument cells: ByVal values (borrowed by the call), and for a ByRef place the
+        // `VT_BYREF` reference to its storage, which the callee writes through.
+        let mut cells = Vec::with_capacity(args.len());
+        for arg in args {
+            cells.push(match arg {
+                OxCallArg::Operand(op) => Some(self.operand(op)?),
+                OxCallArg::Named { value, .. } => Some(self.operand(value)?),
+                OxCallArg::ByRef(place) => Some(self.com_reference(place)?),
+                OxCallArg::Omitted => None,
+                OxCallArg::Const(n) => Some(Variant::from_i32(*n)),
             });
         }
-        let _plan = verified_late_dispatch_plan(&member, invoke_kind, args)?;
-        let request = DynamicCallRequest {
-            object,
-            member,
-            args: call_args,
-            call_kind_hint: Some(invoke_kind_to_dynamic(invoke_kind)),
-        };
-        let (ret, writebacks) = self
-            .exec
+        let call_args = com_call_args(args, &cells);
+        self.exec
             .host
             .com()
-            .dispatch_invoke_dynamic_variant_with_writebacks(&request)
-            .map_err(|e| Vm3Error::Fault(Fault::from_hal(e)))?;
-        // Apply COM `[out]`/`[in,out]` write-backs to the ByRef call-site places; only a
-        // `ByRef` arg (marked from the typelib's param directions) is written back — a
-        // force-ByVal `(x)` / non-l-value is lowered to `Operand` and correctly skipped.
-        apply_optional_byref_writebacks(args, &writebacks, |place, value| {
-            self.store(place, value)
-        })?;
-        Ok(ret)
+            .invoke_object(
+                &object,
+                com_member(&member),
+                com_call_kind(invoke_kind),
+                &call_args,
+            )
+            .map_err(|e| Vm3Error::Fault(Fault::from_hal(e)))
+    }
+
+    /// The `VT_BYREF` cell a COM call gets for a ByRef place, as VBA builds it: a slot that
+    /// already holds a reference (an element passed ByRef) is passed on, a typed variable is
+    /// `VT_BYREF | vt` to its storage, and a Variant variable is `VT_BYREF | VT_VARIANT` to its
+    /// cell.
+    fn com_reference(&mut self, place: &OxPlace) -> Result<Variant, Vm3Error> {
+        let typed = self.place_ty(place).is_byref_variant_reference();
+        let loc = self.resolve(place);
+        let cell = self
+            .read_loc_mut(loc)?
+            .ok_or_else(|| Vm3Error::Malformed(format!("ByRef COM argument {loc:?}")))?;
+        if cell.byref_target().is_some() {
+            return Ok(cell.clone_reference());
+        }
+        let cell: *mut Variant = cell;
+        // SAFETY: frame slots and globals are stable storage that outlives the call; no Rust
+        // reference to the cell is held across it.
+        Ok(unsafe {
+            if typed {
+                Variant::by_ref((*cell).core().raw_vt(), Variant::payload_ptr(cell))
+            } else {
+                Variant::by_ref(0x0C, cell.cast())
+            }
+        })
     }
 
     fn dispatch_early_com_method(
@@ -6140,13 +6135,49 @@ mod interop_plan_tests {
     }
 }
 
-fn invoke_kind_to_dynamic(k: TypeLibMemberInvokeKind) -> DynamicCallKind {
-    match k {
-        TypeLibMemberInvokeKind::Method => DynamicCallKind::Method,
-        TypeLibMemberInvokeKind::PropertyGet => DynamicCallKind::PropertyGet,
-        TypeLibMemberInvokeKind::PropertyPut => DynamicCallKind::PropertyLet,
-        TypeLibMemberInvokeKind::PropertyPutRef => DynamicCallKind::PropertySet,
+/// The member of a COM object call.
+fn com_member(member: &DynamicMemberSelector) -> calcvba_com::call::ComMember<'_> {
+    match member {
+        DynamicMemberSelector::Name(name) | DynamicMemberSelector::TokenNamed { name, .. } => {
+            calcvba_com::call::ComMember::Name(name)
+        }
+        DynamicMemberSelector::DefaultMember => calcvba_com::call::ComMember::Id(0),
+        DynamicMemberSelector::Token(token) => calcvba_com::call::ComMember::Id(*token),
     }
+}
+
+/// What a COM object call does with its member.
+fn com_call_kind(kind: TypeLibMemberInvokeKind) -> calcvba_com::call::ComCallKind {
+    match kind {
+        TypeLibMemberInvokeKind::Method => calcvba_com::call::ComCallKind::Method,
+        TypeLibMemberInvokeKind::PropertyGet => calcvba_com::call::ComCallKind::Get,
+        TypeLibMemberInvokeKind::PropertyPut => calcvba_com::call::ComCallKind::Let,
+        TypeLibMemberInvokeKind::PropertyPutRef => calcvba_com::call::ComCallKind::Set,
+    }
+}
+
+/// The argument list of a COM object call over the cells built for `args` (`None` for an
+/// omitted argument; a ByRef place's cell is its reference).
+fn com_call_args<'a>(
+    args: &'a [OxCallArg],
+    cells: &'a [Option<Variant>],
+) -> Vec<calcvba_com::call::ComArg<'a>> {
+    args.iter()
+        .zip(cells)
+        .map(|(arg, cell)| calcvba_com::call::ComArg {
+            value: match (arg, cell) {
+                (OxCallArg::ByRef(_), Some(reference)) => {
+                    calcvba_com::call::ComArgValue::Reference(reference)
+                }
+                (_, Some(value)) => calcvba_com::call::ComArgValue::Value(value),
+                (_, None) => calcvba_com::call::ComArgValue::Missing,
+            },
+            name: match arg {
+                OxCallArg::Named { name, .. } => Some(name.as_str()),
+                _ => None,
+            },
+        })
+        .collect()
 }
 
 /// Coerce a value to an object reference (mirrors vm2's `variant_to_object`): an unset object

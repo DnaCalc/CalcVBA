@@ -1313,6 +1313,36 @@ impl StandardHostServices {
     }
 
     #[cfg(target_os = "windows")]
+    /// The HAL error for a failed object call: VBA's number, with the server's description,
+    /// source and help (VBA's default message when it gave none).
+    pub(crate) fn com_call_fault(
+        &self,
+        operation: &'static str,
+        fault: calcvba_com::call::ComFault,
+    ) -> HalError {
+        let description = fault
+            .description
+            .clone()
+            .unwrap_or_else(|| calcvba_runtime::default_error_message(fault.number).to_string());
+        let mut message = format!("COM call failed with VBA error {}", fault.number);
+        if let Some(hr) = fault.hresult {
+            message.push_str(&format!(" (HRESULT {:#010X})", hr as u32));
+        }
+        HalError::adapter_fault(
+            self.profile,
+            CapabilityId::ComActivationDispatch,
+            operation,
+            message,
+        )
+        .with_host_error_code(fault.number)
+        .with_host_error_info(crate::error::HostErrorInfo {
+            source: fault.source,
+            description: Some(description),
+            help_file: fault.help_file,
+            help_context: fault.help_context,
+        })
+    }
+
     fn com_dispatch_invoke_fault(&self, failure: ComInvokeFailure) -> HalError {
         let label = failure.classification_label();
         // Recover the real VBA Err.Number (and description) the COM server

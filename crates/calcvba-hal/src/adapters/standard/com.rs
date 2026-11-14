@@ -244,6 +244,55 @@ fn try_bind_projection_object_metadata(
 }
 
 impl ComHal for StandardHostServices {
+    fn invoke_object(
+        &self,
+        object: &ObjectRef,
+        member: calcvba_com::call::ComMember<'_>,
+        kind: calcvba_com::call::ComCallKind,
+        args: &[calcvba_com::call::ComArg<'_>],
+    ) -> HalResult<Variant> {
+        // A foreign object that is its interface pointer: the one Automation path.
+        #[cfg(target_os = "windows")]
+        if !object.is_compat_object() {
+            let capability = CapabilityId::ComActivationDispatch;
+            if !self.policy.allow_com_activation {
+                return Err(self.denied(capability, "invoke_object"));
+            }
+            let dispatch = calcvba_com::automation::Dispatch::of(object)
+                .map_err(|fault| self.com_call_fault("invoke_object", fault))?;
+            // SAFETY: the VM builds each reference for this call over live storage it does not
+            // borrow across the call.
+            return unsafe {
+                dispatch.invoke(
+                    member,
+                    kind,
+                    args,
+                    &calcvba_com::automation::project_dispatch,
+                )
+            }
+            .map_err(|fault| self.com_call_fault("invoke_object", fault));
+        }
+        crate::traits::invoke_object_by_request(self, object, member, kind, args)
+    }
+
+    fn object_enumerator(
+        &self,
+        object: &ObjectRef,
+    ) -> HalResult<Box<dyn calcvba_com::call::ComEnumerator>> {
+        #[cfg(target_os = "windows")]
+        if !object.is_compat_object() {
+            let enumerator = calcvba_com::automation::Enumerator::of(
+                object,
+                &calcvba_com::automation::project_dispatch,
+            )
+            .map_err(|fault| self.com_call_fault("object_enumerator", fault))?;
+            return Ok(Box::new(enumerator));
+        }
+        Ok(Box::new(SnapshotItems(
+            self.enumerate_object(object.clone())?.into_iter(),
+        )))
+    }
+
     fn create_object_variant(&self, prog_id: Variant) -> HalResult<Variant> {
         let capability = CapabilityId::ComActivationDispatch;
         if !self.policy.allow_com_activation {
@@ -1553,5 +1602,14 @@ mod tests {
             diagnostic.metadata.get("operation").map(String::as_str),
             Some("dispatch_invoke")
         );
+    }
+}
+
+/// A snapshot `For Each` source for objects that are still runtime handles.
+struct SnapshotItems(std::vec::IntoIter<Variant>);
+
+impl calcvba_com::call::ComEnumerator for SnapshotItems {
+    fn next_item(&mut self) -> Result<Option<Variant>, calcvba_com::call::ComFault> {
+        Ok(self.0.next())
     }
 }

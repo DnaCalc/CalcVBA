@@ -7,6 +7,10 @@
 //! to a Variant cell, `VT_BYREF | vt` to typed storage), and the result moves into the runtime
 //! as it is. Objects are their interface pointers. VM3, the JIT and the typed host stack call
 //! these functions; nothing here keeps per-object state.
+use crate::call::{
+    ComArg as Arg, ComArgValue as ArgValue, ComCallKind as CallKind, ComFault as Fault,
+    ComMember as Member,
+};
 use crate::windows_client::{
     IID_IDISPATCH, IID_NULL, OwnedComInterface, RawIDispatch, query_interface_pointer,
 };
@@ -21,107 +25,42 @@ const DISP_E_PARAMNOTFOUND: i32 = 0x8002_0004u32 as i32;
 const DISP_E_UNKNOWNNAME: i32 = 0x8002_0006u32 as i32;
 const VT_ERROR_TAG: u16 = 0x000A;
 
-/// A failed call, as VBA's `Err` sees it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Fault {
-    pub number: i32,
-    pub description: Option<String>,
-    pub source: Option<String>,
-    pub help_file: Option<String>,
-    pub help_context: Option<u32>,
-    pub hresult: Option<i32>,
-}
-
-impl Fault {
-    /// A VBA error with its default message.
-    pub fn number(number: i32) -> Self {
-        Self {
-            number,
-            description: None,
-            source: None,
-            help_file: None,
-            help_context: None,
-            hresult: None,
-        }
+/// The fault for a failed `HRESULT`, with the thread's `IErrorInfo` and an `EXCEPINFO`.
+fn fault_from_hresult(
+    hr: i32,
+    excepinfo: Option<crate::windows_invoke::ComInvokeExceptionInfo>,
+) -> Fault {
+    let info = crate::windows_vtable::take_error_info();
+    let failure = crate::windows_invoke::ComInvokeFailure {
+        label: "automation",
+        dispid: 0,
+        hr: Some(hr),
+        arg_err: None,
+        excep: excepinfo,
+        detail: None,
+    };
+    let number = failure.vba_error_number();
+    let excep = failure.excep;
+    Fault {
+        number,
+        description: excep
+            .as_ref()
+            .and_then(|e| e.description.clone())
+            .or_else(|| info.as_ref().and_then(|e| e.description.clone())),
+        source: excep
+            .as_ref()
+            .and_then(|e| e.source.clone())
+            .or_else(|| info.as_ref().and_then(|e| e.source.clone())),
+        help_file: excep
+            .as_ref()
+            .and_then(|e| e.help_file.clone())
+            .or_else(|| info.as_ref().and_then(|e| e.help_file.clone())),
+        help_context: excep
+            .as_ref()
+            .and_then(|e| e.help_context)
+            .or_else(|| info.and_then(|e| e.help_context)),
+        hresult: Some(hr),
     }
-
-    /// The fault for a failed `HRESULT`, with the thread's `IErrorInfo` and an `EXCEPINFO`.
-    fn from_hresult(
-        hr: i32,
-        excepinfo: Option<crate::windows_invoke::ComInvokeExceptionInfo>,
-    ) -> Self {
-        let info = crate::windows_vtable::take_error_info();
-        let failure = crate::windows_invoke::ComInvokeFailure {
-            label: "automation",
-            dispid: 0,
-            hr: Some(hr),
-            arg_err: None,
-            excep: excepinfo,
-            detail: None,
-        };
-        let number = failure.vba_error_number();
-        let excep = failure.excep;
-        Self {
-            number,
-            description: excep
-                .as_ref()
-                .and_then(|e| e.description.clone())
-                .or_else(|| info.as_ref().and_then(|e| e.description.clone())),
-            source: excep
-                .as_ref()
-                .and_then(|e| e.source.clone())
-                .or_else(|| info.as_ref().and_then(|e| e.source.clone())),
-            help_file: excep
-                .as_ref()
-                .and_then(|e| e.help_file.clone())
-                .or_else(|| info.as_ref().and_then(|e| e.help_file.clone())),
-            help_context: excep
-                .as_ref()
-                .and_then(|e| e.help_context)
-                .or_else(|| info.and_then(|e| e.help_context)),
-            hresult: Some(hr),
-        }
-    }
-}
-
-/// Which member a call names.
-#[derive(Debug, Clone, Copy)]
-pub enum Member<'a> {
-    /// Late bound: `GetIDsOfNames` on each call, as VBA does.
-    Name(&'a str),
-    /// A known DISPID: `DISPID_VALUE` (0) for the default member, or one the compiler bound.
-    Id(i32),
-}
-
-/// What a call does with the member.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CallKind {
-    /// A call statement or a call in an expression; a property read is the same `Invoke`.
-    Method,
-    /// `x = obj.Member`.
-    Get,
-    /// `obj.Member = value` (the value is the last argument).
-    Let,
-    /// `Set obj.Member = object` (the object is the last argument).
-    Set,
-}
-
-/// One argument cell.
-#[derive(Debug, Clone, Copy)]
-pub enum ArgValue<'a> {
-    /// A ByVal argument: the cell is borrowed, the callee reads it and must not clear it.
-    Value(&'a Variant),
-    /// A ByRef argument: a `VT_BYREF` cell referring to the caller's storage.
-    Reference(&'a Variant),
-    /// An omitted optional argument (`VT_ERROR` with `DISP_E_PARAMNOTFOUND`).
-    Missing,
-}
-
-/// One argument, positional or named.
-#[derive(Debug, Clone, Copy)]
-pub struct Arg<'a> {
-    pub value: ArgValue<'a>,
-    pub name: Option<&'a str>,
 }
 
 /// The `IDispatch` a project object crosses into COM as, supplied by the caller until project
@@ -177,7 +116,7 @@ impl Dispatch {
             }));
         }
         if hr < 0 {
-            return Err(Fault::from_hresult(hr, None));
+            return Err(fault_from_hresult(hr, None));
         }
         Ok(ids)
     }
@@ -323,7 +262,7 @@ impl Dispatch {
             let excepinfo = unsafe { crate::windows_invoke::take_excepinfo(&mut exception) };
             // SAFETY: a failed Invoke may still have written the result; it is ours to clear.
             unsafe { VariantClear(&mut result) };
-            return Err(Fault::from_hresult(hr, excepinfo));
+            return Err(fault_from_hresult(hr, excepinfo));
         }
         // SAFETY: a successful Invoke hands the result over; adopt moves it.
         unsafe { adopt(result) }
@@ -391,7 +330,7 @@ impl Enumerator {
         if hr < 0 {
             // SAFETY: ours to clear on failure.
             unsafe { VariantClear(&mut item) };
-            return Err(Fault::from_hresult(hr, None));
+            return Err(fault_from_hresult(hr, None));
         }
         if fetched == 0 {
             return Ok(None);
@@ -425,4 +364,20 @@ pub fn same_object(a: &ObjectRef, b: &ObjectRef) -> bool {
         (Some(x), Some(y)) => x.as_ptr() == y.as_ptr(),
         _ => false,
     }
+}
+
+impl crate::call::ComEnumerator for Enumerator {
+    fn next_item(&mut self) -> Result<Option<Variant>, Fault> {
+        self.next()
+    }
+}
+
+/// The `IDispatch` the bridge hands COM for a project object (step 10 gives project objects
+/// their own): a `VT_DISPATCH` cell owning one reference to the wrapper.
+pub fn project_dispatch(object: &ObjectRef) -> Result<Variant, Fault> {
+    let dispatch = crate::windows_runtime_object::create_runtime_object_dispatch(object.clone());
+    // SAFETY: the wrapper comes back with one reference, which the cell takes over.
+    unsafe { ObjectRef::from_raw_iunknown_owned(dispatch.cast()) }
+        .map(Variant::from_object_ref)
+        .ok_or_else(|| Fault::number(91))
 }

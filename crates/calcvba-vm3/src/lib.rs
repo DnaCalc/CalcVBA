@@ -2906,8 +2906,9 @@ impl<'h> Vm3<'h> {
         Ok(bounds)
     }
 
-    /// Flat element index from VBA (absolute) subscript operands, C-order (first dimension
-    /// outermost), bounds-checked → subscript out of range (9).
+    /// Storage index from VBA (absolute) subscript operands, first dimension fastest as VBA
+    /// stores arrays ([`calcvba_runtime::safe_array::element_index`]), bounds-checked →
+    /// subscript out of range (9).
     fn flat_index(
         &mut self,
         indices: &[OxOperand],
@@ -2929,15 +2930,16 @@ impl<'h> Vm3<'h> {
             return Ok(offset as usize);
         }
         let mut flat = 0usize;
-        for (i, index_op) in indices.iter().enumerate() {
+        let mut stride = 1usize;
+        for (index_op, bound) in indices.iter().zip(bounds) {
             let index_v = self.operand(index_op)?;
             let raw = subscript_to_long(arith::int(&index_v).map_err(arith_fault)?)?;
-            let bound = &bounds[i];
             let offset = i64::from(raw) - i64::from(bound.lower);
             if offset < 0 || offset >= i64::from(bound.count) {
                 return Err(Vm3Error::Fault(Fault::new(9, "subscript out of range")));
             }
-            flat = flat * bound.count as usize + offset as usize;
+            flat += offset as usize * stride;
+            stride *= bound.count as usize;
         }
         Ok(flat)
     }
@@ -3399,8 +3401,11 @@ impl<'h> Vm3<'h> {
                     }
                     let mut out = try_build_default_elements(element, count)?;
                     for (old_flat, value) in old_elems.into_iter().enumerate() {
-                        if let Some(new_flat) = remap_preserve_index(old_flat, &old_bounds, &bounds)
-                        {
+                        if let Some(new_flat) = calcvba_runtime::safe_array::preserved_element_index(
+                            old_flat,
+                            &old_bounds,
+                            &bounds,
+                        ) {
                             out[new_flat] = value;
                         }
                     }
@@ -5722,42 +5727,6 @@ fn try_build_default_elements(
         out.push(default_array_element(element).map_err(|e| Vm3Error::Fault(Fault::new(13, e)))?);
     }
     Ok(out)
-}
-
-/// Map an old flat element index to its position in a `ReDim Preserve`'d shape, preserving
-/// the element's absolute n-dimensional coordinate (C-order, first dimension outermost — the
-/// same convention [`Vm3::flat_index`] uses). Returns `None` when the coordinate falls outside
-/// the new bounds (a shrunk dimension drops those elements). Both bound slices have equal rank
-/// (the caller enforces the VBA `ReDim Preserve` rule before calling).
-fn remap_preserve_index(
-    old_flat: usize,
-    old_bounds: &[SafeArrayBound],
-    new_bounds: &[SafeArrayBound],
-) -> Option<usize> {
-    let rank = old_bounds.len();
-    // Decode the C-order flat index into per-dimension offsets (last dimension fastest).
-    let mut offsets = vec![0usize; rank];
-    let mut rem = old_flat;
-    for d in (0..rank).rev() {
-        let c = old_bounds[d].count as usize;
-        if c == 0 {
-            return None;
-        }
-        offsets[d] = rem % c;
-        rem /= c;
-    }
-    // Re-encode the same absolute coordinate against the new bounds.
-    let mut new_flat = 0usize;
-    for d in 0..rank {
-        let new_count = new_bounds[d].count as i64;
-        let abs = i64::from(old_bounds[d].lower) + offsets[d] as i64;
-        let new_off = abs - i64::from(new_bounds[d].lower);
-        if new_off < 0 || new_off >= new_count {
-            return None;
-        }
-        new_flat = new_flat * new_count as usize + new_off as usize;
-    }
-    Some(new_flat)
 }
 
 /// VBA `Nothing`/empty test (mirrors vm2): a null object reference, `Empty`/`Null`, or a

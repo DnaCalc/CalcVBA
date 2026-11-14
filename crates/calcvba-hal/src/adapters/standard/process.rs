@@ -94,11 +94,15 @@ impl ProcessEnvHal for StandardHostServices {
             return Ok(Variant::empty());
         }
 
+        // `a(i, 0)` is a key and `a(i, 1)` its value; storage is first dimension fastest,
+        // so every key comes before every value.
         let mut values = Vec::with_capacity(entries.len() * 2);
+        let mut settings = Vec::with_capacity(entries.len());
         for entry in entries {
             values.push(Variant::from_string(entry.key_name));
-            values.push(Variant::from_string(entry.value));
+            settings.push(Variant::from_string(entry.value));
         }
+        values.append(&mut settings);
         let bounds = vec![
             SafeArrayBound {
                 lower: 0,

@@ -179,24 +179,10 @@ pub(super) fn admit(layout: &ScalarLayout, inst: &OxInst) -> Result<bool, String
     }
     Ok(true)
 }
+/// The storage index of absolute `indices` (first dimension fastest, as VBA stores arrays);
+/// subscript out of range (9) when the rank or a subscript is wrong.
 pub fn array_flat_index(bounds: &[SafeArrayBound], indices: &[i64]) -> Result<usize, i32> {
-    if bounds.len() != indices.len() {
-        return Err(9);
-    }
-    let mut offset = 0usize;
-    for (bound, &index) in bounds.iter().zip(indices) {
-        let index = index.checked_sub(i64::from(bound.lower)).ok_or(9)?;
-        if index < 0 || index >= i64::from(bound.count) {
-            return Err(9);
-        }
-        // Runtime SAFEARRAY values use first-dimension-outermost storage;
-        // the native Automation boundary converts its descriptor ordering.
-        offset = offset
-            .checked_mul(bound.count as usize)
-            .and_then(|offset| offset.checked_add(index as usize))
-            .ok_or(9)?;
-    }
-    Ok(offset)
+    calcvba_runtime::safe_array::element_index(bounds, indices).ok_or(9)
 }
 // SAFETY CONTRACT: raw and inst are the matching retained, uniquely executing
 // activation and original admitted instruction. No borrowed carrier escapes.
@@ -279,12 +265,13 @@ pub(super) unsafe fn evaluate(raw: *mut RawActivation, inst: &OxInst) -> Result<
                 {
                     return Err(9);
                 }
-                let old_width = old_bounds[rank - 1].count as usize;
-                let new_width = bounds[rank - 1].count as usize;
                 for (index, value) in old.variant_elements().ok_or(13)?.into_iter().enumerate() {
-                    let column = index % old_width;
-                    if column < new_width {
-                        values[index / old_width * new_width + column] = value;
+                    if let Some(index) = calcvba_runtime::safe_array::preserved_element_index(
+                        index,
+                        &old_bounds,
+                        &bounds,
+                    ) {
+                        values[index] = value;
                     }
                 }
             }

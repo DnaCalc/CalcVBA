@@ -451,9 +451,12 @@ fn to_variant(value: &Value) -> Result<Variant, Error> {
                     "array must be a nonempty rectangle of scalar cells".into(),
                 ));
             }
-            let values = cells
-                .iter()
-                .map(to_variant)
+            // CalcVBA stores arrays first dimension fastest, as VBA does: `a(r, c)` is
+            // element `r + c * rows`, so walk the row-major cells column by column.
+            let (row_count, column_count) = (*rows as usize, *columns as usize);
+            let values = (0..column_count)
+                .flat_map(|c| (0..row_count).map(move |r| r * column_count + c))
+                .map(|index| to_variant(&cells[index]))
                 .collect::<Result<Vec<_>, _>>()?;
             let array = SafeArray::from_shape_and_variants(
                 vec![
@@ -513,7 +516,11 @@ fn from_variant(value: &Variant, inside_array: bool) -> Result<Value, Error> {
                     "result array must be a nonempty rectangle".into(),
                 ));
             }
-            let cells = (0..array.len())
+            // Row-major cells from first-dimension-fastest storage: cell (r, c) is element
+            // `r + c * rows` (a one-dimensional result has rows = 1, so element c).
+            let (row_count, column_count) = (rows as usize, columns as usize);
+            let cells = (0..row_count)
+                .flat_map(|r| (0..column_count).map(move |c| r + c * row_count))
                 .map(|index| {
                     array
                         .variant_element(index)

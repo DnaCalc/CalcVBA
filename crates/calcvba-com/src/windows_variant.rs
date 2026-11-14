@@ -216,7 +216,7 @@ unsafe fn record_safearray_to_variant_array(
             let record =
                 unsafe { com_record_from_array_element(psa.cast_const(), &indices, record_info) }?;
             values.push(Variant::from_com_record(record));
-            advance_indices_row_major(&mut indices, bounds);
+            advance_indices_storage_order(&mut indices, bounds);
         }
         Ok(if bounds.len() == 1 {
             SafeArray::from_variants(values)
@@ -401,24 +401,13 @@ unsafe fn decimal96_to_windows(value: Decimal96) -> DECIMAL {
 }
 
 #[cfg(target_os = "windows")]
-/// Advance an n-dimensional SAFEARRAY index tuple in ROW-MAJOR order (last
-/// dimension varies fastest) — the runtime's flat element order (vm2
-/// `flat_index` folds dimensions left to right). `SafeArrayGet/PutElement`
-/// take `rgIndices` in declared-dimension order while the OS lays memory out
-/// with the FIRST dimension fastest; walking our flat vector and these tuples
-/// in lockstep therefore needs row-major tuple order — pairing them in OS
-/// memory order scrambles every rank ≥ 2 array exchanged with a real COM
-/// server even though writer/reader round-trips stay self-consistent
-/// (W1-com-011).
-fn advance_indices_row_major(indices: &mut [i32], bounds: &[SafeArrayBound]) {
-    for (dim_idx, bound) in bounds.iter().enumerate().rev() {
-        indices[dim_idx] += 1;
-        if indices[dim_idx] >= bound.lower + bound.count as i32 {
-            indices[dim_idx] = bound.lower;
-        } else {
-            return;
-        }
-    }
+/// Advance an n-dimensional SAFEARRAY index tuple in storage order (first
+/// dimension fastest), the order both the runtime and the OS keep elements in.
+/// `SafeArrayGet/PutElement` take `rgIndices` in declared-dimension order, so
+/// walking a storage-order value vector and these tuples in lockstep pairs
+/// every element with its own subscripts (W1-com-011).
+fn advance_indices_storage_order(indices: &mut [i32], bounds: &[SafeArrayBound]) {
+    calcvba_runtime::safe_array::advance_subscripts(indices, bounds);
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -498,7 +487,7 @@ unsafe fn safe_array_to_com_value(psa: *mut SAFEARRAY) -> Result<ComValue, Strin
             let units = crate::windows_ffi_bridge::utf16_from_ansi(bytes);
             SysFreeString(text);
             values.push(ComValue::String(BStr::from_utf16_units(&units)?).to_variant()?);
-            advance_indices_row_major(&mut indices, &bounds);
+            advance_indices_storage_order(&mut indices, &bounds);
         }
         return Ok(ComValue::ArrayIntent(SafeArray::from_typed_variants_nd(
             bounds, VT_BSTR, values,
@@ -529,7 +518,7 @@ unsafe fn safe_array_to_com_value(psa: *mut SAFEARRAY) -> Result<ComValue, Strin
         for _ in 0..total_len {
             let value = safe_array_element_nd(psa.cast_const(), &indices, element_vt)?;
             values.push(value);
-            advance_indices_row_major(&mut indices, &bounds);
+            advance_indices_storage_order(&mut indices, &bounds);
         }
         values
     };
@@ -1115,7 +1104,7 @@ where
 
     for _ in 0..total_len {
         values.push(extract_element(&indices)?);
-        advance_indices_row_major(&mut indices, &bounds);
+        advance_indices_storage_order(&mut indices, &bounds);
     }
 
     let array = if element_vt != VT_VARIANT_VALUE
@@ -1159,8 +1148,8 @@ where
     {
         let dims = u32::try_from(bounds.len())
             .map_err(|_| "SAFEARRAY dimension count exceeds supported u32 range".to_string())?;
-        // SAFEARRAYBOUND entries are in declared-dimension order (rgsabound[0]
-        // is dimension 1), exactly as the runtime stores them — no reversal.
+        // SafeArrayCreate takes SAFEARRAYBOUNDs in declared-dimension order and
+        // stores them reversed in rgsabound, as the runtime's own descriptors do.
         let sa_bounds: Vec<SAFEARRAYBOUND> = bounds
             .iter()
             .map(|b| SAFEARRAYBOUND {
@@ -1196,7 +1185,7 @@ where
                     hr as u32
                 ));
             }
-            advance_indices_row_major(&mut indices, &bounds);
+            advance_indices_storage_order(&mut indices, &bounds);
         }
         (*variant).Anonymous.Anonymous.vt = VT_ARRAY | VT_VARIANT;
         (*variant).Anonymous.Anonymous.Anonymous.parray = psa;
@@ -1369,7 +1358,7 @@ pub(crate) unsafe fn set_record_safearray_from_com_value(
                 hr as u32
             ));
         }
-        advance_indices_row_major(&mut indices, &bounds);
+        advance_indices_storage_order(&mut indices, &bounds);
     }
     (*variant).Anonymous.Anonymous.vt = VT_ARRAY | VT_RECORD_VALUE;
     (*variant).Anonymous.Anonymous.Anonymous.parray = psa;
@@ -1443,7 +1432,7 @@ unsafe fn set_native_vba_record_safearray_from_values(
                     hr as u32
                 ));
             }
-            advance_indices_row_major(&mut indices, &bounds);
+            advance_indices_storage_order(&mut indices, &bounds);
         }
         Ok(())
     })();
@@ -1901,7 +1890,7 @@ unsafe fn set_typed_array_arg(
             let _ = SafeArrayDestroy(psa.cast_const());
             return Err(err);
         }
-        advance_indices_row_major(&mut indices, &bounds);
+        advance_indices_storage_order(&mut indices, &bounds);
     }
 
     (*variant).Anonymous.Anonymous.vt = VT_ARRAY | element_vt;
@@ -3045,7 +3034,7 @@ mod tests {
             variant.Anonymous.Anonymous.vt = VT_ARRAY | VT_VARIANT;
             variant.Anonymous.Anonymous.Anonymous.parray = psa;
 
-            // Decode: the runtime flat order is row-major (last dim fastest).
+            // Decode: the runtime stores the first dimension fastest, as the OS does.
             let ComValue::ArrayIntent(decoded) =
                 variant_to_com_value(&variant).expect("decode 2x3 array")
             else {
@@ -3057,7 +3046,7 @@ mod tests {
             let elements = decoded.variant_elements().expect("decoded elements");
             for i in 1..=2i32 {
                 for j in 1..=3i32 {
-                    let flat = ((i - 1) * 3 + (j - 1)) as usize;
+                    let flat = ((i - 1) + (j - 1) * 2) as usize;
                     assert_eq!(
                         elements[flat].as_i32(),
                         Some(10 * i + j),
@@ -3067,10 +3056,10 @@ mod tests {
             }
             let _ = VariantClear(&mut variant);
 
-            // Encode: marshal a runtime-built row-major array and read every
+            // Encode: marshal a runtime-built storage-order array and read every
             // element back through the OS index API.
-            let values: Vec<Variant> = (1..=2)
-                .flat_map(|i| (1..=3).map(move |j| Variant::from_i32(10 * i + j)))
+            let values: Vec<Variant> = (1..=3)
+                .flat_map(|j| (1..=2).map(move |i| Variant::from_i32(10 * i + j)))
                 .collect();
             let array = SafeArray::from_variants_nd(
                 vec![

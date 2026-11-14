@@ -1192,14 +1192,14 @@ impl Variant {
         unsafe { SafeArray::raw_safearray_bounds_len(bytes_to_raw_safearray(self.data_bytes())) }
     }
 
-    /// Read the next VBA For Each element without cloning the array payload.
+    /// Read the next VBA For Each element without cloning the array payload; `For Each`
+    /// walks storage order.
     pub fn safearray_enumeration_element(&self, ordinal: usize) -> Option<Result<Variant, String>> {
-        let (bounds, length) = self.safearray_bounds_len()?;
+        let (_, length) = self.safearray_bounds_len()?;
         if ordinal >= length {
             return None;
         }
-        let index = crate::safe_array::vba_enumeration_index(&bounds, ordinal)?;
-        self.safearray_element(index)
+        self.safearray_element(ordinal)
     }
 
     /// A `VT_RECORD` cell holding `value` as its `BRECORD`.

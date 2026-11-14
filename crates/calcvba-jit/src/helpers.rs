@@ -5336,6 +5336,7 @@ pub(crate) unsafe fn jit_flat_index_from_bounds(
         return Err(unsafe { rt_raise_subscript_out_of_range(state) });
     }
     let mut flat = 0usize;
+    let mut stride = 1usize;
     for (&raw, bound) in indices.iter().zip(bounds) {
         let offset = i64::from(raw) - i64::from(bound.lower);
         if offset < 0 || offset >= i64::from(bound.count) {
@@ -5346,11 +5347,13 @@ pub(crate) unsafe fn jit_flat_index_from_bounds(
             // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
             return Err(unsafe { rt_raise_subscript_out_of_range(state) });
         };
-        flat = flat
-            .checked_mul(bound.count as usize)
-            .and_then(|base| base.checked_add(offset))
+        // Storage order is first dimension fastest, as VBA stores arrays.
+        flat = offset
+            .checked_mul(stride)
+            .and_then(|scaled| flat.checked_add(scaled))
             // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
             .ok_or_else(|| unsafe { rt_raise_subscript_out_of_range(state) })?;
+        stride = stride.saturating_mul(bound.count as usize);
     }
     if flat >= len {
         // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
@@ -6148,6 +6151,7 @@ pub(crate) unsafe fn jit_flat_index(
         return Ok(flat);
     }
     let mut flat = 0usize;
+    let mut stride = 1usize;
     for (&raw, bound) in indices.iter().zip(&bounds) {
         let offset = i64::from(raw) - i64::from(bound.lower);
         if offset < 0 || offset >= i64::from(bound.count) {
@@ -6158,11 +6162,13 @@ pub(crate) unsafe fn jit_flat_index(
             // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
             return Err(unsafe { rt_raise_subscript_out_of_range(state) });
         };
-        flat = flat
-            .checked_mul(bound.count as usize)
-            .and_then(|base| base.checked_add(offset))
+        // Storage order is first dimension fastest, as VBA stores arrays.
+        flat = offset
+            .checked_mul(stride)
+            .and_then(|scaled| flat.checked_add(scaled))
             // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
             .ok_or_else(|| unsafe { rt_raise_subscript_out_of_range(state) })?;
+        stride = stride.saturating_mul(bound.count as usize);
     }
     if flat >= len {
         // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
@@ -6206,35 +6212,6 @@ pub(crate) unsafe fn jit_flat_index_1d(
         return Err(unsafe { rt_raise_subscript_out_of_range(state) });
     }
     Ok(flat)
-}
-
-pub(crate) fn jit_remap_preserve_index(
-    old_flat: usize,
-    old_bounds: &[SafeArrayBound],
-    new_bounds: &[SafeArrayBound],
-) -> Option<usize> {
-    let rank = old_bounds.len();
-    let mut offsets = vec![0usize; rank];
-    let mut rem = old_flat;
-    for dimension in (0..rank).rev() {
-        let count = old_bounds[dimension].count as usize;
-        if count == 0 {
-            return None;
-        }
-        offsets[dimension] = rem % count;
-        rem /= count;
-    }
-    let mut new_flat = 0usize;
-    for dimension in 0..rank {
-        let new_count = new_bounds[dimension].count as i64;
-        let abs = i64::from(old_bounds[dimension].lower) + offsets[dimension] as i64;
-        let new_offset = abs - i64::from(new_bounds[dimension].lower);
-        if new_offset < 0 || new_offset >= new_count {
-            return None;
-        }
-        new_flat = new_flat * new_count as usize + new_offset as usize;
-    }
-    Some(new_flat)
 }
 
 pub(crate) unsafe extern "C" fn rt_jit_array_redim_to_slot(
@@ -6352,8 +6329,11 @@ pub(crate) unsafe extern "C" fn rt_jit_array_redim_to_slot(
                     return unsafe { rt_raise_subscript_out_of_range(state) };
                 }
                 for index in 0..old_len {
-                    let Some(new_index) = jit_remap_preserve_index(index, &old_bounds, &bounds)
-                    else {
+                    let Some(new_index) = calcvba_runtime::safe_array::preserved_element_index(
+                        index,
+                        &old_bounds,
+                        &bounds,
+                    ) else {
                         continue;
                     };
                     if new_index >= values.len() {

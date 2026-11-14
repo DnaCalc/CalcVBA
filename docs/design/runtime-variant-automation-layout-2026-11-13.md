@@ -427,6 +427,18 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
    pointer CalcVBA keeps at `psa - 8` today moves out of the descriptor. Elements of every
    multi-dimensional array, and of fixed-array UDT fields, stored first dimension fastest as VBA
    does (today C-order); `For Each` order and the boundary conversions follow.
+   *As built 2026-11-14 (6a, element order).* Every array stores the first dimension fastest and
+   its `rgsabound` lists the last dimension first, as the Excel capture shows; `SafeArray::bounds`
+   still returns declared order. The one index rule lives in `calcvba_runtime::safe_array`
+   (`element_index`, `element_subscripts`, `advance_subscripts`, `preserved_element_index`), and
+   VM3, the JIT, `calcvba-rt-abi`, the COM boundary and the pointer helpers use it instead of
+   their own row-major folds (three `ReDim Preserve` remaps among them). `For Each` is storage
+   order, so the enumeration remap is gone, and so is the Office record projection's reorder of
+   fixed-array fields. `GetAllSettings` stores all keys, then all values. The native template
+   already walked OS order and needed no change. Hosts that hand CalcVBA row-major cells (DnaCalc's
+   range values) must place `a(r, c)` at `r + c * rows`. Not yet visible from VBA code: element
+   `VarPtr` still returns a pinned copy until step 7. Still open in step 6: `fFeatures` as VBA
+   sets them, oleaut32 allocation on Windows, the UDT descriptor form and the layout pointer.
 7. **Address-of and storage** (section 4), with `VT_BYREF` binding for ByRef Variant
    parameters; the pin registry deleted.
 8. **One COM marshaller** (5.1), replacing stack A with stack B's model; `ComValue` and the

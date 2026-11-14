@@ -416,33 +416,9 @@ mod native_record_pin {
                     let source = source.next_multiple_of(align);
                     let (target, align) = shape(element, to)?;
                     let target = target.next_multiple_of(align);
+                    // Every representation stores the first dimension fastest, as VBA does.
                     for i in 0..count {
-                        // Canonical arrays enumerate the last dimension fastest;
-                        // Office inline arrays store the first dimension fastest.
-                        let mut remainder = i;
-                        let mut native = 0;
-                        for bound in bounds.iter().rev() {
-                            native =
-                                native * bound.count as usize + remainder % bound.count as usize;
-                            remainder /= bound.count as usize;
-                        }
-                        let source_index = if from == Representation::Canonical {
-                            i
-                        } else {
-                            native
-                        };
-                        let target_index = if to == Representation::Canonical {
-                            i
-                        } else {
-                            native
-                        };
-                        project_field(
-                            element,
-                            src.add(source_index * source),
-                            dst.add(target_index * target),
-                            from,
-                            to,
-                        )?;
+                        project_field(element, src.add(i * source), dst.add(i * target), from, to)?;
                     }
                 }
                 // The projection borrows object and array pointers: it holds no reference of
@@ -1052,29 +1028,18 @@ fn advance_windows_safearray_indices(
     indices: &mut [i32],
     bounds: &[crate::safe_array::SafeArrayBound],
 ) -> Result<(), String> {
-    let mut carry = true;
-    for (dimension, bound) in bounds.iter().enumerate().rev() {
-        if !carry {
-            break;
-        }
-        let relative = i64::from(indices[dimension]) - i64::from(bound.lower);
-        let next_relative = relative + 1;
-        if next_relative >= i64::from(bound.count) {
-            indices[dimension] = bound.lower;
-        } else {
-            let next = i64::from(bound.lower) + next_relative;
-            indices[dimension] = i32::try_from(next).map_err(|_| {
-                format!(
-                    "SAFEARRAY bound at dimension {dimension} exceeds the Windows LONG index range"
-                )
-            })?;
-            carry = false;
-        }
+    if crate::safe_array::advance_subscripts(indices, bounds) {
+        return Ok(());
     }
-    if carry {
-        return Err("SAFEARRAY multidimensional index progression exhausted early".to_string());
+    if let Some(dimension) = bounds
+        .iter()
+        .position(|b| i64::from(b.lower) + i64::from(b.count) - 1 > i64::from(i32::MAX))
+    {
+        return Err(format!(
+            "SAFEARRAY bound at dimension {dimension} exceeds the Windows LONG index range"
+        ));
     }
-    Ok(())
+    Err("SAFEARRAY multidimensional index progression exhausted early".to_string())
 }
 
 #[cfg(target_os = "windows")]

@@ -351,6 +351,7 @@ fn bounds_total_len(bounds: &[SafeArrayBound]) -> Result<usize, String> {
     Ok(total)
 }
 
+/// The descriptor's `rgsabound` as stored: the last dimension first.
 unsafe fn raw_bounds_slice<'a>(header: *const RawSafeArray) -> &'a [SafeArrayBound] {
     // SAFETY: callers pass a live descriptor allocated by this module. Reading
     // c_dims and forming the slice over the inline rgsabound tail mirrors
@@ -1125,8 +1126,11 @@ fn alloc_header(
         (*header).cb_elements = cb_elements;
         (*header).c_locks = 0;
         (*header).pv_data = pv_data;
+        // `rgsabound` lists the last dimension first, as oleaut32 and VBA store it.
         let dst = core::ptr::addr_of_mut!((*header).rgsabound).cast::<SafeArrayBound>();
-        core::ptr::copy_nonoverlapping(bounds.as_ptr(), dst, bounds.len());
+        for (slot, bound) in bounds.iter().rev().enumerate() {
+            dst.add(slot).write(*bound);
+        }
         Ok(NonNull::new_unchecked(header))
     }
 }
@@ -1375,10 +1379,13 @@ impl SafeArray {
         unsafe { header_record_layout(self.0.as_ptr()) }
     }
 
+    /// Bounds in declared order (dimension 1 first); `rgsabound` stores them reversed.
     fn raw_bounds(&self) -> Vec<SafeArrayBound> {
         // SAFETY: `self.0` is this value's live descriptor; the helper only
         // borrows the initialized inline bounds tail.
-        unsafe { raw_bounds_slice(self.0.as_ptr()) }.to_vec()
+        let mut bounds = unsafe { raw_bounds_slice(self.0.as_ptr()) }.to_vec();
+        bounds.reverse();
+        bounds
     }
 
     pub fn len(&self) -> usize {
@@ -1413,18 +1420,9 @@ impl SafeArray {
             .expect("SAFEARRAY payload should decode into canonical Variants")
     }
 
-    /// VBA For Each advances the first declared dimension first. The owned
-    /// array's indexing storage keeps the last dimension contiguous.
+    /// VBA `For Each` walks the elements in storage order (first dimension fastest).
     pub fn enumeration_elements(&self) -> Option<Vec<Variant>> {
-        let values = self.variant_elements()?;
-        let bounds = self.bounds_for_shape();
-        Some(
-            (0..values.len())
-                .map(|ordinal| {
-                    values[vba_enumeration_index(&bounds, ordinal).expect("array ordinal")].clone()
-                })
-                .collect(),
-        )
+        self.variant_elements()
     }
 
     pub(crate) fn try_variant_elements(&self) -> Result<Option<Vec<Variant>>, String> {
@@ -1940,8 +1938,9 @@ mod tests {
         FADF_UNKNOWN_VALUE, FADF_VARIANT_VALUE, RawSafeArray, SafeArray, SafeArrayBound,
         VT_BOOL_VALUE, VT_BSTR_VALUE, VT_CY_VALUE, VT_DATE_VALUE, VT_DECIMAL_VALUE,
         VT_DISPATCH_VALUE, VT_I2_VALUE, VT_I4_VALUE, VT_RECORD_VALUE, VT_UNKNOWN_VALUE,
-        VT_VARIANT_VALUE, array_len_from_tag, array_tag_from_safe_array, header_prefix_ptr,
-        marshal_dispatch_argument, payload_allocation_events, safe_array_from_tag,
+        VT_VARIANT_VALUE, advance_subscripts, array_len_from_tag, array_tag_from_safe_array,
+        element_index, element_subscripts, header_prefix_ptr, marshal_dispatch_argument,
+        payload_allocation_events, preserved_element_index, raw_bounds_slice, safe_array_from_tag,
     };
     use crate::live_counters::thread_live_handle_counts;
     use crate::vba_record::{
@@ -2243,6 +2242,42 @@ mod tests {
             offset_of::<RawSafeArray, _>(|base| unsafe { core::ptr::addr_of!((*base).rgsabound) }),
             if pointer_sized_offsets { 24 } else { 16 }
         );
+    }
+
+    #[test]
+    fn storage_order_is_first_dimension_fastest_with_reversed_rgsabound() {
+        // Excel x64 (`arr6`): `f(0 To 1, 0 To 2)` stores `f(1,0)` at element 1 and `f(0,1)`
+        // at element 2, with `rgsabound = {3,0},{2,0}`.
+        let bounds = vec![
+            SafeArrayBound { lower: 0, count: 2 },
+            SafeArrayBound { lower: 0, count: 3 },
+        ];
+        assert_eq!(element_index(&bounds, &[1, 0]), Some(1));
+        assert_eq!(element_index(&bounds, &[0, 1]), Some(2));
+        assert_eq!(element_index(&bounds, &[1, 2]), Some(5));
+        assert_eq!(element_index(&bounds, &[2, 0]), None);
+        assert_eq!(element_index(&bounds, &[0]), None);
+        assert_eq!(element_subscripts(&bounds, 3), Some(vec![1, 1]));
+        assert_eq!(element_subscripts(&bounds, 6), None);
+        let mut subscripts = [0, 0];
+        let mut walked = vec![subscripts];
+        while advance_subscripts(&mut subscripts, &bounds) {
+            walked.push(subscripts);
+        }
+        assert_eq!(walked, [[0, 0], [1, 0], [0, 1], [1, 1], [0, 2], [1, 2]]);
+        assert_eq!(subscripts, [0, 0]);
+        let grown = vec![bounds[0], SafeArrayBound { lower: 0, count: 5 }];
+        assert!((0..6).all(|i| preserved_element_index(i, &bounds, &grown) == Some(i)));
+        let shrunk = vec![bounds[0], SafeArrayBound { lower: 0, count: 1 }];
+        assert_eq!(preserved_element_index(1, &bounds, &shrunk), Some(1));
+        assert_eq!(preserved_element_index(2, &bounds, &shrunk), None);
+
+        let array =
+            SafeArray::from_variants_nd(bounds.clone(), (0..6).map(Variant::from_i32).collect());
+        assert_eq!(array.bounds(), Some(bounds.clone()));
+        // SAFETY: the live descriptor has two bounds.
+        let stored = unsafe { raw_bounds_slice(array.0.as_ptr()) };
+        assert_eq!(stored, [bounds[1], bounds[0]]);
     }
 
     #[test]
@@ -3347,17 +3382,68 @@ mod proptests {
     }
 }
 
-/// Convert a VBA For Each ordinal to the owned array's indexing offset.
-pub fn vba_enumeration_index(bounds: &[SafeArrayBound], mut ordinal: usize) -> Option<usize> {
+/// The storage index of `subscripts` (absolute, declared order) in an array with `bounds`
+/// (declared order). Elements are stored first dimension fastest, as VBA and oleaut32 store
+/// them: in `a(0 To 1, 0 To 2)`, `a(1, 0)` is element 1 and `a(0, 1)` element 2. `None` when
+/// the rank differs or a subscript is outside its dimension (VBA error 9).
+pub fn element_index(bounds: &[SafeArrayBound], subscripts: &[i64]) -> Option<usize> {
+    if bounds.len() != subscripts.len() {
+        return None;
+    }
     let mut index = 0usize;
+    let mut stride = 1usize;
+    for (bound, &subscript) in bounds.iter().zip(subscripts) {
+        let offset = subscript.checked_sub(i64::from(bound.lower))?;
+        if offset < 0 || offset >= i64::from(bound.count) {
+            return None;
+        }
+        index = index.checked_add(usize::try_from(offset).ok()?.checked_mul(stride)?)?;
+        stride = stride.checked_mul(bound.count as usize)?;
+    }
+    Some(index)
+}
+
+/// The absolute subscripts (declared order) of storage element `index`; the inverse of
+/// [`element_index`]. `None` when `index` is past the last element.
+pub fn element_subscripts(bounds: &[SafeArrayBound], mut index: usize) -> Option<Vec<i64>> {
+    let mut subscripts = Vec::with_capacity(bounds.len());
     for bound in bounds {
         let count = bound.count as usize;
         if count == 0 {
             return None;
         }
-        let coordinate = ordinal % count;
-        ordinal /= count;
-        index = index.checked_mul(count)?.checked_add(coordinate)?;
+        subscripts.push(i64::from(bound.lower) + (index % count) as i64);
+        index /= count;
     }
-    (ordinal == 0).then_some(index)
+    (index == 0).then_some(subscripts)
+}
+
+/// Step absolute subscripts (declared order) to the next element in storage order, first
+/// dimension fastest; the order `SafeArrayGetElement` tuples must follow to pair with storage
+/// indices. Returns `false`, with every subscript back at its lower bound, after the last
+/// element.
+pub fn advance_subscripts(subscripts: &mut [i32], bounds: &[SafeArrayBound]) -> bool {
+    for (subscript, bound) in subscripts.iter_mut().zip(bounds) {
+        let next = i64::from(*subscript) + 1;
+        if next < i64::from(bound.lower) + i64::from(bound.count)
+            && let Ok(next) = i32::try_from(next)
+        {
+            *subscript = next;
+            return true;
+        }
+        *subscript = bound.lower;
+    }
+    false
+}
+
+/// Where element `old_index` of an array with `old_bounds` lands after `ReDim Preserve` to
+/// `new_bounds` (same rank), keeping its subscripts; `None` when the new bounds drop it.
+/// Since VBA only lets `ReDim Preserve` change the last dimension's upper bound, the
+/// surviving elements keep their storage index.
+pub fn preserved_element_index(
+    old_index: usize,
+    old_bounds: &[SafeArrayBound],
+    new_bounds: &[SafeArrayBound],
+) -> Option<usize> {
+    element_index(new_bounds, &element_subscripts(old_bounds, old_index)?)
 }

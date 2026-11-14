@@ -79,7 +79,14 @@ pub fn object_variant_pointer(host: &dyn HostServices, value: &Variant) -> Resul
         return Ok(address);
     }
     let _ = host;
-    calcvba_runtime::pointer_helpers::register_object_variant_pointer(value)
+    match value.vtype() {
+        VarType::Empty | VarType::Null => Ok(0),
+        VarType::Object => Ok(value
+            .as_object_ref()
+            .filter(|object| object.raw() != 0)
+            .map_or(0, |object| object.raw_iunknown() as usize as i64)),
+        _ => Err("ObjPtr requires an object reference".to_string()),
+    }
 }
 
 /// Project-instance ids start above class route keys, matching vm3/vm2 allocation.

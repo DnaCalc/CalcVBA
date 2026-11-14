@@ -139,28 +139,30 @@ pub enum OxNativeCallee {
     Builtin(calcvba_bundle::NativeImplId),
     /// A `Declare Lib` external call; the marshalling descriptor lives in the
     /// program's `external_calls` table, keyed by `descriptor_id`.
-    Declare {
-        descriptor_id: u32,
-        ptr_writebacks: Vec<DeclarePtrWriteback>,
-    },
+    Declare { descriptor_id: u32 },
 }
 
-/// A resolved `Declare` pointer-argument write-back. The typed analogue of
-/// `calcvba_bundle::isa::DeclarePtrWriteback`: same concept, but the target is a typed
-/// [`OxPlace`] rather than the erased flat slot index (genuinely different data, not a
-/// serde-driven copy). The `kind` projection is reused from `coreir`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeclarePtrWriteback {
-    pub arg_index: usize,
-    pub target: OxPlace,
-    pub kind: PtrWritebackKind,
+/// Where an [`OxInst::AddrOf`](crate::OxInst::AddrOf) path starts: a variable or
+/// temporary's cell, or a field of a class instance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OxAddrBase {
+    Place(OxPlace),
+    ObjectField { object: OxOperand, field: i32 },
+}
+
+/// One step of an [`OxInst::AddrOf`](crate::OxInst::AddrOf) path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OxAddrStep {
+    /// An element of the array held here, by declared subscripts.
+    Index(Vec<OxOperand>),
+    /// Positional field of the UDT record held here.
+    Field(usize),
 }
 
 // ── Small leaf enums — reused from `calcvba_bundle::coreir` (the one truth) ──────
 //
-// `BoundWhich` (`LBound`/`UBound`), `PtrKind` (`VarPtr`/`StrPtr`/…), `ErrField`
-// (`Err.Number`/…) and `PtrWritebackKind` (a `Declare` pointer write-back's read-back
-// projection) are defined once in `coreir` and reused here verbatim — OxIR does not
+// `BoundWhich` (`LBound`/`UBound`), `PtrKind` (`VarPtr`/`StrPtr`/…) and `ErrField`
+// (`Err.Number`/…) are defined once in `coreir` and reused here verbatim — OxIR does not
 // re-model them. They carry `serde` (added on the canonical definitions), so they
 // serialize into the `.oxi` image directly.
-pub use calcvba_bundle::coreir::{BoundWhich, ErrField, PtrKind, PtrWritebackKind};
+pub use calcvba_bundle::coreir::{BoundWhich, ErrField, PtrKind};

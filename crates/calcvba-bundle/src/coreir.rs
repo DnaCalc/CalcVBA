@@ -468,35 +468,13 @@ pub enum PtrKind {
     Obj,
 }
 
-/// The payload a `Declare` pointer-argument write-back reads back from the pinned
-/// pointer after the native call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum PtrWritebackKind {
-    String,
-    ByteArray,
-    Boolean,
-    Byte,
-    Integer,
-    Long,
-    LongLong,
-    LongPtr,
-    Single,
-    Double,
-    Currency,
-    Date,
-    Record,
-    Variant,
-}
-
-/// A `Declare` argument that is `StrPtr(x)` / `VarPtr(x)` over an l-value: after
-/// the native call, the pinned buffer at the `arg_index`-th argument's pointer is
-/// read back into `target` (the source variable). This is VBA's expression-shape
-/// driven write-back — an r-value pointer operand records no write-back.
+/// The operand of a pointer helper: a variable, element or field whose storage it
+/// addresses, or an r-value (`StrPtr("lit")`, `VarPtr(n + 1)`) held in a statement
+/// temporary for the statement's life, as VBA does.
 #[derive(Debug, Clone, PartialEq)]
-pub struct PtrWriteback {
-    pub arg_index: usize,
-    pub target: CorePlace,
-    pub kind: PtrWritebackKind,
+pub enum CorePtrOperand {
+    Place(CorePlace),
+    Value(Box<CoreValue>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -564,13 +542,12 @@ pub enum CoreValue {
         object: Box<CoreValue>,
         type_name: String,
     },
-    /// A pointer-helper (`VarPtr`/`StrPtr`/`ObjPtr`) over its operand **value**: the
-    /// VM pins the value in the pointer registry and yields its address. The operand
-    /// is a value (not a place) so r-values like `StrPtr("literal")` work; write-back
-    /// into an l-value operand is recorded separately on the `Declare` call.
+    /// A pointer helper (`VarPtr`/`StrPtr`/`ObjPtr`): the real address of its operand's
+    /// storage (`VarPtr`), the BSTR it holds (`StrPtr`) or the interface pointer
+    /// (`ObjPtr`), as a `LongPtr`.
     Ptr {
         kind: PtrKind,
-        value: Box<CoreValue>,
+        operand: CorePtrOperand,
     },
     ErrField(ErrField),
     /// The standalone VBA `Erl` function: reads the line number recorded by the most
@@ -671,12 +648,7 @@ pub enum CoreCallee {
         return_type: Option<VarTypeRef>,
     },
     /// A `Declare Lib` external call (descriptor in `CoreProgram::external_calls`).
-    /// `ptr_writebacks` carries the pointer-helper arguments whose pinned buffer is
-    /// read back into a source l-value after the call (see [`PtrWriteback`]).
-    Declare {
-        descriptor_id: u32,
-        ptr_writebacks: Vec<PtrWriteback>,
-    },
+    Declare { descriptor_id: u32 },
     /// `CallByName(obj, name, calltype, args…)` — dispatch by a *runtime* member
     /// name through the same machinery as `LateDispatch`. The operands are carried
     /// in `args`: `[0]` = object, `[1]` = name string, `[2]` = calltype

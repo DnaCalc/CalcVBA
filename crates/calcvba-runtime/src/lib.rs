@@ -1,5 +1,6 @@
 //! calcvba-runtime: core Variant representation and runtime semantics scaffolding.
 
+pub mod address;
 pub mod alloc;
 pub mod ansi;
 pub mod arithmetic;

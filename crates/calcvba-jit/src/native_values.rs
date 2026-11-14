@@ -252,7 +252,10 @@ pub(super) const HELPERS: &[(&str, &[ir::Type])] = &[
         "cvb_array_bound",
         &[types::I64, types::I32, types::I32, types::I64],
     ),
-    ("cvb_array_data", &[types::I64, types::I64]),
+    (
+        "cvb_array_element_address",
+        &[types::I64, types::I64, types::I32, types::I64],
+    ),
     (
         "cvb_array_redim_encoded",
         &[
@@ -1193,22 +1196,52 @@ impl Values<'_> {
                 );
                 return true;
             }
-            OxInst::Ptr { dst, kind, src } => {
-                let address = self.cell(module, b, src);
-                if layout.operand_type(src) == Ok(ScalarType::Array) {
-                    // `VarPtr(a(i))`: the address of the array's element storage.
-                    let out = self.address(b, layout.slot(*dst).unwrap());
-                    self.call(module, b, "cvb_array_data", &[address, out]);
-                    return true;
-                }
-                let value = if matches!(
-                    kind,
-                    calcvba_oxir::PtrKind::Str | calcvba_oxir::PtrKind::Obj
-                ) {
-                    b.ins()
-                        .load(types::I64, ir::MemFlagsData::new(), address, 0)
+            OxInst::AddrOf {
+                dst,
+                base: calcvba_oxir::OxAddrBase::Place(place),
+                path,
+                ..
+            } if !path.is_empty() => {
+                // Admission allows one `Index` step on a typed array slot: the element's
+                // own address (`pvData` + offset), as VM3 and the JIT give it.
+                let calcvba_oxir::OxAddrStep::Index(indices) = &path[0] else {
+                    unreachable!("admitted element path");
+                };
+                let array = self.cell(module, b, &OxOperand::Use(*place));
+                let vector = self.indices(module, b, indices);
+                let rank = b.ins().iconst(types::I32, indices.len() as i64);
+                let out = self.address(b, layout.slot(*dst).unwrap());
+                self.call(
+                    module,
+                    b,
+                    "cvb_array_element_address",
+                    &[array, vector, rank, out],
+                );
+                return true;
+            }
+            OxInst::AddrOf {
+                dst,
+                kind,
+                base: calcvba_oxir::OxAddrBase::Place(place),
+                ..
+            } => {
+                // Admission allows only a variable or temporary (no path). A Variant slot
+                // is a VARIANT: `VarPtr` of a typed value, `StrPtr` and `ObjPtr` use its
+                // payload at +8, as VM3 and the JIT do; a typed slot is the storage itself.
+                let src = OxOperand::Use(*place);
+                let address = self.cell(module, b, &src);
+                let payload = if layout.operand_type(&src) == Ok(ScalarType::Variant) {
+                    8
                 } else {
-                    address
+                    0
+                };
+                let value = match kind {
+                    calcvba_oxir::PtrKind::Str | calcvba_oxir::PtrKind::Obj => {
+                        b.ins()
+                            .load(types::I64, ir::MemFlagsData::new(), address, payload)
+                    }
+                    calcvba_oxir::PtrKind::VarVariant => address,
+                    _ => b.ins().iadd_imm(address, i64::from(payload)),
                 };
                 self.lower
                     .store_slot(b, layout.slot(*dst).unwrap(), ScalarType::LongLong, value);

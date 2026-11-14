@@ -680,6 +680,8 @@ pub(crate) struct JitFrame {
     pub(crate) temp_types: Vec<OxTy>,
     pub(crate) locals: Vec<Variant>,
     pub(crate) temps: Vec<Variant>,
+    /// Strings `StrPtr` converted from non-String operands, kept for the statement.
+    pub(crate) pointer_strings: Vec<Variant>,
     pub(crate) aliases: Vec<Option<SlotAlias>>,
     pub(crate) gosub_stack: Vec<u32>,
     pub(crate) saved_err: RtSavedErrState,
@@ -751,6 +753,7 @@ pub(crate) fn new_jit_frame(
         temp_types: func.temps.clone(),
         locals,
         temps,
+        pointer_strings: Vec::new(),
         aliases: vec![None; func.locals.len()],
         gosub_stack: Vec::new(),
         saved_err: RtSavedErrState::default(),
@@ -1104,6 +1107,7 @@ pub(crate) fn clear_current_statement_temps(run: &mut JitRun, first_temp: usize)
         for slot in frame.temps.iter_mut().skip(first_temp) {
             *slot = Variant::empty();
         }
+        frame.pointer_strings.clear();
     }
     prune_for_each_for_cleared_temps(run, frame_index, first_temp);
     prune_as_new_slots_for_cleared_temps(run, frame_index, first_temp);

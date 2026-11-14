@@ -2,7 +2,7 @@
 
 use crate::inst::OxInst;
 use crate::program::OxFunc;
-use crate::value::{OxArg, OxCallArg, OxNativeCallee, OxOperand, OxPlace};
+use crate::value::{OxAddrBase, OxAddrStep, OxArg, OxCallArg, OxOperand, OxPlace};
 
 /// Addressability facts for locals and compiler temporaries.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,8 +46,7 @@ fn mark_inst(inst: &OxInst, facts: &mut EscapeFacts) {
                 mark_proc_arg(arg, facts);
             }
         }
-        OxInst::CallNative { callee, args, .. } => {
-            mark_native_callee(callee, facts);
+        OxInst::CallNative { args, .. } => {
             for arg in args {
                 mark_call_arg(arg, facts);
             }
@@ -67,16 +66,20 @@ fn mark_inst(inst: &OxInst, facts: &mut EscapeFacts) {
         OxInst::ForEachInit { iter, .. } | OxInst::ForEachNext { iter, .. } => {
             mark_place(iter, facts);
         }
-        OxInst::Ptr { src, .. } => mark_operand(src, facts),
-        _ => {}
-    }
-}
-
-fn mark_native_callee(callee: &OxNativeCallee, facts: &mut EscapeFacts) {
-    if let OxNativeCallee::Declare { ptr_writebacks, .. } = callee {
-        for writeback in ptr_writebacks {
-            mark_place(&writeback.target, facts);
+        OxInst::AddrOf { base, path, .. } => {
+            match base {
+                OxAddrBase::Place(place) => mark_place(place, facts),
+                OxAddrBase::ObjectField { object, .. } => mark_operand(object, facts),
+            }
+            for step in path {
+                if let OxAddrStep::Index(indices) = step {
+                    for index in indices {
+                        mark_operand(index, facts);
+                    }
+                }
+            }
         }
+        _ => {}
     }
 }
 
@@ -124,8 +127,7 @@ mod tests {
     use crate::program::{OxFunc, OxLocal};
     use crate::ty::{ClassId, OxTy};
     use crate::value::{
-        DeclarePtrWriteback, OxArg, OxCallArg, OxConst, OxNativeCallee, OxOperand, OxPlace,
-        PtrKind, PtrWritebackKind,
+        OxAddrBase, OxArg, OxCallArg, OxConst, OxNativeCallee, OxOperand, OxPlace, PtrKind,
     };
 
     fn local(name: &str) -> OxLocal {
@@ -164,10 +166,11 @@ mod tests {
                 proc: FuncId(0),
                 args: vec![OxArg::ByRef(OxPlace::Local(LocalId(0)))],
             },
-            OxInst::Ptr {
+            OxInst::AddrOf {
                 dst: OxPlace::Temp(TempId(0)),
                 kind: PtrKind::Var,
-                src: OxOperand::Use(OxPlace::Local(LocalId(1))),
+                base: OxAddrBase::Place(OxPlace::Local(LocalId(1))),
+                path: Vec::new(),
             },
             OxInst::ArrayLiteral {
                 dst: OxPlace::Temp(TempId(0)),
@@ -192,15 +195,14 @@ mod tests {
         let facts = escape_facts(&func(vec![
             OxInst::CallNative {
                 dst: None,
-                callee: OxNativeCallee::Declare {
-                    descriptor_id: 0,
-                    ptr_writebacks: vec![DeclarePtrWriteback {
-                        arg_index: 0,
-                        target: OxPlace::Temp(TempId(1)),
-                        kind: PtrWritebackKind::Long,
-                    }],
-                },
+                callee: OxNativeCallee::Declare { descriptor_id: 0 },
                 args: vec![OxCallArg::ByRef(OxPlace::Temp(TempId(0)))],
+            },
+            OxInst::AddrOf {
+                dst: OxPlace::Local(LocalId(0)),
+                kind: PtrKind::Var,
+                base: OxAddrBase::Place(OxPlace::Temp(TempId(1))),
+                path: Vec::new(),
             },
             OxInst::ForEachNext {
                 iter: OxPlace::Temp(TempId(0)),

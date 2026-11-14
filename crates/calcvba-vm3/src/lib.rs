@@ -37,8 +37,8 @@ use calcvba_hal::HostServices;
 use calcvba_hal::traits::DynLinkDescriptorView;
 use calcvba_oxir::inst::OxAsNew;
 use calcvba_oxir::value::{
-    ArithOp, BoundWhich, CmpOp, ErrField, LogicalOp, OxArg, OxCallArg, OxCoerceTarget, OxConst,
-    OxNativeCallee, OxOperand, OxPlace, PtrKind, PtrWritebackKind,
+    ArithOp, BoundWhich, CmpOp, ErrField, LogicalOp, OxAddrBase, OxAddrStep, OxArg, OxCallArg,
+    OxCoerceTarget, OxConst, OxNativeCallee, OxOperand, OxPlace, PtrKind,
 };
 use calcvba_oxir::{
     BlockId, FuncId, ImportId, LocalId, OxBlock, OxInst, OxProgram, OxTerminator, OxTy,
@@ -61,8 +61,7 @@ use calcvba_runtime::safe_array::{SafeArray, SafeArrayBound};
 use calcvba_runtime::variant::VarType;
 use calcvba_runtime::{
     CallbackExecutor, CallbackRegistration, InteropInvokeKind, RuntimeByRefSlot,
-    RuntimeCallArgument, Variant, VbaRecord, VerifiedInteropPlan, pointer_helpers,
-    register_callback,
+    RuntimeCallArgument, Variant, VbaRecord, VerifiedInteropPlan, register_callback,
 };
 
 /// `DISP_E_PARAMNOTFOUND` — the sentinel an omitted optional argument carries into a
@@ -424,8 +423,13 @@ struct Frame {
     ip: usize,
     /// Frame locals (parameters first, then declared locals), indexed by `LocalId`.
     locals: Vec<Variant>,
-    /// Single-assignment temporaries, indexed by `TempId` (sparse — written before read).
-    temps: HashMap<usize, Variant>,
+    /// Temporaries, indexed by `TempId`, sized from the function's temp table so a cell
+    /// never moves (`VarPtr` of an r-value is a temporary's address). Statement temporaries
+    /// are reset to Empty at each statement boundary.
+    temps: Vec<Variant>,
+    /// Strings `StrPtr` converted from non-String operands, kept for the statement (VBA's
+    /// conversion temporaries).
+    pointer_strings: Vec<Variant>,
     /// ByRef parameters: a parameter's frame-local index → the caller location it
     /// aliases, resolved to its ultimate backing at call time (so aliases never chain).
     /// Writes through such a parameter hit the backing live — vm2's true aliasing.
@@ -1234,7 +1238,8 @@ impl<'h> Vm3<'h> {
                     )
                 })
                 .collect::<Result<_, _>>()?,
-            temps: HashMap::new(),
+            temps: vec![Variant::empty(); f.temps.len()],
+            pointer_strings: Vec::new(),
             aliases: HashMap::new(),
             dst: None,
             return_local: f.return_local,
@@ -1698,12 +1703,9 @@ impl<'h> Vm3<'h> {
                 }
                 // A `Declare Lib` external call marshals through the host's dynamic-link HAL —
                 // the identical `invoke_descriptor_variants` contract vm2 drives — capturing
-                // `Err.LastDllError` and applying ByRef + pointer-helper write-backs (M3-7).
-                OxNativeCallee::Declare {
-                    descriptor_id,
-                    ptr_writebacks,
-                } => {
-                    let result = self.declare_call(*descriptor_id, args, ptr_writebacks)?;
+                // `Err.LastDllError` and applying ByRef write-backs (M3-7).
+                OxNativeCallee::Declare { descriptor_id } => {
+                    let result = self.declare_call(*descriptor_id, args)?;
                     if let Some(dst) = dst {
                         self.store(dst, result)?;
                     }
@@ -1813,26 +1815,17 @@ impl<'h> Vm3<'h> {
             // `Err.Clear` → reset the `Err` object.
             OxInst::ClearErr => self.exec.err_engine.clear_err(),
 
-            // ── Pointer helpers (M3-7) ───────────────────────────────────────────────
-            // `StrPtr`/`VarPtr` pin a cloned cell in the process-global pointer registry and
-            // yield its pointer-width address (an `i64`); the `Declare` call that consumes the
-            // pointer frees the pin afterwards (see `declare_call`). `ObjPtr` returns a live
-            // IUnknown address (no registry cell). Identical to vm2's `Ptr*` ops.
-            OxInst::Ptr { dst, kind, src } => {
-                let v = self.operand(src)?;
-                let pointer = match kind {
-                    PtrKind::Str if v.vtype() == VarType::String => {
-                        pointer_helpers::register_variant_pointer(&v)
-                    }
-                    PtrKind::Str => pointer_helpers::register_utf16_string(&arith::as_string(&v)),
-                    PtrKind::Var => pointer_helpers::register_variant_pointer(&v),
-                    PtrKind::VarString => pointer_helpers::register_string_variant_pointer(&v),
-                    PtrKind::VarVariant => {
-                        pointer_helpers::register_variant_var_variant_pointer(&v)
-                    }
-                    PtrKind::Obj => calcvba_rt_abi::object_variant_pointer(self.exec.host, &v),
-                }
-                .map_err(|e| Vm3Error::Fault(Fault::from_string(e)))?;
+            // ── Pointer helpers ──────────────────────────────────────────────────────
+            // `VarPtr`/`StrPtr`/`ObjPtr` give the real address of the storage (or the BSTR /
+            // interface pointer it holds), located by `calcvba_runtime::address` exactly as
+            // the JIT does. An r-value operand is a statement temporary.
+            OxInst::AddrOf {
+                dst,
+                kind,
+                base,
+                path,
+            } => {
+                let pointer = self.address_of(*kind, base, path)?;
                 self.store(dst, Variant::from_i64(pointer))?;
             }
             // A statement boundary drives finalization timing: run any parked
@@ -2731,7 +2724,8 @@ impl<'h> Vm3<'h> {
             block: entry,
             ip: 0,
             locals,
-            temps: HashMap::new(),
+            temps: vec![Variant::empty(); callee.temps.len()],
+            pointer_strings: Vec::new(),
             aliases,
             dst: dst_loc,
             return_local,
@@ -4949,14 +4943,13 @@ impl<'h> Vm3<'h> {
     /// Marshal a `Declare Lib` external call through the host's dynamic-link HAL — the
     /// identical `invoke_descriptor_variants` contract vm2 drives, so a `Declare` behaves
     /// the same whichever VM runs it (the differential gate shares one host). Captures
-    /// `Err.LastDllError`, copies ByRef arguments' marshaled-back values to their caller
-    /// slots, and applies the pointer-helper write-backs (`StrPtr(x)`/`VarPtr(x)` over an
-    /// l-value reads the pinned buffer back into the source). Mirrors vm2's `declare_call`.
+    /// `Err.LastDllError` and copies ByRef arguments' marshaled-back values to their caller
+    /// slots. A `VarPtr(x)` argument is the address of `x` itself, so what the callee
+    /// writes through it is already there.
     fn declare_call(
         &mut self,
         descriptor_id: u32,
         args: &[OxCallArg],
-        ptr_writebacks: &[calcvba_oxir::value::DeclarePtrWriteback],
     ) -> Result<Variant, Vm3Error> {
         // `cur_program()` returns `&'h OxProgram` (a reference independent of the `&mut self`
         // borrow), so the descriptor borrow does not conflict with the mutable calls below.
@@ -5008,12 +5001,6 @@ impl<'h> Vm3<'h> {
         let _callback_regs =
             self.prepare_native_callback_args(descriptor, &param_type_strings, &mut arg_variants)?;
 
-        // The pointer-helper pins this call feeds (the `LongLong`-carried registry addresses
-        // of `StrPtr`/`VarPtr` args). A pin's life ends with the call it feeds — VBA's "the
-        // pointer is valid for the duration of the call" contract — so free them once the
-        // call returns and any write-back has read them back, keeping the registry bounded
-        // across looping `Declare`s.
-        let pin_addrs: Vec<i64> = arg_variants.iter().filter_map(Variant::as_i64).collect();
         let mut identities = HashMap::new();
         let call_arguments = arg_variants
             .iter()
@@ -5044,80 +5031,12 @@ impl<'h> Vm3<'h> {
         self.exec.err_engine.last_dll_error = self.exec.host.dynlink().last_dll_error();
         let (ret, wb_values) = match invoke {
             Ok(pair) => pair,
-            Err(err) => {
-                pointer_helpers::free_pins(&pin_addrs);
-                return Err(Vm3Error::Fault(Fault::from_hal(err)));
-            }
+            Err(err) => return Err(Vm3Error::Fault(Fault::from_hal(err))),
         };
         // Copy each ByRef argument's marshaled-back value to its caller slot. The dynlink host
         // returns `wb_values` aligned to `args`; only `ByRef` args write back (a force-ByVal
         // `(x)` / non-l-value is lowered to `Operand`, so it is correctly left unchanged).
         apply_byref_writebacks(args, &wb_values, |place, value| self.store(place, value))?;
-        // Pointer-helper write-back: a `StrPtr(x)`/`VarPtr(x)` argument over an l-value reads
-        // the pinned buffer (the native call may have mutated it) back into the source
-        // variable. The argument value is the registered pointer; the runtime registry
-        // projects it back to a string / byte-array / scalar Variant.
-        for wb in ptr_writebacks {
-            let pointer = arg_variants
-                .get(wb.arg_index)
-                .and_then(Variant::as_i64)
-                .unwrap_or(0);
-            let value = match wb.kind {
-                PtrWritebackKind::Variant => pointer_helpers::read_back_variant(pointer),
-                PtrWritebackKind::Record => pointer_helpers::read_back_record(pointer),
-                PtrWritebackKind::String => {
-                    pointer_helpers::read_back_string_payload_variant(pointer)
-                }
-                PtrWritebackKind::ByteArray => {
-                    pointer_helpers::read_back_byte_array_payload_variant(pointer)
-                }
-                PtrWritebackKind::Boolean => pointer_helpers::read_back_scalar_payload_variant(
-                    pointer,
-                    pointer_helpers::ScalarPointerKind::Boolean,
-                ),
-                PtrWritebackKind::Byte => pointer_helpers::read_back_scalar_payload_variant(
-                    pointer,
-                    pointer_helpers::ScalarPointerKind::Byte,
-                ),
-                PtrWritebackKind::Integer => pointer_helpers::read_back_scalar_payload_variant(
-                    pointer,
-                    pointer_helpers::ScalarPointerKind::Integer,
-                ),
-                PtrWritebackKind::Long => pointer_helpers::read_back_scalar_payload_variant(
-                    pointer,
-                    pointer_helpers::ScalarPointerKind::Long,
-                ),
-                PtrWritebackKind::LongLong => pointer_helpers::read_back_scalar_payload_variant(
-                    pointer,
-                    pointer_helpers::ScalarPointerKind::LongLong,
-                ),
-                PtrWritebackKind::LongPtr => pointer_helpers::read_back_scalar_payload_variant(
-                    pointer,
-                    pointer_helpers::ScalarPointerKind::LongPtr,
-                ),
-                PtrWritebackKind::Single => pointer_helpers::read_back_scalar_payload_variant(
-                    pointer,
-                    pointer_helpers::ScalarPointerKind::Single,
-                ),
-                PtrWritebackKind::Double => pointer_helpers::read_back_scalar_payload_variant(
-                    pointer,
-                    pointer_helpers::ScalarPointerKind::Double,
-                ),
-                PtrWritebackKind::Currency => pointer_helpers::read_back_scalar_payload_variant(
-                    pointer,
-                    pointer_helpers::ScalarPointerKind::Currency,
-                ),
-                PtrWritebackKind::Date => pointer_helpers::read_back_scalar_payload_variant(
-                    pointer,
-                    pointer_helpers::ScalarPointerKind::Date,
-                ),
-            }
-            .map_err(|e| Vm3Error::Fault(Fault::from_string(e)))?;
-            self.store(&wb.target, value)?;
-        }
-        // The pins are fully consumed (the call ran and any write-back read them back);
-        // release them so the registry stays bounded across looping `Declare`s.
-        pointer_helpers::free_pins(&pin_addrs);
         Ok(ret)
     }
 
@@ -5307,7 +5226,10 @@ impl<'h> Vm3<'h> {
             return;
         };
         if let Some(frame) = self.frames.get_mut(frame_index) {
-            frame.temps.retain(|temp, _| *temp < first_temp);
+            for temp in frame.temps.iter_mut().skip(first_temp) {
+                *temp = Variant::empty();
+            }
+            frame.pointer_strings.clear();
         }
         self.for_each
             .retain(|loc, _| !is_cleared_temp(*loc, frame_index, first_temp));
@@ -5370,7 +5292,7 @@ impl<'h> Vm3<'h> {
             Loc::Temp(fi, ti) => Ok(self
                 .frames
                 .get(fi)
-                .and_then(|f| f.temps.get(&ti))
+                .and_then(|f| f.temps.get(ti))
                 .cloned()
                 .unwrap_or_else(Variant::empty)),
         }
@@ -5407,11 +5329,14 @@ impl<'h> Vm3<'h> {
                 std::mem::replace(slot, v)
             }
             Loc::Temp(fi, ti) => {
-                if let Some(f) = self.frames.get_mut(fi) {
-                    f.temps.insert(ti, v).unwrap_or_else(Variant::empty)
-                } else {
-                    return Err(Vm3Error::Malformed(format!("temp frame {fi} out of range")));
-                }
+                let slot = self
+                    .frames
+                    .get_mut(fi)
+                    .and_then(|f| f.temps.get_mut(ti))
+                    .ok_or_else(|| {
+                        Vm3Error::Malformed(format!("temp [{fi}][{ti}] out of range"))
+                    })?;
+                std::mem::replace(slot, v)
             }
         };
         self.clear_withevents_owners_before_releasing_values(std::iter::once(&old));
@@ -5421,7 +5346,7 @@ impl<'h> Vm3<'h> {
 
     fn clear_withevents_owners_in_frame_before_drop(&mut self, frame: &Frame) {
         self.clear_withevents_owners_before_releasing_values(
-            frame.locals.iter().chain(frame.temps.values()),
+            frame.locals.iter().chain(frame.temps.iter()),
         );
     }
 
@@ -5488,6 +5413,100 @@ impl<'h> Vm3<'h> {
         }
     }
 
+    /// The address `AddrOf` yields: the storage `base` + `path` names, located by
+    /// `calcvba_runtime::address` (the JIT's `rt_jit_addr_of_to_slot` does the same).
+    fn address_of(
+        &mut self,
+        kind: PtrKind,
+        base: &OxAddrBase,
+        path: &[OxAddrStep],
+    ) -> Result<i64, Vm3Error> {
+        use calcvba_runtime::address::{self, AddressKind, AddressStep, Location};
+        let mut steps = Vec::with_capacity(path.len());
+        for step in path {
+            steps.push(match step {
+                OxAddrStep::Index(indices) => {
+                    let mut subscripts = Vec::with_capacity(indices.len());
+                    for index in indices {
+                        let value = self.operand(index)?;
+                        let subscript =
+                            subscript_to_long(arith::int(&value).map_err(arith_fault)?)?;
+                        subscripts.push(i64::from(subscript));
+                    }
+                    AddressStep::Index(subscripts)
+                }
+                OxAddrStep::Field(index) => AddressStep::Field(*index),
+            });
+        }
+        let root = match base {
+            OxAddrBase::Place(place) => {
+                let loc = self.resolve(place);
+                self.read_loc_mut(loc)?
+                    .map(|cell| cell as *mut Variant)
+                    .ok_or_else(|| Vm3Error::Malformed(format!("unaddressable {loc:?}")))?
+            }
+            OxAddrBase::ObjectField { object, field } => {
+                let object = self.operand(object)?;
+                let object = object
+                    .as_object_ref()
+                    .ok_or_else(|| Vm3Error::Fault(Fault::new(91, "Object variable not set")))?;
+                object
+                    .project_field_cell(*field)
+                    .ok_or_else(|| Vm3Error::Fault(Fault::new(13, "type mismatch")))?
+            }
+        };
+        let fault =
+            |number: i32| Vm3Error::Fault(Fault::new(number, default_error_message(number)));
+        // SAFETY: `root` is a live, stable engine cell (a frame slot, a global or a boxed
+        // class field) and no Rust reference to it is held across this call.
+        let location = unsafe { address::locate(root, &steps) }.map_err(fault)?;
+        let address = match kind {
+            PtrKind::Var | PtrKind::VarString => {
+                // SAFETY: the location was just found live.
+                unsafe { location.address(AddressKind::Value) }
+            }
+            PtrKind::VarVariant => {
+                // SAFETY: the location was just found live.
+                unsafe { location.address(AddressKind::Cell) }
+            }
+            PtrKind::Str => {
+                // SAFETY: the location was just found live.
+                match unsafe { location.address(AddressKind::Bstr) } {
+                    Some(address) => Some(address),
+                    // VBA converts a non-String operand to a temporary String for the
+                    // statement and passes that.
+                    None => {
+                        let Location::Cell(cell) = location else {
+                            return Err(fault(13));
+                        };
+                        // SAFETY: a live engine cell, read before any other access.
+                        let text = arith::as_string(unsafe { &*cell });
+                        let converted = Variant::from_string(text);
+                        let bstr = converted.raw_bstr_ptr().expose_provenance();
+                        if let Some(frame) = self.frames.last_mut() {
+                            frame.pointer_strings.push(converted);
+                        }
+                        Some(bstr)
+                    }
+                }
+            }
+            PtrKind::Obj => {
+                // SAFETY: the location was just found live.
+                if let Some(pointer) = unsafe { location.object_pointer() } {
+                    Some(pointer)
+                } else if let Location::Cell(cell) = location {
+                    // SAFETY: a live engine cell, cloned before any other access.
+                    let value = unsafe { (*cell).clone() };
+                    return calcvba_rt_abi::object_variant_pointer(self.exec.host, &value)
+                        .map_err(|e| Vm3Error::Fault(Fault::from_string(e)));
+                } else {
+                    return Err(fault(13));
+                }
+            }
+        };
+        address.map(|a| a as i64).ok_or_else(|| fault(13))
+    }
+
     /// Borrow a resolved location's `Variant` in place (no clone) — the constant-time
     /// counterpart to [`Self::read_loc`], used by the array fast paths to read an
     /// element without deep-cloning the whole backing store. A `Temp` that has not
@@ -5506,7 +5525,7 @@ impl<'h> Vm3<'h> {
                 .and_then(|f| f.locals.get(li))
                 .map(Some)
                 .ok_or_else(|| Vm3Error::Malformed(format!("local [{fi}][{li}] out of range"))),
-            Loc::Temp(fi, ti) => Ok(self.frames.get(fi).and_then(|f| f.temps.get(&ti))),
+            Loc::Temp(fi, ti) => Ok(self.frames.get(fi).and_then(|f| f.temps.get(ti))),
         }
     }
 
@@ -5527,7 +5546,7 @@ impl<'h> Vm3<'h> {
                 .and_then(|f| f.locals.get_mut(li))
                 .map(Some)
                 .ok_or_else(|| Vm3Error::Malformed(format!("local [{fi}][{li}] out of range"))),
-            Loc::Temp(fi, ti) => Ok(self.frames.get_mut(fi).and_then(|f| f.temps.get_mut(&ti))),
+            Loc::Temp(fi, ti) => Ok(self.frames.get_mut(fi).and_then(|f| f.temps.get_mut(ti))),
         }
     }
 
@@ -6022,7 +6041,7 @@ fn inst_kind(inst: &OxInst) -> &'static str {
         | OxInst::WithEventsFirstOwner { .. }
         | OxInst::WithEventsNextOwner { .. } => "WithEvents",
         OxInst::RaiseEvent { .. } => "RaiseEvent",
-        OxInst::Ptr { .. } => "pointer helper",
+        OxInst::AddrOf { .. } => "pointer helper",
         OxInst::ErrFieldGet { .. } => "Err field read",
         OxInst::ErlGet { .. } => "Erl read",
         OxInst::ErrFieldSet { .. } => "Err field write",
@@ -6048,7 +6067,7 @@ mod tests {
         ClassId as CoreClassId, CoreArg, CoreAsNew, CoreBinOp, CoreCallee, CoreClass,
         CoreClassAsNewField, CoreClassField, CoreClassMethod, CoreConst, CoreGlobal, CoreLocal,
         CoreParam, CorePlace, CoreProc, CoreProgram, CoreStmt, CoreValue, ErrorOp, ExitKind,
-        LabelId, LocalId as CoreLocalId, ProcId, PtrWriteback,
+        LabelId, LocalId as CoreLocalId, ProcId,
     };
     use calcvba_bundle::{
         AssignmentIntent, AssignmentTargetKind, BuiltinType, DeclareParamType,
@@ -8000,10 +8019,7 @@ mod tests {
             vec![
                 assign(lc(0), CoreValue::Const(CoreConst::I32(5))),
                 CoreStmt::Eval(CoreValue::Call {
-                    callee: CoreCallee::Declare {
-                        descriptor_id: 0,
-                        ptr_writebacks: Vec::new(),
-                    },
+                    callee: CoreCallee::Declare { descriptor_id: 0 },
                     args: vec![CoreArg::ByRef(lc(0))],
                 }),
             ],
@@ -8025,10 +8041,7 @@ mod tests {
             vec![local("e", VarTypeRef::Builtin(BuiltinType::Long))],
             vec![
                 CoreStmt::Eval(CoreValue::Call {
-                    callee: CoreCallee::Declare {
-                        descriptor_id: 0,
-                        ptr_writebacks: Vec::new(),
-                    },
+                    callee: CoreCallee::Declare { descriptor_id: 0 },
                     args: vec![CoreArg::ByVal(CoreValue::Const(CoreConst::I32(1)))],
                 }),
                 assign(lc(0), CoreValue::ErrField(ErrField::LastDllError)),
@@ -8045,28 +8058,29 @@ mod tests {
     }
 
     #[test]
-    fn strptr_pins_and_a_declare_writeback_round_trips_the_string() {
-        // s = "hi"; Declare Sub Poke Lib "t" (ByVal p As LongPtr); Poke StrPtr(s) with a
-        // String pointer-helper write-back into `s`. The mock makes no native mutation, so
-        // the pinned UTF-16 buffer reads back unchanged — proving StrPtr registration + the
-        // pointer read-back path (and that the pin survives until after the write-back).
+    fn strptr_is_the_strings_own_bstr_and_a_declare_leaves_it_intact() {
+        // s = "hi"; p1 = StrPtr(s); p2 = StrPtr(s); q = VarPtr(s); Poke StrPtr(s). StrPtr is
+        // the variable's own BSTR (the same each time, as in VBA), VarPtr the slot holding it,
+        // and passing the pointer to a Declare leaves `s` unchanged.
+        let ptr = |kind| CoreValue::Ptr {
+            kind,
+            operand: calcvba_bundle::coreir::CorePtrOperand::Place(lc(0)),
+        };
         let mut prog = main_proc(
-            vec![local("s", VarTypeRef::Builtin(BuiltinType::String))],
+            vec![
+                local("s", VarTypeRef::Builtin(BuiltinType::String)),
+                local("p1", VarTypeRef::Builtin(BuiltinType::LongPtr)),
+                local("p2", VarTypeRef::Builtin(BuiltinType::LongPtr)),
+                local("q", VarTypeRef::Builtin(BuiltinType::LongPtr)),
+            ],
             vec![
                 assign(lc(0), CoreValue::Const(CoreConst::Str("hi".into()))),
+                assign(lc(1), ptr(PtrKind::Str)),
+                assign(lc(2), ptr(PtrKind::Str)),
+                assign(lc(3), ptr(PtrKind::VarString)),
                 CoreStmt::Eval(CoreValue::Call {
-                    callee: CoreCallee::Declare {
-                        descriptor_id: 0,
-                        ptr_writebacks: vec![PtrWriteback {
-                            arg_index: 0,
-                            target: lc(0),
-                            kind: PtrWritebackKind::String,
-                        }],
-                    },
-                    args: vec![CoreArg::ByVal(CoreValue::Ptr {
-                        kind: PtrKind::Str,
-                        value: Box::new(load(0)),
-                    })],
+                    callee: CoreCallee::Declare { descriptor_id: 0 },
+                    args: vec![CoreArg::ByVal(ptr(PtrKind::Str))],
                 }),
             ],
         );
@@ -8076,9 +8090,17 @@ mod tests {
         let s = calcvba_runtime::variant_to_vba_string(&vm.slot(0).expect("s"))
             .map(|b| b.as_str().to_string())
             .unwrap_or_default();
-        assert_eq!(
-            s, "hi",
-            "the StrPtr pin must read back the source string unchanged"
+        assert_eq!(s, "hi");
+        let p1 = vm.slot(1).and_then(|v| v.as_i64()).expect("p1");
+        let p2 = vm.slot(2).and_then(|v| v.as_i64()).expect("p2");
+        let q = vm.slot(3).and_then(|v| v.as_i64()).expect("q");
+        assert!(
+            p1 != 0 && p1 == p2,
+            "StrPtr is the variable's own BSTR: {p1:#x} {p2:#x}"
+        );
+        assert!(
+            q != 0 && q != p1,
+            "VarPtr(s) is the slot, not the BSTR: {q:#x}"
         );
     }
 

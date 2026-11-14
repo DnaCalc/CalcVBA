@@ -1807,26 +1807,35 @@ impl<'a> LowerFunc<'a> {
             OxInst::ErrFieldSet { field, src } => {
                 self.emit_err_field_set(builder, module, *field, src)
             }
-            OxInst::Ptr { dst, kind, src } => {
-                // Literal descriptors must borrow the retained program's text,
-                // never a temporary clone of the operand.
-                let operand = self.lower_variant_operand(builder, src)?;
-                let args = self.emit_variant_operand_descriptors(builder, module, &[operand])?;
-                let kind = match kind {
-                    calcvba_oxir::PtrKind::Str => 0,
-                    calcvba_oxir::PtrKind::Var => 1,
-                    calcvba_oxir::PtrKind::VarString => 2,
-                    calcvba_oxir::PtrKind::VarVariant => 3,
-                    calcvba_oxir::PtrKind::Obj => 4,
-                };
-                let kind = builder.ins().iconst(types::I32, kind);
+            OxInst::AddrOf {
+                dst, base, path, ..
+            } => {
+                // The helper reads the path's shape from this instruction (the compiled
+                // image borrows the OxProgram for its entire lifetime); the object and the
+                // subscripts are evaluated here, in path order, as operand descriptors.
+                let mut operands = Vec::new();
+                if let calcvba_oxir::OxAddrBase::ObjectField { object, .. } = base {
+                    operands.push(self.lower_variant_operand(builder, object)?);
+                }
+                for step in path {
+                    if let calcvba_oxir::OxAddrStep::Index(indices) = step {
+                        for index in indices {
+                            operands.push(self.lower_variant_operand(builder, index)?);
+                        }
+                    }
+                }
+                let args = self.emit_variant_operand_descriptors(builder, module, &operands)?;
+                let inst_ptr = builder.ins().iconst(
+                    module.target_config().pointer_type(),
+                    std::ptr::from_ref(inst) as i64,
+                );
                 let (area, index) = place_addr(*dst);
                 let area = builder.ins().iconst(types::I32, i64::from(area));
                 let index = builder.ins().iconst(types::I32, i64::from(index));
-                let callee = self.import(builder, module, self.imports.pointer_slot);
+                let callee = self.import(builder, module, self.imports.addr_of_slot);
                 let call = builder
                     .ins()
-                    .call(callee, &[self.state, self.run, kind, args, area, index]);
+                    .call(callee, &[self.state, self.run, inst_ptr, args, area, index]);
                 let status = builder.inst_results(call)[0];
                 self.return_if_not_ok(builder, status);
                 Ok(())
@@ -6934,17 +6943,9 @@ impl<'a> LowerFunc<'a> {
             OxNativeCallee::Builtin(native_impl) => {
                 self.lower_call_native_builtin(builder, module, dst, *native_impl, args)
             }
-            OxNativeCallee::Declare {
-                descriptor_id,
-                ptr_writebacks,
-            } => self.lower_call_native_declare(
-                builder,
-                module,
-                dst,
-                *descriptor_id,
-                args,
-                ptr_writebacks,
-            ),
+            OxNativeCallee::Declare { descriptor_id } => {
+                self.lower_call_native_declare(builder, module, dst, *descriptor_id, args)
+            }
         }
     }
 
@@ -7020,7 +7021,6 @@ impl<'a> LowerFunc<'a> {
         dst: Option<OxPlace>,
         descriptor_id: u32,
         args: &[OxCallArg],
-        ptr_writebacks: &[calcvba_oxir::value::DeclarePtrWriteback],
     ) -> Result<(), JitError> {
         // Every platform lowers the call; the runtime helper verifies the plan and the host
         // dynlink policy decides at run time (off Windows or x64 it raises, as the interpreter does).
@@ -7033,14 +7033,6 @@ impl<'a> LowerFunc<'a> {
             .map_err(|_| JitError::unsupported("JIT Declare argument count is too large"))?;
         let argc = builder.ins().iconst(types::I32, i64::from(argc));
         let descriptor_id = builder.ins().iconst(types::I32, i64::from(descriptor_id));
-        // The compiled image borrows this OxProgram for its entire lifetime.
-        let writebacks = builder.ins().iconst(
-            module.target_config().pointer_type(),
-            ptr_writebacks.as_ptr() as i64,
-        );
-        let writeback_count = builder
-            .ins()
-            .iconst(types::I32, ptr_writebacks.len() as i64);
         let (dst_area, dst_index) = if let Some(dst) = dst {
             let (area, index) = place_addr(dst);
             (
@@ -7064,8 +7056,6 @@ impl<'a> LowerFunc<'a> {
                 args_ptr,
                 dst_area,
                 dst_index,
-                writebacks,
-                writeback_count,
             ],
         );
         let status = builder.inst_results(call)[0];

@@ -70,7 +70,7 @@ use crate::program::{
 };
 use crate::ty::{ArrayShape, ClassId, IfaceId, ObjClass, OxTy, RecordLayoutId};
 use crate::value::{
-    ArithOp, CmpOp, DeclarePtrWriteback, LogicalOp, OxArg, OxCallArg, OxCoerceTarget, OxConst,
+    ArithOp, CmpOp, LogicalOp, OxAddrBase, OxAddrStep, OxArg, OxCallArg, OxCoerceTarget, OxConst,
     OxNativeCallee, OxOperand, OxPlace,
 };
 
@@ -2138,14 +2138,28 @@ impl<'a> Lowerer<'a> {
                 let ty = self.temps.get(t.0).cloned().unwrap_or(OxTy::Variant);
                 Ok((OxOperand::temp(t), ty))
             }
-            CoreValue::Ptr { kind, value } => {
-                let (src, _) = self.lower_value(value)?;
+            CoreValue::Ptr { kind, operand } => {
+                let (base, path) = match operand {
+                    coreir::CorePtrOperand::Place(place) => self.lower_addr_place(place)?,
+                    coreir::CorePtrOperand::Value(value) => {
+                        // An r-value lives in a statement temporary of its own type, as
+                        // VBA passes one to `VarPtr(ByRef Ptr As Any)`.
+                        let (src, ty) = self.lower_value(value)?;
+                        let held = self.new_temp(ty);
+                        self.emit(OxInst::Assign {
+                            dst: OxPlace::Temp(held),
+                            value: src,
+                        });
+                        (OxAddrBase::Place(OxPlace::Temp(held)), Vec::new())
+                    }
+                };
                 let ty = self.long_ptr_ty();
                 let t = self.new_temp(ty.clone());
-                self.emit(OxInst::Ptr {
+                self.emit(OxInst::AddrOf {
                     dst: OxPlace::Temp(t),
                     kind: *kind,
-                    src,
+                    base,
+                    path,
                 });
                 // VarPtr/StrPtr/ObjPtr yield a pointer-width integer.
                 Ok((OxOperand::temp(t), ty))
@@ -2605,24 +2619,12 @@ impl<'a> Lowerer<'a> {
                 });
                 self.emit_arg_writebacks(writebacks)?;
             }
-            coreir::CoreCallee::Declare {
-                descriptor_id,
-                ptr_writebacks,
-            } => {
+            coreir::CoreCallee::Declare { descriptor_id } => {
                 let (args, arg_writebacks) = self.lower_call_args(args)?;
-                let mut writebacks = Vec::with_capacity(ptr_writebacks.len());
-                for wb in ptr_writebacks {
-                    writebacks.push(DeclarePtrWriteback {
-                        arg_index: wb.arg_index,
-                        target: self.simple_place(&wb.target)?,
-                        kind: wb.kind,
-                    });
-                }
                 self.emit(OxInst::CallNative {
                     dst,
                     callee: OxNativeCallee::Declare {
                         descriptor_id: *descriptor_id,
-                        ptr_writebacks: writebacks,
                     },
                     args,
                 });
@@ -3211,6 +3213,48 @@ impl<'a> Lowerer<'a> {
             out.push(self.lower_value(i)?.0);
         }
         Ok(out)
+    }
+
+    /// The base and path of the storage a pointer helper addresses: the variable or
+    /// class field it starts from, then the element and UDT-field steps into it.
+    fn lower_addr_place(
+        &mut self,
+        place: &coreir::CorePlace,
+    ) -> Result<(OxAddrBase, Vec<OxAddrStep>)> {
+        match place {
+            coreir::CorePlace::Local(l) => {
+                Ok((OxAddrBase::Place(OxPlace::Local(LocalId(l.0))), Vec::new()))
+            }
+            coreir::CorePlace::Global(g) => Ok((
+                OxAddrBase::Place(OxPlace::Global(GlobalId(g.0))),
+                Vec::new(),
+            )),
+            coreir::CorePlace::Field { object, field } => {
+                let object = self.lower_value(object)?.0;
+                Ok((
+                    OxAddrBase::ObjectField {
+                        object,
+                        field: *field,
+                    },
+                    Vec::new(),
+                ))
+            }
+            coreir::CorePlace::Index { array, indices } => {
+                let (base, mut path) = self.lower_addr_place(array)?;
+                path.push(OxAddrStep::Index(self.lower_indices(indices)?));
+                Ok((base, path))
+            }
+            coreir::CorePlace::RecordField { base, index } => {
+                let (base, mut path) = self.lower_addr_place(base)?;
+                path.push(OxAddrStep::Field(*index));
+                Ok((base, path))
+            }
+            coreir::CorePlace::WithEvents { .. }
+            | coreir::CorePlace::Predeclared { .. }
+            | coreir::CorePlace::PredeclaredExtern { .. } => {
+                Err(unimpl("pointer helper over a non-addressable place"))
+            }
+        }
     }
 
     /// A simple (directly addressable) place: a local or a global.
@@ -4416,7 +4460,7 @@ mod tests {
                 CorePlace::Local(CoreLocalId(0)),
                 CoreValue::Ptr {
                     kind: PtrKind::Var,
-                    value: Box::new(CoreValue::Load(CorePlace::Local(CoreLocalId(1)))),
+                    operand: coreir::CorePtrOperand::Place(CorePlace::Local(CoreLocalId(1))),
                 },
             ),
             assign(
@@ -4442,7 +4486,10 @@ mod tests {
         assert_eq!(verify_program(&oxp), Ok(()));
         let f = &oxp.funcs[0];
         let has = |pred: fn(&OxInst) -> bool| f.blocks.iter().any(|b| b.instrs.iter().any(pred));
-        assert!(has(|i| matches!(i, OxInst::Ptr { .. })), "expected Ptr");
+        assert!(
+            has(|i| matches!(i, OxInst::AddrOf { .. })),
+            "expected AddrOf"
+        );
         assert!(
             has(|i| matches!(i, OxInst::ErrFieldGet { .. })),
             "expected ErrFieldGet"

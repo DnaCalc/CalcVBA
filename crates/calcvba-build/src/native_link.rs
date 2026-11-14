@@ -232,10 +232,28 @@ fn relocate_places(inst: &mut OxInst, base: usize) {
         | Coerce { dst, src, .. }
         | Truthy { dst, src }
         | Neg { dst, src, .. }
-        | Not { dst, src }
-        | Ptr { dst, src, .. } => {
+        | Not { dst, src } => {
             place(dst, base);
             operand(src, base);
+        }
+        AddrOf {
+            dst,
+            base: address_base,
+            path,
+            ..
+        } => {
+            place(dst, base);
+            match address_base {
+                calcvba_oxir::OxAddrBase::Place(p) => place(p, base),
+                calcvba_oxir::OxAddrBase::ObjectField { object, .. } => operand(object, base),
+            }
+            for step in path {
+                if let calcvba_oxir::OxAddrStep::Index(indices) = step {
+                    for index in indices {
+                        operand(index, base);
+                    }
+                }
+            }
         }
         Arith { dst, lhs, rhs, .. }
         | Div { dst, lhs, rhs }
@@ -295,16 +313,11 @@ fn relocate_places(inst: &mut OxInst, base: usize) {
             operand(target, base);
             args(a, base);
         }
-        CallNative { dst, callee, args } => {
+        CallNative { dst, args, .. } => {
             if let Some(dst) = dst {
                 place(dst, base);
             }
             call_args(args, base);
-            if let OxNativeCallee::Declare { ptr_writebacks, .. } = callee {
-                for writeback in ptr_writebacks {
-                    place(&mut writeback.target, base);
-                }
-            }
         }
         CallByName {
             dst,

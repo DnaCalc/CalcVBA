@@ -15,7 +15,7 @@ use crate::inst::{ErrorHandler, OxAsNew, OxInst, terminator_operands, terminator
 use crate::passes::{assign_repr_preserving, operand_ty, place_ty};
 use crate::program::{OxFunc, OxProgram};
 use crate::ty::OxTy;
-use crate::value::{OxArg, OxCallArg, OxNativeCallee, OxOperand, OxPlace};
+use crate::value::{OxAddrBase, OxAddrStep, OxArg, OxCallArg, OxOperand, OxPlace};
 use calcvba_bundle::{ProcedureKind, ProjectMemberKind};
 
 /// A single structural defect found by [`verify_program`].
@@ -1557,10 +1557,29 @@ fn verify_inst_places(
         | OxInst::Not { dst, src }
         | OxInst::TypeOfIs {
             dst, object: src, ..
-        }
-        | OxInst::Ptr { dst, src, .. } => {
+        } => {
             check_place(fi, bi, site, dst, locals, globals, temps, errors);
             check_operand(fi, bi, site, src, locals, globals, temps, errors);
+        }
+        OxInst::AddrOf {
+            dst, base, path, ..
+        } => {
+            check_place(fi, bi, site, dst, locals, globals, temps, errors);
+            match base {
+                OxAddrBase::Place(place) => {
+                    check_place(fi, bi, site, place, locals, globals, temps, errors);
+                }
+                OxAddrBase::ObjectField { object, .. } => {
+                    check_operand(fi, bi, site, object, locals, globals, temps, errors);
+                }
+            }
+            for step in path {
+                if let OxAddrStep::Index(indices) = step {
+                    for index in indices {
+                        check_operand(fi, bi, site, index, locals, globals, temps, errors);
+                    }
+                }
+            }
         }
         OxInst::ValidateAssignment { src, .. }
         | OxInst::PredeclaredSet { value: src, .. }
@@ -1612,11 +1631,8 @@ fn verify_inst_places(
                 check_operand(fi, bi, site, target, locals, globals, temps, errors);
             }
         }
-        OxInst::CallNative {
-            dst, callee, args, ..
-        } => {
+        OxInst::CallNative { dst, args, .. } => {
             check_opt_place(fi, bi, site, dst, locals, globals, temps, errors);
-            check_native_callee(fi, bi, site, callee, locals, globals, temps, errors);
             for arg in args {
                 check_call_arg(fi, bi, site, arg, locals, globals, temps, errors);
             }
@@ -1803,33 +1819,6 @@ fn verify_inst_places(
         | OxInst::ClearErr
         | OxInst::SetLineNumber { .. }
         | OxInst::DrainTerminations => {}
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn check_native_callee(
-    fi: usize,
-    bi: usize,
-    site: Option<usize>,
-    callee: &OxNativeCallee,
-    locals: usize,
-    globals: usize,
-    temps: usize,
-    errors: &mut Vec<VerifyError>,
-) {
-    if let OxNativeCallee::Declare { ptr_writebacks, .. } = callee {
-        for writeback in ptr_writebacks {
-            check_place(
-                fi,
-                bi,
-                site,
-                &writeback.target,
-                locals,
-                globals,
-                temps,
-                errors,
-            );
-        }
     }
 }
 

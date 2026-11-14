@@ -2018,7 +2018,7 @@ impl ScalarLayout {
         if self.native_numbers
             && matches!(
                 inst,
-                OxInst::Ptr { .. }
+                OxInst::AddrOf { .. }
                     | OxInst::CallNative {
                         callee: calcvba_oxir::OxNativeCallee::Declare { .. },
                         ..

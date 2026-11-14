@@ -8,7 +8,6 @@
 
 use std::collections::BTreeMap;
 
-use calcvba_bundle::PtrWritebackKind;
 use calcvba_bundle::coreir::{CoreCallee, CoreStmt, CoreValue};
 use calcvba_hal::HostPolicy;
 use calcvba_hal::adapters::null::NullHostServices;
@@ -237,30 +236,6 @@ fn not_not_array_is_an_allocation_probe() {
         snap[1].as_i32(),
         Some(0),
         "allocated probes as non-zero: {snap:?}"
-    );
-}
-
-#[test]
-fn pointer_helper_pins_are_freed_per_native_call_not_leaked() {
-    // Each `StrPtr` pins a cloned cell in the process-global registry; the
-    // consuming `Declare` call frees it afterwards. Under the deterministic policy
-    // the native lane is denied, so the call errors and the error path frees the
-    // pin (`On Error Resume Next` keeps the loop running). The registry must
-    // therefore not grow with the iteration count instead of leaking one pin/iter.
-    let before = calcvba_runtime::pointer_helpers::live_pin_count();
-    run(
-        "Declare PtrSafe Function FakeApi Lib \"fake\" (ByVal p As LongPtr) As Long\n\
-         Sub Main()\n\
-         On Error Resume Next\n\
-         Dim s As String\ns = \"payload\"\n\
-         Dim i As Long\n\
-         For i = 1 To 3000\nFakeApi StrPtr(s)\nNext\n\
-         End Sub",
-    );
-    let after = calcvba_runtime::pointer_helpers::live_pin_count();
-    assert!(
-        after.saturating_sub(before) < 200,
-        "pointer-helper pins leaked across the loop: before={before} after={after}"
     );
 }
 
@@ -604,35 +579,6 @@ fn longptr_udt_field_overflows_above_long_on_win32_target() {
         err.contains("runtime error: 6"),
         "expected overflow error 6, got {err}"
     );
-}
-
-#[test]
-fn longptr_varptr_writeback_kind_follows_win32_target_width() {
-    let program = calcvba_bind::bind_program(
-        &manifest_with_target(
-            "Private Declare PtrSafe Sub Touch Lib \"fake\" (ByVal p As LongPtr)\n\
-             Sub Main()\n\
-             Dim p As LongPtr\n\
-             Touch VarPtr(p)\n\
-             End Sub",
-            ConditionalCompilationTarget::windows_32_vba7(),
-        ),
-        &NullTypeLibs,
-    )
-    .expect("bind Win32 LongPtr VarPtr declare call");
-    let main = program
-        .procs
-        .iter()
-        .find(|proc| proc.name.eq_ignore_ascii_case("Main"))
-        .expect("Main proc");
-    let writeback_kind = main.body.iter().find_map(|stmt| match stmt {
-        CoreStmt::Eval(CoreValue::Call {
-            callee: CoreCallee::Declare { ptr_writebacks, .. },
-            ..
-        }) => ptr_writebacks.first().map(|writeback| writeback.kind),
-        _ => None,
-    });
-    assert_eq!(writeback_kind, Some(PtrWritebackKind::Long));
 }
 
 #[test]
@@ -1534,7 +1480,6 @@ fn file_statements_route_through_vba_bundle() {
         );
     }
     // And no file statement remains on the bespoke `CoreCallee::Native` route.
-    use calcvba_bundle::coreir::{CoreCallee, CoreStmt, CoreValue};
     use calcvba_bundle::native::NativeImplId;
     fn value_native(v: &CoreValue) -> Option<NativeImplId> {
         match v {

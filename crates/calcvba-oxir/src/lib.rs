@@ -54,8 +54,8 @@ pub use program::{
 };
 pub use ty::{ArrayShape, ClassId, IfaceId, ObjClass, OxTy, RecordLayoutId};
 pub use value::{
-    ArithOp, BoundWhich, CmpOp, DeclarePtrWriteback, ErrField, LogicalOp, OxArg, OxCallArg,
-    OxCoerceTarget, OxConst, OxNativeCallee, OxOperand, OxPlace, PtrKind, PtrWritebackKind,
+    ArithOp, BoundWhich, CmpOp, ErrField, LogicalOp, OxAddrBase, OxAddrStep, OxArg, OxCallArg,
+    OxCoerceTarget, OxConst, OxNativeCallee, OxOperand, OxPlace, PtrKind,
 };
 pub use verify::{VerifyError, verify_program};
 

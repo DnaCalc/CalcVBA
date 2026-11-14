@@ -1010,13 +1010,38 @@ impl Variant {
         Some(u64::from_le_bytes(self.data_bytes()))
     }
 
+    /// A `VT_ERROR` cell for VBA error number `code` (`CVErr(code)`). The cell holds the
+    /// SCODE, as VBA's does (Excel: `CVErr(2042)` is `&H800A07FA`): a VBA number 0..=65535 is
+    /// `FACILITY_CONTROL` (`0x800A0000 | code`); any other value is already an SCODE
+    /// (`DISP_E_PARAMNOTFOUND` for a missing argument) and is kept as it is.
     pub fn from_error_code(code: i32) -> Self {
+        Self::from_scode(if (0..=0xFFFF).contains(&code) {
+            (0x800A_0000u32 | code as u32) as i32
+        } else {
+            code
+        })
+    }
+
+    /// A `VT_ERROR` cell holding `scode` exactly.
+    pub fn from_scode(scode: i32) -> Self {
         let mut bytes = [0u8; 8];
-        bytes[0..4].copy_from_slice(&code.to_le_bytes());
+        bytes[0..4].copy_from_slice(&scode.to_le_bytes());
         Self::from_core(VariantCore::from_bytes(VarType::Error, bytes))
     }
 
+    /// The VBA error number of a `VT_ERROR` cell (`CLng(CVErr(2042))` is 2042): the low word of
+    /// a `FACILITY_CONTROL` SCODE, otherwise the SCODE itself.
     pub fn as_error_code(&self) -> Option<i32> {
+        let scode = self.as_scode()?;
+        Some(if (scode as u32) & 0xFFFF_0000 == 0x800A_0000 {
+            scode & 0xFFFF
+        } else {
+            scode
+        })
+    }
+
+    /// The SCODE a `VT_ERROR` cell holds.
+    pub fn as_scode(&self) -> Option<i32> {
         if self.vtype() != VarType::Error {
             return None;
         }
@@ -1175,6 +1200,45 @@ impl Variant {
                 self.record_array_layout(),
             )
         }
+    }
+
+    /// The `SAFEARRAY*` an array cell holds (null when unallocated or not an array).
+    pub fn raw_safearray_ptr(&self) -> *mut core::ffi::c_void {
+        if self.vtype() != VarType::ArrayVariant {
+            return core::ptr::null_mut();
+        }
+        bytes_to_raw_safearray(self.data_bytes())
+    }
+
+    /// The BSTR a String cell holds (null for `vbNullString` or a non-String).
+    pub fn raw_bstr_ptr(&self) -> *mut u16 {
+        if self.vtype() != VarType::String {
+            return core::ptr::null_mut();
+        }
+        bytes_to_raw_bstr(self.data_bytes())
+    }
+
+    /// The address of this cell's union payload (offset 8): where a typed variable's value,
+    /// a String's BSTR or an object's interface pointer is stored.
+    pub fn payload_address(&self) -> usize {
+        (self as *const Self)
+            .expose_provenance()
+            .wrapping_add(calcvba_automation::abi::PAYLOAD_OFFSET)
+    }
+
+    /// The memory and layout of the engine UDT value this cell holds.
+    pub(crate) fn engine_record_memory(&self) -> Option<(*mut u8, Arc<VbaRecordLayout>)> {
+        if self.vtype() != VarType::Record {
+            return None;
+        }
+        let (data, info) = self.core.record_addresses();
+        if data == 0 || info != 0 {
+            return None;
+        }
+        let record = core::ptr::with_exposed_provenance_mut::<VbaRecord>(data);
+        // SAFETY: an engine record cell owns this box (`from_vba_record`); the record's
+        // memory is its own allocation, addressed without borrowing the cell.
+        unsafe { Some(((*record).data_mut_ptr(), Arc::clone((*record).layout()))) }
     }
 
     /// Whether this holds an allocated fixed-size array (`FADF_FIXEDSIZE`).

@@ -83,7 +83,7 @@ fn native_build_refuses_private_optional_paramarray_and_unsupported_reachable_bo
             "ParamArray signature",
         ),
         (
-            "Public Function Selected(ByVal x As Long) As Long\nSelected=Descendant(x)\nEnd Function\nPrivate Function Descendant(ByVal x As Long) As Long\nDim address As LongPtr\naddress=VarPtr(1)\nDescendant=x\nEnd Function",
+            "Private Type Pair\na As Long\nEnd Type\nPublic Function Selected(ByVal x As Long) As Long\nSelected=Descendant(x)\nEnd Function\nPrivate Function Descendant(ByVal x As Long) As Long\nDim address As LongPtr, p As Pair\naddress=VarPtr(p.a)\nDescendant=x\nEnd Function",
             "Descendant",
         ),
     ];

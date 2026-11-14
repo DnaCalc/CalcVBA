@@ -93,7 +93,7 @@ pub(crate) struct Imports {
     pub(crate) call_proc_ref_i32: ClifFuncId,
     pub(crate) lib_invoke_slot: ClifFuncId,
     pub(crate) declare_call_slot: ClifFuncId,
-    pub(crate) pointer_slot: ClifFuncId,
+    pub(crate) addr_of_slot: ClifFuncId,
     pub(crate) arith_v_slot: ClifFuncId,
     pub(crate) concat_v_slot: ClifFuncId,
     pub(crate) neg_v_slot: ClifFuncId,
@@ -407,8 +407,8 @@ pub(crate) fn register_symbols(builder: &mut JITBuilder) {
         rt_jit_declare_call_to_slot as *const u8,
     );
     builder.symbol(
-        "rt_jit_pointer_to_slot",
-        rt_jit_pointer_to_slot as *const u8,
+        "rt_jit_addr_of_to_slot",
+        rt_jit_addr_of_to_slot as *const u8,
     );
     builder.symbol(
         "rt_jit_arith_v_to_slot",
@@ -1869,8 +1869,6 @@ pub(crate) fn declare_imports(module: &mut impl Module) -> Result<Imports, JitEr
     declare_call_slot_sig.params.push(AbiParam::new(ptr_ty));
     declare_call_slot_sig.params.push(AbiParam::new(types::I32));
     declare_call_slot_sig.params.push(AbiParam::new(types::I32));
-    declare_call_slot_sig.params.push(AbiParam::new(ptr_ty));
-    declare_call_slot_sig.params.push(AbiParam::new(types::I32));
     declare_call_slot_sig
         .returns
         .push(AbiParam::new(types::I32));
@@ -1882,13 +1880,13 @@ pub(crate) fn declare_imports(module: &mut impl Module) -> Result<Imports, JitEr
         )
         .map_err(module_err)?;
 
-    let mut pointer_sig = module.make_signature();
-    for ty in [ptr_ty, ptr_ty, types::I32, ptr_ty, types::I32, types::I32] {
-        pointer_sig.params.push(AbiParam::new(ty));
+    let mut addr_of_sig = module.make_signature();
+    for ty in [ptr_ty, ptr_ty, ptr_ty, ptr_ty, types::I32, types::I32] {
+        addr_of_sig.params.push(AbiParam::new(ty));
     }
-    pointer_sig.returns.push(AbiParam::new(types::I32));
-    let pointer_slot = module
-        .declare_function("rt_jit_pointer_to_slot", Linkage::Import, &pointer_sig)
+    addr_of_sig.returns.push(AbiParam::new(types::I32));
+    let addr_of_slot = module
+        .declare_function("rt_jit_addr_of_to_slot", Linkage::Import, &addr_of_sig)
         .map_err(module_err)?;
 
     let mut arith_v_slot_sig = module.make_signature();
@@ -2308,7 +2306,7 @@ pub(crate) fn declare_imports(module: &mut impl Module) -> Result<Imports, JitEr
         call_proc_ref_i32,
         lib_invoke_slot,
         declare_call_slot,
-        pointer_slot,
+        addr_of_slot,
         arith_v_slot,
         concat_v_slot,
         neg_v_slot,
@@ -3930,6 +3928,7 @@ pub(crate) unsafe fn invoke_project_default_member_values(
         temp_types: vec![OxTy::Variant; temps.len()],
         locals: Vec::new(),
         temps,
+        pointer_strings: Vec::new(),
         aliases: Vec::new(),
         gosub_stack: Vec::new(),
         saved_err: RtSavedErrState::default(),
@@ -4671,17 +4670,9 @@ pub(crate) unsafe extern "C" fn rt_jit_declare_call_to_slot(
     args: *const JitCallArgDesc,
     dst_area: i32,
     dst_index: i32,
-    ptr_writebacks: *const calcvba_oxir::value::DeclarePtrWriteback,
-    writeback_count: i32,
 ) -> i32 {
     status_guard(|| {
-        if state.is_null()
-            || run.is_null()
-            || argc < 0
-            || dst_area < -1
-            || dst_index < -1
-            || writeback_count < 0
-        {
+        if state.is_null() || run.is_null() || argc < 0 || dst_area < -1 || dst_index < -1 {
             return ST_FAULT;
         }
         let dst = match (dst_area, dst_index) {
@@ -4802,19 +4793,6 @@ pub(crate) unsafe extern "C" fn rt_jit_declare_call_to_slot(
         let invoke = host
             .dynlink()
             .invoke_descriptor_arguments(&view, &call_arguments);
-        // Pins remain live until both ordinary and pointer write-backs finish.
-        struct Pins(Vec<i64>);
-        impl Drop for Pins {
-            fn drop(&mut self) {
-                calcvba_runtime::pointer_helpers::free_pins(&self.0);
-            }
-        }
-        let _pins = Pins(
-            call_arguments
-                .iter()
-                .filter_map(|arg| arg.value.as_i64())
-                .collect(),
-        );
         let last_dll_error = host.dynlink().last_dll_error();
         {
             // SAFETY: the host call returned, so the live execution state may be borrowed again.
@@ -4852,53 +4830,6 @@ pub(crate) unsafe extern "C" fn rt_jit_declare_call_to_slot(
             };
             *slot = value.clone();
         }
-        if writeback_count > 0 {
-            if ptr_writebacks.is_null() {
-                return ST_FAULT;
-            }
-            // SAFETY: compiled code supplies the borrowed program's live metadata.
-            let writebacks =
-                unsafe { std::slice::from_raw_parts(ptr_writebacks, writeback_count as usize) };
-            for wb in writebacks {
-                use calcvba_oxir::PtrWritebackKind as K;
-                use calcvba_runtime::pointer_helpers::{self as p, ScalarPointerKind as S};
-                let pointer = call_arguments
-                    .get(wb.arg_index)
-                    .and_then(|a| a.value.as_i64())
-                    .unwrap_or(0);
-                let value = match wb.kind {
-                    K::Variant => p::read_back_variant(pointer),
-                    K::Record => p::read_back_record(pointer),
-                    K::String => p::read_back_string_payload_variant(pointer),
-                    K::ByteArray => p::read_back_byte_array_payload_variant(pointer),
-                    kind => p::read_back_scalar_payload_variant(
-                        pointer,
-                        match kind {
-                            K::Boolean => S::Boolean,
-                            K::Byte => S::Byte,
-                            K::Integer => S::Integer,
-                            K::Long => S::Long,
-                            K::LongLong => S::LongLong,
-                            K::LongPtr => S::LongPtr,
-                            K::Single => S::Single,
-                            K::Double => S::Double,
-                            K::Currency => S::Currency,
-                            K::Date => S::Date,
-                            _ => unreachable!(),
-                        },
-                    ),
-                };
-                let value = match value {
-                    Ok(v) => v,
-                    Err(message) => return raise_plan_error(state, run, message),
-                };
-                let (area, index) = place_addr(wb.target);
-                let Some(slot) = slot_mut(run, area, index) else {
-                    return ST_FAULT;
-                };
-                *slot = value;
-            }
-        }
         if let Some((area, index)) = dst {
             let Some(slot) = slot_mut(run, area, index) else {
                 return ST_FAULT;
@@ -4909,54 +4840,169 @@ pub(crate) unsafe extern "C" fn rt_jit_declare_call_to_slot(
     })
 }
 
-/// Pin a VBA value for one synchronous Declare call, using the same storage as VM3.
+/// `VarPtr`/`StrPtr`/`ObjPtr`: the real address of the storage an `AddrOf` names, located
+/// by `calcvba_runtime::address` exactly as VM3's `address_of` does.
+///
 /// # Safety
-/// The state, run and operand descriptor belong to the active compiled invocation.
-pub(crate) unsafe extern "C" fn rt_jit_pointer_to_slot(
+/// The state and run belong to the active compiled invocation; `inst` is an `AddrOf` of the
+/// program the compiled image borrows; `operands` holds its object operand (for a class
+/// field base) and then every subscript, in path order.
+pub(crate) unsafe extern "C" fn rt_jit_addr_of_to_slot(
     state: *mut RawExecState,
     run: *mut JitRun,
-    kind: i32,
-    arg: *const JitVariantOperandDesc,
+    inst: *const calcvba_oxir::OxInst,
+    operands: *const JitVariantOperandDesc,
     dst_area: i32,
     dst_index: i32,
 ) -> i32 {
+    use calcvba_oxir::{OxAddrBase, OxAddrStep, PtrKind};
+    use calcvba_runtime::address::{self, AddressKind, AddressStep, Location};
     status_guard(|| {
-        if state.is_null() || run.is_null() || arg.is_null() || dst_area < 0 || dst_index < 0 {
+        if state.is_null() || run.is_null() || inst.is_null() || dst_area < 0 || dst_index < 0 {
             return ST_FAULT;
         }
-        // SAFETY: checked live handles and the compiler's one descriptor above.
-        let (run_ref, arg) = unsafe { (&*run, *arg) };
-        let value = match variant_operand_value_from_compiled_desc!(run_ref, arg) {
-            Some(v) => v,
-            None => return ST_FAULT,
+        // SAFETY: compiled code passes an instruction of the program it borrows.
+        let calcvba_oxir::OxInst::AddrOf {
+            kind, base, path, ..
+        } = (unsafe { &*inst })
+        else {
+            return ST_FAULT;
         };
-        use calcvba_runtime::pointer_helpers as p;
-        let pointer = match kind {
-            0 if value.vtype() == VarType::String => p::register_variant_pointer(&value),
-            0 => p::register_utf16_string(&arith::as_string(&value)),
-            1 => p::register_variant_pointer(&value),
-            2 => p::register_string_variant_pointer(&value),
-            3 => p::register_variant_var_variant_pointer(&value),
-            4 => {
-                // SAFETY: the active compiled entry retains this state. Copy its
-                // host reference before any COM call; no mutable state borrow survives it.
-                let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
-                    return ST_FAULT;
-                };
-                let host = exec.host;
-                calcvba_rt_abi::object_variant_pointer(host, &value)
+        let operand_count = usize::from(matches!(base, OxAddrBase::ObjectField { .. }))
+            + path
+                .iter()
+                .map(|step| match step {
+                    OxAddrStep::Index(indices) => indices.len(),
+                    OxAddrStep::Field(_) => 0,
+                })
+                .sum::<usize>();
+        if operand_count > 0 && operands.is_null() {
+            return ST_FAULT;
+        }
+        let mut values = Vec::with_capacity(operand_count);
+        for i in 0..operand_count {
+            // SAFETY: compiled code wrote `operand_count` descriptors for this call.
+            let operand = unsafe { *operands.add(i) };
+            // SAFETY: the active run is live; no typed borrow spans this read.
+            let run_ref = unsafe { &*run };
+            match variant_operand_value_from_compiled_desc!(run_ref, operand) {
+                Some(value) => values.push(value),
+                None => return ST_FAULT,
             }
-            _ => return ST_FAULT,
+        }
+        let mut values = values.into_iter();
+        let object = match base {
+            OxAddrBase::ObjectField { .. } => values.next(),
+            OxAddrBase::Place(_) => None,
         };
-        let pointer = match pointer {
-            Ok(p) => p,
-            Err(message) => return raise_plan_error(state, run, message),
+        let mut steps = Vec::with_capacity(path.len());
+        for step in path {
+            steps.push(match step {
+                OxAddrStep::Index(indices) => {
+                    let mut subscripts = Vec::with_capacity(indices.len());
+                    for value in values.by_ref().take(indices.len()) {
+                        match calcvba_eval::arith::int(&value) {
+                            Ok(n) if i32::try_from(n).is_ok() => subscripts.push(n),
+                            Ok(_) => {
+                                // SAFETY: only the active owning entry's error state is updated.
+                                return unsafe { rt_raise_runtime_error_number(state, 6) };
+                            }
+                            Err(error) => {
+                                // SAFETY: only the active owning entry's error state is updated.
+                                return unsafe { rt_raise_runtime_error_number(state, error.code) };
+                            }
+                        }
+                    }
+                    AddressStep::Index(subscripts)
+                }
+                OxAddrStep::Field(index) => AddressStep::Field(*index),
+            });
+        }
+        let root = match (base, object) {
+            (OxAddrBase::Place(place), _) => {
+                let (area, index) = place_addr(*place);
+                // SAFETY: the active run is unique outside host calls.
+                match slot_mut(unsafe { &mut *run }, area, index) {
+                    Some(cell) => cell as *mut Variant,
+                    None => return ST_FAULT,
+                }
+            }
+            (OxAddrBase::ObjectField { field, .. }, Some(object)) => {
+                let Some(object) = object.as_object_ref() else {
+                    // SAFETY: only the active owning entry's error state is updated.
+                    return unsafe { rt_raise_runtime_error_number(state, 91) };
+                };
+                match object.project_field_cell(*field) {
+                    Some(cell) => cell,
+                    // SAFETY: only the active owning entry's error state is updated.
+                    None => return unsafe { rt_raise_runtime_error_number(state, 13) },
+                }
+            }
+            (OxAddrBase::ObjectField { .. }, None) => return ST_FAULT,
+        };
+        // SAFETY: `root` is a live, stable engine cell (a frame slot, a global or a boxed
+        // class field) and no Rust reference to it is held across this call.
+        let location = match unsafe { address::locate(root, &steps) } {
+            Ok(location) => location,
+            // SAFETY: only the active owning entry's error state is updated.
+            Err(number) => return unsafe { rt_raise_runtime_error_number(state, number) },
+        };
+        let address = match kind {
+            // SAFETY: the location was just found live.
+            PtrKind::Var | PtrKind::VarString => unsafe { location.address(AddressKind::Value) },
+            // SAFETY: the location was just found live.
+            PtrKind::VarVariant => unsafe { location.address(AddressKind::Cell) },
+            // SAFETY: the location was just found live.
+            PtrKind::Str => match unsafe { location.address(AddressKind::Bstr) } {
+                Some(address) => Some(address),
+                // VBA converts a non-String operand to a temporary String for the statement.
+                None => {
+                    let Location::Cell(cell) = location else {
+                        // SAFETY: only the active owning entry's error state is updated.
+                        return unsafe { rt_raise_runtime_error_number(state, 13) };
+                    };
+                    // SAFETY: a live engine cell, read before any other access.
+                    let converted = Variant::from_string(arith::as_string(unsafe { &*cell }));
+                    let bstr = converted.raw_bstr_ptr().expose_provenance();
+                    // SAFETY: the active run is unique outside host calls.
+                    if let Some(frame) = unsafe { &mut *run }.frames.last_mut() {
+                        frame.pointer_strings.push(converted);
+                    }
+                    Some(bstr)
+                }
+            },
+            PtrKind::Obj => {
+                // SAFETY: the location was just found live.
+                if let Some(pointer) = unsafe { location.object_pointer() } {
+                    Some(pointer)
+                } else if let Location::Cell(cell) = location {
+                    // SAFETY: a live engine cell, cloned before any other access.
+                    let value = unsafe { (*cell).clone() };
+                    // SAFETY: the active compiled entry retains this state; copy its host
+                    // reference before any COM call.
+                    let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
+                        return ST_FAULT;
+                    };
+                    let host = exec.host;
+                    match calcvba_rt_abi::object_variant_pointer(host, &value) {
+                        Ok(pointer) => Some(pointer as usize),
+                        Err(message) => return raise_plan_error(state, run, message),
+                    }
+                } else {
+                    // SAFETY: only the active owning entry's error state is updated.
+                    return unsafe { rt_raise_runtime_error_number(state, 13) };
+                }
+            }
+        };
+        let Some(address) = address else {
+            // SAFETY: only the active owning entry's error state is updated.
+            return unsafe { rt_raise_runtime_error_number(state, 13) };
         };
         // SAFETY: the active run is unique outside host calls.
         let Some(slot) = slot_mut(unsafe { &mut *run }, dst_area as u32, dst_index as u32) else {
             return ST_FAULT;
         };
-        *slot = Variant::from_i64(pointer);
+        *slot = Variant::from_i64(address as i64);
         ST_OK
     })
 }

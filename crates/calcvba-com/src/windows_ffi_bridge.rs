@@ -497,9 +497,10 @@ pub fn invoke_stdcall(
         // SAFETY: `proc_addr` is an export resolved by get_proc_address from a module
         // an OwnedLibrary or the process cache keeps loaded; libffi builds the Win64 CIF from each argument's
         // actual type, and every pointer-bearing argument (AnsiString/String buffers
-        // borrowed from `args`, Pointer pins per
-        // docs/spec/OXVBA_POINTER_HELPERS_CONTRACT_V1.md) stays alive until this
-        // consuming native call returns. That the Declare signature matches the
+        // borrowed from `args`) stays alive until this consuming native call returns;
+        // `VarPtr`/`StrPtr` addresses point at the guest's own live storage, whose
+        // lifetime is the guest's contract as in VBA
+        // (docs/spec/OXVBA_POINTER_HELPERS_CONTRACT_V1.md). That the Declare signature matches the
         // export's true ABI is the guest's contract, exactly as in VBA 7.1
         // (HAL_DECLARE_ABI_SPEC_V1).
         let result = unsafe { invoke_stdcall_x64(proc_addr, args, return_type) };
@@ -530,8 +531,9 @@ pub fn invoke_stdcall(
         // SAFETY: raw_invoke_shape_error rejected (above) every shape the i64
         // register dispatch cannot express (float lanes, arity > 6); `proc_addr` is
         // an export resolved by get_proc_address from a module load_library keeps
-        // loaded, and all pointer-bearing arguments (string buffers in `args`, helper
-        // pins per docs/spec/OXVBA_POINTER_HELPERS_CONTRACT_V1.md) outlive the call.
+        // loaded, and all pointer-bearing arguments (string buffers in `args`) outlive
+        // the call; `VarPtr`/`StrPtr` addresses are the guest's own live storage
+        // (docs/spec/OXVBA_POINTER_HELPERS_CONTRACT_V1.md).
         // The Declare signature matching the export's true ABI is the guest's
         // contract, exactly as in VBA 7.1 (HAL_DECLARE_ABI_SPEC_V1).
         let result = unsafe { invoke_stdcall_raw(proc_addr, &raw_args, return_type) };
@@ -844,8 +846,9 @@ pub fn invoke_stdcall(
     // SAFETY: raw_invoke_shape_error rejected (above) every shape the i64 register
     // dispatch cannot express (float lanes, arity > 6); `proc_addr` is a symbol
     // resolved by get_proc_address from a handle load_library keeps open, and all
-    // pointer-bearing arguments (string buffers in `args`, helper pins per
-    // docs/spec/OXVBA_POINTER_HELPERS_CONTRACT_V1.md) outlive the call. The Declare
+    // pointer-bearing arguments (string buffers in `args`) outlive the call;
+    // `VarPtr`/`StrPtr` addresses are the guest's own live storage
+    // (docs/spec/OXVBA_POINTER_HELPERS_CONTRACT_V1.md). The Declare
     // signature matching the symbol's true C ABI is the guest's contract, exactly as
     // in VBA 7.1 (HAL_DECLARE_ABI_SPEC_V1).
     let result = unsafe { invoke_c_abi_raw(proc_addr, &raw_args, return_type) };

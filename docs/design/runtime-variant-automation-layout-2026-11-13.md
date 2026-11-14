@@ -462,6 +462,28 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
    to the marshaller rewrite in step 8, which passes `cell.parray` itself.
 7. **Address-of and storage** (section 4), with `VT_BYREF` binding for ByRef Variant
    parameters; the pin registry deleted.
+   *Plan (2026-11-14).* Excel probe `temp/variant-layout-probe/addr7` (x64): the address of a
+   local is stable for the procedure's life, a Static, module or class field for the
+   variable's; a ByRef Long parameter has the caller's `VarPtr`, a ByVal or `(x)` argument a
+   copy's; a ByRef Variant parameter bound to a Long is a `&H4003` cell whose pointer is the
+   Long; `VarPtr(s)` holds `StrPtr(s)`, and a Variant holding a String has that BSTR at +8 (so
+   `StrPtr(v)` is it); `ObjPtr` is the pointer `VarPtr(o)` holds; `ReDim Preserve` keeps the
+   variable's slot and moves the elements; `VarPtr(a(0))` is `pvData`; writes through
+   `CopyMemory` reach locals, Variant payloads and class fields. Three parts:
+   - **7a, real addresses.** One `OxInst::AddrOf { dst, kind, base, path }` (base a place, an
+     object field or a statement temporary holding an r-value; path steps `Index` and
+     `Field`) replaces `OxInst::Ptr`, and one runtime walker computes the address for VM3 and
+     the JIT alike: a Variant's cell, the payload at +8 of a typed scalar, String or object
+     cell, a record's memory, `pvData` + offset for an element (error 9 out of bounds), the
+     field offset inside a record. Storage that can move becomes stable: VM3 temporaries a
+     pre-sized vector, class fields boxed and kept when set to Empty. A `ByVal LongPtr` Declare
+     argument is the integer itself. The pin registry, `ptr_writebacks` and the binder's
+     write-back detection are deleted; procedures that take an address stay off the typed
+     tiers.
+   - **7b, `VT_BYREF` cells.** A typed variable, element or field bound to a ByRef Variant
+     parameter becomes a `VT_BYREF | vt` cell pointing at it, and ByRef parameters bound to
+     elements and fields alias the storage instead of copying in and out.
+   - **7c.** `ReDim` keeps the descriptor (`SafeArrayRedim` in place), as VBA does.
 8. **One COM marshaller** (5.1), replacing stack A with stack B's model; `ComValue` and the
    legacy transports deleted; JIT WithEvents; `VT_UNKNOWN` kept distinct from `VT_DISPATCH`
    (`VarType` reports 13). With it the interpreter lanes can run the OS `Scripting.Dictionary`,

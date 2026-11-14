@@ -26,15 +26,15 @@ pub use array_runtime::{
     array_element_type_for_vartype, default_array_element, redim_safearray_from_elements,
     safearray_vartype_for_element, vba_record_field_kind, vba_record_layout_for_fields,
 };
-pub use isa::{CallArg, DeclarePtrWriteback, NativeCallee, Op, ProcArg};
+pub use isa::{CallArg, NativeCallee, Op, ProcArg};
 pub use native::{LibraryModule, NativeBody, NativeImplId, NativeMethodId, STRCONV_UTF16_BYTES};
 pub use vartype::{BuiltinType, FixedArrayBound, VarTypeRef};
 pub use vba_library::vba_library_bundle;
 
 pub use coreir::{
     CoreArg, CoreBinOp, CoreCallee, CoreClass, CoreClassField, CoreConst, CoreParam, CorePlace,
-    CoreProc, CoreProgram, CoreStmt, CoreUnOp, CoreValue, GlobalId, LabelId, LocalId, ProcId,
-    PtrWritebackKind,
+    CoreProc, CoreProgram, CorePtrOperand, CoreStmt, CoreUnOp, CoreValue, GlobalId, LabelId,
+    LocalId, ProcId,
 };
 
 use calcvba_runtime::DynLinkSymbol;

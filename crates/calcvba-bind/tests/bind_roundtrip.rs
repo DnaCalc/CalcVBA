@@ -5455,9 +5455,17 @@ fn collect_value_callees<'a>(value: &'a CoreValue, out: &mut Vec<&'a CoreCallee>
                 collect_arg_callees(arg, out);
             }
         }
-        CoreValue::TypeOfIs { object, .. } | CoreValue::Ptr { value: object, .. } => {
+        CoreValue::TypeOfIs { object, .. }
+        | CoreValue::Ptr {
+            operand: calcvba_bundle::coreir::CorePtrOperand::Value(object),
+            ..
+        } => {
             collect_value_callees(object, out);
         }
+        CoreValue::Ptr {
+            operand: calcvba_bundle::coreir::CorePtrOperand::Place(_),
+            ..
+        } => {}
         CoreValue::ArrayLiteral { elems, .. } => {
             for elem in elems {
                 collect_value_callees(elem, out);

@@ -437,13 +437,34 @@ pub fn compile_native_scalars(
                         callee: OxNativeCallee::Builtin(_),
                         ..
                     } => {}
-                    OxInst::Ptr { src, kind, .. } => {
-                        if (layout.operand_type(src) == Ok(ScalarType::Array)
-                            && !matches!(kind, calcvba_oxir::PtrKind::Var))
-                            || (!matches!(
-                                kind,
-                                calcvba_oxir::PtrKind::Str | calcvba_oxir::PtrKind::Obj
-                            ) && !matches!(src, OxOperand::Use(_)))
+                    OxInst::AddrOf {
+                        base, path, kind, ..
+                    } => {
+                        let calcvba_oxir::OxAddrBase::Place(place) = base else {
+                            return Err(problem(
+                                func,
+                                "native pointer intrinsic over a class field is not supported",
+                            ));
+                        };
+                        let element =
+                            matches!(path.as_slice(), [calcvba_oxir::OxAddrStep::Index(_)])
+                                && layout.operand_type(&OxOperand::Use(*place))
+                                    == Ok(ScalarType::Array)
+                                && matches!(
+                                    kind,
+                                    calcvba_oxir::PtrKind::Var
+                                        | calcvba_oxir::PtrKind::VarString
+                                        | calcvba_oxir::PtrKind::VarVariant
+                                );
+                        if !path.is_empty() && !element {
+                            return Err(problem(
+                                func,
+                                "native pointer intrinsic over a UDT field or a nested element is not supported",
+                            ));
+                        }
+                        if path.is_empty()
+                            && layout.operand_type(&OxOperand::Use(*place)) == Ok(ScalarType::Array)
+                            && !matches!(kind, calcvba_oxir::PtrKind::Var)
                         {
                             return Err(problem(
                                 func,

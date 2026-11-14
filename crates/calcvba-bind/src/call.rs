@@ -4,8 +4,8 @@
 //! (the `Err` object for now; objects/COM arrive in a later phase).
 
 use calcvba_bundle::coreir::{
-    BoundWhich, CoreArg, CoreCallee, CoreConst, CoreIfArm, CorePlace, CoreStmt, CoreValue,
-    ErrField, PtrKind, PtrWriteback, PtrWritebackKind,
+    BoundWhich, CoreArg, CoreCallee, CoreConst, CoreIfArm, CorePlace, CorePtrOperand, CoreStmt,
+    CoreValue, ErrField, PtrKind,
 };
 use calcvba_bundle::native::NativeImplId;
 use calcvba_bundle::{
@@ -28,7 +28,6 @@ use crate::{Bound, ProcLower};
 
 /// A bound pointer-helper operand: the pin kind, the operand value the VM
 /// pins, and an optional write-back target (source l-value + payload kind).
-type BoundPointerOperand = (PtrKind, CoreValue, Option<(CorePlace, PtrWritebackKind)>);
 
 impl<'a> ProcLower<'a> {
     /// Lower a resolved name + optional argument list to a value (a call, a
@@ -149,19 +148,17 @@ impl<'a> ProcLower<'a> {
                 ))
             }
             DispatchRoute::Declare { descriptor_id } => {
-                // ByRef `Declare` params write back to the caller slot (copy-out); a
-                // `StrPtr(x)`/`VarPtr(x)` pointer argument over an l-value records a
-                // pointer write-back (the pinned buffer → `x` after the call). String
-                // params write back even when `ByVal` (the ANSI-buffer contract).
+                // ByRef `Declare` params write back to the caller slot (copy-out).
+                // String params write back even when `ByVal` (the ANSI-buffer
+                // contract). A `VarPtr(x)` argument is the address of `x` itself, so a
+                // callee writing through it needs no write-back.
                 let by_ref = self.declare_param_by_ref(binding.symbol);
                 let is_string = self.declare_param_is_string(binding.symbol);
-                let (args, ptr_writebacks) =
-                    self.bind_declare_args(arglist, &by_ref, &is_string)?;
+                let args = self.bind_declare_args(arglist, &by_ref, &is_string)?;
                 Ok(value_bound(
                     CoreValue::Call {
                         callee: CoreCallee::Declare {
                             descriptor_id: *descriptor_id,
-                            ptr_writebacks,
                         },
                         args,
                     },
@@ -273,14 +270,10 @@ impl<'a> ProcLower<'a> {
             DispatchRoute::ErrMember(_) => Err(BindError::Unsupported(format!(
                 "`{name}` Err member in value context"
             ))),
-            // The pointer-helper intrinsics yield the address of their operand as a
-            // `LongPtr`. The operand is bound as a **value** (so r-values like
-            // `StrPtr("literal")` work, not just l-values); at run time the VM pins
-            // the value in the pointer registry (`calcvba_runtime::pointer_helpers`) for
-            // the duration of the native call it feeds — see POST_CLEANUP.md for the
-            // lifetime contract. Write-back into an l-value operand is recorded
-            // separately on the `Declare` call (see `bind_args_byref`). `AddressOf` (a
-            // procedure pointer) is a SpecialForm, handled separately in `expr.rs`.
+            // The pointer-helper intrinsics yield the real address of their operand's
+            // storage as a `LongPtr` (or the BSTR / interface pointer it holds). An
+            // r-value operand (`StrPtr("literal")`) lives in a statement temporary.
+            // `AddressOf` (a procedure pointer) is a SpecialForm, handled in `expr.rs`.
             DispatchRoute::Structural(
                 s @ (StructuralIntrinsic::VarPtr
                 | StructuralIntrinsic::StrPtr
@@ -295,12 +288,9 @@ impl<'a> ProcLower<'a> {
                     ArgItem::Positional(e, _) => e,
                     _ => return Err(BindError::Malformed(format!("`{name}` argument"))),
                 };
-                let (kind, value, _writeback) = self.pointer_operand(*s, expr)?;
+                let (kind, operand) = self.pointer_operand(*s, expr)?;
                 Ok(value_bound(
-                    CoreValue::Ptr {
-                        kind,
-                        value: Box::new(value),
-                    },
+                    CoreValue::Ptr { kind, operand },
                     builtin(BuiltinType::LongPtr),
                 ))
             }
@@ -934,24 +924,18 @@ impl<'a> ProcLower<'a> {
         Ok(())
     }
 
-    /// Bind `Declare` arguments (ByRef-aware, like [`Self::bind_arg_byref`]) and
-    /// collect pointer-helper write-backs: a positional `StrPtr(x)` / `VarPtr(x)`
-    /// over a simple-variable l-value records a [`PtrWriteback`] so the VM reads the
-    /// pinned buffer back into `x` after the call (VBA's expression-shape-driven
-    /// write-back). An r-value pointer operand (e.g. `StrPtr("lit")`), a compound
-    /// l-value, or a kind with no buffer projection records no write-back.
+    /// Bind `Declare` arguments, ByRef-aware like [`Self::bind_arg_byref`].
     fn bind_declare_args(
         &mut self,
         arglist: Option<SyntaxNode<'_>>,
         param_by_ref: &[bool],
         param_is_string: &[bool],
-    ) -> Result<(Vec<CoreArg>, Vec<PtrWriteback>), BindError> {
+    ) -> Result<Vec<CoreArg>, BindError> {
         let items = match arglist {
             Some(a) => a.arg_items(),
             None => Vec::new(),
         };
         let mut args = Vec::with_capacity(items.len());
-        let mut writebacks = Vec::new();
         for (i, item) in items.into_iter().enumerate() {
             match item {
                 ArgItem::Omitted => args.push(CoreArg::Omitted),
@@ -966,25 +950,7 @@ impl<'a> ProcLower<'a> {
                         CallSitePassing::ByRef => true,
                         CallSitePassing::Default => param_by_ref.get(i).copied().unwrap_or(false),
                     };
-                    if let Some((intrinsic, operand)) = self.pointer_expression_root(expr) {
-                        let (kind, value, wb) = self.pointer_operand(intrinsic, operand)?;
-                        let value = if self.pointer_call(expr).is_some() {
-                            CoreValue::Ptr {
-                                kind,
-                                value: Box::new(value),
-                            }
-                        } else {
-                            self.bind_expr(expr)?.value
-                        };
-                        args.push(CoreArg::ByVal(value));
-                        if let Some((target, kind)) = wb {
-                            writebacks.push(PtrWriteback {
-                                arg_index: i,
-                                target,
-                                kind,
-                            });
-                        }
-                    } else if !by_ref && param_is_string.get(i).copied().unwrap_or(false) {
+                    if !by_ref && param_is_string.get(i).copied().unwrap_or(false) {
                         // A call-site `ByVal` over a `ByVal As String` param suppresses
                         // the pre-sized-buffer write-back; `Default` keeps it.
                         args.push(self.bind_byval_string_arg(expr, passing)?);
@@ -995,7 +961,7 @@ impl<'a> ProcLower<'a> {
                 }
             }
         }
-        Ok((args, writebacks))
+        Ok(args)
     }
 
     /// Bind a `ByVal … As String` `Declare` argument. VBA converts a `Declare`
@@ -1024,112 +990,25 @@ impl<'a> ProcLower<'a> {
         Ok(CoreArg::ByVal(self.bind_expr(expr)?.value))
     }
 
-    /// If `expr` is a `StrPtr`/`VarPtr`/`ObjPtr` call, return the intrinsic and its
-    /// single operand expression; otherwise `None`.
-    fn pointer_call<'b>(
-        &self,
-        expr: SyntaxNode<'b>,
-    ) -> Option<(StructuralIntrinsic, SyntaxNode<'b>)> {
-        if expr.kind() != SyntaxKind::IndexExpr {
-            return None;
-        }
-        let base = expr.index_base()?;
-        if base.kind() != SyntaxKind::IdentExpr {
-            return None;
-        }
-        let intrinsic = match self.resolve(base.ident_name_token()?.text).map(|b| b.route) {
-            Some(DispatchRoute::Structural(
-                s @ (StructuralIntrinsic::VarPtr
-                | StructuralIntrinsic::StrPtr
-                | StructuralIntrinsic::ObjPtr),
-            )) => s,
-            _ => return None,
-        };
-        match expr.index_arg_list()?.arg_items().into_iter().next()? {
-            ArgItem::Positional(operand, _) => Some((intrinsic, operand)),
-            _ => None,
-        }
-    }
-
-    /// Retain the owner when a native argument addresses a field or element
-    /// inside its pin. Pointer differences are numbers, not writable addresses.
-    fn pointer_expression_root<'b>(
-        &self,
-        expr: SyntaxNode<'b>,
-    ) -> Option<(StructuralIntrinsic, SyntaxNode<'b>)> {
-        if let Some(pointer) = self.pointer_call(expr) {
-            return Some(pointer);
-        }
-        match expr.kind() {
-            SyntaxKind::ParenExpr => self.pointer_expression_root(expr.paren_inner()?),
-            SyntaxKind::BinaryExpr => {
-                let op = expr.binary_op_token()?.kind;
-                if !matches!(op, SyntaxKind::Plus | SyntaxKind::Minus) {
-                    return None;
-                }
-                let left = self.pointer_expression_root(expr.binary_lhs()?);
-                let right = self.pointer_expression_root(expr.binary_rhs()?);
-                match (left, right) {
-                    (Some(root), None) => Some(root),
-                    (None, Some(root)) if op == SyntaxKind::Plus => Some(root),
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    }
-
-    /// Bind a pointer-helper operand: the `PtrKind` + the operand **value** the VM
-    /// pins, plus an optional write-back target (the source l-value + payload kind)
-    /// for use as a `Declare` argument. `VarPtr` of an array element points at the
-    /// whole contiguous array buffer (VBA's `VarPtr(a(0))` idiom); a simple String /
-    /// String-`VarPtr` / array-`VarPtr` l-value writes back; an r-value operand
-    /// (e.g. `StrPtr("lit")`) or a compound target writes back nothing.
+    /// Bind a pointer-helper operand: the `PtrKind` and the storage it addresses. A
+    /// variable, array element (`VarPtr(a(i))` is the element's own address, as in
+    /// VBA), UDT field or class field is addressed in place; anything else is an
+    /// r-value held in a statement temporary.
     fn pointer_operand(
         &mut self,
         intrinsic: StructuralIntrinsic,
         operand: SyntaxNode<'_>,
-    ) -> Result<BoundPointerOperand, BindError> {
-        if let Ok((place, ty)) = self.bind_place(operand) {
-            // `VarPtr(a(i))` → a pointer to the array's contiguous storage (read and
-            // write the whole buffer), keyed off the base array place.
-            if matches!(intrinsic, StructuralIntrinsic::VarPtr)
-                && let CorePlace::Index { array, .. } = &place
-            {
-                let array_place = (**array).clone();
-                let writeback = matches!(array_place, CorePlace::Local(_) | CorePlace::Global(_))
-                    .then(|| (array_place.clone(), PtrWritebackKind::ByteArray));
-                return Ok((PtrKind::Var, CoreValue::Load(array_place), writeback));
-            }
-            let kind = pointer_kind(intrinsic, &ty);
-            // Write-back only into a simple variable (a slot the VM stores into).
-            let writeback = if matches!(place, CorePlace::Local(_) | CorePlace::Global(_)) {
-                match kind {
-                    PtrKind::VarVariant => Some((place.clone(), PtrWritebackKind::Variant)),
-                    PtrKind::Str | PtrKind::VarString => {
-                        Some((place.clone(), PtrWritebackKind::String))
-                    }
-                    PtrKind::Var if matches!(ty, VarTypeRef::Array(_)) => {
-                        Some((place.clone(), PtrWritebackKind::ByteArray))
-                    }
-                    PtrKind::Var if matches!(ty, VarTypeRef::Udt(_)) => {
-                        Some((place.clone(), PtrWritebackKind::Record))
-                    }
-                    PtrKind::Var => scalar_ptr_writeback_kind(self.g.type_ctx, &ty)
-                        .map(|kind| (place.clone(), kind)),
-                    _ => None,
-                }
-            } else {
-                None
-            };
-            // Address the declared variable itself. Coercing this load would
-            // allocate a temporary and make native writes miss the source cell.
-            let value = CoreValue::Load(place);
-            return Ok((kind, value, writeback));
+    ) -> Result<(PtrKind, CorePtrOperand), BindError> {
+        if let Ok((place, ty)) = self.bind_place(operand)
+            && addressable_place(&place)
+        {
+            return Ok((pointer_kind(intrinsic, &ty), CorePtrOperand::Place(place)));
         }
-        // An r-value operand (literal / expression): pin the value, no write-back.
         let operand = self.bind_expr(operand)?;
-        Ok((pointer_kind(intrinsic, &operand.ty), operand.value, None))
+        Ok((
+            pointer_kind(intrinsic, &operand.ty),
+            CorePtrOperand::Value(Box::new(operand.value)),
+        ))
     }
 
     /// Bind one positional cross-bundle extern argument against its published
@@ -3555,7 +3434,7 @@ fn zero_const(ty: &VarTypeRef) -> CoreValue {
 /// The `PtrKind` for a pointer-helper over an operand of static type `ty`. `StrPtr`
 /// and `ObjPtr` are fixed; `VarPtr` distinguishes a String/fixed-string variable
 /// (the BSTR cell) and a Variant variable (the VARIANT cell) from scalar/array
-/// storage. Shared by the value binding (L2) and the Declare write-back detection (L3).
+/// storage.
 fn pointer_kind(intrinsic: StructuralIntrinsic, ty: &VarTypeRef) -> PtrKind {
     match intrinsic {
         StructuralIntrinsic::StrPtr => PtrKind::Str,
@@ -3573,26 +3452,15 @@ fn pointer_kind(intrinsic: StructuralIntrinsic, ty: &VarTypeRef) -> PtrKind {
     }
 }
 
-fn scalar_ptr_writeback_kind(
-    type_ctx: types::TypeContext,
-    ty: &VarTypeRef,
-) -> Option<PtrWritebackKind> {
-    match ty {
-        VarTypeRef::Variant => Some(PtrWritebackKind::Variant),
-        VarTypeRef::Builtin(BuiltinType::Boolean) => Some(PtrWritebackKind::Boolean),
-        VarTypeRef::Builtin(BuiltinType::Byte) => Some(PtrWritebackKind::Byte),
-        VarTypeRef::Builtin(BuiltinType::Integer) => Some(PtrWritebackKind::Integer),
-        VarTypeRef::Builtin(BuiltinType::Long) => Some(PtrWritebackKind::Long),
-        VarTypeRef::Builtin(BuiltinType::LongLong) => Some(PtrWritebackKind::LongLong),
-        VarTypeRef::Builtin(BuiltinType::LongPtr) if !type_ctx.longptr_is_64() => {
-            Some(PtrWritebackKind::Long)
-        }
-        VarTypeRef::Builtin(BuiltinType::LongPtr) => Some(PtrWritebackKind::LongPtr),
-        VarTypeRef::Builtin(BuiltinType::Single) => Some(PtrWritebackKind::Single),
-        VarTypeRef::Builtin(BuiltinType::Double) => Some(PtrWritebackKind::Double),
-        VarTypeRef::Builtin(BuiltinType::Currency) => Some(PtrWritebackKind::Currency),
-        VarTypeRef::Builtin(BuiltinType::Date) => Some(PtrWritebackKind::Date),
-        _ => None,
+/// Whether a pointer helper addresses `place` in place: variables, array elements,
+/// UDT fields and class fields (a default-instance or `WithEvents` slot is read as a
+/// value).
+fn addressable_place(place: &CorePlace) -> bool {
+    match place {
+        CorePlace::Local(_) | CorePlace::Global(_) | CorePlace::Field { .. } => true,
+        CorePlace::Index { array, .. } => addressable_place(array),
+        CorePlace::RecordField { base, .. } => addressable_place(base),
+        _ => false,
     }
 }
 

@@ -1048,6 +1048,17 @@ impl SafeArray {
         Ok(array)
     }
 
+    /// The address of element `flat` (storage order), or `None` past the end or without a
+    /// payload.
+    pub fn element_address(&self, flat: usize) -> Option<*mut u8> {
+        let data = self.data();
+        if data.is_null() || flat >= self.len() {
+            return None;
+        }
+        // SAFETY: `flat < len`, so the offset lies inside the `len * cbElements` payload.
+        Some(unsafe { data.add(flat * element_size_of(self)) })
+    }
+
     fn data(&self) -> *mut u8 {
         // SAFETY: `self.header` is this value's live descriptor.
         unsafe { (*self.header.as_ptr()).pv_data.cast::<u8>() }

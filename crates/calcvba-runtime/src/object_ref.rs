@@ -650,7 +650,9 @@ struct CompatObjectBase {
     object_owner: crate::object_owner::WeakObjectOwner,
     project_instance: bool,
     class_descriptor: &'static RuntimeClassDescriptor,
-    fields: RefCell<BTreeMap<i32, Variant>>,
+    // Each field is boxed and kept once created, so its cell has a stable address for
+    // `VarPtr` (as a VBA instance's fields live in its memory until it is freed).
+    fields: RefCell<BTreeMap<i32, Box<Variant>>>,
     /// Built-in native-object state carried on the box itself (currently a `VBA.Collection`'s
     /// contents). Lazily created on first use via [`ObjectRef::with_native_collection`]; freed
     /// with the box, so there is no VM-side store and no leak. `None` for ordinary project
@@ -922,14 +924,12 @@ fn compat_field_get(owner: *mut CompatObjectBase, token: i32) -> Option<Variant>
     // `is_project_instance()` (a vtbl-identity check), so `owner` is a live `CompatObjectBase`
     // kept alive by that caller's retained `ObjectRef` for the duration of the borrow.
     unsafe {
-        (*owner).fields.borrow().get(&token).cloned().or_else(|| {
-            (*owner)
-                .class_descriptor
-                .fields
-                .iter()
-                .find(|field| field.token == token && field.value_type == RuntimeValueType::Object)
-                .map(|_| Variant::nothing())
-        })
+        (*owner)
+            .fields
+            .borrow()
+            .get(&token)
+            .map(|cell| (**cell).clone())
+            .or_else(|| compat_field_default(owner, token))
     }
 }
 
@@ -938,11 +938,31 @@ fn compat_field_set(owner: *mut CompatObjectBase, token: i32, value: Variant) {
     // verified via `is_project_instance()` that `owner` is a live `CompatObjectBase` kept
     // alive by the caller's retained `ObjectRef`.
     unsafe {
-        if matches!(value.vtype(), crate::VarType::Empty) {
-            (*owner).fields.borrow_mut().remove(&token);
-        } else {
-            (*owner).fields.borrow_mut().insert(token, value);
+        let mut fields = (*owner).fields.borrow_mut();
+        match fields.get_mut(&token) {
+            // Replace in place: the cell keeps its address.
+            Some(cell) => **cell = value,
+            None if matches!(value.vtype(), crate::VarType::Empty) => {}
+            None => {
+                fields.insert(token, Box::new(value));
+            }
         }
+    }
+}
+
+/// The value an absent field reads as: `Nothing` for an object field, else Empty.
+///
+/// # Safety
+/// `owner` is a live `CompatObjectBase`.
+unsafe fn compat_field_default(owner: *mut CompatObjectBase, token: i32) -> Option<Variant> {
+    // SAFETY: forwarded from the caller.
+    unsafe {
+        (*owner)
+            .class_descriptor
+            .fields
+            .iter()
+            .find(|field| field.token == token && field.value_type == RuntimeValueType::Object)
+            .map(|_| Variant::nothing())
     }
 }
 
@@ -1227,7 +1247,7 @@ impl ObjectRef {
         // `RefCell` borrow is single-threaded (`ObjectRef` is neither `Send` nor `Sync`).
         unsafe {
             let guard = (*owner).fields.borrow();
-            Some(f(guard.get(&token)))
+            Some(f(guard.get(&token).map(|cell| &**cell)))
         }
     }
 
@@ -1246,7 +1266,31 @@ impl ObjectRef {
         let owner = compat_owner_from_unknown(self.0.as_ptr());
         // SAFETY: as in `with_project_field` â€” `owner` is a live `CompatObjectBase` held
         // alive by this `ObjectRef`; the exclusive `RefCell` borrow is single-threaded.
-        unsafe { (*owner).fields.borrow_mut().get_mut(&token).map(f) }
+        unsafe {
+            (*owner)
+                .fields
+                .borrow_mut()
+                .get_mut(&token)
+                .map(|cell| f(cell))
+        }
+    }
+
+    /// The cell of instance field `token`, created (Empty, or Nothing for an object field)
+    /// if absent: its address is stable until the instance releases its fields. `None` if
+    /// this is not a project instance.
+    pub fn project_field_cell(&self, token: i32) -> Option<*mut Variant> {
+        if !self.is_project_instance() {
+            return None;
+        }
+        let owner = compat_owner_from_unknown(self.0.as_ptr());
+        // SAFETY: as in `with_project_field_mut`; the returned pointer addresses the boxed
+        // cell, not the map, so later inserts do not move it.
+        unsafe {
+            let default = compat_field_default(owner, token).unwrap_or_else(Variant::empty);
+            let mut fields = (*owner).fields.borrow_mut();
+            let cell = fields.entry(token).or_insert_with(|| Box::new(default));
+            Some(&mut **cell as *mut Variant)
+        }
     }
 
     /// Run `f` against this instance's built-in native-`Collection` state, lazily creating an

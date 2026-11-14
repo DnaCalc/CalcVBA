@@ -1170,13 +1170,9 @@ fn marshal_variant_to_ffi_unix(
             let f = value.as_f64().unwrap_or_else(|| variant_f64(value)) as f32;
             FfiArg::Single(f)
         }
+        // A pointer (`VarPtr(x)`, `StrPtr(s)`) is the address itself.
         "LongLong" | "LongPtr" => {
-            let v = value.as_i64().unwrap_or_else(|| variant_i64(value));
-            if let Some(pointer) = calcvba_runtime::pointer_helpers::lookup_pointer(v) {
-                FfiArg::Pointer(pointer)
-            } else {
-                FfiArg::LongLong(v)
-            }
+            FfiArg::LongLong(value.as_i64().unwrap_or_else(|| variant_i64(value)))
         }
         "String" => {
             let text = value
@@ -1237,14 +1233,10 @@ fn marshal_variant_to_ffi(
         "Single" => Ok(FfiArg::Single(
             value.as_f64().unwrap_or_else(|| variant_f64(value)) as f32,
         )),
-        "LongLong" | "LongPtr" => {
-            let v = value.as_i64().unwrap_or_else(|| variant_i64(value));
-            if let Some(pointer) = calcvba_runtime::pointer_helpers::lookup_pointer(v) {
-                Ok(FfiArg::Pointer(pointer))
-            } else {
-                Ok(FfiArg::LongLong(v))
-            }
-        }
+        // A pointer (`VarPtr(x)`, `StrPtr(s)`) is the address itself.
+        "LongLong" | "LongPtr" => Ok(FfiArg::LongLong(
+            value.as_i64().unwrap_or_else(|| variant_i64(value)),
+        )),
         "String" => {
             // VBA marshals every `Declare` String argument as system-codepage
             // ANSI — never wide, regardless of the export's A/W name — and

@@ -29,8 +29,8 @@ use crate::com::ComMethodRef;
 use crate::ids::{BlockId, FuncId, ImportId};
 use crate::ty::{ClassId, OxTy};
 use crate::value::{
-    ArithOp, BoundWhich, CmpOp, ErrField, LogicalOp, OxArg, OxCallArg, OxCoerceTarget,
-    OxNativeCallee, OxOperand, OxPlace, PtrKind,
+    ArithOp, BoundWhich, CmpOp, ErrField, LogicalOp, OxAddrBase, OxAddrStep, OxArg, OxCallArg,
+    OxCoerceTarget, OxNativeCallee, OxOperand, OxPlace, PtrKind,
 };
 
 /// Auto-instantiation target for a VBA `As New` slot.
@@ -457,10 +457,15 @@ pub enum OxInst {
     },
 
     // ── Pointer helpers / Err fields ─────────────────────────────────────────
-    Ptr {
+    /// `dst :=` the real address of the storage `base` + `path` names (`VarPtr`), the
+    /// BSTR it holds (`StrPtr`) or the interface pointer (`ObjPtr`), as VBA gives them: a
+    /// Variant's cell, the payload of a typed cell, an element at `pvData` + offset, a
+    /// field inside a record. An r-value operand is a statement temporary.
+    AddrOf {
         dst: OxPlace,
         kind: PtrKind,
-        src: OxOperand,
+        base: OxAddrBase,
+        path: Vec<OxAddrStep>,
     },
     ErrFieldGet {
         dst: OxPlace,
@@ -548,7 +553,7 @@ impl OxInst {
             | OxInst::VariantChanged { .. }
             | OxInst::CompareObjectIs { .. }
             | OxInst::TypeOfIs { .. }
-            | OxInst::Ptr { .. }
+            | OxInst::AddrOf { .. }
             | OxInst::AddRef { .. } => true,
 
             // `Unbox` is fallible only when it re-checks the tag.

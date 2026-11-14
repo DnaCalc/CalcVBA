@@ -586,6 +586,48 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
      DISPIDs; the handler runs inside the source's `Invoke` with ByRef parameters as views on
      `rgvarg`; the JIT subscribes like VM3. The projection side channel that synthesises
      events from invoke arguments goes.
+     *Event design (2026-11-15).* Excel x64 (probe `temp/variant-layout-probe/events8`,
+     `WithEvents App As Application`; the harness runs with `EnableEvents` off, so the probe
+     turns it on) gives:
+     - The handler runs inside the call that fires the event, before it returns
+       (`before[new True]after`).
+     - A ByVal object argument is the same object the call returns (`Is` is True).
+     - A ByRef argument is the server's storage: `Cancel` arrives False, and `Cancel = True`
+       keeps the workbook open.
+     - An event fired inside a handler runs nested, at once
+       (`[change A1 d=1[change B1 d=2 end B1] end A1]`).
+     - `Set App = Nothing` stops delivery.
+     - An unhandled error in a handler is a top-level run-time error: the error dialog shows and
+       the whole macro ends; the `On Error Resume Next` around the call that fired the event never
+       sees it.
+
+     The design follows from that:
+     - *One sink per WithEvents variable.* `WithEventsSet` with a COM source advises one sink
+       object (`IUnknown`, `IDispatch` and the source interface from the declared type's type
+       library, `EventRoute::native`) on that connection point. The sink covers every DISPID of
+       the interface; an event without a handler returns `S_OK`. The sink holds only its
+       subscription key, never the owner, so there is no reference cycle.
+       `Set x = Nothing`, rebinding, or the owner's release unadvises it (dropping the connection
+       calls `Unadvise`).
+     - *Synchronous delivery through the running VM.* Events reach VBA only while it is inside a
+       host call (a COM call, a Declare, `DoEvents`, an activation), as in VBA, where they come
+       from the call or its message loop. Around each such call VM3 and the JIT register
+       themselves as the thread's event executor (`calcvba_runtime::events`), with the pointer
+       taken from `&mut self` right before the call, the contract `AddressOf` callbacks already
+       use. The sink's `Invoke` asks the executor to run the handler, so nested events re-enter
+       the same way. With no executor (the run is over), an event is not delivered.
+     - *Arguments as VBA builds them.* `rgvarg` is taken in source order. For a ByRef handler
+       parameter, a `VT_BYREF` argument is passed as the reference (the step 7 cells), so writes
+       reach the server. A by-value argument to a ByRef parameter gets a local copy. ByVal
+       parameters get copies (`VariantCopyInd`). Coercion to the declared types is the ordinary
+       call path's.
+     - *Unhandled handler errors end the run.* The executor records the fault as an abort that
+       no `On Error` handler can catch, and the run ends with it once the host call returns. The
+       sink returns `DISP_E_EXCEPTION` with the error's number, description and source.
+     - *One implementation.* The sink and connection live in `calcvba_com::automation`, behind
+       `ComHal::advise_events`. VM3 and the JIT both implement the executor. The queued path is
+       removed (HAL `subscribe_event`/`poll_event_callback`, VM3's statement-boundary pump, stack
+       A's per-DISPID sinks, and the projection side channel).
    - **8d, `ComValue` out of the client.** The remaining users of `ComValue` (comhost,
      `dynlink`, the native template, connection points) move in steps 9 and 10, where they are
      rewritten anyway; `ComValue` is deleted at the end of step 10.

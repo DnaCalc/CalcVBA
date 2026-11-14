@@ -1470,6 +1470,42 @@ impl SafeArray {
         Ok(true)
     }
 
+    /// Exchanges this array's bounds and storage with `other`'s, keeping both descriptors where
+    /// they are: how `ReDim` and `ReDim Preserve` keep an array's descriptor (VBA's
+    /// `SafeArrayRedim`; Excel: `ArrPtr` slot and `SAFEARRAY*` unchanged, `pvData` new). `false`,
+    /// with nothing changed, unless both have the same rank and element layout.
+    pub fn swap_storage(&mut self, other: &mut SafeArray) -> bool {
+        let same_record = match (&self.record, &other.record) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b) || **a == **b,
+            _ => false,
+        };
+        if !same_record
+            || self.dimensions() != other.dimensions()
+            || self.element_vartype() != other.element_vartype()
+            || element_size_of(self) != element_size_of(other)
+        {
+            return false;
+        }
+        let (a, b) = (self.header.as_ptr(), other.header.as_ptr());
+        let dimensions = usize::from(self.dimensions());
+        // SAFETY: `&mut` access to both owned descriptors, which are distinct allocations with
+        // `dimensions` bounds each; swapping `pvData` and the bounds moves each payload, with the
+        // bounds that size it, to the other owner.
+        unsafe {
+            core::ptr::swap(
+                core::ptr::addr_of_mut!((*a).pv_data),
+                core::ptr::addr_of_mut!((*b).pv_data),
+            );
+            core::ptr::swap_nonoverlapping(
+                core::ptr::addr_of_mut!((*a).rgsabound).cast::<SafeArrayBound>(),
+                core::ptr::addr_of_mut!((*b).rgsabound).cast::<SafeArrayBound>(),
+                dimensions,
+            );
+        }
+        true
+    }
+
     pub fn raw_safearray_ptr(&self) -> *mut core::ffi::c_void {
         self.header.as_ptr().cast()
     }

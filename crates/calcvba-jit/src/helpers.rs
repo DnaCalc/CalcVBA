@@ -6498,7 +6498,7 @@ pub(crate) unsafe extern "C" fn rt_jit_array_redim_to_slot(
         let element = match calcvba_bundle::array_runtime::resolve_redim_element(
             current,
             declared,
-            inherit_current != 0,
+            inherit_current & 1 != 0,
             preserve != 0,
         ) {
             Ok(element) => element,
@@ -6577,6 +6577,24 @@ pub(crate) unsafe extern "C" fn rt_jit_array_redim_to_slot(
         let run = unsafe { &mut *run };
         let Some(slot) = slot_mut(run, dst_area, dst_index) else {
             return ST_FAULT;
+        };
+        if slot.holds_locked_array() {
+            // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
+            return unsafe { rt_raise_fixed_or_temporarily_locked_array(state) };
+        }
+        // An array variable, or `Preserve`, keeps its descriptor (VBA's `SafeArrayRedim`); a
+        // plain `ReDim` of a Variant gets a new one (Excel, probe redim7c). VM3's
+        // `store_redimmed` does the same.
+        let array = if preserve != 0 || inherit_current & 2 == 0 {
+            match slot.redim_in_place(array) {
+                Ok(old) => {
+                    drop(old);
+                    return ST_OK;
+                }
+                Err(array) => array,
+            }
+        } else {
+            array
         };
         let status = store_slot(state, slot, Variant::from_safearray(array));
         if status != ST_OK {

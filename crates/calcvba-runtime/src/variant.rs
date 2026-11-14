@@ -1451,6 +1451,27 @@ impl Variant {
         }
     }
 
+    /// `ReDim` into this cell as VBA does it (`SafeArrayRedim`): when the cell holds, or refers
+    /// to, an allocated array of `array`'s rank and element layout, `array`'s bounds and storage
+    /// move into that descriptor, which keeps its address, and the old storage comes back to be
+    /// dropped. `Err(array)` when there is no such descriptor (unallocated, another rank or
+    /// element type): the caller stores `array` as a new value. The caller checks locks first.
+    pub fn redim_in_place(&mut self, mut array: SafeArray) -> Result<SafeArray, SafeArray> {
+        let Some(raw) = self.array_descriptor() else {
+            return Err(array);
+        };
+        // SAFETY: an array cell (or the slot a reference targets) owns its descriptor or null;
+        // `&mut self` gives exclusive access while the storage is exchanged.
+        let Some(mut current) = (unsafe { SafeArray::borrow_raw(raw, array.vba_record_layout()) })
+        else {
+            return Err(array);
+        };
+        if current.bounds().is_none() || !current.swap_storage(&mut array) {
+            return Err(array);
+        }
+        Ok(array)
+    }
+
     /// Whether this holds, or refers to, an array that is locked (an element of it is out as a
     /// ByRef argument): replacing it raises error 10 in VBA.
     pub fn holds_locked_array(&self) -> bool {

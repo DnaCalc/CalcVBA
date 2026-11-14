@@ -4778,9 +4778,12 @@ impl<'a> LowerFunc<'a> {
         let preserve = builder
             .ins()
             .iconst(types::I32, if preserve { 1 } else { 0 });
+        // Bit 0: inherit the current element type; bit 1: the target is a Variant (a plain
+        // `ReDim` of a Variant gets a new descriptor).
         let inherit_current = builder.ins().iconst(
             types::I32,
-            i64::from(!explicit_element && matches!(dst_ty, OxTy::Variant)),
+            i64::from(!explicit_element && matches!(dst_ty, OxTy::Variant))
+                | (i64::from(matches!(dst_ty, OxTy::Variant)) << 1),
         );
         let element_ptr = self.emit_array_element_metadata_ptr(builder, module, element)?;
         let callee = self.import(builder, module, self.imports.array_redim_slot);

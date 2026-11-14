@@ -537,6 +537,16 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
    (engine test `byref_array_locks`) match on both backends. The source-module host
    (`calcvba-host`), whose typed-stack interpreter has no reference cells either, elaborates
    with `byref_references: false` like native builds until step 10.
+   *As built 2026-11-14 (7c2).* `SafeArray::swap_storage` exchanges bounds and `pvData` between
+   two descriptors of the same rank and element layout, and `Variant::redim_in_place` uses it so
+   a `ReDim` result moves into the array the place holds or refers to (VM3 `store_redimmed`, the
+   JIT's redim helper); a rank change, an unallocated array, or a plain `ReDim` of a Variant
+   stores a new array. A `Variant()` array passed to a ByRef Variant parameter is now a
+   `VT_BYREF | VT_ARRAY | VT_VARIANT` reference like other typed arrays (Excel: `VarPtr` of the
+   parameter + 8 is `ArrPtr`); UDT arrays are still passed as the cell. Excel probe
+   `temp/variant-layout-probe/redim7c/SlotProbe.bas` (engine test `redim_keeps_descriptor`,
+   Windows) matches on both backends; it finds the slot through that reference because VBE7's
+   `VarPtr` loads only inside Office (supplying it is step 9).
 8. **One COM marshaller** (5.1), replacing stack A with stack B's model; `ComValue` and the
    legacy transports deleted; JIT WithEvents; `VT_UNKNOWN` kept distinct from `VT_DISPATCH`
    (`VarType` reports 13). With it the interpreter lanes can run the OS `Scripting.Dictionary`,

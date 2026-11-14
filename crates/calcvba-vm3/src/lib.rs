@@ -3370,6 +3370,9 @@ impl<'h> Vm3<'h> {
             OxPlace::Global(id) => &program.globals[id.0].ty,
         };
         let inherit_current = !explicit_element && matches!(ty, OxTy::Variant);
+        // A plain `ReDim` of a Variant gets a new descriptor; an array variable, or `Preserve`,
+        // keeps it (Excel, probe redim7c).
+        let keep_descriptor = preserve || !matches!(ty, OxTy::Variant);
         let selected = calcvba_bundle::array_runtime::resolve_redim_element(
             &self.read(dst)?,
             element,
@@ -3413,8 +3416,7 @@ impl<'h> Vm3<'h> {
             )
             .map(|array| array.with_fixed_size(fixed))
             .map_err(|_| Vm3Error::Fault(Fault::new(7, "array allocation failed")))?;
-            self.store(dst, Variant::from_safearray(array))?;
-            return Ok(());
+            return self.store_redimmed(dst, array, keep_descriptor);
         }
         let elems: Vec<Variant> = if preserve {
             let cur = self.read(dst)?;
@@ -3458,8 +3460,51 @@ impl<'h> Vm3<'h> {
         };
         let array = redim_safearray_from_elements(bounds, element, elems, fixed)
             .map_err(|e| Vm3Error::Fault(Fault::new(13, e)))?;
-        self.store(dst, Variant::from_safearray(array))?;
-        Ok(())
+        self.store_redimmed(dst, array, keep_descriptor)
+    }
+
+    /// Store a `ReDim` result. With `keep_descriptor` the new storage moves into the array the
+    /// place already holds (or refers to), so its `SAFEARRAY*` stays where it is, as VBA's
+    /// `SafeArrayRedim`; otherwise, or when there is no matching descriptor, the place gets a
+    /// new array value.
+    fn store_redimmed(
+        &mut self,
+        dst: &OxPlace,
+        array: SafeArray,
+        keep_descriptor: bool,
+    ) -> Result<(), Vm3Error> {
+        let loc = self.resolve(dst);
+        let locked = |number: i32| {
+            Vm3Error::Fault(Fault::new(
+                number,
+                calcvba_rt_abi::default_error_message(number),
+            ))
+        };
+        if self
+            .for_each
+            .values()
+            .any(|iterator| iterator.array_source == Some(loc))
+            || self
+                .read_loc_ref(loc)?
+                .is_some_and(Variant::holds_locked_array)
+        {
+            return Err(locked(10));
+        }
+        let array = if keep_descriptor {
+            match self.read_loc_mut(loc)? {
+                Some(cell) => match cell.redim_in_place(array) {
+                    Ok(old) => {
+                        drop(old);
+                        return Ok(());
+                    }
+                    Err(array) => array,
+                },
+                None => array,
+            }
+        } else {
+            array
+        };
+        self.store(dst, Variant::from_safearray(array))
     }
 
     fn element_supports_zeroed_redim(element: &ArrayElementType) -> bool {

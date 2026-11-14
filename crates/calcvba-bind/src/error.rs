@@ -44,6 +44,13 @@ pub enum BindError {
     /// VBA's generic compile-time type mismatch diagnostic.
     #[error("Type mismatch")]
     TypeMismatch,
+    /// A project `Type` value converted to or from a Variant, or passed where a Variant or a
+    /// late-bound argument is expected. VBA keeps no `IRecordInfo` for a project's own Types, so
+    /// it refuses every such conversion at compile time.
+    #[error(
+        "Only user-defined types defined in public object modules can be coerced to or from a variant or passed to late-bound functions"
+    )]
+    UdtVariantCoercion,
     /// VBA's compile diagnostic for non-Variant/non-Object `For Each` loop variables.
     #[error("For Each control variable must be Variant or Object")]
     ForEachControlVariableMustBeVariantOrObject,
@@ -169,6 +176,14 @@ impl BindError {
                 "Type mismatch",
             )
             .with_help("Use compatible declared types for this statement."),
+            BindError::UdtVariantCoercion => Diagnostic::error(
+                "BIND-E-UDT-VARIANT-COERCION",
+                DiagnosticPhase::Bind,
+                "Only user-defined types defined in public object modules can be coerced to or from a variant or passed to late-bound functions",
+            )
+            .with_help(
+                "Pass or assign the UDT to a variable or parameter of the same Type, or copy its fields.",
+            ),
             BindError::ForEachControlVariableMustBeVariantOrObject => Diagnostic::error(
                 "BIND-E-FOREACH-CONTROL-VARIABLE-MUST-BE-VARIANT-OR-OBJECT",
                 DiagnosticPhase::Bind,

@@ -5754,6 +5754,85 @@ fn file_io_lowers_to_vba_filesystem_externs() {
     );
 }
 
+/// Excel 2026-11-14 (temp/variant-layout-probe/udtvar): a project `Type` never converts to or
+/// from a Variant. Every form below is the same compile error in Office VBA, except an operator
+/// on a UDT value, which is a compile-time Type mismatch, and a UDT-to-UDT copy and `Len`.
+#[test]
+fn project_udt_never_converts_to_or_from_variant() {
+    const COERCION: &str = "Only user-defined types defined in public object modules can be coerced to or from a variant or passed to late-bound functions";
+    let cases: &[(&str, &str, &str)] = &[
+        ("assign_to_variant", "", "v = t"),
+        ("assign_from_variant", "", "t = v"),
+        (
+            "byval_variant_param",
+            "Private Sub PV(ByVal x As Variant)\nEnd Sub\n",
+            "PV t",
+        ),
+        (
+            "byref_variant_param",
+            "Private Sub PR(x As Variant)\nEnd Sub\n",
+            "PR t",
+        ),
+        (
+            "optional_variant_param",
+            "Private Sub PO(Optional x As Variant)\nEnd Sub\n",
+            "PO t",
+        ),
+        (
+            "paramarray_param",
+            "Private Sub PA(ParamArray x() As Variant)\nEnd Sub\n",
+            "PA t",
+        ),
+        (
+            "late_bound_arg",
+            "",
+            "Dim o As Object\n    Set o = New Collection\n    o.Add t",
+        ),
+        ("collection_add", "", "Dim c As New Collection\n    c.Add t"),
+        ("array_function", "", "v = Array(t)"),
+        (
+            "variant_return",
+            "Private Function FV() As Variant\n    Dim u As TPub\n    FV = u\nEnd Function\n",
+            "v = FV()",
+        ),
+        (
+            "variant_array_element",
+            "",
+            "Dim a(1) As Variant\n    a(0) = t",
+        ),
+        ("typename", "", "Debug.Print TypeName(t)"),
+        ("vartype", "", "Debug.Print VarType(t)"),
+        ("isempty", "", "Debug.Print IsEmpty(t)"),
+        ("private_type", "", "v = p"),
+    ];
+    let source = |helpers: &str, body: &str| {
+        format!(
+            "Public Type TPub\n    n As Long\nEnd Type\nPrivate Type TPriv\n    n As Long\nEnd Type\n{helpers}\nSub Main()\n    Dim t As TPub, p As TPriv, v As Variant\n    {body}\nEnd Sub\n"
+        )
+    };
+    for (id, helpers, body) in cases {
+        let err = bind_program(&manifest(&source(helpers, body)), &NullTypeLibs).expect_err(id);
+        assert!(
+            err.to_string().contains(COERCION),
+            "{id}: unexpected error: {err}"
+        );
+    }
+    let err = bind_program(
+        &manifest(&source("", "Debug.Print \"x\" & t")),
+        &NullTypeLibs,
+    )
+    .expect_err("concat");
+    assert_eq!(err.to_string(), "Type mismatch", "concat");
+    bind_program(
+        &manifest(&source(
+            "",
+            "Dim u As TPub\n    t.n = 4\n    u = t\n    Debug.Print u.n, Len(u), LenB(u)",
+        )),
+        &NullTypeLibs,
+    )
+    .expect("a UDT copy and Len/LenB bind");
+}
+
 #[test]
 fn for_each_over_fixed_length_string_array_is_rejected() {
     let fixed_dim = "Sub Main()\n    Dim a(1 To 2) As String * 4\n    Dim item As Variant\n    For Each item In a\n    Next item\nEnd Sub\n";

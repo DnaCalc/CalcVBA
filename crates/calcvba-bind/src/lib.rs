@@ -1000,6 +1000,11 @@ impl Lower<'_> {
     /// A declared type name may be a class, a `Type` (UDT), or an `Enum`; the
     /// parser/scanner initially carries all user-defined names as `Object(name)`.
     /// Normalize the value-type cases wherever the binder reads a declared type.
+    /// Is `ty` one of the project's own `Type`s?
+    fn is_project_udt(&self, ty: &VarTypeRef) -> bool {
+        matches!(self.resolve_udt_type(ty.clone()), VarTypeRef::Udt(_))
+    }
+
     fn resolve_udt_type(&self, ty: VarTypeRef) -> VarTypeRef {
         match ty {
             VarTypeRef::Object(name) if self.env.is_udt(&name) => VarTypeRef::Udt(name),

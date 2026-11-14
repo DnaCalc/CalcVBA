@@ -106,14 +106,29 @@ impl<'a> ProcLower<'a> {
                         kind: *kind,
                     },
                 });
-                let mut args = self.bind_extern_proc_args(
-                    arglist,
-                    param_types,
-                    param_names,
-                    param_optional,
-                    param_optional_defaults,
-                    *variadic,
-                )?;
+                // VBA's `Len`/`LenB` take a UDT (its length); every other library argument is
+                // a Variant or a scalar.
+                let udt_ok = unit.eq_ignore_ascii_case("VBA")
+                    && (member.eq_ignore_ascii_case("Len") || member.eq_ignore_ascii_case("LenB"));
+                let single = arglist
+                    .map(|a| a.arg_items())
+                    .and_then(|items| match items[..] {
+                        [ArgItem::Positional(expr, passing)] => Some((expr, passing)),
+                        _ => None,
+                    });
+                let mut args = match single {
+                    Some((expr, passing)) if udt_ok => {
+                        vec![self.bind_extern_one_with(expr, param_types.first(), passing, true)?]
+                    }
+                    _ => self.bind_extern_proc_args(
+                        arglist,
+                        param_types,
+                        param_names,
+                        param_optional,
+                        param_optional_defaults,
+                        *variadic,
+                    )?,
+                };
                 self.inject_option_compare(member, &mut args);
                 Ok(value_bound(
                     CoreValue::Call {
@@ -163,10 +178,17 @@ impl<'a> ProcLower<'a> {
                 ))
             }
             DispatchRoute::SpecialForm(SpecialForm::Array) => {
-                let items = match arglist {
-                    Some(a) => self.bind_positional_values(a)?,
-                    None => Vec::new(),
-                };
+                // `Array(t)`: each element is a Variant, so a project UDT is refused.
+                let mut items = Vec::new();
+                for item in arglist.map(|a| a.arg_items()).unwrap_or_default() {
+                    let (ArgItem::Positional(expr, _) | ArgItem::Named { value: expr, .. }) = item
+                    else {
+                        return Err(BindError::Malformed("omitted index/element".into()));
+                    };
+                    let bound = self.bind_expr(expr)?;
+                    self.reject_udt_variant_arg(None, &bound.ty, false)?;
+                    items.push(bound.value);
+                }
                 Ok(value_bound(
                     CoreValue::ArrayLiteral {
                         elems: items,
@@ -333,8 +355,9 @@ impl<'a> ProcLower<'a> {
         arglist: Option<SyntaxNode<'_>>,
     ) -> Result<Vec<CoreArg>, BindError> {
         let entry = calcvba_symbol::catalog::intrinsic_entry(id);
+        let udt_ok = matches!(id, NativeImplId::Len | NativeImplId::LenB);
         if entry.param_names.is_empty() {
-            return self.bind_args(arglist, None);
+            return self.bind_args_with(arglist, None, udt_ok);
         }
         let items = match arglist {
             Some(a) => a.arg_items(),
@@ -365,7 +388,7 @@ impl<'a> ProcLower<'a> {
                             "positional argument cannot follow named argument".into(),
                         ));
                     }
-                    let arg = self.bind_one_arg(expr, None, passing)?;
+                    let arg = self.bind_one_arg_with(expr, None, passing, udt_ok)?;
                     if pos < slots.len() {
                         slots[pos] = Some(arg);
                     } else {
@@ -490,6 +513,51 @@ impl<'a> ProcLower<'a> {
         param: Option<&Param>,
         passing: CallSitePassing,
     ) -> Result<CoreArg, BindError> {
+        self.bind_one_arg_with(expr, param, passing, false)
+    }
+
+    /// VBA refuses a project UDT where a Variant is expected: a Variant parameter, a
+    /// ParamArray, an intrinsic's argument, or a call without a static signature.
+    fn reject_udt_variant_arg(
+        &self,
+        param: Option<&Param>,
+        actual: &VarTypeRef,
+        udt_ok: bool,
+    ) -> Result<(), BindError> {
+        if udt_ok || !self.g.is_project_udt(actual) {
+            return Ok(());
+        }
+        let expects_variant = param
+            .is_none_or(|p| matches!(self.g.resolve_udt_type(p.ty.clone()), VarTypeRef::Variant));
+        if expects_variant {
+            return Err(BindError::UdtVariantCoercion);
+        }
+        Ok(())
+    }
+
+    /// `v = t` and `t = v`: a project UDT never converts to or from a Variant.
+    pub(crate) fn reject_udt_variant_assignment(
+        &self,
+        target: &VarTypeRef,
+        value: &VarTypeRef,
+    ) -> Result<(), BindError> {
+        let target_udt = self.g.is_project_udt(target);
+        let value_udt = self.g.is_project_udt(value);
+        if (target_udt && matches!(value, VarTypeRef::Variant))
+            || (value_udt && matches!(target, VarTypeRef::Variant))
+        {
+            return Err(BindError::UdtVariantCoercion);
+        }
+        Ok(())
+    }
+
+    fn bind_one_arg_with(
+        &mut self,
+        expr: SyntaxNode<'_>,
+        param: Option<&Param>,
+        passing: CallSitePassing,
+        udt_ok: bool,
+    ) -> Result<CoreArg, BindError> {
         // A call-site `ByVal`/`ByRef` overrides the callee's declared direction;
         // otherwise the declared direction (default ByRef) stands.
         let by_ref = match passing {
@@ -507,12 +575,14 @@ impl<'a> ProcLower<'a> {
             && let Ok((place, place_ty)) = self.bind_place(expr)
             && !self.byref_variant_takes_temporary(param, &place_ty)
         {
+            self.reject_udt_variant_arg(param, &place_ty, udt_ok)?;
             if let Some(param) = param {
                 self.ensure_byref_type_compatible(&param.ty, &place_ty)?;
             }
             return Ok(CoreArg::ByRef(place));
         }
         let mut bound = self.bind_expr(expr)?;
+        self.reject_udt_variant_arg(param, &bound.ty, udt_ok)?;
         if param.is_some_and(|param| {
             matches!(
                 param.ty,
@@ -1072,21 +1142,43 @@ impl<'a> ProcLower<'a> {
         param: Option<&TypeLibParamType>,
         passing: CallSitePassing,
     ) -> Result<CoreArg, BindError> {
+        self.bind_extern_one_with(expr, param, passing, false)
+    }
+
+    fn bind_extern_one_with(
+        &mut self,
+        expr: SyntaxNode<'_>,
+        param: Option<&TypeLibParamType>,
+        passing: CallSitePassing,
+        udt_ok: bool,
+    ) -> Result<CoreArg, BindError> {
         // A call-site `ByVal`/`ByRef` overrides the typelib param direction.
         let by_ref = match passing {
             CallSitePassing::ByVal => false,
             CallSitePassing::ByRef => true,
             CallSitePassing::Default => param.is_some_and(|p| p.is_by_ref()),
         };
+        let expects_variant =
+            !udt_ok && param.is_none_or(|p| matches!(tlb_param_to_vartype(p), VarTypeRef::Variant));
         if by_ref {
             if expr.kind() != SyntaxKind::ParenExpr
-                && let Ok((place, _)) = self.bind_place(expr)
+                && let Ok((place, place_ty)) = self.bind_place(expr)
             {
+                if expects_variant {
+                    self.reject_udt_variant_arg(None, &place_ty, false)?;
+                }
                 return Ok(CoreArg::ByRef(place));
             }
-            return Ok(CoreArg::ByVal(self.bind_expr(expr)?.value));
+            let bound = self.bind_expr(expr)?;
+            if expects_variant {
+                self.reject_udt_variant_arg(None, &bound.ty, false)?;
+            }
+            return Ok(CoreArg::ByVal(bound.value));
         }
         let bound = self.bind_expr(expr)?;
+        if expects_variant {
+            self.reject_udt_variant_arg(None, &bound.ty, false)?;
+        }
         let value = match param {
             Some(p) => self
                 .g
@@ -1369,6 +1461,15 @@ impl<'a> ProcLower<'a> {
         arglist: Option<SyntaxNode<'_>>,
         signature: Option<&Signature>,
     ) -> Result<Vec<CoreArg>, BindError> {
+        self.bind_args_with(arglist, signature, false)
+    }
+
+    fn bind_args_with(
+        &mut self,
+        arglist: Option<SyntaxNode<'_>>,
+        signature: Option<&Signature>,
+        udt_ok: bool,
+    ) -> Result<Vec<CoreArg>, BindError> {
         let items = match arglist {
             Some(a) => a.arg_items(),
             None => Vec::new(),
@@ -1385,10 +1486,11 @@ impl<'a> ProcLower<'a> {
                     });
                 }
                 ArgItem::Positional(expr, passing) => {
-                    args.push(self.bind_one_arg(
+                    args.push(self.bind_one_arg_with(
                         expr,
                         signature.and_then(|s| s.params.get(i)),
                         passing,
+                        udt_ok,
                     )?);
                 }
             }
@@ -1420,11 +1522,21 @@ impl<'a> ProcLower<'a> {
                     });
                 }
                 ArgItem::Positional(expr, passing) => {
+                    self.reject_udt_expr(expr)?;
                     args.push(self.bind_arg_byref(expr, true, passing)?);
                 }
             }
         }
         Ok(args)
+    }
+
+    /// A late-bound argument (no static signature) must not be a project UDT.
+    fn reject_udt_expr(&mut self, expr: SyntaxNode<'_>) -> Result<(), BindError> {
+        let ty = match self.bind_place(expr) {
+            Ok((_, ty)) => ty,
+            Err(_) => return Ok(()),
+        };
+        self.reject_udt_variant_arg(None, &ty, false)
     }
 
     /// `Prop(index…) = rhs` — an indexed `Property Let`/`Set`. Lowers to a call of the

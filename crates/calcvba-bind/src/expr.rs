@@ -344,6 +344,10 @@ impl<'a> ProcLower<'a> {
         {
             return Err(BindError::TypeMismatch);
         }
+        // An operator on a project UDT value (`"x" & t`) is a compile-time Type mismatch.
+        if self.g.is_project_udt(&lhs.ty) || self.g.is_project_udt(&rhs.ty) {
+            return Err(BindError::TypeMismatch);
+        }
         // Every op's result type comes from the promotion lattice (`\` and `Mod` yield the
         // wider integer operand type, `LongLong` when either side is 64-bit).
         let ty = self.g.result_type(op, &lhs.ty, &rhs.ty);

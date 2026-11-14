@@ -87,6 +87,16 @@ dimension fastest); `{Byte; String * 3; Byte; Long}` puts the string at 1, the B
 8 (`LenB` 12). A dynamic array of a UDT has `fFeatures` 0, no `vt` prefix and no `IRecordInfo`;
 a fixed one `&H12` (`FADF_STATIC | FADF_FIXEDSIZE`); `cbElements` = `LenB` of the UDT.
 
+**SAFEARRAYs** (captured 2026-11-14, `temp/variant-layout-probe/arr6/ArrProbe.bas`): elements are
+stored first dimension fastest (`f(0 To 1, 0 To 2) As Long`: `f(1,0)` at 4, `f(0,1)` at 8; three
+dimensions alike; UDT and Variant arrays too), and `For Each` walks that memory order (`00 10 01 11
+02 12`). `rgsabound` is reversed: `rgsabound[0]` describes the last dimension. `fFeatures`: a fixed
+typed array `&H92` (`HAVEVARTYPE | FIXEDSIZE | STATIC`, local or module-level), a dynamic one `&H80`,
+Variant `&H880` (`| FADF_VARIANT`), String `&H180` (`| FADF_BSTR`), a UDT array `&H12` with no `vt`
+prefix; the `vt` prefix is the element type (`&H3`, `&H11`, `&HC`, `&H8`). `cLocks` is 0 at rest.
+`ReDim Preserve` keeps the descriptor's flags; assigning a fixed array to a Variant copies it into a
+dynamic (`&H80`) array.
+
 **Records in Variants.** A `Type` from a standard module cannot be put in a Variant at all:
 "Only user-defined types defined in public object modules can be coerced to or from a variant
 or passed to late-bound functions" (compile error). In Excel VBA, `VT_RECORD` arises only from
@@ -401,6 +411,16 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
    calls `RecordClear`, frees `pvRecord` with `CoTaskMemFree` and `Release`s; `VariantCopy` calls
    `GetSize`, allocates, `RecordCopy`, `AddRef`), replacing `ComRecord`. 5c: the compile error for a
    standard-module `Type` in a Variant, a ByVal Variant or a late-bound argument.
+   *As built 2026-11-14.* 5b: a `VT_RECORD` cell is the `BRECORD` itself (`pvRecord` in the first
+   eight union bytes, `pRecInfo` after it); `ComRecord` owns task-allocator memory and one
+   `IRecordInfo` reference and copies and clears exactly as `VariantCopy`/`VariantClear` do, so a
+   cell can go to oleaut32 unchanged. An engine UDT value in a cell (internal only, since VBA
+   refuses it) is a `VT_RECORD` with a null `pRecInfo` and a boxed `VbaRecord` in `pvRecord`.
+   5c (Excel probe `temp/variant-layout-probe/udtvar`, 17 cases): every conversion of a project
+   `Type` to or from a Variant is that compile error: `v = t`, `t = v`, ByVal/ByRef/Optional
+   Variant and ParamArray parameters, late-bound and `Collection.Add` arguments, `Array(t)`, a
+   Variant function result, a Variant array element, and `TypeName`/`VarType`/`IsEmpty`. An
+   operator on a UDT (`"x" & t`) is a compile-time Type mismatch; `Len`/`LenB` and UDT copies bind.
 6. **SAFEARRAYs.** oleaut32 allocation on Windows, the standard prefix elsewhere; VM3 and the JIT
    re-read `pvData` after every foreign call. UDT arrays as VBA has them: `fFeatures` 0 (dynamic) or
    `FADF_STATIC | FADF_FIXEDSIZE` (fixed), no `vt` prefix, no `IRecordInfo`; the record layout

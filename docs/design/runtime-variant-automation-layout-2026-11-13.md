@@ -560,6 +560,35 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
    legacy transports deleted; JIT WithEvents; `VT_UNKNOWN` kept distinct from `VT_DISPATCH`
    (`VarType` reports 13). With it the interpreter lanes can run the OS `Scripting.Dictionary`,
    so `TypeLibResolver::dictionary_source`'s default becomes the platform default.
+   *Plan (2026-11-14, from a map of both stacks).* Stack B is not a ready model either: its
+   `NativeVariant::input` still copies every argument through `ComValue`, and its receivers are
+   looked up in stack A's bindings map. So step 8 builds the one marshaller over the runtime
+   cell and moves both stacks onto it, in this order:
+   - **8a, objects are their interface pointers.** A foreign object in a cell is an `ObjectRef`
+     over the real `IDispatch` (or `IUnknown`, `VT_UNKNOWN`, `VarType` 13), AddRef'd, released
+     when the cell drops (`Set x = Nothing` releases it, as in VBA). The bindings map, its i32
+     handles (20000+n), `ComObjectToken` and `from_compat_identity` for foreign objects go;
+     `Is` compares `QI(IUnknown)`. A host's root objects (Excel's `Application`) are a registry
+     of `ObjectRef`s, not handles. VBA calls `GetIDsOfNames` on each late-bound call, so the
+     per-binding DISPID cache goes too.
+   - **8b, one invoke.** `rgvarg` is built from the runtime cells: ByVal arguments are bit
+     copies the callee must not clear (borrowed), ByRef places are `VT_BYREF | VT_VARIANT` to
+     the cell or `VT_BYREF | vt` to typed storage (the step 7 references), named arguments
+     go through one `GetIDsOfNames` call, and the result is moved into the destination cell.
+     `METHOD | PROPERTYGET` is one `Invoke`; Let/Set use `PROPERTYPUT`/`PUTREF`; excess
+     arguments raise 450; `pfnDeferredFillIn` runs before `EXCEPINFO` is read. Early-bound
+     vtable calls build their frame the same way from the `FUNCDESC` (`[in] BSTR` is the
+     runtime BSTR, retval written into the destination's payload). VM3, the JIT and the typed
+     host stack call the same functions; `DynamicValue`, `ComInvokeValue`, the
+     `*_legacy_i32_result` chain (already dead) and the `u32::MAX` write-back ids go.
+   - **8c, For Each and events.** `For Each` over an object holds the `IEnumVARIANT` and calls
+     `Next(1, &cell, &fetched)` per item. One sink per WithEvents variable covers all its
+     DISPIDs; the handler runs inside the source's `Invoke` with ByRef parameters as views on
+     `rgvarg`; the JIT subscribes like VM3. The projection side channel that synthesises
+     events from invoke arguments goes.
+   - **8d, `ComValue` out of the client.** The remaining users of `ComValue` (comhost,
+     `dynlink`, the native template, connection points) move in steps 9 and 10, where they are
+     rewritten anyway; `ComValue` is deleted at the end of step 10.
 9. **Declare** (5.2): direct addresses, ANSI BSTR temporaries, prepared CIFs, the shared
    interop plan, `AddressOf` in the JIT.
 10. **Inbound** (5.3): native template services by borrow and move; comhost on `DispInvoke`

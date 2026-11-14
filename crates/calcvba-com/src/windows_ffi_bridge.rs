@@ -991,7 +991,11 @@ mod tests {
         let module = load_library("kernel32.dll").expect("kernel32.dll should load");
         let addr = get_proc_address(module, "GetTickCount").expect("GetTickCount should resolve");
         let result = invoke_stdcall(addr, &[], FfiReturnType::Long).expect("invoke should succeed");
-        assert!(result > 0, "GetTickCount should return positive value");
+        // GetTickCount is a DWORD; read as a Long it is negative after ~24.8 days of uptime.
+        assert_ne!(
+            result as u32, 0,
+            "GetTickCount should return a non-zero tick count"
+        );
     }
 
     #[test]

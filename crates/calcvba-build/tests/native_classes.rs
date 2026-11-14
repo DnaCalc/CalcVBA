@@ -101,7 +101,7 @@ fn project_construction_members_as_new_and_lifetimes_agree() {
         .unwrap()
         .replace(
             "70 Set same = first",
-            "70 Set same = first\nIf False Then answer = same.Bump(\"3\")",
+            "70 Set same = first\nIf False Then answer = same.Bump(first)",
         );
     std::fs::write(refused.join("Counts.bas"), source).unwrap();
     let error = build_native_library(&NativeLibraryBuildOptions {

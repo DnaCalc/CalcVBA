@@ -60,12 +60,9 @@ fn bounded_demo_completes_on_vm_via_native_sqlite() {
 }
 
 #[test]
-fn bounded_demo_rejects_jit_without_falling_back() {
-    let err = run_bounded_demo(true).expect_err(
-        "the SQLite fixture still has unsupported JIT shapes; it must not fall back to VM3",
-    );
-    assert!(
-        err.contains("CallExtern library subset") && err.contains("got Environ"),
-        "unexpected diagnostic: {err}"
+fn bounded_demo_completes_on_jit_via_native_sqlite() {
+    // The JIT runs the whole demo itself (a JIT refusal is an error, never a VM3 fallback).
+    run_bounded_demo(true).expect(
+        "SQLiteForExcel bounded demo should complete on the JIT backend via native sqlite3.dll",
     );
 }

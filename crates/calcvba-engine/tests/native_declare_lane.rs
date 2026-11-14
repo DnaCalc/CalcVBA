@@ -486,6 +486,8 @@ fn riff_shaped_dispcallfunc_vtable_call_writes_variant_result() {
     // pointer, a byte offset into the vtable, null argument tables for the zero-arg
     // case, and a ByRef Variant result. Use a private synthetic vtable whose slot
     // points at a harmless kernel32 no-arg export, avoiding real WASAPI activation.
+    // GetTickCount read as a Long is negative after ~24.8 days of uptime, so the proof asks
+    // only for a non-zero result.
     let snapshot = run("Private Const MEM_COMMIT As Long = &H1000\n\
          Private Const MEM_RESERVE As Long = &H2000\n\
          Private Const MEM_RELEASE As Long = &H8000&\n\
@@ -519,7 +521,7 @@ fn riff_shaped_dispcallfunc_vtable_call_writes_variant_result() {
          RtlMoveMemory ByVal vt, VarPtr(proc), LenB(proc)\n\
          HrInvoke = DispCallFunc(obj, 0, CC_STDCALL, vbLong, 0, ByVal 0&, ByVal 0&, vRet)\n\
          If HrInvoke = 0 Then SlotResult = CLng(vRet)\n\
-         If SlotResult > 0 Then DispCallFuncProof = &H51512\n\
+         If SlotResult <> 0 Then DispCallFuncProof = &H51512\n\
          freedVt = VirtualFree(vt, 0, MEM_RELEASE)\n\
          freedObj = VirtualFree(obj, 0, MEM_RELEASE)\n\
          If freedVt = 0 Or freedObj = 0 Then Err.Raise 722, \"RiffNative\", \"VirtualFree failed\"\n\

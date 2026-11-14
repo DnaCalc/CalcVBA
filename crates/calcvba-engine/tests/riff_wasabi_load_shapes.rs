@@ -397,3 +397,21 @@ fn property_get_fills_its_result_through_a_byref_property_let() {
     let v = run_two(main, cls).expect("runs");
     assert!(v.iter().any(|x| x.as_i32() == Some(42)), "{v:?}");
 }
+
+/// A fixed array passed to a dynamic-array parameter (SQLiteForExcel's `TestBlob`): the callee
+/// reads and writes its elements, and its `ReDim` fails with error 10, as in VBA.
+#[test]
+fn fixed_array_passed_to_an_array_parameter() {
+    both(
+        "Public Result As String\n\
+         Private Sub Fill(b() As Byte)\n    b(1) = 7\nEnd Sub\n\
+         Private Sub Grow(b() As Byte)\n    ReDim b(5)\nEnd Sub\n\
+         Public Sub Main()\n    Dim f(0 To 2) As Byte\n    Fill f\n    Result = CStr(f(1))\n\
+         On Error Resume Next\n    Grow f\n\
+         Result = Result & \":\" & CStr(Err.Number) & \":\" & CStr(UBound(f))\nEnd Sub\n",
+        |v| {
+            v.iter()
+                .any(|v| v.as_bstr().is_some_and(|s| s.to_string() == "7:10:2"))
+        },
+    );
+}

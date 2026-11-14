@@ -5237,7 +5237,13 @@ impl<'a> LowerFunc<'a> {
             }
             OxArg::ByRef(place) => {
                 let actual = place_ty(self.program, self.func, *place)?;
-                if actual != param_ty {
+                // A fixed array passed to an array parameter is the same SAFEARRAY* cell; VBA
+                // accepts it, and the callee cannot ReDim it (the descriptor is fixed-size).
+                let same_array_element = matches!(
+                    (actual, param_ty),
+                    (OxTy::Array(given, _), OxTy::Array(wanted, _)) if given == wanted
+                );
+                if actual != param_ty && !same_array_element {
                     return Err(JitError::unsupported(format!(
                         "M4-4 static call subset requires exact ByRef type match, got {actual:?} for {param_ty:?} at {place:?}"
                     )));

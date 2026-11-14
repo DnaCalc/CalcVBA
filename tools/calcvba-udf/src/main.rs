@@ -137,8 +137,17 @@ fn run() -> Result<()> {
         &calcvba_symbol::CatalogTypeLibResolver,
     )?;
     let mut functions = Vec::new();
+    // Only the project's own modules hold UDFs: the generated `UdfRuntime` and any library
+    // modules binding adds (the engine Scripting library) are not wrapped.
+    let own_module = |name: &str| {
+        loaded
+            .manifest
+            .modules
+            .iter()
+            .any(|module| module.module_name.eq_ignore_ascii_case(name))
+    };
     for entry in procedures {
-        if entry.module == "UdfRuntime" {
+        if !own_module(&entry.module) {
             continue;
         }
         let qualified = format!("{}.{}", entry.module, entry.name);

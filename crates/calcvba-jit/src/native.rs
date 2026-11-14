@@ -328,10 +328,16 @@ pub fn compile_native_scalars(
                                         .ok_or_else(|| {
                                         problem(func, "native class parameter carrier")
                                     })?;
+                                // A ByVal argument converts at the call as VBA converts it (the
+                                // runtime copy raises Type mismatch for text that is no number);
+                                // a late call site may name several classes, and only the one
+                                // selected at run time converts.
+                                let convertible =
+                                    |ty: ScalarType| numeric(ty) || ty == ScalarType::String;
                                 if from != to
                                     && (alias
                                         || !(to == ScalarType::Variant
-                                            || numeric(from) && numeric(to)))
+                                            || convertible(from) && convertible(to)))
                                 {
                                     return Err(problem(
                                         func,

@@ -8097,11 +8097,24 @@ impl<'a> LowerFunc<'a> {
             NativeImplId::StrReverse => self.is_supported_variant_extern_operand(operand),
             NativeImplId::Val => self.is_supported_variant_extern_operand(operand),
             NativeImplId::Len | NativeImplId::LenB => {
-                // A UDT variable is a runtime record cell here, read by the same library
-                // helper as on VM3 (VBA's `Len`/`LenB` of a UDT).
+                // A UDT or typed scalar variable is a runtime cell here, read by the same
+                // library helper as on VM3 (VBA's `Len`/`LenB` of a UDT, `LenB(p)` of a
+                // `LongPtr` is 8).
                 Ok(self.is_supported_variant_extern_operand(operand)?
                     || matches!(operand, OxOperand::Use(place)
-                        if matches!(place_ty(self.program, self.func, *place)?, OxTy::Record(_))))
+                    if matches!(
+                        place_ty(self.program, self.func, *place)?,
+                        OxTy::Record(_)
+                            | OxTy::Long
+                            | OxTy::LongLong
+                            | OxTy::Integer
+                            | OxTy::Byte
+                            | OxTy::Bool
+                            | OxTy::Single
+                            | OxTy::Double
+                            | OxTy::Currency
+                            | OxTy::Date
+                    )))
             }
             NativeImplId::Format => self.is_supported_variant_extern_operand(operand),
             NativeImplId::IsArray

@@ -1,7 +1,7 @@
 # Variant layout cases the engines still answer differently from Excel (dc-yqq0). Fix, then delete the line.
 # Run with the native Declare lane on (the probe reads cells with CopyMemory); refreshed 2026-11-14 after step 7a.
 # BIND/ASSIGN/OBJBACK: VT_BYREF binding (7b). BSTR.Prefix: vbNullString (step 9). UDTMEM UDT arrays: ArrPtr through the VBE7 alias.
-# Jit DECLINED: LenB of a typed local as a Declare argument (dc-yqq0.17).
+# Jit DECLINED: a typed array passed ByRef to a Variant parameter (VT_BYREF | VT_ARRAY, 7b).
 Vm3	ASSIGN.LongElement
 Vm3	ASSIGN.LongFrom2_5
 Vm3	ASSIGN.LongFrom3_5

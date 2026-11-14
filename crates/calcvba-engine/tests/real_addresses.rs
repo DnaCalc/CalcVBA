@@ -27,8 +27,7 @@ Private mDepth(1 To 3) As LongPtr
 
 Private Function Ptr(ByVal p As LongPtr) As LongPtr
     Dim v As LongPtr
-    ' 8 = LenB(v) on x64; the JIT does not lower LenB of a typed local yet (dc-yqq0.17).
-    CopyMemory VarPtr(v), p, 8
+    CopyMemory VarPtr(v), p, LenB(v)
     Ptr = v
 End Function
 

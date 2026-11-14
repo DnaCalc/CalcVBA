@@ -71,6 +71,4 @@ Native callbacks share the active session context and must unwind safely.
 
 DNA Calc implements the HAL descriptor and policy interface; browser hosts use
 host services to supply or refuse UI/filesystem/native operations. Browser
-builds select the interpreter without default JIT features. The older
-spreadsheet adapter is documented in `adapters/spreadsheet-compat/README.md`;
-it is separate from the neutral engine API.
+builds select the interpreter without default JIT features.

@@ -92,8 +92,8 @@ reload and generation checks. Old activations retain code/state until they
 finish. These are used by the calculation scheduler and remain supported.
 DNA Calc also implements the HAL host descriptor/policy interface and advertises
 its supplied COM-shaped objects. Its checkout is an external consumer, not an
-engine source directory. `adapters/spreadsheet-compat` retains an older adapter;
-spreadsheet members and formula policy stay outside the engine.
+engine source directory. Spreadsheet members and formula policy stay outside
+the engine.
 
 ## Host services and Windows interop
 

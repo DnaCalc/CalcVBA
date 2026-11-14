@@ -1,5 +1,5 @@
 //! Host-neutral procedure catalogue and persistent, generation-checked calls.
-//! Spreadsheet adapters live outside this engine, in adapters/spreadsheet-compat.
+//! Spreadsheet glue belongs to the host (DNA Calc's `calc-vba`), not to this engine.
 use calcvba_bundle::{ArrayElementType, coreir::CoreConst};
 use calcvba_hal::{HostServices, adapters::builder::HostBuilder};
 use calcvba_oxir::{FuncId, OxProgram, OxTy};

@@ -27,7 +27,6 @@ members = [
     "crates/calcvba-vm3",
     "crates/calcvba-differential",
     "crates/calcvba-host",
-    "adapters/spreadsheet-compat",
     "tools/calcvba-udf",
 ]
 resolver = "2"

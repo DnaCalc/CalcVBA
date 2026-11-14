@@ -1314,11 +1314,7 @@ impl Values<'_> {
                 let state = b.ins().global_value(types::I64, state);
                 let arguments = b.ins().stack_addr(types::I64, vector, 0);
                 let output_size = result_record.as_ref().map_or(VARIANT_SIZE, |r| {
-                    r.automation_shape()
-                        .expect("admitted return record")
-                        .0
-                        .max(VARIANT_SIZE)
-                        .next_multiple_of(8)
+                    r.size().max(VARIANT_SIZE).next_multiple_of(8)
                 });
                 let output = b.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot,
@@ -1693,9 +1689,7 @@ impl Values<'_> {
                 let record = self.cell(module, b, record);
                 let source = b.ins().iadd_imm(
                     record,
-                    layout.record_slots[&slot]
-                        .automation_field_offset(*index)
-                        .expect("admitted field") as i64,
+                    layout.record_slots[&slot].fields()[*index].offset() as i64,
                 );
                 if let OxInst::RecordArrayGet { indices, .. } = inst
                     && let calcvba_runtime::vba_record::VbaRecordFieldKind::DynamicArray { element } =
@@ -1788,9 +1782,7 @@ impl Values<'_> {
                 let address = self.address(b, slot);
                 let out = b.ins().iadd_imm(
                     address,
-                    layout.record_slots[&slot]
-                        .automation_field_offset(*index)
-                        .expect("admitted field") as i64,
+                    layout.record_slots[&slot].fields()[*index].offset() as i64,
                 );
                 if let OxInst::RecordArraySet { indices, .. } = inst
                     && let calcvba_runtime::vba_record::VbaRecordFieldKind::DynamicArray { element } =
@@ -2133,9 +2125,7 @@ impl Values<'_> {
         indices: &[OxOperand],
     ) -> Value {
         let mut offset = b.ins().iconst(types::I64, 0);
-        let (width, align) = element
-            .automation_storage_shape()
-            .expect("admitted field element");
+        let (width, align) = element.storage_shape().expect("admitted field element");
         let mut stride = width.next_multiple_of(align) as i64;
         for (bound, index) in bounds.iter().zip(indices) {
             let index = self.operand(module, b, index, ScalarType::Long);
@@ -2350,7 +2340,7 @@ pub(super) fn record_descriptor(
                         .iter()
                         .try_fold(1usize, |n, b| n.checked_mul(b.count as usize))
                         .ok_or("record array extent overflow")?;
-                    let (width, align) = element.automation_storage_shape()?;
+                    let (width, align) = element.storage_shape()?;
                     for index in 0..count {
                         field(
                             element,
@@ -2370,17 +2360,13 @@ pub(super) fn record_descriptor(
             Ok(())
         }
         for (index, item) in layout.fields().iter().enumerate() {
-            field(
-                item.kind(),
-                base + layout.automation_field_offset(index)?,
-                owners,
-            )?;
+            field(item.kind(), base + layout.fields()[index].offset(), owners)?;
         }
         Ok(())
     }
     let mut owners = Vec::new();
     fields(layout, 0, &mut owners)?;
-    let mut bytes = (layout.automation_shape()?.0 as u32).to_le_bytes().to_vec();
+    let mut bytes = (layout.size() as u32).to_le_bytes().to_vec();
     bytes.extend_from_slice(&(owners.len() as u32).to_le_bytes());
     for (offset, kind) in owners {
         bytes.extend_from_slice(&offset.to_le_bytes());

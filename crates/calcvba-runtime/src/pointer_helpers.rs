@@ -244,8 +244,7 @@ mod native_record_pin {
 
     fn shape(kind: &Field, representation: Representation) -> Result<(usize, usize), String> {
         match representation {
-            Representation::Canonical => kind.storage_shape(),
-            Representation::Unicode => kind.automation_storage_shape(),
+            Representation::Canonical | Representation::Unicode => kind.storage_shape(),
             Representation::Ansi => kind.declare_storage_shape(),
         }
     }
@@ -255,8 +254,9 @@ mod native_record_pin {
         representation: Representation,
     ) -> Result<usize, String> {
         match representation {
-            Representation::Canonical => Ok(layout.fields()[index].offset()),
-            Representation::Unicode => layout.automation_field_offset(index),
+            Representation::Canonical | Representation::Unicode => {
+                Ok(layout.fields()[index].offset())
+            }
             Representation::Ansi => layout.declare_field_offset(index),
         }
     }
@@ -503,10 +503,10 @@ mod native_record_pin {
             layout: Arc<VbaRecordLayout>,
             representation: Representation,
         ) -> Result<Self, String> {
-            let (size, _) = if representation == Representation::Ansi {
-                layout.declare_shape()?
+            let size = if representation == Representation::Ansi {
+                layout.declare_shape()?.0
             } else {
-                layout.automation_shape()?
+                layout.size()
             };
             let mut fields = Vec::new();
             for (i, field) in layout.fields().iter().enumerate() {
@@ -642,15 +642,12 @@ mod native_record_pin {
                     for (i, field) in result.layout.fields().iter().enumerate() {
                         owners(
                             field.kind(),
-                            result.layout.automation_field_offset(i)?,
+                            result.layout.fields()[i].offset(),
                             Representation::Unicode,
                             &mut fields,
                         )?;
                     }
-                    let mut descriptor = vec![
-                        result.layout.automation_shape()?.0 as u32,
-                        fields.len() as u32,
-                    ];
+                    let mut descriptor = vec![result.layout.size() as u32, fields.len() as u32];
                     for (offset, kind) in fields {
                         descriptor.extend([offset as u32, kind]);
                     }
@@ -719,7 +716,7 @@ mod native_record_pin {
                         Vec::new(),
                     )?));
                 }
-                if SafeArrayGetElemsize(array) as usize != self.layout.automation_shape()?.0 {
+                if SafeArrayGetElemsize(array) as usize != self.layout.size() {
                     return Err("Record array native element size changed".into());
                 }
                 let rank = SafeArrayGetDim(array);

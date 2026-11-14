@@ -1973,63 +1973,6 @@ fn checked_align_to(value: usize, align: usize) -> Result<usize, String> {
 }
 
 impl VbaRecordLayout {
-    /// The record's Automation layout. Variant fields are the platform `VARIANT`, the same
-    /// width as the engine's own cell; the separate shape remains only until records are
-    /// stored in their Automation layout (dc-yqq0.5).
-    pub fn automation_shape(&self) -> Result<(usize, usize), String> {
-        let mut size = 0usize;
-        let mut align = 1usize;
-        for field in self.fields() {
-            let (width, alignment) = field.kind().automation_storage_shape()?;
-            size = checked_align_to(size, alignment)?
-                .checked_add(width)
-                .ok_or("Automation record extent overflow")?;
-            align = align.max(alignment);
-        }
-        let size = checked_align_to(size, align)?;
-        validate_record_size(size)?;
-        Ok((size, align))
-    }
-
-    pub fn automation_field_offset(&self, index: usize) -> Result<usize, String> {
-        let mut offset = 0usize;
-        for (i, field) in self.fields().iter().enumerate() {
-            let (width, align) = field.kind().automation_storage_shape()?;
-            offset = checked_align_to(offset, align)?;
-            if i == index {
-                return Ok(offset);
-            }
-            offset = offset
-                .checked_add(width)
-                .ok_or("Automation field extent overflow")?;
-        }
-        Err("Automation record field index out of range".into())
-    }
-}
-
-impl VbaRecordFieldKind {
-    pub fn automation_storage_shape(&self) -> Result<(usize, usize), String> {
-        match self {
-            Self::Variant => Ok((
-                core::mem::size_of::<VariantCore>(),
-                core::mem::align_of::<VariantCore>(),
-            )),
-            Self::Record(layout) => layout.automation_shape(),
-            Self::FixedArray { element, bounds } => {
-                let (size, align) = element.automation_storage_shape()?;
-                let count = fixed_array_total_len(bounds)?;
-                let size = checked_align_to(size, align)?
-                    .checked_mul(count)
-                    .ok_or("Automation array field extent overflow")?;
-                validate_record_size(size)?;
-                Ok((size, align))
-            }
-            _ => self.storage_shape(),
-        }
-    }
-}
-
-impl VbaRecordLayout {
     /// Declare converts typed String fields to ANSI byte BSTRs and fixed strings to bytes.
     pub fn declare_shape(&self) -> Result<(usize, usize), String> {
         let mut size = 0usize;
@@ -2111,7 +2054,7 @@ mod tests {
     }
 
     #[test]
-    fn automation_and_declare_layouts_keep_native_variant_and_string_extents() {
+    fn native_and_declare_layouts_keep_variant_and_string_extents() {
         let layout = VbaRecordLayout::new(vec![
             Field::anonymous(Kind::Byte),
             Field::anonymous(Kind::Variant),
@@ -2119,13 +2062,13 @@ mod tests {
             Field::anonymous(Kind::FixedString { len: 4 }),
         ])
         .unwrap();
-        assert_eq!(layout.automation_shape().unwrap(), (48, 8));
-        assert_eq!(layout.automation_field_offset(2).unwrap(), 32);
-        assert_eq!(layout.automation_field_offset(3).unwrap(), 36);
+        assert_eq!((layout.size(), layout.align()), (48, 8));
+        assert_eq!(layout.fields()[2].offset(), 32);
+        assert_eq!(layout.fields()[3].offset(), 36);
         assert_eq!(layout.declare_shape().unwrap(), (40, 8));
         let schema = layout.boundary_schema();
         let decoded = VbaRecordLayout::from_boundary_schema(&schema[1..]).unwrap();
-        assert_eq!(decoded.automation_shape().unwrap(), (48, 8));
+        assert_eq!((decoded.size(), decoded.align()), (48, 8));
         assert_eq!(decoded.declare_shape().unwrap(), (40, 8));
     }
 

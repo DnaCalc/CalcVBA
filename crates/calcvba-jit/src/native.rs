@@ -77,11 +77,7 @@ impl NativeScalar {
         if values::record_descriptor(layout).ok()?.len() != 8 {
             return None;
         }
-        match layout
-            .automation_shape()
-            .expect("admitted Automation layout")
-            .0
-        {
+        match layout.size() {
             1 => Some(types::I8),
             2 => Some(types::I16),
             4 => Some(types::I32),
@@ -91,10 +87,7 @@ impl NativeScalar {
     }
     fn result_size(&self) -> usize {
         if self.layout.result == ScalarType::Record {
-            self.layout.record_slots[&self.layout.return_slot]
-                .automation_shape()
-                .expect("admitted Automation layout")
-                .0
+            self.layout.record_slots[&self.layout.return_slot].size()
         } else if self.layout.result == ScalarType::Variant {
             VARIANT_SIZE
         } else {
@@ -604,11 +597,7 @@ pub fn compile_native_scalars(
             let size = if *ty == ScalarType::Variant {
                 VARIANT_SIZE
             } else if let Some(record) = layout.record_slots.get(&i) {
-                record
-                    .automation_shape()
-                    .expect("admitted Automation layout")
-                    .0
-                    .next_multiple_of(8)
+                record.size().next_multiple_of(8)
             } else {
                 8
             };
@@ -1474,9 +1463,7 @@ fn global_offsets(program: &OxProgram) -> Vec<usize> {
         } else if let OxTy::Record(id) = global.ty {
             vba_record_layout_for_fields(&program.record_layouts[id.0])
                 .expect("admitted global record")
-                .automation_shape()
-                .expect("admitted Automation layout")
-                .0
+                .size()
                 .next_multiple_of(8)
         } else {
             8
@@ -1591,11 +1578,7 @@ fn emit_native_call(
                         None
                     };
                     let size = if let Some(record) = record {
-                        record
-                            .automation_shape()
-                            .expect("admitted Automation layout")
-                            .0
-                            .next_multiple_of(8) as u32
+                        record.size().next_multiple_of(8) as u32
                     } else if *ty == ScalarType::Variant {
                         VARIANT_SIZE as u32
                     } else {

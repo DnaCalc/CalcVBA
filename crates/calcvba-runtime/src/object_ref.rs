@@ -1066,7 +1066,12 @@ impl ObjectRef {
         self.clone()
     }
 
+    /// The identity of a runtime compat object; 0 for a foreign COM object (which is its own
+    /// interface pointer and carries none).
     pub fn compat_identity(&self) -> i32 {
+        if !self.is_compat_object() {
+            return 0;
+        }
         let owner = compat_owner_from_unknown(self.0.as_ptr());
         // SAFETY: `self.0` points at a live `CompatObjectBase`. Every `ObjectRef` in the
         // workspace is such a box: the safe constructors mint them, the COM bridge wraps even
@@ -1087,6 +1092,9 @@ impl ObjectRef {
     /// Class/route key for project-dynamic dispatch (which class's route this instance uses).
     /// Only valid for compat (project-class) objects, like `compat_identity`/`class_descriptor`.
     pub fn route_key(&self) -> i32 {
+        if !self.is_compat_object() {
+            return 0;
+        }
         let owner = compat_owner_from_unknown(self.0.as_ptr());
         // SAFETY: documented contract (doc above and `is_compat_object`): callers only invoke
         // this on compat objects, so `owner` is the live `CompatObjectBase` (`#[repr(C)]`,
@@ -1098,6 +1106,9 @@ impl ObjectRef {
     /// route_key)` selects the class dispatch table in a multi-bundle VM. `0` for
     /// single-bundle runs.
     pub fn bundle_id(&self) -> i32 {
+        if !self.is_compat_object() {
+            return 0;
+        }
         let owner = compat_owner_from_unknown(self.0.as_ptr());
         // SAFETY: documented contract as for `route_key`: only called on compat objects, so
         // `owner` is the live `CompatObjectBase` kept alive by this `ObjectRef`'s reference.
@@ -1417,6 +1428,9 @@ impl ObjectRef {
     }
 
     pub fn strong_count(&self) -> u32 {
+        if !self.is_compat_object() {
+            return 0;
+        }
         let owner = compat_owner_from_unknown(self.0.as_ptr());
         // SAFETY: documented compat-object contract as for `class_descriptor`; the box is alive
         // because this `ObjectRef` holds a retained reference, and `ref_count` is atomic.

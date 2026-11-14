@@ -1,9 +1,7 @@
 //! Same-apartment ownership and immutable type-library plans for native tables.
 use super::library::{NativeLibrary, NativeMemberPlan};
 use super::*;
-use crate::{
-    ComObjectToken, TypeLibInterfaceMetadata, WindowsComBridge, windows_client::OwnedComInterface,
-};
+use crate::{TypeLibInterfaceMetadata, WindowsComBridge, windows_client::OwnedComInterface};
 use calcvba_host_api::{HostObject, HostSlot};
 use std::{ffi::c_void, rc::Rc};
 
@@ -38,7 +36,7 @@ fn native_input(
         .map_err(|_| "COM state lock poisoned")?;
     let binding = state
         .bindings
-        .get(&ComObjectToken::new(object.raw()))
+        .get(&state.token_for_object(&object))
         .ok_or("unbound native COM receiver")?;
     if binding.native_owner_thread != std::thread::current().id() {
         return Err("native COM receiver belongs to a different thread/apartment".into());

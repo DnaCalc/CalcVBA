@@ -63,6 +63,38 @@ pub struct WindowsComClientState {
 }
 
 impl WindowsComClientState {
+    /// The binding of `object`: by handle for a runtime compat object, by COM identity for a
+    /// foreign object that is its interface pointer (step 8a). `ComObjectToken(0)`, which no
+    /// binding has, when none matches.
+    pub fn token_for_object(&self, object: &ObjectRef) -> ComObjectToken {
+        if object.is_compat_object() {
+            return ComObjectToken::new(object.raw());
+        }
+        let pointer = object.raw_iunknown() as usize;
+        // SAFETY: the ObjectRef retains a live IUnknown for the call; the identity reference
+        // QueryInterface returns is released at once (only its address is compared).
+        let unknown = unsafe {
+            crate::query_interface_pointer(
+                object.raw_iunknown().cast(),
+                &crate::windows_client::IID_IUNKNOWN,
+            )
+        }
+        .ok()
+        .map(|unknown| {
+            // SAFETY: one owned reference from QueryInterface.
+            unsafe { release_unknown(unknown) };
+            unknown as usize
+        });
+        self.bindings
+            .iter()
+            .find(|(_, binding)| {
+                (unknown.is_some() && Some(binding.native_unknown) == unknown)
+                    || (binding.native_dispatch != 0 && binding.native_dispatch == pointer)
+            })
+            .map(|(token, _)| *token)
+            .unwrap_or_else(|| ComObjectToken::new(0))
+    }
+
     /// Look up the cached "interface IID is marshaled by PSOAInterface" decision.
     pub fn psoa_interface_cache_get(&self, iid_braces: &str) -> Option<bool> {
         self.psoa_interface_iid_cache.get(iid_braces).copied()
@@ -343,7 +375,11 @@ pub fn resolve_bound_native_dispatch(
     state: &WindowsComClientState,
     object: ObjectRef,
 ) -> Result<*mut RawIDispatch, String> {
-    let Some(binding) = state.bindings.get(&ComObjectToken::new(object.raw())) else {
+    // A foreign object that is its interface pointer needs no binding (step 8a).
+    if !object.is_compat_object() {
+        return Ok(object.raw_iunknown().cast());
+    }
+    let Some(binding) = state.bindings.get(&state.token_for_object(&object)) else {
         return Err(format!(
             "COM-E-OBJECT-MISSING: unknown COM object handle {}",
             object.raw()
@@ -362,7 +398,11 @@ pub fn resolve_dispatch_for_com_value(
     state: &mut WindowsComClientState,
     object: ObjectRef,
 ) -> Result<*mut RawIDispatch, String> {
-    if let Some(binding) = state.bindings.get(&ComObjectToken::new(object.raw())) {
+    // A foreign object that is its interface pointer is passed as itself (step 8a).
+    if !object.is_compat_object() {
+        return Ok(object.raw_iunknown().cast());
+    }
+    if let Some(binding) = state.bindings.get(&state.token_for_object(&object)) {
         if binding.native_dispatch != 0 {
             return Ok(binding.native_dispatch as *mut RawIDispatch);
         }
@@ -395,7 +435,7 @@ pub fn resolve_bound_runtime_object(
     state: &WindowsComClientState,
     object: ObjectRef,
 ) -> Result<ObjectRef, String> {
-    let Some(binding) = state.bindings.get(&ComObjectToken::new(object.raw())) else {
+    let Some(binding) = state.bindings.get(&state.token_for_object(&object)) else {
         return Err(format!(
             "COM-E-OBJECT-MISSING: unknown COM object handle {}",
             object.raw()
@@ -418,6 +458,19 @@ pub fn resolve_bound_runtime_object(
 }
 
 fn retained_runtime_object(binding: &mut ComBinding, handle: ComObjectToken) -> ObjectRef {
+    // A native object is its interface pointer (step 8a): the cell holds the IDispatch, with
+    // its own reference; the binding keeps only metadata found by COM identity.
+    if binding.native_dispatch != 0 {
+        let dispatch = binding.native_dispatch as *mut RawIDispatch;
+        // SAFETY: the binding owns a live same-apartment IDispatch; the AddRef is the new
+        // ObjectRef's own reference.
+        unsafe {
+            crate::add_ref_dispatch(dispatch);
+            if let Some(object) = ObjectRef::from_raw_iunknown_owned(dispatch.cast()) {
+                return object;
+            }
+        }
+    }
     if let Some(raw) = binding.runtime_object {
         return binding.runtime_class_descriptor.map_or_else(
             || ObjectRef::from_compat_identity(raw),
@@ -504,9 +557,16 @@ pub fn release_object_binding(
     state: &mut WindowsComClientState,
     object: ObjectRef,
 ) -> Result<ReleasedWindowsComObject, String> {
-    let Some((binding, transports, stale_callbacks)) =
-        state.release_object_state(ComObjectToken::new(object.raw()))
-    else {
+    let token = state.token_for_object(&object);
+    if token.raw() == 0 && !object.is_compat_object() {
+        // A foreign object that is its interface pointer and has no binding: its references
+        // are its cells', released with them; nothing is held here.
+        return Ok(ReleasedWindowsComObject {
+            transports: Vec::new(),
+            stale_callbacks: BTreeSet::new(),
+        });
+    }
+    let Some((binding, transports, stale_callbacks)) = state.release_object_state(token) else {
         return Err(format!(
             "COM-E-OBJECT-MISSING: unknown COM object token {}",
             object.raw()
@@ -712,6 +772,12 @@ pub fn insert_bound_object_binding_at_handle(
     object: ObjectRef,
     mut binding: ComBinding,
 ) -> ObjectRef {
+    if !object.is_compat_object() {
+        // A foreign object that is its interface pointer: a fresh handle keys its metadata.
+        let handle = state.allocate_handle();
+        state.bindings.insert(handle, binding);
+        return object;
+    }
     let runtime_object = if object.raw() == 0 {
         object
     } else {
@@ -738,7 +804,8 @@ pub fn cache_member_dispid(
     member: ComMemberToken,
     dispid: i32,
 ) {
-    if let Some(binding) = state.bindings.get_mut(&ComObjectToken::new(object.raw())) {
+    let token = state.token_for_object(&object);
+    if let Some(binding) = state.bindings.get_mut(&token) {
         binding.member_dispids.insert(member, dispid);
     }
 }
@@ -954,7 +1021,7 @@ pub unsafe fn subscribe_event_shared(
 ) -> Result<(ComSubscriptionToken, WindowsComSubscriptionTransport, usize), String> {
     let (binding, expected_arity, subscription) = {
         let mut state = lock_state(com_state, "subscribe_event")?;
-        let token = ComObjectToken::new(object.raw());
+        let token = state.token_for_object(&object);
         if !state.bindings.contains_key(&token) {
             return Err(format!(
                 "COM-E-EVENT-CONNECTIONPOINT-MISSING: unknown COM object token {}",
@@ -1045,7 +1112,7 @@ pub unsafe fn subscribe_event_shared(
     let mut state = lock_state(com_state, "subscribe_event_insert")?;
     if !state
         .bindings
-        .contains_key(&ComObjectToken::new(object.raw()))
+        .contains_key(&state.token_for_object(&object))
     {
         if let WindowsComSubscriptionTransport::NativeConnectionPoint(native) = transport {
             // SAFETY: this transport was just produced by the advise above and was never

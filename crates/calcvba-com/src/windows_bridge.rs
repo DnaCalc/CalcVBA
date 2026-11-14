@@ -74,7 +74,7 @@ impl WindowsComBridge {
     }
 
     #[cfg(target_arch = "x86_64")]
-    pub(crate) fn record_typed_dispatch_call(&self) {
+    pub fn record_typed_dispatch_call(&self) {
         self.idispatch_call_count.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -150,13 +150,22 @@ impl WindowsComBridge {
                 temporary_id = temporary_id.saturating_sub(1);
             }
         }
-        let dispatch = {
+        let dispatch = if !object.is_compat_object() {
+            // A foreign object that is its interface pointer is the receiver (step 8a).
+            let pointer = object.raw_iunknown().cast::<crate::RawIDispatch>();
+            // SAFETY: the ObjectRef retains a live same-apartment interface for the call; the
+            // AddRef is the guard's own reference.
+            unsafe {
+                crate::add_ref_dispatch(pointer);
+                crate::windows_client::OwnedComInterface::from_owned(pointer.cast())
+            }
+        } else {
             let state = self
                 .lock_state("invoke_early_bound")
                 .map_err(WindowsComBridgeDispatchError::Message)?;
             let binding = state
                 .bindings
-                .get(&ComObjectToken::new(object.raw()))
+                .get(&state.token_for_object(&object))
                 .ok_or_else(|| {
                     WindowsComBridgeDispatchError::Message(
                         "COM-E-EARLY-OBJECT: unbound native object".into(),
@@ -502,7 +511,7 @@ impl WindowsComBridge {
         let state = self.lock_state("describe_object")?;
         Ok(state
             .bindings
-            .get(&ComObjectToken::new(object.raw()))
+            .get(&state.token_for_object(&object))
             .map(|binding| {
                 binding.descriptor(
                     object,
@@ -533,7 +542,7 @@ impl WindowsComBridge {
     pub fn object_type_name(&self, object: ObjectRef) -> Result<Option<String>, String> {
         let (prog_id_name, dispatch) = {
             let state = self.lock_state("object_type_name")?;
-            match state.bindings.get(&ComObjectToken::new(object.raw())) {
+            match state.bindings.get(&state.token_for_object(&object)) {
                 Some(binding) => (binding.prog_id_name.clone(), binding.native_dispatch),
                 None => return Ok(None),
             }

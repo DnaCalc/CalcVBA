@@ -229,8 +229,8 @@ impl Location {
     /// The location is live.
     pub unsafe fn object_pointer(&self) -> Option<usize> {
         match self {
-            // SAFETY: object storage holds an interface pointer or null.
             Self::Memory(ptr, Storage::Object) => {
+                // SAFETY: object storage holds an interface pointer or null.
                 Some(unsafe { ptr.cast::<*mut u8>().read() }.expose_provenance())
             }
             _ => None,

@@ -26,9 +26,6 @@ use crate::expr::{builtin, value_bound};
 use crate::types;
 use crate::{Bound, ProcLower};
 
-/// A bound pointer-helper operand: the pin kind, the operand value the VM
-/// pins, and an optional write-back target (source l-value + payload kind).
-
 impl<'a> ProcLower<'a> {
     /// Lower a resolved name + optional argument list to a value (a call, a
     /// constant, or a special form).

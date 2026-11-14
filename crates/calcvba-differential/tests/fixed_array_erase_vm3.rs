@@ -7,9 +7,10 @@
 //!   * a **dynamic** array (`Dim a()` + `ReDim`) is *deallocated* — it becomes
 //!     uninitialized and indexing it raises until it is re-`ReDim`'d.
 //!
-//! vm3 carries the distinction on the runtime SAFEARRAY's `FADF_FIXEDSIZE` bit
-//! (set at allocation, travelling with copies), exactly as real VBA models it,
-//! and `Erase` dispatches on the array value's own flag. These tests pin both
+//! vm3 carries the distinction on the runtime SAFEARRAY's `FADF_STATIC |
+//! FADF_FIXEDSIZE` bits, set at allocation, exactly as real VBA models it, and
+//! `Erase` dispatches on the array value's own flag. A copy assigned into
+//! another variable is dynamic, as in VBA. These tests pin both
 //! arms across every element type; the dynamic-deallocate companion lives in
 //! `compound_place_vm3.rs` (`erase_compound_member_array_deallocates`).
 
@@ -325,15 +326,14 @@ End Sub
     assert_contains(source, &Canon::Empty);
 }
 
-// ── Erase reset uses the array's OWN element type (Variant-held fixed array) ──
+// ── A Variant copy of a fixed array is dynamic ──────────────────────────────
 
-/// `Erase` of a fixed array held in a `Variant` slot resets each element to the
-/// array's OWN element-type default and keeps that type — a fixed `Long` array
-/// stays `VT_I4` (`VarType` = vbLong 3), not re-typed to `Variant`/`Empty`.
-/// (Previously the reset used the bind-site element, which is `Variant` for a
-/// Variant holder, flipping the element type and zeroing as `Empty`.)
+/// `v = a` copies a fixed array into a dynamic one (Excel: the copy's descriptor is `&H80`,
+/// not `&H92`), so `Erase v` deallocates it. Excel x64 (`temp/variant-layout-probe/arr6c`,
+/// 2026-11-14): `v` keeps its type, `VarType(v)` = vbArray + vbLong (8195), and reading
+/// `v(2)` raises error 9; the source `a` is untouched.
 #[test]
-fn erase_variant_held_fixed_array_keeps_element_type() {
+fn erase_variant_copy_of_fixed_array_deallocates_and_keeps_its_type() {
     let source = r#"
 Public result As Long
 Sub Main()
@@ -342,28 +342,30 @@ Sub Main()
     a(2) = 7
     v = a
     Erase v
-    result = VarType(v(2))
+    result = VarType(v)
 End Sub
 "#;
-    // vbLong = 3. Before the fix the element became Empty (vbEmpty = 0).
-    assert_contains(source, &expect(Variant::from_i32(3)));
+    assert_contains(source, &expect(Variant::from_i32(8195)));
 }
 
-/// And the erased element reads back as a real typed zero (Long 0), still usable.
+/// Reading an element of the erased copy raises 9 (Subscript out of range), as in Excel.
 #[test]
-fn erase_variant_held_fixed_array_reads_typed_zero() {
+fn erase_variant_copy_of_fixed_array_read_raises_subscript_out_of_range() {
     let source = r#"
 Public result As Long
 Sub Main()
     Dim a(1 To 3) As Long
     Dim v As Variant
+    Dim x As Variant
     a(2) = 7
     v = a
     Erase v
-    result = v(2)
+    On Error Resume Next
+    x = v(2)
+    result = Err.Number * 100 + a(2)
 End Sub
 "#;
-    assert_contains(source, &expect(Variant::from_i32(0)));
+    assert_contains(source, &expect(Variant::from_i32(907)));
 }
 
 // ── Dynamic array: `Erase` deallocates (read afterwards raises) ──────────────

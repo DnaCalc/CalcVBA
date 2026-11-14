@@ -502,11 +502,12 @@ impl VbaRecordLayout {
 
 impl VbaRecordFieldKind {
     /// The SAFEARRAY element `VARTYPE` for an array of this kind (`VT_I4` for Long, `VT_RECORD`
-    /// for a UDT, ...). Objects are stored in Variant arrays by this runtime (dc-yqq0.6).
+    /// for a UDT, `VT_DISPATCH` for an object type, as VBA allocates them).
     pub fn array_element_vartype(&self) -> Result<u16, String> {
         use crate::safe_array::*;
         Ok(match self {
-            Self::Variant | Self::Object => VT_VARIANT_VALUE,
+            Self::Variant => VT_VARIANT_VALUE,
+            Self::Object => VT_DISPATCH_VALUE,
             Self::Integer => VT_I2_VALUE,
             Self::Long => VT_I4_VALUE,
             Self::LongLong => VT_I8_VALUE,
@@ -521,6 +522,22 @@ impl VbaRecordFieldKind {
             Self::FixedArray { .. } | Self::DynamicArray { .. } => {
                 return Err("array of arrays".to_string());
             }
+        })
+    }
+
+    /// The record layout of an array of this kind: `Some` for a UDT element.
+    pub fn array_record_layout(&self) -> Option<Arc<VbaRecordLayout>> {
+        match self {
+            Self::Record(layout) => Some(Arc::clone(layout)),
+            _ => None,
+        }
+    }
+
+    /// An unallocated dynamic array of this element kind (a null `SAFEARRAY*`).
+    pub fn unallocated_array(&self) -> Result<Variant, String> {
+        Ok(match self.array_record_layout() {
+            Some(layout) => Variant::unallocated_record_array(layout),
+            None => Variant::unallocated_array(self.array_element_vartype()?),
         })
     }
 
@@ -897,7 +914,13 @@ impl VbaRecord {
                     return Ok(None);
                 }
                 // SAFETY: a live descriptor owned by this record for the view's lifetime.
-                let view = unsafe { Variant::borrowed_array_view(raw, element_vt) };
+                let view = unsafe {
+                    Variant::borrowed_array_view(
+                        raw,
+                        element_vt,
+                        element.array_record_layout().as_ref(),
+                    )
+                };
                 Ok(view.safearray_bounds_len())
             }
             _ => Ok(None),
@@ -944,7 +967,13 @@ impl VbaRecord {
                     return Ok(None);
                 }
                 // SAFETY: a live descriptor owned by this record for the view's lifetime.
-                let view = unsafe { Variant::borrowed_array_view(raw, element_vt) };
+                let view = unsafe {
+                    Variant::borrowed_array_view(
+                        raw,
+                        element_vt,
+                        element.array_record_layout().as_ref(),
+                    )
+                };
                 Ok(view.safearray_element(flat).transpose()?)
             }
             _ => Ok(None),
@@ -1005,7 +1034,13 @@ impl VbaRecord {
                     return Ok(None);
                 }
                 // SAFETY: `raw` is the field's live, non-null descriptor of `element_vt` elements, owned by this record and outliving the view.
-                let mut view = unsafe { Variant::borrowed_array_view(raw, element_vt) };
+                let mut view = unsafe {
+                    Variant::borrowed_array_view(
+                        raw,
+                        element_vt,
+                        element.array_record_layout().as_ref(),
+                    )
+                };
                 view.set_safearray_element(flat, value)?;
                 Ok(Some(()))
             }
@@ -1325,18 +1360,22 @@ unsafe fn clone_field_into_live(
             // SAFETY: `previous` is the reference the slot owned, released once.
             drop(unsafe { ObjectRef::from_raw_iunknown_owned(previous) });
         }
-        VbaRecordFieldKind::DynamicArray { .. } => {
+        VbaRecordFieldKind::DynamicArray { element } => {
             // SAFETY: `src` holds the field's owned SAFEARRAY* (null while unallocated).
             let raw = unsafe { *src.cast::<*mut core::ffi::c_void>() };
-            // SAFETY: `raw` is a live CalcVBA SAFEARRAY descriptor or null.
-            let copy = match unsafe { SafeArray::try_clone_from_raw_safearray(raw) }? {
+            // SAFETY: `raw` is a live SAFEARRAY descriptor of `element`s, or null.
+            let copy = match unsafe {
+                SafeArray::try_clone_from_raw_safearray(raw, element.array_record_layout())
+            }? {
                 Some(array) => array.into_raw_safearray_ptr(),
                 None => ptr::null_mut(),
             };
             // SAFETY: `dst` is a live pointer slot that owned its previous descriptor.
             let previous = unsafe { dst.cast::<*mut core::ffi::c_void>().replace(copy) };
             // SAFETY: `previous` is the descriptor the slot owned, destroyed once.
-            drop(unsafe { SafeArray::from_raw_safearray_owned(previous) });
+            drop(unsafe {
+                SafeArray::from_raw_safearray_owned(previous, element.array_record_layout())
+            });
         }
         VbaRecordFieldKind::Record(_) | VbaRecordFieldKind::FixedArray { .. } => {
             // SAFETY: forwards this function's live-source contract. Preparation
@@ -1377,11 +1416,13 @@ unsafe fn drop_field_at(ptr: *mut u8, kind: &VbaRecordFieldKind) {
             // SAFETY: the reference the slot owned, released once as the record drops.
             drop(unsafe { ObjectRef::from_raw_iunknown_owned(raw) });
         }
-        VbaRecordFieldKind::DynamicArray { .. } => {
+        VbaRecordFieldKind::DynamicArray { element } => {
             // SAFETY: the slot owns this SAFEARRAY descriptor (or is null).
             let raw = unsafe { *ptr.cast::<*mut core::ffi::c_void>() };
             // SAFETY: the descriptor the slot owned, destroyed once as the record drops.
-            drop(unsafe { SafeArray::from_raw_safearray_owned(raw) });
+            drop(unsafe {
+                SafeArray::from_raw_safearray_owned(raw, element.array_record_layout())
+            });
         }
         VbaRecordFieldKind::Record(layout) => {
             for field in layout.fields() {
@@ -1475,10 +1516,12 @@ unsafe fn read_field_variant_at(
             // SAFETY: the slot holds the field's owned SAFEARRAY* (null while unallocated);
             // reading the field as a value copies the array, as VBA does.
             let raw = unsafe { *ptr.cast::<*mut core::ffi::c_void>() };
-            // SAFETY: `raw` is a live CalcVBA SAFEARRAY descriptor or null.
-            match unsafe { SafeArray::try_clone_from_raw_safearray(raw) }? {
+            // SAFETY: `raw` is a live SAFEARRAY descriptor of `element`s, or null.
+            match unsafe {
+                SafeArray::try_clone_from_raw_safearray(raw, element.array_record_layout())
+            }? {
                 Some(array) => Variant::from_safearray(array),
-                None => Variant::unallocated_array(element.array_element_vartype()?),
+                None => element.unallocated_array()?,
             }
         }
         VbaRecordFieldKind::Record(layout) => {
@@ -1637,7 +1680,9 @@ unsafe fn write_field_variant_at(
             // SAFETY: `ptr` is a live pointer slot that owned its previous descriptor.
             let previous = unsafe { ptr.cast::<*mut core::ffi::c_void>().replace(raw) };
             // SAFETY: `previous` is the descriptor the slot owned, destroyed once.
-            drop(unsafe { SafeArray::from_raw_safearray_owned(previous) });
+            drop(unsafe {
+                SafeArray::from_raw_safearray_owned(previous, element.array_record_layout())
+            });
         }
         VbaRecordFieldKind::String => {
             if value.vtype() != crate::VarType::String {

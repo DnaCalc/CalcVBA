@@ -4,8 +4,9 @@ use crate::{
     com_record::{ComRecord, ComRecordRef},
     object_ref::{ObjectRef, RawRuntimeIUnknown},
     safe_array::{SafeArray, SafeArrayBound, VT_VARIANT_VALUE},
-    vba_record::VbaRecord,
+    vba_record::{VbaRecord, VbaRecordLayout},
 };
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
@@ -390,9 +391,10 @@ impl VariantCore {
     }
 
     /// The union bytes after the first eight that this type uses: `BRECORD.pRecInfo` for
-    /// `VT_RECORD` on 64-bit targets, zero for every other type.
+    /// `VT_RECORD` (and the record layout of a UDT array) on 64-bit targets, zero for every
+    /// other type.
     pub const fn value_tail(&self) -> [u8; PAYLOAD_TAIL] {
-        if self.vt == VarType::Record as u16 {
+        if self.vt == VarType::Record as u16 || self.vt == VT_ARRAY_OF_RECORDS {
             self.data.tail()
         } else {
             [0; PAYLOAD_TAIL]
@@ -401,15 +403,26 @@ impl VariantCore {
 
     /// A `VT_RECORD` core: `BRECORD { pvRecord, pRecInfo }` across the union, as addresses.
     fn record(record_data: usize, record_info: usize) -> Self {
+        Self::two_pointers(VarType::Record as u16, record_data, record_info)
+    }
+
+    /// A UDT array's core: the `SAFEARRAY*` where `parray` is, and the record layout in the
+    /// `pRecInfo` position. VBA keeps a UDT array's layout in its compiled code, never in a
+    /// Variant (a UDT array cannot enter one), so this cell is internal to the engine.
+    fn record_array(parray: usize, layout: usize) -> Self {
+        Self::two_pointers(VT_ARRAY_OF_RECORDS, parray, layout)
+    }
+
+    fn two_pointers(vt: u16, first: usize, second: usize) -> Self {
         let mut union = [0u8; 8 + PAYLOAD_TAIL];
-        union[..POINTER_SIZE].copy_from_slice(&record_data.to_le_bytes());
-        union[POINTER_SIZE..2 * POINTER_SIZE].copy_from_slice(&record_info.to_le_bytes());
+        union[..POINTER_SIZE].copy_from_slice(&first.to_le_bytes());
+        union[POINTER_SIZE..2 * POINTER_SIZE].copy_from_slice(&second.to_le_bytes());
         let mut bytes = [0u8; 8];
         bytes.copy_from_slice(&union[..8]);
         let mut tail = [0u8; PAYLOAD_TAIL];
         tail.copy_from_slice(&union[8..]);
         Self {
-            vt: VarType::Record as u16,
+            vt,
             reserved1: 0,
             reserved2: 0,
             reserved3: 0,
@@ -417,7 +430,8 @@ impl VariantCore {
         }
     }
 
-    /// The `BRECORD` addresses `(pvRecord, pRecInfo)` of a `VT_RECORD` core.
+    /// The `BRECORD` addresses `(pvRecord, pRecInfo)` of a `VT_RECORD` core, or
+    /// `(parray, layout)` of a UDT array's core.
     fn record_addresses(&self) -> (usize, usize) {
         let mut union = [0u8; 8 + PAYLOAD_TAIL];
         union[..8].copy_from_slice(&self.data.bytes());
@@ -475,7 +489,7 @@ impl VariantCore {
         let mut payload = [0u8; 8];
         payload.copy_from_slice(&bytes[8..16]);
         let mut core = Self::from_raw_parts(vtype_raw, reserved1, reserved2, reserved3, payload);
-        if vtype_raw == VarType::Record as u16 {
+        if vtype_raw == VarType::Record as u16 || vtype_raw == VT_ARRAY_OF_RECORDS {
             let mut tail = [0u8; PAYLOAD_TAIL];
             tail.copy_from_slice(&bytes[16..]);
             core.data = VariantData::from_union(payload, tail);
@@ -534,6 +548,8 @@ fn raw_safearray_ptr_to_bytes(ptr: *mut core::ffi::c_void) -> [u8; 8] {
 }
 
 const POINTER_SIZE: usize = core::mem::size_of::<usize>();
+/// `VT_ARRAY | VT_RECORD`: a UDT array, whose cell also carries the record layout.
+const VT_ARRAY_OF_RECORDS: u16 = 0x2024;
 
 /// What a `VT_RECORD` cell holds. A COM record is the `BRECORD` of an Automation `VARIANT`
 /// (`pvRecord` and its `IRecordInfo`); an engine UDT value has no `IRecordInfo` (VBA gives its
@@ -587,6 +603,36 @@ impl Variant {
 
     pub fn zeroed(vtype: VarType) -> Self {
         Self::from_core(VariantCore::from_bytes(vtype, [0; 8]))
+    }
+
+    /// An unallocated UDT array (`Dim a() As T`): a null `SAFEARRAY*` with the declared
+    /// record layout, which a later `ReDim` or a callee that allocates the array needs.
+    pub fn unallocated_record_array(layout: Arc<VbaRecordLayout>) -> Self {
+        Self::from_core(VariantCore::record_array(
+            0,
+            Arc::into_raw(layout).expose_provenance(),
+        ))
+    }
+
+    /// The record layout a UDT array cell carries (allocated or not).
+    pub fn record_array_layout(&self) -> Option<Arc<VbaRecordLayout>> {
+        let raw = self.record_array_layout_ptr();
+        if raw.is_null() {
+            return None;
+        }
+        // SAFETY: a UDT array cell holds one strong reference from `Arc::into_raw`
+        // (`from_safearray` / `unallocated_record_array`) until drop; this takes another.
+        unsafe {
+            Arc::increment_strong_count(raw);
+            Some(Arc::from_raw(raw))
+        }
+    }
+
+    fn record_array_layout_ptr(&self) -> *const VbaRecordLayout {
+        if self.core.raw_vt() != VT_ARRAY_OF_RECORDS {
+            return core::ptr::null();
+        }
+        core::ptr::with_exposed_provenance(self.core.record_addresses().1)
     }
 
     pub fn unallocated_array(element_vartype: u16) -> Self {
@@ -704,9 +750,18 @@ impl Variant {
             }
             VarType::ArrayVariant => {
                 let ptr = bytes_to_raw_safearray(core.data_bytes());
+                let view = Self { core };
+                let layout = view.record_array_layout();
+                // The view only borrows the wire's pointers.
+                core::mem::forget(view);
                 // SAFETY: guaranteed by this unsafe fn's caller.
-                let Some(array) = (unsafe { SafeArray::try_clone_from_raw_safearray(ptr) })? else {
-                    return Ok(Self::from_core(core));
+                let Some(array) =
+                    (unsafe { SafeArray::try_clone_from_raw_safearray(ptr, layout.clone()) })?
+                else {
+                    return Ok(match layout {
+                        Some(layout) => Self::unallocated_record_array(layout),
+                        None => Self::from_core(core),
+                    });
                 };
                 Ok(Self::from_safearray(array))
             }
@@ -1053,6 +1108,13 @@ impl Variant {
     pub fn from_safearray(value: SafeArray) -> Self {
         // The tag carries the element type: `VT_ARRAY | vt`, as Automation stores it.
         let vt = 0x2000 | value.element_vartype();
+        if let Some(layout) = value.vba_record_layout() {
+            let raw = value.into_raw_safearray_ptr();
+            return Self::from_core(VariantCore::record_array(
+                raw.expose_provenance(),
+                Arc::into_raw(layout).expose_provenance(),
+            ));
+        }
         let raw = value.into_raw_safearray_ptr();
         Self::from_core(VariantCore::from_raw_parts(
             vt,
@@ -1067,12 +1129,22 @@ impl Variant {
     /// dynamic-array field), for in-place element access. It is never dropped.
     ///
     /// # Safety
-    /// `raw` is a live, non-null CalcVBA SAFEARRAY descriptor with element type `element_vt`
-    /// that outlives the view.
+    /// `raw` is a live, non-null SAFEARRAY descriptor with element type `element_vt` (and
+    /// record layout `record` for a UDT array) that outlives the view.
     pub(crate) unsafe fn borrowed_array_view(
         raw: *mut core::ffi::c_void,
         element_vt: u16,
+        record: Option<&Arc<VbaRecordLayout>>,
     ) -> core::mem::ManuallyDrop<Self> {
+        if let Some(layout) = record {
+            // The view borrows the caller's layout reference; it is never dropped.
+            return core::mem::ManuallyDrop::new(Self {
+                core: VariantCore::record_array(
+                    raw.expose_provenance(),
+                    Arc::as_ptr(layout).expose_provenance(),
+                ),
+            });
+        }
         core::mem::ManuallyDrop::new(Self {
             core: VariantCore::from_raw_parts(
                 0x2000 | element_vt,
@@ -1098,7 +1170,41 @@ impl Variant {
         // `from_safearray`/clone); `clone_from_raw_safearray` verifies the provenance
         // prefix and deep-clones, leaving ownership with this Variant.
         unsafe {
-            SafeArray::try_clone_from_raw_safearray(bytes_to_raw_safearray(self.data_bytes()))
+            SafeArray::try_clone_from_raw_safearray(
+                bytes_to_raw_safearray(self.data_bytes()),
+                self.record_array_layout(),
+            )
+        }
+    }
+
+    /// Whether this holds an allocated fixed-size array (`FADF_FIXEDSIZE`).
+    pub fn is_fixed_size_array(&self) -> bool {
+        if self.vtype() != VarType::ArrayVariant {
+            return false;
+        }
+        // SAFETY: an ArrayVariant owns its descriptor (or null) until drop; the view only
+        // reads `fFeatures`.
+        unsafe { SafeArray::borrow_raw(bytes_to_raw_safearray(self.data_bytes()), None) }
+            .is_some_and(|array| array.is_fixed_size())
+    }
+
+    /// Give an array being assigned into `target` the storage kind VBA gives it: a copy is a
+    /// dynamic array (Excel: `v = fixedLongs` is `&H80`, not `&H92`), unless `target` is itself
+    /// a fixed-size array being written back (a ByRef copy-out into its own variable).
+    pub fn adopt_assignment_target_fixedness(&mut self, target: &Variant) {
+        if self.vtype() != VarType::ArrayVariant {
+            return;
+        }
+        let fixed = target.is_fixed_size_array();
+        if self.is_fixed_size_array() == fixed {
+            return;
+        }
+        let raw = bytes_to_raw_safearray(self.data_bytes());
+        // SAFETY: `&mut self` gives exclusive access to the descriptor this ArrayVariant owns;
+        // the view only rewrites its fixed-size bits.
+        let view = unsafe { SafeArray::borrow_raw(raw, None) };
+        if let Some(mut array) = view {
+            array.set_fixed_size(fixed);
         }
     }
 
@@ -1123,6 +1229,7 @@ impl Variant {
         unsafe {
             SafeArray::set_raw_safearray_variant_element(
                 bytes_to_raw_safearray(self.data_bytes()),
+                self.record_array_layout(),
                 index,
                 value,
             )
@@ -1176,6 +1283,7 @@ impl Variant {
         Some(unsafe {
             SafeArray::raw_safearray_variant_element(
                 bytes_to_raw_safearray(self.data_bytes()),
+                self.record_array_layout(),
                 index,
             )
         })
@@ -1367,7 +1475,10 @@ impl Variant {
                 crate::vba_record::owning_boundary("variant-safearray-clone")?;
                 Ok(match self.try_as_safearray()? {
                     Some(array) => Self::from_safearray(array),
-                    None => Self::from_core(self.core),
+                    None => match self.record_array_layout() {
+                        Some(layout) => Self::unallocated_record_array(layout),
+                        None => Self::from_core(self.core),
+                    },
                 })
             }
             VarType::Record => {
@@ -1415,13 +1526,13 @@ impl Drop for Variant {
             }
             VarType::ArrayVariant => {
                 let raw = bytes_to_raw_safearray(self.data_bytes());
-                // SAFETY: an ArrayVariant payload was produced by moving an OxVba
-                // SafeArray into this Variant (`from_safearray`/clone), satisfying
-                // `from_raw_safearray_owned`'s provenance contract; ownership transfers
-                // back here, so the descriptor is freed exactly once.
-                if let Some(array) = unsafe { SafeArray::from_raw_safearray_owned(raw) } {
-                    drop(array);
-                }
+                let layout = self.record_array_layout_ptr();
+                // SAFETY: a UDT array cell owns one strong layout reference from
+                // `Arc::into_raw`; it is released exactly once here.
+                let layout = (!layout.is_null()).then(|| unsafe { Arc::from_raw(layout) });
+                // SAFETY: an ArrayVariant owns its descriptor (moved in by `from_safearray`);
+                // ownership transfers back here, so it is freed exactly once.
+                drop(unsafe { SafeArray::from_raw_safearray_owned(raw, layout) });
             }
             VarType::Record => {
                 let (data, info) = self.core.record_addresses();

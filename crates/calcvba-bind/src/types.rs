@@ -49,7 +49,9 @@ pub(crate) fn array_element_of_with(ctx: TypeContext, elem: &VarTypeRef) -> Arra
             element: Box::new(array_element_of_with(ctx, element)),
             bounds: bounds.clone(),
         },
-        VarTypeRef::Object(_) | VarTypeRef::Udt(_) | VarTypeRef::Variant | VarTypeRef::Array(_) => {
+        // Object and class arrays are `VT_DISPATCH` arrays, as VBA allocates them (`&H440`).
+        VarTypeRef::Object(_) => ArrayElementType::Object,
+        VarTypeRef::Udt(_) | VarTypeRef::Variant | VarTypeRef::Array(_) => {
             ArrayElementType::Variant
         }
     }

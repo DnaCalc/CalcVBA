@@ -1552,11 +1552,11 @@ impl<'h> Vm3<'h> {
             }
             OxInst::Assign { dst, value } => {
                 let v = self.operand(value)?;
-                self.store(dst, v)?;
+                self.store_assigned(dst, v)?;
             }
             OxInst::Box { dst, src, .. } => {
                 let v = self.operand(src)?;
-                self.store(dst, v)?;
+                self.store_assigned(dst, v)?;
             }
             OxInst::Unbox {
                 dst,
@@ -1568,7 +1568,7 @@ impl<'h> Vm3<'h> {
                 if *checked && !variant_matches_ox_ty(&v, to) {
                     return Err(Vm3Error::Fault(Fault::new(13, "type mismatch")));
                 }
-                self.store(dst, v)?;
+                self.store_assigned(dst, v)?;
             }
             // `dst := (current != original)` — VBA-`Variant`-equality change detection that
             // guards a compound `ByRef` copy-out (mirrors vm2's `Op::VariantChanged`, which
@@ -2130,13 +2130,8 @@ impl<'h> Vm3<'h> {
                         }
                     }
                     None if was_array => {
-                        let value = if let Some(layout) =
-                            cur.as_safearray().and_then(|a| a.vba_record_layout())
-                        {
-                            Variant::from_safearray(
-                                SafeArray::from_vba_records_nd(Vec::new(), layout, Vec::new())
-                                    .map_err(|e| Vm3Error::Fault(Fault::new(13, e)))?,
-                            )
+                        let value = if let Some(layout) = cur.record_array_layout() {
+                            Variant::unallocated_record_array(layout)
                         } else {
                             Variant::unallocated_array(erased_element_vartype)
                         };
@@ -5534,6 +5529,23 @@ impl<'h> Vm3<'h> {
                 .ok_or_else(|| Vm3Error::Malformed(format!("local [{fi}][{li}] out of range"))),
             Loc::Temp(fi, ti) => Ok(self.frames.get_mut(fi).and_then(|f| f.temps.get_mut(&ti))),
         }
+    }
+
+    /// Store an assigned value: an array copied into a variable takes that variable's storage
+    /// kind (`Variant::adopt_assignment_target_fixedness`), as the JIT's `rt_jit_store_variant`.
+    fn store_assigned(&mut self, place: &OxPlace, mut v: Variant) -> Result<(), Vm3Error> {
+        let loc = self.resolve(place);
+        if v.vtype() == VarType::ArrayVariant && !matches!(loc, Loc::Temp(..)) {
+            let target = match loc {
+                Loc::Global(p, g) => self.exec.programs.get(p).and_then(|p| p.globals.get(g)),
+                Loc::Local(fi, li) => self.frames.get(fi).and_then(|f| f.locals.get(li)),
+                Loc::Temp(..) => None,
+            };
+            if let Some(target) = target {
+                v.adopt_assignment_target_fixedness(target);
+            }
+        }
+        self.write_loc(loc, v)
     }
 
     fn store(&mut self, place: &OxPlace, v: Variant) -> Result<(), Vm3Error> {

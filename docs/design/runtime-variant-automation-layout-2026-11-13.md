@@ -437,8 +437,29 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
    fixed-array fields. `GetAllSettings` stores all keys, then all values. The native template
    already walked OS order and needed no change. Hosts that hand CalcVBA row-major cells (DnaCalc's
    range values) must place `a(r, c)` at `r + c * rows`. Not yet visible from VBA code: element
-   `VarPtr` still returns a pinned copy until step 7. Still open in step 6: `fFeatures` as VBA
-   sets them, oleaut32 allocation on Windows, the UDT descriptor form and the layout pointer.
+   `VarPtr` still returns a pinned copy until step 7.
+   *As built 2026-11-14 (6b, descriptors).* A descriptor is oleaut32's: the header, `rgsabound`,
+   and the 16 hidden bytes before it, with the vt at `psa-4` (`FADF_HAVEVARTYPE`) or the IID at
+   `psa-16` (`FADF_HAVEIID`). On Windows `SafeArrayAllocDescriptorEx`, `SafeArrayAllocData` and
+   `SafeArrayDestroy` allocate and free it, so a callee may `SafeArrayRedim` or destroy a
+   CalcVBA array, and an array a callee creates is adopted as it is; elsewhere the runtime lays
+   out the same bytes. The private owner prefix (magic, allocation rank, layout pointer) is
+   gone. `fFeatures` are VBA's (Excel probe `temp/variant-layout-probe/arr6b`): typed
+   `&H80`, String `&H180`, Variant `&H880`, object and class arrays `VT_DISPATCH` with
+   `FADF_HAVEIID` and IID_IDispatch (`&H440`; until now they were Variant arrays), UDT arrays `0`
+   with no vt and no `IRecordInfo`, and `FADF_STATIC | FADF_FIXEDSIZE` added on a fixed-size
+   array (`&H92`, `&H892`, `&H12`). An array assigned into a variable takes that variable's
+   storage kind, so `v = fixedArray` is dynamic (`&H80`) on both backends. A UDT array's record
+   layout is no longer in the descriptor: the `SafeArray` handle carries it, and the cell keeps
+   it in the `pRecInfo` position beside `parray` (an unallocated UDT array is a null `parray`
+   with its layout), as VBA knows it from the declaration. Pointer-sized elements (BSTR,
+   objects) are pointer width on 32-bit targets. VM3 and the JIT never cache `pvData`; every
+   element access reads the descriptor. Known differences left: a class-typed array gets
+   IID_IDispatch where VBA writes the class's interface IID; an empty `Array()` has vt `0` at
+   `psa-4` in Excel; `ReDim` keeps the descriptor address in VBA (step 7); `For Each` sets
+   `cLocks` in VBA; the native template still builds UDT arrays with `SafeArrayCreateEx(VT_RECORD)`
+   and fixed arrays with `FADF_FIXEDSIZE` only (step 10). Defect 11 (LBound lost to COM) belongs
+   to the marshaller rewrite in step 8, which passes `cell.parray` itself.
 7. **Address-of and storage** (section 4), with `VT_BYREF` binding for ByRef Variant
    parameters; the pin registry deleted.
 8. **One COM marshaller** (5.1), replacing stack A with stack B's model; `ComValue` and the

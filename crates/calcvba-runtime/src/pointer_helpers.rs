@@ -626,10 +626,11 @@ mod native_record_pin {
         layout: Arc<VbaRecordLayout>,
     }
     impl AutomationRecordArray {
-        pub fn from_array(array: &SafeArray) -> Result<Self, String> {
-            let layout = array
-                .vba_record_layout()
-                .ok_or("Record array layout missing")?;
+        /// The native form of a UDT array value: `array` is `None` while unallocated.
+        pub fn from_array(
+            layout: Arc<VbaRecordLayout>,
+            array: Option<&SafeArray>,
+        ) -> Result<Self, String> {
             let mut result = Self {
                 cell: Box::new(NativeValue::empty().0),
                 layout,
@@ -637,7 +638,9 @@ mod native_record_pin {
             // SAFETY: the private VARIANT exclusively owns the new descriptor.
             unsafe {
                 result.cell.Anonymous.Anonymous.vt = 0x2024;
-                if let Some(bounds) = array.bounds() {
+                if let Some(array) = array
+                    && let Some(bounds) = array.bounds()
+                {
                     let mut fields = Vec::new();
                     for (i, field) in result.layout.fields().iter().enumerate() {
                         owners(
@@ -710,11 +713,7 @@ mod native_record_pin {
             unsafe {
                 let array = self.cell.Anonymous.Anonymous.Anonymous.parray;
                 if array.is_null() {
-                    return Ok(Value::from_safearray(SafeArray::from_vba_records_nd(
-                        Vec::new(),
-                        self.layout.clone(),
-                        Vec::new(),
-                    )?));
+                    return Ok(Value::unallocated_record_array(self.layout.clone()));
                 }
                 if SafeArrayGetElemsize(array) as usize != self.layout.size() {
                     return Err("Record array native element size changed".into());

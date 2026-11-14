@@ -2676,6 +2676,12 @@ pub(crate) unsafe extern "C" fn rt_jit_store_variant(
         let Some(slot) = slot_mut(run, dst_area, dst_index) else {
             return ST_FAULT;
         };
+        // An array copied into a variable takes that variable's storage kind, as VM3's
+        // `store_assigned`.
+        let mut src = src;
+        if dst_area != AREA_TEMP {
+            src.adopt_assignment_target_fixedness(slot);
+        }
         // SAFETY: the current compiled-run boundary owns the live unique state handle;
         // typed references and owned values remain live and nonaliasing for this call.
         unsafe { replace_jit_slot_with_cleanup(state, slot, src) }
@@ -6429,11 +6435,8 @@ pub(crate) unsafe extern "C" fn rt_jit_array_erase_variant_slot(
                 }
             }
             None if was_array => {
-                if let Some(layout) = current.as_safearray().and_then(|a| a.vba_record_layout()) {
-                    match SafeArray::from_vba_records_nd(Vec::new(), layout, Vec::new()) {
-                        Ok(array) => Variant::from_safearray(array),
-                        Err(_) => return ST_FAULT,
-                    }
+                if let Some(layout) = current.record_array_layout() {
+                    Variant::unallocated_record_array(layout)
                 } else {
                     Variant::unallocated_array(erased_element_vartype)
                 }

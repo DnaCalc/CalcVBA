@@ -1046,11 +1046,13 @@ impl Drop for NativeByRefStorage {
 #[cfg(windows)]
 fn array_cell_storage_from_variant(value: &Variant) -> Result<NativeByRefStorage, String> {
     use windows_sys::Win32::System::Variant::VARIANT;
-    if let Some(array) = value.try_as_safearray()?
-        && array.vba_record_layout().is_some()
-    {
+    if let Some(layout) = value.record_array_layout() {
+        let array = value.try_as_safearray()?;
         return Ok(NativeByRefStorage::RecordArray(
-            calcvba_runtime::pointer_helpers::AutomationRecordArray::from_array(&array)?,
+            calcvba_runtime::pointer_helpers::AutomationRecordArray::from_array(
+                layout,
+                array.as_ref(),
+            )?,
         ));
     }
     if value.vtype() == calcvba_runtime::VarType::Empty

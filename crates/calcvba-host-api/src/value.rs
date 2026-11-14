@@ -358,7 +358,7 @@ pub unsafe fn retain_bits(ty: ValueType, bits: ScalarBits) -> Result<Value, i32>
                 None
             } else {
                 // SAFETY: caller retains a live canonical SAFEARRAY descriptor.
-                Some(unsafe { SafeArray::clone_from_raw_safearray(raw) }.ok_or(13)?)
+                Some(unsafe { SafeArray::clone_from_raw_safearray(raw, None) }.ok_or(13)?)
             })
         }
         ValueType::Variant => {
@@ -395,7 +395,7 @@ pub unsafe fn release_owned_bits(ty: ValueType, bits: ScalarBits) {
         }
         ValueType::Array => {
             // SAFETY: inherited canonical descriptor ownership transfer.
-            drop(unsafe { SafeArray::from_raw_safearray_owned(raw.cast()) });
+            drop(unsafe { SafeArray::from_raw_safearray_owned(raw.cast(), None) });
         }
         _ => {}
     }
@@ -482,7 +482,7 @@ pub unsafe fn take_result(ty: ValueType, output: *mut ScalarBits) -> Result<Valu
                 None
             } else {
                 // SAFETY: successful array output transfers its descriptor once.
-                Some(unsafe { SafeArray::from_raw_safearray_owned(raw) }.ok_or(13)?)
+                Some(unsafe { SafeArray::from_raw_safearray_owned(raw, None) }.ok_or(13)?)
             })
         }
         _ => return Err(13),

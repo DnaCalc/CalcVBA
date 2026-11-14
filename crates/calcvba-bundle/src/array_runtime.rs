@@ -12,8 +12,8 @@ use std::sync::Arc;
 use calcvba_runtime::Variant;
 use calcvba_runtime::safe_array::{
     SafeArray, SafeArrayBound, VT_BOOL_VALUE, VT_BSTR_VALUE, VT_CY_VALUE, VT_DATE_VALUE,
-    VT_I2_VALUE, VT_I4_VALUE, VT_I8_VALUE, VT_R4_VALUE, VT_R8_VALUE, VT_RECORD_VALUE, VT_UI1_VALUE,
-    VT_VARIANT_VALUE,
+    VT_DISPATCH_VALUE, VT_I2_VALUE, VT_I4_VALUE, VT_I8_VALUE, VT_R4_VALUE, VT_R8_VALUE,
+    VT_RECORD_VALUE, VT_UI1_VALUE, VT_VARIANT_VALUE,
 };
 use calcvba_runtime::vba_record::{
     VbaRecord, VbaRecordFieldKind, VbaRecordFieldSpec, VbaRecordLayout,
@@ -21,17 +21,16 @@ use calcvba_runtime::vba_record::{
 
 use crate::ArrayElementType;
 
-/// An unallocated UDT array still needs its declared record prototype when a
-/// native callee allocates its first SAFEARRAY. Its engine descriptor has no
-/// bounds or payload; the native boundary projects it as a null SAFEARRAY*.
+/// An unallocated UDT array still needs its declared record layout when a
+/// native callee allocates its first SAFEARRAY: the cell carries it beside a
+/// null SAFEARRAY*.
 pub fn unallocated_typed_array(element: &ArrayElementType) -> Result<Variant, String> {
     if let ArrayElementType::Record(fields) = element {
         // Declaration itself does not allocate elements. Layouts outside the
         // runtime's record limits must still raise at ReDim, inside VBA's error
         // handling, rather than aborting activation before any statement runs.
         if let Ok(layout) = vba_record_layout_for_fields(fields) {
-            return SafeArray::from_vba_records_nd(Vec::new(), layout, Vec::new())
-                .map(Variant::from_safearray);
+            return Ok(Variant::unallocated_record_array(layout));
         }
     }
     Ok(Variant::unallocated_array(safearray_vartype_for_element(
@@ -48,11 +47,9 @@ fn unallocated_record_array_retains_layout_but_projects_a_null_native_pointer() 
     let value = unallocated_typed_array(&element).unwrap();
     for value in [value.clone(), value] {
         assert!(value.safearray_bounds_len().is_none());
-        let array = value.try_as_safearray().unwrap().unwrap();
-        assert!(array.bounds().is_none());
-        assert_eq!(array.len(), 0);
+        assert!(value.try_as_safearray().unwrap().is_none());
         assert_eq!(
-            array.vba_record_layout().unwrap(),
+            value.record_array_layout().unwrap(),
             vba_record_layout_for_fields(match &element {
                 ArrayElementType::Record(fields) => fields,
                 _ => unreachable!(),
@@ -142,10 +139,9 @@ pub fn safearray_vartype_for_element(element_type: &ArrayElementType) -> u16 {
         ArrayElementType::Date => VT_DATE_VALUE,
         ArrayElementType::String | ArrayElementType::FixedString(_) => VT_BSTR_VALUE,
         ArrayElementType::Boolean => VT_BOOL_VALUE,
-        // The runtime stores object arrays as Variant arrays (`ReDim` of `As Object` builds
-        // VT_VARIANT), so an object element matches that; VT_DISPATCH arrays come with the
-        // SAFEARRAY step (dc-yqq0.6).
-        ArrayElementType::Object | ArrayElementType::DynamicArray(_) => VT_VARIANT_VALUE,
+        // Object arrays are `VT_DISPATCH` arrays, as VBA allocates them (`&H440`).
+        ArrayElementType::Object => VT_DISPATCH_VALUE,
+        ArrayElementType::DynamicArray(_) => VT_VARIANT_VALUE,
     }
 }
 
@@ -168,6 +164,7 @@ pub fn array_element_type_for_vartype(element_vt: u16) -> ArrayElementType {
         VT_DATE_VALUE => ArrayElementType::Date,
         VT_BOOL_VALUE => ArrayElementType::Boolean,
         VT_BSTR_VALUE => ArrayElementType::String,
+        VT_DISPATCH_VALUE => ArrayElementType::Object,
         _ => ArrayElementType::Variant,
     }
 }

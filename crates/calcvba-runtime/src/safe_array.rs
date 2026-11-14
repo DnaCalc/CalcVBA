@@ -32,19 +32,31 @@ pub const VT_INT_VALUE: u16 = 0x0016;
 pub const VT_UINT_VALUE: u16 = 0x0017;
 pub const VT_RECORD_VALUE: u16 = 0x0024;
 
-pub const FADF_HAVEVARTYPE_VALUE: u16 = 0x0080;
-pub const FADF_RECORD_VALUE: u16 = 0x0020;
+/// `FADF_STATIC` (0x0002): the payload is not the allocator's to free. VBA sets it, with
+/// `FADF_FIXEDSIZE`, on every fixed-size array.
+pub const FADF_STATIC_VALUE: u16 = 0x0002;
 /// `FADF_FIXEDSIZE` (0x0010): the SAFEARRAY may not be resized or reallocated.
 /// VBA sets this on a fixed-size array (`Dim a(1 To 3)`), where `Erase`
 /// reinitializes each element to its type default and keeps the array, in
 /// contrast to a dynamic array (`Dim a()` + `ReDim`) whose `Erase` deallocates.
 pub const FADF_FIXEDSIZE_VALUE: u16 = 0x0010;
+pub const FADF_RECORD_VALUE: u16 = 0x0020;
+/// `FADF_HAVEIID` (0x0040): the interface IID is in the 16 bytes before the descriptor.
+pub const FADF_HAVEIID_VALUE: u16 = 0x0040;
+pub const FADF_HAVEVARTYPE_VALUE: u16 = 0x0080;
 pub const FADF_BSTR_VALUE: u16 = 0x0100;
 pub const FADF_UNKNOWN_VALUE: u16 = 0x0200;
 pub const FADF_DISPATCH_VALUE: u16 = 0x0400;
 pub const FADF_VARIANT_VALUE: u16 = 0x0800;
-const OXVBA_SAFEARRAY_OWNER_MAGIC: u32 = u32::from_le_bytes(*b"OVSA");
-const OXVBA_SAFEARRAY_OWNER_VERSION: u16 = 1;
+/// The bits VBA sets on a fixed-size array (`&H12`, measured in Excel 2026-11-14).
+const FADF_FIXED_ARRAY: u16 = FADF_STATIC_VALUE | FADF_FIXEDSIZE_VALUE;
+
+/// The bytes oleaut32 keeps before every descriptor: the IID (`FADF_HAVEIID`), the
+/// `IRecordInfo*` in the last pointer (`FADF_RECORD`), or the `VARTYPE` in the last four bytes
+/// (`FADF_HAVEVARTYPE`).
+const HIDDEN_SIZE: usize = 16;
+const IID_IUNKNOWN: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0xC0, 0, 0, 0, 0, 0, 0, 0x46];
+const IID_IDISPATCH: [u8; 16] = [0, 4, 2, 0, 0, 0, 0, 0, 0xC0, 0, 0, 0, 0, 0, 0, 0x46];
 
 #[cfg(test)]
 std::thread_local! {
@@ -79,21 +91,6 @@ fn payload_allocation_events() -> (usize, usize) {
 pub struct SafeArrayBound {
     pub count: u32,
     pub lower: i32,
-}
-
-#[repr(C, align(8))]
-struct RawSafeArrayOwnerPrefix {
-    // COM Automation stores HAVEVARTYPE metadata adjacent to the descriptor.
-    // The public descriptor pointer still starts at RawSafeArray.
-    magic: u32,
-    version: u16,
-    element_vt: u16,
-    // The rank `alloc_header` allocated this owner for. `Drop` rebuilds the
-    // allocation layout from this value, never from the mutable `c_dims`.
-    alloc_dims: u32,
-    // Non-null only for OxVba-owned native record SAFEARRAYs. This is not an
-    // IRecordInfo pointer and must not be projected as one at COM boundaries.
-    record_layout: *const VbaRecordLayout,
 }
 
 #[repr(C)]
@@ -196,57 +193,66 @@ impl SafeArrayElementKind {
             Self::I1 | Self::Ui1 => 1,
             Self::I2 | Self::Ui2 | Self::Bool => 2,
             Self::I4 | Self::Ui4 | Self::Int | Self::UInt | Self::R4 => 4,
-            Self::I8
-            | Self::Ui8
-            | Self::R8
-            | Self::Currency
-            | Self::Date
-            | Self::BStr
-            | Self::Dispatch
-            | Self::Unknown => 8,
+            Self::I8 | Self::Ui8 | Self::R8 | Self::Currency | Self::Date => 8,
+            Self::BStr | Self::Dispatch | Self::Unknown => core::mem::size_of::<*mut u8>(),
             Self::Decimal => core::mem::size_of::<RawDecimalArrayElement>(),
         }
     }
 
-    fn alignment(self) -> usize {
-        match self {
-            Self::Variant => core::mem::align_of::<Variant>(),
-            Self::I1 | Self::Ui1 => core::mem::align_of::<u8>(),
-            Self::I2 | Self::Ui2 | Self::Bool => core::mem::align_of::<u16>(),
-            Self::I4 | Self::Ui4 | Self::Int | Self::UInt | Self::R4 => {
-                core::mem::align_of::<u32>()
-            }
-            Self::I8
-            | Self::Ui8
-            | Self::R8
-            | Self::Currency
-            | Self::Date
-            | Self::BStr
-            | Self::Dispatch
-            | Self::Unknown => core::mem::align_of::<u64>(),
-            Self::Decimal => core::mem::align_of::<RawDecimalArrayElement>(),
-        }
+    /// Whether elements own resources (strings, objects, Variants) that must be released
+    /// before the payload is freed.
+    fn owns_resources(self) -> bool {
+        matches!(
+            self,
+            Self::Variant | Self::BStr | Self::Dispatch | Self::Unknown
+        )
     }
 
+    /// `fFeatures` as `SafeArrayAllocDescriptorEx` and VBA set them for this element type
+    /// (Excel 2026-11-14: Long `&H80`, String `&H180`, Variant `&H880`, Object `&H440`).
     fn feature_flags(self) -> u16 {
-        FADF_HAVEVARTYPE_VALUE
-            | match self {
-                Self::Variant => FADF_VARIANT_VALUE,
-                Self::BStr => FADF_BSTR_VALUE,
-                Self::Dispatch => FADF_DISPATCH_VALUE,
-                Self::Unknown => FADF_UNKNOWN_VALUE,
-                _ => 0,
-            }
+        match self {
+            Self::Variant => FADF_HAVEVARTYPE_VALUE | FADF_VARIANT_VALUE,
+            Self::BStr => FADF_HAVEVARTYPE_VALUE | FADF_BSTR_VALUE,
+            Self::Dispatch => FADF_HAVEIID_VALUE | FADF_DISPATCH_VALUE,
+            Self::Unknown => FADF_HAVEIID_VALUE | FADF_UNKNOWN_VALUE,
+            _ => FADF_HAVEVARTYPE_VALUE,
+        }
     }
 }
 
-#[repr(transparent)]
-pub struct SafeArray(NonNull<RawSafeArray>);
+/// What a descriptor's elements are: an Automation type, or a VBA `Type` whose layout the
+/// declaration supplies (VBA keeps no layout, vt or `IRecordInfo` in a UDT array's descriptor).
+#[derive(Clone)]
+enum ElementType {
+    Intrinsic(SafeArrayElementKind),
+    Record(Arc<VbaRecordLayout>),
+}
+
+impl ElementType {
+    fn element_size(&self) -> usize {
+        match self {
+            Self::Intrinsic(kind) => kind.element_size(),
+            Self::Record(layout) => layout.size(),
+        }
+    }
+}
+
+/// An array descriptor as oleaut32 lays it out: the header, `rgsabound` with the last
+/// dimension first, and the 16 hidden bytes before it. On Windows oleaut32 allocates and
+/// frees descriptors and payloads, so foreign code may `SafeArrayRedim` or destroy them
+/// exactly as it may VBA's; elsewhere [`sys`] provides the same layout.
+///
+/// A UDT array's record layout travels with the handle (and with the cell holding it), not in
+/// the descriptor: VBA knows it from the declaration.
+pub struct SafeArray {
+    header: NonNull<RawSafeArray>,
+    record: Option<Arc<VbaRecordLayout>>,
+}
 
 // SAFETY: ASSUMPTION — `SafeArray` exclusively owns its descriptor and payload
-// allocations (created by the payload guard and `alloc_header`, freed
-// only in `Drop`), and scalar/BStr elements are plain data or independently
-// owned allocations, so those move freely between threads. Object
+// (allocated in `allocate`, freed only in `Drop`), and scalar/BStr elements are plain data or
+// independently owned allocations, so those move freely between threads. Object
 // (VT_DISPATCH/VT_UNKNOWN) elements hold a retained reference whose
 // AddRef/Release counter is an `AtomicU32`, but the FINAL release parks the
 // object in a `thread_local!` termination queue and touches `Cell` state
@@ -268,58 +274,148 @@ unsafe fn free_raw_bstr(ptr: *mut u16) {
     let _ = unsafe { BStr::from_raw_bstr(ptr) };
 }
 
-/// Largest SAFEARRAY rank OxVba-owned descriptors carry: the `cDims` field of
-/// the Automation SAFEARRAY is 16 bits, so the rank is stored exactly and a
-/// larger rank is rejected before any allocation. VBA source limits (60
-/// dimensions) are enforced above this layer.
+/// Largest SAFEARRAY rank: the `cDims` field of the Automation SAFEARRAY is 16 bits, so the
+/// rank is stored exactly and a larger rank is rejected before any allocation. VBA source
+/// limits (60 dimensions) are enforced above this layer.
 pub const MAX_SAFEARRAY_RANK: usize = u16::MAX as usize;
 
-fn bounds_layout(dimensions: usize) -> Result<std::alloc::Layout, String> {
-    if dimensions == 0 {
-        return Err("SAFEARRAY must have at least one dimension".to_string());
-    }
+/// The size of a header with `dimensions` bounds, as `SafeArrayAllocDescriptor` allocates it.
+#[cfg(not(windows))]
+fn header_size(dimensions: usize) -> Result<usize, String> {
     let header = std::alloc::Layout::new::<RawSafeArray>();
-    let extra = dimensions
-        .checked_sub(1)
-        .ok_or_else(|| "SAFEARRAY dimension underflow".to_string())?;
-    let extra_bounds = std::alloc::Layout::array::<SafeArrayBound>(extra)
+    let extra = std::alloc::Layout::array::<SafeArrayBound>(dimensions.saturating_sub(1))
         .map_err(|_| "SAFEARRAY bounds layout overflow".to_string())?;
     header
-        .extend(extra_bounds)
-        .map(|(layout, _)| layout.pad_to_align())
+        .extend(extra)
+        .map(|(layout, _)| layout.pad_to_align().size())
         .map_err(|_| "SAFEARRAY header layout overflow".to_string())
 }
 
-fn owner_layout(dimensions: usize) -> Result<std::alloc::Layout, String> {
-    // A zero-rank engine descriptor retains an unallocated UDT's prototype.
-    // Keep the full header allocated, including its unused inline bound.
-    let header = bounds_layout(dimensions.max(1))?;
-    let total = core::mem::size_of::<RawSafeArrayOwnerPrefix>()
-        .checked_add(header.size())
-        .ok_or_else(|| "SAFEARRAY owner layout overflow".to_string())?;
-    std::alloc::Layout::from_size_align(total, core::mem::align_of::<RawSafeArray>())
-        .map_err(|_| "SAFEARRAY owner layout invalid".to_string())
+/// Descriptor and payload allocation. On Windows this is oleaut32 itself; elsewhere the same
+/// layout (16 hidden bytes, then the header) from the Rust allocator, with a size word in front
+/// of each block so a free needs nothing from the (mutable) descriptor.
+#[cfg(windows)]
+mod sys {
+    use super::RawSafeArray;
+    use windows_sys::Win32::System::Ole::{
+        SafeArrayAllocData, SafeArrayAllocDescriptorEx, SafeArrayDestroy,
+    };
+
+    /// A descriptor of `dims` dimensions with its hidden bytes, `cDims` set. A UDT array (`vt`
+    /// `None`) is allocated as a Byte array, which reserves the same hidden bytes; the caller
+    /// rewrites `fFeatures`, `cbElements` and the hidden bytes either way.
+    pub(super) fn alloc_descriptor(dims: u16, vt: Option<u16>) -> Option<*mut RawSafeArray> {
+        let mut psa = core::ptr::null_mut();
+        // SAFETY: `psa` is a valid out pointer; the call allocates a descriptor with `dims`
+        // bounds and its hidden prefix, or fails without writing it.
+        let hr = unsafe {
+            SafeArrayAllocDescriptorEx(vt.unwrap_or(super::VT_UI1_VALUE), u32::from(dims), &mut psa)
+        };
+        (hr >= 0 && !psa.is_null()).then_some(psa.cast())
+    }
+
+    /// Allocates `cbElements` × the cell count for a descriptor whose bounds are set.
+    ///
+    /// # Safety
+    /// `header` is a live descriptor from [`alloc_descriptor`] with null `pvData`.
+    pub(super) unsafe fn alloc_data(header: *mut RawSafeArray) -> bool {
+        // SAFETY: forwarded from the caller.
+        unsafe { SafeArrayAllocData(header.cast()) >= 0 }
+    }
+
+    /// Frees the payload and the descriptor.
+    ///
+    /// # Safety
+    /// `header` is a live, unlocked descriptor whose owning elements were already released
+    /// (and zeroed), with `FADF_STATIC` clear so oleaut32 frees the payload.
+    pub(super) unsafe fn destroy(header: *mut RawSafeArray) {
+        // SAFETY: forwarded from the caller; nothing touches the descriptor afterwards.
+        let _ = unsafe { SafeArrayDestroy(header.cast()) };
+    }
 }
 
-fn payload_layout(kind: SafeArrayElementKind, count: usize) -> Result<std::alloc::Layout, String> {
-    let size = kind
-        .element_size()
-        .checked_mul(count)
-        .ok_or_else(|| "SAFEARRAY payload layout overflow".to_string())?;
-    std::alloc::Layout::from_size_align(size.max(1), kind.alignment())
-        .map_err(|_| "SAFEARRAY payload layout invalid".to_string())
-}
+#[cfg(not(windows))]
+mod sys {
+    use super::{HIDDEN_SIZE, RawSafeArray, header_size};
 
-fn record_payload_layout(
-    layout: &VbaRecordLayout,
-    count: usize,
-) -> Result<std::alloc::Layout, String> {
-    let size = layout
-        .size()
-        .checked_mul(count)
-        .ok_or_else(|| "SAFEARRAY record payload layout overflow".to_string())?;
-    std::alloc::Layout::from_size_align(size.max(1), layout.align())
-        .map_err(|_| "SAFEARRAY record payload layout invalid".to_string())
+    /// Every block starts with its size, then pads to this alignment.
+    const BLOCK_ALIGN: usize = 16;
+
+    fn alloc_block(size: usize) -> Option<*mut u8> {
+        let total = size.checked_add(BLOCK_ALIGN)?;
+        let layout = std::alloc::Layout::from_size_align(total, BLOCK_ALIGN).ok()?;
+        // SAFETY: `layout` has non-zero size.
+        let base = unsafe { std::alloc::alloc_zeroed(layout) };
+        if base.is_null() {
+            return None;
+        }
+        // SAFETY: `base` has at least `BLOCK_ALIGN` bytes, aligned for `usize`.
+        unsafe {
+            base.cast::<usize>().write(total);
+            Some(base.add(BLOCK_ALIGN))
+        }
+    }
+
+    /// # Safety
+    /// `block` came from [`alloc_block`] and is freed once.
+    unsafe fn free_block(block: *mut u8) {
+        // SAFETY: `alloc_block` returned `base + BLOCK_ALIGN` and stored the total at `base`.
+        unsafe {
+            let base = block.sub(BLOCK_ALIGN);
+            let total = base.cast::<usize>().read();
+            std::alloc::dealloc(
+                base,
+                std::alloc::Layout::from_size_align_unchecked(total, BLOCK_ALIGN),
+            );
+        }
+    }
+
+    pub(super) fn alloc_descriptor(dims: u16, _vt: Option<u16>) -> Option<*mut RawSafeArray> {
+        let size = HIDDEN_SIZE.checked_add(header_size(usize::from(dims)).ok()?)?;
+        let block = alloc_block(size)?;
+        // SAFETY: the block holds the hidden bytes and then the header, 16-byte aligned.
+        unsafe {
+            let header = block.add(HIDDEN_SIZE).cast::<RawSafeArray>();
+            (*header).c_dims = dims;
+            Some(header)
+        }
+    }
+
+    /// # Safety
+    /// `header` is a live descriptor from [`alloc_descriptor`] with its bounds set and null
+    /// `pvData`.
+    pub(super) unsafe fn alloc_data(header: *mut RawSafeArray) -> bool {
+        // SAFETY: forwarded from the caller.
+        let (count, size) = unsafe {
+            let bounds = super::raw_bounds_slice(header);
+            (
+                super::bounds_total_len(bounds).ok(),
+                (*header).cb_elements as usize,
+            )
+        };
+        let Some(bytes) = count.and_then(|count| count.checked_mul(size)) else {
+            return false;
+        };
+        let Some(data) = alloc_block(bytes) else {
+            return false;
+        };
+        // SAFETY: forwarded from the caller.
+        unsafe { (*header).pv_data = data.cast() };
+        true
+    }
+
+    /// # Safety
+    /// As the Windows `destroy`: a live descriptor whose owning elements were released.
+    pub(super) unsafe fn destroy(header: *mut RawSafeArray) {
+        // SAFETY: both blocks came from `alloc_block` and are freed once here.
+        unsafe {
+            let data = (*header).pv_data.cast::<u8>();
+            if !data.is_null() {
+                free_block(data);
+            }
+            free_block(header.cast::<u8>().sub(HIDDEN_SIZE));
+        }
+    }
 }
 
 fn default_bounds_for_len(len: usize) -> Result<Vec<SafeArrayBound>, String> {
@@ -353,68 +449,59 @@ fn bounds_total_len(bounds: &[SafeArrayBound]) -> Result<usize, String> {
 
 /// The descriptor's `rgsabound` as stored: the last dimension first.
 unsafe fn raw_bounds_slice<'a>(header: *const RawSafeArray) -> &'a [SafeArrayBound] {
-    // SAFETY: callers pass a live descriptor allocated by this module. Reading
-    // c_dims and forming the slice over the inline rgsabound tail mirrors
-    // `SafeArray::raw_bounds` without allocating.
+    // SAFETY: callers pass a live descriptor. Reading c_dims and forming the slice over the
+    // inline rgsabound tail mirrors `SafeArray::raw_bounds` without allocating.
     let dims = unsafe { (*header).c_dims as usize };
     if dims == 0 {
         return &[];
     }
-    // SAFETY: `alloc_header` initialized exactly `dims` bounds at rgsabound.
+    // SAFETY: a descriptor has exactly `dims` bounds at rgsabound.
     let ptr = unsafe { core::ptr::addr_of!((*header).rgsabound).cast::<SafeArrayBound>() };
-    // SAFETY: `ptr` addresses the first bound in the live descriptor allocation,
-    // which `alloc_header` initialized with exactly `dims` contiguous entries.
+    // SAFETY: `ptr` addresses the first of `dims` contiguous bounds in the live descriptor.
     unsafe { core::slice::from_raw_parts(ptr, dims) }
 }
 
-fn header_prefix_ptr(header: *const RawSafeArray) -> *const RawSafeArrayOwnerPrefix {
-    // SAFETY: every descriptor reaching this helper was allocated by
-    // `alloc_header` with `owner_layout`, which places a
-    // `RawSafeArrayOwnerPrefix` immediately before the `RawSafeArray` inside
-    // the same allocation (callers adopting raw pointers promise OxVba
-    // provenance per the `from_raw_*` contracts), so the `sub` stays in-bounds.
-    unsafe {
-        header
-            .cast::<u8>()
-            .sub(core::mem::size_of::<RawSafeArrayOwnerPrefix>())
-            .cast::<RawSafeArrayOwnerPrefix>()
-    }
+/// The hidden bytes before a descriptor.
+fn hidden_bytes(header: *const RawSafeArray) -> *mut u8 {
+    // SAFETY: every descriptor has `HIDDEN_SIZE` bytes before it in the same allocation
+    // (`SafeArrayAllocDescriptor[Ex]`, or `sys::alloc_descriptor`).
+    unsafe { header.cast::<u8>().cast_mut().sub(HIDDEN_SIZE) }
 }
 
-unsafe fn validated_header_prefix(
-    header: *const RawSafeArray,
-) -> Option<*const RawSafeArrayOwnerPrefix> {
-    let prefix = header_prefix_ptr(header);
-    // SAFETY: callers guarantee `header` points at a live OxVba descriptor
-    // allocated by `alloc_header`, whose owner allocation initializes the
-    // prefix before the header pointer is published, so this read is in-bounds
-    // and initialized for the duration of the borrow.
-    let prefix_ref = unsafe { &*prefix };
-    if prefix_ref.magic == OXVBA_SAFEARRAY_OWNER_MAGIC
-        && prefix_ref.version == OXVBA_SAFEARRAY_OWNER_VERSION
-    {
-        Some(prefix)
+/// The element `VARTYPE` as `SafeArrayGetVartype` derives it, or `None` for a descriptor that
+/// names none (a VBA UDT array, or a foreign array of an unknown kind).
+///
+/// # Safety
+/// `header` is a live descriptor.
+unsafe fn descriptor_vartype(header: *const RawSafeArray) -> Option<u16> {
+    // SAFETY: forwarded from the caller.
+    let features = unsafe { (*header).f_features };
+    if features & FADF_RECORD_VALUE != 0 {
+        Some(VT_RECORD_VALUE)
+    } else if features & FADF_HAVEIID_VALUE != 0 || features & FADF_DISPATCH_VALUE != 0 {
+        Some(if features & FADF_DISPATCH_VALUE != 0 {
+            VT_DISPATCH_VALUE
+        } else {
+            VT_UNKNOWN_VALUE
+        })
+    } else if features & FADF_VARIANT_VALUE != 0 {
+        Some(VT_VARIANT_VALUE)
+    } else if features & FADF_BSTR_VALUE != 0 {
+        Some(VT_BSTR_VALUE)
+    } else if features & FADF_UNKNOWN_VALUE != 0 {
+        Some(VT_UNKNOWN_VALUE)
+    } else if features & FADF_HAVEVARTYPE_VALUE != 0 {
+        // SAFETY: a `FADF_HAVEVARTYPE` descriptor keeps its VARTYPE in the last four hidden
+        // bytes.
+        Some(unsafe {
+            hidden_bytes(header)
+                .add(HIDDEN_SIZE - 4)
+                .cast::<u32>()
+                .read_unaligned()
+        } as u16)
     } else {
         None
     }
-}
-
-unsafe fn header_record_layout(header: *const RawSafeArray) -> Option<Arc<VbaRecordLayout>> {
-    // SAFETY: forwards this fn's contract — `header` is a live OxVba descriptor, so
-    // `validated_header_prefix` may inspect its owner prefix.
-    let prefix = unsafe { validated_header_prefix(header)? };
-    // SAFETY: `validated_header_prefix` returned `Some`, so `prefix` points at the
-    // live, initialized owner prefix; reading its `record_layout` field is in-bounds.
-    let raw = unsafe { (*prefix).record_layout };
-    if raw.is_null() {
-        return None;
-    }
-    // SAFETY: non-null record_layout pointers are stored from Arc::into_raw in
-    // alloc_header and released when the SAFEARRAY descriptor is dropped.
-    unsafe { Arc::increment_strong_count(raw) };
-    // SAFETY: `raw` came from `Arc::into_raw` for `VbaRecordLayout`; we just bumped
-    // the strong count, so reconstituting an owning `Arc` balances that increment.
-    Some(unsafe { Arc::from_raw(raw) })
 }
 
 fn payload_offset(kind: SafeArrayElementKind, index: usize) -> usize {
@@ -425,19 +512,14 @@ fn record_payload_offset(layout: &VbaRecordLayout, index: usize) -> usize {
     layout.size() * index
 }
 
-fn raw_iunknown_ptr_to_bytes(ptr: *mut RawRuntimeIUnknown) -> [u8; 8] {
-    // Dispatch/Unknown SAFEARRAY elements have an exact eight-byte x64 pointer
-    // carrier. Explicit exposure permits recovery after the representation is
-    // copied as bytes, while the array's retained reference keeps the object live.
-    u64::try_from(ptr.expose_provenance())
-        .expect("SAFEARRAY object address must fit the x64 carrier")
-        .to_le_bytes()
-}
-
-fn bytes_to_raw_iunknown(bytes: [u8; 8]) -> *mut RawRuntimeIUnknown {
-    let address = usize::try_from(u64::from_le_bytes(bytes))
-        .expect("SAFEARRAY x64 object carrier must fit the target address space");
-    core::ptr::with_exposed_provenance_mut(address)
+/// The owned interface pointer an object element stores: null for `Nothing`.
+fn object_element(value: &Variant) -> Result<*mut RawRuntimeIUnknown, String> {
+    if value.vtype() != VarType::Object {
+        return Err(format!("expected Object SAFEARRAY element, got {value:?}"));
+    }
+    Ok(value
+        .as_object_ref()
+        .map_or(core::ptr::null_mut(), ObjectRef::into_raw_iunknown))
 }
 
 fn variant_i64(value: &Variant) -> Result<i64, String> {
@@ -521,17 +603,15 @@ unsafe fn decode_element_variant(
             )
         }
         SafeArrayElementKind::Dispatch | SafeArrayElementKind::Unknown => {
-            // SAFETY: kind == Dispatch/Unknown, so encode stored the 8
-            // little-endian pointer bytes of a retained runtime IUnknown here.
-            let raw = bytes_to_raw_iunknown(unsafe { *ptr.cast::<[u8; 8]>() });
-            // SAFETY: `raw` is null or the runtime IUnknown the array still
-            // holds its own retained reference on, so it is live here;
-            // `from_raw_iunknown_addref` takes an additional independent
-            // reference per its contract.
-            let Some(object) = (unsafe { ObjectRef::from_raw_iunknown_addref(raw) }) else {
-                return Err("SAFEARRAY object element carried null IUnknown pointer".to_string());
-            };
-            Variant::from_object_ref(object)
+            // SAFETY: kind == Dispatch/Unknown, so the slot holds null (Nothing) or an
+            // interface pointer the array holds one reference on, live here;
+            // `from_raw_iunknown_addref` takes an additional independent reference.
+            match unsafe {
+                ObjectRef::from_raw_iunknown_addref(*ptr.cast::<*mut RawRuntimeIUnknown>())
+            } {
+                Some(object) => Variant::from_object_ref(object),
+                None => Variant::nothing(),
+            }
         }
         SafeArrayElementKind::Decimal => {
             // SAFETY: kind == Decimal, so encode initialized this slot as a
@@ -677,16 +757,12 @@ unsafe fn encode_element_variant(
                 .ok_or_else(|| format!("expected String SAFEARRAY element, got {value:?}"))?;
             ptr.cast::<*mut u16>().write(text.into_raw_bstr());
         },
-        // SAFETY: kind == Dispatch/Unknown sized/aligned the slot for the
-        // 8 pointer bytes; `into_raw_iunknown` transfers the ObjectRef's retained
-        // reference into the slot, so the array owns exactly one IUnknown
-        // reference, released by `drop_element`.
+        // SAFETY: kind == Dispatch/Unknown sized/aligned the slot for a pointer; the
+        // element's retained reference (or null for Nothing) transfers into the slot, so the
+        // array owns exactly one reference, released by `drop_element`.
         SafeArrayElementKind::Dispatch | SafeArrayElementKind::Unknown => unsafe {
-            let object = value
-                .as_object_ref()
-                .ok_or_else(|| format!("expected Object SAFEARRAY element, got {value:?}"))?;
-            let raw = object.into_raw_iunknown();
-            ptr.cast::<[u8; 8]>().write(raw_iunknown_ptr_to_bytes(raw));
+            ptr.cast::<*mut RawRuntimeIUnknown>()
+                .write(object_element(value)?);
         },
         // SAFETY: kind == Decimal sized/aligned the slot for the plain-data
         // RawDecimalArrayElement; written exactly once into the zeroed buffer.
@@ -801,19 +877,13 @@ unsafe fn replace_element_variant(
             let old = ptr.cast::<*mut u16>().replace(text.into_raw_bstr());
             free_raw_bstr(old);
         },
-        // SAFETY: kind == Dispatch/Unknown, so the slot owns a raw IUnknown pointer
-        // (as 8 bytes); store the new owned reference and release the previous one.
+        // SAFETY: kind == Dispatch/Unknown, so the slot owns an interface pointer (or null);
+        // store the new owned reference and release the previous one.
         SafeArrayElementKind::Dispatch | SafeArrayElementKind::Unknown => unsafe {
-            let object = value
-                .as_object_ref()
-                .ok_or_else(|| format!("expected Object SAFEARRAY element, got {value:?}"))?;
-            let raw = object.into_raw_iunknown();
             let old = ptr
-                .cast::<[u8; 8]>()
-                .replace(raw_iunknown_ptr_to_bytes(raw));
-            if let Some(object) = ObjectRef::from_raw_iunknown_owned(bytes_to_raw_iunknown(old)) {
-                drop(object);
-            }
+                .cast::<*mut RawRuntimeIUnknown>()
+                .replace(object_element(value)?);
+            drop(ObjectRef::from_raw_iunknown_owned(old));
         },
         // SAFETY: kind == Decimal, so the slot is a live, aligned `RawDecimalArrayElement`.
         SafeArrayElementKind::Decimal => unsafe {
@@ -829,309 +899,63 @@ unsafe fn replace_element_variant(
 
 unsafe fn drop_element(kind: SafeArrayElementKind, payload: *mut u8, index: usize) {
     // SAFETY: the caller guarantees `payload` holds more than `index`
-    // initialized elements of `kind` and visits each index at most once, so
+    // initialized (or zeroed) elements of `kind` and visits each index at most once, so
     // the offset is in-bounds and the slot still owns its resource.
     let ptr = unsafe { payload.add(payload_offset(kind, index)) };
     match kind {
-        // SAFETY: kind == Variant, so the slot holds an initialized, not yet
-        // dropped `Variant` (callers drop each index exactly once).
+        // SAFETY: kind == Variant, so the slot holds an initialized `Variant` (a zeroed slot
+        // is `Empty`), dropped exactly once.
         SafeArrayElementKind::Variant => unsafe { core::ptr::drop_in_place(ptr.cast::<Variant>()) },
-        // SAFETY: kind == BStr, so the slot holds the array-owned raw BSTR
-        // pointer written at encode time; ownership transfers to
-        // `free_raw_bstr`, which frees it exactly once.
+        // SAFETY: kind == BStr, so the slot holds the array-owned raw BSTR pointer (or null);
+        // ownership transfers to `free_raw_bstr`, which frees it exactly once.
         SafeArrayElementKind::BStr => unsafe { free_raw_bstr(*ptr.cast::<*mut u16>()) },
-        // SAFETY: kind == Dispatch/Unknown, so the slot holds the pointer bytes
-        // of the array's single retained IUnknown reference (taken at encode
-        // time); `from_raw_iunknown_owned` adopts and releases exactly that
-        // reference, per its ownership-transfer contract.
+        // SAFETY: kind == Dispatch/Unknown, so the slot holds the array's single retained
+        // reference (or null); `from_raw_iunknown_owned` adopts and releases exactly that.
         SafeArrayElementKind::Dispatch | SafeArrayElementKind::Unknown => unsafe {
-            let raw = bytes_to_raw_iunknown(*ptr.cast::<[u8; 8]>());
-            if let Some(object) = ObjectRef::from_raw_iunknown_owned(raw) {
-                drop(object);
-            }
+            drop(ObjectRef::from_raw_iunknown_owned(
+                *ptr.cast::<*mut RawRuntimeIUnknown>(),
+            ));
         },
         _ => {}
     }
 }
 
-unsafe fn free_payload(kind: SafeArrayElementKind, payload: *mut core::ffi::c_void, count: usize) {
-    if payload.is_null() || count == 0 {
-        return;
-    }
-    let raw = payload.cast::<u8>();
-    let mut index = 0usize;
-    while index < count {
-        // SAFETY: `payload` was checked non-null above and the caller passes
-        // the same `kind`/`count` the buffer was built with, so every
-        // `index < count` names an initialized element, dropped exactly once here.
-        unsafe { drop_element(kind, raw, index) };
-        index += 1;
-    }
-    if let Ok(layout) = payload_layout(kind, count) {
-        // SAFETY: `raw` was returned by `alloc_zeroed` with this same
-        // `payload_layout(kind, count)`; all elements were dropped above and
-        // nothing reads the buffer after this point.
-        unsafe { std::alloc::dealloc(raw, layout) };
-        #[cfg(test)]
-        note_payload_free();
-    }
-}
-
-enum PayloadConstructionKind {
-    Intrinsic(SafeArrayElementKind),
-    Record(Arc<VbaRecordLayout>),
-}
-
-/// Owns a raw SAFEARRAY payload from allocation until descriptor adoption.
-///
-/// `initialized` advances only after a complete element clone. Drop therefore
-/// destroys exactly the live prefix and deallocates the payload on every returned
-/// error or unwind, including one that occurs after the payload is complete but
-/// before `alloc_header` adopts its pointer.
-struct PayloadConstructionGuard {
-    raw: NonNull<u8>,
-    allocation: std::alloc::Layout,
-    kind: PayloadConstructionKind,
-    initialized: usize,
-    armed: bool,
-}
-
-impl PayloadConstructionGuard {
-    fn intrinsic(kind: SafeArrayElementKind, count: usize) -> Result<Self, String> {
-        let allocation = payload_layout(kind, count)?;
-        Self::allocate(
-            allocation,
-            PayloadConstructionKind::Intrinsic(kind),
-            "safearray-intrinsic-payload-allocation",
-            "failed to allocate SAFEARRAY payload",
-        )
-    }
-
-    fn record(layout: &Arc<VbaRecordLayout>, count: usize) -> Result<Self, String> {
-        let allocation = record_payload_layout(layout, count)?;
-        Self::allocate(
-            allocation,
-            PayloadConstructionKind::Record(Arc::clone(layout)),
-            "safearray-record-payload-allocation",
-            "failed to allocate SAFEARRAY record payload",
-        )
-    }
-
-    fn allocate(
-        allocation: std::alloc::Layout,
-        kind: PayloadConstructionKind,
-        boundary: &'static str,
-        allocation_error: &'static str,
-    ) -> Result<Self, String> {
-        crate::vba_record::owning_boundary(boundary)?;
-        // SAFETY: both payload layout helpers return a non-zero-size layout;
-        // the null allocation result is converted to a deterministic error.
-        let raw = unsafe { std::alloc::alloc_zeroed(allocation) };
-        let raw = NonNull::new(raw).ok_or_else(|| allocation_error.to_string())?;
-        #[cfg(test)]
-        note_payload_allocation();
-        Ok(Self {
-            raw,
-            allocation,
-            kind,
-            initialized: 0,
-            armed: true,
-        })
-    }
-
-    fn payload_ptr(&self) -> *mut core::ffi::c_void {
-        self.raw.as_ptr().cast()
-    }
-
-    fn mark_initialized(&mut self) {
-        self.initialized += 1;
-    }
-
-    fn mark_all_initialized(&mut self, count: usize) {
-        self.initialized = count;
-    }
-
-    fn disarm(mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for PayloadConstructionGuard {
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
+/// Hidden bytes for a new descriptor: the element vt, or the interface IID.
+fn hidden_prefix(element: &ElementType) -> [u8; HIDDEN_SIZE] {
+    let mut hidden = [0u8; HIDDEN_SIZE];
+    if let ElementType::Intrinsic(kind) = element {
+        match kind {
+            SafeArrayElementKind::Dispatch => hidden = IID_IDISPATCH,
+            SafeArrayElementKind::Unknown => hidden = IID_IUNKNOWN,
+            _ => hidden[HIDDEN_SIZE - 4..]
+                .copy_from_slice(&u32::from(kind_vartype(*kind)).to_le_bytes()),
         }
-        match &self.kind {
-            PayloadConstructionKind::Intrinsic(kind) => {
-                for index in 0..self.initialized {
-                    // SAFETY: only completely encoded elements increment
-                    // `initialized`; each prefix element is dropped once here.
-                    unsafe { drop_element(*kind, self.raw.as_ptr(), index) };
-                }
-            }
-            PayloadConstructionKind::Record(layout) => {
-                for index in 0..self.initialized {
-                    // SAFETY: only complete `clone_into_raw` results increment the
-                    // prefix, so this is one drop of each live same-layout record.
-                    unsafe {
-                        VbaRecord::drop_raw(
-                            self.raw.as_ptr().add(record_payload_offset(layout, index)),
-                            layout,
-                        )
-                    };
-                }
-            }
-        }
-        // SAFETY: this armed guard uniquely owns the allocation; every initialized
-        // element was dropped above and the pointer has not been adopted by a header.
-        unsafe { std::alloc::dealloc(self.raw.as_ptr(), self.allocation) };
-        #[cfg(test)]
-        note_payload_free();
     }
+    hidden
 }
 
-fn prepare_payload_from_variants(
-    kind: SafeArrayElementKind,
-    values: &[Variant],
-) -> Result<Option<PayloadConstructionGuard>, String> {
-    if values.is_empty() {
-        return Ok(None);
-    }
-    let mut payload = PayloadConstructionGuard::intrinsic(kind, values.len())?;
-    for (index, value) in values.iter().enumerate() {
-        crate::vba_record::owning_boundary("safearray-intrinsic-element-clone")?;
-        // SAFETY: the guard allocation has `values.len()` slots of `kind`; this
-        // index is written exactly once and counted only after complete success.
-        unsafe { encode_element_variant(kind, payload.raw.as_ptr(), index, value)? };
-        payload.mark_initialized();
-    }
-    Ok(Some(payload))
-}
-
-fn prepare_record_payload_from_records(
-    layout: &Arc<VbaRecordLayout>,
-    values: &[VbaRecord],
-) -> Result<Option<PayloadConstructionGuard>, String> {
-    if values.is_empty() {
-        return Ok(None);
-    }
-    let mut payload = PayloadConstructionGuard::record(layout, values.len())?;
-    for (index, value) in values.iter().enumerate() {
-        if value.layout().as_ref() != layout.as_ref() {
-            return Err("SAFEARRAY record element layout mismatch".to_string());
-        }
-        crate::vba_record::owning_boundary("safearray-record-element-clone")?;
-        // SAFETY: this is the in-bounds uninitialized `index`-th same-layout
-        // record slot. `clone_into_raw` leaves it untouched on failure.
-        unsafe {
-            value.clone_into_raw(
-                payload
-                    .raw
-                    .as_ptr()
-                    .add(record_payload_offset(layout, index)),
-            )?
-        };
-        payload.mark_initialized();
-    }
-    Ok(Some(payload))
-}
-
-/// # Safety
-/// `payload` must be a `record_payload_layout(layout, count)` allocation holding
-/// `count` initialized records of `layout` (or null), freed exactly once here.
-unsafe fn free_record_payload(
-    layout: &VbaRecordLayout,
-    payload: *mut core::ffi::c_void,
-    count: usize,
-) {
-    let raw = payload.cast::<u8>();
-    if raw.is_null() {
-        return;
-    }
-    let mut index = 0usize;
-    while index < count {
-        // SAFETY: every `index < count` names an initialized record at its
-        // `layout.size()`-strided offset, dropped exactly once on this free.
-        unsafe { VbaRecord::drop_raw(raw.add(record_payload_offset(layout, index)), layout) };
-        index += 1;
-    }
-    if let Ok(payload_layout) = record_payload_layout(layout, count) {
-        // SAFETY: `raw` came from `alloc_zeroed` with this same `payload_layout`;
-        // all records were dropped above and nothing reads the buffer afterward.
-        unsafe { std::alloc::dealloc(raw, payload_layout) };
-        #[cfg(test)]
-        note_payload_free();
-    }
-}
-
-fn alloc_header(
-    bounds: &[SafeArrayBound],
-    element_vt: u16,
-    cb_elements: usize,
-    pv_data: *mut core::ffi::c_void,
-    record_layout: Option<Arc<VbaRecordLayout>>,
-) -> Result<NonNull<RawSafeArray>, String> {
-    let c_dims = u16::try_from(bounds.len()).map_err(|_| {
-        format!(
-            "SAFEARRAY rank {} exceeds the {MAX_SAFEARRAY_RANK}-dimension limit",
-            bounds.len()
-        )
-    })?;
-    let cb_elements = u32::try_from(cb_elements)
-        .map_err(|_| "SAFEARRAY cbElements exceeds u32 capacity".to_string())?;
-    let f_features = if element_vt == VT_RECORD_VALUE {
-        FADF_HAVEVARTYPE_VALUE | FADF_RECORD_VALUE
-    } else {
-        SafeArrayElementKind::from_vartype(element_vt)
-            .map(SafeArrayElementKind::feature_flags)
-            .unwrap_or(FADF_HAVEVARTYPE_VALUE)
-    };
-    let layout = owner_layout(bounds.len())?;
-    crate::vba_record::owning_boundary("safearray-header-adoption")?;
-    // SAFETY: `layout` has non-zero size (owner prefix plus at least the
-    // RawSafeArray header), satisfying `alloc_zeroed`; allocation failure is
-    // handled by the NonNull check below.
-    let raw_owner = unsafe { std::alloc::alloc_zeroed(layout) };
-    let Some(raw_owner) = NonNull::new(raw_owner) else {
-        return Err("failed to allocate SAFEARRAY header".to_string());
-    };
-    crate::live_counters::safearray_allocated();
-    // SAFETY: `raw_owner` is a fresh zeroed allocation of
-    // `owner_layout(bounds.len())`: a RawSafeArrayOwnerPrefix followed by a
-    // RawSafeArray header with `bounds.len()` bounds entries (one inline plus
-    // `bounds.len() - 1` trailing). All writes below stay inside that
-    // allocation, the size-derived prefix offset keeps the header aligned, `bounds`
-    // provides exactly `bounds.len()` entries for the non-overlapping copy
-    // into the fresh allocation, and the header pointer offsets a NonNull base
-    // by a constant within the allocation — justifying `new_unchecked`.
-    unsafe {
-        raw_owner
-            .cast::<RawSafeArrayOwnerPrefix>()
-            .as_ptr()
-            .write(RawSafeArrayOwnerPrefix {
-                magic: OXVBA_SAFEARRAY_OWNER_MAGIC,
-                version: OXVBA_SAFEARRAY_OWNER_VERSION,
-                element_vt,
-                alloc_dims: u32::from(c_dims),
-                record_layout: record_layout
-                    .map(Arc::into_raw)
-                    .unwrap_or(core::ptr::null()),
-            });
-        let header = raw_owner
-            .as_ptr()
-            .add(core::mem::size_of::<RawSafeArrayOwnerPrefix>())
-            .cast::<RawSafeArray>();
-        (*header).c_dims = c_dims;
-        (*header).f_features = f_features;
-        (*header).cb_elements = cb_elements;
-        (*header).c_locks = 0;
-        (*header).pv_data = pv_data;
-        // `rgsabound` lists the last dimension first, as oleaut32 and VBA store it.
-        let dst = core::ptr::addr_of_mut!((*header).rgsabound).cast::<SafeArrayBound>();
-        for (slot, bound) in bounds.iter().rev().enumerate() {
-            dst.add(slot).write(*bound);
-        }
-        Ok(NonNull::new_unchecked(header))
+fn kind_vartype(kind: SafeArrayElementKind) -> u16 {
+    match kind {
+        SafeArrayElementKind::Variant => VT_VARIANT_VALUE,
+        SafeArrayElementKind::I1 => VT_I1_VALUE,
+        SafeArrayElementKind::Ui1 => VT_UI1_VALUE,
+        SafeArrayElementKind::I2 => VT_I2_VALUE,
+        SafeArrayElementKind::Ui2 => VT_UI2_VALUE,
+        SafeArrayElementKind::I4 => VT_I4_VALUE,
+        SafeArrayElementKind::Ui4 => VT_UI4_VALUE,
+        SafeArrayElementKind::I8 => VT_I8_VALUE,
+        SafeArrayElementKind::Ui8 => VT_UI8_VALUE,
+        SafeArrayElementKind::Int => VT_INT_VALUE,
+        SafeArrayElementKind::UInt => VT_UINT_VALUE,
+        SafeArrayElementKind::R4 => VT_R4_VALUE,
+        SafeArrayElementKind::R8 => VT_R8_VALUE,
+        SafeArrayElementKind::Currency => VT_CY_VALUE,
+        SafeArrayElementKind::Date => VT_DATE_VALUE,
+        SafeArrayElementKind::Bool => VT_BOOL_VALUE,
+        SafeArrayElementKind::BStr => VT_BSTR_VALUE,
+        SafeArrayElementKind::Dispatch => VT_DISPATCH_VALUE,
+        SafeArrayElementKind::Unknown => VT_UNKNOWN_VALUE,
+        SafeArrayElementKind::Decimal => VT_DECIMAL_VALUE,
     }
 }
 
@@ -1141,25 +965,92 @@ impl SafeArray {
     }
 
     fn supports_zeroed_scalar_payload(kind: SafeArrayElementKind) -> bool {
-        matches!(
-            kind,
-            SafeArrayElementKind::I1
-                | SafeArrayElementKind::Ui1
-                | SafeArrayElementKind::I2
-                | SafeArrayElementKind::Ui2
-                | SafeArrayElementKind::I4
-                | SafeArrayElementKind::Ui4
-                | SafeArrayElementKind::I8
-                | SafeArrayElementKind::Ui8
-                | SafeArrayElementKind::Int
-                | SafeArrayElementKind::UInt
-                | SafeArrayElementKind::R4
-                | SafeArrayElementKind::R8
-                | SafeArrayElementKind::Currency
-                | SafeArrayElementKind::Date
-                | SafeArrayElementKind::Bool
-                | SafeArrayElementKind::Decimal
-        )
+        !kind.owns_resources()
+    }
+
+    /// A descriptor of `bounds` with a zeroed payload when `with_data` (and the array has
+    /// elements), else with null `pvData`. Zeroed elements are valid for every element type
+    /// (Empty, a null BSTR, Nothing, a default record), so the returned array may be dropped
+    /// at any point while its elements are filled in.
+    fn allocate(
+        bounds: &[SafeArrayBound],
+        element: ElementType,
+        with_data: bool,
+    ) -> Result<Self, String> {
+        let c_dims = u16::try_from(bounds.len()).map_err(|_| {
+            format!(
+                "SAFEARRAY rank {} exceeds the {MAX_SAFEARRAY_RANK}-dimension limit",
+                bounds.len()
+            )
+        })?;
+        if c_dims == 0 {
+            return Err("SAFEARRAY must have at least one dimension".to_string());
+        }
+        let len = bounds_total_len(bounds)?;
+        let cb_elements = u32::try_from(element.element_size())
+            .map_err(|_| "SAFEARRAY cbElements exceeds u32 capacity".to_string())?;
+        len.checked_mul(element.element_size())
+            .ok_or_else(|| "SAFEARRAY payload layout overflow".to_string())?;
+        let (f_features, vt) = match &element {
+            ElementType::Intrinsic(kind) => (kind.feature_flags(), Some(kind_vartype(*kind))),
+            ElementType::Record(_) => (0, None),
+        };
+        crate::vba_record::owning_boundary("safearray-header-adoption")?;
+        let header = sys::alloc_descriptor(c_dims, vt)
+            .and_then(NonNull::new)
+            .ok_or_else(|| "failed to allocate SAFEARRAY header".to_string())?;
+        crate::live_counters::safearray_allocated();
+        // SAFETY: `header` is a fresh descriptor with `c_dims` bounds and its hidden bytes;
+        // every write below stays inside it.
+        unsafe {
+            let raw = header.as_ptr();
+            hidden_bytes(raw)
+                .copy_from_nonoverlapping(hidden_prefix(&element).as_ptr(), HIDDEN_SIZE);
+            (*raw).f_features = f_features;
+            (*raw).cb_elements = cb_elements;
+            (*raw).c_locks = 0;
+            (*raw).pv_data = core::ptr::null_mut();
+            // `rgsabound` lists the last dimension first, as oleaut32 and VBA store it.
+            let dst = core::ptr::addr_of_mut!((*raw).rgsabound).cast::<SafeArrayBound>();
+            for (slot, bound) in bounds.iter().rev().enumerate() {
+                dst.add(slot).write(*bound);
+            }
+        }
+        let array = Self {
+            header,
+            record: match element {
+                ElementType::Record(layout) => Some(layout),
+                ElementType::Intrinsic(_) => None,
+            },
+        };
+        if with_data && len != 0 {
+            crate::vba_record::owning_boundary(if array.record.is_some() {
+                "safearray-record-payload-allocation"
+            } else {
+                "safearray-intrinsic-payload-allocation"
+            })?;
+            // SAFETY: the descriptor is live, its bounds and cbElements are set, pvData null.
+            if !unsafe { sys::alloc_data(header.as_ptr()) } {
+                return Err("failed to allocate SAFEARRAY payload".to_string());
+            }
+            // SAFETY: `alloc_data` set pvData to `len * cbElements` bytes; zero them, as the
+            // payload's initial state (oleaut32 does not promise it).
+            unsafe {
+                core::ptr::write_bytes(
+                    (*header.as_ptr()).pv_data.cast::<u8>(),
+                    0,
+                    len * element_size_of(&array),
+                );
+            }
+            #[cfg(test)]
+            note_payload_allocation();
+        }
+        Ok(array)
+    }
+
+    fn data(&self) -> *mut u8 {
+        // SAFETY: `self.header` is this value's live descriptor.
+        unsafe { (*self.header.as_ptr()).pv_data.cast::<u8>() }
     }
 
     fn from_bounds_and_variants(
@@ -1171,27 +1062,26 @@ impl SafeArray {
             format!("unsupported intrinsic SAFEARRAY element vartype 0x{element_vt:04X}")
         })?;
         let expected_len = bounds_total_len(&bounds)?;
-        let payload = match values {
-            Some(values) => {
-                if values.len() != expected_len {
-                    return Err(format!(
-                        "SAFEARRAY payload length {} does not match shape length {}",
-                        values.len(),
-                        expected_len
-                    ));
-                }
-                prepare_payload_from_variants(kind, &values)?
-            }
-            None => None,
-        };
-        let pv_data = payload
-            .as_ref()
-            .map_or(core::ptr::null_mut(), PayloadConstructionGuard::payload_ptr);
-        let header = alloc_header(&bounds, element_vt, kind.element_size(), pv_data, None)?;
-        if let Some(payload) = payload {
-            payload.disarm();
+        if let Some(values) = &values
+            && values.len() != expected_len
+        {
+            return Err(format!(
+                "SAFEARRAY payload length {} does not match shape length {}",
+                values.len(),
+                expected_len
+            ));
         }
-        Ok(Self(header))
+        let array = Self::allocate(&bounds, ElementType::Intrinsic(kind), values.is_some())?;
+        if let Some(values) = values {
+            let data = array.data();
+            for (index, value) in values.iter().enumerate() {
+                crate::vba_record::owning_boundary("safearray-intrinsic-element-clone")?;
+                // SAFETY: the payload has `values.len()` zeroed slots of `kind`; each index is
+                // written once over its zeroed (resource-free) state.
+                unsafe { encode_element_variant(kind, data, index, value)? };
+            }
+        }
+        Ok(array)
     }
 
     pub fn from_vba_records_nd(
@@ -1207,21 +1097,26 @@ impl SafeArray {
                 expected_len
             ));
         }
-        let payload = prepare_record_payload_from_records(&layout, &values)?;
-        let pv_data = payload
-            .as_ref()
-            .map_or(core::ptr::null_mut(), PayloadConstructionGuard::payload_ptr);
-        let header = alloc_header(
-            &bounds,
-            VT_RECORD_VALUE,
-            layout.size(),
-            pv_data,
-            Some(layout.clone()),
-        )?;
-        if let Some(payload) = payload {
-            payload.disarm();
+        let array = Self::allocate(&bounds, ElementType::Record(Arc::clone(&layout)), true)?;
+        let data = array.data();
+        for (index, value) in values.iter().enumerate() {
+            if value.layout().as_ref() != layout.as_ref() {
+                return Err("SAFEARRAY record element layout mismatch".to_string());
+            }
+            crate::vba_record::owning_boundary("safearray-record-element-clone")?;
+            // SAFETY: the zeroed `index`-th same-layout record slot owns nothing yet;
+            // `clone_into_raw` leaves it untouched on failure.
+            unsafe { value.clone_into_raw(data.add(record_payload_offset(&layout, index)))? };
         }
-        Ok(Self(header))
+        Ok(array)
+    }
+
+    /// A UDT array of default records (zeroed memory is VBA's default record).
+    pub fn from_default_records_nd(
+        bounds: Vec<SafeArrayBound>,
+        layout: Arc<VbaRecordLayout>,
+    ) -> Result<Self, String> {
+        Self::allocate(&bounds, ElementType::Record(layout), true)
     }
 
     pub fn vector(len: usize) -> Self {
@@ -1253,24 +1148,7 @@ impl SafeArray {
                 "SAFEARRAY element vartype 0x{element_vt:04X} cannot be defaulted by zeroed scalar payload"
             ));
         }
-        let expected_len = bounds_total_len(&bounds)?;
-        let payload = if expected_len == 0 {
-            None
-        } else {
-            let mut payload = PayloadConstructionGuard::intrinsic(kind, expected_len)?;
-            // All admitted scalar kinds have a complete all-zero default, so the
-            // entire prefix is live immediately after the zeroed allocation.
-            payload.mark_all_initialized(expected_len);
-            Some(payload)
-        };
-        let pv_data = payload
-            .as_ref()
-            .map_or(core::ptr::null_mut(), PayloadConstructionGuard::payload_ptr);
-        let header = alloc_header(&bounds, element_vt, kind.element_size(), pv_data, None)?;
-        if let Some(payload) = payload {
-            payload.disarm();
-        }
-        Ok(Self(header))
+        Self::allocate(&bounds, ElementType::Intrinsic(kind), true)
     }
 
     pub fn from_variants(values: Vec<Variant>) -> Self {
@@ -1310,88 +1188,86 @@ impl SafeArray {
     }
 
     pub fn dimensions(&self) -> u16 {
-        // SAFETY: `self.0` is the descriptor `alloc_header` produced and this
-        // value owns until `Drop`, so reading its `c_dims` field is valid.
-        unsafe { (*self.0.as_ptr()).c_dims }
+        // SAFETY: `self.header` is this value's live descriptor.
+        unsafe { (*self.header.as_ptr()).c_dims }
     }
 
+    /// The element `VARTYPE`: `VT_RECORD` for a VBA UDT array, else as the descriptor gives it.
     pub fn element_vartype(&self) -> u16 {
-        // SAFETY: `self.0` was produced by `alloc_header` (the only
-        // construction path), which placed and initialized the owner prefix
-        // immediately before the header in the same allocation, exactly what
-        // `validated_header_prefix` requires of its caller.
-        let prefix = unsafe { validated_header_prefix(self.0.as_ptr()) }
-            .expect("SAFEARRAY descriptor is not owned by OxVba");
-        // SAFETY: `prefix` was just validated against this value's live owner
-        // allocation, so reading `element_vt` is in-bounds and initialized.
-        unsafe { (*prefix).element_vt }
+        if self.record.is_some() {
+            return VT_RECORD_VALUE;
+        }
+        // SAFETY: `self.header` is this value's live descriptor.
+        unsafe { descriptor_vartype(self.header.as_ptr()) }.unwrap_or(0)
     }
 
     pub fn feature_flags(&self) -> u16 {
-        // SAFETY: `self.0` is this value's live descriptor (allocated by
-        // `alloc_header`, freed only in `Drop`), so reading `f_features` is valid.
-        unsafe { (*self.0.as_ptr()).f_features }
+        // SAFETY: `self.header` is this value's live descriptor.
+        unsafe { (*self.header.as_ptr()).f_features }
     }
 
-    /// Whether this SAFEARRAY carries `FADF_FIXEDSIZE` — i.e. it is a fixed-size
-    /// array (`Dim a(1 To 3)`) whose `Erase` resets elements rather than freeing
-    /// the storage. The bit lives in the descriptor's `fFeatures`, so it travels
-    /// with [`Clone`] and across the COM boundary exactly like the other FADF
-    /// flags.
+    /// Whether this is a fixed-size array (`Dim a(1 To 3)`, `FADF_FIXEDSIZE`), whose `Erase`
+    /// resets elements rather than freeing the storage. The bit lives in the descriptor's
+    /// `fFeatures`, so it travels with [`Clone`] and across the COM boundary.
     pub fn is_fixed_size(&self) -> bool {
         self.feature_flags() & FADF_FIXEDSIZE_VALUE != 0
     }
 
-    /// Set or clear the descriptor's `FADF_FIXEDSIZE` bit in place.
+    /// Mark the array fixed-size or dynamic in place: VBA sets `FADF_STATIC` and
+    /// `FADF_FIXEDSIZE` together on a fixed-size array and neither on a dynamic one.
     pub fn set_fixed_size(&mut self, fixed: bool) {
-        // SAFETY: `self.0` is this value's live descriptor and `&mut self`
-        // guarantees exclusive access, so toggling the `f_features` bit is a
-        // sound in-bounds write.
+        // SAFETY: `&mut self` gives exclusive access to this value's live descriptor.
         unsafe {
-            let header = self.0.as_ptr();
+            let header = self.header.as_ptr();
             if fixed {
-                (*header).f_features |= FADF_FIXEDSIZE_VALUE;
+                (*header).f_features |= FADF_FIXED_ARRAY;
             } else {
-                (*header).f_features &= !FADF_FIXEDSIZE_VALUE;
+                (*header).f_features &= !FADF_FIXED_ARRAY;
             }
         }
     }
 
-    /// Consume `self`, setting/clearing `FADF_FIXEDSIZE`, and return it — a
-    /// builder-style convenience over [`Self::set_fixed_size`].
+    /// Consume `self`, marking it fixed-size or dynamic — a builder-style convenience over
+    /// [`Self::set_fixed_size`].
     #[must_use]
     pub fn with_fixed_size(mut self, fixed: bool) -> Self {
         self.set_fixed_size(fixed);
         self
     }
 
-    fn element_kind(&self) -> SafeArrayElementKind {
-        SafeArrayElementKind::from_vartype(self.element_vartype())
-            .expect("internal SAFEARRAY element vartype should remain supported")
-    }
-
-    pub fn vba_record_layout(&self) -> Option<Arc<VbaRecordLayout>> {
-        if self.element_vartype() != VT_RECORD_VALUE {
+    fn element_kind(&self) -> Option<SafeArrayElementKind> {
+        if self.record.is_some() {
             return None;
         }
-        // SAFETY: `self.0` is this value's own live OxVba descriptor, satisfying
-        // `header_record_layout`'s contract.
-        unsafe { header_record_layout(self.0.as_ptr()) }
+        SafeArrayElementKind::from_vartype(self.element_vartype())
+    }
+
+    fn intrinsic_kind(&self) -> Result<SafeArrayElementKind, String> {
+        self.element_kind().ok_or_else(|| {
+            format!(
+                "unsupported SAFEARRAY element type (fFeatures 0x{:04X}, vt 0x{:04X})",
+                self.feature_flags(),
+                self.element_vartype()
+            )
+        })
+    }
+
+    /// The record layout of a VBA UDT array.
+    pub fn vba_record_layout(&self) -> Option<Arc<VbaRecordLayout>> {
+        self.record.clone()
     }
 
     /// Bounds in declared order (dimension 1 first); `rgsabound` stores them reversed.
     fn raw_bounds(&self) -> Vec<SafeArrayBound> {
-        // SAFETY: `self.0` is this value's live descriptor; the helper only
-        // borrows the initialized inline bounds tail.
-        let mut bounds = unsafe { raw_bounds_slice(self.0.as_ptr()) }.to_vec();
+        // SAFETY: `self.header` is this value's live descriptor.
+        let mut bounds = unsafe { raw_bounds_slice(self.header.as_ptr()) }.to_vec();
         bounds.reverse();
         bounds
     }
 
     pub fn len(&self) -> usize {
-        // SAFETY: `self.0` is this value's live descriptor; the helper only
-        // borrows the initialized inline bounds tail.
-        bounds_total_len(unsafe { raw_bounds_slice(self.0.as_ptr()) }).unwrap_or(0)
+        // SAFETY: `self.header` is this value's live descriptor.
+        bounds_total_len(unsafe { raw_bounds_slice(self.header.as_ptr()) }).unwrap_or(0)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1426,40 +1302,32 @@ impl SafeArray {
     }
 
     pub(crate) fn try_variant_elements(&self) -> Result<Option<Vec<Variant>>, String> {
-        // SAFETY: `self.0` is this value's live descriptor, so reading
-        // `pv_data` is valid; the null (shape-only) case is handled just below.
-        let data = unsafe { (*self.0.as_ptr()).pv_data.cast::<u8>() };
+        let data = self.data();
         if data.is_null() {
             return Ok(None);
         }
         let len = self.len();
-        if let Some(layout) = self.vba_record_layout() {
-            let mut values = Vec::with_capacity(len);
-            let mut index = 0usize;
-            while index < len {
-                // SAFETY: `data` is the record payload of `self.len()` records strided
-                // by `layout.size()`, and `index < self.len()`, so this is in-bounds.
-                let ptr = unsafe { data.add(record_payload_offset(&layout, index)) };
-                values.push(Variant::from_vba_record(
-                    // SAFETY: `ptr` references the live `index`-th record payload laid
-                    // out by `layout`; `clone_from_raw` deep-copies without consuming it.
-                    unsafe { VbaRecord::clone_from_raw(ptr, layout.clone()) }?,
-                ));
-                index += 1;
-            }
-            return Ok(Some(values));
-        }
-        let kind = self.element_kind();
         let mut values = Vec::with_capacity(len);
-        let mut index = 0usize;
-        while index < len {
-            // SAFETY: `data` is the non-null payload built by
-            // `prepare_payload_from_variants` for exactly `self.len()` initialized
-            // elements of this descriptor's `kind`, and `index < self.len()`.
-            values.push(unsafe { decode_element_variant(kind, data, index) }?);
-            index += 1;
+        for index in 0..len {
+            values.push(self.element_at(data, index)?);
         }
         Ok(Some(values))
+    }
+
+    /// Element `index` of the non-null payload `data`, cloned out as a Variant.
+    fn element_at(&self, data: *mut u8, index: usize) -> Result<Variant, String> {
+        if let Some(layout) = &self.record {
+            // SAFETY: `data` is the record payload of `self.len()` records strided by
+            // `layout.size()`, and callers pass `index < self.len()`.
+            let ptr = unsafe { data.add(record_payload_offset(layout, index)) };
+            // SAFETY: `ptr` references the live `index`-th record; `clone_from_raw` copies it.
+            return Ok(Variant::from_vba_record(unsafe {
+                VbaRecord::clone_from_raw(ptr, Arc::clone(layout))
+            }?));
+        }
+        // SAFETY: `data` is the payload of `self.len()` elements of this kind, and callers
+        // pass `index < self.len()`.
+        unsafe { decode_element_variant(self.intrinsic_kind()?, data, index) }
     }
 
     pub fn variant_element(&self, index: usize) -> Result<Variant, String> {
@@ -1469,32 +1337,45 @@ impl SafeArray {
                 "SAFEARRAY index {index} out of range for length {len}"
             ));
         }
-        // SAFETY: `self.0` is this value's live descriptor; reading `pv_data` is
-        // valid, and the null (shape-only) case is handled immediately below.
-        let data = unsafe { (*self.0.as_ptr()).pv_data.cast::<u8>() };
+        let data = self.data();
         if data.is_null() {
             return Err("SAFEARRAY has no materialized element payload".to_string());
         }
-        if let Some(layout) = self.vba_record_layout() {
-            // SAFETY: `index < self.len()` (checked above) and `data` is the record
-            // payload strided by `layout.size()`, so this offset is in-bounds.
-            let ptr = unsafe { data.add(record_payload_offset(&layout, index)) };
-            // SAFETY: `ptr` references the live `index`-th record payload of `layout`.
-            return Ok(Variant::from_vba_record(unsafe {
-                VbaRecord::clone_from_raw(ptr, layout)
-            }?));
-        }
-        // SAFETY: `data` is the non-null intrinsic payload of `self.len()` elements of
-        // this descriptor's kind, and `index < self.len()`, so the slot is in-bounds.
-        unsafe { decode_element_variant(self.element_kind(), data, index) }
+        self.element_at(data, index)
     }
 
     pub fn replace_variant_elements(&self, values: Vec<Variant>) -> Result<Self, String> {
-        Self::from_bounds_and_variants(
-            self.bounds_for_shape(),
-            self.element_vartype(),
-            Some(values),
-        )
+        let bounds = self.bounds_for_shape();
+        let mut array = if let Some(layout) = &self.record {
+            let records = values
+                .iter()
+                .map(|value| {
+                    value
+                        .vba_record_ref()
+                        .ok_or_else(|| "expected VBA record SAFEARRAY element".to_string())
+                        .and_then(VbaRecord::try_clone)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Self::from_vba_records_nd(bounds, Arc::clone(layout), records)?
+        } else {
+            Self::from_bounds_and_variants(bounds, self.element_vartype(), Some(values))?
+        };
+        array.copy_descriptor_traits_from(self);
+        Ok(array)
+    }
+
+    /// Give `self` the fixed-size bits and hidden IID of `source` (a copy keeps them).
+    fn copy_descriptor_traits_from(&mut self, source: &Self) {
+        self.set_fixed_size(source.is_fixed_size());
+        if source.feature_flags() & FADF_HAVEIID_VALUE != 0
+            && self.feature_flags() & FADF_HAVEIID_VALUE != 0
+        {
+            // SAFETY: both descriptors are live and have their hidden bytes.
+            unsafe {
+                hidden_bytes(self.header.as_ptr())
+                    .copy_from_nonoverlapping(hidden_bytes(source.header.as_ptr()), HIDDEN_SIZE);
+            }
+        }
     }
 
     pub fn set_variant_element(&mut self, index: usize, value: &Variant) -> Result<(), String> {
@@ -1504,13 +1385,11 @@ impl SafeArray {
                 "SAFEARRAY index {index} out of range for length {len}"
             ));
         }
-        // SAFETY: `self.0` is this value's live descriptor; reading `pv_data` is
-        // valid, and the null (shape-only) case is handled immediately below.
-        let data = unsafe { (*self.0.as_ptr()).pv_data.cast::<u8>() };
+        let data = self.data();
         if data.is_null() {
             return Err("SAFEARRAY has no materialized element payload".to_string());
         }
-        if let Some(layout) = self.vba_record_layout() {
+        if let Some(layout) = &self.record {
             let Some(source) = value.vba_record_ref() else {
                 return Err(format!(
                     "expected VBA record SAFEARRAY element, got {:?}",
@@ -1521,23 +1400,23 @@ impl SafeArray {
                 return Err("VBA record SAFEARRAY element layout mismatch".to_string());
             }
             let mut replacement = source.try_clone()?;
-            // SAFETY: `index < self.len()` (checked above) and `data` is the record
-            // payload strided by `layout.size()`, so this offset is the in-bounds slot.
-            let ptr = unsafe { data.add(record_payload_offset(&layout, index)) };
-            // SAFETY: replacement is a complete same-layout owner and `ptr` is the
-            // live `index`-th record. The byte swap cannot fail; replacement then
-            // drops the prior element after the array already owns the new payload.
+            // SAFETY: `index < self.len()` (checked above) and `data` is the record payload
+            // strided by `layout.size()`, so this offset is the in-bounds slot.
+            let ptr = unsafe { data.add(record_payload_offset(layout, index)) };
+            // SAFETY: replacement is a complete same-layout owner and `ptr` is the live
+            // `index`-th record. The byte swap cannot fail; replacement then drops the prior
+            // element after the array already owns the new payload.
             unsafe { replacement.swap_with_raw(ptr) };
             return Ok(());
         }
-        // SAFETY: `data` is the non-null intrinsic payload of `self.len()` elements of
-        // this descriptor's kind, and `index < self.len()`, so the slot is writable.
-        unsafe { replace_element_variant(self.element_kind(), data, index, value) }
+        // SAFETY: `data` is the non-null payload of `self.len()` elements of this kind, and
+        // `index < self.len()`, so the slot is writable.
+        unsafe { replace_element_variant(self.intrinsic_kind()?, data, index, value) }
     }
 
     pub fn i32_element(&self, index: usize) -> Result<Option<i32>, String> {
         let Some(kind @ (SafeArrayElementKind::I4 | SafeArrayElementKind::Int)) =
-            SafeArrayElementKind::from_vartype(self.element_vartype())
+            self.element_kind()
         else {
             return Ok(None);
         };
@@ -1547,21 +1426,19 @@ impl SafeArray {
                 "SAFEARRAY index {index} out of range for length {len}"
             ));
         }
-        // SAFETY: `self.0` is this value's live descriptor; reading `pv_data` is valid.
-        let data = unsafe { (*self.0.as_ptr()).pv_data.cast::<u8>() };
+        let data = self.data();
         if data.is_null() {
             return Err("SAFEARRAY has no materialized element payload".to_string());
         }
-        // SAFETY: kind/len checks above prove this is an in-bounds i32 slot.
-        let ptr = unsafe { data.add(payload_offset(kind, index)) };
-        // SAFETY: I4/Int selects a four-byte-aligned `i32` payload layout;
-        // the checked index identifies a live slot inside the non-null payload.
-        Ok(Some(unsafe { *ptr.cast::<i32>() }))
+        // SAFETY: kind/len checks above prove this is an in-bounds, aligned i32 slot.
+        Ok(Some(unsafe {
+            *data.add(payload_offset(kind, index)).cast::<i32>()
+        }))
     }
 
     pub fn set_i32_element(&mut self, index: usize, value: i32) -> Result<bool, String> {
         let Some(kind @ (SafeArrayElementKind::I4 | SafeArrayElementKind::Int)) =
-            SafeArrayElementKind::from_vartype(self.element_vartype())
+            self.element_kind()
         else {
             return Ok(false);
         };
@@ -1571,190 +1448,187 @@ impl SafeArray {
                 "SAFEARRAY index {index} out of range for length {len}"
             ));
         }
-        // SAFETY: `self.0` is this value's live descriptor; reading `pv_data` is valid.
-        let data = unsafe { (*self.0.as_ptr()).pv_data.cast::<u8>() };
+        let data = self.data();
         if data.is_null() {
             return Err("SAFEARRAY has no materialized element payload".to_string());
         }
-        // SAFETY: kind/len checks above prove this is an in-bounds writable i32 slot.
-        let ptr = unsafe { data.add(payload_offset(kind, index)) };
-        // SAFETY: I4/Int selects a four-byte-aligned `i32` payload layout;
-        // the checked index and exclusive `&mut self` make this a unique live slot.
-        unsafe { *ptr.cast::<i32>() = value };
+        // SAFETY: kind/len checks above and exclusive `&mut self` make this a unique, aligned
+        // live i32 slot.
+        unsafe { *data.add(payload_offset(kind, index)).cast::<i32>() = value };
         Ok(true)
     }
 
     pub fn raw_safearray_ptr(&self) -> *mut core::ffi::c_void {
-        self.0.as_ptr().cast()
+        self.header.as_ptr().cast()
     }
 
-    /// Transfer this canonical descriptor to an owner that will eventually use
-    /// from_raw_safearray_owned to release it on the owning thread.
+    /// Transfer the descriptor to an owner that will release it with
+    /// [`Self::from_raw_safearray_owned`] (passing the same record layout) on the owning
+    /// thread. A UDT array's layout is not in the descriptor; the owner keeps it.
     pub fn into_raw_safearray_ptr(self) -> *mut core::ffi::c_void {
         let owner = core::mem::ManuallyDrop::new(self);
-        owner.0.as_ptr().cast()
+        // SAFETY: `owner` is never dropped, so moving its layout out once is sound.
+        drop(unsafe { core::ptr::read(&owner.record) });
+        owner.header.as_ptr().cast()
     }
 
     pub fn clone_raw_safearray_ptr(&self) -> *mut core::ffi::c_void {
         self.clone().into_raw_safearray_ptr()
     }
 
-    /// Construct an immediately destructor-suppressed view of a raw descriptor.
+    /// A non-owning view of a raw descriptor (with the record layout its owner keeps).
     ///
     /// # Safety
-    /// `raw` must remain a live OxVba-owned descriptor for the complete returned
-    /// view lifetime, with shared or exclusive access appropriate to its use.
-    unsafe fn borrow_raw_safearray(
+    /// `raw` must remain a live descriptor for the complete returned view lifetime, with
+    /// shared or exclusive access appropriate to its use, and `record` must be its elements'
+    /// layout when it is a VBA UDT array.
+    pub unsafe fn borrow_raw(
         raw: *mut core::ffi::c_void,
-    ) -> Option<core::mem::ManuallyDrop<Self>> {
-        // SAFETY: forwards this function's live OxVba descriptor contract.
-        unsafe { Self::borrow_raw_safearray_result(raw) }.ok()
-    }
-
-    /// Result-returning counterpart that preserves the public raw-helper
-    /// distinction between a null pointer and a non-OxVba descriptor.
-    ///
-    /// # Safety
-    /// Same as [`Self::borrow_raw_safearray`].
-    unsafe fn borrow_raw_safearray_result(
-        raw: *mut core::ffi::c_void,
-    ) -> Result<core::mem::ManuallyDrop<Self>, String> {
-        let header = NonNull::new(raw.cast::<RawSafeArray>())
-            .ok_or_else(|| "SAFEARRAY raw pointer is null".to_string())?;
-        // SAFETY: forwards this function's live OxVba descriptor contract.
-        unsafe { validated_header_prefix(header.as_ptr()) }
-            .ok_or_else(|| "SAFEARRAY raw pointer is not OxVba-owned".to_string())?;
-        Ok(core::mem::ManuallyDrop::new(Self(header)))
-    }
-
-    /// Takes ownership of a raw SAFEARRAY descriptor produced by this runtime.
-    ///
-    /// # Safety
-    ///
-    /// `raw` must be a descriptor pointer previously returned by
-    /// [`Self::clone_raw_safearray_ptr`] or by moving a [`SafeArray`] into a
-    /// [`Variant`](crate::Variant). This is not an external COM
-    /// `SafeArrayDestroy` adapter; non-OxVba descriptors are rejected when the
-    /// local owner prefix provenance marker is absent.
-    pub unsafe fn from_raw_safearray_owned(raw: *mut core::ffi::c_void) -> Option<Self> {
+        record: Option<Arc<VbaRecordLayout>>,
+    ) -> Option<BorrowedSafeArray> {
         let header = NonNull::new(raw.cast::<RawSafeArray>())?;
-        // SAFETY: this function's contract requires `raw` to be a descriptor
-        // produced by this runtime, so an owner prefix precedes the header in
-        // the same allocation; the magic/version check then rejects anything
-        // that lost OxVba provenance before ownership is adopted.
-        unsafe { validated_header_prefix(header.as_ptr()) }?;
-        Some(Self(header))
+        Some(BorrowedSafeArray(core::mem::ManuallyDrop::new(Self {
+            header,
+            record,
+        })))
     }
 
-    /// Clones a raw SAFEARRAY descriptor produced by this runtime.
+    /// # Safety
+    /// As [`Self::borrow_raw`].
+    unsafe fn borrow_raw_result(
+        raw: *mut core::ffi::c_void,
+        record: Option<Arc<VbaRecordLayout>>,
+    ) -> Result<BorrowedSafeArray, String> {
+        // SAFETY: forwarded from the caller.
+        unsafe { Self::borrow_raw(raw, record) }
+            .ok_or_else(|| "SAFEARRAY raw pointer is null".to_string())
+    }
+
+    /// Takes ownership of a raw SAFEARRAY descriptor: one this runtime handed out with
+    /// [`Self::into_raw_safearray_ptr`], or one oleaut32 allocated (a callee's
+    /// `SafeArrayCreate`, which Automation lets the caller own).
     ///
     /// # Safety
+    /// `raw` must be null or a live descriptor the caller owns, and `record` its elements'
+    /// layout when it is a VBA UDT array. Returns `None` (leaving `raw` alone) for null or for
+    /// an element type this runtime cannot hold.
+    pub unsafe fn from_raw_safearray_owned(
+        raw: *mut core::ffi::c_void,
+        record: Option<Arc<VbaRecordLayout>>,
+    ) -> Option<Self> {
+        let header = NonNull::new(raw.cast::<RawSafeArray>())?;
+        let array = Self { header, record };
+        if array.record.is_none() && array.element_kind().is_none() {
+            let _ = core::mem::ManuallyDrop::new(array);
+            return None;
+        }
+        Some(array)
+    }
+
+    /// Clones a raw SAFEARRAY descriptor.
     ///
-    /// `raw` must point at a live OxVba-owned descriptor. The clone receives
-    /// independent descriptor/payload storage; ownership of `raw` is unchanged.
-    pub unsafe fn clone_from_raw_safearray(raw: *mut core::ffi::c_void) -> Option<Self> {
+    /// # Safety
+    /// `raw` must be null or a live descriptor (with `record` its UDT layout, if any). The
+    /// clone receives independent descriptor/payload storage; ownership of `raw` is unchanged.
+    pub unsafe fn clone_from_raw_safearray(
+        raw: *mut core::ffi::c_void,
+        record: Option<Arc<VbaRecordLayout>>,
+    ) -> Option<Self> {
         // SAFETY: forwards this public helper's raw descriptor contract.
-        unsafe { Self::try_clone_from_raw_safearray(raw) }
+        unsafe { Self::try_clone_from_raw_safearray(raw, record) }
             .expect("cloning a live canonical SAFEARRAY should succeed")
     }
 
+    /// # Safety
+    /// As [`Self::clone_from_raw_safearray`].
     pub(crate) unsafe fn try_clone_from_raw_safearray(
         raw: *mut core::ffi::c_void,
+        record: Option<Arc<VbaRecordLayout>>,
     ) -> Result<Option<Self>, String> {
-        // SAFETY: forwards this function's raw descriptor contract; the returned
-        // ManuallyDrop view cannot claim source ownership during error or unwind.
-        let Some(borrowed) = (unsafe { Self::borrow_raw_safearray(raw) }) else {
+        // SAFETY: forwards this function's raw descriptor contract; the view cannot claim
+        // source ownership during error or unwind.
+        let Some(borrowed) = (unsafe { Self::borrow_raw(raw, record) }) else {
             return Ok(None);
         };
         crate::vba_record::owning_boundary("borrowed-safearray-clone")?;
         Ok(Some(borrowed.try_clone()?))
     }
 
-    /// Mutates one element of a raw SAFEARRAY descriptor produced by this runtime.
+    /// Mutates one element of a raw SAFEARRAY descriptor.
     ///
     /// # Safety
-    ///
-    /// `raw` must point at a live OxVba-owned descriptor, and the caller must
-    /// have exclusive access to that descriptor for the duration of this call.
+    /// `raw` must point at a live descriptor (with `record` its UDT layout, if any), and the
+    /// caller must have exclusive access to it for the duration of this call.
     pub unsafe fn set_raw_safearray_variant_element(
         raw: *mut core::ffi::c_void,
+        record: Option<Arc<VbaRecordLayout>>,
         index: usize,
         value: &Variant,
     ) -> Result<(), String> {
-        // SAFETY: forwards this function's exclusive raw descriptor contract.
-        let mut borrowed = unsafe { Self::borrow_raw_safearray_result(raw) }?;
+        // SAFETY: forwards this function's raw descriptor contract.
+        let mut borrowed = unsafe { Self::borrow_raw_result(raw, record) }?;
         crate::vba_record::owning_boundary("borrowed-safearray-variant-set")?;
         borrowed.set_variant_element(index, value)
     }
 
-    /// Reads one element of a raw SAFEARRAY descriptor produced by this runtime
-    /// **without cloning the array** — O(1) in array length (mirrors
-    /// [`Self::set_raw_safearray_variant_element`]). This is the read primitive
-    /// that keeps `arr(i)` element access constant-time instead of deep-cloning
-    /// the whole backing store per access.
+    /// Reads one element of a raw SAFEARRAY descriptor **without cloning the array** — O(1)
+    /// in array length, the read primitive that keeps `arr(i)` constant-time.
     ///
     /// # Safety
-    ///
-    /// `raw` must point at a live OxVba-owned descriptor, and the caller must
-    /// have shared access to that descriptor for the duration of this call.
+    /// `raw` must point at a live descriptor (with `record` its UDT layout, if any), and the
+    /// caller must have shared access to it for the duration of this call.
     pub unsafe fn raw_safearray_variant_element(
         raw: *mut core::ffi::c_void,
+        record: Option<Arc<VbaRecordLayout>>,
         index: usize,
     ) -> Result<Variant, String> {
-        // SAFETY: forwards this function's shared raw descriptor contract.
-        let borrowed = unsafe { Self::borrow_raw_safearray_result(raw) }?;
+        // SAFETY: forwards this function's raw descriptor contract.
+        let borrowed = unsafe { Self::borrow_raw_result(raw, record) }?;
         crate::vba_record::owning_boundary("borrowed-safearray-variant-read")?;
         borrowed.variant_element(index)
     }
 
-    /// Reads an I4/Int element from a raw SAFEARRAY descriptor produced by this runtime.
+    /// Reads an I4/Int element from a raw SAFEARRAY descriptor.
     ///
     /// # Safety
-    ///
-    /// `raw` must point at a live OxVba-owned descriptor, and the caller must
-    /// have shared access to that descriptor for the duration of this call.
-    /// Ownership of the descriptor remains with the caller.
+    /// `raw` must point at a live descriptor, and the caller must have shared access to it for
+    /// the duration of this call. Ownership of the descriptor remains with the caller.
     pub unsafe fn raw_safearray_i32_element(
         raw: *mut core::ffi::c_void,
         index: usize,
     ) -> Result<Option<i32>, String> {
-        // SAFETY: forwards this function's shared raw descriptor contract.
-        let borrowed = unsafe { Self::borrow_raw_safearray_result(raw) }?;
+        // SAFETY: forwards this function's raw descriptor contract.
+        let borrowed = unsafe { Self::borrow_raw_result(raw, None) }?;
         crate::vba_record::owning_boundary("borrowed-safearray-i32-read")?;
         borrowed.i32_element(index)
     }
 
-    /// Mutates an I4/Int element of a raw SAFEARRAY descriptor produced by this runtime.
+    /// Mutates an I4/Int element of a raw SAFEARRAY descriptor.
     ///
     /// # Safety
-    ///
-    /// `raw` must point at a live OxVba-owned descriptor, and the caller must
-    /// have exclusive access to that descriptor for the duration of this call.
-    /// Ownership of the descriptor remains with the caller.
+    /// `raw` must point at a live descriptor, and the caller must have exclusive access to it
+    /// for the duration of this call. Ownership of the descriptor remains with the caller.
     pub unsafe fn set_raw_safearray_i32_element(
         raw: *mut core::ffi::c_void,
         index: usize,
         value: i32,
     ) -> Result<bool, String> {
-        // SAFETY: forwards this function's exclusive raw descriptor contract.
-        let mut borrowed = unsafe { Self::borrow_raw_safearray_result(raw) }?;
+        // SAFETY: forwards this function's raw descriptor contract.
+        let mut borrowed = unsafe { Self::borrow_raw_result(raw, None) }?;
         crate::vba_record::owning_boundary("borrowed-safearray-i32-set")?;
         borrowed.set_i32_element(index, value)
     }
 
-    /// Reads the bounds and element count of a raw SAFEARRAY descriptor **without
-    /// cloning the element payload** — O(rank). Used with
-    /// [`Self::raw_safearray_variant_element`] to bounds-check and index an array
-    /// in place.
+    /// Reads the bounds and element count of a raw SAFEARRAY descriptor **without cloning the
+    /// element payload** — O(rank).
     ///
     /// # Safety
-    ///
-    /// Same contract as [`Self::raw_safearray_variant_element`].
+    /// `raw` must be null or point at a live descriptor, with shared access for this call.
     pub unsafe fn raw_safearray_bounds_len(
         raw: *mut core::ffi::c_void,
     ) -> Option<(Vec<SafeArrayBound>, usize)> {
-        // SAFETY: forwards this function's shared raw descriptor contract.
-        let borrowed = unsafe { Self::borrow_raw_safearray(raw) }?;
+        // SAFETY: forwarded from the caller.
+        let borrowed = unsafe { Self::borrow_raw(raw, None) }?;
         crate::vba_record::owning_boundary("borrowed-safearray-bounds").ok()?;
         let bounds = borrowed.raw_bounds();
         let len = bounds_total_len(&bounds).ok()?;
@@ -1766,37 +1640,71 @@ impl SafeArray {
     }
 
     pub(crate) fn try_clone(&self) -> Result<Self, String> {
-        // Rebuild from bounds + element vartype + values, deriving canonical
-        // feature flags and then restoring the descriptor's fixed-size bit.
-        let fixed = self.is_fixed_size();
         let bounds = self.raw_bounds();
-        if let Some(layout) = self.vba_record_layout() {
-            let len = self.len();
-            // SAFETY: this descriptor is live for the shared borrow.
-            let data = unsafe { (*self.0.as_ptr()).pv_data.cast::<u8>() };
-            if data.is_null() && len != 0 {
-                return Err("record SAFEARRAY has no materialized element payload".to_string());
+        let data = self.data();
+        let element = match &self.record {
+            Some(layout) => ElementType::Record(Arc::clone(layout)),
+            None => ElementType::Intrinsic(self.intrinsic_kind()?),
+        };
+        let mut copy = Self::allocate(&bounds, element, !data.is_null())?;
+        if !data.is_null() {
+            let target = copy.data();
+            for index in 0..self.len() {
+                match &self.record {
+                    Some(layout) => {
+                        crate::vba_record::owning_boundary("safearray-record-element-clone")?;
+                        let offset = record_payload_offset(layout, index);
+                        // SAFETY: both payloads hold `self.len()` records of `layout`; the
+                        // source record is copied into the zeroed target slot.
+                        unsafe {
+                            VbaRecord::clone_from_raw(data.add(offset), Arc::clone(layout))?
+                                .clone_into_raw(target.add(offset))?
+                        };
+                    }
+                    None => {
+                        crate::vba_record::owning_boundary("safearray-intrinsic-element-clone")?;
+                        let kind = self.intrinsic_kind()?;
+                        // SAFETY: both payloads hold `self.len()` elements of `kind`; the
+                        // zeroed target slot is written once.
+                        unsafe {
+                            let value = decode_element_variant(kind, data, index)?;
+                            encode_element_variant(kind, target, index, &value)?;
+                        }
+                    }
+                }
             }
-            let mut values = Vec::with_capacity(len);
-            for index in 0..len {
-                // SAFETY: non-null `data` holds `len` records with this layout;
-                // `index < len` selects one live record copied without consuming it.
-                values.push(unsafe {
-                    VbaRecord::clone_from_raw(
-                        data.add(record_payload_offset(&layout, index)),
-                        Arc::clone(&layout),
-                    )
-                }?);
-            }
-            return Ok(Self::from_vba_records_nd(bounds, layout, values)?.with_fixed_size(fixed));
         }
-        Ok(match self.try_variant_elements()? {
-            Some(values) => {
-                Self::from_bounds_and_variants(bounds, self.element_vartype(), Some(values))?
-            }
-            None => Self::from_bounds_and_variants(bounds, self.element_vartype(), None)?,
-        }
-        .with_fixed_size(fixed))
+        copy.copy_descriptor_traits_from(self);
+        Ok(copy)
+    }
+}
+
+/// The element size of an allocated array.
+fn element_size_of(array: &SafeArray) -> usize {
+    // SAFETY: `array.header` is a live descriptor.
+    unsafe { (*array.header.as_ptr()).cb_elements as usize }
+}
+
+/// A [`SafeArray`] view over a descriptor owned elsewhere: dropping it releases only its
+/// handle on the record layout, never the descriptor.
+pub struct BorrowedSafeArray(core::mem::ManuallyDrop<SafeArray>);
+
+impl core::ops::Deref for BorrowedSafeArray {
+    type Target = SafeArray;
+    fn deref(&self) -> &SafeArray {
+        &self.0
+    }
+}
+
+impl core::ops::DerefMut for BorrowedSafeArray {
+    fn deref_mut(&mut self) -> &mut SafeArray {
+        &mut self.0
+    }
+}
+
+impl Drop for BorrowedSafeArray {
+    fn drop(&mut self) {
+        drop(self.0.record.take());
     }
 }
 
@@ -1810,59 +1718,38 @@ impl Clone for SafeArray {
 impl Drop for SafeArray {
     fn drop(&mut self) {
         let len = self.len();
-        // SAFETY: `self.0` is the live descriptor this value owns; reading
-        // `pv_data` is valid until the deallocation below.
-        let data = unsafe { (*self.0.as_ptr()).pv_data };
-        if let Some(layout) = self.vba_record_layout() {
-            // SAFETY: `data` is null or the payload built by
-            // `prepare_record_payload_from_records` with this descriptor's
-            // layout and exactly `len` initialized elements.
-            unsafe { free_record_payload(&layout, data, len) };
-        } else {
-            let kind = self.element_kind();
-            // SAFETY: `data` is null or the payload built by
-            // `prepare_payload_from_variants` with this descriptor's `kind` and
-            // exactly `len` initialized elements; `drop` runs at most once, so
-            // the elements and the buffer are released exactly once.
-            unsafe { free_payload(kind, data, len) };
-        }
-        // SAFETY: `self.0` is this value's own live OxVba descriptor allocated by
-        // `alloc_header`, satisfying `validated_header_prefix`'s contract.
-        let prefix = unsafe { validated_header_prefix(self.0.as_ptr()) };
-        // The layout comes from the rank recorded at allocation time.
-        // SAFETY: a validated prefix is live and initialized.
-        let alloc_dims = prefix.map_or(self.dimensions() as usize, |p| unsafe {
-            (*p).alloc_dims as usize
-        });
-        if let Ok(layout) = owner_layout(alloc_dims) {
-            if let Some(prefix) = prefix {
-                // SAFETY: `validated_header_prefix` returned `Some`, so `prefix` points
-                // at the live owner prefix; reading `record_layout` is in-bounds.
-                let record_layout = unsafe { (*prefix).record_layout };
-                if !record_layout.is_null() {
-                    // SAFETY: non-null record_layout pointers are stored from
-                    // Arc::into_raw in alloc_header; this releases the owner
-                    // prefix's strong reference exactly once.
-                    unsafe { drop(Arc::from_raw(record_layout)) };
+        let data = self.data();
+        if !data.is_null() {
+            if let Some(layout) = &self.record {
+                for index in 0..len {
+                    // SAFETY: each `index < len` names a live (or zeroed) record of `layout`,
+                    // dropped exactly once.
+                    unsafe {
+                        VbaRecord::drop_raw(data.add(record_payload_offset(layout, index)), layout)
+                    };
                 }
+            } else if let Some(kind) = self.element_kind()
+                && kind.owns_resources()
+            {
+                for index in 0..len {
+                    // SAFETY: each `index < len` names a live (or zeroed) element of `kind`,
+                    // dropped exactly once.
+                    unsafe { drop_element(kind, data, index) };
+                }
+                // SAFETY: the payload has `len * cbElements` bytes. Zeroed, oleaut32's own
+                // element clear in `SafeArrayDestroy` finds nothing left to release.
+                unsafe { core::ptr::write_bytes(data, 0, len * element_size_of(self)) };
             }
-            // SAFETY: `alloc_header` placed the descriptor exactly
-            // `size_of::<RawSafeArrayOwnerPrefix>()` bytes into the owner
-            // allocation, so this `sub` recovers the allocation's base pointer
-            // without leaving the allocation.
-            let owner = unsafe {
-                self.0
-                    .as_ptr()
-                    .cast::<u8>()
-                    .sub(core::mem::size_of::<RawSafeArrayOwnerPrefix>())
-            };
-            crate::live_counters::safearray_freed();
-            // SAFETY: `owner` is the pointer `alloc_zeroed` returned in
-            // `alloc_header`, and `owner_layout(alloc_dims)` recomputes
-            // the layout used there (`c_dims` was written from `bounds.len()`);
-            // nothing touches the allocation after this point.
-            unsafe { std::alloc::dealloc(owner, layout) };
+            #[cfg(test)]
+            note_payload_free();
         }
+        // SAFETY: this value owns the live descriptor. Clearing `FADF_STATIC` lets the
+        // allocator free the payload; nothing touches the descriptor after `destroy`.
+        unsafe {
+            (*self.header.as_ptr()).f_features &= !FADF_STATIC_VALUE;
+            sys::destroy(self.header.as_ptr());
+        }
+        crate::live_counters::safearray_freed();
     }
 }
 
@@ -1876,7 +1763,7 @@ impl core::fmt::Debug for SafeArray {
                 &format_args!("{:#06X}", self.element_vartype()),
             )
             .field("bounds", &self.bounds())
-            .field("elements", &self.variant_elements())
+            .field("elements", &self.try_variant_elements().ok().flatten())
             .finish()
     }
 }
@@ -1939,8 +1826,8 @@ mod tests {
         VT_BOOL_VALUE, VT_BSTR_VALUE, VT_CY_VALUE, VT_DATE_VALUE, VT_DECIMAL_VALUE,
         VT_DISPATCH_VALUE, VT_I2_VALUE, VT_I4_VALUE, VT_RECORD_VALUE, VT_UNKNOWN_VALUE,
         VT_VARIANT_VALUE, advance_subscripts, array_len_from_tag, array_tag_from_safe_array,
-        element_index, element_subscripts, header_prefix_ptr, marshal_dispatch_argument,
-        payload_allocation_events, preserved_element_index, raw_bounds_slice, safe_array_from_tag,
+        element_index, element_subscripts, marshal_dispatch_argument, payload_allocation_events,
+        preserved_element_index, raw_bounds_slice, safe_array_from_tag,
     };
     use crate::live_counters::thread_live_handle_counts;
     use crate::vba_record::{
@@ -2080,7 +1967,7 @@ mod tests {
     fn record_array_element_bytes(array: &SafeArray, layout: &VbaRecordLayout) -> Vec<u8> {
         // SAFETY: this helper is restricted to the one-element record SAFEARRAY
         // constructed above; its payload is non-null and exactly `layout.size()`.
-        let data = unsafe { (*array.0.as_ptr()).pv_data.cast::<u8>() };
+        let data = unsafe { (*array.header.as_ptr()).pv_data.cast::<u8>() };
         assert!(!data.is_null());
         // SAFETY: the descriptor owns one initialized record of this exact layout.
         unsafe { core::slice::from_raw_parts(data, layout.size()) }.to_vec()
@@ -2090,9 +1977,9 @@ mod tests {
         array: &SafeArray,
     ) -> (usize, u16, u16, u32, u32, usize, Vec<SafeArrayBound>) {
         // SAFETY: `array.0` is its live descriptor for the duration of this borrow.
-        let header = unsafe { &*array.0.as_ptr() };
+        let header = unsafe { &*array.header.as_ptr() };
         (
-            array.0.as_ptr() as usize,
+            array.header.as_ptr() as usize,
             header.c_dims,
             header.f_features,
             header.cb_elements,
@@ -2141,7 +2028,7 @@ mod tests {
         let successful = construct(values).expect("uninjected SAFEARRAY payload construction");
         let success_trace = take_owning_boundary_trace();
         assert_eq!(successful.len(), expected_elements);
-        assert_eq!(success_trace.last(), Some(&"safearray-header-adoption"));
+        assert_eq!(success_trace.first(), Some(&"safearray-header-adoption"));
         let element_boundaries = success_trace
             .iter()
             .filter(|boundary| **boundary == element_boundary)
@@ -2276,7 +2163,7 @@ mod tests {
             SafeArray::from_variants_nd(bounds.clone(), (0..6).map(Variant::from_i32).collect());
         assert_eq!(array.bounds(), Some(bounds.clone()));
         // SAFETY: the live descriptor has two bounds.
-        let stored = unsafe { raw_bounds_slice(array.0.as_ptr()) };
+        let stored = unsafe { raw_bounds_slice(array.header.as_ptr()) };
         assert_eq!(stored, [bounds[1], bounds[0]]);
     }
 
@@ -2348,24 +2235,86 @@ mod tests {
     }
 
     #[test]
-    fn raw_safearray_adoption_requires_calcvba_owner_prefix() {
+    fn raw_safearray_adoption_reads_the_element_type_from_the_descriptor() {
         let array = SafeArray::from_variants(vec![Variant::from_i32(4)]);
         let raw = array.clone_raw_safearray_ptr();
-        let prefix = header_prefix_ptr(raw.cast());
-        let original_magic = unsafe { (*prefix).magic };
-        unsafe {
-            (*prefix.cast_mut()).magic = 0;
-        }
-        assert!(unsafe { SafeArray::from_raw_safearray_owned(raw) }.is_none());
-        unsafe {
-            (*prefix.cast_mut()).magic = original_magic;
-        }
-        let adopted = unsafe { SafeArray::from_raw_safearray_owned(raw) }
-            .expect("restored OxVba-owned SAFEARRAY should be adopted");
+        // A descriptor that names no element type (a UDT array without its layout) is
+        // refused and left with its owner.
+        let header = raw.cast::<RawSafeArray>();
+        let features = unsafe { (*header).f_features };
+        unsafe { (*header).f_features = 0 };
+        assert!(unsafe { SafeArray::from_raw_safearray_owned(raw, None) }.is_none());
+        unsafe { (*header).f_features = features };
+        let adopted = unsafe { SafeArray::from_raw_safearray_owned(raw, None) }
+            .expect("a Variant SAFEARRAY is adopted");
         assert_eq!(
             adopted.variant_elements().expect("elements"),
             vec![Variant::from_i32(4)]
         );
+    }
+
+    /// `fFeatures`, `cbElements` and the hidden bytes as Excel x64 shows them (2026-11-14,
+    /// `temp/variant-layout-probe/arr6b`): Long `&H80` with vt 3 at `psa-4`, String `&H180`,
+    /// Variant `&H880`, Object `&H440` with IID_IDispatch at `psa-16`, a UDT `0` with no vt,
+    /// and a fixed-size array adds `FADF_STATIC | FADF_FIXEDSIZE` (`&H92`, `&H892`, `&H12`).
+    #[test]
+    fn descriptors_carry_the_features_and_hidden_bytes_vba_writes() {
+        fn hidden(array: &SafeArray) -> [u8; 16] {
+            let mut out = [0u8; 16];
+            unsafe {
+                out.copy_from_slice(core::slice::from_raw_parts(
+                    super::hidden_bytes(array.header.as_ptr()),
+                    16,
+                ))
+            };
+            out
+        }
+        fn cb(array: &SafeArray) -> u32 {
+            unsafe { (*array.header.as_ptr()).cb_elements }
+        }
+        let pointer = core::mem::size_of::<usize>() as u32;
+        let long = SafeArray::from_typed_variants(VT_I4_VALUE, vec![Variant::from_i32(1)]).unwrap();
+        assert_eq!((long.feature_flags(), cb(&long)), (0x80, 4));
+        assert_eq!(hidden(&long)[12..], 3u32.to_le_bytes());
+        let fixed = long.clone().with_fixed_size(true);
+        assert_eq!(fixed.feature_flags(), 0x92);
+        assert_eq!(fixed.with_fixed_size(false).feature_flags(), 0x80);
+
+        let text =
+            SafeArray::from_typed_variants(VT_BSTR_VALUE, vec![Variant::from_string("a")]).unwrap();
+        assert_eq!((text.feature_flags(), cb(&text)), (0x180, pointer));
+        assert_eq!(hidden(&text)[12..], 8u32.to_le_bytes());
+
+        let variants = SafeArray::from_variants(vec![Variant::empty()]).with_fixed_size(true);
+        assert_eq!(
+            (variants.feature_flags(), cb(&variants) as usize),
+            (0x892, core::mem::size_of::<Variant>())
+        );
+
+        let objects =
+            SafeArray::from_typed_variants(VT_DISPATCH_VALUE, vec![Variant::nothing()]).unwrap();
+        assert_eq!((objects.feature_flags(), cb(&objects)), (0x440, pointer));
+        assert_eq!(
+            hidden(&objects),
+            [0, 4, 2, 0, 0, 0, 0, 0, 0xC0, 0, 0, 0, 0, 0, 0, 0x46]
+        );
+        assert_eq!(objects.element_vartype(), VT_DISPATCH_VALUE);
+        assert_eq!(objects.variant_element(0).unwrap(), Variant::nothing());
+        assert_eq!(objects.clone().feature_flags(), 0x440);
+
+        let (_, layout) = transactional_record_layouts();
+        let records = SafeArray::from_default_records_nd(
+            vec![SafeArrayBound { count: 2, lower: 0 }],
+            Arc::clone(&layout),
+        )
+        .unwrap();
+        assert_eq!(
+            (records.feature_flags(), cb(&records) as usize),
+            (0, layout.size())
+        );
+        assert_eq!(hidden(&records), [0; 16]);
+        assert_eq!(records.element_vartype(), VT_RECORD_VALUE);
+        assert_eq!(records.with_fixed_size(true).feature_flags(), 0x12);
     }
 
     #[test]
@@ -2382,10 +2331,10 @@ mod tests {
             fixed.feature_flags() & FADF_FIXEDSIZE_VALUE,
             FADF_FIXEDSIZE_VALUE
         );
-        // The non-fixed FADF metadata is untouched alongside the fixed bit.
+        // The non-fixed FADF metadata is untouched alongside the fixed bits.
         assert_eq!(
             fixed.feature_flags(),
-            dynamic.feature_flags() | FADF_FIXEDSIZE_VALUE
+            dynamic.feature_flags() | FADF_FIXEDSIZE_VALUE | super::FADF_STATIC_VALUE
         );
 
         // The descriptor flag travels with the value copy (Variant assignment,
@@ -2406,7 +2355,7 @@ mod tests {
             .expect("typed array")
             .with_fixed_size(true);
         let raw = fixed.clone_raw_safearray_ptr();
-        let adopted = unsafe { SafeArray::from_raw_safearray_owned(raw) }
+        let adopted = unsafe { SafeArray::from_raw_safearray_owned(raw, None) }
             .expect("OxVba-owned descriptor should adopt");
         assert!(adopted.is_fixed_size());
     }
@@ -2472,19 +2421,6 @@ mod tests {
         }
         assert_eq!(thread_live_handle_counts(), before);
         assert_eq!(payload_allocation_events(), payloads);
-    }
-
-    #[test]
-    fn safe_array_dimension_layout_drop_uses_allocation_rank() {
-        // A descriptor whose c_dims is rewritten after allocation must still
-        // free with the layout it was allocated with.
-        let array =
-            SafeArray::from_shape_and_variants(unit_bounds(300), vec![Variant::from_i32(1)])
-                .expect("rank 300");
-        // SAFETY: the descriptor is live and owned; only c_dims is rewritten
-        // and Drop must not read it for the layout.
-        unsafe { (*array.0.as_ptr()).c_dims = 44 };
-        drop(array);
     }
 
     #[test]
@@ -2623,11 +2559,9 @@ mod tests {
         )
         .expect("record array");
 
+        // A VBA UDT array names no element type in its descriptor (Excel: fFeatures 0).
         assert_eq!(array.element_vartype(), VT_RECORD_VALUE);
-        assert_eq!(
-            array.feature_flags(),
-            FADF_HAVEVARTYPE_VALUE | super::FADF_RECORD_VALUE
-        );
+        assert_eq!(array.feature_flags(), 0);
         assert!(array.vba_record_layout().is_some());
         assert_eq!(
             array
@@ -2789,7 +2723,7 @@ mod tests {
                     inject_owning_boundary_failure(nth, mode);
                     let outcome = catch_unwind(AssertUnwindSafe(|| {
                         // SAFETY: `raw` is the live descriptor owned by `source`.
-                        unsafe { SafeArray::raw_safearray_variant_element(raw, 0) }
+                        unsafe { SafeArray::raw_safearray_variant_element(raw, None, 0) }
                     }));
                     clear_owning_boundary_failure();
                     let expected_trace = if nth == 0 {
@@ -2817,18 +2751,22 @@ mod tests {
                     assert_borrowed_bstr_array_source(&source, &descriptor, &original_bytes);
                 }
 
-                for nth in 0..=1 {
+                // A clone allocates the descriptor and payload, then copies each element.
+                let clone_trace = [
+                    "borrowed-safearray-clone",
+                    "safearray-header-adoption",
+                    "safearray-intrinsic-payload-allocation",
+                    "safearray-intrinsic-element-clone",
+                    "borrowed-bstr-clone",
+                ];
+                for nth in 0..clone_trace.len() {
                     inject_owning_boundary_failure(nth, mode);
                     let outcome = catch_unwind(AssertUnwindSafe(|| {
                         // SAFETY: `raw` remains a live shared descriptor for this clone.
-                        unsafe { SafeArray::try_clone_from_raw_safearray(raw) }
+                        unsafe { SafeArray::try_clone_from_raw_safearray(raw, None) }
                     }));
                     clear_owning_boundary_failure();
-                    let expected_trace = if nth == 0 {
-                        vec!["borrowed-safearray-clone"]
-                    } else {
-                        vec!["borrowed-safearray-clone", "borrowed-bstr-clone"]
-                    };
+                    let expected_trace = clone_trace[..=nth].to_vec();
                     assert_eq!(take_owning_boundary_trace(), expected_trace);
                     match (mode, outcome) {
                         (OwningFailureMode::Error, Ok(Err(error))) => assert!(
@@ -2856,7 +2794,7 @@ mod tests {
                         // SAFETY: `raw` is the live, exclusively borrowed descriptor
                         // owned by `source` throughout this mutation attempt.
                         unsafe {
-                            SafeArray::set_raw_safearray_variant_element(raw, 0, &replacement)
+                            SafeArray::set_raw_safearray_variant_element(raw, None, 0, &replacement)
                         }
                     }));
                     clear_owning_boundary_failure();
@@ -3032,7 +2970,7 @@ mod tests {
                 inject_owning_boundary_failure(0, mode);
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
                     // SAFETY: `composite` owns this live descriptor throughout.
-                    unsafe { SafeArray::try_clone_from_raw_safearray(composite_raw) }
+                    unsafe { SafeArray::try_clone_from_raw_safearray(composite_raw, None) }
                 }));
                 clear_owning_boundary_failure();
                 assert_eq!(
@@ -3226,7 +3164,7 @@ mod tests {
         .expect("typed dispatch array");
         assert_eq!(
             dispatch.feature_flags(),
-            FADF_HAVEVARTYPE_VALUE | FADF_DISPATCH_VALUE
+            super::FADF_HAVEIID_VALUE | FADF_DISPATCH_VALUE
         );
 
         let unknown = SafeArray::from_typed_variants(
@@ -3238,7 +3176,7 @@ mod tests {
         .expect("typed unknown array");
         assert_eq!(
             unknown.feature_flags(),
-            FADF_HAVEVARTYPE_VALUE | FADF_UNKNOWN_VALUE
+            super::FADF_HAVEIID_VALUE | FADF_UNKNOWN_VALUE
         );
     }
 

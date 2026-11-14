@@ -3187,6 +3187,26 @@ pub(crate) unsafe fn clear_jit_withevents_owners_before_releasing_values<'a>(
 // same-thread handle produced by `exec_state_as_raw`; any additional raw pointer
 // and length arguments must identify the initialized, nonaliasing storage described
 // by their typed parameters for the complete synchronous call.
+/// Store `value` into a VBA slot. A slot holding a `VT_BYREF` reference (a ByRef Variant
+/// parameter bound to a typed variable) stores into the referenced variable, coerced to its
+/// type as VM3's `write_loc` does (`"abc"` into a Long raises 13).
+pub(crate) fn store_slot(state: *mut RawExecState, slot: &mut Variant, value: Variant) -> i32 {
+    let Some((vt, _)) = slot.byref_target() else {
+        *slot = value;
+        return ST_OK;
+    };
+    match calcvba_eval::arith::coerce_for_byref_target(&value, vt) {
+        // SAFETY: a reference's target is the caller's live variable, not borrowed here.
+        Ok(coerced) => match unsafe { slot.write_through(coerced) } {
+            Ok(()) => ST_OK,
+            // SAFETY: only the active owning entry's error state is updated.
+            Err(_) => unsafe { rt_raise_runtime_error_number(state, 13) },
+        },
+        // SAFETY: only the active owning entry's error state is updated.
+        Err(error) => unsafe { rt_raise_runtime_error_number(state, error.code) },
+    }
+}
+
 pub(crate) unsafe fn replace_jit_slot_with_cleanup(
     state: *mut RawExecState,
     slot: &mut Variant,
@@ -3199,7 +3219,10 @@ pub(crate) unsafe fn replace_jit_slot_with_cleanup(
     if status != ST_OK {
         return status;
     }
-    *slot = value;
+    let status = store_slot(state, slot, value);
+    if status != ST_OK {
+        return status;
+    }
     ST_OK
 }
 
@@ -3287,7 +3310,10 @@ pub(crate) unsafe extern "C" fn rt_jit_withevents_get_to_slot(
         let Some(slot) = slot_mut(run, dst_area as u32, dst_index as u32) else {
             return ST_FAULT;
         };
-        *slot = value;
+        let status = store_slot(state, slot, value);
+        if status != ST_OK {
+            return status;
+        }
         ST_OK
     })
 }
@@ -3351,7 +3377,10 @@ pub(crate) unsafe extern "C" fn rt_jit_withevents_set_to_slot(
         let Some(slot) = slot_mut(run, dst_area as u32, dst_index as u32) else {
             return ST_FAULT;
         };
-        *slot = value;
+        let status = store_slot(state, slot, value);
+        if status != ST_OK {
+            return status;
+        }
         ST_OK
     })
 }
@@ -3397,7 +3426,10 @@ pub(crate) unsafe extern "C" fn rt_jit_withevents_clear_owner_to_slot(
         let Some(slot) = slot_mut(run, dst_area as u32, dst_index as u32) else {
             return ST_FAULT;
         };
-        *slot = Variant::from_i32(0);
+        let status = store_slot(state, slot, Variant::from_i32(0));
+        if status != ST_OK {
+            return status;
+        }
         ST_OK
     })
 }
@@ -3459,7 +3491,10 @@ pub(crate) unsafe extern "C" fn rt_jit_withevents_first_owner_to_slot(
         let Some(slot) = slot_mut(run, dst_area as u32, dst_index as u32) else {
             return ST_FAULT;
         };
-        *slot = value;
+        let status = store_slot(state, slot, value);
+        if status != ST_OK {
+            return status;
+        }
         ST_OK
     })
 }
@@ -3502,7 +3537,10 @@ pub(crate) unsafe extern "C" fn rt_jit_withevents_next_owner_to_slot(
         let Some(slot) = slot_mut(run, dst_area as u32, dst_index as u32) else {
             return ST_FAULT;
         };
-        *slot = value;
+        let status = store_slot(state, slot, value);
+        if status != ST_OK {
+            return status;
+        }
         ST_OK
     })
 }
@@ -3655,7 +3693,10 @@ pub(crate) unsafe extern "C" fn rt_jit_project_field_get_to_slot(
         let Some(slot) = slot_mut(run, dst_area as u32, dst_index as u32) else {
             return ST_FAULT;
         };
-        *slot = value;
+        let status = store_slot(state, slot, value);
+        if status != ST_OK {
+            return status;
+        }
         ST_OK
     })
 }
@@ -4127,7 +4168,10 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
                 let Some(slot) = slot_mut(run, area, index) else {
                     return ST_FAULT;
                 };
-                *slot = enumerator;
+                let status = store_slot(state, slot, enumerator);
+                if status != ST_OK {
+                    return status;
+                }
             }
             return ST_OK;
         }
@@ -4151,7 +4195,10 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
             let Some(slot) = slot_mut(run, area, index) else {
                 return ST_FAULT;
             };
-            *slot = value;
+            let status = store_slot(state, slot, value);
+            if status != ST_OK {
+                return status;
+            }
         }
         return ST_OK;
     }
@@ -4231,7 +4278,10 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
         let Some(slot) = slot_mut(run, area, index) else {
             return ST_FAULT;
         };
-        *slot = value;
+        let status = store_slot(state, slot, value);
+        if status != ST_OK {
+            return status;
+        }
     }
     ST_OK
 }
@@ -4646,13 +4696,19 @@ pub(crate) unsafe fn invoke_foreign_member_to_slot_for_jit(
         let Some(slot) = slot_mut(run, arg.area as u32, arg.index as u32) else {
             return ST_FAULT;
         };
-        *slot = value.clone();
+        let status = store_slot(state, slot, value.clone());
+        if status != ST_OK {
+            return status;
+        }
     }
     if let Some((area, index)) = dst {
         let Some(slot) = slot_mut(run, area, index) else {
             return ST_FAULT;
         };
-        *slot = value;
+        let status = store_slot(state, slot, value);
+        if status != ST_OK {
+            return status;
+        }
     }
     ST_OK
 }
@@ -4828,13 +4884,19 @@ pub(crate) unsafe extern "C" fn rt_jit_declare_call_to_slot(
             let Some(slot) = slot_mut(run, arg.area as u32, arg.index as u32) else {
                 return ST_FAULT;
             };
-            *slot = value.clone();
+            let status = store_slot(state, slot, value.clone());
+            if status != ST_OK {
+                return status;
+            }
         }
         if let Some((area, index)) = dst {
             let Some(slot) = slot_mut(run, area, index) else {
                 return ST_FAULT;
             };
-            *slot = ret;
+            let status = store_slot(state, slot, ret);
+            if status != ST_OK {
+                return status;
+            }
         }
         ST_OK
     })
@@ -5002,7 +5064,10 @@ pub(crate) unsafe extern "C" fn rt_jit_addr_of_to_slot(
         let Some(slot) = slot_mut(unsafe { &mut *run }, dst_area as u32, dst_index as u32) else {
             return ST_FAULT;
         };
-        *slot = Variant::from_i64(address as i64);
+        let status = store_slot(state, slot, Variant::from_i64(address as i64));
+        if status != ST_OK {
+            return status;
+        }
         ST_OK
     })
 }
@@ -5210,7 +5275,10 @@ pub(crate) unsafe extern "C" fn rt_jit_project_type_name_to_slot(
         let Some(slot) = slot_mut(run, dst_area as u32, dst_index as u32) else {
             return ST_FAULT;
         };
-        *slot = out;
+        let status = store_slot(state, slot, out);
+        if status != ST_OK {
+            return status;
+        }
         ST_OK
     })
 }
@@ -5254,7 +5322,10 @@ pub(crate) unsafe extern "C" fn rt_jit_new_record_to_slot(
         let Some(slot) = slot_mut(run, dst_area, dst_index) else {
             return ST_FAULT;
         };
-        *slot = Variant::from_vba_record(record);
+        let status = store_slot(state, slot, Variant::from_vba_record(record));
+        if status != ST_OK {
+            return status;
+        }
         ST_OK
     })
 }
@@ -5294,7 +5365,10 @@ pub(crate) unsafe extern "C" fn rt_jit_record_get_to_slot(
         let Some(slot) = slot_mut(run, dst_area as u32, dst_index as u32) else {
             return ST_FAULT;
         };
-        *slot = value;
+        let status = store_slot(state, slot, value);
+        if status != ST_OK {
+            return status;
+        }
         ST_OK
     })
 }
@@ -5558,7 +5632,10 @@ pub(crate) unsafe extern "C" fn rt_jit_record_array_get_to_slot(
         let Some(slot) = slot_mut(run, dst_area as u32, dst_index as u32) else {
             return ST_FAULT;
         };
-        *slot = value;
+        let status = store_slot(state, slot, value);
+        if status != ST_OK {
+            return status;
+        }
         ST_OK
     })
 }
@@ -5714,7 +5791,10 @@ pub(crate) unsafe extern "C" fn rt_jit_project_field_array_get_to_slot(
         let Some(slot) = slot_mut(run, dst_area as u32, dst_index as u32) else {
             return ST_FAULT;
         };
-        *slot = value;
+        let status = store_slot(state, slot, value);
+        if status != ST_OK {
+            return status;
+        }
         ST_OK
     })
 }
@@ -6413,7 +6493,10 @@ pub(crate) unsafe extern "C" fn rt_jit_array_redim_to_slot(
         let Some(slot) = slot_mut(run, dst_area, dst_index) else {
             return ST_FAULT;
         };
-        *slot = Variant::from_safearray(array);
+        let status = store_slot(state, slot, Variant::from_safearray(array));
+        if status != ST_OK {
+            return status;
+        }
         ST_OK
     })
 }
@@ -6437,7 +6520,8 @@ pub(crate) unsafe extern "C" fn rt_jit_array_erase_variant_slot(
         let Some(current) = slot_ref(run_ref, array_area, array_index) else {
             return ST_FAULT;
         };
-        let was_array = current.vtype() == VarType::ArrayVariant;
+        // A ByRef Variant parameter bound to a typed array refers to it (`VT_BYREF | VT_ARRAY`).
+        let was_array = current.array_element_vartype().is_some();
         let erased_element_vartype = current.array_element_vartype().unwrap_or(VT_VARIANT_VALUE);
         let fixed = current
             .as_safearray()
@@ -6505,7 +6589,10 @@ pub(crate) unsafe extern "C" fn rt_jit_array_erase_variant_slot(
                 }
             }
         } else {
-            *slot = replacement;
+            let status = store_slot(state, slot, replacement);
+            if status != ST_OK {
+                return status;
+            }
         }
         ST_OK
     })
@@ -6559,7 +6646,10 @@ pub(crate) unsafe extern "C" fn rt_jit_array_get_i32_1d_to_slot(
         let Some(slot) = slot_mut(run, dst_area, dst_index) else {
             return ST_FAULT;
         };
-        *slot = value;
+        let status = store_slot(state, slot, value);
+        if status != ST_OK {
+            return status;
+        }
         ST_OK
     })
 }
@@ -6636,7 +6726,10 @@ pub(crate) unsafe extern "C" fn rt_jit_array_get_variant_to_slot(
                 let Some(slot) = slot_mut(run, dst_area, dst_index) else {
                     return ST_FAULT;
                 };
-                *slot = value;
+                let status = store_slot(state, slot, value);
+                if status != ST_OK {
+                    return status;
+                }
                 return ST_OK;
             }
             // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
@@ -6672,7 +6765,10 @@ pub(crate) unsafe extern "C" fn rt_jit_array_get_variant_to_slot(
                     let Some(slot) = slot_mut(run, dst_area, dst_index) else {
                         return ST_FAULT;
                     };
-                    *slot = Variant::from_i32(value);
+                    let status = store_slot(state, slot, Variant::from_i32(value));
+                    if status != ST_OK {
+                        return status;
+                    }
                     return ST_OK;
                 }
                 Ok(None) => {}
@@ -6692,7 +6788,10 @@ pub(crate) unsafe extern "C" fn rt_jit_array_get_variant_to_slot(
         let Some(slot) = slot_mut(run, dst_area, dst_index) else {
             return ST_FAULT;
         };
-        *slot = value;
+        let status = store_slot(state, slot, value);
+        if status != ST_OK {
+            return status;
+        }
         ST_OK
     })
 }
@@ -6973,7 +7072,10 @@ pub(crate) unsafe extern "C" fn rt_jit_bound_to_slot(
         let Some(slot) = slot_mut(run, dst_area, dst_index) else {
             return ST_FAULT;
         };
-        *slot = Variant::from_i32(value);
+        let status = store_slot(state, slot, Variant::from_i32(value));
+        if status != ST_OK {
+            return status;
+        }
         ST_OK
     })
 }
@@ -7301,7 +7403,10 @@ pub(crate) unsafe extern "C" fn rt_jit_unbox_to_slot(
         let Some(slot) = slot_mut(run, dst_area, dst_index) else {
             return ST_FAULT;
         };
-        *slot = src;
+        let status = store_slot(state, slot, src);
+        if status != ST_OK {
+            return status;
+        }
         ST_OK
     })
 }
@@ -7454,7 +7559,10 @@ pub(crate) unsafe extern "C" fn rt_jit_concat_v_to_slot(
         let Some(slot) = slot_mut(run, dst_area, dst_index) else {
             return ST_FAULT;
         };
-        *slot = out;
+        let status = store_slot(state, slot, out);
+        if status != ST_OK {
+            return status;
+        }
         ST_OK
     })
 }
@@ -8086,7 +8194,10 @@ pub(crate) unsafe extern "C" fn rt_jit_direct_exit_noarg_func(
             let Some(value) = return_value else {
                 return ST_FAULT;
             };
-            *slot = value;
+            let status = store_slot(state, slot, value);
+            if status != ST_OK {
+                return status;
+            }
         }
         status
     })
@@ -8640,7 +8751,12 @@ pub(crate) unsafe extern "C" fn rt_jit_direct_enter_proc_i32(
                     if slot_alias_ref(run, alias).is_none() {
                         return ST_FAULT;
                     }
-                    frame.aliases[index] = Some(alias);
+                    // A typed variable bound to a ByRef Variant parameter is referred to by a
+                    // `VT_BYREF` cell, as VBA binds it; a Variant is the caller's own cell.
+                    match byref_variant_reference(run, alias, &param.ty) {
+                        Some(reference) => frame.locals[index] = reference,
+                        None => frame.aliases[index] = Some(alias),
+                    }
                 }
                 _ => return ST_FAULT,
             }
@@ -8849,7 +8965,12 @@ pub(crate) unsafe extern "C" fn rt_jit_call_extern_proc_i32(
                         if slot_alias_ref(run, alias).is_none() {
                             return ST_FAULT;
                         }
-                        frame.aliases[index] = Some(alias);
+                        // A typed variable bound to a ByRef Variant parameter is referred to by a
+                        // `VT_BYREF` cell, as VBA binds it; a Variant is the caller's own cell.
+                        match byref_variant_reference(run, alias, &param.ty) {
+                            Some(reference) => frame.locals[index] = reference,
+                            None => frame.aliases[index] = Some(alias),
+                        }
                     }
                     _ => return ST_FAULT,
                 }
@@ -8935,7 +9056,10 @@ pub(crate) unsafe extern "C" fn rt_jit_call_extern_proc_i32(
             let Some(slot) = slot_mut(unsafe { &mut *run }, area, index) else {
                 return ST_FAULT;
             };
-            *slot = value;
+            let status = store_slot(state, slot, value);
+            if status != ST_OK {
+                return status;
+            }
         }
         status
     })
@@ -9120,7 +9244,12 @@ pub(crate) unsafe extern "C" fn rt_jit_call_proc_i32(
                         if slot_alias_ref(run, alias).is_none() {
                             return ST_FAULT;
                         }
-                        frame.aliases[index] = Some(alias);
+                        // A typed variable bound to a ByRef Variant parameter is referred to by a
+                        // `VT_BYREF` cell, as VBA binds it; a Variant is the caller's own cell.
+                        match byref_variant_reference(run, alias, &param.ty) {
+                            Some(reference) => frame.locals[index] = reference,
+                            None => frame.aliases[index] = Some(alias),
+                        }
                     }
                     _ => return ST_FAULT,
                 }
@@ -9206,7 +9335,10 @@ pub(crate) unsafe extern "C" fn rt_jit_call_proc_i32(
             let Some(slot) = slot_mut(unsafe { &mut *run }, area, index) else {
                 return ST_FAULT;
             };
-            *slot = value;
+            let status = store_slot(state, slot, value);
+            if status != ST_OK {
+                return status;
+            }
         }
         status
     })
@@ -9461,7 +9593,10 @@ pub(crate) unsafe extern "C" fn rt_jit_lib_invoke_to_slot(
             let Some(slot) = slot_mut(run, area, index) else {
                 return ST_FAULT;
             };
-            *slot = out;
+            let status = store_slot(state, slot, out);
+            if status != ST_OK {
+                return status;
+            }
         }
         ST_OK
     })

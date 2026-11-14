@@ -2689,7 +2689,13 @@ impl<'h> Vm3<'h> {
                     }
                 }
                 OxArg::ByRef(place) => {
-                    aliases.insert(i, self.resolve(place));
+                    let param_ty = callee.locals.get(i).map(|local| &local.ty);
+                    match self.byref_reference(place, param_ty)? {
+                        Some(reference) => locals[i] = reference,
+                        None => {
+                            aliases.insert(i, self.resolve(place));
+                        }
+                    }
                 }
                 OxArg::Omitted => {
                     if let Some(slot) = locals.get_mut(i) {
@@ -3729,7 +3735,16 @@ impl<'h> Vm3<'h> {
                     {
                         return Err(Vm3Error::Fault(Fault::new(13, "Type mismatch")));
                     }
-                    frame.aliases.insert(li, loc);
+                    let param_ty = self.exec.programs[target_prog].program.funcs[proc.0]
+                        .locals
+                        .get(li)
+                        .map(|local| local.ty.clone());
+                    match self.byref_reference(place, param_ty.as_ref())? {
+                        Some(reference) => frame.locals[li] = reference,
+                        None => {
+                            frame.aliases.insert(li, loc);
+                        }
+                    }
                 }
                 OxArg::Omitted => {
                     if let Some(slot) = frame.locals.get_mut(li) {
@@ -5311,6 +5326,16 @@ impl<'h> Vm3<'h> {
             )));
         }
         self.param_array_aliases.remove(&loc);
+        // A ByRef Variant parameter bound to a typed variable stores into that variable,
+        // coerced to its type (Excel: `"12"` into a Long is 12, `"abc"` raises 13).
+        if let Some(cell) = self.read_loc_ref(loc)?
+            && let Some((vt, _)) = cell.byref_target()
+        {
+            let coerced = arith::coerce_for_byref_target(&v, vt).map_err(arith_fault)?;
+            // SAFETY: a reference cell's target is the caller's live variable, not borrowed here.
+            return unsafe { cell.write_through(coerced) }
+                .map_err(|e| Vm3Error::Fault(Fault::new(13, e)));
+        }
         let old = match loc {
             Loc::Global(p, g) => {
                 let slot = self.exec.programs[p].globals.get_mut(g).ok_or_else(|| {
@@ -5547,6 +5572,41 @@ impl<'h> Vm3<'h> {
                 .map(Some)
                 .ok_or_else(|| Vm3Error::Malformed(format!("local [{fi}][{li}] out of range"))),
             Loc::Temp(fi, ti) => Ok(self.frames.get_mut(fi).and_then(|f| f.temps.get_mut(ti))),
+        }
+    }
+
+    /// The `VT_BYREF` cell a ByRef Variant parameter gets for `place`, as VBA binds it: a typed
+    /// variable (scalar, String, object or typed array) is referred to by its storage (Excel:
+    /// a Long is `&H4003` pointing at the Long), while a Variant variable is the caller's own
+    /// cell (`None`: the parameter aliases it).
+    fn byref_reference(
+        &mut self,
+        place: &OxPlace,
+        param_ty: Option<&OxTy>,
+    ) -> Result<Option<Variant>, Vm3Error> {
+        if param_ty != Some(&OxTy::Variant) || !self.place_ty(place).is_byref_variant_reference() {
+            return Ok(None);
+        }
+        let loc = self.resolve(place);
+        let Some(cell) = self.read_loc_mut(loc)? else {
+            return Ok(None);
+        };
+        let vt = cell.core().raw_vt();
+        let target = Variant::payload_ptr(cell);
+        // SAFETY: the caller's cell is stable storage (a frame slot or a global) that outlives
+        // the callee's activation; the typed variable's cell keeps its declared type `vt`.
+        Ok(Some(unsafe { Variant::by_ref(vt, target) }))
+    }
+
+    /// The declared type of `place` in the current frame.
+    fn place_ty(&self, place: &OxPlace) -> OxTy {
+        let frame = self.frames.last().expect("executing frame");
+        let program = self.exec.programs[frame.prog].program;
+        let function = &program.funcs[frame.func.0];
+        match place {
+            OxPlace::Local(id) => function.locals[id.0].ty.clone(),
+            OxPlace::Temp(id) => function.temps[id.0].clone(),
+            OxPlace::Global(id) => program.globals[id.0].ty.clone(),
         }
     }
 

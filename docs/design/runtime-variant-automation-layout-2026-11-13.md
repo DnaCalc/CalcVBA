@@ -484,6 +484,22 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
      parameter becomes a `VT_BYREF | vt` cell pointing at it, and ByRef parameters bound to
      elements and fields alias the storage instead of copying in and out.
    - **7c.** `ReDim` keeps the descriptor (`SafeArrayRedim` in place), as VBA does.
+   *As built 2026-11-14 (7a).* As planned; also `VT_ERROR` cells hold the SCODE
+   (`CVErr(2042)` is `&H800A07FA`), and the native lane addresses typed array elements. The Excel
+   comparison `variant_layout_excel` now runs with the native Declare lane, so its probe reads real
+   memory; VM3 matched every layout case there after 7a.
+   *As built 2026-11-14 (7b1).* `VarType::ByRef` is a `VT_BYREF | vt` cell (`VT_BYREF | VT_ARRAY |
+   vt` for a typed array): cloning it reads the target, `Variant::write_through` stores a value of the
+   target's type, and `calcvba_eval::arith::coerce_for_byref_target` applies VBA's Let coercion
+   first. A typed variable (scalar, String, object, typed array) passed ByRef to a Variant parameter
+   becomes such a cell in the callee's slot, decided from the caller's declared type
+   (`OxTy::is_byref_variant_reference`) by VM3's `byref_reference` and the JIT's
+   `byref_variant_reference`; VM3's `write_loc` and the JIT's `store_slot` write through it, and the
+   in-place array accessors see through it, so `ReDim`, element writes, `For Each` and `Erase` act on
+   the caller's array. Excel probe `temp/variant-layout-probe/byref7b` (engine test
+   `byref_variant_references`) and the `BIND`/`ASSIGN` cases of the Excel comparison match on both
+   backends; the JIT now runs that comparison too. Still copies: typed array elements and UDT fields
+   (7b2), class-typed objects (VBA uses a temporary there), fixed-length strings.
 8. **One COM marshaller** (5.1), replacing stack A with stack B's model; `ComValue` and the
    legacy transports deleted; JIT WithEvents; `VT_UNKNOWN` kept distinct from `VT_DISPATCH`
    (`VarType` reports 13). With it the interpreter lanes can run the OS `Scripting.Dictionary`,

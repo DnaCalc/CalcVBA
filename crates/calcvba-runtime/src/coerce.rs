@@ -300,6 +300,7 @@ pub fn coerce_to(value: &Variant, target: VarType) -> Result<Variant, String> {
 
 pub fn variant_to_vba_string(value: &Variant) -> Result<BStr, String> {
     let text = match value.vtype() {
+        VarType::ByRef => return variant_to_vba_string(&value.try_clone()?),
         VarType::Empty => BStr::empty(),
         VarType::Integer => BStr::from(format!("{}", value.as_i16().unwrap_or(0))),
         VarType::Long => BStr::from(format!("{}", value.as_i32().unwrap_or(0))),
@@ -477,6 +478,7 @@ fn format_vba_f64(v: f64) -> String {
 /// intrinsics tab-separate them).
 pub fn print_display_text(value: &Variant) -> String {
     match value.vtype() {
+        VarType::ByRef => print_display_text(&value.clone()),
         VarType::String => value
             .as_bstr()
             .map(|text| text.as_str().to_string())

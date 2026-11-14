@@ -2698,6 +2698,11 @@ pub fn is_numeric(args: &[Variant]) -> LibResult<Variant> {
     // and False for `Boolean`/`Date`/`Null`/`Object`/`Error`/arrays/`Nothing`
     // (`coerce_to(.., Double)` would wrongly accept Boolean and Date).
     let result = match v.vtype() {
+        VarType::ByRef => {
+            // Cloning a reference reads its target (VBA's `VariantCopyInd`).
+            let target = v.clone();
+            return is_numeric(std::slice::from_ref(&target));
+        }
         VarType::String => is_numeric_string(&as_str(v)?),
         VarType::Empty
         | VarType::Integer

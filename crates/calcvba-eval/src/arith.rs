@@ -1082,6 +1082,30 @@ pub fn coerce_string(v: &Variant) -> R {
     coerce_to(v, VarType::String).map_err(ArithError::from)
 }
 
+/// Coerce `v` for a store through a `VT_BYREF | vt` reference, as VBA's Let into the referenced
+/// variable would: a Long target takes `"12"` as 12 and `2.5` as 2 (banker's rounding); `"abc"`
+/// raises 13, `Null` 94 and `1E20` 6. A Variant target takes any value; an object target only an
+/// object; an array target only an array of the same element type.
+pub fn coerce_for_byref_target(v: &Variant, vt: u16) -> R {
+    let numeric = |target| coerce_numeric(v, target);
+    match vt {
+        0x02 => numeric(NumericCoerceTarget::Integer),
+        0x03 => numeric(NumericCoerceTarget::Long),
+        0x04 => numeric(NumericCoerceTarget::Single),
+        0x05 => numeric(NumericCoerceTarget::Double),
+        0x06 => numeric(NumericCoerceTarget::Currency),
+        0x07 => numeric(NumericCoerceTarget::Date),
+        0x0B => numeric(NumericCoerceTarget::Boolean),
+        0x11 => numeric(NumericCoerceTarget::Byte),
+        0x14 => numeric(NumericCoerceTarget::LongLong),
+        0x08 => coerce_string(v),
+        0x0C => Ok(v.clone()),
+        0x09 | 0x0D if v.vtype() == VarType::Object => Ok(v.clone()),
+        vt if vt & 0x2000 != 0 && v.core().raw_vt() == vt => Ok(v.clone()),
+        _ => Err(ArithError::type_mismatch()),
+    }
+}
+
 /// Pad with trailing spaces or truncate to a fixed UTF-16 code-unit length.
 pub fn coerce_fixed_string(v: &Variant, len: usize) -> R {
     let text = coerce_string(v)?;

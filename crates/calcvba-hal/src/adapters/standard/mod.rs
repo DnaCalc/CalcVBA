@@ -784,6 +784,7 @@ impl StandardHostServices {
         field: &'static str,
     ) -> HalResult<i32> {
         let value = match value.vtype() {
+            VarType::ByRef => return self.variant_to_i32(&value.clone(), capability, op, field),
             VarType::Empty | VarType::Null => 0,
             VarType::Boolean => i32::from(value.as_bool().ok_or_else(|| {
                 HalError::adapter_fault(

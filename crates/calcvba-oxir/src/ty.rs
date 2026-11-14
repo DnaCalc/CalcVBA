@@ -129,6 +129,18 @@ pub enum OxTy {
 }
 
 impl OxTy {
+    /// Whether a variable of this type passed to a ByRef `Variant` parameter is referred to
+    /// by a `VT_BYREF` cell pointing at its storage (a scalar, String, object or typed array, as
+    /// VBA binds it). A Variant is passed as the cell itself; a fixed-length string or a UDT
+    /// never this way.
+    pub fn is_byref_variant_reference(&self) -> bool {
+        match self {
+            Self::Variant | Self::FixedStr(_) | Self::Record(_) => false,
+            Self::Array(element, _) => !matches!(element.as_ref(), Self::Variant | Self::Record(_)),
+            _ => true,
+        }
+    }
+
     /// Whether this is the dynamic top type.
     pub fn is_variant(&self) -> bool {
         matches!(self, OxTy::Variant)

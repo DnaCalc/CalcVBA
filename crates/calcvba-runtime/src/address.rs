@@ -91,6 +91,18 @@ unsafe fn step_into(at: Location, step: &AddressStep) -> Result<Location, i32> {
         (Location::Cell(cell), AddressStep::Index(subscripts)) => {
             // SAFETY: `cell` is a live engine cell.
             let cell = unsafe { &*cell };
+            // A `VT_BYREF | VT_ARRAY` reference indexes the array it refers to.
+            if let Some((vt, target)) = cell.byref_target()
+                && vt & 0x2000 != 0
+            {
+                // SAFETY: the reference's target is a live `SAFEARRAY*` slot.
+                let raw = unsafe { target.cast::<*mut core::ffi::c_void>().read() };
+                // SAFETY: the slot holds a live descriptor or null; the view only reads it.
+                let Some(array) = (unsafe { SafeArray::borrow_raw(raw, None) }) else {
+                    return Err(SUBSCRIPT_OUT_OF_RANGE);
+                };
+                return array_element(&array, subscripts);
+            }
             if cell.vtype() != VarType::ArrayVariant {
                 return Err(TYPE_MISMATCH);
             }
@@ -210,6 +222,11 @@ impl Location {
             (Self::Cell(cell), AddressKind::Bstr) => {
                 // SAFETY: a live engine cell.
                 let cell_ref = unsafe { &**cell };
+                // A reference to a String: the BSTR it refers to.
+                if let Some((0x08, target)) = cell_ref.byref_target() {
+                    // SAFETY: the reference's target is a live BSTR slot.
+                    return Some(unsafe { target.cast::<*mut u16>().read() }.expose_provenance());
+                }
                 (cell_ref.vtype() == VarType::String)
                     .then(|| cell_ref.raw_bstr_ptr().expose_provenance())
             }

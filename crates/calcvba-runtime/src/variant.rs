@@ -33,6 +33,9 @@ pub enum VarType {
     UnsignedInt = 0x0017,
     Record = 0x0024,
     ArrayVariant = 0x200C,
+    /// `VT_BYREF | vt`: a reference to storage of type `vt` (a typed variable bound to a ByRef
+    /// Variant parameter, as VBA binds it). Reading the cell reads the target.
+    ByRef = 0x4000,
     ProcRef = 0xFFF0,
 }
 
@@ -63,10 +66,21 @@ impl VarType {
             raw if raw & 0xF000 == 0x2000 && is_array_element_vartype(raw & 0x0FFF) => {
                 Some(Self::ArrayVariant)
             }
+            raw if raw & 0xF000 == 0x4000 && is_byref_target_vartype(raw & 0x0FFF) => {
+                Some(Self::ByRef)
+            }
+            raw if raw & 0xF000 == 0x6000 && is_array_element_vartype(raw & 0x0FFF) => {
+                Some(Self::ByRef)
+            }
             0xFFF0 => Some(Self::ProcRef),
             _ => None,
         }
     }
+}
+
+/// Target types a `VT_BYREF` (non-array) tag may carry.
+const fn is_byref_target_vartype(vt: u16) -> bool {
+    matches!(vt, 0x02..=0x0C | 0x0E | 0x10..=0x15 | 0x16 | 0x17)
 }
 
 /// Element types a `VT_ARRAY` tag may carry (a SAFEARRAY's `vt`).
@@ -356,7 +370,7 @@ impl VariantCore {
             | VarType::Error
             | VarType::UnsignedLong
             | VarType::UnsignedInt => 4,
-            VarType::String | VarType::Object | VarType::ArrayVariant => {
+            VarType::String | VarType::Object | VarType::ArrayVariant | VarType::ByRef => {
                 core::mem::size_of::<*const ()>()
             }
             // `BRECORD`: `pvRecord` here and `pRecInfo` after it (in the tail on 64-bit targets,
@@ -1130,6 +1144,138 @@ impl Variant {
         unsafe { ObjectRef::from_raw_iunknown_addref(bytes_to_raw_iunknown(self.data_bytes())) }
     }
 
+    /// A `VT_BYREF | vt` cell referring to storage of type `vt` at `target` (for `VT_ARRAY | vt`
+    /// the `SAFEARRAY*` slot), as VBA passes a typed variable to a ByRef Variant parameter. The
+    /// cell owns nothing.
+    ///
+    /// # Safety
+    /// `target` is live storage of type `vt` for as long as the cell is read or written.
+    pub unsafe fn by_ref(vt: u16, target: *mut u8) -> Self {
+        Self::from_core(VariantCore::from_raw_parts(
+            0x4000 | vt,
+            0,
+            0,
+            0,
+            exposed_pointer_to_bytes(target.cast_const()),
+        ))
+    }
+
+    /// The target type (`vt` without `VT_BYREF`, `VT_ARRAY` kept) and address of a `VT_BYREF`
+    /// cell.
+    pub fn byref_target(&self) -> Option<(u16, *mut u8)> {
+        if self.vtype() != VarType::ByRef {
+            return None;
+        }
+        Some((
+            self.core.raw_vt() & !0x4000,
+            core::ptr::with_exposed_provenance_mut(exposed_pointer_address(self.data_bytes())),
+        ))
+    }
+
+    /// The value a `VT_BYREF` cell refers to (VBA's `VariantCopyInd`).
+    fn byref_value(&self) -> Result<Variant, String> {
+        let (vt, ptr) = self
+            .byref_target()
+            .ok_or_else(|| "not a VT_BYREF cell".to_string())?;
+        if vt & 0x2000 != 0 {
+            // SAFETY: a VT_BYREF | VT_ARRAY cell refers to a live SAFEARRAY* slot.
+            let raw = unsafe { ptr.cast::<*mut core::ffi::c_void>().read() };
+            // SAFETY: the slot holds a live descriptor or null.
+            return Ok(
+                match unsafe { SafeArray::try_clone_from_raw_safearray(raw, None) }? {
+                    Some(array) => Self::from_safearray(array),
+                    None => Self::unallocated_array(vt & 0x0FFF),
+                },
+            );
+        }
+        // SAFETY: a VT_BYREF cell refers to live storage of type `vt` (`by_ref`'s contract).
+        unsafe {
+            Ok(match vt {
+                0x02 => Self::from_i16(ptr.cast::<i16>().read_unaligned()),
+                0x03 => Self::from_i32(ptr.cast::<i32>().read_unaligned()),
+                0x04 => Self::from_f32(ptr.cast::<f32>().read_unaligned()),
+                0x05 => Self::from_f64(ptr.cast::<f64>().read_unaligned()),
+                0x06 => Self::from_currency_scaled_i64(ptr.cast::<i64>().read_unaligned()),
+                0x07 => Self::from_date_f64(ptr.cast::<f64>().read_unaligned()),
+                0x08 => Self::from_string(
+                    borrow_raw_bstr(ptr.cast::<*mut u16>().read_unaligned()).try_to_owned()?,
+                ),
+                0x09 | 0x0D => {
+                    let raw = ptr.cast::<*mut RawRuntimeIUnknown>().read_unaligned();
+                    match ObjectRef::from_raw_iunknown_addref(raw) {
+                        Some(object) => Self::from_object_ref(object),
+                        None => Self::nothing(),
+                    }
+                }
+                0x0A => Self::from_scode(ptr.cast::<i32>().read_unaligned()),
+                0x0B => Self::from_bool(ptr.cast::<i16>().read_unaligned() != 0),
+                0x0C => (*ptr.cast::<Variant>()).try_clone()?,
+                0x11 => Self::from_u8(ptr.read()),
+                0x14 => Self::from_i64(ptr.cast::<i64>().read_unaligned()),
+                other => return Err(format!("unsupported VT_BYREF target type {other:#06X}")),
+            })
+        }
+    }
+
+    /// Store `value` into the storage a `VT_BYREF` cell refers to. `value` already has the
+    /// target's type (the caller applies VBA's assignment coercion); the target's previous
+    /// value is released.
+    ///
+    /// # Safety
+    /// This is a `VT_BYREF` cell whose target is live and not otherwise borrowed.
+    pub unsafe fn write_through(&self, value: Variant) -> Result<(), String> {
+        let (vt, ptr) = self
+            .byref_target()
+            .ok_or_else(|| "not a VT_BYREF cell".to_string())?;
+        let mismatch = || format!("VT_BYREF {vt:#06X} target given {:?}", value.vtype());
+        if vt & 0x2000 != 0 {
+            if value.vtype() != VarType::ArrayVariant || value.core.raw_vt() != vt {
+                return Err(mismatch());
+            }
+            let raw = match value.try_as_safearray()? {
+                Some(array) => array.into_raw_safearray_ptr(),
+                None => core::ptr::null_mut(),
+            };
+            // SAFETY: the target is a live SAFEARRAY* slot that owns its previous descriptor.
+            unsafe {
+                let previous = ptr.cast::<*mut core::ffi::c_void>().replace(raw);
+                drop(SafeArray::from_raw_safearray_owned(previous, None));
+            }
+            return Ok(());
+        }
+        // SAFETY: the target is live storage of type `vt` (this fn's contract); each arm writes
+        // exactly that type and releases what the slot owned.
+        unsafe {
+            match vt {
+                0x0C => drop(ptr.cast::<Variant>().replace(value)),
+                0x08 => {
+                    let text = value.try_as_bstr()?.ok_or_else(mismatch)?;
+                    let previous = ptr.cast::<*mut u16>().replace(text.into_raw_bstr());
+                    drop(BStr::from_raw_bstr(previous));
+                }
+                0x09 | 0x0D => {
+                    if value.vtype() != VarType::Object {
+                        return Err(mismatch());
+                    }
+                    let raw = value
+                        .as_object_ref()
+                        .map_or(core::ptr::null_mut(), ObjectRef::into_raw_iunknown);
+                    let previous = ptr.cast::<*mut RawRuntimeIUnknown>().replace(raw);
+                    drop(ObjectRef::from_raw_iunknown_owned(previous));
+                }
+                _ => {
+                    let target = Self::from_core(VariantCore::from_raw_parts(vt, 0, 0, 0, [0; 8]));
+                    if value.vtype() != target.vtype() {
+                        return Err(mismatch());
+                    }
+                    let width = value.core.value_width();
+                    ptr.copy_from_nonoverlapping(value.data_bytes().as_ptr(), width);
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn from_safearray(value: SafeArray) -> Self {
         // The tag carries the element type: `VT_ARRAY | vt`, as Automation stores it.
         let vt = 0x2000 | value.element_vartype();
@@ -1187,6 +1333,9 @@ impl Variant {
     }
 
     pub fn try_as_safearray(&self) -> Result<Option<SafeArray>, String> {
+        if self.vtype() == VarType::ByRef {
+            return self.byref_value()?.try_as_safearray();
+        }
         if self.vtype() != VarType::ArrayVariant {
             return Ok(None);
         }
@@ -1204,10 +1353,23 @@ impl Variant {
 
     /// The `SAFEARRAY*` an array cell holds (null when unallocated or not an array).
     pub fn raw_safearray_ptr(&self) -> *mut core::ffi::c_void {
-        if self.vtype() != VarType::ArrayVariant {
-            return core::ptr::null_mut();
+        self.array_descriptor().unwrap_or(core::ptr::null_mut())
+    }
+
+    /// The `SAFEARRAY*` this cell holds, or refers to through `VT_BYREF | VT_ARRAY` (null when
+    /// unallocated); `None` for a non-array. In-place element access uses it, so a ByRef Variant
+    /// parameter bound to a typed array reads and writes the caller's array.
+    fn array_descriptor(&self) -> Option<*mut core::ffi::c_void> {
+        match self.vtype() {
+            VarType::ArrayVariant => Some(bytes_to_raw_safearray(self.data_bytes())),
+            VarType::ByRef => {
+                let (vt, target) = self.byref_target()?;
+                // SAFETY: a `VT_BYREF | VT_ARRAY` reference targets a live `SAFEARRAY*` slot.
+                (vt & 0x2000 != 0)
+                    .then(|| unsafe { target.cast::<*mut core::ffi::c_void>().read() })
+            }
+            _ => None,
         }
-        bytes_to_raw_safearray(self.data_bytes())
     }
 
     /// The BSTR a String cell holds (null for `vbNullString` or a non-String).
@@ -1216,6 +1378,13 @@ impl Variant {
             return core::ptr::null_mut();
         }
         bytes_to_raw_bstr(self.data_bytes())
+    }
+
+    /// A pointer to the union payload (offset 8) of the cell at `cell`, with the cell's
+    /// provenance: the storage a `VT_BYREF` reference to a typed variable points at.
+    pub fn payload_ptr(cell: *mut Variant) -> *mut u8 {
+        cell.cast::<u8>()
+            .wrapping_add(calcvba_automation::abi::PAYLOAD_OFFSET)
     }
 
     /// The address of this cell's union payload (offset 8): where a typed variable's value,
@@ -1273,26 +1442,24 @@ impl Variant {
     }
 
     pub fn array_element_vartype(&self) -> Option<u16> {
-        if self.vtype() != VarType::ArrayVariant {
-            return None;
-        }
+        self.array_descriptor()?;
         Some(self.core.raw_vt() & 0x0FFF)
     }
 
     pub fn set_safearray_element(&mut self, index: usize, value: &Variant) -> Result<(), String> {
-        if self.vtype() != VarType::ArrayVariant {
+        let Some(raw) = self.array_descriptor() else {
             return Err(format!(
                 "expected Array Variant for SAFEARRAY element write, got {:?}",
                 self.vtype()
             ));
-        }
+        };
         // SAFETY: `&mut self` proves exclusive access to this Variant. An
         // ArrayVariant owns its raw SAFEARRAY descriptor until drop, so mutating
         // one element through the descriptor preserves ownership and aliases no
         // other safe reference to the same descriptor.
         unsafe {
             SafeArray::set_raw_safearray_variant_element(
-                bytes_to_raw_safearray(self.data_bytes()),
+                raw,
                 self.record_array_layout(),
                 index,
                 value,
@@ -1301,15 +1468,11 @@ impl Variant {
     }
 
     pub fn safearray_i32_element(&self, index: usize) -> Option<Result<Option<i32>, String>> {
-        if self.vtype() != VarType::ArrayVariant {
-            return None;
-        }
+        let raw = self.array_descriptor()?;
         // SAFETY: vtype was checked to be ArrayVariant, so the payload is this
         // Variant's owned raw OxVba descriptor. The raw helper borrows without
         // taking ownership and returns `Ok(None)` for non-i32 element arrays.
-        Some(unsafe {
-            SafeArray::raw_safearray_i32_element(bytes_to_raw_safearray(self.data_bytes()), index)
-        })
+        Some(unsafe { SafeArray::raw_safearray_i32_element(raw, index) })
     }
 
     pub fn set_safearray_i32_element(
@@ -1317,19 +1480,11 @@ impl Variant {
         index: usize,
         value: i32,
     ) -> Option<Result<bool, String>> {
-        if self.vtype() != VarType::ArrayVariant {
-            return None;
-        }
+        let raw = self.array_descriptor()?;
         // SAFETY: `&mut self` proves exclusive access to this ArrayVariant's
         // owned descriptor. The raw helper returns `Ok(false)` for non-i32
         // element arrays so callers can keep the generic fallback.
-        Some(unsafe {
-            SafeArray::set_raw_safearray_i32_element(
-                bytes_to_raw_safearray(self.data_bytes()),
-                index,
-                value,
-            )
-        })
+        Some(unsafe { SafeArray::set_raw_safearray_i32_element(raw, index, value) })
     }
 
     /// Reads one SAFEARRAY element **without cloning the whole array** — O(1) in
@@ -1338,30 +1493,22 @@ impl Variant {
     /// via [`Self::as_safearray`] deep-clones the entire backing store (O(N)) and
     /// must not be used for per-element access in a loop.
     pub fn safearray_element(&self, index: usize) -> Option<Result<Variant, String>> {
-        if self.vtype() != VarType::ArrayVariant {
-            return None;
-        }
+        let raw = self.array_descriptor()?;
         // SAFETY: vtype was checked to be ArrayVariant, so the payload is this
         // Variant's owned raw OxVba descriptor; the raw reader borrows it without
         // taking ownership (leaving this Variant the owner until drop).
         Some(unsafe {
-            SafeArray::raw_safearray_variant_element(
-                bytes_to_raw_safearray(self.data_bytes()),
-                self.record_array_layout(),
-                index,
-            )
+            SafeArray::raw_safearray_variant_element(raw, self.record_array_layout(), index)
         })
     }
 
     /// Reads the array's bounds and element count **without cloning the element
     /// payload** — O(rank). `None` if this Variant does not hold an array.
     pub fn safearray_bounds_len(&self) -> Option<(Vec<SafeArrayBound>, usize)> {
-        if self.vtype() != VarType::ArrayVariant {
-            return None;
-        }
+        let raw = self.array_descriptor()?;
         // SAFETY: as in `safearray_element` — borrow the owned descriptor without
         // taking ownership.
-        unsafe { SafeArray::raw_safearray_bounds_len(bytes_to_raw_safearray(self.data_bytes())) }
+        unsafe { SafeArray::raw_safearray_bounds_len(raw) }
     }
 
     /// Read the next VBA For Each element without cloning the array payload; `For Each`
@@ -1545,6 +1692,8 @@ impl Variant {
                     },
                 })
             }
+            // Reading a reference reads its target (VBA's `VariantCopyInd`).
+            VarType::ByRef => self.byref_value(),
             VarType::Record => {
                 crate::vba_record::owning_boundary("variant-record-clone")?;
                 Ok(match self.record_cell() {
@@ -1641,6 +1790,10 @@ impl core::fmt::Debug for Variant {
             VarType::Record => {
                 dbg.field("record", &self.record_cell());
             }
+            VarType::ByRef => {
+                dbg.field("by_ref", &format_args!("{:#06X}", self.core.raw_vt()))
+                    .field("target", &self.byref_value().ok());
+            }
             _ => {
                 dbg.field("data", &self.data_bytes());
             }
@@ -1663,6 +1816,7 @@ impl PartialEq for Variant {
                     == bytes_to_raw_iunknown(other.data_bytes())
             }
             VarType::ArrayVariant => self.as_safearray() == other.as_safearray(),
+            VarType::ByRef => self.byref_target() == other.byref_target(),
             VarType::Record => match (self.record_cell(), other.record_cell()) {
                 (Some(RecordCell::Com(left)), Some(RecordCell::Com(right))) => {
                     left.record_info_ptr() == right.record_info_ptr()

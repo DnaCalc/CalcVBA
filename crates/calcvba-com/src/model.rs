@@ -102,6 +102,8 @@ impl ComValue {
     /// carrier.
     pub fn from_variant(value: &Variant) -> Result<Self, String> {
         Ok(match value.vtype() {
+            // A reference carries its target's value (VBA's `VariantCopyInd`).
+            calcvba_runtime::VarType::ByRef => return Self::from_variant(&value.clone()),
             calcvba_runtime::VarType::Empty => Self::Empty,
             calcvba_runtime::VarType::Null => Self::Null,
             calcvba_runtime::VarType::Integer => Self::I32(

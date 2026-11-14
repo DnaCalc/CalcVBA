@@ -732,6 +732,7 @@ fn consume_bootstrap_flag(
 
 fn format_variant_value(value: &Variant) -> String {
     match value.vtype() {
+        VarType::ByRef => format_variant_value(&value.clone()),
         VarType::Empty => "empty".to_string(),
         VarType::Null => "null".to_string(),
         VarType::Error => format!("error:{}", value.as_error_code().unwrap_or(0)),

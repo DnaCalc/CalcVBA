@@ -970,6 +970,39 @@ pub(crate) fn resolve_slot_alias(run: &JitRun, mut alias: SlotAlias) -> Option<S
     None
 }
 
+/// The `VT_BYREF` cell a ByRef `Variant` parameter gets for the caller slot `alias` when
+/// that slot is a typed variable (VM3's `byref_reference` decides the same way); `None` when
+/// the parameter aliases the slot.
+pub(crate) fn byref_variant_reference(
+    run: &mut JitRun,
+    alias: SlotAlias,
+    param_ty: &OxTy,
+) -> Option<Variant> {
+    if *param_ty != OxTy::Variant {
+        return None;
+    }
+    let owner = alias.frame?;
+    let index = alias.index as usize;
+    let declared = match alias.area {
+        AREA_LOCAL => run.frames.get(owner)?.local_types.get(index)?.clone(),
+        AREA_TEMP => run.frames.get(owner)?.temp_types.get(index)?.clone(),
+        AREA_GLOBAL if owner < run.program_count && !run.programs.is_null() => {
+            // SAFETY: `programs` holds `program_count` images of programs the run borrows.
+            let program = unsafe { &*(*run.programs.add(owner)).program };
+            program.globals.get(index)?.ty.clone()
+        }
+        _ => return None,
+    };
+    if !declared.is_byref_variant_reference() {
+        return None;
+    }
+    let cell = slot_alias_mut(run, alias)?;
+    let vt = cell.core().raw_vt();
+    // SAFETY: the caller's slot is stable storage that outlives the callee's activation, and
+    // a typed variable's cell keeps its declared type `vt`.
+    Some(unsafe { Variant::by_ref(vt, Variant::payload_ptr(cell)) })
+}
+
 pub(crate) fn slot_mut(run: &mut JitRun, area: u32, index: u32) -> Option<&mut Variant> {
     let alias = current_frame_slot(run, area, index)?;
     slot_alias_mut(run, alias)
@@ -1853,7 +1886,12 @@ pub(crate) unsafe fn seed_jit_member_frame_args(
                 if slot_alias_ref(run, alias).is_none() {
                     return ST_FAULT;
                 }
-                frame.aliases[param_index] = Some(alias);
+                // A typed variable bound to a ByRef Variant parameter is referred to by a
+                // `VT_BYREF` cell, as VBA binds it; a Variant is the caller's own cell.
+                match byref_variant_reference(run, alias, &param.ty) {
+                    Some(reference) => frame.locals[param_index] = reference,
+                    None => frame.aliases[param_index] = Some(alias),
+                }
             }
             _ => return ST_FAULT,
         }

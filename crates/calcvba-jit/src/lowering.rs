@@ -5252,7 +5252,11 @@ impl<'a> LowerFunc<'a> {
                     (actual, param_ty),
                     (OxTy::Array(given, _), OxTy::Array(wanted, _)) if given == wanted
                 );
-                if actual != param_ty && !same_array_element {
+                // A typed variable bound to a ByRef Variant parameter becomes a `VT_BYREF`
+                // reference when the frame is seeded (`byref_variant_reference`).
+                let variant_reference =
+                    *param_ty == OxTy::Variant && actual.is_byref_variant_reference();
+                if actual != param_ty && !same_array_element && !variant_reference {
                     return Err(JitError::unsupported(format!(
                         "M4-4 static call subset requires exact ByRef type match, got {actual:?} for {param_ty:?} at {place:?}"
                     )));

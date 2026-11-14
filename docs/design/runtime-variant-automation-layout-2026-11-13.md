@@ -547,6 +547,15 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
    `temp/variant-layout-probe/redim7c/SlotProbe.bas` (engine test `redim_keeps_descriptor`,
    Windows) matches on both backends; it finds the slot through that reference because VBE7's
    `VarPtr` loads only inside Office (supplying it is step 9).
+   *As built 2026-11-14 (7c3).* `ForEachInit` over an array place (or a reference to a
+   dynamic-array field, which the loop now walks instead of a copy) takes an `ArrayLock` kept in
+   the frame by iterator temp. Each `For Each` has its own exit block, reached by `Exit For` and by
+   running out, where `OxInst::ForEachEnd` releases the lock; a `GoTo` out skips it and the lock
+   stays until the procedure returns, as in Excel. The error-10 checks now come only from locks
+   (`Variant::holds_locked_array`); VM3's and the JIT's scans of the iterator table are gone.
+   The native lane and the host's typed stack take no array locks, and `ForEachEnd` is a no-op
+   there. Excel probe `temp/variant-layout-probe/redim7c/ForEachProbe.bas` (engine test
+   `for_each_locks`, Windows) matches on both backends.
 8. **One COM marshaller** (5.1), replacing stack A with stack B's model; `ComValue` and the
    legacy transports deleted; JIT WithEvents; `VT_UNKNOWN` kept distinct from `VT_DISPATCH`
    (`VarType` reports 13). With it the interpreter lanes can run the OS `Scripting.Dictionary`,

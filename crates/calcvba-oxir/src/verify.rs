@@ -1582,7 +1582,7 @@ fn verify_inst_places(
                 }
             }
         }
-        OxInst::ReleaseRef { src } => {
+        OxInst::ReleaseRef { src } | OxInst::ForEachEnd { iter: src } => {
             check_place(fi, bi, site, src, locals, globals, temps, errors);
         }
         OxInst::ValidateAssignment { src, .. }

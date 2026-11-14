@@ -1027,6 +1027,8 @@ impl Values<'_> {
                 self.object_type(module, b, object, type_name, false, Some(*dst));
                 return true;
             }
+            // The native lane takes no array locks, so the loop's end has nothing to release.
+            OxInst::ForEachEnd { .. } => return true,
             OxInst::ForEachInit { iter, source } => {
                 let key = self.address(b, layout.slot(*iter).unwrap());
                 let source_cell = self.cell(module, b, source);

@@ -25,6 +25,7 @@ pub(crate) struct Imports {
     pub(crate) store_variant: ClifFuncId,
     pub(crate) stmt_boundary: ClifFuncId,
     pub(crate) release_ref: ClifFuncId,
+    pub(crate) for_each_end: ClifFuncId,
     pub(crate) drain_terminations: ClifFuncId,
     pub(crate) add_ref: ClifFuncId,
     pub(crate) release: ClifFuncId,
@@ -181,6 +182,7 @@ pub(crate) fn register_symbols(builder: &mut JITBuilder) {
     builder.symbol("rt_jit_store_variant", rt_jit_store_variant as *const u8);
     builder.symbol("rt_jit_stmt_boundary", rt_jit_stmt_boundary as *const u8);
     builder.symbol("rt_jit_release_ref", rt_jit_release_ref as *const u8);
+    builder.symbol("rt_jit_for_each_end", rt_jit_for_each_end as *const u8);
     builder.symbol(
         "rt_jit_drain_terminations",
         rt_jit_drain_terminations as *const u8,
@@ -666,6 +668,10 @@ pub(crate) fn declare_imports(module: &mut impl Module) -> Result<Imports, JitEr
     // `ReleaseRef`: the same shape (run, state, temp index).
     let release_ref = module
         .declare_function("rt_jit_release_ref", Linkage::Import, &stmt_boundary_sig)
+        .map_err(module_err)?;
+    // `ForEachEnd`: the same shape (run, state, iterator temp index).
+    let for_each_end = module
+        .declare_function("rt_jit_for_each_end", Linkage::Import, &stmt_boundary_sig)
         .map_err(module_err)?;
 
     let mut set_line_sig = module.make_signature();
@@ -2244,6 +2250,7 @@ pub(crate) fn declare_imports(module: &mut impl Module) -> Result<Imports, JitEr
         store_variant,
         stmt_boundary,
         release_ref,
+        for_each_end,
         drain_terminations,
         add_ref,
         release,
@@ -2691,10 +2698,6 @@ pub(crate) unsafe extern "C" fn rt_jit_store_variant(
         };
         // SAFETY: the callback-capable lookup returned and no typed run borrow is live.
         let run = unsafe { &mut *run };
-        if array_is_iterating(run, dst_area, dst_index) {
-            // SAFETY: the checked entry retains the calling-thread execution state.
-            return unsafe { rt_raise_fixed_or_temporarily_locked_array(state) };
-        }
         let Some(slot) = slot_mut(run, dst_area, dst_index) else {
             return ST_FAULT;
         };
@@ -2803,6 +2806,31 @@ pub(crate) unsafe extern "C" fn rt_jit_release_ref(
         let run = unsafe { &mut *run };
         if let Some(frame) = run.frames.last_mut() {
             frame.ref_locks.retain(|(held, _)| *held != temp as usize);
+        }
+        ST_OK
+    })
+}
+
+/// `ForEachEnd`: the loop of iterator temp `iter` ended through `Exit For` or by running out;
+/// release its array lock (VM3 does the same).
+pub(crate) unsafe extern "C" fn rt_jit_for_each_end(
+    run: *mut JitRun,
+    state: *mut RawExecState,
+    iter: i32,
+) -> i32 {
+    status_guard(|| {
+        if run.is_null() || state.is_null() || iter < 0 {
+            return ST_FAULT;
+        }
+        // SAFETY: null was rejected and compiled code gives unique run ownership.
+        let run = unsafe { &mut *run };
+        if let Some(frame) = run.frames.last_mut()
+            && let Some(at) = frame
+                .loop_locks
+                .iter()
+                .rposition(|(held, _)| *held == iter as usize)
+        {
+            frame.loop_locks.remove(at);
         }
         ST_OK
     })
@@ -4020,6 +4048,7 @@ pub(crate) unsafe fn invoke_project_default_member_values(
         temps,
         pointer_strings: Vec::new(),
         ref_locks: Vec::new(),
+        loop_locks: Vec::new(),
         aliases: Vec::new(),
         gosub_stack: Vec::new(),
         saved_err: RtSavedErrState::default(),
@@ -6467,10 +6496,6 @@ pub(crate) unsafe extern "C" fn rt_jit_array_redim_to_slot(
             // SAFETY: null was rejected; this is a read-only guard before building the
             // replacement value or taking a mutable slot reference.
             let run_ref = unsafe { &*run };
-            if array_is_iterating(run_ref, dst_area, dst_index) {
-                // SAFETY: the checked entry retains the calling-thread execution state.
-                return unsafe { rt_raise_fixed_or_temporarily_locked_array(state) };
-            }
             let Some(current) = slot_ref(run_ref, dst_area, dst_index) else {
                 return ST_FAULT;
             };
@@ -6629,7 +6654,8 @@ pub(crate) unsafe extern "C" fn rt_jit_array_erase_variant_slot(
         let fixed = current
             .as_safearray()
             .is_some_and(|array| array.is_fixed_size());
-        if array_is_iterating(run_ref, array_area, array_index) {
+        // A locked array (an element out as a ByRef argument, a `For Each` walking it).
+        if current.holds_locked_array() {
             // SAFETY: the checked entry retains the calling-thread execution state.
             return unsafe { rt_raise_fixed_or_temporarily_locked_array(state) };
         }
@@ -7285,9 +7311,12 @@ pub(crate) unsafe extern "C" fn rt_jit_for_each_init_variant_array(
         let (array_source, iter_alias) = {
             // SAFETY: this short read-only run borrow ends before host callbacks.
             let run_ref = unsafe { &*run };
+            let reference_temp = source.area as u32 == AREA_TEMP
+                && slot_ref(run_ref, source.area as u32, source.index as u32)
+                    .is_some_and(|cell| cell.byref_target().is_some());
             let array_source = if source_value.as_safearray().is_some()
                 && source.kind == JIT_VARIANT_OPERAND_PLACE
-                && source.area as u32 != AREA_TEMP
+                && (source.area as u32 != AREA_TEMP || reference_temp)
             {
                 current_frame_slot(run_ref, source.area as u32, source.index as u32)
                     .and_then(|alias| resolve_slot_alias(run_ref, alias))
@@ -7355,6 +7384,14 @@ pub(crate) unsafe extern "C" fn rt_jit_for_each_init_variant_array(
         };
         // SAFETY: null was rejected and immutable borrows ended before the map write.
         let run = unsafe { &mut *run };
+        // VBA locks the array for the loop (`cLocks` + 1); VM3 does the same.
+        if let Some(source) = array_source
+            && iter_area == AREA_TEMP
+            && let Some(lock) = slot_alias_ref(run, source).and_then(Variant::lock_array)
+            && let Some(frame) = run.frames.last_mut()
+        {
+            frame.loop_locks.push((iter_index as usize, lock));
+        }
         run.for_each.insert(
             iter_alias,
             JitForEachState {

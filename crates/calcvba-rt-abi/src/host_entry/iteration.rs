@@ -6,7 +6,7 @@ use calcvba_oxir::OxInst;
 pub(super) fn is_iteration(inst: &OxInst) -> bool {
     matches!(
         inst,
-        OxInst::ForEachInit { .. } | OxInst::ForEachNext { .. }
+        OxInst::ForEachInit { .. } | OxInst::ForEachNext { .. } | OxInst::ForEachEnd { .. }
     )
 }
 pub(super) fn admit(layout: &ScalarLayout, inst: &OxInst) -> Result<bool, String> {
@@ -35,6 +35,8 @@ pub(super) fn admit(layout: &ScalarLayout, inst: &OxInst) -> Result<bool, String
                 return Err("typed enumeration condition requires Boolean".into());
             }
         }
+        // Host enumeration holds no array lock, so the loop's end has nothing to release.
+        OxInst::ForEachEnd { iter } => variant(*iter)?,
         _ => return Ok(false),
     }
     Ok(true)
@@ -87,6 +89,7 @@ pub(super) unsafe fn evaluate(
             // SAFETY: the admitted condition slot owns one Boolean value.
             unsafe { write_owned(raw, dst, T::Boolean, Value::Boolean(present)) }
         }
+        OxInst::ForEachEnd { .. } => Ok(()),
         _ => Err(5),
     }
 }

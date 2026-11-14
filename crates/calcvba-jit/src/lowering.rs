@@ -565,6 +565,17 @@ impl<'a> LowerFunc<'a> {
             OxInst::StmtBoundary {
                 clear_temps_from, ..
             } => self.emit_stmt_boundary(builder, module, *clear_temps_from),
+            OxInst::ForEachEnd { iter } => {
+                let calcvba_oxir::OxPlace::Temp(temp) = iter else {
+                    return Err(JitError::unsupported("ForEachEnd of a non-temporary"));
+                };
+                let temp = builder.ins().iconst(types::I32, temp.0 as i64);
+                let callee = self.import(builder, module, self.imports.for_each_end);
+                let call = builder.ins().call(callee, &[self.run, self.state, temp]);
+                let status = builder.inst_results(call)[0];
+                self.return_if_not_ok(builder, status);
+                Ok(())
+            }
             OxInst::ReleaseRef { src } => {
                 let calcvba_oxir::OxPlace::Temp(temp) = src else {
                     return Err(JitError::unsupported("ReleaseRef of a non-temporary"));

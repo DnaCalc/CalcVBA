@@ -433,6 +433,10 @@ struct Frame {
     /// The array locks each `MakeRef` temporary holds while its call runs, by temp index;
     /// released by `ReleaseRef`, by clearing the temp at a statement boundary, and on exit.
     ref_locks: Vec<(usize, calcvba_runtime::safe_array::ArrayLock)>,
+    /// The array locks `For Each` loops hold, by iterator temp index; released by
+    /// `ForEachEnd` (`Exit For` or running out) and on exit, never at a statement boundary:
+    /// a `GoTo` out of the loop leaves the array locked until the procedure returns.
+    loop_locks: Vec<(usize, calcvba_runtime::safe_array::ArrayLock)>,
     /// ByRef parameters: a parameter's frame-local index → the caller location it
     /// aliases, resolved to its ultimate backing at call time (so aliases never chain).
     /// Writes through such a parameter hit the backing live — vm2's true aliasing.
@@ -1244,6 +1248,7 @@ impl<'h> Vm3<'h> {
             temps: vec![Variant::empty(); f.temps.len()],
             pointer_strings: Vec::new(),
             ref_locks: Vec::new(),
+            loop_locks: Vec::new(),
             aliases: HashMap::new(),
             dst: None,
             return_local: f.return_local,
@@ -1864,6 +1869,18 @@ impl<'h> Vm3<'h> {
                     .ref_locks
                     .extend(locks.into_iter().map(|lock| (temp, lock)));
             }
+            OxInst::ForEachEnd { iter } => {
+                if let OxPlace::Temp(iter_temp) = iter {
+                    let frame = self.frames.last_mut().expect("executing frame");
+                    if let Some(at) = frame
+                        .loop_locks
+                        .iter()
+                        .rposition(|(held, _)| *held == iter_temp.0)
+                    {
+                        frame.loop_locks.remove(at);
+                    }
+                }
+            }
             OxInst::ReleaseRef { src } => {
                 if let Loc::Temp(frame_index, temp) = self.resolve(src) {
                     self.frames[frame_index]
@@ -2094,9 +2111,8 @@ impl<'h> Vm3<'h> {
             OxInst::ArrayErase { array, element } => {
                 let location = self.resolve(array);
                 if self
-                    .for_each
-                    .values()
-                    .any(|iterator| iterator.array_source == Some(location))
+                    .read_loc_ref(location)?
+                    .is_some_and(Variant::holds_locked_array)
                 {
                     return Err(Vm3Error::Fault(Fault::new(
                         10,
@@ -2200,11 +2216,26 @@ impl<'h> Vm3<'h> {
                         OxOperand::Use(place @ (OxPlace::Local(_) | OxPlace::Global(_))) => {
                             Some(self.resolve(place))
                         }
+                        // A reference to a dynamic-array field (`For Each x In t.d`).
+                        OxOperand::Use(place @ OxPlace::Temp(_))
+                            if self
+                                .read_loc_ref(self.resolve(place))?
+                                .is_some_and(|cell| cell.byref_target().is_some()) =>
+                        {
+                            Some(self.resolve(place))
+                        }
                         _ => None,
                     }
                 } else {
                     None
                 };
+                // VBA locks the array for the loop (`cLocks` + 1).
+                if let (Some(source), OxPlace::Temp(iter_temp)) = (array_source, iter)
+                    && let Some(lock) = self.read_loc_ref(source)?.and_then(Variant::lock_array)
+                {
+                    let frame = self.frames.last_mut().expect("executing frame");
+                    frame.loop_locks.push((iter_temp.0, lock));
+                }
                 let elements = self.foreach_elements(src, 0)?;
                 let key = self.resolve(iter);
                 self.for_each.insert(
@@ -2776,6 +2807,7 @@ impl<'h> Vm3<'h> {
             temps: vec![Variant::empty(); callee.temps.len()],
             pointer_strings: Vec::new(),
             ref_locks: Vec::new(),
+            loop_locks: Vec::new(),
             aliases,
             dst: dst_loc,
             return_local,
@@ -3481,12 +3513,8 @@ impl<'h> Vm3<'h> {
             ))
         };
         if self
-            .for_each
-            .values()
-            .any(|iterator| iterator.array_source == Some(loc))
-            || self
-                .read_loc_ref(loc)?
-                .is_some_and(Variant::holds_locked_array)
+            .read_loc_ref(loc)?
+            .is_some_and(Variant::holds_locked_array)
         {
             return Err(locked(10));
         }
@@ -5405,17 +5433,8 @@ impl<'h> Vm3<'h> {
 
     /// Write a resolved location (same dense/sparse contract as [`Self::read_loc`]).
     fn write_loc(&mut self, loc: Loc, v: Variant) -> Result<(), Vm3Error> {
-        if self
-            .for_each
-            .values()
-            .any(|iterator| iterator.array_source == Some(loc))
-        {
-            return Err(Vm3Error::Fault(Fault::new(
-                10,
-                calcvba_rt_abi::default_error_message(10),
-            )));
-        }
-        // An array an element of which is out as a ByRef argument is locked (VBA error 10).
+        // A locked array (an element of it out as a ByRef argument, or a `For Each` walking
+        // it) cannot be replaced: VBA error 10.
         if self
             .read_loc_ref(loc)?
             .is_some_and(Variant::holds_locked_array)
@@ -6236,6 +6255,7 @@ fn inst_kind(inst: &OxInst) -> &'static str {
         OxInst::RaiseEvent { .. } => "RaiseEvent",
         OxInst::AddrOf { .. } => "pointer helper",
         OxInst::MakeRef { .. } | OxInst::ReleaseRef { .. } => "ByRef reference",
+        OxInst::ForEachEnd { .. } => "For Each",
         OxInst::ErrFieldGet { .. } => "Err field read",
         OxInst::ErlGet { .. } => "Erl read",
         OxInst::ErrFieldSet { .. } => "Err field write",

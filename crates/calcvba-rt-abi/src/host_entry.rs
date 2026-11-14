@@ -1946,6 +1946,10 @@ impl ScalarLayout {
                     self.operand_type(source)?;
                     return Ok(());
                 }
+                OxInst::ForEachEnd { iter } => {
+                    self.slot(*iter)?;
+                    return Ok(());
+                }
                 OxInst::ForEachNext {
                     iter,
                     item,

@@ -551,6 +551,7 @@ pub fn compile_native_scalars(
                     OxInst::ArrayLiteral { .. }
                     | OxInst::ForEachInit { .. }
                     | OxInst::ForEachNext { .. }
+                    | OxInst::ForEachEnd { .. }
                     | OxInst::Box { .. }
                     | OxInst::Unbox { .. }
                     | OxInst::Concat { .. }

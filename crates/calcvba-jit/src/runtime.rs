@@ -685,6 +685,9 @@ pub(crate) struct JitFrame {
     /// The array locks each `MakeRef` temporary holds while its call runs, by temp index;
     /// released by `ReleaseRef`, by clearing the temp at a statement boundary, and on exit.
     pub(crate) ref_locks: Vec<(usize, calcvba_runtime::safe_array::ArrayLock)>,
+    /// The array locks `For Each` loops hold, by iterator temp index; released by
+    /// `ForEachEnd` and on exit, never at a statement boundary (VM3 does the same).
+    pub(crate) loop_locks: Vec<(usize, calcvba_runtime::safe_array::ArrayLock)>,
     pub(crate) aliases: Vec<Option<SlotAlias>>,
     pub(crate) gosub_stack: Vec<u32>,
     pub(crate) saved_err: RtSavedErrState,
@@ -758,6 +761,7 @@ pub(crate) fn new_jit_frame(
         temps,
         pointer_strings: Vec::new(),
         ref_locks: Vec::new(),
+        loop_locks: Vec::new(),
         aliases: vec![None; func.locals.len()],
         gosub_stack: Vec::new(),
         saved_err: RtSavedErrState::default(),
@@ -2084,14 +2088,4 @@ pub(crate) fn call_return_variant(ty: &OxTy, value: &Variant) -> Option<Variant>
         OxTy::ProcRef => value.as_proc_ref().map(Variant::from_proc_ref),
         _ => None,
     }
-}
-
-pub(crate) fn array_is_iterating(run: &JitRun, area: u32, index: u32) -> bool {
-    let source =
-        current_frame_slot(run, area, index).and_then(|alias| resolve_slot_alias(run, alias));
-    source.is_some()
-        && run
-            .for_each
-            .values()
-            .any(|iterator| iterator.array_source == source)
 }

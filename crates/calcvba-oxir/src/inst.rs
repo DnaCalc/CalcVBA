@@ -483,6 +483,12 @@ pub enum OxInst {
     ReleaseRef {
         src: OxPlace,
     },
+    /// The `For Each` loop of iterator `iter` has ended through `Exit For` or by running out:
+    /// release the lock `ForEachInit` took on an array source. A `GoTo` out of the loop skips
+    /// it, and the array stays locked until the procedure returns, as in VBA.
+    ForEachEnd {
+        iter: OxPlace,
+    },
     ErrFieldGet {
         dst: OxPlace,
         field: ErrField,
@@ -572,6 +578,7 @@ impl OxInst {
             | OxInst::AddrOf { .. }
             | OxInst::MakeRef { .. }
             | OxInst::ReleaseRef { .. }
+            | OxInst::ForEachEnd { .. }
             | OxInst::AddRef { .. } => true,
 
             // `Unbox` is fallible only when it re-checks the tag.

@@ -63,7 +63,9 @@ fn mark_inst(inst: &OxInst, facts: &mut EscapeFacts) {
                 mark_place(place, facts);
             }
         }
-        OxInst::ForEachInit { iter, .. } | OxInst::ForEachNext { iter, .. } => {
+        OxInst::ForEachInit { iter, .. }
+        | OxInst::ForEachNext { iter, .. }
+        | OxInst::ForEachEnd { iter } => {
             mark_place(iter, facts);
         }
         OxInst::AddrOf { base, path, .. } | OxInst::MakeRef { base, path, .. } => {

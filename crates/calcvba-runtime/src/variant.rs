@@ -1472,6 +1472,19 @@ impl Variant {
         Ok(array)
     }
 
+    /// A lock on the array this cell holds or refers to (`None` for a non-array or an
+    /// unallocated one): what `For Each` holds while it walks the array.
+    pub fn lock_array(&self) -> Option<crate::safe_array::ArrayLock> {
+        let cell = match self.byref_target() {
+            // SAFETY: a `VT_BYREF | VT_VARIANT` reference targets a live engine cell.
+            Some((0x0C, target)) => unsafe { &*target.cast::<Variant>() },
+            _ => self,
+        };
+        // SAFETY: an array cell's descriptor is null or live, and a locked descriptor is
+        // orphaned rather than freed, so it outlives the lock.
+        unsafe { crate::safe_array::ArrayLock::new(cell.array_descriptor()?) }
+    }
+
     /// Whether this holds, or refers to, an array that is locked (an element of it is out as a
     /// ByRef argument): replacing it raises error 10 in VBA.
     pub fn holds_locked_array(&self) -> bool {

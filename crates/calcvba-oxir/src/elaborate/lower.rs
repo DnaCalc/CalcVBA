@@ -1429,7 +1429,16 @@ impl<'a> Lowerer<'a> {
             }
             CoreStmt::ForEach { item, source, body } => {
                 let for_pad = self.cur_fault;
-                let (src, _) = self.lower_value(source)?;
+                // A dynamic-array field is iterated through a reference to it, so the loop
+                // walks and locks the field's own array (VBA's loop over the live array).
+                let src = match source {
+                    CoreValue::Load(place) => self.array_reference(place)?.map(OxOperand::Use),
+                    _ => None,
+                };
+                let src = match src {
+                    Some(src) => src,
+                    None => self.lower_value(source)?.0,
+                };
                 let iter = self.new_temp(OxTy::Variant);
                 self.emit(OxInst::ForEachInit {
                     iter: OxPlace::Temp(iter),
@@ -1459,9 +1468,12 @@ impl<'a> Lowerer<'a> {
                 // body: bind the current item, then run the loop body.
                 self.cur_fault = for_pad;
                 self.store_to_place(item, OxOperand::temp(item_t))?;
+                // `Exit For` and running out both end at `exit_blk`, which releases the loop's
+                // lock; a `GoTo` out of the body does not pass it.
+                let exit_blk = self.reserve();
                 self.loops.push(LoopCtx {
                     is_for: true,
-                    brk: s_next,
+                    brk: exit_blk,
                 });
                 self.lower_block(body)?;
                 self.loops.pop();
@@ -1473,6 +1485,11 @@ impl<'a> Lowerer<'a> {
                     OxConst::Empty
                 };
                 self.store_to_place(item, OxOperand::Const(exhausted))?;
+                self.finish_to(OxTerminator::Jump(exit_blk), exit_blk);
+                self.cur_fault = for_pad;
+                self.emit(OxInst::ForEachEnd {
+                    iter: OxPlace::Temp(iter),
+                });
                 self.finish_to(OxTerminator::Jump(s_next), s_next);
                 Ok(())
             }

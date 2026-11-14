@@ -153,8 +153,7 @@ pub fn invoke_object_by_request<H: ComHal + ?Sized>(
                 ComArgValue::Missing => None,
             },
             name: arg.name.map(str::to_string),
-            by_ref: matches!(arg.value, ComArgValue::Reference(_))
-                .then(|| calcvba_runtime::RuntimeByRefSlot::new(index as u32, None)),
+            by_ref: reference_slot(args, index),
         })
         .collect();
     let request = DynamicCallRequest {
@@ -179,6 +178,28 @@ pub fn invoke_object_by_request<H: ComHal + ?Sized>(
         }
     }
     Ok(value)
+}
+
+/// The write-back slot of a ByRef argument for the dynamic request: references to the same
+/// storage share the id of the first, so the callee sees one cell for them (an argument passed
+/// twice, or a ByRef parameter passed on with the variable it aliases), as VBA passes them.
+fn reference_slot(
+    args: &[calcvba_com::call::ComArg<'_>],
+    index: usize,
+) -> Option<calcvba_runtime::RuntimeByRefSlot> {
+    use calcvba_com::call::ComArgValue;
+    let ComArgValue::Reference(reference) = args[index].value else {
+        return None;
+    };
+    let target = reference.byref_target().map(|(_, address)| address);
+    let first = args[..index]
+        .iter()
+        .position(|arg| {
+            matches!(arg.value, ComArgValue::Reference(other)
+                if other.byref_target().map(|(_, address)| address) == target)
+        })
+        .unwrap_or(index);
+    Some(calcvba_runtime::RuntimeByRefSlot::new(first as u32, None))
 }
 
 /// Stores a value a callee returned for a ByRef argument through its `VT_BYREF` reference,
@@ -616,6 +637,44 @@ pub trait ComHal {
         args: &[calcvba_com::call::ComArg<'_>],
     ) -> HalResult<Variant> {
         invoke_object_by_request(self, object, member, kind, args)
+    }
+    /// Call the compiler-selected interface member (early bound) over the runtime cells, with
+    /// the argument shapes of [`Self::invoke_object`]. The default marshals through
+    /// [`Self::invoke_early_bound`] and writes each returned ByRef value through its reference.
+    fn invoke_early_bound_object(
+        &self,
+        object: &ObjectRef,
+        member: &TypeLibMemberMetadata,
+        args: &[calcvba_com::call::ComArg<'_>],
+    ) -> HalResult<Variant> {
+        use calcvba_com::call::ComArgValue;
+        let call_args: Vec<_> = args
+            .iter()
+            .enumerate()
+            .map(|(index, arg)| calcvba_com::DynamicCallArg {
+                value: match arg.value {
+                    ComArgValue::Value(value) => {
+                        Some(calcvba_com::DynamicValue::from_variant(value.clone()))
+                    }
+                    // Cloning a reference reads its target.
+                    ComArgValue::Reference(reference) => {
+                        Some(calcvba_com::DynamicValue::from_variant(reference.clone()))
+                    }
+                    ComArgValue::Missing => None,
+                },
+                name: arg.name.map(str::to_string),
+                by_ref: reference_slot(args, index),
+            })
+            .collect();
+        let result = self.invoke_early_bound(object.clone(), member, &call_args)?;
+        for writeback in result.writebacks {
+            if let Some(ComArgValue::Reference(reference)) =
+                args.get(writeback.slot.id as usize).map(|arg| arg.value)
+            {
+                write_through_reference(reference, writeback.value)?;
+            }
+        }
+        Ok(result.value.unwrap_or_else(Variant::empty))
     }
     /// A `For Each` over a COM object, one item at a time. The default enumerates through
     /// [`Self::enumerate_object`].

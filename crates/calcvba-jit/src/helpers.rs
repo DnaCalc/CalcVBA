@@ -4641,153 +4641,45 @@ pub(crate) unsafe fn invoke_foreign_member_to_slot_for_jit(
     if run.is_null() || args.len() != names.len() {
         return ST_FAULT;
     }
-    if early_member.is_none() {
-        if let Err(message) = verified_late_dispatch_plan_for_jit(name, kind, args, names) {
-            return raise_plan_error(state, run, message);
-        }
-        // SAFETY: forwarded from this function's contract.
-        return unsafe {
-            invoke_late_bound_for_jit(state, run, object, name, kind, args, names, dst)
-        };
-    }
-    let mut call_args = Vec::with_capacity(args.len());
-    {
-        // SAFETY: this read-only preparation borrow ends before the host call.
-        let run_ref = unsafe { &*run };
-        let mut identities = std::collections::BTreeMap::new();
-        for (index, (arg, name)) in args.iter().copied().zip(names.iter().copied()).enumerate() {
-            let value = if arg.kind == JIT_CALL_ARG_OMITTED {
-                None
-            } else {
-                match call_arg_variant_value(run_ref, arg) {
-                    Some(value) => Some(DynamicValue::from_variant(value)),
-                    None => return ST_FAULT,
-                }
-            };
-            // SAFETY: names are compiled descriptors backed by the live OxProgram.
-            let name = match unsafe { call_arg_name_preserved(name) } {
-                Ok(name) => name,
-                Err(status) => return status,
-            };
-            let by_ref = if arg.kind == JIT_CALL_ARG_BYREF_ALIAS {
-                if arg.area < 0 || arg.index < 0 {
-                    return ST_FAULT;
-                }
-                let Some(slot) = slot_ref(run_ref, arg.area as u32, arg.index as u32) else {
-                    return ST_FAULT;
-                };
-                // Only an identity key during operand preparation; no pointer or
-                // borrow escapes to the host. Resolved caller aliases share it.
-                let id = *identities
-                    .entry(slot as *const Variant as usize)
-                    .or_insert(index as u32);
-                Some(RuntimeByRefSlot::new(id, None))
-            } else {
-                None
-            };
-            call_args.push(DynamicCallArg {
-                value,
-                name,
-                by_ref,
-            });
-        }
-    }
-    let host = {
-        // SAFETY: JIT helpers receive pointers produced by `exec_state_as_raw` for a
-        // live `ExecState`. Copying the host reference ends this typed state borrow
-        // before a host call that may synchronously re-enter VBA.
-        let exec = match unsafe { jit_exec_state_mut(state) } {
-            Some(exec) => exec,
-            None => return ST_FAULT,
-        };
-        exec.host
-    };
-    let Some(member) = early_member else {
-        return ST_FAULT;
-    };
-    let result = {
+    if let Some(member) = early_member {
         if interop_invoke_kind_from_project(kind)
             != interop_invoke_kind_from_com(member.invoke_kind)
         {
             return raise_plan_error(state, run, "early COM accessor mismatch".into());
         }
-        host.com()
-            .invoke_early_bound(object, member, &call_args)
-            .and_then(|result| {
-                let mut writebacks = vec![None; args.len()];
-                for writeback in result.writebacks {
-                    let slot = writebacks
-                        .get_mut(writeback.slot.id as usize)
-                        .ok_or_else(|| {
-                            calcvba_hal::HalError::adapter_fault(
-                                host.profile(),
-                                calcvba_hal::model::CapabilityId::ComActivationDispatch,
-                                "invoke_early_bound",
-                                "early COM writeback slot out of range",
-                            )
-                        })?;
-                    *slot = Some(writeback.value);
-                }
-                Ok((result.value.unwrap_or_else(Variant::empty), writebacks))
-            })
-    };
-    let (value, writebacks) = match result {
-        Ok(result) => result,
-        Err(err) => {
-            // SAFETY: the host call returned, so no callback-owned state borrow
-            // remains and the live execution state may be borrowed again.
-            let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
-                return ST_FAULT;
-            };
-            exec.err_engine
-                .raise(Fault::from_hal(err), current_unit_source(run));
-            return ST_FAULT;
-        }
-    };
-    // SAFETY: the host call returned and no typed run borrow spans it.
-    let run = unsafe { &mut *run };
-    for (index, arg) in args.iter().copied().enumerate() {
-        if arg.kind != JIT_CALL_ARG_BYREF_ALIAS {
-            continue;
-        }
-        let Some(Some(value)) = writebacks.get(index) else {
-            continue;
-        };
-        if arg.area < 0 || arg.index < 0 {
-            return ST_FAULT;
-        }
-        let Some(slot) = slot_mut(run, arg.area as u32, arg.index as u32) else {
-            return ST_FAULT;
-        };
-        let status = store_slot(state, slot, value.clone());
-        if status != ST_OK {
-            return status;
-        }
+    } else if let Err(message) = verified_late_dispatch_plan_for_jit(name, kind, args, names) {
+        return raise_plan_error(state, run, message);
     }
-    if let Some((area, index)) = dst {
-        let Some(slot) = slot_mut(run, area, index) else {
-            return ST_FAULT;
-        };
-        let status = store_slot(state, slot, value);
-        if status != ST_OK {
-            return status;
-        }
+    // SAFETY: forwarded from this function's contract.
+    unsafe {
+        invoke_com_member_for_jit(
+            state,
+            run,
+            object,
+            name,
+            early_member,
+            kind,
+            args,
+            names,
+            dst,
+        )
     }
-    ST_OK
 }
 
-/// A late-bound call on a COM object (VM3's `dispatch_com_method` does the same): ByVal
-/// arguments are the slots' values, borrowed by the call; a ByRef argument is the `VT_BYREF`
-/// reference to its slot, which the callee writes through; the result goes to `dst`.
+/// A call on a COM object, late bound or early bound (`early`; VM3's `dispatch_com_method` and
+/// `dispatch_early_com_method` do the same): ByVal arguments are the slots' values, borrowed by
+/// the call; a ByRef argument is the `VT_BYREF` reference to its slot, which the callee writes
+/// through; the result goes to `dst`.
 ///
 /// # Safety
 /// As [`invoke_foreign_member_to_slot_for_jit`].
 #[allow(clippy::too_many_arguments)]
-unsafe fn invoke_late_bound_for_jit(
+unsafe fn invoke_com_member_for_jit(
     state: *mut RawExecState,
     run: *mut JitRun,
     object: ObjectRef,
     name: &str,
+    early: Option<&calcvba_com::TypeLibMemberMetadata>,
     kind: ProjectMemberKind,
     args: &[JitCallArgDesc],
     names: &[JitCallArgNameDesc],
@@ -4857,10 +4749,15 @@ unsafe fn invoke_late_bound_for_jit(
         ProjectMemberKind::PropertyLet => calcvba_com::call::ComCallKind::Let,
         ProjectMemberKind::PropertySet => calcvba_com::call::ComCallKind::Set,
     };
-    let value = match host
-        .com()
-        .invoke_object(&object, member, call_kind, &call_args)
-    {
+    let result = match early {
+        Some(member) => host
+            .com()
+            .invoke_early_bound_object(&object, member, &call_args),
+        None => host
+            .com()
+            .invoke_object(&object, member, call_kind, &call_args),
+    };
+    let value = match result {
         Ok(value) => value,
         Err(err) => {
             // SAFETY: the host call returned; the live execution state may be borrowed again.

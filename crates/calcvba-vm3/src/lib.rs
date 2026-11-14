@@ -28,8 +28,7 @@ use calcvba_bundle::{
     safearray_vartype_for_element, vba_record_layout_for_fields,
 };
 use calcvba_com::{
-    ComMemberToken, ComSubscriptionToken, DynamicCallArg, DynamicMemberSelector, DynamicValue,
-    TypeLibMemberInvokeKind,
+    ComMemberToken, ComSubscriptionToken, DynamicMemberSelector, TypeLibMemberInvokeKind,
 };
 use calcvba_eval::arith::{self, ArithError};
 use calcvba_eval::collection::{CollectionError, CollectionMethod, dispatch_collection};
@@ -46,8 +45,7 @@ use calcvba_oxir::{
 use calcvba_rt_abi::{
     ComEventSink, ErrorMode, EventBinding, ExecState, Fault, FaultAction, LoadedProgram,
     MarshalArgRef, ProcInvoker, ResumePoint, ResumeTarget, SavedErrState, apply_byref_writebacks,
-    apply_optional_byref_writebacks, marshal_ox_args, marshal_ox_call_args, take_termination_batch,
-    variant_changed,
+    marshal_ox_args, marshal_ox_call_args, take_termination_batch, variant_changed,
 };
 use calcvba_runtime::object_ref::{
     Guid, ObjectRef, RUNTIME_CLASS_LIFECYCLE_NONE, RUNTIME_IDISPATCH_INTERFACE_IDENTITY,
@@ -4968,51 +4966,22 @@ impl<'h> Vm3<'h> {
         member: &calcvba_com::TypeLibMemberMetadata,
         args: &[OxCallArg],
     ) -> Result<Variant, Vm3Error> {
-        let mut call_args = Vec::with_capacity(args.len());
-        let mut identities = HashMap::new();
-        for (index, arg) in args.iter().enumerate() {
-            let (value, name) = match arg {
-                OxCallArg::Operand(op) => (Some(self.operand(op)?), None),
-                OxCallArg::ByRef(place) => (Some(self.read(place)?), None),
-                OxCallArg::Named { name, value } => {
-                    (Some(self.operand(value)?), Some(name.clone()))
-                }
-                OxCallArg::Omitted => (None, None),
-                OxCallArg::Const(n) => (Some(Variant::from_i32(*n)), None),
-            };
-            call_args.push(DynamicCallArg {
-                value: value.map(DynamicValue::from_variant),
-                name,
-                by_ref: match arg {
-                    OxCallArg::ByRef(place) => Some(RuntimeByRefSlot::new(
-                        *identities
-                            .entry(self.resolve(place))
-                            .or_insert(index as u32),
-                        None,
-                    )),
-                    _ => None,
-                },
+        let mut cells = Vec::with_capacity(args.len());
+        for arg in args {
+            cells.push(match arg {
+                OxCallArg::Operand(op) => Some(self.operand(op)?),
+                OxCallArg::Named { value, .. } => Some(self.operand(value)?),
+                OxCallArg::ByRef(place) => Some(self.com_reference(place)?),
+                OxCallArg::Omitted => None,
+                OxCallArg::Const(n) => Some(Variant::from_i32(*n)),
             });
         }
-        let result = self
-            .exec
+        let call_args = com_call_args(args, &cells);
+        self.exec
             .host
             .com()
-            .invoke_early_bound(object, member, &call_args)
-            .map_err(|error| Vm3Error::Fault(Fault::from_hal(error)))?;
-        let mut writebacks = vec![None; args.len()];
-        for writeback in result.writebacks {
-            let slot = writebacks
-                .get_mut(writeback.slot.id as usize)
-                .ok_or_else(|| {
-                    Vm3Error::Malformed("early COM writeback slot out of range".into())
-                })?;
-            *slot = Some(writeback.value);
-        }
-        apply_optional_byref_writebacks(args, &writebacks, |place, value| {
-            self.store(place, value)
-        })?;
-        Ok(result.value.unwrap_or_else(Variant::empty))
+            .invoke_early_bound_object(&object, member, &call_args)
+            .map_err(|error| Vm3Error::Fault(Fault::from_hal(error)))
     }
 
     /// Invoke a base-library built-in. Most builtins use the shared context-free

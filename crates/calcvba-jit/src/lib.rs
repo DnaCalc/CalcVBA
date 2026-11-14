@@ -12,7 +12,7 @@ use calcvba_bundle::{
     array_element_type_for_vartype, default_array_element, redim_safearray_from_elements,
     safearray_vartype_for_element, vba_library_bundle, vba_record_layout_for_fields,
 };
-use calcvba_com::{DynamicCallArg, DynamicValue, TypeLibMemberInvokeKind};
+use calcvba_com::TypeLibMemberInvokeKind;
 use calcvba_eval::{
     arith,
     collection::{CollectionError, CollectionMethod, dispatch_collection},
@@ -54,8 +54,8 @@ use calcvba_rt_abi::{
     rt_truthy_v, runtime_class_descriptors_for_program, variant_changed,
 };
 use calcvba_runtime::{
-    Decimal96, InteropInvokeKind, RUNTIME_CLASS_LIFECYCLE_NONE, RuntimeByRefSlot,
-    RuntimeClassDescriptor, VarType, Variant, VbaRecord, VerifiedInteropPlan,
+    Decimal96, InteropInvokeKind, RUNTIME_CLASS_LIFECYCLE_NONE, RuntimeClassDescriptor, VarType,
+    Variant, VbaRecord, VerifiedInteropPlan,
     object_ref::{ObjectRef, RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR},
     safe_array::{
         SafeArray, SafeArrayBound, VT_BOOL_VALUE, VT_BSTR_VALUE, VT_CY_VALUE, VT_DATE_VALUE,

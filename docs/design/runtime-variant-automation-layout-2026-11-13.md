@@ -483,7 +483,15 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
    - **7b, `VT_BYREF` cells.** A typed variable, element or field bound to a ByRef Variant
      parameter becomes a `VT_BYREF | vt` cell pointing at it, and ByRef parameters bound to
      elements and fields alias the storage instead of copying in and out.
-   - **7c.** `ReDim` keeps the descriptor (`SafeArrayRedim` in place), as VBA does.
+   - **7c.** Array locks and `ReDim` in place, in three parts. 7c1: a reference locks every
+     array on its path while its call runs (Excel: `cLocks` 1 per reference; `ReDim`,
+     `ReDim Preserve`, `Erase`, array assignment and overwriting a Variant that holds the array
+     raise 10; the lock goes when the call returns or raises; a record assignment replaces a
+     locked field array and the reference keeps writing to the detached one). 7c2: `ReDim` and
+     `ReDim Preserve` keep the descriptor (`SafeArrayRedim`: same `SAFEARRAY*`, new `pvData`;
+     a rank change, or a plain `ReDim` of a Variant, gets a new descriptor). 7c3: `For Each`
+     locks through `cLocks` (`Exit For` releases; a `GoTo` out of the loop keeps the lock until
+     the procedure returns).
    *As built 2026-11-14 (7a).* As planned; also `VT_ERROR` cells hold the SCODE
    (`CVErr(2042)` is `&H800A07FA`), and the native lane addresses typed array elements. The Excel
    comparison `variant_layout_excel` now runs with the native Declare lane, so its probe reads real
@@ -518,6 +526,17 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
    until step 10. The JIT's ParamArray element write goes through `store_slot`, so a ParamArray
    built from elements writes to them. Not yet done: VBA also locks the arrays on a reference's
    path for the call (first part of 7c).
+   *As built 2026-11-14 (7c1).* `address::locate_locking` locks each descriptor an `Index` step
+   walks (`safe_array::ArrayLock`, `cLocks` + 1); `MakeRef` keeps the locks in the frame against
+   its temporary, and `OxInst::ReleaseRef` after the call, clearing the temporary at a statement
+   boundary, or leaving the procedure drops them. Replacing a cell that holds or refers to a
+   locked array raises 10 (VM3 `write_loc`, JIT `store_slot`), and dropping a locked
+   `SafeArray` orphans it; the last unlock frees it. A compound `ReDim`/`Erase` of a
+   dynamic-array field goes through a `MakeRef` reference instead of copy and write-back, so it
+   acts on the field and sees its lock. Excel probes `temp/variant-layout-probe/redim7c`
+   (engine test `byref_array_locks`) match on both backends. The source-module host
+   (`calcvba-host`), whose typed-stack interpreter has no reference cells either, elaborates
+   with `byref_references: false` like native builds until step 10.
 8. **One COM marshaller** (5.1), replacing stack A with stack B's model; `ComValue` and the
    legacy transports deleted; JIT WithEvents; `VT_UNKNOWN` kept distinct from `VT_DISPATCH`
    (`VarType` reports 13). With it the interpreter lanes can run the OS `Scripting.Dictionary`,

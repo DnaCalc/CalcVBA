@@ -236,6 +236,7 @@ fn relocate_places(inst: &mut OxInst, base: usize) {
             place(dst, base);
             operand(src, base);
         }
+        ReleaseRef { src } => place(src, base),
         AddrOf {
             dst,
             base: address_base,

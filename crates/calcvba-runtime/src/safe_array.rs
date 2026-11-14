@@ -261,8 +261,9 @@ pub struct SafeArray {
 // those objects' lifecycle.
 unsafe impl Send for SafeArray {}
 // SAFETY: no `&self` method mutates the descriptor or payload (this module has
-// no interior mutability; `c_locks` is never toggled after construction), so
-// shared access performs only reads plus atomic AddRefs when object elements
+// no interior mutability; `c_locks` is changed only through `lock_raw` /
+// `unlock_raw`, by the VM thread that runs the program holding the reference),
+// so shared access performs only reads plus atomic AddRefs when object elements
 // are cloned out — data-race-free.
 unsafe impl Sync for SafeArray {}
 
@@ -1728,6 +1729,15 @@ impl Clone for SafeArray {
 
 impl Drop for SafeArray {
     fn drop(&mut self) {
+        // A locked descriptor is still referred to (an element passed ByRef, a `For Each` in
+        // progress): VBA's `SafeArrayDestroy` refuses it and the storage stays alive, so a
+        // record assignment that replaces a locked field array leaves the reference writing to
+        // the detached array. The last `unlock_raw` frees it.
+        // SAFETY: this value owns the live descriptor.
+        if unsafe { (*self.header.as_ptr()).c_locks } > 0 {
+            orphans::park(self.header.as_ptr().cast(), self.record.take());
+            return;
+        }
         let len = self.len();
         let data = self.data();
         if !data.is_null() {
@@ -1762,6 +1772,100 @@ impl Drop for SafeArray {
         }
         crate::live_counters::safearray_freed();
     }
+}
+
+/// Locked descriptors whose owner let go of them (see `Drop for SafeArray`), with the record
+/// layout needed to free them.
+mod orphans {
+    use super::VbaRecordLayout;
+    use std::sync::{Arc, Mutex};
+
+    type Orphan = (usize, Option<Arc<VbaRecordLayout>>);
+
+    static ORPHANS: Mutex<Vec<Orphan>> = Mutex::new(Vec::new());
+
+    pub(super) fn park(raw: *mut core::ffi::c_void, record: Option<Arc<VbaRecordLayout>>) {
+        let mut orphans = ORPHANS.lock().unwrap_or_else(|poison| poison.into_inner());
+        orphans.push((raw.expose_provenance(), record));
+    }
+
+    /// Takes `raw` out of the orphan list, with its layout; `None` when it was not orphaned.
+    pub(super) fn take(raw: *mut core::ffi::c_void) -> Option<Option<Arc<VbaRecordLayout>>> {
+        let mut orphans = ORPHANS.lock().unwrap_or_else(|poison| poison.into_inner());
+        let address = raw.addr();
+        let index = orphans.iter().position(|(at, _)| *at == address)?;
+        Some(orphans.swap_remove(index).1)
+    }
+}
+
+/// `SafeArrayLock`: one more reference into the array's storage. While locked, `ReDim`, `Erase`
+/// and replacing the array raise error 10, and dropping it keeps the storage alive.
+///
+/// # Safety
+/// `raw` is a live descriptor.
+pub unsafe fn lock_raw(raw: *mut core::ffi::c_void) {
+    let header = raw.cast::<RawSafeArray>();
+    // SAFETY: forwarded from the caller; the VM thread is the only one changing `cLocks`.
+    unsafe { (*header).c_locks += 1 };
+}
+
+/// `SafeArrayUnlock`: releases a [`lock_raw`]. The last release of an orphaned descriptor frees
+/// it.
+///
+/// # Safety
+/// `raw` is a live descriptor locked by a matching [`lock_raw`].
+pub unsafe fn unlock_raw(raw: *mut core::ffi::c_void) {
+    let header = raw.cast::<RawSafeArray>();
+    // SAFETY: forwarded from the caller.
+    let remaining = unsafe {
+        (*header).c_locks = (*header).c_locks.saturating_sub(1);
+        (*header).c_locks
+    };
+    if remaining == 0
+        && let Some(record) = orphans::take(raw)
+    {
+        // SAFETY: an orphan is a live descriptor nothing else owns; this takes ownership once.
+        drop(unsafe { SafeArray::from_raw_safearray_owned(raw, record) });
+    }
+}
+
+/// A held [`lock_raw`], released when dropped: a `MakeRef` reference holds one for each array on
+/// its path until the call it was made for returns (or the statement or procedure ends).
+#[derive(Debug)]
+pub struct ArrayLock(core::ptr::NonNull<core::ffi::c_void>);
+
+// SAFETY: a lock only adjusts `cLocks` on the VM thread that runs the program; like
+// `SafeArray`, it may move with the frame that holds it.
+unsafe impl Send for ArrayLock {}
+
+impl ArrayLock {
+    /// Locks the live descriptor `raw` (`None` for null, an unallocated array).
+    ///
+    /// # Safety
+    /// `raw` is null or a live descriptor that stays allocated while the lock is held (a locked
+    /// descriptor is orphaned rather than freed, so the engine keeps that promise).
+    pub unsafe fn new(raw: *mut core::ffi::c_void) -> Option<Self> {
+        let raw = core::ptr::NonNull::new(raw)?;
+        // SAFETY: forwarded from the caller.
+        unsafe { lock_raw(raw.as_ptr()) };
+        Some(Self(raw))
+    }
+}
+
+impl Drop for ArrayLock {
+    fn drop(&mut self) {
+        // SAFETY: `new` locked this live descriptor, which stays allocated while locked.
+        unsafe { unlock_raw(self.0.as_ptr()) };
+    }
+}
+
+/// Whether the descriptor `raw` (null for an unallocated array) is locked.
+///
+/// # Safety
+/// `raw` is null or a live descriptor.
+pub unsafe fn is_locked_raw(raw: *mut core::ffi::c_void) -> bool {
+    // SAFETY: forwarded from the caller.
+    !raw.is_null() && unsafe { (*raw.cast::<RawSafeArray>()).c_locks } > 0
 }
 
 impl core::fmt::Debug for SafeArray {

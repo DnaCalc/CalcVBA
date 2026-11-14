@@ -437,7 +437,7 @@ pub fn compile_native_scalars(
                         callee: OxNativeCallee::Builtin(_),
                         ..
                     } => {}
-                    OxInst::MakeRef { .. } => {
+                    OxInst::MakeRef { .. } | OxInst::ReleaseRef { .. } => {
                         return Err(problem(
                             func,
                             "native ByRef array element or UDT field argument is not supported",

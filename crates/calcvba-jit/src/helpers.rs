@@ -24,6 +24,7 @@ pub(crate) struct Imports {
     pub(crate) store_proc_ref: ClifFuncId,
     pub(crate) store_variant: ClifFuncId,
     pub(crate) stmt_boundary: ClifFuncId,
+    pub(crate) release_ref: ClifFuncId,
     pub(crate) drain_terminations: ClifFuncId,
     pub(crate) add_ref: ClifFuncId,
     pub(crate) release: ClifFuncId,
@@ -179,6 +180,7 @@ pub(crate) fn register_symbols(builder: &mut JITBuilder) {
     builder.symbol("rt_jit_store_proc_ref", rt_jit_store_proc_ref as *const u8);
     builder.symbol("rt_jit_store_variant", rt_jit_store_variant as *const u8);
     builder.symbol("rt_jit_stmt_boundary", rt_jit_stmt_boundary as *const u8);
+    builder.symbol("rt_jit_release_ref", rt_jit_release_ref as *const u8);
     builder.symbol(
         "rt_jit_drain_terminations",
         rt_jit_drain_terminations as *const u8,
@@ -660,6 +662,10 @@ pub(crate) fn declare_imports(module: &mut impl Module) -> Result<Imports, JitEr
     stmt_boundary_sig.returns.push(AbiParam::new(types::I32));
     let stmt_boundary = module
         .declare_function("rt_jit_stmt_boundary", Linkage::Import, &stmt_boundary_sig)
+        .map_err(module_err)?;
+    // `ReleaseRef`: the same shape (run, state, temp index).
+    let release_ref = module
+        .declare_function("rt_jit_release_ref", Linkage::Import, &stmt_boundary_sig)
         .map_err(module_err)?;
 
     let mut set_line_sig = module.make_signature();
@@ -2237,6 +2243,7 @@ pub(crate) fn declare_imports(module: &mut impl Module) -> Result<Imports, JitEr
         store_proc_ref,
         store_variant,
         stmt_boundary,
+        release_ref,
         drain_terminations,
         add_ref,
         release,
@@ -2781,6 +2788,26 @@ pub(crate) unsafe extern "C" fn rt_jit_stmt_boundary(
     })
 }
 
+/// `ReleaseRef`: the call a `MakeRef` temporary was made for has returned; release its array
+/// locks (VM3 does the same).
+pub(crate) unsafe extern "C" fn rt_jit_release_ref(
+    run: *mut JitRun,
+    state: *mut RawExecState,
+    temp: i32,
+) -> i32 {
+    status_guard(|| {
+        if run.is_null() || state.is_null() || temp < 0 {
+            return ST_FAULT;
+        }
+        // SAFETY: null was rejected and compiled code gives unique run ownership.
+        let run = unsafe { &mut *run };
+        if let Some(frame) = run.frames.last_mut() {
+            frame.ref_locks.retain(|(held, _)| *held != temp as usize);
+        }
+        ST_OK
+    })
+}
+
 pub(crate) unsafe extern "C" fn rt_jit_drain_terminations(
     run: *mut JitRun,
     state: *mut RawExecState,
@@ -3208,6 +3235,11 @@ pub(crate) unsafe fn clear_jit_withevents_owners_before_releasing_values<'a>(
 /// parameter bound to a typed variable) stores into the referenced variable, coerced to its
 /// type as VM3's `write_loc` does (`"abc"` into a Long raises 13).
 pub(crate) fn store_slot(state: *mut RawExecState, slot: &mut Variant, value: Variant) -> i32 {
+    // An array an element of which is out as a ByRef argument is locked (VBA error 10).
+    if slot.holds_locked_array() {
+        // SAFETY: only the active owning entry's error state is updated.
+        return unsafe { rt_raise_runtime_error_number(state, 10) };
+    }
     let Some((vt, _)) = slot.byref_target() else {
         *slot = value;
         return ST_OK;
@@ -3987,6 +4019,7 @@ pub(crate) unsafe fn invoke_project_default_member_values(
         locals: Vec::new(),
         temps,
         pointer_strings: Vec::new(),
+        ref_locks: Vec::new(),
         aliases: Vec::new(),
         gosub_stack: Vec::new(),
         saved_err: RtSavedErrState::default(),
@@ -5021,28 +5054,45 @@ pub(crate) unsafe extern "C" fn rt_jit_addr_of_to_slot(
             }
             (OxAddrBase::ObjectField { .. }, None) => return ST_FAULT,
         };
+        let Some(kind) = kind else {
+            // A ByRef element or field argument: the callee reads and writes the storage
+            // itself, and the arrays on the path stay locked while it runs (VM3's `MakeRef`
+            // does the same).
+            if dst_area as u32 != AREA_TEMP {
+                return ST_FAULT;
+            }
+            // SAFETY: `root` is a live, stable engine cell and no Rust reference to it is held.
+            let (location, locks) = match unsafe { address::locate_locking(root, &steps) } {
+                Ok(found) => found,
+                // SAFETY: only the active owning entry's error state is updated.
+                Err(number) => return unsafe { rt_raise_runtime_error_number(state, number) },
+            };
+            // SAFETY: the storage lives at least for the statement the reference is for.
+            let Some(reference) = (unsafe { location.reference(true) }) else {
+                return ST_FAULT;
+            };
+            // SAFETY: the active run is unique outside host calls.
+            let run = unsafe { &mut *run };
+            let Some(slot) = slot_mut(run, dst_area as u32, dst_index as u32) else {
+                return ST_FAULT;
+            };
+            // A fresh statement temporary: replace it, never write through it.
+            *slot = reference;
+            let temp = dst_index as usize;
+            if let Some(frame) = run.frames.last_mut() {
+                frame.ref_locks.retain(|(held, _)| *held != temp);
+                frame
+                    .ref_locks
+                    .extend(locks.into_iter().map(|lock| (temp, lock)));
+            }
+            return ST_OK;
+        };
         // SAFETY: `root` is a live, stable engine cell (a frame slot, a global or a boxed
         // class field) and no Rust reference to it is held across this call.
         let location = match unsafe { address::locate(root, &steps) } {
             Ok(location) => location,
             // SAFETY: only the active owning entry's error state is updated.
             Err(number) => return unsafe { rt_raise_runtime_error_number(state, number) },
-        };
-        let Some(kind) = kind else {
-            // A ByRef element or field argument: the callee reads and writes the storage
-            // itself (VM3's `MakeRef` does the same).
-            // SAFETY: the storage lives at least for the statement the reference is for.
-            let Some(reference) = (unsafe { location.reference(true) }) else {
-                return ST_FAULT;
-            };
-            // SAFETY: the active run is unique outside host calls.
-            let Some(slot) = slot_mut(unsafe { &mut *run }, dst_area as u32, dst_index as u32)
-            else {
-                return ST_FAULT;
-            };
-            // A fresh statement temporary: replace it, never write through it.
-            *slot = reference;
-            return ST_OK;
         };
         let address = match kind {
             // SAFETY: the location was just found live.

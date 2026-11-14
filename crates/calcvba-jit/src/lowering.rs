@@ -565,6 +565,17 @@ impl<'a> LowerFunc<'a> {
             OxInst::StmtBoundary {
                 clear_temps_from, ..
             } => self.emit_stmt_boundary(builder, module, *clear_temps_from),
+            OxInst::ReleaseRef { src } => {
+                let calcvba_oxir::OxPlace::Temp(temp) = src else {
+                    return Err(JitError::unsupported("ReleaseRef of a non-temporary"));
+                };
+                let temp = builder.ins().iconst(types::I32, temp.0 as i64);
+                let callee = self.import(builder, module, self.imports.release_ref);
+                let call = builder.ins().call(callee, &[self.run, self.state, temp]);
+                let status = builder.inst_results(call)[0];
+                self.return_if_not_ok(builder, status);
+                Ok(())
+            }
             OxInst::SetLineNumber { line } => self.emit_set_line_number(builder, module, *line),
             OxInst::DrainTerminations => self.emit_drain_terminations(builder, module),
             OxInst::AddRef { object } => self.emit_add_ref(builder, module, object),

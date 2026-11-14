@@ -726,12 +726,17 @@ struct LoopCtx {
 /// but ONLY if it actually changed (`temp != original`), mirroring vm2's `VariantChanged`
 /// guard so an unchanged compound `ByRef` param never clobbers an out-of-band mutation of the
 /// same place (or needlessly re-runs a `WithEvents` (un)subscribe).
-struct ArgWriteback {
-    place: coreir::CorePlace,
-    temp: OxPlace,
-    /// The copied-in snapshot, captured at copy-in time; the write-back runs only when
-    /// `temp != original`.
-    original: OxPlace,
+enum ArgWriteback {
+    /// Copy-out of a compound place passed through a temporary.
+    Copy {
+        place: coreir::CorePlace,
+        temp: OxPlace,
+        /// The copied-in snapshot, captured at copy-in time; the write-back runs only when
+        /// `temp != original`.
+        original: OxPlace,
+    },
+    /// Release of a `MakeRef` reference's array locks once the call has returned.
+    Release(OxPlace),
 }
 
 struct Lowerer<'a> {
@@ -1324,8 +1329,14 @@ impl<'a> Lowerer<'a> {
                 // A simple target is resized in place; a COMPOUND target (e.g. a member
                 // array `ReDim b.arr(n)`) builds the new array into a temp, which is then
                 // written back into the nested base (materialize-and-write-back).
-                let compound = !Self::is_simple_place(array);
-                let dst = if compound {
+                // A dynamic-array field or an array held in a Variant element is resized
+                // through a reference to it, as VBA resizes it in place: the array's own lock
+                // (an element of it passed ByRef) then raises error 10.
+                let reference = self.array_reference(array)?;
+                let compound = reference.is_none() && !Self::is_simple_place(array);
+                let dst = if let Some(reference) = reference {
+                    reference
+                } else if compound {
                     // `Preserve` needs the base's current array as the temp's starting
                     // value; a plain `ReDim` overwrites it, but seeding the temp keeps the
                     // redim's element type / preserve logic uniform with the simple path.
@@ -1351,6 +1362,9 @@ impl<'a> Lowerer<'a> {
                 if compound {
                     self.store_to_place(array, OxOperand::Use(dst))?;
                 }
+                if reference.is_some() {
+                    self.emit(OxInst::ReleaseRef { src: dst });
+                }
                 self.finish_to(OxTerminator::Jump(s_next), s_next);
                 Ok(())
             }
@@ -1363,8 +1377,11 @@ impl<'a> Lowerer<'a> {
                 // erases that, then writes it back into the nested base — the same
                 // materialize-and-write-back the ReDim arm uses, preserving the
                 // element-type-aware erase for both dynamic and fixed member arrays.
-                let compound = !Self::is_simple_place(array);
-                let arr = if compound {
+                let reference = self.array_reference(array)?;
+                let compound = reference.is_none() && !Self::is_simple_place(array);
+                let arr = if let Some(reference) = reference {
+                    reference
+                } else if compound {
                     let (cur, arr_ty) = self.lower_place_load(array)?;
                     let t = self.new_temp(arr_ty);
                     self.emit(OxInst::Assign {
@@ -1381,6 +1398,9 @@ impl<'a> Lowerer<'a> {
                 });
                 if compound {
                     self.store_to_place(array, OxOperand::Use(arr))?;
+                }
+                if reference.is_some() {
+                    self.emit(OxInst::ReleaseRef { src: arr });
                 }
                 self.finish_to(OxTerminator::Jump(s_next), s_next);
                 Ok(())
@@ -2794,7 +2814,10 @@ impl<'a> Lowerer<'a> {
                 base,
                 path,
             });
-            Ok((OxPlace::Temp(t), None))
+            Ok((
+                OxPlace::Temp(t),
+                Some(ArgWriteback::Release(OxPlace::Temp(t))),
+            ))
         } else {
             // Copy the place's current value into a fresh temp (the aliased ByRef slot), and
             // a SECOND `original` snapshot temp captured at copy-in, so the post-call
@@ -2812,7 +2835,7 @@ impl<'a> Lowerer<'a> {
             });
             Ok((
                 OxPlace::Temp(t),
-                Some(ArgWriteback {
+                Some(ArgWriteback::Copy {
                     place: place.clone(),
                     temp: OxPlace::Temp(t),
                     original: OxPlace::Temp(orig),
@@ -2896,11 +2919,22 @@ impl<'a> Lowerer<'a> {
     /// store-block when changed (else straight to the merge), then a merge continuation.
     fn emit_arg_writebacks(&mut self, writebacks: Vec<ArgWriteback>) -> Result<()> {
         for wb in writebacks {
+            let (place, temp, original) = match wb {
+                ArgWriteback::Copy {
+                    place,
+                    temp,
+                    original,
+                } => (place, temp, original),
+                ArgWriteback::Release(src) => {
+                    self.emit(OxInst::ReleaseRef { src });
+                    continue;
+                }
+            };
             let changed = self.new_temp(OxTy::Bool);
             self.emit(OxInst::VariantChanged {
                 dst: OxPlace::Temp(changed),
-                current: OxOperand::Use(wb.temp),
-                original: OxOperand::Use(wb.original),
+                current: OxOperand::Use(temp),
+                original: OxOperand::Use(original),
             });
             let store_blk = self.reserve();
             let merge_blk = self.reserve();
@@ -2913,7 +2947,7 @@ impl<'a> Lowerer<'a> {
                 },
                 store_blk,
             );
-            self.store_to_place(&wb.place, OxOperand::Use(wb.temp))?;
+            self.store_to_place(&place, OxOperand::Use(temp))?;
             self.finish_to(OxTerminator::Jump(merge_blk), merge_blk);
         }
         Ok(())
@@ -3352,6 +3386,25 @@ impl<'a> Lowerer<'a> {
             Shape::Field(ArrayElementType::Object) => Some(OxTy::Object(ObjClass::Untyped)),
             Shape::Field(element) => Some(self.ox_ty_for_array_element(&element)),
         }
+    }
+
+    /// For a compound `ReDim`/`Erase` target that is an array a reference can reach (a
+    /// dynamic-array UDT field, or an element holding an array), a statement temporary holding
+    /// that reference; `None` for a simple place or anything that keeps copy and write-back.
+    fn array_reference(&mut self, place: &coreir::CorePlace) -> Result<Option<OxPlace>> {
+        if Self::is_simple_place(place) || !self.resolver.byref_references {
+            return Ok(None);
+        }
+        let Some(ty) = self
+            .byref_reference_ty(place)
+            .filter(|ty| matches!(ty, OxTy::Array(..)))
+        else {
+            return Ok(None);
+        };
+        let (base, path) = self.lower_addr_place(place)?;
+        let t = OxPlace::Temp(self.new_temp(ty));
+        self.emit(OxInst::MakeRef { dst: t, base, path });
+        Ok(Some(t))
     }
 
     /// A simple (directly addressable) place: a local or a global.

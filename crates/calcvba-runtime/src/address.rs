@@ -77,11 +77,43 @@ const TYPE_MISMATCH: i32 = 13;
 /// `root` is a live engine cell, and nothing else accesses the storage it reaches while the
 /// returned location is in use.
 pub unsafe fn locate(root: *mut Variant, path: &[AddressStep]) -> Result<Location, i32> {
+    // SAFETY: forwarded from the caller.
+    unsafe { walk(root, path, &mut Vec::new()) }
+}
+
+/// [`locate`] for a ByRef argument: also locks every array descriptor the path indexes, as VBA
+/// does while the reference is out (`ts(1).d(1)` locks `ts` and `ts(1).d`), so `ReDim`, `Erase`
+/// and replacing those arrays raise error 10 instead of freeing the storage.
+///
+/// # Safety
+/// As [`locate`].
+pub unsafe fn locate_locking(
+    root: *mut Variant,
+    path: &[AddressStep],
+) -> Result<(Location, Vec<crate::safe_array::ArrayLock>), i32> {
+    let mut walked = Vec::new();
+    // SAFETY: forwarded from the caller.
+    let location = unsafe { walk(root, path, &mut walked) }?;
+    let locks = walked
+        .into_iter()
+        // SAFETY: each descriptor was just walked live; a locked one is never freed.
+        .filter_map(|raw| unsafe { crate::safe_array::ArrayLock::new(raw) })
+        .collect();
+    Ok((location, locks))
+}
+
+/// # Safety
+/// As [`locate`].
+unsafe fn walk(
+    root: *mut Variant,
+    path: &[AddressStep],
+    walked: &mut Vec<*mut core::ffi::c_void>,
+) -> Result<Location, i32> {
     // SAFETY: `root` is a live engine cell.
     let mut at = Location::Cell(unsafe { through_variant_reference(root) });
     for step in path {
         // SAFETY: `at` addresses live storage reached from `root`, per the caller.
-        at = unsafe { step_into(at, step)? };
+        at = unsafe { step_into(at, step, walked)? };
         if let Location::Cell(cell) = at {
             // SAFETY: a cell reached on the path is live.
             at = Location::Cell(unsafe { through_variant_reference(cell) });
@@ -103,9 +135,15 @@ unsafe fn through_variant_reference(cell: *mut Variant) -> *mut Variant {
     }
 }
 
+/// One step; an `Index` step records the descriptor it indexes in `walked`.
+///
 /// # Safety
 /// As [`locate`].
-unsafe fn step_into(at: Location, step: &AddressStep) -> Result<Location, i32> {
+unsafe fn step_into(
+    at: Location,
+    step: &AddressStep,
+    walked: &mut Vec<*mut core::ffi::c_void>,
+) -> Result<Location, i32> {
     match (at, step) {
         (Location::Cell(cell), AddressStep::Index(subscripts)) => {
             // SAFETY: `cell` is a live engine cell.
@@ -120,6 +158,7 @@ unsafe fn step_into(at: Location, step: &AddressStep) -> Result<Location, i32> {
                 let Some(array) = (unsafe { SafeArray::borrow_raw(raw, None) }) else {
                     return Err(SUBSCRIPT_OUT_OF_RANGE);
                 };
+                walked.push(raw);
                 return array_element(&array, subscripts);
             }
             if cell.vtype() != VarType::ArrayVariant {
@@ -131,6 +170,7 @@ unsafe fn step_into(at: Location, step: &AddressStep) -> Result<Location, i32> {
             else {
                 return Err(SUBSCRIPT_OUT_OF_RANGE);
             };
+            walked.push(raw);
             array_element(&array, subscripts)
         }
         (Location::Cell(cell), AddressStep::Field(index)) => {
@@ -162,6 +202,7 @@ unsafe fn step_into(at: Location, step: &AddressStep) -> Result<Location, i32> {
             else {
                 return Err(SUBSCRIPT_OUT_OF_RANGE);
             };
+            walked.push(raw);
             array_element(&array, s)
         }
         _ => Err(TYPE_MISMATCH),

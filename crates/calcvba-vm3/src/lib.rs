@@ -430,6 +430,9 @@ struct Frame {
     /// Strings `StrPtr` converted from non-String operands, kept for the statement (VBA's
     /// conversion temporaries).
     pointer_strings: Vec<Variant>,
+    /// The array locks each `MakeRef` temporary holds while its call runs, by temp index;
+    /// released by `ReleaseRef`, by clearing the temp at a statement boundary, and on exit.
+    ref_locks: Vec<(usize, calcvba_runtime::safe_array::ArrayLock)>,
     /// ByRef parameters: a parameter's frame-local index → the caller location it
     /// aliases, resolved to its ultimate backing at call time (so aliases never chain).
     /// Writes through such a parameter hit the backing live — vm2's true aliasing.
@@ -1240,6 +1243,7 @@ impl<'h> Vm3<'h> {
                 .collect::<Result<_, _>>()?,
             temps: vec![Variant::empty(); f.temps.len()],
             pointer_strings: Vec::new(),
+            ref_locks: Vec::new(),
             aliases: HashMap::new(),
             dst: None,
             return_local: f.return_local,
@@ -1838,18 +1842,34 @@ impl<'h> Vm3<'h> {
                     Vm3Error::Fault(Fault::new(number, default_error_message(number)))
                 };
                 // SAFETY: `root` is a live, stable engine cell; no Rust reference to it is held.
-                let location =
-                    unsafe { calcvba_runtime::address::locate(root, &steps) }.map_err(fault)?;
+                let (location, locks) =
+                    unsafe { calcvba_runtime::address::locate_locking(root, &steps) }
+                        .map_err(fault)?;
                 // SAFETY: the storage lives at least for the statement the reference is for.
                 let reference = unsafe { location.reference(true) }.ok_or_else(|| {
                     Vm3Error::Malformed("MakeRef over storage with no reference form".into())
                 })?;
                 // The destination is a fresh statement temporary: replace, never write through.
                 let loc = self.resolve(dst);
+                let Loc::Temp(frame_index, temp) = loc else {
+                    return Err(Vm3Error::Malformed(format!("MakeRef destination {loc:?}")));
+                };
                 let slot = self
                     .read_loc_mut(loc)?
                     .ok_or_else(|| Vm3Error::Malformed(format!("MakeRef destination {loc:?}")))?;
                 *slot = reference;
+                let frame = &mut self.frames[frame_index];
+                frame.ref_locks.retain(|(held, _)| *held != temp);
+                frame
+                    .ref_locks
+                    .extend(locks.into_iter().map(|lock| (temp, lock)));
+            }
+            OxInst::ReleaseRef { src } => {
+                if let Loc::Temp(frame_index, temp) = self.resolve(src) {
+                    self.frames[frame_index]
+                        .ref_locks
+                        .retain(|(held, _)| *held != temp);
+                }
             }
             // A statement boundary drives finalization timing: run any parked
             // `Class_Terminate`s released by the previous statement (the error model takes its
@@ -2755,6 +2775,7 @@ impl<'h> Vm3<'h> {
             locals,
             temps: vec![Variant::empty(); callee.temps.len()],
             pointer_strings: Vec::new(),
+            ref_locks: Vec::new(),
             aliases,
             dst: dst_loc,
             return_local,
@@ -5268,6 +5289,7 @@ impl<'h> Vm3<'h> {
                 *temp = Variant::empty();
             }
             frame.pointer_strings.clear();
+            frame.ref_locks.retain(|(temp, _)| *temp < first_temp);
         }
         self.for_each
             .retain(|loc, _| !is_cleared_temp(*loc, frame_index, first_temp));
@@ -5342,6 +5364,16 @@ impl<'h> Vm3<'h> {
             .for_each
             .values()
             .any(|iterator| iterator.array_source == Some(loc))
+        {
+            return Err(Vm3Error::Fault(Fault::new(
+                10,
+                calcvba_rt_abi::default_error_message(10),
+            )));
+        }
+        // An array an element of which is out as a ByRef argument is locked (VBA error 10).
+        if self
+            .read_loc_ref(loc)?
+            .is_some_and(Variant::holds_locked_array)
         {
             return Err(Vm3Error::Fault(Fault::new(
                 10,
@@ -6158,6 +6190,7 @@ fn inst_kind(inst: &OxInst) -> &'static str {
         | OxInst::WithEventsNextOwner { .. } => "WithEvents",
         OxInst::RaiseEvent { .. } => "RaiseEvent",
         OxInst::AddrOf { .. } => "pointer helper",
+        OxInst::MakeRef { .. } | OxInst::ReleaseRef { .. } => "ByRef reference",
         OxInst::ErrFieldGet { .. } => "Err field read",
         OxInst::ErlGet { .. } => "Erl read",
         OxInst::ErrFieldSet { .. } => "Err field write",

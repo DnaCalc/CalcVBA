@@ -1582,6 +1582,9 @@ fn verify_inst_places(
                 }
             }
         }
+        OxInst::ReleaseRef { src } => {
+            check_place(fi, bi, site, src, locals, globals, temps, errors);
+        }
         OxInst::ValidateAssignment { src, .. }
         | OxInst::PredeclaredSet { value: src, .. }
         | OxInst::PredeclaredExternSet { value: src, .. }

@@ -682,6 +682,9 @@ pub(crate) struct JitFrame {
     pub(crate) temps: Vec<Variant>,
     /// Strings `StrPtr` converted from non-String operands, kept for the statement.
     pub(crate) pointer_strings: Vec<Variant>,
+    /// The array locks each `MakeRef` temporary holds while its call runs, by temp index;
+    /// released by `ReleaseRef`, by clearing the temp at a statement boundary, and on exit.
+    pub(crate) ref_locks: Vec<(usize, calcvba_runtime::safe_array::ArrayLock)>,
     pub(crate) aliases: Vec<Option<SlotAlias>>,
     pub(crate) gosub_stack: Vec<u32>,
     pub(crate) saved_err: RtSavedErrState,
@@ -754,6 +757,7 @@ pub(crate) fn new_jit_frame(
         locals,
         temps,
         pointer_strings: Vec::new(),
+        ref_locks: Vec::new(),
         aliases: vec![None; func.locals.len()],
         gosub_stack: Vec::new(),
         saved_err: RtSavedErrState::default(),
@@ -1145,6 +1149,7 @@ pub(crate) fn clear_current_statement_temps(run: &mut JitRun, first_temp: usize)
             *slot = Variant::empty();
         }
         frame.pointer_strings.clear();
+        frame.ref_locks.retain(|(temp, _)| *temp < first_temp);
     }
     prune_for_each_for_cleared_temps(run, frame_index, first_temp);
     prune_as_new_slots_for_cleared_temps(run, frame_index, first_temp);

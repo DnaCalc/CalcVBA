@@ -126,8 +126,16 @@ impl Module {
     ) -> Result<Self, Error> {
         let (core, catalogue) = calcvba_bind::bind_program_with_procedures(manifest, resolver)
             .map_err(|e| Error::Compile(e.to_string()))?;
-        let mut program =
-            calcvba_oxir::elaborate::elaborate(&core).map_err(|e| Error::Compile(e.to_string()))?;
+        // The host's typed-stack interpreter has no `VT_BYREF` cells yet (step 10 of the
+        // VARIANT-layout programme moves it onto the shared session): elements and fields passed
+        // ByRef keep copy-in and copy-out here, as in native builds.
+        let mut program = calcvba_oxir::elaborate::elaborate_with(
+            &core,
+            &calcvba_oxir::elaborate::ElaborateOptions {
+                byref_references: false,
+            },
+        )
+        .map_err(|e| Error::Compile(e.to_string()))?;
         // A source-module host has explicit bound procedures, not an implicit
         // program run entry or diagnostic entry-local snapshot. Initialization
         // remains the separate compiler-owned global initializer.

@@ -476,6 +476,13 @@ pub enum OxInst {
         base: OxAddrBase,
         path: Vec<OxAddrStep>,
     },
+    /// The call a `MakeRef` reference was made for has returned: release the array locks it
+    /// took (VBA locks every array on the path while the reference is out, so `ReDim`, `Erase`
+    /// and replacing the array raise error 10). Clearing the temporary at a statement boundary,
+    /// and leaving the procedure, release them too.
+    ReleaseRef {
+        src: OxPlace,
+    },
     ErrFieldGet {
         dst: OxPlace,
         field: ErrField,
@@ -564,6 +571,7 @@ impl OxInst {
             | OxInst::TypeOfIs { .. }
             | OxInst::AddrOf { .. }
             | OxInst::MakeRef { .. }
+            | OxInst::ReleaseRef { .. }
             | OxInst::AddRef { .. } => true,
 
             // `Unbox` is fallible only when it re-checks the tag.

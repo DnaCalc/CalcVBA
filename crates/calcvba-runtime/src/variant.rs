@@ -1451,6 +1451,19 @@ impl Variant {
         }
     }
 
+    /// Whether this holds, or refers to, an array that is locked (an element of it is out as a
+    /// ByRef argument): replacing it raises error 10 in VBA.
+    pub fn holds_locked_array(&self) -> bool {
+        let cell = match self.byref_target() {
+            // SAFETY: a `VT_BYREF | VT_VARIANT` reference targets a live engine cell.
+            Some((0x0C, target)) => unsafe { &*target.cast::<Variant>() },
+            _ => self,
+        };
+        cell.array_descriptor()
+            // SAFETY: an array cell's descriptor is null or live.
+            .is_some_and(|raw| unsafe { crate::safe_array::is_locked_raw(raw) })
+    }
+
     /// Whether this is an array cell or a `VT_BYREF | VT_ARRAY` reference to one (an array
     /// element or UDT field passed ByRef): element access works the same on both.
     pub fn holds_array(&self) -> bool {

@@ -1089,6 +1089,29 @@ impl ObjectRef {
         self.compat_identity()
     }
 
+    /// The identity VBA's `Is` compares: a runtime object's identity number, and for a foreign
+    /// object its `IUnknown` address (COM identity: `QueryInterface` for `IUnknown` returns the
+    /// same pointer from every interface of one object).
+    pub fn is_identity(&self) -> usize {
+        if self.is_compat_object() {
+            return self.compat_identity() as u32 as usize;
+        }
+        let this = self.0.as_ptr();
+        let mut unknown: *mut c_void = core::ptr::null_mut();
+        // SAFETY: this ObjectRef retains a live COM object whose first field is its IUnknown
+        // vtable; the reference QueryInterface returns is released at once (only its address is
+        // kept).
+        unsafe {
+            let vtbl = (*this).vtbl;
+            let hr = ((*vtbl).query_interface)(this.cast(), &RUNTIME_GUID_IUNKNOWN, &mut unknown);
+            if hr < 0 || unknown.is_null() {
+                return this as usize;
+            }
+            ((*vtbl).release)(unknown);
+        }
+        unknown as usize
+    }
+
     /// Class/route key for project-dynamic dispatch (which class's route this instance uses).
     /// Only valid for compat (project-class) objects, like `compat_identity`/`class_descriptor`.
     pub fn route_key(&self) -> i32 {

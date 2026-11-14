@@ -2541,7 +2541,7 @@ impl<'h> Vm3<'h> {
                 args,
             } => {
                 let source_object = variant_to_object(&self.operand(source)?)?;
-                let source_id = source_object.raw();
+                let source_id = source_object.is_identity();
                 let event_id = *event;
                 // Collect subscribers whose binding holds this source and routes this event,
                 // then run each handler in VBA subscription order with the sink as `me` and
@@ -5534,7 +5534,7 @@ impl<'h> Vm3<'h> {
                 .events
                 .com_subscriptions
                 .values()
-                .filter(|sink| object_identity(&sink.owner) == owner_raw)
+                .filter(|sink| object_identity(&sink.owner) == owner_raw as u32 as usize)
                 .count() as u32;
             let retained_event_refs = event_binding_refs + com_sink_refs;
             // `owner` is one temporary AddRef taken while inspecting the values. If every
@@ -5976,14 +5976,14 @@ fn is_nothing(value: &Variant) -> bool {
 }
 
 /// The raw identity (an `i32`) of an object value, or 0 for a non-object/`Nothing`.
-fn object_identity(value: &Variant) -> i32 {
-    value.as_object_ref().map(|o| o.raw()).unwrap_or(0)
+fn object_identity(value: &Variant) -> usize {
+    value.as_object_ref().map(|o| o.is_identity()).unwrap_or(0)
 }
 
 /// VBA's `Is` operator accepts only object references at run time. A Variant
 /// that currently holds a scalar compiles, but evaluating the comparison raises
 /// error 424 instead of treating the scalar as the null object identity.
-fn object_identity_for_is(value: &Variant) -> Result<i32, Vm3Error> {
+fn object_identity_for_is(value: &Variant) -> Result<usize, Vm3Error> {
     if value.vtype() == VarType::Object {
         Ok(object_identity(value))
     } else {

@@ -2049,14 +2049,14 @@ pub(crate) fn jit_is_nothing(value: &Variant) -> bool {
 pub(crate) unsafe fn object_identity_for_is(
     state: *mut RawExecState,
     value: &Variant,
-) -> Result<i32, i32> {
+) -> Result<usize, i32> {
     if !matches!(value.vtype(), VarType::Object) {
         // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
         return Err(unsafe { rt_raise_runtime_error_number(state, 424) });
     }
     Ok(value
         .as_object_ref()
-        .map(|object| object.raw())
+        .map(|object| object.is_identity())
         .unwrap_or(0))
 }
 

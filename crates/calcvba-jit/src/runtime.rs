@@ -672,6 +672,9 @@ pub(crate) struct JitForEachState {
     pub(crate) array_source: Option<SlotAlias>,
     pub(crate) elements: Vec<Variant>,
     pub(crate) position: usize,
+    /// A COM object's enumerator, asked for one item at a time (`IEnumVARIANT::Next`), as VBA
+    /// does (VM3 the same); `elements` is then unused.
+    pub(crate) enumerator: Option<Box<dyn calcvba_com::call::ComEnumerator>>,
 }
 
 pub(crate) struct JitFrame {

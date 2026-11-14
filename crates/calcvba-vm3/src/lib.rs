@@ -405,6 +405,15 @@ struct ForEachState {
     array_source: Option<Loc>,
     elements: Vec<Variant>,
     position: usize,
+    /// A COM object's enumerator, asked for one item at a time (`IEnumVARIANT::Next`), as VBA
+    /// does; `elements` is then unused.
+    enumerator: Option<Box<dyn calcvba_com::call::ComEnumerator>>,
+}
+
+/// What a `For Each` walks: a snapshot of items, or a COM object's enumerator.
+enum ForEachItems {
+    Snapshot(Vec<Variant>),
+    Enumerator(Box<dyn calcvba_com::call::ComEnumerator>),
 }
 
 /// One procedure activation: its dispatch position, value slots, ByRef aliasing, and
@@ -2236,7 +2245,10 @@ impl<'h> Vm3<'h> {
                     let frame = self.frames.last_mut().expect("executing frame");
                     frame.loop_locks.push((iter_temp.0, lock));
                 }
-                let elements = self.foreach_elements(src, 0)?;
+                let (elements, enumerator) = match self.foreach_elements(src, 0)? {
+                    ForEachItems::Snapshot(elements) => (elements, None),
+                    ForEachItems::Enumerator(enumerator) => (Vec::new(), Some(enumerator)),
+                };
                 let key = self.resolve(iter);
                 self.for_each.insert(
                     key,
@@ -2244,6 +2256,7 @@ impl<'h> Vm3<'h> {
                         array_source,
                         elements,
                         position: 0,
+                        enumerator,
                     },
                 );
             }
@@ -2253,7 +2266,20 @@ impl<'h> Vm3<'h> {
                 has_value,
             } => {
                 let key = self.resolve(iter);
-                let next = if let Some(state) = self.for_each.get(&key) {
+                let next = if let Some(enumerator) = self
+                    .for_each
+                    .get_mut(&key)
+                    .and_then(|state| state.enumerator.as_mut())
+                {
+                    enumerator.next_item().map_err(|fault| {
+                        Vm3Error::Fault(Fault::new(
+                            fault.number,
+                            fault
+                                .description
+                                .unwrap_or_else(|| default_error_message(fault.number).to_string()),
+                        ))
+                    })?
+                } else if let Some(state) = self.for_each.get(&key) {
                     if state.position >= state.elements.len() {
                         None
                     } else if let Some(source) = state.array_source {
@@ -4671,7 +4697,7 @@ impl<'h> Vm3<'h> {
         Ok(Variant::from_object_ref(enumerator))
     }
 
-    fn foreach_elements(&mut self, src: Variant, depth: usize) -> Result<Vec<Variant>, Vm3Error> {
+    fn foreach_elements(&mut self, src: Variant, depth: usize) -> Result<ForEachItems, Vm3Error> {
         if depth > 8 {
             return Err(Vm3Error::Fault(Fault::new(
                 438,
@@ -4679,16 +4705,18 @@ impl<'h> Vm3<'h> {
             )));
         }
         if let Some(arr) = src.as_safearray() {
-            return Ok(arr.enumeration_elements().unwrap_or_default());
+            return Ok(ForEachItems::Snapshot(
+                arr.enumeration_elements().unwrap_or_default(),
+            ));
         }
         let Some(obj) = src.as_object_ref() else {
             return Err(Vm3Error::Fault(Fault::new(13, "Type mismatch")));
         };
         if let Some(values) = obj.native_collection_snapshot() {
-            return Ok(values);
+            return Ok(ForEachItems::Snapshot(values));
         }
         if obj.is_compat_object() && obj.route_key() == VBA_COLLECTION_ROUTE_KEY {
-            return Ok(Vec::new());
+            return Ok(ForEachItems::Snapshot(Vec::new()));
         }
         if obj.is_project_instance() {
             return self.project_class_enumerator_elements(obj, depth + 1);
@@ -4696,7 +4724,8 @@ impl<'h> Vm3<'h> {
         self.exec
             .host
             .com()
-            .enumerate_object(obj)
+            .object_enumerator(&obj)
+            .map(ForEachItems::Enumerator)
             .map_err(Fault::from_hal)
             .map_err(Vm3Error::Fault)
     }
@@ -4705,7 +4734,7 @@ impl<'h> Vm3<'h> {
         &mut self,
         object: ObjectRef,
         depth: usize,
-    ) -> Result<Vec<Variant>, Vm3Error> {
+    ) -> Result<ForEachItems, Vm3Error> {
         let class_idx = object.route_key() as usize;
         let obj_bundle = object.bundle_id() as usize;
         let program = self

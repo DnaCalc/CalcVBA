@@ -1776,6 +1776,7 @@ pub(crate) fn declare_imports(module: &mut impl Module) -> Result<Imports, JitEr
 
     let mut for_each_next_slot_sig = module.make_signature();
     for_each_next_slot_sig.params.push(AbiParam::new(ptr_ty));
+    for_each_next_slot_sig.params.push(AbiParam::new(ptr_ty));
     for_each_next_slot_sig
         .params
         .push(AbiParam::new(types::I32));
@@ -7444,6 +7445,7 @@ pub(crate) unsafe extern "C" fn rt_jit_for_each_init_variant_array(
             };
             (array_source, iter_alias)
         };
+        let mut enumerator = None;
         let elements = if let Some(array) = source_value.as_safearray() {
             array.enumeration_elements().unwrap_or_default()
         } else if let Some(object) = source_value.as_object_ref() {
@@ -7470,16 +7472,20 @@ pub(crate) unsafe extern "C" fn rt_jit_for_each_init_variant_array(
                     };
                     exec.host
                 };
-                match host.com().enumerate_object(object) {
-                    Ok(values) => values,
+                // A COM object's enumerator, asked for one item at a time (VM3 the same).
+                match host.com().object_enumerator(&object) {
+                    Ok(source) => {
+                        enumerator = Some(source);
+                        Vec::new()
+                    }
                     Err(error) => {
                         // SAFETY: the active entry uniquely owns the live state.
-                        return unsafe {
-                            rt_raise_runtime_error_number(
-                                state,
-                                error.host_error_code.unwrap_or(13),
-                            )
+                        let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
+                            return ST_FAULT;
                         };
+                        exec.err_engine
+                            .raise(Fault::from_hal(error), current_unit_source(run));
+                        return ST_FAULT;
                     }
                 }
             }
@@ -7512,6 +7518,7 @@ pub(crate) unsafe extern "C" fn rt_jit_for_each_init_variant_array(
                 array_source,
                 elements,
                 position: 0,
+                enumerator,
             },
         );
         ST_OK
@@ -7520,6 +7527,7 @@ pub(crate) unsafe extern "C" fn rt_jit_for_each_init_variant_array(
 
 pub(crate) unsafe extern "C" fn rt_jit_for_each_next_variant_array(
     run: *mut JitRun,
+    state: *mut RawExecState,
     iter_area: u32,
     iter_index: u32,
     item_area: u32,
@@ -7538,7 +7546,17 @@ pub(crate) unsafe extern "C" fn rt_jit_for_each_next_variant_array(
         else {
             return ST_FAULT;
         };
-        let next = if let Some(state) = run.for_each.get(&iter_alias) {
+        let next = if let Some(enumerator) = run
+            .for_each
+            .get_mut(&iter_alias)
+            .and_then(|iterator| iterator.enumerator.as_mut())
+        {
+            match enumerator.next_item() {
+                Ok(next) => next,
+                // SAFETY: the compiled caller passes the live, uniquely owned state.
+                Err(fault) => return unsafe { rt_raise_runtime_error_number(state, fault.number) },
+            }
+        } else if let Some(state) = run.for_each.get(&iter_alias) {
             if state.position >= state.elements.len() {
                 None
             } else if let Some(source) = state.array_source {

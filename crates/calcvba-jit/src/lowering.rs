@@ -5168,7 +5168,8 @@ impl<'a> LowerFunc<'a> {
         let call = builder.ins().call(
             callee,
             &[
-                self.run, iter_area, iter_index, item_area, item_index, has_area, has_index,
+                self.run, self.state, iter_area, iter_index, item_area, item_index, has_area,
+                has_index,
             ],
         );
         let status = builder.inst_results(call)[0];

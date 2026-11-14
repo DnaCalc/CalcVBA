@@ -741,6 +741,33 @@ impl Variant {
     /// encoded in the wire bytes must have been produced by `Variant::to_wire_bytes`
     /// in this process and the source allocation/object must still be live for the
     /// whole call. Arbitrary or stale pointer bytes are undefined behavior.
+    /// Takes ownership of an Automation `VARIANT` a COM callee produced (an `[out, retval]`, or
+    /// a value a callee stored through a reference): the cell moves into the runtime as it is, no
+    /// copy, with its `vt` kept (`VT_UNKNOWN` stays 13). `Err(vt)` for a type VBA has no type for
+    /// (`VT_I1`, `VT_UI2`, `VT_UI4`, `VT_UI8`, `VT_INT`, `VT_UINT`, a reference, or any other
+    /// `vt` the runtime cell does not hold): VBA raises 458 there, and the caller still owns
+    /// `bytes` and clears it.
+    ///
+    /// # Safety
+    /// `bytes` is a `VARIANT` the caller owns (its BSTR, interface, `SAFEARRAY` or record are
+    /// owned by it and allocated by oleaut32), which nothing frees afterwards on success.
+    pub unsafe fn adopt_automation(bytes: [u8; WIRE_SIZE]) -> Result<Self, u16> {
+        let vt = u16::from_le_bytes([bytes[0], bytes[1]]);
+        let element = vt & 0x0FFF;
+        let vba_type = matches!(element, 0x00..=0x0B | 0x0D | 0x0E | 0x11 | 0x14 | 0x24)
+            || (element == 0x0C && vt & 0x2000 != 0);
+        let supported = match vt & 0xF000 {
+            0 => vba_type && element != 0x0C,
+            0x2000 => vba_type && element > 0x01,
+            _ => false,
+        };
+        if !supported {
+            return Err(vt);
+        }
+        let core = VariantCore::from_wire_bytes(bytes).map_err(|_| vt)?;
+        Ok(Self::from_core(core))
+    }
+
     pub unsafe fn from_trusted_wire_bytes(bytes: [u8; WIRE_SIZE]) -> Result<Self, String> {
         let core = VariantCore::from_wire_bytes(bytes)?;
         match core.vtype() {

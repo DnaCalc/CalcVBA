@@ -1,5 +1,7 @@
 //! calcvba-com: Windows-first COM bridge, metadata facade, and wire translation boundary.
 pub mod access_policy;
+#[cfg(target_os = "windows")]
+pub mod automation;
 pub use access_policy::{ComPolicyScope, authorize_native_com};
 
 pub mod ansi;

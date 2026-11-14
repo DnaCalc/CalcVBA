@@ -10,7 +10,7 @@
 //! any new difference and on any listed difference that is now fixed.
 #![cfg(all(windows, target_pointer_width = "64"))]
 
-use calcvba_differential::{Canon, Executor, run};
+use calcvba_differential::{Canon, Executor, run_with_engine_setup};
 use std::collections::{BTreeMap, BTreeSet};
 
 const MODULE: &str = include_str!("../../../conformance/excel-measurements/variant-layout.vba");
@@ -31,7 +31,10 @@ fn differences(executor: Executor) -> BTreeMap<String, String> {
     let source = format!(
         "Public result As String\r\n{MODULE}\r\nSub Main()\r\n  result = RunAll()\r\nEnd Sub\r\n"
     );
-    let outcome = run(executor, &source);
+    // The probe reads cells with `CopyMemory`, so the native Declare lane is on, as in Excel.
+    let outcome = run_with_engine_setup(executor, &source, &|engine| {
+        engine.set_host_policy(calcvba_hal::HostPolicy::native());
+    });
     let declined = |why: String| BTreeMap::from([("DECLINED".to_string(), why)]);
     if let Some(why) = outcome.unsupported {
         return declined(format!("unsupported: {why}"));

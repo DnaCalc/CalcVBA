@@ -36,7 +36,7 @@ fn native_input(
         .map_err(|_| "COM state lock poisoned")?;
     let binding = state
         .bindings
-        .get(&state.token_for_object(&object))
+        .get(&state.token_for_object(object))
         .ok_or("unbound native COM receiver")?;
     if binding.native_owner_thread != std::thread::current().id() {
         return Err("native COM receiver belongs to a different thread/apartment".into());

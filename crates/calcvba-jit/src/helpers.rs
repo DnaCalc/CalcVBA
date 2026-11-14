@@ -3430,8 +3430,60 @@ pub(crate) unsafe extern "C" fn rt_jit_withevents_set_to_slot(
             Err(status) => return status,
         };
         let key = jit_withevents_key(&owner_ref, binding as i64);
+        let program = {
+            // SAFETY: a short read of the run's current program index.
+            unsafe { &*run }
+                .frames
+                .last()
+                .map(|frame| frame.program_index)
+                .unwrap_or(0)
+        };
         // SAFETY: this helper inherits the exact live, uniquely borrowed, same-thread
         // execution-state handle contract from its checked compiled-run caller.
+        let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
+            return ST_FAULT;
+        };
+        // Rebinding unadvises the old sink; a COM source gets one sink for its events (VM3's
+        // WithEventsSet does the same, design doc step 8c). Advise and Unadvise are host calls
+        // that may deliver events, so no borrow of the state is held across them.
+        let interface = exec.com_event_interface(program, binding);
+        let host = exec.host;
+        let old = exec.take_com_connections(|held| held == key);
+        let _ = exec;
+        drop(old);
+        if !jit_is_nothing(&value)
+            && let Some(source) = value.as_object_ref()
+            && !source.is_project_instance()
+            && let Some(interface) = interface
+        {
+            match host.com().advise_events(&source, &interface, key as u64) {
+                Ok(connection) => {
+                    // SAFETY: the host call returned; the state may be borrowed again.
+                    let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
+                        return ST_FAULT;
+                    };
+                    exec.insert_com_connection(
+                        key,
+                        calcvba_rt_abi::ComEventConnection {
+                            connection,
+                            owner: owner_value.clone(),
+                            program,
+                            binding,
+                        },
+                    );
+                }
+                Err(error) => {
+                    // SAFETY: the host call returned; the state may be borrowed again.
+                    let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
+                        return ST_FAULT;
+                    };
+                    exec.err_engine
+                        .raise(Fault::from_hal(error), current_unit_source(run));
+                    return ST_FAULT;
+                }
+            }
+        }
+        // SAFETY: the host calls returned; the state may be borrowed again.
         let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
             return ST_FAULT;
         };
@@ -3498,7 +3550,11 @@ pub(crate) unsafe extern "C" fn rt_jit_withevents_clear_owner_to_slot(
         exec.events
             .withevents
             .retain(|key, _| jit_withevents_owner_raw(*key) != owner_raw);
+        let connections =
+            exec.take_com_connections(|key| jit_withevents_owner_raw(key) == owner_raw);
         let _ = exec;
+        // Unadvised with no borrow of the state held (Unadvise may deliver events).
+        drop(connections);
         // SAFETY: callback-capable lookup returned and no typed run borrow is live.
         let run = unsafe { &mut *run };
         let Some(slot) = slot_mut(run, dst_area as u32, dst_index as u32) else {
@@ -4757,6 +4813,10 @@ unsafe fn invoke_com_member_for_jit(
             .com()
             .invoke_object(&object, member, call_kind, &call_args),
     };
+    // SAFETY: the host call returned; the state is not borrowed.
+    if let Some(status) = unsafe { crate::events::event_abort_status(state) } {
+        return status;
+    }
     let value = match result {
         Ok(value) => value,
         Err(err) => {
@@ -4940,6 +5000,10 @@ pub(crate) unsafe extern "C" fn rt_jit_declare_call_to_slot(
         let invoke = host
             .dynlink()
             .invoke_descriptor_arguments(&view, &call_arguments);
+        // SAFETY: the host call returned; the state is not borrowed.
+        if let Some(status) = unsafe { crate::events::event_abort_status(state) } {
+            return status;
+        }
         let last_dll_error = host.dynlink().last_dll_error();
         {
             // SAFETY: the host call returned, so the live execution state may be borrowed again.
@@ -7370,7 +7434,12 @@ pub(crate) unsafe extern "C" fn rt_jit_for_each_init_variant_array(
                     exec.host
                 };
                 // A COM object's enumerator, asked for one item at a time (VM3 the same).
-                match host.com().object_enumerator(&object) {
+                let enumerator_result = host.com().object_enumerator(&object);
+                // SAFETY: the host call returned; the state is not borrowed.
+                if let Some(status) = unsafe { crate::events::event_abort_status(state) } {
+                    return status;
+                }
+                match enumerator_result {
                     Ok(source) => {
                         enumerator = Some(source);
                         Vec::new()
@@ -7436,19 +7505,32 @@ pub(crate) unsafe extern "C" fn rt_jit_for_each_next_variant_array(
         if run.is_null() {
             return ST_FAULT;
         }
+        let raw_run = run;
         // SAFETY: null was rejected and this helper owns mutable access for the call.
-        let run = unsafe { &mut *run };
+        let run = unsafe { &mut *raw_run };
         let Some(iter_alias) = current_frame_slot(run, iter_area, iter_index)
             .and_then(|alias| resolve_slot_alias(run, alias))
         else {
             return ST_FAULT;
         };
-        let next = if let Some(enumerator) = run
+        // A COM enumerator leaves the iterator table for its call, with no borrow of the run held
+        // across it: an event handler running inside the call may start its own loops.
+        let enumerator = run
             .for_each
             .get_mut(&iter_alias)
-            .and_then(|iterator| iterator.enumerator.as_mut())
-        {
-            match enumerator.next_item() {
+            .and_then(|iterator| iterator.enumerator.take());
+        let next = if let Some(mut enumerator) = enumerator {
+            let next = enumerator.next_item();
+            // SAFETY: the host call returned; the run is re-borrowed from its root.
+            let run = unsafe { &mut *raw_run };
+            if let Some(iterator) = run.for_each.get_mut(&iter_alias) {
+                iterator.enumerator = Some(enumerator);
+            }
+            // SAFETY: the host call returned; the state is not borrowed.
+            if let Some(status) = unsafe { crate::events::event_abort_status(state) } {
+                return status;
+            }
+            match next {
                 Ok(next) => next,
                 // SAFETY: the compiled caller passes the live, uniquely owned state.
                 Err(fault) => return unsafe { rt_raise_runtime_error_number(state, fault.number) },
@@ -7470,6 +7552,8 @@ pub(crate) unsafe extern "C" fn rt_jit_for_each_next_variant_array(
         } else {
             None
         };
+        // SAFETY: no other borrow of the run is live here.
+        let run = unsafe { &mut *raw_run };
         if next.is_some() {
             run.for_each
                 .get_mut(&iter_alias)
@@ -7617,12 +7701,17 @@ unsafe fn arithmetic_value_for_jit(
                 };
                 exec.host
             };
-            match host.com().invoke_object(
+            let value = host.com().invoke_object(
                 &object,
                 calcvba_com::call::ComMember::Id(0),
                 calcvba_com::call::ComCallKind::Get,
                 &[],
-            ) {
+            );
+            // SAFETY: the host call returned; the state is not borrowed.
+            if let Some(status) = unsafe { crate::events::event_abort_status(state) } {
+                return Err(status);
+            }
+            match value {
                 Ok(result) => result,
                 Err(error) => {
                     // SAFETY: host callback returned; reacquire state only now.

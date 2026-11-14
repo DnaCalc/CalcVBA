@@ -676,6 +676,24 @@ pub trait ComHal {
         }
         Ok(result.value.unwrap_or_else(Variant::empty))
     }
+    /// Advise a WithEvents sink for the source interface `interface` (an IID in registry form,
+    /// from the declared type's type library) on `source`; the sink hands each event to the
+    /// running program's executor (`calcvba_runtime::events`) for subscription `key`. Dropping the
+    /// returned connection unadvises it. The default has no event transport: VBA error 459.
+    fn advise_events(
+        &self,
+        _source: &ObjectRef,
+        _interface: &str,
+        _key: u64,
+    ) -> HalResult<Box<dyn calcvba_com::call::ComEventConnection>> {
+        Err(HalError::adapter_fault(
+            HalProfileId::Null,
+            CapabilityId::ComActivationDispatch,
+            "advise_events",
+            "this host has no COM event transport",
+        )
+        .with_host_error_code(459))
+    }
     /// A `For Each` over a COM object, one item at a time. The default enumerates through
     /// [`Self::enumerate_object`].
     fn object_enumerator(

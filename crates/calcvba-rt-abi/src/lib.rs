@@ -7,7 +7,6 @@ use calcvba_bundle::{
     ArrayElementType, NativeImplId, NumericCoerceTarget, NumericMode, ProjectMemberKind,
     StringCompareMode,
 };
-use calcvba_com::ComSubscriptionToken;
 use calcvba_eval::arith::{self, ArithError, CmpOp as EvalCmpOp};
 use calcvba_eval::typed;
 use calcvba_hal::HostServices;
@@ -66,7 +65,7 @@ pub fn coerce_declared_value(value: &Variant, ty: &OxTy) -> Result<Variant, Arit
 pub fn object_variant_pointer(host: &dyn HostServices, value: &Variant) -> Result<i64, String> {
     #[cfg(target_os = "windows")]
     if let Some(object) = value.as_object_ref()
-        && object.raw() != 0
+        && !object.is_nothing_placeholder()
         && !object.is_project_instance()
         && let Ok(pointer) = host.com().retain_native_dispatch_object(object)
     {
@@ -83,7 +82,7 @@ pub fn object_variant_pointer(host: &dyn HostServices, value: &Variant) -> Resul
         VarType::Empty | VarType::Null => Ok(0),
         VarType::Object => Ok(value
             .as_object_ref()
-            .filter(|object| object.raw() != 0)
+            .filter(|object| !object.is_nothing_placeholder())
             .map_or(0, |object| object.raw_iunknown() as usize as i64)),
         _ => Err("ObjPtr requires an object reference".to_string()),
     }
@@ -232,10 +231,25 @@ pub struct EventBinding {
     pub order: u64,
 }
 
-/// A live host event subscription routed back to a project sink handler.
-pub struct ComEventSink {
+/// A WithEvents variable's sink advised on a COM source (step 8c): the sink delivers its events
+/// synchronously to the running program for this subscription. Dropping it unadvises the sink.
+pub struct ComEventConnection {
+    pub connection: Box<dyn calcvba_com::call::ComEventConnection>,
+    /// The instance holding the WithEvents variable (`Me` of its handlers).
     pub owner: Variant,
+    /// The program whose routes name the handlers.
+    pub program: usize,
+    /// The WithEvents binding token the routes are keyed by.
+    pub binding: i32,
+}
+
+/// A COM event as a call of its WithEvents handler: `me` is the instance holding the variable;
+/// `args` are the event arguments prepared for the handler's parameters.
+pub struct EventHandlerCall {
+    pub program: usize,
     pub handler: usize,
+    pub me: Variant,
+    pub args: Vec<Variant>,
 }
 
 /// Host sink registered by COM server/export code for project `RaiseEvent` fan-out.
@@ -249,9 +263,12 @@ pub struct EventFabric<'h> {
     pub automatic: Rc<std::cell::RefCell<automatic_events::AutomaticEventState>>,
     pub withevents: HashMap<i64, EventBinding>,
     pub next_withevents_order: u64,
-    pub com_subscriptions: HashMap<i32, ComEventSink>,
-    pub com_subscriptions_by_key: HashMap<i64, Vec<i32>>,
-    pub pumping: bool,
+    /// WithEvents sinks advised on COM sources, by WithEvents key.
+    pub com_connections: HashMap<i64, ComEventConnection>,
+    /// An error a WithEvents handler did not handle: VBA reports it as a top-level run-time
+    /// error and ends the run, whatever `On Error` the code that fired the event had (Excel,
+    /// probe events8). Taken when the host call that delivered the event returns.
+    pub pending_abort: Option<Fault>,
     pub withevents_iters: Vec<(Vec<ObjectRef>, usize)>,
     pub project_event_sink: Option<ProjectEventSink<'h>>,
 }
@@ -290,6 +307,101 @@ struct PredeclaredInitCallback {
 struct PredeclaredInitPlan {
     value: Variant,
     callback: Option<PredeclaredInitCallback>,
+}
+
+impl ExecState<'_> {
+    /// The source interface (an IID in registry form) a WithEvents binding in `program` advises a
+    /// sink on: the declared type's, from the routes' type-library metadata (design doc, step 8c).
+    /// `None` when the binding's class handles no event of it, so no sink is needed.
+    ///
+    /// Advising is a host call, which may deliver events: the caller makes it with no borrow of
+    /// this state held, then records the connection ([`Self::insert_com_connection`]).
+    pub fn com_event_interface(&self, program: usize, binding: i32) -> Option<String> {
+        self.programs
+            .get(program)?
+            .program
+            .event_routes
+            .iter()
+            .filter(|route| route.binding == binding)
+            .find_map(|route| route.native.as_ref()?.connection_point_iid.clone())
+    }
+
+    /// Records an advised WithEvents sink.
+    pub fn insert_com_connection(&mut self, key: i64, connection: ComEventConnection) {
+        self.events.com_connections.insert(key, connection);
+    }
+
+    /// Takes the sinks of the WithEvents keys `selected` selects (rebinding, `Set x = Nothing`, the
+    /// owner cleared or terminated). Dropping them unadvises them, a host call: the caller drops
+    /// them with no borrow of this state held.
+    #[must_use = "dropping the connections unadvises them"]
+    pub fn take_com_connections(
+        &mut self,
+        selected: impl Fn(i64) -> bool,
+    ) -> Vec<ComEventConnection> {
+        let keys: Vec<i64> = self
+            .events
+            .com_connections
+            .keys()
+            .copied()
+            .filter(|key| selected(*key))
+            .collect();
+        keys.into_iter()
+            .filter_map(|key| self.events.com_connections.remove(&key))
+            .collect()
+    }
+
+    /// The handler call for COM event `dispid` on WithEvents subscription `key`, as VBA binds it:
+    /// for a ByRef parameter a `VT_BYREF` argument is passed as the reference (the server's
+    /// storage) and any other argument as a local copy; ByVal parameters get copies of the values.
+    /// `None` when the subscription is gone or routes no handler for the event.
+    pub fn com_event_call(
+        &self,
+        key: u64,
+        dispid: i32,
+        args: &[Variant],
+    ) -> Option<EventHandlerCall> {
+        let connection = self.events.com_connections.get(&(key as i64))?;
+        let loaded = self.programs.get(connection.program)?;
+        // A native route names its event by the type library's token; the sink sees the DISPID.
+        let handler = loaded
+            .program
+            .event_routes
+            .iter()
+            .find(|route| {
+                route.binding == connection.binding
+                    && route
+                        .native
+                        .as_ref()
+                        .is_some_and(|native| native.dispatch_member_id == Some(dispid))
+            })?
+            .handler;
+        let function = loaded.program.funcs.get(handler)?;
+        let args = args
+            .iter()
+            .enumerate()
+            .map(|(index, arg)| {
+                // Local 0 is the handler's `Me`; event argument `index` is local `index + 1`.
+                let by_ref = function
+                    .locals
+                    .get(index + 1)
+                    .and_then(|local| local.param.as_ref())
+                    .is_some_and(|param| param.by_ref);
+                if by_ref && arg.byref_target().is_some() {
+                    arg.clone_reference()
+                } else {
+                    // Cloning a reference reads its target (VariantCopyInd).
+                    arg.clone()
+                }
+            })
+            .collect();
+        Some(EventHandlerCall {
+            program: connection.program,
+            handler,
+            me: connection.owner.clone(),
+            args,
+        })
+    }
 }
 
 /// One linked VBA project image's mutable runtime tables.
@@ -929,66 +1041,26 @@ fn withevents_owner_raw(key: i64) -> i32 {
     (key >> 32) as i32
 }
 
-// SAFETY CONTRACT: `state` is the live same-thread execution-state root. This
-// function takes owned subscription state before entering the host and performs
-// no typed state borrow across `Unadvise`/unsubscribe re-entry.
-unsafe fn unsubscribe_com_key(state: *mut RawExecState, key: i64) -> Result<(), Fault> {
-    let (host, tokens, removed_sinks) = {
-        // SAFETY: upheld by the private raw-state contract.
-        let Some(exec) = (unsafe { state_from_raw(state) }) else {
-            return Err(Fault::new(5, "runtime ABI state pointer is null"));
-        };
-        let host = exec.host;
-        let tokens = exec
-            .events
-            .com_subscriptions_by_key
-            .remove(&key)
-            .unwrap_or_default();
-        let removed_sinks = tokens
-            .iter()
-            .filter_map(|raw| exec.events.com_subscriptions.remove(raw))
-            .collect::<Vec<_>>();
-        (host, tokens, removed_sinks)
-    };
-    for raw in tokens {
-        let _ = host
-            .com()
-            .unsubscribe_event_variant(ComSubscriptionToken::new(raw));
-    }
-    // Keep the extracted sink owners alive through every host call. A same-token
-    // registration created by synchronous re-entry is intentionally preserved.
-    drop(removed_sinks);
-    Ok(())
-}
-
 // SAFETY CONTRACT: `state` is the live same-thread execution-state root. Owned
 // work is extracted before every host call and state is reborrowed afterwards.
 unsafe fn cleanup_terminated_owner(state: *mut RawExecState, owner_raw: i32) -> Result<(), Fault> {
+    // The owner's WithEvents sinks are unadvised with no borrow of the state held (Unadvise may
+    // deliver events, and a handler running then may advise again): repeat until none is left.
     loop {
-        let keys: Vec<i64> = {
-            // SAFETY: upheld by the private raw-state contract. The snapshot borrow
-            // ends before unsubscribe can synchronously re-enter the runtime.
+        let connections = {
+            // SAFETY: upheld by the private raw-state contract. The borrow ends before the
+            // connections are dropped.
             let Some(exec) = (unsafe { state_from_raw(state) }) else {
                 return Err(Fault::new(5, "runtime ABI state pointer is null"));
             };
-            exec.events
-                .com_subscriptions_by_key
-                .keys()
-                .copied()
-                .filter(|key| withevents_owner_raw(*key) == owner_raw)
-                .collect()
+            exec.take_com_connections(|key| withevents_owner_raw(key) == owner_raw)
         };
-        if keys.is_empty() {
+        if connections.is_empty() {
             break;
         }
-        for key in keys {
-            // SAFETY: no typed state borrow is live across the host call. Repeat the
-            // snapshot after the batch so subscriptions created by re-entry are also
-            // owned and unsubscribed before the terminating owner is forgotten.
-            unsafe { unsubscribe_com_key(state, key) }?;
-        }
+        drop(connections);
     }
-    // SAFETY: host unsubscribe calls have returned and no typed borrow is live.
+    // SAFETY: the unadvise calls have returned and no typed borrow is live.
     let Some(exec) = (unsafe { state_from_raw(state) }) else {
         return Err(Fault::new(5, "runtime ABI state pointer is null"));
     };
@@ -2494,7 +2566,16 @@ pub unsafe extern "C" fn rt_lib_invoke_with_policy(
             };
             exec.host
         };
-        let result = match calcvba_lib::invoke_context_free(id, argv, host) {
+        let result = calcvba_lib::invoke_context_free(id, argv, host);
+        // A WithEvents handler that left an error unhandled during the call (DoEvents, MsgBox)
+        // ends the run past every `On Error` (design doc, step 8c).
+        // SAFETY: the host call returned; a short borrow of the live state.
+        if let Some(exec) = (unsafe { state_from_raw(state) })
+            && exec.events.pending_abort.is_some()
+        {
+            return ST_ABORT;
+        }
+        let result = match result {
             Ok(value) => Ok(value),
             Err(calcvba_lib::ContextFreeInvokeError::Library(err)) => Err(err),
             Err(calcvba_lib::ContextFreeInvokeError::ContextRequired) => {
@@ -2659,13 +2740,9 @@ pub unsafe extern "C" fn rt_project_new_object(
 
 fn variant_is_nothing(value: &Variant) -> bool {
     match value.vtype() {
-        VarType::Object => {
-            value
-                .as_object_ref()
-                .map(|object| object.raw())
-                .unwrap_or(0)
-                == 0
-        }
+        VarType::Object => value
+            .as_object_ref()
+            .is_none_or(|object| object.is_nothing_placeholder()),
         VarType::Empty | VarType::Null => true,
         _ => value.as_i16() == Some(0) || value.as_i32() == Some(0),
     }
@@ -3621,6 +3698,7 @@ pub fn default_error_help_context(code: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use calcvba_com::ComSubscriptionToken;
     #[test]
     fn host_error_fields_remain_separate_from_transport_diagnostics() {
         let error = calcvba_hal::HalError::adapter_fault(
@@ -3756,35 +3834,6 @@ mod tests {
             event: ComMemberToken,
         ) -> HalResult<ComSubscriptionToken> {
             self.inner.com().subscribe_event(object, event)
-        }
-
-        fn unsubscribe_event_variant(
-            &self,
-            subscription: ComSubscriptionToken,
-        ) -> HalResult<Variant> {
-            self.calls
-                .lock()
-                .expect("unsubscribe calls lock")
-                .push(subscription.raw());
-            if subscription.raw() == 41 {
-                let state = self.state.load(Ordering::SeqCst);
-                // SAFETY: the test stores the live state root before cleanup and cleanup
-                // deliberately holds no typed state borrow across this host callback.
-                let exec = unsafe { state_from_raw(state) }.expect("live reentry state");
-                exec.events.com_subscriptions.insert(
-                    42,
-                    ComEventSink {
-                        owner: Variant::from_i32(withevents_owner_raw(self.owner_key)),
-                        handler: 0,
-                    },
-                );
-                exec.events
-                    .com_subscriptions_by_key
-                    .entry(self.owner_key)
-                    .or_default()
-                    .push(42);
-            }
-            Ok(Variant::empty())
         }
 
         fn poll_event_callback(&self) -> HalResult<Option<ComCallbackPayload>> {
@@ -4650,23 +4699,62 @@ mod tests {
         }
     }
 
+    /// A connection whose drop (the Unadvise) re-enters the runtime once and advises a new sink
+    /// for the same terminating owner.
+    struct ReentrantConnection {
+        id: i32,
+        host: &'static ReentrantUnsubscribeHost,
+    }
+
+    impl calcvba_com::call::ComEventConnection for ReentrantConnection {}
+
+    impl Drop for ReentrantConnection {
+        fn drop(&mut self) {
+            self.host
+                .calls
+                .lock()
+                .expect("unadvise calls lock")
+                .push(self.id);
+            if self.id == 41 {
+                let state = self.host.state.load(Ordering::SeqCst);
+                // SAFETY: the test stores the live state root before cleanup, and cleanup holds
+                // no typed state borrow while it drops connections.
+                let exec = unsafe { state_from_raw(state) }.expect("live reentry state");
+                exec.insert_com_connection(
+                    self.host.owner_key,
+                    ComEventConnection {
+                        connection: Box::new(ReentrantConnection {
+                            id: 42,
+                            host: self.host,
+                        }),
+                        owner: Variant::from_i32(withevents_owner_raw(self.host.owner_key)),
+                        program: 0,
+                        binding: 9,
+                    },
+                );
+            }
+        }
+    }
+
     #[test]
-    fn terminated_owner_cleanup_reconciles_subscription_created_by_unsubscribe_reentry() {
-        // SAFETY: the raw state root remains live for cleanup and the custom host
-        // re-enters only while cleanup has released every typed state borrow.
+    fn terminated_owner_cleanup_unadvises_a_sink_advised_during_unadvise() {
+        // SAFETY: the raw state root remains live for cleanup and the connection re-enters only
+        // while cleanup has released every typed state borrow.
         unsafe {
             let owner_raw = 73i32;
             let key = (i64::from(owner_raw) << 32) | 9;
-            let host = ReentrantUnsubscribeHost::new(key);
-            let mut state = ExecState::new(&host);
-            state.events.com_subscriptions.insert(
-                41,
-                ComEventSink {
+            let host: &'static ReentrantUnsubscribeHost =
+                Box::leak(Box::new(ReentrantUnsubscribeHost::new(key)));
+            let mut state = ExecState::new(host);
+            state.insert_com_connection(
+                key,
+                ComEventConnection {
+                    connection: Box::new(ReentrantConnection { id: 41, host }),
                     owner: Variant::from_i32(owner_raw),
-                    handler: 0,
+                    program: 0,
+                    binding: 9,
                 },
             );
-            state.events.com_subscriptions_by_key.insert(key, vec![41]);
             state.events.withevents.insert(
                 key,
                 EventBinding {
@@ -4681,11 +4769,10 @@ mod tests {
             cleanup_terminated_owner(raw_state, owner_raw).expect("termination cleanup");
 
             assert_eq!(
-                *host.calls.lock().expect("unsubscribe calls lock"),
+                *host.calls.lock().expect("unadvise calls lock"),
                 vec![41, 42]
             );
-            assert!(state.events.com_subscriptions.is_empty());
-            assert!(state.events.com_subscriptions_by_key.is_empty());
+            assert!(state.events.com_connections.is_empty());
             assert!(state.events.withevents.is_empty());
         }
     }

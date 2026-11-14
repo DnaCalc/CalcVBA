@@ -96,3 +96,6 @@ pub trait ComEnumerator {
     /// The next item, or `None` at the end.
     fn next_item(&mut self) -> Result<Option<Variant>, ComFault>;
 }
+
+/// A sink advised on a COM object for a WithEvents subscription; dropping it unadvises the sink.
+pub trait ComEventConnection {}

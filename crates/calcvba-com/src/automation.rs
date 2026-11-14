@@ -7,6 +7,9 @@
 //! to a Variant cell, `VT_BYREF | vt` to typed storage), and the result moves into the runtime
 //! as it is. Objects are their interface pointers. VM3, the JIT and the typed host stack call
 //! these functions; nothing here keeps per-object state.
+mod events;
+pub use events::{EventConnection, advise_events};
+
 use crate::call::{
     ComArg as Arg, ComArgValue as ArgValue, ComCallKind as CallKind, ComFault as Fault,
     ComMember as Member,
@@ -316,7 +319,7 @@ impl Enumerator {
     }
 
     /// The next item (`IEnumVARIANT::Next(1, ...)`), or `None` at the end.
-    pub fn next(&mut self) -> Result<Option<Variant>, Fault> {
+    pub fn next_item(&mut self) -> Result<Option<Variant>, Fault> {
         let enumerator = self
             .0
             .as_ptr()
@@ -368,7 +371,7 @@ pub fn same_object(a: &ObjectRef, b: &ObjectRef) -> bool {
 
 impl crate::call::ComEnumerator for Enumerator {
     fn next_item(&mut self) -> Result<Option<Variant>, Fault> {
-        self.next()
+        Enumerator::next_item(self)
     }
 }
 

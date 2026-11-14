@@ -278,6 +278,22 @@ impl ComHal for StandardHostServices {
         crate::traits::invoke_object_by_request(self, object, member, kind, args)
     }
 
+    fn advise_events(
+        &self,
+        source: &ObjectRef,
+        interface: &str,
+        key: u64,
+    ) -> HalResult<Box<dyn calcvba_com::call::ComEventConnection>> {
+        #[cfg(target_os = "windows")]
+        if !source.is_compat_object() {
+            let connection = calcvba_com::automation::advise_events(source, interface, key)
+                .map_err(|fault| self.com_call_fault("advise_events", fault))?;
+            return Ok(Box::new(connection));
+        }
+        let _ = (interface, key);
+        Err(self.com_call_fault("advise_events", calcvba_com::call::ComFault::number(459)))
+    }
+
     fn object_enumerator(
         &self,
         object: &ObjectRef,
@@ -741,7 +757,7 @@ impl ComHal for StandardHostServices {
                 return Ok(descriptor);
             }
         }
-        let descriptor = if object.raw() == 0 {
+        let descriptor = if object.is_nothing_placeholder() || !object.is_compat_object() {
             None
         } else if let Some(prog_id_name) = projection_prog_id_name(self, &object)? {
             Some(ComObjectDescriptor {
@@ -1566,6 +1582,15 @@ impl ComHal for StandardHostServices {
     }
 }
 
+/// A snapshot `For Each` source for objects that are still runtime handles.
+struct SnapshotItems(std::vec::IntoIter<Variant>);
+
+impl calcvba_com::call::ComEnumerator for SnapshotItems {
+    fn next_item(&mut self) -> Result<Option<Variant>, calcvba_com::call::ComFault> {
+        Ok(self.0.next())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{DYNAMIC_NAME_UNRESOLVED_LABEL, dynamic_member_name_unresolved};
@@ -1605,14 +1630,5 @@ mod tests {
             diagnostic.metadata.get("operation").map(String::as_str),
             Some("dispatch_invoke")
         );
-    }
-}
-
-/// A snapshot `For Each` source for objects that are still runtime handles.
-struct SnapshotItems(std::vec::IntoIter<Variant>);
-
-impl calcvba_com::call::ComEnumerator for SnapshotItems {
-    fn next_item(&mut self) -> Result<Option<Variant>, calcvba_com::call::ComFault> {
-        Ok(self.0.next())
     }
 }

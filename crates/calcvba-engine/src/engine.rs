@@ -201,14 +201,16 @@ fn vm3_runtime_diagnostic(err: calcvba_vm3::Vm3Error) -> PhaseDiagnostic {
     let code = match &err {
         calcvba_vm3::Vm3Error::BudgetExceeded => "RUN-E-BUDGET",
         calcvba_vm3::Vm3Error::Unimplemented { .. } => "VM3-E-UNIMPLEMENTED",
-        calcvba_vm3::Vm3Error::Fault(_) => "VM3-E-FAULT",
+        calcvba_vm3::Vm3Error::Fault(_) | calcvba_vm3::Vm3Error::EventAbort(_) => "VM3-E-FAULT",
         calcvba_vm3::Vm3Error::Malformed(_) => "VM3-E-MALFORMED",
     };
     // A runtime fault carries the VBA Err.Number; keep it so consumers that
     // re-raise across a VBA boundary (the COM server EXCEPINFO) report the real
     // code (Err.Raise 457, subscript 9, overflow 6) instead of a flat default.
     let vba_fault = match &err {
-        calcvba_vm3::Vm3Error::Fault(fault) => Some(fault.clone()),
+        calcvba_vm3::Vm3Error::Fault(fault) | calcvba_vm3::Vm3Error::EventAbort(fault) => {
+            Some(fault.clone())
+        }
         _ => None,
     };
     let diagnostic = PhaseDiagnostic::from_diagnostic(OxDiagnostic::error(
@@ -1202,14 +1204,17 @@ impl Engine {
             Err(calcvba_vm3::Vm3Error::Unimplemented { what }) => {
                 SnapshotOutcome::Unsupported(format!("vm3: {what}"))
             }
-            Err(calcvba_vm3::Vm3Error::Fault(fault)) => SnapshotOutcome::Raised {
-                err: FinalErr {
-                    number: fault.code,
-                    source: fault.source.unwrap_or_else(|| oxp.unit_name.clone()),
-                    description: fault.message,
-                    last_dll_error: fault_last_dll_error,
-                },
-            },
+            // An error a WithEvents handler left unhandled ends the run the same way.
+            Err(calcvba_vm3::Vm3Error::Fault(fault) | calcvba_vm3::Vm3Error::EventAbort(fault)) => {
+                SnapshotOutcome::Raised {
+                    err: FinalErr {
+                        number: fault.code,
+                        source: fault.source.unwrap_or_else(|| oxp.unit_name.clone()),
+                        description: fault.message,
+                        last_dll_error: fault_last_dll_error,
+                    },
+                }
+            }
             Err(calcvba_vm3::Vm3Error::Malformed(m)) => {
                 SnapshotOutcome::Failed(format!("vm3: {m}"))
             }

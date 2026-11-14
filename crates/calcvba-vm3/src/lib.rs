@@ -27,9 +27,7 @@ use calcvba_bundle::{
     array_element_type_for_vartype, default_array_element, redim_safearray_from_elements,
     safearray_vartype_for_element, vba_record_layout_for_fields,
 };
-use calcvba_com::{
-    ComMemberToken, ComSubscriptionToken, DynamicMemberSelector, TypeLibMemberInvokeKind,
-};
+use calcvba_com::{DynamicMemberSelector, TypeLibMemberInvokeKind};
 use calcvba_eval::arith::{self, ArithError};
 use calcvba_eval::collection::{CollectionError, CollectionMethod, dispatch_collection};
 use calcvba_hal::HostServices;
@@ -43,9 +41,9 @@ use calcvba_oxir::{
     BlockId, FuncId, ImportId, LocalId, OxBlock, OxInst, OxProgram, OxTerminator, OxTy,
 };
 use calcvba_rt_abi::{
-    ComEventSink, ErrorMode, EventBinding, ExecState, Fault, FaultAction, LoadedProgram,
-    MarshalArgRef, ProcInvoker, ResumePoint, ResumeTarget, SavedErrState, apply_byref_writebacks,
-    marshal_ox_args, marshal_ox_call_args, take_termination_batch, variant_changed,
+    ErrorMode, EventBinding, ExecState, Fault, FaultAction, LoadedProgram, MarshalArgRef,
+    ProcInvoker, ResumePoint, ResumeTarget, SavedErrState, apply_byref_writebacks, marshal_ox_args,
+    marshal_ox_call_args, take_termination_batch, variant_changed,
 };
 use calcvba_runtime::object_ref::{
     Guid, ObjectRef, RUNTIME_CLASS_LIFECYCLE_NONE, RUNTIME_IDISPATCH_INTERFACE_IDENTITY,
@@ -354,6 +352,9 @@ pub enum Vm3Error {
     Unimplemented { what: &'static str },
     /// A structurally invalid program (should not occur for verifier-clean OxIR).
     Malformed(String),
+    /// An error a WithEvents handler did not handle: VBA reports it as a top-level run-time
+    /// error and ends the run; no `On Error` handler catches it (Excel, probe events8).
+    EventAbort(Fault),
 }
 
 impl std::fmt::Display for Vm3Error {
@@ -363,6 +364,11 @@ impl std::fmt::Display for Vm3Error {
             Vm3Error::Fault(fault) => write!(f, "uncaught error {}: {}", fault.code, fault.message),
             Vm3Error::Unimplemented { what } => write!(f, "vm3 does not yet execute: {what}"),
             Vm3Error::Malformed(m) => write!(f, "malformed OxIR: {m}"),
+            Vm3Error::EventAbort(fault) => write!(
+                f,
+                "uncaught error {} in an event handler: {}",
+                fault.code, fault.message
+            ),
         }
     }
 }
@@ -1905,7 +1911,6 @@ impl<'h> Vm3<'h> {
                 // inbound host (COM) events (mirrors vm2's statement-boundary drain + pump).
                 self.clear_statement_temps(*clear_temps_from);
                 self.maybe_drain();
-                self.pump_com_events();
             }
             OxInst::SetLineNumber { line } => {
                 if let Some(frame) = self.frames.last_mut() {
@@ -2264,12 +2269,22 @@ impl<'h> Vm3<'h> {
                 has_value,
             } => {
                 let key = self.resolve(iter);
-                let next = if let Some(enumerator) = self
+                // The enumerator leaves the iterator table for the call: an event handler running
+                // inside it may start its own loops.
+                let enumerator = self
                     .for_each
                     .get_mut(&key)
-                    .and_then(|state| state.enumerator.as_mut())
-                {
-                    enumerator.next_item().map_err(|fault| {
+                    .and_then(|state| state.enumerator.take());
+                let next = if let Some(mut enumerator) = enumerator {
+                    let next = {
+                        let _events = self.event_scope();
+                        enumerator.next_item()
+                    };
+                    if let Some(state) = self.for_each.get_mut(&key) {
+                        state.enumerator = Some(enumerator);
+                    }
+                    self.take_event_abort()?;
+                    next.map_err(|fault| {
                         Vm3Error::Fault(Fault::new(
                             fault.number,
                             fault
@@ -2461,7 +2476,7 @@ impl<'h> Vm3<'h> {
                     if let Some(source) = v.as_object_ref()
                         && !source.is_project_instance()
                     {
-                        self.subscribe_com_events(key, *binding, &owner_value, &source);
+                        self.advise_com_events(key, *binding, &owner_value, &source)?;
                     }
                     let order = self.exec.events.next_withevents_order;
                     self.exec.events.next_withevents_order =
@@ -4095,125 +4110,47 @@ impl<'h> Vm3<'h> {
         self.exec.draining = false;
     }
 
-    /// Subscribe a `WithEvents` sink (`owner`) to a COM `source`'s events for `binding_token`:
-    /// for each event the sink routes, advise the host's connection point (the shared, live-
-    /// tested HAL `subscribe_event`) and record the subscription for dispatch + teardown.
-    /// Mirrors vm2's `subscribe_com_events`.
-    fn subscribe_com_events(
+    /// Advises one sink for a WithEvents variable on a COM source (design doc, step 8c). An
+    /// object without the declared type's connection point raises VBA error 459.
+    fn advise_com_events(
         &mut self,
         key: i64,
         binding_token: i32,
         owner: &Variant,
         source: &ObjectRef,
-    ) {
-        let routes: Vec<(i32, usize)> = self.exec.programs[self.cur]
-            .event_routes
-            .iter()
-            .filter(|((binding, _), _)| *binding == binding_token)
-            .map(|((_, event), handler)| (*event, *handler))
-            .collect();
-        for (event, handler) in routes {
-            if let Ok(subscription) = self
-                .exec
-                .host
-                .com()
-                .subscribe_event(source.clone(), ComMemberToken::new(event))
-            {
-                self.exec.events.com_subscriptions.insert(
-                    subscription.raw(),
-                    ComEventSink {
-                        owner: owner.clone(),
-                        handler,
-                    },
-                );
-                self.exec
-                    .events
-                    .com_subscriptions_by_key
-                    .entry(key)
-                    .or_default()
-                    .push(subscription.raw());
-            }
-        }
+    ) -> Result<(), Vm3Error> {
+        let Some(interface) = self.exec.com_event_interface(self.cur, binding_token) else {
+            return Ok(());
+        };
+        let host = self.exec.host;
+        let connection = host
+            .com()
+            .advise_events(source, &interface, key as u64)
+            .map_err(|error| Vm3Error::Fault(Fault::from_hal(error)))?;
+        self.exec.insert_com_connection(
+            key,
+            calcvba_rt_abi::ComEventConnection {
+                connection,
+                owner: owner.clone(),
+                program: self.cur,
+                binding: binding_token,
+            },
+        );
+        Ok(())
     }
 
-    /// Tear down every host (COM) subscription a `withevents` key holds (rebind / Set Nothing).
+    /// Unadvises a WithEvents key's sink (rebinding or `Set x = Nothing`).
     fn unsubscribe_com_key(&mut self, key: i64) {
-        if let Some(tokens) = self.exec.events.com_subscriptions_by_key.remove(&key) {
-            for raw in tokens {
-                let _ = self
-                    .exec
-                    .host
-                    .com()
-                    .unsubscribe_event_variant(ComSubscriptionToken::new(raw));
-                self.exec.events.com_subscriptions.remove(&raw);
-            }
-        }
+        let connections = self.exec.take_com_connections(|held| held == key);
+        drop(connections);
     }
 
-    /// Tear down every host (COM) subscription owned by `owner_raw` (owner cleared / terminated).
+    /// Unadvises every sink owned by `owner_raw` (owner cleared or terminated).
     fn unsubscribe_com_owner(&mut self, owner_raw: i32) {
-        let keys: Vec<i64> = self
+        let connections = self
             .exec
-            .events
-            .com_subscriptions_by_key
-            .keys()
-            .copied()
-            .filter(|key| withevents_owner_raw(*key) == owner_raw)
-            .collect();
-        for key in keys {
-            self.unsubscribe_com_key(key);
-        }
-    }
-
-    /// Drain inbound host (COM) events: poll the host for delivered callbacks and dispatch each
-    /// to the subscribed sink handler (run in the sink owner's program). Re-entrancy-guarded;
-    /// handler faults are suppressed (events arrive out-of-band from the raiser). Mirrors vm2's
-    /// `pump_com_events`; called at statement boundaries.
-    fn pump_com_events(&mut self) {
-        if self.exec.events.pumping {
-            return;
-        }
-        self.exec.events.pumping = true;
-        loop {
-            let payload = match self.exec.host.com().poll_event_callback() {
-                Ok(Some(payload)) => payload,
-                // `Ok(None)` = nothing pending; `Err` = the host has no event delivery (the null
-                // host) — either way, stop pumping.
-                _ => break,
-            };
-            let sink = self
-                .exec
-                .events
-                .com_subscriptions
-                .get(&payload.subscription.raw())
-                .map(|sink| (sink.owner.clone(), sink.handler));
-            if let Some((owner, handler)) = sink {
-                let values: Vec<Variant> = payload
-                    .args
-                    .iter()
-                    .map(|arg| arg.variant().clone())
-                    .collect();
-                // Run the handler in the sink owner's program (its bundle_id), suppressing faults.
-                let owner_bundle = owner
-                    .as_object_ref()
-                    .map(|o| o.bundle_id() as usize)
-                    .unwrap_or(self.cur);
-                let _ = <Self as ProcInvoker>::invoke_proc_with_values(
-                    self,
-                    owner_bundle,
-                    FuncId(handler),
-                    owner,
-                    values,
-                    true,
-                );
-            }
-            let _ = self
-                .exec
-                .host
-                .com()
-                .release_event_callback_variant(payload.callback);
-        }
-        self.exec.events.pumping = false;
+            .take_com_connections(|key| withevents_owner_raw(key) == owner_raw);
+        drop(connections);
     }
 
     /// `TypeOf <object> Is <Type>`: for a project instance, match the bare type name against
@@ -4719,10 +4656,13 @@ impl<'h> Vm3<'h> {
         if obj.is_project_instance() {
             return self.project_class_enumerator_elements(obj, depth + 1);
         }
-        self.exec
-            .host
-            .com()
-            .object_enumerator(&obj)
+        let host = self.exec.host;
+        let enumerator = {
+            let _events = self.event_scope();
+            host.com().object_enumerator(&obj)
+        };
+        self.take_event_abort()?;
+        enumerator
             .map(ForEachItems::Enumerator)
             .map_err(Fault::from_hal)
             .map_err(Vm3Error::Fault)
@@ -4861,16 +4801,18 @@ impl<'h> Vm3<'h> {
     ) -> Result<Variant, Vm3Error> {
         let _plan = verified_late_dispatch_plan(&member, invoke_kind, &[])?;
         let call_args: Vec<_> = args.iter().map(calcvba_com::call::ComArg::value).collect();
-        self.exec
-            .host
-            .com()
-            .invoke_object(
+        let host = self.exec.host;
+        let result = {
+            let _events = self.event_scope();
+            host.com().invoke_object(
                 &object,
                 com_member(&member),
                 com_call_kind(invoke_kind),
                 &call_args,
             )
-            .map_err(|e| Vm3Error::Fault(Fault::from_hal(e)))
+        };
+        self.take_event_abort()?;
+        result.map_err(|e| Vm3Error::Fault(Fault::from_hal(e)))
     }
 
     fn dispatch_member_by_name(
@@ -4923,16 +4865,37 @@ impl<'h> Vm3<'h> {
             });
         }
         let call_args = com_call_args(args, &cells);
-        self.exec
-            .host
-            .com()
-            .invoke_object(
+        let host = self.exec.host;
+        let result = {
+            let _events = self.event_scope();
+            host.com().invoke_object(
                 &object,
                 com_member(&member),
                 com_call_kind(invoke_kind),
                 &call_args,
             )
-            .map_err(|e| Vm3Error::Fault(Fault::from_hal(e)))
+        };
+        self.take_event_abort()?;
+        result.map_err(|e| Vm3Error::Fault(Fault::from_hal(e)))
+    }
+
+    /// Registers this VM as the thread's event executor for one host call (design doc, step
+    /// 8c): a COM event fired during the call runs its WithEvents handler here, synchronously.
+    /// The pointer is taken from `&mut self` right before the call; the caller makes the host
+    /// call with no borrow of the VM held across it and drops the scope before using `self`.
+    fn event_scope(&mut self) -> calcvba_runtime::events::ExecutorScope {
+        let executor: &mut dyn calcvba_runtime::events::EventExecutor = self;
+        // SAFETY: see above; the scope ends before this VM is used again.
+        unsafe { calcvba_runtime::events::ExecutorScope::enter(NonNull::from(executor)) }
+    }
+
+    /// The error a WithEvents handler left unhandled during the last host call, as the
+    /// uncatchable end of the run.
+    fn take_event_abort(&mut self) -> Result<(), Vm3Error> {
+        match self.exec.events.pending_abort.take() {
+            Some(fault) => Err(Vm3Error::EventAbort(fault)),
+            None => Ok(()),
+        }
     }
 
     /// The `VT_BYREF` cell a COM call gets for a ByRef place, as VBA builds it: a slot that
@@ -4977,11 +4940,14 @@ impl<'h> Vm3<'h> {
             });
         }
         let call_args = com_call_args(args, &cells);
-        self.exec
-            .host
-            .com()
-            .invoke_early_bound_object(&object, member, &call_args)
-            .map_err(|error| Vm3Error::Fault(Fault::from_hal(error)))
+        let host = self.exec.host;
+        let result = {
+            let _events = self.event_scope();
+            host.com()
+                .invoke_early_bound_object(&object, member, &call_args)
+        };
+        self.take_event_abort()?;
+        result.map_err(|error| Vm3Error::Fault(Fault::from_hal(error)))
     }
 
     /// Invoke a base-library built-in. Most builtins use the shared context-free
@@ -5040,7 +5006,13 @@ impl<'h> Vm3<'h> {
                 .map_err(|e| Vm3Error::Fault(Fault::from_lib(e)));
         }
 
-        match calcvba_lib::invoke_context_free(id, argv, self.exec.host) {
+        let host = self.exec.host;
+        let result = {
+            let _events = self.event_scope();
+            calcvba_lib::invoke_context_free(id, argv, host)
+        };
+        self.take_event_abort()?;
+        match result {
             Ok(value) => Ok(value),
             Err(calcvba_lib::ContextFreeInvokeError::Library(err)) => {
                 Err(Vm3Error::Fault(Fault::from_lib(err)))
@@ -5146,11 +5118,13 @@ impl<'h> Vm3<'h> {
                 }
             })
             .collect::<Vec<_>>();
-        let invoke = self
-            .exec
-            .host
-            .dynlink()
-            .invoke_descriptor_arguments(&view, &call_arguments);
+        let host = self.exec.host;
+        let invoke = {
+            let _events = self.event_scope();
+            host.dynlink()
+                .invoke_descriptor_arguments(&view, &call_arguments)
+        };
+        self.take_event_abort()?;
         // VBA refreshes `Err.LastDllError` after every `Declare` call (the OS last-error the
         // HAL captured immediately after the native call); non-native lanes report 0.
         self.exec.err_engine.last_dll_error = self.exec.host.dynlink().last_dll_error();
@@ -5532,7 +5506,7 @@ impl<'h> Vm3<'h> {
             let com_sink_refs = self
                 .exec
                 .events
-                .com_subscriptions
+                .com_connections
                 .values()
                 .filter(|sink| object_identity(&sink.owner) == owner_raw as u32 as usize)
                 .count() as u32;
@@ -5865,6 +5839,47 @@ impl<'h> Vm3<'h> {
     }
 }
 
+impl calcvba_runtime::events::EventExecutor for Vm3<'_> {
+    /// Runs the WithEvents handler for a COM event, synchronously inside the host call that
+    /// delivered it (design doc, step 8c). An error the handler leaves unhandled ends the run
+    /// once that call returns (`take_event_abort`) and goes back to the source as the event's
+    /// failure.
+    fn deliver_event(
+        &mut self,
+        key: u64,
+        dispid: i32,
+        args: &[Variant],
+    ) -> Result<bool, calcvba_runtime::events::EventFault> {
+        let call = self.exec.com_event_call(key, dispid, args);
+        let Some(call) = call else {
+            return Ok(false);
+        };
+        let handler_result = self.run_proc_with_values(
+            call.program,
+            FuncId(call.handler),
+            call.me,
+            call.args,
+            false,
+        );
+        match handler_result {
+            Ok(_) => Ok(true),
+            Err(error) => {
+                let fault = match error {
+                    Vm3Error::Fault(fault) | Vm3Error::EventAbort(fault) => fault,
+                    other => Fault::new(51, other.to_string()),
+                };
+                let reported = calcvba_runtime::events::EventFault {
+                    number: fault.code,
+                    description: fault.message.clone(),
+                    source: fault.source.clone().unwrap_or_default(),
+                };
+                self.exec.events.pending_abort.get_or_insert(fault);
+                Err(reported)
+            }
+        }
+    }
+}
+
 impl CallbackExecutor for Vm3<'_> {
     fn invoke_callback(&mut self, proc_token: usize, args: &[isize]) -> isize {
         self.run_native_callback_proc(proc_token, args)
@@ -5969,7 +5984,9 @@ fn try_build_default_elements(
 /// numeric zero (the literal-0-as-Nothing representation). Used by `Let`/`Set` validation.
 fn is_nothing(value: &Variant) -> bool {
     match value.vtype() {
-        VarType::Object => value.as_object_ref().map(|o| o.raw()).unwrap_or(0) == 0,
+        VarType::Object => value
+            .as_object_ref()
+            .is_none_or(|object| object.is_nothing_placeholder()),
         VarType::Empty | VarType::Null => true,
         _ => value.as_i16() == Some(0) || value.as_i32() == Some(0),
     }
@@ -7848,13 +7865,11 @@ mod tests {
             .position(|event| *event == "do-events-enter")
             .expect("DoEvents entered host");
         assert_eq!(order.get(enter + 1), Some(&"do-events-exit"));
+        // COM events run synchronously inside the host call that delivers them (design doc,
+        // step 8c), so VM3 never polls a queue afterwards.
         assert!(
-            order[enter + 2..].contains(&"stmt-boundary-poll"),
-            "VM3 must poll queued callbacks only after host DoEvents returns: {order:?}"
-        );
-        assert!(
-            order[enter + 2..].contains(&"callback-release"),
-            "VM3 must own and release the queued payload after host return: {order:?}"
+            !order[enter + 2..].contains(&"stmt-boundary-poll"),
+            "VM3 must not poll queued callbacks: {order:?}"
         );
     }
 

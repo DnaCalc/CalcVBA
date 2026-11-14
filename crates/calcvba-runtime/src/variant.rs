@@ -732,15 +732,6 @@ impl Variant {
         }
     }
 
-    /// Rebuilds a Variant from wire bytes that may contain process-local pointer
-    /// carriers (`BSTR`, runtime object identity, OxVba-owned SAFEARRAY, or
-    /// runtime-owned record payload).
-    ///
-    /// # Safety
-    /// For `String`, `Object`, `ArrayVariant`, and `Record` payloads, the pointer
-    /// encoded in the wire bytes must have been produced by `Variant::to_wire_bytes`
-    /// in this process and the source allocation/object must still be live for the
-    /// whole call. Arbitrary or stale pointer bytes are undefined behavior.
     /// Takes ownership of an Automation `VARIANT` a COM callee produced (an `[out, retval]`, or
     /// a value a callee stored through a reference): the cell moves into the runtime as it is, no
     /// copy, with its `vt` kept (`VT_UNKNOWN` stays 13). `Err(vt)` for a type VBA has no type for
@@ -768,6 +759,15 @@ impl Variant {
         Ok(Self::from_core(core))
     }
 
+    /// Rebuilds a Variant from wire bytes that may contain process-local pointer
+    /// carriers (`BSTR`, runtime object identity, OxVba-owned SAFEARRAY, or
+    /// runtime-owned record payload).
+    ///
+    /// # Safety
+    /// For `String`, `Object`, `ArrayVariant`, and `Record` payloads, the pointer
+    /// encoded in the wire bytes must have been produced by `Variant::to_wire_bytes`
+    /// in this process and the source allocation/object must still be live for the
+    /// whole call. Arbitrary or stale pointer bytes are undefined behavior.
     pub unsafe fn from_trusted_wire_bytes(bytes: [u8; WIRE_SIZE]) -> Result<Self, String> {
         let core = VariantCore::from_wire_bytes(bytes)?;
         match core.vtype() {

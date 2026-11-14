@@ -630,10 +630,24 @@ fn validate_event_handler(
             let VarTypeRef::Object(name) = &parameter.ty else {
                 return Err(fail());
             };
-            if let Some(iid) = event.parameter_iids.get(index).copied().flatten()
-                && env.object_interface(name).and_then(|m| m.iid) != Some(iid)
-            {
-                return Err(fail());
+            // `As Object` declares the generic IDispatch, which is what an event parameter of
+            // type Object (`Sh As Object` in `SheetChange`) is; a typed event parameter needs its
+            // own interface, as in VBA.
+            let generic_dispatch = calcvba_com::ComInterfaceIid {
+                data1: 0x0002_0400,
+                data2: 0,
+                data3: 0,
+                data4: [0xC0, 0, 0, 0, 0, 0, 0, 0x46],
+            };
+            if let Some(iid) = event.parameter_iids.get(index).copied().flatten() {
+                let declared = if name.eq_ignore_ascii_case("Object") {
+                    Some(generic_dispatch)
+                } else {
+                    env.object_interface(name).and_then(|m| m.iid)
+                };
+                if declared != Some(iid) {
+                    return Err(fail());
+                }
             }
         } else if parameter.ty != call::tlb_param_to_vartype(expected) {
             return Err(fail());

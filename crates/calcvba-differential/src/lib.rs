@@ -497,7 +497,10 @@ pub fn run_ox_programs(executor: Executor, programs: &[calcvba_oxir::OxProgram])
                             handle_balance: None,
                         }
                     }
-                    Err(calcvba_vm3::Vm3Error::Fault(fault)) => RunOutcome {
+                    Err(
+                        calcvba_vm3::Vm3Error::Fault(fault)
+                        | calcvba_vm3::Vm3Error::EventAbort(fault),
+                    ) => RunOutcome {
                         result: Err(format!("VBA error {}", fault.code)),
                         err: FinalErr {
                             number: fault.code,

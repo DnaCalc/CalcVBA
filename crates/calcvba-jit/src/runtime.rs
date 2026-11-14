@@ -272,6 +272,10 @@ impl<'p> CompiledImage<'p> {
             ));
         }
         let _proc_invoker_registration = ProcInvokerRegistration { state };
+        // COM events fired during the run's host calls run their handlers on this run.
+        // SAFETY: `state` and `run_root` are this run's roots until the scope drops at the end
+        // of the run, and the helpers hold no borrow of either across a host call.
+        let _event_scope = unsafe { crate::events::enter_event_scope(state, run_root) };
 
         let mut result = (|| {
             let initialize = !session.initialized;
@@ -285,6 +289,19 @@ impl<'p> CompiledImage<'p> {
                 let status =
                     unsafe { self.invoke_func(program_index, init, &[], run_root, state, None) }?;
                 if status == calcvba_rt_abi::ST_ABORT {
+                    // An error a WithEvents handler left unhandled ends the run with it.
+                    if let Some(fault) = exec.events.pending_abort.take() {
+                        return Ok(JitOutcome {
+                            values: Vec::new(),
+                            err: JitFinalErr {
+                                number: fault.code,
+                                source: fault.source.unwrap_or_default(),
+                                description: fault.message,
+                                last_dll_error: exec.err_engine.last_dll_error,
+                            },
+                            raised: true,
+                        });
+                    }
                     return Err(JitError::BudgetExceeded);
                 }
                 if status == ST_FAULT {
@@ -322,6 +339,19 @@ impl<'p> CompiledImage<'p> {
                     self.invoke_func(entry_program_index, entry, args, run_root, state, snapshot)
                 }?;
                 if status == calcvba_rt_abi::ST_ABORT {
+                    // An error a WithEvents handler left unhandled ends the run with it.
+                    if let Some(fault) = exec.events.pending_abort.take() {
+                        return Ok(JitOutcome {
+                            values: Vec::new(),
+                            err: JitFinalErr {
+                                number: fault.code,
+                                source: fault.source.unwrap_or_default(),
+                                description: fault.message,
+                                last_dll_error: exec.err_engine.last_dll_error,
+                            },
+                            raised: true,
+                        });
+                    }
                     return Err(JitError::BudgetExceeded);
                 }
                 if status == ST_FAULT {
@@ -2030,13 +2060,9 @@ pub(crate) fn variant_matches_unbox_target(value: &Variant, target: i32) -> bool
 
 pub(crate) fn jit_is_nothing(value: &Variant) -> bool {
     match value.vtype() {
-        VarType::Object => {
-            value
-                .as_object_ref()
-                .map(|object| object.raw())
-                .unwrap_or(0)
-                == 0
-        }
+        VarType::Object => value
+            .as_object_ref()
+            .is_none_or(|object| object.is_nothing_placeholder()),
         VarType::Empty | VarType::Null => true,
         _ => value.as_i16() == Some(0) || value.as_i32() == Some(0),
     }

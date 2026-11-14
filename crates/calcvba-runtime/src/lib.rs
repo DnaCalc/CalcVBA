@@ -13,6 +13,7 @@ pub mod collection;
 pub mod com_record;
 pub mod date;
 pub mod decimal;
+pub mod events;
 pub mod interop_plan;
 pub mod live_counters;
 pub mod object_owner;

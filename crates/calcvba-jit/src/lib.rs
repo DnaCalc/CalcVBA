@@ -81,6 +81,7 @@ use thiserror::Error;
 mod admission;
 mod consts;
 mod error;
+mod events;
 #[macro_use]
 mod runtime;
 mod helpers;

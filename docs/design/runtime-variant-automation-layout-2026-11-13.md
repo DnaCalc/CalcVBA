@@ -628,6 +628,32 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
        `ComHal::advise_events`. VM3 and the JIT both implement the executor. The queued path is
        removed (HAL `subscribe_event`/`poll_event_callback`, VM3's statement-boundary pump, stack
        A's per-DISPID sinks, and the projection side channel).
+
+     *As built 2026-11-15 (8c events).*
+     - `calcvba_runtime::events` is the executor registry. `calcvba_com::automation::advise_events`
+       is the sink and its connection, behind `ComHal::advise_events`. The runtime ABI's
+       `ExecState::com_event_interface`, `insert_com_connection`, `take_com_connections` and
+       `com_event_call` are shared by VM3 and the JIT. Advise and Unadvise run with no borrow of the
+       state held, and owner termination repeats until no sink is left.
+     - VM3 registers itself around each host call: COM calls, `For Each`, Declares and context-free
+       builtins such as `DoEvents` and `CreateObject`. An unhandled handler error becomes
+       `Vm3Error::EventAbort`, which no `On Error` catches.
+     - The JIT registers its run once, since its helpers hold no borrow across host calls. An
+       unhandled handler error returns `ST_ABORT` after the host call, and the top level reports
+       the recorded fault.
+     - Excel passes event arguments by name (`rgdispidNamedArgs` are the parameter positions); the
+       sink maps them.
+     - Fixes found on the way:
+       - `is_nothing` treated every interface pointer as `Nothing` (`raw() == 0`), and `ObjPtr`
+         returned 0 for them. `ObjectRef::is_nothing_placeholder` now tells the cases apart.
+       - `Is` released an out-of-process proxy's `IUnknown` through the wrong vtable.
+       - The binder rejected `ByVal Sh As Object` for an event's `Object` parameter.
+     - Engine test `com_events_excel` (ignored, live out-of-process Excel) matches the probe on both
+       backends, including the unhandled-error abort.
+     - Left for later: `End` inside a COM event handler, stack A's queued HAL methods and
+       `calcvba-lib`'s event builtins (deleted with stack A), and `com_matrix_events` (its
+       `OxVba.TestEventServer` registration points at the retired OxVba repo; V10/V11 expectations
+       predate synchronous delivery).
    - **8d, `ComValue` out of the client.** The remaining users of `ComValue` (comhost,
      `dynlink`, the native template, connection points) move in steps 9 and 10, where they are
      rewritten anyway; `ComValue` is deleted at the end of step 10.

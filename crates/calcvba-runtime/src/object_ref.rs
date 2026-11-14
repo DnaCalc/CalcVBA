@@ -1089,6 +1089,12 @@ impl ObjectRef {
         self.compat_identity()
     }
 
+    /// Whether this is a runtime placeholder for `Nothing` (a compat object with identity 0). A
+    /// foreign object is its interface pointer and never is (step 8a), whatever `raw()` says.
+    pub fn is_nothing_placeholder(&self) -> bool {
+        self.is_compat_object() && self.compat_identity() == 0
+    }
+
     /// The identity VBA's `Is` compares: a runtime object's identity number, and for a foreign
     /// object its `IUnknown` address (COM identity: `QueryInterface` for `IUnknown` returns the
     /// same pointer from every interface of one object).
@@ -1107,7 +1113,10 @@ impl ObjectRef {
             if hr < 0 || unknown.is_null() {
                 return this as usize;
             }
-            ((*vtbl).release)(unknown);
+            // Released through its own vtable: an out-of-process proxy's IUnknown is a
+            // different object from the interface proxy it came from.
+            let identity = unknown.cast::<RawRuntimeIUnknown>();
+            ((*(*identity).vtbl).release)(unknown);
         }
         unknown as usize
     }

@@ -142,90 +142,14 @@ unsafe fn release_record_info(record_info: *mut c_void) {
 }
 
 #[cfg(target_os = "windows")]
-unsafe fn clone_com_record(
-    record_info: *mut c_void,
-    record_data: *const c_void,
-) -> Result<(*mut c_void, *mut c_void), String> {
-    if record_info.is_null() {
-        return Err("COM record carried null IRecordInfo".to_string());
-    }
-    if record_data.is_null() {
-        return Err("COM record carried null record data".to_string());
-    }
-    let info = record_info.cast::<RawIRecordInfo>();
-    // SAFETY: non-null `record_info` is a live IRecordInfo pointer for this record.
-    let vtbl = unsafe { &*(*info).vtbl };
-    let mut cloned: *mut c_void = std::ptr::null_mut();
-    // SAFETY: `record_data` belongs to `record_info`; RecordCreateCopy writes a
-    // fresh owned record allocation into `cloned` on success.
-    let hr = unsafe { (vtbl.record_create_copy)(record_info, record_data, &mut cloned) };
-    if hr < 0 || cloned.is_null() {
-        return Err(format!(
-            "IRecordInfo::RecordCreateCopy failed with HRESULT {:#010X}",
-            hr as u32
-        ));
-    }
-    // SAFETY: after a successful record copy, the returned ComRecord owns an
-    // IRecordInfo reference for destroying that copy later.
-    unsafe {
-        add_ref_record_info(record_info);
-    }
-    Ok((record_info, cloned))
-}
-
-#[cfg(target_os = "windows")]
-unsafe fn destroy_com_record(record_info: *mut c_void, record_data: *mut c_void) {
-    if !record_info.is_null() && !record_data.is_null() {
-        let info = record_info.cast::<RawIRecordInfo>();
-        // SAFETY: `record_info` is the IRecordInfo paired with `record_data`.
-        let vtbl = unsafe { &*(*info).vtbl };
-        // SAFETY: this destroys the owned record allocation paired with this
-        // record-info reference.
-        unsafe {
-            let _ = (vtbl.record_destroy)(record_info, record_data);
-        }
-    }
-    if !record_info.is_null() {
-        // SAFETY: this releases the record-info reference owned by the ComRecord.
-        unsafe {
-            release_record_info(record_info);
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
 pub(crate) unsafe fn create_com_record_from_record_info(
     record_info: *mut c_void,
 ) -> Result<ComRecord, String> {
     if record_info.is_null() {
         return Err("COM record retval allocation received null IRecordInfo".to_string());
     }
-    let info = record_info.cast::<RawIRecordInfo>();
-    // SAFETY: `record_info` is a live owned IRecordInfo pointer obtained from
-    // OleAut; its first field is the IRecordInfo vtable.
-    let vtbl = unsafe { &*(*info).vtbl };
-    // SAFETY: RecordCreate allocates a new record payload owned by this
-    // IRecordInfo. The returned ComRecord adopts both the payload and the owned
-    // IRecordInfo reference.
-    let record_data = unsafe { (vtbl.record_create)(record_info) };
-    if record_data.is_null() {
-        // SAFETY: the caller transferred this IRecordInfo reference to us; release
-        // it because no ComRecord will own it.
-        unsafe {
-            release_record_info(record_info);
-        }
-        return Err("IRecordInfo::RecordCreate returned null".to_string());
-    }
-    // SAFETY: `record_data` is the fresh allocation returned by `record_info`, and
-    // `destroy_com_record` will destroy it and release the owned IRecordInfo.
-    unsafe {
-        ComRecord::from_raw_parts(
-            record_info,
-            record_data,
-            clone_com_record,
-            destroy_com_record,
-        )
-    }
+    // SAFETY: the caller transfers one owned reference to a live IRecordInfo.
+    unsafe { ComRecord::create(record_info) }
 }
 
 #[cfg(target_os = "windows")]
@@ -233,17 +157,9 @@ unsafe fn com_record_from_variant(variant: &VARIANT) -> Result<ComRecord, String
     // SAFETY: caller checked/knows this VARIANT has vt == VT_RECORD, so the
     // record arm of the VARIANT union is active.
     let fields = unsafe { variant.Anonymous.Anonymous.Anonymous.Anonymous };
-    // SAFETY: the VT_RECORD union arm supplies a record payload and matching
-    // IRecordInfo; clone_com_record copies it into runtime-owned storage.
-    unsafe {
-        let (record_info, record_data) = clone_com_record(fields.pRecInfo, fields.pvRecord)?;
-        ComRecord::from_raw_parts(
-            record_info,
-            record_data,
-            clone_com_record,
-            destroy_com_record,
-        )
-    }
+    // SAFETY: the VT_RECORD union arm supplies a live record and its IRecordInfo; this is
+    // VariantCopy's record copy into runtime-owned storage.
+    unsafe { ComRecord::copy_from(fields.pRecInfo, fields.pvRecord) }
 }
 
 #[cfg(target_os = "windows")]
@@ -2381,8 +2297,7 @@ where
             (*variant).Anonymous.Anonymous.Anonymous.pdispVal = dispatch;
         }
         ComValue::Record(record) => {
-            let cloned = record.deep_clone()?;
-            let (record_info, record_data) = cloned.into_raw_parts()?;
+            let (record_info, record_data) = record.try_clone()?.into_raw_parts();
             (*variant).Anonymous.Anonymous.vt = VT_RECORD_VALUE;
             (*variant).Anonymous.Anonymous.Anonymous.Anonymous.pRecInfo = record_info;
             (*variant).Anonymous.Anonymous.Anonymous.Anonymous.pvRecord = record_data;
@@ -2650,6 +2565,7 @@ mod tests {
         refs: AtomicU32,
         copies: AtomicU32,
         destroys: AtomicU32,
+        clears: AtomicU32,
     }
 
     impl FakeRecordInfo {
@@ -2659,6 +2575,7 @@ mod tests {
                 refs: AtomicU32::new(1),
                 copies: AtomicU32::new(0),
                 destroys: AtomicU32::new(0),
+                clears: AtomicU32::new(0),
             }
         }
     }
@@ -2720,12 +2637,14 @@ mod tests {
     }
 
     unsafe extern "system" fn fake_record_clear(
-        _this: *mut c_void,
+        this: *mut c_void,
         pvexisting: *const c_void,
     ) -> i32 {
         if pvexisting.is_null() {
             return 0x8007_0057u32 as i32;
         }
+        let info = &*(this.cast::<FakeRecordInfo>());
+        info.clears.fetch_add(1, Ordering::SeqCst);
         0
     }
 
@@ -2913,11 +2832,15 @@ mod tests {
         unsafe {
             let _ = VariantClear(&mut variant);
         }
+        let cleared = info.clears.load(Ordering::SeqCst);
         drop(values);
         drop(array);
-        assert!(
-            info.destroys.load(Ordering::SeqCst) >= 2,
-            "decoded runtime record clones should be destroyed"
+        // Each runtime record is cleared as VariantClear clears one (RecordClear, free,
+        // Release): the array's two and the two copies `variant_elements` made.
+        assert_eq!(
+            info.clears.load(Ordering::SeqCst),
+            cleared + 4,
+            "decoded runtime records should be cleared once each"
         );
     }
 
@@ -2991,15 +2914,14 @@ mod tests {
         let mut roundtrip: VARIANT = unsafe { std::mem::zeroed() };
         let mut resolve_object = |_object| Ok(std::ptr::null_mut());
         let mut add_ref = |_dispatch: *mut c_void| {};
+        let value = ComValue::Record(record);
         unsafe {
-            set_variant_from_com_value(
-                &mut roundtrip,
-                &ComValue::Record(record.clone()),
-                &mut resolve_object,
-                &mut add_ref,
-            )
-            .expect("record VARIANT write");
+            set_variant_from_com_value(&mut roundtrip, &value, &mut resolve_object, &mut add_ref)
+                .expect("record VARIANT write");
         }
+        let ComValue::Record(record) = value else {
+            unreachable!()
+        };
         assert_eq!(unsafe { roundtrip.Anonymous.Anonymous.vt }, VT_RECORD_VALUE);
         assert_ne!(
             unsafe { roundtrip.Anonymous.Anonymous.Anonymous.Anonymous.pvRecord },
@@ -3020,17 +2942,15 @@ mod tests {
         );
         assert_eq!(info.copies.load(Ordering::SeqCst), 2);
 
-        let roundtrip_record =
-            unsafe { roundtrip.Anonymous.Anonymous.Anonymous.Anonymous.pvRecord };
+        // The written VARIANT is oleaut's to clear (RecordClear, CoTaskMemFree, Release).
         unsafe {
-            fake_record_destroy((&mut info as *mut FakeRecordInfo).cast(), roundtrip_record);
-            fake_release((&mut info as *mut FakeRecordInfo).cast());
+            let _ = VariantClear(&mut roundtrip);
         }
         drop(record);
         assert_eq!(
-            info.destroys.load(Ordering::SeqCst),
-            3,
-            "source, roundtrip copy, and runtime copy are each destroyed exactly once"
+            info.clears.load(Ordering::SeqCst),
+            2,
+            "the roundtrip VARIANT and the runtime copy are each cleared exactly once"
         );
         assert_eq!(
             info.refs.load(Ordering::SeqCst),

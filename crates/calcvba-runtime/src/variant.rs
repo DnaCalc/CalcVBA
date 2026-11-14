@@ -1,7 +1,7 @@
 use crate::{
     Decimal96,
     bstr::{BStr, OwnedBStrCore, borrow_raw_bstr},
-    com_record::ComRecord,
+    com_record::{ComRecord, ComRecordRef},
     object_ref::{ObjectRef, RawRuntimeIUnknown},
     safe_array::{SafeArray, SafeArrayBound, VT_VARIANT_VALUE},
     vba_record::VbaRecord,
@@ -193,6 +193,14 @@ impl VariantData {
         self.bytes
     }
 
+    const fn from_union(bytes: [u8; 8], tail: [u8; PAYLOAD_TAIL]) -> Self {
+        Self {
+            bytes,
+            tail,
+            not_send_sync: core::marker::PhantomData,
+        }
+    }
+
     /// The union bytes after the first eight (see [`PAYLOAD_TAIL`]).
     pub const fn tail(self) -> [u8; PAYLOAD_TAIL] {
         self.tail
@@ -264,6 +272,7 @@ impl PartialEq for VariantCore {
         self.vt == other.vt
             && self.value_reserved() == other.value_reserved()
             && self.value_bytes() == other.value_bytes()
+            && self.value_tail() == other.value_tail()
     }
 }
 
@@ -346,9 +355,12 @@ impl VariantCore {
             | VarType::Error
             | VarType::UnsignedLong
             | VarType::UnsignedInt => 4,
-            VarType::String | VarType::Object | VarType::ArrayVariant | VarType::Record => {
+            VarType::String | VarType::Object | VarType::ArrayVariant => {
                 core::mem::size_of::<*const ()>()
             }
+            // `BRECORD`: `pvRecord` here and `pRecInfo` after it (in the tail on 64-bit targets,
+            // in these eight bytes where pointers are 32-bit).
+            VarType::Record => 8,
             VarType::LongLong
             | VarType::UnsignedLongLong
             | VarType::Double
@@ -375,6 +387,46 @@ impl VariantCore {
         } else {
             [0; 3]
         }
+    }
+
+    /// The union bytes after the first eight that this type uses: `BRECORD.pRecInfo` for
+    /// `VT_RECORD` on 64-bit targets, zero for every other type.
+    pub const fn value_tail(&self) -> [u8; PAYLOAD_TAIL] {
+        if self.vt == VarType::Record as u16 {
+            self.data.tail()
+        } else {
+            [0; PAYLOAD_TAIL]
+        }
+    }
+
+    /// A `VT_RECORD` core: `BRECORD { pvRecord, pRecInfo }` across the union, as addresses.
+    fn record(record_data: usize, record_info: usize) -> Self {
+        let mut union = [0u8; 8 + PAYLOAD_TAIL];
+        union[..POINTER_SIZE].copy_from_slice(&record_data.to_le_bytes());
+        union[POINTER_SIZE..2 * POINTER_SIZE].copy_from_slice(&record_info.to_le_bytes());
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&union[..8]);
+        let mut tail = [0u8; PAYLOAD_TAIL];
+        tail.copy_from_slice(&union[8..]);
+        Self {
+            vt: VarType::Record as u16,
+            reserved1: 0,
+            reserved2: 0,
+            reserved3: 0,
+            data: VariantData::from_union(bytes, tail),
+        }
+    }
+
+    /// The `BRECORD` addresses `(pvRecord, pRecInfo)` of a `VT_RECORD` core.
+    fn record_addresses(&self) -> (usize, usize) {
+        let mut union = [0u8; 8 + PAYLOAD_TAIL];
+        union[..8].copy_from_slice(&self.data.bytes());
+        union[8..].copy_from_slice(&self.data.tail());
+        let mut data = [0u8; POINTER_SIZE];
+        data.copy_from_slice(&union[..POINTER_SIZE]);
+        let mut info = [0u8; POINTER_SIZE];
+        info.copy_from_slice(&union[POINTER_SIZE..2 * POINTER_SIZE]);
+        (usize::from_le_bytes(data), usize::from_le_bytes(info))
     }
 
     pub const fn reserved1(&self) -> u16 {
@@ -422,10 +474,36 @@ impl VariantCore {
         let reserved3 = u16::from_le_bytes([bytes[6], bytes[7]]);
         let mut payload = [0u8; 8];
         payload.copy_from_slice(&bytes[8..16]);
-        Ok(Self::from_raw_parts(
-            vtype_raw, reserved1, reserved2, reserved3, payload,
-        ))
+        let mut core = Self::from_raw_parts(vtype_raw, reserved1, reserved2, reserved3, payload);
+        if vtype_raw == VarType::Record as u16 {
+            let mut tail = [0u8; PAYLOAD_TAIL];
+            tail.copy_from_slice(&bytes[16..]);
+            core.data = VariantData::from_union(payload, tail);
+        }
+        Ok(core)
     }
+}
+
+/// # Safety
+/// `core` must be a `VT_RECORD` core produced by [`Variant::from_com_record`] or
+/// [`Variant::from_vba_record`] whose cell is still live for `'a`.
+unsafe fn record_cell_of<'a>(core: &VariantCore) -> Option<RecordCell<'a>> {
+    let (data, info) = core.record_addresses();
+    if data == 0 {
+        return None;
+    }
+    Some(if info != 0 {
+        // SAFETY: guaranteed by the caller.
+        RecordCell::Com(unsafe {
+            ComRecordRef::from_raw_parts(
+                core::ptr::with_exposed_provenance_mut(info),
+                core::ptr::with_exposed_provenance_mut(data),
+            )
+        })
+    } else {
+        // SAFETY: guaranteed by the caller.
+        RecordCell::Vba(unsafe { &*core::ptr::with_exposed_provenance::<VbaRecord>(data) })
+    })
 }
 
 fn exposed_pointer_to_bytes<T>(ptr: *const T) -> [u8; 8] {
@@ -455,23 +533,15 @@ fn raw_safearray_ptr_to_bytes(ptr: *mut core::ffi::c_void) -> [u8; 8] {
     exposed_pointer_to_bytes(ptr.cast_const())
 }
 
+const POINTER_SIZE: usize = core::mem::size_of::<usize>();
+
+/// What a `VT_RECORD` cell holds. A COM record is the `BRECORD` of an Automation `VARIANT`
+/// (`pvRecord` and its `IRecordInfo`); an engine UDT value has no `IRecordInfo` (VBA gives its
+/// own Types none) and keeps a boxed [`VbaRecord`] in `pvRecord`.
 #[derive(Debug)]
-enum RecordPayload {
-    Com(ComRecord),
-    Vba(VbaRecord),
-}
-
-impl RecordPayload {
-    fn deep_clone(&self) -> Result<Self, String> {
-        match self {
-            Self::Com(record) => Ok(Self::Com(record.deep_clone()?)),
-            Self::Vba(record) => Ok(Self::Vba(record.try_clone()?)),
-        }
-    }
-}
-
-fn raw_record_payload_ptr_to_bytes(ptr: *const RecordPayload) -> [u8; 8] {
-    exposed_pointer_to_bytes(ptr)
+enum RecordCell<'a> {
+    Com(ComRecordRef<'a>),
+    Vba(&'a VbaRecord),
 }
 
 fn bytes_to_raw_bstr(bytes: [u8; 8]) -> *mut u16 {
@@ -484,10 +554,6 @@ fn bytes_to_raw_iunknown(bytes: [u8; 8]) -> *mut RawRuntimeIUnknown {
 
 fn bytes_to_raw_safearray(bytes: [u8; 8]) -> *mut core::ffi::c_void {
     core::ptr::with_exposed_provenance_mut(exposed_pointer_address(bytes))
-}
-
-fn bytes_to_raw_record_payload(bytes: [u8; 8]) -> *const RecordPayload {
-    core::ptr::with_exposed_provenance(exposed_pointer_address(bytes))
 }
 
 /// Owning runtime Variant.
@@ -645,16 +711,14 @@ impl Variant {
                 Ok(Self::from_safearray(array))
             }
             VarType::Record => {
-                let ptr = bytes_to_raw_record_payload(core.data_bytes());
-                if ptr.is_null() {
-                    return Ok(Self::from_core(VariantCore::from_bytes(
-                        VarType::Record,
-                        [0; 8],
-                    )));
-                }
                 // SAFETY: guaranteed by this unsafe fn's caller.
-                let payload = unsafe { (*ptr).deep_clone()? };
-                Ok(Self::from_record_payload(payload))
+                match unsafe { record_cell_of(&core) } {
+                    Some(RecordCell::Com(record)) => {
+                        Ok(Self::from_com_record(record.try_to_owned()?))
+                    }
+                    Some(RecordCell::Vba(record)) => Ok(Self::from_vba_record(record.try_clone()?)),
+                    None => Ok(Self::zeroed(VarType::Record)),
+                }
             }
             _ => Ok(Self::from_core(core)),
         }
@@ -1138,53 +1202,49 @@ impl Variant {
         self.safearray_element(index)
     }
 
+    /// A `VT_RECORD` cell holding `value` as its `BRECORD`.
     pub fn from_com_record(value: ComRecord) -> Self {
-        Self::from_record_payload(RecordPayload::Com(value))
-    }
-
-    pub fn from_vba_record(value: VbaRecord) -> Self {
-        Self::from_record_payload(RecordPayload::Vba(value))
-    }
-
-    fn from_record_payload(value: RecordPayload) -> Self {
-        let raw = Box::into_raw(Box::new(value));
-        Self::from_core(VariantCore::from_bytes(
-            VarType::Record,
-            raw_record_payload_ptr_to_bytes(raw),
+        let (record_info, record_data) = value.into_raw_parts();
+        // A null `pRecInfo` marks an engine record; a COM record always has its IRecordInfo.
+        assert!(!record_info.is_null(), "COM record without IRecordInfo");
+        Self::from_core(VariantCore::record(
+            record_data.expose_provenance(),
+            record_info.expose_provenance(),
         ))
     }
 
-    fn as_record_payload(&self) -> Option<&RecordPayload> {
+    /// A `VT_RECORD` cell holding an engine UDT value (no `IRecordInfo`).
+    pub fn from_vba_record(value: VbaRecord) -> Self {
+        let raw = Box::into_raw(Box::new(value));
+        Self::from_core(VariantCore::record(raw.expose_provenance(), 0))
+    }
+
+    fn record_cell(&self) -> Option<RecordCell<'_>> {
         if self.vtype() != VarType::Record {
             return None;
         }
-        let raw = bytes_to_raw_record_payload(self.data_bytes());
-        if raw.is_null() {
-            return None;
-        }
-        // SAFETY: vtype was checked to be Record, so the payload is a
-        // Box<RecordPayload> pointer produced by `from_record_payload` and owned by
-        // this Variant until drop.
-        Some(unsafe { &*raw })
+        // SAFETY: an owning Record Variant holds either a COM record it owns or a boxed
+        // engine record (`from_com_record` / `from_vba_record`), live until drop.
+        unsafe { record_cell_of(&self.core) }
     }
 
-    fn as_record_payload_mut(&mut self) -> Option<&mut RecordPayload> {
+    fn vba_record_mut(&mut self) -> Option<&mut VbaRecord> {
         if self.vtype() != VarType::Record {
             return None;
         }
-        let raw = bytes_to_raw_record_payload(self.data_bytes()).cast_mut();
-        if raw.is_null() {
+        let (data, info) = self.core.record_addresses();
+        if data == 0 || info != 0 {
             return None;
         }
-        // SAFETY: `&mut self` proves exclusive access to the record Variant and the
-        // payload box it owns.
-        Some(unsafe { &mut *raw })
+        // SAFETY: `&mut self` proves exclusive access to the boxed engine record it owns.
+        Some(unsafe { &mut *core::ptr::with_exposed_provenance_mut::<VbaRecord>(data) })
     }
 
-    pub fn as_com_record(&self) -> Option<ComRecord> {
-        match self.as_record_payload()? {
-            RecordPayload::Com(record) => Some(record.clone()),
-            RecordPayload::Vba(_) => None,
+    /// The COM record (`BRECORD`) this cell holds, borrowed.
+    pub fn as_com_record(&self) -> Option<ComRecordRef<'_>> {
+        match self.record_cell()? {
+            RecordCell::Com(record) => Some(record),
+            RecordCell::Vba(_) => None,
         }
     }
 
@@ -1193,38 +1253,29 @@ impl Variant {
     }
 
     pub(crate) fn vba_record_ref(&self) -> Option<&VbaRecord> {
-        match self.as_record_payload()? {
-            RecordPayload::Com(_) => None,
-            RecordPayload::Vba(record) => Some(record),
+        match self.record_cell()? {
+            RecordCell::Com(_) => None,
+            RecordCell::Vba(record) => Some(record),
         }
     }
 
     pub fn vba_record_file_len(&self) -> Option<Result<usize, String>> {
-        match self.as_record_payload()? {
-            RecordPayload::Com(_) => None,
-            RecordPayload::Vba(record) => Some(record.file_len()),
-        }
+        Some(self.vba_record_ref()?.file_len())
     }
 
     /// VBA's `Len` of a UDT value (see [`VbaRecordLayout::vba_len`]).
     pub fn vba_record_len(&self) -> Option<usize> {
-        match self.as_record_payload()? {
-            RecordPayload::Com(_) => None,
-            RecordPayload::Vba(record) => Some(record.layout().vba_len()),
-        }
+        Some(self.vba_record_ref()?.layout().vba_len())
     }
 
     pub fn vba_record_memory_len(&self) -> Option<usize> {
-        match self.as_record_payload()? {
-            RecordPayload::Com(_) => None,
-            RecordPayload::Vba(record) => Some(record.memory_len()),
-        }
+        Some(self.vba_record_ref()?.memory_len())
     }
 
     pub fn read_record_field_variant(&self, index: usize) -> Result<Variant, String> {
-        match self.as_record_payload() {
-            Some(RecordPayload::Vba(record)) => record.read_field_variant(index),
-            Some(RecordPayload::Com(_)) => Err("COM record fields require COM metadata".into()),
+        match self.record_cell() {
+            Some(RecordCell::Vba(record)) => record.read_field_variant(index),
+            Some(RecordCell::Com(_)) => Err("COM record fields require COM metadata".into()),
             None => Err(format!("expected Record Variant, got {:?}", self.vtype())),
         }
     }
@@ -1234,21 +1285,22 @@ impl Variant {
         index: usize,
         value: &Variant,
     ) -> Result<(), String> {
-        match self.as_record_payload_mut() {
-            Some(RecordPayload::Vba(record)) => record.write_field_variant(index, value),
-            Some(RecordPayload::Com(_)) => Err("COM record fields require COM metadata".into()),
-            None => Err(format!("expected Record Variant, got {:?}", self.vtype())),
+        if self.as_com_record().is_some() {
+            return Err("COM record fields require COM metadata".into());
+        }
+        let vtype = self.vtype();
+        match self.vba_record_mut() {
+            Some(record) => record.write_field_variant(index, value),
+            None => Err(format!("expected Record Variant, got {vtype:?}")),
         }
     }
 
     pub fn lset_record_from(&mut self, source: &Variant) -> Result<(), String> {
-        match (self.as_record_payload_mut(), source.as_record_payload()) {
-            (Some(RecordPayload::Vba(target)), Some(RecordPayload::Vba(source))) => {
-                target.lset_from(source)
-            }
-            (Some(RecordPayload::Com(_)), _) | (_, Some(RecordPayload::Com(_))) => {
-                Err("COM record LSet requires COM metadata".into())
-            }
+        if self.as_com_record().is_some() || source.as_com_record().is_some() {
+            return Err("COM record LSet requires COM metadata".into());
+        }
+        match (self.vba_record_mut(), source.vba_record_ref()) {
+            (Some(target), Some(source)) => target.lset_from(source),
             _ => Err("Type mismatch".into()),
         }
     }
@@ -1257,9 +1309,9 @@ impl Variant {
         &self,
         index: usize,
     ) -> Result<Option<(Vec<SafeArrayBound>, usize)>, String> {
-        match self.as_record_payload() {
-            Some(RecordPayload::Vba(record)) => record.array_field_bounds_len(index),
-            Some(RecordPayload::Com(_)) => Err("COM record fields require COM metadata".into()),
+        match self.record_cell() {
+            Some(RecordCell::Vba(record)) => record.array_field_bounds_len(index),
+            Some(RecordCell::Com(_)) => Err("COM record fields require COM metadata".into()),
             None => Err(format!("expected Record Variant, got {:?}", self.vtype())),
         }
     }
@@ -1269,9 +1321,9 @@ impl Variant {
         index: usize,
         flat: usize,
     ) -> Result<Option<Variant>, String> {
-        match self.as_record_payload() {
-            Some(RecordPayload::Vba(record)) => record.read_array_field_element(index, flat),
-            Some(RecordPayload::Com(_)) => Err("COM record fields require COM metadata".into()),
+        match self.record_cell() {
+            Some(RecordCell::Vba(record)) => record.read_array_field_element(index, flat),
+            Some(RecordCell::Com(_)) => Err("COM record fields require COM metadata".into()),
             None => Err(format!("expected Record Variant, got {:?}", self.vtype())),
         }
     }
@@ -1282,12 +1334,13 @@ impl Variant {
         flat: usize,
         value: &Variant,
     ) -> Result<Option<()>, String> {
-        match self.as_record_payload_mut() {
-            Some(RecordPayload::Vba(record)) => {
-                record.write_array_field_element(index, flat, value)
-            }
-            Some(RecordPayload::Com(_)) => Err("COM record fields require COM metadata".into()),
-            None => Err(format!("expected Record Variant, got {:?}", self.vtype())),
+        if self.as_com_record().is_some() {
+            return Err("COM record fields require COM metadata".into());
+        }
+        let vtype = self.vtype();
+        match self.vba_record_mut() {
+            Some(record) => record.write_array_field_element(index, flat, value),
+            None => Err(format!("expected Record Variant, got {vtype:?}")),
         }
     }
 
@@ -1319,9 +1372,10 @@ impl Variant {
             }
             VarType::Record => {
                 crate::vba_record::owning_boundary("variant-record-clone")?;
-                Ok(match self.as_record_payload() {
-                    Some(payload) => Self::from_record_payload(payload.deep_clone()?),
-                    None => Self::from_core(self.core),
+                Ok(match self.record_cell() {
+                    Some(RecordCell::Com(record)) => Self::from_com_record(record.try_to_owned()?),
+                    Some(RecordCell::Vba(record)) => Self::from_vba_record(record.try_clone()?),
+                    None => Self::zeroed(VarType::Record),
                 })
             }
             _ => Ok(Self::from_core(self.core)),
@@ -1370,13 +1424,21 @@ impl Drop for Variant {
                 }
             }
             VarType::Record => {
-                let raw = bytes_to_raw_record_payload(self.data_bytes()).cast_mut();
-                if !raw.is_null() {
-                    // SAFETY: a Record Variant owns a Box<RecordPayload> created by
-                    // `from_record_payload`; taking the box here drops that payload.
-                    unsafe {
-                        drop(Box::from_raw(raw));
-                    }
+                let (data, info) = self.core.record_addresses();
+                if info != 0 {
+                    // SAFETY: a COM record cell owns its `BRECORD` (`from_com_record`); this
+                    // releases it once, as `VariantClear` does.
+                    drop(unsafe {
+                        ComRecord::from_raw_parts(
+                            core::ptr::with_exposed_provenance_mut(info),
+                            core::ptr::with_exposed_provenance_mut(data),
+                        )
+                    });
+                } else if data != 0 {
+                    // SAFETY: an engine record cell owns the box from `from_vba_record`.
+                    drop(unsafe {
+                        Box::from_raw(core::ptr::with_exposed_provenance_mut::<VbaRecord>(data))
+                    });
                 }
             }
             _ => {}
@@ -1402,7 +1464,7 @@ impl core::fmt::Debug for Variant {
                 dbg.field("array", &self.as_safearray());
             }
             VarType::Record => {
-                dbg.field("record", &self.as_record_payload());
+                dbg.field("record", &self.record_cell());
             }
             _ => {
                 dbg.field("data", &self.data_bytes());
@@ -1426,9 +1488,12 @@ impl PartialEq for Variant {
                     == bytes_to_raw_iunknown(other.data_bytes())
             }
             VarType::ArrayVariant => self.as_safearray() == other.as_safearray(),
-            VarType::Record => match (self.as_record_payload(), other.as_record_payload()) {
-                (Some(RecordPayload::Com(left)), Some(RecordPayload::Com(right))) => left == right,
-                (Some(RecordPayload::Vba(left)), Some(RecordPayload::Vba(right))) => {
+            VarType::Record => match (self.record_cell(), other.record_cell()) {
+                (Some(RecordCell::Com(left)), Some(RecordCell::Com(right))) => {
+                    left.record_info_ptr() == right.record_info_ptr()
+                        && left.record_data_ptr() == right.record_data_ptr()
+                }
+                (Some(RecordCell::Vba(left)), Some(RecordCell::Vba(right))) => {
                     left.data_ptr() == right.data_ptr()
                 }
                 (None, None) => true,
@@ -1443,7 +1508,6 @@ impl Eq for Variant {}
 
 #[cfg(test)]
 mod tests {
-    use core::ffi::c_void;
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     use crate::live_counters::thread_live_handle_counts;
@@ -1856,40 +1920,12 @@ mod tests {
         assert!(wire[8..].iter().all(|byte| *byte == 0));
     }
 
-    unsafe fn clone_test_record(
-        record_info: *mut c_void,
-        record_data: *const c_void,
-    ) -> Result<(*mut c_void, *mut c_void), String> {
-        // SAFETY: this clone callback is only registered for records whose data is a
-        // boxed `i32` (see `test_record_variant`), so `record_data` points to a live i32.
-        let value = unsafe { *record_data.cast::<i32>() };
-        Ok((record_info, Box::into_raw(Box::new(value)).cast()))
-    }
-
-    unsafe fn destroy_test_record(_record_info: *mut c_void, record_data: *mut c_void) {
-        // SAFETY: paired with `clone_test_record`/`test_record_variant`, `record_data`
-        // is a `Box<i32>` raw pointer reclaimed exactly once here.
-        unsafe {
-            drop(Box::from_raw(record_data.cast::<i32>()));
-        }
-    }
-
     fn test_record_variant(value: i32) -> Variant {
-        let record_info = core::ptr::NonNull::<u8>::dangling()
-            .as_ptr()
-            .cast::<c_void>();
-        let record_data = Box::into_raw(Box::new(value)).cast::<c_void>();
-        // SAFETY: `record_data` is a freshly leaked `Box<i32>`, `record_info` is a
-        // non-null placeholder, and the clone/destroy callbacks match that i32 payload.
-        let record = unsafe {
-            crate::ComRecord::from_raw_parts(
-                record_info,
-                record_data,
-                clone_test_record,
-                destroy_test_record,
-            )
-            .expect("test record")
-        };
+        let info = crate::com_record::test_support::TestRecordInfo::create(4);
+        // SAFETY: a live test IRecordInfo whose reference moves into the record.
+        let record = unsafe { crate::ComRecord::create(info) }.expect("test record");
+        // SAFETY: the record holds four writable bytes.
+        unsafe { *record.record_data_ptr().cast::<i32>() = value };
         Variant::from_com_record(record)
     }
 

@@ -1,62 +1,44 @@
 use core::ffi::c_void;
-use std::sync::{
-    Arc,
-    atomic::{AtomicIsize, Ordering},
-};
+use std::sync::Arc;
 
 use calcvba_runtime::{
     ComRecord, LiveHandleCounts, ObjectRef, VarType, Variant, VariantCore, VbaRecord,
-    VbaRecordFieldKind, VbaRecordFieldSpec, VbaRecordLayout, live_handle_counts,
+    VbaRecordFieldKind, VbaRecordFieldSpec, VbaRecordLayout,
+    com_record::test_support::TestRecordInfo,
+    live_handle_counts,
     safe_array::{SafeArray, VT_UNKNOWN_VALUE, VT_VARIANT_VALUE},
 };
 
-static LIVE_COM_RECORD_DATA: AtomicIsize = AtomicIsize::new(0);
-
-unsafe fn clone_com_record_data(
-    record_info: *mut c_void,
-    record_data: *const c_void,
-) -> Result<(*mut c_void, *mut c_void), String> {
-    // SAFETY: the test constructs every record payload as a live `Box<i32>` and
-    // keeps its matching record-info owner alive until all variants are dropped.
-    let value = unsafe { *record_data.cast::<i32>() };
-    let cloned = Box::into_raw(Box::new(value)).cast::<c_void>();
-    LIVE_COM_RECORD_DATA.fetch_add(1, Ordering::AcqRel);
-    Ok((record_info, cloned))
+/// The test's record type: four bytes, counted by a fake `IRecordInfo`.
+fn record_info() -> *mut c_void {
+    use std::sync::OnceLock;
+    static INFO: OnceLock<usize> = OnceLock::new();
+    let address = *INFO.get_or_init(|| TestRecordInfo::create(4).expose_provenance());
+    core::ptr::with_exposed_provenance_mut(address)
 }
 
-unsafe fn destroy_com_record_data(_record_info: *mut c_void, record_data: *mut c_void) {
-    if record_data.is_null() {
-        return;
-    }
-    // SAFETY: every non-null payload supplied to this callback came from
-    // `Box::into_raw` in `make_com_record` or `clone_com_record_data`, and each
-    // owning `ComRecord` invokes the callback exactly once.
-    unsafe {
-        drop(Box::from_raw(record_data.cast::<i32>()));
-    }
-    LIVE_COM_RECORD_DATA.fetch_sub(1, Ordering::AcqRel);
+fn live_com_records() -> isize {
+    // SAFETY: the shared test IRecordInfo is leaked and stays readable.
+    unsafe { TestRecordInfo::live_records(record_info()) }
 }
 
-fn make_com_record(record_info: *mut c_void, value: i32) -> ComRecord {
-    let record_data = Box::into_raw(Box::new(value)).cast::<c_void>();
-    LIVE_COM_RECORD_DATA.fetch_add(1, Ordering::AcqRel);
-    // SAFETY: `record_info` is the live owner allocated by the test, `record_data`
-    // is a fresh `Box<i32>`, and the paired callbacks clone/drop that exact shape.
-    unsafe {
-        ComRecord::from_raw_parts(
-            record_info,
-            record_data,
-            clone_com_record_data,
-            destroy_com_record_data,
-        )
-        .expect("valid COM record test carrier")
+fn make_com_record(value: i32) -> ComRecord {
+    let info = record_info();
+    // SAFETY: a live test IRecordInfo; AddRef gives `create` the reference it takes over.
+    let record = unsafe {
+        let table = &**info.cast::<*const calcvba_automation::com::IRecordInfoVtbl>();
+        (table.unknown.add_ref)(info);
+        ComRecord::create(info)
     }
+    .expect("valid COM record test carrier");
+    // SAFETY: the record holds four writable bytes.
+    unsafe { *record.record_data_ptr().cast::<i32>() = value };
+    record
 }
 
 fn com_record_value(value: &Variant) -> i32 {
     let record = value.as_com_record().expect("COM record Variant");
-    // SAFETY: all COM records in this test use the `Box<i32>` callback pair above;
-    // the returned shared record handle keeps the payload live for this read.
+    // SAFETY: every COM record in this test holds an i32, borrowed from its live cell.
     unsafe { *record.record_data_ptr().cast::<i32>() }
 }
 
@@ -78,7 +60,7 @@ fn variant_strict_provenance_pointer_carriers_roundtrip_mutate_and_balance() {
     assert_eq!(core::mem::align_of::<VariantCore>(), 8);
     let before = live_handle_counts();
     assert_eq!(before, LiveHandleCounts::default());
-    assert_eq!(LIVE_COM_RECORD_DATA.load(Ordering::Acquire), 0);
+    assert_eq!(live_com_records(), 0);
 
     {
         // BSTR: exact odd-byte payload, ordinary clone, and trusted in-process wire
@@ -268,10 +250,14 @@ fn variant_strict_provenance_pointer_carriers_roundtrip_mutate_and_balance() {
 
         // COM RecordPayload: callback-owned record data is independently cloned,
         // mutation remains isolated, and its separate test counter reaches zero.
-        let mut record_info_owner = Box::new(0u8);
-        let record_info = (&mut *record_info_owner as *mut u8).cast::<c_void>();
-        let com_value = Variant::from_com_record(make_com_record(record_info, 51));
+        let com_value = Variant::from_com_record(make_com_record(51));
         assert_ne!(u64::from_le_bytes(com_value.data_bytes()), 0);
+        // The cell is the BRECORD: pvRecord, then the record's IRecordInfo.
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(
+            com_value.to_wire_bytes()[16..24],
+            record_info().expose_provenance().to_le_bytes()
+        );
         let com_record_clone = com_value.clone();
         let source_record = com_value.as_com_record().expect("source COM record");
         // SAFETY: this record uses the test's uniquely allocated `Box<i32>` payload;
@@ -279,7 +265,6 @@ fn variant_strict_provenance_pointer_carriers_roundtrip_mutate_and_balance() {
         unsafe {
             *source_record.record_data_ptr().cast::<i32>() = 88;
         }
-        drop(source_record);
         // SAFETY: the source RecordPayload remains live in `com_value`.
         let com_record_wire_clone =
             unsafe { Variant::from_trusted_wire_bytes(com_value.to_wire_bytes()) }
@@ -301,6 +286,6 @@ fn variant_strict_provenance_pointer_carriers_roundtrip_mutate_and_balance() {
         assert!(Variant::from_wire_bytes(array_wire).is_err());
     }
 
-    assert_eq!(LIVE_COM_RECORD_DATA.load(Ordering::Acquire), 0);
+    assert_eq!(live_com_records(), 0);
     assert_eq!(before.balance_to(live_handle_counts()), Default::default());
 }

@@ -1346,57 +1346,12 @@ mod tests {
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    unsafe fn clone_test_record(
-        record_info: *mut core::ffi::c_void,
-        record_data: *const core::ffi::c_void,
-    ) -> Result<(*mut core::ffi::c_void, *mut core::ffi::c_void), String> {
-        if record_info.is_null() || record_data.is_null() {
-            return Err("test record clone received a null record pointer".to_string());
-        }
-        // SAFETY: this clone callback is only registered (via `test_record_com_value`)
-        // for records whose data is a boxed `TestRecord`, and `record_data` was checked
-        // non-null above, so this reads a live `TestRecord`.
-        let value = unsafe { *record_data.cast::<TestRecord>() };
-        Ok((
-            record_info,
-            Box::into_raw(Box::new(value)).cast::<core::ffi::c_void>(),
-        ))
-    }
-
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    unsafe fn destroy_test_record(
-        _record_info: *mut core::ffi::c_void,
-        record_data: *mut core::ffi::c_void,
-    ) {
-        if !record_data.is_null() {
-            // SAFETY: paired with `clone_test_record`/`test_record_com_value`,
-            // `record_data` is a non-null `Box<TestRecord>` raw pointer reclaimed
-            // exactly once here.
-            unsafe {
-                drop(Box::from_raw(record_data.cast::<TestRecord>()));
-            }
-        }
-    }
-
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     fn test_record_com_value(value: i32) -> crate::ComValue {
-        static RECORD_INFO_SENTINEL: u8 = 0;
-        let data = Box::into_raw(Box::new(TestRecord { value })).cast::<core::ffi::c_void>();
-        let info = (&RECORD_INFO_SENTINEL as *const u8)
-            .cast_mut()
-            .cast::<core::ffi::c_void>();
-        // SAFETY: `data` is a freshly leaked `Box<TestRecord>`, `info` points at a
-        // non-null static sentinel, and the clone/destroy callbacks match that
-        // `TestRecord` payload — satisfying `ComRecord::from_raw_parts`.
-        let record = unsafe {
-            calcvba_runtime::ComRecord::from_raw_parts(
-                info,
-                data,
-                clone_test_record,
-                destroy_test_record,
-            )
-        }
-        .expect("test record pointers are non-null");
+        let info = calcvba_runtime::com_record::test_support::TestRecordInfo::create(4);
+        // SAFETY: a live test IRecordInfo whose reference moves into the record.
+        let record = unsafe { calcvba_runtime::ComRecord::create(info) }.expect("test record");
+        // SAFETY: the test record holds a `TestRecord` (four writable bytes).
+        unsafe { (*record.record_data_ptr().cast::<TestRecord>()).value = value };
         crate::ComValue::Record(record)
     }
 

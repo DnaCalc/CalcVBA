@@ -2721,7 +2721,7 @@ fn supplied_record_safearray_missing_record_info(
 #[cfg(target_os = "windows")]
 fn descriptor_record_info_matches_record(
     descriptor: &crate::TypeLibRecordInfo,
-    record: &calcvba_runtime::ComRecord,
+    record: &calcvba_runtime::ComRecordRef<'_>,
 ) -> bool {
     let raw = crate::windows_variant::record_info_from_descriptor(descriptor);
     let Ok(raw) = raw else {

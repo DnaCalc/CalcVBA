@@ -35,7 +35,7 @@ pub use callback_thunks::{
     CallbackExecutor, CallbackRegistration, CallbackThunkError, register_callback,
 };
 pub use coerce::{print_display_text, variant_to_vba_string, write_display_text};
-pub use com_record::{ComRecord, ComRecordCloneFn, ComRecordDestroyFn};
+pub use com_record::{ComRecord, ComRecordRef};
 pub use decimal::Decimal96;
 pub use interop_plan::{
     InteropApartmentPolicy, InteropCallKind, InteropCallSpec, InteropCleanupPolicy,

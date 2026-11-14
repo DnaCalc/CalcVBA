@@ -207,7 +207,8 @@ impl ComValue {
             calcvba_runtime::VarType::Record => Self::Record(
                 value
                     .as_com_record()
-                    .ok_or_else(|| "invalid Record VARIANT payload".to_string())?,
+                    .ok_or_else(|| "invalid Record VARIANT payload".to_string())?
+                    .try_to_owned()?,
             ),
             calcvba_runtime::VarType::ProcRef => {
                 return Err("procedure references cannot be converted to COM values".to_string());

@@ -29,7 +29,7 @@
 //! | `Decimal` | 96-bit struct | `Decimal` |
 //! | `Str` / `FixedStr(n)` | `*mut u16` (owned BSTR) | `String` |
 //! | `Object(_)` | `*mut IUnknown` (typed) | `Object` |
-//! | `Record(_)` | `*const RecordPayload` (value semantics) | `Record` |
+//! | `Record(_)` | a `VT_RECORD` cell (value semantics) | `Record` |
 //! | `Array(t, _)` | `*mut SAFEARRAY` | `ArrayVariant` |
 //! | `ProcRef` | `usize` proc index | `ProcRef` |
 //! | `Variant` | the platform `VARIANT` (24 bytes on 64-bit, 16 on 32-bit) | identity |
@@ -114,7 +114,7 @@ pub enum OxTy {
     // ── References / aggregates ──
     /// A typed interface pointer (`*mut IUnknown`); see [`ObjClass`].
     Object(ObjClass),
-    /// A value-semantics UDT record (`*const RecordPayload`).
+    /// A value-semantics UDT record (a `VT_RECORD` cell).
     Record(RecordLayoutId),
     /// A `SAFEARRAY` of element type `T`.
     Array(Box<OxTy>, ArrayShape),

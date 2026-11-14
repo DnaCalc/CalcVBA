@@ -942,7 +942,7 @@ where
                     "vtable ByRef record parameter expects a Record argument, got {value:?}"
                 ));
             };
-            let record = record.deep_clone()?;
+            let record = record.try_clone()?;
             let ptr = record.record_data_ptr();
             (ptr.cast::<c_void>(), ByRefCell::Record(slot, record))
         }
@@ -1800,44 +1800,12 @@ mod tests {
         value: i32,
     }
 
-    unsafe fn clone_test_record(
-        record_info: *mut c_void,
-        record_data: *const c_void,
-    ) -> Result<(*mut c_void, *mut c_void), String> {
-        if record_info.is_null() || record_data.is_null() {
-            return Err("test record clone received a null record pointer".to_string());
-        }
-        // SAFETY: the null guard above proves `record_data` is non-null, and this
-        // clone callback is only registered for payloads built by
-        // `test_record_variant`, which always points at a live `TestRecord`.
-        let value = unsafe { *record_data.cast::<TestRecord>() };
-        Ok((record_info, Box::into_raw(Box::new(value)).cast::<c_void>()))
-    }
-
-    unsafe fn destroy_test_record(_record_info: *mut c_void, record_data: *mut c_void) {
-        if !record_data.is_null() {
-            // SAFETY: this destroy callback only runs for payloads `test_record_variant`
-            // produced via `Box::into_raw(Box::new(TestRecord ..))`, so the non-null
-            // `record_data` is a uniquely-owned `TestRecord` box reclaimed exactly once.
-            unsafe {
-                drop(Box::from_raw(record_data.cast::<TestRecord>()));
-            }
-        }
-    }
-
     fn test_record_variant(value: i32) -> Variant {
-        static RECORD_INFO_SENTINEL: u8 = 0;
-        let data = Box::into_raw(Box::new(TestRecord { value })).cast::<c_void>();
-        let info = (&RECORD_INFO_SENTINEL as *const u8)
-            .cast_mut()
-            .cast::<c_void>();
-        // SAFETY: `info` points at the static `RECORD_INFO_SENTINEL` and `data` is a
-        // freshly-leaked `TestRecord` box; both are non-null and the matched
-        // clone/destroy callbacks above know how to copy and free that payload.
-        let record = unsafe {
-            ComRecord::from_raw_parts(info, data, clone_test_record, destroy_test_record)
-        }
-        .expect("test record pointers are non-null");
+        let info = calcvba_runtime::com_record::test_support::TestRecordInfo::create(4);
+        // SAFETY: a live test IRecordInfo whose reference moves into the record.
+        let record = unsafe { ComRecord::create(info) }.expect("test record");
+        // SAFETY: the test record holds four writable bytes.
+        unsafe { *record.record_data_ptr().cast::<i32>() = value };
         Variant::from_com_record(record)
     }
 

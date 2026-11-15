@@ -2473,6 +2473,14 @@ impl<'a> ProcLower<'a> {
             // A qualified member can be a proc (call), a `Const`/`Enum` value, or a
             // module variable (place) — lower it the same way a bare name resolves.
             Some(binding) => Ok(Some(self.finish_value_or_call(member, &binding, arglist)?)),
+            // `Excel.ThisWorkbook.[A1]`: a member of a qualified value, bound on that value.
+            None if parts.len() > 2
+                && self
+                    .resolve_qualified_scoped(&part_refs[..part_refs.len() - 1])
+                    .is_some() =>
+            {
+                Ok(None)
+            }
             None if self.is_namespace_qualifier(&parts[0]) => {
                 Err(self.unresolved(member, "member"))
             }
@@ -2497,6 +2505,14 @@ impl<'a> ProcLower<'a> {
             Some(binding) => Ok(Some(
                 self.finish_value_or_call_statement(member, &binding, arglist)?,
             )),
+            // `Excel.ThisWorkbook.[A1]`: a member of a qualified value, bound on that value.
+            None if parts.len() > 2
+                && self
+                    .resolve_qualified_scoped(&part_refs[..part_refs.len() - 1])
+                    .is_some() =>
+            {
+                Ok(None)
+            }
             None if self.is_namespace_qualifier(&parts[0]) => {
                 Err(self.unresolved(member, "member"))
             }
@@ -3354,10 +3370,14 @@ impl<'a> ProcLower<'a> {
         )
     }
 
-    /// `recv.[text]` as VBA binds it: late bound, always the receiver's evaluation of `text`;
-    /// early bound, the member named `text` when the interface has one, else the evaluation
-    /// when the interface is extensible (`Application.[A1]`), else "Method or data member not
-    /// found". `None` for an ordinary member name, or a bracketed one the interface declares.
+    /// `recv.[text]` as VBA binds it (probes global10, tw11): late bound, always the
+    /// receiver's evaluation of `text`; early bound, the member named `text` when the
+    /// interface has one, else the evaluation when the interface declares a `DISPID_EVALUATE`
+    /// member (`Sheet1.[A1]`, a closed `Worksheet`) or is extensible (`wb.[A1]`, which then
+    /// raises 438), else "Method or data member not found". A document module is the
+    /// project's closed class: its host's declared or evaluate member, never a late call
+    /// (`ThisWorkbook.[A1]` does not compile). `None` for an ordinary member name, or a
+    /// bracketed one the interface declares.
     fn foreign_member(&self, recv: &Bound, member: &str) -> Result<Option<Bound>, BindError> {
         let Some(text) = crate::foreign_name_text(member) else {
             return Ok(None);
@@ -3368,7 +3388,19 @@ impl<'a> ProcLower<'a> {
         if self.resolve_member(&recv.ty, member, None).is_some() {
             return Ok(None);
         }
-        if self.binds_unknown_member_late(&recv.ty) {
+        let declares_evaluate = |ty: &VarTypeRef| matches!(ty, VarTypeRef::Object(name) if self.g.env.declares_evaluate_member(name));
+        if let Some(host) = self.g.document_host_type(&recv.ty) {
+            let host = VarTypeRef::Object(host.into());
+            if self.resolve_member(&host, member, None).is_some() || !declares_evaluate(&host) {
+                return Ok(None);
+            }
+            let document = CoreValue::Load(CorePlace::Field {
+                object: Box::new(recv.value.clone()),
+                field: calcvba_bundle::HOST_DOCUMENT_FIELD,
+            });
+            return Ok(Some(self.evaluate_foreign(document, text)));
+        }
+        if self.binds_unknown_member_late(&recv.ty) || declares_evaluate(&recv.ty) {
             return Ok(Some(self.evaluate_foreign(recv.value.clone(), text)));
         }
         Ok(None)

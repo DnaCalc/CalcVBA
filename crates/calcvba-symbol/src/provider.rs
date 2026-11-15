@@ -57,6 +57,12 @@ pub trait Provider {
         let _ = type_name;
         false
     }
+    /// Whether `type_name` is an interface this provider owns that declares a
+    /// `DISPID_EVALUATE` (-5) member, which evaluates `x.[text]` (Excel's `Worksheet`).
+    fn declares_evaluate_member(&self, type_name: &str) -> bool {
+        let _ = type_name;
+        false
+    }
     /// The application object (`(type_name, class)`) that evaluates this provider's foreign
     /// names `[text]`: one whose interface has a `DISPID_EVALUATE` (-5) member.
     fn foreign_evaluator(&self) -> Option<(String, String)> {
@@ -355,6 +361,13 @@ impl ResolutionEnvironment {
         self.providers
             .iter()
             .any(|provider| provider.is_extensible_object_type(type_name))
+    }
+    /// Whether `type_name`'s interface declares a `DISPID_EVALUATE` member, which evaluates
+    /// `x.[text]` even when the interface is not extensible (Excel's `Worksheet`).
+    pub fn declares_evaluate_member(&self, type_name: &str) -> bool {
+        self.providers
+            .iter()
+            .any(|provider| provider.declares_evaluate_member(type_name))
     }
     pub fn object_interface(
         &self,

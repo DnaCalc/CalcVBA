@@ -23,6 +23,8 @@ pub struct ComTypeLibProvider {
     interface_iid: Option<calcvba_com::ComInterfaceIid>,
 }
 
+/// The `DISPID_EVALUATE` member that evaluates a foreign name `[text]` (Excel's `_Evaluate`).
+const DISPID_EVALUATE: i32 = -5;
 impl ComTypeLibProvider {
     fn resolve_constant(&self, parts: &[&str]) -> Option<Binding> {
         use calcvba_bundle::coreir::CoreConst as C;
@@ -328,11 +330,18 @@ impl Provider for ComTypeLibProvider {
     fn is_extensible_object_type(&self, type_name: &str) -> bool {
         self.blob.extensible && self.owns_members(type_name)
     }
+    fn declares_evaluate_member(&self, type_name: &str) -> bool {
+        self.owns_members(type_name)
+            && self
+                .blob
+                .members
+                .iter()
+                .any(|member| member.token == DISPID_EVALUATE)
+    }
     fn is_library_name(&self, name: &str) -> bool {
         self.blob.identity.reference_name.eq_ignore_ascii_case(name)
     }
     fn foreign_evaluator(&self) -> Option<(String, String)> {
-        const DISPID_EVALUATE: i32 = -5;
         let object = self.app_object()?;
         self.blob
             .members

@@ -60,6 +60,12 @@ impl Provider for HostProvider {
         self.blobs.iter().any(|blob| blob.is_library_name(name))
     }
 
+    fn declares_evaluate_member(&self, type_name: &str) -> bool {
+        self.blobs
+            .iter()
+            .any(|blob| blob.declares_evaluate_member(type_name))
+    }
+
     fn foreign_evaluator(&self) -> Option<(String, String)> {
         self.blobs.iter().find_map(|blob| blob.foreign_evaluator())
     }

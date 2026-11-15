@@ -1242,6 +1242,7 @@ impl TypedStack {
                     .transpose()?;
                 let text = |op: &Option<OxOperand>| match op {
                     Some(OxOperand::Const(OxConst::Str(s))) => Some(s.clone()),
+                    Some(OxOperand::Const(OxConst::NullStr)) => Some(String::new()),
                     _ => None,
                 };
                 let err = self.err();

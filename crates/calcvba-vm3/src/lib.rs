@@ -42,8 +42,8 @@ use calcvba_oxir::{
 };
 use calcvba_rt_abi::{
     ErrorMode, EventBinding, ExecState, Fault, FaultAction, LoadedProgram, MarshalArgRef,
-    ProcInvoker, ResumePoint, ResumeTarget, SavedErrState, apply_byref_writebacks, marshal_ox_args,
-    marshal_ox_call_args, take_termination_batch, variant_changed,
+    ProcInvoker, ResumePoint, ResumeTarget, SavedErrState, marshal_ox_args, marshal_ox_call_args,
+    take_termination_batch, variant_changed,
 };
 use calcvba_runtime::object_ref::{
     Guid, ObjectRef, RUNTIME_CLASS_LIFECYCLE_NONE, RUNTIME_IDISPATCH_INTERFACE_IDENTITY,
@@ -56,8 +56,8 @@ use calcvba_runtime::object_ref::{
 use calcvba_runtime::safe_array::{SafeArray, SafeArrayBound};
 use calcvba_runtime::variant::VarType;
 use calcvba_runtime::{
-    CallbackExecutor, CallbackRegistration, InteropInvokeKind, RuntimeByRefSlot,
-    RuntimeCallArgument, Variant, VbaRecord, VerifiedInteropPlan, register_callback,
+    CallbackExecutor, CallbackRegistration, InteropInvokeKind, Variant, VbaRecord,
+    VerifiedInteropPlan, register_callback,
 };
 
 /// `DISP_E_PARAMNOTFOUND` — the sentinel an omitted optional argument carries into a
@@ -5073,12 +5073,10 @@ impl<'h> Vm3<'h> {
         )
     }
 
-    /// Marshal a `Declare Lib` external call through the host's dynamic-link HAL — the
-    /// identical `invoke_descriptor_variants` contract vm2 drives, so a `Declare` behaves
-    /// the same whichever VM runs it (the differential gate shares one host). Captures
-    /// `Err.LastDllError` and copies ByRef arguments' marshaled-back values to their caller
-    /// slots. A `VarPtr(x)` argument is the address of `x` itself, so what the callee
-    /// writes through it is already there.
+    /// A `Declare Lib` call through the host's dynamic-link HAL (design doc, step 9): ByVal
+    /// arguments are values, each ByRef place (and a String variable passed to a ByVal String
+    /// parameter, which the binder binds ByRef for its copy-back) is the `VT_BYREF` reference a
+    /// COM call gets, so the callee writes the caller's storage. Captures `Err.LastDllError`.
     fn declare_call(
         &mut self,
         descriptor_id: u32,
@@ -5097,7 +5095,16 @@ impl<'h> Vm3<'h> {
                     format!("unknown Declare descriptor {descriptor_id}"),
                 ))
             })?;
-        let mut arg_variants = self.native_args(args)?;
+        let mut cells = Vec::with_capacity(args.len());
+        for arg in args {
+            cells.push(match arg {
+                OxCallArg::Operand(op) => Some(self.operand(op)?),
+                OxCallArg::Named { value, .. } => Some(self.operand(value)?),
+                OxCallArg::ByRef(place) => Some(self.com_reference(place)?),
+                OxCallArg::Omitted => None,
+                OxCallArg::Const(n) => Some(Variant::from_i32(*n)),
+            });
+        }
 
         let param_type_strings: Vec<String> = descriptor
             .param_types
@@ -5132,57 +5139,31 @@ impl<'h> Vm3<'h> {
 
         let _plan = verified_declare_plan(descriptor)?;
         let _callback_regs =
-            self.prepare_native_callback_args(descriptor, &param_type_strings, &mut arg_variants)?;
-
-        let mut identities = HashMap::new();
-        let call_arguments = arg_variants
-            .iter()
-            .enumerate()
-            .map(|(index, value)| {
-                let by_ref = match args.get(index) {
-                    Some(OxCallArg::ByRef(place)) => {
-                        let id = *identities
-                            .entry(self.resolve(place))
-                            .or_insert(index as u32);
-                        Some(RuntimeByRefSlot::new(id, None))
-                    }
-                    _ => None,
-                };
-                RuntimeCallArgument {
-                    value: value.clone(),
-                    by_ref,
-                }
-            })
-            .collect::<Vec<_>>();
+            self.prepare_native_callback_args(descriptor, &param_type_strings, &mut cells)?;
+        let call_args = com_call_args(args, &cells);
         let host = self.exec.host;
         let invoke = {
             let _events = self.event_scope();
-            host.dynlink()
-                .invoke_descriptor_arguments(&view, &call_arguments)
+            host.dynlink().invoke_declare(&view, &call_args)
         };
         self.take_event_abort()?;
         // VBA refreshes `Err.LastDllError` after every `Declare` call (the OS last-error the
         // HAL captured immediately after the native call); non-native lanes report 0.
         self.exec.err_engine.last_dll_error = self.exec.host.dynlink().last_dll_error();
-        let (ret, wb_values) = match invoke {
-            Ok(pair) => pair,
-            Err(err) => return Err(Vm3Error::Fault(Fault::from_hal(err))),
-        };
-        // Copy each ByRef argument's marshaled-back value to its caller slot. The dynlink host
-        // returns `wb_values` aligned to `args`; only `ByRef` args write back (a force-ByVal
-        // `(x)` / non-l-value is lowered to `Operand`, so it is correctly left unchanged).
-        apply_byref_writebacks(args, &wb_values, |place, value| self.store(place, value))?;
-        Ok(ret)
+        invoke.map_err(|err| Vm3Error::Fault(Fault::from_hal(err)))
     }
 
     fn prepare_native_callback_args(
         &mut self,
         descriptor: &calcvba_bundle::ExternalCallDescriptor,
         param_type_strings: &[String],
-        arg_variants: &mut [Variant],
+        cells: &mut [Option<Variant>],
     ) -> Result<Vec<CallbackRegistration>, Vm3Error> {
         let mut registrations = Vec::new();
-        for (index, value) in arg_variants.iter_mut().enumerate() {
+        for (index, value) in cells.iter_mut().enumerate() {
+            let Some(value) = value.as_mut() else {
+                continue;
+            };
             let Some(proc_token) = value.as_proc_ref() else {
                 continue;
             };
@@ -6289,6 +6270,7 @@ fn const_variant(c: &OxConst) -> Variant {
         OxConst::Currency(scaled) => Variant::from_currency_scaled_i64(*scaled),
         OxConst::Date(bits) => Variant::from_date_f64(f64::from_bits(*bits)),
         OxConst::Str(s) => Variant::from_string(s.clone()),
+        OxConst::NullStr => Variant::null_string(),
     }
 }
 

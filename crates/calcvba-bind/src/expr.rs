@@ -636,7 +636,7 @@ pub(crate) fn const_type(c: &CoreConst) -> VarTypeRef {
         CoreConst::F64(_) => builtin(BuiltinType::Double),
         CoreConst::F32(_) => builtin(BuiltinType::Single),
         CoreConst::Currency(_) => builtin(BuiltinType::Currency),
-        CoreConst::Str(_) => builtin(BuiltinType::String),
+        CoreConst::Str(_) | CoreConst::NullStr => builtin(BuiltinType::String),
         CoreConst::Bool(_) => builtin(BuiltinType::Boolean),
         CoreConst::Date(_) => builtin(BuiltinType::Date),
         _ => VarTypeRef::Variant,

@@ -272,6 +272,37 @@ pub fn write_through_reference(reference: &Variant, value: Variant) -> HalResult
     unsafe { reference.write_through(value) }.map_err(fault)
 }
 
+/// [`DynamicLinkHal::invoke_declare`]'s default: the values go to
+/// [`DynamicLinkHal::invoke_descriptor_arguments`] (references to one storage share a ByRef
+/// identity), and each returned value is written through its reference.
+pub fn invoke_declare_by_values<H: DynamicLinkHal + ?Sized>(
+    hal: &H,
+    descriptor: &DynLinkDescriptorView<'_>,
+    args: &[calcvba_com::call::ComArg<'_>],
+) -> HalResult<Variant> {
+    use calcvba_com::call::ComArgValue;
+    let call_args: Vec<RuntimeCallArgument> = args
+        .iter()
+        .enumerate()
+        .map(|(index, arg)| RuntimeCallArgument {
+            value: match arg.value {
+                ComArgValue::Value(value) => value.clone(),
+                // Cloning a reference reads its target.
+                ComArgValue::Reference(reference) => reference.clone(),
+                ComArgValue::Missing => Variant::empty(),
+            },
+            by_ref: reference_slot(args, index),
+        })
+        .collect();
+    let (value, writebacks) = hal.invoke_descriptor_arguments(descriptor, &call_args)?;
+    for (arg, written) in args.iter().zip(writebacks) {
+        if let ComArgValue::Reference(reference) = arg.value {
+            write_through_reference(reference, written)?;
+        }
+    }
+    Ok(value)
+}
+
 fn variant_companion_not_overridden<T>(
     capability: CapabilityId,
     operation: &'static str,
@@ -854,6 +885,22 @@ pub trait DynamicLinkHal {
         _args: &[Variant],
     ) -> HalResult<(Variant, Vec<Variant>)> {
         variant_companion_not_overridden(CapabilityId::DynamicLinking, "invoke_descriptor_variants")
+    }
+
+    /// Calls a `Declare` with argument cells (design doc, step 9): ByVal arguments are borrowed
+    /// values; ByRef arguments, and a String variable passed to a ByVal String parameter (for
+    /// its copy-back), are `VT_BYREF` references to the caller's storage. The callee writes
+    /// through the references; the result is returned.
+    ///
+    /// The default serves hosts without a direct marshaller: it sends the values to
+    /// [`Self::invoke_descriptor_arguments`] (references to one storage share a ByRef identity)
+    /// and writes each returned value through its reference.
+    fn invoke_declare(
+        &self,
+        descriptor: &DynLinkDescriptorView<'_>,
+        args: &[calcvba_com::call::ComArg<'_>],
+    ) -> HalResult<Variant> {
+        invoke_declare_by_values(self, descriptor, args)
     }
 
     /// Values plus canonical caller-storage identities. Repeated native ByRef

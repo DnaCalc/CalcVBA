@@ -31,6 +31,9 @@ pub enum OxConst {
     /// `Date` serial as an `f64` bit pattern.
     Date(u64),
     Str(String),
+    /// `vbNullString`: a String whose BSTR is null (`StrPtr` 0, `NULL` to a `Declare`);
+    /// everywhere else it is `""`.
+    NullStr,
 }
 
 /// A simple, directly-addressable place: a local, a global, or a temporary. These

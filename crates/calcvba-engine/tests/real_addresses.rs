@@ -2,8 +2,7 @@
 //! and writes through them reach the variables. Every expected line is Excel x64's
 //! (`temp/variant-layout-probe/addr7/AddrProbe.bas`, captured 2026-11-14 in one owned Excel),
 //! except the UDT offsets, which are section 2 of the variant-layout design. The ByRef Variant
-//! lines (`VT_BYREF` cells) belong to step 7b; `StrPtr(vbNullString)` is 0 in Excel but
-//! `vbNullString` is still folded to `""` here (defect 4, step 9), so that value is left out.
+//! lines (`VT_BYREF` cells) belong to step 7b.
 #![cfg(target_os = "windows")]
 
 use calcvba_engine::{Engine, HostConfig};
@@ -95,7 +94,7 @@ Sub Main()
     out = out & "STR varptr_holds_strptr=" & (Ptr(VarPtr(s)) = StrPtr(s)) & vbLf
     p1 = StrPtr(s): s = "abcd"
     out = out & "STR_REASSIGN strptr_changed=" & (p1 <> StrPtr(s)) & " varptr_same=" & (VarPtr(s) = VarPtr(s)) & vbLf
-    out = out & "STRPTR_EMPTY_NONZERO=" & (StrPtr("") <> 0) & vbLf
+    out = out & "STRPTR_NULL=" & StrPtr(vbNullString) & " STRPTR_EMPTY_NONZERO=" & (StrPtr("") <> 0) & vbLf
     out = out & "OBJPTR_NOTHING=" & ObjPtr(o) & vbLf
     Set o = New Collection
     out = out & "OBJPTR_VARPTR " & (Ptr(VarPtr(o)) = ObjPtr(o)) & vbLf
@@ -164,7 +163,7 @@ STATIC_STABLE True
 MODULE_STABLE True
 STR varptr_holds_strptr=True
 STR_REASSIGN strptr_changed=True varptr_same=True
-STRPTR_EMPTY_NONZERO=True
+STRPTR_NULL=0 STRPTR_EMPTY_NONZERO=True
 OBJPTR_NOTHING=0
 OBJPTR_VARPTR True
 VARIANT_STR payload_is_strptr=True

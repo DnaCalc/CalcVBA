@@ -94,6 +94,10 @@ pub(super) unsafe fn read_operand(
             // SAFETY: transfer one owned BSTR into this frame's scratch.
             unsafe { pin_value(raw, Value::String(text.as_str().into())) }?
         }
+        OxOperand::Const(OxConst::NullStr) => {
+            // SAFETY: a null BSTR owns nothing; scratch keeps the carrier shape.
+            unsafe { pin_value(raw, Value::String(calcvba_runtime::bstr::BStr::null())) }?
+        }
         OxOperand::Const(OxConst::Empty) => {
             // SAFETY: transfer one canonical Variant into stable scratch storage.
             unsafe { pin_value(raw, Value::Variant(Variant::empty())) }?

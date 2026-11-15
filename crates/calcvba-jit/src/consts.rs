@@ -63,6 +63,8 @@ pub(crate) const JIT_VARIANT_OPERAND_CURRENCY: i32 = 9;
 pub(crate) const JIT_VARIANT_OPERAND_DATE: i32 = 10;
 pub(crate) const JIT_VARIANT_OPERAND_STR_UTF8: i32 = 11;
 pub(crate) const JIT_VARIANT_OPERAND_NOTHING: i32 = 12;
+/// `vbNullString`: a String cell with a null BSTR.
+pub(crate) const JIT_VARIANT_OPERAND_NULL_STR: i32 = 13;
 pub(crate) const JIT_ASSIGN_INTENT_IMPLICIT: i32 = 0;
 pub(crate) const JIT_ASSIGN_INTENT_LET: i32 = 1;
 pub(crate) const JIT_ASSIGN_INTENT_SET: i32 = 2;

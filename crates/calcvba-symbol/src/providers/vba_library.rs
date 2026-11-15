@@ -289,8 +289,8 @@ pub fn library_predeclared_object(name: &str) -> Option<PredeclaredObjectId> {
 /// `frontend_library`. Integer constants are `I32` (VBA `Long`/`Integer`), string
 /// constants are `Str`; this is exactly what a referenced project's `Public Const`
 /// folds to, so a `vb*` constant binds identically to a published one.
-/// `vbNullString`/`Nothing`/`Empty`/`Null` are intentionally absent — they are
-/// structural intrinsics, not value constants.
+/// `vbNullString` is `NullStr` (a String with a null BSTR). `Nothing`/`Empty`/`Null`
+/// are absent: they are structural intrinsics, not value constants.
 pub fn library_constant(name: &str) -> Option<CoreConst> {
     // `int(i32)` → `CoreConst::I32` (VBA `Long`); `str(&str)` → `CoreConst::Str`.
     let int = CoreConst::I32;
@@ -306,9 +306,8 @@ pub fn library_constant(name: &str) -> Option<CoreConst> {
         "vblet" => int(4),
         "vbset" => int(8),
         "vbnullchar" => str("\0"),
-        // An empty string at the VBA level (compares/assigns as ""); the
-        // null-pointer distinction only matters at the `Declare` boundary.
-        "vbnullstring" => str(""),
+        // `""` in every operation, but its BSTR is null: `StrPtr` 0, `NULL` to a `Declare`.
+        "vbnullstring" => CoreConst::NullStr,
         "vbback" => str("\u{0008}"),
         "vbformfeed" => str("\u{000C}"),
         "vbverticaltab" => str("\u{000B}"),

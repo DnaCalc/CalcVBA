@@ -690,6 +690,8 @@ pub(crate) fn coerce_const_to_declared_type(
 ) -> Option<CoreConst> {
     match ty {
         VarTypeRef::Variant => Some(value),
+        // `Const s As String = vbNullString` keeps the null BSTR.
+        VarTypeRef::Builtin(BuiltinType::String) if value == CoreConst::NullStr => Some(value),
         VarTypeRef::FixedString(_) | VarTypeRef::Builtin(BuiltinType::String) => {
             const_to_string(&value).map(CoreConst::Str)
         }
@@ -1487,6 +1489,7 @@ fn f64_const(v: f64) -> CoreConst {
 fn const_to_string(c: &CoreConst) -> Option<String> {
     Some(match c {
         CoreConst::Str(s) => s.clone(),
+        CoreConst::NullStr => String::new(),
         CoreConst::I16(n) => n.to_string(),
         CoreConst::I32(n) => n.to_string(),
         CoreConst::I64(n) => n.to_string(),
@@ -1626,6 +1629,18 @@ pub(crate) fn fold_const_binary(
     mode: StringCompareMode,
 ) -> Option<CoreConst> {
     use CoreBinOp::*;
+    // `vbNullString` is `""` in every operation; only its storage is null.
+    let empty = CoreConst::Str(String::new());
+    let lhs = if *lhs == CoreConst::NullStr {
+        &empty
+    } else {
+        lhs
+    };
+    let rhs = if *rhs == CoreConst::NullStr {
+        &empty
+    } else {
+        rhs
+    };
     if matches!(op, Concat) {
         return Some(CoreConst::Str(
             const_to_string(lhs)? + &const_to_string(rhs)?,

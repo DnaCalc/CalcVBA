@@ -3492,6 +3492,7 @@ fn lower_const(c: &CoreConst) -> OxConst {
         CoreConst::Currency(n) => OxConst::Currency(*n),
         CoreConst::Date(bits) => OxConst::Date(*bits),
         CoreConst::Str(s) => OxConst::Str(s.clone()),
+        CoreConst::NullStr => OxConst::NullStr,
     }
 }
 
@@ -3509,7 +3510,7 @@ fn const_type(c: &CoreConst) -> OxTy {
         CoreConst::F32(_) => OxTy::Single,
         CoreConst::Currency(_) => OxTy::Currency,
         CoreConst::Date(_) => OxTy::Date,
-        CoreConst::Str(_) => OxTy::Str,
+        CoreConst::Str(_) | CoreConst::NullStr => OxTy::Str,
     }
 }
 

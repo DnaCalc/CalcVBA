@@ -1,12 +1,10 @@
 # Variant layout cases the engines still answer differently from Excel (dc-yqq0). Fix, then delete the line.
-# Run with the native Declare lane on (the probe reads cells with CopyMemory); refreshed 2026-11-14 after step 7b2.
-# BIND.TypedObjectVar: VBA passes a class-typed object through a temporary. BSTR.Prefix: vbNullString (step 9).
-# UDTMEM UDT arrays: ArrPtr through the VBE7 alias (step 9).
+# Run with the native Declare lane on (the probe reads cells with CopyMemory); refreshed 2026-11-15 after step 9 (vbNullString is a null BSTR).
+# BIND.TypedObjectVar: VBA passes a class-typed object through a temporary.
+# UDTMEM UDT arrays: fFeatures has FADF_RECORD (&H20) where VBA has 0 (dynamic) or FADF_STATIC|FADF_FIXEDSIZE (&H12) (step 6 remainder).
 Vm3	BIND.TypedObjectVar
-Vm3	BSTR.Prefix
 Vm3	UDTMEM.DynUdtArray
 Vm3	UDTMEM.FixedUdtArray
 Jit	BIND.TypedObjectVar
-Jit	BSTR.Prefix
 Jit	UDTMEM.DynUdtArray
 Jit	UDTMEM.FixedUdtArray

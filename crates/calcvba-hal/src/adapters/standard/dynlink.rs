@@ -16,7 +16,11 @@ pub(super) struct DynLinkBindingState {
     pub(super) descriptors: BTreeMap<u32, BindingHandle>,
     pub(super) bindings: BTreeMap<BindingHandle, DynLinkSymbol>,
     #[cfg(target_os = "windows")]
-    native_modules: BTreeMap<String, Arc<calcvba_com::windows_ffi_bridge::OwnedLibrary>>,
+    pub(super) native_modules: BTreeMap<String, Arc<calcvba_com::windows_ffi_bridge::OwnedLibrary>>,
+    /// Each `Declare`'s library, entry point and CIF, prepared once.
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    pub(super) declare_plans:
+        BTreeMap<super::declare::PlanKey, std::rc::Rc<super::declare::DeclarePlan>>,
 }
 
 impl DynLinkBindingState {
@@ -323,6 +327,26 @@ impl DynamicLinkHal for StandardHostServices {
         args: &[Variant],
     ) -> HalResult<(Variant, Vec<Variant>)> {
         invoke_descriptor_values(self, descriptor, args, &[])
+    }
+
+    fn invoke_declare(
+        &self,
+        descriptor: &DynLinkDescriptorView<'_>,
+        args: &[calcvba_com::call::ComArg<'_>],
+    ) -> HalResult<Variant> {
+        // The direct marshaller (design doc, step 9) for the native lane.
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        if descriptor.marshal_lane == "m1-native-ffi" && self.native_mode_enabled() {
+            let capability = CapabilityId::DynamicLinking;
+            if !self.supports(capability) {
+                return Err(self.unsupported(capability, "invoke_declare"));
+            }
+            if !self.policy.allow_dynamic_link {
+                return Err(self.denied(capability, "invoke_declare"));
+            }
+            return super::declare::invoke(self, descriptor, args);
+        }
+        crate::traits::invoke_declare_by_values(self, descriptor, args)
     }
 
     fn invoke_descriptor_arguments(
@@ -1261,7 +1285,7 @@ fn marshal_variant_to_ffi(
     }
 }
 
-fn unmarshal_ffi_to_variant(raw: i64, return_type: Option<&str>) -> Variant {
+pub(super) fn unmarshal_ffi_to_variant(raw: i64, return_type: Option<&str>) -> Variant {
     match return_type {
         None => Variant::empty(),
         Some("Long") => Variant::from_i32(raw as i32),

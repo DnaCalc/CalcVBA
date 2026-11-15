@@ -4925,36 +4925,60 @@ pub(crate) unsafe extern "C" fn rt_jit_declare_call_to_slot(
         if let Err(message) = verified_declare_plan_for_jit(&descriptor) {
             return raise_plan_error(state, run, message);
         }
-        let call_arguments = {
-            // SAFETY: this operand-read borrow is bounded before the host call.
-            let run_ref = unsafe { &*run };
-            let mut values = Vec::with_capacity(argc);
-            let mut identities = std::collections::BTreeMap::new();
-            for (index, arg) in args.iter().enumerate() {
-                let by_ref = if arg.kind == JIT_CALL_ARG_BYREF_ALIAS {
+        // ByVal arguments are values; each ByRef place is the `VT_BYREF` reference a COM call
+        // gets (VM3's declare_call does the same), so the callee writes the caller's storage.
+        let mut cells = Vec::with_capacity(argc);
+        {
+            // SAFETY: this preparation borrow ends before the host call.
+            let run_mut = unsafe { &mut *run };
+            for arg in args.iter().copied() {
+                cells.push(if arg.kind == JIT_CALL_ARG_OMITTED {
+                    None
+                } else if arg.kind == JIT_CALL_ARG_BYREF_ALIAS {
                     if arg.area < 0 || arg.index < 0 {
                         return ST_FAULT;
                     }
-                    let Some(slot) = slot_ref(run_ref, arg.area as u32, arg.index as u32) else {
-                        return ST_FAULT;
-                    };
-                    // This address is only an identity key for this synchronous
-                    // call; no pointer or typed borrow escapes to the host.
-                    let identity = std::ptr::from_ref(slot) as usize;
-                    let id = *identities.entry(identity).or_insert(index as u32);
-                    Some(calcvba_runtime::RuntimeByRefSlot::new(id, None))
-                } else {
-                    None
-                };
-                match call_arg_variant_value(run_ref, *arg) {
-                    Some(value) => {
-                        values.push(calcvba_runtime::RuntimeCallArgument { value, by_ref })
+                    match com_reference_for_jit(run_mut, arg.area as u32, arg.index as u32) {
+                        Some(reference) => Some(reference),
+                        None => return ST_FAULT,
                     }
-                    None => return ST_FAULT,
-                }
+                } else {
+                    match call_arg_variant_value(run_mut, arg) {
+                        Some(value) => Some(value),
+                        None => return ST_FAULT,
+                    }
+                });
             }
-            values
+        }
+        // `AddressOf` values become thunk addresses registered for this call.
+        // SAFETY: the run's roots stay live for the Declare call, which holds no run borrow.
+        let _callbacks = match unsafe {
+            crate::callbacks::register_callbacks(state, run, &descriptor, &mut cells)
+        } {
+            Ok(callbacks) => callbacks,
+            Err(fault) => {
+                // SAFETY: no host call is in progress; a short borrow of the live state.
+                let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
+                    return ST_FAULT;
+                };
+                exec.err_engine.raise(fault, current_unit_source(run));
+                return ST_FAULT;
+            }
         };
+        let call_args: Vec<_> = args
+            .iter()
+            .zip(&cells)
+            .map(|(arg, cell)| calcvba_com::call::ComArg {
+                value: match cell {
+                    Some(reference) if arg.kind == JIT_CALL_ARG_BYREF_ALIAS => {
+                        calcvba_com::call::ComArgValue::Reference(reference)
+                    }
+                    Some(value) => calcvba_com::call::ComArgValue::Value(value),
+                    None => calcvba_com::call::ComArgValue::Missing,
+                },
+                name: None,
+            })
+            .collect();
         let param_type_strings: Vec<String> = descriptor
             .param_types
             .iter()
@@ -4997,9 +5021,7 @@ pub(crate) unsafe extern "C" fn rt_jit_declare_call_to_slot(
             };
             exec.host
         };
-        let invoke = host
-            .dynlink()
-            .invoke_descriptor_arguments(&view, &call_arguments);
+        let invoke = host.dynlink().invoke_declare(&view, &call_args);
         // SAFETY: the host call returned; the state is not borrowed.
         if let Some(status) = unsafe { crate::events::event_abort_status(state) } {
             return status;
@@ -5012,8 +5034,8 @@ pub(crate) unsafe extern "C" fn rt_jit_declare_call_to_slot(
             };
             exec.err_engine.last_dll_error = last_dll_error;
         }
-        let (ret, wb_values) = match invoke {
-            Ok(pair) => pair,
+        let ret = match invoke {
+            Ok(value) => value,
             Err(err) => {
                 // SAFETY: the host call returned, so the live execution state may be borrowed again.
                 let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
@@ -5024,26 +5046,10 @@ pub(crate) unsafe extern "C" fn rt_jit_declare_call_to_slot(
                 return ST_FAULT;
             }
         };
+        drop(call_args);
+        drop(cells);
         // SAFETY: the host call returned and no typed run borrow spans it.
         let run = unsafe { &mut *run };
-        for (index, arg) in args.iter().copied().enumerate() {
-            if arg.kind != JIT_CALL_ARG_BYREF_ALIAS {
-                continue;
-            }
-            let Some(value) = wb_values.get(index) else {
-                continue;
-            };
-            if arg.area < 0 || arg.index < 0 {
-                return ST_FAULT;
-            }
-            let Some(slot) = slot_mut(run, arg.area as u32, arg.index as u32) else {
-                return ST_FAULT;
-            };
-            let status = store_slot(state, slot, value.clone());
-            if status != ST_OK {
-                return status;
-            }
-        }
         if let Some((area, index)) = dst {
             let Some(slot) = slot_mut(run, area, index) else {
                 return ST_FAULT;

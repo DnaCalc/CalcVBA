@@ -2275,7 +2275,7 @@ impl<'a> LowerFunc<'a> {
 
     fn operand_is_static_string_source(&self, operand: &OxOperand) -> Result<bool, JitError> {
         match operand {
-            OxOperand::Const(OxConst::Str(_)) => Ok(true),
+            OxOperand::Const(OxConst::Str(_) | OxConst::NullStr) => Ok(true),
             OxOperand::Use(place) => Ok(matches!(
                 place_ty(self.program, self.func, *place)?,
                 OxTy::Str | OxTy::FixedStr(_)
@@ -2393,6 +2393,9 @@ impl<'a> LowerFunc<'a> {
             }
             OxOperand::Const(OxConst::Nothing) => {
                 Ok(const_operand(builder, JIT_VARIANT_OPERAND_NOTHING, 0))
+            }
+            OxOperand::Const(OxConst::NullStr) => {
+                Ok(const_operand(builder, JIT_VARIANT_OPERAND_NULL_STR, 0))
             }
             OxOperand::Const(OxConst::Bool(value)) => Ok(const_operand(
                 builder,
@@ -7405,6 +7408,7 @@ impl<'a> LowerFunc<'a> {
                 | OxConst::Currency(_)
                 | OxConst::Date(_),
             ) => Ok(true),
+            OxOperand::Const(OxConst::NullStr) => Ok(true),
             OxOperand::Const(OxConst::Str(value)) => Ok(i32::try_from(value.len()).is_ok()),
             OxOperand::Use(place) => Ok(is_m4_4_variant_descriptor_operand_ty(place_ty(
                 self.program,
@@ -8289,7 +8293,9 @@ impl<'a> LowerFunc<'a> {
             return Ok(true);
         }
         match operand {
-            OxOperand::Const(OxConst::Str(_)) => Ok(native_impl != NativeImplId::CVar),
+            OxOperand::Const(OxConst::Str(_) | OxConst::NullStr) => {
+                Ok(native_impl != NativeImplId::CVar)
+            }
             OxOperand::Const(
                 OxConst::Null
                 | OxConst::Empty
@@ -8412,6 +8418,7 @@ impl<'a> LowerFunc<'a> {
         operand: &OxOperand,
     ) -> Result<bool, JitError> {
         match operand {
+            OxOperand::Const(OxConst::NullStr) => Ok(true),
             OxOperand::Const(OxConst::Str(value)) => Ok(i32::try_from(value.len()).is_ok()),
             _ => self.is_supported_date_part_extern_operand(operand),
         }
@@ -8446,6 +8453,7 @@ impl<'a> LowerFunc<'a> {
                 | OxConst::Currency(_)
                 | OxConst::Date(_),
             ) => Ok(true),
+            OxOperand::Const(OxConst::NullStr) => Ok(true),
             OxOperand::Const(OxConst::Str(value)) => Ok(i32::try_from(value.len()).is_ok()),
             OxOperand::Use(place) => Ok(matches!(
                 place_ty(self.program, self.func, *place)?,
@@ -8464,6 +8472,7 @@ impl<'a> LowerFunc<'a> {
             return Ok(true);
         }
         match operand {
+            OxOperand::Const(OxConst::NullStr) => Ok(true),
             OxOperand::Const(OxConst::Str(value)) => Ok(i32::try_from(value.len()).is_ok()),
             OxOperand::Use(place) => {
                 let ty = place_ty(self.program, self.func, *place)?;

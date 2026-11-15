@@ -328,7 +328,7 @@ fn truthy(value: &CoreConst) -> bool {
         CoreConst::F64(bits) | CoreConst::Date(bits) => f64::from_bits(*bits) != 0.0,
         CoreConst::F32(bits) => f32::from_bits(*bits) != 0.0,
         CoreConst::Str(s) => !s.is_empty(),
-        CoreConst::Empty | CoreConst::Null | CoreConst::Nothing => false,
+        CoreConst::NullStr | CoreConst::Empty | CoreConst::Null | CoreConst::Nothing => false,
     }
 }
 

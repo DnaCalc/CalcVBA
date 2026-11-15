@@ -488,6 +488,7 @@ fn literal(value: &CoreConst) -> String {
         CoreConst::F32(v) => format!("{}!", f32::from_bits(*v)),
         CoreConst::Currency(v) => format!("UdfCurrency({v}^)"),
         CoreConst::Date(v) => format!("CDate({}#)", f64::from_bits(*v)),
+        CoreConst::NullStr => "vbNullString".into(),
         CoreConst::Str(s) => {
             let mut parts = Vec::new();
             let mut plain = String::new();

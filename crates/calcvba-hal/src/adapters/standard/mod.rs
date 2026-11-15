@@ -19,6 +19,8 @@ macro_rules! hal_contract_assert {
 
 mod com;
 mod console;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+mod declare;
 mod descriptor;
 mod diagnostics;
 mod dynlink;

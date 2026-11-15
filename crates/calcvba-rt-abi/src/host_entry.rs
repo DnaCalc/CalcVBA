@@ -1736,7 +1736,10 @@ impl ScalarLayout {
                         || [source, description, help_file].iter().any(|o| {
                             o.as_ref().is_some_and(|o| {
                                 !layout.native_numbers
-                                    && !matches!(o, OxOperand::Const(OxConst::Str(_)))
+                                    && !matches!(
+                                        o,
+                                        OxOperand::Const(OxConst::Str(_) | OxConst::NullStr)
+                                    )
                             })
                         })
                     {
@@ -1795,7 +1798,9 @@ impl ScalarLayout {
             }
             OxOperand::Const(OxConst::Date(_)) if self.native_numbers => Ok(ScalarType::Date),
             OxOperand::Const(OxConst::Nothing) => Ok(ScalarType::HostObject),
-            OxOperand::Const(OxConst::Str(_)) if self.owning => Ok(ScalarType::String),
+            OxOperand::Const(OxConst::Str(_) | OxConst::NullStr) if self.owning => {
+                Ok(ScalarType::String)
+            }
             OxOperand::Const(OxConst::Empty | OxConst::Null) if self.owning => {
                 Ok(ScalarType::Variant)
             }

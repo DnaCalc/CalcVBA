@@ -288,6 +288,7 @@ fn proc_args(args: &[OxArg]) -> Vec<Arg<'_>> {
 fn const_str<'a>(args: &[Arg<'a>], index: usize) -> Option<&'a str> {
     match args.get(index) {
         Some(Arg::Operand(OxOperand::Const(OxConst::Str(text)))) => Some(text),
+        Some(Arg::Operand(OxOperand::Const(OxConst::NullStr))) => Some(""),
         _ => None,
     }
 }

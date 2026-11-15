@@ -1303,6 +1303,7 @@ pub(crate) unsafe fn variant_operand_value(
             Some(Variant::from_date_f64(f64::from_bits(operand.value as u64)))
         }
         JIT_VARIANT_OPERAND_NOTHING => Some(Variant::nothing()),
+        JIT_VARIANT_OPERAND_NULL_STR => Some(Variant::null_string()),
         JIT_VARIANT_OPERAND_STR_UTF8 => {
             let len = usize::try_from(operand.index).ok()?;
             let ptr = usize::try_from(operand.value).ok()? as *const u8;

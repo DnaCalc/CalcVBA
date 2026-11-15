@@ -174,7 +174,7 @@ fn const_ty(c: &OxConst) -> OxTy {
         OxConst::F64(_) => OxTy::Double,
         OxConst::Currency(_) => OxTy::Currency,
         OxConst::Date(_) => OxTy::Date,
-        OxConst::Str(_) => OxTy::Str,
+        OxConst::Str(_) | OxConst::NullStr => OxTy::Str,
     }
 }
 

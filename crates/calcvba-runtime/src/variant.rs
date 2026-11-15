@@ -619,6 +619,11 @@ impl Variant {
         Self::from_core(VariantCore::from_bytes(vtype, [0; 8]))
     }
 
+    /// `vbNullString`: a String cell whose BSTR is null.
+    pub fn null_string() -> Self {
+        Self::zeroed(VarType::String)
+    }
+
     /// An unallocated UDT array (`Dim a() As T`): a null `SAFEARRAY*` with the declared
     /// record layout, which a later `ReDim` or a callee that allocates the array needs.
     pub fn unallocated_record_array(layout: Arc<VbaRecordLayout>) -> Self {
@@ -1645,6 +1650,18 @@ impl Variant {
         unsafe { record_cell_of(&self.core) }
     }
 
+    /// The in-place data of the engine record the live cell at `cell` holds, or `None` for any
+    /// other cell: what VBA passes for a UDT without String fields.
+    ///
+    /// # Safety
+    ///
+    /// `cell` points to a live cell, with write provenance, that nothing else accesses while the
+    /// result is used.
+    pub unsafe fn vba_record_data_at(cell: *mut Variant) -> Option<*mut u8> {
+        // SAFETY: the caller's exclusive live cell.
+        unsafe { (*cell).vba_record_mut().map(VbaRecord::data_mut_ptr) }
+    }
+
     fn vba_record_mut(&mut self) -> Option<&mut VbaRecord> {
         if self.vtype() != VarType::Record {
             return None;
@@ -1667,6 +1684,11 @@ impl Variant {
 
     pub fn as_vba_record(&self) -> Option<VbaRecord> {
         Some(self.vba_record_ref()?.clone())
+    }
+
+    /// The layout of the engine record this cell holds.
+    pub fn vba_record_layout(&self) -> Option<&Arc<VbaRecordLayout>> {
+        self.vba_record_ref().map(VbaRecord::layout)
     }
 
     pub(crate) fn vba_record_ref(&self) -> Option<&VbaRecord> {

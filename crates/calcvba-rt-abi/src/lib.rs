@@ -996,38 +996,6 @@ pub fn marshal_ox_call_args<E>(
         .collect()
 }
 
-/// Apply write-back values aligned to an `OxCallArg` list, writing only ByRef places.
-pub fn apply_byref_writebacks<E>(
-    args: &[OxCallArg],
-    values: &[Variant],
-    mut store: impl FnMut(&OxPlace, Variant) -> Result<(), E>,
-) -> Result<(), E> {
-    for (index, arg) in args.iter().enumerate() {
-        if let OxCallArg::ByRef(place) = arg
-            && let Some(value) = values.get(index)
-        {
-            store(place, value.clone())?;
-        }
-    }
-    Ok(())
-}
-
-/// Apply optional write-back values aligned to an `OxCallArg` list.
-pub fn apply_optional_byref_writebacks<E>(
-    args: &[OxCallArg],
-    values: &[Option<Variant>],
-    mut store: impl FnMut(&OxPlace, Variant) -> Result<(), E>,
-) -> Result<(), E> {
-    for (index, arg) in args.iter().enumerate() {
-        if let OxCallArg::ByRef(place) = arg
-            && let Some(Some(value)) = values.get(index)
-        {
-            store(place, value.clone())?;
-        }
-    }
-    Ok(())
-}
-
 /// One pending `Class_Terminate` callback resolved against the shared loaded-image tables.
 pub struct TerminationWork {
     pub instance_id: i32,

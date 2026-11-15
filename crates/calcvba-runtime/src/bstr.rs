@@ -93,6 +93,11 @@ impl OwnedBStrCore {
 }
 
 impl BStr {
+    /// `vbNullString`: no allocation (`StrPtr` 0).
+    pub const fn null() -> Self {
+        Self { raw: None }
+    }
+
     pub fn empty() -> Self {
         Self::from_utf16_units(&[]).expect("zero-length BSTR allocation should succeed")
     }

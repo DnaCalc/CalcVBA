@@ -188,6 +188,59 @@ pub(crate) use imp::{
     record_buffer_freed, safearray_allocated, safearray_freed,
 };
 
+/// What a cell or array slot owns, as the live counters see it: its `vt` (the slot's own type for
+/// a typed slot) and payload pointer.
+pub type OwnedPayload = (u16, usize);
+
+/// Reads the owned payload of the storage a native callee may rewrite: a `VARIANT` cell at
+/// `cell` (`vt` from the cell), or a typed slot at `cell` holding a pointer of type `slot_vt`.
+///
+/// # Safety
+/// `cell` is live storage of that shape.
+pub unsafe fn owned_payload(cell: *const u8, slot_vt: Option<u16>) -> OwnedPayload {
+    // SAFETY: per the contract; a VARIANT's payload is at offset 8.
+    unsafe {
+        match slot_vt {
+            Some(vt) => (vt, cell.cast::<usize>().read_unaligned()),
+            None => (
+                cell.cast::<u16>().read_unaligned(),
+                cell.add(8).cast::<usize>().read_unaligned(),
+            ),
+        }
+    }
+}
+
+/// Accounts a native callee's rewrite of runtime storage: what the storage owned before was freed
+/// by the callee (`VariantClear`, `SysFreeString`, `SafeArrayDestroy`), and what it owns now was
+/// allocated by it. Only BSTRs and `SAFEARRAY`s are counted.
+pub fn account_foreign_rewrite(before: OwnedPayload, after: OwnedPayload) {
+    if before == after {
+        return;
+    }
+    let counted = |(vt, payload): OwnedPayload| -> Option<bool> {
+        if payload == 0 || vt & 0x4000 != 0 {
+            return None;
+        }
+        if vt & 0x2000 != 0 {
+            Some(false)
+        } else if vt == 0x0008 {
+            Some(true)
+        } else {
+            None
+        }
+    };
+    match counted(before) {
+        Some(true) => bstr_freed(),
+        Some(false) => safearray_freed(),
+        None => {}
+    }
+    match counted(after) {
+        Some(true) => bstr_allocated(),
+        Some(false) => safearray_allocated(),
+        None => {}
+    }
+}
+
 #[cfg(test)]
 pub(crate) use current_thread_live_handle_counts as thread_live_handle_counts;
 

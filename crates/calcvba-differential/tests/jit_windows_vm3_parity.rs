@@ -441,7 +441,8 @@ End Sub
 }
 
 #[test]
-fn unsupported_alias_carriers_fail_before_entering_native_code() {
+fn one_string_variable_for_two_as_any_parameters_reaches_native_code() {
+    // VBA passes each argument (an ANSI temporary per String argument) and calls the function.
     let fixture = NativeFixture::build();
     let path = fixture.path().display().to_string();
     let observed = compare(&format!(
@@ -464,7 +465,7 @@ End Sub
     ));
     assert_eq!(
         &observed.values[..3],
-        &[0, 5, 0].map(|n| canon(&Variant::from_i32(n)))
+        &[42, 0, 1].map(|n| canon(&Variant::from_i32(n)))
     );
     assert!(!observed.raised);
     assert_eq!(
@@ -585,10 +586,10 @@ End Sub
 }
 
 #[test]
-fn native_variant_unproved_shapes_still_refuse_aliases_before_callee_execution() {
+fn one_variant_variable_for_two_parameters_reaches_native_code() {
     let fixture = NativeFixture::build();
     let path = fixture.path().display().to_string();
-    // These are explicit remaining gaps, not VBA compatibility expectations.
+    // The callee gets the Variant's own cell (or, As Any, its storage) for both parameters.
     for (initial, first_decl, second_decl) in [
         ("value = Array(1, 2)", "Variant", "Variant"),
         (
@@ -623,7 +624,7 @@ End Sub
         assert!(!observed.raised);
         assert_eq!(
             &observed.values[..3],
-            &[0, 5, 0].map(|value| canon(&Variant::from_i32(value)))
+            &[42, 0, 1].map(|value| canon(&Variant::from_i32(value)))
         );
     }
 }
@@ -855,10 +856,10 @@ End Sub
 }
 
 #[test]
-fn mixed_native_string_any_aliases_still_refuse_before_entry() {
+fn one_string_variable_for_a_string_and_an_as_any_parameter_reaches_native_code() {
     let fixture = NativeFixture::build();
     let path = fixture.path().display().to_string();
-    // Protective refusals remain compatibility gaps with explicit owners.
+    // Each String argument is its own ANSI temporary, as in VBA.
     for (first_decl, second_decl) in [("String", "Any"), ("Any", "String")] {
         let observed = compare(&format!(
             r#"
@@ -882,7 +883,7 @@ End Sub
         assert!(!observed.raised);
         assert_eq!(
             &observed.values[..3],
-            &[0, 5, 0].map(|value| canon(&Variant::from_i32(value)))
+            &[42, 0, 1].map(|value| canon(&Variant::from_i32(value)))
         );
     }
 }

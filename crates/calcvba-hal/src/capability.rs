@@ -910,6 +910,19 @@ impl DynamicLinkHal for PolicyHost {
             .invoke_descriptor_arguments(descriptor, args)
     }
 
+    fn invoke_declare(
+        &self,
+        descriptor: &DynLinkDescriptorView<'_>,
+        args: &[calcvba_com::call::ComArg<'_>],
+    ) -> HalResult<Variant> {
+        self.check(
+            Capability::Ffi,
+            "invoke_declare",
+            declare_detail(descriptor),
+        )?;
+        self.inner.dynlink().invoke_declare(descriptor, args)
+    }
+
     fn invoke_symbol_variant(&self, symbol: DynLinkSymbol, arg: &Variant) -> HalResult<Variant> {
         self.check(Capability::Ffi, "invoke_symbol", "symbol-call".to_string())?;
         self.inner.dynlink().invoke_symbol_variant(symbol, arg)
@@ -1248,6 +1261,14 @@ mod tests {
             self.log("invoke_descriptor_arguments");
             Ok((Variant::from_i32(7), Vec::new()))
         }
+        fn invoke_declare(
+            &self,
+            _descriptor: &DynLinkDescriptorView<'_>,
+            _args: &[calcvba_com::call::ComArg<'_>],
+        ) -> HalResult<Variant> {
+            self.log("invoke_declare");
+            Ok(Variant::from_i32(7))
+        }
         fn invoke_symbol_variant(
             &self,
             _symbol: DynLinkSymbol,
@@ -1563,6 +1584,11 @@ mod tests {
                         .invoke_descriptor_arguments(&view(), &[])
                         .is_ok()
                 }),
+            ),
+            (
+                "invoke_declare",
+                true,
+                Box::new(|host| host.dynlink().invoke_declare(&view(), &[]).is_ok()),
             ),
             (
                 "invoke_symbol_variant",

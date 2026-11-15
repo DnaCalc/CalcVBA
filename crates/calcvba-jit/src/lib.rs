@@ -79,6 +79,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use thiserror::Error;
 
 mod admission;
+mod callbacks;
 mod consts;
 mod error;
 mod events;

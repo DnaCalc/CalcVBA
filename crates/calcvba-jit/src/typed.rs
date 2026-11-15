@@ -783,7 +783,8 @@ impl ScalarLower<'_> {
             OxOperand::Const(OxConst::Bool(value)) => {
                 b.ins().iconst(types::I32, if *value { -1 } else { 0 })
             }
-            OxOperand::Const(OxConst::Nothing) => b.ins().iconst(types::I64, 0),
+            // Nothing, and vbNullString's null BSTR (an owned String slot needs no free).
+            OxOperand::Const(OxConst::Nothing | OxConst::NullStr) => b.ins().iconst(types::I64, 0),
             OxOperand::Const(OxConst::Str(text)) => {
                 let PhysicalSlots::Frame(frame) = self.slots else {
                     unreachable!("owning string literal");

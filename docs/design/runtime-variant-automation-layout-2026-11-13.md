@@ -710,6 +710,31 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
      rewritten anyway; `ComValue` is deleted at the end of step 10.
 9. **Declare** (5.2): direct addresses, ANSI BSTR temporaries, prepared CIFs, the shared
    interop plan, `AddressOf` in the JIT.
+   *As built 2026-11-15 (Windows x64).* VM3 and the JIT hand `DynamicLinkHal::invoke_declare`
+   one `ComArg` per parameter: the argument's value, a `VT_BYREF` reference to its storage, or
+   Missing. `calcvba-hal/src/adapters/standard/declare.rs` builds the call. The library, entry
+   point and libffi CIF are prepared once per descriptor and cached. Then, per argument:
+   - **Strings** become ANSI BSTR temporaries (`WideCharToMultiByte`, `NULL` for a null BSTR).
+     They are converted back into the variable after the call, ByVal String included, as Excel
+     does (`CharUpperA` on a ByVal String changes it).
+   - **ByRef arguments of the parameter's type** pass the caller's own storage. A ByRef array
+     passes its `SAFEARRAY*` slot.
+   - **String arrays** pass an ANSI copy. **Records holding Strings** (or record arrays) pass an
+     ANSI copy, converted back. **A record without Strings** is its own memory, so the callee
+     gets `VarPtr(t)`.
+   - **ByVal scalars** take VBA's argument coercion (`CLng(2.5)` is 2). **ByVal Object** passes
+     the interface pointer. **ByVal Variant** passes a pointer to a copy of the cell.
+   - **A Variant result** is adopted.
+   - **Foreign rewrites** of cells and temporaries the callee may take over are counted in the
+     live-handle counters.
+   `AddressOf` callbacks run on the JIT too (`calcvba-jit/src/callbacks.rs`, `CallWindowProc`
+   only, as on VM3). `PolicyHost` forwards `invoke_declare` with its FFI check. A String nothing
+   has assigned, and `vbNullString` (`CoreConst::NullStr`/`OxConst::NullStr`), hold a null BSTR:
+   `StrPtr` 0, `NULL` to a Declare, `""` in every operation. Fixed by this step: defects 2, 4, 5,
+   13 and 17 on the Declare path (1 and 3 went with the real addresses of step 7). Not done here: the shared per-parameter interop plan (VM3 and the
+   JIT still build their own `interop_plan`); Unix ByRef and defect 16 (Unix keeps the value
+   marshaller, as do Windows targets other than x64); the `as_str` library sites of defect 17.
+   Tests: `calcvba-engine/tests/declare_cells.rs` and `real_addresses.rs` (`STRPTR_NULL=0`).
 10. **Inbound** (5.3): native template services by borrow and move; comhost on `DispInvoke`
     and on the shared `Session`, so the JIT runs it; host API aliases and `take_result`.
 

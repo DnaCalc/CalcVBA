@@ -2186,7 +2186,8 @@ fn default_value_for_type(
     String,
 )> {
     let value = match ty {
-        VarTypeRef::Builtin(BuiltinType::String) => CoreValue::Const(CoreConst::Str(String::new())),
+        // A String nothing has assigned holds a null BSTR (`StrPtr` 0).
+        VarTypeRef::Builtin(BuiltinType::String) => CoreValue::Const(CoreConst::NullStr),
         VarTypeRef::FixedString(len) => types::coerce_store_with(
             type_ctx,
             CoreValue::Const(CoreConst::Str("\0".repeat(*len as usize))),

@@ -84,8 +84,10 @@ function Invoke-ProbeCase($Case) {
     $first=$null
     try {
         # Optional type-library references (paths to .tlb/.dll files) for early-bound and WithEvents code.
-        foreach ($ref in @($Case.references)) {
-            if ($ref) { [void]$wb.VBProject.References.AddFromFile([string]$ref) }
+        if ($Case.PSObject.Properties['references']) {
+            foreach ($ref in @($Case.references)) {
+                if ($ref) { [void]$wb.VBProject.References.AddFromFile([string]$ref) }
+            }
         }
         foreach ($m in $Case.modules) {
             $comp=$wb.VBProject.VBComponents.Add([int]$m.kind)

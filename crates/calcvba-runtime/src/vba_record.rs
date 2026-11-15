@@ -441,6 +441,20 @@ impl VbaRecordLayout {
         &self.fields
     }
 
+    /// Whether the record holds a String or fixed-length String field, directly or in a nested
+    /// record or fixed array: those are what a `Declare` converts to ANSI.
+    pub fn holds_text(&self) -> bool {
+        fn text(kind: &VbaRecordFieldKind) -> bool {
+            match kind {
+                VbaRecordFieldKind::String | VbaRecordFieldKind::FixedString { .. } => true,
+                VbaRecordFieldKind::Record(layout) => layout.holds_text(),
+                VbaRecordFieldKind::FixedArray { element, .. } => text(element),
+                _ => false,
+            }
+        }
+        self.fields.iter().any(|field| text(&field.kind))
+    }
+
     pub fn size(&self) -> usize {
         self.size
     }

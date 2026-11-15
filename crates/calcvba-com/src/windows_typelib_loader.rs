@@ -3837,6 +3837,126 @@ fn enumerate_typelib_coclass_names(ptlib: *mut c_void) -> Vec<String> {
     names
 }
 
+/// `TYPEFLAG_FAPPOBJECT`, `TYPEFLAG_FCANCREATE` and `TYPEFLAG_FNONEXTENSIBLE` from oaidl.h.
+const TYPEFLAG_FAPPOBJECT: u16 = 0x0001;
+const TYPEFLAG_FCANCREATE: u16 = 0x0002;
+const TYPEFLAG_FNONEXTENSIBLE: u16 = 0x0080;
+
+/// The library's application objects: its `TYPEFLAG_FAPPOBJECT` coclasses, whose default
+/// interface members VBA resolves as unqualified names (Excel's `Global`).
+#[cfg(target_os = "windows")]
+fn enumerate_typelib_app_objects(ptlib: *mut c_void) -> Vec<crate::TypeLibAppObject> {
+    let mut objects = Vec::new();
+    // SAFETY: a live ITypeLib from the loader; every ITypeInfo and TYPEATTR read here is
+    // released before the next iteration.
+    unsafe {
+        let vtbl = *(ptlib as *const *const ITypeLibVtbl);
+        let count = ((*vtbl).get_type_info_count)(ptlib);
+        for i in 0..count {
+            let mut typekind: u32 = 0;
+            if ((*vtbl).get_type_info_type)(ptlib, i, &mut typekind) != COM_S_OK
+                || typekind != TKIND_COCLASS
+            {
+                continue;
+            }
+            let mut ptinfo: *mut c_void = std::ptr::null_mut();
+            if ((*vtbl).get_type_info)(ptlib, i, &mut ptinfo) != COM_S_OK || ptinfo.is_null() {
+                continue;
+            }
+            let ti_vtbl = *(ptinfo as *const *const ITypeInfoVtbl);
+            let mut pattr: *mut TYPEATTR = std::ptr::null_mut();
+            if ((*ti_vtbl).get_type_attr)(ptinfo, &mut pattr) == COM_S_OK && !pattr.is_null() {
+                let flags = (*pattr).wtypeflags;
+                let clsid = guid_to_string(&(*pattr).guid);
+                ((*ti_vtbl).release_type_attr)(ptinfo, pattr);
+                if flags & TYPEFLAG_FAPPOBJECT != 0
+                    && let Some(coclass) = typeinfo_name(ptinfo)
+                {
+                    objects.push(crate::TypeLibAppObject {
+                        coclass,
+                        clsid,
+                        creatable: flags & TYPEFLAG_FCANCREATE != 0,
+                    });
+                }
+            }
+            ((*ti_vtbl).release)(ptinfo);
+        }
+    }
+    objects
+}
+
+/// Whether the named coclass's default interface (or the named interface) is extensible: a
+/// member it does not declare is then bound late, by name, as VBA does (`Application.Sum`).
+#[cfg(target_os = "windows")]
+fn requested_type_extensible(ptlib: *mut c_void, name: &str) -> bool {
+    /// The kind, flags and implemented-interface count of a type.
+    ///
+    /// # Safety
+    /// `info` is a live ITypeInfo.
+    unsafe fn attributes(info: *mut c_void) -> Option<(u32, u16, u16)> {
+        // SAFETY: the TYPEATTR of the caller's live ITypeInfo, released before returning.
+        unsafe {
+            let ti_vtbl = *(info as *const *const ITypeInfoVtbl);
+            let mut pattr: *mut TYPEATTR = std::ptr::null_mut();
+            if ((*ti_vtbl).get_type_attr)(info, &mut pattr) != COM_S_OK || pattr.is_null() {
+                return None;
+            }
+            let result = ((*pattr).typekind, (*pattr).wtypeflags, (*pattr).cimpl_types);
+            ((*ti_vtbl).release_type_attr)(info, pattr);
+            Some(result)
+        }
+    }
+    // SAFETY: a live ITypeLib from the loader; every ITypeInfo read here is released before
+    // returning.
+    unsafe {
+        let vtbl = *(ptlib as *const *const ITypeLibVtbl);
+        let count = ((*vtbl).get_type_info_count)(ptlib);
+        for i in 0..count {
+            let mut ptinfo: *mut c_void = std::ptr::null_mut();
+            if ((*vtbl).get_type_info)(ptlib, i, &mut ptinfo) != COM_S_OK || ptinfo.is_null() {
+                continue;
+            }
+            if !typeinfo_name(ptinfo).is_some_and(|n| n.eq_ignore_ascii_case(name)) {
+                release_typeinfo(ptinfo);
+                continue;
+            }
+            let result = match attributes(ptinfo) {
+                Some((TKIND_COCLASS, _, impls)) => {
+                    let ti_vtbl = *(ptinfo as *const *const ITypeInfoVtbl);
+                    let mut extensible = false;
+                    for index in 0..u32::from(impls) {
+                        let mut flags = 0i32;
+                        let mut href = 0u32;
+                        let mut implemented: *mut c_void = std::ptr::null_mut();
+                        if ((*ti_vtbl).get_impl_type_flags)(ptinfo, index, &mut flags) != COM_S_OK
+                            || flags & IMPLTYPEFLAG_FDEFAULT == 0
+                            || flags & IMPLTYPEFLAG_FSOURCE != 0
+                            || ((*ti_vtbl).get_ref_type_of_impl_type)(ptinfo, index, &mut href)
+                                != COM_S_OK
+                            || ((*ti_vtbl).get_ref_type_info)(ptinfo, href, &mut implemented)
+                                != COM_S_OK
+                            || implemented.is_null()
+                        {
+                            continue;
+                        }
+                        extensible = attributes(implemented).is_some_and(|(_, type_flags, _)| {
+                            type_flags & TYPEFLAG_FNONEXTENSIBLE == 0
+                        });
+                        release_typeinfo(implemented);
+                        break;
+                    }
+                    extensible
+                }
+                Some((_, type_flags, _)) => type_flags & TYPEFLAG_FNONEXTENSIBLE == 0,
+                None => false,
+            };
+            release_typeinfo(ptinfo);
+            return result;
+        }
+    }
+    false
+}
+
 /// Extracts event metadata from a coclass ITypeInfo by walking source interfaces.
 #[cfg(target_os = "windows")]
 unsafe fn extract_events_from_coclass(
@@ -4122,6 +4242,8 @@ pub fn build_metadata_blob_from_typelib(
     };
     let member_name_to_token: Vec<(String, i32)> =
         members.iter().map(|m| (m.name.clone(), m.token)).collect();
+    let extensible = requested_coclass_name(&identity)
+        .is_some_and(|name| requested_type_extensible(ptlib, &name));
 
     Ok(TypeLibMetadataBlob {
         constants: enumerate_typelib_constants(ptlib)?,
@@ -4132,6 +4254,8 @@ pub fn build_metadata_blob_from_typelib(
         events,
         coclass_names,
         coclass_prog_ids: enumerate_typelib_coclass_prog_ids(ptlib),
+        app_objects: enumerate_typelib_app_objects(ptlib),
+        extensible,
     })
 }
 
@@ -4395,6 +4519,8 @@ pub unsafe fn build_metadata_blob_from_dispatch(
         events,
         coclass_names,
         coclass_prog_ids: Vec::new(),
+        app_objects: Vec::new(),
+        extensible: false,
     })
 }
 

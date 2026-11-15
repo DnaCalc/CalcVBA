@@ -240,6 +240,12 @@ native_impl_ids! {
     DebugPrint,
     /// Character input expression; distinct from the parser-bound Input # statement.
     FileInputChars,
+    /// `AppObject(class)`: the session's instance of an application object (a library's
+    /// `appobject` coclass, or a host-injected coclass), by CLSID or ProgID.
+    AppObject,
+    /// `EvaluateForeign(object, text)`: a foreign name `[text]`, the object's
+    /// `DISPID_EVALUATE` member called with the text.
+    EvaluateForeign,
 }
 
 /// The `VBA`-typelib-style module a library function belongs to. Provenance for
@@ -310,7 +316,9 @@ impl NativeImplId {
             | ComUnsubscribeEvent
             | ComEventCallbackSubscription
             | ComEventCallbackArg
-            | ComReleaseEventCallback => M::Interaction,
+            | ComReleaseEventCallback
+            | AppObject
+            | EvaluateForeign => M::Interaction,
             DebugPrint => M::Diagnostics,
         }
     }
@@ -808,6 +816,8 @@ impl NativeImplId {
                 | NativeImplId::ComEventCallbackSubscription
                 | NativeImplId::ComEventCallbackArg
                 | NativeImplId::ComReleaseEventCallback
+                | NativeImplId::AppObject
+                | NativeImplId::EvaluateForeign
         )
     }
 }

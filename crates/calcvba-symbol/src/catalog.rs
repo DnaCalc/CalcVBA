@@ -385,6 +385,8 @@ pub const fn intrinsic_entry(id: NativeImplId) -> IntrinsicEntry {
         }
         ComEventCallbackArg => e(ComEventCallbackArg, &[], variadic(0), SpecialForm),
         ComReleaseEventCallback => e(ComReleaseEventCallback, &[], variadic(0), SpecialForm),
+        AppObject => e(AppObject, &[], sig(1, 1), SpecialForm),
+        EvaluateForeign => e(EvaluateForeign, &[], sig(2, 2), SpecialForm),
 
         // ── Diagnostics ──
         DebugPrint => e(DebugPrint, &[], variadic(0), DebugMember),

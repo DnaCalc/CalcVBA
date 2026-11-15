@@ -490,13 +490,6 @@ impl ComHal for StandardHostServices {
         }
         #[cfg(target_os = "windows")]
         if self.native_com_enabled() {
-            if let Some(object) = self
-                .com_bridge
-                .host_dispatch_object_for_prog_id(prog_id_name)
-                .map_err(|message| self.com_createobject_adapter_fault(message))?
-            {
-                return Ok(Variant::from_object_ref(object));
-            }
             match self.activate_variant_object_for_prog_id_name(prog_id_name) {
                 Ok(value) => {
                     return Ok(value);
@@ -513,6 +506,58 @@ impl ComHal for StandardHostServices {
         #[cfg(target_os = "windows")]
         try_bind_projection_object_metadata(self, object.clone(), prog_id_name)?;
         Ok(Variant::from_object_ref(object))
+    }
+
+    fn app_object_variant(&self, class: Variant) -> HalResult<Variant> {
+        let capability = CapabilityId::ComActivationDispatch;
+        let class = variant_to_vba_string(&class)
+            .map_err(|detail| {
+                HalError::adapter_fault(self.profile, capability, "app_object", detail)
+            })?
+            .as_str();
+        #[cfg(target_os = "windows")]
+        if self.native_com_enabled() {
+            self.ensure_thread_com_apartment("app_object")?;
+            // A registered instance needs no permission; creating one is an activation.
+            let create = self.policy.allow_com_activation
+                && crate::traits::HostServices::permits_com_activation(self);
+            return match self.com_bridge.app_object(&class, create) {
+                Ok(Some(object)) => Ok(Variant::from_object_ref(object)),
+                Ok(None) => Err(HalError::adapter_fault(
+                    self.profile,
+                    capability,
+                    "app_object",
+                    format!(
+                        "com-createobject-not-found no instance of application object `{class}`"
+                    ),
+                )
+                .with_host_error_code(429)),
+                Err(message) => Err(self.com_createobject_adapter_fault(message)),
+            };
+        }
+        Err(self.unsupported(capability, "app_object"))
+    }
+
+    unsafe fn register_app_object(
+        &self,
+        class: &str,
+        dispatch: *mut core::ffi::c_void,
+    ) -> HalResult<()> {
+        let capability = CapabilityId::ComActivationDispatch;
+        #[cfg(target_os = "windows")]
+        if self.native_com_enabled() {
+            self.ensure_thread_com_apartment("register_app_object")?;
+            // SAFETY: forwarded: one retained IDispatch reference, taken over.
+            return unsafe {
+                self.com_bridge
+                    .register_app_object(class, dispatch.cast::<RawIDispatch>())
+            }
+            .map_err(|message| {
+                HalError::adapter_fault(self.profile, capability, "register_app_object", message)
+            });
+        }
+        let _ = (class, dispatch);
+        Err(self.unsupported(capability, "register_app_object"))
     }
 
     fn get_object_variant(&self, pathname: Variant, class: Variant) -> HalResult<Variant> {

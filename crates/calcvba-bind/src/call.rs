@@ -73,6 +73,11 @@ impl<'a> ProcLower<'a> {
             DispatchRoute::ProjectMember { kind } => {
                 self.bind_project_call(name, binding, *kind, arglist)
             }
+            // `Range("A1")`: a member of the library's application object.
+            DispatchRoute::AppObjectMember { type_name, class } => {
+                let recv = self.app_object_receiver(type_name, class);
+                self.bind_member_call_on(recv, name, arglist, true)
+            }
             // A referenced project's hidden-module function (no receiver): register a
             // cross-bundle import and emit an `ExternProc` call. `has_receiver: true`
             // never reaches here (a coclass member needs a receiver — it arrives via
@@ -1668,7 +1673,7 @@ impl<'a> ProcLower<'a> {
                 self.bind_variant_index_store(field_place, member, arglist, kind, rhs)
             }
             // An untyped / foreign receiver: a late-bound indexed property put.
-            None if self.is_late_bound_receiver(&recv.ty) => {
+            None if self.binds_unknown_member_late(&recv.ty) => {
                 let mut args = self.bind_late_dispatch_args(arglist)?;
                 args.push(CoreArg::ByVal(rhs.clone()));
                 Ok(Some(vec![CoreStmt::Eval(
@@ -2691,7 +2696,10 @@ impl<'a> ProcLower<'a> {
             .and_then(|b| b.symbol)
             .and_then(|s| self.g.env.symbols.symbol(s))
             .is_some_and(|s| s.kind == SymbolKind::Enum);
-        (is_vba_namespace || is_project_name || is_proc_module || is_enum)
+        // A type library's name (`Excel`) qualifies its names, unless the name is itself bound
+        // (a host-injected object named like its library).
+        let is_library = self.g.env.is_library_name(name) && self.resolve(name).is_none();
+        (is_vba_namespace || is_project_name || is_proc_module || is_enum || is_library)
             && !self.resolves_to_local_value(name)
     }
 
@@ -2710,7 +2718,15 @@ impl<'a> ProcLower<'a> {
     }
 
     /// Lower `recv.member` (already-bound receiver, no args) to a value.
-    fn bind_member_value(&mut self, recv: Bound, member: &str) -> Result<Bound, BindError> {
+    pub(crate) fn bind_member_value(
+        &mut self,
+        recv: Bound,
+        member: &str,
+    ) -> Result<Bound, BindError> {
+        if let Some(foreign) = self.foreign_member(&recv, member)? {
+            return Ok(foreign);
+        }
+        let member = crate::unbracket_identifier(member);
         let recv = self.document_member_receiver(recv, member, None);
         match self.resolve_member(&recv.ty, member, None) {
             Some(binding) => match &binding.route {
@@ -2798,8 +2814,9 @@ impl<'a> ProcLower<'a> {
                     ".{member} ({other:?} pending)"
                 ))),
             },
-            // No declared member on an untyped/foreign receiver → late binding.
-            None if self.is_late_bound_receiver(&recv.ty) => Ok(value_bound(
+            // No declared member on an untyped/foreign receiver, or on an extensible
+            // interface → late binding.
+            None if self.binds_unknown_member_late(&recv.ty) => Ok(value_bound(
                 self.late_member_call(
                     member,
                     ProjectMemberKind::PropertyGet,
@@ -2851,6 +2868,27 @@ impl<'a> ProcLower<'a> {
             return Ok(bound);
         }
         let recv = self.member_receiver_bound(member_node)?;
+        self.bind_member_call_on(recv, member, arglist, allow_statement_only_sub)
+    }
+
+    /// `recv.member(args)` for a bound receiver: the member call, an index into a member
+    /// array, or a foreign name `recv.[text]`.
+    pub(crate) fn bind_member_call_on(
+        &mut self,
+        recv: Bound,
+        member: &str,
+        arglist: Option<SyntaxNode<'_>>,
+        allow_statement_only_sub: bool,
+    ) -> Result<Bound, BindError> {
+        if let Some(foreign) = self.foreign_member(&recv, member)? {
+            return match arglist {
+                None => Ok(foreign),
+                Some(_) => Err(BindError::Unsupported(format!(
+                    "arguments to the foreign name `{member}`"
+                ))),
+            };
+        }
+        let member = crate::unbracket_identifier(member);
         let recv = self.document_member_receiver(recv, member, None);
         // A field of a UDT receiver (`o.Lines(i)` / `o.field`): a fixed-index
         // record element, optionally indexed when the field is an array. This
@@ -3068,7 +3106,7 @@ impl<'a> ProcLower<'a> {
                     ".{member}(...) ({other:?} pending)"
                 ))),
             },
-            None if self.is_late_bound_receiver(&recv.ty) => {
+            None if self.binds_unknown_member_late(&recv.ty) => {
                 let method_args = self.bind_late_dispatch_args(arglist)?;
                 Ok(value_bound(
                     self.late_member_call(
@@ -3280,6 +3318,62 @@ impl<'a> ProcLower<'a> {
     /// True if a receiver should fall back to late binding when a member doesn't
     /// resolve: an untyped `Variant`, or a plain `Object`. A missing member on a
     /// known project, referenced-project, host, or COM type stays an error.
+    /// Whether a member `ty` does not declare is called late, by name: an untyped or foreign
+    /// receiver, or an extensible interface (`Application.Sum`, as in VBA). Otherwise it is
+    /// the compile error "Method or data member not found".
+    pub(crate) fn binds_unknown_member_late(&self, ty: &VarTypeRef) -> bool {
+        self.is_late_bound_receiver(ty)
+            || matches!(ty, VarTypeRef::Object(name) if self.g.env.is_extensible_object_type(name))
+    }
+
+    /// The receiver of an application object's member (`Range` is `AppObject(Global).Range`),
+    /// typed as the application object so its members bind early.
+    pub(crate) fn app_object_receiver(&self, type_name: &str, class: &str) -> Bound {
+        value_bound(
+            CoreValue::Call {
+                callee: CoreCallee::Native(NativeImplId::AppObject),
+                args: vec![CoreArg::ByVal(CoreValue::Const(CoreConst::Str(
+                    class.to_string(),
+                )))],
+            },
+            VarTypeRef::Object(type_name.to_string()),
+        )
+    }
+
+    /// The foreign name `[text]` evaluated by `recv`: `EvaluateForeign(recv, text)`.
+    pub(crate) fn evaluate_foreign(&self, recv: CoreValue, text: &str) -> Bound {
+        value_bound(
+            CoreValue::Call {
+                callee: CoreCallee::Native(NativeImplId::EvaluateForeign),
+                args: vec![
+                    CoreArg::ByVal(recv),
+                    CoreArg::ByVal(CoreValue::Const(CoreConst::Str(text.to_string()))),
+                ],
+            },
+            VarTypeRef::Variant,
+        )
+    }
+
+    /// `recv.[text]` as VBA binds it: late bound, always the receiver's evaluation of `text`;
+    /// early bound, the member named `text` when the interface has one, else the evaluation
+    /// when the interface is extensible (`Application.[A1]`), else "Method or data member not
+    /// found". `None` for an ordinary member name, or a bracketed one the interface declares.
+    fn foreign_member(&self, recv: &Bound, member: &str) -> Result<Option<Bound>, BindError> {
+        let Some(text) = crate::foreign_name_text(member) else {
+            return Ok(None);
+        };
+        if self.is_late_bound_receiver(&recv.ty) {
+            return Ok(Some(self.evaluate_foreign(recv.value.clone(), text)));
+        }
+        if self.resolve_member(&recv.ty, member, None).is_some() {
+            return Ok(None);
+        }
+        if self.binds_unknown_member_late(&recv.ty) {
+            return Ok(Some(self.evaluate_foreign(recv.value.clone(), text)));
+        }
+        Ok(None)
+    }
+
     pub(crate) fn is_late_bound_receiver(&self, ty: &VarTypeRef) -> bool {
         match ty {
             VarTypeRef::Variant => true,

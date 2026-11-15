@@ -1674,6 +1674,8 @@ impl calcvba_symbol::TypeLibResolver for FixtureTypes {
             events: vec![],
             coclass_names: vec!["Calculator".into()],
             coclass_prog_ids: Vec::new(),
+            app_objects: Vec::new(),
+            extensible: false,
         })
     }
 }

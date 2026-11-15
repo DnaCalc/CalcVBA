@@ -54,6 +54,24 @@ pub struct TypeLibMetadataBlob {
     /// Registered activation names read from each coclass's CLSID. A typelib
     /// namespace (or a source reference alias) need not equal its ProgID prefix.
     pub coclass_prog_ids: Vec<(String, String)>,
+    /// The library's application objects (`TYPEFLAG_FAPPOBJECT` coclasses): their default
+    /// interface members are names in scope, as Excel's `Global` makes `Range` one.
+    pub app_objects: Vec<TypeLibAppObject>,
+    /// For a blob scoped to one coclass or interface: whether its interface is extensible,
+    /// so a member it does not declare binds late by name (`Application.Sum`). `false` when
+    /// unknown, which keeps an undeclared member a compile error.
+    pub extensible: bool,
+}
+
+/// A library's application object (`appobject` in IDL).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TypeLibAppObject {
+    /// The coclass name (`Global` for Excel).
+    pub coclass: String,
+    /// The coclass CLSID, `{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}`.
+    pub clsid: String,
+    /// `TYPEFLAG_FCANCREATE`: an instance may be made when the host registers none.
+    pub creatable: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeLibConstantMetadata {
@@ -1223,6 +1241,8 @@ mod tests {
             events: Vec::new(),
             coclass_names: Vec::new(),
             coclass_prog_ids: Vec::new(),
+            app_objects: Vec::new(),
+            extensible: false,
         };
 
         let descriptor = runtime_class_descriptor_from_typelib_metadata(&metadata);

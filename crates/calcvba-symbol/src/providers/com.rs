@@ -74,9 +74,27 @@ impl ComTypeLibProvider {
         Self::with_interface_iid(blob, iid)
     }
     pub fn with_interface_iid(
-        blob: TypeLibMetadataBlob,
+        mut blob: TypeLibMetadataBlob,
         interface_iid: Option<calcvba_com::ComInterfaceIid>,
     ) -> Self {
+        // An application object's instance is the host's (Excel hands its `Application` in for
+        // `Global`), and only the members' DISPIDs are its contract: its interface need not
+        // answer `QueryInterface`. Its members are therefore called through `IDispatch` by
+        // DISPID, never through a vtable.
+        let app_object = blob
+            .identity
+            .requested_coclass
+            .as_deref()
+            .is_some_and(|coclass| {
+                blob.app_objects
+                    .iter()
+                    .any(|object| object.coclass.eq_ignore_ascii_case(coclass))
+            });
+        if app_object {
+            for member in &mut blob.members {
+                member.is_dual = false;
+            }
+        }
         let reference = fold_identifier(&blob.identity.reference_name);
         let mut type_names = vec![reference.clone()];
         let mut member_type_names = vec![reference.clone()];
@@ -163,7 +181,40 @@ impl ComTypeLibProvider {
         self.blob.activation_prog_id.as_deref()
     }
 
+    /// The application object this blob is scoped to, when its requested coclass is one.
+    fn app_object(&self) -> Option<&calcvba_com::TypeLibAppObject> {
+        let coclass = self.blob.identity.requested_coclass.as_deref()?;
+        self.blob
+            .app_objects
+            .iter()
+            .find(|object| object.coclass.eq_ignore_ascii_case(coclass))
+    }
+
+    /// `name` as a member of this blob's application object (`Range` of Excel's `Global`).
+    pub fn resolve_app_object_member(&self, name: &str) -> Option<Binding> {
+        let object = self.app_object()?;
+        self.blob
+            .members
+            .iter()
+            .any(|member| member.name.eq_ignore_ascii_case(name))
+            .then(|| {
+                Binding::new(
+                    None,
+                    DispatchRoute::AppObjectMember {
+                        type_name: format!(
+                            "{}.{}",
+                            self.blob.identity.reference_name, object.coclass
+                        ),
+                        class: object.clsid.clone(),
+                    },
+                )
+            })
+    }
+
     pub fn resolve_object_root(&self, name: &str) -> Option<Binding> {
+        if let Some(binding) = self.resolve_app_object_member(name) {
+            return Some(binding);
+        }
         if !self.owns(name) {
             return None;
         }
@@ -261,9 +312,38 @@ impl ComTypeLibProvider {
 impl Provider for ComTypeLibProvider {
     fn resolve(&self, name: &str) -> Option<Binding> {
         self.resolve_constant(&[name])
+            .or_else(|| self.resolve_app_object_member(name))
     }
     fn resolve_qualified(&self, parts: &[&str]) -> Option<Binding> {
-        self.resolve_constant(parts)
+        self.resolve_constant(parts).or_else(|| match parts {
+            // `Excel.Range`: the library name qualifies its application object's members.
+            [library, member]
+                if library.eq_ignore_ascii_case(&self.blob.identity.reference_name) =>
+            {
+                self.resolve_app_object_member(member)
+            }
+            _ => None,
+        })
+    }
+    fn is_extensible_object_type(&self, type_name: &str) -> bool {
+        self.blob.extensible && self.owns_members(type_name)
+    }
+    fn is_library_name(&self, name: &str) -> bool {
+        self.blob.identity.reference_name.eq_ignore_ascii_case(name)
+    }
+    fn foreign_evaluator(&self) -> Option<(String, String)> {
+        const DISPID_EVALUATE: i32 = -5;
+        let object = self.app_object()?;
+        self.blob
+            .members
+            .iter()
+            .any(|member| member.token == DISPID_EVALUATE)
+            .then(|| {
+                (
+                    format!("{}.{}", self.blob.identity.reference_name, object.coclass),
+                    object.clsid.clone(),
+                )
+            })
     }
     fn has_ambiguous_unqualified_name(&self, name: &str) -> bool {
         self.blob

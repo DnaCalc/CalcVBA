@@ -88,6 +88,8 @@ impl calcvba_symbol::TypeLibResolver for Types {
             events: vec![],
             coclass_names: vec!["Native".into()],
             coclass_prog_ids: Vec::new(),
+            app_objects: Vec::new(),
+            extensible: false,
         })
     }
 }

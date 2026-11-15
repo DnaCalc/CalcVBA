@@ -512,6 +512,8 @@ pub fn invoke_context_free(
         ComEventCallbackSubscription => host::com_event_callback_subscription(args, host),
         ComEventCallbackArg => host::com_event_callback_arg(args, host),
         ComReleaseEventCallback => host::com_release_event_callback(args, host),
+        AppObject => host::app_object(args, host),
+        EvaluateForeign => host::evaluate_foreign(args, host),
 
         // ── Diagnostics ──
         DebugPrint => host::debug_print(args, host),

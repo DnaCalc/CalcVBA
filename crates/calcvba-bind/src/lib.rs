@@ -1287,9 +1287,13 @@ impl<'a> ProcLower<'a> {
         name: &str,
         want: Option<calcvba_bundle::ProjectMemberKind>,
     ) -> Option<Binding> {
-        self.g
-            .env
-            .resolve_member_from_scope(self.info.proc_scope, recv, name, want)
+        // `c.[Foo]` is the member `Foo` (the brackets only escape the name).
+        self.g.env.resolve_member_from_scope(
+            self.info.proc_scope,
+            recv,
+            unbracket_identifier(name),
+            want,
+        )
     }
 
     fn resolve_default_member(&self, recv: &VarTypeRef) -> Option<Binding> {
@@ -1471,7 +1475,13 @@ fn is_unqualified_name_context(context: &str) -> bool {
     )
 }
 
-fn unbracket_identifier(name: &str) -> &str {
+/// The text of a foreign name `[text]`, or `None` for an ordinary identifier.
+pub(crate) fn foreign_name_text(name: &str) -> Option<&str> {
+    name.strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+}
+
+pub(crate) fn unbracket_identifier(name: &str) -> &str {
     name.strip_prefix('[')
         .and_then(|rest| rest.strip_suffix(']'))
         .unwrap_or(name)

@@ -703,6 +703,8 @@ mod tests {
             events: Vec::new(),
             coclass_names: Vec::new(),
             coclass_prog_ids: Vec::new(),
+            app_objects: Vec::new(),
+            extensible: false,
         };
 
         let binding =
@@ -767,6 +769,8 @@ mod tests {
             }],
             coclass_names: Vec::new(),
             coclass_prog_ids: Vec::new(),
+            app_objects: Vec::new(),
+            extensible: false,
         };
 
         let binding =
@@ -825,6 +829,8 @@ mod tests {
             events: Vec::new(),
             coclass_names: Vec::new(),
             coclass_prog_ids: Vec::new(),
+            app_objects: Vec::new(),
+            extensible: false,
         };
 
         let specs = member_specs_from_typelib_metadata(&metadata);

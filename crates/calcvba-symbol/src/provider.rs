@@ -51,6 +51,23 @@ pub trait Provider {
     ) -> Option<Vec<calcvba_com::TypeLibEventMetadata>> {
         None
     }
+    /// Whether `type_name` is an extensible interface this provider owns: a member it does
+    /// not declare binds late, by name.
+    fn is_extensible_object_type(&self, type_name: &str) -> bool {
+        let _ = type_name;
+        false
+    }
+    /// The application object (`(type_name, class)`) that evaluates this provider's foreign
+    /// names `[text]`: one whose interface has a `DISPID_EVALUATE` (-5) member.
+    fn foreign_evaluator(&self) -> Option<(String, String)> {
+        None
+    }
+    /// Whether `name` is the name of a type library this provider stands for (`Excel`), which
+    /// qualifies the library's names (`Excel.Range`, `Excel.xlUp`).
+    fn is_library_name(&self, name: &str) -> bool {
+        let _ = name;
+        false
+    }
     /// Resolve a bare name in this provider's scope.
     fn resolve(&self, name: &str) -> Option<Binding> {
         let _ = name;
@@ -325,6 +342,20 @@ impl ResolutionEnvironment {
             .iter()
             .any(|provider| provider.is_known_object_type(type_name))
     }
+    /// The application object that evaluates an unqualified foreign name `[text]`: the first,
+    /// in reference order, whose interface has a `DISPID_EVALUATE` member (Excel's `Global`).
+    pub fn foreign_evaluator(&self) -> Option<(String, String)> {
+        self.providers
+            .iter()
+            .find_map(|provider| provider.foreign_evaluator())
+    }
+    /// Whether `type_name` is an extensible COM interface (`Excel.Application`): a member
+    /// it does not declare binds late, by name, as VBA does.
+    pub fn is_extensible_object_type(&self, type_name: &str) -> bool {
+        self.providers
+            .iter()
+            .any(|provider| provider.is_extensible_object_type(type_name))
+    }
     pub fn object_interface(
         &self,
         type_name: &str,
@@ -531,6 +562,13 @@ impl ResolutionEnvironment {
     }
 
     /// Is `name` (any case) an active or referenced VBA project name?
+    /// Whether `name` is a referenced type library's name (`Excel`): a qualifier of its names.
+    pub fn is_library_name(&self, name: &str) -> bool {
+        self.providers
+            .iter()
+            .any(|provider| provider.is_library_name(name))
+    }
+
     pub fn is_project_name(&self, name: &str) -> bool {
         let target = crate::model::fold_identifier(name);
         if self.external_project_names.contains(&target) {
@@ -719,6 +757,18 @@ fn resolve_typelib_provider_closure(
                 push_typelib_followup(
                     &reference_name,
                     interface_name,
+                    &mut followups,
+                    &mut followup_seen,
+                );
+            }
+        }
+        // A library's application objects are always in scope: their members are names
+        // (`Range`, `ThisWorkbook`), so each appobject coclass's own blob is loaded.
+        if request.requested_coclass.is_none() {
+            for app_object in &blob.app_objects {
+                push_typelib_followup(
+                    &reference_name,
+                    app_object.coclass.clone(),
                     &mut followups,
                     &mut followup_seen,
                 );

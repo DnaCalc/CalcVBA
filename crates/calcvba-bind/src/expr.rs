@@ -151,6 +151,10 @@ impl<'a> ProcLower<'a> {
                 if let Some(bound) = self.bind_predeclared_instance(name)? {
                     return Ok(bound);
                 }
+                // A foreign name `[A1+1]` VBA does not know is the host's evaluation of it.
+                if let Some(bound) = self.bind_foreign_name(name) {
+                    return Ok(bound);
+                }
                 let (place, ty) = self.implicit_local(name)?;
                 return Ok(Bound {
                     value: CoreValue::Load(place.clone()),
@@ -164,18 +168,15 @@ impl<'a> ProcLower<'a> {
         if let DispatchRoute::ConstValue(c) = &binding.route {
             return Ok(value_bound(CoreValue::Const(c.clone()), const_type(c)));
         }
+        // A host-injected coclass used as a value: the host's instance of that class.
         if let DispatchRoute::ComObjectRoot { type_name, prog_id } = &binding.route {
-            let prog_id = prog_id.clone().unwrap_or_else(|| type_name.clone());
-            let args = vec![CoreArg::ByVal(CoreValue::Const(CoreConst::Str(prog_id)))];
-            return Ok(value_bound(
-                CoreValue::Call {
-                    callee: calcvba_bundle::coreir::CoreCallee::Native(
-                        calcvba_bundle::native::NativeImplId::CreateObject,
-                    ),
-                    args,
-                },
-                VarTypeRef::Object(type_name.clone()),
-            ));
+            let class = prog_id.clone().unwrap_or_else(|| type_name.clone());
+            return Ok(self.app_object_receiver(type_name, &class));
+        }
+        // `ActiveSheet`, `ThisWorkbook`: a member of the library's application object.
+        if let DispatchRoute::AppObjectMember { type_name, class } = &binding.route {
+            let recv = self.app_object_receiver(type_name, class);
+            return self.bind_member_value(recv, crate::unbracket_identifier(name));
         }
         // An active-project `Const`/`Enum` member: its value is folded once in the
         // symbol layer (the published type system's single source of truth).
@@ -219,6 +220,16 @@ impl<'a> ProcLower<'a> {
         }
         // Otherwise a constant or a 0-argument call.
         self.bind_call_route(name, &binding, None)
+    }
+
+    /// An unresolved foreign name `[text]`: the text evaluated by the first application object
+    /// that has a `DISPID_EVALUATE` member (Excel's `Global._Evaluate`). `None` for an
+    /// ordinary name, or when no referenced library has such an application object.
+    pub(crate) fn bind_foreign_name(&self, name: &str) -> Option<Bound> {
+        let text = crate::foreign_name_text(name)?;
+        let (type_name, class) = self.g.env.foreign_evaluator()?;
+        let recv = self.app_object_receiver(&type_name, &class);
+        Some(self.evaluate_foreign(recv.value, text))
     }
 
     /// A `VB_PredeclaredId` class referenced by its name → its global singleton: an

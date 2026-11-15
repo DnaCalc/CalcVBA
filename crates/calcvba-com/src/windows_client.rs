@@ -244,7 +244,16 @@ pub struct RawIConnectionPoint {
 #[cfg(target_os = "windows")]
 pub fn activate_dispatch_by_prog_id(prog_id: &str) -> Result<*mut RawIDispatch, String> {
     let clsid = crate::windows_typelib_loader::registered_clsid_from_prog_id(prog_id)?;
+    activate_dispatch_by_clsid(&clsid, prog_id)
+}
 
+/// `CoCreateInstance` of `clsid` for its `IDispatch`; `label` names the class in errors.
+#[cfg(target_os = "windows")]
+pub fn activate_dispatch_by_clsid(
+    clsid: &windows_sys::core::GUID,
+    label: &str,
+) -> Result<*mut RawIDispatch, String> {
+    let prog_id = label;
     let mut dispatch_ptr: *mut core::ffi::c_void = std::ptr::null_mut();
     // SAFETY: `clsid` was parsed from the registered class identity above,
     // `IID_IDISPATCH` is a 'static GUID, and `&mut dispatch_ptr` is a live out-slot.
@@ -254,7 +263,7 @@ pub fn activate_dispatch_by_prog_id(prog_id: &str) -> Result<*mut RawIDispatch, 
     // caller (one Release is owed).
     let hr = unsafe {
         CoCreateInstance(
-            &clsid,
+            clsid,
             std::ptr::null_mut(),
             CLSCTX_SERVER,
             &IID_IDISPATCH,

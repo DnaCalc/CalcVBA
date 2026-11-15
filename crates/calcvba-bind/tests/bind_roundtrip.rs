@@ -3393,6 +3393,8 @@ impl TypeLibResolver for WidgetTypeLibs {
             events: Vec::new(),
             coclass_names: Vec::new(),
             coclass_prog_ids: Vec::new(),
+            app_objects: Vec::new(),
+            extensible: false,
         })
     }
 }
@@ -4163,6 +4165,8 @@ impl TypeLibResolver for ScopedEventTypeLibs {
             }],
             coclass_names: vec!["Application".into(), "Workbook".into()],
             coclass_prog_ids: Vec::new(),
+            app_objects: Vec::new(),
+            extensible: false,
         })
     }
 }
@@ -4245,6 +4249,8 @@ impl TypeLibResolver for ScopedWorkbookEventTypeLibs {
             events,
             coclass_names: vec!["Application".into(), "Workbook".into()],
             coclass_prog_ids: Vec::new(),
+            app_objects: Vec::new(),
+            extensible: false,
         })
     }
 }
@@ -4545,6 +4551,8 @@ impl TypeLibResolver for DefaultValueTypeLibs {
             events: Vec::new(),
             coclass_names: Vec::new(),
             coclass_prog_ids: Vec::new(),
+            app_objects: Vec::new(),
+            extensible: false,
         })
     }
 }
@@ -4671,6 +4679,8 @@ impl TypeLibResolver for ApplicationTypeLibs {
             events: Vec::new(),
             coclass_names: vec!["Application".into()],
             coclass_prog_ids: Vec::new(),
+            app_objects: Vec::new(),
+            extensible: false,
         })
     }
 }
@@ -4754,6 +4764,8 @@ impl TypeLibResolver for ChainedComTypeLibs {
                 events: Vec::new(),
                 coclass_names: vec!["Workbooks".into()],
                 coclass_prog_ids: Vec::new(),
+                app_objects: Vec::new(),
+                extensible: false,
             });
         }
         if request.reference_name.eq_ignore_ascii_case("Excel")
@@ -4788,6 +4800,8 @@ impl TypeLibResolver for ChainedComTypeLibs {
                 events: Vec::new(),
                 coclass_names: vec!["Workbook".into()],
                 coclass_prog_ids: Vec::new(),
+                app_objects: Vec::new(),
+                extensible: false,
             });
         }
         if request.reference_name.eq_ignore_ascii_case("Excel") {
@@ -4828,6 +4842,8 @@ impl TypeLibResolver for ChainedComTypeLibs {
                 events: Vec::new(),
                 coclass_names: vec!["Application".into(), "Workbook".into()],
                 coclass_prog_ids: Vec::new(),
+                app_objects: Vec::new(),
+                extensible: false,
             });
         }
         None
@@ -5883,4 +5899,132 @@ fn contains_file_native(program: &CoreProgram) -> bool {
             id.library_member().is_some() || id.library_statement_member().is_some()
         })
     })
+}
+
+/// A library `Host` whose application object `Global` has `Range`, `ActiveSheet` and the
+/// `DISPID_EVALUATE` member `_Evaluate`, as Excel's has.
+struct AppObjectTypeLibs;
+impl TypeLibResolver for AppObjectTypeLibs {
+    fn resolve(
+        &self,
+        request: &calcvba_com::TypeLibResolveRequest,
+    ) -> Option<calcvba_com::TypeLibMetadataBlob> {
+        use calcvba_com::{TypeLibMemberInvokeKind as K, TypeLibParamType as P};
+        let member =
+            |name: &str, token: i32, kind: K, params: Vec<P>| calcvba_com::TypeLibMemberMetadata {
+                name: name.into(),
+                token,
+                vtable_slot: None,
+                requires_argument: !params.is_empty(),
+                invoke_kind: kind,
+                parameter_names: params.iter().map(|_| "x".to_string()).collect(),
+                parameter_optional: params.iter().map(|_| false).collect(),
+                parameter_optional_defaults: Vec::new(),
+                is_default_member: false,
+                parameter_wire_types: params
+                    .iter()
+                    .map(|p| calcvba_com::TypeLibWireType::Automation(*p))
+                    .collect(),
+                parameter_iids: params.iter().map(|_| None).collect(),
+                parameter_types: params,
+                return_type: Some(P::Object),
+                return_wire_type: Some(calcvba_com::TypeLibWireType::Automation(P::Object)),
+                callconv_is_stdcall: true,
+                is_dual: true,
+                interface_iid: None,
+                source_typekind: Some(calcvba_com::SourceTypeKind::Dispatch),
+                vtable_slot_bound: None,
+            };
+        let global = request
+            .requested_coclass
+            .as_deref()
+            .is_some_and(|name| name.eq_ignore_ascii_case("Global"));
+        let members = if global {
+            vec![
+                member("Range", 197, K::PropertyGet, vec![P::Variant]),
+                member("ActiveSheet", 307, K::PropertyGet, Vec::new()),
+                member("_Evaluate", -5, K::Method, vec![P::Variant]),
+            ]
+        } else {
+            Vec::new()
+        };
+        Some(calcvba_com::TypeLibMetadataBlob {
+            constants: Vec::new(),
+            identity: calcvba_com::TypeLibResolvedIdentity {
+                reference_name: "Host".into(),
+                requested_coclass: request.requested_coclass.clone(),
+                importlib: "host".into(),
+                libid: None,
+                major_version: 1,
+                minor_version: 0,
+                lcid: None,
+                cache_key: format!("host:{:?}", request.requested_coclass),
+            },
+            activation_prog_id: None,
+            member_name_to_token: members.iter().map(|m| (m.name.clone(), m.token)).collect(),
+            members,
+            events: Vec::new(),
+            coclass_names: vec!["Global".into()],
+            coclass_prog_ids: Vec::new(),
+            app_objects: vec![calcvba_com::TypeLibAppObject {
+                coclass: "Global".into(),
+                clsid: "{00000000-0000-0000-0000-0000000000A1}".into(),
+                creatable: true,
+            }],
+            extensible: false,
+        })
+    }
+}
+
+#[test]
+fn application_object_members_and_foreign_names_bind_as_vba_does() {
+    // Probe temp/variant-layout-probe/global10: `Range`, `Host.ActiveSheet` and `[text]` are
+    // the application object's; after a dot on a late-bound object, `[text]` is its evaluation.
+    let main = "Public a As Variant, b As Variant, c As Variant, d As Variant\n\
+Sub Main()\n\
+    Set a = Range(\"A1\")\n\
+    Set b = Host.ActiveSheet\n\
+    c = [A1+1]\n\
+    d = ActiveSheet.[B2]\n\
+End Sub\n";
+    let manifest = SymbolProjectManifest {
+        project_name: "Proj".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Main".into(),
+            module_kind: ModuleKind::Procedural,
+            attributes: ModuleAttributes::named("Main"),
+            source: main.into(),
+        }],
+        references: vec![ProjectReference::TypeLibrary {
+            name: "Host".into(),
+            guid: None,
+            version_major: Some(1),
+            version_minor: Some(0),
+            lcid: None,
+            import_lib: None,
+        }],
+        reference_projects: Vec::new(),
+        conditional_constants: BTreeMap::new(),
+        conditional_compilation_target: Default::default(),
+    };
+    let program = bind_program(&manifest, &AppObjectTypeLibs).expect("bind_program");
+    let mut callees = Vec::new();
+    for proc in &program.procs {
+        for stmt in &proc.body {
+            if let CoreStmt::Assign { value, .. } | CoreStmt::Eval(value) = stmt {
+                collect_value_callees(value, &mut callees);
+            }
+        }
+    }
+    let natives = |id: NativeImplId| {
+        callees
+            .iter()
+            .filter(|c| matches!(c, CoreCallee::Native(n) if *n == id))
+            .count()
+    };
+    // `Range`, `Host.ActiveSheet`, `[A1+1]`'s evaluator and `ActiveSheet`.
+    assert_eq!(natives(NativeImplId::AppObject), 4, "{callees:?}");
+    assert_eq!(natives(NativeImplId::EvaluateForeign), 2, "{callees:?}");
+    assert_eq!(natives(NativeImplId::CreateObject), 0, "{callees:?}");
 }

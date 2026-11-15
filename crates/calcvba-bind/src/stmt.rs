@@ -136,6 +136,9 @@ impl<'a> ProcLower<'a> {
         {
             return Ok(stmts);
         }
+        if let Some(stmts) = self.try_foreign_assignment(target_node, intent, &val)? {
+            return Ok(stmts);
+        }
         if let Some(stmts) = self.try_property_assignment(target_node, intent, &val, value_label)? {
             return Ok(stmts);
         }
@@ -226,6 +229,37 @@ impl<'a> ProcLower<'a> {
             target_name: target_node.text().trim().to_string(),
             target_type_name: types::type_name(&target_ty),
         }])
+    }
+
+    /// `[A1] = 5`: a foreign name VBA does not know, as an assignment target, is the host's
+    /// evaluation of it, and the value goes to that object's default member.
+    fn try_foreign_assignment(
+        &mut self,
+        target: SyntaxNode<'_>,
+        intent: AssignmentIntent,
+        val: &crate::Bound,
+    ) -> Result<Option<Vec<CoreStmt>>, BindError> {
+        if target.kind() != SyntaxKind::IdentExpr {
+            return Ok(None);
+        }
+        let Some(token) = target.ident_name_token() else {
+            return Ok(None);
+        };
+        if self.resolve(token.text).is_some() {
+            return Ok(None);
+        }
+        let Some(object) = self.bind_foreign_name(token.text) else {
+            return Ok(None);
+        };
+        let kind = match intent {
+            AssignmentIntent::Set => ProjectMemberKind::PropertySet,
+            _ => ProjectMemberKind::PropertyLet,
+        };
+        Ok(Some(vec![CoreStmt::Eval(self.late_default_member_call(
+            kind,
+            object.value,
+            vec![CoreArg::ByVal(val.value.clone())],
+        ))]))
     }
 
     fn try_err_field_assignment(
@@ -534,7 +568,7 @@ impl<'a> ProcLower<'a> {
                     // A field/method member → an l-value place store (handled upstream).
                     Some(_) => Ok(None),
                     // An untyped/foreign receiver → a late-bound property put.
-                    None if self.is_late_bound_receiver(&recv.ty) => setter(self, recv.value),
+                    None if self.binds_unknown_member_late(&recv.ty) => setter(self, recv.value),
                     None => Ok(None),
                 }
             }

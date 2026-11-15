@@ -1,0 +1,19 @@
+[package]
+name = "calcvba-excel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CalcVBA hosted in-process: a C ABI over Automation types, with VBA and XLL loaders for Excel"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[target.'cfg(all(windows, target_arch = "x86_64"))'.dependencies]
+calcvba-engine.workspace = true
+calcvba-hal.workspace = true
+calcvba-runtime.workspace = true
+calcvba-symbol.workspace = true
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_System_Variant", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging"] }

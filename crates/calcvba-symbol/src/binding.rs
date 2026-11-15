@@ -125,14 +125,22 @@ pub enum DispatchRoute {
         connection_point_iid: Option<String>,
         callback_arity: u8,
     },
-    /// A root object supplied by the host object model (`Application`,
-    /// `ThisWorkbook`, …). The current Core IR has no host-root value form, so
-    /// the binder lowers this through the existing COM activation path; the route
-    /// remains distinct so that later host-identity injection has one replacement
-    /// point.
+    /// A coclass of a host-injected reference used as a value (`Application` for an
+    /// `Excel.Application` host reference): the host's instance of that class, lowered to
+    /// `AppObject(prog_id)` like an application object.
     ComObjectRoot {
         type_name: String,
         prog_id: Option<String>,
+    },
+    /// A member of a library's application object (`TYPEFLAG_FAPPOBJECT` coclass), named
+    /// without a receiver: Excel's `Range`, `Cells`, `ActiveSheet`, `Application` and
+    /// `ThisWorkbook` are `Global` members. The binder makes it a member access on
+    /// `AppObject(class)` typed `type_name` (`Excel.Global`).
+    AppObjectMember {
+        /// The application object's type (`<Library>.<Coclass>`).
+        type_name: String,
+        /// Its class: the coclass CLSID.
+        class: String,
     },
     /// A compiler-internal structural intrinsic.
     Structural(StructuralIntrinsic),

@@ -28,6 +28,7 @@ members = [
     "crates/calcvba-differential",
     "crates/calcvba-host",
     "tools/calcvba-udf",
+    "tools/calcvba-excel",
 ]
 resolver = "2"
 
@@ -80,6 +81,7 @@ calcvba-oxir = { path = "crates/calcvba-oxir" }
 calcvba-rt-abi = { path = "crates/calcvba-rt-abi" }
 calcvba-eval = { path = "crates/calcvba-eval" }
 calcvba-vm3 = { path = "crates/calcvba-vm3" }
+calcvba-host = { path = "crates/calcvba-host" }
 calcvba-differential = { path = "crates/calcvba-differential" }
 rkyv = "0.8"
 quick-xml = "0.37"

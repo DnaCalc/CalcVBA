@@ -36,7 +36,32 @@ impl Provider for HostProvider {
     fn resolve(&self, name: &str) -> Option<Binding> {
         self.blobs
             .iter()
-            .find_map(|blob| blob.resolve_object_root(name))
+            .find_map(|blob| blob.resolve_app_object_member(name))
+            .or_else(|| {
+                self.blobs
+                    .iter()
+                    .find_map(|blob| blob.resolve_object_root(name))
+            })
+    }
+
+    fn resolve_qualified(&self, parts: &[&str]) -> Option<Binding> {
+        self.blobs
+            .iter()
+            .find_map(|blob| blob.resolve_qualified(parts))
+    }
+
+    fn is_extensible_object_type(&self, type_name: &str) -> bool {
+        self.blobs
+            .iter()
+            .any(|blob| blob.is_extensible_object_type(type_name))
+    }
+
+    fn is_library_name(&self, name: &str) -> bool {
+        self.blobs.iter().any(|blob| blob.is_library_name(name))
+    }
+
+    fn foreign_evaluator(&self) -> Option<(String, String)> {
+        self.blobs.iter().find_map(|blob| blob.foreign_evaluator())
     }
 
     fn resolve_member(

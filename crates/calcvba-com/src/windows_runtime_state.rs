@@ -44,9 +44,10 @@ impl WindowsComSubscriptionTransport {
 #[derive(Debug, Default)]
 pub struct WindowsComClientState {
     inner: ComRuntimeState<WindowsComSubscriptionTransport>,
-    /// The host's root objects (`Application`, …) by ProgID: the state owns one `IDispatch`
-    /// reference to each, and every lookup hands out a reference of its own.
-    host_objects_by_prog_id: BTreeMap<String, usize>,
+    /// The session's application objects by CLSID (`{…}`, upper case): the instances the host
+    /// registered, or that a first use created. The state owns one `IDispatch` reference to
+    /// each, and every lookup hands out a reference of its own.
+    app_objects: BTreeMap<String, usize>,
     /// Per-interface-IID cache of "is this interface marshaled by PSOAInterface?"
     /// (`HKCR\Interface\{iid}\ProxyStubClsid32 == {00020424-…}`, the oleaut
     /// universal marshaler whose proxy is a typelib-aligned, vtable-callable slot
@@ -120,8 +121,8 @@ impl Drop for WindowsComClientState {
         self.subscriptions.clear();
         self.callbacks.clear();
         self.pending_callbacks.clear();
-        for dispatch in std::mem::take(&mut self.host_objects_by_prog_id).into_values() {
-            // SAFETY: the map owns exactly one retained IDispatch reference per host root.
+        for dispatch in std::mem::take(&mut self.app_objects).into_values() {
+            // SAFETY: the map owns exactly one retained IDispatch reference per app object.
             unsafe { release_dispatch(dispatch as *mut RawIDispatch) };
         }
         for binding in self.bindings.values_mut() {
@@ -158,10 +159,6 @@ impl Drop for WindowsComClientState {
         }
         self.runtime_object_dispatch_wrappers.clear();
     }
-}
-
-fn normalize_prog_id_name(prog_id_name: &str) -> String {
-    prog_id_name.trim().to_ascii_lowercase()
 }
 
 #[derive(Debug, Clone)]
@@ -507,21 +504,7 @@ pub fn release_object_binding(
     let token = state.token_for_object(&object);
     if token.raw() == 0 && !object.is_compat_object() {
         // A foreign object is its interface pointer and has no binding: its references are its
-        // cells', released with them. A host root the host releases leaves the registry, which
-        // drops the one reference it held.
-        let pointer = object.raw_iunknown() as usize;
-        let roots: Vec<String> = state
-            .host_objects_by_prog_id
-            .iter()
-            .filter(|(_, root)| **root == pointer)
-            .map(|(name, _)| name.clone())
-            .collect();
-        for name in roots {
-            if let Some(root) = state.host_objects_by_prog_id.remove(&name) {
-                // SAFETY: the registry owned exactly this one reference.
-                unsafe { release_dispatch(root as *mut RawIDispatch) };
-            }
-        }
+        // cells', released with them.
         return Ok(ReleasedWindowsComObject {
             transports: Vec::new(),
             stale_callbacks: BTreeSet::new(),
@@ -693,40 +676,26 @@ pub fn insert_bound_object_binding(
     object
 }
 
-pub fn bind_host_dispatch_object(
+/// Registers `dispatch` (one reference, taken over) as the session's instance of the
+/// application object `class_key`, replacing (and releasing) an earlier one.
+pub fn register_app_object(
     state: &mut WindowsComClientState,
-    prog_id_name: &str,
-    mut binding: ComBinding,
-) -> ObjectRef {
-    let normalized_prog_id = normalize_prog_id_name(prog_id_name);
-    // The registry keeps the first root bound for a ProgID; a later one is surplus.
-    // SAFETY: the identity reference is the binding's own; a 0 slot is a no-op.
-    unsafe { release_unknown(binding.native_unknown as *mut core::ffi::c_void) };
-    binding.native_unknown = 0;
-    if state
-        .host_objects_by_prog_id
-        .contains_key(&normalized_prog_id)
+    class_key: &str,
+    dispatch: *mut RawIDispatch,
+) {
+    if let Some(previous) = state
+        .app_objects
+        .insert(class_key.to_string(), dispatch as usize)
     {
-        // SAFETY: the incoming IDispatch reference is surplus; null-safe.
-        unsafe { release_dispatch(binding.native_dispatch as *mut RawIDispatch) };
-    } else if binding.native_dispatch != 0 {
-        state
-            .host_objects_by_prog_id
-            .insert(normalized_prog_id.clone(), binding.native_dispatch);
+        // SAFETY: the registry owned exactly this one reference.
+        unsafe { release_dispatch(previous as *mut RawIDispatch) };
     }
-    host_dispatch_object_for_prog_id(state, &normalized_prog_id)
-        .unwrap_or_else(|| ObjectRef::from_compat_identity(0))
 }
 
-pub fn host_dispatch_object_for_prog_id(
-    state: &mut WindowsComClientState,
-    prog_id_name: &str,
-) -> Option<ObjectRef> {
-    let dispatch = state
-        .host_objects_by_prog_id
-        .get(&normalize_prog_id_name(prog_id_name))
-        .copied()? as *mut RawIDispatch;
-    // SAFETY: the registry owns a live reference to the root; the AddRef is the ObjectRef's own.
+/// The session's instance of the application object `class_key`, with a reference of its own.
+pub fn app_object(state: &mut WindowsComClientState, class_key: &str) -> Option<ObjectRef> {
+    let dispatch = state.app_objects.get(class_key).copied()? as *mut RawIDispatch;
+    // SAFETY: the registry owns a live reference; the AddRef is the ObjectRef's own.
     unsafe {
         crate::add_ref_dispatch(dispatch);
         ObjectRef::from_raw_iunknown_owned(dispatch.cast())
@@ -871,21 +840,22 @@ pub fn insert_bound_object_binding_shared(
     Ok(insert_bound_object_binding(&mut state, binding))
 }
 
-pub fn bind_host_dispatch_object_shared(
+pub fn register_app_object_shared(
     com_state: &Arc<Mutex<WindowsComClientState>>,
-    prog_id_name: &str,
-    binding: ComBinding,
-) -> Result<ObjectRef, String> {
-    let mut state = lock_state(com_state, "bind_host_dispatch_object")?;
-    Ok(bind_host_dispatch_object(&mut state, prog_id_name, binding))
+    class_key: &str,
+    dispatch: *mut RawIDispatch,
+) -> Result<(), String> {
+    let mut state = lock_state(com_state, "register_app_object")?;
+    register_app_object(&mut state, class_key, dispatch);
+    Ok(())
 }
 
-pub fn host_dispatch_object_for_prog_id_shared(
+pub fn app_object_shared(
     com_state: &Arc<Mutex<WindowsComClientState>>,
-    prog_id_name: &str,
+    class_key: &str,
 ) -> Result<Option<ObjectRef>, String> {
-    let mut state = lock_state(com_state, "host_dispatch_object_for_prog_id")?;
-    Ok(host_dispatch_object_for_prog_id(&mut state, prog_id_name))
+    let mut state = lock_state(com_state, "app_object")?;
+    Ok(app_object(&mut state, class_key))
 }
 
 pub fn insert_bound_object_binding_at_handle_shared(

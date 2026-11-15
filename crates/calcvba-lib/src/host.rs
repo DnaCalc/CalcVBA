@@ -588,6 +588,21 @@ pub fn com_release_event_callback(args: &[Variant], host: &dyn HostServices) -> 
     Ok(host.com().release_event_callback_variant(callback)?)
 }
 
+/// `AppObject(class)`: the session's instance of an application object. A host may register
+/// it; otherwise the HAL creates one when the class is creatable and activation is allowed.
+pub fn app_object(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
+    let class = req(args, 0)?;
+    host.authorize_com_activation("app_object", &activation_target(&class))?;
+    Ok(host.com().app_object_variant(class)?)
+}
+
+/// `EvaluateForeign(object, text)`: the foreign name `[text]`, evaluated by the object.
+pub fn evaluate_foreign(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
+    let object = to_object(need(args, 0)?, "object")?;
+    let text = req(args, 1)?;
+    Ok(host.com().evaluate_foreign_variant(object, text)?)
+}
+
 // ── Diagnostics ──
 pub fn debug_print(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
     Ok(host.diag().debug_print_variant(print_joined(args))?)

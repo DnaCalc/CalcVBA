@@ -570,8 +570,39 @@ pub trait ComHal {
     fn get_object_variant(&self, _pathname: Variant, _class: Variant) -> HalResult<Variant> {
         variant_companion_not_overridden(CapabilityId::ComActivationDispatch, "get_object_variant")
     }
-    /// Bind an existing native `IDispatch` pointer into the host COM state and
-    /// associate it with a ProgID for subsequent host-root activation.
+    /// The session's instance of application object `class` (a CLSID `{…}` or a ProgID): the
+    /// one the host registered; otherwise, when the host permits COM activation, a new one the
+    /// session keeps (`CoCreateInstance`); otherwise error 429. `AppObject(class)` in the IR.
+    fn app_object_variant(&self, _class: Variant) -> HalResult<Variant> {
+        variant_companion_not_overridden(CapabilityId::ComActivationDispatch, "app_object_variant")
+    }
+    /// Registers the host's instance of application object `class` (a CLSID or ProgID), such
+    /// as Excel's `Application` for `Excel.Global`.
+    ///
+    /// # Safety
+    ///
+    /// `dispatch` must be a valid `IDispatch` pointer carrying one retained reference owned by
+    /// the caller, which an implementation that accepts it takes over.
+    unsafe fn register_app_object(
+        &self,
+        _class: &str,
+        _dispatch: *mut core::ffi::c_void,
+    ) -> HalResult<()> {
+        variant_companion_not_overridden(CapabilityId::ComActivationDispatch, "register_app_object")
+    }
+    /// A foreign name `[text]` evaluated by `object`: its `DISPID_EVALUATE` (-5) member called
+    /// with the text, as VBA does (Excel's `Evaluate`). An object without one raises 438.
+    fn evaluate_foreign_variant(&self, object: ObjectRef, text: Variant) -> HalResult<Variant> {
+        const DISPID_EVALUATE: i32 = -5;
+        self.invoke_object(
+            &object,
+            calcvba_com::call::ComMember::Id(DISPID_EVALUATE),
+            calcvba_com::call::ComCallKind::Method,
+            &[calcvba_com::call::ComArg::value(&text)],
+        )
+    }
+    /// Bind an existing native `IDispatch` pointer into the host COM state: the object is its
+    /// interface pointer. `_prog_id` is a type hint only.
     ///
     /// # Safety
     ///

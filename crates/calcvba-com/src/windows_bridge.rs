@@ -6,15 +6,14 @@ use crate::{
     ComSubscriptionToken, DynamicCallKind, DynamicCallRequest, DynamicMemberSelector, RawIDispatch,
     ReleasedWindowsComObject, TypeLibCacheScope, TypeLibMetadataBlob, TypeLibMetadataCacheState,
     TypeLibResolveRequest, TypeLibResolvedIdentity, WindowsComClientState,
-    activate_runtime_dispatch, activate_runtime_object_binding_shared,
-    bind_host_dispatch_object_shared, bind_native_dispatch_result_shared,
-    binding_from_typelib_metadata, build_typelib_metadata, callback_arg, callback_arity,
-    callback_subscription_token, execute_bound_runtime_call_result_with_shared_state,
-    execute_bound_variant_with_shared_state, host_dispatch_object_for_prog_id_shared,
+    activate_runtime_dispatch, activate_runtime_object_binding_shared, app_object_shared,
+    bind_native_dispatch_result_shared, binding_from_typelib_metadata, build_typelib_metadata,
+    callback_arg, callback_arity, callback_subscription_token,
+    execute_bound_runtime_call_result_with_shared_state, execute_bound_variant_with_shared_state,
     insert_bound_object_binding_at_handle_shared, invoke_dispatch_variant_with_shared_state,
     legacy_runtime_arg_values, member_spec_from_typelib_metadata,
-    member_token_and_spec_from_typelib_metadata_name, query_unknown_from_dispatch,
-    release_callback, release_object_binding_shared, release_subscription_transport,
+    member_token_and_spec_from_typelib_metadata_name, register_app_object_shared, release_callback,
+    release_object_binding_shared, release_subscription_transport,
     resolve_bound_native_dispatch_shared, resolve_known_typelib_identity,
     resolve_named_argument_dispids, resolve_typelib_identity_for_prog_id_name,
     subscribe_event_shared, take_polled_callback_payload, unsubscribe_event_shared,
@@ -450,20 +449,57 @@ impl WindowsComBridge {
         Ok(unsafe { object_from_owned_dispatch(dispatch) })
     }
 
-    /// Registers `dispatch` as the host root object named `prog_id_name` (`Application`, …),
-    /// which `CreateObject` of that name and the host-root routes return from then on.
+    /// The registry key of an application-object class: its CLSID, given as `{…}` or as a
+    /// ProgID, upper case.
+    pub fn app_object_class_key(class: &str) -> Result<String, String> {
+        let class = class.trim();
+        let clsid = match crate::windows_client::parse_guid_canonical(class) {
+            Some(clsid) => clsid,
+            None => crate::windows_typelib_loader::registered_clsid_from_prog_id(class)?,
+        };
+        Ok(crate::windows_typelib_loader::guid_to_string(&clsid).to_ascii_uppercase())
+    }
+
+    /// Registers `dispatch` as the session's instance of application object `class` (a CLSID
+    /// or ProgID): what `AppObject(class)` returns from then on.
     ///
     /// # Safety
     ///
-    /// `dispatch` must be null or carry one retained `IDispatch` reference owned by the caller,
-    /// which this method takes over.
-    pub unsafe fn bind_host_root(
+    /// `dispatch` must carry one retained `IDispatch` reference owned by the caller, which this
+    /// method takes over (and releases when it fails).
+    pub unsafe fn register_app_object(
         &self,
-        prog_id_name: &str,
+        class: &str,
         dispatch: *mut RawIDispatch,
-    ) -> Result<ObjectRef, String> {
-        // SAFETY: forwarded.
-        unsafe { self.bind_host_dispatch_object(prog_id_name, dispatch) }
+    ) -> Result<(), String> {
+        if dispatch.is_null() {
+            return Err("an application object must not be Nothing".into());
+        }
+        match Self::app_object_class_key(class) {
+            Ok(key) => register_app_object_shared(&self.state, &key, dispatch),
+            Err(message) => {
+                // SAFETY: the caller's one reference, not taken over.
+                unsafe { crate::release_dispatch(dispatch) };
+                Err(message)
+            }
+        }
+    }
+
+    /// The session's instance of application object `class`. With none registered and
+    /// `create` set, `CoCreateInstance` makes one, which the session keeps.
+    pub fn app_object(&self, class: &str, create: bool) -> Result<Option<ObjectRef>, String> {
+        let key = Self::app_object_class_key(class)?;
+        if let Some(object) = app_object_shared(&self.state, &key)? {
+            return Ok(Some(object));
+        }
+        if !create {
+            return Ok(None);
+        }
+        let clsid = crate::windows_client::parse_guid_canonical(&key)
+            .ok_or_else(|| format!("invalid CLSID `{key}`"))?;
+        let dispatch = crate::windows_client::activate_dispatch_by_clsid(&clsid, &key)?;
+        register_app_object_shared(&self.state, &key, dispatch)?;
+        app_object_shared(&self.state, &key)
     }
 
     pub fn bind_projection_object(
@@ -476,47 +512,22 @@ impl WindowsComBridge {
         insert_bound_object_binding_at_handle_shared(&self.state, object, binding)
     }
 
+    /// An object the host hands in: it is its interface pointer (no binding, no metadata).
+    ///
     /// # Safety
     ///
     /// `dispatch` must be null or carry one retained `IDispatch` reference
-    /// owned by the caller. On success or failure this method takes ownership
-    /// of that reference.
+    /// owned by the caller, which this method takes over.
     pub unsafe fn bind_host_dispatch_object(
         &self,
-        prog_id_name: &str,
+        _type_hint: &str,
         dispatch: *mut RawIDispatch,
     ) -> Result<ObjectRef, String> {
         if dispatch.is_null() {
             return Ok(ObjectRef::from_compat_identity(0));
         }
-        // A host root needs no type-library metadata: it is its interface pointer.
-        let mut binding =
-            binding_from_typelib_metadata(prog_id_name.to_string(), dispatch as usize, None);
-        // SAFETY: `dispatch` was checked non-null above and per this method's `# Safety`
-        // carries one retained reference owned by us, so it is a live `IDispatch` whose
-        // `IUnknown` vtable can be queried.
-        match unsafe { query_unknown_from_dispatch(dispatch) } {
-            Ok(unknown) => {
-                binding.native_unknown = unknown as usize;
-            }
-            Err(message) => {
-                // SAFETY: QueryInterface failed, so no IUnknown reference was retained; we
-                // still own the caller's single retained `IDispatch` reference (non-null,
-                // checked above) and release it exactly once before erroring out.
-                unsafe {
-                    crate::release_dispatch(dispatch);
-                }
-                return Err(message);
-            }
-        }
-        bind_host_dispatch_object_shared(&self.state, prog_id_name, binding)
-    }
-
-    pub fn host_dispatch_object_for_prog_id(
-        &self,
-        prog_id_name: &str,
-    ) -> Result<Option<ObjectRef>, String> {
-        host_dispatch_object_for_prog_id_shared(&self.state, prog_id_name)
+        // SAFETY: one retained reference, taken over by the ObjectRef.
+        Ok(unsafe { object_from_owned_dispatch(dispatch) })
     }
 
     pub fn describe_object(

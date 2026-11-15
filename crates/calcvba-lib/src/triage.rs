@@ -33,7 +33,7 @@ pub const fn capabilities_of(id: NativeImplId) -> &'static [Capability] {
         Environ | Command => &[C::Env],
         GetSetting | GetAllSettings | SaveSetting | DeleteSetting => &[C::Settings],
         SendKeys | AppActivate => &[C::UiKeys],
-        CreateObject | GetObject => &[C::ComActivate],
+        CreateObject | GetObject | AppObject => &[C::ComActivate],
         // Not gated: pure functions, handle operations after an open, console, UI prompts,
         // time, diagnostics and the events of an already activated object.
         Len
@@ -182,6 +182,7 @@ pub const fn capabilities_of(id: NativeImplId) -> &'static [Capability] {
         | ComEventCallbackSubscription
         | ComEventCallbackArg
         | ComReleaseEventCallback
+        | EvaluateForeign
         | DebugPrint
         | FileInputChars => &[],
     }

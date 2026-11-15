@@ -911,6 +911,8 @@ impl TypeLibResolver for Libraries<'_> {
             events: vec![],
             coclass_names: library.interfaces.iter().map(|i| i.name.clone()).collect(),
             coclass_prog_ids: Vec::new(),
+            app_objects: Vec::new(),
+            extensible: false,
         })
     }
 }

@@ -844,15 +844,31 @@ impl Lower<'_> {
     }
 
     fn coerce(&self, value: CoreValue, from: &VarTypeRef, to: &VarTypeRef) -> CoreValue {
-        if self.document_host_type(from).is_some_and(
-            |host| matches!(to,VarTypeRef::Object(name) if name.eq_ignore_ascii_case(host)),
-        ) {
-            return CoreValue::Load(CorePlace::Field {
-                object: Box::new(value),
-                field: calcvba_bundle::HOST_DOCUMENT_FIELD,
-            });
-        }
+        let value = self.document_as_host(value, from, to);
         types::coerce_with(self.type_ctx, value, from, to)
+    }
+
+    /// A document module's instance used as its host type (`Set wb = ThisWorkbook` with
+    /// `wb As Workbook` or `As Excel.Workbook`) is the host object it carries.
+    pub(crate) fn document_as_host(
+        &self,
+        value: CoreValue,
+        from: &VarTypeRef,
+        to: &VarTypeRef,
+    ) -> CoreValue {
+        let unqualified = |name: &str| name.rsplit('.').next().unwrap_or(name).to_string();
+        let is_host = self.document_host_type(from).is_some_and(|host| {
+            matches!(to, VarTypeRef::Object(name)
+                if name.eq_ignore_ascii_case(host)
+                    || (!name.contains('.') && unqualified(host).eq_ignore_ascii_case(name)))
+        });
+        if !is_host {
+            return value;
+        }
+        CoreValue::Load(CorePlace::Field {
+            object: Box::new(value),
+            field: calcvba_bundle::HOST_DOCUMENT_FIELD,
+        })
     }
     fn document_host_type(&self, ty: &VarTypeRef) -> Option<&str> {
         let VarTypeRef::Object(name) = ty else {

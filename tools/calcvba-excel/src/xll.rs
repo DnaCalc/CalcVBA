@@ -370,6 +370,7 @@ fn run_source(
             import_lib: None,
         }],
         app_objects: vec![(EXCEL_GLOBAL.into(), application)],
+        documents: Vec::new(),
         engine: Some((engine, jit)),
         error: (0, String::new()),
     };

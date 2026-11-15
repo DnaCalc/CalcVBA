@@ -590,6 +590,28 @@ pub trait ComHal {
     ) -> HalResult<()> {
         variant_companion_not_overridden(CapabilityId::ComActivationDispatch, "register_app_object")
     }
+    /// The host object of document module `module` (a workbook for `ThisWorkbook`, a sheet
+    /// for `Sheet1`), when the host registered one: the document's default instance carries
+    /// it, and members of the document's host type reach it.
+    fn document_object_variant(&self, _module: &str) -> HalResult<Option<Variant>> {
+        Ok(None)
+    }
+    /// Registers the host object of document module `module`.
+    ///
+    /// # Safety
+    ///
+    /// `dispatch` must be a valid `IDispatch` pointer carrying one retained reference owned by
+    /// the caller, which an implementation that accepts it takes over.
+    unsafe fn register_document_object(
+        &self,
+        _module: &str,
+        _dispatch: *mut core::ffi::c_void,
+    ) -> HalResult<()> {
+        variant_companion_not_overridden(
+            CapabilityId::ComActivationDispatch,
+            "register_document_object",
+        )
+    }
     /// A foreign name `[text]` evaluated by `object`: its `DISPID_EVALUATE` (-5) member called
     /// with the text, as VBA does (Excel's `Evaluate`). An object without one raises 438.
     fn evaluate_foreign_variant(&self, object: ObjectRef, text: Variant) -> HalResult<Variant> {

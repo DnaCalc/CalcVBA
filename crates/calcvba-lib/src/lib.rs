@@ -77,8 +77,15 @@ impl From<HalError> for LibError {
         // back to the generic invalid-call (5) when the HAL gave no host code.
         // (The COM *dispatch* path reaches the VM via `Fault::from_hal` instead,
         // which already threads `host_error_code`.)
+        // A description the host gave (or VBA's default text for its number) is the
+        // `Err.Description`, as on the dispatch path.
         match err.host_error_code {
-            Some(code) => LibError::new(code, err.message),
+            Some(code) => LibError::new(
+                code,
+                err.host_error_info
+                    .and_then(|info| info.description)
+                    .unwrap_or(err.message),
+            ),
             None => LibError::invalid_call(format!("{err:?}")),
         }
     }

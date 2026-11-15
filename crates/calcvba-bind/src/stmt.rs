@@ -161,6 +161,7 @@ impl<'a> ProcLower<'a> {
             return Err(BindError::TypeMismatch);
         }
         let stored = types::string_into_byte_array(val.value, &val.ty, &target_ty);
+        let stored = self.g.document_as_host(stored, &val.ty, &target_ty);
         let value = self.g.coerce_store(stored, &target_ty);
         Ok(vec![CoreStmt::Assign {
             place,

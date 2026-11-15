@@ -598,7 +598,14 @@ pub fn app_object(args: &[Variant], host: &dyn HostServices) -> LibResult<Varian
 
 /// `EvaluateForeign(object, text)`: the foreign name `[text]`, evaluated by the object.
 pub fn evaluate_foreign(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
-    let object = to_object(need(args, 0)?, "object")?;
+    let mut object = to_object(need(args, 0)?, "object")?;
+    // A document module's instance (`Set o = Sheet1: o.[A1]`) stands for its host document.
+    if let Some(document) = object
+        .project_field_get(calcvba_bundle::HOST_DOCUMENT_FIELD)
+        .and_then(|value| value.as_object_ref())
+    {
+        object = document;
+    }
     let text = req(args, 1)?;
     Ok(host.com().evaluate_foreign_variant(object, text)?)
 }

@@ -2746,6 +2746,31 @@ fn object_identity(value: &Variant) -> i32 {
         .unwrap_or(0)
 }
 
+/// A new default instance of a document module (a class with the host-document field) takes
+/// the host object the host registered for that module, if any. VM3 and compiled code both
+/// create default instances through this.
+pub fn attach_host_document(
+    host: &dyn HostServices,
+    class: &calcvba_oxir::OxClass,
+    object: &ObjectRef,
+) -> Result<(), Fault> {
+    if !class
+        .fields
+        .iter()
+        .any(|field| field.token == calcvba_bundle::HOST_DOCUMENT_FIELD)
+    {
+        return Ok(());
+    }
+    if let Some(document) = host
+        .com()
+        .document_object_variant(&class.name)
+        .map_err(Fault::from_hal)?
+    {
+        object.project_field_set(calcvba_bundle::HOST_DOCUMENT_FIELD, document);
+    }
+    Ok(())
+}
+
 /// Runtime-helper raw-pointer entry point.
 ///
 /// # Safety
@@ -2806,6 +2831,7 @@ pub unsafe extern "C" fn rt_project_predeclared_instance(
                     has_terminate,
                     descriptor,
                 );
+                attach_host_document(exec.host, class, &object)?;
                 let value = Variant::from_object_ref(object);
                 exec.programs[program_index]
                     .predeclared_singletons

@@ -83,6 +83,8 @@ struct Entry {
     modules: Vec<sym::ModuleUnit>,
     references: Vec<sym::ProjectReference>,
     app_objects: Vec<(String, Dispatch)>,
+    /// Document modules' host objects, by module name.
+    documents: Vec<(String, Dispatch)>,
     engine: Option<(Engine, bool)>,
     error: (i32, String),
 }
@@ -164,6 +166,7 @@ pub unsafe extern "system" fn calcvba_new(handle: *mut isize) -> i32 {
         modules: Vec::new(),
         references: Vec::new(),
         app_objects: Vec::new(),
+        documents: Vec::new(),
         engine: None,
         error: (0, String::new()),
     };
@@ -201,6 +204,53 @@ pub unsafe extern "system" fn calcvba_add_module(
             module_kind,
             source,
         });
+        Ok(())
+    })
+}
+
+/// Adds a document module `name` (`ThisWorkbook`, `Sheet1`) whose host object is `document`,
+/// of type `host_type` as the project's references name it (`Excel.Workbook`). The module's
+/// default instance carries the object; members of the host type reach it.
+///
+/// # Safety
+/// `name`, `host_type` and `source` are null or live `BSTR`s; `document` is a live `IDispatch`.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn calcvba_add_document(
+    handle: isize,
+    name: *const u16,
+    host_type: *const u16,
+    source: *const u16,
+    document: *mut core::ffi::c_void,
+) -> i32 {
+    if document.is_null() {
+        return E_POINTER;
+    }
+    // SAFETY: the caller's BSTRs.
+    let (name, host_type, source) =
+        unsafe { (bstr_text(name), bstr_text(host_type), bstr_text(source)) };
+    with_entry(handle, |entry| {
+        if name.eq_ignore_ascii_case(DRIVER) {
+            return Err(failure(format!("`{DRIVER}` is the driver module's name")));
+        }
+        if host_type.is_empty() {
+            return Err(failure(format!("document `{name}` needs its host type")));
+        }
+        // SAFETY: a live IDispatch; the project takes its own reference.
+        let object = unsafe { Dispatch::add_ref(document) };
+        if let Some((engine, _)) = &entry.engine {
+            register_document(engine, &name, &object)?;
+        }
+        let mut attributes = sym::ModuleAttributes::named(&name);
+        attributes.vb_predeclared_id = true;
+        attributes.vb_exposed = true;
+        attributes.host_document_type = Some(host_type);
+        entry.modules.push(sym::ModuleUnit {
+            attributes,
+            module_name: name.clone(),
+            module_kind: sym::ModuleKind::Document,
+            source,
+        });
+        entry.documents.push((name, object));
         Ok(())
     })
 }
@@ -260,6 +310,21 @@ pub unsafe extern "system" fn calcvba_set_app_object(
     })
 }
 
+fn register_document(
+    engine: &Engine,
+    module: &str,
+    object: &Dispatch,
+) -> Result<(), (i32, String)> {
+    // SAFETY: a retained reference, which the registry takes over.
+    unsafe {
+        engine
+            .host_services()
+            .com()
+            .register_document_object(module, object.retained())
+    }
+    .map_err(|error| failure(error.to_string()))
+}
+
 fn register(engine: &Engine, class: &str, object: &Dispatch) -> Result<(), (i32, String)> {
     // SAFETY: a retained reference, which the registry takes over.
     unsafe {
@@ -284,6 +349,9 @@ pub extern "system" fn calcvba_compile(handle: isize, backend: i32) -> i32 {
         engine.set_host_policy(HostPolicy::native());
         for (class, object) in &entry.app_objects {
             register(&engine, class, object)?;
+        }
+        for (module, object) in &entry.documents {
+            register_document(&engine, module, object)?;
         }
         entry.engine = Some((engine, jit));
         Ok(())

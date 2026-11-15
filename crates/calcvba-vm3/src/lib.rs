@@ -964,9 +964,9 @@ impl<'h> Vm3<'h> {
                     .iter()
                     .find(|m| m.name.eq_ignore_ascii_case(name))
             });
-        let proc = member.map(|m| m.proc).ok_or_else(|| {
-            Vm3Error::Fault(Fault::new(438, format!("Object doesn't support '{name}'")))
-        })?;
+        let proc = member
+            .map(|m| m.proc)
+            .ok_or_else(|| Vm3Error::Fault(Fault::new(438, default_error_message(438))))?;
         // Host args are already by-value (resolution-order is moot), but run in the object's
         // program (target_prog = obj_bundle).
         self.run_proc_with_values_captured(
@@ -3792,6 +3792,8 @@ impl<'h> Vm3<'h> {
             has_terminate,
             descriptor,
         );
+        calcvba_rt_abi::attach_host_document(self.exec.host, class, &object)
+            .map_err(Vm3Error::Fault)?;
         let value = Variant::from_object_ref(object);
         self.exec.programs[self.cur]
             .predeclared_singletons
@@ -4434,9 +4436,7 @@ impl<'h> Vm3<'h> {
         let proc = member
             .filter(|member| (!public_only && obj_bundle == self.cur) || member.externally_visible)
             .map(|m| m.proc)
-            .ok_or_else(|| {
-                Vm3Error::Fault(Fault::new(438, format!("Object doesn't support '{name}'")))
-            })?;
+            .ok_or_else(|| Vm3Error::Fault(Fault::new(438, default_error_message(438))))?;
         // ByRef args alias the caller's place (write-back); named arguments reorder by
         // the callee parameter names before the frame is seeded.
         let proc_args = self.project_call_args(obj_bundle, proc, args)?;

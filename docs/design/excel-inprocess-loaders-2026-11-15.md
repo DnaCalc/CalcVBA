@@ -219,6 +219,9 @@ First cases:
   - `calcvba_add_module(handle, name, kind, source)`
   - `calcvba_add_reference(handle, name, libid, major, minor)`
   - `calcvba_set_app_object(handle, class, IDispatch*)`
+  - `calcvba_add_document(handle, name, host_type, source, IDispatch*)`: a document module
+    (`ThisWorkbook`, `Sheet1`) and its host object, of type `host_type` as the references
+    name it (`Excel.Workbook`)
   - `calcvba_compile(handle, backend)`
   - `calcvba_run(handle, module, entry, VARIANT* result)`
   - `calcvba_last_error(handle, number*, VARIANT* description)`
@@ -228,7 +231,9 @@ First cases:
   (VM3 or the JIT). A driver module's `Sub Main` stores the entry function's value. The
   session is therefore not resident yet (items 2 and 3).
 - **Loaders.**
-  - `loaders/CalcVBALoader.bas` copies the workbook's modules into a project.
+  - `loaders/CalcVBALoader.bas` copies the workbook's modules into a project: standard,
+    class and document modules. Each document module goes in with its workbook, sheet or
+    chart (found by code name) and the type `"Excel." & TypeName(object)`.
   - `loaders/CalcVBAXllCompare.bas` drives the XLL. The same DLL's `xlAutoOpen` registers
     `CALCVBA.RUN(source, module, entry, backend)`.
   - In the owned test Excel, `xlGetHwnd` gave 0, so the XLL takes the `XLMAIN` window of its
@@ -239,6 +244,20 @@ First cases:
   `Application`, unqualified and `Excel.`-qualified globals, `Application.Sum`, foreign names
   and their assignment, and the 438 cases. Through both loaders, VM3 and the JIT give every
   line exactly as VBA does.
+
+*As built 2026-11-15 (document modules).*
+
+- **Host-neutral.** `ComHal::register_document_object` / `document_object_variant` keep a host
+  object per document module. When VM3 or compiled code first creates a document module's
+  default instance, `calcvba_rt_abi::attach_host_document` puts that object in its host field.
+  A document instance assigned to its host type (`Set wb = ThisWorkbook`, `wb As Workbook`)
+  is the host object; a foreign name on a document instance is its host's.
+- **Result.** Probe tw11 (18 lines, one workbook each, `run-inproc-probe.ps1 -PerModule`): the
+  five VBA refuses to compile, CalcVBA refuses too (`excel_foreign_names.rs`). Of the 13 that
+  run, 11 match VBA on VM3 and the JIT. `v = ws.[A1]` and `v = Sheet1.[A1]` store the Range,
+  where VBA's Let takes its value: a general Let gap, bead dc-6hobz.
+- **Not yet.** The XLL loader compiles one module's source without a VBA project, so it has
+  no document modules.
 
 ## Risks
 

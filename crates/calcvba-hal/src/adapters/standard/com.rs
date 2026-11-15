@@ -560,6 +560,53 @@ impl ComHal for StandardHostServices {
         Err(self.unsupported(capability, "register_app_object"))
     }
 
+    fn document_object_variant(&self, module: &str) -> HalResult<Option<Variant>> {
+        #[cfg(target_os = "windows")]
+        if self.native_com_enabled() {
+            return self
+                .com_bridge
+                .document_object(module)
+                .map(|object| object.map(Variant::from_object_ref))
+                .map_err(|message| {
+                    HalError::adapter_fault(
+                        self.profile,
+                        CapabilityId::ComActivationDispatch,
+                        "document_object",
+                        message,
+                    )
+                });
+        }
+        let _ = module;
+        Ok(None)
+    }
+
+    unsafe fn register_document_object(
+        &self,
+        module: &str,
+        dispatch: *mut core::ffi::c_void,
+    ) -> HalResult<()> {
+        let capability = CapabilityId::ComActivationDispatch;
+        #[cfg(target_os = "windows")]
+        if self.native_com_enabled() {
+            self.ensure_thread_com_apartment("register_document_object")?;
+            // SAFETY: forwarded: one retained IDispatch reference, taken over.
+            return unsafe {
+                self.com_bridge
+                    .register_document_object(module, dispatch.cast::<RawIDispatch>())
+            }
+            .map_err(|message| {
+                HalError::adapter_fault(
+                    self.profile,
+                    capability,
+                    "register_document_object",
+                    message,
+                )
+            });
+        }
+        let _ = (module, dispatch);
+        Err(self.unsupported(capability, "register_document_object"))
+    }
+
     fn get_object_variant(&self, pathname: Variant, class: Variant) -> HalResult<Variant> {
         let capability = CapabilityId::ComActivationDispatch;
         if !self.supports(capability) {

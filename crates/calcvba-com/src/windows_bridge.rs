@@ -502,6 +502,35 @@ impl WindowsComBridge {
         app_object_shared(&self.state, &key)
     }
 
+    /// The registry key of document module `module`'s host object (never a CLSID, which
+    /// starts with `{`).
+    fn document_object_key(module: &str) -> String {
+        format!("DOCUMENT:{}", module.trim().to_ascii_uppercase())
+    }
+
+    /// Registers `dispatch` as the host object of document module `module` (Excel's
+    /// workbook for `ThisWorkbook`): the default instance of that module carries it.
+    ///
+    /// # Safety
+    ///
+    /// `dispatch` must carry one retained `IDispatch` reference owned by the caller, which this
+    /// method takes over.
+    pub unsafe fn register_document_object(
+        &self,
+        module: &str,
+        dispatch: *mut RawIDispatch,
+    ) -> Result<(), String> {
+        if dispatch.is_null() {
+            return Err("a document object must not be Nothing".into());
+        }
+        register_app_object_shared(&self.state, &Self::document_object_key(module), dispatch)
+    }
+
+    /// The registered host object of document module `module`, if any.
+    pub fn document_object(&self, module: &str) -> Result<Option<ObjectRef>, String> {
+        app_object_shared(&self.state, &Self::document_object_key(module))
+    }
+
     pub fn bind_projection_object(
         &self,
         object: ObjectRef,

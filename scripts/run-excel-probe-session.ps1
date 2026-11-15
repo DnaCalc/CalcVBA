@@ -83,6 +83,10 @@ function Invoke-ProbeCase($Case) {
     $record=[ordered]@{id=[string]$Case.id;compile_status='not-run';compile_dialogs=@();run_value=$null;run_error=$null;run_dialogs=@()}
     $first=$null
     try {
+        # Optional type-library references (paths to .tlb/.dll files) for early-bound and WithEvents code.
+        foreach ($ref in @($Case.references)) {
+            if ($ref) { [void]$wb.VBProject.References.AddFromFile([string]$ref) }
+        }
         foreach ($m in $Case.modules) {
             $comp=$wb.VBProject.VBComponents.Add([int]$m.kind)
             $comp.Name=[string]$m.name

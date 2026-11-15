@@ -202,7 +202,7 @@ fn vm3_runtime_diagnostic(err: calcvba_vm3::Vm3Error) -> PhaseDiagnostic {
         calcvba_vm3::Vm3Error::BudgetExceeded => "RUN-E-BUDGET",
         calcvba_vm3::Vm3Error::Unimplemented { .. } => "VM3-E-UNIMPLEMENTED",
         calcvba_vm3::Vm3Error::Fault(_) | calcvba_vm3::Vm3Error::EventAbort(_) => "VM3-E-FAULT",
-        calcvba_vm3::Vm3Error::Malformed(_) => "VM3-E-MALFORMED",
+        calcvba_vm3::Vm3Error::Malformed(_) | calcvba_vm3::Vm3Error::Halted => "VM3-E-MALFORMED",
     };
     // A runtime fault carries the VBA Err.Number; keep it so consumers that
     // re-raise across a VBA boundary (the COM server EXCEPINFO) report the real
@@ -1220,6 +1220,9 @@ impl Engine {
             }
             Err(calcvba_vm3::Vm3Error::BudgetExceeded) => {
                 SnapshotOutcome::Failed("execution budget exhausted".into())
+            }
+            Err(calcvba_vm3::Vm3Error::Halted) => {
+                SnapshotOutcome::Failed("vm3: End escaped the run".into())
             }
         }
     }

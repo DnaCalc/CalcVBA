@@ -15,13 +15,13 @@ REGEDIT4
 "Class"="OxVba.TestEventServer.TestEventServer"
 "Assembly"="OxVba.TestEventServer, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null"
 "RuntimeVersion"="v4.0.30319"
-"CodeBase"="file:///C:/Work/DnaCalc/OxVba/tools/OxVba.TestEventServer/bin/Debug/net48/OxVba.TestEventServer.dll"
+"CodeBase"="file:///C:/Work/DnaCalc/CalcVBA/tools/OxVba.TestEventServer/bin/Debug/net48/OxVba.TestEventServer.dll"
 
 [HKEY_CURRENT_USER\Software\Classes\CLSID\{E2A30001-0001-0001-0001-000000000004}\InprocServer32\1.0.0.0]
 "Class"="OxVba.TestEventServer.TestEventServer"
 "Assembly"="OxVba.TestEventServer, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null"
 "RuntimeVersion"="v4.0.30319"
-"CodeBase"="file:///C:/Work/DnaCalc/OxVba/tools/OxVba.TestEventServer/bin/Debug/net48/OxVba.TestEventServer.dll"
+"CodeBase"="file:///C:/Work/DnaCalc/CalcVBA/tools/OxVba.TestEventServer/bin/Debug/net48/OxVba.TestEventServer.dll"
 
 [HKEY_CURRENT_USER\Software\Classes\CLSID\{E2A30001-0001-0001-0001-000000000004}\ProgId]
 @="OxVba.TestEventServer"

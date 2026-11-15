@@ -2,9 +2,10 @@
 //!
 //! `WithEvents` is only valid in a class module, so every scenario is a manifest
 //! (a `Main` procedural module + a `Sink` class module) run on vm3 via [`run_manifest`].
-//! Each event scenario fires the server's `Fire*` trigger, pumps the inbound event
-//! queue (the statement boundary / `DoEvents`), and reads the captured value(s)
-//! back into a `Main` global.
+//! Each event scenario fires the server's `Fire*` trigger; the handler runs inside that call, as
+//! in VBA (design doc `runtime-variant-automation-layout-2026-11-13.md`, step 8c), and the
+//! captured value(s) are read back into a `Main` global. `OxVba.TestEventServer` is the .NET
+//! server in `tools/OxVba.TestEventServer` (`register.ps1` registers it for the current user).
 //!
 //! These are NOT three-leg differential value tests — an event delivery is a single
 //! observable effect — so each asserts the captured vm3 effect directly (with the
@@ -28,7 +29,7 @@ use calcvba_symbol::manifest::ModuleKind;
 #[test]
 #[ignore = "live COM; run explicitly"]
 fn v1_on_simple_event_multi_fire() {
-    // 0-arg sink path; multi-fire single-pump drain. FireSimpleEvent x2 -> hits == 2.
+    // 0-arg sink path. FireSimpleEvent x2 -> hits == 2.
     let sink = "Private mHits As Long\n\
          Private WithEvents src As OxVba.TestEventServer\n\
          Public Sub Wire()\n\
@@ -200,17 +201,10 @@ fn v6_multi_sink_fan_out() {
 #[test]
 #[ignore = "live COM; run explicitly"]
 fn v7_excel_new_workbook_oop_event() {
-    // THE out-of-process flagship: an Excel connection point + STA event pump.
-    // Wire app, Workbooks.Add, pump. The handler also dereferences the `Wb`
-    // object arg (reads `Wb.Name`), so the verdict requires a live workbook
-    // binding, not Nothing / a dead proxy — a bare fire-count (mFired >= 1)
-    // would pass even if the object arg were broken.
+    // Out-of-process Excel `Application.NewWorkbook` through an early-bound `Workbooks.Add` with
+    // its optional argument omitted. The handler also dereferences the `Wb` object arg (reads
+    // `Wb.Name`), so the verdict requires a live workbook, not Nothing or a dead proxy.
     // verdict = IIf(mFired >= 1 And mWbOk >= 1, 1, 0).
-    //
-    // GREEN (verified live, ~5s). Out-of-process Excel `Application.NewWorkbook`
-    // is delivered end-to-end with a plain STA dispatch sink. Object-typed event
-    // args are retained and bound through the normal native-dispatch object table
-    // before the queued VM pump dispatches `appEv_NewWorkbook`.
     let main_src = "Public result As Long\n\
          Sub Main()\n\
          Dim s As New Sink\n\
@@ -245,18 +239,10 @@ fn v7_excel_new_workbook_oop_event() {
 #[test]
 #[ignore = "live COM; run explicitly"]
 fn v8_excel_sheet_change_oop_object_arg() {
-    // 2-arg OOP event + object-arg re-entry into a Range from inside the handler.
-    // Write to C-column cell, handler reads Target.Column (== 3). verdict = IIf(mCol = 3, 1, 0).
-    //
-    // GREEN (verified live, ~3s). Out-of-process `Workbook.SheetChange(Sh, Target)` is
-    // delivered end-to-end: the connection point is advised (events recovered from the
-    // live Workbook's typelib), the event fires, and BOTH object args (the `Sh` Worksheet
-    // and the `Target` Range) are marshalled across the apartment via the Global
-    // Interface Table and revived as live objects on the VM thread; the handler reads the
-    // revived `Target` Range's member `.Column` (late-bound, == 3). This also pins the
-    // named-argument path: Excel delivers SheetChange with rgdispidNamedArgs mapping the
-    // raw slots to declared parameter positions (`Sh` -> 0, `Target` -> 1), rather than as
-    // plain positional reversed args.
+    // 2-arg OOP event + object-arg re-entry into a Range from inside the handler. Write to a
+    // C-column cell; the handler reads Target.Column (== 3). Excel passes `Sh` and `Target` as
+    // named arguments (rgdispidNamedArgs maps them to positions 0 and 1).
+    // verdict = IIf(mCol = 3, 1, 0).
     let main_src = "Public result As Long\n\
          Sub Main()\n\
          Dim s As New Sink\n\
@@ -291,14 +277,10 @@ fn v8_excel_sheet_change_oop_object_arg() {
 #[test]
 #[ignore = "live COM; run explicitly"]
 fn v9_handler_re_entrancy() {
-    // `pumping` re-entrancy guard. FireValueChanged 3; the handler appends "(v", re-fires
-    // v-1 (while v > 1) and calls DoEvents, then appends "v)". With the guard the nested
-    // DoEvents is a NO-OP, so each handler invocation completes before the next is delivered
-    // (flat FIFO drain) -> "(33)(22)(11)". WITHOUT the guard the nested DoEvents pumps
-    // re-entrantly, interleaving the markers -> "(3(2(11)2)3)". The EXACT log thus
-    // distinguishes the two drain strategies; an order/set-insensitive check (e.g. max/min)
-    // could not, and would pass whether or not the guard exists.
-    // verdict = IIf(mLog = "(33)(22)(11)", 1, 0).
+    // An event fired inside a handler runs at once, nested inside it, as in VBA: Excel x64 with
+    // this server logs "(3(2(11)2)3)" (probe `temp/variant-layout-probe/events8tes`, 2026-11-15).
+    // FireValueChanged 3; the handler appends "(v", re-fires v-1 (while v > 1) and calls
+    // DoEvents, then appends "v)".
     let sink = "Private mLog As String\n\
          Private WithEvents src As OxVba.TestEventServer\n\
          Public Sub Wire()\n\
@@ -307,7 +289,7 @@ fn v9_handler_re_entrancy() {
          DoEvents\n\
          End Sub\n\
          Public Function Result() As Long\n\
-         Result = IIf(mLog = \"(33)(22)(11)\", 1, 0)\n\
+         Result = IIf(mLog = \"(3(2(11)2)3)\", 1, 0)\n\
          End Function\n\
          Private Sub src_OnValueChanged(ByVal value As Long)\n\
          mLog = mLog & \"(\" & CStr(value)\n\
@@ -320,52 +302,41 @@ fn v9_handler_re_entrancy() {
     run_event_case_result("V9", sink, 1);
 }
 
-// ── V10 (asymmetry contract): handler-error parity ───────────────────────────
+// ── V10: an unhandled handler error ends the run ──────────────────────────────
 
 #[test]
 #[ignore = "live COM; run explicitly"]
-fn v10_handler_error_swallowed_bridge_intact() {
-    // The COM pump SWALLOWS a handler error (pump_com_events `let _ =`), unlike a project
-    // RaiseEvent which propagates. The handler sets mEntered BEFORE raising, so the verdict
-    // requires both (a) the handler actually ran (mEntered = 1 — distinguishes "error
-    // swallowed" from "event never delivered", which the old mPing-only check could not)
-    // and (b) the bridge stayed intact afterwards (Ping() = 42). No `On Error` wraps the
-    // fire: the pump swallows the handler error so it never reaches Wire, hence a regression
-    // that PROPAGATED it would surface as an uncaught error (test failure) instead of being
-    // masked. verdict = IIf(mEntered = 1 And mPing = 42, 1, 0).
-    let sink = "Private mPing As Long\n\
-         Private mEntered As Long\n\
-         Private WithEvents src As OxVba.TestEventServer\n\
+fn v10_unhandled_handler_error_ends_the_run() {
+    // VBA reports an error a handler leaves unhandled as a top-level run-time error and ends the
+    // macro, even under the firing code's `On Error Resume Next` (Excel x64 with this server,
+    // probe `temp/variant-layout-probe/events8tes`, 2026-11-15).
+    let sink = "Private WithEvents src As OxVba.TestEventServer\n\
          Public Sub Wire()\n\
          Set src = New OxVba.TestEventServer\n\
+         On Error Resume Next\n\
          src.FireValueChanged 1\n\
-         DoEvents\n\
-         mPing = src.Ping()\n\
          End Sub\n\
          Public Function Result() As Long\n\
-         Result = IIf(mEntered = 1 And mPing = 42, 1, 0)\n\
+         Result = 1\n\
          End Function\n\
          Private Sub src_OnValueChanged(ByVal value As Long)\n\
-         mEntered = mEntered + 1\n\
          Err.Raise 5\n\
          End Sub\n";
-    run_event_case_result("V10", sink, 1);
-}
-
-// ── V11 (doc-gap): ByRef event arg write-back ────────────────────────────────
-
-#[test]
-#[ignore = "DOCUMENTED GAP: TestEventServer has no ByRef event arg; Excel BeforeClose(Cancel) is best-effort"]
-fn v11_byref_event_arg_documented_gap() {
-    // TestEventServer's event interface (IOxVbaTestEventServerEvents) has only
-    // by-value int args (OnSimpleEvent/OnValueChanged/OnPairChanged) — no ByRef-out
-    // event arg. A project `Event Validate(ByRef ok As Boolean)` works, but a COM
-    // ByRef event write-back needs e.g. Excel Workbook_BeforeClose(Cancel) (best-effort
-    // live) or a new server event. Discoverable, non-silent gap.
-    eprintln!(
-        "V11 GAP: no ByRef COM event arg on OxVba.TestEventServer. Add an event with a \
-         [in,out] arg (or use Excel Workbook.BeforeClose(Cancel)) to express this."
-    );
+    let main_src = "Public result As Long\n\
+         Sub Main()\n\
+         Dim s As New Sink\n\
+         s.Wire\n\
+         result = s.Result()\n\
+         End Sub\n";
+    let modules = vec![
+        ("Main", ModuleKind::Procedural, main_src.to_string()),
+        ("Sink", ModuleKind::Class, sink.to_string()),
+    ];
+    match run_manifest(modules, tes_ref()) {
+        Ok(snap) => panic!("V10: the run did not end: {snap:?}"),
+        Err(e) if is_typelib_absent(&e) => eprintln!("SKIP V10: {e}"),
+        Err(e) => assert!(e.contains("error 5"), "V10: {e}"),
+    }
 }
 
 // ── V12: subscription lifetime / Class_Terminate Unadvise ────────────────────

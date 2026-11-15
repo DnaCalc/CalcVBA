@@ -2,7 +2,8 @@
 //! executes, so a COM event fired inside a host call runs its WithEvents handler synchronously,
 //! as VBA does (VM3 registers itself around each host call; the JIT's helpers hold no borrow of
 //! the run across one, so one registration covers the run). An error the handler leaves
-//! unhandled ends the run once the host call returns (`ST_ABORT` with the fault recorded).
+//! unhandled ends the run once the host call returns (`ST_ABORT` with the fault recorded), and
+//! so does `End` in a handler (`ST_HALT`).
 use super::*;
 use crate::helpers::{after_jit_frame_pop, invoke_project_member_with_me};
 use calcvba_runtime::default_error_message;
@@ -98,6 +99,17 @@ impl EventExecutor for JitEventExecutor {
         }
         match result {
             Ok(_) => Ok(true),
+            Err(ST_HALT) => {
+                // `End` in the handler ends the whole run once the host call returns; the source
+                // sees the event as handled (Excel, probe events8end).
+                // SAFETY: the handler returned; the state may be borrowed again.
+                if let Some(exec) = unsafe { jit_exec_state_mut(state) } {
+                    exec.events
+                        .pending_abort
+                        .get_or_insert(calcvba_rt_abi::RunAbort::End);
+                }
+                Ok(true)
+            }
             Err(_) => {
                 // SAFETY: the handler returned; the state may be borrowed again.
                 let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
@@ -115,7 +127,9 @@ impl EventExecutor for JitEventExecutor {
                     description: err.description.clone(),
                     source: err.source.clone(),
                 };
-                exec.events.pending_abort.get_or_insert(fault);
+                exec.events
+                    .pending_abort
+                    .get_or_insert(calcvba_rt_abi::RunAbort::Fault(fault));
                 Err(reported)
             }
         }
@@ -150,8 +164,9 @@ pub(crate) unsafe fn enter_event_scope(
     }
 }
 
-/// `ST_ABORT` when a WithEvents handler left an error unhandled during the host call that just
-/// returned: the run ends with it, past every `On Error`.
+/// The status that ends the run when a WithEvents handler ended it during the host call that
+/// just returned: `ST_ABORT` for an error it left unhandled (past every `On Error`), `ST_HALT`
+/// for `End`.
 ///
 /// # Safety
 /// `state` is the live run's execution state, not borrowed across this call.
@@ -160,6 +175,6 @@ pub(crate) unsafe fn event_abort_status(state: *mut RawExecState) -> Option<i32>
     let exec = unsafe { jit_exec_state_mut(state) }?;
     exec.events
         .pending_abort
-        .is_some()
-        .then_some(calcvba_rt_abi::ST_ABORT)
+        .as_ref()
+        .map(calcvba_rt_abi::RunAbort::status)
 }

@@ -256,6 +256,29 @@ pub struct EventHandlerCall {
 pub type ProjectEventSink<'h> =
     Box<dyn FnMut(ObjectRef, i32, Vec<Variant>) -> Result<(), String> + 'h>;
 
+/// The end of a whole run, decided inside a procedure re-entered through a host call (a COM
+/// event's WithEvents handler) and acted on when that host call returns, since it cannot unwind
+/// through the host (Excel, probes events8 and events8end).
+#[derive(Debug, Clone)]
+pub enum RunAbort {
+    /// An error the handler left unhandled: a top-level run-time error, whatever `On Error` the
+    /// code that fired the event had.
+    Fault(Fault),
+    /// `End` in the handler: the rest of the handler, the code after the call that fired the
+    /// event and the callers all stop at once.
+    End,
+}
+
+impl RunAbort {
+    /// The ABI status a compiled caller returns for it: `ST_ABORT` or `ST_HALT`.
+    pub fn status(&self) -> i32 {
+        match self {
+            Self::Fault(_) => ST_ABORT,
+            Self::End => ST_HALT,
+        }
+    }
+}
+
 /// Shared event fabric state. Procedure execution remains engine-owned; the cells that
 /// describe subscriptions, ordering, and host sinks are VM-agnostic session state.
 #[derive(Default)]
@@ -265,10 +288,9 @@ pub struct EventFabric<'h> {
     pub next_withevents_order: u64,
     /// WithEvents sinks advised on COM sources, by WithEvents key.
     pub com_connections: HashMap<i64, ComEventConnection>,
-    /// An error a WithEvents handler did not handle: VBA reports it as a top-level run-time
-    /// error and ends the run, whatever `On Error` the code that fired the event had (Excel,
-    /// probe events8). Taken when the host call that delivered the event returns.
-    pub pending_abort: Option<Fault>,
+    /// How a procedure VBA code re-entered through a host call (a WithEvents handler) ended the
+    /// whole run. Taken when the host call that delivered the event returns.
+    pub pending_abort: Option<RunAbort>,
     pub withevents_iters: Vec<(Vec<ObjectRef>, usize)>,
     pub project_event_sink: Option<ProjectEventSink<'h>>,
 }
@@ -2571,9 +2593,9 @@ pub unsafe extern "C" fn rt_lib_invoke_with_policy(
         // ends the run past every `On Error` (design doc, step 8c).
         // SAFETY: the host call returned; a short borrow of the live state.
         if let Some(exec) = (unsafe { state_from_raw(state) })
-            && exec.events.pending_abort.is_some()
+            && let Some(abort) = &exec.events.pending_abort
         {
-            return ST_ABORT;
+            return abort.status();
         }
         let result = match result {
             Ok(value) => Ok(value),

@@ -517,6 +517,7 @@ pub fn run_ox_programs(executor: Executor, programs: &[calcvba_oxir::OxProgram])
                     }
                     Err(
                         err @ (calcvba_vm3::Vm3Error::Malformed(_)
+                        | calcvba_vm3::Vm3Error::Halted
                         | calcvba_vm3::Vm3Error::BudgetExceeded),
                     ) => RunOutcome {
                         result: Err(format!("vm3: {err}")),

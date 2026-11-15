@@ -290,7 +290,9 @@ impl<'p> CompiledImage<'p> {
                     unsafe { self.invoke_func(program_index, init, &[], run_root, state, None) }?;
                 if status == calcvba_rt_abi::ST_ABORT {
                     // An error a WithEvents handler left unhandled ends the run with it.
-                    if let Some(fault) = exec.events.pending_abort.take() {
+                    if let Some(calcvba_rt_abi::RunAbort::Fault(fault)) =
+                        exec.events.pending_abort.take()
+                    {
                         return Ok(JitOutcome {
                             values: Vec::new(),
                             err: JitFinalErr {
@@ -312,6 +314,8 @@ impl<'p> CompiledImage<'p> {
                     });
                 }
                 if status == ST_HALT {
+                    // `End`, here or in a WithEvents handler during a host call.
+                    exec.events.pending_abort = None;
                     return Ok(JitOutcome {
                         values: snapshot_values(exec, &run),
                         err: err_from_exec(exec),
@@ -340,7 +344,9 @@ impl<'p> CompiledImage<'p> {
                 }?;
                 if status == calcvba_rt_abi::ST_ABORT {
                     // An error a WithEvents handler left unhandled ends the run with it.
-                    if let Some(fault) = exec.events.pending_abort.take() {
+                    if let Some(calcvba_rt_abi::RunAbort::Fault(fault)) =
+                        exec.events.pending_abort.take()
+                    {
                         return Ok(JitOutcome {
                             values: Vec::new(),
                             err: JitFinalErr {
@@ -362,6 +368,8 @@ impl<'p> CompiledImage<'p> {
                     });
                 }
                 if status == ST_HALT {
+                    // `End`, here or in a WithEvents handler during a host call.
+                    exec.events.pending_abort = None;
                     return Ok(JitOutcome {
                         values: snapshot_values(exec, &run),
                         err: err_from_exec(exec),

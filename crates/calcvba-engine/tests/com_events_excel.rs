@@ -20,6 +20,7 @@ use calcvba_hal::HostPolicy;
 use calcvba_symbol::manifest as sym;
 
 const MAIN: &str = "Public result As String\n\
+Public trail As String\n\
 Sub Main()\n\
     Dim s As New Sink\n\
     result = s.Run()\n\
@@ -34,6 +35,7 @@ Private mCancel As Boolean\n\
 Private mDepth As Long\n\
 Private mLastWb As Object\n\
 Private mRaise As Boolean\n\
+Private mEnd As Boolean\n\
 \n\
 Public Property Let RaiseInHandler(ByVal value As Boolean)\n\
     mRaise = value\n\
@@ -91,10 +93,32 @@ Public Function RunError() As String\n\
     RunError = \"not ended: err=\" & Err.Number\n\
 End Function\n\
 \n\
+Public Function RunEnd() As String\n\
+    Dim wb As Object\n\
+    Set app = CreateObject(\"Excel.Application\")\n\
+    app.DisplayAlerts = False\n\
+    app.EnableEvents = True\n\
+    Set appEv = app\n\
+    mEnd = True\n\
+    On Error Resume Next\n\
+    Set wb = app.Workbooks.Add\n\
+    trail = trail & \" caller continued\"\n\
+    RunEnd = \"not ended\"\n\
+End Function\n\
+\n\
+Private Sub Class_Terminate()\n\
+    trail = trail & \" terminate\"\n\
+End Sub\n\
+\n\
 Private Sub appEv_NewWorkbook(ByVal Wb As Excel.Workbook)\n\
     mLog = mLog & \"[new \" & (Wb Is app.ActiveWorkbook) & \"]\"\n\
     Set mLastWb = Wb\n\
     If mRaise Then app.Quit: Err.Raise 1234, \"Sink\", \"handler failed\"\n\
+    If mEnd Then\n\
+        trail = trail & \" handler\"\n\
+        app.Quit\n\
+        End\n\
+    End If\n\
 End Sub\n\
 \n\
 Private Sub appEv_WorkbookBeforeClose(ByVal Wb As Excel.Workbook, Cancel As Boolean)\n\
@@ -183,5 +207,34 @@ End Sub\n";
         // The manifest path reports an uncaught error by its text ("uncaught error 1234 ...",
         // "VBA error 1234").
         assert!(format!("{error:?}").contains("1234"), "{name}: {error:?}");
+    }
+}
+
+#[test]
+#[ignore = "live COM; starts Excel"]
+fn end_in_a_handler_ends_the_whole_run_on_vm3_and_jit() {
+    // Excel (probe `events8end`): `End` in the handler stops the handler, the code after the
+    // call that fired the event and every caller; `Class_Terminate` does not run.
+    let main = "Public result As String\n\
+Public trail As String\n\
+Sub Main()\n\
+    Dim s As New Sink\n\
+    trail = \"main\"\n\
+    result = s.RunEnd()\n\
+    trail = trail & \" main continued\"\n\
+End Sub\n";
+    for (name, config) in [("vm3", HostConfig::vm3()), ("jit", HostConfig::jit())] {
+        let values = engine(config)
+            .execute_manifest_with_variant_snapshot(&manifest(main))
+            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        let trail = values
+            .iter()
+            .find_map(|v| {
+                v.as_bstr()
+                    .map(|s| s.to_string())
+                    .filter(|s| s.starts_with("main"))
+            })
+            .unwrap_or_else(|| panic!("{name}: no trail in {values:?}"));
+        assert_eq!(trail, "main handler", "{name}");
     }
 }

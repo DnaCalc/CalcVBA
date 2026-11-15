@@ -355,6 +355,9 @@ pub enum Vm3Error {
     /// An error a WithEvents handler did not handle: VBA reports it as a top-level run-time
     /// error and ends the run; no `On Error` handler catches it (Excel, probe events8).
     EventAbort(Fault),
+    /// `End` inside a nested activation: it unwinds every enclosing activation to the
+    /// outermost `run_loop`, which ends the run as `End` there does. Never returned from the VM.
+    Halted,
 }
 
 impl std::fmt::Display for Vm3Error {
@@ -369,6 +372,7 @@ impl std::fmt::Display for Vm3Error {
                 "uncaught error {} in an event handler: {}",
                 fault.code, fault.message
             ),
+            Vm3Error::Halted => write!(f, "the run ended with End"),
         }
     }
 }
@@ -498,6 +502,9 @@ pub struct Vm3<'h> {
     /// `As New` object slots, keyed by the resolved storage location. A read of
     /// one of these slots creates a fresh instance when the slot is Empty/Nothing.
     as_new_slots: HashMap<Loc, OxAsNew>,
+    /// Nested `run_loop` activations (host entries, object dispatch, event handlers, native
+    /// callbacks): `End` below the outermost unwinds with [`Vm3Error::Halted`].
+    run_depth: usize,
 }
 
 impl<'h> Vm3<'h> {
@@ -511,6 +518,7 @@ impl<'h> Vm3<'h> {
             for_each: HashMap::new(),
             param_array_aliases: HashMap::new(),
             as_new_slots: HashMap::new(),
+            run_depth: 0,
         }
     }
 
@@ -828,6 +836,7 @@ impl<'h> Vm3<'h> {
             for_each: HashMap::new(),
             param_array_aliases: HashMap::new(),
             as_new_slots: HashMap::new(),
+            run_depth: 0,
         };
         // Every cross-project reference must resolve before any code runs.
         vm.validate_links()?;
@@ -1278,6 +1287,36 @@ impl<'h> Vm3<'h> {
     /// recursion is bounded by the frame ceiling (error 28), never a host stack
     /// overflow — and the model mirrors vm2's iterative dispatch.
     fn run_loop(&mut self, base: usize) -> Result<(), Vm3Error> {
+        self.run_depth += 1;
+        let result = self.run_loop_body(base);
+        self.run_depth -= 1;
+        match result {
+            // `End` in a nested activation (a handler, a callback, a called method) reached the
+            // outermost loop: end the run here as `End` at this level would.
+            Err(Vm3Error::Halted) if self.run_depth == 0 => {
+                self.exec.events.pending_abort = None;
+                self.halt_to(base);
+                Ok(())
+            }
+            other => other,
+        }
+    }
+
+    /// VBA `End`: stop the *entire* program at any call depth, with no return to the caller and
+    /// no finalization. Unwind to the base frame (which stays on the stack to back the snapshot).
+    fn halt_to(&mut self, base: usize) {
+        self.truncate_frames_with_withevents_cleanup(base + 1);
+        self.prune_param_array_aliases_from_depth(self.frames.len());
+        // Re-derive `cur` to the surviving (base/entry) frame's program: `End` may fire inside a
+        // cross-program callee, and the post-run snapshot reader (`slot`) reads
+        // `programs[cur]`'s globals, which must be the entry program's, to stay consistent with
+        // the entry frame's locals it also reads.
+        if let Some(frame) = self.frames.get(base) {
+            self.cur = frame.prog;
+        }
+    }
+
+    fn run_loop_body(&mut self, base: usize) -> Result<(), Vm3Error> {
         let _policy = self.exec.host.enter_com_policy();
         while self.frames.len() > base {
             let top = self.frames.len() - 1;
@@ -1339,17 +1378,13 @@ impl<'h> Vm3<'h> {
                     }
                     self.do_return()?;
                 }
-                // VBA `End`: stop the *entire* program immediately at any call depth — no
-                // return to the caller, no finalization. Unwind to the base frame (which
-                // stays on the stack to back the snapshot) and end the run.
+                // VBA `End`: stop the *entire* program immediately at any call depth. In a
+                // nested activation it unwinds to the outermost loop, which ends the run.
                 OxTerminator::Halt => {
-                    self.truncate_frames_with_withevents_cleanup(base + 1);
-                    self.prune_param_array_aliases_from_depth(self.frames.len());
-                    // Re-derive `cur` to the surviving (base/entry) frame's program: `End` may
-                    // fire inside a cross-program callee, and the post-run snapshot reader
-                    // (`slot`) reads `programs[cur]`'s globals — which must be the entry
-                    // program's, to stay consistent with the entry frame's locals it also reads.
-                    self.cur = self.frames[base].prog;
+                    if self.run_depth > 1 {
+                        return Err(Vm3Error::Halted);
+                    }
+                    self.halt_to(base);
                     break;
                 }
                 // The landing pad: dispatch the in-flight fault on the activation's
@@ -4893,7 +4928,8 @@ impl<'h> Vm3<'h> {
     /// uncatchable end of the run.
     fn take_event_abort(&mut self) -> Result<(), Vm3Error> {
         match self.exec.events.pending_abort.take() {
-            Some(fault) => Err(Vm3Error::EventAbort(fault)),
+            Some(calcvba_rt_abi::RunAbort::Fault(fault)) => Err(Vm3Error::EventAbort(fault)),
+            Some(calcvba_rt_abi::RunAbort::End) => Err(Vm3Error::Halted),
             None => Ok(()),
         }
     }
@@ -5223,6 +5259,14 @@ impl<'h> Vm3<'h> {
             true,
         ) {
             Ok(ret) => Self::callback_return_to_isize(&ret),
+            // `End` in a callback ends the whole run once the Declare that called back returns.
+            Err(Vm3Error::Halted) => {
+                self.exec
+                    .events
+                    .pending_abort
+                    .get_or_insert(calcvba_rt_abi::RunAbort::End);
+                0
+            }
             Err(_) => 0,
         }
     }
@@ -5863,6 +5907,15 @@ impl calcvba_runtime::events::EventExecutor for Vm3<'_> {
         );
         match handler_result {
             Ok(_) => Ok(true),
+            // `End` in the handler ends the whole run once the host call returns; the source
+            // sees the event as handled (Excel, probe events8end).
+            Err(Vm3Error::Halted) => {
+                self.exec
+                    .events
+                    .pending_abort
+                    .get_or_insert(calcvba_rt_abi::RunAbort::End);
+                Ok(true)
+            }
             Err(error) => {
                 let fault = match error {
                     Vm3Error::Fault(fault) | Vm3Error::EventAbort(fault) => fault,
@@ -5873,7 +5926,10 @@ impl calcvba_runtime::events::EventExecutor for Vm3<'_> {
                     description: fault.message.clone(),
                     source: fault.source.clone().unwrap_or_default(),
                 };
-                self.exec.events.pending_abort.get_or_insert(fault);
+                self.exec
+                    .events
+                    .pending_abort
+                    .get_or_insert(calcvba_rt_abi::RunAbort::Fault(fault));
                 Err(reported)
             }
         }

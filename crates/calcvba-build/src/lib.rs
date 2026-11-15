@@ -130,7 +130,7 @@ pub fn build_wrapped_com_server(
 
     let ox_image = build_artifacts(
         &closure,
-        calcvba_symbol::DictionarySource::Engine,
+        calcvba_symbol::DictionarySource::platform_default(),
         &calcvba_oxir::elaborate::ElaborateOptions::default(),
     )?;
     let oxi_path = options.out_dir.join(format!("{artifact_stem}.oxi"));
@@ -190,7 +190,7 @@ pub fn build_oximage(project_path: &Path, out_dir: &Path) -> Result<PathBuf, Bui
         })?;
     let image = build_artifacts(
         &closure,
-        calcvba_symbol::DictionarySource::Engine,
+        calcvba_symbol::DictionarySource::platform_default(),
         &calcvba_oxir::elaborate::ElaborateOptions::default(),
     )?;
     let bytes = image

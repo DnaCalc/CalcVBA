@@ -501,6 +501,9 @@ impl HostServices for PolicyHost {
     fn policy(&self) -> &HostPolicy {
         self.inner.policy()
     }
+    fn permits_com_activation(&self) -> bool {
+        !self.deny.contains(Capability::ComActivate) && self.inner.permits_com_activation()
+    }
     fn console(&self) -> &dyn ConsoleHal {
         self.inner.console()
     }

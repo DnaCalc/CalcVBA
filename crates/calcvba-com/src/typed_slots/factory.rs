@@ -23,33 +23,17 @@ fn native_input(
         // SAFETY: the boundary helper transferred one native dispatch reference.
         return Ok(unsafe { OwnedComInterface::from_owned(pointer) });
     }
-    if !object.is_compat_object() {
+    let _ = bridge;
+    if !object.is_compat_object() && !object.is_nothing_placeholder() {
+        // A native object is its interface pointer (design doc, step 8); the ObjectRef cannot
+        // leave its thread, so it is in this apartment.
         // SAFETY: an ObjectRef owns a same-apartment IUnknown; clone transfers
         // exactly one reference. The selected imported IID is queried by build.
         return Ok(unsafe {
             OwnedComInterface::from_owned(object.clone().into_raw_iunknown().cast())
         });
     }
-    let state = bridge
-        .shared_state()
-        .lock()
-        .map_err(|_| "COM state lock poisoned")?;
-    let binding = state
-        .bindings
-        .get(&state.token_for_object(object))
-        .ok_or("unbound native COM receiver")?;
-    if binding.native_owner_thread != std::thread::current().id() {
-        return Err("native COM receiver belongs to a different thread/apartment".into());
-    }
-    let pointer = binding.native_dispatch as *mut crate::RawIDispatch;
-    if pointer.is_null() {
-        return Err("native COM receiver has no native dispatch".into());
-    }
-    // SAFETY: the locked binding retains this same-apartment native object.
-    unsafe {
-        crate::add_ref_dispatch(pointer);
-        Ok(OwnedComInterface::from_owned(pointer.cast()))
-    }
+    Err("unbound native COM receiver".into())
 }
 
 impl calcvba_host_api::HostObjectServices for NativeServices {

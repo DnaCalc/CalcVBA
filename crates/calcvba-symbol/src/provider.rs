@@ -178,16 +178,12 @@ pub trait TypeLibResolver {
         &self,
         request: &calcvba_com::TypeLibResolveRequest,
     ) -> Option<calcvba_com::TypeLibMetadataBlob>;
-    /// Where `Scripting.Dictionary` comes from for code bound against this resolver.
-    ///
-    /// The target is [`DictionarySource::platform_default`]: the Scripting runtime on Windows,
-    /// as Excel uses it. The default stays [`DictionarySource::Engine`] until the interpreter
-    /// lanes' COM client runs the Scripting runtime fully (`New` of a COM class, late-bound
-    /// ByRef arguments, late-bound names without catalog metadata: dc-yqq0.8); lanes that do
-    /// already (native exports, typed COM hosts) answer the platform default. A host that may
-    /// not activate COM classes (Safe policy) keeps the engine class.
+    /// Where `Scripting.Dictionary` comes from for code bound against this resolver: the
+    /// Scripting runtime on Windows, as Excel uses it, and the engine class elsewhere
+    /// ([`DictionarySource::platform_default`]). A host that may not activate COM classes (Safe
+    /// policy) keeps the engine class.
     fn dictionary_source(&self) -> DictionarySource {
-        DictionarySource::Engine
+        DictionarySource::platform_default()
     }
     /// Nominal identity from the same resolved metadata snapshot. Providers
     /// with an explicit type descriptor can retain even a memberless interface.

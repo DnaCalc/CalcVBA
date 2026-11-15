@@ -117,6 +117,11 @@ pub trait HostServices {
     fn authorize_com_activation(&self, _op: &'static str, _target: &str) -> HalResult<()> {
         Ok(())
     }
+    /// Whether code bound for this host may activate COM classes at all, asked at compile time
+    /// (no audit record): a host that may not gets the engine's own `Scripting.Dictionary`.
+    fn permits_com_activation(&self) -> bool {
+        self.policy().allow_com_activation
+    }
     fn project_catalog(&self) -> Option<&dyn ProjectCatalogHal> {
         None
     }
@@ -178,6 +183,45 @@ pub fn invoke_object_by_request<H: ComHal + ?Sized>(
         }
     }
     Ok(value)
+}
+
+/// The early-bound call for runtime-handle objects: [`ComHal::invoke_early_bound`] over the
+/// argument values, then each returned ByRef value written through its reference.
+/// [`ComHal::invoke_early_bound_object`]'s default.
+pub fn invoke_early_bound_object_by_request<H: ComHal + ?Sized>(
+    hal: &H,
+    object: &ObjectRef,
+    member: &TypeLibMemberMetadata,
+    args: &[calcvba_com::call::ComArg<'_>],
+) -> HalResult<Variant> {
+    use calcvba_com::call::ComArgValue;
+    let call_args: Vec<_> = args
+        .iter()
+        .enumerate()
+        .map(|(index, arg)| calcvba_com::DynamicCallArg {
+            value: match arg.value {
+                ComArgValue::Value(value) => {
+                    Some(calcvba_com::DynamicValue::from_variant(value.clone()))
+                }
+                // Cloning a reference reads its target.
+                ComArgValue::Reference(reference) => {
+                    Some(calcvba_com::DynamicValue::from_variant(reference.clone()))
+                }
+                ComArgValue::Missing => None,
+            },
+            name: arg.name.map(str::to_string),
+            by_ref: reference_slot(args, index),
+        })
+        .collect();
+    let result = hal.invoke_early_bound(object.clone(), member, &call_args)?;
+    for writeback in result.writebacks {
+        if let Some(ComArgValue::Reference(reference)) =
+            args.get(writeback.slot.id as usize).map(|arg| arg.value)
+        {
+            write_through_reference(reference, writeback.value)?;
+        }
+    }
+    Ok(result.value.unwrap_or_else(Variant::empty))
 }
 
 /// The write-back slot of a ByRef argument for the dynamic request: references to the same
@@ -647,34 +691,7 @@ pub trait ComHal {
         member: &TypeLibMemberMetadata,
         args: &[calcvba_com::call::ComArg<'_>],
     ) -> HalResult<Variant> {
-        use calcvba_com::call::ComArgValue;
-        let call_args: Vec<_> = args
-            .iter()
-            .enumerate()
-            .map(|(index, arg)| calcvba_com::DynamicCallArg {
-                value: match arg.value {
-                    ComArgValue::Value(value) => {
-                        Some(calcvba_com::DynamicValue::from_variant(value.clone()))
-                    }
-                    // Cloning a reference reads its target.
-                    ComArgValue::Reference(reference) => {
-                        Some(calcvba_com::DynamicValue::from_variant(reference.clone()))
-                    }
-                    ComArgValue::Missing => None,
-                },
-                name: arg.name.map(str::to_string),
-                by_ref: reference_slot(args, index),
-            })
-            .collect();
-        let result = self.invoke_early_bound(object.clone(), member, &call_args)?;
-        for writeback in result.writebacks {
-            if let Some(ComArgValue::Reference(reference)) =
-                args.get(writeback.slot.id as usize).map(|arg| arg.value)
-            {
-                write_through_reference(reference, writeback.value)?;
-            }
-        }
-        Ok(result.value.unwrap_or_else(Variant::empty))
+        invoke_early_bound_object_by_request(self, object, member, args)
     }
     /// Advise a WithEvents sink for the source interface `interface` (an IID in registry form,
     /// from the declared type's type library) on `source`; the sink hands each event to the

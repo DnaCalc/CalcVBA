@@ -57,6 +57,16 @@ impl WindowsComBridgeDispatchError {
     }
 }
 
+/// The ObjectRef over a native `IDispatch` the caller owns one reference to (null: Nothing).
+///
+/// # Safety
+/// `dispatch` is null or a live IDispatch carrying one reference, which the ObjectRef takes over.
+unsafe fn object_from_owned_dispatch(dispatch: *mut RawIDispatch) -> ObjectRef {
+    // SAFETY: forwarded.
+    unsafe { ObjectRef::from_raw_iunknown_owned(dispatch.cast()) }
+        .unwrap_or_else(|| ObjectRef::from_compat_identity(0))
+}
+
 impl WindowsComBridge {
     pub fn new(force_registered_test_dispatch: bool) -> Self {
         Self {
@@ -68,12 +78,10 @@ impl WindowsComBridge {
         }
     }
 
-    #[cfg(target_arch = "x86_64")]
-    pub(crate) fn record_typed_vtable_call(&self) {
+    pub fn record_typed_vtable_call(&self) {
         self.vtable_call_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    #[cfg(target_arch = "x86_64")]
     pub fn record_typed_dispatch_call(&self) {
         self.idispatch_call_count.fetch_add(1, Ordering::Relaxed);
     }
@@ -398,6 +406,14 @@ impl WindowsComBridge {
     where
         F: FnMut(&mut ComBinding) -> Result<(), String>,
     {
+        // A native object is its interface pointer (design doc, step 8): no binding, so no
+        // type-library metadata is loaded for it.
+        let dispatch =
+            activate_runtime_dispatch(prog_id_name, self.force_registered_test_dispatch)?;
+        if !dispatch.is_null() {
+            // SAFETY: activation returned one retained IDispatch reference.
+            return Ok(unsafe { object_from_owned_dispatch(dispatch) });
+        }
         let metadata = self.load_typelib_metadata_for_prog_id_name(prog_id_name)?;
         activate_runtime_object_binding_shared(
             &self.state,
@@ -414,9 +430,8 @@ impl WindowsComBridge {
     pub fn get_active_object(&self, prog_id_name: &str) -> Result<ObjectRef, String> {
         let dispatch = crate::get_active_dispatch_by_prog_id(prog_id_name)?;
         // SAFETY: `get_active_dispatch_by_prog_id` returns one retained IDispatch reference
-        // (or errors before returning), and `bind_host_dispatch_object` takes ownership of
-        // that single reference on both success and failure.
-        unsafe { self.bind_host_dispatch_object(prog_id_name, dispatch) }
+        // (or errors before returning), which the ObjectRef takes over.
+        Ok(unsafe { object_from_owned_dispatch(dispatch) })
     }
 
     /// `GetObject("<pathname>"[, class])` — bind to the object a file path names
@@ -429,11 +444,26 @@ impl WindowsComBridge {
         class_name: Option<&str>,
     ) -> Result<ObjectRef, String> {
         let dispatch = crate::bind_dispatch_by_path(path)?;
-        let label = class_name.unwrap_or(path);
+        let _ = class_name;
         // SAFETY: `bind_dispatch_by_path` returns one retained IDispatch reference (or errors
-        // before returning), and `bind_host_dispatch_object` takes ownership of that single
-        // reference on both success and failure.
-        unsafe { self.bind_host_dispatch_object(label, dispatch) }
+        // before returning), which the ObjectRef takes over.
+        Ok(unsafe { object_from_owned_dispatch(dispatch) })
+    }
+
+    /// Registers `dispatch` as the host root object named `prog_id_name` (`Application`, …),
+    /// which `CreateObject` of that name and the host-root routes return from then on.
+    ///
+    /// # Safety
+    ///
+    /// `dispatch` must be null or carry one retained `IDispatch` reference owned by the caller,
+    /// which this method takes over.
+    pub unsafe fn bind_host_root(
+        &self,
+        prog_id_name: &str,
+        dispatch: *mut RawIDispatch,
+    ) -> Result<ObjectRef, String> {
+        // SAFETY: forwarded.
+        unsafe { self.bind_host_dispatch_object(prog_id_name, dispatch) }
     }
 
     pub fn bind_projection_object(
@@ -459,24 +489,9 @@ impl WindowsComBridge {
         if dispatch.is_null() {
             return Ok(ObjectRef::from_compat_identity(0));
         }
-        let metadata = match self.load_typelib_metadata_for_prog_id_name(prog_id_name) {
-            Ok(metadata) => metadata,
-            Err(message) => {
-                // SAFETY: per this method's `# Safety` we took ownership of the caller's one
-                // retained `IDispatch` reference, `dispatch` was checked non-null above, and
-                // this error return is the sole exit on this path, so the reference is
-                // released exactly once.
-                unsafe {
-                    crate::release_dispatch(dispatch);
-                }
-                return Err(message);
-            }
-        };
-        let mut binding = binding_from_typelib_metadata(
-            prog_id_name.to_string(),
-            dispatch as usize,
-            metadata.as_ref(),
-        );
+        // A host root needs no type-library metadata: it is its interface pointer.
+        let mut binding =
+            binding_from_typelib_metadata(prog_id_name.to_string(), dispatch as usize, None);
         // SAFETY: `dispatch` was checked non-null above and per this method's `# Safety`
         // carries one retained reference owned by us, so it is a live `IDispatch` whose
         // `IUnknown` vtable can be queried.
@@ -540,6 +555,16 @@ impl WindowsComBridge {
     /// (a typeinfo named `"IDictionary"` would otherwise regress `"Dictionary"`).
     /// `None` when there is no binding to name.
     pub fn object_type_name(&self, object: ObjectRef) -> Result<Option<String>, String> {
+        if !object.is_compat_object() {
+            if object.is_nothing_placeholder() {
+                return Ok(None);
+            }
+            // A foreign object is its interface pointer: its class from its own type information.
+            // SAFETY: the ObjectRef retains a live IUnknown for the call.
+            return Ok(unsafe {
+                crate::windows_typelib_loader::live_object_class_name(object.raw_iunknown().cast())
+            });
+        }
         let (prog_id_name, dispatch) = {
             let state = self.lock_state("object_type_name")?;
             match state.bindings.get(&state.token_for_object(&object)) {

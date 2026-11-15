@@ -7,6 +7,7 @@
 //! to a Variant cell, `VT_BYREF | vt` to typed storage), and the result moves into the runtime
 //! as it is. Objects are their interface pointers. VM3, the JIT and the typed host stack call
 //! these functions; nothing here keeps per-object state.
+pub mod early;
 mod events;
 pub use events::{EventConnection, advise_events};
 
@@ -124,6 +125,12 @@ impl Dispatch {
         Ok(ids)
     }
 
+    /// The name of member `id`, from the object's type information.
+    fn member_name(&self, id: i32) -> Option<String> {
+        // SAFETY: a retained IDispatch for the call.
+        unsafe { crate::windows_typelib_loader::live_member_name(self.raw(), id) }
+    }
+
     /// One `IDispatch::Invoke` with `args` in source order.
     ///
     /// # Safety
@@ -141,18 +148,24 @@ impl Dispatch {
             return Err(Fault::number(450));
         }
         // Member and named-argument DISPIDs.
-        let mut names: Vec<&str> = Vec::new();
-        if let Member::Name(name) = member {
-            names.push(name);
-        }
         let named: Vec<usize> = args
             .iter()
             .enumerate()
             .filter_map(|(i, arg)| arg.name.map(|_| i))
             .collect();
-        if !named.is_empty() && matches!(member, Member::Id(_)) {
-            // Named arguments need the member's name to resolve.
-            return Err(Fault::number(448));
+        // Named arguments resolve against the member's name; a member given by DISPID gets its
+        // name from the object's type information.
+        let member_name;
+        let member = match member {
+            Member::Id(id) if !named.is_empty() => {
+                member_name = self.member_name(id).ok_or_else(|| Fault::number(448))?;
+                Member::Name(member_name.as_str())
+            }
+            member => member,
+        };
+        let mut names: Vec<&str> = Vec::new();
+        if let Member::Name(name) = member {
+            names.push(name);
         }
         names.extend(named.iter().filter_map(|&i| args[i].name));
         let ids = if names.is_empty() {

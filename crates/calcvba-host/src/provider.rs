@@ -102,7 +102,12 @@ impl Provider {
                     });
             }
         }
-        let resolver = Libraries(&self.object_libraries, &*self.resolver, self.dictionary);
+        let resolver = Libraries(
+            &self.object_libraries,
+            &*self.resolver,
+            self.dictionary,
+            self.host.permits_com_activation(),
+        );
         let mut module = Module::load_project_graph(&manifests, &resolver).map_err(error)?;
         // Reuse the normal compiler retention pass for every unit, including
         // untyped Object/Variant defaults absent from source declarations.
@@ -222,7 +227,12 @@ impl Provider {
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
         };
-        let resolver = Libraries(&libraries, &*self.resolver, self.dictionary);
+        let resolver = Libraries(
+            &libraries,
+            &*self.resolver,
+            self.dictionary,
+            self.host.permits_com_activation(),
+        );
         let mut module = Module::load_project(&manifest, &resolver).map_err(error)?;
         // An untyped Object/Variant can arrive from any explicitly supplied
         // host interface, even when no source declaration mentions that type.
@@ -774,9 +784,15 @@ struct Libraries<'a>(
     &'a [api::TypedObjectLibrary],
     &'a dyn TypeLibResolver,
     Option<calcvba_symbol::DictionarySource>,
+    /// Whether the host may activate native COM classes; a host that may not gets the engine's
+    /// own Scripting.Dictionary.
+    bool,
 );
 impl TypeLibResolver for Libraries<'_> {
     fn dictionary_source(&self) -> calcvba_symbol::DictionarySource {
+        if !self.3 {
+            return calcvba_symbol::DictionarySource::Engine;
+        }
         self.2.unwrap_or_else(|| self.1.dictionary_source())
     }
     fn interface_iid(

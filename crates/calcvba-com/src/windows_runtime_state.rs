@@ -7,10 +7,9 @@ use crate::{
     ComBinding, ComCallbackToken, ComEventPath, ComEventSpec, ComInvokeArg, ComMemberSpec,
     ComMemberToken, ComObjectToken, ComRuntimeState, ComSubscriptionToken, ComValue,
     DispatchEventSinkConfig, RawIDispatch, WindowsConnectionPointTransport,
-    binding_from_typelib_metadata, get_dispid_by_name, query_unknown_from_dispatch,
-    release_dispatch, release_unknown, source_interface_event_spec_supported,
-    try_advise_dispatch_event_sink, try_advise_single_i32_source_interface_event_sink,
-    unadvise_connection_point,
+    binding_from_typelib_metadata, get_dispid_by_name, release_dispatch, release_unknown,
+    source_interface_event_spec_supported, try_advise_dispatch_event_sink,
+    try_advise_single_i32_source_interface_event_sink, unadvise_connection_point,
 };
 
 use calcvba_runtime::ObjectRef;
@@ -45,7 +44,9 @@ impl WindowsComSubscriptionTransport {
 #[derive(Debug, Default)]
 pub struct WindowsComClientState {
     inner: ComRuntimeState<WindowsComSubscriptionTransport>,
-    host_objects_by_prog_id: BTreeMap<String, ComObjectToken>,
+    /// The host's root objects (`Application`, …) by ProgID: the state owns one `IDispatch`
+    /// reference to each, and every lookup hands out a reference of its own.
+    host_objects_by_prog_id: BTreeMap<String, usize>,
     /// Per-interface-IID cache of "is this interface marshaled by PSOAInterface?"
     /// (`HKCR\Interface\{iid}\ProxyStubClsid32 == {00020424-…}`, the oleaut
     /// universal marshaler whose proxy is a typelib-aligned, vtable-callable slot
@@ -63,36 +64,14 @@ pub struct WindowsComClientState {
 }
 
 impl WindowsComClientState {
-    /// The binding of `object`: by handle for a runtime compat object, by COM identity for a
-    /// foreign object that is its interface pointer (step 8a). `ComObjectToken(0)`, which no
-    /// binding has, when none matches.
+    /// The binding of a runtime compat object (by handle). A foreign object is its interface
+    /// pointer and has no binding (design doc, step 8): `ComObjectToken(0)`, which no binding
+    /// has.
     pub fn token_for_object(&self, object: &ObjectRef) -> ComObjectToken {
         if object.is_compat_object() {
             return ComObjectToken::new(object.raw());
         }
-        let pointer = object.raw_iunknown() as usize;
-        // SAFETY: the ObjectRef retains a live IUnknown for the call; the identity reference
-        // QueryInterface returns is released at once (only its address is compared).
-        let unknown = unsafe {
-            crate::query_interface_pointer(
-                object.raw_iunknown().cast(),
-                &crate::windows_client::IID_IUNKNOWN,
-            )
-        }
-        .ok()
-        .map(|unknown| {
-            // SAFETY: one owned reference from QueryInterface.
-            unsafe { release_unknown(unknown) };
-            unknown as usize
-        });
-        self.bindings
-            .iter()
-            .find(|(_, binding)| {
-                (unknown.is_some() && Some(binding.native_unknown) == unknown)
-                    || (binding.native_dispatch != 0 && binding.native_dispatch == pointer)
-            })
-            .map(|(token, _)| *token)
-            .unwrap_or_else(|| ComObjectToken::new(0))
+        ComObjectToken::new(0)
     }
 
     /// Look up the cached "interface IID is marshaled by PSOAInterface" decision.
@@ -141,7 +120,10 @@ impl Drop for WindowsComClientState {
         self.subscriptions.clear();
         self.callbacks.clear();
         self.pending_callbacks.clear();
-        self.host_objects_by_prog_id.clear();
+        for dispatch in std::mem::take(&mut self.host_objects_by_prog_id).into_values() {
+            // SAFETY: the map owns exactly one retained IDispatch reference per host root.
+            unsafe { release_dispatch(dispatch as *mut RawIDispatch) };
+        }
         for binding in self.bindings.values_mut() {
             if binding.native_dispatch != 0 {
                 // SAFETY: the bindings map owns exactly one retained `IDispatch` reference
@@ -510,47 +492,12 @@ pub unsafe fn bind_native_dispatch_result(
         }
         return object;
     }
-    // SAFETY: `dispatch` was checked non-null above, and per this function's `# Safety`
-    // the caller transferred one retained reference to us, so it is a live `IDispatch`
-    // whose `IUnknown` vtable can be queried.
-    let unknown = match unsafe { query_unknown_from_dispatch(dispatch) } {
-        Ok(unknown) => unknown,
-        Err(_) => {
-            // SAFETY: QueryInterface failed so no IUnknown reference was retained; we own
-            // the caller's single retained `IDispatch` reference (non-null, checked above)
-            // and release it exactly once before returning Nothing.
-            unsafe {
-                release_dispatch(dispatch);
-            }
-            return ObjectRef::from_compat_identity(0);
-        }
-    };
-    if let Some((handle, binding)) = state
-        .bindings
-        .iter_mut()
-        .find(|(_, binding)| binding.native_unknown == unknown as usize)
-    {
-        // SAFETY: an existing binding already owns retained dispatch/unknown references for
-        // this COM identity, so the caller's incoming `IDispatch` reference (ours per this
-        // function's `# Safety`) and the `IUnknown` reference just AddRef'd by
-        // `query_unknown_from_dispatch` are surplus duplicates; each is released exactly
-        // once here.
-        unsafe {
-            release_dispatch(dispatch);
-            release_unknown(unknown.cast());
-        }
-        return retained_runtime_object(binding, *handle);
-    }
-    let handle = state.allocate_handle();
-    let mut binding = binding_from_typelib_metadata(
-        format!("{prog_id_hint}::<invoke-result>"),
-        dispatch as usize,
-        None,
-    );
-    binding.native_unknown = unknown as usize;
-    let object = retained_runtime_object(&mut binding, handle);
-    state.bindings.insert(handle, binding);
-    object
+    let _ = (state, prog_id_hint);
+    // A native object is its interface pointer (design doc, step 8): the caller's reference
+    // moves into the ObjectRef, and nothing is bound.
+    // SAFETY: `dispatch` is non-null and carries the one reference the caller transferred.
+    unsafe { ObjectRef::from_raw_iunknown_owned(dispatch.cast()) }
+        .unwrap_or_else(|| ObjectRef::from_compat_identity(0))
 }
 
 pub fn release_object_binding(
@@ -559,8 +506,22 @@ pub fn release_object_binding(
 ) -> Result<ReleasedWindowsComObject, String> {
     let token = state.token_for_object(&object);
     if token.raw() == 0 && !object.is_compat_object() {
-        // A foreign object that is its interface pointer and has no binding: its references
-        // are its cells', released with them; nothing is held here.
+        // A foreign object is its interface pointer and has no binding: its references are its
+        // cells', released with them. A host root the host releases leaves the registry, which
+        // drops the one reference it held.
+        let pointer = object.raw_iunknown() as usize;
+        let roots: Vec<String> = state
+            .host_objects_by_prog_id
+            .iter()
+            .filter(|(_, root)| **root == pointer)
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in roots {
+            if let Some(root) = state.host_objects_by_prog_id.remove(&name) {
+                // SAFETY: the registry owned exactly this one reference.
+                unsafe { release_dispatch(root as *mut RawIDispatch) };
+            }
+        }
         return Ok(ReleasedWindowsComObject {
             transports: Vec::new(),
             stale_callbacks: BTreeSet::new(),
@@ -712,6 +673,20 @@ pub fn insert_bound_object_binding(
     state: &mut WindowsComClientState,
     mut binding: ComBinding,
 ) -> ObjectRef {
+    if binding.native_dispatch != 0 {
+        // A native object is its interface pointer: the binding's IDispatch reference moves
+        // into the ObjectRef, its identity reference is released, and nothing is kept.
+        // SAFETY: the binding owns one retained reference to each pointer.
+        unsafe {
+            release_unknown(binding.native_unknown as *mut core::ffi::c_void);
+            if let Some(object) =
+                ObjectRef::from_raw_iunknown_owned(binding.native_dispatch as *mut _)
+            {
+                return object;
+            }
+        }
+        return ObjectRef::from_compat_identity(0);
+    }
     let handle = state.allocate_handle();
     let object = retained_runtime_object(&mut binding, handle);
     state.bindings.insert(handle, binding);
@@ -724,47 +699,38 @@ pub fn bind_host_dispatch_object(
     mut binding: ComBinding,
 ) -> ObjectRef {
     let normalized_prog_id = normalize_prog_id_name(prog_id_name);
-    if let Some(handle) = state
+    // The registry keeps the first root bound for a ProgID; a later one is surplus.
+    // SAFETY: the identity reference is the binding's own; a 0 slot is a no-op.
+    unsafe { release_unknown(binding.native_unknown as *mut core::ffi::c_void) };
+    binding.native_unknown = 0;
+    if state
         .host_objects_by_prog_id
-        .get(&normalized_prog_id)
-        .copied()
-        && let Some(existing) = state.bindings.get_mut(&handle)
+        .contains_key(&normalized_prog_id)
     {
-        // An existing binding already owns retained dispatch/unknown references for this
-        // ProgID, so the incoming `binding`'s references (its `native_dispatch`, and the
-        // `native_unknown` the caller AddRef'd via `query_unknown_from_dispatch`) are surplus
-        // duplicates. `ComBinding` stores them as bare `usize` with no `Drop`, so dropping it
-        // here would leak them — release each exactly once first (mirrors
-        // `bind_native_dispatch_result`'s dedup branch).
-        // SAFETY: `native_dispatch`/`native_unknown` are 0 or live COM pointers this binding
-        // exclusively owns; `release_*` are null-safe, so a 0 slot is a no-op.
-        unsafe {
-            release_dispatch(binding.native_dispatch as *mut RawIDispatch);
-            release_unknown(binding.native_unknown as *mut core::ffi::c_void);
-        }
-        return retained_runtime_object(existing, handle);
+        // SAFETY: the incoming IDispatch reference is surplus; null-safe.
+        unsafe { release_dispatch(binding.native_dispatch as *mut RawIDispatch) };
+    } else if binding.native_dispatch != 0 {
+        state
+            .host_objects_by_prog_id
+            .insert(normalized_prog_id.clone(), binding.native_dispatch);
     }
-    let handle = state.allocate_handle();
-    let object = retained_runtime_object(&mut binding, handle);
-    state
-        .host_objects_by_prog_id
-        .insert(normalized_prog_id, handle);
-    state.bindings.insert(handle, binding);
-    object
+    host_dispatch_object_for_prog_id(state, &normalized_prog_id)
+        .unwrap_or_else(|| ObjectRef::from_compat_identity(0))
 }
 
 pub fn host_dispatch_object_for_prog_id(
     state: &mut WindowsComClientState,
     prog_id_name: &str,
 ) -> Option<ObjectRef> {
-    let handle = state
+    let dispatch = state
         .host_objects_by_prog_id
         .get(&normalize_prog_id_name(prog_id_name))
-        .copied()?;
-    state
-        .bindings
-        .get_mut(&handle)
-        .map(|binding| retained_runtime_object(binding, handle))
+        .copied()? as *mut RawIDispatch;
+    // SAFETY: the registry owns a live reference to the root; the AddRef is the ObjectRef's own.
+    unsafe {
+        crate::add_ref_dispatch(dispatch);
+        ObjectRef::from_raw_iunknown_owned(dispatch.cast())
+    }
 }
 
 pub fn insert_bound_object_binding_at_handle(
@@ -773,9 +739,8 @@ pub fn insert_bound_object_binding_at_handle(
     mut binding: ComBinding,
 ) -> ObjectRef {
     if !object.is_compat_object() {
-        // A foreign object that is its interface pointer: a fresh handle keys its metadata.
-        let handle = state.allocate_handle();
-        state.bindings.insert(handle, binding);
+        // A foreign object is its interface pointer and carries no binding.
+        let _ = binding;
         return object;
     }
     let runtime_object = if object.raw() == 0 {

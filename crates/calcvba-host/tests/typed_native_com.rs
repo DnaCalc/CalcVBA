@@ -527,21 +527,18 @@ End Function
             data4: [1; 8],
         });
         assert!(prepare(host.as_ref(), reference.clone(), &[wrong_iid]).is_err());
-        // Exercise the native ownership guard directly: a HAL host itself is
-        // deliberately not Send, so safe callers cannot move it to a worker.
+        // A native object is its interface pointer, and an ObjectRef is not Send, so no other
+        // thread can hold it. A runtime handle that names no bound object is refused before
+        // anything native is touched.
         let bridge = calcvba_com::WindowsComBridge::new(false);
-        let owned = bridge
-            .activate_runtime_object_binding("Scripting.Dictionary", |_| Ok(()))
-            .unwrap();
         let other_bridge = bridge.clone();
         let other_members = members.clone();
-        let raw_identity = owned.raw();
         let error = std::thread::spawn(move || {
             // SAFETY: unchanged trusted compiler metadata. The bridge must
-            // reject the foreign owner before touching its native pointer.
+            // reject the unbound handle before touching any native pointer.
             unsafe {
                 other_bridge.prepare_typed_object(
-                    calcvba_runtime::ObjectRef::from_compat_identity(raw_identity),
+                    calcvba_runtime::ObjectRef::from_compat_identity(20_001),
                     &other_members,
                 )
             }
@@ -550,9 +547,7 @@ End Function
         .join()
         .unwrap()
         .unwrap();
-        assert!(error.contains("different thread/apartment"));
-        // SAFETY: the parent apartment remains initialized and owns this binding.
-        unsafe { bridge.release_object(owned) }.unwrap();
+        assert!(error.contains("unbound native COM receiver"), "{error}");
         let object = prepare(host.as_ref(), reference.clone(), &members).unwrap();
         // The typed receiver owns its QI reference independently of the HAL binding.
         host.com()
@@ -1499,6 +1494,8 @@ End Function
             host.com()
                 .release_object_variant(raw.as_object_ref().unwrap())
                 .unwrap();
+            // The cell is the interface pointer and holds its own reference until it drops.
+            drop(raw);
             let session = module.into_session(backend).unwrap();
             let args = [api::ValueSlot::Object(object.argument())];
             assert!(
@@ -1726,6 +1723,8 @@ End Function
             host.com()
                 .release_object_variant(raw.as_object_ref().unwrap())
                 .unwrap();
+            // The cell is the interface pointer and holds its own reference until it drops.
+            drop(raw);
             assert_eq!(observed.references.load(Ordering::SeqCst), 2);
             let session = module.into_session(backend).unwrap();
             let bound = session

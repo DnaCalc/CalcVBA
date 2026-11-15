@@ -243,6 +243,106 @@ fn try_bind_projection_object_metadata(
         })
 }
 
+/// VBA's coercion of an early-bound argument to its parameter's type, and of a ByRef value back
+/// to the caller's variable.
+#[cfg(target_os = "windows")]
+fn argument_coercion(value: &Variant, vt: u16) -> Result<Variant, calcvba_com::call::ComFault> {
+    calcvba_eval::arith::coerce_for_byref_target(value, vt).map_err(|error| {
+        calcvba_com::call::ComFault {
+            description: Some(error.message),
+            ..calcvba_com::call::ComFault::number(error.code)
+        }
+    })
+}
+
+/// A request-shaped call on a foreign object (its interface pointer), made through the one
+/// Automation path ([`ComHal::invoke_object`]): each ByRef argument is a `VT_BYREF | VT_VARIANT`
+/// reference to a cell holding its value, and that cell's value after the call is its write-back.
+#[cfg(target_os = "windows")]
+fn invoke_foreign_request<'a>(
+    host: &StandardHostServices,
+    object: &ObjectRef,
+    member: calcvba_com::call::ComMember<'_>,
+    kind: calcvba_com::call::ComCallKind,
+    args: impl Iterator<Item = (Option<&'a Variant>, Option<&'a str>, bool)>,
+) -> HalResult<(Variant, Vec<Option<Variant>>)> {
+    use calcvba_com::call::{ComArg, ComArgValue};
+    let args: Vec<_> = args.collect();
+    let cells: Vec<Variant> = args
+        .iter()
+        .map(|(value, _, _)| value.map_or_else(Variant::empty, Variant::clone))
+        .collect();
+    let references: Vec<Option<Variant>> = args
+        .iter()
+        .zip(&cells)
+        .map(|((value, _, by_ref), cell)| {
+            (*by_ref && value.is_some()).then(|| {
+                // SAFETY: the cell outlives the call and is not otherwise borrowed during it.
+                unsafe { Variant::by_ref(0x0C, cell.as_variant_cell_ptr().cast()) }
+            })
+        })
+        .collect();
+    let call_args: Vec<ComArg<'_>> = args
+        .iter()
+        .enumerate()
+        .map(|(index, (value, name, _))| ComArg {
+            value: match (value, &references[index]) {
+                (None, _) => ComArgValue::Missing,
+                (Some(_), Some(reference)) => ComArgValue::Reference(reference),
+                (Some(_), None) => ComArgValue::Value(&cells[index]),
+            },
+            name: *name,
+        })
+        .collect();
+    let value = host.invoke_object(object, member, kind, &call_args)?;
+    drop(call_args);
+    let writebacks = references
+        .iter()
+        .zip(&cells)
+        .map(|(reference, cell)| reference.as_ref().map(|_| cell.clone()))
+        .collect();
+    Ok((value, writebacks))
+}
+
+#[cfg(target_os = "windows")]
+fn dynamic_call_kind(kind: Option<calcvba_com::DynamicCallKind>) -> calcvba_com::call::ComCallKind {
+    use calcvba_com::call::ComCallKind;
+    match kind {
+        None | Some(calcvba_com::DynamicCallKind::Method) => ComCallKind::Method,
+        Some(calcvba_com::DynamicCallKind::PropertyGet) => ComCallKind::Get,
+        Some(calcvba_com::DynamicCallKind::PropertyLet) => ComCallKind::Let,
+        Some(calcvba_com::DynamicCallKind::PropertySet) => ComCallKind::Set,
+    }
+}
+
+/// A dynamic request on a foreign object, through the one Automation path.
+#[cfg(target_os = "windows")]
+fn invoke_foreign_dynamic(
+    host: &StandardHostServices,
+    request: &DynamicCallRequest,
+) -> HalResult<(Variant, Vec<Option<Variant>>)> {
+    use calcvba_com::call::ComMember;
+    let member = match &request.member {
+        DynamicMemberSelector::Name(name) => ComMember::Name(name),
+        DynamicMemberSelector::TokenNamed { name, .. } => ComMember::Name(name),
+        DynamicMemberSelector::Token(token) => ComMember::Id(*token),
+        DynamicMemberSelector::DefaultMember => ComMember::Id(0),
+    };
+    invoke_foreign_request(
+        host,
+        &request.object,
+        member,
+        dynamic_call_kind(request.call_kind_hint),
+        request.args.iter().map(|arg| {
+            (
+                arg.value.as_ref().map(|value| value.variant()),
+                arg.name.as_deref(),
+                arg.by_ref.is_some(),
+            )
+        }),
+    )
+}
+
 impl ComHal for StandardHostServices {
     fn invoke_object(
         &self,
@@ -276,6 +376,51 @@ impl ComHal for StandardHostServices {
             return Ok(value);
         }
         crate::traits::invoke_object_by_request(self, object, member, kind, args)
+    }
+
+    fn invoke_early_bound_object(
+        &self,
+        object: &ObjectRef,
+        member: &calcvba_com::TypeLibMemberMetadata,
+        args: &[calcvba_com::call::ComArg<'_>],
+    ) -> HalResult<Variant> {
+        // A foreign object: the compiler-bound member through its interface (design doc, 8b).
+        #[cfg(target_os = "windows")]
+        if !object.is_compat_object() {
+            if !self.policy.allow_com_activation {
+                return Err(self.denied(CapabilityId::ComActivationDispatch, "invoke_object"));
+            }
+            calcvba_com::authorize_native_com("com.invoke", &member.name).map_err(|detail| {
+                HalError::adapter_fault(
+                    self.profile,
+                    CapabilityId::ComActivationDispatch,
+                    "invoke_object",
+                    detail,
+                )
+            })?;
+            // SAFETY: the VM builds each reference for this call over live storage it does not
+            // borrow across the call.
+            let (value, transport) = unsafe {
+                calcvba_com::automation::early::invoke(
+                    object,
+                    member,
+                    args,
+                    &calcvba_com::automation::project_dispatch,
+                    &argument_coercion,
+                )
+            }
+            .map_err(|fault| self.com_call_fault("invoke_object", fault))?;
+            match transport {
+                calcvba_com::automation::early::EarlyTransport::Vtable => {
+                    self.com_bridge.record_typed_vtable_call()
+                }
+                calcvba_com::automation::early::EarlyTransport::Dispatch => {
+                    self.com_bridge.record_typed_dispatch_call()
+                }
+            }
+            return Ok(value);
+        }
+        crate::traits::invoke_early_bound_object_by_request(self, object, member, args)
     }
 
     fn advise_events(
@@ -898,6 +1043,38 @@ impl ComHal for StandardHostServices {
     }
 
     fn dispatch_invoke_variant(&self, request: &ComInvokeRequest) -> HalResult<Variant> {
+        #[cfg(target_os = "windows")]
+        if !request.object.is_compat_object() {
+            if !self.policy.allow_com_activation {
+                return Err(self.denied(CapabilityId::ComActivationDispatch, "dispatch_invoke"));
+            }
+            let kind = match request.invoke_kind_hint {
+                Some(calcvba_com::ComInvokeKind::PropertyGet) => {
+                    calcvba_com::DynamicCallKind::PropertyGet
+                }
+                Some(calcvba_com::ComInvokeKind::PropertyPut) => {
+                    calcvba_com::DynamicCallKind::PropertyLet
+                }
+                Some(calcvba_com::ComInvokeKind::PropertyPutRef) => {
+                    calcvba_com::DynamicCallKind::PropertySet
+                }
+                _ => calcvba_com::DynamicCallKind::Method,
+            };
+            return invoke_foreign_request(
+                self,
+                &request.object,
+                calcvba_com::call::ComMember::Id(request.member.raw()),
+                dynamic_call_kind(Some(kind)),
+                request.args.iter().map(|arg| {
+                    (
+                        arg.value.as_ref().map(|value| value.variant()),
+                        arg.name.as_deref(),
+                        false,
+                    )
+                }),
+            )
+            .map(|(value, _)| value);
+        }
         let object = request.object.raw();
         let member = request.member.raw();
         let args = request.args.as_slice();
@@ -967,6 +1144,10 @@ impl ComHal for StandardHostServices {
         let capability = CapabilityId::ComActivationDispatch;
         if !self.policy.allow_com_activation {
             return Err(self.denied(capability, "dispatch_invoke"));
+        }
+        #[cfg(target_os = "windows")]
+        if !request.object.is_compat_object() {
+            return invoke_foreign_dynamic(self, request).map(|(value, _)| value);
         }
         if let Some(value) = invoke_portable_dispatch(self, request)? {
             return Ok(value.value.unwrap_or_else(Variant::empty));
@@ -1057,6 +1238,10 @@ impl ComHal for StandardHostServices {
         let capability = CapabilityId::ComActivationDispatch;
         if !self.policy.allow_com_activation {
             return Err(self.denied(capability, "dispatch_invoke"));
+        }
+        #[cfg(target_os = "windows")]
+        if !request.object.is_compat_object() {
+            return invoke_foreign_dynamic(self, request);
         }
         if let Some(result) = invoke_portable_dispatch(self, request)? {
             let mut writebacks = vec![None; request.args.len()];

@@ -26,6 +26,8 @@ use crate::manifest::{
 const CLASS_NAME: &str = "DnaScriptingDictionary";
 const FACTORY_NAME: &str = "DnaScripting";
 const PROGID: &str = "Scripting.Dictionary";
+/// The Microsoft Scripting Runtime type library.
+const SCRIPTING_LIBID: &str = "{420B2830-E718-11CF-893D-00A0C9054228}";
 
 /// Only the engine's injected implementation has a public name distinct from its
 /// private source name. A user class with the same name retains its own identity.
@@ -266,18 +268,40 @@ pub fn with_builtin_scripting(
     manifest: &SymbolProjectManifest,
     source: crate::DictionarySource,
 ) -> Cow<'_, SymbolProjectManifest> {
-    if source == crate::DictionarySource::Native {
-        return Cow::Borrowed(manifest);
-    }
     let has_scripting_ref = manifest.references.iter().any(|reference| match reference {
         ProjectReference::TypeLibrary { name, guid, .. } => {
             name.eq_ignore_ascii_case("Scripting")
-                || guid.as_deref().is_some_and(|g| {
-                    g.eq_ignore_ascii_case("{420B2830-E718-11CF-893D-00A0C9054228}")
-                })
+                || guid
+                    .as_deref()
+                    .is_some_and(|g| g.eq_ignore_ascii_case(SCRIPTING_LIBID))
         }
         _ => false,
     });
+    if source == crate::DictionarySource::Native {
+        // The platform's class needs its type library to bind `Scripting.Dictionary`. A project
+        // that names the qualified type without referencing the library (accepted by the engine
+        // class, which needs no reference) gets the Scripting reference, so both sources bind
+        // the same projects.
+        let names_type = manifest.modules.iter().any(|module| {
+            module
+                .source
+                .to_ascii_lowercase()
+                .contains("scripting.dictionary")
+        });
+        if has_scripting_ref || !names_type {
+            return Cow::Borrowed(manifest);
+        }
+        let mut out = manifest.clone();
+        out.references.push(ProjectReference::TypeLibrary {
+            name: "Scripting".into(),
+            guid: Some(SCRIPTING_LIBID.into()),
+            version_major: Some(1),
+            version_minor: Some(0),
+            lcid: None,
+            import_lib: None,
+        });
+        return Cow::Owned(out);
+    }
     let own_dictionary = manifest
         .modules
         .iter()

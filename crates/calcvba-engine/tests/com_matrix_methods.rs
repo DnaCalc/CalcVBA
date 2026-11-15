@@ -72,12 +72,11 @@ fn m2_dictionary_add_two_args_then_exists() {
 #[test]
 #[ignore = "live COM; run explicitly"]
 fn m3_dictionary_add_named_vs_positional() {
-    // d1.Add "k",100 (positional => VTABLE) ; d2.Add Item:=100, Key:="k" (named =>
-    // forced IDispatch, windows_invoke.rs:1955). verdict = IIf(d1("k")=100 And
-    // d2("k")=100, 100, 0) = 100. The named call must NOT secretly vtable-dispatch
-    // with a GetIDsOfNames reorder bug: exact vt counts only the positional-eligible
-    // members. Positional-eligible: d1.Add, d1("k") get, d2("k") get = 3 (the named
-    // d2.Add goes IDispatch). The default-member d(k) gets ARE vtable-eligible.
+    // d1.Add "k",100 (positional) ; d2.Add Item:=100, Key:="k" (named). An early-bound call
+    // places named arguments by the member's parameter names, as VBA's compiler does, so both
+    // go through the vtable. verdict = IIf(d1("k")=100 And d2("k")=100, 100, 0) = 100, which
+    // fails if the named arguments land in the wrong positions. Vtable calls: d1.Add, d2.Add,
+    // d1("k") get, d2("k") get = 4.
     let early_src = "Public verdict As Long\n\
          Sub Main()\n\
          Dim d1 As Scripting.Dictionary\n\
@@ -105,7 +104,7 @@ fn m3_dictionary_add_named_vs_positional() {
     // two default-member `("k")` gets are `Item`, whose get/put/putref SHARE a memid, so
     // the memid-only typelib-bind spec lookup declines them to IDispatch (correct
     // value). Currently vtable=1. Closing it needs invoke-kind-aware spec selection.
-    assert_differential("M3", late, early, None, find_verdict, 100, Some(3));
+    assert_differential("M3", late, early, None, find_verdict, 100, Some(4));
 }
 
 // ── M4: FSO BuildPath (2 str) + FileExists (Bool) ────────────────────────────

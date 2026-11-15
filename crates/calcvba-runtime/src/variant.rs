@@ -756,6 +756,14 @@ impl Variant {
             return Err(vt);
         }
         let core = VariantCore::from_wire_bytes(bytes).map_err(|_| vt)?;
+        // The callee allocated what the cell holds; from here the runtime frees it, so the live
+        // counters see it as one of its own.
+        let payload = bytes[8..16].iter().any(|byte| *byte != 0);
+        if payload && vt == 0x0008 {
+            crate::live_counters::bstr_allocated();
+        } else if payload && vt & 0x2000 != 0 {
+            crate::live_counters::safearray_allocated();
+        }
         Ok(Self::from_core(core))
     }
 

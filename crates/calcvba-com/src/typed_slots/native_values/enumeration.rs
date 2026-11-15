@@ -20,8 +20,7 @@ unsafe fn start(
         if let Some(error) = unsafe { invoke_dispatch(owner, member, vec![], &mut output) } {
             return Err(error);
         }
-        // SAFETY: successful Invoke initialized this native VARIANT discriminant.
-        let tag = unsafe { output.0.Anonymous.Anonymous.vt };
+        let tag = output.tag();
         if !matches!(
             tag,
             windows_sys::Win32::System::Variant::VT_UNKNOWN
@@ -29,8 +28,8 @@ unsafe fn start(
         ) {
             return Err(fault(438));
         }
-        // SAFETY: both admitted tags hold one borrowed native interface pointer.
-        let pointer = unsafe { output.0.Anonymous.Anonymous.Anonymous.punkVal };
+        // Both admitted tags hold one borrowed native interface pointer.
+        let pointer = output.payload_pointer();
         // SAFETY: the native result cell owns this borrowed IUnknown prefix.
         unsafe { query_enumvariant_from_unknown(pointer.cast()) }.map_err(|_| fault(438))?
     } else {
@@ -105,7 +104,7 @@ pub(in crate::typed_slots) fn prepare(
             crate::windows_vtable::clear_thread_error_info();
             // SAFETY: QI proved IEnumVARIANT; output/fetched are initialized cells.
             let hr = unsafe {
-                ((*(*pointer).vtbl).next)(pointer.cast(), 1, &mut output.0, &mut fetched)
+                ((*(*pointer).vtbl).next)(pointer.cast(), 1, output.as_mut_ptr(), &mut fetched)
             };
             let error = (hr < 0).then(|| map_hresult(hr));
             owner.bridge.record_typed_vtable_call();

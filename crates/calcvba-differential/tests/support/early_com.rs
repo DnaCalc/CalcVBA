@@ -233,7 +233,8 @@ fn run(source: &str, jit: bool, fault: DescriptorFault) -> Observation {
         before
             .balance_to(current_thread_live_handle_counts())
             .is_zero(),
-        "early COM owned carrier leak"
+        "early COM owned carrier leak: {:?}",
+        before.balance_to(current_thread_live_handle_counts())
     );
     if let Some(references) = native_references {
         assert_eq!(

@@ -32,116 +32,153 @@ fn fault(number: i32) -> TypedFault {
     }
 }
 // Windows x64 requires 16-byte-aligned caller storage for indirect by-value
-// aggregate arguments. The native cell includes VARIANT's full record union.
+// aggregate arguments. The native cell is the runtime cell, which is the Automation VARIANT
+// (design doc, step 8): no conversion layer sits between them.
 #[repr(C, align(16))]
-struct NativeVariant(VARIANT);
+struct NativeVariant(Variant);
 impl NativeVariant {
     fn empty() -> Self {
-        // SAFETY: an all-zero native VARIANT is VT_EMPTY.
-        Self(unsafe { std::mem::zeroed() })
+        Self(Variant::empty())
     }
+    /// An unallocated array of `element` (a null `parray` the native call fills).
+    fn array_output(element: u16) -> Self {
+        Self(Variant::unallocated_array(element))
+    }
+    /// The argument cell for `value`: the runtime cell itself, with each prepared host object in
+    /// it (at the top or inside an array) crossing as its native `IDispatch`.
     fn input(value: &Variant) -> Result<Self, TypedFault> {
-        let mut cell = Self::empty();
-        if value.vtype() == VarType::Object && value.as_object_ref().is_none() {
-            // SAFETY: initialized union payload is null; tag makes this Nothing.
-            cell.0.Anonymous.Anonymous.vt = windows_sys::Win32::System::Variant::VT_DISPATCH;
-            return Ok(cell);
-        }
-        let value = crate::ComValue::from_variant(value).map_err(|_| fault(13))?;
-        let mut dispatches = Vec::new();
-        let mut resolve = |object: calcvba_runtime::ObjectRef| {
-            let portable = HostObject::from_object_ref(&object)
-                .ok_or("native argument is not a prepared host object")?;
+        let crossed = map_objects(value.clone(), &mut |object| {
+            let Some(portable) = HostObject::from_object_ref(&object) else {
+                if !object.is_compat_object() {
+                    // A foreign object already is its interface pointer.
+                    return Ok(Variant::from_object_ref(object));
+                }
+                return Err(fault(13));
+            };
             let native = portable
                 .payload()
                 .and_then(|v| v.downcast_ref::<NativeReceiver>())
-                .ok_or("host object has no native receiver")?;
-            // A prepared nominal interface need not itself be IDispatch. Keep
-            // the exact QI'd dispatch owner until the VARIANT has retained it.
-            // SAFETY: the wrapper retains its same-apartment native interface.
-            let pointer = unsafe {
-                crate::query_interface_pointer(
+                .ok_or_else(|| fault(13))?;
+            // A prepared nominal interface need not itself be IDispatch.
+            // SAFETY: the wrapper retains its same-apartment native interface; a successful
+            // QueryInterface hands one reference, which the ObjectRef takes over.
+            unsafe {
+                let pointer = crate::query_interface_pointer(
                     native.pointer.as_ptr(),
                     &crate::windows_client::IID_IDISPATCH,
                 )
-            }?;
-            // SAFETY: successful QI transferred one owned dispatch reference.
-            dispatches.push(unsafe { OwnedComInterface::from_owned(pointer) });
-            Ok(pointer)
-        };
-        let mut retain = |pointer: *mut c_void| {
-            // SAFETY: resolve returns a retained same-apartment dual interface.
-            unsafe {
-                crate::add_ref_dispatch(pointer.cast());
+                .map_err(|_| fault(13))?;
+                calcvba_runtime::ObjectRef::from_raw_iunknown_owned(pointer.cast())
             }
-        };
-        // SAFETY: fresh initialized output; resolver/retain preserve native object
-        // ownership, including elements recursively marshalled inside arrays.
-        unsafe {
-            crate::set_variant_from_com_value(&mut cell.0, &value, &mut resolve, &mut retain)
-        }
-        .map_err(|_| fault(13))?;
-        Ok(cell)
+            .map(Variant::from_object_ref)
+            .ok_or_else(|| fault(13))
+        })?;
+        Ok(Self(crossed))
     }
-    fn value(&self, owner: &NativeReceiver) -> Result<Variant, TypedFault> {
+    /// The cell as the `VARIANT*` a native call reads or writes.
+    fn as_mut_ptr(&mut self) -> *mut VARIANT {
+        self.0.as_variant_cell_ptr().cast()
+    }
+    /// The pointer in the cell's payload (an interface, BSTR or `SAFEARRAY*`), borrowed.
+    fn payload_pointer(&self) -> *mut c_void {
+        let bytes = self.0.to_wire_bytes();
+        let mut address = [0u8; core::mem::size_of::<usize>()];
+        address.copy_from_slice(&bytes[8..8 + core::mem::size_of::<usize>()]);
+        std::ptr::with_exposed_provenance_mut(usize::from_le_bytes(address))
+    }
+    /// The cell's raw `vt`.
+    fn tag(&self) -> u16 {
+        let bytes = self.0.to_wire_bytes();
+        u16::from_le_bytes([bytes[0], bytes[1]])
+    }
+    /// A borrowed bit copy for an `rgvarg` entry; never cleared.
+    fn view(&self) -> VARIANT {
+        // SAFETY: the runtime cell has the VARIANT layout; the copy owns nothing.
+        unsafe { std::ptr::read(self.0.as_variant_cell_ptr().cast::<VARIANT>()) }
+    }
+    fn value(&mut self, owner: &NativeReceiver) -> Result<Variant, TypedFault> {
         self.value_with_interface(owner, None)
     }
+    /// What a native call left in the cell, as the typed host holds it: the value the callee
+    /// wrote moves into the runtime, and each object in it (at the top or inside an array)
+    /// becomes a prepared host object.
     fn value_with_interface(
-        &self,
+        &mut self,
         owner: &NativeReceiver,
         interface: Option<usize>,
     ) -> Result<Variant, TypedFault> {
-        let mut query = |pointer| {
-            // SAFETY: valid native unknown borrowed from an owned native cell.
-            unsafe {
-                crate::query_interface_pointer(pointer, &crate::windows_client::IID_IDISPATCH)
+        let bytes = self.0.to_wire_bytes();
+        // The callee may have replaced what the cell held: take its bytes as they are now.
+        std::mem::forget(std::mem::replace(&mut self.0, Variant::empty()));
+        // SAFETY: the cell's contents are owned here (the callee's output or our own input,
+        // possibly replaced by it), and nothing else frees them.
+        let value = match unsafe { Variant::adopt_automation(bytes) } {
+            Ok(value) => value,
+            Err(_) => {
+                let mut cell: VARIANT =
+                    // SAFETY: the bytes are a VARIANT this frame owns.
+                    unsafe { std::mem::transmute::<[u8; calcvba_runtime::WIRE_SIZE], VARIANT>(bytes) };
+                // SAFETY: as above; clearing releases what it holds.
+                unsafe { VariantClear(&mut cell) };
+                return Err(fault(458));
             }
         };
-        let mut retain = |pointer: *mut c_void| {
-            // SAFETY: decoder borrows a native cell with an owned interface ref.
-            unsafe {
-                crate::add_ref_dispatch(pointer.cast());
-            }
-        };
-        let mut bind = |pointer: *mut c_void, _: &str, _: &'static str| {
-            if pointer.is_null() {
+        map_objects(value, &mut |object| {
+            if object.is_nothing_placeholder() {
                 return Ok(Variant::nothing());
             }
-            // SAFETY: decoder transfers one native IDispatch reference.
-            let incoming = unsafe { OwnedComInterface::from_owned(pointer) };
-            // SAFETY: make_native_object borrows this same-apartment reference
-            // and retains its own independently QI'd native receiver.
-            let object = unsafe {
+            // SAFETY: the ObjectRef retains a live same-apartment native object; the factory QIs
+            // and retains its declared interface independently.
+            let prepared = unsafe {
                 make_native_object(
                     owner.bridge.clone(),
-                    incoming.as_ptr(),
+                    object.raw_iunknown().cast(),
                     interface,
                     owner.library.clone(),
                 )
-            }?;
-            Ok(Variant::from_object_ref(object.object_ref()))
-        };
-        // SAFETY: initialized native cell remains owned throughout decoding.
-        unsafe {
-            crate::variant_to_variant_value(
-                &self.0,
-                &mut query,
-                &mut retain,
-                &mut bind,
-                "",
-                "typed native result",
-            )
-        }
-        .map_err(|_| fault(13))
+            }
+            .map_err(|_| fault(13))?;
+            Ok(Variant::from_object_ref(prepared.object_ref()))
+        })
     }
 }
-impl Drop for NativeVariant {
-    fn drop(&mut self) {
-        // SAFETY: this guard owns exactly one initialized native VARIANT.
-        unsafe {
-            VariantClear(&mut self.0);
-        }
+
+/// `value` with each object in it (at the top, or an element of an object or Variant array,
+/// recursively) replaced by `map`'s result.
+fn map_objects(
+    value: Variant,
+    map: &mut dyn FnMut(calcvba_runtime::ObjectRef) -> Result<Variant, TypedFault>,
+) -> Result<Variant, TypedFault> {
+    if value.vtype() == VarType::Object {
+        return match value.as_object_ref() {
+            Some(object) if !object.is_nothing_placeholder() => map(object),
+            _ => Ok(value),
+        };
     }
+    let Ok(Some(array)) = value.try_as_safearray() else {
+        return Ok(value);
+    };
+    if !matches!(array.element_vartype(), 0x09 | 0x0C | 0x0D) {
+        return Ok(value);
+    }
+    let Some(elements) = array.variant_elements() else {
+        return Ok(value);
+    };
+    let mut changed = false;
+    let mut mapped = Vec::with_capacity(elements.len());
+    for element in elements {
+        let holds_object = element.vtype() == VarType::Object || element.holds_array();
+        let next = map_objects(element, map)?;
+        changed |= holds_object;
+        mapped.push(next);
+    }
+    if !changed {
+        return Ok(value);
+    }
+    array
+        .replace_variant_elements(mapped)
+        .map(Variant::from_safearray)
+        .map_err(|_| fault(13))
 }
 struct NativePointer {
     raw: *mut c_void,
@@ -195,14 +232,11 @@ impl Cell {
                 raw: std::ptr::null_mut(),
             }),
             Some(T::Variant) => {
-                let mut value = NativeVariant::empty();
                 if let Some(element) = array_element(wire) {
-                    // SAFETY: set only the initialized VARIANT tag; null parray
-                    // is a valid empty output until the native call writes it.
-                    value.0.Anonymous.Anonymous.vt = VT_ARRAY | element;
-                    Self::Array(value)
+                    // A null parray is a valid empty output until the native call writes it.
+                    Self::Array(NativeVariant::array_output(element))
                 } else {
-                    Self::Variant(value)
+                    Self::Variant(NativeVariant::empty())
                 }
             }
             _ => return Err(fault(13)),
@@ -226,9 +260,7 @@ impl Cell {
             Value::Variant(v) if plan::carrier(ty) == Some(T::Variant) => {
                 let cell = NativeVariant::input(v)?;
                 if let Some(element) = array_element(Some(wire)) {
-                    // SAFETY: cell is initialized by the native Variant adapter.
-                    let tag = unsafe { cell.0.Anonymous.Anonymous.vt };
-                    if tag != (VT_ARRAY | element) {
+                    if cell.tag() != (VT_ARRAY | element) {
                         return Err(fault(13));
                     }
                     Self::Array(cell)
@@ -267,10 +299,11 @@ impl Cell {
             Self::Boolean(v) => std::ptr::from_mut(v).cast(),
             Self::String(v) => std::ptr::addr_of_mut!(v.raw).cast(),
             Self::Object(v) => std::ptr::addr_of_mut!(v.raw).cast(),
-            Self::Variant(v) => std::ptr::addr_of_mut!(v.0).cast(),
+            Self::Variant(v) => v.as_mut_ptr().cast(),
             Self::Array(v) => {
-                // SAFETY: a declared array cell keeps the parray union active.
-                unsafe { std::ptr::addr_of_mut!(v.0.Anonymous.Anonymous.Anonymous.parray).cast() }
+                // The parray slot is the payload, 8 bytes into the cell.
+                // SAFETY: inside the 16-byte cell.
+                unsafe { v.as_mut_ptr().cast::<u8>().add(8).cast() }
             }
         }
     }
@@ -285,11 +318,8 @@ impl Cell {
             Self::String(v) => FfiArg::Pointer(v.raw.cast()),
             Self::Object(v) => FfiArg::Pointer(v.raw),
             // Native x64 VARIANT by-value transport is an indirect struct copy.
-            Self::Variant(v) => FfiArg::Pointer(std::ptr::addr_of_mut!(v.0).cast()),
-            Self::Array(v) => {
-                // SAFETY: array cell's initialized active union member is parray.
-                FfiArg::Pointer(unsafe { v.0.Anonymous.Anonymous.Anonymous.parray }.cast())
-            }
+            Self::Variant(v) => FfiArg::Pointer(v.as_mut_ptr().cast()),
+            Self::Array(v) => FfiArg::Pointer(v.0.raw_safearray_ptr()),
             Self::Empty => unreachable!("admitted native input"),
         }
     }
@@ -307,8 +337,7 @@ impl Cell {
                 Self::String(_) => VT_BSTR,
                 Self::Object(_) => VT_DISPATCH,
                 Self::Variant(_) => VT_VARIANT,
-                // SAFETY: an array cell retains its initialized array tag.
-                Self::Array(value) => unsafe { value.0.Anonymous.Anonymous.vt },
+                Self::Array(value) => value.tag(),
                 Self::Empty => unreachable!("admitted dispatch argument"),
             };
             argument.Anonymous.Anonymous.vt = tag | VT_BYREF;
@@ -336,9 +365,8 @@ impl Cell {
                     argument.Anonymous.Anonymous.Anonymous.pdispVal = value.raw;
                 }
                 Self::Variant(value) | Self::Array(value) => {
-                    // SAFETY: a shallow borrowed view of the initialized native
-                    // cell. Only the original guard clears its ownership.
-                    argument = unsafe { std::ptr::read(&value.0) };
+                    // A shallow borrowed view; only the cell owns its contents.
+                    argument = value.view();
                 }
                 Self::Empty => unreachable!("admitted dispatch argument"),
             }
@@ -611,7 +639,7 @@ pub(super) unsafe fn invoke(
     }
     if dispatch {
         dispatch_result(
-            &dispatch_output,
+            &mut dispatch_output,
             owner,
             member.return_type,
             prepared.result_interface,
@@ -696,7 +724,7 @@ unsafe fn invoke_dispatch_arguments(
             owner.library.locale_id.unwrap_or(0x0400),
             flags,
             &mut params,
-            &mut output.0,
+            output.as_mut_ptr(),
             &mut exception,
             &mut argument_error,
         )
@@ -734,7 +762,7 @@ unsafe fn invoke_dispatch_arguments(
 }
 
 fn dispatch_result(
-    output: &NativeVariant,
+    output: &mut NativeVariant,
     owner: &NativeReceiver,
     ty: Option<P>,
     interface: Option<usize>,

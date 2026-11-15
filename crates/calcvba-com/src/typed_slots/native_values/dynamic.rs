@@ -105,7 +105,7 @@ pub(in crate::typed_slots) fn invoke(
         .collect::<Result<_, _>>()?;
     // Project each cell once. Repeated aliases reuse that raw authority without
     // creating a competing mutable borrow of the same native storage.
-    let pointers: Vec<*mut VARIANT> = cells.iter_mut().map(|cell| &raw mut cell.0).collect();
+    let pointers: Vec<*mut VARIANT> = cells.iter_mut().map(|cell| cell.as_mut_ptr()).collect();
     let mut arguments = Vec::with_capacity(values.len());
     for i in order {
         let a = &call.arguments[i];

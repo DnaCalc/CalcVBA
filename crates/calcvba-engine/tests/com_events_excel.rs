@@ -26,9 +26,9 @@ Sub Main()\n\
     result = s.Run()\n\
 End Sub\n";
 
-/// Calls into Excel stay late bound (`As Object`); the WithEvents variable is typed, as VBA
-/// requires.
-const SINK: &str = "Private app As Object\n\
+/// The WithEvents variable is typed, as VBA requires; `APP_TYPE` is `Object` (late-bound calls
+/// into Excel) or `Excel.Application` (early-bound calls through its vtable).
+const SINK: &str = "Private app As APP_TYPE\n\
 Private WithEvents appEv As Excel.Application\n\
 Private mLog As String\n\
 Private mCancel As Boolean\n\
@@ -144,12 +144,20 @@ CLOSE [close in=False]\n\
 UNHOOKED log=[]\n";
 
 fn manifest(main: &str) -> sym::SymbolProjectManifest {
+    manifest_with(main, "Object")
+}
+
+fn manifest_with(main: &str, app_type: &str) -> sym::SymbolProjectManifest {
     sym::SymbolProjectManifest {
         project_name: "Main".to_string(),
         project_kind: sym::ProjectKind::Source,
         modules: [
             ("Main", sym::ModuleKind::Procedural, main.to_string()),
-            ("Sink", sym::ModuleKind::Class, SINK.to_string()),
+            (
+                "Sink",
+                sym::ModuleKind::Class,
+                SINK.replace("APP_TYPE", app_type),
+            ),
         ]
         .into_iter()
         .map(|(name, kind, source)| sym::ModuleUnit {
@@ -175,9 +183,14 @@ fn engine(config: HostConfig) -> Engine {
 #[test]
 #[ignore = "live COM; starts Excel"]
 fn withevents_on_excel_behave_as_in_vba_on_vm3_and_jit() {
-    for (name, config) in [("vm3", HostConfig::vm3()), ("jit", HostConfig::jit())] {
+    for (name, config, app_type) in [
+        ("vm3", HostConfig::vm3(), "Object"),
+        ("jit", HostConfig::jit(), "Object"),
+        ("vm3 early-bound", HostConfig::vm3(), "Excel.Application"),
+        ("jit early-bound", HostConfig::jit(), "Excel.Application"),
+    ] {
         let values = engine(config)
-            .execute_manifest_with_variant_snapshot(&manifest(MAIN))
+            .execute_manifest_with_variant_snapshot(&manifest_with(MAIN, app_type))
             .unwrap_or_else(|e| panic!("{name}: {e:?}"));
         let out = values
             .iter()

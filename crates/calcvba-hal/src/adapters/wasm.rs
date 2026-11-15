@@ -79,6 +79,10 @@ impl HostServices for WasmHostServices {
     fn policy(&self) -> &HostPolicy {
         &self.policy
     }
+    fn permits_com_activation(&self) -> bool {
+        // This host activates no native COM class.
+        false
+    }
 
     fn console(&self) -> &dyn ConsoleHal {
         self

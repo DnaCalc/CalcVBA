@@ -650,10 +650,61 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
        - The binder rejected `ByVal Sh As Object` for an event's `Object` parameter.
      - Engine test `com_events_excel` (ignored, live out-of-process Excel) matches the probe on both
        backends, including the unhandled-error abort.
-     - Left for later: `End` inside a COM event handler, stack A's queued HAL methods and
-       `calcvba-lib`'s event builtins (deleted with stack A), and `com_matrix_events` (its
-       `OxVba.TestEventServer` registration points at the retired OxVba repo; V10/V11 expectations
-       predate synchronous delivery).
+     - Left for later: stack A's queued HAL methods and `calcvba-lib`'s event builtins (deleted
+       with stack A in step 10).
+     *As built 2026-11-15 (8c, End and the events matrix).* `End` in a handler ends the whole run,
+     as in Excel (probe `temp/variant-layout-probe/events8end`: the rest of the handler, the code
+     after the call that fired the event and `Class_Terminate` never run). The run-ending state a
+     handler leaves is `calcvba_rt_abi::RunAbort` (a fault or `End`). VM3 counts nested
+     `run_loop` activations, and `End` below the outermost unwinds with the internal
+     `Vm3Error::Halted` to the outermost loop, which ends the run; the JIT returns `ST_HALT`.
+     `com_matrix_events` runs again (`OxVba.TestEventServer` is registered for the current user
+     from `tools/OxVba.TestEventServer`); with that server Excel runs a nested event at once and
+     ends the macro on an unhandled handler error (probe `events8tes`), which V9 and V10 now
+     expect.
+   - *As built 2026-11-15 (8a/8b completed).*
+     - **Early-bound calls.** `calcvba_com::automation::early` builds an early-bound call from
+       the member's `FUNCDESC` metadata over the runtime cells and calls the vtable slot through
+       `oleaut32!DispCallFunc`, so every `VARTYPE` gets the platform's calling convention (x64
+       and x86; the libffi lane was x64 only).
+       - *Arguments.* A ByVal argument is converted to the parameter's type by VBA's argument
+         coercion (`calcvba_eval::arith::coerce_for_byref_target`, supplied by the HAL), or
+         borrowed when it already has that type. A ByRef argument whose reference has the
+         parameter's type is passed as that pointer; otherwise it goes through a temporary of the
+         parameter's type, written back after the call. Named arguments are placed by parameter
+         name, as VBA's compiler does, and a property assignment's value is the last parameter.
+       - *Omitted and hidden parameters.* An omitted optional is `DISP_E_PARAMNOTFOUND` or the
+         typelib default, `[lcid]` is the call's locale, and a ParamArray tail is a SAFEARRAY.
+       - *Results.* `[out, retval]` writes into the result cell's payload, and the value moves
+         into the runtime as it is.
+       - *When `Invoke` is used instead.* A pure dispinterface member, a parameter shape the
+         marshaller does not build, or a proxy whose vtable is not the type library's goes
+         through `Invoke` with the DISPID.
+       - *Refusals.* A dual member with an untrustworthy descriptor (reserved or out-of-bounds
+         slot, no bound, no IID, not `stdcall`) is refused with 430, never hidden behind
+         `Invoke`.
+       - The omitted-optional gap (`Workbooks.Add`) is closed.
+     - **Bindings.** A native object carries no binding: `CreateObject`, `GetObject`, call results
+       and `bind_native_dispatch_value` hand over the interface pointer. A host root
+       (`bind_native_dispatch_object_variant`) is kept as one `IDispatch` reference per ProgID,
+       and each lookup hands out its own reference. So `Set x = Nothing` releases at once, as in
+       VBA. Compat (projection) objects keep their bindings until step 10.
+     - **The older request calls.** For foreign objects, `dispatch_invoke_variant` and
+       `dispatch_invoke_dynamic_variant(_with_writebacks)` go through the one path as well. That
+       includes `VarType`'s default-member read, which before fell through to the deterministic
+       fake lane.
+     - **`TypeName`.** For a COM object it is the class name from the object's own type
+       information: `IProvideClassInfo`, else the coclass whose default interface the object's
+       is, else the interface's name. `TypeOf ... Is` falls back to that name when the binder has
+       no IID (Excel's `Worksheet`).
+     - **The typed host stack.** Its Variant arguments and results are the runtime cell itself.
+       A prepared host object crosses as its native `IDispatch`, and an object in a result
+       becomes a prepared host object. `ComValue` no longer appears on that path.
+     - **`Scripting.Dictionary`.** It is the platform's class wherever the host may activate
+       native COM classes (`HostServices::permits_com_activation`, which `PolicyHost` and
+       deterministic hosts answer `false`), and builds use the platform default too. A project
+       that names `Scripting.Dictionary` without the Scripting reference gets it, as the engine
+       class needed none. Adopted BSTRs and arrays count in the live-handle counters.
    - **8d, `ComValue` out of the client.** The remaining users of `ComValue` (comhost,
      `dynlink`, the native template, connection points) move in steps 9 and 10, where they are
      rewritten anyway; `ComValue` is deleted at the end of step 10.

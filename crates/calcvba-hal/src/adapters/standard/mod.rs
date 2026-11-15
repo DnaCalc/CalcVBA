@@ -96,29 +96,7 @@ const IID_OXVBA_TEST_DISPATCH_SOURCE_EVENTS_STR: &str = "11111113-2222-3333-4444
 const IID_EXCEL_APPLICATION_EVENTS_STR: &str = "00024413-0000-0000-C000-000000000046";
 #[cfg(test)]
 #[cfg(target_os = "windows")]
-const TEST_DISPID_FIRE_CHANGED: i32 = 3;
-#[cfg(test)]
-#[cfg(target_os = "windows")]
-const TEST_DISPID_FIRE_CHANGED_PAIR: i32 = 4;
-#[cfg(test)]
-#[cfg(target_os = "windows")]
-const TEST_DISPID_FIRE_CHANGED_SOURCE_INTERFACE: i32 = 11;
-#[cfg(test)]
-#[cfg(target_os = "windows")]
 const TEST_DISPID_LOOKUP: i32 = 6;
-#[cfg(test)]
-#[cfg(test)]
-#[cfg(target_os = "windows")]
-const TEST_DISPID_SUM_PAIR: i32 = 12;
-#[cfg(test)]
-#[cfg(target_os = "windows")]
-const TEST_DISPID_LOOKUP_PAIR: i32 = 13;
-#[cfg(test)]
-#[cfg(target_os = "windows")]
-const TEST_DISPID_SET_INDEXED_VALUE: i32 = 14;
-#[cfg(test)]
-#[cfg(target_os = "windows")]
-const TEST_DISPID_SET_INDEXED_VALUE_REF: i32 = 15;
 #[cfg(test)]
 #[cfg(target_os = "windows")]
 const TEST_DISPID_ECHO_VARIANT: i32 = 16;
@@ -1434,6 +1412,11 @@ impl HostServices for StandardHostServices {
         self.policy()
     }
 
+    fn permits_com_activation(&self) -> bool {
+        // A deterministic or non-Windows host activates no native COM class.
+        self.policy().allow_com_activation && self.native_com_enabled()
+    }
+
     fn console(&self) -> &dyn ConsoleHal {
         self
     }
@@ -1618,9 +1601,6 @@ fn map_project_callback_error(
     }
 }
 
-#[cfg(all(test, target_os = "windows"))]
-type ComEventSubscriptionTransport = calcvba_com::WindowsComSubscriptionTransport;
-
 #[cfg(target_os = "windows")]
 thread_local! {
     static THREAD_COM_APARTMENT_READY: Cell<bool> = const { Cell::new(false) };
@@ -1736,18 +1716,13 @@ mod tests {
     };
 
     #[cfg(target_os = "windows")]
-    use crate::{
-        model::ComInvocationStrategy,
-        traits::{TypeLibCacheScope, TypeLibResolveRequest},
-    };
+    use crate::traits::{TypeLibCacheScope, TypeLibResolveRequest};
     use calcvba_com::{ComInvokeArg, ComInvokeRequest, DynamicObjectBridge, DynamicObjectToken};
     #[cfg(target_os = "windows")]
     use calcvba_com::{
-        ComInvokeFailure, RawIDispatch, VariantResultValue,
-        add_ref_dispatch as raw_add_ref_dispatch, create_calcvba_test_dispatch,
-        release_dispatch as raw_release_dispatch,
+        ComInvokeFailure, RawIDispatch, add_ref_dispatch as raw_add_ref_dispatch,
+        create_calcvba_test_dispatch, release_dispatch as raw_release_dispatch,
         set_variant_from_com_value as com_set_variant_from_com_value,
-        take_variant_result_value as com_take_variant_result_value,
         variant_to_com_value as com_variant_to_com_value,
     };
     #[cfg(target_os = "windows")]
@@ -1769,7 +1744,7 @@ mod tests {
     use super::StandardHostServices;
     #[cfg(target_os = "windows")]
     use windows_sys::Win32::System::Variant::{
-        VARIANT, VT_ARRAY, VT_DISPATCH, VT_UNKNOWN, VT_VARIANT, VariantClear,
+        VARIANT, VT_ARRAY, VT_DISPATCH, VT_VARIANT, VariantClear,
     };
 
     #[cfg(target_os = "windows")]
@@ -1848,14 +1823,6 @@ mod tests {
             })
     }
 
-    #[cfg(target_os = "windows")]
-    fn release_object_test(
-        host: &StandardHostServices,
-        object: calcvba_runtime::ObjectRef,
-    ) -> crate::error::HalResult<i32> {
-        host.release_object_variant(object).map(expect_i32)
-    }
-
     fn release_object_variant_test(
         host: &StandardHostServices,
         object: calcvba_runtime::ObjectRef,
@@ -1922,17 +1889,61 @@ mod tests {
     #[cfg(target_os = "windows")]
     fn dispatch_invoke_named(
         host: &StandardHostServices,
-        object: i32,
+        object: &ObjectRef,
         member_name: &str,
         args: &[i32],
     ) -> crate::error::HalResult<i32> {
+        if !object.is_compat_object() {
+            // A native object is its interface pointer: the member is called by name, as a
+            // late-bound VBA call does.
+            let cells: Vec<Variant> = args.iter().copied().map(Variant::from_i32).collect();
+            let call_args: Vec<_> = cells.iter().map(calcvba_com::call::ComArg::value).collect();
+            let value = host.invoke_object(
+                object,
+                calcvba_com::call::ComMember::Name(member_name),
+                calcvba_com::call::ComCallKind::Method,
+                &call_args,
+            )?;
+            return Ok(value
+                .as_i32()
+                .or_else(|| value.as_i16().map(i32::from))
+                .or_else(|| value.as_bool().map(|b| if b { 1 } else { 0 }))
+                .unwrap_or_default());
+        }
         let request = ComInvokeRequest {
-            object: ObjectRef::from_compat_identity(object),
-            member: bound_member_token_by_name(host, object, member_name)?,
+            object: object.clone(),
+            member: bound_member_token_by_name(host, object.raw(), member_name)?,
             args: args.iter().copied().map(ComInvokeArg::positional).collect(),
             invoke_kind_hint: None,
         };
         dispatch_invoke_legacy_v2(host, &request)
+    }
+
+    /// A call of `member` by name on a native object with `(value, name)` arguments, through
+    /// the one Automation path, as a late-bound VBA call makes it.
+    #[cfg(target_os = "windows")]
+    fn call_by_name(
+        host: &StandardHostServices,
+        object: &ObjectRef,
+        member: &str,
+        kind: calcvba_com::call::ComCallKind,
+        args: &[(i32, Option<&str>)],
+    ) -> crate::error::HalResult<Variant> {
+        let cells: Vec<Variant> = args.iter().map(|(v, _)| Variant::from_i32(*v)).collect();
+        let call_args: Vec<_> = cells
+            .iter()
+            .zip(args)
+            .map(|(cell, (_, name))| calcvba_com::call::ComArg {
+                value: calcvba_com::call::ComArgValue::Value(cell),
+                name: *name,
+            })
+            .collect();
+        host.invoke_object(
+            object,
+            calcvba_com::call::ComMember::Name(member),
+            kind,
+            &call_args,
+        )
     }
 
     trait SemanticComTestExt {
@@ -1940,11 +1951,6 @@ mod tests {
             &self,
             prog_id_name: &str,
         ) -> crate::error::HalResult<calcvba_runtime::ObjectRef>;
-        #[cfg(target_os = "windows")]
-        fn release_object_test(
-            &self,
-            object: calcvba_runtime::ObjectRef,
-        ) -> crate::error::HalResult<i32>;
         #[cfg(target_os = "windows")]
         fn invalidate_typelib_cache_test(
             &self,
@@ -1958,7 +1964,7 @@ mod tests {
         #[cfg(target_os = "windows")]
         fn dispatch_invoke_named(
             &self,
-            object: i32,
+            object: &ObjectRef,
             member_name: &str,
             args: &[i32],
         ) -> crate::error::HalResult<i32>;
@@ -1970,14 +1976,6 @@ mod tests {
             prog_id_name: &str,
         ) -> crate::error::HalResult<calcvba_runtime::ObjectRef> {
             create_object_test(self, prog_id_name)
-        }
-
-        #[cfg(target_os = "windows")]
-        fn release_object_test(
-            &self,
-            object: calcvba_runtime::ObjectRef,
-        ) -> crate::error::HalResult<i32> {
-            release_object_test(self, object)
         }
 
         #[cfg(target_os = "windows")]
@@ -1999,7 +1997,7 @@ mod tests {
         #[cfg(target_os = "windows")]
         fn dispatch_invoke_named(
             &self,
-            object: i32,
+            object: &ObjectRef,
             member_name: &str,
             args: &[i32],
         ) -> crate::error::HalResult<i32> {
@@ -2890,94 +2888,6 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn dispatch_result_variant_binds_runtime_object_handle() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::default());
-        let dispatch = create_calcvba_test_dispatch();
-        let mut variant: VARIANT = unsafe { std::mem::zeroed() };
-        variant.Anonymous.Anonymous.vt = VT_DISPATCH;
-        variant.Anonymous.Anonymous.Anonymous.pdispVal = dispatch.cast();
-        let classified = unsafe {
-            com_take_variant_result_value(
-                &mut variant,
-                &mut |unknown: *mut core::ffi::c_void| {
-                    calcvba_com::query_dispatch_from_unknown(
-                        unknown.cast::<calcvba_com::RawIUnknown>(),
-                    )
-                    .map(|dispatch| dispatch.cast::<core::ffi::c_void>())
-                },
-                &mut |dispatch: *mut core::ffi::c_void| {
-                    raw_add_ref_dispatch(dispatch.cast::<RawIDispatch>());
-                },
-            )
-        }
-        .expect("classify dispatch result");
-        let value = match classified {
-            VariantResultValue::Value(value) => value
-                .to_variant()
-                .expect("COM result should convert to Variant"),
-            VariantResultValue::Dispatch(dispatch) => host
-                .bind_native_dispatch_result(
-                    dispatch.cast::<RawIDispatch>(),
-                    "OxVba.TestDispatch",
-                    "dispatch_invoke",
-                )
-                .expect("bind dispatch result"),
-        };
-        let handle = expect_object_handle(value);
-        assert!(handle.raw() >= 20_001);
-        assert_eq!(
-            host.release_object_test(handle)
-                .expect("release_object should succeed"),
-            1
-        );
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn unknown_variant_result_binds_runtime_object_handle_when_dispatch_is_available() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::default());
-        let dispatch = create_calcvba_test_dispatch();
-        let mut variant: VARIANT = unsafe { std::mem::zeroed() };
-        variant.Anonymous.Anonymous.vt = VT_UNKNOWN;
-        variant.Anonymous.Anonymous.Anonymous.punkVal = dispatch.cast();
-        let classified = unsafe {
-            com_take_variant_result_value(
-                &mut variant,
-                &mut |unknown: *mut core::ffi::c_void| {
-                    calcvba_com::query_dispatch_from_unknown(
-                        unknown.cast::<calcvba_com::RawIUnknown>(),
-                    )
-                    .map(|dispatch| dispatch.cast::<core::ffi::c_void>())
-                },
-                &mut |dispatch: *mut core::ffi::c_void| {
-                    raw_add_ref_dispatch(dispatch.cast::<RawIDispatch>());
-                },
-            )
-        }
-        .expect("classify unknown result");
-        let value = match classified {
-            VariantResultValue::Value(value) => value
-                .to_variant()
-                .expect("COM result should convert to Variant"),
-            VariantResultValue::Dispatch(dispatch) => host
-                .bind_native_dispatch_result(
-                    dispatch.cast::<RawIDispatch>(),
-                    "OxVba.TestDispatch",
-                    "dispatch_invoke",
-                )
-                .expect("bind unknown-dispatch result"),
-        };
-        let handle = expect_object_handle(value);
-        assert!(handle.raw() >= 20_001);
-        assert_eq!(
-            host.release_object_test(handle)
-                .expect("release_object should succeed"),
-            1
-        );
-    }
-
     #[test]
     fn dynlink_bind_descriptor_rejects_unsupported_marshal_lane() {
         let host = StandardHostServices::new(
@@ -3855,244 +3765,6 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn windows_native_com_event_subscription_lifecycle_is_tracked() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
-        let object = host
-            .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
-            .expect("create_object should return a token");
-        assert!(
-            object.raw() >= 20_001,
-            "controlled COM lane should bind native object"
-        );
-        let subscription = host
-            .subscribe_event(object.clone(), 1.into())
-            .expect("subscribe_event should succeed for controlled event source");
-        assert!(subscription.raw() >= 40_001);
-        {
-            let state = host
-                .com_bridge
-                .shared_state()
-                .lock()
-                .expect("com state lock should succeed");
-            let registered = state
-                .subscriptions
-                .get(&subscription)
-                .expect("subscription should be tracked");
-            assert!(
-                matches!(
-                    registered.transport,
-                    super::ComEventSubscriptionTransport::NativeConnectionPoint(_)
-                ),
-                "controlled lane should use native connection-point transport"
-            );
-        }
-
-        assert_eq!(
-            host.dispatch_invoke_named(object.raw(), "FireChanged", &[77])
-                .expect("FireChanged should succeed"),
-            77
-        );
-        let callback = host
-            .do_events_variant()
-            .expect("do_events should pump pending COM callback");
-        let callback = expect_i32(callback);
-        assert!(callback >= 60_001);
-        assert_eq!(
-            host.event_callback_subscription(callback.into())
-                .expect("callback subscription lookup should succeed"),
-            subscription
-        );
-        assert_eq!(
-            host.event_callback_variant(callback.into(), 0)
-                .expect("callback arg lookup should succeed"),
-            rv(77)
-        );
-        assert_eq!(
-            host.event_callback_arity(callback.into())
-                .expect("callback arity lookup should succeed"),
-            1
-        );
-        assert_eq!(
-            host.release_event_callback_variant(callback.into())
-                .expect("callback release should succeed"),
-            rv(1)
-        );
-        assert_eq!(
-            host.do_events_variant()
-                .expect("callback queue should be drained"),
-            Variant::from_i32(0),
-            "native callback lane should not enqueue duplicate projection callbacks"
-        );
-
-        assert_eq!(
-            host.unsubscribe_event_variant(subscription)
-                .expect("unsubscribe_event should succeed"),
-            rv(1)
-        );
-        let _ = host
-            .dispatch_invoke_named(object.raw(), "FireChanged", &[88])
-            .expect("FireChanged should remain invokable after unsubscribe");
-        assert_eq!(
-            host.do_events_variant()
-                .expect("callback queue should remain empty after unsubscribe"),
-            Variant::from_i32(0)
-        );
-        let callback_still_present = {
-            let state = host
-                .com_bridge
-                .shared_state()
-                .lock()
-                .expect("com state lock should succeed");
-            state.callbacks.contains_key(&callback.into())
-        };
-        assert!(
-            !callback_still_present,
-            "released callback payload should be removed from callback registry"
-        );
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_native_com_event_multi_arg_callback_payload_roundtrips() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
-        let object = host
-            .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
-            .expect("create_object should return a token");
-        let subscription = host
-            .subscribe_event(object.clone(), super::TEST_EVENT_CHANGED_PAIR.into())
-            .expect("subscribe_event should succeed for controlled pair-event source");
-
-        assert_eq!(
-            host.dispatch_invoke_named(object.raw(), "FireChangedPair", &[90])
-                .expect("FireChangedPair should succeed"),
-            91
-        );
-        let callback = host
-            .do_events_variant()
-            .expect("do_events should pump pending COM callback");
-        let callback = expect_i32(callback);
-        assert!(callback >= 60_001);
-        assert_eq!(
-            host.event_callback_subscription(callback.into())
-                .expect("callback subscription lookup should succeed"),
-            subscription
-        );
-        assert_eq!(
-            host.event_callback_arity(callback.into())
-                .expect("callback arity lookup should succeed"),
-            2
-        );
-        assert_eq!(
-            host.event_callback_variant(callback.into(), 0)
-                .expect("callback arg0 lookup should succeed"),
-            rv(90)
-        );
-        assert_eq!(
-            host.event_callback_variant(callback.into(), 1)
-                .expect("callback arg1 lookup should succeed"),
-            rv(91)
-        );
-        let err = host
-            .event_callback_variant(callback.into(), 2)
-            .expect_err("index beyond callback arity should fail");
-        assert_eq!(err.kind, HalErrorKind::AdapterFault);
-        assert!(
-            err.message
-                .contains("COM-E-EVENT-CALLBACK-SIGNATURE-MISMATCH")
-        );
-        assert_eq!(
-            host.release_event_callback_variant(callback.into())
-                .expect("callback release should succeed"),
-            rv(1)
-        );
-        assert_eq!(
-            host.unsubscribe_event_variant(subscription)
-                .expect("unsubscribe_event should succeed"),
-            rv(1)
-        );
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_native_com_event_poll_returns_structured_payload() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
-        let object = host
-            .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
-            .expect("create_object should return a token");
-        let subscription = host
-            .subscribe_event(object.clone(), super::TEST_EVENT_CHANGED_PAIR.into())
-            .expect("subscribe_event should succeed for controlled pair-event source");
-
-        assert_eq!(
-            host.dispatch_invoke_named(object.raw(), "FireChangedPair", &[90])
-                .expect("FireChangedPair should succeed"),
-            91
-        );
-        let callback = host
-            .do_events_variant()
-            .expect("do_events should pump pending COM callback");
-        let callback = expect_i32(callback);
-        let payload = host
-            .poll_event_callback()
-            .expect("poll_event_callback should succeed")
-            .expect("callback payload should be available");
-        assert_eq!(payload.callback.raw(), callback);
-        assert_eq!(payload.subscription.raw(), subscription.raw());
-        assert_eq!(payload.object.raw(), object.raw());
-        assert_eq!(payload.event.raw(), super::TEST_EVENT_CHANGED_PAIR);
-        assert_eq!(
-            payload
-                .args
-                .iter()
-                .map(|value| value.to_com_value())
-                .collect::<Vec<_>>(),
-            vec![ComValue::I32(90), ComValue::I32(91)]
-        );
-        assert!(
-            host.poll_event_callback()
-                .expect("poll_event_callback should succeed when queue is empty")
-                .is_none()
-        );
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_native_com_release_object_clears_subscriptions_and_callbacks() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
-        let object = host
-            .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
-            .expect("create_object should return a token");
-        let subscription = host
-            .subscribe_event(object.clone(), 1.into())
-            .expect("subscribe_event should succeed for controlled event source");
-        host.dispatch_invoke_named(object.raw(), "FireChanged", &[77])
-            .expect("FireChanged should succeed");
-        let callback = host
-            .do_events_variant()
-            .expect("do_events should pump pending COM callback");
-        let callback = expect_i32(callback);
-
-        assert_eq!(host.release_object_test(object).expect("release_object"), 1);
-        let callback_err = host
-            .event_callback_subscription(callback.into())
-            .expect_err("released object callback should be gone");
-        assert!(
-            callback_err
-                .message
-                .contains("COM-E-EVENT-CALLBACK-MISSING")
-        );
-        let subscription_err = host
-            .unsubscribe_event_variant(subscription)
-            .expect_err("released object subscription should be gone");
-        assert!(
-            subscription_err
-                .message
-                .contains("COM-E-EVENT-ADVISE-FAILED")
-        );
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
     fn windows_native_com_event_subscription_rejects_unknown_event_token() {
         let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
@@ -4103,59 +3775,6 @@ mod tests {
             .expect_err("unknown event token should fail deterministically");
         assert_eq!(err.kind, HalErrorKind::AdapterFault);
         assert!(err.message.contains("COM-E-EVENT-CONNECTIONPOINT-MISSING"));
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_native_com_event_subscription_supports_controlled_com_evt_b_source_interface_lane() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
-        let object = host
-            .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
-            .expect("create_object should return a token");
-        let subscription = host
-            .subscribe_event(
-                object.clone(),
-                super::TEST_EVENT_CHANGED_SOURCE_INTERFACE.into(),
-            )
-            .expect("controlled source-interface event token should subscribe successfully");
-        assert!(
-            subscription.raw() >= 40_001,
-            "subscription token should be in deterministic range"
-        );
-        assert_eq!(
-            host.dispatch_invoke_named(object.raw(), "FireChangedSourceInterface", &[77])
-                .expect("FireChangedSourceInterface should succeed"),
-            77
-        );
-        let callback = host
-            .do_events_variant()
-            .expect("do_events should pump pending source-interface callback");
-        let callback = expect_i32(callback);
-        assert_eq!(
-            host.event_callback_subscription(callback.into())
-                .expect("callback subscription lookup should succeed"),
-            subscription
-        );
-        assert_eq!(
-            host.event_callback_arity(callback.into())
-                .expect("callback arity lookup should succeed"),
-            1
-        );
-        assert!(
-            host.event_callback_variant(callback.into(), 0)
-                .expect("callback arg0 lookup should succeed")
-                == rv(77)
-        );
-        assert_eq!(
-            host.release_event_callback_variant(callback.into())
-                .expect("callback release should succeed"),
-            rv(1)
-        );
-        assert_eq!(
-            host.unsubscribe_event_variant(subscription)
-                .expect("unsubscribe should succeed"),
-            rv(1)
-        );
     }
 
     #[cfg(target_os = "windows")]
@@ -4183,41 +3802,6 @@ mod tests {
             .expect_err("unknown callback arity lookup should fail deterministically");
         assert_eq!(err.kind, HalErrorKind::AdapterFault);
         assert!(err.message.contains("COM-E-EVENT-CALLBACK-MISSING"));
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_native_com_event_callback_arg_index_is_validated() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
-        let object = host
-            .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
-            .expect("create_object should return a token");
-        let subscription = host
-            .subscribe_event(object.clone(), 1.into())
-            .expect("subscribe should succeed");
-        let _ = host
-            .dispatch_invoke_named(object.raw(), "FireChanged", &[77])
-            .expect("FireChanged should succeed");
-        let callback = host.do_events_variant().expect("callback token");
-        let callback = expect_i32(callback);
-        let err = host
-            .event_callback_variant(callback.into(), 1)
-            .expect_err("only callback arg index 0 should be supported");
-        assert_eq!(err.kind, HalErrorKind::AdapterFault);
-        assert!(
-            err.message
-                .contains("COM-E-EVENT-CALLBACK-SIGNATURE-MISMATCH")
-        );
-        assert_eq!(
-            host.release_event_callback_variant(callback.into())
-                .expect("release callback should succeed"),
-            rv(1)
-        );
-        assert_eq!(
-            host.unsubscribe_event_variant(subscription)
-                .expect("unsubscribe should succeed"),
-            rv(1)
-        );
     }
 
     #[cfg(target_os = "windows")]
@@ -4267,12 +3851,12 @@ mod tests {
             "native COM handles use COM-state handle space"
         );
         let count = host
-            .dispatch_invoke_named(object.raw(), "Count", &[])
+            .dispatch_invoke_named(&object, "Count", &[])
             .expect("dictionary Count should be invokable");
         assert!(count >= 0);
 
         let exists = host
-            .dispatch_invoke_named(object.raw(), "Exists", &[42])
+            .dispatch_invoke_named(&object, "Exists", &[42])
             .expect("dictionary Exists should be invokable");
         assert!(exists == 0 || exists == 1);
     }
@@ -4285,79 +3869,80 @@ mod tests {
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
         assert!(
-            object.raw() >= 20_001,
-            "controlled COM lane should bind native object"
+            !object.is_compat_object(),
+            "controlled COM lane should hold the native object's interface pointer"
         );
         assert_eq!(
-            host.dispatch_invoke_named(object.raw(), "Count", &[])
+            host.dispatch_invoke_named(&object, "Count", &[])
                 .expect("Count property-get should succeed"),
             7
         );
         assert_eq!(
-            host.dispatch_invoke_named(object.raw(), "Exists", &[42])
+            host.dispatch_invoke_named(&object, "Exists", &[42])
                 .expect("Exists(42) should succeed"),
             1
         );
         assert_eq!(
-            host.dispatch_invoke_named(object.raw(), "Exists", &[41])
+            host.dispatch_invoke_named(&object, "Exists", &[41])
                 .expect("Exists(41) should succeed"),
             0
         );
         assert_eq!(
-            host.dispatch_invoke_named(object.raw(), "Ping", &[999])
+            host.dispatch_invoke_named(&object, "Ping", &[])
                 .expect("Ping no-arg method invoke should succeed"),
             123
         );
         assert_eq!(
-            host.dispatch_invoke_named(object.raw(), "Lookup", &[42])
+            host.dispatch_invoke_named(&object, "Lookup", &[42])
                 .expect("Lookup property-get with argument should succeed"),
             1_042
         );
+        // obj.SetValue = 33
+        call_by_name(
+            &host,
+            &object,
+            "SetValue",
+            calcvba_com::call::ComCallKind::Let,
+            &[(33, None)],
+        )
+        .expect("SetValue property-put should succeed");
         assert_eq!(
-            host.dispatch_invoke_named(object.raw(), "SetValue", &[33])
-                .expect("SetValue property-put should succeed"),
-            33
-        );
-        assert_eq!(
-            host.dispatch_invoke_named(object.raw(), "Value", &[])
+            host.dispatch_invoke_named(&object, "Value", &[])
                 .expect("Value property-get should reflect SetValue"),
             33
         );
+        // Set obj.SetValueRef = 33 (the fixture adds 100000 for a putref)
+        call_by_name(
+            &host,
+            &object,
+            "SetValueRef",
+            calcvba_com::call::ComCallKind::Set,
+            &[(33, None)],
+        )
+        .expect("SetValueRef property-putref should succeed");
         assert_eq!(
-            host.dispatch_invoke_named(object.raw(), "SetValueRef", &[33])
-                .expect("SetValueRef property-putref should succeed"),
-            100_033
-        );
-        assert_eq!(
-            host.dispatch_invoke_named(object.raw(), "Value", &[])
+            host.dispatch_invoke_named(&object, "Value", &[])
                 .expect("Value property-get should reflect SetValueRef"),
             100_033
         );
     }
-
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_controlled_test_dispatch_supports_named_method_args_variant_v2() {
         let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
-            .expect("create_object should return a token");
-        let request = ComInvokeRequest {
-            object: object.clone(),
-            member: super::TEST_DISPID_SUM_PAIR.into(),
-            args: vec![
-                ComInvokeArg::named(14, "rhs"),
-                ComInvokeArg::named(3, "lhs"),
-            ],
-            invoke_kind_hint: None,
-        };
-        assert_eq!(
-            expect_i32(
-                host.dispatch_invoke_variant(&request)
-                    .expect("named-argument SumPair invoke should succeed")
-            ),
-            3_014
-        );
+            .expect("create_object should return the native object");
+        // SumPair rhs:=14, lhs:=3
+        let value = call_by_name(
+            &host,
+            &object,
+            "SumPair",
+            calcvba_com::call::ComCallKind::Method,
+            &[(14, Some("rhs")), (3, Some("lhs"))],
+        )
+        .expect("named-argument SumPair invoke should succeed");
+        assert_eq!(expect_i32(value), 3_014);
     }
 
     #[test]
@@ -4389,52 +3974,22 @@ mod tests {
             Variant::from_i32(5_033)
         );
     }
-
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_controlled_test_dispatch_supports_named_property_get_args_variant_v2() {
         let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
-            .expect("create_object should return a token");
-        let request = ComInvokeRequest {
-            object: object.clone(),
-            member: super::TEST_DISPID_LOOKUP_PAIR.into(),
-            args: vec![
-                ComInvokeArg::named(14, "rhs"),
-                ComInvokeArg::named(3, "lhs"),
-            ],
-            invoke_kind_hint: None,
-        };
-        assert_eq!(
-            expect_i32(
-                host.dispatch_invoke_variant(&request)
-                    .expect("named property-get invoke should succeed")
-            ),
-            203_014
-        );
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_native_controlled_test_dispatch_supports_named_default_member_args_variant_v2() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
-        let object = host
-            .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
-            .expect("create_object should return a token");
-        let request = ComInvokeRequest {
-            object: object.clone(),
-            member: 0.into(),
-            args: vec![ComInvokeArg::named(19, "value")],
-            invoke_kind_hint: None,
-        };
-        assert_eq!(
-            expect_i32(
-                host.dispatch_invoke_variant(&request)
-                    .expect("named default-member invoke should succeed")
-            ),
-            19
-        );
+            .expect("create_object should return the native object");
+        let value = call_by_name(
+            &host,
+            &object,
+            "LookupPair",
+            calcvba_com::call::ComCallKind::Get,
+            &[(14, Some("rhs")), (3, Some("lhs"))],
+        )
+        .expect("named property-get invoke should succeed");
+        assert_eq!(expect_i32(value), 203_014);
     }
 
     #[cfg(target_os = "windows")]
@@ -4455,48 +4010,6 @@ mod tests {
         // COM invoke layer for runtime resolution via GetIDsOfNames. The Dictionary COM
         // server will either resolve the name or return a deterministic COM error.
         let _ = host.dispatch_invoke_variant(&request);
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_native_controlled_test_dispatch_preserves_omitted_arg_metadata_v2() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
-        let object = host
-            .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
-            .expect("create_object should return a token");
-        let request = ComInvokeRequest {
-            object: object.clone(),
-            member: super::TEST_DISPID_LOOKUP.into(),
-            args: vec![ComInvokeArg::omitted()],
-            invoke_kind_hint: None,
-        };
-        let err = host
-            .dispatch_invoke_variant(&request)
-            .expect_err("omitted required argument should fail deterministically");
-        assert_eq!(err.kind, HalErrorKind::AdapterFault);
-        assert!(err.message.contains("member requires argument"));
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_native_controlled_test_dispatch_named_property_put_value_uses_propertyput_lane_v2() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
-        let object = host
-            .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
-            .expect("create_object should return a token");
-        let request = ComInvokeRequest {
-            object: object.clone(),
-            member: super::TEST_DISPID_SET_INDEXED_VALUE.into(),
-            args: vec![ComInvokeArg::positional(7), ComInvokeArg::named(9, "value")],
-            invoke_kind_hint: None,
-        };
-        assert_eq!(
-            expect_i32(
-                host.dispatch_invoke_variant(&request)
-                    .expect("named value argument should still route through property-put lane")
-            ),
-            307_009
-        );
     }
 
     #[cfg(target_os = "windows")]
@@ -4527,38 +4040,29 @@ mod tests {
             expected
         );
     }
-
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_controlled_test_dispatch_named_indexed_property_put_reorders_value_last_v2() {
         let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
-            .expect("create_object should return a token");
-        let request = ComInvokeRequest {
-            object: object.clone(),
-            member: super::TEST_DISPID_SET_INDEXED_VALUE.into(),
-            args: vec![
-                ComInvokeArg::named(9, "value"),
-                ComInvokeArg::named(7, "lhs"),
-            ],
-            invoke_kind_hint: None,
-        };
+            .expect("create_object should return the native object");
+        // obj.SetIndexedValue(lhs:=7) = 9: the named index, then the assigned value.
+        let value = call_by_name(
+            &host,
+            &object,
+            "SetIndexedValue",
+            calcvba_com::call::ComCallKind::Let,
+            &[(7, Some("lhs")), (9, None)],
+        )
+        .expect("named indexed property-put should succeed");
+        assert_eq!(expect_i32(value), 307_009);
         assert_eq!(
-            expect_i32(
-                host.dispatch_invoke_variant(&request).expect(
-                    "fully named indexed property-put should canonicalize deterministically"
-                )
-            ),
-            307_009
-        );
-        assert_eq!(
-            host.dispatch_invoke_named(object.raw(), "Value", &[])
+            host.dispatch_invoke_named(&object, "Value", &[])
                 .expect("Value property-get should reflect named indexed property-put"),
             307_009
         );
     }
-
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_native_controlled_test_dispatch_named_indexed_property_putref_reorders_value_last_v2()
@@ -4566,24 +4070,18 @@ mod tests {
         let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
         let object = host
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
-            .expect("create_object should return a token");
-        let request = ComInvokeRequest {
-            object: object.clone(),
-            member: super::TEST_DISPID_SET_INDEXED_VALUE_REF.into(),
-            args: vec![
-                ComInvokeArg::named(13, "value"),
-                ComInvokeArg::named(8, "lhs"),
-            ],
-            invoke_kind_hint: None,
-        };
+            .expect("create_object should return the native object");
+        let value = call_by_name(
+            &host,
+            &object,
+            "SetIndexedValueRef",
+            calcvba_com::call::ComCallKind::Set,
+            &[(8, Some("lhs")), (13, None)],
+        )
+        .expect("named indexed property-putref should succeed");
+        assert_eq!(expect_i32(value), 408_013);
         assert_eq!(
-            expect_i32(host.dispatch_invoke_variant(&request).expect(
-                "fully named indexed property-putref should canonicalize deterministically"
-            )),
-            408_013
-        );
-        assert_eq!(
-            host.dispatch_invoke_named(object.raw(), "Value", &[])
+            host.dispatch_invoke_named(&object, "Value", &[])
                 .expect("Value property-get should reflect named indexed property-putref"),
             408_013
         );
@@ -4605,11 +4103,7 @@ mod tests {
             })
             .expect_err("Lookup should reject missing argument");
         assert_eq!(err.kind, HalErrorKind::AdapterFault);
-        assert!(
-            err.message.contains("member requires argument"),
-            "expected stable missing-argument surface, got {}",
-            err.message
-        );
+        assert_eq!(err.host_error_code, Some(449), "{}", err.message);
     }
 
     #[cfg(target_os = "windows")]
@@ -4620,23 +4114,16 @@ mod tests {
             .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
             .expect("create_object should return a token");
         let err = host
-            .dispatch_invoke_named(object.raw(), "RaiseException", &[])
+            .dispatch_invoke_named(&object, "RaiseException", &[])
             .expect_err("RaiseException should surface an adapter fault");
         assert_eq!(err.kind, HalErrorKind::AdapterFault);
-        assert!(
-            err.message.contains("com-dispatch-exception-raised"),
-            "expected exception-raised classification, got {}",
-            err.message
-        );
-        assert!(
-            err.message
-                .contains("excep_description=\"controlled dispatch exception\""),
-            "expected EXCEPINFO description in adapter fault, got {}",
-            err.message
-        );
-        assert!(
-            !err.message.contains("arg_err="),
-            "unexpected arg_err classification leak in {}",
+        // DISP_E_EXCEPTION with the server's EXCEPINFO, which becomes Err.Description.
+        assert_eq!(
+            err.host_error_info
+                .as_ref()
+                .and_then(|info| info.description.as_deref()),
+            Some("controlled dispatch exception"),
+            "{}",
             err.message
         );
     }
@@ -4669,7 +4156,7 @@ mod tests {
             binding.native_dispatch
         };
         let _ = host
-            .dispatch_invoke_named(object.raw(), "Count", &[])
+            .dispatch_invoke_named(&object, "Count", &[])
             .expect("dispatch invoke should succeed");
         let after = {
             let state = host
@@ -4701,7 +4188,7 @@ mod tests {
         }
 
         let _ = host
-            .dispatch_invoke_named(object.raw(), "Count", &[])
+            .dispatch_invoke_named(&object, "Count", &[])
             .expect("dictionary Count should be invokable");
         let cache_size_after_first = {
             let state = host
@@ -4717,7 +4204,7 @@ mod tests {
                 .len()
         };
         let _ = host
-            .dispatch_invoke_named(object.raw(), "Count", &[])
+            .dispatch_invoke_named(&object, "Count", &[])
             .expect("dictionary Count should be invokable repeatedly");
         let cache_size_after_second = {
             let state = host
@@ -4740,38 +4227,6 @@ mod tests {
             cache_size_after_first, cache_size_after_second,
             "repeated invocation should reuse cached member DISPID entries"
         );
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_native_com_prefer_vtable_strategy_matches_dispatch_results() {
-        let dispatch_host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
-        let mut vtable_policy = HostPolicy::native();
-        vtable_policy.com_invocation_strategy = ComInvocationStrategy::PreferVtable;
-        let vtable_host = StandardHostServices::new(HalProfileId::Windows, vtable_policy);
-
-        let dispatch_object = dispatch_host
-            .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
-            .expect("dispatch create_object should succeed");
-        let vtable_object = vtable_host
-            .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
-            .expect("vtable create_object should succeed");
-
-        let dispatch_count = dispatch_host
-            .dispatch_invoke_named(dispatch_object.raw(), "Count", &[])
-            .expect("dispatch count should succeed");
-        let vtable_count = vtable_host
-            .dispatch_invoke_named(vtable_object.raw(), "Count", &[])
-            .expect("vtable count should succeed");
-        assert_eq!(dispatch_count, vtable_count);
-
-        let dispatch_exists = dispatch_host
-            .dispatch_invoke_named(dispatch_object.raw(), "Exists", &[42])
-            .expect("dispatch exists should succeed");
-        let vtable_exists = vtable_host
-            .dispatch_invoke_named(vtable_object.raw(), "Exists", &[42])
-            .expect("vtable exists should succeed");
-        assert_eq!(dispatch_exists, vtable_exists);
     }
 
     #[cfg(target_os = "windows")]
@@ -5144,243 +4599,6 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn windows_native_com_binding_caches_typelib_member_and_event_specs() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
-        let object = host
-            .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
-            .expect("create_object should return a token");
-        let state = host
-            .com_bridge
-            .shared_state()
-            .lock()
-            .expect("com state lock should succeed");
-        let binding = state
-            .bindings
-            .get(&ComObjectToken::new(object.raw()))
-            .expect("binding should be present for native object token");
-        let member_by_name = |name: &str| {
-            binding
-                .member_specs
-                .values()
-                .find(|member| member.name == name)
-                .unwrap_or_else(|| panic!("member spec for {name} should be present"))
-        };
-        let member = member_by_name("FireChangedPair");
-        assert_eq!(member.name, "FireChangedPair");
-        assert!(member.requires_argument);
-        assert_eq!(member.invoke_kind, super::TypeLibMemberInvokeKind::Method);
-        let ping = member_by_name("Ping");
-        assert_eq!(ping.name, "Ping");
-        assert!(!ping.requires_argument);
-        assert_eq!(ping.invoke_kind, super::TypeLibMemberInvokeKind::Method);
-        let fire_changed_source = member_by_name("FireChangedSourceInterface");
-        assert_eq!(fire_changed_source.name, "FireChangedSourceInterface");
-        assert!(fire_changed_source.requires_argument);
-        assert_eq!(
-            fire_changed_source.invoke_kind,
-            super::TypeLibMemberInvokeKind::Method
-        );
-        let lookup = member_by_name("Lookup");
-        assert_eq!(lookup.name, "Lookup");
-        assert!(lookup.requires_argument);
-        assert_eq!(
-            lookup.invoke_kind,
-            super::TypeLibMemberInvokeKind::PropertyGet
-        );
-        let set_value = member_by_name("SetValue");
-        assert_eq!(set_value.name, "SetValue");
-        assert!(set_value.requires_argument);
-        assert_eq!(
-            set_value.invoke_kind,
-            super::TypeLibMemberInvokeKind::PropertyPut
-        );
-        let set_value_ref = member_by_name("SetValueRef");
-        assert_eq!(set_value_ref.name, "SetValueRef");
-        assert!(set_value_ref.requires_argument);
-        assert_eq!(
-            set_value_ref.invoke_kind,
-            super::TypeLibMemberInvokeKind::PropertyPutRef
-        );
-        let value = member_by_name("Value");
-        assert_eq!(value.name, "Value");
-        assert!(!value.requires_argument);
-        assert_eq!(
-            value.invoke_kind,
-            super::TypeLibMemberInvokeKind::PropertyGet
-        );
-        let dispatch_event = binding
-            .event_specs
-            .get(&super::TEST_EVENT_CHANGED_PAIR.into())
-            .expect("ChangedPair event spec should be present");
-        assert_eq!(dispatch_event.callback_arity, 2);
-        assert_eq!(dispatch_event.path, super::ComEventPath::Dispatch);
-        assert_eq!(
-            dispatch_event.connection_point_iid.as_deref(),
-            Some(super::IID_OXVBA_TEST_DISPATCH_EVENTS_STR)
-        );
-        assert_eq!(
-            dispatch_event.dispatch_member_id,
-            Some(super::TEST_EVENT_CHANGED_PAIR)
-        );
-        let source_interface_event = binding
-            .event_specs
-            .get(&super::TEST_EVENT_CHANGED_SOURCE_INTERFACE.into())
-            .expect("source-interface event spec should be present");
-        assert_eq!(source_interface_event.callback_arity, 1);
-        assert_eq!(
-            source_interface_event.path,
-            super::ComEventPath::SourceInterface
-        );
-        assert_eq!(
-            source_interface_event.connection_point_iid.as_deref(),
-            Some(super::IID_OXVBA_TEST_DISPATCH_SOURCE_EVENTS_STR)
-        );
-        assert!(source_interface_event.dispatch_member_id.is_none());
-        let fire_changed_trigger = binding
-            .event_trigger_specs
-            .get(&super::TEST_DISPID_FIRE_CHANGED.into())
-            .expect("FireChanged trigger spec should be present");
-        assert_eq!(
-            fire_changed_trigger.event_token,
-            super::TEST_EVENT_CHANGED.into()
-        );
-        assert_eq!(fire_changed_trigger.callback_arity, 1);
-        assert!(!fire_changed_trigger.second_arg_is_incremented);
-        let fire_changed_pair_trigger = binding
-            .event_trigger_specs
-            .get(&super::TEST_DISPID_FIRE_CHANGED_PAIR.into())
-            .expect("FireChangedPair trigger spec should be present");
-        assert_eq!(
-            fire_changed_pair_trigger.event_token,
-            super::TEST_EVENT_CHANGED_PAIR.into()
-        );
-        assert_eq!(fire_changed_pair_trigger.callback_arity, 2);
-        assert!(fire_changed_pair_trigger.second_arg_is_incremented);
-        let fire_changed_source_trigger = binding
-            .event_trigger_specs
-            .get(&super::TEST_DISPID_FIRE_CHANGED_SOURCE_INTERFACE.into())
-            .expect("FireChangedSourceInterface trigger spec should be present");
-        assert_eq!(
-            fire_changed_source_trigger.event_token,
-            super::TEST_EVENT_CHANGED_SOURCE_INTERFACE.into()
-        );
-        assert_eq!(fire_changed_source_trigger.callback_arity, 1);
-        assert!(!fire_changed_source_trigger.second_arg_is_incremented);
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_native_com_object_descriptor_reports_identity_and_capabilities() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
-        let object = host
-            .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
-            .expect("create_object should return a token");
-        let descriptor = host
-            .describe_object(object.clone())
-            .expect("describe_object should succeed")
-            .expect("known COM object should produce a descriptor");
-
-        assert_eq!(descriptor.object.raw(), object.raw());
-        assert_eq!(descriptor.prog_id_name, "OxVba.TestDispatch");
-        assert_eq!(
-            descriptor.transport,
-            calcvba_com::ComObjectTransportKind::NativeDispatch
-        );
-        let state = host
-            .com_bridge
-            .shared_state()
-            .lock()
-            .expect("com state lock should succeed");
-        let binding = state
-            .bindings
-            .get(&ComObjectToken::new(object.raw()))
-            .expect("binding should be present for native object token");
-        let count_token = binding
-            .member_specs
-            .iter()
-            .find(|(_, member)| member.name == "Count")
-            .map(|((token, _), _)| *token)
-            .expect("Count member token should be present");
-        let fire_changed_pair_token = binding
-            .member_specs
-            .iter()
-            .find(|(_, member)| member.name == "FireChangedPair")
-            .map(|((token, _), _)| *token)
-            .expect("FireChangedPair member token should be present");
-        let echo_variant_token = binding
-            .member_specs
-            .iter()
-            .find(|(_, member)| member.name == "EchoVariant")
-            .map(|((token, _), _)| *token)
-            .expect("EchoVariant member token should be present");
-        assert!(descriptor.supports_events);
-        assert!(descriptor.known_member_tokens.contains(&count_token));
-        assert!(
-            descriptor
-                .known_member_tokens
-                .contains(&fire_changed_pair_token)
-        );
-        assert_eq!(descriptor.default_member_token, Some(echo_variant_token));
-        assert_eq!(
-            descriptor.default_member_name.as_deref(),
-            Some("EchoVariant")
-        );
-        assert!(
-            descriptor
-                .known_event_tokens
-                .contains(&super::TEST_EVENT_CHANGED.into())
-        );
-        assert!(
-            descriptor
-                .known_event_tokens
-                .contains(&super::TEST_EVENT_CHANGED_PAIR.into())
-        );
-        assert_eq!(
-            descriptor.typelib_cache_key.as_deref(),
-            Some("typelib:calcvba-testdispatch:1.0:0")
-        );
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_native_dictionary_binding_exposes_member_metadata_without_fake_event_projection() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
-
-        let object = host
-            .create_object_test(SCRIPTING_DICTIONARY_PROG_ID_NAME)
-            .expect("create_object should return dictionary token");
-        let state = host
-            .com_bridge
-            .shared_state()
-            .lock()
-            .expect("com state lock should succeed");
-        let binding = state
-            .bindings
-            .get(&ComObjectToken::new(object.raw()))
-            .expect("binding should be present for dictionary token");
-        let exists_member = binding
-            .member_specs
-            .values()
-            .find(|member| member.name == "Exists")
-            .expect("Exists member spec should be present");
-        assert_eq!(exists_member.name, "Exists");
-        assert!(exists_member.requires_argument);
-        assert_eq!(
-            exists_member.invoke_kind,
-            super::TypeLibMemberInvokeKind::Method
-        );
-        assert!(
-            binding.event_specs.is_empty(),
-            "real dictionary binding should not expose fake event metadata"
-        );
-        assert!(
-            binding.event_trigger_specs.is_empty(),
-            "real dictionary binding should not expose fake event triggers"
-        );
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
     fn windows_native_dictionary_event_subscription_fails_without_event_metadata() {
         let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
 
@@ -5470,8 +4688,8 @@ mod tests {
             .create_object_test(SCRIPTING_DICTIONARY_PROG_ID_NAME)
             .expect("string ProgID should resolve native COM activation");
         assert!(
-            object.raw() >= 20_001,
-            "expected native COM object handle from direct ProgID activation, got {object}"
+            !object.is_compat_object() && !object.is_nothing_placeholder(),
+            "expected the native object's interface pointer from direct ProgID activation, got {object}"
         );
     }
 
@@ -5515,46 +4733,6 @@ mod tests {
             "expected raw GetIDsOfNames detail, got {}",
             err.message
         );
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn release_object_clears_native_subscriptions_and_pending_callbacks() {
-        let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
-        let object = host
-            .create_object_test(TEST_DISPATCH_PROG_ID_NAME)
-            .expect("create_object should return controlled COM object");
-        let subscription = host
-            .subscribe_event(object.clone(), 1.into())
-            .expect("subscribe_event should succeed");
-        let _ = host
-            .dispatch_invoke_named(object.raw(), "FireChanged", &[77])
-            .expect("dispatch_invoke should queue callback");
-
-        assert!(
-            host.poll_event_callback()
-                .expect("first callback should be available")
-                .is_some()
-        );
-
-        let _ = host
-            .dispatch_invoke_named(object.raw(), "FireChanged", &[88])
-            .expect("second callback should queue");
-        assert_eq!(
-            host.release_object_test(object)
-                .expect("release_object should clear tracked COM state"),
-            1
-        );
-        assert!(
-            host.poll_event_callback()
-                .expect("released object should not leave callback payloads behind")
-                .is_none()
-        );
-
-        let err = host
-            .unsubscribe_event_variant(subscription)
-            .expect_err("released object subscription should already be removed");
-        assert_eq!(err.kind, HalErrorKind::AdapterFault);
     }
 
     proptest! {

@@ -1536,6 +1536,226 @@ pub unsafe fn live_object_typeinfo_name(
     name
 }
 
+/// `IProvideClassInfo` — `{B196B283-BAB4-101A-B69C-00AA00341D07}`.
+#[cfg(target_os = "windows")]
+const IID_IPROVIDECLASSINFO: windows_sys::core::GUID = windows_sys::core::GUID {
+    data1: 0xB196_B283,
+    data2: 0xBAB4,
+    data3: 0x101A,
+    data4: [0xB6, 0x9C, 0x00, 0xAA, 0x00, 0x34, 0x1D, 0x07],
+};
+
+/// The class name VBA's `TypeName` reports for a COM object: its coclass, from
+/// `IProvideClassInfo` or else the coclass of its type library whose default interface is the
+/// object's (`Scripting.Dictionary` is `Dictionary`, not its interface `IDictionary`; an Excel
+/// sheet is `Worksheet`, not `_Worksheet`), falling back to the interface's own name.
+///
+/// # Safety
+/// `object` is a live IUnknown-derived pointer for the duration of the call.
+#[cfg(target_os = "windows")]
+pub unsafe fn live_object_class_name(object: *mut c_void) -> Option<String> {
+    crate::authorize_native_com("com.typeinfo", "live_object_class_name").ok()?;
+    if object.is_null() {
+        return None;
+    }
+    // SAFETY: forwarded; a successful QueryInterface hands one reference, released below.
+    if let Ok(provider) = unsafe { crate::query_interface_pointer(object, &IID_IPROVIDECLASSINFO) }
+    {
+        // IProvideClassInfo: IUnknown (3 slots), then GetClassInfo.
+        type GetClassInfo = unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> i32;
+        let mut class_info: *mut c_void = null_mut();
+        // SAFETY: `provider` is the live IProvideClassInfo; slot 3 is GetClassInfo.
+        let hr = unsafe {
+            let vtbl = *(provider as *const *const usize);
+            let get: GetClassInfo = core::mem::transmute(*vtbl.add(3));
+            get(provider, &mut class_info)
+        };
+        // SAFETY: the one reference the QueryInterface returned.
+        unsafe { crate::release_unknown(provider) };
+        if hr == COM_S_OK && !class_info.is_null() {
+            // SAFETY: a retained coclass ITypeInfo, released after reading its name.
+            let name = unsafe { typeinfo_name(class_info) };
+            // SAFETY: as above.
+            unsafe { release_typeinfo(class_info) };
+            if name.is_some() {
+                return name;
+            }
+        }
+    }
+    // SAFETY: `object` is live per the contract; a successful QueryInterface hands one
+    // reference, released below.
+    let dispatch = match unsafe { crate::query_interface_pointer(object, &crate::IID_IDISPATCH) } {
+        Ok(dispatch) => dispatch,
+        Err(_) => return None,
+    };
+    let mut ptinfo: *mut c_void = null_mut();
+    // SAFETY: a live IDispatch from the QueryInterface; GetTypeInfo retains one ITypeInfo.
+    let hr = unsafe {
+        let vtbl = (*dispatch.cast::<crate::windows_client::RawIDispatch>()).vtbl;
+        ((*vtbl).get_type_info)(dispatch, 0, 0x0400, &mut ptinfo)
+    };
+    // SAFETY: the reference the QueryInterface returned.
+    unsafe { crate::release_unknown(dispatch) };
+    if hr != COM_S_OK || ptinfo.is_null() {
+        return None;
+    }
+    // SAFETY: `ptinfo` is a retained interface ITypeInfo, released below.
+    let name =
+        unsafe { coclass_name_for_default_interface(ptinfo).or_else(|| typeinfo_name(ptinfo)) };
+    // SAFETY: as above.
+    unsafe { release_typeinfo(ptinfo) };
+    name
+}
+
+/// The name of member `memid` of a live object, from `IDispatch::GetTypeInfo` and
+/// `ITypeInfo::GetNames`.
+///
+/// # Safety
+/// `dispatch` is a live IDispatch for the duration of the call.
+#[cfg(target_os = "windows")]
+pub unsafe fn live_member_name(
+    dispatch: *mut crate::windows_client::RawIDispatch,
+    memid: i32,
+) -> Option<String> {
+    crate::authorize_native_com("com.typeinfo", "live_member_name").ok()?;
+    if dispatch.is_null() {
+        return None;
+    }
+    let mut ptinfo: *mut c_void = null_mut();
+    // SAFETY: a live IDispatch; GetTypeInfo retains one ITypeInfo.
+    let hr =
+        unsafe { ((*(*dispatch).vtbl).get_type_info)(dispatch.cast(), 0, 0x0400, &mut ptinfo) };
+    if hr != COM_S_OK || ptinfo.is_null() {
+        return None;
+    }
+    let mut name: *mut u16 = null_mut();
+    let mut count = 0u32;
+    // SAFETY: a retained ITypeInfo; one BSTR slot.
+    let hr = unsafe {
+        let vtbl = *(ptinfo as *const *const ITypeInfoVtbl);
+        ((*vtbl).get_names)(ptinfo, memid, &mut name, 1, &mut count)
+    };
+    // SAFETY: the reference GetTypeInfo returned.
+    unsafe { release_typeinfo(ptinfo) };
+    if hr != COM_S_OK || count == 0 {
+        return None;
+    }
+    // SAFETY: GetNames transferred the BSTR.
+    unsafe { bstr_to_string_and_free(name) }
+}
+
+/// Releases one ITypeInfo reference.
+///
+/// # Safety
+/// `ptinfo` is a live ITypeInfo carrying the reference being released.
+#[cfg(target_os = "windows")]
+unsafe fn release_typeinfo(ptinfo: *mut c_void) {
+    // SAFETY: per the contract.
+    unsafe {
+        let vtbl = *(ptinfo as *const *const ITypeInfoVtbl);
+        ((*vtbl).release)(ptinfo);
+    }
+}
+
+/// The name of the coclass in `interface`'s type library whose default (non-source) interface is
+/// `interface`.
+///
+/// # Safety
+/// `interface` is a live ITypeInfo.
+#[cfg(target_os = "windows")]
+unsafe fn coclass_name_for_default_interface(interface: *mut c_void) -> Option<String> {
+    // SAFETY: a live ITypeInfo; the TYPEATTR is released at once.
+    let guid = unsafe {
+        let vtbl = *(interface as *const *const ITypeInfoVtbl);
+        let mut pattr: *mut TYPEATTR = null_mut();
+        if ((*vtbl).get_type_attr)(interface, &mut pattr) != COM_S_OK || pattr.is_null() {
+            return None;
+        }
+        let guid = (*pattr).guid;
+        ((*vtbl).release_type_attr)(interface, pattr);
+        guid
+    };
+    let mut ptlib: *mut c_void = null_mut();
+    let mut index = 0u32;
+    // SAFETY: a live ITypeInfo; on success one ITypeLib reference, released below.
+    let hr = unsafe {
+        let vtbl = *(interface as *const *const ITypeInfoVtbl);
+        ((*vtbl).get_containing_type_lib)(interface, &mut ptlib, &mut index)
+    };
+    if hr != COM_S_OK || ptlib.is_null() {
+        return None;
+    }
+    let same = |a: &windows_sys::core::GUID| {
+        a.data1 == guid.data1
+            && a.data2 == guid.data2
+            && a.data3 == guid.data3
+            && a.data4 == guid.data4
+    };
+    let mut found = None;
+    // SAFETY: a live ITypeLib; each ITypeInfo and TYPEATTR it hands out is released in turn.
+    unsafe {
+        let lib = *(ptlib as *const *const ITypeLibVtbl);
+        let count = ((*lib).get_type_info_count)(ptlib);
+        'classes: for i in 0..count {
+            let mut kind = 0u32;
+            if ((*lib).get_type_info_type)(ptlib, i, &mut kind) != COM_S_OK || kind != TKIND_COCLASS
+            {
+                continue;
+            }
+            let mut class: *mut c_void = null_mut();
+            if ((*lib).get_type_info)(ptlib, i, &mut class) != COM_S_OK || class.is_null() {
+                continue;
+            }
+            let vtbl = *(class as *const *const ITypeInfoVtbl);
+            let mut pattr: *mut TYPEATTR = null_mut();
+            let impls =
+                if ((*vtbl).get_type_attr)(class, &mut pattr) == COM_S_OK && !pattr.is_null() {
+                    let n = u32::from((*pattr).cimpl_types);
+                    ((*vtbl).release_type_attr)(class, pattr);
+                    n
+                } else {
+                    0
+                };
+            for impl_index in 0..impls {
+                let mut flags = 0i32;
+                if ((*vtbl).get_impl_type_flags)(class, impl_index, &mut flags) != COM_S_OK
+                    || flags & IMPLTYPEFLAG_FDEFAULT == 0
+                    || flags & IMPLTYPEFLAG_FSOURCE != 0
+                {
+                    continue;
+                }
+                let mut href = 0u32;
+                let mut implemented: *mut c_void = null_mut();
+                if ((*vtbl).get_ref_type_of_impl_type)(class, impl_index, &mut href) != COM_S_OK
+                    || ((*vtbl).get_ref_type_info)(class, href, &mut implemented) != COM_S_OK
+                    || implemented.is_null()
+                {
+                    continue;
+                }
+                let impl_vtbl = *(implemented as *const *const ITypeInfoVtbl);
+                let mut impl_attr: *mut TYPEATTR = null_mut();
+                let matches = ((*impl_vtbl).get_type_attr)(implemented, &mut impl_attr) == COM_S_OK
+                    && !impl_attr.is_null()
+                    && {
+                        let matched = same(&(*impl_attr).guid);
+                        ((*impl_vtbl).release_type_attr)(implemented, impl_attr);
+                        matched
+                    };
+                release_typeinfo(implemented);
+                if matches {
+                    found = typeinfo_name(class);
+                    release_typeinfo(class);
+                    break 'classes;
+                }
+            }
+            release_typeinfo(class);
+        }
+        let lib = *(ptlib as *const *const ITypeLibVtbl);
+        ((*lib).release)(ptlib);
+    }
+    found
+}
+
 /// Reflect a callable default property's declared type without executing it.
 /// VT_VARIANT (12) means its value must be read to learn the runtime subtype.
 /// # Safety

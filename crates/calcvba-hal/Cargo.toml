@@ -11,6 +11,7 @@ calcvba-host-api.workspace = true
 calcvba-diagnostics.workspace = true
 calcvba-com.workspace = true
 calcvba-runtime.workspace = true
+calcvba-eval.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]

@@ -643,7 +643,7 @@ impl Engine {
     fn bind_types(&self) -> BindTypes<'_> {
         BindTypes {
             inner: &*self.typelib_resolver,
-            com_activation: self.host_policy().allow_com_activation,
+            com_activation: self.host_services.permits_com_activation(),
             dictionary: self.dictionary_source,
         }
     }

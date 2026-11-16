@@ -1,0 +1,5 @@
+line	title	description
+1223	Formula for the mathematical real number, r	Formula for the mathematical real number, r. R = open parentheses i + f times 10 to the minus d power closed parentheses 10 to the X power
+1249	Formula for legal month X	Formula for legal month X. Legal Month X = true if X is greater than or = to 0 and x is less than or equal to 12. Otherwise LegalMonth X is false
+1250	Formula for LegalDay Month Day Year	Formula for LegalDay Month Day Year. Legal Day Month, Day, Year = false if open parentheses year is less than 0 or year is less than 32767 closed parentheses or LegalMonth Month is false or day is not a valid day for the specified month and year. Otherwise LegalDay Month Day Year = True
+1252	Formula for Year X	Formula for Year X. Year X = X + 2000 if X is greater or equal to 0 and X is less than or equal to 29. Otherwise Year X = X + 1900.

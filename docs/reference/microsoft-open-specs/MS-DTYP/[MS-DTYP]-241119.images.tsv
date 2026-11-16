@@ -1,0 +1,12 @@
+line	title	description
+530	Packet byte/bit order	Packet byte/bit order
+1828	Access mask bitmap table	Access mask bitmap table
+3258	Components of the Application Data member for the conditional expression (Title=="VP")	Components of the Application Data member for the conditional expression (Title=="VP")
+3280	Postfix to memory mapping for "(@User.smartcard == 1 || @Device.managed == 1) && (@Resource.dept Any_of {"Sales","HR"})"	Postfix to memory mapping for "(@User.smartcard == 1 || @Device.managed == 1) && (@Resource.dept Any_of {"Sales","HR"})"
+3292	Postfix to memory mapping for (@User.clearanceLevel >= @Resource.requiredClearance) || (Member_of {SID(BA)})	Postfix to memory mapping for (@User.clearanceLevel >= @Resource.requiredClearance) || (Member_of {SID(BA)})
+4160	Security descriptor field offsets example	Security descriptor field offsets example
+4205	Security access control list data example	Security access control list data example
+4220	ACE field offsets	ACE field offsets
+4223	ACE owner field offsets example	ACE owner field offsets example
+4226	ACE group field offsets example	ACE group field offsets example
+5110	ACL inheritance logic	ACL inheritance logic

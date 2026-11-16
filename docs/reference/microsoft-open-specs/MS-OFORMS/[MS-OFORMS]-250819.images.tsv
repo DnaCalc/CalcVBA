@@ -1,0 +1,24 @@
+line	title	description
+568	UserForm control	UserForm control
+571	Frame control	Frame control
+574	CheckBox control	CheckBox control
+577	ComboBox control	ComboBox control
+580	ListBox control	ListBox control
+583	OptionButton controls in a Frame	OptionButton controls in a Frame
+586	TextBox control	TextBox control
+589	ToggleButton control	ToggleButton control
+592	CommandButton control	CommandButton control
+595	Image control	Image control
+598	Label control	Label control
+601	TabStrip control, first tab selected	TabStrip control, first tab selected
+602	TabStrip control, second tab selected	TabStrip control, second tab selected
+605	ScrollBar control	ScrollBar control
+608	SpinButton control	SpinButton control
+611	MultiPage control, first page selected	MultiPage control, first page selected
+612	MultiPage control, second page selected	MultiPage control, second page selected
+622	Control structure without additional data	Control structure without additional data
+630	Parent control structure	Parent control structure
+633	ClassTable structure	ClassTable structure
+636	Sites array	Sites array
+642	MultiPage control structure	MultiPage control structure
+784	Padding in the DataBlock	Padding in the DataBlock

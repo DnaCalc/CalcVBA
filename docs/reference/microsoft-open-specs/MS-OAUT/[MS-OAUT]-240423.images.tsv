@@ -1,0 +1,14 @@
+line	title	description
+652	Generic Automation call	Generic Automation call
+654	Optimized Automation call	Optimized Automation call
+661	Generic query for type information	Generic query for type information
+663	Generic query for type information related to COM servers	Generic query for type information related to COM servers
+4862	Call to server	Call to server
+4867	Getting the value of a property	Getting the value of a property
+4873	Setting the value of a property	Setting the value of a property
+4881	Calling a method with Byref and optional arguments	Calling a method with Byref and optional arguments
+4892	Call to IEnumVARIANT::Next	Call to IEnumVARIANT::Next
+4894	Call to IEnumVARIANT::Next	Call to IEnumVARIANT::Next
+4897	Call to IEnumVARIANT::Skip	Call to IEnumVARIANT::Skip
+4900	Call to IEnumVARIANT::Reset	Call to IEnumVARIANT::Reset
+4903	Call to IEnumVARIANT::Clone	Call to IEnumVARIANT::Clone

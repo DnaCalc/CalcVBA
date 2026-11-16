@@ -677,6 +677,7 @@ fn elaborate_proc(
                 optional: p.optional,
                 by_ref: p.by_ref,
                 variadic: p.variadic,
+                has_default: p.default.is_some(),
             }),
             escaped: false,
         });
@@ -2180,6 +2181,51 @@ impl<'a> Lowerer<'a> {
     // ── Values ───────────────────────────────────────────────────────────────
 
     /// Lower an expression, emitting its instructions and returning `(operand, type)`.
+    /// [`CoreValue::LetValue`]: `IsObject(v)`, then either the late default-member get of `v`
+    /// (no arguments) or `v` itself.
+    fn lower_let_value(&mut self, inner: &CoreValue) -> Result<(OxOperand, OxTy)> {
+        let (src, _) = self.lower_value(inner)?;
+        let value = self.new_temp(OxTy::Variant);
+        self.emit(OxInst::Assign {
+            dst: OxPlace::Temp(value),
+            value: src,
+        });
+        let is_object = self.new_temp(OxTy::Variant);
+        self.emit(OxInst::CallNative {
+            dst: Some(OxPlace::Temp(is_object)),
+            callee: OxNativeCallee::Builtin(calcvba_bundle::NativeImplId::IsObject),
+            args: vec![OxCallArg::Operand(OxOperand::temp(value))],
+        });
+        let cond = self.truthy_cond(OxOperand::temp(is_object));
+        let result = self.new_temp(OxTy::Variant);
+        let object_blk = self.reserve();
+        let other_blk = self.reserve();
+        let done = self.reserve();
+        self.finish_to(
+            OxTerminator::Branch {
+                cond,
+                then_blk: object_blk,
+                else_blk: other_blk,
+            },
+            object_blk,
+        );
+        self.emit(OxInst::ComCallLate {
+            dst: Some(OxPlace::Temp(result)),
+            recv: OxOperand::temp(value),
+            name: String::new(),
+            default_member: true,
+            invoke_kind: invoke_kind_from_member_kind(Some(ProjectMemberKind::PropertyGet)),
+            args: Vec::new(),
+        });
+        self.finish_to(OxTerminator::Jump(done), other_blk);
+        self.emit(OxInst::Assign {
+            dst: OxPlace::Temp(result),
+            value: OxOperand::temp(value),
+        });
+        self.finish_to(OxTerminator::Jump(done), done);
+        Ok((OxOperand::temp(result), OxTy::Variant))
+    }
+
     fn lower_value(&mut self, value: &CoreValue) -> Result<(OxOperand, OxTy)> {
         match value {
             CoreValue::Const(c) => Ok((OxOperand::Const(lower_const(c)), const_type(c))),
@@ -2193,6 +2239,7 @@ impl<'a> Lowerer<'a> {
                 num,
             } => self.lower_binary(*op, lhs, rhs, *mode, *num),
             CoreValue::Coerce { value, to } => self.lower_coerce(value, to),
+            CoreValue::LetValue(inner) => self.lower_let_value(inner),
             CoreValue::Call { callee, args } => self.lower_call(callee, args),
             CoreValue::WithTemp(id) => {
                 let t = self.with_temps.get(id).copied().ok_or_else(|| {

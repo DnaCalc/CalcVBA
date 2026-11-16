@@ -146,6 +146,9 @@ struct ProjectionObjectState {
     handles_by_prog_id: BTreeMap<String, i32>,
     prog_ids_by_handle: BTreeMap<i32, String>,
     portable_objects_by_handle: BTreeMap<i32, Arc<dyn PortableDispatch>>,
+    /// The session's application objects the portable projection supplied, by class (upper
+    /// case): one instance each, as `AppObject(class)` returns.
+    portable_app_objects: BTreeMap<String, Variant>,
 }
 
 impl std::fmt::Debug for StandardHostServices {
@@ -265,6 +268,7 @@ impl StandardHostServices {
                 handles_by_prog_id: BTreeMap::new(),
                 prog_ids_by_handle: BTreeMap::new(),
                 portable_objects_by_handle: BTreeMap::new(),
+                portable_app_objects: BTreeMap::new(),
             })),
             dynlink_state: Rc::new(RefCell::new(DynLinkBindingState::default())),
             last_dll_error: Rc::new(Cell::new(0)),

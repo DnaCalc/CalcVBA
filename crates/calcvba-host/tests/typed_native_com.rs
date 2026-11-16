@@ -259,6 +259,9 @@ End Function
 Public Function ReadValue(ByVal d As Scripting.Dictionary, ByVal key As Variant) As Variant
     ReadValue = d.Item(key)
 End Function
+Public Function ReadObject(ByVal d As Scripting.Dictionary, ByVal key As Variant) As Variant
+    Set ReadObject = d.Item(key)
+End Function
 Public Sub PutValue(ByVal d As Scripting.Dictionary, ByVal key As Variant, ByVal value As Variant)
     d.Item(key) = value
 End Sub
@@ -417,7 +420,8 @@ End Function
                 &[args[0], args[1], api::ValueSlot::Variant(&payload)],
                 api::ValueType::Void,
             );
-            let result = call_values_sliced(&session, "ReadValue", &args, api::ValueType::Variant);
+            // An object item comes back with Set; a Let would take its default member.
+            let result = call_values_sliced(&session, "ReadObject", &args, api::ValueType::Variant);
             assert!(
                 matches!(&result, api::Value::Variant(value) if value.as_object_ref().is_some())
             );

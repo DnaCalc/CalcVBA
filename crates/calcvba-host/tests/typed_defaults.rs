@@ -246,11 +246,13 @@ fn runtime_defaults_preserve_identity_order_faults_and_slice_effects() {
             }
         }
         drop(call);
+        // `Echo = x` is a Let: VBA assigns the object's default value, read once (probe
+        // temp/variant-layout-probe/let12, `RetLet = w`).
         let before = log.borrow().len();
         assert!(
-            matches!(invoke("Echo", &[api::ValueSlot::Variant(&x)], api::ValueType::Variant), api::Value::Variant(v) if v.as_object_ref().unwrap().raw() == left.object_ref().raw())
+            matches!(invoke("Echo", &[api::ValueSlot::Variant(&x)], api::ValueType::Variant), api::Value::Variant(v) if v.as_f64() == Some(41.0))
         );
-        assert_eq!(log.borrow().len(), before);
+        assert_eq!(log.borrow().len(), before + 1);
         for (input, expected) in [(api::Variant::nothing(), 91), (api::Variant::null(), 94)] {
             assert!(
                 matches!(invoke("Catch", &[api::ValueSlot::Variant(&input)], api::ValueType::Long), api::Value::Long(n) if n == expected)
@@ -286,11 +288,12 @@ fn runtime_defaults_preserve_identity_order_faults_and_slice_effects() {
             ),
             api::Value::Long(450)
         ));
+        // The 64 default reads of a coercion, plus the Let's own read of `x`.
         let mut chain = x.clone();
-        for depth in 1..=64 {
+        for depth in 1..=65 {
             let next = object(6, chain);
             chain = api::Variant::from_object_ref(next.object_ref());
-            if depth == 63 {
+            if depth == 64 {
                 assert!(matches!(
                     invoke(
                         "Number",

@@ -151,6 +151,7 @@ impl<'a> ProcLower<'a> {
         }
         if intent == AssignmentIntent::Let && !types::is_object(&target_ty) {
             val = self.bind_default_member_value_context(val, value_label)?;
+            val = let_value(val);
         }
         // A declared scalar variable holds its declared type: coerce the value to the
         // target type on store (unconditionally — the value's static type is not a
@@ -2529,5 +2530,37 @@ fn lset_record_field_is_byte_copyable(field: &ArrayElementType) -> bool {
         | ArrayElementType::Date
         | ArrayElementType::FixedString(_)
         | ArrayElementType::Boolean => true,
+    }
+}
+
+/// A `Let` source whose static type is Variant or Object may hold an object at run time:
+/// VBA then assigns that object's default member ([`CoreValue::LetValue`]). A constant, an
+/// operator result, or a library function that never returns an object holds none.
+fn let_value(val: crate::Bound) -> crate::Bound {
+    let may_hold_object = matches!(val.ty, VarTypeRef::Variant | VarTypeRef::Object(_))
+        && match &val.value {
+            CoreValue::Const(_) | CoreValue::Unary { .. } | CoreValue::Binary { .. } => false,
+            CoreValue::Call {
+                callee: CoreCallee::Native(id),
+                ..
+            } => matches!(
+                id,
+                NativeImplId::IIf
+                    | NativeImplId::Choose
+                    | NativeImplId::Switch
+                    | NativeImplId::CreateObject
+                    | NativeImplId::GetObject
+                    | NativeImplId::AppObject
+                    | NativeImplId::EvaluateForeign
+            ),
+            _ => true,
+        };
+    if !may_hold_object {
+        return val;
+    }
+    crate::Bound {
+        value: CoreValue::LetValue(Box::new(val.value)),
+        ty: VarTypeRef::Variant,
+        place: None,
     }
 }

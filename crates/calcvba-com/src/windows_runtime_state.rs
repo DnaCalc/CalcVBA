@@ -497,12 +497,31 @@ pub unsafe fn bind_native_dispatch_result(
         .unwrap_or_else(|| ObjectRef::from_compat_identity(0))
 }
 
+/// The host-object registry key prefix of an object the host bound by ProgID: what
+/// `CreateObject` of that ProgID returns.
+pub const PROG_ID_OBJECT_PREFIX: &str = "PROGID:";
+
 pub fn release_object_binding(
     state: &mut WindowsComClientState,
     object: ObjectRef,
 ) -> Result<ReleasedWindowsComObject, String> {
     let token = state.token_for_object(&object);
     if token.raw() == 0 && !object.is_compat_object() {
+        // An object the host bound by ProgID leaves that registry when the host releases it,
+        // which drops the one reference the registry held.
+        let pointer = object.raw_iunknown() as usize;
+        let bound: Vec<String> = state
+            .app_objects
+            .iter()
+            .filter(|(key, held)| key.starts_with(PROG_ID_OBJECT_PREFIX) && **held == pointer)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in bound {
+            if let Some(held) = state.app_objects.remove(&key) {
+                // SAFETY: the registry owned exactly this one reference.
+                unsafe { release_dispatch(held as *mut RawIDispatch) };
+            }
+        }
         // A foreign object is its interface pointer and has no binding: its references are its
         // cells', released with them.
         return Ok(ReleasedWindowsComObject {

@@ -1120,6 +1120,29 @@ impl ScalarLayout {
                                     ))
                             })
                             .collect();
+                        // A default member read with no arguments (`v = x`, a Let of an
+                        // object) reaches only a default member that needs none; one with a
+                        // required parameter (a Dictionary's `Item(Key)`) raises instead.
+                        let methods: Vec<_> = if *default_member && args.is_empty() {
+                            methods
+                                .into_iter()
+                                .filter(|m| {
+                                    functions.get(m.proc.0).is_some_and(|func| {
+                                        func.locals
+                                            .iter()
+                                            .take(func.param_count)
+                                            .skip(crate::hidden_me_receiver_param_count(func))
+                                            .all(|local| {
+                                                local
+                                                    .param
+                                                    .is_some_and(|p| p.optional || p.variadic)
+                                            })
+                                    })
+                                })
+                                .collect()
+                        } else {
+                            methods
+                        };
                         if methods.is_empty() {
                             if declared.is_some()
                                 && interface_name.is_none()

@@ -90,6 +90,13 @@ function Invoke-ProbeCase($Case) {
             }
         }
         foreach ($m in $Case.modules) {
+            # An exported module (`import`: a .cls/.bas file with its headers and member
+            # attributes such as VB_UserMemId) goes in through Import, which keeps them.
+            if ($m.PSObject.Properties['import'] -and $m.import) {
+                $comp=$wb.VBProject.VBComponents.Import([string]$m.path)
+                if ($null -eq $first) { $first=$comp }
+                continue
+            }
             $comp=$wb.VBProject.VBComponents.Add([int]$m.kind)
             $comp.Name=[string]$m.name
             $text=[IO.File]::ReadAllText([string]$m.path)

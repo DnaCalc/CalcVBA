@@ -553,6 +553,12 @@ pub enum CoreValue {
         operand: CorePtrOperand,
     },
     ErrField(ErrField),
+    /// The value a `Let` assigns from a Variant or Object source (probe let12): when the
+    /// value is an object, its default member, called once with no arguments (a further
+    /// object stays an object). `Nothing` raises 91, an object without a default member 438,
+    /// a default member that needs an argument 450 (all raised by the late default-member
+    /// get). Any other value is itself.
+    LetValue(Box<CoreValue>),
     /// The standalone VBA `Erl` function: reads the line number recorded by the most
     /// recent trapped error in the current run (0 if none).
     Erl,

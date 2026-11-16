@@ -133,6 +133,25 @@ unsafe fn bstr_text(text: *const u16) -> String {
     String::from_utf16_lossy(units)
 }
 
+/// A module's code as the VBE exports it, from `Attribute VB_Name` on: the exported header
+/// (`VERSION`, `BEGIN … END`) goes; member attributes such as `VB_UserMemId` stay. Plain code
+/// (no header) is unchanged.
+fn module_text(source: &str) -> String {
+    let first = source.lines().next().unwrap_or("").trim_start();
+    if !first.to_ascii_lowercase().starts_with("version ") {
+        return source.to_string();
+    }
+    let lines: Vec<&str> = source.lines().collect();
+    match lines.iter().position(|line| {
+        line.trim_start()
+            .to_ascii_lowercase()
+            .starts_with("attribute vb_name")
+    }) {
+        Some(at) => lines[at..].join("\r\n"),
+        None => source.to_string(),
+    }
+}
+
 fn failure(message: impl Into<String>) -> (i32, String) {
     (0, message.into())
 }
@@ -188,7 +207,7 @@ pub unsafe extern "system" fn calcvba_add_module(
     source: *const u16,
 ) -> i32 {
     // SAFETY: the caller's BSTRs.
-    let (name, source) = unsafe { (bstr_text(name), bstr_text(source)) };
+    let (name, source) = unsafe { (bstr_text(name), module_text(&bstr_text(source))) };
     let module_kind = match kind {
         1 => sym::ModuleKind::Procedural,
         2 => sym::ModuleKind::Class,
@@ -226,8 +245,13 @@ pub unsafe extern "system" fn calcvba_add_document(
         return E_POINTER;
     }
     // SAFETY: the caller's BSTRs.
-    let (name, host_type, source) =
-        unsafe { (bstr_text(name), bstr_text(host_type), bstr_text(source)) };
+    let (name, host_type, source) = unsafe {
+        (
+            bstr_text(name),
+            bstr_text(host_type),
+            module_text(&bstr_text(source)),
+        )
+    };
     with_entry(handle, |entry| {
         if name.eq_ignore_ascii_case(DRIVER) {
             return Err(failure(format!("`{DRIVER}` is the driver module's name")));

@@ -3382,8 +3382,18 @@ impl<'a> ProcLower<'a> {
         let Some(text) = crate::foreign_name_text(member) else {
             return Ok(None);
         };
-        if self.is_late_bound_receiver(&recv.ty) {
+        let untyped = match &recv.ty {
+            VarTypeRef::Variant => true,
+            VarTypeRef::Object(name) => fold_identifier(name) == "object",
+            _ => false,
+        };
+        if untyped {
             return Ok(Some(self.evaluate_foreign(recv.value.clone(), text)));
+        }
+        // A declared type the binder has no members for (`c As VBA.Collection`) is still early
+        // bound in VBA: `c.[_NewEnum]` names its member `_NewEnum`.
+        if self.is_late_bound_receiver(&recv.ty) {
+            return Ok(None);
         }
         if self.resolve_member(&recv.ty, member, None).is_some() {
             return Ok(None);

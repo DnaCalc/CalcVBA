@@ -546,16 +546,34 @@ pub fn resolve_default(
         }
         let reference = value.as_object_ref().ok_or(91)?;
         let object = calcvba_host_api::HostObject::from_object_ref(&reference).ok_or(13)?;
+        value = default_value_of(&object, layout, context)?;
+    }
+    if value.vtype() == VarType::Object {
+        Err(28)
+    } else {
+        Ok(value)
+    }
+}
+
+/// One host object's default member, read once with no arguments: what a `Let` assigns
+/// from an object (`CoreValue::LetValue`). A dynamic (`IDispatch`) object is asked by
+/// `DISPID_VALUE`; a typed one through the compiler's planned default getter, else 438 (or
+/// the planned fault, 450 for a default that needs an argument).
+pub fn default_value_of(
+    object: &calcvba_host_api::HostObject,
+    layout: &ScalarLayout,
+    context: &mut super::TypedContext,
+) -> Result<Variant, i32> {
+    {
         if object.header().iid == calcvba_host_api::object::IDISPATCH {
             let call = calcvba_host_api::object::DynamicMemberCall {
                 name: None,
                 kind: calcvba_host_api::object::DynamicMemberKind::Get,
                 arguments: vec![],
             };
-            value = object
+            return object
                 .invoke_dynamic(&call, &mut [], context)
-                .map_err(|e| e.publish(context))?;
-            continue;
+                .map_err(|e| e.publish(context));
         }
         let plan = layout
             .default_calls
@@ -599,12 +617,7 @@ pub fn resolve_default(
                 )
             }
         }?;
-        value = to_variant(result);
-    }
-    if value.vtype() == VarType::Object {
-        Err(28)
-    } else {
-        Ok(value)
+        Ok(to_variant(result))
     }
 }
 fn matches_type(value: &Variant, ty: ScalarType) -> bool {

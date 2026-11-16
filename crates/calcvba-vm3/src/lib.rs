@@ -1256,10 +1256,32 @@ impl<'h> Vm3<'h> {
             func,
             block: f.entry,
             ip: 0,
+            // An `Optional` Variant parameter starts Missing: a call that leaves it out
+            // (`o.Item` with no argument list) passes nothing, and the arguments a call does
+            // pass are seeded over these.
             locals: f
                 .locals
                 .iter()
-                .map(|local| {
+                .enumerate()
+                .map(|(index, local)| {
+                    if index < f.param_count
+                        && local.param.is_some_and(|info| {
+                            info.optional && !info.variadic && !info.has_default
+                        })
+                        && local.ty == OxTy::Variant
+                    {
+                        return Ok(Variant::from_error_code(MISSING_ARG));
+                    }
+                    // An omitted typed `Optional` holds its type's zero (`Optional n As Long`
+                    // is 0), as a declared local does.
+                    if index < f.param_count
+                        && local
+                            .param
+                            .is_some_and(|info| info.optional && !info.variadic)
+                        && let Some(zero) = scalar_zero(&local.ty)
+                    {
+                        return Ok(zero);
+                    }
                     Self::initial_value_for_slot(
                         self.exec.programs[prog].program,
                         &local.ty,
@@ -4343,9 +4365,7 @@ impl<'h> Vm3<'h> {
         member
             .filter(|member| obj_bundle == self.cur || member.externally_visible)
             .map(|m| m.proc)
-            .ok_or_else(|| {
-                Vm3Error::Fault(Fault::new(438, "Object doesn't support default member"))
-            })
+            .ok_or_else(|| Vm3Error::Fault(Fault::new(438, default_error_message(438))))
     }
 
     fn dispatch_project_default_member(
@@ -4791,6 +4811,11 @@ impl<'h> Vm3<'h> {
     ) -> Result<Variant, Vm3Error> {
         let object = variant_to_object(&recv_v)?;
         if object.route_key() == VBA_COLLECTION_ROUTE_KEY {
+            // A Collection's value with no index (`v = c`): its default `Item` gets no
+            // argument, which VBA reports as 450 (probe let12).
+            if args.is_empty() {
+                return Err(Vm3Error::Fault(Fault::new(450, default_error_message(450))));
+            }
             return self.dispatch_collection_method(&object, "Item", args);
         }
         if object.is_project_instance() {
@@ -4813,6 +4838,9 @@ impl<'h> Vm3<'h> {
     ) -> Result<Variant, Vm3Error> {
         let object = variant_to_object(&recv_v)?;
         if object.route_key() == VBA_COLLECTION_ROUTE_KEY {
+            if args.is_empty() {
+                return Err(Vm3Error::Fault(Fault::new(450, default_error_message(450))));
+            }
             return self.dispatch_collection_values(&object, "Item", args);
         }
         if object.is_project_instance() {
@@ -6548,6 +6576,7 @@ mod tests {
                 optional: false,
                 by_ref: false,
                 variadic: false,
+                has_default: false,
             }),
             escaped: false,
         }
@@ -8459,6 +8488,7 @@ mod tests {
                         optional: false,
                         by_ref: false,
                         variadic: false,
+                        has_default: false,
                     }),
                 ), // Local 0 (param)
                 ox_local("Double", OxTy::Long, None), // Local 1 (return)
@@ -8751,3 +8781,21 @@ mod tests {
     }
 }
 pub mod typed;
+
+/// The value a declared scalar of type `ty` starts with (`Long` 0, `String` ""), for a slot
+/// that no assignment has reached; `None` for Variant, object, record and array slots.
+fn scalar_zero(ty: &OxTy) -> Option<Variant> {
+    Some(match ty {
+        OxTy::Bool => Variant::from_bool(false),
+        OxTy::Byte => Variant::from_u8(0),
+        OxTy::Integer => Variant::from_i16(0),
+        OxTy::Long => Variant::from_i32(0),
+        OxTy::LongLong => Variant::from_i64(0),
+        OxTy::Single => Variant::from_f32(0.0),
+        OxTy::Double => Variant::from_f64(0.0),
+        OxTy::Currency => Variant::from_currency_scaled_i64(0),
+        OxTy::Date => Variant::from_date_f64(0.0),
+        OxTy::Str => Variant::from_string(""),
+        _ => return None,
+    })
+}

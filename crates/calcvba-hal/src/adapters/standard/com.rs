@@ -490,6 +490,14 @@ impl ComHal for StandardHostServices {
         }
         #[cfg(target_os = "windows")]
         if self.native_com_enabled() {
+            // An object the host supplied for this ProgID (a test fixture, a projected class).
+            if let Some(object) = self
+                .com_bridge
+                .host_object_for_prog_id(prog_id_name)
+                .map_err(|message| self.com_createobject_adapter_fault(message))?
+            {
+                return Ok(Variant::from_object_ref(object));
+            }
             match self.activate_variant_object_for_prog_id_name(prog_id_name) {
                 Ok(value) => {
                     return Ok(value);
@@ -515,6 +523,30 @@ impl ComHal for StandardHostServices {
                 HalError::adapter_fault(self.profile, capability, "app_object", detail)
             })?
             .as_str();
+        // A portable host projects its objects by ProgID: the application object is the one
+        // it makes for that class, once per session.
+        if let Some(projection) = &self.portable_objects {
+            let key = class.trim().to_ascii_uppercase();
+            if let Some(existing) = self
+                .projection_state
+                .borrow()
+                .portable_app_objects
+                .get(&key)
+            {
+                return Ok(existing.clone());
+            }
+            if let Some(dispatch) = projection.create_object(class.trim()) {
+                let object = allocate_projection_object_ref(self, class.trim(), Some(dispatch))?;
+                #[cfg(target_os = "windows")]
+                try_bind_projection_object_metadata(self, object.clone(), class.trim())?;
+                let value = Variant::from_object_ref(object);
+                self.projection_state
+                    .borrow_mut()
+                    .portable_app_objects
+                    .insert(key, value.clone());
+                return Ok(value);
+            }
+        }
         #[cfg(target_os = "windows")]
         if self.native_com_enabled() {
             self.ensure_thread_com_apartment("app_object")?;

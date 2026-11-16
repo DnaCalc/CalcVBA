@@ -20,6 +20,21 @@ Private Declare PtrSafe Function calcvba_close Lib "<DLL>" (ByVal handle As Long
 Private Const EXCEL_GLOBAL As String = "{00020812-0000-0000-C000-000000000046}"
 Private Const EXCEL_LIBID As String = "{00020813-0000-0000-C000-000000000046}"
 
+' The component's code as the VBE exports it, with its member attributes (VB_UserMemId and
+' the like), which CodeModule.Lines leaves out.
+Private Function ExportedText(ByVal comp As Object) As String
+    Dim path As String, f As Integer, text As String
+    path = Environ$("TEMP") & "\calcvba-" & comp.Name & "-" & CStr(Int(Timer * 1000)) & ".txt"
+    comp.Export path
+    f = FreeFile
+    Open path For Binary Access Read As #f
+    text = Space$(LOF(f))
+    Get #f, , text
+    Close #f
+    Kill path
+    ExportedText = text
+End Function
+
 ' The workbook, sheet or chart whose document module is codeName.
 Private Function DocumentObject(ByVal codeName As String) As Object
     Dim sheet As Object
@@ -43,8 +58,7 @@ Public Function RunCalcVBA(ByVal moduleName As String, ByVal entry As String, By
     If calcvba_new(handle) <> 0 Then RunCalcVBA = "calcvba_new failed": Exit Function
     For Each comp In ThisWorkbook.VBProject.VBComponents
         If comp.Name <> "CalcVBALoader" And comp.Name <> "CalcVBACompare" Then
-            code = ""
-            If comp.CodeModule.CountOfLines > 0 Then code = comp.CodeModule.Lines(1, comp.CodeModule.CountOfLines)
+            code = ExportedText(comp)
             If comp.Type = 1 Or comp.Type = 2 Then
                 message = Failure(handle, calcvba_add_module(handle, StrPtr(comp.Name), comp.Type, StrPtr(code)), "add_module " & comp.Name)
             ElseIf comp.Type = 100 Then

@@ -696,6 +696,30 @@ impl TypedStack {
                     callee: calcvba_oxir::OxNativeCallee::Builtin(id),
                     args,
                 } => {
+                    // `IsObject(v)` (every Let from a Variant source asks it): answered from
+                    // the value's type, with no argument list built.
+                    if *id == calcvba_bundle::NativeImplId::IsObject
+                        && let [calcvba_oxir::OxCallArg::Operand(op)] = args.as_slice()
+                    {
+                        let is_object =
+                            self.operand(op)?.vtype() == calcvba_runtime::VarType::Object;
+                        let frame = &mut self.frames.last_mut().ok_or(5)?.activation;
+                        if let Some(dst) = dst {
+                            let ty = frame
+                                .layout()
+                                .operand_type(&OxOperand::Use(*dst))
+                                .map_err(|_| 5)?;
+                            frame.write_owned_value(
+                                *dst,
+                                calcvba_rt_abi::host_entry::value::from_variant(
+                                    ty,
+                                    calcvba_runtime::Variant::from_bool(is_object),
+                                )?,
+                            )?;
+                        }
+                        frame.set_pc(frame.pc() + 1);
+                        return Ok(());
+                    }
                     let mut values = Vec::with_capacity(args.len());
                     for arg in args {
                         values.push(match arg {

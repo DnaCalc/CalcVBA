@@ -31,7 +31,9 @@ foreach ($path in $ModulePath) {
     $full=[IO.Path]::GetFullPath($path)
     $name=[IO.Path]::GetFileNameWithoutExtension($full)
     $kind=if ($full.EndsWith('.cls')) { 2 } else { 1 }
-    $modules+=[ordered]@{name=$name;kind=$kind;path=$full}
+    # A file in exported form (VERSION header) is imported, keeping its member attributes.
+    $import=(Get-Content -LiteralPath $full -TotalCount 1) -match '^VERSION '
+    $modules+=[ordered]@{name=$name;kind=$kind;path=$full;import=$import}
 }
 if (-not $Module) { $Module=$modules[0].name }
 $loaders=Join-Path $repo 'tools\calcvba-excel\loaders'

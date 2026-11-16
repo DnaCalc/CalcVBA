@@ -549,14 +549,35 @@ impl WindowsComBridge {
     /// owned by the caller, which this method takes over.
     pub unsafe fn bind_host_dispatch_object(
         &self,
-        _type_hint: &str,
+        prog_id: &str,
         dispatch: *mut RawIDispatch,
     ) -> Result<ObjectRef, String> {
         if dispatch.is_null() {
             return Ok(ObjectRef::from_compat_identity(0));
         }
+        // The host supplies this object for its ProgID: `CreateObject` of it returns this
+        // instance until the host releases it. The registry keeps a reference of its own.
+        if !prog_id.trim().is_empty() {
+            // SAFETY: the caller's live reference; this AddRef is the registry's.
+            unsafe { crate::add_ref_dispatch(dispatch) };
+            register_app_object_shared(&self.state, &Self::prog_id_object_key(prog_id), dispatch)?;
+        }
         // SAFETY: one retained reference, taken over by the ObjectRef.
         Ok(unsafe { object_from_owned_dispatch(dispatch) })
+    }
+
+    fn prog_id_object_key(prog_id: &str) -> String {
+        format!(
+            "{}{}",
+            crate::windows_runtime_state::PROG_ID_OBJECT_PREFIX,
+            prog_id.trim().to_ascii_uppercase()
+        )
+    }
+
+    /// The object the host bound for `prog_id`, if it still holds one (what `CreateObject`
+    /// returns before activating anything).
+    pub fn host_object_for_prog_id(&self, prog_id: &str) -> Result<Option<ObjectRef>, String> {
+        app_object_shared(&self.state, &Self::prog_id_object_key(prog_id))
     }
 
     pub fn describe_object(

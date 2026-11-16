@@ -4311,6 +4311,11 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
             }
             return ST_OK;
         }
+        // A Collection's value with no index (`v = c`): VBA reports 450, as VM3 does.
+        if name.is_empty() && args.is_empty() {
+            // SAFETY: the active JIT entry owns this same-thread error state.
+            return unsafe { rt_raise_runtime_error_number(state, 450) };
+        }
         // SAFETY: the current compiled-run boundary owns the live unique state handle;
         // typed references and owned values remain live and nonaliasing for this call.
         let value = match unsafe {

@@ -50,6 +50,24 @@ pub(super) unsafe fn invoke_dynamic(
         return Err(424);
     }
     let reference = receiver.as_object_ref().ok_or(91)?;
+    // A typed host object's default value, read with no arguments (`v = x`, the Let of
+    // an object): the compiler's planned default getter, as the coercions use.
+    if *default_member
+        && args.is_empty()
+        && matches!(invoke_kind, K::PropertyGet)
+        && reference.native_collection_snapshot().is_none()
+        && let Some(object) = host_view(&reference)
+        && object.header().iid != calcvba_host_api::object::IDISPATCH
+    {
+        let result = super::value::default_value_of(&object, layout, context)?;
+        if let Some(dst) = dst {
+            let index = layout.slot(*dst).map_err(|_| 5)?;
+            let value = from_variant(layout.slots[index], result)?;
+            // SAFETY: exact admitted destination receives one owning result.
+            unsafe { write_owned(raw, index, layout.slots[index], value) }?;
+        }
+        return Ok(());
+    }
     let mut values = Vec::with_capacity(args.len());
     let mut specifications = Vec::with_capacity(args.len());
     let mut targets = Vec::with_capacity(args.len());

@@ -5426,7 +5426,8 @@ fn typed_com_named_argument_errors_are_bind_time_diagnostics() {
 fn callee_of(value: &CoreValue) -> Option<&CoreCallee> {
     match value {
         CoreValue::Call { callee, .. } => Some(callee),
-        CoreValue::Coerce { value, .. } => callee_of(value),
+        // A Let from a Variant/Object source assigns its default member: the call is inside.
+        CoreValue::Coerce { value, .. } | CoreValue::LetValue(value) => callee_of(value),
         _ => None,
     }
 }
@@ -5458,7 +5459,9 @@ fn collect_arg_callees<'a>(arg: &'a CoreArg, out: &mut Vec<&'a CoreCallee>) {
 
 fn collect_value_callees<'a>(value: &'a CoreValue, out: &mut Vec<&'a CoreCallee>) {
     match value {
-        CoreValue::Unary { expr, .. } | CoreValue::Coerce { value: expr, .. } => {
+        CoreValue::Unary { expr, .. }
+        | CoreValue::Coerce { value: expr, .. }
+        | CoreValue::LetValue(expr) => {
             collect_value_callees(expr, out);
         }
         CoreValue::Binary { lhs, rhs, .. } => {
@@ -5533,7 +5536,7 @@ fn all_value_callees(program: &CoreProgram) -> Vec<&CoreCallee> {
 fn call_of(value: &CoreValue) -> Option<(&CoreCallee, &[CoreArg])> {
     match value {
         CoreValue::Call { callee, args } => Some((callee, args)),
-        CoreValue::Coerce { value, .. } => call_of(value),
+        CoreValue::Coerce { value, .. } | CoreValue::LetValue(value) => call_of(value),
         _ => None,
     }
 }

@@ -31,6 +31,10 @@ pub struct OxParamInfo {
     pub by_ref: bool,
     /// A trailing `ParamArray`.
     pub variadic: bool,
+    /// The `Optional` parameter declares a default (`= 3`). A call the binder sees fills it
+    /// in; a parameter without one that a call leaves out starts Missing (a Variant).
+    #[serde(default)]
+    pub has_default: bool,
 }
 
 /// A frame-local typed variable (indexed by [`LocalId`]). Parameters occupy the

@@ -1955,6 +1955,18 @@ pub(crate) unsafe fn seed_jit_member_frame_args(
             _ => return ST_FAULT,
         }
     }
+    // Trailing parameters the call left out (`o.Item` with no argument list): an `Optional`
+    // Variant is Missing, as VBA passes it; typed optionals keep their frame zero.
+    for param_index in hidden + args.len()..func.param_count {
+        if let Some(param) = func.locals.get(param_index)
+            && param
+                .param
+                .is_some_and(|info| info.optional && !info.variadic && !info.has_default)
+            && matches!(param.ty, OxTy::Variant)
+        {
+            frame.locals[param_index] = Variant::from_error_code(MISSING_ARG);
+        }
+    }
     ST_OK
 }
 

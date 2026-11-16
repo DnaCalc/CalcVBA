@@ -278,15 +278,21 @@ fn surface_member_from_proc(
     proc: &calcvba_bundle::coreir::CoreProc,
     symbol: SymbolId,
 ) -> SurfaceMember {
-    let parameter_names = proc.params.iter().map(|param| param.name.clone()).collect();
-    let parameter_types = proc
-        .params
+    // A class member's first parameter is the binder's hidden `Me` receiver (a name VBA code
+    // cannot give a parameter); callers pass the receiver separately, so the published
+    // signature starts after it.
+    let params = match proc.params.split_first() {
+        Some((first, rest)) if first.name.eq_ignore_ascii_case("Me") => rest,
+        _ => &proc.params[..],
+    };
+    let parameter_names = params.iter().map(|param| param.name.clone()).collect();
+    let parameter_types = params
         .iter()
         .map(|param| param_type(&param.ty, param.by_ref))
         .collect();
-    let parameter_optional = proc.params.iter().map(|param| param.optional).collect();
-    let parameter_optional_defaults = proc.params.iter().map(|_| None).collect();
-    let parameter_variadic = proc.params.iter().any(|param| param.variadic);
+    let parameter_optional = params.iter().map(|param| param.optional).collect();
+    let parameter_optional_defaults = params.iter().map(|param| param.default.clone()).collect();
+    let parameter_variadic = params.iter().any(|param| param.variadic);
     let return_type = proc
         .return_local
         .and_then(|local| proc.locals.get(local.0))

@@ -32,11 +32,12 @@ pub struct OxParamInfo {
     pub by_ref: bool,
     /// A trailing `ParamArray`.
     pub variadic: bool,
-    /// The `Optional` parameter's declared default (`= 3`): the folded constant, before
-    /// coercion to the parameter type. A call the binder sees fills it in; where a call leaves
-    /// the parameter out (late bound, `CallByName`), the callee's frame starts with it, coerced
-    /// to the parameter type as the binder's fill is. An omitted Variant parameter without one
-    /// is Missing; a typed one is its type's zero.
+    /// The `Optional` parameter's declared default (`= 3`): the folded constant, already in the
+    /// declared type where the symbol layer converts it (`Optional n As Long = 5` is Long 5). A
+    /// call the binder sees fills it in; where a call leaves the parameter out (late bound,
+    /// `CallByName`, an explicit `,`), the callee's frame starts with it, put through the
+    /// parameter's store conversion as the binder's fill is. An omitted Variant parameter
+    /// without one is Missing; a typed one is its type's zero.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<OxConst>,
 }

@@ -3953,8 +3953,13 @@ impl<'h> Vm3<'h> {
                     }
                 }
                 OxArg::Omitted => {
+                    let seeded = self.exec.programs[target_prog].program.funcs[proc.0]
+                        .locals
+                        .get(li)
+                        .and_then(omitted_param_value)
+                        .transpose()?;
                     if let Some(slot) = frame.locals.get_mut(li) {
-                        *slot = Variant::from_error_code(MISSING_ARG);
+                        *slot = seeded.unwrap_or_else(|| Variant::from_error_code(MISSING_ARG));
                     }
                 }
             }

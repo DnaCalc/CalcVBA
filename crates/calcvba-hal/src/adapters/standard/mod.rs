@@ -1296,7 +1296,6 @@ impl StandardHostServices {
         .with_host_error_code(vba_error_number)
     }
 
-    #[cfg(target_os = "windows")]
     /// The HAL error for a failed object call: VBA's number, with the server's description,
     /// source and help (VBA's default message when it gave none).
     pub(crate) fn com_call_fault(
@@ -1327,6 +1326,7 @@ impl StandardHostServices {
         })
     }
 
+    #[cfg(target_os = "windows")]
     fn com_dispatch_invoke_fault(&self, failure: ComInvokeFailure) -> HalError {
         let label = failure.classification_label();
         // Recover the real VBA Err.Number (and description) the COM server

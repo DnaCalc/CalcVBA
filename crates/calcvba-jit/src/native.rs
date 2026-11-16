@@ -293,7 +293,7 @@ pub fn compile_native_scalars(
                                     OxCallArg::Operand(operand) => (operand.clone(), false),
                                     OxCallArg::ByRef(place) => (
                                         OxOperand::Use(*place),
-                                        parameter.param.is_some_and(|p| p.by_ref),
+                                        parameter.param.as_ref().is_some_and(|p| p.by_ref),
                                     ),
                                     // An omitted Optional Variant is passed as Missing.
                                     OxCallArg::Omitted

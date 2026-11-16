@@ -6648,7 +6648,7 @@ impl<'a> LowerFunc<'a> {
             // Only As New storage and possible caller aliases need activation
             // before argument descriptors are read. Ordinary object arguments
             // do not need an extra owning copy into their existing slot.
-            let caller_alias = matches!(place,OxPlace::Local(id) if self.func.locals[id.0].param.is_some_and(|parameter|parameter.by_ref));
+            let caller_alias = matches!(place,OxPlace::Local(id) if self.func.locals[id.0].param.as_ref().is_some_and(|parameter|parameter.by_ref));
             let global = matches!(place, OxPlace::Global(_));
             let local_binding=self.func.blocks.iter().flat_map(|block|&block.instrs).any(|instruction|matches!(instruction,OxInst::AsNew {place:registered,..} if *registered==place));
             if !(caller_alias || global || local_binding) {

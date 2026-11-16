@@ -823,7 +823,7 @@ fn verify_event_routes(program: &OxProgram, errors: &mut Vec<VerifyError>) {
             if handler
                 .locals
                 .get(i + 1)
-                .and_then(|local| local.param)
+                .and_then(|local| local.param.as_ref())
                 .is_none_or(|p| p.by_ref != ty.is_by_ref() || p.optional || p.variadic)
             {
                 fail("handler passing mode disagrees");

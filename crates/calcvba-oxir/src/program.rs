@@ -19,9 +19,10 @@ use crate::com::{ComInterface, ComMethodRef};
 use crate::ids::{BlockId, FuncId, LocalId};
 use crate::inst::{OxAsNew, OxBlock};
 use crate::ty::{IfaceId, OxTy, RecordLayoutId};
+use crate::value::OxConst;
 
 /// Parameter-specific facts for a [`OxLocal`] that is a procedure parameter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OxParamInfo {
     /// Source-level `Optional` marker. Omitted defaults are bound by the caller,
     /// but package/runtime descriptor consumers still need the signature fact.
@@ -31,10 +32,20 @@ pub struct OxParamInfo {
     pub by_ref: bool,
     /// A trailing `ParamArray`.
     pub variadic: bool,
-    /// The `Optional` parameter declares a default (`= 3`). A call the binder sees fills it
-    /// in; a parameter without one that a call leaves out starts Missing (a Variant).
-    #[serde(default)]
-    pub has_default: bool,
+    /// The `Optional` parameter's declared default (`= 3`): the folded constant, before
+    /// coercion to the parameter type. A call the binder sees fills it in; where a call leaves
+    /// the parameter out (late bound, `CallByName`), the callee's frame starts with it, coerced
+    /// to the parameter type as the binder's fill is. An omitted Variant parameter without one
+    /// is Missing; a typed one is its type's zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<OxConst>,
+}
+
+impl OxParamInfo {
+    /// The parameter declares a default value.
+    pub fn has_default(&self) -> bool {
+        self.default.is_some()
+    }
 }
 
 /// A frame-local typed variable (indexed by [`LocalId`]). Parameters occupy the

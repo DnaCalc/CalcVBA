@@ -8923,7 +8923,7 @@ pub(crate) unsafe extern "C" fn rt_jit_direct_enter_proc_i32(
                 return ST_FAULT;
             };
             if param_info.variadic {
-                if !is_m4_4_supported_paramarray_param(&param.ty, *param_info)
+                if !is_m4_4_supported_paramarray_param(&param.ty, param_info)
                     || arg.kind != JIT_CALL_ARG_BYVAL_VARIANT
                 {
                     return ST_FAULT;
@@ -9137,7 +9137,7 @@ pub(crate) unsafe extern "C" fn rt_jit_call_extern_proc_i32(
                     return ST_FAULT;
                 };
                 if param_info.variadic {
-                    if !is_m4_4_supported_paramarray_param(&param.ty, *param_info)
+                    if !is_m4_4_supported_paramarray_param(&param.ty, param_info)
                         || arg.kind != JIT_CALL_ARG_BYVAL_VARIANT
                     {
                         return ST_FAULT;
@@ -9416,7 +9416,7 @@ pub(crate) unsafe extern "C" fn rt_jit_call_proc_i32(
                     return ST_FAULT;
                 };
                 if param_info.variadic {
-                    if !is_m4_4_supported_paramarray_param(&param.ty, *param_info)
+                    if !is_m4_4_supported_paramarray_param(&param.ty, param_info)
                         || arg.kind != JIT_CALL_ARG_BYVAL_VARIANT
                     {
                         return ST_FAULT;

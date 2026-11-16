@@ -37,7 +37,7 @@ pub(crate) fn validate_func_shape(func: &OxFunc) -> Result<(), JitError> {
         }
     }
     for (index, param) in func.locals.iter().take(func.param_count).enumerate() {
-        if let Some(info) = param.param
+        if let Some(info) = param.param.as_ref()
             && info.variadic
         {
             if index + 1 != func.param_count {
@@ -98,7 +98,7 @@ pub(crate) fn validate_scalar_call_arg_against_param(
         )));
     };
     if param_info.variadic {
-        if !is_m4_4_supported_paramarray_param(&param.ty, *param_info) {
+        if !is_m4_4_supported_paramarray_param(&param.ty, param_info) {
             return Err(JitError::unsupported(format!(
                 "M4-4 ParamArray support is limited to ByVal Variant or dynamic Variant-array parameters, got {:?} in {}.{}",
                 param.ty, callee_name, param.name
@@ -537,7 +537,7 @@ pub(crate) fn is_m4_4_for_each_source_ty(ty: &OxTy) -> bool {
 
 pub(crate) fn is_m4_4_supported_paramarray_param(
     ty: &OxTy,
-    param_info: calcvba_oxir::OxParamInfo,
+    param_info: &calcvba_oxir::OxParamInfo,
 ) -> bool {
     param_info.variadic
         && !param_info.by_ref

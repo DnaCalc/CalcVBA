@@ -317,7 +317,7 @@ fn build_native_artifact(
             let func = &program.funcs[target.0];
             if let Some(parameter) = func.locals[..func.param_count]
                 .iter()
-                .filter_map(|local| local.param)
+                .filter_map(|local| local.param.as_ref())
                 .find(|parameter| parameter.variadic || parameter.optional)
             {
                 let kind = if parameter.variadic {

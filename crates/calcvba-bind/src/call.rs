@@ -2771,6 +2771,16 @@ impl<'a> ProcLower<'a> {
                             name: member.to_string(),
                         });
                     }
+                    // A read without an argument list passes each parameter as `recv.member()`
+                    // does: its declared default, else a typed zero, else Missing.
+                    let args = match (&signature, binding.symbol) {
+                        (Some(sig), Some(sym))
+                            if sig.params.iter().all(|p| p.optional || p.param_array) =>
+                        {
+                            self.bind_proc_args(None, sig, sym)?
+                        }
+                        _ => Vec::new(),
+                    };
                     let ty = self.g.resolve_udt_type(
                         signature
                             .and_then(|sig| sig.return_type)
@@ -2779,7 +2789,7 @@ impl<'a> ProcLower<'a> {
                     let dispatch = self.interface_dispatch_name(&recv.ty, member);
                     Ok(value_bound(
                         self.g.coerce_store(
-                            self.late_member_call(&dispatch, kind, recv.value, Vec::new()),
+                            self.late_member_call(&dispatch, kind, recv.value, args),
                             &ty,
                         ),
                         ty,

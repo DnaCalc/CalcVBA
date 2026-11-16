@@ -11,7 +11,7 @@ use calcvba_eval::arith::{self, ArithError, CmpOp as EvalCmpOp};
 use calcvba_eval::typed;
 use calcvba_hal::HostServices;
 use calcvba_lib::LibContext;
-use calcvba_oxir::value::{OxArg, OxCallArg, OxOperand, OxPlace};
+use calcvba_oxir::value::{OxArg, OxCallArg, OxConst, OxOperand, OxPlace};
 use calcvba_oxir::{
     BlockId, ErrorHandler, FuncId, OxProgram, OxTy, inst::OxAsNew, program::OxClassMethod,
 };
@@ -29,6 +29,25 @@ use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 use std::slice;
+/// The runtime value of an OxIR constant (an operand, or a parameter's declared default).
+pub fn ox_const_variant(c: &OxConst) -> Variant {
+    match c {
+        OxConst::Empty => Variant::empty(),
+        OxConst::Null => Variant::null(),
+        OxConst::Nothing => Variant::nothing(),
+        OxConst::Bool(b) => Variant::from_bool(*b),
+        OxConst::I16(n) => Variant::from_i16(*n),
+        OxConst::I32(n) => Variant::from_i32(*n),
+        OxConst::I64(n) => Variant::from_i64(*n),
+        OxConst::F32(bits) => Variant::from_f32(f32::from_bits(*bits)),
+        OxConst::F64(bits) => Variant::from_f64(f64::from_bits(*bits)),
+        OxConst::Currency(scaled) => Variant::from_currency_scaled_i64(*scaled),
+        OxConst::Date(bits) => Variant::from_date_f64(f64::from_bits(*bits)),
+        OxConst::Str(s) => Variant::from_string(s.clone()),
+        OxConst::NullStr => Variant::null_string(),
+    }
+}
+
 pub mod automatic_events;
 pub mod library;
 pub mod native_export;

@@ -178,7 +178,9 @@ fn const_ty(c: &OxConst) -> OxTy {
     }
 }
 
-fn numeric_target(ty: &OxTy) -> Option<NumericCoerceTarget> {
+/// The checked numeric coercion a store into a slot of type `ty` applies (`None` for String,
+/// Variant, object, record and array types).
+pub fn numeric_target(ty: &OxTy) -> Option<NumericCoerceTarget> {
     match ty {
         OxTy::Bool => Some(NumericCoerceTarget::Boolean),
         OxTy::Byte => Some(NumericCoerceTarget::Byte),

@@ -1811,7 +1811,7 @@ pub(crate) unsafe fn seed_jit_member_frame_args(
             return ST_FAULT;
         };
         if param_info.variadic {
-            if !is_m4_4_supported_paramarray_param(&param.ty, *param_info)
+            if !is_m4_4_supported_paramarray_param(&param.ty, param_info)
                 || arg.kind != JIT_CALL_ARG_BYVAL_VARIANT
             {
                 return ST_FAULT;
@@ -1866,6 +1866,13 @@ pub(crate) unsafe fn seed_jit_member_frame_args(
                     };
                 if let Some(aliases) = param_array_aliases {
                     pending_param_array_aliases.push((param_index, aliases));
+                }
+            }
+            JIT_CALL_ARG_OMITTED if param_info.optional && param_info.default.is_some() => {
+                // SAFETY: the current compiled-run boundary owns the live unique state handle.
+                match unsafe { seed_omitted_param_default(state, frame, param_index, param) } {
+                    ST_OK => {}
+                    status => return status,
                 }
             }
             JIT_CALL_ARG_OMITTED if param_info.optional && matches!(param.ty, OxTy::Variant) => {
@@ -1955,19 +1962,56 @@ pub(crate) unsafe fn seed_jit_member_frame_args(
             _ => return ST_FAULT,
         }
     }
-    // Trailing parameters the call left out (`o.Item` with no argument list): an `Optional`
-    // Variant is Missing, as VBA passes it; typed optionals keep their frame zero.
+    // Trailing parameters the call left out (`o.Item` with no argument list, `CallByName`): an
+    // `Optional` takes its declared default, coerced to the parameter type; without one a
+    // Variant is Missing, as VBA passes it, and a typed optional keeps its frame zero.
     for param_index in hidden + args.len()..func.param_count {
-        if let Some(param) = func.locals.get(param_index)
-            && param
-                .param
-                .is_some_and(|info| info.optional && !info.variadic && !info.has_default)
-            && matches!(param.ty, OxTy::Variant)
-        {
+        let Some(param) = func.locals.get(param_index) else {
+            continue;
+        };
+        let Some(info) = param.param.as_ref() else {
+            continue;
+        };
+        if !info.optional || info.variadic {
+            continue;
+        }
+        if info.default.is_some() {
+            // SAFETY: the current compiled-run boundary owns the live unique state handle.
+            match unsafe { seed_omitted_param_default(state, frame, param_index, param) } {
+                ST_OK => {}
+                status => return status,
+            }
+        } else if matches!(param.ty, OxTy::Variant) {
             frame.locals[param_index] = Variant::from_error_code(MISSING_ARG);
         }
     }
     ST_OK
+}
+
+/// Seed an omitted `Optional` parameter with its declared default, coerced to the parameter
+/// type as an argument (and the binder's filled-in default) is: `Optional n As Long = 5` is
+/// Long 5, and a Variant parameter keeps the constant's own type.
+///
+/// SAFETY CONTRACT: `state` must be null or the exact live, uniquely borrowed, same-thread handle
+/// produced by `exec_state_as_raw`.
+unsafe fn seed_omitted_param_default(
+    state: *mut RawExecState,
+    frame: &mut JitFrame,
+    param_index: usize,
+    param: &calcvba_oxir::OxLocal,
+) -> i32 {
+    let Some(default) = param.param.as_ref().and_then(|info| info.default.as_ref()) else {
+        return ST_FAULT;
+    };
+    let value = calcvba_rt_abi::ox_const_variant(default);
+    // SAFETY: forwarded from this function's contract.
+    match unsafe { coerce_call_arg_for_param(state, &param.ty, &value) } {
+        Ok(value) => {
+            frame.locals[param_index] = value;
+            ST_OK
+        }
+        Err(status) => status,
+    }
 }
 
 // SAFETY CONTRACT: `state` must be null or the exact live, uniquely borrowed,

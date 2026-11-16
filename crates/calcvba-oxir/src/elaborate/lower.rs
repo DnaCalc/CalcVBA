@@ -677,7 +677,7 @@ fn elaborate_proc(
                 optional: p.optional,
                 by_ref: p.by_ref,
                 variadic: p.variadic,
-                has_default: p.default.is_some(),
+                default: p.default.as_ref().map(lower_const),
             }),
             escaped: false,
         });
@@ -3859,6 +3859,7 @@ mod tests {
         verify_program(&oxp).expect("optional-param program verifies");
         let info = oxp.funcs[0].locals[0]
             .param
+            .clone()
             .expect("first local should be param metadata");
         assert!(info.optional);
         assert!(info.by_ref);

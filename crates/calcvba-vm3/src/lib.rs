@@ -43,7 +43,7 @@ use calcvba_oxir::{
 use calcvba_rt_abi::{
     ErrorMode, EventBinding, ExecState, Fault, FaultAction, LoadedProgram, MarshalArgRef,
     ProcInvoker, ResumePoint, ResumeTarget, SavedErrState, marshal_ox_args, marshal_ox_call_args,
-    take_termination_batch, variant_changed,
+    ox_const_variant, take_termination_batch, variant_changed,
 };
 use calcvba_runtime::object_ref::{
     Guid, ObjectRef, RUNTIME_CLASS_LIFECYCLE_NONE, RUNTIME_IDISPATCH_INTERFACE_IDENTITY,
@@ -1256,31 +1256,19 @@ impl<'h> Vm3<'h> {
             func,
             block: f.entry,
             ip: 0,
-            // An `Optional` Variant parameter starts Missing: a call that leaves it out
-            // (`o.Item` with no argument list) passes nothing, and the arguments a call does
-            // pass are seeded over these.
+            // An `Optional` parameter starts as the value a call that leaves it out passes
+            // (`o.Item` with no argument list, `CallByName`): its declared default, else Missing
+            // for a Variant, else its type's zero. The arguments a call does pass are seeded
+            // over these.
             locals: f
                 .locals
                 .iter()
                 .enumerate()
                 .map(|(index, local)| {
                     if index < f.param_count
-                        && local.param.is_some_and(|info| {
-                            info.optional && !info.variadic && !info.has_default
-                        })
-                        && local.ty == OxTy::Variant
+                        && let Some(value) = omitted_param_value(local)
                     {
-                        return Ok(Variant::from_error_code(MISSING_ARG));
-                    }
-                    // An omitted typed `Optional` holds its type's zero (`Optional n As Long`
-                    // is 0), as a declared local does.
-                    if index < f.param_count
-                        && local
-                            .param
-                            .is_some_and(|info| info.optional && !info.variadic)
-                        && let Some(zero) = scalar_zero(&local.ty)
-                    {
-                        return Ok(zero);
+                        return value;
                     }
                     Self::initial_value_for_slot(
                         self.exec.programs[prog].program,
@@ -2869,7 +2857,10 @@ impl<'h> Vm3<'h> {
                 }
                 OxArg::Omitted => {
                     if let Some(slot) = locals.get_mut(i) {
-                        *slot = Variant::from_error_code(MISSING_ARG);
+                        *slot = match callee.locals.get(i).and_then(omitted_param_value) {
+                            Some(value) => value?,
+                            None => Variant::from_error_code(MISSING_ARG),
+                        };
                     }
                 }
             }
@@ -2881,8 +2872,8 @@ impl<'h> Vm3<'h> {
             .enumerate()
             .skip(args.len())
         {
-            if parameter.param.is_some_and(|p| p.optional) && parameter.ty == OxTy::Variant {
-                locals[i] = Variant::from_error_code(MISSING_ARG);
+            if let Some(value) = omitted_param_value(parameter) {
+                locals[i] = value?;
             }
         }
         let return_local = callee.return_local;
@@ -5886,7 +5877,7 @@ impl<'h> Vm3<'h> {
 
     fn operand(&mut self, op: &OxOperand) -> Result<Variant, Vm3Error> {
         match op {
-            OxOperand::Const(c) => Ok(const_variant(c)),
+            OxOperand::Const(c) => Ok(ox_const_variant(c)),
             OxOperand::Use(p) => self.read(p),
         }
     }
@@ -6284,22 +6275,38 @@ fn variant_to_object(value: &Variant) -> Result<ObjectRef, Vm3Error> {
     Err(Vm3Error::Fault(Fault::new(424, "Object required")))
 }
 
-fn const_variant(c: &OxConst) -> Variant {
-    match c {
-        OxConst::Empty => Variant::empty(),
-        OxConst::Null => Variant::null(),
-        OxConst::Nothing => Variant::nothing(),
-        OxConst::Bool(b) => Variant::from_bool(*b),
-        OxConst::I16(n) => Variant::from_i16(*n),
-        OxConst::I32(n) => Variant::from_i32(*n),
-        OxConst::I64(n) => Variant::from_i64(*n),
-        OxConst::F32(bits) => Variant::from_f32(f32::from_bits(*bits)),
-        OxConst::F64(bits) => Variant::from_f64(f64::from_bits(*bits)),
-        OxConst::Currency(scaled) => Variant::from_currency_scaled_i64(*scaled),
-        OxConst::Date(bits) => Variant::from_date_f64(f64::from_bits(*bits)),
-        OxConst::Str(s) => Variant::from_string(s.clone()),
-        OxConst::NullStr => Variant::null_string(),
+/// The value an `Optional` parameter a call leaves out starts with: its declared default, else
+/// Missing for a Variant, else its type's zero (`Optional n As Long` is 0, as a declared local
+/// is). `None` for a parameter that is not optional (or a `ParamArray`), and for an optional
+/// object, record or array, which keep their slot's initial value.
+fn omitted_param_value(local: &calcvba_oxir::OxLocal) -> Option<Result<Variant, Vm3Error>> {
+    let info = local.param.as_ref()?;
+    if !info.optional || info.variadic {
+        return None;
     }
+    if let Some(default) = &info.default {
+        return Some(param_default_value(default, &local.ty));
+    }
+    if local.ty == OxTy::Variant {
+        return Some(Ok(Variant::from_error_code(MISSING_ARG)));
+    }
+    scalar_zero(&local.ty).map(Ok)
+}
+
+/// An omitted `Optional` parameter's declared default, coerced to the parameter type as the
+/// binder coerces the default it fills in (`Optional n As Long = 5` is Long 5; a Variant
+/// parameter keeps the constant's own type, `= 3` is Integer 3).
+fn param_default_value(default: &OxConst, ty: &OxTy) -> Result<Variant, Vm3Error> {
+    let value = ox_const_variant(default);
+    match ty {
+        OxTy::Str => arith::coerce_string(&value),
+        OxTy::FixedStr(len) => arith::coerce_fixed_string(&value, *len as usize),
+        ty => match calcvba_oxir::passes::numeric_target(ty) {
+            Some(target) => arith::coerce_numeric(&value, target),
+            None => Ok(value),
+        },
+    }
+    .map_err(arith_fault)
 }
 
 fn variant_matches_ox_ty(value: &Variant, ty: &OxTy) -> bool {
@@ -6576,7 +6583,7 @@ mod tests {
                 optional: false,
                 by_ref: false,
                 variadic: false,
-                has_default: false,
+                default: None,
             }),
             escaped: false,
         }
@@ -8488,7 +8495,7 @@ mod tests {
                         optional: false,
                         by_ref: false,
                         variadic: false,
-                        has_default: false,
+                        default: None,
                     }),
                 ), // Local 0 (param)
                 ox_local("Double", OxTy::Long, None), // Local 1 (return)

@@ -946,7 +946,10 @@ impl ScalarLayout {
                 let mut optional = Vec::new();
                 let mut parameters = Vec::new();
                 for local in &callee.locals[..callee.param_count] {
-                    let p = local.param.ok_or("missing callee parameter metadata")?;
+                    let p = local
+                        .param
+                        .as_ref()
+                        .ok_or("missing callee parameter metadata")?;
                     by_ref.push(p.by_ref);
                     optional.push(p.optional);
                     parameters.push(scalar(&local.ty)?);
@@ -1135,6 +1138,7 @@ impl ScalarLayout {
                                             .all(|local| {
                                                 local
                                                     .param
+                                                    .as_ref()
                                                     .is_some_and(|p| p.optional || p.variadic)
                                             })
                                     })
@@ -1549,7 +1553,7 @@ impl ScalarLayout {
             return Err("typed Boolean parameter ABI remains open".into());
         }
         for local in func.locals.iter().take(func.param_count) {
-            let p = local.param.ok_or("missing parameter metadata")?;
+            let p = local.param.as_ref().ok_or("missing parameter metadata")?;
             if (p.by_ref || p.optional || p.variadic) && !owning {
                 return Err("typed entry requires required ByVal parameters".into());
             }
@@ -1665,7 +1669,7 @@ impl ScalarLayout {
             class_news,
             param_array: func.locals[..func.param_count]
                 .iter()
-                .position(|l| l.param.is_some_and(|p| p.variadic)),
+                .position(|l| l.param.as_ref().is_some_and(|p| p.variadic)),
             record_slots,
             array_record_slots,
             array_slots,
@@ -1676,11 +1680,11 @@ impl ScalarLayout {
             has_result: result.is_some(),
             by_ref_parameters: func.locals[..func.param_count]
                 .iter()
-                .map(|l| l.param.is_some_and(|p| p.by_ref))
+                .map(|l| l.param.as_ref().is_some_and(|p| p.by_ref))
                 .collect(),
             optional_parameters: func.locals[..func.param_count]
                 .iter()
-                .map(|l| l.param.is_some_and(|p| p.optional))
+                .map(|l| l.param.as_ref().is_some_and(|p| p.optional))
                 .collect(),
             calls,
             extern_calls,
@@ -2761,7 +2765,10 @@ fn call_signature(callee: &OxFunc) -> Result<CallSignature, String> {
     let mut by_ref = Vec::new();
     let mut optional = Vec::new();
     for local in &callee.locals[..callee.param_count] {
-        let p = local.param.ok_or("missing imported parameter metadata")?;
+        let p = local
+            .param
+            .as_ref()
+            .ok_or("missing imported parameter metadata")?;
         parameters.push(scalar_type(&local.ty).ok_or("unsupported imported carrier")?);
         by_ref.push(p.by_ref);
         optional.push(p.optional);

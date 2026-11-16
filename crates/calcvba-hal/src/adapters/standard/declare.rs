@@ -47,7 +47,7 @@ const VT_ARRAY: u16 = 0x2000;
 /// A `Declare` prepared once: its library (kept loaded), entry point and CIF.
 pub(crate) struct DeclarePlan {
     /// The loaded DLL, kept for the plan; `None` for one of the runtime's own exports.
-    _library: Option<Arc<OwnedLibrary>>,
+    library: Option<Arc<OwnedLibrary>>,
     call: PreparedNativeCall,
     result: ResultShape,
 }
@@ -217,6 +217,30 @@ fn runtime_export(library: &str, entry: &str) -> Option<usize> {
         .then_some((var_ptr as *const ()).expose_provenance())
 }
 
+/// The address a runtime export (`VarPtr`) gets for a ByRef UDT array: the variable's own
+/// `SAFEARRAY*` slot, as VBA passes it, Strings and all (probe variant-layout: Excel reports the
+/// original array's `fFeatures` through `VarPtrArray(fa)`). A DLL gets an Automation-layout copy
+/// instead, which lives only for the call; the identity export needs no conversion, and its
+/// result must stay valid while the variable does. `None` for anything else (marshalled as for
+/// any `Declare`).
+fn runtime_own_storage(arg: ComArgValue<'_>) -> Option<u64> {
+    let ComArgValue::Reference(reference) = arg else {
+        return None;
+    };
+    // Cloning a reference reads its target: the array value.
+    let value = reference.clone();
+    value.record_array_layout()?;
+    match reference.byref_target()? {
+        // A typed array variable: its own SAFEARRAY* slot.
+        (vt, pointer) if vt & VT_ARRAY != 0 => Some(pointer.expose_provenance() as u64),
+        // A cell holding the array: the parray field of that cell.
+        (VT_VARIANT, pointer) => {
+            Some(Variant::payload_ptr(pointer.cast()).expose_provenance() as u64)
+        }
+        _ => None,
+    }
+}
+
 /// The prepared call (CIF and result shape) for `address`.
 fn prepare(
     host: &StandardHostServices,
@@ -257,7 +281,7 @@ fn prepare(
         )
     };
     Ok(DeclarePlan {
-        _library: library,
+        library,
         call,
         result,
     })
@@ -748,6 +772,13 @@ pub(super) fn invoke(
             .get(index)
             .map_or("Long", String::as_str);
         let by_ref = descriptor.param_by_ref.get(index).copied().unwrap_or(false);
+        if plan.library.is_none()
+            && by_ref
+            && let Some(word) = runtime_own_storage(arg.value)
+        {
+            words.push(word);
+            continue;
+        }
         words.push(marshal(host, param_type, by_ref, arg.value, &mut after)?);
     }
     let mut cells: Vec<*mut core::ffi::c_void> = words

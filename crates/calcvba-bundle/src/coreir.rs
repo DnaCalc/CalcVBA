@@ -134,7 +134,8 @@ pub struct CoreProc {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CoreParam {
-    /// Compiler-folded explicit Optional default, before declared-type coercion.
+    /// Compiler-folded explicit Optional default, converted to the declared type when it is
+    /// folded (`calcvba-symbol` `coerce_param_default_value`); a Variant keeps the constant's type.
     pub default: Option<CoreConst>,
     pub name: String,
     /// The declared static type of the parameter (see [`CoreGlobal::ty`]).

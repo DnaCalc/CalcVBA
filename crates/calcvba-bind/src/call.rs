@@ -3107,12 +3107,19 @@ impl<'a> ProcLower<'a> {
                         com_member_return_type(com_member),
                     ))
                 }
-                // A referenced coclass member call: coerce args to the published
-                // param types, dispatch by name in the object's bundle.
+                // A referenced coclass member call: bind args to the published signature
+                // (named args into their slots, an omitted optional as its default, typed zero
+                // or Missing, as for a project member), dispatch by name in the object's bundle.
+                // A member published without parameter names (the built-in `Collection`) keeps
+                // its arguments as written; the callee resolves them.
                 DispatchRoute::ExternMember {
                     member: m,
                     kind,
                     param_types,
+                    param_names,
+                    param_optional,
+                    param_optional_defaults,
+                    variadic,
                     ..
                 } => {
                     // A value-context member call is a read: coerce a property
@@ -3122,7 +3129,21 @@ impl<'a> ProcLower<'a> {
                         ProjectMemberKind::Method => ProjectMemberKind::Method,
                         _ => ProjectMemberKind::PropertyGet,
                     };
-                    let method_args = self.bind_extern_args(arglist, param_types)?;
+                    let published = !param_names.is_empty()
+                        && param_names.len() == param_types.len()
+                        && param_names.iter().all(|name| !name.is_empty());
+                    let method_args = if published {
+                        self.bind_extern_proc_args(
+                            arglist,
+                            param_types,
+                            param_names,
+                            param_optional,
+                            param_optional_defaults,
+                            *variadic,
+                        )?
+                    } else {
+                        self.bind_extern_args(arglist, param_types)?
+                    };
                     Ok(value_bound(
                         self.late_member_call(m, kind, recv.value, method_args),
                         VarTypeRef::Variant,

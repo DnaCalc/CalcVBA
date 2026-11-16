@@ -19,6 +19,9 @@ Public Function Typed(Optional ByVal n As Long) As Variant\n\
 End Function\n\
 Public Function TypedDefault(Optional ByVal n As Long = 5) As Variant\n\
     TypedDefault = \"got \" & TypeName(n) & \" \" & CStr(n)\n\
+End Function\n\
+Public Function Pair(Optional ByVal a As Long = 1, Optional ByVal b As String = \"b\") As Variant\n\
+    Pair = CStr(a) & \"/\" & b\n\
 End Function\n";
 
 const MAIN: &str = "Public result As String\n\
@@ -41,6 +44,10 @@ Sub Main()\n\
     result = result & \"early_typed_default=\" & e.TypedDefault & vbLf\n\
     result = result & \"late_typed_default=\" & o.TypedDefault & vbLf\n\
     result = result & \"early_typed_default_parens=\" & e.TypedDefault() & vbLf\n\
+    result = result & \"early_skip_first=\" & e.Pair(, \"x\") & vbLf\n\
+    result = result & \"late_skip_first=\" & o.Pair(, \"x\") & vbLf\n\
+    result = result & \"late_named=\" & o.Pair(b:=\"y\") & vbLf\n\
+    result = result & \"callbyname_skip_first=\" & CallByName(o, \"Pair\", VbMethod, , \"z\") & vbLf\n\
 End Sub\n";
 
 const EXPECTED: &[&str] = &[
@@ -59,6 +66,10 @@ const EXPECTED: &[&str] = &[
     "early_typed_default=got Long 5",
     "late_typed_default=got Long 5",
     "early_typed_default_parens=got Long 5",
+    "early_skip_first=1/x",
+    "late_skip_first=1/x",
+    "late_named=1/y",
+    "callbyname_skip_first=1/z",
 ];
 
 fn check(executor: Executor) {

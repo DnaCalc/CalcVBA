@@ -206,9 +206,11 @@ fn default_member_fault_and_nothing_do_not_turn_into_scalar_inputs() {
             session.call_bound(&plus, &[object], 10000),
             Err(Error::Runtime { .. })
         ));
+        // `Nothing + 1` is a type mismatch in Excel VBA (probe
+        // temp/variant-layout-probe/ops13: `z + 1` raises 13; a conversion of Nothing is 91).
         assert!(matches!(
             session.call_bound(&plus, &[Variant::nothing()], 10000),
-            Err(Error::Runtime { number: 91, .. })
+            Err(Error::Runtime { number: 13, .. })
         ));
     }
 }

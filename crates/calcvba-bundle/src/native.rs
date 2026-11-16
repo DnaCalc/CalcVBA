@@ -265,6 +265,43 @@ pub enum LibraryModule {
 }
 
 impl NativeImplId {
+    /// Whether this function takes an object argument as the object itself. Every other
+    /// library function reads an object argument's default member first, as VBA does
+    /// (`CStr(w)`, `Abs(w)`, `Format(w)` of an object whose default is 42 are "42", 42, "42";
+    /// probe temp/variant-layout-probe/ops13). These inspect the object (`TypeName`,
+    /// `IsObject`), hand it on (`CVar`, `IIf`, `Array`-like `Choose`/`Switch`), or use it as an
+    /// object (COM events, `AppObject`, `EvaluateForeign`, record I/O). `VarType` reads the
+    /// default when there is one (`VarType(w)` is its type) and is handled by the callers.
+    pub fn keeps_object_args(self) -> bool {
+        use NativeImplId::*;
+        matches!(
+            self,
+            IsArray
+                | VarType
+                | TypeName
+                | IsObject
+                | IsNull
+                | IsEmpty
+                | IsMissing
+                | IsError
+                | CVar
+                | IIf
+                | Choose
+                | Switch
+                | CreateObject
+                | GetObject
+                | ComSubscribeEvent
+                | ComUnsubscribeEvent
+                | ComEventCallbackSubscription
+                | ComEventCallbackArg
+                | ComReleaseEventCallback
+                | AppObject
+                | EvaluateForeign
+                | FilePut
+                | FileGetInto
+        )
+    }
+
     /// The owning library module (provenance + host-sensitivity grouping).
     pub fn module(self) -> LibraryModule {
         use LibraryModule as M;

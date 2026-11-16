@@ -282,17 +282,34 @@ pub(crate) fn is_rejected_longlong_narrowing(
         )
 }
 
-fn is_fixed_integer(ty: &VarTypeRef) -> bool {
-    matches!(
-        ty,
-        VarTypeRef::Builtin(
-            BuiltinType::Byte
-                | BuiltinType::Integer
-                | BuiltinType::Long
-                | BuiltinType::LongLong
-                | BuiltinType::LongPtr
-        )
-    )
+/// The integer type a logical operator answers in for a typed operand (as `arith::logic_width`):
+/// Byte, Integer (also Boolean), LongLong, else Long.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum LogicType {
+    Byte,
+    Integer,
+    Long,
+    LongLong,
+}
+
+impl LogicType {
+    fn max_by(self, other: Self) -> VarTypeRef {
+        builtin(match self.max(other) {
+            LogicType::Byte => BuiltinType::Byte,
+            LogicType::Integer => BuiltinType::Integer,
+            LogicType::Long => BuiltinType::Long,
+            LogicType::LongLong => BuiltinType::LongLong,
+        })
+    }
+}
+
+pub(crate) fn logic_result_type(ctx: TypeContext, ty: &VarTypeRef) -> LogicType {
+    match ty {
+        VarTypeRef::Builtin(BuiltinType::Byte) => LogicType::Byte,
+        VarTypeRef::Builtin(BuiltinType::Integer | BuiltinType::Boolean) => LogicType::Integer,
+        _ if is_longlong_with(ctx, ty) => LogicType::LongLong,
+        _ => LogicType::Long,
+    }
 }
 
 // ── Operator result lattice ─────────────────────────────────────────────────
@@ -313,13 +330,8 @@ pub(crate) fn result_type_with(
                 builtin(BuiltinType::Boolean)
             } else if is_variant(lhs) || is_variant(rhs) {
                 VarTypeRef::Variant
-            } else if (is_longlong_with(ctx, lhs) || is_longlong_with(ctx, rhs))
-                && is_fixed_integer(lhs)
-                && is_fixed_integer(rhs)
-            {
-                builtin(BuiltinType::LongLong)
             } else {
-                builtin(BuiltinType::Long)
+                logic_result_type(ctx, lhs).max_by(logic_result_type(ctx, rhs))
             }
         }
         IntDiv | Mod => int_div_result(ctx, lhs, rhs),

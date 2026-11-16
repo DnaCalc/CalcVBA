@@ -277,6 +277,13 @@ impl<'a> ProcLower<'a> {
             .unary_operand()
             .ok_or_else(|| BindError::Malformed("unary without operand".into()))?;
         let operand = self.bind_expr(operand_node)?;
+        let operand = if matches!(op.kind, SyntaxKind::Minus | SyntaxKind::KwNot) {
+            let operand =
+                self.bind_default_member_value_context(operand, operand_node.text().trim())?;
+            self.object_operand_value(operand)
+        } else {
+            operand
+        };
         match op.kind {
             SyntaxKind::Plus => Ok(operand),
             // Unary minus is fixed-typed arithmetic: `-ai` (Integer) overflows at
@@ -296,7 +303,17 @@ impl<'a> ProcLower<'a> {
                 Ok(value_bound(value, ty))
             }
             SyntaxKind::KwNot => {
-                let ty = if types::is_boolean(&operand.ty) {
+                // `Not` of a Variant keeps its operand's subtype (`Not w` of an Integer default
+                // is the Integer -43).
+                let ty = if matches!(operand.ty, VarTypeRef::Variant) {
+                    VarTypeRef::Variant
+                } else if matches!(
+                    operand.ty,
+                    VarTypeRef::Builtin(BuiltinType::Byte | BuiltinType::Integer)
+                ) {
+                    // `Not` keeps a Byte or Integer (`Not CByte(1)` is the Byte 254).
+                    operand.ty.clone()
+                } else if types::is_boolean(&operand.ty) {
                     builtin(BuiltinType::Boolean)
                 } else if self.g.is_longlong(&operand.ty) {
                     builtin(BuiltinType::LongLong)
@@ -314,6 +331,28 @@ impl<'a> ProcLower<'a> {
             }
             other => Err(BindError::Unsupported(format!("unary {other:?}"))),
         }
+    }
+
+    /// An operand statically typed `Object` (or an interface with no known default member)
+    /// is converted as VBA compiles it: a late get of its default member, called before the
+    /// operator (`o + 1` with `o As Object` is 43; probe temp/variant-layout-probe/ops13).
+    fn object_operand_value(&self, operand: Bound) -> Bound {
+        // An Enum-typed value can still be carried as `Object(name)`: it is a Long.
+        if !matches!(
+            self.g.resolve_udt_type(operand.ty.clone()),
+            VarTypeRef::Object(_)
+        ) || self.g.is_project_udt(&operand.ty)
+        {
+            return operand;
+        }
+        value_bound(
+            self.late_default_member_call(
+                ProjectMemberKind::PropertyGet,
+                operand.value,
+                Vec::new(),
+            ),
+            VarTypeRef::Variant,
+        )
     }
 
     fn bind_binary(&mut self, node: SyntaxNode<'_>) -> Result<Bound, BindError> {
@@ -350,6 +389,8 @@ impl<'a> ProcLower<'a> {
         if op != CoreBinOp::Is {
             lhs = self.bind_default_member_value_context(lhs, lhs_node.text().trim())?;
             rhs = self.bind_default_member_value_context(rhs, rhs_node.text().trim())?;
+            lhs = self.object_operand_value(lhs);
+            rhs = self.object_operand_value(rhs);
         }
         if op == CoreBinOp::Is && (!is_object_is_operand(&lhs.ty) || !is_object_is_operand(&rhs.ty))
         {

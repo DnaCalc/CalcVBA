@@ -1,0 +1,58 @@
+# Lines of the object-operators probes CalcVBA still answers differently from Excel (both backends).
+# All are VBE7's binary-operator behaviour for a VBA class object held in a Variant: the answer is
+# that object's default member (the right operand's when it holds one and is not a call result, else
+# the left's), with the operation dropped. MS-VBAL does not describe it (its operators are simple data
+# operators). Tracked in the bead that follows dc-pfk4c. Fix, then delete the line.
+(s) + w=Integer:42
+(w) + 1=Integer:42
+-(w + 1)=Integer:-42
+CStr(w + 1)=String:42
+CStr(w + s)=String:7
+CVar(w) + 1=Integer:42
+MakeV() + 1=Integer:7
+MakeV() + s=Integer:7
+MakeV() + w=Integer:42
+a(1) + 1=Integer:7
+d + w=Integer:42
+o + w=Integer:42
+s & w=Integer:42
+s * w=Integer:42
+s + s=Integer:7
+s + w=Integer:42
+s - w=Integer:42
+s Mod w=Integer:42
+t + w=Integer:42
+u.g + 1=Integer:7
+w & s=Integer:7
+w * s=Integer:7
+w + "1"=Integer:42
+w + (1)=Integer:42
+w + (l1)=Integer:42
+w + (s)=Integer:7
+w + -1=Integer:42
+w + 1 + s=Integer:7
+w + 1#=Integer:42
+w + 1=Integer:42
+w + Abs(1)=Integer:42
+w + CInt(l1)=Integer:42
+w + CVar(1)=Integer:42
+w + CVar(s)=Integer:7
+w + True=Integer:42
+w + a(0)=Integer:42
+w + a(1)=Integer:7
+w + l1 * 1=Integer:42
+w + l1=Integer:42
+w + s=Integer:7
+w + u.f=Integer:42
+w + u.g=Integer:7
+w + w=Integer:42
+w + x1=Integer:42
+w - s=Integer:7
+w / s=Integer:7
+w And s=Integer:7
+w Like s=Integer:7
+w Mod 5=Integer:42
+w Mod s=Integer:7
+w \ (5)=Integer:42
+w \ s=Integer:7
+w ^ s=Integer:7

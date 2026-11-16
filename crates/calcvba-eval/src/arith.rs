@@ -925,7 +925,7 @@ pub fn not(v: &Variant) -> R {
         let handle: i64 = if allocated { 1 } else { 0 };
         return Ok(long_or_double(!handle));
     }
-    Ok(long_or_double(!int(v)?))
+    Ok(logic_value(logic_width(v), !int(v)?))
 }
 
 fn bitlogic(
@@ -973,7 +973,40 @@ fn bitlogic(
             r.as_bool().unwrap_or(false),
         )));
     }
-    Ok(long_or_double(bit(int(l)?, int(r)?)))
+    let width = logic_width(l).max(logic_width(r));
+    Ok(logic_value(width, bit(int(l)?, int(r)?)))
+}
+
+/// The integer type a logical operator (`And`, `Or`, `Xor`, `Eqv`, `Imp`, `Not`) works and
+/// answers in, from its operands' subtypes: Byte, Integer (also Boolean and Empty), Long
+/// (also every non-integer type) or LongLong; the wider operand decides. Measured in Excel
+/// (probe temp/variant-layout-probe/ops13/LogProbe.bas): `CByte(1) And CByte(3)` is Byte,
+/// `True And CByte(3)` and `Empty And Empty` are Integer, `1.5 And CInt(3)` is Long,
+/// `CByte(1) Imp CByte(3)` is the Byte 255.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum LogicWidth {
+    Byte,
+    Integer,
+    Long,
+    LongLong,
+}
+
+fn logic_width(v: &Variant) -> LogicWidth {
+    match v.vtype() {
+        VarType::Byte => LogicWidth::Byte,
+        VarType::Integer | VarType::Boolean | VarType::Empty => LogicWidth::Integer,
+        VarType::LongLong => LogicWidth::LongLong,
+        _ => LogicWidth::Long,
+    }
+}
+
+fn logic_value(width: LogicWidth, value: i64) -> Variant {
+    match width {
+        LogicWidth::Byte => Variant::from_u8(value as u8),
+        LogicWidth::Integer => Variant::from_i16(value as i16),
+        LogicWidth::Long => long_or_double(value),
+        LogicWidth::LongLong => Variant::from_i64(value),
+    }
 }
 
 pub fn and(l: &Variant, r: &Variant) -> R {

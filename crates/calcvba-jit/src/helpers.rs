@@ -4065,6 +4065,32 @@ pub(crate) unsafe fn invoke_project_member_with_me(
 // same-thread handle produced by `exec_state_as_raw`; any additional raw pointer
 // and length arguments must identify the initialized, nonaliasing storage described
 // by their typed parameters for the complete synchronous call.
+/// Whether a project instance's class has a default member a value read can call (`VarType`
+/// of such an object is its default's type; of one without, `vbObject`).
+fn project_has_default_get(run: *mut JitRun, value: &Variant) -> bool {
+    let Some(object) = value.as_object_ref().filter(|o| o.is_project_instance()) else {
+        return false;
+    };
+    // SAFETY: the active compiled entry owns this run; only metadata is read.
+    let Some(image) = program_image(unsafe { &*run }, object.bundle_id() as usize) else {
+        return false;
+    };
+    // SAFETY: the image's program is live for the run.
+    let program = unsafe { &*image.program };
+    program
+        .classes
+        .get(object.route_key() as usize)
+        .is_some_and(|class| {
+            class.methods.iter().any(|m| {
+                m.is_default_member
+                    && matches!(
+                        m.kind,
+                        ProjectMemberKind::PropertyGet | ProjectMemberKind::Method
+                    )
+            })
+        })
+}
+
 pub(crate) unsafe fn invoke_project_default_member_values(
     run: *mut JitRun,
     state: *mut RawExecState,
@@ -7765,6 +7791,16 @@ pub(crate) unsafe extern "C" fn rt_jit_arith_v_to_slot(
         let Some(rhs) = variant_operand_value_from_compiled_desc!(run_ref, operands[1]) else {
             return ST_FAULT;
         };
+        // `Nothing` in arithmetic is a type mismatch (13), as VBA reports `z + 1` (a
+        // conversion or comparison reports 91).
+        let nothing = |v: &Variant| {
+            v.vtype() == VarType::Object
+                && v.as_object_ref().is_none_or(|o| o.is_nothing_placeholder())
+        };
+        if nothing(&lhs) || nothing(&rhs) {
+            // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
+            return unsafe { rt_raise_runtime_error_number(state, 13) };
+        }
         // SAFETY: operand clones own their carriers; the shared run_ref borrow
         // has ended before either default member can invoke VBA or host code.
         let lhs = match unsafe { arithmetic_value_for_jit(state, run, lhs) } {
@@ -7807,6 +7843,18 @@ pub(crate) unsafe extern "C" fn rt_jit_concat_v_to_slot(
         };
         let Some(rhs) = variant_operand_value_from_compiled_desc!(run_ref, operands[1]) else {
             return ST_FAULT;
+        };
+        // SAFETY: the operand owns its carrier and the shared run borrow has ended; a
+        // default member read (`w & "x"`, `w = 42`, `CLng(w)`) may run VBA or host code.
+        let lhs = match unsafe { arithmetic_value_for_jit(state, run, lhs) } {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        // SAFETY: the operand owns its carrier and the shared run borrow has ended; a
+        // default member read (`w & "x"`, `w = 42`, `CLng(w)`) may run VBA or host code.
+        let rhs = match unsafe { arithmetic_value_for_jit(state, run, rhs) } {
+            Ok(value) => value,
+            Err(status) => return status,
         };
         let out = match arith::concat(&lhs, &rhs) {
             Ok(value) => value,
@@ -7894,6 +7942,18 @@ pub(crate) unsafe extern "C" fn rt_jit_compare_v_to_slot(
         };
         let Some(rhs) = variant_operand_value_from_compiled_desc!(run_ref, operands[1]) else {
             return ST_FAULT;
+        };
+        // SAFETY: the operand owns its carrier and the shared run borrow has ended; a
+        // default member read (`w & "x"`, `w = 42`, `CLng(w)`) may run VBA or host code.
+        let lhs = match unsafe { arithmetic_value_for_jit(state, run, lhs) } {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        // SAFETY: the operand owns its carrier and the shared run borrow has ended; a
+        // default member read (`w & "x"`, `w = 42`, `CLng(w)`) may run VBA or host code.
+        let rhs = match unsafe { arithmetic_value_for_jit(state, run, rhs) } {
+            Ok(value) => value,
+            Err(status) => return status,
         };
         // SAFETY: null was rejected and operand clones no longer borrow from `run`.
         let run = unsafe { &mut *run };
@@ -8064,6 +8124,18 @@ pub(crate) unsafe extern "C" fn rt_jit_logical_v_to_slot(
         let Some(rhs) = variant_operand_value_from_compiled_desc!(run_ref, operands[1]) else {
             return ST_FAULT;
         };
+        // SAFETY: the operand owns its carrier and the shared run borrow has ended; a
+        // default member read (`w & "x"`, `w = 42`, `CLng(w)`) may run VBA or host code.
+        let lhs = match unsafe { arithmetic_value_for_jit(state, run, lhs) } {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        // SAFETY: the operand owns its carrier and the shared run borrow has ended; a
+        // default member read (`w & "x"`, `w = 42`, `CLng(w)`) may run VBA or host code.
+        let rhs = match unsafe { arithmetic_value_for_jit(state, run, rhs) } {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
         // SAFETY: null was rejected and operand clones no longer borrow from `run`.
         let run = unsafe { &mut *run };
         let Some(out) = slot_mut(run, dst_area, dst_index) else {
@@ -8093,6 +8165,12 @@ pub(crate) unsafe extern "C" fn rt_jit_not_v_to_slot(
         let Some(src) = variant_operand_value_from_compiled_desc!(run_ref, operand) else {
             return ST_FAULT;
         };
+        // SAFETY: the operand owns its carrier and the shared run borrow has ended; a
+        // default member read (`w & "x"`, `w = 42`, `CLng(w)`) may run VBA or host code.
+        let src = match unsafe { arithmetic_value_for_jit(state, run, src) } {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
         // SAFETY: null was rejected and operand clone no longer borrows from `run`.
         let run = unsafe { &mut *run };
         let Some(out) = slot_mut(run, dst_area, dst_index) else {
@@ -8121,6 +8199,12 @@ pub(crate) unsafe extern "C" fn rt_jit_truthy_v_to_bool_slot(
         let run_ref = unsafe { &*run };
         let Some(src) = variant_operand_value_from_compiled_desc!(run_ref, operand) else {
             return ST_FAULT;
+        };
+        // SAFETY: the operand owns its carrier and the shared run borrow has ended; a
+        // default member read (`w & "x"`, `w = 42`, `CLng(w)`) may run VBA or host code.
+        let src = match unsafe { arithmetic_value_for_jit(state, run, src) } {
+            Ok(value) => value,
+            Err(status) => return status,
         };
         let mut truthy = 0;
         // SAFETY: the enclosing JIT boundary validated the live state and all Variant input/output pointers are initialized, live, and nonaliasing.
@@ -8185,6 +8269,12 @@ pub(crate) unsafe extern "C" fn rt_jit_coerce_numeric_v_to_slot(
         let Some(src) = variant_operand_value_from_compiled_desc!(run_ref, operand) else {
             return ST_FAULT;
         };
+        // SAFETY: the operand owns its carrier and the shared run borrow has ended; a
+        // default member read (`w & "x"`, `w = 42`, `CLng(w)`) may run VBA or host code.
+        let src = match unsafe { arithmetic_value_for_jit(state, run, src) } {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
         // SAFETY: null was rejected and operand clone no longer borrows from `run`.
         let run = unsafe { &mut *run };
         let Some(out) = slot_mut(run, dst_area, dst_index) else {
@@ -8213,6 +8303,12 @@ pub(crate) unsafe extern "C" fn rt_jit_coerce_string_v_to_slot(
         let run_ref = unsafe { &*run };
         let Some(src) = variant_operand_value_from_compiled_desc!(run_ref, operand) else {
             return ST_FAULT;
+        };
+        // SAFETY: the operand owns its carrier and the shared run borrow has ended; a
+        // default member read (`w & "x"`, `w = 42`, `CLng(w)`) may run VBA or host code.
+        let src = match unsafe { arithmetic_value_for_jit(state, run, src) } {
+            Ok(value) => value,
+            Err(status) => return status,
         };
         let mut coerced = Variant::empty();
         // SAFETY: the enclosing JIT boundary validated the live state and all Variant input/output pointers are initialized, live, and nonaliasing.
@@ -8249,6 +8345,12 @@ pub(crate) unsafe extern "C" fn rt_jit_coerce_fixed_string_v_to_slot(
         let run_ref = unsafe { &*run };
         let Some(src) = variant_operand_value_from_compiled_desc!(run_ref, operand) else {
             return ST_FAULT;
+        };
+        // SAFETY: the operand owns its carrier and the shared run borrow has ended; a
+        // default member read (`w & "x"`, `w = 42`, `CLng(w)`) may run VBA or host code.
+        let src = match unsafe { arithmetic_value_for_jit(state, run, src) } {
+            Ok(value) => value,
+            Err(status) => return status,
         };
         let mut coerced = Variant::empty();
         // SAFETY: the enclosing JIT boundary validated the live state and all Variant input/output pointers are initialized, live, and nonaliasing.
@@ -9835,22 +9937,81 @@ pub(crate) unsafe extern "C" fn rt_jit_lib_invoke_to_slot(
             }
             argv
         };
+        // A library function reads an object argument's default member, except those that
+        // take the object itself; `VarType` keeps an object without one (vbObject), as VM3.
+        let mut argv = argv;
+        let mut answer = None;
+        if let Some(id) = calcvba_bundle::NativeImplId::ALL
+            .get(native_id as usize)
+            .copied()
+        {
+            let var_type = id == calcvba_bundle::NativeImplId::VarType;
+            let is_vba_object = |v: &Variant| {
+                v.as_object_ref()
+                    .is_some_and(|o| o.is_project_instance() && !o.is_nothing_placeholder())
+            };
+            if matches!(
+                id,
+                calcvba_bundle::NativeImplId::Len | calcvba_bundle::NativeImplId::LenB
+            ) && argv.first().is_some_and(is_vba_object)
+            {
+                // `Len`/`LenB` of a VBA class object answer its default value itself (VBA:
+                // `Len(w)` is 42; probe temp/variant-layout-probe/ops13), as VM3.
+                // SAFETY: the operand-read borrow ended above; no run borrow is held.
+                match unsafe { arithmetic_value_for_jit(state, run, argv[0].clone()) } {
+                    Ok(value) => answer = Some(value),
+                    Err(status) => return status,
+                }
+            } else if !id.keeps_object_args() || var_type {
+                for arg in argv.iter_mut() {
+                    if arg.vtype() != VarType::Object {
+                        continue;
+                    }
+                    if arg
+                        .as_object_ref()
+                        .is_none_or(|o| o.is_nothing_placeholder())
+                    {
+                        if var_type {
+                            continue;
+                        }
+                        // A value-reading function of Nothing is 91 (`CStr(z)`), as VM3.
+                        // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
+                        return unsafe { rt_raise_runtime_error_number(state, 91) };
+                    }
+                    if var_type
+                        && arg.as_object_ref().is_some_and(|o| o.is_project_instance())
+                        && !project_has_default_get(run, arg)
+                    {
+                        continue;
+                    }
+                    // SAFETY: the operand-read borrow ended above; no run borrow is held.
+                    match unsafe { arithmetic_value_for_jit(state, run, arg.clone()) } {
+                        Ok(value) => *arg = value,
+                        Err(status) => return status,
+                    }
+                }
+            }
+        }
         let mut out = Variant::empty();
-        // SAFETY: null state was rejected; `argv` is one live allocation containing
-        // exactly `argv.len()` initialized Variants, and `out` is unique initialized
-        // Variant storage that does not alias the argument allocation.
-        let status = unsafe {
-            rt_lib_invoke_with_policy(
-                state,
-                native_id,
-                argv.as_ptr(),
-                argv.len(),
-                string_typed_alias,
-                &mut out,
-            )
-        };
-        if status != ST_OK {
-            return status;
+        if let Some(value) = answer {
+            out = value;
+        } else {
+            // SAFETY: null state was rejected; `argv` is one live allocation containing
+            // exactly `argv.len()` initialized Variants, and `out` is unique initialized
+            // Variant storage that does not alias the argument allocation.
+            let status = unsafe {
+                rt_lib_invoke_with_policy(
+                    state,
+                    native_id,
+                    argv.as_ptr(),
+                    argv.len(),
+                    string_typed_alias,
+                    &mut out,
+                )
+            };
+            if status != ST_OK {
+                return status;
+            }
         }
         if let Some((area, index)) = dst {
             // SAFETY: null was rejected and operand clones no longer borrow from `run`.

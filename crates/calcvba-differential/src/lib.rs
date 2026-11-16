@@ -22141,7 +22141,8 @@ End Sub
 
     #[test]
     fn jit_matches_vm3_variant_logical_numeric_expr() {
-        assert_jit_matches_vm3_contains(JIT_VARIANT_LOGICAL_NUMERIC_EXPR, Variant::from_i32(2));
+        // An Integer `And` an Integer is an Integer (MS-VBAL logical operator types; Excel).
+        assert_jit_matches_vm3_contains(JIT_VARIANT_LOGICAL_NUMERIC_EXPR, Variant::from_i16(2));
     }
 
     #[test]

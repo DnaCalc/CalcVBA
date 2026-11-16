@@ -3570,11 +3570,14 @@ fn numeric_result_type(mode: NumericMode) -> OxTy {
     }
 }
 
+/// `Not` keeps a Boolean, Integer, Long or LongLong; a Byte answers a Byte, carried as a
+/// Variant (the runtime's logic width gives the Byte); anything else is a Long.
 fn not_result_type(src: &OxTy) -> OxTy {
     match src {
         OxTy::Bool => OxTy::Bool,
+        OxTy::Integer => OxTy::Integer,
         OxTy::LongLong => OxTy::LongLong,
-        OxTy::Variant => OxTy::Variant,
+        OxTy::Variant | OxTy::Byte => OxTy::Variant,
         _ => OxTy::Long,
     }
 }
@@ -3589,11 +3592,21 @@ fn logical_result_type(lhs: &OxTy, rhs: &OxTy) -> OxTy {
         && is_fixed_integer_ty(rhs)
     {
         OxTy::LongLong
-    } else if matches!(lhs, OxTy::Byte | OxTy::Long | OxTy::Integer)
-        && matches!(rhs, OxTy::Byte | OxTy::Long | OxTy::Integer)
+    } else if matches!(lhs, OxTy::Long)
+        && matches!(rhs, OxTy::Byte | OxTy::Long | OxTy::Integer | OxTy::Bool)
+        || matches!(rhs, OxTy::Long)
+            && matches!(lhs, OxTy::Byte | OxTy::Long | OxTy::Integer | OxTy::Bool)
     {
         OxTy::Long
+    } else if matches!(lhs, OxTy::Integer | OxTy::Bool | OxTy::Byte)
+        && matches!(rhs, OxTy::Integer | OxTy::Bool | OxTy::Byte)
+        && !matches!((lhs, rhs), (OxTy::Byte, OxTy::Byte))
+    {
+        // Integer, Boolean and Byte operands answer an Integer (`True And CByte(3)` is 3).
+        OxTy::Integer
     } else {
+        // Byte with Byte answers a Byte, carried as a Variant; other types follow the
+        // runtime's logic width.
         OxTy::Variant
     }
 }

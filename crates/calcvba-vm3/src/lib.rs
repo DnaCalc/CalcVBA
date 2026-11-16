@@ -1662,8 +1662,8 @@ impl<'h> Vm3<'h> {
             } => {
                 let left = self.operand(lhs)?;
                 let right = self.operand(rhs)?;
-                let l = self.arithmetic_value(left)?;
-                let r = self.arithmetic_value(right)?;
+                let l = self.arithmetic_operand(left)?;
+                let r = self.arithmetic_operand(right)?;
                 let out = match op {
                     ArithOp::Add => arith::add(&l, &r, *mode),
                     ArithOp::Sub => arith::sub(&l, &r, *mode),
@@ -1676,15 +1676,15 @@ impl<'h> Vm3<'h> {
             OxInst::Div { dst, lhs, rhs } => {
                 let left = self.operand(lhs)?;
                 let right = self.operand(rhs)?;
-                let l = self.arithmetic_value(left)?;
-                let r = self.arithmetic_value(right)?;
+                let l = self.arithmetic_operand(left)?;
+                let r = self.arithmetic_operand(right)?;
                 self.store_arith(dst, arith::div(&l, &r))?;
             }
             OxInst::Pow { dst, lhs, rhs } => {
                 let left = self.operand(lhs)?;
                 let right = self.operand(rhs)?;
-                let l = self.arithmetic_value(left)?;
-                let r = self.arithmetic_value(right)?;
+                let l = self.arithmetic_operand(left)?;
+                let r = self.arithmetic_operand(right)?;
                 self.store_arith(dst, arith::pow(&l, &r))?;
             }
             OxInst::Neg { dst, src, mode } => {
@@ -1693,8 +1693,10 @@ impl<'h> Vm3<'h> {
                 self.store_arith(dst, arith::neg(&v, *mode))?;
             }
             OxInst::Concat { dst, lhs, rhs } => {
-                let l = self.operand(lhs)?;
-                let r = self.operand(rhs)?;
+                let left = self.operand(lhs)?;
+                let right = self.operand(rhs)?;
+                let l = self.arithmetic_value(left)?;
+                let r = self.arithmetic_value(right)?;
                 self.store_arith(dst, arith::concat(&l, &r))?;
             }
             OxInst::Compare {
@@ -1705,16 +1707,20 @@ impl<'h> Vm3<'h> {
                 mode,
                 coercion,
             } => {
-                let l = self.operand(lhs)?;
-                let r = self.operand(rhs)?;
+                let left = self.operand(lhs)?;
+                let right = self.operand(rhs)?;
+                let l = self.arithmetic_value(left)?;
+                let r = self.arithmetic_value(right)?;
                 self.store_arith(
                     dst,
                     arith::compare_declared(&l, &r, *mode, cmp_op(*op), *coercion),
                 )?;
             }
             OxInst::Logical { dst, op, lhs, rhs } => {
-                let l = self.operand(lhs)?;
-                let r = self.operand(rhs)?;
+                let left = self.operand(lhs)?;
+                let right = self.operand(rhs)?;
+                let l = self.arithmetic_value(left)?;
+                let r = self.arithmetic_value(right)?;
                 let out = match op {
                     LogicalOp::And => arith::and(&l, &r),
                     LogicalOp::Or => arith::or(&l, &r),
@@ -1725,19 +1731,28 @@ impl<'h> Vm3<'h> {
                 self.store_arith(dst, out)?;
             }
             OxInst::Not { dst, src } => {
-                let v = self.operand(src)?;
+                let value = self.operand(src)?;
+                let v = self.arithmetic_value(value)?;
                 self.store_arith(dst, arith::not(&v))?;
             }
             // Reduce a condition to a Boolean by VBA truthiness (the elaboration emits
             // this before a conditional `Branch`); the `is_truthy` rule + error code are
             // exactly what vm2's `JumpIfZero` uses.
             OxInst::Truthy { dst, src } => {
-                let v = self.operand(src)?;
+                let value = self.operand(src)?;
+                let v = self.arithmetic_value(value)?;
                 let out = arith::is_truthy(&v).map(Variant::from_bool);
                 self.store_arith(dst, out)?;
             }
             OxInst::Coerce { dst, src, target } => {
-                let v = self.operand(src)?;
+                let value = self.operand(src)?;
+                // A conversion reads an object's default member (`n = w`, `LongArg(w)`); the
+                // widen to Variant keeps the object.
+                let v = if matches!(target, OxCoerceTarget::ImplicitVariant) {
+                    value
+                } else {
+                    self.arithmetic_value(value)?
+                };
                 let out = match target {
                     OxCoerceTarget::Numeric(t) => arith::coerce_numeric(&v, *t),
                     OxCoerceTarget::Str => arith::coerce_string(&v),
@@ -1762,8 +1777,14 @@ impl<'h> Vm3<'h> {
             // contextual `calcvba-lib` dispatcher; `Declare Lib` marshalling is M3.
             OxInst::CallNative { dst, callee, args } => match callee {
                 OxNativeCallee::Builtin(id) => {
-                    let argv = self.native_args(args)?;
-                    let result = self.invoke_native_lib(*id, &argv)?;
+                    let mut argv = self.native_args(args)?;
+                    let result = match self.vba_object_len(*id, &argv)? {
+                        Some(value) => value,
+                        None => {
+                            self.native_object_values(*id, &mut argv)?;
+                            self.invoke_native_lib(*id, &argv)?
+                        }
+                    };
                     if let Some(dst) = dst {
                         self.store(dst, result)?;
                     }
@@ -2952,8 +2973,14 @@ impl<'h> Vm3<'h> {
             return self.call_proc_in(b, dst, FuncId(proc), args);
         }
         let (id, string_typed_alias) = self.resolve_library_import(import)?;
-        let argv = self.extern_args(args)?;
-        let result = self.invoke_native_lib_with_policy(id, &argv, string_typed_alias)?;
+        let mut argv = self.extern_args(args)?;
+        let result = match self.vba_object_len(id, &argv)? {
+            Some(value) => value,
+            None => {
+                self.native_object_values(id, &mut argv)?;
+                self.invoke_native_lib_with_policy(id, &argv, string_typed_alias)?
+            }
+        };
         if let Some(dst) = dst {
             self.store(&dst, result)?;
         }
@@ -4773,6 +4800,15 @@ impl<'h> Vm3<'h> {
     }
 
     /// Resolve an arithmetic value while retaining the caller's owning object.
+    /// An arithmetic operand's value: [`Self::arithmetic_value`], with `Nothing` a type
+    /// mismatch (13), as VBA reports `z + 1` (a conversion or comparison reports 91).
+    fn arithmetic_operand(&mut self, value: Variant) -> Result<Variant, Vm3Error> {
+        if value.vtype() == VarType::Object && is_nothing(&value) {
+            return Err(Vm3Error::Fault(Fault::new(13, default_error_message(13))));
+        }
+        self.arithmetic_value(value)
+    }
+
     fn arithmetic_value(&mut self, mut value: Variant) -> Result<Variant, Vm3Error> {
         // Resolve a value-context default without replacing the owning object
         // stored in the caller's argument/local. Project and foreign objects
@@ -5081,6 +5117,79 @@ impl<'h> Vm3<'h> {
     /// Marshal a native built-in's arguments to plain values — a built-in reads the
     /// *value* of a ByRef argument (matching vm2's `native_args`), and an omitted one is
     /// `Empty`.
+    /// `Len`/`LenB` of a VBA class object answer its default value itself, not that value's
+    /// length (VBA: `Len(w)` of an object whose default is 42 is the Integer 42; probe
+    /// temp/variant-layout-probe/ops13). `None` for any other call.
+    fn vba_object_len(
+        &mut self,
+        id: NativeImplId,
+        argv: &[Variant],
+    ) -> Result<Option<Variant>, Vm3Error> {
+        if !matches!(id, NativeImplId::Len | NativeImplId::LenB) {
+            return Ok(None);
+        }
+        match argv.first() {
+            Some(arg)
+                if !is_nothing(arg)
+                    && arg.as_object_ref().is_some_and(|o| o.is_project_instance()) =>
+            {
+                Ok(Some(self.arithmetic_value(arg.clone())?))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// A library function reads an object argument's default member, except those that take
+    /// the object itself ([`NativeImplId::keeps_object_args`]); `VarType` reads it when there is
+    /// one (an object without a default member is `vbObject`).
+    fn native_object_values(
+        &mut self,
+        id: NativeImplId,
+        argv: &mut [Variant],
+    ) -> Result<(), Vm3Error> {
+        let var_type = id == NativeImplId::VarType;
+        if id.keeps_object_args() && !var_type {
+            return Ok(());
+        }
+        for arg in argv.iter_mut() {
+            if arg.vtype() != VarType::Object {
+                continue;
+            }
+            if is_nothing(arg) {
+                if var_type {
+                    continue;
+                }
+                return Err(Vm3Error::Fault(Fault::new(91, default_error_message(91))));
+            }
+            if var_type && !self.project_has_default_get(arg) {
+                continue;
+            }
+            *arg = self.arithmetic_value(arg.clone())?;
+        }
+        Ok(())
+    }
+
+    /// Whether `value` is a project instance whose class has a default member a value read can
+    /// call. (`VarType` of a COM object is the library's: `object_default_value`.)
+    fn project_has_default_get(&self, value: &Variant) -> bool {
+        let Some(object) = value.as_object_ref().filter(|o| o.is_project_instance()) else {
+            return false;
+        };
+        self.exec
+            .programs
+            .get(object.bundle_id() as usize)
+            .and_then(|lp| lp.program.classes.get(object.route_key() as usize))
+            .is_some_and(|class| {
+                class.methods.iter().any(|m| {
+                    m.is_default_member
+                        && matches!(
+                            m.kind,
+                            ProjectMemberKind::PropertyGet | ProjectMemberKind::Method
+                        )
+                })
+            })
+    }
+
     fn native_args(&mut self, args: &[OxCallArg]) -> Result<Vec<Variant>, Vm3Error> {
         marshal_ox_call_args(
             args,

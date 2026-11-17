@@ -75,15 +75,25 @@ pub(super) unsafe fn invoke_dynamic(
     for (i, arg) in args.iter().enumerate() {
         let mut name = None;
         let mut target = None;
+        if let OxCallArg::Named { name: n, .. } = arg {
+            name = Some(n.clone());
+        }
         let value = match arg {
-            OxCallArg::Operand(op) | OxCallArg::Named { value: op, .. } => {
-                if let OxCallArg::Named { name: n, .. } = arg {
-                    name = Some(n.clone());
-                }
+            OxCallArg::Operand(op)
+            | OxCallArg::Named {
+                value: op,
+                by_ref: None,
+                ..
+            } => {
                 // SAFETY: admitted actual operand retained through this call.
                 unsafe { super::value::operand_value(raw, layout, op) }?
             }
-            OxCallArg::ByRef(place) => {
+            // A named argument over an l-value passes ByRef like a positional one.
+            OxCallArg::ByRef(place)
+            | OxCallArg::Named {
+                by_ref: Some(place),
+                ..
+            } => {
                 let index = layout.slot(*place).map_err(|_| 5)?;
                 target = Some(index);
                 // SAFETY: admitted lvalue and stable ancestor/global ownership.

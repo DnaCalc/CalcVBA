@@ -1912,7 +1912,9 @@ fn default_value_from_core_const(value: CoreConst) -> Option<DefaultValue> {
         CoreConst::NullStr => DefaultValue::Str(String::new()),
         CoreConst::Currency(value) => DefaultValue::CurrencyScaledI64(value),
         CoreConst::Date(bits) => DefaultValue::DateSerialF64(bits),
-        CoreConst::Empty | CoreConst::Null | CoreConst::Nothing => return None,
+        CoreConst::Empty | CoreConst::Null | CoreConst::Nothing | CoreConst::Missing => {
+            return None;
+        }
     })
 }
 

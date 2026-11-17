@@ -297,6 +297,9 @@ pub enum CoreConst {
     /// `vbNullString`: a String whose BSTR is null (`StrPtr` 0, `NULL` to a `Declare`);
     /// everywhere else it is `""`.
     NullStr,
+    /// Missing: the Variant an omitted argument carries (`VT_ERROR` holding
+    /// `DISP_E_PARAMNOTFOUND`, 0x80020004), so `IsMissing` is True.
+    Missing,
 }
 
 impl CoreConst {
@@ -765,10 +768,14 @@ pub enum CoreArg {
     ByVal(CoreValue),
     ByRef(CorePlace),
     Omitted,
-    /// A `name := value` argument (late-bound / COM dispatch).
+    /// A `name := value` argument (late-bound / COM dispatch). `by_ref` is the
+    /// place a late-bound named argument aliases (an unparenthesized l-value),
+    /// passed ByRef exactly like a positional [`CoreArg::ByRef`]; `value` is then
+    /// its load.
     Named {
         name: String,
         value: CoreValue,
+        by_ref: Option<CorePlace>,
     },
 }
 

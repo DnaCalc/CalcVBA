@@ -176,7 +176,7 @@ pub(crate) fn operand_static_ty<'a>(
         OxOperand::Const(OxConst::Currency(_)) => Ok(OxTy::Currency),
         OxOperand::Const(OxConst::Date(_)) => Ok(OxTy::Date),
         OxOperand::Const(OxConst::Str(_) | OxConst::NullStr) => Ok(OxTy::Str),
-        OxOperand::Const(OxConst::Empty | OxConst::Null) => Ok(OxTy::Variant),
+        OxOperand::Const(OxConst::Empty | OxConst::Null | OxConst::Missing) => Ok(OxTy::Variant),
     }
 }
 

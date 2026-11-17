@@ -805,7 +805,7 @@ impl ScalarLower<'_> {
                 );
                 b.ins().stack_load(types::I64, output, 0)
             }
-            OxOperand::Const(OxConst::Empty | OxConst::Null) => {
+            OxOperand::Const(OxConst::Empty | OxConst::Null | OxConst::Missing) => {
                 let PhysicalSlots::Frame(frame) = self.slots else {
                     unreachable!("owning Variant literal");
                 };
@@ -817,7 +817,11 @@ impl ScalarLower<'_> {
                 let out = b.ins().stack_addr(types::I64, output, 0);
                 let null = b.ins().iconst(
                     types::I32,
-                    i64::from(u8::from(matches!(operand, OxOperand::Const(OxConst::Null)))),
+                    match operand {
+                        OxOperand::Const(OxConst::Null) => 1,
+                        OxOperand::Const(OxConst::Missing) => 2,
+                        _ => 0,
+                    },
                 );
                 self.helper(
                     b,

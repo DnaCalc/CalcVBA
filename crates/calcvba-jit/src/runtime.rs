@@ -19,6 +19,8 @@ impl JitEngine {
         &self,
         programs: &[&'p OxProgram],
     ) -> Result<CompiledImage<'p>, JitError> {
+        #[cfg(feature = "test-decline")]
+        decline_marked(programs)?;
         Compiler::compile_image(programs)
     }
 
@@ -27,8 +29,25 @@ impl JitEngine {
         programs: &[&'p OxProgram],
         configuration: &JitConfiguration,
     ) -> Result<CompiledImage<'p>, JitError> {
+        #[cfg(feature = "test-decline")]
+        decline_marked(programs)?;
         Compiler::compile_image_with_configuration(programs, configuration)
     }
+}
+
+/// Test-only (feature `test-decline`): decline any program holding a procedure whose name
+/// contains `JitDeclineMarker`, so host tests can exercise a failed JIT reload.
+#[cfg(feature = "test-decline")]
+fn decline_marked(programs: &[&OxProgram]) -> Result<(), JitError> {
+    for func in programs.iter().flat_map(|p| p.funcs.iter()) {
+        if func.name.contains("JitDeclineMarker") {
+            return Err(JitError::Unsupported(format!(
+                "test-decline: {} is marked as unsupported",
+                func.name
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// The exact ISA, CPU features and compiler flags used by a compilation. A cache
@@ -1304,6 +1323,9 @@ pub(crate) unsafe fn variant_operand_value(
         }
         JIT_VARIANT_OPERAND_NOTHING => Some(Variant::nothing()),
         JIT_VARIANT_OPERAND_NULL_STR => Some(Variant::null_string()),
+        JIT_VARIANT_OPERAND_MISSING => Some(calcvba_rt_abi::ox_const_variant(
+            &calcvba_oxir::OxConst::Missing,
+        )),
         JIT_VARIANT_OPERAND_STR_UTF8 => {
             let len = usize::try_from(operand.index).ok()?;
             let ptr = usize::try_from(operand.value).ok()? as *const u8;
@@ -1895,12 +1917,15 @@ pub(crate) unsafe fn seed_jit_member_frame_args(
                 // SAFETY: the live state handle is valid for this call.
                 return unsafe { rt_raise_type_mismatch(state) };
             }
-            // A literal or computed operand passed to a ByRef Variant parameter is a private copy
-            // (no caller place to alias), as for an explicit ByRef copy argument.
+            // A literal or computed operand passed to a ByRef parameter is a private copy (no
+            // caller place to alias), as for an explicit ByRef copy argument: `o.Bump (lk)` or
+            // `o.Bump n:=5` to `Bump(n As Long)` coerces the value and leaves the caller alone.
             JIT_CALL_ARG_BYVAL_VARIANT
                 if param_info.by_ref
                     && !param_info.variadic
-                    && is_jit_variant_carrier_ty(&param.ty) =>
+                    && (is_jit_variant_carrier_ty(&param.ty)
+                        || numeric_call_target(&param.ty).is_some()
+                        || matches!(param.ty, OxTy::Str | OxTy::FixedStr(_))) =>
             {
                 let Some(value) = call_arg_variant_value(run, arg) else {
                     return ST_FAULT;

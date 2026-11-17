@@ -335,9 +335,11 @@ impl<'a> ProcLower<'a> {
             return Ok(None);
         };
         let folded = calcvba_symbol::model::fold_identifier(name.trim_end_matches('$'));
-        if folded != "mid" {
-            return Ok(None);
-        }
+        let native = match folded.as_str() {
+            "mid" => NativeImplId::MidStmt,
+            "midb" => NativeImplId::MidBStmt,
+            _ => return Ok(None),
+        };
         let items = target
             .index_arg_list()
             .ok_or_else(|| BindError::Malformed("Mid assignment arguments".into()))?
@@ -367,7 +369,7 @@ impl<'a> ProcLower<'a> {
         Ok(Some(vec![CoreStmt::Assign {
             place,
             value: CoreValue::Call {
-                callee: CoreCallee::Native(NativeImplId::MidStmt),
+                callee: CoreCallee::Native(native),
                 args,
             },
             intent: AssignmentIntent::Let,

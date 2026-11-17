@@ -538,9 +538,11 @@ impl Values<'_> {
             let (operand, by_ref, omitted, name) = match argument {
                 OxCallArg::Operand(operand) => (operand.clone(), false, false, None),
                 OxCallArg::ByRef(place) => (OxOperand::Use(*place), true, false, None),
-                OxCallArg::Named { name, value } => {
-                    (value.clone(), false, false, Some(name.clone()))
-                }
+                OxCallArg::Named {
+                    name,
+                    value,
+                    by_ref,
+                } => (value.clone(), by_ref.is_some(), false, Some(name.clone())),
                 OxCallArg::Const(value) => {
                     (OxOperand::Const(OxConst::I32(*value)), false, false, None)
                 }

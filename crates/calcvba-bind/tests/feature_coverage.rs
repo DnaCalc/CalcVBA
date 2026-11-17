@@ -1124,17 +1124,18 @@ fn single_line_function_body_executes() {
 }
 
 #[test]
-fn byval_call_argument_modifier_parses_and_runs() {
-    // `ByVal expr` / `ByRef expr` as a call-site passing-mode override (the
-    // CopyMemory/API idiom) parses and binds; here it matches the parameter's
-    // own ByVal, so the call runs and returns the value unchanged.
-    let snap = run(
+fn byval_call_argument_to_vba_function_is_refused() {
+    // MS-VBAL 5.6.13.1: call-site `ByVal` is valid only for an external (`Declare`)
+    // procedure; Excel refuses it to a VBA procedure with "Type mismatch"
+    // (conformance/excel-measurements/spec-pass/CmpCallByVal.bas).
+    let err = run_result(
         "Sub Main()\nDim r As Long\nDim x As Long\nx = 9\nr = Echo(ByVal x)\nEnd Sub\n\
          Public Function Echo(ByVal n As Long) As Long\nEcho = n\nEnd Function",
-    );
+    )
+    .expect_err("call-site ByVal to a VBA function must not bind");
     assert!(
-        snap.contains(&Variant::from_i32(9)),
-        "expected ByVal call-arg result 9 in {snap:?}"
+        err.contains("bind error: TypeMismatch"),
+        "unexpected error: {err}"
     );
 }
 

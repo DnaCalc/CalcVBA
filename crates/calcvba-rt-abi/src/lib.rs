@@ -45,6 +45,8 @@ pub fn ox_const_variant(c: &OxConst) -> Variant {
         OxConst::Date(bits) => Variant::from_date_f64(f64::from_bits(*bits)),
         OxConst::Str(s) => Variant::from_string(s.clone()),
         OxConst::NullStr => Variant::null_string(),
+        // DISP_E_PARAMNOTFOUND: the Missing an omitted argument carries.
+        OxConst::Missing => Variant::from_scode(0x8002_0004u32 as i32),
     }
 }
 

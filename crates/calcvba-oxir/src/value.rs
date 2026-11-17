@@ -34,6 +34,9 @@ pub enum OxConst {
     /// `vbNullString`: a String whose BSTR is null (`StrPtr` 0, `NULL` to a `Declare`);
     /// everywhere else it is `""`.
     NullStr,
+    /// Missing: the Variant an omitted argument carries (`VT_ERROR` holding
+    /// `DISP_E_PARAMNOTFOUND`, 0x80020004), so `IsMissing` is True.
+    Missing,
 }
 
 /// A simple, directly-addressable place: a local, a global, or a temporary. These
@@ -128,7 +131,13 @@ pub enum OxCallArg {
     Operand(OxOperand),
     ByRef(OxPlace),
     Omitted,
-    Named { name: String, value: OxOperand },
+    /// `by_ref` is the place a late-bound named argument aliases, passed ByRef like
+    /// [`OxCallArg::ByRef`]; `value` is then `Use` of that place.
+    Named {
+        name: String,
+        value: OxOperand,
+        by_ref: Option<OxPlace>,
+    },
     Const(i32),
 }
 

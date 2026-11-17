@@ -438,7 +438,7 @@ impl<'a> ProcLower<'a> {
             "Filter" => set_trailing_arg(args, 3, text()),
             "InStrRev" => set_trailing_arg(args, 3, text()),
             "Replace" => set_trailing_arg(args, 5, text()),
-            "InStr" => {
+            "InStr" | "InStrB" => {
                 if args.len() == 2 {
                     args.insert(0, CoreArg::ByVal(CoreValue::Const(CoreConst::I32(1))));
                 }
@@ -1009,6 +1009,7 @@ impl<'a> ProcLower<'a> {
                 ArgItem::Named { name, value } => args.push(CoreArg::Named {
                     name: name.text.to_string(),
                     value: self.bind_expr(value)?.value,
+                    by_ref: None,
                 }),
                 ArgItem::Positional(expr, passing) => {
                     // A call-site `ByVal`/`ByRef` overrides the declared direction.
@@ -1163,6 +1164,7 @@ impl<'a> ProcLower<'a> {
                     args.push(CoreArg::Named {
                         name: name.text.to_string(),
                         value: self.bind_expr(value)?.value,
+                        by_ref: None,
                     });
                 }
                 ArgItem::Positional(expr, passing) => {
@@ -1429,6 +1431,7 @@ impl<'a> ProcLower<'a> {
                     args.push(CoreArg::Named {
                         name: name.text.to_string(),
                         value: v,
+                        by_ref: None,
                     });
                 }
                 ArgItem::Positional(expr, passing) => {
@@ -1460,11 +1463,20 @@ impl<'a> ProcLower<'a> {
         for item in items {
             match item {
                 ArgItem::Omitted => args.push(CoreArg::Omitted),
+                // A named argument passes ByRef like a positional one (Excel: `o.Bump n:=lk`
+                // updates `lk`); a parenthesized expression stays a value.
                 ArgItem::Named { name, value } => {
-                    let v = self.bind_expr(value)?.value;
+                    self.reject_udt_expr(value)?;
+                    let (value, by_ref) =
+                        match self.bind_arg_byref(value, true, CallSitePassing::Default)? {
+                            CoreArg::ByRef(place) => (CoreValue::Load(place.clone()), Some(place)),
+                            CoreArg::ByVal(value) => (value, None),
+                            _ => unreachable!("bind_arg_byref yields ByRef or ByVal"),
+                        };
                     args.push(CoreArg::Named {
                         name: name.text.to_string(),
-                        value: v,
+                        value,
+                        by_ref,
                     });
                 }
                 ArgItem::Positional(expr, passing) => {
@@ -2160,21 +2172,18 @@ impl<'a> ProcLower<'a> {
         for item in items {
             match item {
                 ArgItem::Positional(expr, passing) => {
+                    // MS-VBAL 5.6.13.1: a positional argument after a named one is a
+                    // syntax error, a ParamArray tail included (Excel: "Syntax error").
                     if seen_named {
-                        if variadic_index.is_some() {
-                            // VBA permits named fixed arguments before the
-                            // positional ParamArray tail. Once a named argument
-                            // appears, later positional arguments cannot fill
-                            // fixed slots; they are variadic elements.
-                            let alias = self.paramarray_alias_place(expr, passing);
-                            tail.push((self.bind_one_arg(expr, None, passing)?, alias));
-                            pos += 1;
-                            continue;
-                        } else {
-                            return Err(BindError::Unsupported(
-                                "positional argument cannot follow named argument".into(),
-                            ));
-                        }
+                        return Err(BindError::Malformed(
+                            "Syntax error: positional argument cannot follow named argument".into(),
+                        ));
+                    }
+                    // MS-VBAL 5.6.13.1: call-site `ByVal` is valid only for an
+                    // external (`Declare`) procedure; to a VBA procedure Excel
+                    // reports "Type mismatch".
+                    if passing == CallSitePassing::ByVal {
+                        return Err(BindError::TypeMismatch);
                     }
                     if pos < bindable_fixed_count {
                         slots[pos] =
@@ -2191,8 +2200,8 @@ impl<'a> ProcLower<'a> {
                 }
                 ArgItem::Omitted => {
                     if seen_named {
-                        return Err(BindError::Unsupported(
-                            "positional argument cannot follow named argument".into(),
+                        return Err(BindError::Malformed(
+                            "Syntax error: positional argument cannot follow named argument".into(),
                         ));
                     }
                     if pos < bindable_fixed_count {
@@ -2336,6 +2345,7 @@ impl<'a> ProcLower<'a> {
                 ArgItem::Named { name, value } if i >= 3 => CoreArg::Named {
                     name: name.text.to_string(),
                     value: self.bind_expr(value)?.value,
+                    by_ref: None,
                 },
                 ArgItem::Omitted if i >= 3 => CoreArg::Omitted,
                 _ => {
@@ -3697,13 +3707,14 @@ fn zero_param_index<'t>(
 }
 
 /// Convert one variadic-tail argument to its array-element value for a ParamArray
-/// box. Tail args are always ByVal values or omitted slots (a Missing element →
-/// `Empty`); the other variants cannot occur but are mapped sensibly.
+/// box. Tail args are always ByVal values or omitted slots (an omitted element is
+/// Missing, as in Excel: `IsMissing(r(1))` is True for `PA(1, , 3)`); the other
+/// variants cannot occur but are mapped sensibly.
 fn paramarray_element(arg: CoreArg) -> CoreValue {
     match arg {
         CoreArg::ByVal(v) => v,
         CoreArg::Named { value, .. } => value,
-        CoreArg::Omitted => CoreValue::Const(calcvba_bundle::coreir::CoreConst::Empty),
+        CoreArg::Omitted => CoreValue::Const(calcvba_bundle::coreir::CoreConst::Missing),
         CoreArg::ByRef(place) => CoreValue::Load(place),
     }
 }

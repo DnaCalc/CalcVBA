@@ -1345,9 +1345,15 @@ fn positional_after_named_argument_is_bind_error() {
 }
 
 #[test]
-fn positional_paramarray_tail_after_named_fixed_argument_binds() {
+fn positional_paramarray_tail_after_named_fixed_argument_is_bind_error() {
+    // Excel: "Syntax error" for `PA(a:=1, 2)` with `PA(a, ParamArray r())`
+    // (conformance/excel-measurements/spec-pass/CmpNamedThenPos.bas).
     let src = "Sub Main()\n    Dim r As Long\n    Call Capture(target := r, 3, 4)\nEnd Sub\n\nSub Capture(ByRef target As Long, ParamArray items() As Variant)\n    target = UBound(items)\nEnd Sub\n";
-    assert_eq!(run_main_local0(src), Some(1.0));
+    let err = bind_error(src);
+    assert!(
+        err.contains("positional argument cannot follow named argument"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -2055,12 +2061,13 @@ fn parenthesized_argument_forces_by_val() {
 }
 
 #[test]
-fn call_site_byval_forces_by_val_over_byref_param() {
-    // A call-site `ByVal r` overrides the callee's declared `ByRef`, so the
-    // mutation must NOT reach the caller's `r`. (The parser accepted the
-    // `ByVal`/`ByRef` modifier but dropped it, so this used to mutate r to 105.)
+fn call_site_byval_to_vba_procedure_is_bind_error() {
+    // MS-VBAL 5.6.13.1: call-site `ByVal` is valid only when calling an external
+    // (`Declare`) procedure. Excel reports "Type mismatch" for `Inc ByVal r` to a VBA Sub
+    // (conformance/excel-measurements/spec-pass/CmpCallByVal.bas).
     let src = "Sub Main()\n    Dim r As Long\n    r = 5\n    Inc ByVal r\nEnd Sub\n\nSub Inc(ByRef n As Long)\n    n = n + 100\nEnd Sub\n";
-    assert_eq!(run_main_local0(src), Some(5.0));
+    let err = bind_error(src);
+    assert!(err.contains("TypeMismatch"), "unexpected error: {err}");
 }
 
 #[test]

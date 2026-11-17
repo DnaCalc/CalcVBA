@@ -771,6 +771,7 @@ pub(super) fn default_value(value: &calcvba_bundle::coreir::CoreConst) -> api::V
         C::Date(n) => V::from_date_f64(f64::from_bits(*n)),
         C::Str(s) => V::from_string(s.clone()),
         C::NullStr => V::null_string(),
+        C::Missing => V::from_scode(0x8002_0004u32 as i32),
     }
 }
 pub(crate) fn interface_id(iid: ComInterfaceIid) -> api::InterfaceId {

@@ -1332,10 +1332,11 @@ pub unsafe extern "C" fn constant_variant(
     null: u32,
     output: *mut ScalarBits,
 ) -> i32 {
-    let value = if null != 0 {
-        Variant::null()
-    } else {
-        Variant::empty()
+    // 0 Empty, 1 Null, 2 Missing (DISP_E_PARAMNOTFOUND).
+    let value = match null {
+        0 => Variant::empty(),
+        2 => crate::ox_const_variant(&calcvba_oxir::OxConst::Missing),
+        _ => Variant::null(),
     };
     // SAFETY: frame owns the actual inline Variant until instruction completion.
     match unsafe { pin_value(raw, Value::Variant(value)) } {

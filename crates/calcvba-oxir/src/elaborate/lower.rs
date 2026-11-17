@@ -3023,7 +3023,11 @@ impl<'a> Lowerer<'a> {
                     writebacks.extend(wb);
                     OxArg::ByVal(value)
                 }
-                CoreArg::ByRef(place) => {
+                CoreArg::ByRef(place)
+                | CoreArg::Named {
+                    by_ref: Some(place),
+                    ..
+                } => {
                     let (p, wb) = self.lower_byref_place(place)?;
                     writebacks.extend(wb);
                     OxArg::ByRef(p)
@@ -3056,9 +3060,27 @@ impl<'a> Lowerer<'a> {
                     OxCallArg::ByRef(p)
                 }
                 CoreArg::Omitted => OxCallArg::Omitted,
-                CoreArg::Named { name, value } => OxCallArg::Named {
+                CoreArg::Named {
+                    name,
+                    by_ref: Some(place),
+                    ..
+                } => {
+                    let (p, wb) = self.lower_byref_place(place)?;
+                    writebacks.extend(wb);
+                    OxCallArg::Named {
+                        name: name.clone(),
+                        value: OxOperand::Use(p),
+                        by_ref: Some(p),
+                    }
+                }
+                CoreArg::Named {
+                    name,
+                    value,
+                    by_ref: None,
+                } => OxCallArg::Named {
                     name: name.clone(),
                     value: self.lower_value(value)?.0,
+                    by_ref: None,
                 },
             });
         }
@@ -3630,13 +3652,14 @@ fn lower_const(c: &CoreConst) -> OxConst {
         CoreConst::Date(bits) => OxConst::Date(*bits),
         CoreConst::Str(s) => OxConst::Str(s.clone()),
         CoreConst::NullStr => OxConst::NullStr,
+        CoreConst::Missing => OxConst::Missing,
     }
 }
 
 fn const_type(c: &CoreConst) -> OxTy {
     match c {
-        // Empty / Null inhabit only Variant.
-        CoreConst::Empty | CoreConst::Null => OxTy::Variant,
+        // Empty / Null / Missing inhabit only Variant.
+        CoreConst::Empty | CoreConst::Null | CoreConst::Missing => OxTy::Variant,
         // `Nothing` is a null object reference.
         CoreConst::Nothing => OxTy::Object(crate::ty::ObjClass::Untyped),
         CoreConst::Bool(_) => OxTy::Bool,

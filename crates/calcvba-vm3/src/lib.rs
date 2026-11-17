@@ -4324,7 +4324,11 @@ impl<'h> Vm3<'h> {
         let mut next_positional = 0usize;
         for arg in args {
             let lowered = match arg {
-                OxCallArg::ByRef(place) => OxArg::ByRef(*place),
+                OxCallArg::ByRef(place)
+                | OxCallArg::Named {
+                    by_ref: Some(place),
+                    ..
+                } => OxArg::ByRef(*place),
                 OxCallArg::Operand(op) => OxArg::ByVal(op.clone()),
                 OxCallArg::Named { value, .. } => OxArg::ByVal(value.clone()),
                 OxCallArg::Omitted => OxArg::Omitted,
@@ -4973,9 +4977,13 @@ impl<'h> Vm3<'h> {
         let mut cells = Vec::with_capacity(args.len());
         for arg in args {
             cells.push(match arg {
+                OxCallArg::ByRef(place)
+                | OxCallArg::Named {
+                    by_ref: Some(place),
+                    ..
+                } => Some(self.com_reference(place)?),
                 OxCallArg::Operand(op) => Some(self.operand(op)?),
                 OxCallArg::Named { value, .. } => Some(self.operand(value)?),
-                OxCallArg::ByRef(place) => Some(self.com_reference(place)?),
                 OxCallArg::Omitted => None,
                 OxCallArg::Const(n) => Some(Variant::from_i32(*n)),
             });
@@ -5049,9 +5057,13 @@ impl<'h> Vm3<'h> {
         let mut cells = Vec::with_capacity(args.len());
         for arg in args {
             cells.push(match arg {
+                OxCallArg::ByRef(place)
+                | OxCallArg::Named {
+                    by_ref: Some(place),
+                    ..
+                } => Some(self.com_reference(place)?),
                 OxCallArg::Operand(op) => Some(self.operand(op)?),
                 OxCallArg::Named { value, .. } => Some(self.operand(value)?),
-                OxCallArg::ByRef(place) => Some(self.com_reference(place)?),
                 OxCallArg::Omitted => None,
                 OxCallArg::Const(n) => Some(Variant::from_i32(*n)),
             });
@@ -5252,9 +5264,13 @@ impl<'h> Vm3<'h> {
         let mut cells = Vec::with_capacity(args.len());
         for arg in args {
             cells.push(match arg {
+                OxCallArg::ByRef(place)
+                | OxCallArg::Named {
+                    by_ref: Some(place),
+                    ..
+                } => Some(self.com_reference(place)?),
                 OxCallArg::Operand(op) => Some(self.operand(op)?),
                 OxCallArg::Named { value, .. } => Some(self.operand(value)?),
-                OxCallArg::ByRef(place) => Some(self.com_reference(place)?),
                 OxCallArg::Omitted => None,
                 OxCallArg::Const(n) => Some(Variant::from_i32(*n)),
             });
@@ -6258,7 +6274,7 @@ fn verified_late_dispatch_plan(
     let byref_slots = args
         .iter()
         .enumerate()
-        .filter_map(|(index, arg)| matches!(arg, OxCallArg::ByRef(_)).then_some(index as u32))
+        .filter_map(|(index, arg)| arg_is_by_ref(arg).then_some(index as u32))
         .collect();
     VerifiedInteropPlan::late_dispatch(
         member_name,
@@ -6362,6 +6378,19 @@ fn com_call_kind(kind: TypeLibMemberInvokeKind) -> calcvba_com::call::ComCallKin
     }
 }
 
+/// Whether `arg` passes a place ByRef: a positional `ByRef`, or a late-bound named argument
+/// over an l-value (Excel passes `o.Bump n:=lk` ByRef, as `o.Bump lk`).
+fn arg_is_by_ref(arg: &OxCallArg) -> bool {
+    matches!(
+        arg,
+        OxCallArg::ByRef(_)
+            | OxCallArg::Named {
+                by_ref: Some(_),
+                ..
+            }
+    )
+}
+
 /// The argument list of a COM object call over the cells built for `args` (`None` for an
 /// omitted argument; a ByRef place's cell is its reference).
 fn com_call_args<'a>(
@@ -6372,7 +6401,7 @@ fn com_call_args<'a>(
         .zip(cells)
         .map(|(arg, cell)| calcvba_com::call::ComArg {
             value: match (arg, cell) {
-                (OxCallArg::ByRef(_), Some(reference)) => {
+                (arg, Some(reference)) if arg_is_by_ref(arg) => {
                     calcvba_com::call::ComArgValue::Reference(reference)
                 }
                 (_, Some(value)) => calcvba_com::call::ComArgValue::Value(value),
@@ -6811,6 +6840,7 @@ mod tests {
                 &[OxCallArg::Named {
                     name: "x".into(),
                     value: OxOperand::Const(OxConst::I32(21)),
+                    by_ref: None,
                 }],
             )
             .expect("named arg should map to visible parameter after Me");

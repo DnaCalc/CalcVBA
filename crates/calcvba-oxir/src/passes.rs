@@ -164,7 +164,7 @@ pub(crate) fn operand_ty(
 
 fn const_ty(c: &OxConst) -> OxTy {
     match c {
-        OxConst::Empty | OxConst::Null => OxTy::Variant,
+        OxConst::Empty | OxConst::Null | OxConst::Missing => OxTy::Variant,
         OxConst::Nothing => OxTy::Object(ObjClass::Untyped),
         OxConst::Bool(_) => OxTy::Bool,
         OxConst::I16(_) => OxTy::Integer,

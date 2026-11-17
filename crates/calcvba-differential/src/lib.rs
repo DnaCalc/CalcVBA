@@ -616,8 +616,10 @@ pub fn run_with_timeout(
         }
         let _ = tx.send(run_with_project_locked(executor, &src, &proj));
     });
+    // The queue watchdog only catches a stalled lock: two snapshot gates running in parallel
+    // each hold the fixture lock for over a minute of back-to-back fixtures.
     started_rx
-        .recv_timeout(std::time::Duration::from_secs(60))
+        .recv_timeout(std::time::Duration::from_secs(600))
         .expect("differential fixture queue stalled before execution (not a semantic TIMEOUT)");
     match rx.recv_timeout(dur) {
         Ok(outcome) => Some(outcome),
@@ -3698,115 +3700,78 @@ End Sub
 
     const JIT_PARAMARRAY_UBOUND_PACK: &str =
         include_str!("../../../conformance/tests/params_paramarray_pack.bas");
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_PACK: &str =
-        include_str!("../../../conformance/tests/params_paramarray_named_fixed_tail_pack.bas");
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_ALIAS_COPYOUT: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_alias_copyout.bas"
+    const JIT_PARAMARRAY_FIXED_TAIL_PACK: &str =
+        include_str!("../../../conformance/tests/params_paramarray_fixed_tail_pack.bas");
+    const JIT_PARAMARRAY_FIXED_TAIL_ALIAS_COPYOUT: &str =
+        include_str!("../../../conformance/tests/params_paramarray_fixed_tail_alias_copyout.bas");
+    const JIT_PARAMARRAY_FIXED_TAIL_PARENTHESIZED_NO_ALIAS: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_fixed_tail_parenthesized_no_alias.bas"
     );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_PARENTHESIZED_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_parenthesized_no_alias.bas"
+    const JIT_PARAMARRAY_FIXED_TAIL_ARRAY_ELEMENT_ALIAS_COPYOUT: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_fixed_tail_array_element_alias_copyout.bas"
     );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_BYVAL_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_byval_no_alias.bas"
+    const JIT_PARAMARRAY_FIXED_TAIL_ARRAY_ELEMENT_PARENTHESIZED_NO_ALIAS: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_fixed_tail_array_element_parenthesized_no_alias.bas"
     );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_ARRAY_ELEMENT_ALIAS_COPYOUT: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_array_element_alias_copyout.bas"
+    const JIT_PARAMARRAY_FIXED_TAIL_DUPLICATE_ALIAS_COPYOUT: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_fixed_tail_duplicate_alias_copyout.bas"
     );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_ARRAY_ELEMENT_PARENTHESIZED_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_array_element_parenthesized_no_alias.bas"
+    const JIT_PARAMARRAY_FIXED_TAIL_DUPLICATE_PARENTHESIZED_NO_ALIAS: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_fixed_tail_duplicate_parenthesized_no_alias.bas"
     );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_ARRAY_ELEMENT_BYVAL_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_array_element_byval_no_alias.bas"
+    const JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_ALIAS_COPYOUT: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_fixed_tail_global_alias_copyout.bas"
     );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_DUPLICATE_ALIAS_COPYOUT: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_duplicate_alias_copyout.bas"
+    const JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_PARENTHESIZED_NO_ALIAS: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_fixed_tail_global_parenthesized_no_alias.bas"
     );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_DUPLICATE_PARENTHESIZED_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_duplicate_parenthesized_no_alias.bas"
+    const JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_STRING_ALIAS_COPYOUT: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_fixed_tail_global_string_alias_copyout.bas"
     );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_DUPLICATE_BYVAL_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_duplicate_byval_no_alias.bas"
+    const JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_STRING_PARENTHESIZED_NO_ALIAS: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_fixed_tail_global_string_parenthesized_no_alias.bas"
     );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_ALIAS_COPYOUT: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_global_alias_copyout.bas"
+    const JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_LONGPTR_ALIAS_COPYOUT: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_fixed_tail_global_longptr_alias_copyout.bas"
     );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_PARENTHESIZED_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_global_parenthesized_no_alias.bas"
+    const JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_LONGPTR_PARENTHESIZED_NO_ALIAS: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_fixed_tail_global_longptr_parenthesized_no_alias.bas"
     );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_BYVAL_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_global_byval_no_alias.bas"
+    const JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_fixed_tail_global_typed_scalar_alias_bundle_copyout.bas"
     );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_STRING_ALIAS_COPYOUT: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_global_string_alias_copyout.bas"
+    const JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_fixed_tail_global_typed_scalar_parenthesized_no_alias.bas"
     );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_STRING_PARENTHESIZED_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_global_string_parenthesized_no_alias.bas"
+    const JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_FIXED_STRING_ALIAS_COPYOUT: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_fixed_tail_global_fixed_string_alias_copyout.bas"
     );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_STRING_BYVAL_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_global_string_byval_no_alias.bas"
+    const JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_FIXED_STRING_PARENTHESIZED_NO_ALIAS: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_fixed_tail_global_fixed_string_parenthesized_no_alias.bas"
     );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_LONGPTR_ALIAS_COPYOUT: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_global_longptr_alias_copyout.bas"
+    const JIT_PARAMARRAY_FIXED_TAIL_TYPED_LONG_STRING_ALIAS_COPYOUT: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_fixed_tail_typed_long_string_alias_copyout.bas"
     );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_LONGPTR_PARENTHESIZED_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_global_longptr_parenthesized_no_alias.bas"
+    const JIT_PARAMARRAY_FIXED_TAIL_TYPED_LONG_STRING_PARENTHESIZED_NO_ALIAS: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_fixed_tail_typed_long_string_parenthesized_no_alias.bas"
     );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_LONGPTR_BYVAL_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_global_longptr_byval_no_alias.bas"
+    const JIT_PARAMARRAY_FIXED_TAIL_TYPED_LONGPTR_ALIAS_COPYOUT: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_fixed_tail_typed_longptr_alias_copyout.bas"
     );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_global_typed_scalar_alias_bundle_copyout.bas"
+    const JIT_PARAMARRAY_FIXED_TAIL_TYPED_LONGPTR_PARENTHESIZED_NO_ALIAS: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_fixed_tail_typed_longptr_parenthesized_no_alias.bas"
     );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_global_typed_scalar_parenthesized_no_alias.bas"
+    const JIT_PARAMARRAY_FIXED_TAIL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_fixed_tail_typed_scalar_alias_bundle_copyout.bas"
     );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_BYVAL_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_global_typed_scalar_byval_no_alias.bas"
+    const JIT_PARAMARRAY_FIXED_TAIL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_fixed_tail_typed_scalar_parenthesized_no_alias.bas"
     );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_FIXED_STRING_ALIAS_COPYOUT: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_global_fixed_string_alias_copyout.bas"
+    const JIT_PARAMARRAY_FIXED_TAIL_TYPED_FIXED_STRING_ALIAS_COPYOUT: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_fixed_tail_typed_fixed_string_alias_copyout.bas"
     );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_FIXED_STRING_PARENTHESIZED_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_global_fixed_string_parenthesized_no_alias.bas"
-    );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_FIXED_STRING_BYVAL_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_global_fixed_string_byval_no_alias.bas"
-    );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONG_STRING_ALIAS_COPYOUT: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_typed_long_string_alias_copyout.bas"
-    );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONG_STRING_PARENTHESIZED_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_typed_long_string_parenthesized_no_alias.bas"
-    );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONG_STRING_BYVAL_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_typed_long_string_byval_no_alias.bas"
-    );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONGPTR_ALIAS_COPYOUT: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_typed_longptr_alias_copyout.bas"
-    );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONGPTR_PARENTHESIZED_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_typed_longptr_parenthesized_no_alias.bas"
-    );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONGPTR_BYVAL_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_typed_longptr_byval_no_alias.bas"
-    );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_typed_scalar_alias_bundle_copyout.bas"
-    );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_typed_scalar_parenthesized_no_alias.bas"
-    );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_BYVAL_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_typed_scalar_byval_no_alias.bas"
-    );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_FIXED_STRING_ALIAS_COPYOUT: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_typed_fixed_string_alias_copyout.bas"
-    );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_FIXED_STRING_PARENTHESIZED_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_typed_fixed_string_parenthesized_no_alias.bas"
-    );
-    const JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_FIXED_STRING_BYVAL_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_named_fixed_tail_typed_fixed_string_byval_no_alias.bas"
+    const JIT_PARAMARRAY_FIXED_TAIL_TYPED_FIXED_STRING_PARENTHESIZED_NO_ALIAS: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_fixed_tail_typed_fixed_string_parenthesized_no_alias.bas"
     );
     const JIT_PARAMARRAY_UBOUND_EMPTY: &str =
         include_str!("../../../conformance/tests/params_paramarray_empty.bas");
@@ -3816,16 +3781,11 @@ End Sub
         include_str!("../../../conformance/tests/params_paramarray_alias_copyout.bas");
     const JIT_PARAMARRAY_GLOBAL_ALIAS_COPYOUT: &str =
         include_str!("../../../conformance/tests/params_paramarray_global_alias_copyout.bas");
-    const JIT_PARAMARRAY_GLOBAL_BYVAL_NO_ALIAS: &str =
-        include_str!("../../../conformance/tests/params_paramarray_global_byval_no_alias.bas");
     const JIT_PARAMARRAY_GLOBAL_PARENTHESIZED_NO_ALIAS: &str = include_str!(
         "../../../conformance/tests/params_paramarray_global_parenthesized_no_alias.bas"
     );
     const JIT_PARAMARRAY_GLOBAL_STRING_ALIAS_COPYOUT: &str = include_str!(
         "../../../conformance/tests/params_paramarray_global_string_alias_copyout.bas"
-    );
-    const JIT_PARAMARRAY_GLOBAL_STRING_BYVAL_NO_ALIAS: &str = include_str!(
-        "../../../conformance/tests/params_paramarray_global_string_byval_no_alias.bas"
     );
     const JIT_PARAMARRAY_GLOBAL_STRING_PARENTHESIZED_NO_ALIAS: &str = include_str!(
         "../../../conformance/tests/params_paramarray_global_string_parenthesized_no_alias.bas"
@@ -3837,8 +3797,11 @@ End Sub
         include_str!("../../../conformance/tests/params_paramarray_duplicate_alias_copyout.bas");
     const JIT_PARAMARRAY_PARENTHESIZED_NO_ALIAS: &str =
         include_str!("../../../conformance/tests/params_paramarray_parenthesized_no_alias.bas");
-    const JIT_PARAMARRAY_BYVAL_NO_ALIAS: &str =
-        include_str!("../../../conformance/tests/params_paramarray_byval_no_alias.bas");
+    const JIT_PARAMARRAY_CALL_SITE_BYVAL_ERROR: &str =
+        include_str!("../../../conformance/tests/params_paramarray_call_site_byval_error.bas");
+    const JIT_PARAMARRAY_NAMED_THEN_POSITIONAL_ERROR: &str = include_str!(
+        "../../../conformance/tests/params_paramarray_named_then_positional_error.bas"
+    );
     const JIT_PARAMARRAY_VARIANT_ARRAY_ELEMENT_MUTATION: &str = include_str!(
         "../../../conformance/tests/params_paramarray_variant_array_element_mutation.bas"
     );
@@ -11493,618 +11456,414 @@ End Sub
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_pack() {
-        assert_jit_matches_vm3_contains(JIT_PARAMARRAY_NAMED_FIXED_TAIL_PACK, Variant::from_i32(1));
+    fn jit_matches_vm3_paramarray_fixed_tail_pack() {
+        assert_jit_matches_vm3_contains(JIT_PARAMARRAY_FIXED_TAIL_PACK, Variant::from_i32(1));
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_alias_copyout() {
+    fn jit_matches_vm3_paramarray_fixed_tail_alias_copyout() {
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_ALIAS_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_ALIAS_COPYOUT,
             Variant::from_i32(17),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_ALIAS_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_ALIAS_COPYOUT,
             Variant::from_i32(101),
         );
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_parenthesized_no_alias() {
+    fn jit_matches_vm3_paramarray_fixed_tail_parenthesized_no_alias() {
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_PARENTHESIZED_NO_ALIAS,
             Variant::from_i16(5),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_PARENTHESIZED_NO_ALIAS,
             Variant::from_i32(101),
         );
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_byval_no_alias() {
+    fn jit_matches_vm3_paramarray_fixed_tail_array_element_alias_copyout() {
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_BYVAL_NO_ALIAS,
-            Variant::from_i16(5),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_BYVAL_NO_ALIAS,
-            Variant::from_i32(101),
-        );
-    }
-
-    #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_array_element_alias_copyout() {
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_ARRAY_ELEMENT_ALIAS_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_ARRAY_ELEMENT_ALIAS_COPYOUT,
             Variant::from_i32(17),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_ARRAY_ELEMENT_ALIAS_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_ARRAY_ELEMENT_ALIAS_COPYOUT,
             Variant::from_i32(101),
         );
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_array_element_parenthesized_no_alias() {
+    fn jit_matches_vm3_paramarray_fixed_tail_array_element_parenthesized_no_alias() {
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_ARRAY_ELEMENT_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_ARRAY_ELEMENT_PARENTHESIZED_NO_ALIAS,
             Variant::from_i32(5),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_ARRAY_ELEMENT_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_ARRAY_ELEMENT_PARENTHESIZED_NO_ALIAS,
             Variant::from_i32(101),
         );
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_array_element_byval_no_alias() {
+    fn jit_matches_vm3_paramarray_fixed_tail_duplicate_alias_copyout() {
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_ARRAY_ELEMENT_BYVAL_NO_ALIAS,
-            Variant::from_i32(5),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_ARRAY_ELEMENT_BYVAL_NO_ALIAS,
-            Variant::from_i32(101),
-        );
-    }
-
-    #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_duplicate_alias_copyout() {
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_DUPLICATE_ALIAS_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_DUPLICATE_ALIAS_COPYOUT,
             Variant::from_i32(23),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_DUPLICATE_ALIAS_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_DUPLICATE_ALIAS_COPYOUT,
             Variant::from_i32(102),
         );
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_duplicate_parenthesized_no_alias() {
+    fn jit_matches_vm3_paramarray_fixed_tail_duplicate_parenthesized_no_alias() {
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_DUPLICATE_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_DUPLICATE_PARENTHESIZED_NO_ALIAS,
             Variant::from_i16(5),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_DUPLICATE_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_DUPLICATE_PARENTHESIZED_NO_ALIAS,
             Variant::from_i32(102),
         );
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_duplicate_byval_no_alias() {
+    fn jit_matches_vm3_paramarray_fixed_tail_global_alias_copyout() {
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_DUPLICATE_BYVAL_NO_ALIAS,
-            Variant::from_i16(5),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_DUPLICATE_BYVAL_NO_ALIAS,
-            Variant::from_i32(102),
-        );
-    }
-
-    #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_global_alias_copyout() {
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_ALIAS_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_ALIAS_COPYOUT,
             Variant::from_i32(123),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_ALIAS_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_ALIAS_COPYOUT,
             Variant::from_i32(101),
         );
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_global_parenthesized_no_alias() {
+    fn jit_matches_vm3_paramarray_fixed_tail_global_parenthesized_no_alias() {
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_PARENTHESIZED_NO_ALIAS,
             Variant::from_i32(5),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_PARENTHESIZED_NO_ALIAS,
             Variant::from_i32(101),
         );
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_global_byval_no_alias() {
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_BYVAL_NO_ALIAS,
-            Variant::from_i32(5),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_BYVAL_NO_ALIAS,
-            Variant::from_i32(101),
-        );
-    }
-
-    #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_global_string_alias_copyout() {
+    fn jit_matches_vm3_paramarray_fixed_tail_global_string_alias_copyout() {
         assert_jit_matches_vm3_contains_canon(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_STRING_ALIAS_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_STRING_ALIAS_COPYOUT,
             Canon::Str("named-global".into()),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_STRING_ALIAS_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_STRING_ALIAS_COPYOUT,
             Variant::from_i32(101),
         );
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_global_string_parenthesized_no_alias() {
+    fn jit_matches_vm3_paramarray_fixed_tail_global_string_parenthesized_no_alias() {
         assert_jit_matches_vm3_contains_canon(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_STRING_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_STRING_PARENTHESIZED_NO_ALIAS,
             Canon::Str("before".into()),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_STRING_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_STRING_PARENTHESIZED_NO_ALIAS,
             Variant::from_i32(101),
         );
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_global_string_byval_no_alias() {
-        assert_jit_matches_vm3_contains_canon(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_STRING_BYVAL_NO_ALIAS,
-            Canon::Str("before".into()),
-        );
+    fn jit_matches_vm3_paramarray_fixed_tail_global_longptr_alias_copyout() {
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_STRING_BYVAL_NO_ALIAS,
-            Variant::from_i32(101),
-        );
-    }
-
-    #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_global_longptr_alias_copyout() {
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_LONGPTR_ALIAS_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_LONGPTR_ALIAS_COPYOUT,
             Variant::from_i64(5_000_000_014),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_LONGPTR_ALIAS_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_LONGPTR_ALIAS_COPYOUT,
             Variant::from_i32(101),
         );
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_global_longptr_parenthesized_no_alias() {
+    fn jit_matches_vm3_paramarray_fixed_tail_global_longptr_parenthesized_no_alias() {
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_LONGPTR_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_LONGPTR_PARENTHESIZED_NO_ALIAS,
             Variant::from_i64(17),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_LONGPTR_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_LONGPTR_PARENTHESIZED_NO_ALIAS,
             Variant::from_i32(101),
         );
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_global_longptr_byval_no_alias() {
+    fn jit_matches_vm3_paramarray_fixed_tail_global_typed_scalar_alias_bundle_copyout() {
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_LONGPTR_BYVAL_NO_ALIAS,
-            Variant::from_i64(17),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_LONGPTR_BYVAL_NO_ALIAS,
-            Variant::from_i32(101),
-        );
-    }
-
-    #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_global_typed_scalar_alias_bundle_copyout() {
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
             Variant::from_i64(5_000_000_012),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
             Variant::from_i16(99),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
             Variant::from_u8(7),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
             Variant::from_bool(true),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
             Variant::from_currency_scaled_i64(123_456),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
             Variant::from_f32(1.25),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
             Variant::from_f64(2.5),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
             Variant::from_date_f64(36527.0),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
             Variant::from_i32(108),
         );
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_global_typed_scalar_parenthesized_no_alias() {
+    fn jit_matches_vm3_paramarray_fixed_tail_global_typed_scalar_parenthesized_no_alias() {
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
             Variant::from_i64(1_111_111_111),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
             Variant::from_i16(12),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
             Variant::from_u8(3),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
             Variant::from_bool(false),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
             Variant::from_currency_scaled_i64(12_345),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
             Variant::from_f32(4.5),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
             Variant::from_f64(6.75),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
             Variant::from_date_f64(2.0),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
             Variant::from_i32(108),
         );
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_global_typed_scalar_byval_no_alias() {
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_BYVAL_NO_ALIAS,
-            Variant::from_i64(1_111_111_111),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_BYVAL_NO_ALIAS,
-            Variant::from_i16(12),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_BYVAL_NO_ALIAS,
-            Variant::from_u8(3),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_BYVAL_NO_ALIAS,
-            Variant::from_bool(false),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_BYVAL_NO_ALIAS,
-            Variant::from_currency_scaled_i64(12_345),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_BYVAL_NO_ALIAS,
-            Variant::from_f32(4.5),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_BYVAL_NO_ALIAS,
-            Variant::from_f64(6.75),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_BYVAL_NO_ALIAS,
-            Variant::from_date_f64(2.0),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_BYVAL_NO_ALIAS,
-            Variant::from_i32(108),
-        );
-    }
-
-    #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_global_fixed_string_alias_copyout() {
+    fn jit_matches_vm3_paramarray_fixed_tail_global_fixed_string_alias_copyout() {
         assert_jit_matches_vm3_contains_canon(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_FIXED_STRING_ALIAS_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_FIXED_STRING_ALIAS_COPYOUT,
             Canon::Str("abc".into()),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_FIXED_STRING_ALIAS_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_FIXED_STRING_ALIAS_COPYOUT,
             Variant::from_i32(101),
         );
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_global_fixed_string_parenthesized_no_alias() {
+    fn jit_matches_vm3_paramarray_fixed_tail_global_fixed_string_parenthesized_no_alias() {
         assert_jit_matches_vm3_contains_canon(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_FIXED_STRING_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_FIXED_STRING_PARENTHESIZED_NO_ALIAS,
             Canon::Str("abc".into()),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_FIXED_STRING_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_FIXED_STRING_PARENTHESIZED_NO_ALIAS,
             Variant::from_i32(101),
         );
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_global_fixed_string_byval_no_alias() {
-        assert_jit_matches_vm3_contains_canon(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_FIXED_STRING_BYVAL_NO_ALIAS,
-            Canon::Str("abc".into()),
-        );
+    fn jit_matches_vm3_paramarray_fixed_tail_typed_long_string_alias_copyout() {
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_FIXED_STRING_BYVAL_NO_ALIAS,
-            Variant::from_i32(101),
-        );
-    }
-
-    #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_typed_long_string_alias_copyout() {
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONG_STRING_ALIAS_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_LONG_STRING_ALIAS_COPYOUT,
             Variant::from_i32(99),
         );
         assert_jit_matches_vm3_contains_canon(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONG_STRING_ALIAS_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_LONG_STRING_ALIAS_COPYOUT,
             Canon::Str("mutated".into()),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONG_STRING_ALIAS_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_LONG_STRING_ALIAS_COPYOUT,
             Variant::from_i32(102),
         );
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_typed_long_string_parenthesized_no_alias() {
+    fn jit_matches_vm3_paramarray_fixed_tail_typed_long_string_parenthesized_no_alias() {
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONG_STRING_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_LONG_STRING_PARENTHESIZED_NO_ALIAS,
             Variant::from_i32(5),
         );
         assert_jit_matches_vm3_contains_canon(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONG_STRING_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_LONG_STRING_PARENTHESIZED_NO_ALIAS,
             Canon::Str("before".into()),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONG_STRING_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_LONG_STRING_PARENTHESIZED_NO_ALIAS,
             Variant::from_i32(102),
         );
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_typed_long_string_byval_no_alias() {
+    fn jit_matches_vm3_paramarray_fixed_tail_typed_longptr_alias_copyout() {
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONG_STRING_BYVAL_NO_ALIAS,
-            Variant::from_i32(5),
-        );
-        assert_jit_matches_vm3_contains_canon(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONG_STRING_BYVAL_NO_ALIAS,
-            Canon::Str("before".into()),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONG_STRING_BYVAL_NO_ALIAS,
-            Variant::from_i32(102),
-        );
-    }
-
-    #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_typed_longptr_alias_copyout() {
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONGPTR_ALIAS_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_LONGPTR_ALIAS_COPYOUT,
             Variant::from_i64(5_000_000_014),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONGPTR_ALIAS_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_LONGPTR_ALIAS_COPYOUT,
             Variant::from_i32(101),
         );
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_typed_longptr_parenthesized_no_alias() {
+    fn jit_matches_vm3_paramarray_fixed_tail_typed_longptr_parenthesized_no_alias() {
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONGPTR_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_LONGPTR_PARENTHESIZED_NO_ALIAS,
             Variant::from_i64(17),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONGPTR_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_LONGPTR_PARENTHESIZED_NO_ALIAS,
             Variant::from_i32(101),
         );
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_typed_longptr_byval_no_alias() {
+    fn jit_matches_vm3_paramarray_fixed_tail_typed_scalar_alias_bundle_copyout() {
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONGPTR_BYVAL_NO_ALIAS,
-            Variant::from_i64(17),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONGPTR_BYVAL_NO_ALIAS,
-            Variant::from_i32(101),
-        );
-    }
-
-    #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_typed_scalar_alias_bundle_copyout() {
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
             Variant::from_i64(5_000_000_012),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
             Variant::from_i16(99),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
             Variant::from_u8(7),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
             Variant::from_bool(true),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
             Variant::from_currency_scaled_i64(123_456),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
             Variant::from_f32(1.25),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
             Variant::from_f64(2.5),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
             Variant::from_date_f64(36527.0),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
             Variant::from_i32(108),
         );
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_typed_scalar_parenthesized_no_alias() {
+    fn jit_matches_vm3_paramarray_fixed_tail_typed_scalar_parenthesized_no_alias() {
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
             Variant::from_i64(1_111_111_111),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
             Variant::from_i16(12),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
             Variant::from_u8(3),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
             Variant::from_bool(false),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
             Variant::from_currency_scaled_i64(12_345),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
             Variant::from_f32(4.5),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
             Variant::from_f64(6.75),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
             Variant::from_date_f64(2.0),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
             Variant::from_i32(108),
         );
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_typed_scalar_byval_no_alias() {
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_BYVAL_NO_ALIAS,
-            Variant::from_i64(1_111_111_111),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_BYVAL_NO_ALIAS,
-            Variant::from_i16(12),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_BYVAL_NO_ALIAS,
-            Variant::from_u8(3),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_BYVAL_NO_ALIAS,
-            Variant::from_bool(false),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_BYVAL_NO_ALIAS,
-            Variant::from_currency_scaled_i64(12_345),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_BYVAL_NO_ALIAS,
-            Variant::from_f32(4.5),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_BYVAL_NO_ALIAS,
-            Variant::from_f64(6.75),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_BYVAL_NO_ALIAS,
-            Variant::from_date_f64(2.0),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_BYVAL_NO_ALIAS,
-            Variant::from_i32(108),
-        );
-    }
-
-    #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_typed_fixed_string_alias_copyout() {
+    fn jit_matches_vm3_paramarray_fixed_tail_typed_fixed_string_alias_copyout() {
         assert_jit_matches_vm3_contains_canon(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_FIXED_STRING_ALIAS_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_FIXED_STRING_ALIAS_COPYOUT,
             Canon::Str("abc".into()),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_FIXED_STRING_ALIAS_COPYOUT,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_FIXED_STRING_ALIAS_COPYOUT,
             Variant::from_i32(101),
         );
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_typed_fixed_string_parenthesized_no_alias() {
+    fn jit_matches_vm3_paramarray_fixed_tail_typed_fixed_string_parenthesized_no_alias() {
         assert_jit_matches_vm3_contains_canon(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_FIXED_STRING_PARENTHESIZED_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_FIXED_STRING_PARENTHESIZED_NO_ALIAS,
             Canon::Str("abc".into()),
         );
         assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_FIXED_STRING_PARENTHESIZED_NO_ALIAS,
-            Variant::from_i32(101),
-        );
-    }
-
-    #[test]
-    fn jit_matches_vm3_paramarray_named_fixed_tail_typed_fixed_string_byval_no_alias() {
-        assert_jit_matches_vm3_contains_canon(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_FIXED_STRING_BYVAL_NO_ALIAS,
-            Canon::Str("abc".into()),
-        );
-        assert_jit_matches_vm3_contains(
-            JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_FIXED_STRING_BYVAL_NO_ALIAS,
+            JIT_PARAMARRAY_FIXED_TAIL_TYPED_FIXED_STRING_PARENTHESIZED_NO_ALIAS,
             Variant::from_i32(101),
         );
     }
@@ -12115,12 +11874,15 @@ End Sub
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_omitted_tail_empty() {
+    fn jit_matches_vm3_paramarray_omitted_tail_missing() {
+        // Excel: an omitted ParamArray element is Missing (vbError 10, TypeName "Error"),
+        // not Empty (spec-pass SpecExpr `paOmitted`).
         assert_jit_matches_vm3_contains(JIT_PARAMARRAY_OMITTED_TAIL_EMPTY, Variant::from_i32(0));
         assert_jit_matches_vm3_contains(JIT_PARAMARRAY_OMITTED_TAIL_EMPTY, Variant::from_i32(1));
+        assert_jit_matches_vm3_contains(JIT_PARAMARRAY_OMITTED_TAIL_EMPTY, Variant::from_i32(10));
         assert_jit_matches_vm3_contains_canon(
             JIT_PARAMARRAY_OMITTED_TAIL_EMPTY,
-            Canon::Str("Empty".into()),
+            Canon::Str("Error".into()),
         );
         assert_jit_matches_vm3_contains(JIT_PARAMARRAY_OMITTED_TAIL_EMPTY, Variant::from_i16(7));
     }
@@ -12163,10 +11925,34 @@ End Sub
         );
     }
 
+    /// Both executors refuse `source` at bind time with the same `message`.
+    fn assert_jit_matches_vm3_bind_error(source: &str, message: &str) {
+        let vm3 = run(Executor::Vm3, source);
+        let jit = run(Executor::Jit, source);
+        assert!(vm3.unsupported.is_none(), "vm3 unsupported: {vm3:?}");
+        assert!(jit.unsupported.is_none(), "jit unsupported: {jit:?}");
+        assert!(!vm3.raised, "vm3 should fail at bind time: {vm3:?}");
+        assert!(!jit.raised, "jit should fail at bind time: {jit:?}");
+        assert_eq!(jit.result, vm3.result);
+        assert_eq!(vm3.result, Err(format!("bind: {message}")));
+    }
+
+    /// MS-VBAL 5.6.13.1: call-site `ByVal` is valid only for an external (`Declare`)
+    /// procedure. Excel refuses it to a VBA procedure, ParamArray tail included, with the
+    /// compile error "Type mismatch".
     #[test]
-    fn jit_matches_vm3_paramarray_byval_no_alias() {
-        assert_jit_matches_vm3_contains(JIT_PARAMARRAY_BYVAL_NO_ALIAS, Variant::from_i16(5));
-        assert_jit_matches_vm3_contains(JIT_PARAMARRAY_BYVAL_NO_ALIAS, Variant::from_i16(9));
+    fn jit_matches_vm3_paramarray_call_site_byval_error() {
+        assert_jit_matches_vm3_bind_error(JIT_PARAMARRAY_CALL_SITE_BYVAL_ERROR, "Type mismatch");
+    }
+
+    /// A positional argument after a named one is a syntax error, also when it would fill a
+    /// ParamArray tail (Excel: "Syntax error").
+    #[test]
+    fn jit_matches_vm3_paramarray_named_then_positional_error() {
+        assert_jit_matches_vm3_bind_error(
+            JIT_PARAMARRAY_NAMED_THEN_POSITIONAL_ERROR,
+            "malformed construct: Syntax error: positional argument cannot follow named argument",
+        );
     }
 
     #[test]
@@ -12186,11 +11972,6 @@ End Sub
     }
 
     #[test]
-    fn jit_matches_vm3_paramarray_global_byval_no_alias() {
-        assert_jit_matches_vm3_contains(JIT_PARAMARRAY_GLOBAL_BYVAL_NO_ALIAS, Variant::from_i32(5));
-    }
-
-    #[test]
     fn jit_matches_vm3_paramarray_global_parenthesized_no_alias() {
         assert_jit_matches_vm3_contains(
             JIT_PARAMARRAY_GLOBAL_PARENTHESIZED_NO_ALIAS,
@@ -12203,14 +11984,6 @@ End Sub
         assert_jit_matches_vm3_contains_canon(
             JIT_PARAMARRAY_GLOBAL_STRING_ALIAS_COPYOUT,
             Canon::Str("global".into()),
-        );
-    }
-
-    #[test]
-    fn jit_matches_vm3_paramarray_global_string_byval_no_alias() {
-        assert_jit_matches_vm3_contains_canon(
-            JIT_PARAMARRAY_GLOBAL_STRING_BYVAL_NO_ALIAS,
-            Canon::Str("before".into()),
         );
     }
 
@@ -15722,7 +15495,8 @@ End Sub
     fn jit_matches_vm3_financial_algorithm_rate_nper_subset() {
         assert_jit_matches_vm3_contains(
             JIT_FINANCIAL_ALGORITHM_RATE_NPER_SUBSET,
-            Variant::from_f64(0.02922854076913337),
+            // Excel: 3F9DEE162ADA59CE (language-rows.excel.txt, rate-shape).
+            Variant::from_f64(f64::from_bits(0x3F9D_EE16_2ADA_59CE)),
         );
         assert_jit_matches_vm3_contains(
             JIT_FINANCIAL_ALGORITHM_RATE_NPER_SUBSET,
@@ -22654,27 +22428,35 @@ End Sub
         );
     }
 
-    /// Once a named fixed argument has been bound, later positional arguments form the
-    /// ParamArray tail rather than trying to backfill fixed slots.
+    /// A positional ParamArray tail after a named fixed argument is refused on a project
+    /// method too (Excel: "Syntax error"); positional-after-named is never valid VBA.
     #[test]
-    fn vm3_project_method_named_fixed_paramarray_tail() {
+    fn vm3_project_method_named_fixed_paramarray_tail_refused() {
         use calcvba_symbol::manifest::ModuleKind::{Class, Procedural};
-        let snap = run_obj_ok(&[
-            (
-                "Main",
-                Procedural,
-                "Public gResult As Long\nSub Main()\n  Dim w As Widget\n  Set w = New Widget\n  gResult = w.SumFrom(start:=5, 10, 20, 30)\nEnd Sub\n",
-            ),
-            (
-                "Widget",
-                Class,
-                "Public Function SumFrom(ByVal start As Long, ParamArray xs() As Variant) As Long\n  Dim i As Long\n  SumFrom = start\n  For i = LBound(xs) To UBound(xs)\n    SumFrom = SumFrom + CLng(xs(i))\n  Next i\nEnd Function\n",
-            ),
-        ]);
+        let o = run_modules(
+            Executor::Vm3,
+            &[
+                (
+                    "Main",
+                    Procedural,
+                    "Public gResult As Long\nSub Main()\n  Dim w As Widget\n  Set w = New Widget\n  gResult = w.SumFrom(start:=5, 10, 20, 30)\nEnd Sub\n",
+                ),
+                (
+                    "Widget",
+                    Class,
+                    "Public Function SumFrom(ByVal start As Long, ParamArray xs() As Variant) As Long\n  Dim i As Long\n  SumFrom = start\n  For i = LBound(xs) To UBound(xs)\n    SumFrom = SumFrom + CLng(xs(i))\n  Next i\nEnd Function\n",
+                ),
+            ],
+            "VBAProject",
+        );
+        assert!(o.unsupported.is_none(), "{o:?}");
         assert_eq!(
-            snap.first(),
-            Some(&canon(&Variant::from_i32(65))),
-            "{snap:?}"
+            o.result,
+            Err(
+                "bind: malformed construct: Syntax error: positional argument cannot follow named argument"
+                    .to_string()
+            ),
+            "{o:?}"
         );
     }
 
@@ -22953,152 +22735,104 @@ End Sub
             ),
             render_jit_scope("params/paramarray_pack_ubound", JIT_PARAMARRAY_UBOUND_PACK),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_pack",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_PACK,
+                "params/paramarray_fixed_tail_pack",
+                JIT_PARAMARRAY_FIXED_TAIL_PACK,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_alias_copyout",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_ALIAS_COPYOUT,
+                "params/paramarray_fixed_tail_alias_copyout",
+                JIT_PARAMARRAY_FIXED_TAIL_ALIAS_COPYOUT,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_parenthesized_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_PARENTHESIZED_NO_ALIAS,
+                "params/paramarray_fixed_tail_parenthesized_no_alias",
+                JIT_PARAMARRAY_FIXED_TAIL_PARENTHESIZED_NO_ALIAS,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_byval_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_BYVAL_NO_ALIAS,
+                "params/paramarray_fixed_tail_array_element_alias_copyout",
+                JIT_PARAMARRAY_FIXED_TAIL_ARRAY_ELEMENT_ALIAS_COPYOUT,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_array_element_alias_copyout",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_ARRAY_ELEMENT_ALIAS_COPYOUT,
+                "params/paramarray_fixed_tail_array_element_parenthesized_no_alias",
+                JIT_PARAMARRAY_FIXED_TAIL_ARRAY_ELEMENT_PARENTHESIZED_NO_ALIAS,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_array_element_parenthesized_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_ARRAY_ELEMENT_PARENTHESIZED_NO_ALIAS,
+                "params/paramarray_fixed_tail_duplicate_alias_copyout",
+                JIT_PARAMARRAY_FIXED_TAIL_DUPLICATE_ALIAS_COPYOUT,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_array_element_byval_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_ARRAY_ELEMENT_BYVAL_NO_ALIAS,
+                "params/paramarray_fixed_tail_duplicate_parenthesized_no_alias",
+                JIT_PARAMARRAY_FIXED_TAIL_DUPLICATE_PARENTHESIZED_NO_ALIAS,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_duplicate_alias_copyout",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_DUPLICATE_ALIAS_COPYOUT,
+                "params/paramarray_fixed_tail_global_alias_copyout",
+                JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_ALIAS_COPYOUT,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_duplicate_parenthesized_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_DUPLICATE_PARENTHESIZED_NO_ALIAS,
+                "params/paramarray_fixed_tail_global_parenthesized_no_alias",
+                JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_PARENTHESIZED_NO_ALIAS,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_duplicate_byval_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_DUPLICATE_BYVAL_NO_ALIAS,
+                "params/paramarray_fixed_tail_global_string_alias_copyout",
+                JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_STRING_ALIAS_COPYOUT,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_global_alias_copyout",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_ALIAS_COPYOUT,
+                "params/paramarray_fixed_tail_global_string_parenthesized_no_alias",
+                JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_STRING_PARENTHESIZED_NO_ALIAS,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_global_parenthesized_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_PARENTHESIZED_NO_ALIAS,
+                "params/paramarray_fixed_tail_global_longptr_alias_copyout",
+                JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_LONGPTR_ALIAS_COPYOUT,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_global_byval_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_BYVAL_NO_ALIAS,
+                "params/paramarray_fixed_tail_global_longptr_parenthesized_no_alias",
+                JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_LONGPTR_PARENTHESIZED_NO_ALIAS,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_global_string_alias_copyout",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_STRING_ALIAS_COPYOUT,
+                "params/paramarray_fixed_tail_global_typed_scalar_alias_bundle_copyout",
+                JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_global_string_parenthesized_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_STRING_PARENTHESIZED_NO_ALIAS,
+                "params/paramarray_fixed_tail_global_typed_scalar_parenthesized_no_alias",
+                JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_global_string_byval_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_STRING_BYVAL_NO_ALIAS,
+                "params/paramarray_fixed_tail_global_fixed_string_alias_copyout",
+                JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_FIXED_STRING_ALIAS_COPYOUT,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_global_longptr_alias_copyout",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_LONGPTR_ALIAS_COPYOUT,
+                "params/paramarray_fixed_tail_global_fixed_string_parenthesized_no_alias",
+                JIT_PARAMARRAY_FIXED_TAIL_GLOBAL_FIXED_STRING_PARENTHESIZED_NO_ALIAS,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_global_longptr_parenthesized_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_LONGPTR_PARENTHESIZED_NO_ALIAS,
+                "params/paramarray_fixed_tail_typed_long_string_alias_copyout",
+                JIT_PARAMARRAY_FIXED_TAIL_TYPED_LONG_STRING_ALIAS_COPYOUT,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_global_longptr_byval_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_LONGPTR_BYVAL_NO_ALIAS,
+                "params/paramarray_fixed_tail_typed_long_string_parenthesized_no_alias",
+                JIT_PARAMARRAY_FIXED_TAIL_TYPED_LONG_STRING_PARENTHESIZED_NO_ALIAS,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_global_typed_scalar_alias_bundle_copyout",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
+                "params/paramarray_fixed_tail_typed_longptr_alias_copyout",
+                JIT_PARAMARRAY_FIXED_TAIL_TYPED_LONGPTR_ALIAS_COPYOUT,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_global_typed_scalar_parenthesized_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
+                "params/paramarray_fixed_tail_typed_longptr_parenthesized_no_alias",
+                JIT_PARAMARRAY_FIXED_TAIL_TYPED_LONGPTR_PARENTHESIZED_NO_ALIAS,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_global_typed_scalar_byval_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_TYPED_SCALAR_BYVAL_NO_ALIAS,
+                "params/paramarray_fixed_tail_typed_scalar_alias_bundle_copyout",
+                JIT_PARAMARRAY_FIXED_TAIL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_global_fixed_string_alias_copyout",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_FIXED_STRING_ALIAS_COPYOUT,
+                "params/paramarray_fixed_tail_typed_scalar_parenthesized_no_alias",
+                JIT_PARAMARRAY_FIXED_TAIL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_global_fixed_string_parenthesized_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_FIXED_STRING_PARENTHESIZED_NO_ALIAS,
+                "params/paramarray_fixed_tail_typed_fixed_string_alias_copyout",
+                JIT_PARAMARRAY_FIXED_TAIL_TYPED_FIXED_STRING_ALIAS_COPYOUT,
             ),
             render_jit_scope(
-                "params/paramarray_named_fixed_tail_global_fixed_string_byval_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_GLOBAL_FIXED_STRING_BYVAL_NO_ALIAS,
-            ),
-            render_jit_scope(
-                "params/paramarray_named_fixed_tail_typed_long_string_alias_copyout",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONG_STRING_ALIAS_COPYOUT,
-            ),
-            render_jit_scope(
-                "params/paramarray_named_fixed_tail_typed_long_string_parenthesized_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONG_STRING_PARENTHESIZED_NO_ALIAS,
-            ),
-            render_jit_scope(
-                "params/paramarray_named_fixed_tail_typed_long_string_byval_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONG_STRING_BYVAL_NO_ALIAS,
-            ),
-            render_jit_scope(
-                "params/paramarray_named_fixed_tail_typed_longptr_alias_copyout",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONGPTR_ALIAS_COPYOUT,
-            ),
-            render_jit_scope(
-                "params/paramarray_named_fixed_tail_typed_longptr_parenthesized_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONGPTR_PARENTHESIZED_NO_ALIAS,
-            ),
-            render_jit_scope(
-                "params/paramarray_named_fixed_tail_typed_longptr_byval_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_LONGPTR_BYVAL_NO_ALIAS,
-            ),
-            render_jit_scope(
-                "params/paramarray_named_fixed_tail_typed_scalar_alias_bundle_copyout",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_ALIAS_BUNDLE_COPYOUT,
-            ),
-            render_jit_scope(
-                "params/paramarray_named_fixed_tail_typed_scalar_parenthesized_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_PARENTHESIZED_NO_ALIAS,
-            ),
-            render_jit_scope(
-                "params/paramarray_named_fixed_tail_typed_scalar_byval_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_SCALAR_BYVAL_NO_ALIAS,
-            ),
-            render_jit_scope(
-                "params/paramarray_named_fixed_tail_typed_fixed_string_alias_copyout",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_FIXED_STRING_ALIAS_COPYOUT,
-            ),
-            render_jit_scope(
-                "params/paramarray_named_fixed_tail_typed_fixed_string_parenthesized_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_FIXED_STRING_PARENTHESIZED_NO_ALIAS,
-            ),
-            render_jit_scope(
-                "params/paramarray_named_fixed_tail_typed_fixed_string_byval_no_alias",
-                JIT_PARAMARRAY_NAMED_FIXED_TAIL_TYPED_FIXED_STRING_BYVAL_NO_ALIAS,
+                "params/paramarray_fixed_tail_typed_fixed_string_parenthesized_no_alias",
+                JIT_PARAMARRAY_FIXED_TAIL_TYPED_FIXED_STRING_PARENTHESIZED_NO_ALIAS,
             ),
             render_jit_scope(
                 "params/paramarray_empty_ubound",
@@ -23125,10 +22859,6 @@ End Sub
                 JIT_PARAMARRAY_PARENTHESIZED_NO_ALIAS,
             ),
             render_jit_scope(
-                "params/paramarray_byval_no_alias",
-                JIT_PARAMARRAY_BYVAL_NO_ALIAS,
-            ),
-            render_jit_scope(
                 "params/paramarray_variant_array_element_mutation",
                 JIT_PARAMARRAY_VARIANT_ARRAY_ELEMENT_MUTATION,
             ),
@@ -23137,20 +22867,12 @@ End Sub
                 JIT_PARAMARRAY_GLOBAL_ALIAS_COPYOUT,
             ),
             render_jit_scope(
-                "params/paramarray_global_byval_no_alias",
-                JIT_PARAMARRAY_GLOBAL_BYVAL_NO_ALIAS,
-            ),
-            render_jit_scope(
                 "params/paramarray_global_parenthesized_no_alias",
                 JIT_PARAMARRAY_GLOBAL_PARENTHESIZED_NO_ALIAS,
             ),
             render_jit_scope(
                 "params/paramarray_global_string_alias_copyout",
                 JIT_PARAMARRAY_GLOBAL_STRING_ALIAS_COPYOUT,
-            ),
-            render_jit_scope(
-                "params/paramarray_global_string_byval_no_alias",
-                JIT_PARAMARRAY_GLOBAL_STRING_BYVAL_NO_ALIAS,
             ),
             render_jit_scope(
                 "params/paramarray_global_string_parenthesized_no_alias",

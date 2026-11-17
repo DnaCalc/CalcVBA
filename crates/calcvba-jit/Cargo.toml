@@ -26,6 +26,8 @@ thiserror.workspace = true
 
 [features]
 default = []
+# Test-only: decline procedures named *JitDeclineMarker* (host failed-reload test).
+test-decline = []
 [lints]
 workspace = true
 

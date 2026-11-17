@@ -2899,62 +2899,361 @@ pub fn mirr(args: &[Variant]) -> LibResult<Variant> {
     Ok(vf64((-pos / neg).powf(1.0 / (n as f64 - 1.0)) - 1.0))
 }
 
-fn rate_func(r: f64, nper: f64, pmt: f64, pv: f64, fv: f64, due: f64) -> f64 {
-    if r.abs() < 1e-9 {
-        pv + pmt * nper + fv
-    } else {
-        let growth = (1.0 + r).powf(nper);
-        pv * growth + pmt * (1.0 + r * due) * ((growth - 1.0) / r) + fv
-    }
+/// An x87 80-bit extended value: a 64-bit significand rounded to nearest-even after every
+/// operation, `mant * 2^exp` with bit 63 of `mant` set (or `mant == 0` for zero). VBA's `Rate`
+/// evaluates its function and its secant step in this precision and rounds to Double only where
+/// it stores a variable; Double-only or exact arithmetic each leave one-ulp differences in
+/// RateShape (`lin_fv1.5`, `lin_fv2`, `far_n1_12`, `a360_g*`, ...). Finite values only; the
+/// exponent is unbounded here, and range is checked when a value is stored as a Double.
+#[derive(Clone, Copy)]
+struct X80 {
+    neg: bool,
+    mant: u64,
+    exp: i32,
 }
 
-fn rate_func_derivative(r: f64, nper: f64, pmt: f64, pv: f64, due: f64) -> f64 {
-    if r.abs() < 1e-8 {
-        let step = 1e-7;
-        (rate_func(r + step, nper, pmt, pv, 0.0, due)
-            - rate_func(r - step, nper, pmt, pv, 0.0, due))
-            / (2.0 * step)
-    } else {
-        let base = 1.0 + r;
-        if base <= 0.0 {
-            return f64::NAN;
+/// Round `mant * 2^exp` to `bits` significant bits (nearest, ties to even). Callers keep at
+/// least two bits below the target and fold any discarded low bits into the last bit (sticky).
+fn round_significand(mant: u128, exp: i32, bits: u32) -> (u128, i32) {
+    if mant == 0 {
+        return (0, 0);
+    }
+    let width = 128 - mant.leading_zeros();
+    if width <= bits {
+        let s = bits - width;
+        return (mant << s, exp - s as i32);
+    }
+    let shift = width - bits;
+    let mut m = mant >> shift;
+    let rem = mant & ((1u128 << shift) - 1);
+    let half = 1u128 << (shift - 1);
+    if rem > half || (rem == half && m & 1 == 1) {
+        m += 1;
+    }
+    let mut e = exp + shift as i32;
+    if m >> bits != 0 {
+        m >>= 1;
+        e += 1;
+    }
+    (m, e)
+}
+
+impl X80 {
+    fn new(neg: bool, mant: u128, exp: i32) -> X80 {
+        let (m, e) = round_significand(mant, exp, 64);
+        X80 {
+            neg: neg && m != 0,
+            mant: m as u64,
+            exp: e,
         }
-        let growth = base.powf(nper);
-        let growth_p = nper * base.powf(nper - 1.0);
-        let c = (growth - 1.0) / r;
-        let c_p = (growth_p * r - (growth - 1.0)) / (r * r);
-        pv * growth_p + pmt * (due * c + (1.0 + r * due) * c_p)
+    }
+
+    /// A finite Double, exactly.
+    fn of(x: f64) -> X80 {
+        let bits = x.to_bits();
+        let neg = bits >> 63 != 0;
+        let biased = ((bits >> 52) & 0x7ff) as i32;
+        let frac = bits & ((1u64 << 52) - 1);
+        let (m, e) = if biased == 0 {
+            (frac, -1074)
+        } else {
+            (frac | (1u64 << 52), biased - 1075)
+        };
+        X80::new(neg, u128::from(m), e)
+    }
+
+    fn mul(self, o: X80) -> X80 {
+        X80::new(
+            self.neg != o.neg,
+            u128::from(self.mant) * u128::from(o.mant),
+            self.exp + o.exp,
+        )
+    }
+
+    /// `o` must be non-zero.
+    fn div(self, o: X80) -> X80 {
+        if self.mant == 0 {
+            return self;
+        }
+        // Two long-division steps give a 125+ bit quotient; the remainder is the sticky bit.
+        let d = u128::from(o.mant);
+        let n = u128::from(self.mant) << 64;
+        let (q1, r1) = (n / d, n % d);
+        let n2 = r1 << 62;
+        let (q2, r2) = (n2 / d, n2 % d);
+        let q = (q1 << 62) | q2 | u128::from(r2 != 0);
+        X80::new(self.neg != o.neg, q, self.exp - o.exp - 126)
+    }
+
+    fn add(self, o: X80) -> X80 {
+        if o.mant == 0 {
+            return self;
+        }
+        if self.mant == 0 {
+            return o;
+        }
+        let (big, small) = if (self.exp, self.mant) >= (o.exp, o.mant) {
+            (self, o)
+        } else {
+            (o, self)
+        };
+        // 62 guard bits, with the bits shifted out of the smaller operand kept as a sticky bit.
+        let a = u128::from(big.mant) << 62;
+        let b = u128::from(small.mant) << 62;
+        let d = (big.exp - small.exp) as u32;
+        let b = if d >= 126 {
+            1
+        } else {
+            (b >> d) | u128::from(b & ((1u128 << d) - 1) != 0)
+        };
+        let m = if big.neg == small.neg { a + b } else { a - b };
+        X80::new(big.neg, m, big.exp - 62)
+    }
+
+    fn sub(self, o: X80) -> X80 {
+        self.add(X80 { neg: !o.neg, ..o })
+    }
+
+    /// The value stored as a Double; `None` when it overflows the Double range.
+    fn to_f64(self) -> Option<f64> {
+        let sign = u64::from(self.neg) << 63;
+        if self.mant == 0 {
+            return Some(f64::from_bits(sign));
+        }
+        if self.exp + 63 >= -1022 {
+            let (m, e) = round_significand(u128::from(self.mant), self.exp, 53);
+            let top = e + 52;
+            if top > 1023 {
+                return None;
+            }
+            let biased = (top + 1023) as u64;
+            Some(f64::from_bits(
+                sign | (biased << 52) | (m as u64 & ((1u64 << 52) - 1)),
+            ))
+        } else {
+            // Subnormal: round to a multiple of 2^-1074.
+            let s = (-(self.exp + 1074)) as u32;
+            if s >= 66 {
+                return Some(f64::from_bits(sign));
+            }
+            let mant = u128::from(self.mant);
+            let mut m = mant >> s;
+            let rem = mant & ((1u128 << s) - 1);
+            let half = 1u128 << (s - 1);
+            if rem > half || (rem == half && m & 1 == 1) {
+                m += 1;
+            }
+            Some(f64::from_bits(sign | m as u64))
+        }
     }
 }
 
-/// Ported from the legacy VM's `rate_i32`: Newton iteration with the analytic
-/// annuity derivative. Switched to f64 (the legacy variant scaled by percent).
+/// A double-double value `hi + lo`, for a `pow` accurate well past Double precision.
+#[derive(Clone, Copy)]
+struct Dd(f64, f64);
+
+fn quick_two_sum(a: f64, b: f64) -> Dd {
+    let s = a + b;
+    Dd(s, b - (s - a))
+}
+
+fn two_sum(a: f64, b: f64) -> Dd {
+    let s = a + b;
+    let bb = s - a;
+    Dd(s, (a - (s - bb)) + (b - bb))
+}
+
+impl Dd {
+    fn add(self, o: Dd) -> Dd {
+        let Dd(s, e) = two_sum(self.0, o.0);
+        let Dd(t, f) = two_sum(self.1, o.1);
+        let Dd(s, e) = quick_two_sum(s, e + t);
+        quick_two_sum(s, e + f)
+    }
+
+    fn mul(self, o: Dd) -> Dd {
+        let p = self.0 * o.0;
+        let e = self.0.mul_add(o.0, -p);
+        quick_two_sum(p, e + (self.0 * o.1 + self.1 * o.0))
+    }
+
+    fn div_f64(self, d: f64) -> Dd {
+        let q = self.0 / d;
+        let p = q * d;
+        let e = q.mul_add(d, -p);
+        quick_two_sum(q, (self.0 - p - e + self.1) / d)
+    }
+
+    fn scale(self, k: i32) -> Dd {
+        // 2^k in two factors so neither overflows on the way to a representable result.
+        let a = 2f64.powi(k / 2);
+        let b = 2f64.powi(k - k / 2);
+        Dd(self.0 * a * b, self.1 * a * b)
+    }
+}
+
+/// `exp(a)` in double-double: `a = k ln 2 + r`, `expm1(r / 2^10)` by Taylor series, doubled
+/// back with `expm1(2x) = expm1(x) (expm1(x) + 2)`, then scaled by `2^k`.
+fn exp_dd(a: Dd) -> Dd {
+    const LN2: Dd = Dd(std::f64::consts::LN_2, 2.319_046_813_846_299_6e-17);
+    if a.0 > 709.8 {
+        return Dd(f64::INFINITY, 0.0);
+    }
+    if a.0 < -745.2 {
+        return Dd(0.0, 0.0);
+    }
+    let k = (a.0 / LN2.0).round();
+    let r = a.add(Dd(-k, 0.0).mul(LN2));
+    let s = Dd(r.0 / 1024.0, r.1 / 1024.0);
+    let (mut term, mut sum) = (s, s);
+    for i in 2..=12 {
+        term = term.mul(s).div_f64(f64::from(i));
+        sum = sum.add(term);
+    }
+    for _ in 0..10 {
+        sum = sum.mul(sum.add(Dd(2.0, 0.0)));
+    }
+    sum.add(Dd(1.0, 0.0)).scale(k as i32)
+}
+
+/// `ln(x)` for finite `x > 0` in double-double: two Newton steps `y += x e^-y - 1`.
+fn ln_dd(x: f64) -> Dd {
+    let mut y = Dd(x.ln(), 0.0);
+    for _ in 0..2 {
+        let t = exp_dd(Dd(-y.0, -y.1)).mul(Dd(x, 0.0));
+        y = y.add(t.add(Dd(-1.0, 0.0)));
+    }
+    y
+}
+
+/// `base ^ n` rounded once to Double (RateShape `a3exact` needs the correctly rounded
+/// `1.0968289920724807 ^ 3`, which a libm `pow` misses by one ulp). Whole `n` up to 2^20 by
+/// binary powering, otherwise `exp(n ln base)`, both in double-double.
+fn pow_rounded(base: f64, n: f64) -> f64 {
+    if n == 0.0 || base == 1.0 {
+        return 1.0;
+    }
+    if base == 0.0 {
+        return if n > 0.0 { 0.0 } else { f64::INFINITY };
+    }
+    let whole = n.fract() == 0.0;
+    if base < 0.0 && !whole {
+        return f64::NAN;
+    }
+    let odd = whole && n.abs() < 9.007_199_254_740_992e15 && (n % 2.0).abs() == 1.0;
+    let sign = if base < 0.0 && odd { -1.0 } else { 1.0 };
+    let b = base.abs();
+    let v = if whole && (1.0..=1_048_576.0).contains(&n) {
+        let mut k = n as u32;
+        let mut x = Dd(b, 0.0);
+        let mut acc = Dd(1.0, 0.0);
+        loop {
+            if k & 1 == 1 {
+                acc = acc.mul(x);
+            }
+            k >>= 1;
+            if k == 0 || !acc.0.is_finite() {
+                break;
+            }
+            x = x.mul(x);
+        }
+        acc
+    } else {
+        let l = ln_dd(b);
+        let p = Dd(n, 0.0).mul(l);
+        exp_dd(p)
+    };
+    if !v.0.is_finite() {
+        return f64::INFINITY * sign;
+    }
+    sign * (v.0 + v.1)
+}
+
+/// `Rate`'s function of the rate `r`, `pv (1+r)^n + pmt (1+r type) ((1+r)^n - 1) / r + fv`,
+/// as VBA evaluates it: `1+r` and `(1+r)^n` stored as Doubles, the rest in x87 extended
+/// precision, the result stored as a Double. `(1+r)^n` or the result overflowing is error 6
+/// (RateShape `a360_far_g10`, `a360_far_g50`); a NaN (a negative base) is error 5.
+fn rate_eval(r: f64, nper: f64, pmt: f64, pv: f64, fv: f64, due: bool) -> LibResult<f64> {
+    let overflow = || LibError::overflow("Rate");
+    let x = X80::of;
+    if !r.is_finite() {
+        return Err(overflow());
+    }
+    let v = if r == 0.0 {
+        x(pv).add(x(pmt).mul(x(nper))).add(x(fv))
+    } else {
+        let base = x(r).add(x(1.0)).to_f64().ok_or_else(overflow)?;
+        let growth = pow_rounded(base, nper);
+        if growth.is_nan() {
+            return Err(LibError::invalid_call("Rate failed to converge"));
+        }
+        if growth.is_infinite() {
+            return Err(overflow());
+        }
+        let g = x(growth);
+        let t2 = if due { x(base) } else { x(1.0) };
+        let annuity = x(pmt).mul(t2).mul(g.sub(x(1.0))).div(x(r));
+        x(pv).mul(g).add(annuity).add(x(fv))
+    };
+    v.to_f64().ok_or_else(overflow)
+}
+
+/// `Rate(nper, pmt, pv, [fv], [type], [guess])`, VBA's secant iteration, pinned bit for bit by
+/// `conformance/excel-measurements/rate-shape` (dc-bjt7v):
+/// - The second point is `guess / 2` when `f(guess) > 0`, else `guess * 2`. Plain Newton would
+///   solve the linear `Rate(1, 0, -1, 20)` exactly; Excel's 18.9999999999997 from guess 0.1 is
+///   this one secant step from (0.1, 0.05).
+/// - Each step is `r1 - (r1 - r0) f1 / (f1 - f0)` in extended precision, stored as a Double.
+/// - It stops when `|f| < 1e-7` (the `lin_fv*`, `far_n1_*` residuals; 1e-6 or 1e-8 miss lines).
+/// - When the two latest `f` are equal (guess 0: both points are 0) the older point moves
+///   by 1e-5 away from the newer one (`lin19_g0`; 1e-4 and 1e-6 miss); still equal is error 5.
+/// - At most 40 steps (`a360_g0` takes 35; 100 would let `noroot`/`zero_rate` converge), then
+///   error 5, which is also how an exact root of 0 ends (`zero_rate`, `a5mixed`).
 pub fn rate(args: &[Variant]) -> LibResult<Variant> {
+    const TOLERANCE: f64 = 1e-7;
+    const NUDGE: f64 = 1e-5;
+    const MAX_STEPS: usize = 40;
     let nper = as_f64(need(args, 0)?)?;
     let pmt = as_f64(need(args, 1)?)?;
     let pv = as_f64(need(args, 2)?)?;
     let fv = opt_f64(args, 3, 0.0)?;
-    let due = due_flag(args, 4)?;
+    let due = due_flag(args, 4)? != 0.0;
     if nper <= 0.0 {
         return Err(LibError::invalid_call("Rate requires nper > 0"));
     }
-    let mut r = opt_f64(args, 5, 0.1)?.max(-0.99);
-    for _ in 0..200 {
-        let f = rate_func(r, nper, pmt, pv, fv, due);
-        let fp = rate_func_derivative(r, nper, pmt, pv, due);
-        if fp.abs() < 1e-12 {
-            return Err(LibError::invalid_call("Rate failed to converge"));
+    let no_root = || LibError::invalid_call("Rate failed to converge");
+    let f = |r: f64| rate_eval(r, nper, pmt, pv, fv, due);
+    let x = X80::of;
+    let mut r0 = opt_f64(args, 5, 0.1)?;
+    let mut y0 = f(r0)?;
+    let mut r1 = if y0 > 0.0 { r0 / 2.0 } else { r0 * 2.0 };
+    let mut y1 = f(r1)?;
+    for _ in 0..MAX_STEPS {
+        if y1 == y0 {
+            let moved = if r1 > r0 {
+                x(r0).sub(x(NUDGE))
+            } else {
+                x(r0).add(x(NUDGE))
+            };
+            r0 = moved.to_f64().ok_or_else(no_root)?;
+            y0 = f(r0)?;
+            if y1 == y0 {
+                return Err(no_root());
+            }
         }
-        let next = (r - f / fp).max(-0.99);
-        if !next.is_finite() {
-            return Err(LibError::invalid_call("Rate diverged"));
+        let step = x(r1).sub(x(r0)).mul(x(y1)).div(x(y1).sub(x(y0)));
+        r0 = x(r1)
+            .sub(step)
+            .to_f64()
+            .ok_or_else(|| LibError::overflow("Rate"))?;
+        y0 = f(r0)?;
+        if y0.abs() < TOLERANCE {
+            return Ok(vf64(r0));
         }
-        if (next - r).abs() < 1e-10 {
-            return Ok(vf64(next));
-        }
-        r = next;
+        std::mem::swap(&mut r0, &mut r1);
+        std::mem::swap(&mut y0, &mut y1);
     }
-    Err(LibError::invalid_call("Rate failed to converge"))
+    Err(no_root())
 }
 
 // ── Colour ───────────────────────────────────────────────────────────────────────
@@ -4163,5 +4462,129 @@ mod tests {
             .code,
             13
         );
+    }
+
+    /// Every line of `conformance/excel-measurements/rate-shape/RateShape.excel.txt` (dc-bjt7v):
+    /// `Rate` over the probe's grid, by IEEE bits or error number.
+    #[test]
+    fn rate_matches_excel_rate_shape() {
+        const EXCEL: &str =
+            include_str!("../../../conformance/excel-measurements/rate-shape/RateShape.excel.txt");
+        // (key, nper, pmt, pv, fv, type, guess) as RateShape.bas builds them.
+        type Case = (String, f64, f64, f64, f64, f64, Option<f64>);
+        let mut cases: Vec<Case> = Vec::new();
+        let guesses: [(&str, Option<f64>); 15] = [
+            ("", None),
+            ("0.1", Some(0.1)),
+            ("0", Some(0.0)),
+            ("0.5", Some(0.5)),
+            ("1", Some(1.0)),
+            ("5", Some(5.0)),
+            ("10", Some(10.0)),
+            ("18", Some(18.0)),
+            ("18.9", Some(18.9)),
+            ("19", Some(19.0)),
+            ("19.1", Some(19.1)),
+            ("20", Some(20.0)),
+            ("25", Some(25.0)),
+            ("-0.5", Some(-0.5)),
+            ("100", Some(100.0)),
+        ];
+        for (k, g) in guesses {
+            cases.push((format!("lin19_g{k}"), 1.0, 0.0, -1.0, 20.0, 0.0, g));
+        }
+        for (k, f) in [
+            ("1.1", 1.1),
+            ("1.5", 1.5),
+            ("2", 2.0),
+            ("3", 3.0),
+            ("5", 5.0),
+            ("11", 11.0),
+            ("21", 21.0),
+            ("50", 50.0),
+            ("100", 100.0),
+            ("1000", 1000.0),
+            ("10000", 10000.0),
+            ("1000000", 1000000.0),
+        ] {
+            cases.push((format!("lin_fv{k}"), 1.0, 0.0, -1.0, f, 0.0, None));
+        }
+        for (k, f) in [("1.21", 1.21), ("4", 4.0), ("9", 9.0), ("100", 100.0)] {
+            cases.push((format!("n2_fv{k}"), 2.0, 0.0, -1.0, f, 0.0, None));
+        }
+        cases.push(("n3_fv8".into(), 3.0, 0.0, -1.0, 8.0, 0.0, None));
+        cases.push(("n10_fv2".into(), 10.0, 0.0, -1.0, 2.0, 0.0, None));
+        for (k, g) in [
+            ("", None),
+            ("0", Some(0.0)),
+            ("-0.004", Some(-0.004)),
+            ("-0.0049", Some(-0.0049)),
+            ("-0.005", Some(-0.005)),
+            ("0.01", Some(0.01)),
+            ("0.5", Some(0.5)),
+        ] {
+            cases.push((format!("a360_g{k}"), 360.0, -1.0, 1000.0, 0.0, 0.0, g));
+        }
+        for (k, n, pmt, pv, fv, t, g) in [
+            ("a10", 10.0, -100.0, 500.0, 0.0, 0.0, None),
+            ("a10due", 10.0, -100.0, 500.0, 0.0, 1.0, None),
+            ("a12g05", 12.0, -10.0, 100.0, 0.0, 0.0, Some(0.5)),
+            ("a48", 48.0, -250.0, 10000.0, 0.0, 0.0, None),
+            ("a48fv", 48.0, -250.0, 10000.0, -1000.0, 0.0, None),
+            ("a5mixed", 5.0, -100.0, 300.0, 200.0, 0.0, None),
+            ("a360due", 360.0, -6.0, 1000.0, 0.0, 1.0, None),
+            ("a3exact", 3.0, -40.0, 100.0, 0.0, 0.0, None),
+        ] {
+            cases.push((k.into(), n, pmt, pv, fv, t, g));
+        }
+        for i in 1..=12 {
+            let fv = 2f64.powi(i);
+            cases.push((format!("far_n1_{i}"), 1.0, 0.0, -1.0, fv, 0.0, None));
+        }
+        for g in [1.0, 2.0, 5.0, 10.0, 50.0] {
+            cases.push((
+                format!("a360_far_g{g}"),
+                360.0,
+                -1.0,
+                1000.0,
+                0.0,
+                0.0,
+                Some(g),
+            ));
+        }
+        cases.push(("noroot".into(), 10.0, 100.0, 100.0, 100.0, 0.0, None));
+        cases.push(("zero_rate".into(), 10.0, -10.0, 100.0, 0.0, 0.0, None));
+
+        let expected: Vec<(&str, &str)> = EXCEL
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                let (k, v) = l.trim_end().split_once('=').unwrap();
+                (k, v.split('|').next().unwrap())
+            })
+            .collect();
+        assert_eq!(expected.len(), cases.len());
+        let mut wrong = Vec::new();
+        for ((key, n, pmt, pv, fv, t, g), (want_key, want)) in cases.iter().zip(&expected) {
+            assert_eq!(key, want_key);
+            let mut args = vec![
+                Variant::from_f64(*n),
+                Variant::from_f64(*pmt),
+                Variant::from_f64(*pv),
+                Variant::from_f64(*fv),
+                Variant::from_f64(*t),
+            ];
+            if let Some(g) = g {
+                args.push(Variant::from_f64(*g));
+            }
+            let got = match rate(&args) {
+                Ok(v) => format!("{:016X}", v.as_f64().unwrap().to_bits()),
+                Err(e) => format!("ERR{}", e.code),
+            };
+            if got != *want {
+                wrong.push(format!("{key}: Excel {want}, CalcVBA {got}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     }
 }

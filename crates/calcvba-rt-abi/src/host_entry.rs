@@ -1828,7 +1828,7 @@ impl ScalarLayout {
             OxOperand::Const(OxConst::Str(_) | OxConst::NullStr) if self.owning => {
                 Ok(ScalarType::String)
             }
-            OxOperand::Const(OxConst::Empty | OxConst::Null) if self.owning => {
+            OxOperand::Const(OxConst::Empty | OxConst::Null | OxConst::Missing) if self.owning => {
                 Ok(ScalarType::Variant)
             }
             _ => Err("typed operand requires the dynamic runtime".into()),

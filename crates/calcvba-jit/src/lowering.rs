@@ -2415,6 +2415,9 @@ impl<'a> LowerFunc<'a> {
             OxOperand::Const(OxConst::NullStr) => {
                 Ok(const_operand(builder, JIT_VARIANT_OPERAND_NULL_STR, 0))
             }
+            OxOperand::Const(OxConst::Missing) => {
+                Ok(const_operand(builder, JIT_VARIANT_OPERAND_MISSING, 0))
+            }
             OxOperand::Const(OxConst::Bool(value)) => Ok(const_operand(
                 builder,
                 JIT_VARIANT_OPERAND_BOOL,
@@ -2653,7 +2656,30 @@ impl<'a> LowerFunc<'a> {
                     None,
                 ))
             }
-            OxCallArg::Named { name, value } => {
+            OxCallArg::Named {
+                name,
+                by_ref: Some(place),
+                ..
+            } => {
+                let (area, index) = place_addr(*place);
+                Ok((
+                    LoweredCallArg {
+                        kind: builder
+                            .ins()
+                            .iconst(types::I32, i64::from(JIT_CALL_ARG_BYREF_ALIAS)),
+                        aux: zero_i32,
+                        value: zero_i64,
+                        area: builder.ins().iconst(types::I32, i64::from(area)),
+                        index: builder.ins().iconst(types::I32, index as i64),
+                    },
+                    Some(name.as_str()),
+                ))
+            }
+            OxCallArg::Named {
+                name,
+                value,
+                by_ref: None,
+            } => {
                 let operand = self.lower_variant_operand(builder, value)?;
                 Ok((
                     LoweredCallArg {

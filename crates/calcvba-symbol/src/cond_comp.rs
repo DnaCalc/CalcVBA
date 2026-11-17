@@ -343,7 +343,11 @@ fn truthy(value: &CoreConst) -> Result<bool, String> {
         CoreConst::F64(bits) | CoreConst::Date(bits) => f64::from_bits(*bits) != 0.0,
         CoreConst::F32(bits) => f32::from_bits(*bits) != 0.0,
         CoreConst::Str(_) => unreachable!("rejected above"),
-        CoreConst::NullStr | CoreConst::Empty | CoreConst::Null | CoreConst::Nothing => false,
+        CoreConst::NullStr
+        | CoreConst::Empty
+        | CoreConst::Null
+        | CoreConst::Nothing
+        | CoreConst::Missing => false,
     })
 }
 

@@ -1,4 +1,4 @@
-//! vm3 built-in `Collection` missing entries should raise error 9.
+//! vm3 built-in `Collection`: a missing key raises 5 and an index out of range raises 9 (Excel).
 
 use calcvba_differential::{Executor, run};
 
@@ -15,31 +15,39 @@ fn error_number(body: &str) -> i32 {
 }
 
 #[test]
-fn collection_item_missing_key_raises_9() {
+fn collection_item_missing_key_raises_5() {
     assert_eq!(
         error_number(
             "    Dim c As New Collection\n    c.Add 10, \"present\"\n    r = c.Item(\"missing\")\n"
         ),
-        9
+        5
     );
 }
 
 #[test]
-fn collection_default_member_missing_key_raises_9() {
+fn collection_default_member_missing_key_raises_5() {
     assert_eq!(
         error_number(
             "    Dim c As New Collection\n    c.Add 10, \"present\"\n    r = c(\"missing\")\n"
         ),
-        9
+        5
     );
 }
 
 #[test]
-fn collection_remove_missing_key_raises_9() {
+fn collection_remove_missing_key_raises_5() {
     assert_eq!(
         error_number(
             "    Dim c As New Collection\n    c.Add 10, \"present\"\n    c.Remove \"missing\"\n"
         ),
+        5
+    );
+}
+
+#[test]
+fn collection_index_out_of_range_raises_9() {
+    assert_eq!(
+        error_number("    Dim c As New Collection\n    c.Add 10\n    r = c.Item(2)\n"),
         9
     );
 }

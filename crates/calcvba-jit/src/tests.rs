@@ -10997,12 +10997,8 @@ fn jit_call_proc_ref_coerces_unknown_signature_two_string_variant_byval_byte_pay
 #[test]
 fn jit_call_proc_ref_coerces_unknown_signature_two_string_variant_byval_error_decimal_payloads() {
     let cases = vec![
-        (
-            "error",
-            "CVErr",
-            OxOperand::Const(OxConst::I32(1234)),
-            "Error 1234",
-        ),
+        // A CVErr payload into a String parameter is a Type mismatch (Let-coercion, as Excel
+        // `s = CVErr(5)`); see spec_pass_laneb_vm3.rs.
         (
             "decimal",
             "CDec",
@@ -11357,12 +11353,8 @@ fn jit_call_proc_ref_coerces_unknown_signature_mixed_string_variant_byval_select
 #[test]
 fn jit_call_proc_ref_coerces_unknown_signature_mixed_string_variant_byval_error_decimal_payloads() {
     let cases = vec![
-        (
-            "error",
-            "CVErr",
-            OxOperand::Const(OxConst::I32(1234)),
-            "Error 1234",
-        ),
+        // A CVErr payload into a String parameter is a Type mismatch (Let-coercion, as Excel
+        // `s = CVErr(5)`); see spec_pass_laneb_vm3.rs.
         (
             "decimal",
             "CDec",
@@ -11887,12 +11879,8 @@ fn jit_call_proc_ref_coerces_unknown_signature_string_variant_byval_return_selec
 #[test]
 fn jit_call_proc_ref_coerces_unknown_signature_string_variant_byval_error_decimal_payloads() {
     let cases = vec![
-        (
-            "error",
-            "CVErr",
-            OxOperand::Const(OxConst::I32(1234)),
-            "Error 1234",
-        ),
+        // A CVErr payload into a String parameter is a Type mismatch (Let-coercion, as Excel
+        // `s = CVErr(5)`); see spec_pass_laneb_vm3.rs.
         (
             "decimal",
             "CDec",
@@ -12479,12 +12467,8 @@ fn jit_call_proc_ref_coerces_unknown_signature_string_byref_variant_byval_byte_p
 #[test]
 fn jit_call_proc_ref_coerces_unknown_signature_string_byref_variant_byval_error_decimal_payloads() {
     let cases = vec![
-        (
-            "error",
-            "CVErr",
-            OxOperand::Const(OxConst::I32(1234)),
-            "Error 1234",
-        ),
+        // A CVErr payload into a String parameter is a Type mismatch (Let-coercion, as Excel
+        // `s = CVErr(5)`); see spec_pass_laneb_vm3.rs.
         (
             "decimal",
             "CDec",
@@ -12815,12 +12799,8 @@ fn jit_call_proc_ref_coerces_unknown_signature_string_byref_variant_byval_functi
 fn jit_call_proc_ref_coerces_unknown_signature_string_byref_variant_byval_function_statement_error_decimal_payloads()
  {
     let cases = vec![
-        (
-            "error",
-            "CVErr",
-            OxOperand::Const(OxConst::I32(1234)),
-            "Error 1234",
-        ),
+        // A CVErr payload into a String parameter is a Type mismatch (Let-coercion, as Excel
+        // `s = CVErr(5)`); see spec_pass_laneb_vm3.rs.
         (
             "decimal",
             "CDec",
@@ -13544,12 +13524,8 @@ fn jit_call_proc_ref_coerces_unknown_signature_mixed_string_variant_byval_functi
 fn jit_call_proc_ref_coerces_unknown_signature_mixed_string_variant_byval_function_statement_error_decimal_payloads()
  {
     let cases = vec![
-        (
-            "error",
-            "CVErr",
-            OxOperand::Const(OxConst::I32(1234)),
-            "Error 1234",
-        ),
+        // A CVErr payload into a String parameter is a Type mismatch (Let-coercion, as Excel
+        // `s = CVErr(5)`); see spec_pass_laneb_vm3.rs.
         (
             "decimal",
             "CDec",
@@ -13810,12 +13786,8 @@ fn jit_call_proc_ref_coerces_unknown_signature_two_string_variant_byval_function
 fn jit_call_proc_ref_coerces_unknown_signature_two_string_variant_byval_function_statement_error_decimal_payloads()
  {
     let cases = vec![
-        (
-            "error",
-            "CVErr",
-            OxOperand::Const(OxConst::I32(1234)),
-            "Error 1234",
-        ),
+        // A CVErr payload into a String parameter is a Type mismatch (Let-coercion, as Excel
+        // `s = CVErr(5)`); see spec_pass_laneb_vm3.rs.
         (
             "decimal",
             "CDec",

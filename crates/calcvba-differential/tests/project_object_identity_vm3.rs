@@ -215,8 +215,9 @@ fn project_class_typeof_uses_runtime_descriptor_for_object_variables() {
                 \x20   isWidget = TypeOf o Is Widget\n\
                 \x20   isGadget = TypeOf o Is Gadget\n\
                 \x20   Set o = Nothing\n\
+                \x20   On Error Resume Next\n\
                 \x20   isNothingWidget = TypeOf o Is Widget\n\
-                \x20   result = CStr(isWidget) & \"|\" & CStr(isGadget) & \"|\" & CStr(isNothingWidget)\n\
+                \x20   result = CStr(isWidget) & \"|\" & CStr(isGadget) & \"|\" & Err.Number\n\
                 End Sub\n";
     let widget = "Private n As Long\n\
                   Private Sub Class_Initialize()\n\
@@ -237,7 +238,9 @@ fn project_class_typeof_uses_runtime_descriptor_for_object_variables() {
             ],
             "VBAProject",
         ),
-        "True|False|False",
+        // `TypeOf` on an `As Object` variable holding Nothing raises 91 (Excel, spec-pass
+        // SpecExpr typeOfNothing).
+        "True|False|91",
     );
 }
 

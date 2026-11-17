@@ -1976,7 +1976,7 @@ End Sub
 Public ge As Variant
 Sub Main()
   Dim code As Long
-  code = -1
+  code = 70000
   ge = Error(code)
 End Sub
 ";
@@ -1998,7 +1998,7 @@ End Sub
 Public ge As String
 Sub Main()
   Dim code As Long
-  code = -1
+  code = 70000
   ge = Error(code)
 End Sub
 ";
@@ -2020,7 +2020,7 @@ End Sub
 Public ge As String
 Sub Main()
   Dim code As Long
-  code = -1
+  code = 70000
   ge = Error$(code)
 End Sub
 ";
@@ -15487,12 +15487,12 @@ End Sub
 
     #[test]
     fn jit_matches_vm3_builtin_date_part_exprs() {
-        assert_jit_matches_vm3_contains(JIT_BUILTIN_DATE_PART_EXPRS, Variant::from_i32(2020));
-        assert_jit_matches_vm3_contains(JIT_BUILTIN_DATE_PART_EXPRS, Variant::from_i32(1));
-        assert_jit_matches_vm3_contains(JIT_BUILTIN_DATE_PART_EXPRS, Variant::from_i32(16));
-        assert_jit_matches_vm3_contains(JIT_BUILTIN_DATE_PART_EXPRS, Variant::from_i32(13));
-        assert_jit_matches_vm3_contains(JIT_BUILTIN_DATE_PART_EXPRS, Variant::from_i32(14));
-        assert_jit_matches_vm3_contains(JIT_BUILTIN_DATE_PART_EXPRS, Variant::from_i32(15));
+        assert_jit_matches_vm3_contains(JIT_BUILTIN_DATE_PART_EXPRS, Variant::from_i16(2020));
+        assert_jit_matches_vm3_contains(JIT_BUILTIN_DATE_PART_EXPRS, Variant::from_i16(1));
+        assert_jit_matches_vm3_contains(JIT_BUILTIN_DATE_PART_EXPRS, Variant::from_i16(16));
+        assert_jit_matches_vm3_contains(JIT_BUILTIN_DATE_PART_EXPRS, Variant::from_i16(13));
+        assert_jit_matches_vm3_contains(JIT_BUILTIN_DATE_PART_EXPRS, Variant::from_i16(14));
+        assert_jit_matches_vm3_contains(JIT_BUILTIN_DATE_PART_EXPRS, Variant::from_i16(15));
     }
 
     #[test]
@@ -15598,18 +15598,18 @@ End Sub
 
     #[test]
     fn jit_matches_vm3_stdlib_date_string_policy() {
-        assert_jit_matches_vm3_contains(JIT_STDLIB_DATE_STRING_POLICY, Variant::from_i32(2000));
-        assert_jit_matches_vm3_contains(JIT_STDLIB_DATE_STRING_POLICY, Variant::from_i32(1));
+        assert_jit_matches_vm3_contains(JIT_STDLIB_DATE_STRING_POLICY, Variant::from_i16(2000));
+        assert_jit_matches_vm3_contains(JIT_STDLIB_DATE_STRING_POLICY, Variant::from_i16(1));
         assert_jit_matches_vm3_contains(JIT_STDLIB_DATE_STRING_POLICY, Variant::from_bool(true));
         assert_jit_matches_vm3_contains(JIT_STDLIB_DATE_STRING_POLICY, Variant::from_bool(false));
     }
 
     #[test]
     fn jit_matches_vm3_stdlib_datetime_expansion() {
-        assert_jit_matches_vm3_contains(JIT_STDLIB_DATETIME_EXPANSION, Variant::from_i32(2024));
-        assert_jit_matches_vm3_contains(JIT_STDLIB_DATETIME_EXPANSION, Variant::from_i32(2));
-        assert_jit_matches_vm3_contains(JIT_STDLIB_DATETIME_EXPANSION, Variant::from_i32(3));
-        assert_jit_matches_vm3_contains(JIT_STDLIB_DATETIME_EXPANSION, Variant::from_i32(7));
+        assert_jit_matches_vm3_contains(JIT_STDLIB_DATETIME_EXPANSION, Variant::from_i16(2024));
+        assert_jit_matches_vm3_contains(JIT_STDLIB_DATETIME_EXPANSION, Variant::from_i16(2));
+        assert_jit_matches_vm3_contains(JIT_STDLIB_DATETIME_EXPANSION, Variant::from_i16(3));
+        assert_jit_matches_vm3_contains(JIT_STDLIB_DATETIME_EXPANSION, Variant::from_i16(7));
     }
 
     #[test]
@@ -15699,7 +15699,7 @@ End Sub
             JIT_STDLIB_STRING_EXPANSION_CORE,
             Variant::from_string("B"),
         );
-        assert_jit_matches_vm3_contains(JIT_STDLIB_STRING_EXPANSION_CORE, Variant::from_i32(66));
+        assert_jit_matches_vm3_contains(JIT_STDLIB_STRING_EXPANSION_CORE, Variant::from_i16(66));
         assert_jit_matches_vm3_contains(
             JIT_STDLIB_STRING_EXPANSION_CORE,
             Variant::from_string("777"),
@@ -15985,7 +15985,7 @@ End Sub
             JIT_BUILTIN_ERROR_TEXT_UNKNOWN_EXPR,
             Canon::Str("Application-defined or object-defined error".into()),
         );
-        assert_jit_matches_vm3_raises(JIT_BUILTIN_ERROR_TEXT_INVALID_EXPR, 5);
+        assert_jit_matches_vm3_raises(JIT_BUILTIN_ERROR_TEXT_INVALID_EXPR, 6);
     }
 
     #[test]
@@ -16040,8 +16040,8 @@ End Sub
 
     #[test]
     fn jit_matches_vm3_builtin_error_text_destination_invalid() {
-        assert_jit_matches_vm3_raises(JIT_BUILTIN_ERROR_TEXT_RESULT_DESTINATION_INVALID, 5);
-        assert_jit_matches_vm3_raises(JIT_BUILTIN_ERROR_TEXT_ALIAS_DESTINATION_INVALID, 5);
+        assert_jit_matches_vm3_raises(JIT_BUILTIN_ERROR_TEXT_RESULT_DESTINATION_INVALID, 6);
+        assert_jit_matches_vm3_raises(JIT_BUILTIN_ERROR_TEXT_ALIAS_DESTINATION_INVALID, 6);
     }
 
     #[test]
@@ -16264,12 +16264,12 @@ End Sub
                 canon(&Variant::from_i32(1)),
                 canon(&Variant::from_i32(1)),
                 canon(&Variant::from_i32(3)),
-                canon(&Variant::from_i32(65)),
+                canon(&Variant::from_i16(65)),
                 canon(&Variant::from_i32(0)),
                 canon(&Variant::from_i32(1)),
                 canon(&Variant::from_i32(1)),
                 canon(&Variant::from_i32(3)),
-                canon(&Variant::from_i32(17152)),
+                canon(&Variant::from_i16(17152)),
                 Canon::Str("ABC".into()),
                 Canon::Str(String::new()),
                 Canon::Str("A".into()),
@@ -16421,7 +16421,7 @@ End Sub
         );
         assert_jit_matches_vm3_contains(
             JIT_BUILTIN_STRING_LITERAL_COMPANION_ARGS,
-            Variant::from_i32(65),
+            Variant::from_i16(65),
         );
         assert_jit_matches_vm3_contains_canon(
             JIT_BUILTIN_STRING_LITERAL_COMPANION_ARGS,
@@ -16641,7 +16641,7 @@ End Sub
         );
         assert_jit_matches_vm3_contains(
             JIT_BUILTIN_STATIC_STRING_COMPANION_OPERANDS,
-            Variant::from_i32(65),
+            Variant::from_i16(65),
         );
         assert_jit_matches_vm3_contains_canon(
             JIT_BUILTIN_STATIC_STRING_COMPANION_OPERANDS,
@@ -16673,11 +16673,11 @@ End Sub
         );
         assert_jit_matches_vm3_contains(
             JIT_BUILTIN_LEFTB_RIGHTB_ODD_BYTE_EXPRS,
-            Variant::from_i32(65),
+            Variant::from_i16(65),
         );
         assert_jit_matches_vm3_contains(
             JIT_BUILTIN_LEFTB_RIGHTB_ODD_BYTE_EXPRS,
-            Variant::from_i32(17152),
+            Variant::from_i16(17152),
         );
     }
 
@@ -16708,12 +16708,12 @@ End Sub
                 canon(&Variant::from_i32(1)),
                 canon(&Variant::from_i32(1)),
                 canon(&Variant::from_i32(3)),
-                canon(&Variant::from_i32(65)),
+                canon(&Variant::from_i16(65)),
                 canon(&Variant::from_i32(0)),
                 canon(&Variant::from_i32(1)),
                 canon(&Variant::from_i32(1)),
                 canon(&Variant::from_i32(3)),
-                canon(&Variant::from_i32(17152)),
+                canon(&Variant::from_i16(17152)),
                 Canon::Str(String::new()),
                 Canon::Str("A".into()),
                 Canon::Str(String::new()),
@@ -17402,12 +17402,12 @@ End Sub
 
     #[test]
     fn jit_matches_vm3_builtin_weekday_expr() {
-        assert_jit_matches_vm3_contains(JIT_BUILTIN_WEEKDAY_EXPR, Variant::from_i32(5));
+        assert_jit_matches_vm3_contains(JIT_BUILTIN_WEEKDAY_EXPR, Variant::from_i16(5));
     }
 
     #[test]
     fn jit_matches_vm3_builtin_weekday_firstday_expr() {
-        assert_jit_matches_vm3_contains(JIT_BUILTIN_WEEKDAY_FIRSTDAY_EXPR, Variant::from_i32(1));
+        assert_jit_matches_vm3_contains(JIT_BUILTIN_WEEKDAY_FIRSTDAY_EXPR, Variant::from_i16(1));
     }
 
     #[test]
@@ -19156,10 +19156,8 @@ End Sub
 
     #[test]
     fn jit_matches_vm3_optional_string_explicit_error_coerce_call() {
-        assert_jit_matches_vm3_contains_canon(
-            JIT_OPTIONAL_STRING_EXPLICIT_ERROR_COERCE_CALL,
-            Canon::Str("Error 1234".into()),
-        );
+        // A CVErr into a String parameter is a Type mismatch (Excel: `s = CVErr(5)`).
+        assert_jit_matches_vm3_raises(JIT_OPTIONAL_STRING_EXPLICIT_ERROR_COERCE_CALL, 13);
     }
 
     #[test]
@@ -19412,10 +19410,8 @@ End Sub
 
     #[test]
     fn jit_matches_vm3_optional_string_explicit_variant_error_coerce_call() {
-        assert_jit_matches_vm3_contains_canon(
-            JIT_OPTIONAL_STRING_EXPLICIT_VARIANT_ERROR_COERCE_CALL,
-            Canon::Str("Error 1234".into()),
-        );
+        // A CVErr into a String parameter is a Type mismatch (Excel: `s = CVErr(5)`).
+        assert_jit_matches_vm3_raises(JIT_OPTIONAL_STRING_EXPLICIT_VARIANT_ERROR_COERCE_CALL, 13);
     }
 
     #[test]
@@ -19492,10 +19488,8 @@ End Sub
 
     #[test]
     fn jit_matches_vm3_optional_string_named_arg_order_error_coerce_call() {
-        assert_jit_matches_vm3_contains_canon(
-            JIT_OPTIONAL_STRING_NAMED_ARG_ORDER_ERROR_COERCE_CALL,
-            Canon::Str("Error 1234".into()),
-        );
+        // A CVErr into a String parameter is a Type mismatch (Excel: `s = CVErr(5)`).
+        assert_jit_matches_vm3_raises(JIT_OPTIONAL_STRING_NAMED_ARG_ORDER_ERROR_COERCE_CALL, 13);
     }
 
     #[test]
@@ -19636,9 +19630,10 @@ End Sub
 
     #[test]
     fn jit_matches_vm3_optional_string_named_arg_order_variant_error_coerce_call() {
-        assert_jit_matches_vm3_contains_canon(
+        // A CVErr into a String parameter is a Type mismatch (Excel: `s = CVErr(5)`).
+        assert_jit_matches_vm3_raises(
             JIT_OPTIONAL_STRING_NAMED_ARG_ORDER_VARIANT_ERROR_COERCE_CALL,
-            Canon::Str("Error 1234".into()),
+            13,
         );
     }
 
@@ -19689,10 +19684,8 @@ End Sub
 
     #[test]
     fn jit_matches_vm3_optional_string_named_error_coerce_call() {
-        assert_jit_matches_vm3_contains_canon(
-            JIT_OPTIONAL_STRING_NAMED_ERROR_COERCE_CALL,
-            Canon::Str("Error 1234".into()),
-        );
+        // A CVErr into a String parameter is a Type mismatch (Excel: `s = CVErr(5)`).
+        assert_jit_matches_vm3_raises(JIT_OPTIONAL_STRING_NAMED_ERROR_COERCE_CALL, 13);
     }
 
     #[test]
@@ -19934,10 +19927,8 @@ End Sub
 
     #[test]
     fn jit_matches_vm3_optional_string_named_variant_error_coerce_call() {
-        assert_jit_matches_vm3_contains_canon(
-            JIT_OPTIONAL_STRING_NAMED_VARIANT_ERROR_COERCE_CALL,
-            Canon::Str("Error 1234".into()),
-        );
+        // A CVErr into a String parameter is a Type mismatch (Excel: `s = CVErr(5)`).
+        assert_jit_matches_vm3_raises(JIT_OPTIONAL_STRING_NAMED_VARIANT_ERROR_COERCE_CALL, 13);
     }
 
     #[test]
@@ -20274,9 +20265,10 @@ End Sub
 
     #[test]
     fn jit_matches_vm3_string_mixed_byref_byval_variant_error_local_coerce_call() {
-        assert_jit_matches_vm3_contains_canon(
+        // A CVErr into a String is a Type mismatch (Excel: `s = CVErr(5)`).
+        assert_jit_matches_vm3_raises(
             JIT_STRING_MIXED_BYREF_BYVAL_VARIANT_ERROR_LOCAL_COERCE_CALL,
-            Canon::Str("Error 1234".into()),
+            13,
         );
     }
 
@@ -20466,9 +20458,10 @@ End Sub
 
     #[test]
     fn jit_matches_vm3_string_named_byval_variant_error_local_coerce_return_call() {
-        assert_jit_matches_vm3_contains_canon(
+        // A CVErr into a String is a Type mismatch (Excel: `s = CVErr(5)`).
+        assert_jit_matches_vm3_raises(
             JIT_STRING_NAMED_BYVAL_VARIANT_ERROR_LOCAL_COERCE_RETURN_CALL,
-            Canon::Str("Error 1234".into()),
+            13,
         );
     }
 
@@ -20818,9 +20811,10 @@ End Sub
 
     #[test]
     fn jit_matches_vm3_string_named_mixed_byref_byval_variant_error_local_coerce_call() {
-        assert_jit_matches_vm3_contains_canon(
+        // A CVErr into a String is a Type mismatch (Excel: `s = CVErr(5)`).
+        assert_jit_matches_vm3_raises(
             JIT_STRING_NAMED_MIXED_BYREF_BYVAL_VARIANT_ERROR_LOCAL_COERCE_CALL,
-            Canon::Str("Error 1234".into()),
+            13,
         );
     }
 
@@ -21076,10 +21070,8 @@ End Sub
 
     #[test]
     fn jit_matches_vm3_string_byval_variant_error_local_coerce_return_call() {
-        assert_jit_matches_vm3_contains_canon(
-            JIT_STRING_BYVAL_VARIANT_ERROR_LOCAL_COERCE_RETURN_CALL,
-            Canon::Str("Error 1234".into()),
-        );
+        // A CVErr into a String is a Type mismatch (Excel: `s = CVErr(5)`).
+        assert_jit_matches_vm3_raises(JIT_STRING_BYVAL_VARIANT_ERROR_LOCAL_COERCE_RETURN_CALL, 13);
     }
 
     #[test]
@@ -21216,10 +21208,8 @@ End Sub
 
     #[test]
     fn jit_matches_vm3_variant_return_to_string_error_payload_call() {
-        assert_jit_matches_vm3_contains_canon(
-            JIT_VARIANT_RETURN_TO_STRING_ERROR_PAYLOAD_CALL,
-            Canon::Str("Error 1234".into()),
-        );
+        // A CVErr into a String is a Type mismatch (Excel: `s = CVErr(5)`).
+        assert_jit_matches_vm3_raises(JIT_VARIANT_RETURN_TO_STRING_ERROR_PAYLOAD_CALL, 13);
     }
 
     #[test]

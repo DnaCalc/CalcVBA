@@ -50,10 +50,15 @@ native_impl_ids! {
     LenB,
     Left,
     LeftB,
+    AscB,
+    ChrB,
+    InStrB,
+    MidB,
     Right,
     RightB,
     Mid,
     MidStmt, // `Mid(s, i, n) = ...` statement form
+    MidBStmt, // `MidB(s, i, n) = ...` statement form (byte positions)
     LSetStmt, // `LSet s = ...` statement form
     RSetStmt, // `RSet s = ...` statement form
     InStr,
@@ -116,6 +121,8 @@ native_impl_ids! {
     DatePart, // `DatePart(interval, date, …)`
     DateNow,  // `Date`
     TimeNow,  // `Time`
+    DateNowText, // `Date$` — the date as a `mm-dd-yyyy` String
+    TimeNowText, // `Time$` — the time as a `hh:mm:ss` String
     Now,
     Timer,
 
@@ -204,6 +211,7 @@ native_impl_ids! {
     FileEof,
     FileLof,
     FileSeek,
+    FileAttr, // `FileAttr(n, 1)` — the mode a file number was opened in
     FileLoc,
     FilePut,     // `Put #n, [rec], value` — write a record
     FileGetInto, // `Get #n, [rec], var` — read a record (lowered as an assignment)
@@ -307,15 +315,15 @@ impl NativeImplId {
         use LibraryModule as M;
         use NativeImplId::*;
         match self {
-            Len | LenB | Left | LeftB | Right | RightB | Mid | MidStmt | LSetStmt | RSetStmt
-            | InStr | InStrRev | LCase | UCase | Split | Join | Replace | Trim | LTrim | RTrim
-            | StrComp | Like | Chr | Asc | ChrW | AscW | Space | StringRepeat | StrReverse
-            | StrConv | Format | FormatNumber | FormatCurrency | FormatPercent | FormatDateTime
-            | Filter => M::Strings,
+            Len | LenB | Left | LeftB | AscB | ChrB | InStrB | MidB | Right | RightB | Mid
+            | MidStmt | MidBStmt | LSetStmt | RSetStmt | InStr | InStrRev | LCase | UCase
+            | Split | Join | Replace | Trim | LTrim | RTrim | StrComp | Like | Chr | Asc | ChrW
+            | AscW | Space | StringRepeat | StrReverse | StrConv | Format | FormatNumber
+            | FormatCurrency | FormatPercent | FormatDateTime | Filter => M::Strings,
             Abs | Int | Fix | Sgn | Round | Sqr | Sin | Cos | Log | Exp | Atn | Tan => M::Math,
             DateSerial | TimeSerial | DateValue | TimeValue | DateAdd | DateDiff | Year | Month
             | Day | Weekday | Hour | Minute | Second | MonthName | WeekdayName | DatePart
-            | DateNow | TimeNow | Now | Timer => M::DateTime,
+            | DateNow | TimeNow | DateNowText | TimeNowText | Now | Timer => M::DateTime,
             Hex | Oct | CStr | Str | Val | CDate | CVErr | CBool | CByte | CInt | CLng
             | CLngLng | CLngPtr | CSng | CDbl | CCur | CDec | CVar => M::Conversion,
             Rnd | Randomize => M::Random,
@@ -330,8 +338,8 @@ impl NativeImplId {
             | FileChDir | FileLen | FileCopy | FileGetAttr | FileSetAttr | FileChDrive
             | FileDateTime | FileRead | FileWrite | FilePrint | ConsolePrint | FileInput
             | ConsoleInput | FileLineInput | ConsoleLineInput | FileEof | FileLof | FileSeek
-            | FileLoc | FilePut | FileGetInto | FileWidth | FileRename | FileLock | FileUnlock
-            | FileInputChars => M::FileIo,
+            | FileAttr | FileLoc | FilePut | FileGetInto | FileWidth | FileRename | FileLock
+            | FileUnlock | FileInputChars => M::FileIo,
             Command
             | GetSetting
             | GetAllSettings
@@ -428,6 +436,10 @@ impl NativeImplId {
             LenB => "LenB",
             Left => "Left",
             LeftB => "LeftB",
+            AscB => "AscB",
+            ChrB => "ChrB",
+            InStrB => "InStrB",
+            MidB => "MidB",
             Right => "Right",
             RightB => "RightB",
             Mid => "Mid",
@@ -461,7 +473,7 @@ impl NativeImplId {
             Filter => "Filter",
             // Statement forms (`MidStmt`/`LSetStmt`/`RSetStmt`) and `Like` (operator)
             // are name-less — not bundle members, even though their module is `Strings`.
-            MidStmt | LSetStmt | RSetStmt | Like => return None,
+            MidStmt | MidBStmt | LSetStmt | RSetStmt | Like => return None,
             // ── Math ──
             Abs => "Abs",
             Int => "Int",
@@ -494,6 +506,8 @@ impl NativeImplId {
             DatePart => "DatePart",
             DateNow => "Date",
             TimeNow => "Time",
+            DateNowText => "Date$",
+            TimeNowText => "Time$",
             Now => "Now",
             Timer => "Timer",
             // ── Conversion ──
@@ -586,6 +600,7 @@ impl NativeImplId {
             FileEof => "EOF",
             FileLof => "LOF",
             FileSeek => "Seek",
+            FileAttr => "FileAttr",
             FileLoc => "Loc",
             // The by-name `FileStatement` forms (not parser-bound — they resolve by
             // name like a function): member = catalog primary.
@@ -646,6 +661,8 @@ impl NativeImplId {
         match self {
             Left => &["Left$"],
             LeftB => &["LeftB$"],
+            ChrB => &["ChrB$"],
+            MidB => &["MidB$"],
             Right => &["Right$"],
             RightB => &["RightB$"],
             Mid => &["Mid$"],
@@ -702,10 +719,10 @@ impl NativeImplId {
         match self {
             // ── Strings ──
             Len | LenB | LCase | UCase | Trim | LTrim | RTrim | Chr | Asc | ChrW | AscW | Space
-            | StrReverse => 1,
+            | StrReverse | AscB | ChrB => 1,
             Left | LeftB | Right | RightB | Join | StringRepeat | FormatDateTime => 2,
-            Mid | StrComp | StrConv => 3,
-            InStr | InStrRev | Split | Format | Filter => 4,
+            Mid | MidB | StrComp | StrConv => 3,
+            InStr | InStrB | InStrRev | Split | Format | Filter => 4,
             FormatNumber | FormatCurrency | FormatPercent => 5,
             Replace => 6,
             // ── Math ──
@@ -717,7 +734,7 @@ impl NativeImplId {
             DateSerial | TimeSerial | DateAdd => 3,
             DatePart | WeekdayName => 4,
             DateDiff => 5,
-            DateNow | TimeNow | Now | Timer => 0,
+            DateNow | TimeNow | DateNowText | TimeNowText | Now | Timer => 0,
             // ── Conversion ── (all single-argument)
             Hex | Oct | CStr | Str | Val | CDate | CVErr | CBool | CByte | CInt | CLng
             | CLngLng | CLngPtr | CSng | CDbl | CCur | CDec | CVar => 1,
@@ -750,7 +767,7 @@ impl NativeImplId {
             FreeFile | FileCurDir | FileLen | FileGetAttr | FileDateTime | FileEof | FileLof
             | FileSeek | FileLoc | FileKill | FileMkDir | FileRmDir | FileChDir | FileChDrive => 1,
             // The two-argument name-statements.
-            FileSetAttr | FileCopy => 2,
+            FileSetAttr | FileCopy | FileAttr => 2,
             // Not a migrated bundle member (the parser-bound statements use
             // `library_statement_param_count`).
             _ => 0,
@@ -830,6 +847,8 @@ impl NativeImplId {
             self,
             NativeImplId::DateNow
                 | NativeImplId::TimeNow
+                | NativeImplId::DateNowText
+                | NativeImplId::TimeNowText
                 | NativeImplId::Now
                 | NativeImplId::Timer
                 | NativeImplId::Command

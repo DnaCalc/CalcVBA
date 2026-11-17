@@ -681,7 +681,7 @@ impl ScanCtx<'_> {
                     "Property Let index parameter names must match Property Get",
                 );
             }
-            if get_param.ty != let_param.ty {
+            if get_param.ty != let_param.ty || get_param.mode != let_param.mode {
                 return incompatible_property_accessor(
                     property,
                     new_accessor,
@@ -749,7 +749,7 @@ impl ScanCtx<'_> {
                     "Property Set index parameter names must match Property Get",
                 );
             }
-            if get_param.ty != set_param.ty {
+            if get_param.ty != set_param.ty || get_param.mode != set_param.mode {
                 return incompatible_property_accessor(
                     property,
                     new_accessor,
@@ -803,7 +803,7 @@ impl ScanCtx<'_> {
                     "Property Let and Property Set index parameter names must match",
                 );
             }
-            if let_param.ty != set_param.ty {
+            if let_param.ty != set_param.ty || let_param.mode != set_param.mode {
                 return incompatible_property_accessor(
                     property,
                     new_accessor,
@@ -1512,9 +1512,10 @@ fn module_option_base(root: SyntaxNode<'_>) -> i32 {
         if !toks.iter().any(|t| t.kind == SyntaxKind::KwBase) {
             continue;
         }
-        let is_one = toks
-            .iter()
-            .any(|t| t.kind == SyntaxKind::IntLiteral && t.text.trim() == "1");
+        let is_one = toks.iter().any(|t| {
+            t.kind == SyntaxKind::IntLiteral
+                && t.text.trim().trim_end_matches(['%', '&', '^']) == "1"
+        });
         return i32::from(is_one);
     }
     0
@@ -1857,8 +1858,20 @@ fn parse_default_literal(rhs: &str) -> Option<CoreConst> {
         return Some(CoreConst::Bool(false));
     }
     if let Some(inner) = rhs.strip_prefix('"') {
-        let end = inner.find('"').unwrap_or(inner.len());
-        return Some(CoreConst::Str(inner[..end].to_string()));
+        // `""` inside a string literal is one quote.
+        let mut text = String::new();
+        let mut chars = inner.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            text.push(c);
+        }
+        return Some(CoreConst::Str(text));
     }
     if rhs.starts_with('#')
         && let Some(end) = rhs[1..].find('#')
@@ -2825,6 +2838,22 @@ mod tests {
             *scalar_ty,
             VarTypeRef::Object("inner".into()),
             "a scalar UDT field stays scalar"
+        );
+    }
+
+    #[test]
+    fn optional_string_default_keeps_doubled_quotes() {
+        assert_eq!(
+            parse_default_literal("\"a\"\"b\""),
+            Some(CoreConst::Str("a\"b".to_string()))
+        );
+        assert_eq!(
+            parse_default_literal("\"\"\"\""),
+            Some(CoreConst::Str("\"".to_string()))
+        );
+        assert_eq!(
+            parse_default_literal("\"\""),
+            Some(CoreConst::Str(String::new()))
         );
     }
 }

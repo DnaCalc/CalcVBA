@@ -172,9 +172,9 @@ pub(crate) fn numeric_mode_with(ctx: TypeContext, ty: &VarTypeRef) -> NumericMod
         return NumericMode::Widening;
     };
     match b {
-        BuiltinType::Double | BuiltinType::Boolean | BuiltinType::Date | BuiltinType::String => {
-            NumericMode::Widening
-        }
+        BuiltinType::Double | BuiltinType::Boolean | BuiltinType::String => NumericMode::Widening,
+        // A typed Date result is range-checked: `dd + 1` past 31 December 9999 is Overflow.
+        BuiltinType::Date => NumericMode::Checked(NumericCoerceTarget::Date),
         other => numeric_target(ctx, *other).map_or(NumericMode::Widening, NumericMode::Checked),
     }
 }
@@ -205,12 +205,19 @@ pub(crate) fn coerce_store_with(ctx: TypeContext, value: CoreValue, to: &VarType
 /// Coerce `value` (of type `from`) to type `to`, wrapping in a `Coerce` node only
 /// when a scalar conversion is actually needed (skips identity conversions).
 fn is_string_into_byte_array(from: &VarTypeRef, to: &VarTypeRef) -> bool {
-    matches!(from, VarTypeRef::Builtin(BuiltinType::String))
-        && matches!(to, VarTypeRef::Array(inner) if matches!(**inner, VarTypeRef::Builtin(BuiltinType::Byte)))
+    matches!(
+        from,
+        VarTypeRef::Builtin(BuiltinType::String) | VarTypeRef::Variant
+    ) && is_byte_array(to)
 }
 
-/// `bytes = "text"` (a String stored into a Byte array) copies the string's UTF-16LE bytes, as
-/// VBA does; lowered to StrConv with the internal UTF-16 mode. Any other pairing is unchanged.
+fn is_byte_array(ty: &VarTypeRef) -> bool {
+    matches!(ty, VarTypeRef::Array(inner) if matches!(**inner, VarTypeRef::Builtin(BuiltinType::Byte)))
+}
+
+/// `bytes = "text"` (a String, or a Variant holding one, stored into a Byte array) copies the
+/// string's UTF-16LE bytes, as VBA does; lowered to StrConv with the internal UTF-16 mode, which
+/// passes an array through unchanged. Any other pairing is unchanged.
 pub(crate) fn string_into_byte_array(
     value: CoreValue,
     from: &VarTypeRef,
@@ -314,6 +321,14 @@ pub(crate) fn logic_result_type(ctx: TypeContext, ty: &VarTypeRef) -> LogicType 
 
 // ── Operator result lattice ─────────────────────────────────────────────────
 
+/// `&` over a declared array (`Dim bb() As Byte: x = bb & "!"`) is a compile-time Type
+/// mismatch in VBE.
+pub(crate) fn is_rejected_array_operand(op: CoreBinOp, lhs: &VarTypeRef, rhs: &VarTypeRef) -> bool {
+    let array =
+        |ty: &VarTypeRef| matches!(ty, VarTypeRef::Array(_) | VarTypeRef::FixedArray { .. });
+    op == CoreBinOp::Concat && (array(lhs) || array(rhs))
+}
+
 /// The (over-approximated) result type of a binary operator.
 pub(crate) fn result_type_with(
     ctx: TypeContext,
@@ -383,6 +398,17 @@ fn is_integer_builtin(b: BuiltinType) -> bool {
 /// `LongLong` is `Double`, otherwise `Single`. A non-numeric operand makes the result `Variant`.
 fn arith_result(ctx: TypeContext, op: CoreBinOp, lhs: &VarTypeRef, rhs: &VarTypeRef) -> VarTypeRef {
     use BuiltinType::*;
+    // A declared Date with a number, or two Dates added, is a Date; `Date - Date` is a Double.
+    let date = |ty: &VarTypeRef| matches!(ty, VarTypeRef::Builtin(Date));
+    let date_or_number = |ty: &VarTypeRef| date(ty) || typed_numeric(ctx, ty).is_some();
+    if (date(lhs) || date(rhs)) && date_or_number(lhs) && date_or_number(rhs) {
+        return match op {
+            CoreBinOp::Add => builtin(Date),
+            CoreBinOp::Sub if date(lhs) && date(rhs) => builtin(Double),
+            CoreBinOp::Sub => builtin(Date),
+            _ => VarTypeRef::Variant,
+        };
+    }
     let (Some(l), Some(r)) = (typed_numeric(ctx, lhs), typed_numeric(ctx, rhs)) else {
         return VarTypeRef::Variant;
     };

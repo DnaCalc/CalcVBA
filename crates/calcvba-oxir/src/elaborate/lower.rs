@@ -1757,27 +1757,69 @@ impl<'a> Lowerer<'a> {
             _ => NumericMode::Widening,
         };
 
-        // counter = start
-        let (start_op, _) = self.lower_value(start)?;
+        // VBA evaluates the start, limit and step, and only then assigns the counter:
+        // `i = 10: For i = 1 To i + 2` runs the limit with i = 10.
+        let (start_op, start_ty) = self.lower_value(start)?;
+        let start_t = self.new_temp(start_ty.clone());
         self.emit(OxInst::Assign {
-            dst: var_place,
+            dst: OxPlace::Temp(start_t),
             value: start_op,
         });
         // limit and step are evaluated once into temps.
-        let (end_op, end_ty) = self.lower_value(end)?;
+        let (end_op, mut end_ty) = self.lower_value(end)?;
+        let (step_op, mut step_ty) = match step {
+            Some(s) => self.lower_value(s)?,
+            None => (OxOperand::Const(OxConst::I16(1)), OxTy::Integer),
+        };
+        // A Variant counter takes numeric bounds: a numeric-string bound is converted
+        // (`"abc"` is 13), and a Variant bound is checked the same way (a Null is 94).
+        let end_op = self.checked_for_bound(&counter_ty, end_op, &mut end_ty);
+        let step_op = self.checked_for_bound(&counter_ty, step_op, &mut step_ty);
         let limit = self.new_temp(end_ty.clone());
         self.emit(OxInst::Assign {
             dst: OxPlace::Temp(limit),
             value: end_op,
         });
-        let (step_op, step_ty) = match step {
-            Some(s) => self.lower_value(s)?,
-            None => (OxOperand::Const(OxConst::I16(1)), OxTy::Integer),
-        };
         let step_t = self.new_temp(step_ty.clone());
         self.emit(OxInst::Assign {
             dst: OxPlace::Temp(step_t),
             value: step_op,
+        });
+        // A Variant counter takes the widest type of its start, limit and step.
+        let mut start_op = OxOperand::temp(start_t);
+        if counter_ty.is_variant()
+            && let (Some(a), Some(b), Some(c)) = (
+                for_numeric_rank(&start_ty),
+                for_numeric_rank(&end_ty),
+                for_numeric_rank(&step_ty),
+            )
+            && a < b.max(c)
+        {
+            let (widest, target) = for_numeric_widest(b.max(c));
+            let wide_t = self.new_temp(widest);
+            self.emit(OxInst::Coerce {
+                dst: OxPlace::Temp(wide_t),
+                src: start_op,
+                target: OxCoerceTarget::Numeric(target),
+            });
+            start_op = OxOperand::temp(wide_t);
+        }
+        // A body that carries a label can be entered by a GoTo that skips this header. The
+        // limit and step temporaries are then still 0 and `Next` leaves the loop; the
+        // `ran` flag marks that the header executed.
+        let ran = if body_has_label(body) {
+            let ran = self.new_temp(OxTy::Bool);
+            self.emit(OxInst::Assign {
+                dst: OxPlace::Temp(ran),
+                value: OxOperand::Const(OxConst::Bool(true)),
+            });
+            Some(ran)
+        } else {
+            None
+        };
+        self.emit(OxInst::Assign {
+            dst: var_place,
+            value: start_op,
         });
 
         // step >= 0 ? (fixed at entry — the step sign never changes)
@@ -1854,6 +1896,18 @@ impl<'a> Lowerer<'a> {
         // passing the type max raises Overflow (6); a Variant/float counter widens.
         // Belongs to the For statement, so restore its pad after the body.
         self.cur_fault = for_pad;
+        if let Some(ran) = ran {
+            let go = self.reserve();
+            let cond = self.truthy_cond(OxOperand::temp(ran));
+            self.finish_to(
+                OxTerminator::Branch {
+                    cond,
+                    then_blk: go,
+                    else_blk: after,
+                },
+                go,
+            );
+        }
         self.emit(OxInst::Arith {
             dst: var_place,
             op: ArithOp::Add,
@@ -1863,6 +1917,33 @@ impl<'a> Lowerer<'a> {
         });
         self.finish_to(OxTerminator::Jump(head), after);
         Ok(())
+    }
+
+    /// A `For` limit or step bound for a `Variant` counter, checked as a number: a String
+    /// is converted to a Double, and a Variant is converted into a scratch Double so a Null
+    /// (94) or non-numeric value (13) raises. Other counters were coerced by the binder.
+    fn checked_for_bound(
+        &mut self,
+        counter_ty: &OxTy,
+        bound: OxOperand,
+        bound_ty: &mut OxTy,
+    ) -> OxOperand {
+        if !counter_ty.is_variant()
+            || !matches!(bound_ty, OxTy::Str | OxTy::FixedStr(_) | OxTy::Variant)
+        {
+            return bound;
+        }
+        let number = self.new_temp(OxTy::Double);
+        self.emit(OxInst::Coerce {
+            dst: OxPlace::Temp(number),
+            src: bound.clone(),
+            target: OxCoerceTarget::Numeric(calcvba_bundle::NumericCoerceTarget::Double),
+        });
+        if bound_ty.is_variant() {
+            return bound;
+        }
+        *bound_ty = OxTy::Double;
+        OxOperand::temp(number)
     }
 
     fn lower_select(
@@ -1887,21 +1968,30 @@ impl<'a> Lowerer<'a> {
 
         for block in cases {
             self.cur_fault = select_pad;
-            let matched = self.lower_case_match(&sel_op, &sel_ty, &block.clauses, compare_mode)?;
-            // The case-match is a Compare/Logical result that can be Null (a Null
-            // selector), so coerce to a Boolean for the Branch invariant (a Null match
-            // is then falsy, falling through to the next case / Case Else like vm2).
-            let matched = self.truthy_cond(matched);
+            // The clauses of a Case are tried in order and stop at the first match, so a
+            // later clause's expression is not evaluated. Each clause result can be Null
+            // (a Null selector), so coerce it to a Boolean for the Branch invariant (a
+            // Null match is then falsy, moving on to the next clause / case / Case Else).
             let body_blk = self.reserve();
             let next_blk = self.reserve();
-            self.finish_to(
-                OxTerminator::Branch {
-                    cond: matched,
-                    then_blk: body_blk,
-                    else_blk: next_blk,
-                },
-                body_blk,
-            );
+            if block.clauses.is_empty() {
+                self.finish_to(OxTerminator::Jump(next_blk), body_blk);
+            }
+            for (i, clause) in block.clauses.iter().enumerate() {
+                self.cur_fault = select_pad;
+                let matched = self.lower_case_clause(&sel_op, &sel_ty, clause, compare_mode)?;
+                let matched = self.truthy_cond(matched);
+                let last = i + 1 == block.clauses.len();
+                let else_blk = if last { next_blk } else { self.reserve() };
+                self.finish_to(
+                    OxTerminator::Branch {
+                        cond: matched,
+                        then_blk: body_blk,
+                        else_blk,
+                    },
+                    if last { body_blk } else { else_blk },
+                );
+            }
             self.lower_block(&block.body)?;
             self.finish_to(OxTerminator::Jump(end), next_blk);
         }
@@ -1928,11 +2018,13 @@ impl<'a> Lowerer<'a> {
         let (sel_raw, _) = self.lower_value(selector)?;
         // Evaluate once into a temp, coerced to Long (VBA rounds the selector; a
         // non-numeric selector faults to this statement's pad — error 13).
-        let sel_t = self.new_temp(OxTy::Long);
+        // The selector is an Integer, so 40000 overflows (6); a negative one or one
+        // above 255 is error 5, and 0 or past the list falls through.
+        let sel_t = self.new_temp(OxTy::Integer);
         self.emit(OxInst::Coerce {
             dst: OxPlace::Temp(sel_t),
             src: sel_raw,
-            target: OxCoerceTarget::Numeric(calcvba_bundle::NumericCoerceTarget::Long),
+            target: OxCoerceTarget::Numeric(calcvba_bundle::NumericCoerceTarget::Integer),
         });
         let sel_op = OxOperand::temp(sel_t);
 
@@ -1947,10 +2039,29 @@ impl<'a> Lowerer<'a> {
         });
         let negative = self.truthy_cond(OxOperand::temp(neg_t));
         let raise_negative = self.reserve();
+        let high_check = self.reserve();
         let first_selector_check = self.reserve();
         self.finish_to(
             OxTerminator::Branch {
                 cond: negative,
+                then_blk: raise_negative,
+                else_blk: high_check,
+            },
+            high_check,
+        );
+        let high_t = self.new_temp(OxTy::Bool);
+        self.emit(OxInst::Compare {
+            coercion: calcvba_bundle::ComparisonCoercion::Strict,
+            dst: OxPlace::Temp(high_t),
+            op: CmpOp::Gt,
+            lhs: sel_op.clone(),
+            rhs: OxOperand::Const(OxConst::I32(255)),
+            mode: calcvba_bundle::StringCompareMode::Binary,
+        });
+        let too_high = self.truthy_cond(OxOperand::temp(high_t));
+        self.finish_to(
+            OxTerminator::Branch {
+                cond: too_high,
                 then_blk: raise_negative,
                 else_blk: first_selector_check,
             },
@@ -2019,33 +2130,6 @@ impl<'a> Lowerer<'a> {
 
     /// Lower one case's clause list to a single Boolean-ish operand (the clauses are
     /// OR-ed together).
-    fn lower_case_match(
-        &mut self,
-        sel: &OxOperand,
-        sel_ty: &OxTy,
-        clauses: &[coreir::CaseClause],
-        compare_mode: calcvba_bundle::StringCompareMode,
-    ) -> Result<OxOperand> {
-        let mut acc: Option<OxOperand> = None;
-        for clause in clauses {
-            let clause_bool = self.lower_case_clause(sel, sel_ty, clause, compare_mode)?;
-            acc = Some(match acc {
-                None => clause_bool,
-                Some(prev) => {
-                    let t = self.new_temp(OxTy::Variant);
-                    self.emit(OxInst::Logical {
-                        dst: OxPlace::Temp(t),
-                        op: LogicalOp::Or,
-                        lhs: prev,
-                        rhs: clause_bool,
-                    });
-                    OxOperand::temp(t)
-                }
-            });
-        }
-        Ok(acc.unwrap_or(OxOperand::Const(OxConst::Bool(false))))
-    }
-
     /// The operands of one Select Case comparison. As for a binary comparison, Office
     /// coerces a declared String to a number when the other side is declared numeric
     /// (`Dim c As String` ... `Select Case c` / `Case 48 To 57`); invalid text stays
@@ -2559,20 +2643,26 @@ impl<'a> Lowerer<'a> {
                     )
                 };
                 let string_operand = if string(&l_ty) && numeric(&r_ty) {
-                    Some(&mut l)
+                    Some((&mut l, &r_ty))
                 } else if numeric(&l_ty) && string(&r_ty) {
-                    Some(&mut r)
+                    Some((&mut r, &l_ty))
                 } else {
                     None
                 };
-                if let Some(operand) = string_operand {
-                    let converted = self.new_temp(OxTy::Double);
+                if let Some((operand, other)) = string_operand {
+                    // Against a Boolean or a Date the String converts to that type (Excel:
+                    // `s = True` with s = "True", and `s = #1/1/2000#` with s = "1/1/2000",
+                    // are True); against any other number, to Double.
+                    let (ty, target) = match other {
+                        OxTy::Bool => (OxTy::Bool, calcvba_bundle::NumericCoerceTarget::Boolean),
+                        OxTy::Date => (OxTy::Date, calcvba_bundle::NumericCoerceTarget::Date),
+                        _ => (OxTy::Double, calcvba_bundle::NumericCoerceTarget::Double),
+                    };
+                    let converted = self.new_temp(ty);
                     self.emit(OxInst::Coerce {
                         dst: OxPlace::Temp(converted),
                         src: operand.clone(),
-                        target: OxCoerceTarget::Numeric(
-                            calcvba_bundle::NumericCoerceTarget::Double,
-                        ),
+                        target: OxCoerceTarget::Numeric(target),
                     });
                     *operand = OxOperand::temp(converted);
                 }
@@ -3613,6 +3703,49 @@ fn logical_result_type(lhs: &OxTy, rhs: &OxTy) -> OxTy {
 
 fn is_fixed_integer_ty(ty: &OxTy) -> bool {
     matches!(ty, OxTy::Byte | OxTy::Integer | OxTy::Long | OxTy::LongLong)
+}
+
+/// Widening order of the numeric types a `Variant` For counter can take.
+fn for_numeric_rank(ty: &OxTy) -> Option<u8> {
+    Some(match ty {
+        OxTy::Byte => 0,
+        OxTy::Integer => 1,
+        OxTy::Long => 2,
+        OxTy::LongLong => 3,
+        OxTy::Single => 4,
+        OxTy::Double => 5,
+        _ => return None,
+    })
+}
+
+fn for_numeric_widest(rank: u8) -> (OxTy, calcvba_bundle::NumericCoerceTarget) {
+    use calcvba_bundle::NumericCoerceTarget as N;
+    match rank {
+        0 => (OxTy::Byte, N::Byte),
+        1 => (OxTy::Integer, N::Integer),
+        2 => (OxTy::Long, N::Long),
+        3 => (OxTy::LongLong, N::LongLong),
+        4 => (OxTy::Single, N::Single),
+        _ => (OxTy::Double, N::Double),
+    }
+}
+
+/// Whether a loop body defines a label (so a GoTo can enter it past the header).
+fn body_has_label(body: &[CoreStmt]) -> bool {
+    body.iter().any(|stmt| match stmt {
+        CoreStmt::Label(_) => true,
+        CoreStmt::If { arms, else_body } => {
+            arms.iter().any(|arm| body_has_label(&arm.body)) || body_has_label(else_body)
+        }
+        CoreStmt::DoLoop { body, .. }
+        | CoreStmt::ForRange { body, .. }
+        | CoreStmt::ForEach { body, .. }
+        | CoreStmt::With { body, .. } => body_has_label(body),
+        CoreStmt::Select {
+            cases, case_else, ..
+        } => cases.iter().any(|c| body_has_label(&c.body)) || body_has_label(case_else),
+        _ => false,
+    })
 }
 
 fn compare_result_type(lhs: &OxTy, rhs: &OxTy) -> OxTy {

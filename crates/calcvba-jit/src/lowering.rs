@@ -968,7 +968,10 @@ impl<'a> LowerFunc<'a> {
                     }
                     OxCoerceTarget::Str => {
                         self.ensure_string_place(*dst)?;
-                        if self.operand_is_static_string_source(src)? {
+                        // A String temp can hold the Null of `Null & Null`, which the String
+                        // Let-coercion refuses (error 94), so only a declared String copies as is.
+                        let temp = matches!(src, OxOperand::Use(OxPlace::Temp(_)));
+                        if !temp && self.operand_is_static_string_source(src)? {
                             return self.emit_store_variant(builder, module, *dst, src);
                         }
                         self.emit_variant_string_coerce_slot_call(builder, module, *dst, src)
@@ -1308,8 +1311,18 @@ impl<'a> LowerFunc<'a> {
                     self.emit_store_f64(builder, module, *dst, value)?;
                     self.emit_overflow_if_not_finite(builder, module, value, false)
                 }
+                // Date arithmetic (`dd + 1`) computes in the runtime helper, which range-checks
+                // the Date result.
+                OxTy::Date => self.emit_variant_arith_slot_call(
+                    builder,
+                    module,
+                    *dst,
+                    *op,
+                    *mode,
+                    BinaryVariantOperands { lhs, rhs },
+                ),
                 ty => Err(JitError::unsupported(format!(
-                    "M4-4 lowers checked arithmetic only for current Long/Integer/Byte/LongLong/Currency/Single/Double destinations, got {ty:?} at {dst:?}"
+                    "M4-4 lowers checked arithmetic only for current Long/Integer/Byte/LongLong/Currency/Single/Double/Date destinations, got {ty:?} at {dst:?}"
                 ))),
             },
             OxInst::Div { dst, lhs, rhs } => {
@@ -1452,8 +1465,10 @@ impl<'a> LowerFunc<'a> {
                     }
                     self.emit_variant_neg_slot_call(builder, module, *dst, *mode, src)
                 }
+                // `-dd` of a declared Date is a Date, computed and range-checked by the helper.
+                OxTy::Date => self.emit_variant_neg_slot_call(builder, module, *dst, *mode, src),
                 ty => Err(JitError::unsupported(format!(
-                    "M4-4 lowers checked scalar negation or Widening Variant negation only for Long/Integer/Byte/LongLong/Currency/Single/Double/Variant destinations, got {ty:?} at {dst:?}"
+                    "M4-4 lowers checked scalar negation or Widening Variant negation only for Long/Integer/Byte/LongLong/Currency/Single/Double/Date/Variant destinations, got {ty:?} at {dst:?}"
                 ))),
             },
             OxInst::CallProc { dst, proc, args } => {
@@ -2231,10 +2246,13 @@ impl<'a> LowerFunc<'a> {
                 }
                 _ => false,
             },
+            // An integer constant stores directly only inside the Date range; the helper raises
+            // Overflow for the rest (Excel: `dt = 3000000` raises 6).
             NumericCoerceTarget::Date => match operand {
-                OxOperand::Const(OxConst::Date(_))
-                | OxOperand::Const(OxConst::I32(_))
-                | OxOperand::Const(OxConst::I16(_)) => true,
+                OxOperand::Const(OxConst::Date(_)) | OxOperand::Const(OxConst::I16(_)) => true,
+                OxOperand::Const(OxConst::I32(value)) => {
+                    calcvba_runtime::coerce::is_date_serial(f64::from(*value))
+                }
                 OxOperand::Use(place) => {
                     matches!(place_ty(self.program, self.func, *place)?, OxTy::Date)
                 }
@@ -2251,9 +2269,9 @@ impl<'a> LowerFunc<'a> {
                 _ => false,
             },
             NumericCoerceTarget::Byte | NumericCoerceTarget::Integer => match operand {
-                OxOperand::Const(OxConst::I32(_))
-                | OxOperand::Const(OxConst::I16(_))
-                | OxOperand::Const(OxConst::Bool(_)) => true,
+                OxOperand::Const(OxConst::I32(_)) | OxOperand::Const(OxConst::I16(_)) => true,
+                // `True` is the Byte 255 (the helper converts it), but the Integer -1.
+                OxOperand::Const(OxConst::Bool(_)) => target == NumericCoerceTarget::Integer,
                 OxOperand::Use(place) => matches!(
                     place_ty(self.program, self.func, *place)?,
                     OxTy::Long | OxTy::Byte | OxTy::Integer
@@ -2898,6 +2916,7 @@ impl<'a> LowerFunc<'a> {
         let bare = type_name.rsplit('.').next().unwrap_or(type_name);
         let known = iid.is_some()
             || bare.eq_ignore_ascii_case("Collection")
+            || bare.eq_ignore_ascii_case("Object")
             || self.programs.iter().any(|program| {
                 program
                     .classes
@@ -2929,6 +2948,13 @@ impl<'a> LowerFunc<'a> {
         let (area, index) = place_addr(dst);
         let area = builder.ins().iconst(types::I32, i64::from(area));
         let index = builder.ins().iconst(types::I32, index as i64);
+        // `TypeOf` on an `As Object` variable holding Nothing raises 91 (Excel); on a
+        // class-typed variable or a Variant it is False.
+        let untyped = matches!(
+            operand_static_ty(self.program, self.func, object)?,
+            OxTy::Object(calcvba_oxir::ObjClass::Untyped)
+        );
+        let nothing_raises = builder.ins().iconst(types::I32, i64::from(untyped));
         let callee = self.import(builder, module, self.imports.type_of_is_slot);
         let call = builder.ins().call(
             callee,
@@ -2942,6 +2968,7 @@ impl<'a> LowerFunc<'a> {
                 iid_high,
                 area,
                 index,
+                nothing_raises,
             ],
         );
         let status = builder.inst_results(call)[0];
@@ -7097,7 +7124,44 @@ impl<'a> LowerFunc<'a> {
         Ok(())
     }
 
+    /// The library ABI passes every argument as a Variant and the library body applies VBA's
+    /// arity, coercion and Null rules, so a pure library built-in with a Variant destination
+    /// is admitted in any shape the typed shape checks below do not name.
     fn validate_call_extern_library_shape(
+        &self,
+        dst: Option<OxPlace>,
+        args: &[calcvba_oxir::OxArg],
+        native_impl: NativeImplId,
+    ) -> Result<(), JitError> {
+        use calcvba_bundle::native::LibraryModule as M;
+        match self.validate_call_extern_library_shape_typed(dst, args, native_impl) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let pure_module = matches!(
+                    native_impl.module(),
+                    M::Strings
+                        | M::Math
+                        | M::DateTime
+                        | M::Conversion
+                        | M::Financial
+                        | M::Information
+                );
+                let variant_destination = match dst {
+                    None => true,
+                    Some(dst) => {
+                        matches!(place_ty(self.program, self.func, dst), Ok(OxTy::Variant))
+                    }
+                };
+                if pure_module && variant_destination {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
+    fn validate_call_extern_library_shape_typed(
         &self,
         dst: Option<OxPlace>,
         args: &[calcvba_oxir::OxArg],
@@ -7122,6 +7186,8 @@ impl<'a> LowerFunc<'a> {
                 NativeImplId::Now
                     | NativeImplId::DateNow
                     | NativeImplId::TimeNow
+                    | NativeImplId::DateNowText
+                    | NativeImplId::TimeNowText
                     | NativeImplId::Timer
             )
         {

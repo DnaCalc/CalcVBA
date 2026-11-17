@@ -108,7 +108,7 @@ const FILE_KEYS: &[&str] = &[
 ];
 
 /// Modules CalcVBA does not finish (an endless loop); not run, and counted as differing.
-const HANGS: &[&str] = &["CmpGotoFor"];
+const HANGS: &[&str] = &[];
 
 /// Known differences for `executor`: lines prefixed `vm3 ` or `jit ` hold for that executor only.
 fn known(executor: Executor) -> std::collections::BTreeSet<&'static str> {

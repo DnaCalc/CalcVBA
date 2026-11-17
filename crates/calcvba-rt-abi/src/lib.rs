@@ -2567,6 +2567,17 @@ pub unsafe extern "C" fn rt_lib_invoke_with_policy(
             // SAFETY: the exported helper contract guarantees that non-null `state` is the live, uniquely borrowed execution state.
             return unsafe { seat_fault(state, Fault::new(94, "invalid use of Null")) };
         }
+        // `Error()` with no argument is the text of the last error (`Err.Description`).
+        if id == NativeImplId::ErrorText && argv.is_empty() {
+            // SAFETY: the exported contract supplies the live state; this short borrow ends
+            // before the write.
+            let Some(exec) = (unsafe { state_from_raw(state) }) else {
+                return ST_FAULT;
+            };
+            let text = Variant::from_string(exec.err_engine.err.description.clone());
+            // SAFETY: the exported helper contract guarantees live unique state and aligned, initialized, uniquely writable typed output storage.
+            return unsafe { write_out(state, out, text) };
+        }
         let host = {
             // SAFETY: the exported contract supplies the live state. Copying the
             // shared host handle ends this typed borrow before host-capable dispatch.

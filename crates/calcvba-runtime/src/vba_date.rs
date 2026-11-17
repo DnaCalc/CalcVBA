@@ -12,6 +12,9 @@ pub const VBA_EPOCH_DAYS_FROM_UNIX: i64 = -25569;
 
 /// Days since 1970-01-01 for a proleptic-Gregorian `(y, m, d)` (Howard Hinnant's algorithm).
 pub fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    // A month outside 1-12 carries into the year (`DateSerial(2000, 15, 1)` is March 2001).
+    let y = y + (m - 1).div_euclid(12);
+    let m = (m - 1).rem_euclid(12) + 1;
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = y - era * 400;

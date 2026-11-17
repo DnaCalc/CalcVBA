@@ -41,17 +41,13 @@ pub fn tokenize(source: &str) -> Vec<(SyntaxKind, &str)> {
         // ── Comment (' or Rem at line/logical-statement start) ─────────────
         if b == b'\'' {
             i += 1;
-            while i < bytes.len() && bytes[i] != b'\n' && bytes[i] != b'\r' {
-                i += 1;
-            }
+            i = comment_end(bytes, i);
             tokens.push((SyntaxKind::Comment, &source[start..i]));
             continue;
         }
         if is_rem_comment_start(bytes, i) {
             i += 3; // Rem
-            while i < bytes.len() && bytes[i] != b'\n' && bytes[i] != b'\r' {
-                i += 1;
-            }
+            i = comment_end(bytes, i);
             tokens.push((SyntaxKind::Comment, &source[start..i]));
             continue;
         }
@@ -124,7 +120,13 @@ pub fn tokenize(source: &str) -> Vec<(SyntaxKind, &str)> {
         }
 
         // ── Numeric literals (int, float, hex, oct) ─────────
-        if b.is_ascii_digit() {
+        if b.is_ascii_digit()
+            || (b == b'.'
+                && bytes.get(i + 1).is_some_and(u8::is_ascii_digit)
+                && !(i > 0
+                    && (bytes[i - 1].is_ascii_alphanumeric()
+                        || matches!(bytes[i - 1], b'_' | b')' | b']' | b'"'))))
+        {
             lex_number(source, bytes, &mut i);
             tokens.push((classify_number(&source[start..i]), &source[start..i]));
             continue;
@@ -143,6 +145,19 @@ pub fn tokenize(source: &str) -> Vec<(SyntaxKind, &str)> {
                     i += 1;
                 }
                 tokens.push((SyntaxKind::HexLiteral, &source[start..i]));
+                continue;
+            }
+            // `&17`: octal without the `O` (MS-VBAL §3.3.2), only where an operand may start,
+            // so `a &17` stays a concatenation.
+            if matches!(next, b'0'..=b'7') && !last_is_operand(&tokens) {
+                i += 1;
+                while i < bytes.len() && (b'0'..=b'7').contains(&bytes[i]) {
+                    i += 1;
+                }
+                if i < bytes.len() && is_integer_type_suffix(bytes[i]) {
+                    i += 1;
+                }
+                tokens.push((SyntaxKind::OctLiteral, &source[start..i]));
                 continue;
             }
             if next == b'o' {
@@ -213,7 +228,7 @@ pub fn tokenize(source: &str) -> Vec<(SyntaxKind, &str)> {
             // Type suffix after identifier-like word: %, &, !, #, @, $
             if can_have_type_suffix(kind)
                 && i < bytes.len()
-                && is_type_suffix(bytes[i])
+                && (is_type_suffix(bytes[i]) || is_caret_suffix(bytes, i))
                 && !is_bang_member_operator(bytes, i)
             {
                 let ts = i;
@@ -272,6 +287,79 @@ pub fn tokenize(source: &str) -> Vec<(SyntaxKind, &str)> {
 
     tokens.push((SyntaxKind::Eof, &source[source.len()..]));
     tokens
+}
+
+/// End of a comment that starts before `from`: the line end, extended over every ` _` line
+/// continuation (MS-VBAL §3.2: a comment ending in a continuation takes the next line).
+fn comment_end(bytes: &[u8], from: usize) -> usize {
+    let mut i = from;
+    loop {
+        while i < bytes.len() && bytes[i] != b'\n' && bytes[i] != b'\r' {
+            i += 1;
+        }
+        let continued = i < bytes.len()
+            && i >= from + 2
+            && bytes[i - 1] == b'_'
+            && matches!(bytes[i - 2], b' ' | b'\t');
+        if !continued {
+            return i;
+        }
+        if bytes[i] == b'\r' && bytes.get(i + 1) == Some(&b'\n') {
+            i += 2;
+        } else {
+            i += 1;
+        }
+        // the next physical line belongs to the comment
+    }
+}
+
+/// Is the last significant token one that ends an operand (so a following `&` is an operator)?
+fn last_is_operand(tokens: &[(SyntaxKind, &str)]) -> bool {
+    use SyntaxKind::*;
+    tokens
+        .iter()
+        .rev()
+        .find(|(k, _)| !matches!(k, Whitespace | LineContinuation))
+        .is_some_and(|(k, _)| {
+            matches!(
+                k,
+                Ident
+                    | IntLiteral
+                    | FloatLiteral
+                    | HexLiteral
+                    | OctLiteral
+                    | StringLiteral
+                    | DateLiteral
+                    | RParen
+                    | BracketedIdent
+                    | TypeSuffix
+            )
+        })
+}
+
+/// `^` straight after an identifier is the LongLong type character (MS-VBAL §3.3.5.3) only
+/// where it cannot be an exponent operator: it ends the declarator (`Dim x^`, `x^ As ...`,
+/// `x^, y`, `x^ = 5`).
+fn is_caret_suffix(bytes: &[u8], i: usize) -> bool {
+    if bytes[i] != b'^' {
+        return false;
+    }
+    let mut j = i + 1;
+    while j < bytes.len() && matches!(bytes[j], b' ' | b'\t') {
+        j += 1;
+    }
+    match bytes.get(j) {
+        None => true,
+        Some(b'\n' | b'\r' | b',' | b')' | b':' | b'\'' | b'=') => true,
+        Some(b'A' | b'a') => {
+            bytes[j..].len() >= 2
+                && bytes[j + 1].eq_ignore_ascii_case(&b's')
+                && !bytes
+                    .get(j + 2)
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_')
+        }
+        _ => false,
+    }
 }
 
 /// Check if `_` at position `i` is a line continuation (followed by optional
@@ -436,7 +524,7 @@ fn lex_number(source: &str, bytes: &[u8], i: &mut usize) {
         }
     }
     // Exponent part
-    if *i < bytes.len() && (bytes[*i] == b'e' || bytes[*i] == b'E') {
+    if *i < bytes.len() && matches!(bytes[*i], b'e' | b'E' | b'd' | b'D') {
         let saved = *i;
         *i += 1;
         if *i < bytes.len() && (bytes[*i] == b'+' || bytes[*i] == b'-') {
@@ -462,7 +550,7 @@ fn classify_number(text: &str) -> SyntaxKind {
         return SyntaxKind::FloatLiteral;
     }
     let body = text.trim_end_matches(['%', '&', '^']);
-    if body.contains('.') || body.contains('e') || body.contains('E') {
+    if body.contains(['.', 'e', 'E', 'd', 'D']) {
         SyntaxKind::FloatLiteral
     } else {
         SyntaxKind::IntLiteral
@@ -822,5 +910,42 @@ mod tests {
 
         let toks = tokenize("Sub");
         assert_eq!(toks.last().unwrap().0, SyntaxKind::Eof);
+    }
+
+    #[test]
+    fn comment_continues_over_underscore_lines() {
+        let toks = tokenize("x = 1 ' a _\n b\ny");
+        assert!(toks.contains(&(SyntaxKind::Comment, "' a _\n b")));
+        // `_` glued to text is not a continuation
+        let toks = tokenize("' a_\nb");
+        assert_eq!(toks[0], (SyntaxKind::Comment, "' a_"));
+    }
+
+    #[test]
+    fn caret_suffix_only_ends_a_declarator() {
+        assert_eq!(
+            kinds("Dim x^"),
+            vec![
+                SyntaxKind::KwDim,
+                SyntaxKind::Whitespace,
+                SyntaxKind::Ident,
+                SyntaxKind::TypeSuffix,
+                SyntaxKind::Eof
+            ]
+        );
+        assert!(kinds("x^ As LongLong").contains(&SyntaxKind::TypeSuffix));
+        assert!(!kinds("x^2").contains(&SyntaxKind::TypeSuffix));
+        assert!(!kinds("x ^ 2").contains(&SyntaxKind::TypeSuffix));
+        assert!(!kinds("x^y").contains(&SyntaxKind::TypeSuffix));
+    }
+
+    #[test]
+    fn number_forms() {
+        assert_eq!(tokenize("1D3")[0], (SyntaxKind::FloatLiteral, "1D3"));
+        assert_eq!(tokenize(".5")[0], (SyntaxKind::FloatLiteral, ".5"));
+        assert_eq!(tokenize("&17")[0], (SyntaxKind::OctLiteral, "&17"));
+        // after an operand `&` stays the concatenation operator; `a.5` stays a member access
+        assert_eq!(tokenize("a &17")[2].0, SyntaxKind::Ampersand);
+        assert_eq!(tokenize("a.5")[1].0, SyntaxKind::Dot);
     }
 }

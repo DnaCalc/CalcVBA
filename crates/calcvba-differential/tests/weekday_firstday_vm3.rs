@@ -19,11 +19,11 @@ fn value(expr: &str) -> Canon {
 fn weekday_defaults_to_sunday_first() {
     assert_eq!(
         value("Weekday(DateSerial(2024, 1, 7))"),
-        canon(&Variant::from_i32(1))
+        canon(&Variant::from_i16(1))
     );
     assert_eq!(
         value("Weekday(DateSerial(2024, 1, 8))"),
-        canon(&Variant::from_i32(2))
+        canon(&Variant::from_i16(2))
     );
 }
 
@@ -31,11 +31,11 @@ fn weekday_defaults_to_sunday_first() {
 fn weekday_honors_monday_first() {
     assert_eq!(
         value("Weekday(DateSerial(2024, 1, 7), 2)"),
-        canon(&Variant::from_i32(7))
+        canon(&Variant::from_i16(7))
     );
     assert_eq!(
         value("Weekday(DateSerial(2024, 1, 8), 2)"),
-        canon(&Variant::from_i32(1))
+        canon(&Variant::from_i16(1))
     );
 }
 
@@ -43,10 +43,10 @@ fn weekday_honors_monday_first() {
 fn weekday_explicit_sunday_matches_default() {
     assert_eq!(
         value("Weekday(DateSerial(2024, 1, 8), 1)"),
-        canon(&Variant::from_i32(2))
+        canon(&Variant::from_i16(2))
     );
     assert_eq!(
         value("Weekday(DateSerial(2024, 1, 8), 0)"),
-        canon(&Variant::from_i32(2))
+        canon(&Variant::from_i16(2))
     );
 }

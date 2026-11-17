@@ -53,9 +53,10 @@ fn error_function_returns_messages_and_current_err_description() {
 
 #[test]
 fn error_function_rejects_invalid_numbers() {
+    // A number past 65535 overflows; a negative one has no message of its own and is not an error.
     let outcome = run(
         Executor::Vm3,
-        "Sub Main()\n    Dim s As String\n    s = Error(-1)\nEnd Sub\n",
+        "Sub Main()\n    Dim s As String\n    s = Error(70000)\nEnd Sub\n",
     );
     assert!(
         outcome.unsupported.is_none(),
@@ -66,5 +67,10 @@ fn error_function_rejects_invalid_numbers() {
         outcome.result.is_err(),
         "invalid Error argument should raise: {outcome:?}"
     );
-    assert_eq!(outcome.err.number, 5);
+    assert_eq!(outcome.err.number, 6);
+    let negative = run(
+        Executor::Vm3,
+        "Sub Main()\n    Dim s As String\n    s = Error(-1)\nEnd Sub\n",
+    );
+    assert!(negative.result.is_ok(), "{negative:?}");
 }

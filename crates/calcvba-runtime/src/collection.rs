@@ -12,8 +12,8 @@
 //! This is the data model only; the shared dispatch site
 //! ([`crate::collection`] has none — see `calcvba_eval::collection::dispatch_collection`)
 //! maps [`CollectionError`] onto VBA run-time error numbers (9 / 457 / 5 / 449) and builds
-//! [`Selector`]s from the call arguments. Keys are case-insensitive (folded to ASCII
-//! lowercase).
+//! [`Selector`]s from the call arguments. Keys are case-insensitive (folded to Unicode
+//! lowercase by [`fold_key`]).
 
 use crate::Variant;
 
@@ -29,14 +29,21 @@ pub enum Selector {
 /// dispatch site.
 #[derive(Debug, PartialEq, Eq)]
 pub enum CollectionError {
-    /// Index out of range / key not found → error 9.
+    /// Index out of range → error 9.
     NotFound,
     /// `Add` with a key already present → error 457.
     DuplicateKey,
-    /// `Add` given both `before` and `after` → error 5.
+    /// `Add` given both `before` and `after`, or a key that is not in the collection → error 5.
     BadArgument,
+    /// `Add` given a key that is not a String → error 13.
+    TypeMismatch,
     /// A required `Item`/`Remove` selector was omitted → error 449.
     ArgNotOptional,
+}
+
+/// The case-insensitive form of a collection key: Unicode lower case, so `Ä` and `ä` are one key.
+pub fn fold_key(key: &str) -> String {
+    key.chars().flat_map(char::to_lowercase).collect()
 }
 
 /// A VBA `Collection`'s ordered contents. Indices are 1-based at the VBA surface.
@@ -114,7 +121,7 @@ impl CollectionData {
                     .then_some(zero)
                     .ok_or(CollectionError::NotFound)
             }
-            Selector::Key(k) => self.position_of_key(k).ok_or(CollectionError::NotFound),
+            Selector::Key(k) => self.position_of_key(k).ok_or(CollectionError::BadArgument),
         }
     }
 
@@ -168,7 +175,7 @@ mod tests {
         assert_eq!(i32_of(c.item(&Selector::Key("beta".into()))), Some(2));
         assert_eq!(
             c.item(&Selector::Key("missing".into())).unwrap_err(),
-            CollectionError::NotFound
+            CollectionError::BadArgument
         );
         // Duplicate key → 457.
         assert_eq!(

@@ -570,6 +570,25 @@ impl<'h> Vm3<'h> {
         ty == Some(&OxTy::Variant)
     }
 
+    /// Whether `operand` is a place declared `As Object` (an untyped object variable).
+    fn operand_is_untyped_object(&self, operand: &OxOperand) -> bool {
+        let Some(frame) = self.frames.last() else {
+            return false;
+        };
+        let function = &self.cur_program().funcs[frame.func.0];
+        let ty = match operand {
+            OxOperand::Use(OxPlace::Local(id)) => function.locals.get(id.0).map(|local| &local.ty),
+            OxOperand::Use(OxPlace::Temp(id)) => function.temps.get(id.0),
+            OxOperand::Use(OxPlace::Global(id)) => self
+                .cur_program()
+                .globals
+                .get(id.0)
+                .map(|global| &global.ty),
+            _ => None,
+        };
+        matches!(ty, Some(OxTy::Object(calcvba_oxir::ObjClass::Untyped)))
+    }
+
     /// Initial slot value for a statically typed VBA variable. Dynamic array variables are
     /// arrays before allocation for `IsArray`, but have no SAFEARRAY descriptor/bounds until
     /// `ReDim`.
@@ -2267,7 +2286,13 @@ impl<'h> Vm3<'h> {
                         };
                         self.store(array, value)?
                     }
-                    None => self.store(array, Variant::empty())?,
+                    // `Erase` of a Variant that is not an array is a type mismatch.
+                    None => {
+                        return Err(Vm3Error::Fault(Fault::new(
+                            13,
+                            calcvba_rt_abi::default_error_message(13),
+                        )));
+                    }
                 }
             }
             OxInst::Bound {
@@ -3689,14 +3714,18 @@ impl<'h> Vm3<'h> {
         // raising "Object required" (424).
         let is_object = matches!(value.vtype(), VarType::Object);
         match intent {
-            Intent::Set if !is_object => Err(Vm3Error::Fault(Fault::new(
-                if matches!(src, OxOperand::Use(_)) && self.operand_is_variant(src) {
-                    13
+            // A non-object Variant `Set` into a Variant is a Type mismatch; into an object
+            // variable (or from a non-Variant) it is "Object required" (Excel).
+            Intent::Set if !is_object => Err(Vm3Error::Fault(
+                if matches!(src, OxOperand::Use(_))
+                    && self.operand_is_variant(src)
+                    && target_kind == Kind::Variant
+                {
+                    Fault::new(13, "Type mismatch")
                 } else {
-                    424
+                    Fault::new(424, "Object required")
                 },
-                "Object required",
-            ))),
+            )),
             Intent::Let
                 if target_kind == Kind::Variant
                     && value.vtype() == VarType::Object
@@ -3714,45 +3743,26 @@ impl<'h> Vm3<'h> {
                 Err(Vm3Error::Fault(Fault::new(424, "Object required")))
             }
             Intent::Set if value.vtype() == VarType::Object && is_nothing(&value) => Ok(()),
-            // Strict `Set` type check (error 13): when the target's declared type is a known
-            // project class/interface, a project-instance source must be that class or
-            // implement that interface. Unconstrained targets (`Object`/`Variant`, or any
-            // non-project type) are not checked, and `Nothing` is always allowed. Mirrors
-            // vm2's `validate_assignment` (the source object's class + the target type are
-            // both resolved in the object's OWN program, against the bare target name).
+            // Strict `Set` type check (error 13): a project class/interface target takes only
+            // an instance of that class (or implementing it), a `Collection` target only a
+            // Collection; `Object`/`Variant` and COM interface targets are not checked here.
             Intent::Set if value.vtype() == VarType::Object && !target_type_name.is_empty() => {
                 let obj = variant_to_object(&value)?;
-                let bare_target = target_type_name
-                    .rsplit('.')
-                    .next()
-                    .unwrap_or(target_type_name);
-                if obj.is_project_instance()
-                    && let Some(lp) = self.exec.programs.get(obj.bundle_id() as usize)
-                {
-                    let target_is_project = lp.program.classes.iter().any(|c| {
-                        c.name.eq_ignore_ascii_case(bare_target)
-                            || c.implements
-                                .iter()
-                                .any(|i| i.eq_ignore_ascii_case(bare_target))
-                    });
-                    if target_is_project
-                        && let Some(class) = lp.program.classes.get(obj.route_key() as usize)
-                    {
-                        let compatible = class.name.eq_ignore_ascii_case(bare_target)
-                            || class
-                                .implements
-                                .iter()
-                                .any(|i| i.eq_ignore_ascii_case(bare_target));
-                        if !compatible {
-                            return Err(Vm3Error::Fault(Fault::new(
-                                13,
-                                format!(
-                                    "Type mismatch: `{}` cannot be assigned to `{target_type_name}`",
-                                    class.name
-                                ),
-                            )));
-                        }
-                    }
+                let source = obj
+                    .is_project_instance()
+                    .then(|| self.exec.programs.get(obj.bundle_id() as usize))
+                    .flatten()
+                    .map(|lp| lp.program);
+                if calcvba_rt_abi::object_types::set_type_mismatch(
+                    &obj,
+                    target_type_name,
+                    source,
+                    self.exec.programs.iter().map(|lp| lp.program),
+                ) {
+                    return Err(Vm3Error::Fault(Fault::new(
+                        13,
+                        format!("Type mismatch: cannot be assigned to `{target_type_name}`"),
+                    )));
                 }
                 Ok(())
             }
@@ -4240,11 +4250,21 @@ impl<'h> Vm3<'h> {
     /// delegate to the host (unreachable until `CreateObject` lands in M3-8, but mirrors vm2).
     fn type_of_is(&mut self, object: &OxOperand, type_name: &str) -> Result<bool, Vm3Error> {
         let v = self.operand(object)?;
-        // `TypeOf Nothing Is X` is False, not an error — and so is the same test on an unset
-        // or `Set …= Nothing` object variable (a null Object Variant) and on `Empty`/`Null`.
-        // Guard before `variant_to_object`, which would otherwise raise 91.
-        if is_nothing(&v) {
+        // `TypeOf` on a non-object (`Empty`, `Null`, a number) is False, and so is it on
+        // `Nothing` — except for an `As Object` variable holding Nothing, which raises 91
+        // (Excel: `Set o = Nothing: TypeOf o Is Collection`).
+        if v.vtype() != VarType::Object {
             return Ok(false);
+        }
+        if is_nothing(&v) {
+            return if self.operand_is_untyped_object(object) {
+                Err(Vm3Error::Fault(Fault::new(
+                    91,
+                    "Object variable or With block variable not set",
+                )))
+            } else {
+                Ok(false)
+            };
         }
         let obj = variant_to_object(&v)?;
         calcvba_rt_abi::object_types::matches_type(
@@ -4800,6 +4820,7 @@ impl<'h> Vm3<'h> {
                 "This key is already associated with an element of this collection",
             ),
             CollectionError::BadArgument => Fault::new(5, "Invalid procedure call or argument"),
+            CollectionError::TypeMismatch => Fault::new(13, "Type mismatch"),
             CollectionError::ArgNotOptional => Fault::new(449, "Argument not optional"),
         }
     }
@@ -6378,14 +6399,7 @@ fn variant_to_object(value: &Variant) -> Result<ObjectRef, Vm3Error> {
             "Object variable or With block variable not set",
         )));
     }
-    if let Some(raw) = value.as_i16().map(i32::from).or_else(|| value.as_i32()) {
-        return Ok(ObjectRef::from_compat_identity(raw));
-    }
-    if let Some(raw) = value.as_i64() {
-        return i32::try_from(raw)
-            .map(ObjectRef::from_compat_identity)
-            .map_err(|_| Vm3Error::Fault(Fault::new(13, "object handle exceeds i32 range")));
-    }
+    // A number is not an object (`vv = 5: vv.Foo` is 424, as in Excel).
     Err(Vm3Error::Fault(Fault::new(424, "Object required")))
 }
 

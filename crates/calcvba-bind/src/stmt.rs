@@ -952,7 +952,19 @@ impl<'a> ProcLower<'a> {
     }
 
     fn bind_with(&mut self, node: SyntaxNode<'_>) -> Result<Vec<CoreStmt>, BindError> {
-        let obj = self.bind_required_bound(node.condition_expr(), "With object")?;
+        let mut obj = self.bind_required_bound(node.condition_expr(), "With object")?;
+        // A UDT subject is reached through its place on each `.member`; its subscripts are
+        // evaluated once, on entry (`With pts(i)`).
+        let mut stmts = Vec::new();
+        if matches!(self.g.resolve_udt_type(obj.ty.clone()), VarTypeRef::Udt(_))
+            && let Some(place) = obj.place.take()
+        {
+            let place = self.snapshot_place_indices(place, &mut stmts);
+            if matches!(obj.value, CoreValue::Load(_)) {
+                obj.value = CoreValue::Load(place.clone());
+            }
+            obj.place = Some(place);
+        }
         let id = self.next_with_temp;
         self.next_with_temp += 1;
         self.with_stack.push(crate::Bound {
@@ -962,11 +974,12 @@ impl<'a> ProcLower<'a> {
         });
         let body = self.bind_opt_block(node.body_block());
         self.with_stack.pop();
-        Ok(vec![CoreStmt::With {
+        stmts.push(CoreStmt::With {
             id,
             receiver: obj.value,
             body: body?,
-        }])
+        });
+        Ok(stmts)
     }
 
     fn bind_exit(&mut self, node: SyntaxNode<'_>) -> Result<Vec<CoreStmt>, BindError> {
@@ -1884,9 +1897,9 @@ impl<'a> ProcLower<'a> {
     /// are significant (zones vs. adjacency for `Print`; trailing-separator newline
     /// suppression for both), so we walk the `PrintItemList` in source order and pack
     /// a per-item separator spec into `args[1]`: one char per item — the separator
-    /// that *follows* it (`,`, `;`, or `n` for none). `Print #` additionally carries
-    /// `args[2]` as a per-item kind spec (`v` value, `s` Spc, `t` Tab), followed by
-    /// item values; `Write #` keeps `args[2..]` as field values.
+    /// that *follows* it (`,`, `;`, or `n` for none). `args[2]` is a per-item kind spec
+    /// (`v` value, `s` Spc, `t` Tab, `z` bare Tab, `e` empty item), followed by the item
+    /// values.
     fn bind_print_write(&mut self, node: SyntaxNode<'_>) -> Result<Vec<CoreStmt>, BindError> {
         let id = match node.kind() {
             SyntaxKind::PrintStmt => NativeImplId::FilePrint,
@@ -1902,18 +1915,19 @@ impl<'a> ProcLower<'a> {
             }
         };
         // Default each field's following separator to 'n' (none → terminate the line);
-        // a `,`/`;` token in the list overwrites the preceding field's slot.
+        // a `,`/`;` token in the list overwrites the preceding field's slot. A `,` with no
+        // item before it is an empty item (kind 'e') that still advances a print zone.
         let mut fields: Vec<CoreValue> = Vec::new();
         let mut seps: Vec<char> = Vec::new();
         let mut kinds: Vec<char> = Vec::new();
+        let mut after_separator = true;
         if let Some(list) = node.child_node(SyntaxKind::PrintItemList) {
             for element in list.children() {
                 match element {
                     SyntaxElement::Node(item) if item.kind() == SyntaxKind::PrintItem => {
                         if let Some(e) = item.first_expr_child() {
-                            if id == NativeImplId::FilePrint
-                                && let Some((kind, value)) = self.bind_print_clause_control(e)?
-                            {
+                            after_separator = false;
+                            if let Some((kind, value)) = self.bind_print_clause_control(e)? {
                                 fields.push(value);
                                 kinds.push(kind);
                                 seps.push('n');
@@ -1925,29 +1939,35 @@ impl<'a> ProcLower<'a> {
                         }
                     }
                     SyntaxElement::Token(tok) if tok.kind == SyntaxKind::Comma => {
-                        if let Some(last) = seps.last_mut() {
+                        if after_separator {
+                            fields.push(CoreValue::Const(CoreConst::Empty));
+                            kinds.push('e');
+                            seps.push(',');
+                        } else if let Some(last) = seps.last_mut() {
                             *last = ',';
                         }
+                        after_separator = true;
                     }
                     SyntaxElement::Token(tok) if tok.kind == SyntaxKind::Semicolon => {
-                        if let Some(last) = seps.last_mut() {
+                        if !after_separator && let Some(last) = seps.last_mut() {
                             *last = ';';
                         }
+                        after_separator = true;
                     }
                     _ => {}
                 }
             }
         }
-        let mut args = vec![
+        let args: Vec<CoreArg> = [
             CoreArg::ByVal(handle),
             CoreArg::ByVal(CoreValue::Const(CoreConst::Str(seps.into_iter().collect()))),
-        ];
-        if id == NativeImplId::FilePrint {
-            args.push(CoreArg::ByVal(CoreValue::Const(CoreConst::Str(
+            CoreArg::ByVal(CoreValue::Const(CoreConst::Str(
                 kinds.into_iter().collect(),
-            ))));
-        }
-        args.extend(fields.into_iter().map(CoreArg::ByVal));
+            ))),
+        ]
+        .into_iter()
+        .chain(fields.into_iter().map(CoreArg::ByVal))
+        .collect();
         Ok(vec![CoreStmt::Eval(self.vba_library_call(id, args))])
     }
 
@@ -2090,11 +2110,19 @@ impl<'a> ProcLower<'a> {
             None => CoreValue::Const(CoreConst::Empty),
         };
         let (place, target_ty) = self.bind_place(*target_node)?;
-        // The read native needs the target's VBA type code to fix the record size.
-        let type_code = CoreValue::Const(CoreConst::I32(record_type_code(
-            self.g.type_ctx,
-            &target_ty,
-        )));
+        // The read native needs the target's VBA type code to fix the record size. An
+        // array target reads as many elements as it holds: its type code is
+        // `VT_ARRAY | element` and the array itself rides in the length slot.
+        let array_element = match &target_ty {
+            calcvba_symbol::signature::VarTypeRef::Array(element) => {
+                Some(record_type_code(self.g.type_ctx, element))
+            }
+            _ => None,
+        };
+        let type_code = CoreValue::Const(CoreConst::I32(match array_element {
+            Some(element) => 0x2000 | element,
+            None => record_type_code(self.g.type_ctx, &target_ty),
+        }));
         // String-length spec: a fixed-length string passes its length N (read N
         // bytes, no prefix); a variable string passes -(Len(target)) so a Binary
         // read knows the byte count (Random uses the on-disk 2-byte prefix).
@@ -2117,6 +2145,7 @@ impl<'a> ProcLower<'a> {
                     num: NumericMode::Widening,
                 }
             }
+            calcvba_symbol::signature::VarTypeRef::Array(_) => self.bind_expr(*target_node)?.value,
             _ => CoreValue::Const(CoreConst::I32(0)),
         };
         let args = vec![

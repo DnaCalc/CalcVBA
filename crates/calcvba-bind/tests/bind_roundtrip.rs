@@ -1091,12 +1091,16 @@ fn print_hash_binds_spc_and_tab_as_print_clause_controls() {
 
 #[test]
 fn write_hash_binds_every_field() {
-    // `Write #1, x, y` ⇒ `[handle, sep-spec, x, y]` — all fields reach the call.
+    // `Write #1, x, y` ⇒ `[handle, sep-spec, kind-spec, x, y]` — all fields reach the call.
     let program = bind(
         "Sub Main()\n    Dim x, y\n    Open \"x.txt\" For Output As #1\n    Write #1, x, y\nEnd Sub\n",
     );
     let args = extern_filesystem_call_args(&program, "Write").expect("a FileSystem.Write call");
-    assert_eq!(args.len(), 4, "handle + sep-spec + 2 fields: {args:?}");
+    assert_eq!(
+        args.len(),
+        5,
+        "handle + sep-spec + kind-spec + 2 fields: {args:?}"
+    );
 }
 
 #[test]
@@ -1156,6 +1160,52 @@ fn addressof_runs_as_integer() {
     // The proc reference materializes as an integer (round-trips through a slot).
     let src = "Sub Main()\n    Dim r As Long\n    r = AddressOf Helper\nEnd Sub\n\nSub Helper()\nEnd Sub\n";
     assert!(run_main_local0(src).is_some());
+}
+
+#[test]
+fn addressof_keeps_the_module_qualifier() {
+    // `AddressOf Module2.Foo` names Module2's `Foo`, not the module's own `Foo`.
+    let program = bind_program(
+        &manifest_modules(&[
+            (
+                "Mod1",
+                ModuleKind::Procedural,
+                "Sub Main()\n    Dim p As LongPtr\n    p = AddressOf Module2.Foo\nEnd Sub\n\nPrivate Sub Foo(ByVal a As Long)\nEnd Sub\n",
+            ),
+            (
+                "Module2",
+                ModuleKind::Procedural,
+                "Public Sub Foo()\nEnd Sub\n",
+            ),
+        ]),
+        &NullTypeLibs,
+    )
+    .expect("bind_program");
+    fn target(v: &CoreValue) -> Option<usize> {
+        match v {
+            CoreValue::AddressOf(proc) => Some(proc.0),
+            CoreValue::Coerce { value, .. } => target(value),
+            _ => None,
+        }
+    }
+    let main = program
+        .procs
+        .iter()
+        .find(|p| p.name.eq_ignore_ascii_case("Main"))
+        .unwrap();
+    let proc = main
+        .body
+        .iter()
+        .find_map(|s| match s {
+            CoreStmt::Assign { value, .. } => target(value),
+            _ => None,
+        })
+        .expect("AddressOf assignment");
+    assert!(
+        program.procs[proc].params.is_empty(),
+        "AddressOf Module2.Foo bound to the wrong Foo: {:?}",
+        program.procs[proc].params
+    );
 }
 
 #[test]
@@ -2715,7 +2765,7 @@ fn project_default_member_set_roundtrip() {
 #[test]
 fn default_member_property_set_assigned_object_is_byval_after_byref_index_arg() {
     let main = "Sub Main()\n    Dim b As Box\n    Dim t As Thing\n    Dim target As Long\n    Set b = New Box\n    Set t = New Thing\n    Set b(target) = t\nEnd Sub\n";
-    let box_cls = "Public Property Get Item(ByVal i As Long) As Thing\n    Set Item = Nothing\nEnd Property\nAttribute Item.VB_UserMemId = 0\n\n\
+    let box_cls = "Public Property Get Item(ByRef i As Long) As Thing\n    Set Item = Nothing\nEnd Property\nAttribute Item.VB_UserMemId = 0\n\n\
                    Public Property Set Item(ByRef i As Long, ByRef value As Thing)\nEnd Property\nAttribute Item.VB_UserMemId = 0\n";
     let thing = "Public Sub Touch()\nEnd Sub\n";
     let program = bind_program(

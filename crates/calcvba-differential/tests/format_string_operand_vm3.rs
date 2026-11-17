@@ -41,9 +41,9 @@ fn date_string_operand_under_date_mask_is_parsed() {
 }
 
 #[test]
-fn non_numeric_string_still_formats_as_zero() {
-    // A genuinely non-numeric string is 0 (VBA), not an error.
-    assert_formats("Format(\"abc\", \"0.00\")", "0.00");
+fn non_numeric_string_is_returned_unchanged() {
+    // A non-numeric string under a number mask is returned unchanged (Excel).
+    assert_formats("Format(\"abc\", \"0.00\")", "abc");
 }
 
 #[test]

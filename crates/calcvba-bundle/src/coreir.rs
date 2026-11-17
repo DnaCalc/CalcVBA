@@ -311,7 +311,15 @@ impl CoreConst {
             _ => None,
         };
         let digits = trimmed.trim_end_matches(['%', '&', '^']);
-        let n: i64 = digits.parse().ok()?;
+        let Ok(n) = digits.parse::<i64>() else {
+            // Beyond LongLong: a Double when unsuffixed (MS-VBAL §3.3.2), too large for a suffix.
+            if suffix.is_some() || digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit())
+            {
+                return None;
+            }
+            let value: f64 = digits.parse().ok()?;
+            return value.is_finite().then_some(CoreConst::F64(value.to_bits()));
+        };
         match suffix {
             Some(b'%') => i16::try_from(n).ok().map(CoreConst::I16),
             Some(b'&') => i32::try_from(n).ok().map(CoreConst::I32),
@@ -357,18 +365,72 @@ impl CoreConst {
     /// `Single`/`Currency` magnitude overflows its type. Used by both the binder
     /// and `Const` folding so the two agree.
     pub fn from_float_literal(text: &str) -> Option<CoreConst> {
-        let value: f64 = text.trim_end_matches(['!', '#', '@']).parse().ok()?;
+        // `D` is the Double exponent letter (`1D3`); Rust only knows `e`.
+        let body = text
+            .trim_end_matches(['!', '#', '@'])
+            .replace(['d', 'D'], "e");
+        let value: f64 = body.parse().ok()?;
         match text.as_bytes().last() {
-            Some(b'@') => {
-                let scaled = (value * 10_000.0).round_ties_even();
-                (scaled.is_finite() && scaled >= i64::MIN as f64 && scaled <= i64::MAX as f64)
-                    .then_some(CoreConst::Currency(scaled as i64))
-            }
+            Some(b'@') => currency_from_decimal(&body).map(CoreConst::Currency),
             Some(b'!') => (value.is_finite() && value.abs() <= f64::from(f32::MAX))
                 .then_some(CoreConst::F32((value as f32).to_bits())),
             _ => value.is_finite().then_some(CoreConst::F64(value.to_bits())),
         }
     }
+}
+
+/// A decimal literal (`12.34`, `.5`, `1e-3`) as Currency units (value * 10_000), rounded half
+/// to even on the exact decimal digits, without going through `f64`.
+fn currency_from_decimal(text: &str) -> Option<i64> {
+    let (mantissa, exp) = match text.split_once(['e', 'E']) {
+        Some((m, e)) => (m, e.parse::<i32>().ok()?),
+        None => (text, 0),
+    };
+    let (int, frac) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    if int.is_empty() && frac.is_empty() {
+        return None;
+    }
+    if !int.bytes().chain(frac.bytes()).all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    // value * 10^4 = digits * 10^(exp + 4 - frac.len())
+    let shift = i64::from(exp) + 4 - frac.len() as i64;
+    let digits: String = int.chars().chain(frac.chars()).collect();
+    let digits = digits.trim_start_matches('0');
+    if digits.is_empty() {
+        return Some(0);
+    }
+    let magnitude: i128 = if shift >= 0 {
+        if digits.len() as i64 + shift > 30 {
+            return None;
+        }
+        digits
+            .parse::<i128>()
+            .ok()?
+            .checked_mul(10i128.checked_pow(shift as u32)?)?
+    } else {
+        let cut = (-shift) as usize;
+        if cut > digits.len() {
+            0
+        } else {
+            let (head, tail) = digits.split_at(digits.len() - cut);
+            let head: i128 = if head.is_empty() {
+                0
+            } else {
+                head.parse().ok()?
+            };
+            let mut chars = tail.chars();
+            let first = chars.next();
+            let rest_nonzero = chars.any(|c| c != '0');
+            let round_up = match first {
+                Some(c) if c > '5' => true,
+                Some('5') => rest_nonzero || head % 2 == 1,
+                _ => false,
+            };
+            head + i128::from(round_up)
+        }
+    };
+    i64::try_from(magnitude).ok()
 }
 
 #[cfg(test)]
@@ -393,6 +455,32 @@ mod core_const_tests {
             CoreConst::from_int_literal("2147483648"),
             Some(CoreConst::F64(_))
         ));
+    }
+
+    #[test]
+    fn big_integer_literal_is_a_double() {
+        assert_eq!(
+            CoreConst::from_int_literal("99999999999999999999"),
+            Some(CoreConst::F64(1e20f64.to_bits()))
+        );
+        assert_eq!(CoreConst::from_int_literal("99999999999999999999&"), None);
+    }
+
+    #[test]
+    fn d_exponent_and_exact_currency_rounding() {
+        assert_eq!(
+            CoreConst::from_float_literal("1D3"),
+            Some(CoreConst::F64(1000f64.to_bits()))
+        );
+        let cur = |t| CoreConst::from_float_literal(t);
+        assert_eq!(cur("0.00005@"), Some(CoreConst::Currency(0)));
+        assert_eq!(cur("0.00015@"), Some(CoreConst::Currency(2)));
+        assert_eq!(cur("0.000151@"), Some(CoreConst::Currency(2)));
+        assert_eq!(cur("0.00025@"), Some(CoreConst::Currency(2)));
+        assert_eq!(cur("0.00026@"), Some(CoreConst::Currency(3)));
+        assert_eq!(cur("1.2345@"), Some(CoreConst::Currency(12345)));
+        assert_eq!(cur(".5@"), Some(CoreConst::Currency(5000)));
+        assert_eq!(cur("1.5e-1@"), Some(CoreConst::Currency(1500)));
     }
 
     #[test]

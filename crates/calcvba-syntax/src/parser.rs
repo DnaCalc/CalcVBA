@@ -114,6 +114,8 @@ struct Parser<'a> {
     pending_multinext_closures: usize,
     /// Active source-level `For` parser nesting.
     for_depth: usize,
+    /// `Option` statements already seen (bit per kind), for "Duplicate Option statement".
+    options_seen: u8,
 }
 
 impl<'a> Parser<'a> {
@@ -127,6 +129,7 @@ impl<'a> Parser<'a> {
             paren_depth: 0,
             pending_multinext_closures: 0,
             for_depth: 0,
+            options_seen: 0,
         }
     }
 
@@ -470,6 +473,7 @@ impl<'a> Parser<'a> {
             | SyntaxKind::KwAddressOf
             | SyntaxKind::LParen
             | SyntaxKind::Dot
+            | SyntaxKind::Bang
             | SyntaxKind::Hash => true,
             k if Self::is_expr_name_token(k) => true,
             k if Self::prefix_binding_power(k).is_some() => true,
@@ -691,10 +695,10 @@ impl<'a> Parser<'a> {
                 }
                 self.finish_node();
             }
-            // Dot-prefix (With-block member access: .Value)
-            SyntaxKind::Dot => {
+            // Dot-prefix (With-block member access: .Value, or the dictionary access !key)
+            SyntaxKind::Dot | SyntaxKind::Bang => {
                 self.start_node(SyntaxKind::MemberExpr);
-                self.bump(); // .
+                self.bump(); // . or !
                 self.eat_expr_whitespace();
                 if self.at(SyntaxKind::Ident)
                     || self.at(SyntaxKind::BracketedIdent)
@@ -1032,18 +1036,46 @@ impl<'a> Parser<'a> {
         self.eat_trivia();
         self.bump(); // Option
         self.eat_whitespace();
+        let kind = match self.current() {
+            SyntaxKind::KwExplicit => Some(1),
+            SyntaxKind::KwBase => Some(2),
+            SyntaxKind::KwCompare => Some(4),
+            SyntaxKind::KwPrivate => Some(8),
+            _ => None,
+        };
+        if let Some(bit) = kind {
+            if self.options_seen & bit != 0 {
+                self.error("Duplicate Option statement".into());
+            }
+            self.options_seen |= bit;
+        }
         if self.at(SyntaxKind::KwExplicit) {
             self.bump();
         } else if self.at(SyntaxKind::KwBase) {
             self.bump();
             self.eat_whitespace();
             if self.at(SyntaxKind::IntLiteral) {
+                // `0`/`1`, with an integer type character allowed (`Option Base 1&`).
+                let text = self.tokens[self.pos].1;
+                if !matches!(text.trim_end_matches(['%', '&', '^']), "0" | "1") {
+                    self.error("Expected: 0 or 1".into());
+                }
                 self.bump();
+            } else {
+                self.error("Expected: 0 or 1".into());
             }
         } else if self.at(SyntaxKind::KwCompare) {
             self.bump();
             self.eat_whitespace();
             // Binary (keyword) | Text (lexes as Ident) | Database (Ident)
+            let text = self.tokens[self.pos].1;
+            let known = self.at(SyntaxKind::KwBinary)
+                || (self.at(SyntaxKind::Ident)
+                    && (text.eq_ignore_ascii_case("text")
+                        || text.eq_ignore_ascii_case("database")));
+            if !known {
+                self.error("Expected: Text or Binary".into());
+            }
             if self.at(SyntaxKind::KwBinary) || self.at(SyntaxKind::Ident) {
                 self.bump();
             }
@@ -2249,11 +2281,16 @@ impl<'a> Parser<'a> {
                 self.parse_expr();
             }
         }
-        self.eat_to_eol();
+        self.eat_to_clause_end();
 
         // Case clauses
         loop {
             self.eat_trivia();
+            // `Select Case x: Case 1: ...: End Select` on one line.
+            if self.at(SyntaxKind::Colon) {
+                self.bump();
+                self.eat_whitespace();
+            }
             if self.at_eof() || self.at(SyntaxKind::KwEnd) {
                 break;
             }
@@ -2322,7 +2359,7 @@ impl<'a> Parser<'a> {
                 self.bump();
             }
         }
-        self.eat_to_eol();
+        self.eat_to_clause_end();
 
         self.finish_node();
     }

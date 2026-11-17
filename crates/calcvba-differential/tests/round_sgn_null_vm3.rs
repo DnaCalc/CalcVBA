@@ -1,14 +1,9 @@
-//! `Round`/`Sgn` of `Null` raise "Invalid use of Null" (94); they are NOT
-//! Null-propagating. This distinguishes them from the Variant-preserving
-//! `Abs`/`Int`/`Fix` (which return Null for a Null argument — see
-//! `abs_int_fix_sgn_vm3`): `Round` and `Sgn` coerce their argument to a numeric
-//! type (Double / Integer), and coercing `Null` to a concrete numeric type is
-//! error 94. `Sgn(Null)=94` is verified against live Office VBA 7.1; `Round`
-//! shares the same coerce-to-numeric mechanism (`as_f64`). This test guards the
-//! behavior so the (previously mis-reported "should propagate Null") finding is
-//! not re-applied.
+//! `Round(Null)` is `Null` and `Sgn(Null)` raises "Invalid use of Null" (94), as Excel answers.
+//! `Sgn` coerces its argument to a number (and coercing `Null` is error 94); `Round` keeps the
+//! Variant `Null` like `Abs`/`Int`/`Fix` (see `abs_int_fix_sgn_vm3`).
 
-use calcvba_differential::{Executor, run};
+use calcvba_differential::{Executor, canon, run};
+use calcvba_runtime::Variant;
 
 fn error_number(expr: &str) -> i32 {
     let source = format!("Public r As Variant\nSub Main()\n    r = {expr}\nEnd Sub\n");
@@ -27,8 +22,14 @@ fn error_number(expr: &str) -> i32 {
 }
 
 #[test]
-fn round_and_sgn_of_null_raise_invalid_use_of_null() {
-    assert_eq!(error_number("Round(Null)"), 94);
-    assert_eq!(error_number("Round(Null, 2)"), 94);
+fn round_of_null_is_null_and_sgn_of_null_raises_94() {
+    // Excel: `Round(Null)` is Null (the argument keeps its Variant subtype); `Sgn(Null)` is 94.
+    for expr in ["Round(Null)", "Round(Null, 2)"] {
+        let source = format!("Public r As Variant\nSub Main()\n    r = {expr}\nEnd Sub\n");
+        let outcome = run(Executor::Vm3, &source);
+        assert!(outcome.unsupported.is_none(), "{expr}");
+        let values = outcome.result.expect("run");
+        assert_eq!(values[0], canon(&Variant::null()), "{expr}");
+    }
     assert_eq!(error_number("Sgn(Null)"), 94);
 }

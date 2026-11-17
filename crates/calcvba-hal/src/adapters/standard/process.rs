@@ -1,4 +1,4 @@
-use super::filesystem::{expand_host_wildcard_paths, path_contains_wildcards};
+use super::filesystem::dir_listing;
 use crate::{
     error::{HalError, HalResult},
     model::CapabilityId,
@@ -10,16 +10,16 @@ use calcvba_runtime::{
     safe_array::{SafeArray, SafeArrayBound, VT_BSTR_VALUE},
     variant_to_vba_string,
 };
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-};
+use std::collections::BTreeMap;
 
 use super::StandardHostServices;
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct DirSearchState {
     pub(super) remaining: Vec<String>,
+    /// A pattern has been given, so a bare `Dir()` continues it; before that (or after the
+    /// listing ended) a bare `Dir()` is error 5.
+    pub(super) active: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -288,7 +288,7 @@ impl ProcessEnvHal for StandardHostServices {
         Ok(Variant::from_i32(key))
     }
 
-    fn dir_variant(&self, path: Variant, _attrs: Variant) -> HalResult<Variant> {
+    fn dir_variant(&self, path: Variant, attrs: Variant) -> HalResult<Variant> {
         let capability = CapabilityId::ProcessEnv;
         if !self.supports(capability) {
             return Err(self.unsupported(capability, "dir"));
@@ -308,7 +308,17 @@ impl ProcessEnvHal for StandardHostServices {
             };
             if is_continuation {
                 let mut state = self.borrow_dir(capability, "dir")?;
+                if !state.active {
+                    return Err(HalError::adapter_fault(
+                        self.profile,
+                        capability,
+                        "dir",
+                        "Dir() has no previous pattern",
+                    )
+                    .with_host_error_code(5));
+                }
                 let next = if state.remaining.is_empty() {
+                    state.active = false;
                     String::new()
                 } else {
                     state.remaining.remove(0)
@@ -317,25 +327,22 @@ impl ProcessEnvHal for StandardHostServices {
             }
 
             let target = self.variant_to_path(&path, capability, "dir", "path")?;
-            let matches = enumerate_dir_matches(&target).map_err(|err| {
-                HalError::adapter_fault(
-                    self.profile,
-                    capability,
-                    "dir",
-                    format!("failed to enumerate dir path {}: {err}", target.display()),
-                )
-            })?;
-            let mut names = matches
-                .into_iter()
-                .map(|entry| {
-                    entry
-                        .file_name()
-                        .map(|value| value.to_string_lossy().to_string())
-                        .unwrap_or_else(|| entry.display().to_string())
-                })
-                .collect::<Vec<_>>();
+            let attrs = self
+                .variant_to_i32(&attrs, capability, "dir", "attributes")
+                .unwrap_or(0);
+            let raw = path.as_bstr().map(|text| text.as_str().to_string());
+            let mut names =
+                dir_listing(raw.as_deref().unwrap_or(""), &target, attrs).map_err(|err| {
+                    HalError::adapter_fault(
+                        self.profile,
+                        capability,
+                        "dir",
+                        format!("failed to enumerate dir path {}: {err}", target.display()),
+                    )
+                })?;
             let first = names.first().cloned().unwrap_or_default();
             let mut state = self.borrow_dir(capability, "dir")?;
+            state.active = !names.is_empty();
             state.remaining = if names.len() > 1 {
                 names.drain(1..).collect()
             } else {
@@ -393,14 +400,4 @@ fn settings_missing_fault(
     message: &'static str,
 ) -> HalError {
     HalError::adapter_fault(profile, capability, op, message).with_host_error_code(5)
-}
-
-fn enumerate_dir_matches(target: &Path) -> std::io::Result<Vec<PathBuf>> {
-    if path_contains_wildcards(target) {
-        return expand_host_wildcard_paths(target);
-    }
-    if target.exists() {
-        return Ok(vec![target.to_path_buf()]);
-    }
-    Ok(Vec::new())
 }

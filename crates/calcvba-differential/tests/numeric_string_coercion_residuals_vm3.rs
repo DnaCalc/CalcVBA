@@ -42,7 +42,7 @@ fn cstr_of_null_raises_invalid_use_of_null() {
 }
 
 #[test]
-fn empty_plus_numeric_takes_the_numeric_subtype_but_empty_plus_string_is_mismatch() {
+fn empty_plus_numeric_takes_the_numeric_subtype_and_empty_plus_string_is_the_string() {
     assert_eq!(
         value(
             "    Dim e As Variant\n    r = CStr(VarType(e + 1)) & \":\" & TypeName(e + 1) & \":\" & CStr(e + 1) & \":\" & CStr(VarType(1 + e))"
@@ -50,7 +50,11 @@ fn empty_plus_numeric_takes_the_numeric_subtype_but_empty_plus_string_is_mismatc
         // Measured against Excel 16.0 build 20527: Empty acts as a zero of the other operand's type.
         canon(&Variant::from_string("2:Integer:1:2"))
     );
-    assert_eq!(error_number("    Dim e As Variant\n    r = e + \"5\""), 13);
+    // `Empty + "5"` is the String "5" (Excel, spec-pass SpecOps emptyPlusStr5).
+    assert_eq!(
+        value("    Dim e As Variant\n    r = e + \"5\""),
+        canon(&Variant::from_string("5"))
+    );
 }
 
 #[test]
@@ -93,8 +97,9 @@ fn strconv_byte_modes_convert_through_byte_arrays() {
         ),
         canon(&Variant::from_string("AZ"))
     );
+    // vbUnicode reads the string's own bytes as ANSI text: `A`, NUL, `Z`, NUL (Excel).
     assert_eq!(
         value("    r = StrConv(\"AZ\", 64)"),
-        canon(&Variant::from_string("AZ"))
+        canon(&Variant::from_string("A\0Z\0"))
     );
 }

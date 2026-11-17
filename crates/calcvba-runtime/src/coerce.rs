@@ -10,32 +10,143 @@ use crate::variant::{VarType, Variant};
 /// converts it (any non-zero is `True`). This is the single source of truth shared by the
 /// explicit (`pure::cbool`) and implicit (`arith::coerce_numeric`) paths so the two agree.
 pub fn parse_bool_text(text: &str) -> Option<bool> {
-    if text.eq_ignore_ascii_case("true") {
+    // `#TRUE#` / `#FALSE#` (the `Write #` spellings) convert too (Excel: `f = "#TRUE#"` is True).
+    if text.eq_ignore_ascii_case("true") || text.eq_ignore_ascii_case("#true#") {
         Some(true)
-    } else if text.eq_ignore_ascii_case("false") {
+    } else if text.eq_ignore_ascii_case("false") || text.eq_ignore_ascii_case("#false#") {
         Some(false)
     } else {
         None
     }
 }
 
-/// Parse the full VBA numeric-string grammar used by explicit conversions and
-/// implicit arithmetic coercion. This intentionally differs from Rust's
-/// `f64::parse`: VBA accepts Automation radix strings (`&HFF`, `&O17`), rejects
-/// trailing type-suffix forms in conversion-string grammar (`&HFF&`), and rejects
-/// Rust-only spellings such as `NaN`/`inf`.
-pub fn parse_vba_numeric_string(s: &str) -> Option<f64> {
+/// Why a string is not a VBA number: not numeric text (Type mismatch, 13) or numeric text out
+/// of the `Double` range (Overflow, 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumberTextError {
+    Mismatch,
+    Overflow,
+}
+
+impl NumberTextError {
+    /// The VBA run-time error number.
+    pub const fn code(self) -> i32 {
+        match self {
+            Self::Mismatch => 13,
+            Self::Overflow => 6,
+        }
+    }
+
+    pub const fn decimal_error(self) -> crate::decimal::DecimalError {
+        match self {
+            Self::Mismatch => crate::decimal::DecimalError::TypeMismatch,
+            Self::Overflow => crate::decimal::DecimalError::Overflow,
+        }
+    }
+
+    fn message(self) -> String {
+        match self {
+            Self::Mismatch => "runtime error: 13 (Type mismatch)".to_string(),
+            Self::Overflow => "runtime error: 6 (Overflow)".to_string(),
+        }
+    }
+}
+
+/// The parts of a decimal number string: its sign and the unsigned body
+/// `digits[.digits][(E|D)[sign]digits]`, already checked against that grammar.
+///
+/// The sign may lead (`-5`, `- 5`), trail (`5-`) or be parentheses (`(5)`), as OLE's
+/// `VarR8FromStr` accepts. Thousands separators and currency symbols are not accepted (Excel
+/// raised 13 on `"1,000"` and `"$5"` on the measuring machine).
+fn number_text_parts(s: &str) -> Option<(bool, &str)> {
     let t = s.trim();
-    if t.is_empty() {
+    let (negative, body) = if t.len() >= 2 && t.starts_with('(') && t.ends_with(')') {
+        (true, t[1..t.len() - 1].trim())
+    } else if let Some(rest) = t.strip_prefix('-') {
+        (true, rest.trim_start())
+    } else if let Some(rest) = t.strip_prefix('+') {
+        (false, rest.trim_start())
+    } else if let Some(rest) = t.strip_suffix('-') {
+        (true, rest.trim_end())
+    } else if let Some(rest) = t.strip_suffix('+') {
+        (false, rest.trim_end())
+    } else {
+        (false, t)
+    };
+    let bytes = body.as_bytes();
+    let mut pos = 0;
+    let digits = |pos: &mut usize| {
+        let start = *pos;
+        while bytes.get(*pos).is_some_and(u8::is_ascii_digit) {
+            *pos += 1;
+        }
+        *pos - start
+    };
+    let mut mantissa_digits = digits(&mut pos);
+    if bytes.get(pos) == Some(&b'.') {
+        pos += 1;
+        mantissa_digits += digits(&mut pos);
+    }
+    if mantissa_digits == 0 {
         return None;
     }
+    if matches!(bytes.get(pos), Some(b'e' | b'E' | b'd' | b'D')) {
+        pos += 1;
+        if matches!(bytes.get(pos), Some(b'+' | b'-')) {
+            pos += 1;
+        }
+        if digits(&mut pos) == 0 {
+            return None;
+        }
+    }
+    (pos == bytes.len()).then_some((negative, body))
+}
+
+/// Parse a VBA number string (the grammar of `CDbl` and of an implicit String-to-number Let):
+/// blanks around the text, a leading, trailing or parenthesised sign, a `D` exponent like `E`,
+/// and the Automation radix forms `&HFF` / `&O17`. Rust-only spellings such as `NaN`/`inf` and
+/// the type-suffixed `&HFF&` are rejected.
+pub fn parse_vba_number(s: &str) -> Result<f64, NumberTextError> {
+    let t = s.trim();
     if let Some(value) = parse_vba_prefixed_integer(t) {
-        return Some(value as f64);
+        return Ok(value as f64);
     }
-    if matches!(t.as_bytes()[0], b'+' | b'-' | b'.' | b'0'..=b'9') {
-        return t.parse::<f64>().ok().filter(|value| value.is_finite());
+    let (negative, body) = number_text_parts(t).ok_or(NumberTextError::Mismatch)?;
+    let (mantissa, exponent) = match body.find(['e', 'E', 'd', 'D']) {
+        Some(i) => (&body[..i], &body[i + 1..]),
+        None => (body, "0"),
+    };
+    let (whole, frac) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let whole = if whole.is_empty() { "0" } else { whole };
+    let frac = if frac.is_empty() { "0" } else { frac };
+    let value: f64 = format!("{whole}.{frac}e{exponent}")
+        .parse()
+        .map_err(|_| NumberTextError::Mismatch)?;
+    if !value.is_finite() {
+        return Err(NumberTextError::Overflow);
     }
-    None
+    Ok(if negative { -value } else { value })
+}
+
+/// The exact integer a number string spells when it is plain digits (with any of the sign
+/// forms of [`parse_vba_number`]) or a radix literal, so a `LongLong` Let keeps digits beyond
+/// a Double's 53 bits (`"9007199254740993"`). `None` for other text or outside `i64`.
+pub fn parse_vba_integer_text(s: &str) -> Option<i64> {
+    let t = s.trim();
+    if let Some(value) = parse_vba_prefixed_integer(t) {
+        return Some(value);
+    }
+    let (negative, body) = number_text_parts(t)?;
+    if !body.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let magnitude: i128 = body.parse().ok()?;
+    i64::try_from(if negative { -magnitude } else { magnitude }).ok()
+}
+
+/// [`parse_vba_number`] without the reason for a failure.
+pub fn parse_vba_numeric_string(s: &str) -> Option<f64> {
+    parse_vba_number(s).ok()
 }
 
 fn parse_vba_prefixed_integer(t: &str) -> Option<i64> {
@@ -244,41 +355,61 @@ pub fn coerce_to(value: &Variant, target: VarType) -> Result<Variant, String> {
                 .as_decimal96()
                 .ok_or_else(|| "invalid Decimal variant payload".to_string())?;
             let f = decimal_to_f64(dec);
+            let overflow = || "runtime error: 6 (Overflow)".to_string();
+            // Integer and Currency targets round the exact value half to even (VarI4FromDec).
+            let rounded = |digits: u32, min: i128, max: i128| {
+                dec.round_scaled_i128(digits)
+                    .filter(|n| (min..=max).contains(n))
+                    .ok_or_else(overflow)
+            };
             match target {
                 VarType::Double => Ok(Variant::from_f64(f)),
                 VarType::Single => Ok(Variant::from_f32(f as f32)),
-                VarType::Boolean => Ok(Variant::from_bool(f != 0.0)),
-                VarType::Currency => {
-                    // Currency is a scaled i64 with four implied decimals.
-                    let scaled = (f * 10_000.0).round();
-                    if scaled < i64::MIN as f64 || scaled > i64::MAX as f64 {
-                        return Err("runtime error: 6 (Overflow)".to_string());
-                    }
-                    Ok(Variant::from_currency_scaled_i64(scaled as i64))
-                }
+                VarType::Boolean => Ok(Variant::from_bool(!dec.is_zero())),
+                VarType::Currency => Ok(Variant::from_currency_scaled_i64(rounded(
+                    4,
+                    i128::from(i64::MIN),
+                    i128::from(i64::MAX),
+                )?
+                    as i64)),
                 VarType::Long => {
-                    let rounded = f.round();
-                    if rounded < i32::MIN as f64 || rounded > i32::MAX as f64 {
-                        return Err("runtime error: 6 (Overflow)".to_string());
-                    }
-                    Ok(Variant::from_i32(rounded as i32))
+                    Ok(Variant::from_i32(
+                        rounded(0, i128::from(i32::MIN), i128::from(i32::MAX))? as i32,
+                    ))
                 }
                 VarType::Integer => {
-                    let rounded = f.round();
-                    if rounded < i16::MIN as f64 || rounded > i16::MAX as f64 {
-                        return Err("runtime error: 6 (Overflow)".to_string());
-                    }
-                    Ok(Variant::from_i16(rounded as i16))
+                    Ok(Variant::from_i16(
+                        rounded(0, i128::from(i16::MIN), i128::from(i16::MAX))? as i16,
+                    ))
                 }
                 VarType::LongLong => {
-                    let rounded = f.round();
-                    if rounded < i64::MIN as f64 || rounded > i64::MAX as f64 {
-                        return Err("runtime error: 6 (Overflow)".to_string());
-                    }
-                    Ok(Variant::from_i64(rounded as i64))
+                    Ok(Variant::from_i64(
+                        rounded(0, i128::from(i64::MIN), i128::from(i64::MAX))? as i64,
+                    ))
                 }
                 _ => unreachable!("guarded by the match arm pattern"),
             }
+        }
+
+        // ── String → number through the VBA number grammar ──
+        (
+            VarType::String,
+            VarType::Double
+            | VarType::Single
+            | VarType::Byte
+            | VarType::Integer
+            | VarType::Long
+            | VarType::LongLong
+            | VarType::Currency
+            | VarType::Boolean
+            | VarType::Date
+            | VarType::Decimal,
+        ) => {
+            let text = value
+                .as_bstr()
+                .ok_or_else(|| "invalid String variant payload".to_string())?
+                .as_str();
+            string_to_number(&text, target)
         }
 
         // ── Empty coerces to zero/false for numeric targets ──
@@ -296,6 +427,114 @@ pub fn coerce_to(value: &Variant, target: VarType) -> Result<Variant, String> {
             target
         )),
     }
+}
+
+/// A String converted to a numeric `target` as VBA's Let does: integer targets round half to
+/// even and range-check (Overflow), `Boolean` also takes `"True"`/`"False"`, `Date` also takes
+/// date text, `Decimal` keeps every digit.
+fn string_to_number(text: &str, target: VarType) -> Result<Variant, String> {
+    let overflow = || "runtime error: 6 (Overflow)".to_string();
+    if target == VarType::Boolean
+        && let Some(b) = parse_bool_text(text)
+    {
+        return Ok(Variant::from_bool(b));
+    }
+    if target == VarType::Date
+        && let Some(serial) = crate::date::parse_date_text_serial(text)
+    {
+        return Ok(Variant::from_date_f64(serial));
+    }
+    if target == VarType::Decimal
+        && let Some(result) = crate::decimal::Decimal96::parse_text(text)
+    {
+        return result.map(Variant::from_decimal96).map_err(|_| overflow());
+    }
+    if target == VarType::LongLong
+        && let Some(n) = parse_vba_integer_text(text)
+    {
+        return Ok(Variant::from_i64(n));
+    }
+    let x = parse_vba_number(text).map_err(NumberTextError::message)?;
+    let int = |min: f64, max: f64| {
+        let r = x.round_ties_even();
+        if r >= min && r <= max {
+            Ok(r)
+        } else {
+            Err(overflow())
+        }
+    };
+    Ok(match target {
+        VarType::Double => Variant::from_f64(x),
+        VarType::Single if x.abs() <= f64::from(f32::MAX) => Variant::from_f32(x as f32),
+        VarType::Single => return Err(overflow()),
+        VarType::Boolean => Variant::from_bool(x != 0.0),
+        VarType::Byte => Variant::from_u8(int(0.0, 255.0)? as u8),
+        VarType::Integer => Variant::from_i16(int(-32768.0, 32767.0)? as i16),
+        VarType::Long => Variant::from_i32(int(-2_147_483_648.0, 2_147_483_647.0)? as i32),
+        VarType::LongLong if x.abs() < 9.223_372_036_854_775e18 => {
+            Variant::from_i64(x.round_ties_even() as i64)
+        }
+        VarType::Currency => {
+            Variant::from_currency_scaled_i64(currency_scaled_from_f64(x).ok_or_else(overflow)?)
+        }
+        VarType::Date if is_date_serial(x) => Variant::from_date_f64(x),
+        VarType::Decimal => {
+            Variant::from_decimal96(crate::decimal::Decimal96::from_f64(x).map_err(|_| overflow())?)
+        }
+        _ => return Err(overflow()),
+    })
+}
+
+/// A Double as Currency's scaled value (`value * 10^4`), computed exactly from the Double's
+/// binary value and rounded half to even (VarCyFromR8); `None` outside the Currency range.
+/// Going through `value * 10_000.0` alone loses the last digits near the limits
+/// (`CCur(922337203685477.5#)` must be 922337203685477.5, `922337203685477.625#` Overflow).
+pub fn currency_scaled_from_f64(value: f64) -> Option<i64> {
+    if !value.is_finite() {
+        return None;
+    }
+    // Where the floating product is exact enough (below 2^53), keep its rounding: `0.00005`
+    // gives the product 0.5, which rounds to even (0).
+    let product = value * 10_000.0;
+    if product.abs() < 9_007_199_254_740_992.0 {
+        return Some(product.round_ties_even() as i64);
+    }
+    let bits = value.to_bits();
+    let negative = bits >> 63 == 1;
+    let exp_bits = ((bits >> 52) & 0x7FF) as i32;
+    let fraction = bits & ((1 << 52) - 1);
+    // value = mantissa * 2^exp
+    let (mantissa, exp) = if exp_bits == 0 {
+        (fraction, -1074)
+    } else {
+        (fraction | (1 << 52), exp_bits - 1075)
+    };
+    let scaled = i128::from(mantissa) * 10_000;
+    let magnitude = if exp >= 0 {
+        if exp > 20 {
+            return None;
+        }
+        scaled.checked_shl(exp as u32)?
+    } else if exp < -120 {
+        0
+    } else {
+        let shift = (-exp) as u32;
+        let q = scaled >> shift;
+        let rem = scaled - (q << shift);
+        let half = 1i128 << (shift - 1);
+        if rem > half || (rem == half && q & 1 == 1) {
+            q + 1
+        } else {
+            q
+        }
+    };
+    let signed = if negative { -magnitude } else { magnitude };
+    i64::try_from(signed).ok()
+}
+
+/// Is `serial` inside the Date range (1 January 100 to 31 December 9999, VarDateFromR8)?
+pub fn is_date_serial(serial: f64) -> bool {
+    serial > -657_435.0 && serial < 2_958_466.0
 }
 
 pub fn variant_to_vba_string(value: &Variant) -> Result<BStr, String> {
@@ -382,14 +621,19 @@ fn format_vba_currency(scaled: i64) -> String {
 /// most `digits` digits and the fraction at most `digits` places; otherwise as `d.dddE+XX` with
 /// at least two exponent digits. Negative zero keeps its sign ("-0").
 fn format_vba_float(v: f64, digits: usize) -> String {
+    // Office prints the IEEE specials as the Microsoft C runtime does.
     if v.is_nan() {
-        return "NaN".to_string();
+        return if v.is_sign_negative() {
+            "-nan(ind)".to_string()
+        } else {
+            "nan".to_string()
+        };
     }
     if v.is_infinite() {
         return if v > 0.0 {
-            "Infinity".to_string()
+            "inf".to_string()
         } else {
-            "-Infinity".to_string()
+            "-inf".to_string()
         };
     }
     let sign = if v.is_sign_negative() { "-" } else { "" };
@@ -502,7 +746,7 @@ pub fn print_display_text(value: &Variant) -> String {
         VarType::UnsignedLong | VarType::UnsignedInt => value.as_u32().unwrap_or(0).to_string(),
         VarType::UnsignedLongLong => value.as_u64().unwrap_or(0).to_string(),
         VarType::Single => format_vba_single(value.as_f32().unwrap_or(0.0)),
-        VarType::Double => value.as_f64().unwrap_or(0.0).to_string(),
+        VarType::Double => format_vba_f64(value.as_f64().unwrap_or(0.0)),
         VarType::Date => crate::vba_date::format_general_date(value.as_date_f64().unwrap_or(0.0)),
         VarType::Decimal => value
             .as_decimal96()
@@ -567,15 +811,145 @@ pub fn write_display_text(value: &Variant) -> String {
         // `Write #` emits a date as the locale-independent `#YYYY-MM-DD HH:MM:SS#` literal,
         // NOT the locale "General Date" form `print_display_text` would give.
         VarType::Date => crate::vba_date::format_write_date(value.as_date_f64().unwrap_or(0.0)),
-        // Numbers (incl. Currency/Decimal) reuse the canonical locale-independent rendering.
+        // A Single or Double drops the zero before its decimal point (Excel: `Write #1, 0.1 + 0.2`
+        // writes `.3`).
+        VarType::Single | VarType::Double => {
+            let text = print_display_text(value);
+            if let Some(rest) = text.strip_prefix("0.") {
+                format!(".{rest}")
+            } else if let Some(rest) = text.strip_prefix("-0.") {
+                format!("-.{rest}")
+            } else {
+                text
+            }
+        }
+        // Other numbers (incl. Currency/Decimal) reuse the canonical locale-independent rendering.
         _ => print_display_text(value),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{coerce_to, parse_bool_text, parse_vba_numeric_string, variant_to_vba_string};
+    use super::{
+        NumberTextError, coerce_to, parse_bool_text, parse_vba_number, parse_vba_numeric_string,
+        print_display_text, variant_to_vba_string, write_display_text,
+    };
     use crate::{VarType, Variant};
+
+    #[test]
+    fn number_text_grammar_matches_excel() {
+        // SpecTypes dbl1d3, dblSpSign, dblParen, dblTrailMinus, dblHex, dblPad, dblE400,
+        // dblThou, dblDollar.
+        assert_eq!(parse_vba_number("1d3"), Ok(1000.0));
+        assert_eq!(parse_vba_number("- 5"), Ok(-5.0));
+        assert_eq!(parse_vba_number("(5)"), Ok(-5.0));
+        assert_eq!(parse_vba_number("5-"), Ok(-5.0));
+        assert_eq!(parse_vba_number("&H10"), Ok(16.0));
+        assert_eq!(parse_vba_number("  12  "), Ok(12.0));
+        assert_eq!(parse_vba_number(".5"), Ok(0.5));
+        assert_eq!(parse_vba_number("5."), Ok(5.0));
+        assert_eq!(parse_vba_number("1E400"), Err(NumberTextError::Overflow));
+        for bad in [
+            "1,000", "$5", "", "-", "e5", "1e", "NaN", "inf", "5--", "(-5)",
+        ] {
+            assert_eq!(
+                parse_vba_number(bad),
+                Err(NumberTextError::Mismatch),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            super::parse_vba_integer_text("9007199254740993"),
+            Some(9_007_199_254_740_993)
+        );
+        assert_eq!(super::parse_vba_integer_text("1.5"), None);
+        assert_eq!(parse_bool_text("#TRUE#"), Some(true));
+        assert_eq!(parse_bool_text("#false#"), Some(false));
+    }
+
+    #[test]
+    fn coerce_to_converts_strings_through_the_number_grammar() {
+        let s = |text: &str| Variant::from_string(text);
+        assert_eq!(
+            coerce_to(&s("4"), VarType::Double).unwrap().as_f64(),
+            Some(4.0)
+        );
+        assert_eq!(
+            coerce_to(&s("(2.5)"), VarType::Long).unwrap().as_i32(),
+            Some(-2)
+        );
+        assert_eq!(
+            coerce_to(&s("&HFF"), VarType::Integer).unwrap().as_i16(),
+            Some(255)
+        );
+        assert_eq!(
+            coerce_to(&s("9007199254740993"), VarType::LongLong)
+                .unwrap()
+                .as_i64(),
+            Some(9_007_199_254_740_993)
+        );
+        assert_eq!(
+            coerce_to(&s("True"), VarType::Boolean).unwrap().as_bool(),
+            Some(true)
+        );
+        assert!(
+            coerce_to(&s("abc"), VarType::Double)
+                .unwrap_err()
+                .contains("13")
+        );
+        assert!(
+            coerce_to(&s("40000"), VarType::Integer)
+                .unwrap_err()
+                .contains("6")
+        );
+        assert!(
+            coerce_to(&s("1E400"), VarType::Double)
+                .unwrap_err()
+                .contains("6")
+        );
+    }
+
+    #[test]
+    fn currency_from_double_is_exact_near_the_limits() {
+        use super::currency_scaled_from_f64 as cy;
+        // SpecTypes ccurNearMax and curTooBig.
+        assert_eq!(cy(922_337_203_685_477.5), Some(9_223_372_036_854_775_000));
+        assert_eq!(cy(922_337_203_685_477.5 + 0.125), None);
+        assert_eq!(cy(-922_337_203_685_477.5), Some(-9_223_372_036_854_775_000));
+        assert_eq!(cy(1.5), Some(15_000));
+        assert_eq!(cy(0.00005), Some(0), "the product 0.5 rounds to even");
+        assert_eq!(cy(-0.0001), Some(-1));
+        assert_eq!(cy(f64::NAN), None);
+    }
+
+    #[test]
+    fn float_specials_print_as_the_c_runtime_does() {
+        let text = |bits: u64| {
+            variant_to_vba_string(&Variant::from_f64(f64::from_bits(bits)))
+                .unwrap()
+                .as_str()
+        };
+        assert_eq!(text(0x7FF0_0000_0000_0000), "inf");
+        assert_eq!(text(0xFFF0_0000_0000_0000), "-inf");
+        assert_eq!(text(0xFFF8_0000_0000_0000), "-nan(ind)");
+    }
+
+    #[test]
+    fn print_and_write_number_text_use_fifteen_digits() {
+        let print = |x: f64| print_display_text(&Variant::from_f64(x));
+        let write = |x: f64| write_display_text(&Variant::from_f64(x));
+        // Print #1, 0.1 + 0.2 writes " 0.3 "; Print #1, 1E+20; 0.000015; -1 / 3 writes
+        // " 1E+20  0.000015 -0.333333333333333 " (the caller adds the sign/trailing blanks).
+        assert_eq!(print(0.1 + 0.2), "0.3");
+        assert_eq!(print(1e20), "1E+20");
+        assert_eq!(print(0.000015), "0.000015");
+        assert_eq!(print(-1.0 / 3.0), "-0.333333333333333");
+        // Write #1, 0.1 + 0.2 writes .3.
+        assert_eq!(write(0.1 + 0.2), ".3");
+        assert_eq!(write(-0.5), "-.5");
+        assert_eq!(write(12.5), "12.5");
+        assert_eq!(write_display_text(&Variant::from_f32(0.25)), ".25");
+    }
 
     #[test]
     fn parse_bool_text_recognizes_true_false_case_insensitively_without_trimming() {
@@ -670,10 +1044,12 @@ mod tests {
     #[test]
     fn decimal_to_long_rounds_to_nearest() {
         use crate::decimal::Decimal96;
-        // 2.5 rounds to 3 (round-half-away-from-zero via f64::round).
+        // 2.5 rounds half to even, to 2, and 3.5 to 4 (VarI4FromDec, as VBA's CLng).
         let v = Variant::from_decimal96(Decimal96::from_parts(25, 0, 0, 1, false));
         let out = coerce_to(&v, VarType::Long).expect("Decimal→Long");
-        assert_eq!(out.as_i32(), Some(3));
+        assert_eq!(out.as_i32(), Some(2));
+        let v = Variant::from_decimal96(Decimal96::from_parts(35, 0, 0, 1, true));
+        assert_eq!(coerce_to(&v, VarType::Long).unwrap().as_i32(), Some(-4));
 
         // Integer-valued decimal.
         let whole = Variant::from_decimal96(Decimal96::from_parts(1000, 0, 0, 0, false));
@@ -826,6 +1202,8 @@ mod tests {
             VarType::Long => Variant::from_i32(0),
             VarType::Double => Variant::from_f64(0.0),
             VarType::Boolean => Variant::from_bool(false),
+            // A String source converts when its text is a number ("" is Type mismatch in VBA).
+            VarType::String => Variant::from_string("0"),
             _ => Variant::zeroed(vtype),
         }
     }
@@ -897,6 +1275,8 @@ mod proptests {
             VarType::Long => Variant::from_i32(0),
             VarType::Double => Variant::from_f64(0.0),
             VarType::Boolean => Variant::from_bool(false),
+            // A String source converts when its text is a number ("" is Type mismatch in VBA).
+            VarType::String => Variant::from_string("0"),
             _ => Variant::zeroed(vtype),
         }
     }

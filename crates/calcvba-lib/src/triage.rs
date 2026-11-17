@@ -40,10 +40,15 @@ pub const fn capabilities_of(id: NativeImplId) -> &'static [Capability] {
         | LenB
         | Left
         | LeftB
+        | AscB
+        | ChrB
+        | InStrB
+        | MidB
         | Right
         | RightB
         | Mid
         | MidStmt
+        | MidBStmt
         | LSetStmt
         | RSetStmt
         | InStr
@@ -102,6 +107,8 @@ pub const fn capabilities_of(id: NativeImplId) -> &'static [Capability] {
         | DatePart
         | DateNow
         | TimeNow
+        | DateNowText
+        | TimeNowText
         | Now
         | Timer
         | Hex
@@ -166,6 +173,7 @@ pub const fn capabilities_of(id: NativeImplId) -> &'static [Capability] {
         | FileEof
         | FileLof
         | FileSeek
+        | FileAttr
         | FileLoc
         | FilePut
         | FileGetInto

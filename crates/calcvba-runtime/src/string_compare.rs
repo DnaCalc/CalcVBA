@@ -34,7 +34,17 @@ fn fold(units: &[u16]) -> Vec<u16> {
         match decoded {
             Ok(value) => {
                 for lower in value.to_lowercase() {
-                    result.extend_from_slice(lower.encode_utf16(&mut [0; 2]));
+                    // Linguistic text compare expands these letters (`CompareString`).
+                    let expansion = match lower {
+                        '\u{e6}' => Some("ae"),
+                        '\u{153}' => Some("oe"),
+                        '\u{df}' => Some("ss"),
+                        _ => None,
+                    };
+                    match expansion {
+                        Some(text) => result.extend(text.encode_utf16()),
+                        None => result.extend_from_slice(lower.encode_utf16(&mut [0; 2])),
+                    }
                 }
             }
             Err(value) => result.push(value.unpaired_surrogate()),

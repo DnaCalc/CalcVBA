@@ -361,6 +361,7 @@ mod tests {
                     | FileEof
                     | FileLof
                     | FileSeek
+                    | FileAttr
                     | FileLoc
                     | FileKill
                     | FileMkDir
@@ -375,7 +376,7 @@ mod tests {
         for &id in NativeImplId::ALL {
             let migrated = match id.module() {
                 M::Strings | M::Math | M::DateTime | M::Conversion | M::Random | M::Financial => {
-                    !matches!(id, MidStmt | LSetStmt | RSetStmt | Like)
+                    !matches!(id, MidStmt | MidBStmt | LSetStmt | RSetStmt | Like)
                 }
                 M::Information => information_by_name(id),
                 M::Interaction => interaction_by_name(id),
@@ -433,6 +434,7 @@ mod tests {
             FileEof,
             FileLof,
             FileSeek,
+            FileAttr,
             FileLoc,
             FileKill,
             FileMkDir,

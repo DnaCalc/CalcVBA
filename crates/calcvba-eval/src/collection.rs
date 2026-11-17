@@ -7,7 +7,7 @@
 //! rest of the shared value/builtin kernel — it is the single place that turns a member +
 //! `Variant` args into a `CollectionData` operation, so no VM re-implements it.
 
-pub use calcvba_runtime::collection::{CollectionData, CollectionError, Selector};
+pub use calcvba_runtime::collection::{CollectionData, CollectionError, Selector, fold_key};
 
 use calcvba_runtime::Variant;
 
@@ -39,7 +39,7 @@ pub fn dispatch_collection(
         CollectionMethod::Count => Ok(Variant::from_i32(data.count())),
         CollectionMethod::Add => {
             let value = args.first().cloned().unwrap_or_else(Variant::empty);
-            let key = optional_key(args.get(1));
+            let key = optional_key(args.get(1))?;
             let before = optional_selector(args.get(2));
             let after = optional_selector(args.get(3));
             data.add(value, key, before, after)?;
@@ -65,7 +65,7 @@ fn is_missing_arg(v: &Variant) -> bool {
 /// (lenient numeric coercion; a non-numeric, non-string value yields index 0 → out of range).
 fn variant_selector(v: &Variant) -> Selector {
     if let Some(s) = v.as_bstr() {
-        Selector::Key(s.as_str().to_ascii_lowercase())
+        Selector::Key(fold_key(&s.as_str()))
     } else {
         // Any numeric subtype is a 1-based Long index. Coerce through the shared
         // integer conversion (VBA banker's rounding) rather than a hand-rolled
@@ -79,12 +79,16 @@ fn variant_selector(v: &Variant) -> Selector {
     }
 }
 
-/// The folded string key from an `Add` key argument, or `None` if omitted.
-fn optional_key(arg: Option<&Variant>) -> Option<String> {
-    let v = arg?;
-    (!is_missing_arg(v))
-        .then(|| v.as_bstr().map(|s| s.as_str().to_ascii_lowercase()))
-        .flatten()
+/// The folded string key from an `Add` key argument, `None` if omitted; a key that is not a
+/// String is a type mismatch.
+fn optional_key(arg: Option<&Variant>) -> Result<Option<String>, CollectionError> {
+    let Some(v) = arg.filter(|v| !is_missing_arg(v)) else {
+        return Ok(None);
+    };
+    match v.as_bstr() {
+        Some(s) => Ok(Some(fold_key(&s.as_str()))),
+        None => Err(CollectionError::TypeMismatch),
+    }
 }
 
 /// A `Selector` from an optional `before`/`after` argument, or `None` if omitted.
@@ -165,7 +169,7 @@ mod tests {
                 &[Variant::from_string("zz")]
             )
             .unwrap_err(),
-            CollectionError::NotFound
+            CollectionError::BadArgument
         );
         // Omitted required selector → 449.
         assert_eq!(

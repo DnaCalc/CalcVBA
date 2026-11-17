@@ -1,9 +1,10 @@
 //! The l-value binder: `bind_place` classifies an assignable expression into a
 //! `CorePlace` (local/global slot, array element, …) and reports its type.
 
-use calcvba_bundle::coreir::{CorePlace, CoreValue};
+use calcvba_bundle::AssignmentIntent;
+use calcvba_bundle::coreir::{CoreLocal, CorePlace, CoreStmt, CoreValue, LocalId};
 use calcvba_symbol::binding::DispatchRoute;
-use calcvba_symbol::signature::VarTypeRef;
+use calcvba_symbol::signature::{BuiltinType, VarTypeRef};
 use calcvba_syntax::{SyntaxKind, SyntaxNode};
 
 use crate::ProcLower;
@@ -20,6 +21,13 @@ impl<'a> ProcLower<'a> {
                     .ident_name_token()
                     .ok_or_else(|| BindError::Malformed("place identifier".into()))?;
                 let name = tok.text;
+                // `Me` is a value, never a variable: passed ByRef it is a copy of the
+                // reference (and without Option Explicit it must not become a local).
+                if node.ident_is_me() {
+                    return Err(BindError::InvalidAssignment(
+                        "Invalid use of Me keyword".into(),
+                    ));
+                }
                 if let Some(rl) = self.return_target(name) {
                     return Ok((CorePlace::Local(rl), self.info.return_type.clone()));
                 }
@@ -53,6 +61,17 @@ impl<'a> ProcLower<'a> {
                     .index_base()
                     .ok_or_else(|| BindError::Malformed("index base".into()))?;
                 let (base_place, base_ty) = self.bind_place(base)?;
+                // `arr()` with an empty index list names the whole array (`SumArr la()`).
+                if node
+                    .index_arg_list()
+                    .is_none_or(|a| a.arg_items().is_empty())
+                    && matches!(
+                        base_ty,
+                        VarTypeRef::Array(_) | VarTypeRef::FixedArray { .. }
+                    )
+                {
+                    return Ok((base_place, base_ty));
+                }
                 let base_is_record_field = matches!(base_place, CorePlace::RecordField { .. });
                 // Track the array's element type so a nested UDT-array element
                 // (`o.Lines(i).Text`) can resolve its sub-fields; a non-array
@@ -195,6 +214,52 @@ impl<'a> ProcLower<'a> {
 
     /// Bind each positional argument of an `ArgList` to a value (used for array
     /// indices, `Array(...)` items, etc.). Omitted/named slots become an error.
+    /// `place` with every non-constant subscript evaluated once, up front: each is stored in
+    /// a hidden local by a statement appended to `prelude`, and the place reads that local
+    /// (`With pts(i)` names the element `i` selects on entry, whatever `i` becomes later).
+    pub(crate) fn snapshot_place_indices(
+        &mut self,
+        place: CorePlace,
+        prelude: &mut Vec<CoreStmt>,
+    ) -> CorePlace {
+        match place {
+            CorePlace::Index { array, indices } => {
+                let array = Box::new(self.snapshot_place_indices(*array, prelude));
+                let indices = indices
+                    .into_iter()
+                    .map(|index| {
+                        if matches!(index, CoreValue::Const(_)) {
+                            return index;
+                        }
+                        let local = LocalId(self.info.param_count + self.locals.len());
+                        // An array subscript is a Long.
+                        let long = VarTypeRef::Builtin(BuiltinType::Long);
+                        self.locals.push(CoreLocal {
+                            name: format!("With Index {}", local.0),
+                            ty: long.clone(),
+                            array_element: None,
+                        });
+                        prelude.push(CoreStmt::Assign {
+                            place: CorePlace::Local(local),
+                            value: self.g.coerce_store(index, &long),
+                            intent: AssignmentIntent::Let,
+                            target_kind: crate::types::assignment_target_kind(&long),
+                            target_name: String::new(),
+                            target_type_name: crate::types::type_name(&long),
+                        });
+                        CoreValue::Load(CorePlace::Local(local))
+                    })
+                    .collect();
+                CorePlace::Index { array, indices }
+            }
+            CorePlace::RecordField { base, index } => CorePlace::RecordField {
+                base: Box::new(self.snapshot_place_indices(*base, prelude)),
+                index,
+            },
+            other => other,
+        }
+    }
+
     pub(crate) fn bind_positional_values(
         &mut self,
         arglist: SyntaxNode<'_>,

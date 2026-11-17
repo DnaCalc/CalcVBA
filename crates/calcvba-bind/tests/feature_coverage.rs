@@ -374,7 +374,7 @@ fn longptr_const_overflows_above_long_on_win32_target() {
 fn invalid_enum_initializer_is_bind_error() {
     let err = run_result(
         "Public Enum Fractional\n\
-         Bad = 1.5\n\
+         Bad = 3000000000.5\n\
          End Enum\n\
          Sub Main()\n\
          End Sub",
@@ -938,7 +938,7 @@ fn scalar_boolean_like_const_expression_executes() {
 #[test]
 fn scalar_boolean_like_charlist_const_expression_executes() {
     let snap = run(
-        "Const CFlag As Boolean = (\"f\" Like \"[a-z]\") And (\"9\" Like \"[0-9a-f]\") And (\"]\" Like \"[]x]\") And (\"F\" Like \"[!a-z]\")\nSub Main()\nDim flag As Boolean\nflag = CFlag\nEnd Sub",
+        "Const CFlag As Boolean = (\"f\" Like \"[a-z]\") And (\"9\" Like \"[0-9a-f]\") And (\"x]\" Like \"[]x]\") And (\"F\" Like \"[!a-z]\")\nSub Main()\nDim flag As Boolean\nflag = CFlag\nEnd Sub",
     );
     assert_eq!(snap, vec![Variant::from_bool(true)]);
 }
@@ -1530,13 +1530,14 @@ fn iif_stays_an_eager_special_form() {
 
 #[test]
 fn like_charlist_ranges_negation_and_literal_bracket() {
-    // `[charlist]` with `a-z` ranges, `!` negation, and a literal `]` first.
+    // `[charlist]` with `a-z` ranges and `!` negation; `]` cannot sit inside a group, and `[]`
+    // matches the empty string (Excel: `"ab" Like "a[]b"` is True, spec-pass likeEmptyBr).
     let snap = run("Sub Main()\n\
          Dim a As Boolean\nDim b As Boolean\nDim c As Boolean\nDim d As Boolean\n\
          a = (\"f\" Like \"[a-z]\")\n\
          b = (\"F\" Like \"[!a-z]\")\n\
          c = (\"9\" Like \"[0-9a-f]\")\n\
-         d = (\"]\" Like \"[]x]\")\n\
+         d = (\"x]\" Like \"[]x]\")\n\
          End Sub");
     assert!(
         snap.iter()
@@ -1826,7 +1827,7 @@ fn optional_boolean_like_defaults_are_bound_for_omitted_args() {
 #[test]
 fn optional_boolean_like_charlist_defaults_are_bound_for_omitted_args() {
     let snap = run(
-        "Sub Main()\nDim b As Boolean\nCall Fill(b)\nEnd Sub\nSub Fill(ByRef target As Boolean, Optional ByVal flag As Boolean = (\"f\" Like \"[a-z]\") And (\"9\" Like \"[0-9a-f]\") And (\"]\" Like \"[]x]\") And (\"F\" Like \"[!a-z]\"))\ntarget = flag\nEnd Sub",
+        "Sub Main()\nDim b As Boolean\nCall Fill(b)\nEnd Sub\nSub Fill(ByRef target As Boolean, Optional ByVal flag As Boolean = (\"f\" Like \"[a-z]\") And (\"9\" Like \"[0-9a-f]\") And (\"x]\" Like \"[]x]\") And (\"F\" Like \"[!a-z]\"))\ntarget = flag\nEnd Sub",
     );
     assert_eq!(snap, vec![Variant::from_bool(true)]);
 }

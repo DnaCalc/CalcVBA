@@ -414,6 +414,10 @@ pub trait FileSystemHal {
     fn seek_variant(&self, _handle: Variant, _position: Variant) -> HalResult<Variant> {
         variant_companion_not_overridden(CapabilityId::FileSystemIo, "seek_variant")
     }
+    /// `FileAttr(handle, kind)`: the mode (kind 1) the file number was opened in.
+    fn file_attr_variant(&self, _handle: Variant, _kind: Variant) -> HalResult<Variant> {
+        variant_companion_not_overridden(CapabilityId::FileSystemIo, "file_attr_variant")
+    }
     fn eof_variant(&self, _handle: Variant) -> HalResult<Variant> {
         variant_companion_not_overridden(CapabilityId::FileSystemIo, "eof_variant")
     }

@@ -244,41 +244,28 @@ pub(crate) fn vunit() -> Variant {
     Variant::empty()
 }
 
-/// Dispatch a base-library built-in to its native body. Exhaustive over
-/// `NativeImplId` — adding a variant without a body is a compile error.
-/// The value-returning string functions that propagate `Null` → `Null` (a `Null` argument
-/// yields a `Null` result). Excludes `Format` (returns "" for `Null`), the array-returning
-/// `Split`/`Join`/`Filter`, the conversion functions (which have their own `Null` rules), and
-/// the `Mid`/`LSet`/`RSet` statement forms.
-fn string_fn_propagates_null(id: NativeImplId) -> bool {
+/// Whether a `Null` argument makes the built-in's result `Null`. Only the argument that
+/// carries the text or date propagates: a `Null` in a numeric or option argument raises
+/// "Invalid use of Null" (94) from the coercion. `Chr`, `Space`, `String`, `Replace`,
+/// `InStrRev` and `StrReverse` do not propagate at all. The string-typed `$` aliases are
+/// distinguished by the VM's library import metadata and raise 94 before reaching this body.
+fn null_propagates(id: NativeImplId, args: &[Variant]) -> bool {
     use NativeImplId::*;
-    matches!(
-        id,
-        Len | LenB
-            | Left
-            | LeftB
-            | Right
-            | RightB
-            | Mid
-            | LCase
-            | UCase
-            | Trim
-            | LTrim
-            | RTrim
-            | StrReverse
-            | Space
-            | StringRepeat
-            | Chr
-            | ChrW
-            | Asc
-            | AscW
-            | InStr
-            | InStrRev
-            | Replace
-            | StrComp
-            | StrConv
-            | Like
-    )
+    let is_null = |i: usize| args.get(i).is_some_and(|a| a.vtype() == Vt::Null);
+    match id {
+        Len | LenB | Left | LeftB | Right | RightB | Mid | MidB | LCase | UCase | Trim | LTrim
+        | RTrim | StrConv | Hex | Oct | Str | Round | Year | Month | Day | Weekday | Hour
+        | Minute | Second => is_null(0),
+        StrComp | Like => is_null(0) || is_null(1),
+        InStr | InStrB => {
+            let base = usize::from(args.len() >= 3);
+            is_null(base) || is_null(base + 1)
+        }
+        DateAdd => is_null(2),
+        DateDiff => is_null(1) || is_null(2),
+        DatePart => is_null(1),
+        _ => false,
+    }
 }
 
 /// Invoke a built-in that does not access [`LibContext`].
@@ -297,7 +284,7 @@ pub fn invoke_context_free(
     // `variant_to_vba_string`, which raises Type mismatch 13 on `Null`). The string-typed
     // `$` aliases are distinguished by the VM's library import metadata and raise 94 before
     // reaching this shared unsuffixed body.
-    if string_fn_propagates_null(id) && args.iter().any(|a| a.vtype() == Vt::Null) {
+    if null_propagates(id, args) {
         return Ok(Variant::null());
     }
     let result = match id {
@@ -306,10 +293,15 @@ pub fn invoke_context_free(
         LenB => pure::len_b(args),
         Left => pure::left(args),
         LeftB => pure::left_b(args),
+        AscB => pure::asc_b(args),
+        ChrB => pure::chr_b(args),
+        InStrB => pure::instr_b(args),
+        MidB => pure::mid_b(args),
         Right => pure::right(args),
         RightB => pure::right_b(args),
         Mid => pure::mid(args),
         MidStmt => pure::mid_stmt(args),
+        MidBStmt => pure::mid_b_stmt(args),
         LSetStmt => pure::lset_stmt(args),
         RSetStmt => pure::rset_stmt(args),
         InStr => pure::instr(args, false),
@@ -375,6 +367,8 @@ pub fn invoke_context_free(
         DatePart => pure::vba_datepart(args),
         DateNow => host::date_now(host),
         TimeNow => host::time_now(host),
+        DateNowText => host::date_now_text(host),
+        TimeNowText => host::time_now_text(host),
         Now => host::now(host),
         Timer => host::timer(host),
 
@@ -463,7 +457,13 @@ pub fn invoke_context_free(
         Partition => pure::partition(args),
 
         // ── File / Console I/O ──
-        FreeFile => host::free_file(args, host),
+        // `FreeFile` is an `Integer` (a file number is 1-511).
+        FreeFile => host::free_file(args, host).map(|number| {
+            match number.as_i32().and_then(|n| i16::try_from(n).ok()) {
+                Some(n) => Variant::from_i16(n),
+                None => number,
+            }
+        }),
         FileOpen => host::file_open(args, host),
         FileClose => host::file_close(args, host),
         FileKill => host::file_kill(args, host),
@@ -489,6 +489,7 @@ pub fn invoke_context_free(
         FileEof => host::file_eof(args, host),
         FileLof => host::file_lof(args, host),
         FileSeek => host::file_seek(args, host),
+        FileAttr => host::file_attr(args, host),
         FileLoc => host::file_loc(args, host),
         FilePut => host::file_put(args, host),
         FileGetInto => host::file_get_into(args, host),

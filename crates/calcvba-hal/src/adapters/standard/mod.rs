@@ -414,6 +414,7 @@ impl StandardHostServices {
                 op,
                 format!("invalid file handle: {handle}"),
             )
+            .with_host_error_code(52)
         })
     }
 
@@ -2317,7 +2318,7 @@ mod tests {
         let handle = FileSystemHal::open_with_record_len(
             &host,
             Variant::from_i32(910),
-            Variant::from_i32(4),
+            Variant::from_i32((1 << 16) | 4),
             Variant::from_i32(8),
         )
         .expect("open with len");

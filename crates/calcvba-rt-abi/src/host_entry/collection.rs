@@ -84,6 +84,7 @@ pub fn invoke(
             E::NotFound => 9,
             E::DuplicateKey => 457,
             E::BadArgument => 5,
+            E::TypeMismatch => 13,
             E::ArgNotOptional => 449,
         })
 }

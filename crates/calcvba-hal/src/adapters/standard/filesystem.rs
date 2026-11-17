@@ -107,6 +107,19 @@ fn change_drive(letter: char) -> std::io::Result<()> {
     }
 }
 
+/// The VBA run-time error number for a failed host I/O call: `not_found` for a missing
+/// file or path (53 file, 76 path), 70 permission denied, 75 for an existing or
+/// non-empty target, else `other`.
+fn io_error_code(err: &std::io::Error, not_found: i32, other: i32) -> i32 {
+    use std::io::ErrorKind;
+    match err.kind() {
+        ErrorKind::NotFound => not_found,
+        ErrorKind::PermissionDenied => 70,
+        ErrorKind::AlreadyExists | ErrorKind::DirectoryNotEmpty => 75,
+        _ => other,
+    }
+}
+
 #[derive(Debug, Default)]
 pub(super) struct FileSystemState {
     pub(super) handles: BTreeMap<i32, FileHandleState>,
@@ -230,6 +243,8 @@ pub(super) struct FileHandleState {
     /// Fixed record length from `Open … For Random … Len = N` (0 = unset; Random
     /// records then use the written value's natural size as the stride).
     pub(super) record_len: i32,
+    /// The last `Get` could not read a whole record: `EOF` of a Binary or Random file.
+    get_hit_eof: bool,
 }
 
 /// The 1-based position VBA `Seek(filenumber)` (FUNCTION form) reports: the next
@@ -496,7 +511,8 @@ impl FileSystemHal for StandardHostServices {
                         capability,
                         "open",
                         format!("file handle #{requested_handle} is already in use"),
-                    ));
+                    )
+                    .with_host_error_code(55));
                 }
                 requested_handle
             } else {
@@ -537,6 +553,7 @@ impl FileSystemHal for StandardHostServices {
                                 "open",
                                 format!("failed to read host path {}: {err}", host_path.display()),
                             )
+                            .with_host_error_code(io_error_code(&err, 53, 53))
                         })?;
                         let len = clamp_u64_to_i32(data.len() as u64);
                         (data, len, 0)
@@ -631,6 +648,7 @@ impl FileSystemHal for StandardHostServices {
                     print_column,
                     locks: Vec::new(),
                     record_len: 0,
+                    get_hit_eof: false,
                 },
             );
             self.assert_fs_invariants(&state, "open-post");
@@ -761,6 +779,7 @@ impl FileSystemHal for StandardHostServices {
                 print_column,
                 locks: Vec::new(),
                 record_len: 0,
+                get_hit_eof: false,
             },
         );
         self.assert_fs_invariants(&state, "open-post");
@@ -778,14 +797,41 @@ impl FileSystemHal for StandardHostServices {
         mode: Variant,
         record_len: Variant,
     ) -> HalResult<Variant> {
+        let capability = CapabilityId::FileSystemIo;
+        let mode_raw = self.variant_to_i32(&mode, capability, "open", "mode")?;
+        // `Open … As #n` takes a file number 1..=511 (error 52 otherwise); `Len` is at
+        // most 32767 (overflow, 6).
+        if !(1..=511).contains(&(mode_raw >> 16)) {
+            return Err(HalError::adapter_fault(
+                self.profile,
+                capability,
+                "open",
+                format!("bad file name or number: #{}", mode_raw >> 16),
+            )
+            .with_host_error_code(52));
+        }
+        let len = self
+            .variant_to_i32(&record_len, capability, "open", "len")
+            .unwrap_or(0);
+        if len > 32767 {
+            return Err(HalError::adapter_fault(
+                self.profile,
+                capability,
+                "open",
+                format!("record length {len} is out of range"),
+            )
+            .with_host_error_code(6));
+        }
         let handle = self.open_variant(path, mode)?;
-        // Record a positive `Len = N` for Random-mode fixed-record positioning.
-        if let Ok(len) = self.variant_to_i32(&record_len, CapabilityId::FileSystemIo, "open", "len")
-            && len > 0
-            && let Ok(handle_id) =
-                self.variant_to_i32(&handle, CapabilityId::FileSystemIo, "open", "handle")
+        // Random files use `Len = N` as the record length, 128 when it is omitted.
+        let len = match (mode_raw & 0xFFFF, len) {
+            (MODE_RANDOM, len) if len <= 0 => 128,
+            (_, len) => len,
+        };
+        if len > 0
+            && let Ok(handle_id) = self.variant_to_i32(&handle, capability, "open", "handle")
         {
-            let mut state = self.borrow_fs(CapabilityId::FileSystemIo, "open")?;
+            let mut state = self.borrow_fs(capability, "open")?;
             if let Ok(entry) = self.fs_entry_mut(&mut state, handle_id, "open") {
                 entry.record_len = len;
             }
@@ -842,7 +888,8 @@ impl FileSystemHal for StandardHostServices {
                 capability,
                 "close",
                 format!("invalid file handle: {handle}"),
-            ))
+            )
+            .with_host_error_code(52))
         }
     }
 
@@ -883,7 +930,8 @@ impl FileSystemHal for StandardHostServices {
                         capability,
                         "kill",
                         format!("wildcard Kill path matched no files: {path_text}"),
-                    ));
+                    )
+                    .with_host_error_code(53));
                 }
                 for matched_path in matched_paths {
                     #[cfg(target_os = "windows")]
@@ -902,6 +950,7 @@ impl FileSystemHal for StandardHostServices {
                                 path_text
                             ),
                         )
+                        .with_host_error_code(io_error_code(&err, 53, 75))
                     })?;
                 }
             }
@@ -921,6 +970,7 @@ impl FileSystemHal for StandardHostServices {
                     "kill",
                     format!("failed to remove host path {}: {err}", host_path.display()),
                 )
+                .with_host_error_code(io_error_code(&err, 53, 75))
             })?;
         }
         Ok(Variant::from_i32(0))
@@ -952,6 +1002,7 @@ impl FileSystemHal for StandardHostServices {
                     "mkdir",
                     format!("failed to create directory {path_text}: {err}"),
                 )
+                .with_host_error_code(io_error_code(&err, 76, 75))
             })?;
         }
         Ok(Variant::from_i32(0))
@@ -983,6 +1034,7 @@ impl FileSystemHal for StandardHostServices {
                     "rmdir",
                     format!("failed to remove directory {path_text}: {err}"),
                 )
+                .with_host_error_code(io_error_code(&err, 76, 75))
             })?;
         }
         Ok(Variant::from_i32(0))
@@ -1013,7 +1065,8 @@ impl FileSystemHal for StandardHostServices {
                 capability,
                 "seek",
                 format!("bad record number for seek: {position}"),
-            ));
+            )
+            .with_host_error_code(63));
         }
         let mut state = self.borrow_fs(capability, "seek")?;
         self.assert_fs_invariants(&state, "seek-pre");
@@ -1026,6 +1079,7 @@ impl FileSystemHal for StandardHostServices {
             };
             entry.input_buffer_origin = entry.position;
             entry.input_text_eof = false;
+            entry.get_hit_eof = false;
             let print_cursor = if entry.mode == MODE_APPEND {
                 entry.len.max(0) as usize
             } else {
@@ -1038,6 +1092,34 @@ impl FileSystemHal for StandardHostServices {
         Ok(Variant::empty())
     }
 
+    fn file_attr_variant(&self, handle: Variant, kind: Variant) -> HalResult<Variant> {
+        let capability = CapabilityId::FileSystemIo;
+        if !self.supports(capability) {
+            return Err(self.unsupported(capability, "fileattr"));
+        }
+        let handle = self.variant_to_i32(&handle, capability, "fileattr", "handle")?;
+        let kind = self.variant_to_i32(&kind, capability, "fileattr", "kind")?;
+        let mut state = self.borrow_fs(capability, "fileattr")?;
+        let entry = self.fs_entry_mut(&mut state, handle, "fileattr")?;
+        if kind != 1 {
+            return Err(HalError::adapter_fault(
+                self.profile,
+                capability,
+                "fileattr",
+                "only FileAttr(n, 1) is supported",
+            )
+            .with_host_error_code(5));
+        }
+        // VBA's open-mode codes: Input 1, Output 2, Random 4, Append 8, Binary 32.
+        Ok(Variant::from_i32(match entry.mode {
+            0 => 1,
+            1 => 2,
+            MODE_APPEND => 8,
+            MODE_BINARY => 32,
+            _ => 4,
+        }))
+    }
+
     fn eof_variant(&self, handle: Variant) -> HalResult<Variant> {
         let capability = CapabilityId::FileSystemIo;
         if !self.supports(capability) {
@@ -1046,6 +1128,10 @@ impl FileSystemHal for StandardHostServices {
         let handle = self.variant_to_i32(&handle, capability, "eof", "handle")?;
         let mut state = self.borrow_fs(capability, "eof")?;
         let entry = self.fs_entry_mut(&mut state, handle, "eof")?;
+        // A Binary or Random file reports EOF only once a `Get` could not read a whole record.
+        if matches!(entry.mode, MODE_BINARY | MODE_RANDOM) {
+            return Ok(Variant::from_i32(i32::from(entry.get_hit_eof)));
+        }
         let text_end = entry.mode == 0
             && (entry.input_text_eof
                 || entry.data.get(entry.position as usize).copied() == Some(26));
@@ -1383,7 +1469,8 @@ impl FileSystemHal for StandardHostServices {
                     capability,
                     "put",
                     "Bad record length: value exceeds the file's Len",
-                ));
+                )
+                .with_host_error_code(59));
             }
             let off = match explicit {
                 Some(rec) if rec >= 1 => ((rec - 1) as usize).saturating_mul(stride),
@@ -1399,12 +1486,14 @@ impl FileSystemHal for StandardHostServices {
         };
         let write_end = offset + bytes.len();
         let slot_end = offset + slot;
-        if slot_end > entry.data.len() {
-            entry.data.resize(slot_end, 0);
+        // The file grows only to the last byte written; the unwritten tail of a
+        // final record slot is not padded.
+        if write_end > entry.data.len() {
+            entry.data.resize(write_end, 0);
         }
         entry.data[offset..write_end].copy_from_slice(&bytes);
         entry.position = slot_end as i32;
-        entry.len = entry.len.max(slot_end as i32);
+        entry.len = entry.len.max(write_end as i32);
         Ok(Variant::empty())
     }
 
@@ -1426,6 +1515,10 @@ impl FileSystemHal for StandardHostServices {
             Some(self.variant_to_i32(&position, capability, "get", "position")?)
         };
         let code = self.variant_to_i32(&vtype, capability, "get", "type")? as u16;
+        // `VT_ARRAY | element`: fill an array shaped like the one passed in the length slot.
+        if code & 0x2000 != 0 {
+            return self.get_array_record(handle_id, explicit, code & 0x0FFF, &str_len);
+        }
         let vt = VarType::from_u16(code).unwrap_or(VarType::Empty);
         let fixed_numeric = record_size(vt);
         // `str_len` carries the string length intent: > 0 = a fixed-length string of
@@ -1511,6 +1604,15 @@ impl FileSystemHal for StandardHostServices {
             }
             (None, _) => (Variant::empty(), 0),
         };
+        // EOF of a Binary or Random file: this `Get` could not read a whole record.
+        let needed = match (fixed_numeric, vt) {
+            (Some(size), _) => size,
+            (None, VarType::String) if str_len > 0 => str_len as usize,
+            (None, VarType::String) if mode == MODE_RANDOM => 2,
+            (None, VarType::String) if mode == MODE_BINARY => (-str_len).max(0) as usize,
+            _ => 0,
+        };
+        entry.get_hit_eof = needed > 0 && offset.saturating_add(needed) > data_len;
         entry.position = (offset + advance) as i32;
         Ok(value)
     }
@@ -1573,6 +1675,7 @@ impl FileSystemHal for StandardHostServices {
                     "chdir",
                     format!("failed to change directory to {}: {err}", dir.display()),
                 )
+                .with_host_error_code(io_error_code(&err, 76, 76))
             })?;
         }
         Ok(Variant::from_i32(0))
@@ -1592,6 +1695,7 @@ impl FileSystemHal for StandardHostServices {
                     "filelen",
                     format!("failed to stat {}: {err}", p.display()),
                 )
+                .with_host_error_code(io_error_code(&err, 53, 53))
             })?;
             // VBA `FileLen` returns a `Long`.
             Ok(Variant::from_i32(len.len().min(i32::MAX as u64) as i32))
@@ -1641,6 +1745,7 @@ impl FileSystemHal for StandardHostServices {
                     "getattr",
                     format!("failed to stat {}: {err}", p.display()),
                 )
+                .with_host_error_code(io_error_code(&err, 53, 53))
             })?;
             // VBA `GetAttr` returns an `Integer` of the documented attribute bits.
             Ok(Variant::from_i32(file_attribute_bits(&meta)))
@@ -1732,6 +1837,7 @@ impl FileSystemHal for StandardHostServices {
                     "filedatetime",
                     format!("failed to stat {}: {err}", p.display()),
                 )
+                .with_host_error_code(io_error_code(&err, 53, 53))
             })?;
             let modified = meta.modified().map_err(|err| {
                 HalError::adapter_fault(
@@ -1822,6 +1928,125 @@ impl FileSystemHal for StandardHostServices {
         entry.locks.retain(|&r| r != range);
         Ok(Variant::empty())
     }
+}
+
+impl StandardHostServices {
+    /// `Get #n, [rec], array`: read one element per slot of `shape` (the target array) into
+    /// a new array of the same bounds. A short read zero-fills and marks the file at EOF.
+    fn get_array_record(
+        &self,
+        handle: i32,
+        explicit: Option<i32>,
+        element_code: u16,
+        shape: &Variant,
+    ) -> HalResult<Variant> {
+        let capability = CapabilityId::FileSystemIo;
+        let fault = |message: &str, code: i32| {
+            HalError::adapter_fault(self.profile, capability, "get", message.to_string())
+                .with_host_error_code(code)
+        };
+        let Some(shape) = shape.as_safearray() else {
+            return Err(fault("Get target is not an array", 13));
+        };
+        let element = VarType::from_u16(element_code).unwrap_or(VarType::Empty);
+        let Some(size) = record_size(element) else {
+            return Err(fault("Get into an array of this element type", 13));
+        };
+        let count = shape.len();
+        let total = size.saturating_mul(count);
+        let mut state = self.borrow_fs(capability, "get")?;
+        let entry = self.fs_entry_mut(&mut state, handle, "get")?;
+        let stride = if entry.record_len > 0 {
+            entry.record_len as usize
+        } else {
+            total
+        };
+        let offset = match explicit {
+            Some(rec) if rec >= 1 => {
+                if entry.mode == MODE_RANDOM {
+                    ((rec - 1) as usize).saturating_mul(stride)
+                } else {
+                    (rec - 1) as usize
+                }
+            }
+            _ => entry.position.max(0) as usize,
+        };
+        let start = offset.min(entry.data.len());
+        let end = offset.saturating_add(total).min(entry.data.len());
+        let mut bytes = entry.data[start..end].to_vec();
+        entry.get_hit_eof = bytes.len() < total;
+        bytes.resize(total, 0);
+        let values: Vec<Variant> = (0..count)
+            .map(|index| deserialize_record(element, &bytes[index * size..(index + 1) * size]))
+            .collect();
+        entry.position = offset.saturating_add(if entry.mode == MODE_RANDOM && stride > 0 {
+            stride
+        } else {
+            total
+        }) as i32;
+        let array = match shape.bounds() {
+            Some(bounds) => calcvba_runtime::safe_array::SafeArray::from_typed_variants_nd(
+                bounds,
+                element_code,
+                values,
+            ),
+            None => {
+                calcvba_runtime::safe_array::SafeArray::from_typed_variants(element_code, values)
+            }
+        }
+        .map_err(|message: String| fault(&message, 5))?;
+        Ok(Variant::from_safearray(array))
+    }
+}
+
+/// The entry names `Dir(path, attributes)` lists, in name order. A path ending in a
+/// separator lists that folder's contents; a bare folder name matches nothing unless
+/// `vbDirectory` is requested. An entry is listed when its hidden/system/directory bits
+/// are all among the requested `attributes` (so `vbNormal` lists plain files only), and
+/// `.` and `..` join a wildcard listing that asks for directories.
+pub(super) fn dir_listing(raw: &str, target: &Path, attrs: i32) -> std::io::Result<Vec<String>> {
+    let pattern = if raw.ends_with(['\\', '/']) {
+        target.join("*")
+    } else {
+        target.to_path_buf()
+    };
+    let wildcard = path_contains_wildcards(&pattern);
+    let candidates = if wildcard {
+        expand_host_wildcard_paths(&pattern)?
+    } else if pattern.exists() {
+        vec![pattern.clone()]
+    } else {
+        Vec::new()
+    };
+    let filtered = VB_HIDDEN | VB_SYSTEM | VB_DIRECTORY;
+    let wanted = attrs & filtered;
+    let name_of = |path: &Path| {
+        path.file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.display().to_string())
+    };
+    let mut names: Vec<String> = candidates
+        .iter()
+        .filter(|path| {
+            fs::metadata(path)
+                .map(|meta| file_attribute_bits(&meta) & filtered & !wanted == 0)
+                .unwrap_or(false)
+        })
+        .map(|path| name_of(path))
+        .collect();
+    if wildcard
+        && attrs & VB_DIRECTORY != 0
+        && let Some(last) = pattern.file_name()
+    {
+        let last = last.to_string_lossy();
+        for dots in [".", ".."] {
+            if wildcard_match(&last, dots) {
+                names.push(dots.to_string());
+            }
+        }
+    }
+    names.sort_by_key(|name| name.to_lowercase());
+    Ok(names)
 }
 
 pub(super) fn path_contains_wildcards(path: &Path) -> bool {
@@ -2030,5 +2255,172 @@ mod record_io_tests {
         // Fixed-length string (already padded to N): raw ANSI, no prefix, even in Random.
         let f = serialize_record(&Variant::from_string("ab  "), MODE_RANDOM, true);
         assert_eq!(f, vec![b'a', b'b', b' ', b' ']);
+    }
+}
+
+/// File-system behaviour measured in Excel (dc-ez3rd, probe module SpecStmt): VBA error
+/// numbers, default record length, `FileAttr`, Binary `EOF` and `Dir` attributes, run on
+/// the real file system under a temp directory.
+#[cfg(test)]
+mod vba_file_tests {
+    use crate::{
+        adapters::standard::StandardHostServices,
+        model::{HostPolicy, native_host_profile},
+        traits::{FileSystemHal, ProcessEnvHal},
+    };
+    use calcvba_runtime::Variant;
+    use std::path::PathBuf;
+
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("cvp-hal-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Scratch(dir)
+        }
+        fn path(&self, name: &str) -> Variant {
+            Variant::from_string(self.0.join(name).to_string_lossy().as_ref())
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn host() -> StandardHostServices {
+        StandardHostServices::new(native_host_profile(), HostPolicy::native())
+    }
+
+    fn code<T: std::fmt::Debug>(result: crate::error::HalResult<T>) -> Option<i32> {
+        result.expect_err("expected a fault").host_error_code
+    }
+
+    /// `Open path For <mode> As #handle [Len = len]` (mode codes: Input 0, Output 1, Binary 3,
+    /// Random 4).
+    fn open(
+        host: &StandardHostServices,
+        path: Variant,
+        mode: i32,
+        handle: i32,
+        len: i32,
+    ) -> crate::error::HalResult<Variant> {
+        host.open_with_record_len(
+            path,
+            Variant::from_i32((handle << 16) | mode),
+            Variant::from_i32(len),
+        )
+    }
+
+    fn int(n: i32) -> Variant {
+        Variant::from_i32(n)
+    }
+
+    #[test]
+    fn file_faults_carry_vba_error_numbers() {
+        let dir = Scratch::new("codes");
+        let host = host();
+        assert_eq!(code(open(&host, dir.path("none.txt"), 0, 1, 0)), Some(53));
+        open(&host, dir.path("a.txt"), 1, 1, 0).unwrap();
+        assert_eq!(code(open(&host, dir.path("b.txt"), 1, 1, 0)), Some(55));
+        assert_eq!(code(open(&host, dir.path("b.txt"), 1, 0, 0)), Some(52));
+        assert_eq!(code(open(&host, dir.path("b.txt"), 1, 600, 0)), Some(52));
+        assert_eq!(code(host.eof_variant(int(9))), Some(52));
+        assert_eq!(code(host.close_variant(int(9))), Some(52));
+        host.close_variant(int(0)).unwrap();
+
+        open(&host, dir.path("a.txt"), 3, 1, 0).unwrap();
+        assert_eq!(code(host.seek_variant(int(1), int(0))), Some(63));
+        host.close_variant(int(1)).unwrap();
+        open(&host, dir.path("r.txt"), 4, 1, 2).unwrap();
+        let put = host.put_record_variant(int(1), int(1), Variant::from_string("abcdef"), int(0));
+        assert_eq!(code(put), Some(59));
+        host.close_variant(int(1)).unwrap();
+        assert_eq!(code(open(&host, dir.path("r.txt"), 4, 1, 40000)), Some(6));
+
+        assert_eq!(code(host.kill_variant(dir.path("none.txt"))), Some(53));
+        host.mkdir_variant(dir.path("d")).unwrap();
+        assert_eq!(code(host.mkdir_variant(dir.path("d"))), Some(75));
+        open(&host, dir.path("d/x.txt"), 1, 1, 0).unwrap();
+        host.close_variant(int(1)).unwrap();
+        assert_eq!(code(host.rmdir_variant(dir.path("d"))), Some(75));
+        assert_eq!(code(host.ch_dir_variant(dir.path("nodir"))), Some(76));
+        assert_eq!(code(host.file_len_variant(dir.path("none.txt"))), Some(53));
+    }
+
+    #[test]
+    fn random_file_defaults_to_128_byte_records() {
+        let dir = Scratch::new("random");
+        let host = host();
+        open(&host, dir.path("r.txt"), 4, 1, 0).unwrap();
+        // A string is a 2-byte length plus the data, so record 2 ends at 128 + 3.
+        host.put_record_variant(int(1), int(2), Variant::from_string("x"), int(0))
+            .unwrap();
+        assert_eq!(host.lof_variant(int(1)).unwrap().as_i32(), Some(131));
+    }
+
+    #[test]
+    fn file_attr_reports_the_open_mode() {
+        let dir = Scratch::new("attr");
+        let host = host();
+        for (mode, want) in [(0, 1), (1, 2), (2, 8), (3, 32), (4, 4)] {
+            let name = format!("f{mode}.txt");
+            std::fs::write(dir.0.join(&name), b"x").unwrap();
+            open(&host, dir.path(&name), mode, 2, 0).unwrap();
+            assert_eq!(
+                host.file_attr_variant(int(2), int(1)).unwrap().as_i32(),
+                Some(want),
+                "mode {mode}"
+            );
+            host.close_variant(int(2)).unwrap();
+        }
+    }
+
+    #[test]
+    fn binary_eof_is_set_by_a_short_get() {
+        let dir = Scratch::new("eof");
+        let host = host();
+        std::fs::write(dir.0.join("b.bin"), [1u8]).unwrap();
+        open(&host, dir.path("b.bin"), 3, 2, 0).unwrap();
+        let byte = int(17); // Byte
+        host.get_record_variant(int(2), Variant::empty(), byte.clone(), int(0))
+            .unwrap();
+        // The only byte was read whole, so EOF is still False.
+        assert_eq!(host.eof_variant(int(2)).unwrap().as_i32(), Some(0));
+        host.get_record_variant(int(2), Variant::empty(), byte, int(0))
+            .unwrap();
+        assert_eq!(host.eof_variant(int(2)).unwrap().as_i32(), Some(1));
+    }
+
+    fn dir_all(host: &StandardHostServices, pattern: Variant, attrs: i32) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut next = host.dir_variant(pattern, int(attrs)).unwrap();
+        while let Some(name) = next.as_bstr().filter(|n| !n.is_empty()) {
+            names.push(name.as_str().to_string());
+            next = host.dir_variant(Variant::empty(), int(0)).unwrap();
+        }
+        names
+    }
+
+    #[test]
+    fn dir_filters_by_attribute_and_lists_a_folder_only_with_a_trailing_separator() {
+        let dir = Scratch::new("dir");
+        let host = host();
+        std::fs::create_dir(dir.0.join("sub")).unwrap();
+        std::fs::write(dir.0.join("a.txt"), b"").unwrap();
+        let star =
+            |suffix: &str| Variant::from_string(format!("{}/{suffix}", dir.0.display()).as_str());
+        assert_eq!(dir_all(&host, star("*"), 0), ["a.txt"]);
+        assert_eq!(dir_all(&host, star("*"), 16), [".", "..", "a.txt", "sub"]);
+        // A bare folder name finds nothing; with a trailing separator it lists the contents.
+        let folder = dir.path("");
+        let bare = Variant::from_string(dir.0.to_string_lossy().as_ref());
+        assert_eq!(dir_all(&host, bare, 0), Vec::<String>::new());
+        assert_eq!(dir_all(&host, folder, 0), ["a.txt"]);
+        // A bare `Dir()` after the listing ended has no pattern to continue (error 5).
+        assert_eq!(code(host.dir_variant(Variant::empty(), int(0))), Some(5));
     }
 }

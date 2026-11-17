@@ -336,7 +336,7 @@ impl<'a> ProcLower<'a> {
     /// An operand statically typed `Object` (or an interface with no known default member)
     /// is converted as VBA compiles it: a late get of its default member, called before the
     /// operator (`o + 1` with `o As Object` is 43; probe temp/variant-layout-probe/ops13).
-    fn object_operand_value(&self, operand: Bound) -> Bound {
+    pub(crate) fn object_operand_value(&self, operand: Bound) -> Bound {
         // An Enum-typed value can still be carried as `Object(name)`: it is a Long.
         if !matches!(
             self.g.resolve_udt_type(operand.ty.clone()),
@@ -400,6 +400,9 @@ impl<'a> ProcLower<'a> {
         if self.g.is_project_udt(&lhs.ty) || self.g.is_project_udt(&rhs.ty) {
             return Err(BindError::TypeMismatch);
         }
+        if types::is_rejected_array_operand(op, &lhs.ty, &rhs.ty) {
+            return Err(BindError::TypeMismatch);
+        }
         // Every op's result type comes from the promotion lattice (`\` and `Mod` yield the
         // wider integer operand type, `LongLong` when either side is 64-bit).
         let ty = self.g.result_type(op, &lhs.ty, &rhs.ty);
@@ -426,7 +429,10 @@ impl<'a> ProcLower<'a> {
         if base.kind() == SyntaxKind::IdentExpr
             && let Some(tok) = base.ident_name_token()
         {
-            match self.resolve_suffixed(base, tok.text) {
+            let binding = self
+                .resolve_suffixed(base, tok.text)
+                .map(|b| self.left_exception(tok.text, b, node.index_arg_list()));
+            match binding {
                 Some(binding) => {
                     if self.binding_is_module(&binding) {
                         return Err(self.module_as_value_error(tok.text));
@@ -587,6 +593,46 @@ impl<'a> ProcLower<'a> {
         })
     }
 
+    /// MS-VBAL §5.6.10: a `Left` match that is a parameterless function, subroutine or
+    /// Property Get, not typed as a class, `Object` or `Variant`, is discarded when it is
+    /// indexed with two arguments (`Left("abcd", 2)` inside a class with `Property Left`):
+    /// the name then binds on the lower tiers, the library `Left`.
+    fn left_exception(
+        &self,
+        name: &str,
+        binding: calcvba_symbol::binding::Binding,
+        arglist: Option<SyntaxNode<'_>>,
+    ) -> calcvba_symbol::binding::Binding {
+        if !name.eq_ignore_ascii_case("Left")
+            || arglist.is_none_or(|a| a.arg_items().len() != 2)
+            || !matches!(binding.route, DispatchRoute::ProjectMember { .. })
+        {
+            return binding;
+        }
+        let DispatchRoute::ProjectMember { kind } = binding.route else {
+            return binding;
+        };
+        let kind = match kind {
+            ProjectMemberKind::Method => ProjectMemberKind::Method,
+            _ => ProjectMemberKind::PropertyGet,
+        };
+        let Some(sig) = binding
+            .symbol
+            .and_then(|s| self.project_property_accessor_signature(s, kind, name).ok())
+        else {
+            return binding;
+        };
+        let discard = sig.params.is_empty()
+            && !matches!(
+                sig.return_type,
+                Some(VarTypeRef::Object(_) | VarTypeRef::Variant)
+            );
+        if discard && let Some(library) = self.g.env.resolve_in_libraries(name) {
+            return library;
+        }
+        binding
+    }
+
     fn bind_new(&mut self, node: SyntaxNode<'_>) -> Result<Bound, BindError> {
         let name = node
             .new_type_name()
@@ -625,9 +671,14 @@ impl<'a> ProcLower<'a> {
             _ => None,
         }
         .ok_or_else(|| BindError::Unsupported("AddressOf requires a procedure name".into()))?;
-        let binding = self
-            .resolve(name)
-            .ok_or_else(|| self.unresolved(name, "AddressOf operand"))?;
+        // `AddressOf Module2.Foo` names Module2's `Foo`, not whichever `Foo` the bare name
+        // resolves to here.
+        let binding = if operand.kind() == SyntaxKind::MemberExpr {
+            self.qualified_namespace_member_binding(operand, name)
+        } else {
+            self.resolve(name)
+        }
+        .ok_or_else(|| self.unresolved(name, "AddressOf operand"))?;
         let proc = binding
             .symbol
             .and_then(|s| self.g.ids.proc_of.get(&s).copied())

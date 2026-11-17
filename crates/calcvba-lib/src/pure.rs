@@ -11,7 +11,7 @@ use crate::{
 };
 use calcvba_runtime::{
     Decimal96, Variant, default_error_message,
-    safe_array::{SafeArray, VT_UI1_VALUE, VT_VARIANT_VALUE},
+    safe_array::{SafeArray, VT_BSTR_VALUE, VT_UI1_VALUE, VT_VARIANT_VALUE},
     variant::VarType,
 };
 // The VBA serial ↔ civil calendar math is canonical in `calcvba_runtime::vba_date`; re-export it
@@ -67,10 +67,21 @@ fn arg_present(args: &[Variant], index: usize) -> Option<&Variant> {
     opt(args, index).filter(|v| !matches!(v.vtype(), VarType::Empty) && !missing_sentinel(v))
 }
 
-/// Text-mode normalization, ported from the legacy `normalize_for_compare`:
-/// ASCII case-folding. FIDELITY: not Unicode/locale-aware.
 fn norm_compare(s: String, text: bool) -> String {
-    if text { s.to_ascii_lowercase() } else { s }
+    if !text {
+        return s;
+    }
+    // Case-fold each character on its own (Unicode lower case), so byte offsets found in the
+    // folded text stay valid in the original unless a fold changes the encoded length.
+    s.chars()
+        .map(|c| {
+            let mut lower = c.to_lowercase();
+            match (lower.next(), lower.next()) {
+                (Some(l), None) if l.len_utf8() == c.len_utf8() => l,
+                _ => c,
+            }
+        })
+        .collect()
 }
 
 /// The operand's UTF-16 code units for comparison: a String reads its BSTR units VERBATIM
@@ -114,6 +125,73 @@ pub fn left_b(args: &[Variant]) -> LibResult<Variant> {
     Ok(Variant::from_bstr_bytes(&bytes[..n.min(bytes.len())]))
 }
 
+/// `AscB(s)` — the first BYTE of the string's UTF-16LE storage, as a `Byte`.
+pub fn asc_b(args: &[Variant]) -> LibResult<Variant> {
+    let bytes = string_bytes(need(args, 0)?)?;
+    let first = bytes
+        .first()
+        .copied()
+        .ok_or_else(|| LibError::invalid_call("AscB of empty string"))?;
+    Ok(Variant::from_u8(first))
+}
+
+/// `ChrB(code)` — a one-BYTE string (`LenB` 1, `Len` 0); `code` is `0..=255`.
+pub fn chr_b(args: &[Variant]) -> LibResult<Variant> {
+    let code = as_i32(need(args, 0)?)?;
+    let byte = u8::try_from(code).map_err(|_| LibError::invalid_call("invalid character code"))?;
+    Ok(Variant::from_bstr_bytes(&[byte]))
+}
+
+/// `MidB(s, start, [length])` — `start` and `length` count BYTES.
+pub fn mid_b(args: &[Variant]) -> LibResult<Variant> {
+    let bytes = string_bytes(need(args, 0)?)?;
+    let start = one_based_mid_start(need(args, 1)?)?;
+    let from = (start - 1).min(bytes.len());
+    let take = match arg_present(args, 2) {
+        Some(v) => as_usize(v)?,
+        None => bytes.len() - from,
+    };
+    let to = from.saturating_add(take).min(bytes.len());
+    Ok(Variant::from_bstr_bytes(&bytes[from..to]))
+}
+
+/// `InStrB([start], s1, s2, [compare])` — the 1-based BYTE position of `s2` in `s1`.
+pub fn instr_b(args: &[Variant]) -> LibResult<Variant> {
+    let has_start = args.len() >= 3;
+    let base = usize::from(has_start);
+    let start = if has_start {
+        as_i32(need(args, 0)?)?
+    } else {
+        1
+    };
+    if start < 1 {
+        return Err(LibError::invalid_call("InStrB start must be >= 1"));
+    }
+    let text = text_compare(args, base + 2)?;
+    let bytes = |index: usize| -> LibResult<Vec<u8>> {
+        let value = need(args, index)?;
+        if text {
+            Ok(norm_compare(as_str(value)?, true)
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect())
+        } else {
+            string_bytes(value)
+        }
+    };
+    let hay = bytes(base)?;
+    let needle = bytes(base + 1)?;
+    let from = start as usize - 1;
+    if from > hay.len() || needle.len() > hay.len() - from {
+        return Ok(vi32(0));
+    }
+    if needle.is_empty() {
+        return Ok(vi32(0));
+    }
+    let found = hay[from..].windows(needle.len()).position(|w| w == needle);
+    Ok(vi32(found.map_or(0, |at| (from + at + 1) as i32)))
+}
+
 pub fn right(args: &[Variant]) -> LibResult<Variant> {
     let units = string_units(need(args, 0)?)?;
     let n = as_usize(need(args, 1)?)?.min(units.len());
@@ -138,11 +216,15 @@ pub fn mid(args: &[Variant]) -> LibResult<Variant> {
     Ok(Variant::from_utf16_units(&units[from..to]))
 }
 
-/// `Mid(s, start, [count]) = value` — returns the spliced string (the VM stores
-/// it back into the target slot).
 pub fn mid_stmt(args: &[Variant]) -> LibResult<Variant> {
     let mut units = string_units(need(args, 0)?)?;
     let start = one_based_mid_start(need(args, 1)?)? - 1;
+    // A start past the end of the target string is an error, not a no-op.
+    if start >= units.len() {
+        return Err(LibError::invalid_call(
+            "Mid start is past the end of the string",
+        ));
+    }
     // args = [target, start, value] or [target, start, count, value]
     let (count, value) = if args.len() >= 4 {
         (
@@ -161,6 +243,32 @@ pub fn mid_stmt(args: &[Variant]) -> LibResult<Variant> {
         }
     }
     Ok(Variant::from_utf16_units(&units))
+}
+
+/// `MidB(s, start, [count]) = value` — as [`mid_stmt`], with `start` and `count` in bytes.
+pub fn mid_b_stmt(args: &[Variant]) -> LibResult<Variant> {
+    let mut bytes = string_bytes(need(args, 0)?)?;
+    let start = one_based_mid_start(need(args, 1)?)? - 1;
+    if start >= bytes.len() {
+        return Err(LibError::invalid_call(
+            "MidB start is past the end of the string",
+        ));
+    }
+    let (count, value) = if args.len() >= 4 {
+        (
+            Some(as_usize(need(args, 2)?)?),
+            string_bytes(need(args, 3)?)?,
+        )
+    } else {
+        (None, string_bytes(need(args, 2)?)?)
+    };
+    let limit = count.unwrap_or(value.len()).min(value.len());
+    for (i, byte) in value.into_iter().take(limit).enumerate() {
+        if let Some(slot) = bytes.get_mut(start + i) {
+            *slot = byte;
+        }
+    }
+    Ok(Variant::from_bstr_bytes(&bytes))
 }
 
 pub fn lset_stmt(args: &[Variant]) -> LibResult<Variant> {
@@ -232,6 +340,10 @@ pub fn instr(args: &[Variant], rev: bool) -> LibResult<Variant> {
     let text = text_compare(args, base + 2)?;
     let hay = norm_compare(as_str(need(args, base)?)?, text);
     let needle = norm_compare(as_str(need(args, base + 1)?)?, text);
+    // Nothing is found in an empty string, whatever the search text.
+    if hay.is_empty() {
+        return Ok(vi32(0));
+    }
 
     let byte_start = utf16_index_to_byte(&hay, start as usize - 1);
     if byte_start > hay.len() {
@@ -260,6 +372,9 @@ fn instr_rev(args: &[Variant]) -> LibResult<Variant> {
     };
     if start == 0 || start < -1 {
         return Err(LibError::invalid_call("InStrRev start must be -1 or >= 1"));
+    }
+    if start != -1 && start as usize > hay_units {
+        return Ok(vi32(0));
     }
     // Search the first `start` code units (the match must end at or before `start`).
     let region_units = if start == -1 {
@@ -294,30 +409,37 @@ pub fn ucase(args: &[Variant]) -> LibResult<Variant> {
     Ok(vstr(as_str(need(args, 0)?)?.to_uppercase()))
 }
 
-/// `Split(expression, [delimiter = " "], [limit = -1], [compare])`. `limit` caps the number
-/// of substrings (the last element holds the unsplit remainder); `compare` chooses how the
-/// delimiter is matched (binary vs. case-insensitive text). Both were previously ignored.
 pub fn split(args: &[Variant]) -> LibResult<Variant> {
     let s = as_str(need(args, 0)?)?;
-    let delim = match opt(args, 1) {
+    let delim = match arg_present(args, 1) {
         Some(v) => as_str(v)?,
         None => " ".to_string(),
     };
-    let limit = match opt(args, 2) {
+    let limit = match arg_present(args, 2) {
         Some(v) => as_i32(v)?,
         None => -1,
     };
+    if limit < -1 {
+        return Err(LibError::invalid_call("Split limit must be -1 or greater"));
+    }
     let text = text_compare(args, 3)?;
-    let parts: Vec<Variant> = if delim.is_empty() {
+    let parts: Vec<Variant> = if s.is_empty() || limit == 0 {
+        // An empty string, or a zero limit, gives an empty (`LBound 0, UBound -1`) array.
+        Vec::new()
+    } else if delim.is_empty() {
         // An empty delimiter never splits — the whole string is the single element.
         vec![vstr(s)]
-    } else if limit == 0 {
-        // A zero limit returns an empty (`LBound 0, UBound -1`) array.
-        Vec::new()
     } else {
         split_with_limit(&s, &delim, limit, text)
     };
-    Ok(Variant::from_safearray(SafeArray::from_variants(parts)))
+    string_array(parts)
+}
+
+/// A `String()` array (the element type `Split` and `Filter` return, not `Variant()`).
+fn string_array(parts: Vec<Variant>) -> LibResult<Variant> {
+    SafeArray::from_typed_variants(VT_BSTR_VALUE, parts)
+        .map(Variant::from_safearray)
+        .map_err(LibError::type_mismatch)
 }
 
 /// Split `s` on `delim` into at most `limit` parts (negative = unlimited), matching the
@@ -371,7 +493,7 @@ pub fn filter(args: &[Variant]) -> LibResult<Variant> {
             out.push(element);
         }
     }
-    Ok(Variant::from_safearray(SafeArray::from_variants(out)))
+    string_array(out)
 }
 
 pub fn join(args: &[Variant]) -> LibResult<Variant> {
@@ -485,78 +607,114 @@ pub fn str_comp(args: &[Variant]) -> LibResult<Variant> {
 /// ranges), and an optional trailing compare mode (0=binary, 1=text).
 pub fn like(args: &[Variant]) -> LibResult<Variant> {
     let text = text_compare(args, 2)?;
-    let s: Vec<char> = norm_compare(as_str(need(args, 0)?)?, text)
-        .chars()
-        .collect();
-    let p: Vec<char> = norm_compare(as_str(need(args, 1)?)?, text)
-        .chars()
-        .collect();
-    Ok(vbool(like_match(&s, &p)))
-}
-
-fn like_match(s: &[char], p: &[char]) -> bool {
-    if p.is_empty() {
-        return s.is_empty();
-    }
-    match p[0] {
-        '*' => (0..=s.len()).any(|i| like_match(&s[i..], &p[1..])),
-        '?' => !s.is_empty() && like_match(&s[1..], &p[1..]),
-        '#' => !s.is_empty() && s[0].is_ascii_digit() && like_match(&s[1..], &p[1..]),
-        '[' => match charlist_end(&p[1..]) {
-            // p[1..1+end] is the charlist body; p[1+end] is the closing ']'.
-            Some(end) => {
-                !s.is_empty()
-                    && char_in_charlist(s[0], &p[1..1 + end])
-                    && like_match(&s[1..], &p[end + 2..])
-            }
-            None => !s.is_empty() && s[0] == '[' && like_match(&s[1..], &p[1..]),
-        },
-        c => !s.is_empty() && s[0] == c && like_match(&s[1..], &p[1..]),
-    }
-}
-
-/// Index (within `body`, the chars after the opening `[`) of the closing `]`. A
-/// `]` that is the first member (optionally after a leading `!`) is literal.
-fn charlist_end(body: &[char]) -> Option<usize> {
-    let mut i = 0;
-    if body.first() == Some(&'!') {
-        i += 1;
-    }
-    if body.get(i) == Some(&']') {
-        i += 1;
-    }
-    while i < body.len() {
-        if body[i] == ']' {
-            return Some(i);
-        }
-        i += 1;
-    }
-    None
-}
-
-/// `[charlist]` membership: a leading `!` negates; `a-z` denotes a range.
-fn char_in_charlist(c: char, body: &[char]) -> bool {
-    let (negate, body) = match body.split_first() {
-        Some((&'!', rest)) => (true, rest),
-        _ => (false, body),
+    let subject = string_units(need(args, 0)?)?;
+    let pattern = string_units(need(args, 1)?)?;
+    let tokens = like_tokens(&pattern, text)?;
+    let subject: Vec<u16> = if text {
+        subject.into_iter().map(fold_unit).collect()
+    } else {
+        subject
     };
+    Ok(vbool(like_match(&subject, &tokens)))
+}
+
+/// One element of a compiled `Like` pattern. A `Like` runs over UTF-16 code units, so `?` is one
+/// unit and a surrogate pair is two.
+enum LikeToken {
+    Any,
+    One,
+    Digit,
+    Unit(u16),
+    Set {
+        negate: bool,
+        ranges: Vec<(u16, u16)>,
+    },
+}
+
+/// Case fold of one code unit for text comparison (Unicode lower case when it stays one unit).
+fn fold_unit(unit: u16) -> u16 {
+    let Some(c) = char::from_u32(u32::from(unit)) else {
+        return unit;
+    };
+    let mut lower = c.to_lowercase();
+    match (lower.next(), lower.next()) {
+        (Some(l), None) if (l as u32) <= 0xFFFF => l as u32 as u16,
+        _ => unit,
+    }
+}
+
+fn invalid_pattern() -> LibError {
+    LibError::new(93, "Invalid pattern string")
+}
+
+/// Compile a pattern (folded when `text`). An unclosed `[` or a reversed range is
+/// "Invalid pattern string" (93); an empty `[]` matches the empty string.
+fn like_tokens(pattern: &[u16], text: bool) -> LibResult<Vec<LikeToken>> {
+    let fold = |u: u16| if text { fold_unit(u) } else { u };
+    let mut tokens = Vec::new();
     let mut i = 0;
-    let mut found = false;
-    while i < body.len() {
-        if i + 2 < body.len() && body[i + 1] == '-' {
-            let (lo, hi) = (body[i], body[i + 2]);
-            if (lo <= c && c <= hi) || (hi <= c && c <= lo) {
-                found = true;
+    while i < pattern.len() {
+        let unit = pattern[i];
+        i += 1;
+        match unit {
+            0x2A => tokens.push(LikeToken::Any),
+            0x3F => tokens.push(LikeToken::One),
+            0x23 => tokens.push(LikeToken::Digit),
+            0x5B => {
+                let close = pattern[i..]
+                    .iter()
+                    .position(|u| *u == 0x5D)
+                    .map(|p| p + i)
+                    .ok_or_else(invalid_pattern)?;
+                let mut body = &pattern[i..close];
+                i = close + 1;
+                let negate = body.first() == Some(&0x21) && body.len() > 1;
+                if negate {
+                    body = &body[1..];
+                }
+                if body.is_empty() {
+                    continue;
+                }
+                let mut ranges = Vec::new();
+                let mut k = 0;
+                while k < body.len() {
+                    if k + 2 < body.len() && body[k + 1] == 0x2D {
+                        let (lo, hi) = (fold(body[k]), fold(body[k + 2]));
+                        if lo > hi {
+                            return Err(invalid_pattern());
+                        }
+                        ranges.push((lo, hi));
+                        k += 3;
+                    } else {
+                        ranges.push((fold(body[k]), fold(body[k])));
+                        k += 1;
+                    }
+                }
+                tokens.push(LikeToken::Set { negate, ranges });
             }
-            i += 3;
-        } else {
-            if body[i] == c {
-                found = true;
-            }
-            i += 1;
+            other => tokens.push(LikeToken::Unit(fold(other))),
         }
     }
-    found != negate
+    Ok(tokens)
+}
+
+fn like_match(s: &[u16], p: &[LikeToken]) -> bool {
+    let Some((first, rest)) = p.split_first() else {
+        return s.is_empty();
+    };
+    match first {
+        LikeToken::Any => (0..=s.len()).any(|i| like_match(&s[i..], rest)),
+        LikeToken::One => !s.is_empty() && like_match(&s[1..], rest),
+        LikeToken::Digit => {
+            !s.is_empty() && (0x30..=0x39).contains(&s[0]) && like_match(&s[1..], rest)
+        }
+        LikeToken::Unit(u) => !s.is_empty() && s[0] == *u && like_match(&s[1..], rest),
+        LikeToken::Set { negate, ranges } => {
+            !s.is_empty()
+                && (ranges.iter().any(|(lo, hi)| (*lo..=*hi).contains(&s[0])) != *negate)
+                && like_match(&s[1..], rest)
+        }
+    }
 }
 
 /// Shared code-point decode for `Chr`/`ChrW`: the argument is a VBA `Long` whose
@@ -618,7 +776,7 @@ pub fn asc_w(args: &[Variant]) -> LibResult<Variant> {
         None => as_str(value)?.encode_utf16().next(),
     }
     .ok_or_else(|| LibError::invalid_call("AscW of empty string"))?;
-    Ok(vi32(i32::from(unit as i16)))
+    Ok(Variant::from_i16(unit as i16))
 }
 
 /// `Asc(s)` — genuine ANSI: the first char's byte in the live system ANSI code page
@@ -637,24 +795,31 @@ pub fn asc(args: &[Variant]) -> LibResult<Variant> {
         .first()
         .copied()
         .unwrap_or(b'?');
-    Ok(vi32(i32::from(byte)))
+    Ok(Variant::from_i16(i16::from(byte)))
 }
 
 pub fn space(args: &[Variant]) -> LibResult<Variant> {
     Ok(vstr(" ".repeat(alloc_count(need(args, 0)?)?)))
 }
 
-/// `String(number, character)` — `character` may be a code or a string.
 pub fn string_repeat(args: &[Variant]) -> LibResult<Variant> {
     let count = alloc_count(need(args, 0)?)?;
     let arg = need(args, 1)?;
-    let ch = if let Ok(code) = as_i32(arg) {
-        let code = if code > 255 { code % 256 } else { code };
-        char::from_u32(code as u32).unwrap_or(' ')
+    let ch = if arg.vtype() == VarType::String {
+        // A string supplies its own first character.
+        let units = string_units(arg)?;
+        *units
+            .first()
+            .ok_or_else(|| LibError::invalid_call("String character is empty"))?
     } else {
-        as_str(arg)?.chars().next().unwrap_or(' ')
+        // A number is a character code: the low byte, read through the ANSI code page.
+        let byte = as_i64(arg)?.rem_euclid(256) as u8;
+        calcvba_runtime::ansi::ansi_decode(&[byte])
+            .encode_utf16()
+            .next()
+            .unwrap_or(u16::from(byte))
     };
-    Ok(vstr(ch.to_string().repeat(count)))
+    Ok(Variant::from_utf16_units(&vec![ch; count]))
 }
 
 pub fn str_reverse(args: &[Variant]) -> LibResult<Variant> {
@@ -673,12 +838,18 @@ pub fn str_conv(args: &[Variant]) -> LibResult<Variant> {
     const VB_PROPER_CASE: i32 = 3;
     const VB_UNICODE: i32 = 64;
     const VB_FROM_UNICODE: i32 = 128;
+    // Wide, narrow, katakana and hiragana need an East Asian locale.
+    const VB_EAST_ASIAN: i32 = 4 | 8 | 16 | 32;
 
     // Internal mode of the binder's `Byte() = String` store: the UTF-16LE bytes of the text.
     if mode == calcvba_bundle::STRCONV_UTF16_BYTES {
-        let bytes = as_str(need(args, 0)?)?
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
+        // From a Variant source, anything but a String (an array) is stored as it is, and the
+        // store checks its type.
+        if need(args, 0)?.vtype() != VarType::String {
+            return Ok(need(args, 0)?.clone());
+        }
+        let bytes = string_bytes(need(args, 0)?)?
+            .into_iter()
             .map(Variant::from_u8)
             .collect();
         let array =
@@ -692,14 +863,19 @@ pub fn str_conv(args: &[Variant]) -> LibResult<Variant> {
         ));
     }
 
+    if mode & VB_EAST_ASIAN != 0 {
+        return Err(LibError::invalid_call(
+            "StrConv wide/narrow/kana modes need an East Asian locale",
+        ));
+    }
+
     let mut s = if mode & VB_UNICODE != 0 {
+        // The string's own bytes are read as ANSI text, one wide character per byte.
         let input = need(args, 0)?;
         if let Some(array) = input.as_safearray() {
-            let bytes = array_bytes(&array)?;
-            calcvba_runtime::ansi::ansi_decode(&bytes)
+            calcvba_runtime::ansi::ansi_decode(&array_bytes(&array)?)
         } else {
-            let text = as_str(input)?;
-            calcvba_runtime::ansi::ansi_decode(&calcvba_runtime::ansi::ansi_encode(&text))
+            calcvba_runtime::ansi::ansi_decode(&string_bytes(input)?)
         }
     } else {
         as_str(need(args, 0)?)?
@@ -713,29 +889,31 @@ pub fn str_conv(args: &[Variant]) -> LibResult<Variant> {
     };
 
     if mode & VB_FROM_UNICODE != 0 {
-        let bytes = calcvba_runtime::ansi::ansi_encode(&s)
-            .into_iter()
-            .map(Variant::from_u8)
-            .collect();
-        let array =
-            SafeArray::from_typed_variants(VT_UI1_VALUE, bytes).map_err(LibError::type_mismatch)?;
-        return Ok(Variant::from_safearray(array));
+        // The ANSI bytes, packed into a String (so `LenB` counts bytes). Storing it in a
+        // `Byte()` copies those bytes.
+        return Ok(Variant::from_bstr_bytes(
+            &calcvba_runtime::ansi::ansi_encode(&s),
+        ));
     }
 
     Ok(vstr(s))
 }
 
 fn proper_case(s: &str) -> String {
-    s.split(' ')
-        .map(|w| {
-            let mut cs = w.chars();
-            match cs.next() {
-                Some(f) => f.to_uppercase().collect::<String>() + &cs.as_str().to_lowercase(),
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut out = String::with_capacity(s.len());
+    let mut word_start = true;
+    for c in s.chars() {
+        if c.is_whitespace() {
+            out.push(c);
+            word_start = true;
+        } else if word_start {
+            out.extend(c.to_uppercase());
+            word_start = false;
+        } else {
+            out.extend(c.to_lowercase());
+        }
+    }
+    out
 }
 
 fn array_bytes(array: &SafeArray) -> LibResult<Vec<u8>> {
@@ -763,11 +941,18 @@ pub fn format(args: &[Variant]) -> LibResult<Variant> {
     if mask.is_empty() {
         return cstr(args);
     }
-    Ok(vstr(crate::format::apply(value, &mask)))
+    let first_day = first_day_of_week(args, 2)?;
+    let first_week = first_week_of_year(args, 3)?;
+    Ok(vstr(crate::format::apply_with(
+        value, &mask, first_day, first_week,
+    )))
 }
 
 pub fn format_number(args: &[Variant]) -> LibResult<Variant> {
     let value = need(args, 0)?;
+    if let Some(early) = fixed_format_guard(value)? {
+        return Ok(early);
+    }
     let options = fixed_format_options(args)?;
     Ok(vstr(crate::format::format_number(
         value,
@@ -780,6 +965,9 @@ pub fn format_number(args: &[Variant]) -> LibResult<Variant> {
 
 pub fn format_currency(args: &[Variant]) -> LibResult<Variant> {
     let value = need(args, 0)?;
+    if let Some(early) = fixed_format_guard(value)? {
+        return Ok(early);
+    }
     let options = fixed_format_options(args)?;
     Ok(vstr(crate::format::format_currency(
         value,
@@ -792,6 +980,9 @@ pub fn format_currency(args: &[Variant]) -> LibResult<Variant> {
 
 pub fn format_percent(args: &[Variant]) -> LibResult<Variant> {
     let value = need(args, 0)?;
+    if let Some(early) = fixed_format_guard(value)? {
+        return Ok(early);
+    }
     let options = fixed_format_options(args)?;
     Ok(vstr(crate::format::format_percent(
         value,
@@ -818,6 +1009,20 @@ struct FixedFormatOptions {
     include_leading_digit: bool,
     parens_for_negative: bool,
     group_digits: bool,
+}
+
+/// `FormatNumber`/`FormatCurrency`/`FormatPercent` of `Null` is the empty string; text that is
+/// not a number is a type mismatch.
+fn fixed_format_guard(value: &Variant) -> LibResult<Option<Variant>> {
+    match value.vtype() {
+        VarType::Null => Ok(Some(vstr(""))),
+        VarType::String
+            if calcvba_runtime::coerce::parse_vba_numeric_string(&as_str(value)?).is_none() =>
+        {
+            Err(LibError::type_mismatch("expected a numeric value"))
+        }
+        _ => Ok(None),
+    }
 }
 
 fn fixed_format_options(args: &[Variant]) -> LibResult<FixedFormatOptions> {
@@ -1060,10 +1265,9 @@ fn math1_typed(v: &Variant, op: Math1Op) -> LibResult<Variant> {
     }
 }
 
-/// Banker's rounding (round-half-to-even), like VBA `Round`.
 pub fn round(args: &[Variant]) -> LibResult<Variant> {
-    let x = as_f64(need(args, 0)?)?;
-    let digits = match opt(args, 1) {
+    let value = need(args, 0)?;
+    let digits = match arg_present(args, 1) {
         Some(v) => as_i32(v)?,
         None => 0,
     };
@@ -1072,10 +1276,68 @@ pub fn round(args: &[Variant]) -> LibResult<Variant> {
             "Round numdecimalplaces must be non-negative",
         ));
     }
-    let factor = 10f64.powi(digits);
+    let digits = digits as u32;
+    // The result keeps the argument's type; only a fractional part can change.
+    match value.vtype() {
+        VarType::Byte | VarType::Integer | VarType::Long | VarType::LongLong => {
+            return Ok(value.clone());
+        }
+        VarType::Currency => {
+            let scaled = value.as_currency_scaled_i64().unwrap_or(0);
+            if digits >= 4 {
+                return Ok(value.clone());
+            }
+            let drop = 4 - digits;
+            let magnitude =
+                round_half_even_div(u128::from(scaled.unsigned_abs()), drop) * 10u128.pow(drop);
+            let magnitude = i64::try_from(magnitude)
+                .map_err(|_| LibError::overflow("Round overflows Currency"))?;
+            return Ok(Variant::from_currency_scaled_i64(if scaled < 0 {
+                -magnitude
+            } else {
+                magnitude
+            }));
+        }
+        VarType::Decimal => {
+            let d = value.as_decimal96().unwrap_or_default();
+            let scale = u32::from(d.scale());
+            if digits >= scale {
+                return Ok(value.clone());
+            }
+            let magnitude = round_half_even_div(d.magnitude_u128(), scale - digits);
+            return Ok(Variant::from_decimal96(decimal96_from_magnitude(
+                magnitude,
+                digits as u8,
+                d.is_negative(),
+            )));
+        }
+        VarType::Single => {
+            let x = f64::from(value.as_f32().unwrap_or(0.0));
+            let factor = 10f64.powi(digits.min(60) as i32);
+            return Ok(Variant::from_f32(
+                ((x * factor).round_ties_even() / factor) as f32,
+            ));
+        }
+        _ => {}
+    }
+    let x = as_f64(value)?;
+    let factor = 10f64.powi(digits.min(300) as i32);
     let scaled = x * factor;
     let rounded = scaled.round_ties_even();
     Ok(vf64(rounded / factor))
+}
+
+/// `magnitude / 10^drop`, rounded half to even.
+fn round_half_even_div(magnitude: u128, drop: u32) -> u128 {
+    let divisor = 10u128.pow(drop.min(38));
+    let quotient = magnitude / divisor;
+    let remainder = magnitude % divisor;
+    let half = divisor / 2;
+    if remainder > half || (remainder == half && quotient % 2 == 1) {
+        quotient + 1
+    } else {
+        quotient
+    }
 }
 
 // ── Date / time (serial: days since 1899-12-30) ────────────────────────────────
@@ -1105,12 +1367,9 @@ fn validate_dateserial_arg(value: i64) -> LibResult<i64> {
     if (-32_768..=32_767).contains(&value) {
         Ok(value)
     } else {
-        Err(LibError::invalid_call("DateSerial argument out of range"))
+        // The arguments are `Integer`: a value outside its range is an Overflow.
+        Err(LibError::overflow("DateSerial argument out of range"))
     }
-}
-
-fn date_day_index(serial: f64) -> i64 {
-    serial.trunc() as i64
 }
 
 fn day_index_weekday(day: i64) -> i32 {
@@ -1144,6 +1403,14 @@ pub fn date_serial(args: &[Variant]) -> LibResult<Variant> {
     let y = validate_dateserial_arg(as_i64(need(args, 0)?)?)?;
     let m = validate_dateserial_arg(as_i64(need(args, 1)?)?)?;
     let d = validate_dateserial_arg(as_i64(need(args, 2)?)?)?;
+    // A year of 0-99 is two-digit (0-29 -> 2000s, 30-99 -> 1900s); negative years and years
+    // past 9999 are invalid.
+    let y = match y {
+        0..=29 => y + 2000,
+        30..=99 => y + 1900,
+        100..=9999 => y,
+        _ => return Err(LibError::invalid_call("DateSerial year out of range")),
+    };
     Ok(Variant::from_date_f64(validate_vba_date_serial(
         ymd_to_serial(y, m, d),
     )?))
@@ -1158,20 +1425,28 @@ pub fn time_serial(args: &[Variant]) -> LibResult<Variant> {
     ))
 }
 
-/// VBA `DateValue` returns the DATE-ONLY part of its argument. It accepts a Date or a numeric
-/// serial (not just a string): `DateValue(Now)` is today at midnight. Strings parse through the
-/// same lenient parser as `CDate`. The time-of-day is dropped by truncating the serial toward
-/// zero (so a negative serial keeps its calendar day).
 pub fn date_value(args: &[Variant]) -> LibResult<Variant> {
     let v = need(args, 0)?;
-    let serial = match v.vtype() {
-        VarType::Date => v.as_date_f64().unwrap_or(0.0),
-        VarType::String => cdate_from_string(&as_str(v)?)?.as_date_f64().unwrap_or(0.0),
-        _ => conv_f64(v)?,
-    };
+    if v.vtype() == VarType::Null {
+        return Ok(Variant::null());
+    }
+    let serial = date_arg(v)?;
     Ok(Variant::from_date_f64(validate_vba_date_serial(
         serial.trunc(),
     )?))
+}
+
+/// A date argument: a `Date` or numeric serial, or a string read as `CDate` reads it.
+fn date_arg(v: &Variant) -> LibResult<f64> {
+    match v.vtype() {
+        VarType::Date => Ok(v.as_date_f64().unwrap_or(0.0)),
+        // Date text parses as `CDate` parses it; a numeric string is its serial.
+        VarType::String => match cdate_from_string(&as_str(v)?) {
+            Ok(date) => Ok(date.as_date_f64().unwrap_or(0.0)),
+            Err(error) => as_f64(v).map_err(|_| error),
+        },
+        _ => as_f64(v),
+    }
 }
 
 /// VBA `TimeValue` returns the TIME-OF-DAY part of its argument. Like `DateValue` it accepts a
@@ -1217,7 +1492,11 @@ fn parse_time_value_string(s: &str) -> LibResult<f64> {
         parse_date(date_part.trim())?;
         return parse_time_only(&time_part).ok_or_else(err);
     }
-    parse_time_only(s).ok_or_else(err)
+    if let Some(time) = parse_time_only(s) {
+        return Ok(time);
+    }
+    // A date with no time of day has the time 0.
+    parse_date(s).map(|_| 0.0)
 }
 
 fn split_trailing_time(s: &str) -> Option<(&str, String)> {
@@ -1243,11 +1522,16 @@ fn parse_time_only(s: &str) -> Option<f64> {
     }
 
     let parts: Vec<&str> = text.split(':').collect();
-    if !(2..=3).contains(&parts.len()) {
+    // `3 PM` is a time; a bare number is not.
+    let one_part_with_meridian = parts.len() == 1 && meridian.is_some();
+    if !(2..=3).contains(&parts.len()) && !one_part_with_meridian {
         return None;
     }
     let mut h = parts[0].trim().parse::<i64>().ok()?;
-    let m = parts[1].trim().parse::<i64>().ok()?;
+    let m = match parts.get(1) {
+        Some(value) => value.trim().parse::<i64>().ok()?,
+        None => 0,
+    };
     let sec = match parts.get(2) {
         Some(value) => value.trim().parse::<f64>().ok()?,
         None => 0.0,
@@ -1278,57 +1562,65 @@ fn parse_time_only(s: &str) -> Option<f64> {
     Some((h as f64 * 3600.0 + m as f64 * 60.0 + sec) / 86400.0)
 }
 
-/// Parse a date string into `(year, month, day)` WITHOUT validating the calendar (see
-/// [`ymd_is_valid`]). Accepts ISO `YYYY-MM-DD`, US `M/D/YYYY`, and month-name forms.
 fn parse_date_raw(s: &str) -> Option<(i64, i64, i64)> {
+    // Two-digit years use VBA's window: 0-29 -> 2000s, 30-99 -> 1900s.
+    fn window(year: i64) -> i64 {
+        match year {
+            0..=29 => year + 2000,
+            30..=99 => year + 1900,
+            other => other,
+        }
+    }
     let s = s.trim();
-    // ISO `YYYY-MM-DD` (all-numeric; falls through to the month-name path otherwise).
-    if let Some((y, rest)) = s.split_once('-')
-        && let Some((m, d)) = rest.split_once('-')
-        && let (Ok(y), Ok(m), Ok(d)) = (
-            y.trim().parse::<i64>(),
-            m.trim().parse::<i64>(),
-            d.trim().parse::<i64>(),
-        )
-    {
-        return Some((y, m, d));
-    }
-    // US `M/D/YYYY`.
-    if let Some((m, rest)) = s.split_once('/')
-        && let Some((d, y)) = rest.split_once('/')
-        && let (Ok(m), Ok(d), Ok(y)) = (
-            m.trim().parse::<i64>(),
-            d.trim().parse::<i64>(),
-            y.trim().parse::<i64>(),
-        )
-    {
-        return Some((y, m, d));
-    }
-    // Month-name forms: `d mmm yyyy`, `mmm d, yyyy`, `dd mmmm yyyy`, … — a month name
-    // plus a day and a year, in either order, space/comma separated.
     let mut month = None;
     let mut nums: Vec<i64> = Vec::new();
-    for tok in s.split([' ', ',', '\t']).filter(|t| !t.is_empty()) {
+    let mut first_token_len = 0;
+    for tok in s
+        .split([' ', ',', '\t', '/', '-'])
+        .filter(|t| !t.is_empty())
+    {
         if let Some(m) = month_from_name(tok) {
-            month = Some(m);
-        } else if let Ok(n) = tok.trim().parse::<i64>() {
-            nums.push(n);
+            if month.replace(m).is_some() {
+                return None;
+            }
+        } else if tok.bytes().all(|b| b.is_ascii_digit()) {
+            if nums.is_empty() && month.is_none() {
+                first_token_len = tok.len();
+            }
+            nums.push(tok.parse::<i64>().ok()?);
         } else {
             return None;
         }
     }
-    if let (Some(m), [a, b]) = (month, nums.as_slice()) {
-        // The year is the value that can't be a day-of-month (> 31); the other is the
-        // day. A 2-digit year uses VBA's window: 0-29 → 2000s, 30-99 → 1900s.
-        let (day, year) = if *a > 31 { (*b, *a) } else { (*a, *b) };
-        let year = match year {
-            0..=29 => year + 2000,
-            30..=99 => year + 1900,
-            other => other,
-        };
-        return Some((year, m, day));
+    match (month, nums.as_slice()) {
+        // Month name, day and year in either order: `31-Jan-95`, `Jan 5, 2000`, `5 January 2000`.
+        (Some(m), [a, b]) => {
+            let (day, year) = if *a > 31 { (*b, *a) } else { (*a, *b) };
+            Some((window(year), m, day))
+        }
+        // Month name and one number: a day of this year (`Dec 30`) or a year (`Jan 2000`).
+        (Some(m), [n]) if *n > 31 => Some((window(*n), m, 1)),
+        (Some(m), [n]) => Some((current_year(), m, *n)),
+        // All numeric: `y-m-d` when the first part is a year, otherwise US `m/d/y`.
+        (None, [a, b, c]) => {
+            if first_token_len >= 3 || *a > 31 {
+                Some((*a, *b, *c))
+            } else {
+                Some((window(*c), *a, *b))
+            }
+        }
+        // `m/d`: the day of this year.
+        (None, [a, b]) => Some((current_year(), *a, *b)),
+        _ => None,
     }
-    None
+}
+
+/// The current calendar year (UTC).
+fn current_year() -> i64 {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    civil_from_days(seconds.div_euclid(86_400)).0
 }
 
 /// The 1-based month number for a month name or its 3-letter prefix (`Jan`,
@@ -1337,19 +1629,23 @@ fn month_from_name(tok: &str) -> Option<i64> {
     const ABBR: [&str; 12] = [
         "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
     ];
-    let t = tok.trim().to_ascii_lowercase();
+    let t = tok.trim().trim_end_matches('.').to_ascii_lowercase();
+    if t.len() < 3 {
+        return None;
+    }
     ABBR.iter()
         .position(|a| t.starts_with(a))
         .map(|i| i as i64 + 1)
 }
 
-/// FIDELITY: supports day/week/hour/minute/second additions exactly; month/year
-/// additions are calendar-correct, clamp the day to the target month's length
-/// (VBA never rolls `1/31` past February), and preserve the time of day.
 pub fn date_add(args: &[Variant]) -> LibResult<Variant> {
-    let interval = as_str(need(args, 0)?)?.to_lowercase();
-    let number = as_f64(need(args, 1)?)?;
-    let serial = as_f64(need(args, 2)?)?;
+    let interval = interval_arg(need(args, 0)?)?;
+    // The count is a `Long`; Excel drops its fraction (`DateAdd("d", 1.5, ...)` adds one day).
+    let number = as_f64(need(args, 1)?)?.trunc();
+    if !number.is_finite() || number.abs() > f64::from(i32::MAX) {
+        return Err(LibError::overflow("DateAdd number out of range"));
+    }
+    let serial = date_arg(need(args, 2)?)?;
     let result = match interval.as_str() {
         "yyyy" | "m" | "q" => {
             let (y, m, d) = serial_to_ymd(serial);
@@ -1375,11 +1671,13 @@ pub fn date_add(args: &[Variant]) -> LibResult<Variant> {
                 date_serial + time_frac
             }
         }
-        "d" | "y" | "w" => serial + number,
-        "ww" => serial + number * 7.0,
-        "h" => serial + number / 24.0,
-        "n" => serial + number / 1440.0,
-        "s" => serial + number / 86400.0,
+        // Before 1899-12-30 the time of day counts away from zero, so the arithmetic runs on
+        // the continuous time line and maps back.
+        "d" | "y" | "w" => real_to_serial(serial_to_real(serial) + number),
+        "ww" => real_to_serial(serial_to_real(serial) + number * 7.0),
+        "h" => real_to_serial(serial_to_real(serial) + number / 24.0),
+        "n" => real_to_serial(serial_to_real(serial) + number / 1440.0),
+        "s" => real_to_serial(serial_to_real(serial) + number / 86400.0),
         _ => {
             return Err(LibError::invalid_call(format!(
                 "unknown DateAdd interval `{interval}`"
@@ -1389,44 +1687,67 @@ pub fn date_add(args: &[Variant]) -> LibResult<Variant> {
     Ok(Variant::from_date_f64(validate_vba_date_serial(result)?))
 }
 
-/// FIDELITY: difference in the unit; calendar-unit diffs are approximate.
+fn interval_arg(value: &Variant) -> LibResult<String> {
+    Ok(as_str(value)?.trim().to_ascii_lowercase())
+}
+
+/// The continuous time (days) of a serial: before 1899-12-30 the time of day counts away from
+/// zero (`-1.25` is 06:00 on day -1), so it adds to the day instead of subtracting.
+fn serial_to_real(serial: f64) -> f64 {
+    if serial < 0.0 {
+        serial.trunc() + (serial - serial.trunc()).abs()
+    } else {
+        serial
+    }
+}
+
+fn real_to_serial(real: f64) -> f64 {
+    if real >= 0.0 {
+        real
+    } else {
+        let day = real.floor();
+        day - (real - day)
+    }
+}
+
 pub fn date_diff(args: &[Variant]) -> LibResult<Variant> {
-    let interval = as_str(need(args, 0)?)?.to_lowercase();
-    let a = as_f64(need(args, 1)?)?;
-    let b = as_f64(need(args, 2)?)?;
-    let a_day = date_day_index(a);
-    let b_day = date_day_index(b);
-    let days = (b_day - a_day) as f64;
+    let interval = interval_arg(need(args, 0)?)?;
+    let a = date_arg(need(args, 1)?)?;
+    let b = date_arg(need(args, 2)?)?;
+    let (ra, rb) = (serial_to_real(a), serial_to_real(b));
+    let (a_day, b_day) = (ra.floor() as i64, rb.floor() as i64);
+    // Whole seconds on the continuous time line, so an hour or minute boundary is exact.
+    let (a_sec, b_sec) = (
+        (ra * 86_400.0).round() as i64,
+        (rb * 86_400.0).round() as i64,
+    );
+    let (ya, ma, _) = serial_to_ymd(a);
+    let (yb, mb, _) = serial_to_ymd(b);
     let result = match interval.as_str() {
-        "d" | "y" => days,
-        "w" => {
-            let start_weekday = day_index_weekday(a_day);
-            count_weekday_boundaries(a_day, b_day, start_weekday) as f64
-        }
+        "yyyy" => yb - ya,
+        "q" => (yb * 4 + (mb - 1) / 3) - (ya * 4 + (ma - 1) / 3),
+        "m" => (yb - ya) * 12 + (mb - ma),
+        "d" | "y" => b_day - a_day,
+        "w" => (b_day - a_day) / 7,
         "ww" => {
             let first = first_day_of_week(args, 3)?;
-            count_weekday_boundaries(a_day, b_day, first - 1) as f64
+            count_weekday_boundaries(a_day, b_day, first - 1)
         }
-        "h" => (b - a) * 24.0,
-        "n" => (b - a) * 1440.0,
-        "s" => (b - a) * 86400.0,
-        "m" | "q" | "yyyy" => {
-            let (ya, ma, _) = serial_to_ymd(a);
-            let (yb, mb, _) = serial_to_ymd(b);
-            let months = (yb - ya) * 12 + (mb - ma);
-            match interval.as_str() {
-                "yyyy" => (yb - ya) as f64,
-                "q" => (months / 3) as f64,
-                _ => months as f64,
-            }
-        }
+        "h" => b_sec.div_euclid(3600) - a_sec.div_euclid(3600),
+        "n" => b_sec.div_euclid(60) - a_sec.div_euclid(60),
+        "s" => b_sec - a_sec,
         _ => {
             return Err(LibError::invalid_call(format!(
                 "unknown DateDiff interval `{interval}`"
             )));
         }
     };
-    Ok(vf64(result.trunc()))
+    // The count is a `Long`; one that does not fit (seconds across a century) comes back as a
+    // `Double`, as Excel's does.
+    Ok(match i32::try_from(result) {
+        Ok(count) => vi32(count),
+        Err(_) => vf64(result as f64),
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -1441,8 +1762,8 @@ pub enum DatePart {
 }
 
 pub fn date_part(args: &[Variant], part: DatePart) -> LibResult<Variant> {
-    let serial = as_f64(need(args, 0)?)?;
-    Ok(vi32(match part {
+    let serial = date_arg(need(args, 0)?)?;
+    let value = match part {
         DatePart::Year | DatePart::Month | DatePart::Day | DatePart::Weekday => {
             let (y, m, d) = serial_to_ymd(serial);
             match part {
@@ -1465,11 +1786,12 @@ pub fn date_part(args: &[Variant], part: DatePart) -> LibResult<Variant> {
                 _ => unreachable!(),
             }
         }
-    }))
+    };
+    Ok(Variant::from_i16(value as i16))
 }
 
 fn first_day_of_week(args: &[Variant], index: usize) -> LibResult<i32> {
-    let first = match opt(args, index) {
+    let first = match arg_present(args, index) {
         Some(v) => as_i32(v)?,
         None => 1,
     };
@@ -1478,6 +1800,49 @@ fn first_day_of_week(args: &[Variant], index: usize) -> LibResult<i32> {
         return Err(LibError::invalid_call("firstdayofweek out of range"));
     }
     Ok(first)
+}
+
+fn first_week_of_year(args: &[Variant], index: usize) -> LibResult<i32> {
+    let first = match arg_present(args, index) {
+        Some(v) => as_i32(v)?,
+        None => 1,
+    };
+    let first = if first == 0 { 1 } else { first };
+    if !(1..=3).contains(&first) {
+        return Err(LibError::invalid_call("firstweekofyear out of range"));
+    }
+    Ok(first)
+}
+
+/// The week of the year (`DatePart "ww"`, `Format "ww"`). `first_day` is `vbSunday..vbSaturday`
+/// (1-7); `first_week` is `vbFirstJan1` (1: week 1 holds Jan 1), `vbFirstFourDays` (2: week 1
+/// is the first week with four days in the year) or `vbFirstFullWeek` (3). A date before week 1
+/// belongs to the last week of the previous year, and (except under `vbFirstJan1`) one on or
+/// after week 1 of the next year is week 1.
+pub(crate) fn week_of_year(y: i64, m: i64, d: i64, first_day: i32, first_week: i32) -> i64 {
+    let day = days_from_civil(y, m, d);
+    let week_one_start = |year: i64| -> i64 {
+        let jan1 = days_from_civil(year, 1, 1);
+        // Days from the start of the week to Jan 1 (1970-01-01 was a Thursday).
+        let before = (jan1 + 4 - i64::from(first_day - 1)).rem_euclid(7);
+        let week_start = jan1 - before;
+        match first_week {
+            2 if 7 - before < 4 => week_start + 7,
+            3 if before != 0 => week_start + 7,
+            _ => week_start,
+        }
+    };
+    // Under vbFirstJan1 the days of the last week stay in this year (Dec 31 can be week 53);
+    // under the other two rules they belong to week 1 once it has started.
+    if first_week != 1 && day >= week_one_start(y + 1) {
+        return 1;
+    }
+    let start = if day >= week_one_start(y) {
+        week_one_start(y)
+    } else {
+        week_one_start(y - 1)
+    };
+    (day - start) / 7 + 1
 }
 
 fn weekday_number(year: i32, month: u32, day: u32, first: i32) -> i32 {
@@ -1531,6 +1896,11 @@ pub fn weekday_name(args: &[Variant]) -> LibResult<Variant> {
         return Err(LibError::invalid_call("WeekdayName weekday out of range"));
     }
     let first = if first == 0 { 1 } else { first };
+    if !(1..=7).contains(&first) {
+        return Err(LibError::invalid_call(
+            "WeekdayName firstdayofweek out of range",
+        ));
+    }
     let idx = ((weekday - 1) + (first - 1)).rem_euclid(7) as usize;
     let name = NAMES[idx];
     Ok(vstr(if abbreviate { &name[..3] } else { name }))
@@ -1560,11 +1930,9 @@ pub fn len_b(args: &[Variant]) -> LibResult<Variant> {
     Ok(vi32(bytes as i32))
 }
 
-/// `DatePart(interval, date, [firstdayofweek], [firstweekofyear])` — extract a
-/// component named by `interval` (`yyyy`/`q`/`m`/`y`/`d`/`w`/`ww`/`h`/`n`/`s`).
 pub fn vba_datepart(args: &[Variant]) -> LibResult<Variant> {
-    let interval = as_str(need(args, 0)?)?.trim().to_ascii_lowercase();
-    let serial = as_f64(need(args, 1)?)?;
+    let interval = interval_arg(need(args, 0)?)?;
+    let serial = date_arg(need(args, 1)?)?;
     let (y, m, d) = serial_to_ymd(serial);
     let (h, mi, s) = serial_to_hms(serial);
     let value = match interval.as_str() {
@@ -1572,16 +1940,18 @@ pub fn vba_datepart(args: &[Variant]) -> LibResult<Variant> {
         "q" => (((m - 1) / 3) + 1) as i32,
         "m" => m as i32,
         "d" => d as i32,
-        "w" => day_of_week(y as i32, m as u32, d as u32) + 1,
+        "w" => {
+            let first = first_day_of_week(args, 2)?;
+            weekday_number(y as i32, m as u32, d as u32, first)
+        }
         "y" => {
             // Day of the year: this date's ordinal minus Jan 1's.
             (days_from_civil(y, m, d) - days_from_civil(y, 1, 1) + 1) as i32
         }
         "ww" => {
-            // Week of year (default Sunday-first, week 1 = the week of Jan 1).
-            let doy = days_from_civil(y, m, d) - days_from_civil(y, 1, 1);
-            let jan1_dow = day_of_week(y as i32, 1, 1); // 0 = Sunday
-            ((doy + jan1_dow as i64) / 7 + 1) as i32
+            let first_day = first_day_of_week(args, 2)?;
+            let first_week = first_week_of_year(args, 3)?;
+            week_of_year(y, m, d, first_day, first_week) as i32
         }
         "h" => h as i32,
         "n" => mi as i32,
@@ -1592,7 +1962,7 @@ pub fn vba_datepart(args: &[Variant]) -> LibResult<Variant> {
             )));
         }
     };
-    Ok(vi32(value))
+    Ok(Variant::from_i16(value as i16))
 }
 
 /// `IsMissing(arg)` — True only for an omitted optional `Variant` argument,
@@ -1605,18 +1975,19 @@ pub fn is_missing(args: &[Variant]) -> LibResult<Variant> {
 }
 
 pub fn error_text(args: &[Variant]) -> LibResult<Variant> {
-    let Some(value) = opt(args, 0) else {
+    let Some(value) = arg_present(args, 0) else {
         return Ok(vstr(""));
     };
-    if value.vtype() == VarType::Empty {
-        return Ok(vstr(""));
-    }
     let code = as_i32(value)?;
     if code == 0 {
         return Ok(vstr(""));
     }
+    // The number is an unsigned 16-bit value; a negative one has no message of its own.
+    if code > 65_535 {
+        return Err(LibError::overflow("Error number out of range"));
+    }
     if code < 0 {
-        return Err(LibError::invalid_call("Error number must be non-negative"));
+        return Ok(vstr(calcvba_runtime::default_error_message(0)));
     }
     Ok(vstr(calcvba_runtime::default_error_message(code)))
 }
@@ -1672,12 +2043,16 @@ pub fn oct(args: &[Variant]) -> LibResult<Variant> {
 pub fn cstr(args: &[Variant]) -> LibResult<Variant> {
     Ok(vstr(as_str(need(args, 0)?)?))
 }
-/// `Str(n)` — leading space for non-negative numbers, and the VB `Str$` quirk
-/// of dropping the leading zero of a magnitude below 1 (`Str(0.5)` = " .5",
-/// `Str(-0.5)` = "-.5"; a plain "0" is unchanged). `CStr` keeps the leading zero.
 pub fn str_fn(args: &[Variant]) -> LibResult<Variant> {
-    let n = as_f64(need(args, 0)?)?;
-    let body = as_str(need(args, 0)?)?;
+    let value = need(args, 0)?;
+    // A numeric string is converted to its number first; `Empty` is 0.
+    let number = match value.vtype() {
+        VarType::String => vf64(as_f64(value)?),
+        VarType::Empty => vi32(0),
+        _ => value.clone(),
+    };
+    let n = as_f64(&number)?;
+    let body = as_str(&number)?;
     let body = if let Some(rest) = body.strip_prefix("0.") {
         format!(".{rest}")
     } else if let Some(rest) = body.strip_prefix("-0.") {
@@ -1755,7 +2130,12 @@ pub fn cdate(args: &[Variant]) -> LibResult<Variant> {
         // serial (the integer part is the day, the fraction the time of day).
         VarType::String => cdate_from_string(&as_str(v)?),
         _ => {
-            let serial = validate_vba_date_serial(conv_f64(v)?)?;
+            // A number outside the Date range is Overflow (Excel: `CDate(3000000)` raises 6).
+            let serial = conv_f64(v)?;
+            if !calcvba_runtime::coerce::is_date_serial(serial) {
+                return Err(LibError::overflow("value does not fit in Date"));
+            }
+            let serial = validate_vba_date_serial(serial)?;
             Ok(Variant::from_date_f64(serial))
         }
     }
@@ -1804,6 +2184,13 @@ pub fn cverr(args: &[Variant]) -> LibResult<Variant> {
 /// `CInt("&H20")`, etc.). `as_f64` alone does not parse strings — only numeric
 /// Variants.
 fn conv_f64(value: &Variant) -> LibResult<f64> {
+    // A conversion function reads an error value as its number (`CLng(CVErr(5))` is 5).
+    if let Some(code) = value
+        .as_error_code()
+        .filter(|_| value.vtype() == VarType::Error)
+    {
+        return Ok(f64::from(code));
+    }
     if value.vtype() == VarType::String {
         return parse_vba_numeric_string(&as_str(value)?)
             .ok_or_else(|| LibError::type_mismatch("expected a numeric value"));
@@ -1813,7 +2200,7 @@ fn conv_f64(value: &Variant) -> LibResult<f64> {
 /// Read a conversion argument as `i64` with VBA banker's rounding, parsing a numeric
 /// string first. A non-string numeric keeps its exact value via `as_i64`.
 fn conv_i64(value: &Variant) -> LibResult<i64> {
-    if value.vtype() == VarType::String {
+    if value.vtype() == VarType::String || value.vtype() == VarType::Error {
         let d = conv_f64(value)?;
         if !d.is_finite() || d.abs() >= 9.223_372_036_854_775e18 {
             return Err(LibError::overflow("integer overflow"));
@@ -2018,7 +2405,31 @@ fn decimal96_from_f64(value: f64) -> LibResult<Decimal96> {
     if value == 0.0 {
         return Ok(decimal96_zero());
     }
-    let text = format!("{value:.15}");
+    // A Double carries 15 significant digits into a Decimal.
+    let scientific = format!("{:.14e}", value.abs());
+    let (mantissa, exponent) = scientific.split_once('e').unwrap_or((&scientific, "0"));
+    let exponent: i32 = exponent.parse().unwrap_or(0);
+    let digits = mantissa.replace('.', "");
+    let point = exponent + 1; // digits before the decimal point
+    let mut text = String::new();
+    if value < 0.0 {
+        text.push('-');
+    }
+    if point <= 0 {
+        text.push_str("0.");
+        text.push_str(&"0".repeat((-point) as usize));
+        text.push_str(&digits);
+    } else if point as usize >= digits.len() {
+        text.push_str(&digits);
+        text.push_str(&"0".repeat(point as usize - digits.len()));
+    } else {
+        text.push_str(&digits[..point as usize]);
+        text.push('.');
+        text.push_str(&digits[point as usize..]);
+    }
+    if text.contains('.') {
+        text.truncate(text.trim_end_matches('0').len());
+    }
     parse_decimal96_text(&text).ok_or_else(|| LibError::overflow("value does not fit in Decimal"))
 }
 
@@ -2081,7 +2492,16 @@ pub fn clnglng(args: &[Variant]) -> LibResult<Variant> {
 }
 /// `CByte` — to `Byte` (banker's rounding, range 0..255).
 pub fn cbyte(args: &[Variant]) -> LibResult<Variant> {
-    let value = conv_i64(need(args, 0)?)?;
+    let arg = need(args, 0)?;
+    // `CByte(True)` is 255 (True's low byte).
+    if arg.vtype() == VarType::Boolean {
+        return Ok(Variant::from_u8(if arg.as_bool().unwrap_or(false) {
+            255
+        } else {
+            0
+        }));
+    }
+    let value = conv_i64(arg)?;
     let narrowed =
         u8::try_from(value).map_err(|_| LibError::overflow("value does not fit in Byte"))?;
     Ok(Variant::from_u8(narrowed))
@@ -2101,12 +2521,23 @@ pub fn cbool(args: &[Variant]) -> LibResult<Variant> {
 }
 /// `CCur` — to `Currency` (a fixed 4-decimal scaled i64); out of range overflows.
 pub fn ccur(args: &[Variant]) -> LibResult<Variant> {
-    let scale = calcvba_runtime::CurrencyValue::SCALE as f64;
-    let scaled = (conv_f64(need(args, 0)?)? * scale).round_ties_even();
-    if !scaled.is_finite() || scaled.abs() >= 9.223_372_036_854_775e18 {
-        return Err(LibError::overflow("value does not fit in Currency"));
-    }
-    Ok(Variant::from_currency_scaled_i64(scaled as i64))
+    let arg = need(args, 0)?;
+    let overflow = || LibError::overflow("value does not fit in Currency");
+    // Exact sources keep every digit; a Double converts from its exact binary value.
+    let scaled = match arg.vtype() {
+        VarType::Currency => arg.as_currency_scaled_i64(),
+        VarType::Decimal => arg
+            .as_decimal96()
+            .and_then(|d| d.round_scaled_i128(4))
+            .and_then(|n| i64::try_from(n).ok()),
+        VarType::LongLong => arg
+            .as_i64()
+            .and_then(|n| n.checked_mul(calcvba_runtime::CurrencyValue::SCALE)),
+        _ => calcvba_runtime::coerce::currency_scaled_from_f64(conv_f64(arg)?),
+    };
+    Ok(Variant::from_currency_scaled_i64(
+        scaled.ok_or_else(overflow)?,
+    ))
 }
 /// `CDec` — to a Variant carrying the Decimal subtype.
 pub fn cdec(args: &[Variant]) -> LibResult<Variant> {
@@ -2137,12 +2568,15 @@ fn rng_step(ctx: &mut LibContext) -> f64 {
 }
 
 fn rnd_negative_seed(value: f64) -> u64 {
-    let bits = (value as f32).to_bits() as u64;
-    ((bits & RND_MASK) | ((bits >> 24) & 0xFF)) & RND_MASK
+    let bits = u64::from((value as f32).to_bits());
+    ((bits & RND_MASK) + ((bits >> 24) & 0xFF)) & RND_MASK
 }
 
+/// The 16 bits `Randomize` takes from its argument: the high half of the XOR of the Double's two
+/// 32-bit words. They replace the middle two bytes of the 24-bit state.
 fn randomize_seed_word(value: f64) -> u64 {
-    (value.to_bits() >> 48) & 0xFFFF
+    let bits = value.to_bits();
+    ((bits ^ (bits >> 32)) >> 16) & 0xFFFF
 }
 
 /// An optional numeric argument, treating an `Empty` placeholder as omitted.
@@ -2183,9 +2617,27 @@ pub fn randomize(args: &[Variant], ctx: &mut LibContext) -> LibResult<Variant> {
 // ── Financial ──────────────────────────────────────────────────────────────────
 
 fn opt_f64(args: &[Variant], index: usize, default: f64) -> LibResult<f64> {
-    match opt(args, index) {
+    match arg_present(args, index) {
         Some(v) => as_f64(v),
         None => Ok(default),
+    }
+}
+
+/// The `due` / `type` argument: any non-zero value means payments at the start of the period.
+fn due_flag(args: &[Variant], index: usize) -> LibResult<f64> {
+    Ok(if opt_f64(args, index, 0.0)? != 0.0 {
+        1.0
+    } else {
+        0.0
+    })
+}
+
+/// A financial result; a value that is not a finite number is "Invalid procedure call".
+fn finite_result(x: f64) -> LibResult<Variant> {
+    if x.is_finite() {
+        Ok(vf64(x))
+    } else {
+        Err(LibError::invalid_call("financial result is not a number"))
     }
 }
 
@@ -2249,8 +2701,8 @@ pub fn fv(args: &[Variant]) -> LibResult<Variant> {
         as_f64(need(args, 2)?)?,
     );
     let pv = opt_f64(args, 3, 0.0)?;
-    let t = opt_f64(args, 4, 0.0)?;
-    Ok(vf64(fv_value(i, n, pmt, pv, t)))
+    let t = due_flag(args, 4)?;
+    finite_result(fv_value(i, n, pmt, pv, t))
 }
 
 pub fn pv(args: &[Variant]) -> LibResult<Variant> {
@@ -2260,13 +2712,13 @@ pub fn pv(args: &[Variant]) -> LibResult<Variant> {
         as_f64(need(args, 2)?)?,
     );
     let fv = opt_f64(args, 3, 0.0)?;
-    let t = opt_f64(args, 4, 0.0)?;
-    Ok(vf64(if i == 0.0 {
+    let t = due_flag(args, 4)?;
+    finite_result(if i == 0.0 {
         -(fv + pmt * n)
     } else {
         let g = (1.0 + i).powf(n);
         -(fv + pmt * (1.0 + i * t) * (g - 1.0) / i) / g
-    }))
+    })
 }
 
 pub fn pmt(args: &[Variant]) -> LibResult<Variant> {
@@ -2276,61 +2728,59 @@ pub fn pmt(args: &[Variant]) -> LibResult<Variant> {
         as_f64(need(args, 2)?)?,
     );
     let fv = opt_f64(args, 3, 0.0)?;
-    let t = opt_f64(args, 4, 0.0)?;
-    Ok(vf64(pmt_value(i, n, pv, fv, t)))
+    let t = due_flag(args, 4)?;
+    if n == 0.0 {
+        return Err(LibError::invalid_call("Pmt requires nper <> 0"));
+    }
+    finite_result(pmt_value(i, n, pv, fv, t))
 }
 
-/// `IPmt(rate, per, nper, pv, [fv = 0], [type = 0])` → the interest portion of the
-/// `per`-th payment.
 pub fn ipmt(args: &[Variant]) -> LibResult<Variant> {
     let rate = as_f64(need(args, 0)?)?;
     let per = as_f64(need(args, 1)?)?;
     let nper = as_f64(need(args, 2)?)?;
     let pv = as_f64(need(args, 3)?)?;
     let fv = opt_f64(args, 4, 0.0)?;
-    let t = if opt_f64(args, 5, 0.0)? != 0.0 {
-        1.0
-    } else {
-        0.0
-    };
-    Ok(vf64(ipmt_value(rate, per, nper, pv, fv, t)))
+    let t = due_flag(args, 5)?;
+    if nper <= 0.0 || per < 1.0 || per > nper {
+        return Err(LibError::invalid_call("IPmt period out of range"));
+    }
+    finite_result(ipmt_value(rate, per, nper, pv, fv, t))
 }
 
-/// `PPmt(rate, per, nper, pv, [fv = 0], [type = 0])` → the principal portion of the
-/// `per`-th payment, i.e. the period payment minus its interest portion.
 pub fn ppmt(args: &[Variant]) -> LibResult<Variant> {
     let rate = as_f64(need(args, 0)?)?;
     let per = as_f64(need(args, 1)?)?;
     let nper = as_f64(need(args, 2)?)?;
     let pv = as_f64(need(args, 3)?)?;
     let fv = opt_f64(args, 4, 0.0)?;
-    let t = if opt_f64(args, 5, 0.0)? != 0.0 {
-        1.0
-    } else {
-        0.0
-    };
+    let t = due_flag(args, 5)?;
+    if nper <= 0.0 || per < 1.0 || per > nper {
+        return Err(LibError::invalid_call("PPmt period out of range"));
+    }
     let payment = pmt_value(rate, nper, pv, fv, t);
-    Ok(vf64(payment - ipmt_value(rate, per, nper, pv, fv, t)))
+    finite_result(payment - ipmt_value(rate, per, nper, pv, fv, t))
 }
 
-/// `SLN(cost, salvage, life)` → straight-line depreciation per period.
 pub fn sln(args: &[Variant]) -> LibResult<Variant> {
     let cost = as_f64(need(args, 0)?)?;
     let salvage = as_f64(need(args, 1)?)?;
     let life = as_f64(need(args, 2)?)?;
-    Ok(vf64((cost - salvage) / life))
+    if life == 0.0 {
+        return Err(LibError::invalid_call("SLN requires life <> 0"));
+    }
+    finite_result((cost - salvage) / life)
 }
 
-/// `SYD(cost, salvage, life, period)` → sum-of-years'-digits depreciation for
-/// `period`.
 pub fn syd(args: &[Variant]) -> LibResult<Variant> {
     let cost = as_f64(need(args, 0)?)?;
     let salvage = as_f64(need(args, 1)?)?;
     let life = as_f64(need(args, 2)?)?;
     let period = as_f64(need(args, 3)?)?;
-    Ok(vf64(
-        (cost - salvage) * (life - period + 1.0) * 2.0 / (life * (life + 1.0)),
-    ))
+    if life <= 0.0 || period <= 0.0 || period > life {
+        return Err(LibError::invalid_call("SYD period out of range"));
+    }
+    finite_result((cost - salvage) * (life - period + 1.0) * 2.0 / (life * (life + 1.0)))
 }
 
 /// `DDB(cost, salvage, life, period, [factor = 2])` → double-declining-balance
@@ -2344,6 +2794,10 @@ pub fn ddb(args: &[Variant]) -> LibResult<Variant> {
     let life = as_f64(need(args, 2)?)?;
     let period = as_f64(need(args, 3)?)?;
     let factor = opt_f64(args, 4, 2.0)?;
+    if cost < 0.0 || salvage < 0.0 || life <= 0.0 || period <= 0.0 || period > life || factor <= 0.0
+    {
+        return Err(LibError::invalid_call("DDB argument out of range"));
+    }
     let rate = factor / life;
     let (book_start, book_end) = if rate >= 1.0 {
         // A rate at/above 1 fully depreciates in the first period.
@@ -2369,56 +2823,55 @@ pub fn nper(args: &[Variant]) -> LibResult<Variant> {
         as_f64(need(args, 2)?)?,
     );
     let fv = opt_f64(args, 3, 0.0)?;
-    let t = opt_f64(args, 4, 0.0)?;
-    Ok(vf64(if i == 0.0 {
+    let t = due_flag(args, 4)?;
+    finite_result(if i == 0.0 {
         -(pv + fv) / pmt
     } else {
         let a = pmt * (1.0 + i * t);
         ((a - fv * i) / (a + pv * i)).ln() / (1.0 + i).ln()
-    }))
+    })
 }
 
 pub fn npv(args: &[Variant]) -> LibResult<Variant> {
     let rate = as_f64(need(args, 0)?)?;
+    if rate == -1.0 {
+        return Err(LibError::invalid_call("NPV requires rate <> -1"));
+    }
     let flows = cashflows(need(args, 1)?)?;
     let mut acc = 0.0;
     for (k, cf) in flows.iter().enumerate() {
         acc += cf / (1.0 + rate).powi(k as i32 + 1);
     }
-    Ok(vf64(acc))
+    finite_result(acc)
 }
 
-fn npv_at(rate: f64, flows: &[f64]) -> f64 {
-    flows
-        .iter()
-        .enumerate()
-        .map(|(k, cf)| cf / (1.0 + rate).powi(k as i32))
-        .sum()
-}
-
-/// FIDELITY: Newton/​bisection hybrid first-cut.
 pub fn irr(args: &[Variant]) -> LibResult<Variant> {
     let flows = cashflows(need(args, 0)?)?;
-    let mut rate = opt_f64(args, 1, 0.1)?;
-    for _ in 0..100 {
-        let f = npv_at(rate, &flows);
-        let df = flows
-            .iter()
-            .enumerate()
-            .skip(1)
-            .map(|(k, cf)| -(k as f64) * cf / (1.0 + rate).powi(k as i32 + 1))
-            .sum::<f64>();
-        if df.abs() < 1e-12 {
-            break;
-        }
-        let next = rate - f / df;
-        if (next - rate).abs() < 1e-9 {
-            rate = next;
-            break;
-        }
-        rate = next;
+    // A rate exists only when the flows change sign.
+    if !flows.iter().any(|c| *c > 0.0) || !flows.iter().any(|c| *c < 0.0) {
+        return Err(LibError::invalid_call(
+            "IRR requires positive and negative flows",
+        ));
     }
-    Ok(vf64(rate))
+    // Newton on the polynomial in x = 1 + rate, by Horner's rule (steady rounding near the root).
+    let mut x = 1.0 + opt_f64(args, 1, 0.1)?;
+    for _ in 0..100 {
+        let (mut p, mut dp) = (0.0, 0.0);
+        for c in &flows {
+            dp = dp * x + p;
+            p = p * x + c;
+        }
+        if dp.abs() < 1e-12 {
+            break;
+        }
+        let next = x - p / dp;
+        let done = (next - x).abs() < 1e-13;
+        x = next;
+        if done {
+            break;
+        }
+    }
+    finite_result(x - 1.0)
 }
 
 pub fn mirr(args: &[Variant]) -> LibResult<Variant> {
@@ -2481,22 +2934,18 @@ pub fn rate(args: &[Variant]) -> LibResult<Variant> {
     let pmt = as_f64(need(args, 1)?)?;
     let pv = as_f64(need(args, 2)?)?;
     let fv = opt_f64(args, 3, 0.0)?;
-    let due = if opt_f64(args, 4, 0.0)? != 0.0 {
-        1.0
-    } else {
-        0.0
-    };
-    if nper == 0.0 {
-        return Err(LibError::invalid_call("Rate requires nper <> 0"));
+    let due = due_flag(args, 4)?;
+    if nper <= 0.0 {
+        return Err(LibError::invalid_call("Rate requires nper > 0"));
     }
-    let mut r = opt_f64(args, 5, 0.1)?.clamp(-0.99, 10.0);
-    for _ in 0..60 {
+    let mut r = opt_f64(args, 5, 0.1)?.max(-0.99);
+    for _ in 0..200 {
         let f = rate_func(r, nper, pmt, pv, fv, due);
         let fp = rate_func_derivative(r, nper, pmt, pv, due);
         if fp.abs() < 1e-12 {
             return Err(LibError::invalid_call("Rate failed to converge"));
         }
-        let next = (r - f / fp).clamp(-0.99, 10.0);
+        let next = (r - f / fp).max(-0.99);
         if !next.is_finite() {
             return Err(LibError::invalid_call("Rate diverged"));
         }
@@ -2510,13 +2959,15 @@ pub fn rate(args: &[Variant]) -> LibResult<Variant> {
 
 // ── Colour ───────────────────────────────────────────────────────────────────────
 
-/// `RGB(red, green, blue)` → a `Long` packed colour. Each component is coerced to a
-/// number and CLAMPED to `0..=255` (a value above 255 becomes 255 — live-verified:
-/// `RGB(256, 300, 1000) = 16777215`), then packed as `red + green*256 + blue*65536`
-/// (the maximum, `RGB(255,255,255)`, is `16_777_215`, well within `Long`).
 pub fn rgb(args: &[Variant]) -> LibResult<Variant> {
-    let component =
-        |index: usize| -> LibResult<i32> { Ok(as_i32(need(args, index)?)?.clamp(0, 255)) };
+    // A component above 255 clamps to 255; a negative one is invalid.
+    let component = |index: usize| -> LibResult<i32> {
+        let value = as_i32(need(args, index)?)?;
+        if value < 0 {
+            return Err(LibError::invalid_call("RGB component must not be negative"));
+        }
+        Ok(value.min(255))
+    };
     let (red, green, blue) = (component(0)?, component(1)?, component(2)?);
     Ok(vi32(red + green * 256 + blue * 65_536))
 }
@@ -2705,6 +3156,7 @@ pub fn is_numeric(args: &[Variant]) -> LibResult<Variant> {
         }
         VarType::String => is_numeric_string(&as_str(v)?),
         VarType::Empty
+        | VarType::Boolean
         | VarType::Integer
         | VarType::Long
         | VarType::Single
@@ -2718,8 +3170,7 @@ pub fn is_numeric(args: &[Variant]) -> LibResult<Variant> {
         | VarType::UnsignedLong
         | VarType::UnsignedLongLong
         | VarType::UnsignedInt => true,
-        VarType::Boolean
-        | VarType::Date
+        VarType::Date
         | VarType::Null
         | VarType::Object
         | VarType::Error
@@ -2851,11 +3302,18 @@ pub fn is_date(args: &[Variant]) -> LibResult<Variant> {
     Ok(vbool(ok))
 }
 
-/// VBA truthiness for the special forms: `Null`/`Empty` are false, otherwise a
-/// nonzero numeric coercion is true (`True` is -1, any nonzero is true).
 fn truthy(v: &Variant) -> LibResult<bool> {
     match v.vtype() {
         VarType::Null | VarType::Empty => Ok(false),
+        // "True" / "False" read as the Booleans; any other string must be a number.
+        VarType::String => {
+            let text = as_str(v)?;
+            match text.trim().to_ascii_lowercase().as_str() {
+                "true" => Ok(true),
+                "false" => Ok(false),
+                _ => Ok(as_f64(v)? != 0.0),
+            }
+        }
         _ => Ok(as_f64(v)? != 0.0),
     }
 }
@@ -2870,21 +3328,24 @@ pub fn iif(args: &[Variant]) -> LibResult<Variant> {
     }
 }
 
-/// `Choose(index, v1, v2, …)` — 1-based selection; `Null` when out of range.
 pub fn choose(args: &[Variant]) -> LibResult<Variant> {
-    let idx = as_i32(need(args, 0)?)?;
-    if idx < 1 {
+    // The index is truncated toward zero (`Choose(1.5, ...)` picks the first choice).
+    let index = as_f64(need(args, 0)?)?.trunc();
+    if !(1.0..=f64::from(i32::MAX)).contains(&index) {
         return Ok(Variant::null());
     }
     Ok(args
-        .get(idx as usize)
+        .get(index as usize)
         .cloned()
         .unwrap_or_else(Variant::null))
 }
 
-/// `Switch(c1, v1, c2, v2, …)` — returns the first `vi` whose `ci` is truthy,
-/// else `Null`.
 pub fn switch(args: &[Variant]) -> LibResult<Variant> {
+    if !args.len().is_multiple_of(2) {
+        return Err(LibError::invalid_call(
+            "Switch needs expression/value pairs",
+        ));
+    }
     let mut i = 0;
     while i + 1 < args.len() {
         if truthy(&args[i])? {
@@ -3194,7 +3655,84 @@ mod tests {
             bstr(error_text(&[Variant::from_i32(12345)])),
             "Application-defined or object-defined error"
         );
-        assert_eq!(error_text(&[Variant::from_i32(-1)]).unwrap_err().code, 5);
+        // A negative number has no message of its own; one past 65535 overflows.
+        assert_eq!(
+            bstr(error_text(&[Variant::from_i32(-1)])),
+            "Application-defined or object-defined error"
+        );
+        assert_eq!(
+            error_text(&[Variant::from_i32(70_000)]).unwrap_err().code,
+            6
+        );
+    }
+
+    #[test]
+    fn week_of_year_follows_first_day_and_first_week() {
+        // 1/1/2005 is a Saturday.
+        assert_eq!(week_of_year(2005, 1, 1, 1, 1), 1);
+        assert_eq!(week_of_year(2005, 1, 1, 1, 3), 52);
+        assert_eq!(week_of_year(2005, 1, 1, 2, 2), 53);
+        // 12/29/2003 (Monday) belongs to week 1 of 2004 under Monday / four-day weeks.
+        assert_eq!(week_of_year(2003, 12, 29, 2, 2), 1);
+    }
+
+    #[test]
+    fn like_reports_bad_patterns_and_matches_empty_brackets() {
+        assert_eq!(like(&[vs("["), vs("[")]).unwrap_err().code, 93);
+        assert_eq!(like(&[vs("b"), vs("[z-a]")]).unwrap_err().code, 93);
+        assert!(like_("ab", "a[]b"));
+        assert!(like_("ab", "a[b-c]"));
+    }
+
+    #[test]
+    fn mid_statement_past_the_end_is_an_error() {
+        let past = mid_stmt(&[vs("abc"), Variant::from_i32(5), vs("x")]);
+        assert_eq!(past.unwrap_err().code, 5);
+        assert_eq!(
+            bstr(mid_stmt(&[vs("abc"), Variant::from_i32(2), vs("xyz")])),
+            "axy"
+        );
+        // MidB counts bytes: byte 3 of "abc" (UTF-16LE) is the low byte of "b".
+        let out = mid_b_stmt(&[vs("abc"), Variant::from_i32(3), vs("z")]).unwrap();
+        assert_eq!(out.as_bstr().unwrap().payload_bytes(), b"a\0z\0c\0");
+    }
+
+    #[test]
+    fn byte_functions_work_on_utf16_bytes() {
+        assert_eq!(asc_b(&[vs("A")]).unwrap().as_u8(), Some(65));
+        assert_eq!(
+            chr_b(&[Variant::from_i32(65)])
+                .unwrap()
+                .as_bstr()
+                .unwrap()
+                .payload_bytes(),
+            b"A"
+        );
+        assert_eq!(instr_b(&[vs("abc"), vs("b")]).unwrap().as_i32(), Some(3));
+        assert_eq!(
+            mid_b(&[vs("abc"), Variant::from_i32(3), Variant::from_i32(2)])
+                .unwrap()
+                .as_bstr()
+                .unwrap()
+                .payload_bytes(),
+            b"b\0"
+        );
+    }
+
+    #[test]
+    fn financial_guards_and_rounding() {
+        assert_eq!(
+            pmt(&[vf64(0.1), vf64(0.0), vf64(1000.0)]).unwrap_err().code,
+            5
+        );
+        assert_eq!(sln(&[vf64(1.0), vf64(0.0), vf64(0.0)]).unwrap_err().code, 5);
+        let due = fv(&[vf64(0.1), vf64(10.0), vf64(-100.0), vf64(0.0), vf64(2.0)]).unwrap();
+        assert!((due.as_f64().unwrap() - 1753.1167061).abs() < 1e-6);
+        // Round keeps its argument type.
+        let cur = round(&[Variant::from_currency_scaled_i64(25_000)]).unwrap();
+        assert_eq!(cur.as_currency_scaled_i64(), Some(20_000));
+        let single = round(&[Variant::from_f32(1.25), Variant::from_i32(1)]).unwrap();
+        assert_eq!(single.as_f32(), Some(1.2));
     }
 
     #[test]
@@ -3326,10 +3864,9 @@ mod tests {
         assert!(isnum(Variant::from_i32(42)));
         assert!(isnum(Variant::from_f64(3.5)));
         assert!(isnum(Variant::empty()));
-        // Boolean, Date and Null are NOT numeric in VBA — even though Boolean/Date
-        // would coerce to Double, `IsNumeric` rejects them by subtype.
-        assert!(!isnum(Variant::from_bool(true)));
-        assert!(!isnum(Variant::from_bool(false)));
+        // Boolean IS numeric (Excel: `IsNumeric(True)`); Date and Null are not.
+        assert!(isnum(Variant::from_bool(true)));
+        assert!(isnum(Variant::from_bool(false)));
         assert!(!isnum(Variant::from_date_f64(45000.0))); // a Date-typed Variant
         assert!(!isnum(Variant::null()));
     }
@@ -3495,7 +4032,11 @@ mod tests {
     }
     fn asc_(s: &str, wide: bool) -> i32 {
         let r = if wide { asc_w(&[vs(s)]) } else { asc(&[vs(s)]) };
-        r.unwrap().as_i32().unwrap()
+        let value = r.unwrap();
+        value
+            .as_i32()
+            .or_else(|| value.as_i16().map(i32::from))
+            .unwrap()
     }
 
     #[test]

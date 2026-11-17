@@ -597,8 +597,27 @@ fn as_i32(c: &CoreConst) -> Option<i32> {
         // valid only when their numeric value still fits a VBA Long.
         CoreConst::I64(n) => i32::try_from(*n).ok(),
         CoreConst::Bool(b) => Some(if *b { -1 } else { 0 }),
+        // A non-integer initializer is coerced to Long with banker's rounding (Excel:
+        // `A = 1.5` gives 2, `2.5` gives 2).
+        CoreConst::F64(bits) => f64_to_i32_ties_even(f64::from_bits(*bits)),
+        CoreConst::F32(bits) => f64_to_i32_ties_even(f64::from(f32::from_bits(*bits))),
+        CoreConst::Currency(scaled) => {
+            let whole = scaled.div_euclid(10_000);
+            let frac = scaled.rem_euclid(10_000);
+            let rounded = match frac.cmp(&5_000) {
+                std::cmp::Ordering::Less => whole,
+                std::cmp::Ordering::Greater => whole + 1,
+                std::cmp::Ordering::Equal => whole + (whole & 1),
+            };
+            i32::try_from(rounded).ok()
+        }
         _ => None,
     }
+}
+
+fn f64_to_i32_ties_even(v: f64) -> Option<i32> {
+    let r = v.round_ties_even();
+    (r.is_finite() && r >= f64::from(i32::MIN) && r <= f64::from(i32::MAX)).then_some(r as i32)
 }
 
 /// Result of folding one `Const` initializer: a value, a not-yet-resolved
@@ -1767,73 +1786,92 @@ fn fold_string_relational(
         Like => like_match(
             &l.chars().collect::<Vec<_>>(),
             &r.chars().collect::<Vec<_>>(),
-        ),
+        )?,
         _ => return None,
     })
 }
 
-/// VBA `Like` pattern match: `?` any char, `*` any run, `#` any digit,
-/// `[chars]`/`[!chars]` charlists with `a-z` ranges and literal `]` when it is the
-/// first charlist member. Case is already normalised by the caller.
-fn like_match(s: &[char], p: &[char]) -> bool {
-    match p.first() {
-        None => s.is_empty(),
-        Some('*') => (0..=s.len()).any(|i| like_match(&s[i..], &p[1..])),
-        Some('?') => !s.is_empty() && like_match(&s[1..], &p[1..]),
-        Some('#') => !s.is_empty() && s[0].is_ascii_digit() && like_match(&s[1..], &p[1..]),
-        Some('[') => match charlist_end(&p[1..]) {
-            Some(end) => {
-                !s.is_empty()
-                    && char_in_charlist(s[0], &p[1..1 + end])
-                    && like_match(&s[1..], &p[end + 2..])
-            }
-            None => !s.is_empty() && s[0] == '[' && like_match(&s[1..], &p[1..]),
-        },
-        Some(&c) => !s.is_empty() && s[0] == c && like_match(&s[1..], &p[1..]),
-    }
+/// VBA `Like` pattern match: `?` any char, `*` any run, `#` any digit, `[chars]`/`[!chars]`
+/// charlists with `a-z` ranges. `[]` matches the empty string and a `]` cannot sit inside a group
+/// (Excel, spec-pass `likeEmptyBr`). `None` for a pattern VBA rejects with error 93 (an unclosed
+/// `[`, a descending range) or one not folded here (`[!]`), which is then left to the runtime.
+/// Case is already normalised by the caller.
+fn like_match(s: &[char], p: &[char]) -> Option<bool> {
+    let tokens = like_tokens(p)?;
+    Some(like_tokens_match(s, &tokens))
 }
 
-/// Index within `body` (the chars after `[`) of the closing `]`. A `]` that is
-/// first in the charlist, optionally after `!`, is a literal member.
-fn charlist_end(body: &[char]) -> Option<usize> {
+enum LikeTok {
+    Star,
+    Any,
+    Digit,
+    Empty,
+    Lit(char),
+    Set(bool, Vec<(char, char)>),
+}
+
+fn like_tokens(p: &[char]) -> Option<Vec<LikeTok>> {
+    let mut out = Vec::new();
     let mut i = 0;
-    if body.first() == Some(&'!') {
+    while i < p.len() {
+        out.push(match p[i] {
+            '*' => LikeTok::Star,
+            '?' => LikeTok::Any,
+            '#' => LikeTok::Digit,
+            '[' => {
+                let close = i + 1 + p[i + 1..].iter().position(|&c| c == ']')?;
+                let body = &p[i + 1..close];
+                i = close;
+                if body.is_empty() {
+                    LikeTok::Empty
+                } else {
+                    let (negate, rest) = match body.split_first() {
+                        Some((&'!', rest)) => (true, rest),
+                        _ => (false, body),
+                    };
+                    if rest.is_empty() {
+                        return None;
+                    }
+                    let mut ranges = Vec::new();
+                    let mut k = 0;
+                    while k < rest.len() {
+                        if k + 2 < rest.len() && rest[k + 1] == '-' {
+                            if rest[k] > rest[k + 2] {
+                                return None;
+                            }
+                            ranges.push((rest[k], rest[k + 2]));
+                            k += 3;
+                        } else {
+                            ranges.push((rest[k], rest[k]));
+                            k += 1;
+                        }
+                    }
+                    LikeTok::Set(negate, ranges)
+                }
+            }
+            c => LikeTok::Lit(c),
+        });
         i += 1;
     }
-    if body.get(i) == Some(&']') {
-        i += 1;
-    }
-    while i < body.len() {
-        if body[i] == ']' {
-            return Some(i);
-        }
-        i += 1;
-    }
-    None
+    Some(out)
 }
 
-fn char_in_charlist(c: char, body: &[char]) -> bool {
-    let (negate, body) = match body.split_first() {
-        Some((&'!', rest)) => (true, rest),
-        _ => (false, body),
+fn like_tokens_match(s: &[char], p: &[LikeTok]) -> bool {
+    let Some((first, rest)) = p.split_first() else {
+        return s.is_empty();
     };
-    let mut i = 0;
-    let mut found = false;
-    while i < body.len() {
-        if i + 2 < body.len() && body[i + 1] == '-' {
-            let (lo, hi) = (body[i], body[i + 2]);
-            if (lo <= c && c <= hi) || (hi <= c && c <= lo) {
-                found = true;
-            }
-            i += 3;
-        } else {
-            if body[i] == c {
-                found = true;
-            }
-            i += 1;
+    let one = |ok: bool| ok && like_tokens_match(&s[1..], rest);
+    match first {
+        LikeTok::Star => (0..=s.len()).any(|i| like_tokens_match(&s[i..], rest)),
+        LikeTok::Empty => like_tokens_match(s, rest),
+        _ if s.is_empty() => false,
+        LikeTok::Any => one(true),
+        LikeTok::Digit => one(s[0].is_ascii_digit()),
+        LikeTok::Lit(c) => one(s[0] == *c),
+        LikeTok::Set(negate, ranges) => {
+            one(ranges.iter().any(|&(lo, hi)| lo <= s[0] && s[0] <= hi) != *negate)
         }
     }
-    found != negate
 }
 
 pub(crate) fn core_binop(kind: SyntaxKind) -> Option<CoreBinOp> {

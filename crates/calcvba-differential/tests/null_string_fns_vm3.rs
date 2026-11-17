@@ -56,13 +56,9 @@ fn string_functions_propagate_null() {
         "LCase(n)",
         "Trim(n)",
         "Len(n)",
-        "StrReverse(n)",
-        "Replace(n, \"a\", \"b\")",
         "InStr(n, \"x\")",
         "InStr(1, n, \"x\")",
         "StrComp(n, \"a\")",
-        "Chr(n)",
-        "Asc(n)",
     ] {
         assert_eq!(eval_with_null(expr), null, "{expr} should be Null");
     }
@@ -106,4 +102,20 @@ fn non_null_string_functions_still_work() {
         eval_with_null("Len(\"abcd\")"),
         canon(&Variant::from_i32(4))
     );
+}
+
+#[test]
+fn functions_that_do_not_propagate_null_raise_94() {
+    // Excel: these take no Null (their result is not a Null-able text).
+    for expr in [
+        "Chr(n)",
+        "Asc(n)",
+        "StrReverse(n)",
+        "Replace(n, \"a\", \"b\")",
+        "InStrRev(n, \"a\")",
+        "Space(n)",
+        "Left(\"a\", n)",
+    ] {
+        assert_eq!(error_number_with_null(expr), 94, "{expr}");
+    }
 }

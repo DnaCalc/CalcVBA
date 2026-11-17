@@ -1997,6 +1997,7 @@ pub(crate) fn declare_imports(module: &mut impl Module) -> Result<Imports, JitEr
     type_of_is_slot_sig.params.push(AbiParam::new(types::I64));
     type_of_is_slot_sig.params.push(AbiParam::new(types::I32));
     type_of_is_slot_sig.params.push(AbiParam::new(types::I32));
+    type_of_is_slot_sig.params.push(AbiParam::new(types::I32));
     type_of_is_slot_sig.returns.push(AbiParam::new(types::I32));
     let type_of_is_slot = module
         .declare_function(
@@ -4528,6 +4529,8 @@ pub(crate) unsafe fn raise_collection_error_for_jit(
         // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
         CollectionError::BadArgument => unsafe { rt_raise_runtime_error_number(state, 5) },
         // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
+        CollectionError::TypeMismatch => unsafe { rt_raise_runtime_error_number(state, 13) },
+        // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
         CollectionError::ArgNotOptional => unsafe { rt_raise_runtime_error_number(state, 449) },
     }
 }
@@ -6163,7 +6166,16 @@ pub(crate) unsafe extern "C" fn rt_jit_validate_assignment(
         match intent {
             // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
             JIT_ASSIGN_INTENT_SET if !is_object => unsafe {
-                rt_raise_runtime_error_number(state, if variant_source { 13 } else { 424 })
+                // A non-object Variant `Set` into a Variant is a Type mismatch; into an object
+                // variable (or from a non-Variant) it is "Object required" (Excel).
+                rt_raise_runtime_error_number(
+                    state,
+                    if variant_source && target_kind == JIT_ASSIGN_TARGET_VARIANT {
+                        13
+                    } else {
+                        424
+                    },
+                )
             },
             JIT_ASSIGN_INTENT_LET
                 if target_kind == JIT_ASSIGN_TARGET_VARIANT
@@ -6220,9 +6232,6 @@ pub(crate) unsafe fn validate_jit_project_set_compatibility(
     let Some(object) = value.as_object_ref() else {
         return ST_OK;
     };
-    if !object.is_project_instance() {
-        return ST_OK;
-    }
     let target_type_name = if target_type_name_len == 0 {
         ""
     } else {
@@ -6236,44 +6245,31 @@ pub(crate) unsafe fn validate_jit_project_set_compatibility(
             Err(_) => return ST_FAULT,
         }
     };
-    let bare_target = target_type_name
-        .rsplit('.')
-        .next()
-        .unwrap_or(target_type_name);
-    if bare_target.is_empty() {
-        return ST_OK;
-    }
-    let Some(image) = program_image(run, object.bundle_id() as usize) else {
-        return ST_FAULT;
+    let program_at = |index: usize| {
+        program_image(run, index)
+            .filter(|image| !image.program.is_null())
+            // SAFETY: each installed image's program was installed from CompiledImage for
+            // this run and outlives it.
+            .map(|image| unsafe { &*image.program })
     };
-    if image.program.is_null() {
-        return ST_FAULT;
-    }
-    // SAFETY: the image was installed from CompiledImage for this run.
-    let program = unsafe { &*image.program };
-    let target_is_project = program.classes.iter().any(|class| {
-        class.name.eq_ignore_ascii_case(bare_target)
-            || class
-                .implements
-                .iter()
-                .any(|interface| interface.eq_ignore_ascii_case(bare_target))
-    });
-    if !target_is_project {
-        return ST_OK;
-    }
-    let Some(class) = program.classes.get(object.route_key() as usize) else {
-        return ST_FAULT;
-    };
-    let compatible = class.name.eq_ignore_ascii_case(bare_target)
-        || class
-            .implements
-            .iter()
-            .any(|interface| interface.eq_ignore_ascii_case(bare_target));
-    if compatible {
-        ST_OK
+    let source = if object.is_project_instance() {
+        match program_at(object.bundle_id() as usize) {
+            Some(program) => Some(program),
+            None => return ST_FAULT,
+        }
     } else {
+        None
+    };
+    if calcvba_rt_abi::object_types::set_type_mismatch(
+        &object,
+        target_type_name,
+        source,
+        (0..run.program_count).filter_map(program_at),
+    ) {
         // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
         unsafe { rt_raise_type_mismatch(state) }
+    } else {
+        ST_OK
     }
 }
 
@@ -6813,7 +6809,9 @@ pub(crate) unsafe extern "C" fn rt_jit_array_erase_variant_slot(
                     Variant::unallocated_array(erased_element_vartype)
                 }
             }
-            None => Variant::empty(),
+            // `Erase` of a Variant that is not an array is a type mismatch.
+            // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
+            None => return unsafe { rt_raise_type_mismatch(state) },
         };
         // SAFETY: null was rejected and the replacement no longer borrows from `run`.
         let run = unsafe { &mut *run };
@@ -8036,6 +8034,7 @@ pub(crate) unsafe extern "C" fn rt_jit_type_of_is_to_bool_slot(
     iid_high: u64,
     dst_area: u32,
     dst_index: u32,
+    nothing_raises: i32,
 ) -> i32 {
     status_guard(|| {
         if state.is_null()
@@ -8061,11 +8060,19 @@ pub(crate) unsafe extern "C" fn rt_jit_type_of_is_to_bool_slot(
             Ok(value) => value,
             Err(status) => return status,
         };
-        let matches = if value.as_object_ref().is_none()
-            && matches!(
-                value.vtype(),
-                VarType::Object | VarType::Empty | VarType::Null
-            ) {
+        // `TypeOf` on `Empty`/`Null` is False; on `Nothing` it is False too, except for an
+        // `As Object` operand, which raises 91 (Excel).
+        let matches = if matches!(value.vtype(), VarType::Empty | VarType::Null) {
+            false
+        } else if value.vtype() == VarType::Object
+            && value
+                .as_object_ref()
+                .is_none_or(|object| object.is_nothing_placeholder())
+        {
+            if nothing_raises != 0 {
+                // SAFETY: live unique state for this synchronous helper.
+                return unsafe { rt_raise_runtime_error_number(state, 91) };
+            }
             false
         } else {
             // SAFETY: the current compiled-run boundary owns the live unique state handle;

@@ -407,6 +407,128 @@ pub fn library_constant(name: &str) -> Option<CoreConst> {
         "vbdirectory" => int(16),
         "vbarchive" => int(32),
         "vbobjecterror" => int(-2147221504),
-        _ => return None,
+        // VbAppWinStyle (the `Shell` window styles).
+        "vbhide" => int(0),
+        "vbnormalfocus" => int(1),
+        "vbminimizedfocus" => int(2),
+        "vbmaximizedfocus" => int(3),
+        "vbnormalnofocus" => int(4),
+        "vbminimizednofocus" => int(6),
+        // VbCalendar.
+        "vbcalgreg" => int(0),
+        "vbcalhijri" => int(1),
+        // VbFileAttribute's file alias.
+        "vbalias" => int(64),
+        // VbQueryClose.
+        "vbformcontrolmenu" => int(0),
+        "vbformcode" => int(1),
+        "vbappwindows" => int(2),
+        "vbapptaskmanager" => int(3),
+        "vbformmdiform" => int(4),
+        // VbIMEStatus.
+        "vbimemodenocontrol" => int(0),
+        "vbimemodeon" => int(1),
+        "vbimemodeoff" => int(2),
+        "vbimemodedisable" | "vbimedisable" => int(3),
+        "vbimemodehiragana" | "vbimehiragana" => int(4),
+        "vbimemodekatakana" | "vbimekatakanadbl" => int(5),
+        "vbimemodekatakanahalf" | "vbimekatakanasng" => int(6),
+        "vbimemodealphafull" | "vbimealphadbl" => int(7),
+        "vbimemodealpha" | "vbimealphasng" => int(8),
+        "vbimemodehangulfull" => int(9),
+        "vbimemodehangul" => int(10),
+        // SystemColorConstants.
+        "vbscrollbars" => int(-2147483648),
+        "vbdesktop" => int(-2147483647),
+        "vbactivetitlebar" => int(-2147483646),
+        "vbinactivetitlebar" => int(-2147483645),
+        "vbmenubar" => int(-2147483644),
+        "vbwindowbackground" => int(-2147483643),
+        "vbwindowframe" => int(-2147483642),
+        "vbmenutext" => int(-2147483641),
+        "vbwindowtext" => int(-2147483640),
+        "vbtitlebartext" => int(-2147483639),
+        "vbactiveborder" => int(-2147483638),
+        "vbinactiveborder" => int(-2147483637),
+        "vbapplicationworkspace" => int(-2147483636),
+        "vbhighlight" => int(-2147483635),
+        "vbhighlighttext" => int(-2147483634),
+        "vbbuttonface" | "vb3dface" => int(-2147483633),
+        "vbbuttonshadow" | "vb3dshadow" => int(-2147483632),
+        "vbgraytext" => int(-2147483631),
+        "vbbuttontext" => int(-2147483630),
+        "vbinactivecaptiontext" => int(-2147483629),
+        "vb3dhighlight" => int(-2147483628),
+        "vb3ddkshadow" => int(-2147483627),
+        "vb3dlight" => int(-2147483626),
+        "vbinfotext" => int(-2147483625),
+        "vbinfobackground" => int(-2147483624),
+        other => return key_code_constant(other).map(CoreConst::I16),
     })
+}
+
+/// `KeyCodeConstants`: the `vbKey*` virtual-key codes, which are `Integer` (not `Long`).
+fn key_code_constant(lower: &str) -> Option<i16> {
+    let key = lower.strip_prefix("vbkey")?;
+    let named = match key {
+        "lbutton" => 1,
+        "rbutton" => 2,
+        "cancel" => 3,
+        "mbutton" => 4,
+        "back" => 8,
+        "tab" => 9,
+        "clear" => 12,
+        "return" => 13,
+        "shift" => 16,
+        "control" => 17,
+        "menu" => 18,
+        "pause" => 19,
+        "capital" => 20,
+        "escape" => 27,
+        "space" => 32,
+        "pageup" => 33,
+        "pagedown" => 34,
+        "end" => 35,
+        "home" => 36,
+        "left" => 37,
+        "up" => 38,
+        "right" => 39,
+        "down" => 40,
+        "select" => 41,
+        "print" => 42,
+        "execute" => 43,
+        "snapshot" => 44,
+        "insert" => 45,
+        "delete" => 46,
+        "help" => 47,
+        "numlock" => 144,
+        "multiply" => 106,
+        "add" => 107,
+        "separator" => 108,
+        "subtract" => 109,
+        "decimal" => 110,
+        "divide" => 111,
+        _ => {
+            // A single letter or digit is its character code; `numpadN` is 96 + N; `fN` is 111 + N.
+            let bytes = key.as_bytes();
+            return match bytes {
+                [c @ b'a'..=b'z'] => Some(i16::from(c.to_ascii_uppercase())),
+                [c @ b'0'..=b'9'] => Some(i16::from(*c)),
+                _ => {
+                    if let Some(n) = key
+                        .strip_prefix("numpad")
+                        .and_then(|n| n.parse::<i16>().ok())
+                    {
+                        (0..=9).contains(&n).then_some(96 + n)
+                    } else {
+                        key.strip_prefix('f')
+                            .and_then(|n| n.parse::<i16>().ok())
+                            .filter(|n| (1..=16).contains(n))
+                            .map(|n| 111 + n)
+                    }
+                }
+            };
+        }
+    };
+    Some(named)
 }

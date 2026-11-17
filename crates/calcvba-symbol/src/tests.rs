@@ -2152,10 +2152,10 @@ fn public_object_module_signatures_cannot_use_private_object_module_types() {
 #[test]
 fn property_get_let_pairing_accepts_matching_accessors_in_any_order() {
     for src in [
-        "Property Get Foo(ByVal index As Long) As String\r\nEnd Property\r\n\
+        "Property Get Foo(ByRef index As Long) As String\r\nEnd Property\r\n\
          Property Let Foo(ByRef index As Long, ByRef value As String)\r\nEnd Property\r\n",
         "Property Let Foo(ByRef index As Long, ByRef value As String)\r\nEnd Property\r\n\
-         Property Get Foo(ByVal index As Long) As String\r\nEnd Property\r\n",
+         Property Get Foo(ByRef index As Long) As String\r\nEnd Property\r\n",
     ] {
         let m = manifest("Proj", vec![module("Mod1", src)]);
         let env = build_resolution_environment(&m, &NullTypeLibs).expect("env");
@@ -2179,22 +2179,22 @@ fn property_get_let_pairing_accepts_matching_accessors_in_any_order() {
 fn property_get_let_pairing_rejects_mismatches() {
     for (src, reason) in [
         (
-            "Property Get Foo(ByVal index As Long) As String\r\nEnd Property\r\n\
+            "Property Get Foo(ByRef index As Long) As String\r\nEnd Property\r\n\
              Property Let Foo(ByRef value As String)\r\nEnd Property\r\n",
             "Property Let must have the Property Get index parameters plus one final value parameter",
         ),
         (
-            "Property Get Foo(ByVal index As Long) As String\r\nEnd Property\r\n\
+            "Property Get Foo(ByRef index As Long) As String\r\nEnd Property\r\n\
              Property Let Foo(ByRef key As Long, ByRef value As String)\r\nEnd Property\r\n",
             "Property Let index parameter names must match Property Get",
         ),
         (
-            "Property Get Foo(ByVal index As Long) As String\r\nEnd Property\r\n\
+            "Property Get Foo(ByRef index As Long) As String\r\nEnd Property\r\n\
              Property Let Foo(ByRef index As String, ByRef value As String)\r\nEnd Property\r\n",
             "Property Let index parameter types must match Property Get",
         ),
         (
-            "Property Get Foo(ByVal index As Long) As Long\r\nEnd Property\r\n\
+            "Property Get Foo(ByRef index As Long) As Long\r\nEnd Property\r\n\
              Property Let Foo(ByRef index As Long, ByRef value As String)\r\nEnd Property\r\n",
             "Property Let value parameter type must match Property Get return type",
         ),
@@ -2225,10 +2225,10 @@ fn property_get_let_pairing_rejects_mismatches() {
 #[test]
 fn property_get_set_pairing_accepts_matching_index_accessors_in_any_order() {
     for src in [
-        "Property Get Foo(ByVal index As Long) As Widget\r\nEnd Property\r\n\
+        "Property Get Foo(ByRef index As Long) As Widget\r\nEnd Property\r\n\
          Property Set Foo(ByRef index As Long, ByRef value As Object)\r\nEnd Property\r\n",
         "Property Set Foo(ByRef index As Long, ByRef value As Object)\r\nEnd Property\r\n\
-         Property Get Foo(ByVal index As Long) As Widget\r\nEnd Property\r\n",
+         Property Get Foo(ByRef index As Long) As Widget\r\nEnd Property\r\n",
     ] {
         let m = manifest("Proj", vec![module("Mod1", src)]);
         let env = build_resolution_environment(&m, &NullTypeLibs).expect("env");
@@ -2252,26 +2252,26 @@ fn property_get_set_pairing_accepts_matching_index_accessors_in_any_order() {
 fn property_get_set_pairing_rejects_index_mismatches() {
     for (src, expected_accessor, reason) in [
         (
-            "Property Get Foo(ByVal index As Long) As Widget\r\nEnd Property\r\n\
+            "Property Get Foo(ByRef index As Long) As Widget\r\nEnd Property\r\n\
              Property Set Foo(ByRef value As Object)\r\nEnd Property\r\n",
             "Set",
             "Property Set must have the Property Get index parameters plus one final reference parameter",
         ),
         (
-            "Property Get Foo(ByVal index As Long) As Widget\r\nEnd Property\r\n\
+            "Property Get Foo(ByRef index As Long) As Widget\r\nEnd Property\r\n\
              Property Set Foo(ByRef index As String, ByRef value As Object)\r\nEnd Property\r\n",
             "Set",
             "Property Set index parameter types must match Property Get",
         ),
         (
-            "Property Get Foo(ByVal index As Long) As Widget\r\nEnd Property\r\n\
+            "Property Get Foo(ByRef index As Long) As Widget\r\nEnd Property\r\n\
              Property Set Foo(ByRef key As Long, ByRef value As Object)\r\nEnd Property\r\n",
             "Set",
             "Property Set index parameter names must match Property Get",
         ),
         (
             "Property Set Foo(ByRef key As Long, ByRef value As Object)\r\nEnd Property\r\n\
-             Property Get Foo(ByVal index As Long) As Widget\r\nEnd Property\r\n",
+             Property Get Foo(ByRef index As Long) As Widget\r\nEnd Property\r\n",
             "Get",
             "Property Set index parameter names must match Property Get",
         ),
@@ -2336,6 +2336,35 @@ fn property_let_set_pairing_rejects_index_mismatch_without_get() {
                 } if property == "Foo"
                     && *accessor == expected_accessor
                     && *reason == expected_reason
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn property_accessor_index_passing_modes_must_agree() {
+    for (src, accessor) in [
+        (
+            "Property Get Foo(ByVal index As Long) As String\r\nEnd Property\r\n\
+             Property Let Foo(ByRef index As Long, ByRef value As String)\r\nEnd Property\r\n",
+            "Let",
+        ),
+        (
+            "Property Get Foo(ByVal index As Long) As Widget\r\nEnd Property\r\n\
+             Property Set Foo(ByRef index As Long, ByRef value As Object)\r\nEnd Property\r\n",
+            "Set",
+        ),
+    ] {
+        let m = manifest("Proj", vec![module("Mod1", src)]);
+        let err = match build_resolution_environment(&m, &NullTypeLibs) {
+            Ok(_) => panic!("ByVal/ByRef mismatch should reject"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(
+                &err,
+                SymbolModelError::IncompatiblePropertyAccessor { accessor: got, .. } if *got == accessor
             ),
             "unexpected error: {err:?}"
         );
@@ -2814,7 +2843,7 @@ fn optional_object_defaults_accept_nothing_and_zero() {
 
 #[test]
 fn optional_boolean_like_default_folds_charlists_and_ranges() {
-    let src = "Sub S(Optional ByVal flag As Boolean = (\"f\" Like \"[a-z]\") And (\"9\" Like \"[0-9a-f]\") And (\"]\" Like \"[]x]\") And (\"F\" Like \"[!a-z]\"))\r\nEnd Sub\r\n";
+    let src = "Sub S(Optional ByVal flag As Boolean = (\"f\" Like \"[a-z]\") And (\"9\" Like \"[0-9a-f]\") And (\"x]\" Like \"[]x]\") And (\"F\" Like \"[!a-z]\"))\r\nEnd Sub\r\n";
     let m = manifest("Proj", vec![module("Mod1", src)]);
     let env = build_resolution_environment(&m, &NullTypeLibs).expect("env");
     let scope = env.module_scope("Mod1").expect("module scope");
@@ -3766,7 +3795,7 @@ fn enum_initializers_keep_long_bit_patterns_and_auto_increment() {
 fn enum_initializers_reject_invalid_explicit_values() {
     for (source, expected) in [
         (
-            "Public Enum Fractional\r\n    Bad = 1.5\r\nEnd Enum\r\n",
+            "Public Enum Fractional\r\n    Bad = 3000000000.5\r\nEnd Enum\r\n",
             "Bad",
         ),
         (

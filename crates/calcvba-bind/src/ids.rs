@@ -910,9 +910,10 @@ pub(crate) fn module_option_base(module: SyntaxNode<'_>) -> i32 {
         if !toks.iter().any(|t| t.kind == SyntaxKind::KwBase) {
             continue;
         }
-        let is_one = toks
-            .iter()
-            .any(|t| t.kind == SyntaxKind::IntLiteral && t.text.trim() == "1");
+        let is_one = toks.iter().any(|t| {
+            t.kind == SyntaxKind::IntLiteral
+                && t.text.trim().trim_end_matches(['%', '&', '^']) == "1"
+        });
         return i32::from(is_one);
     }
     0

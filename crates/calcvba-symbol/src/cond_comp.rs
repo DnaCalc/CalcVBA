@@ -15,7 +15,7 @@
 //! constant-expression evaluator
 //! ([`crate::const_eval`]) so their semantics match VBA `Const` semantics exactly.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use calcvba_bundle::StringCompareMode;
 use calcvba_bundle::coreir::CoreConst;
@@ -91,7 +91,7 @@ pub fn predefined_cc_constants_for_target(target: ConditionalCompilationTarget) 
         ("vba7", target.vba7),
         ("win64", is_windows && is_64),
         ("win32", is_windows),
-        ("vba6", false),
+        ("vba6", target.vba7),
         ("win16", false),
         ("mac", is_mac),
     ]
@@ -131,6 +131,7 @@ pub fn preprocess(source: &str, base: &CcConstants) -> Result<String, String> {
     let lines: Vec<&str> = source.split_inclusive('\n').collect();
     let mut cc = base.clone();
     let mut stack: Vec<Frame> = Vec::new();
+    let mut defined: HashSet<String> = HashSet::new();
     let mut out = String::with_capacity(source.len());
 
     let mut i = 0;
@@ -149,7 +150,8 @@ pub fn preprocess(source: &str, base: &CcConstants) -> Result<String, String> {
         }
         let physical = &lines[start..i];
 
-        let is_directive = process_logical(logical.trim_start(), &mut stack, &mut cc)?;
+        let is_directive =
+            process_logical(logical.trim_start(), &mut stack, &mut cc, &mut defined)?;
         let keep = !is_directive && emitting(&stack);
         for line in physical {
             if keep {
@@ -186,15 +188,23 @@ fn process_logical(
     text: &str,
     stack: &mut Vec<Frame>,
     cc: &mut CcConstants,
+    defined: &mut HashSet<String>,
 ) -> Result<bool, String> {
     let lower = text.to_ascii_lowercase();
 
     if directive_at(&lower, "#const") {
-        if emitting(stack)
-            && let Some((name, expr)) = split_const(&text["#const".len()..])
-        {
-            let value = evaluate(expr, cc);
-            cc.insert(fold_identifier(name), value);
+        if let Some((name, expr)) = split_const(&text["#const".len()..]) {
+            // A name may be defined once per module, whichever `#If` arm it sits in.
+            let name = fold_identifier(name.trim_end_matches(['%', '&', '^', '!', '#', '@', '$']));
+            if !defined.insert(name.clone()) {
+                return Err(format!(
+                    "Duplicate definition: conditional compilation constant `{name}`"
+                ));
+            }
+            if emitting(stack) {
+                let value = evaluate(expr, cc);
+                cc.insert(name, value);
+            }
         }
         return Ok(true);
     }
@@ -204,7 +214,7 @@ fn process_logical(
         match stack.last_mut() {
             Some(frame) => {
                 let active =
-                    frame.parent_active && !frame.taken && truthy(&evaluate(condition, cc));
+                    frame.parent_active && !frame.taken && truthy(&evaluate(condition, cc))?;
                 frame.branch_active = active;
                 frame.taken |= active;
             }
@@ -222,7 +232,9 @@ fn process_logical(
         }
         return Ok(true);
     }
-    if directive_at(&lower, "#end") && lower["#end".len()..].trim_start().starts_with("if") {
+    if (directive_at(&lower, "#end") && lower["#end".len()..].trim_start().starts_with("if"))
+        || directive_at(&lower, "#endif")
+    {
         if stack.pop().is_none() {
             return Err("conditional compilation: `#End If` without `#If`".to_string());
         }
@@ -231,7 +243,7 @@ fn process_logical(
     if directive_at(&lower, "#if") {
         let condition = directive_condition(&text["#if".len()..]);
         let parent_active = emitting(stack);
-        let active = parent_active && truthy(&evaluate(condition, cc));
+        let active = parent_active && truthy(&evaluate(condition, cc))?;
         stack.push(Frame {
             parent_active,
             taken: active,
@@ -319,17 +331,20 @@ fn eval_cc(node: SyntaxNode<'_>, cc: &CcConstants) -> CoreConst {
 
 /// VBA truthiness of a `#If` condition value: a non-zero number / `True`; an
 /// undefined constant (`Empty`) and `Null`/`Nothing`/empty string are false.
-fn truthy(value: &CoreConst) -> bool {
-    match value {
+fn truthy(value: &CoreConst) -> Result<bool, String> {
+    if matches!(value, CoreConst::Str(_) | CoreConst::NullStr) {
+        return Err("Type mismatch: conditional compilation condition is a string".to_string());
+    }
+    Ok(match value {
         CoreConst::Bool(b) => *b,
         CoreConst::I16(n) => *n != 0,
         CoreConst::I32(n) => *n != 0,
         CoreConst::I64(n) | CoreConst::Currency(n) => *n != 0,
         CoreConst::F64(bits) | CoreConst::Date(bits) => f64::from_bits(*bits) != 0.0,
         CoreConst::F32(bits) => f32::from_bits(*bits) != 0.0,
-        CoreConst::Str(s) => !s.is_empty(),
+        CoreConst::Str(_) => unreachable!("rejected above"),
         CoreConst::NullStr | CoreConst::Empty | CoreConst::Null | CoreConst::Nothing => false,
-    }
+    })
 }
 
 /// The condition text of `#If`/`#ElseIf <cond> Then`: the text after the directive
@@ -373,8 +388,10 @@ fn strip_trailing_comment(s: &str) -> &str {
 /// Whether a physical line ends with a VBA line continuation (` _` before the EOL).
 fn continues(line: &str) -> bool {
     let body = line.trim_end_matches(['\r', '\n']);
-    let trimmed = body.trim_end();
-    trimmed.len() < body.len() && trimmed.ends_with('_') // whitespace then `_` at end
+    // whitespace then `_` at the end, trailing whitespace allowed
+    body.trim_end()
+        .strip_suffix('_')
+        .is_some_and(|before| before.ends_with([' ', '\t']))
 }
 
 /// A physical line's content for logical-line joining: without its EOL, and without
@@ -595,5 +612,27 @@ mod tests {
             assert_eq!(error.offset as usize, expected_offset, "EOL={eol:?}");
             assert_eq!(source.as_bytes()[error.offset as usize], b')');
         }
+    }
+
+    #[test]
+    fn duplicate_const_and_string_condition_are_errors() {
+        assert!(
+            preprocess(
+                "#If Win64 Then\n#Const P = 8\n#Else\n#Const P = 4\n#End If\n",
+                &cc()
+            )
+            .is_err()
+        );
+        assert!(preprocess("#Const S = \"x\"\n#If S Then\n#End If\n", &cc()).is_err());
+    }
+
+    #[test]
+    fn continuation_endif_suffix_and_vba6() {
+        let out = run("#Const A = 1 _\n + 1\n#If A = 2 _\n Then\nyes\n#EndIf\n");
+        assert!(out.contains("yes"), "{out:?}");
+        let out = run(
+            "#Const X% = 1\n#If X Then\nyes\n#End If\n#If VBA6 And Not Win16 Then\nsix\n#End If\n",
+        );
+        assert!(out.contains("yes") && out.contains("six"), "{out:?}");
     }
 }

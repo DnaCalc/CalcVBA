@@ -20,7 +20,7 @@ use calcvba_runtime::date::parse_date_text_serial_bits;
 use calcvba_runtime::variant::VarType;
 use calcvba_runtime::{Variant, variant_to_vba_string};
 
-use crate::pure::{day_of_week, serial_to_ymd};
+use crate::pure::{day_of_week, days_from_civil, serial_to_ymd, week_of_year};
 
 const MONTHS: [&str; 12] = [
     "January",
@@ -50,21 +50,162 @@ const WEEKDAYS: [&str; 7] = [
 ];
 const WEEKDAYS_ABBR: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-/// Entry point: `Format(value, mask)`. `mask` is non-empty (the empty/omitted
-/// case is handled by the caller as a plain `CStr`).
-pub fn apply(value: &Variant, mask: &str) -> String {
+#[cfg(test)]
+fn apply(value: &Variant, mask: &str) -> String {
+    apply_with(value, mask, 1, 1)
+}
+
+/// `Format(value, mask, firstdayofweek, firstweekofyear)`: the two week arguments steer the `w`
+/// and `ww` date tokens (`vbSunday`/`vbFirstJan1` by default).
+pub fn apply_with(value: &Variant, mask: &str, first_day: i32, first_week: i32) -> String {
+    let weeks = Weeks {
+        first_day,
+        first_week,
+    };
     let trimmed = mask.trim();
     if trimmed.is_empty() {
         return general_string(value);
     }
+    // A Null formats as nothing, or as the mask's fourth section.
+    if value.vtype() == VarType::Null {
+        return trimmed
+            .split(';')
+            .nth(3)
+            .map(literal_text)
+            .unwrap_or_default();
+    }
     if let Some(out) = named(value, trimmed) {
         return out;
     }
+    if value.vtype() == VarType::String {
+        // A string mask (`@ & < >`) formats text; a number mask formats a numeric string and
+        // returns any other text unchanged.
+        if has_string_mask_chars(trimmed) {
+            return format_string(&general_string(value), trimmed);
+        }
+        let numeric = value
+            .as_bstr()
+            .and_then(|b| parse_vba_numeric_string(&b.as_str()))
+            .is_some();
+        if !numeric && !is_date_mask(trimmed) {
+            return general_string(value);
+        }
+    }
     if is_date_mask(trimmed) {
-        format_date(value, trimmed)
+        format_date(value, trimmed, weeks)
     } else {
         format_numeric(value, trimmed)
     }
+}
+
+/// The week-numbering settings of a `Format` call.
+#[derive(Clone, Copy)]
+struct Weeks {
+    first_day: i32,
+    first_week: i32,
+}
+
+impl Weeks {
+    const DEFAULT: Weeks = Weeks {
+        first_day: 1,
+        first_week: 1,
+    };
+}
+
+/// True when the mask has a string-format character outside quotes.
+fn has_string_mask_chars(mask: &str) -> bool {
+    let mut quoted = false;
+    for c in mask.chars() {
+        match c {
+            '"' => quoted = !quoted,
+            '@' | '&' | '<' | '>' if !quoted => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// A mask section's literal text: quotes dropped, a backslash taking the next character as is.
+fn literal_text(section: &str) -> String {
+    let mut out = String::new();
+    let mut chars = section.chars();
+    let mut quoted = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => quoted = !quoted,
+            '\\' if !quoted => out.extend(chars.next()),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// `Format` of text with a string mask: `@` is a character or a space, `&` a character or
+/// nothing (both filled from the right), `>` upper-cases and `<` lower-cases the result. Text
+/// longer than the placeholders keeps its extra leading characters. The second section is for
+/// empty text.
+fn format_string(text: &str, mask: &str) -> String {
+    let sections: Vec<&str> = mask.split(';').collect();
+    let section = if text.is_empty() && sections.len() >= 2 {
+        sections[1]
+    } else {
+        sections[0]
+    };
+    let mut upper = false;
+    let mut lower = false;
+    // Pattern items: Some(true) = `@`, Some(false) = `&`, None carries a literal.
+    let mut items: Vec<(Option<bool>, char)> = Vec::new();
+    let mut chars = section.chars();
+    let mut quoted = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => quoted = !quoted,
+            _ if quoted => items.push((None, c)),
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    items.push((None, next));
+                }
+            }
+            '@' => items.push((Some(true), ' ')),
+            '&' => items.push((Some(false), ' ')),
+            '>' => upper = true,
+            '<' => lower = true,
+            other => items.push((None, other)),
+        }
+    }
+    let mut source: Vec<char> = text.chars().collect();
+    let mut rendered: Vec<String> = Vec::with_capacity(items.len());
+    for (kind, literal) in items.iter().rev() {
+        rendered.push(match kind {
+            None => literal.to_string(),
+            Some(pad_space) => match source.pop() {
+                Some(c) => c.to_string(),
+                None if *pad_space => " ".to_string(),
+                None => String::new(),
+            },
+        });
+    }
+    rendered.reverse();
+    let leading: String = source.into_iter().collect();
+    let first_placeholder = items.iter().position(|(kind, _)| kind.is_some());
+    let mut out = String::new();
+    match first_placeholder {
+        Some(at) => {
+            out.extend(rendered[..at].iter().map(String::as_str));
+            out.push_str(&leading);
+            out.extend(rendered[at..].iter().map(String::as_str));
+        }
+        None => {
+            out.extend(rendered.iter().map(String::as_str));
+            out.push_str(&leading);
+        }
+    }
+    if upper {
+        out = out.to_uppercase();
+    } else if lower {
+        out = out.to_lowercase();
+    }
+    out
 }
 
 fn general_string(value: &Variant) -> String {
@@ -118,13 +259,13 @@ fn named(value: &Variant, mask: &str) -> Option<String> {
         "yes/no" => Some(bool_word(value, "Yes", "No")),
         "true/false" => Some(bool_word(value, "True", "False")),
         "on/off" => Some(bool_word(value, "On", "Off")),
-        "general date" => Some(format_date(value, "general date")),
-        "long date" => Some(format_date(value, "dddd, mmmm d, yyyy")),
-        "medium date" => Some(format_date(value, "dd-mmm-yy")),
-        "short date" => Some(format_date(value, "m/d/yyyy")),
-        "long time" => Some(format_date(value, "h:nn:ss AM/PM")),
-        "medium time" => Some(format_date(value, "h:nn AM/PM")),
-        "short time" => Some(format_date(value, "hh:nn")),
+        "general date" => Some(format_date(value, "general date", Weeks::DEFAULT)),
+        "long date" => Some(format_date(value, "dddd, mmmm d, yyyy", Weeks::DEFAULT)),
+        "medium date" => Some(format_date(value, "dd-mmm-yy", Weeks::DEFAULT)),
+        "short date" => Some(format_date(value, "m/d/yyyy", Weeks::DEFAULT)),
+        "long time" => Some(format_date(value, "h:nn:ss AM/PM", Weeks::DEFAULT)),
+        "medium time" => Some(format_date(value, "h:nn AM/PM", Weeks::DEFAULT)),
+        "short time" => Some(format_date(value, "hh:nn", Weeks::DEFAULT)),
         _ => None,
     }
 }
@@ -197,11 +338,11 @@ pub fn format_percent(
 /// constants; regional settings are bounded to this module's existing masks.
 pub fn format_date_time(value: &Variant, named_format: i32) -> Option<String> {
     Some(match named_format {
-        0 => format_date(value, "general date"),
-        1 => format_date(value, "dddd, mmmm d, yyyy"),
-        2 => format_date(value, "m/d/yyyy"),
-        3 => format_date(value, "h:nn:ss AM/PM"),
-        4 => format_date(value, "hh:nn"),
+        0 => format_date(value, "general date", Weeks::DEFAULT),
+        1 => format_date(value, "dddd, mmmm d, yyyy", Weeks::DEFAULT),
+        2 => format_date(value, "m/d/yyyy", Weeks::DEFAULT),
+        3 => format_date(value, "h:nn:ss AM/PM", Weeks::DEFAULT),
+        4 => format_date(value, "hh:nn", Weeks::DEFAULT),
         _ => return None,
     })
 }
@@ -268,7 +409,7 @@ fn is_date_mask(mask: &str) -> bool {
     // Date masks never use `0`/`#` digit placeholders; numeric masks never use
     // the calendar tokens. This split is unambiguous for the common surface.
     let has_placeholder = lower.contains('0') || lower.contains('#');
-    let has_calendar = lower.contains(['y', 'm', 'd', 'h', 'n', 's', ':']);
+    let has_calendar = lower.contains(['y', 'm', 'd', 'h', 'n', 's', 'w', 'q', ':']);
     has_calendar && !has_placeholder
 }
 
@@ -306,12 +447,12 @@ fn render_section(section: &str, mut value: f64) -> String {
     let last = chars.iter().rposition(|c| matches!(c, '0' | '#'));
     let (first, last) = match (first, last) {
         (Some(f), Some(l)) => (f, l),
-        _ => return section.to_string(), // no placeholders → pure literal
+        _ => return literal_text(section), // no placeholders → pure literal
     };
 
-    let prefix: String = chars[..first].iter().collect();
+    let prefix = literal_text(&chars[..first].iter().collect::<String>());
     let core = &chars[first..=last];
-    let suffix: String = chars[last + 1..].iter().collect();
+    let suffix = literal_text(&chars[last + 1..].iter().collect::<String>());
 
     let dot = core.iter().position(|c| *c == '.');
     let (int_pat, frac_pat): (&[char], &[char]) = match dot {
@@ -420,7 +561,7 @@ fn decompose(value: &Variant) -> DateParts {
     }
 }
 
-fn format_date(value: &Variant, mask: &str) -> String {
+fn format_date(value: &Variant, mask: &str, weeks: Weeks) -> String {
     let p = decompose(value);
     // "General Date" routes here with a non-token mask; render date + present
     // time components like VBA's default.
@@ -431,11 +572,11 @@ fn format_date(value: &Variant, mask: &str) -> String {
         return match (has_date, has_time) {
             (true, true) => format!(
                 "{} {}",
-                format_date(value, "m/d/yyyy"),
-                format_date(value, "h:nn:ss AM/PM")
+                format_date(value, "m/d/yyyy", weeks),
+                format_date(value, "h:nn:ss AM/PM", weeks)
             ),
-            (false, true) => format_date(value, "h:nn:ss AM/PM"),
-            _ => format_date(value, "m/d/yyyy"),
+            (false, true) => format_date(value, "h:nn:ss AM/PM", weeks),
+            _ => format_date(value, "m/d/yyyy", weeks),
         };
     }
 
@@ -453,6 +594,18 @@ fn format_date(value: &Variant, mask: &str) -> String {
             (format!("{:04}", p.year), 4, false, true)
         } else if starts_ci(rest, "yy") {
             (format!("{:02}", p.year.rem_euclid(100)), 2, false, true)
+        } else if starts_ci(rest, "y") {
+            let day_of_year =
+                days_from_civil(p.year, p.month, p.day) - days_from_civil(p.year, 1, 1) + 1;
+            (day_of_year.to_string(), 1, false, true)
+        } else if starts_ci(rest, "ww") {
+            let week = week_of_year(p.year, p.month, p.day, weeks.first_day, weeks.first_week);
+            (week.to_string(), 2, false, true)
+        } else if starts_ci(rest, "w") {
+            let weekday = (p.dow as i32 - (weeks.first_day - 1)).rem_euclid(7) + 1;
+            (weekday.to_string(), 1, false, true)
+        } else if starts_ci(rest, "q") {
+            (((p.month - 1) / 3 + 1).to_string(), 1, false, true)
         } else if starts_ci(rest, "mmmm") {
             (month_name(p.month, false), 4, false, true)
         } else if starts_ci(rest, "mmm") {

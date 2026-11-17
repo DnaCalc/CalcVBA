@@ -1,4 +1,83 @@
+use crate::decimal::{Decimal96, DecimalError};
 use crate::{Variant, coerce::coerce_to, variant::VarType};
+
+/// A `Decimal` arithmetic operator (VarDecAdd/Sub/Mul/Div).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecimalOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+/// An operand of a Decimal operation as a Decimal: integers, Boolean, Empty and Currency
+/// exactly, Single/Double/Date to their significant digits, a String by its numeric text.
+pub fn to_decimal(v: &Variant) -> Result<Decimal96, DecimalError> {
+    let exact = |n: i64| Ok(Decimal96::from_i64(n));
+    match v.vtype() {
+        VarType::Decimal => v.as_decimal96().ok_or(DecimalError::TypeMismatch),
+        VarType::Empty => exact(0),
+        VarType::Boolean => exact(if v.as_bool().unwrap_or(false) { -1 } else { 0 }),
+        VarType::Byte => exact(i64::from(v.as_u8().unwrap_or(0))),
+        VarType::SignedByte => exact(i64::from(v.as_i8().unwrap_or(0))),
+        VarType::Integer => exact(i64::from(v.as_i16().unwrap_or(0))),
+        VarType::UnsignedInteger => exact(i64::from(v.as_u16().unwrap_or(0))),
+        VarType::Long => exact(i64::from(v.as_i32().unwrap_or(0))),
+        VarType::UnsignedLong | VarType::UnsignedInt => exact(i64::from(v.as_u32().unwrap_or(0))),
+        VarType::LongLong => exact(v.as_i64().unwrap_or(0)),
+        VarType::UnsignedLongLong => Ok(Decimal96::from_u96(
+            u128::from(v.as_u64().unwrap_or(0)),
+            0,
+            false,
+        )),
+        VarType::Currency => {
+            let scaled = v.as_currency_scaled_i64().unwrap_or(0);
+            Ok(Decimal96::from_u96(u128::from(scaled.unsigned_abs()), 4, scaled < 0).trimmed())
+        }
+        VarType::Single => Decimal96::from_f32(v.as_f32().unwrap_or(0.0)),
+        VarType::Double => Decimal96::from_f64(v.as_f64().unwrap_or(0.0)),
+        VarType::Date => Decimal96::from_f64(v.as_date_f64().unwrap_or(0.0)),
+        VarType::String => {
+            let text = v.as_bstr().map(|b| b.as_str()).unwrap_or_default();
+            match Decimal96::parse_text(&text) {
+                Some(result) => result,
+                None => crate::coerce::parse_vba_number(&text)
+                    .map_err(|e| e.decimal_error())
+                    .and_then(Decimal96::from_f64),
+            }
+        }
+        VarType::ByRef => to_decimal(&v.try_clone().map_err(|_| DecimalError::TypeMismatch)?),
+        _ => Err(DecimalError::TypeMismatch),
+    }
+}
+
+/// `l op r` in the Decimal type when either operand is a `Decimal` (VBA gives the Decimal
+/// result then); `Ok(None)` when neither is.
+pub fn decimal_binop(
+    l: &Variant,
+    r: &Variant,
+    op: DecimalOp,
+) -> Result<Option<Variant>, DecimalError> {
+    if l.vtype() != VarType::Decimal && r.vtype() != VarType::Decimal {
+        return Ok(None);
+    }
+    let (a, b) = (to_decimal(l)?, to_decimal(r)?);
+    let value = match op {
+        DecimalOp::Add => a.checked_add(b),
+        DecimalOp::Sub => a.checked_sub(b),
+        DecimalOp::Mul => a.checked_mul(b),
+        DecimalOp::Div => a.checked_div(b),
+    }?;
+    Ok(Some(Variant::from_decimal96(value)))
+}
+
+fn decimal_lane(l: &Variant, r: &Variant, op: DecimalOp) -> Result<Option<Variant>, String> {
+    decimal_binop(l, r, op).map_err(|e| match e {
+        DecimalError::Overflow => "runtime error: 6 (Overflow)".to_string(),
+        DecimalError::DivideByZero => "runtime error: 11 (Division by zero)".to_string(),
+        DecimalError::TypeMismatch => "runtime error: 13 (Type mismatch)".to_string(),
+    })
+}
 
 /// VBA **Variant** integer-arithmetic promotion: compute integral operands exactly
 /// and return the smallest carrier at least as wide as the operands that can hold
@@ -109,6 +188,9 @@ fn int_binop(
 }
 
 pub fn add(lhs: &Variant, rhs: &Variant) -> Result<Variant, String> {
+    if let Some(value) = decimal_lane(lhs, rhs, DecimalOp::Add)? {
+        return Ok(value);
+    }
     if let (Some(l), Some(r)) = (int_lane(lhs), int_lane(rhs)) {
         return Ok(int_binop(
             l,
@@ -121,6 +203,9 @@ pub fn add(lhs: &Variant, rhs: &Variant) -> Result<Variant, String> {
 }
 
 pub fn sub(lhs: &Variant, rhs: &Variant) -> Result<Variant, String> {
+    if let Some(value) = decimal_lane(lhs, rhs, DecimalOp::Sub)? {
+        return Ok(value);
+    }
     if let (Some(l), Some(r)) = (int_lane(lhs), int_lane(rhs)) {
         return Ok(int_binop(
             l,
@@ -133,6 +218,9 @@ pub fn sub(lhs: &Variant, rhs: &Variant) -> Result<Variant, String> {
 }
 
 pub fn mul(lhs: &Variant, rhs: &Variant) -> Result<Variant, String> {
+    if let Some(value) = decimal_lane(lhs, rhs, DecimalOp::Mul)? {
+        return Ok(value);
+    }
     if let (Some(l), Some(r)) = (int_lane(lhs), int_lane(rhs)) {
         return Ok(int_binop(
             l,
@@ -151,6 +239,24 @@ pub fn neg(v: &Variant) -> Result<Variant, String> {
         } else {
             integer_or_wider(-value, floor)
         });
+    }
+    // Unary minus keeps the operand's type: Single, Currency, Date and Decimal stay themselves.
+    match v.vtype() {
+        VarType::Single => return Ok(Variant::from_f32(-v.as_f32().unwrap_or(0.0))),
+        VarType::Date => return Ok(Variant::from_date_f64(-v.as_date_f64().unwrap_or(0.0))),
+        VarType::Decimal => {
+            if let Some(d) = v.as_decimal96() {
+                return Ok(Variant::from_decimal96(d.negated()));
+            }
+        }
+        VarType::Currency => {
+            let scaled = v.as_currency_scaled_i64().unwrap_or(0);
+            return scaled
+                .checked_neg()
+                .map(Variant::from_currency_scaled_i64)
+                .ok_or_else(|| "runtime error: 6 (Overflow)".to_string());
+        }
+        _ => {}
     }
     let d = coerce_to(v, VarType::Double)?;
     Ok(Variant::from_f64(-d.as_f64().unwrap_or(0.0)))

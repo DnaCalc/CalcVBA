@@ -83,7 +83,8 @@ fn negative_date_serial_uses_whole_number_date_part() {
 #[test]
 fn date_range_is_validated_for_constructors_and_isdate() {
     assert_raises("    Dim d As Date\n    d = DateSerial(10000, 1, 1)\n", 5);
-    assert_raises("    Dim d As Date\n    d = CDate(2958466#)\n", 5);
+    // A number past the Date range is Overflow (Excel, spec-pass SpecTypes cdtBig).
+    assert_raises("    Dim d As Date\n    d = CDate(2958466#)\n", 6);
 
     let snap = snapshot("Public r As Boolean\n", "    r = IsDate(\"1/1/10000\")\n");
     assert_eq!(

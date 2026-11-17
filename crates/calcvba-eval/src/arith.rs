@@ -12,11 +12,13 @@
 
 use crate::typed::{self, CheckedIntBinOp};
 use calcvba_bundle::{NumericCoerceTarget, NumericMode, StringCompareMode};
+use calcvba_runtime::arithmetic::DecimalOp;
 use calcvba_runtime::decimal::Decimal96;
+use calcvba_runtime::decimal::DecimalError;
 use calcvba_runtime::variant::VarType;
 use calcvba_runtime::{
     Variant, arithmetic as rt,
-    coerce::{coerce_to, parse_vba_numeric_string},
+    coerce::{coerce_to, is_date_serial, parse_vba_integer_text, parse_vba_number},
     variant_to_vba_string,
 };
 
@@ -82,7 +84,22 @@ impl From<&str> for ArithError {
     }
 }
 
+impl From<DecimalError> for ArithError {
+    fn from(error: DecimalError) -> Self {
+        match error {
+            DecimalError::Overflow => Self::overflow(),
+            DecimalError::DivideByZero => Self::div_by_zero(),
+            DecimalError::TypeMismatch => Self::type_mismatch(),
+        }
+    }
+}
+
 type R = Result<Variant, ArithError>;
+
+/// `l op r` as a Decimal when either operand is a `Decimal` (VBA's Decimal lane).
+fn decimal_lane(l: &Variant, r: &Variant, op: DecimalOp) -> Result<Option<Variant>, ArithError> {
+    rt::decimal_binop(l, r, op).map_err(ArithError::from)
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum CmpOp {
@@ -153,9 +170,13 @@ pub fn num(v: &Variant) -> Result<f64, ArithError> {
         } else {
             0.0
         }),
-        VarType::String => {
-            parse_vba_numeric_string(&as_string(v)).ok_or_else(ArithError::type_mismatch)
-        }
+        VarType::String => parse_vba_number(&as_string(v)).map_err(|e| {
+            if e.code() == 6 {
+                ArithError::overflow()
+            } else {
+                ArithError::type_mismatch()
+            }
+        }),
         _ => read_f64(v),
     }
 }
@@ -170,6 +191,18 @@ pub fn int(v: &Variant) -> Result<i64, ArithError> {
     }
     if let Some(x) = v.as_proc_ref() {
         return i64::try_from(x).map_err(|_| ArithError::overflow());
+    }
+    // A Decimal rounds exactly (half to even); a digit string keeps digits beyond 2^53.
+    if let Some(d) = v.as_decimal96() {
+        return d
+            .round_scaled_i128(0)
+            .and_then(|n| i64::try_from(n).ok())
+            .ok_or_else(ArithError::overflow);
+    }
+    if v.vtype() == VarType::String
+        && let Some(n) = parse_vba_integer_text(&as_string(v))
+    {
+        return Ok(n);
     }
     let d = num(v)?;
     if !d.is_finite() || d.abs() >= 9.223_372_036_854_775e18 {
@@ -268,6 +301,9 @@ pub fn neg(v: &Variant, mode: NumericMode) -> R {
         }
         NumericMode::Checked(ty) => coerce_numeric(&Variant::from_f64(-num(v)?), ty),
         NumericMode::Widening if is_object_nothing(v) => Err(ArithError::object_not_set()),
+        NumericMode::Widening if v.vtype() == VarType::Currency => {
+            checked_currency(-currency_operand(v)?)
+        }
         NumericMode::Widening => rt::neg(v).map_err(ArithError::from),
     }
 }
@@ -403,6 +439,14 @@ fn exact_currency_operand(v: &Variant) -> Option<Result<i128, ArithError>> {
             )));
         }
         VarType::Currency => i128::from(v.as_currency_scaled_i64().unwrap_or(0)),
+        // A Decimal keeps its digits: rounded half to even at Currency's four places.
+        VarType::Decimal => {
+            return Some(
+                v.as_decimal96()
+                    .and_then(|d| d.round_scaled_i128(4))
+                    .ok_or_else(ArithError::overflow),
+            );
+        }
         _ => return None,
     };
     Some(Ok(scaled))
@@ -459,8 +503,10 @@ fn is_date(v: &Variant) -> bool {
 /// `Double` from `widen_double`/`from_f64`, so `as_f64` is `Some`).
 fn as_date(v: Variant) -> Variant {
     match v.as_f64() {
-        Some(serial) => Variant::from_date_f64(serial),
-        None => v,
+        // A result outside the Date range stays a Double (Excel: `#12/31/9999# + 1` in a
+        // Variant is the Double 2958466).
+        Some(serial) if is_date_serial(serial) => Variant::from_date_f64(serial),
+        _ => v,
     }
 }
 
@@ -475,8 +521,20 @@ fn typed_zero_like(other: &Variant) -> Option<Variant> {
         VarType::Single => Variant::from_f32(0.0),
         VarType::Double => Variant::from_f64(0.0),
         VarType::Currency => Variant::from_currency_scaled_i64(0),
+        // `Empty + True` is the Integer -1, and `Empty + Empty` the Integer 0.
+        VarType::Boolean | VarType::Empty => Variant::from_i16(0),
+        VarType::Decimal => Variant::from_decimal96(Default::default()),
         _ => return None,
     })
+}
+
+/// The operands with an `Empty` replaced by a typed zero of the other operand, when that
+/// replaces anything (`None` otherwise).
+fn resolved_empty(l: &Variant, r: &Variant) -> Option<(Variant, Variant)> {
+    let replaces = |empty: &Variant, other: &Variant| {
+        empty.vtype() == VarType::Empty && typed_zero_like(other).is_some()
+    };
+    (replaces(l, r) || replaces(r, l)).then(|| resolve_empty(l, r))
 }
 
 /// Replace an `Empty` operand by a typed zero of the other operand, when the other is numeric.
@@ -526,11 +584,14 @@ fn widening_add(l: &Variant, r: &Variant) -> R {
         return Ok(Variant::from_utf16_units(&units));
     }
     if l.vtype() == VarType::Empty || r.vtype() == VarType::Empty {
-        if l.vtype() == VarType::String || r.vtype() == VarType::String {
-            return Err(ArithError::type_mismatch());
+        // `Empty + "5"` is the String "5" (and `Empty + "a"` the String "a").
+        if l.vtype() == VarType::String {
+            return Ok(l.clone());
         }
-        if typed_zero_like(l).is_some() || typed_zero_like(r).is_some() {
-            let (l2, r2) = resolve_empty(l, r);
+        if r.vtype() == VarType::String {
+            return Ok(r.clone());
+        }
+        if let Some((l2, r2)) = resolved_empty(l, r) {
             return widening_add(&l2, &r2);
         }
         let raw = Variant::from_f64(num(l)? + num(r)?);
@@ -539,6 +600,9 @@ fn widening_add(l: &Variant, r: &Variant) -> R {
         } else {
             raw
         });
+    }
+    if let Some(value) = decimal_lane(l, r, DecimalOp::Add)? {
+        return Ok(value);
     }
     let raw = if currency_pair_with_float_or_text(l, r) {
         currency_add(l, r)?
@@ -561,11 +625,11 @@ fn widening_sub(l: &Variant, r: &Variant) -> R {
         return Ok(Variant::null());
     }
     reject_object_nothing(l, r)?;
-    if (l.vtype() == VarType::Empty || r.vtype() == VarType::Empty)
-        && (typed_zero_like(l).is_some() || typed_zero_like(r).is_some())
-    {
-        let (l2, r2) = resolve_empty(l, r);
+    if let Some((l2, r2)) = resolved_empty(l, r) {
         return widening_sub(&l2, &r2);
+    }
+    if let Some(value) = decimal_lane(l, r, DecimalOp::Sub)? {
+        return Ok(value);
     }
     let raw = if currency_pair_with_float_or_text(l, r) {
         currency_sub(l, r)?
@@ -585,11 +649,11 @@ fn widening_mul(l: &Variant, r: &Variant) -> R {
     if is_null(l) || is_null(r) {
         return Ok(Variant::null());
     }
-    if (l.vtype() == VarType::Empty || r.vtype() == VarType::Empty)
-        && (typed_zero_like(l).is_some() || typed_zero_like(r).is_some())
-    {
-        let (l2, r2) = resolve_empty(l, r);
+    if let Some((l2, r2)) = resolved_empty(l, r) {
         return widening_mul(&l2, &r2);
+    }
+    if let Some(value) = decimal_lane(l, r, DecimalOp::Mul)? {
+        return Ok(value);
     }
     if has_currency_exact_lane(l, r)
         && (l.vtype() == VarType::Currency || r.vtype() == VarType::Currency)
@@ -613,6 +677,16 @@ fn numeric(l: &Variant, r: &Variant, f: impl Fn(f64, f64) -> R) -> R {
 }
 
 pub fn div(l: &Variant, r: &Variant) -> R {
+    if !is_null(l) && !is_null(r) {
+        if let Some(value) = decimal_lane(l, r, DecimalOp::Div)? {
+            return Ok(value);
+        }
+        // A Double divided by `Empty` is Division by zero, even `0# / Empty` (Excel); a narrower
+        // zero over Empty stays the Overflow of 0 / 0 (`CByte(0) / Empty` raises 6).
+        if r.vtype() == VarType::Empty && l.vtype() == VarType::Double {
+            return Err(ArithError::div_by_zero());
+        }
+    }
     numeric(l, r, |a, b| {
         if b == 0.0 {
             // 0 / 0 is Overflow (error 6) in Office; any other division by zero is error 11.
@@ -655,6 +729,11 @@ fn concat_units(v: &Variant) -> Vec<u16> {
 pub fn concat(l: &Variant, r: &Variant) -> R {
     if is_null(l) && is_null(r) {
         return Ok(Variant::null());
+    }
+    // An array or an error value has no string form for `&` (Type mismatch).
+    let no_text = |v: &Variant| matches!(v.vtype(), VarType::ArrayVariant | VarType::Error);
+    if no_text(l) || no_text(r) {
+        return Err(ArithError::type_mismatch());
     }
     let mut units = Vec::new();
     if !is_null(l) {
@@ -706,6 +785,26 @@ fn cmp_order(
     // are exempt (`Null` is handled by the caller; `Empty` adapts to the other operand).
     if (cmp_is_string(l) && cmp_is_numeric(r)) || (cmp_is_numeric(l) && cmp_is_string(r)) {
         return Err(ArithError::type_mismatch());
+    }
+    // Error values compare by their codes, and with nothing else (Excel: `CVErr(10) < CVErr(9)`
+    // is False, `CVErr(2042) = 1` raises 13).
+    match (l.vtype() == VarType::Error, r.vtype() == VarType::Error) {
+        (true, true) => return Ok(l.as_error_code().cmp(&r.as_error_code())),
+        (true, false) | (false, true) => return Err(ArithError::type_mismatch()),
+        (false, false) => {}
+    }
+    // A Single against a Double compares as Single (Excel: `sg = 0.1: sg = 0.1` is True).
+    let single_double =
+        |a: &Variant, b: &Variant| a.vtype() == VarType::Single && b.vtype() == VarType::Double;
+    if single_double(l, r) || single_double(r, l) {
+        let as_single = |v: &Variant| {
+            v.as_f32()
+                .or_else(|| v.as_f64().map(|x| x as f32))
+                .unwrap_or(0.0)
+        };
+        return as_single(l)
+            .partial_cmp(&as_single(r))
+            .ok_or_else(ArithError::overflow);
     }
     let both_string = l.vtype() == VarType::String && r.vtype() == VarType::String;
     if both_string {
@@ -925,56 +1024,93 @@ pub fn not(v: &Variant) -> R {
         let handle: i64 = if allocated { 1 } else { 0 };
         return Ok(long_or_double(!handle));
     }
-    Ok(logic_value(logic_width(v), !int(v)?))
+    let (width, value) = logic_operand(v)?;
+    Ok(logic_value(width, !value))
 }
 
-fn bitlogic(
-    l: &Variant,
-    r: &Variant,
-    bit: impl Fn(i64, i64) -> i64,
-    logic: impl Fn(bool, bool) -> bool,
-) -> R {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LogicOp {
+    And,
+    Or,
+    Xor,
+    Eqv,
+    Imp,
+}
+
+impl LogicOp {
+    fn bits(self, a: i64, b: i64) -> i64 {
+        match self {
+            Self::And => a & b,
+            Self::Or => a | b,
+            Self::Xor => a ^ b,
+            Self::Eqv => !(a ^ b),
+            Self::Imp => !a | b,
+        }
+    }
+}
+
+/// A logical operand as an integer, with the width it works in. A value outside that width's
+/// range is Overflow (Excel: `Not 3000000000#` and `CCur(1E12) Xor 1` raise 6).
+fn logic_operand(v: &Variant) -> Result<(LogicWidth, i64), ArithError> {
+    let width = logic_width(v);
+    let value = int(v)?;
+    if width == LogicWidth::Long && i32::try_from(value).is_err() {
+        return Err(ArithError::overflow());
+    }
+    Ok((width, value))
+}
+
+/// The result of a logical operator in `known`'s type (Boolean stays Boolean).
+fn logic_typed(known: &Variant, width: LogicWidth, value: i64) -> Variant {
+    if known.vtype() == VarType::Boolean {
+        Variant::from_bool(value != 0)
+    } else {
+        logic_value(width, value)
+    }
+}
+
+fn bitlogic(l: &Variant, r: &Variant, op: LogicOp) -> R {
     let l_null = is_null(l);
     let r_null = is_null(r);
     if l_null && r_null {
         return Ok(Variant::null());
     }
     if l_null || r_null {
-        // VBA three-valued logic: one operand is `Null` (every bit unknown). A result bit is
-        // known only where the *other* operand alone forces it; if any bit still depends on
-        // the unknown operand the whole result is `Null`. We detect this by evaluating the
-        // bit-op with the unknown operand as all-0 vs all-1: where the two agree, the known
-        // operand decided every bit. (`x And Null` = Null unless x=0→0; `x Or Null` = Null
-        // unless x=-1→-1; `Xor`/`Eqv` never agree → Null; `Imp` = `(Not a) Or b` follows.)
-        let (known, known_ty) = if l_null {
-            (int(r)?, r.vtype())
-        } else {
-            (int(l)?, l.vtype())
+        // OLE's rules with one `Null` operand (VarAnd/VarOr/VarImp): `0 And Null` is the zero
+        // of the other operand's type, `x Or Null` is `x` when x is non-zero, `Null Imp x` is
+        // `Null Or x` and `x Imp Null` is `(Not x) Or Null`; anything else, and every `Xor` and
+        // `Eqv`, is `Null`. (Excel: `CByte(0) And Null` is the Byte 0, `5 Or Null` the
+        // Integer 5, `5 Imp Null` the Integer -6, `Null Imp 5` the Integer 5.)
+        let known = if l_null { r } else { l };
+        let (width, value) = logic_operand(known)?;
+        let not = |n: i64| {
+            if width == LogicWidth::Byte {
+                n ^ 0xFF
+            } else {
+                !n
+            }
         };
-        let (lo, hi) = if l_null {
-            (bit(0, known), bit(-1, known))
-        } else {
-            (bit(known, 0), bit(known, -1))
+        let result = match op {
+            LogicOp::And => (value == 0).then_some(0),
+            LogicOp::Or => (value != 0).then_some(value),
+            LogicOp::Imp if l_null => (value != 0).then_some(value),
+            LogicOp::Imp => (not(value) != 0).then(|| not(value)),
+            LogicOp::Xor | LogicOp::Eqv => None,
         };
-        if lo != hi {
-            return Ok(Variant::null());
-        }
-        // Determined: a `Boolean` known operand yields a `Boolean` result (e.g.
-        // `False And Null` = False, `True Or Null` = True); otherwise a `Long`.
-        return Ok(if known_ty == VarType::Boolean {
-            Variant::from_bool(lo != 0)
-        } else {
-            long_or_double(lo)
+        return Ok(match result {
+            Some(value) => logic_typed(known, width, value),
+            None => Variant::null(),
         });
     }
     if l.vtype() == VarType::Boolean && r.vtype() == VarType::Boolean {
-        return Ok(Variant::from_bool(logic(
-            l.as_bool().unwrap_or(false),
-            r.as_bool().unwrap_or(false),
-        )));
+        let (a, b) = (l.as_bool().unwrap_or(false), r.as_bool().unwrap_or(false));
+        return Ok(Variant::from_bool(
+            op.bits(-i64::from(a), -i64::from(b)) != 0,
+        ));
     }
-    let width = logic_width(l).max(logic_width(r));
-    Ok(logic_value(width, bit(int(l)?, int(r)?)))
+    let (lw, a) = logic_operand(l)?;
+    let (rw, b) = logic_operand(r)?;
+    Ok(logic_value(lw.max(rw), op.bits(a, b)))
 }
 
 /// The integer type a logical operator (`And`, `Or`, `Xor`, `Eqv`, `Imp`, `Not`) works and
@@ -1010,21 +1146,21 @@ fn logic_value(width: LogicWidth, value: i64) -> Variant {
 }
 
 pub fn and(l: &Variant, r: &Variant) -> R {
-    bitlogic(l, r, |a, b| a & b, |a, b| a && b)
+    bitlogic(l, r, LogicOp::And)
 }
 pub fn or(l: &Variant, r: &Variant) -> R {
-    bitlogic(l, r, |a, b| a | b, |a, b| a || b)
+    bitlogic(l, r, LogicOp::Or)
 }
 pub fn xor(l: &Variant, r: &Variant) -> R {
-    bitlogic(l, r, |a, b| a ^ b, |a, b| a != b)
+    bitlogic(l, r, LogicOp::Xor)
 }
 pub fn eqv(l: &Variant, r: &Variant) -> R {
-    // `a Eqv b` = `Not (a Xor b)` (bitwise) / `a == b` (Boolean).
-    bitlogic(l, r, |a, b| !(a ^ b), |a, b| a == b)
+    // `a Eqv b` = `Not (a Xor b)`.
+    bitlogic(l, r, LogicOp::Eqv)
 }
 pub fn imp(l: &Variant, r: &Variant) -> R {
-    // `a Imp b` = `(Not a) Or b` (bitwise) / `!a || b` (Boolean).
-    bitlogic(l, r, |a, b| !a | b, |a, b| !a || b)
+    // `a Imp b` = `(Not a) Or b`.
+    bitlogic(l, r, LogicOp::Imp)
 }
 
 // ── Coercion ──────────────────────────────────────────────────────────────────
@@ -1054,6 +1190,14 @@ pub fn coerce_numeric(v: &Variant, target: NumericCoerceTarget) -> R {
             Ok(Variant::from_bool(num(v)? != 0.0))
         }
         NumericCoerceTarget::Byte => {
+            // `True` converts to the Byte 255 (its low byte), implicitly and through CByte.
+            if v.vtype() == VarType::Boolean {
+                return Ok(Variant::from_u8(if v.as_bool().unwrap_or(false) {
+                    255
+                } else {
+                    0
+                }));
+            }
             let n = int(v)?;
             if (0..=255).contains(&n) {
                 Ok(Variant::from_u8(n as u8))
@@ -1103,7 +1247,16 @@ pub fn coerce_numeric(v: &Variant, target: NumericCoerceTarget) -> R {
                     return Ok(Variant::from_date_f64(serial));
                 }
             }
-            Ok(Variant::from_date_f64(num(v)?))
+            let serial = if v.vtype() == VarType::Date {
+                v.as_date_f64().unwrap_or(0.0)
+            } else {
+                num(v)?
+            };
+            // A number outside 1 January 100 .. 31 December 9999 is Overflow.
+            if !is_date_serial(serial) {
+                return Err(ArithError::overflow());
+            }
+            Ok(Variant::from_date_f64(serial))
         }
     }
 }
@@ -1111,6 +1264,23 @@ pub fn coerce_numeric(v: &Variant, target: NumericCoerceTarget) -> R {
 pub fn coerce_string(v: &Variant) -> R {
     if is_null(v) {
         return Err(ArithError::null_use());
+    }
+    // An error value does not Let-convert to String (Excel: `s = CVErr(5)` raises 13).
+    if v.vtype() == VarType::Error {
+        return Err(ArithError::type_mismatch());
+    }
+    // A Byte array Let-converts to the String whose UTF-16LE storage is those bytes
+    // (Excel: `bb = "AB": s = bb` gives "AB").
+    if let Some(array) = v.as_safearray()
+        && array.element_vartype() == calcvba_runtime::safe_array::VT_UI1_VALUE
+    {
+        let bytes = array
+            .variant_elements()
+            .ok_or_else(ArithError::type_mismatch)?
+            .iter()
+            .map(|b| b.as_u8().ok_or_else(ArithError::type_mismatch))
+            .collect::<Result<Vec<u8>, _>>()?;
+        return Ok(Variant::from_bstr_bytes(&bytes));
     }
     coerce_to(v, VarType::String).map_err(ArithError::from)
 }

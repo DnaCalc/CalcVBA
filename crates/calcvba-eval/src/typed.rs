@@ -110,13 +110,10 @@ pub fn currency_mul_scaled_i128(lhs: i128, rhs: i128) -> Result<i64, ArithError>
     currency_checked_scaled_i128(div_round_ties_even(product, CURRENCY_SCALE))
 }
 
+/// A Double as Currency's scaled value, exactly (see
+/// [`calcvba_runtime::coerce::currency_scaled_from_f64`]).
 pub fn currency_from_f64(value: f64) -> Result<i64, ArithError> {
-    let scaled = (value * 10_000.0).round_ties_even();
-    if scaled.is_finite() && scaled >= i64::MIN as f64 && scaled <= i64::MAX as f64 {
-        Ok(scaled as i64)
-    } else {
-        Err(ArithError::overflow())
-    }
+    calcvba_runtime::coerce::currency_scaled_from_f64(value).ok_or_else(ArithError::overflow)
 }
 
 pub fn div_round_ties_even(numerator: i128, denominator: i128) -> i128 {

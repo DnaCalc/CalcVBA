@@ -665,6 +665,10 @@ impl FileSystemHal for PolicyHost {
         self.inner.fs().seek_variant(handle, position)
     }
 
+    fn file_attr_variant(&self, handle: Variant, kind: Variant) -> HalResult<Variant> {
+        self.inner.fs().file_attr_variant(handle, kind)
+    }
+
     fn eof_variant(&self, handle: Variant) -> HalResult<Variant> {
         self.inner.fs().eof_variant(handle)
     }

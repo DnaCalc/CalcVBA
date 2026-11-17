@@ -465,6 +465,10 @@ impl<'a> ProcLower<'a> {
         .ok_or_else(|| self.unresolved(name, "project proc"))?;
 
         let signature = self.proc_signature_for(sym, kind);
+        if let Some(indices) = zero_param_index(signature.as_ref(), arglist) {
+            let result = self.bind_project_call(name, binding, kind, None)?;
+            return self.index_call_result(result, indices);
+        }
         let mut args = match &signature {
             Some(sig) => self.bind_proc_args(arglist, sig, sym)?,
             None => self.bind_args(arglist, None)?,
@@ -490,6 +494,41 @@ impl<'a> ProcLower<'a> {
             CoreValue::Call {
                 callee: CoreCallee::VbaProc { proc: proc_id },
                 args,
+            },
+            ty,
+        ))
+    }
+
+    /// `f(i)` where `f` takes no parameters: the result of calling `f`, indexed. An object
+    /// result is indexed through its default member; anything else is subscripted (a
+    /// Variant decides between the two at run time).
+    fn index_call_result(
+        &mut self,
+        result: Bound,
+        indices: SyntaxNode<'_>,
+    ) -> Result<Bound, BindError> {
+        let indices = self.bind_positional_values(indices)?;
+        if matches!(
+            self.g.resolve_udt_type(result.ty.clone()),
+            VarTypeRef::Object(_)
+        ) {
+            return Ok(value_bound(
+                self.late_default_member_call(
+                    ProjectMemberKind::PropertyGet,
+                    result.value,
+                    indices.into_iter().map(CoreArg::ByVal).collect(),
+                ),
+                VarTypeRef::Variant,
+            ));
+        }
+        let ty = match self.g.resolve_udt_type(result.ty) {
+            VarTypeRef::Array(element) => self.g.resolve_udt_type(*element),
+            _ => VarTypeRef::Variant,
+        };
+        Ok(value_bound(
+            CoreValue::Index {
+                array: Box::new(result.value),
+                indices,
             },
             ty,
         ))
@@ -566,6 +605,10 @@ impl<'a> ProcLower<'a> {
             && !self.is_object_default_member_index_expr(expr)
             && let Ok((place, place_ty)) = self.bind_place(expr)
             && !self.byref_variant_takes_temporary(param, &place, &place_ty)
+            // `obj.field` reaches the field through the object's interface: passed ByRef it
+            // is a copy the callee's writes never reach (Excel: `IncL kk.n` leaves `kk.n`).
+            && !(expr.kind() == SyntaxKind::MemberExpr
+                && matches!(place, CorePlace::Field { .. }))
         {
             self.reject_udt_variant_arg(param, &place_ty, udt_ok)?;
             if let Some(param) = param {
@@ -574,6 +617,15 @@ impl<'a> ProcLower<'a> {
             return Ok(CoreArg::ByRef(place));
         }
         let mut bound = self.bind_expr(expr)?;
+        // A parenthesised object passed to an object-typed parameter is evaluated: it reads
+        // the object's default member (438 when the class has none, as in Excel).
+        if forced_by_val
+            && let Some(p) = param
+            && matches!(self.g.resolve_udt_type(p.ty.clone()), VarTypeRef::Object(_))
+            && !self.g.is_project_udt(&p.ty)
+        {
+            bound = self.object_operand_value(bound);
+        }
         self.reject_udt_variant_arg(param, &bound.ty, udt_ok)?;
         if param.is_some_and(|param| {
             matches!(
@@ -2425,6 +2477,11 @@ impl<'a> ProcLower<'a> {
             .member_name_token()
             .ok_or_else(|| BindError::Malformed("member without name".into()))?
             .text;
+        // `x!k` (and `!k` inside `With x`) is `x.DefaultMember("k")` (MS-VBAL §5.6.14).
+        if node.member_is_bang() {
+            let recv = self.member_receiver_bound(node)?;
+            return self.bind_bang_member(recv, crate::unbracket_identifier(member));
+        }
         // `Err.Number` / `Err.Description` / `Err.Source` are error-state reads.
         if let Some(recv) = node.member_receiver()
             && self.is_err_receiver(recv)
@@ -2447,6 +2504,44 @@ impl<'a> ProcLower<'a> {
         }
         let recv = self.member_receiver_bound(node)?;
         self.bind_member_value(recv, member)
+    }
+
+    /// The dictionary access `recv!key`: the receiver's default member called with the
+    /// name as a String argument. A project class's default member is called by name; any
+    /// other receiver dispatches its default member late.
+    fn bind_bang_member(&mut self, recv: Bound, key: &str) -> Result<Bound, BindError> {
+        let args = vec![CoreArg::ByVal(CoreValue::Const(CoreConst::Str(
+            key.to_string(),
+        )))];
+        if let VarTypeRef::Object(_) = &recv.ty
+            && let Some(default) = self.resolve_default_member(&recv.ty)
+            && let DispatchRoute::ProjectMember { kind } = &default.route
+            && let Some(sym) = default.symbol
+        {
+            let kind = match kind {
+                ProjectMemberKind::Method => ProjectMemberKind::Method,
+                _ => ProjectMemberKind::PropertyGet,
+            };
+            let name = self
+                .symbol_display_name(sym)
+                .unwrap_or_else(|| key.to_string());
+            let signature = self.project_property_accessor_signature(sym, kind, &name)?;
+            let ret = self
+                .g
+                .resolve_udt_type(signature.return_type.unwrap_or(VarTypeRef::Variant));
+            let dispatch = self.interface_dispatch_name(&recv.ty, &name);
+            return Ok(value_bound(
+                self.g.coerce_store(
+                    self.late_member_call(&dispatch, kind, recv.value, args),
+                    &ret,
+                ),
+                ret,
+            ));
+        }
+        Ok(value_bound(
+            self.late_default_member_call(ProjectMemberKind::PropertyGet, recv.value, args),
+            VarTypeRef::Variant,
+        ))
     }
 
     /// `Module.Member(args)` or `Enum.Member` where the receiver is a bare
@@ -2981,6 +3076,11 @@ impl<'a> ProcLower<'a> {
                     // Use the method's signature so ByRef params alias the caller
                     // (and named args reorder into positional slots for dispatch).
                     let signature = member_sym.and_then(|s| self.proc_signature_for(s, kind));
+                    if let Some(indices) = zero_param_index(signature.as_ref(), arglist) {
+                        let result =
+                            self.bind_member_call_on(recv, member, None, allow_statement_only_sub)?;
+                        return self.index_call_result(result, indices);
+                    }
                     let method_args = match (&signature, member_sym) {
                         (Some(sig), Some(s)) => self.bind_proc_args(arglist, sig, s)?,
                         _ => self.bind_args(arglist, None)?,
@@ -3575,6 +3675,25 @@ fn ensure_byval_type_compatible(
         return Err(BindError::TypeMismatch);
     }
     Ok(())
+}
+
+/// The argument list of `f(args)` when it indexes `f`'s result rather than passing
+/// arguments: `f` is a Function or Property Get with no parameters and the list holds only
+/// positional values.
+fn zero_param_index<'t>(
+    signature: Option<&Signature>,
+    arglist: Option<SyntaxNode<'t>>,
+) -> Option<SyntaxNode<'t>> {
+    let sig = signature?;
+    let arglist = arglist?;
+    let items = arglist.arg_items();
+    (sig.params.is_empty()
+        && sig.return_type.is_some()
+        && !items.is_empty()
+        && items
+            .iter()
+            .all(|i| matches!(i, ArgItem::Positional(_, CallSitePassing::Default))))
+    .then_some(arglist)
 }
 
 /// Convert one variadic-tail argument to its array-element value for a ParamArray

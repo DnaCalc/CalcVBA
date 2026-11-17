@@ -312,11 +312,24 @@ impl ResolutionEnvironment {
     /// The single source-agnostic lookup site: source scope chain, then providers
     /// in chain order (first hit wins → positional shadowing).
     pub fn resolve(&self, ctx: &ResolutionContext, name: &str) -> Option<Binding> {
-        for ns in NAMESPACE_PRIORITY {
-            if let Ok(Some(symbol)) = self.symbols.resolve_in_scope_chain(ctx.scope, *ns, name) {
-                return Some(self.binding_for_symbol(symbol));
+        // The innermost scope that declares `name` wins (a parameter shadows a module-level
+        // `Const` of the same name); within one scope, the namespace priority decides.
+        let mut scope = Some(ctx.scope);
+        while let Some(scope_id) = scope {
+            for ns in NAMESPACE_PRIORITY {
+                if let Ok(Some(symbol)) = self.symbols.find_in_scope(scope_id, *ns, name) {
+                    return Some(self.binding_for_symbol(symbol));
+                }
             }
+            scope = self.symbols.scope(scope_id).ok().and_then(|s| s.parent);
         }
+        self.resolve_in_libraries(name)
+    }
+
+    /// `name` resolved against the providers only (the referenced libraries), skipping the
+    /// source scope chain: the lower tiers searched when a project match is discarded (the
+    /// MS-VBAL §5.6.10 `Left` exception).
+    pub fn resolve_in_libraries(&self, name: &str) -> Option<Binding> {
         for provider in &self.providers {
             if provider.has_ambiguous_unqualified_name(name) {
                 return None;

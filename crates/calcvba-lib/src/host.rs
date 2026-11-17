@@ -49,6 +49,22 @@ pub fn date_now(host: &dyn HostServices) -> LibResult<Variant> {
 pub fn time_now(host: &dyn HostServices) -> LibResult<Variant> {
     Ok(host.time_locale().time_serial_now_variant()?)
 }
+/// `Date$`: the date as a `mm-dd-yyyy` String.
+pub fn date_now_text(host: &dyn HostServices) -> LibResult<Variant> {
+    let serial = as_f64(&host.time_locale().date_serial_now_variant()?)?;
+    let (year, month, day) = calcvba_runtime::vba_date::serial_to_ymd(serial);
+    Ok(Variant::from_string(format!(
+        "{month:02}-{day:02}-{year:04}"
+    )))
+}
+/// `Time$`: the time as a `hh:mm:ss` String.
+pub fn time_now_text(host: &dyn HostServices) -> LibResult<Variant> {
+    let serial = as_f64(&host.time_locale().time_serial_now_variant()?)?;
+    let (hour, minute, second) = calcvba_runtime::vba_date::serial_to_hms(serial);
+    Ok(Variant::from_string(format!(
+        "{hour:02}:{minute:02}:{second:02}"
+    )))
+}
 pub fn now(host: &dyn HostServices) -> LibResult<Variant> {
     let date = host.time_locale().date_serial_now_variant()?;
     let time = host.time_locale().time_serial_now_variant()?;
@@ -133,10 +149,16 @@ pub fn file_print(args: &[Variant], host: &dyn HostServices) -> LibResult<Varian
 /// `Write #handle, item0, item1 …`. Same arg shape as [`file_print`]; `Write #`
 /// always comma-delimits and formats each field machine-readably (strings quoted,
 /// `#TRUE#`/`#FALSE#`/`#NULL#`/`#ERROR n#`), so the source `;`/`,` separators only
-/// decide whether the trailing `\r\n` is suppressed.
+/// decide whether the trailing `\r\n` is replaced by a comma.
 pub fn file_write(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
     let handle = req(args, 0)?;
-    let record = assemble_write_record(&separator_spec(args), args.get(2..).unwrap_or(&[]));
+    let start_col = as_i32(&host.fs().print_column_variant(handle.clone())?)?.max(0) as usize;
+    let record = assemble_write_record_with_column(
+        &separator_spec(args),
+        &print_item_spec(args),
+        args.get(3..).unwrap_or(&[]),
+        start_col,
+    )?;
     Ok(host
         .fs()
         .print_line_variant(handle, Variant::from_string(record))?)
@@ -200,13 +222,9 @@ fn print_field_text(value: &Variant) -> String {
 }
 
 fn non_negative_count(value: &Variant, name: &str) -> LibResult<usize> {
-    let count = as_i32(value)?;
-    if count < 0 {
-        return Err(LibError::invalid_call(format!(
-            "{name} requires a non-negative count"
-        )));
-    }
-    Ok(count as usize)
+    // A negative `Spc` count is 0.
+    let _ = name;
+    Ok(as_i32(value)?.max(0) as usize)
 }
 
 fn active_width(width: usize) -> Option<usize> {
@@ -243,10 +261,8 @@ fn append_tab(
     value: &Variant,
     width: Option<usize>,
 ) -> LibResult<()> {
-    let target = as_i32(value)?;
-    if target < 1 {
-        return Err(LibError::invalid_call("Tab requires a positive column"));
-    }
+    // `Tab(0)` and a negative column count as `Tab(1)`.
+    let target = as_i32(value)?.max(1);
     let mut target_col = (target - 1) as usize;
     if let Some(width) = width {
         target_col %= width;
@@ -310,6 +326,8 @@ fn assemble_print_record_with_column(
             }
             't' => append_tab(&mut out, &mut col, field, width)?,
             'z' => append_next_print_zone(&mut out, &mut col, width),
+            // An empty item between commas prints nothing; its comma still advances a zone.
+            'e' => {}
             _ => {
                 let text = print_field_text(field);
                 append_print_text(&mut out, &mut col, &text, width);
@@ -331,19 +349,54 @@ fn assemble_print_record_with_column(
     Ok(out)
 }
 
-/// Assemble a `Write #` record: comma-delimited machine-readable fields.
+/// Assemble a `Write #` record: comma-delimited machine-readable fields. `Spc`/`Tab`
+/// items move the column as in `Print #` and take no comma of their own. A trailing
+/// `,`/`;` ends the record with a comma instead of a line break.
+#[cfg(test)]
 fn assemble_write_record(seps: &str, fields: &[Variant]) -> String {
+    let kinds = default_print_item_spec(fields.len());
+    assemble_write_record_with_column(seps, &kinds, fields, 0).unwrap_or_default()
+}
+
+fn assemble_write_record_with_column(
+    seps: &str,
+    kinds: &str,
+    fields: &[Variant],
+    start_col: usize,
+) -> LibResult<String> {
+    let kinds: Vec<char> = kinds.chars().collect();
+    let kind_at = |index: usize| kinds.get(index).copied().unwrap_or('v');
+    let is_data = |index: usize| matches!(kind_at(index), 'v' | 'e');
+    let last_data = (0..fields.len()).rev().find(|&index| is_data(index));
     let mut out = String::new();
+    let mut col = start_col;
     for (index, field) in fields.iter().enumerate() {
-        if index > 0 {
-            out.push(',');
+        match kind_at(index) {
+            's' => {
+                let count = non_negative_count(field, "Spc")?;
+                append_raw_spaces(&mut out, &mut col, count);
+            }
+            't' => append_tab(&mut out, &mut col, field, None)?,
+            'z' => append_next_print_zone(&mut out, &mut col, None),
+            kind => {
+                if kind == 'v' {
+                    let text = calcvba_runtime::write_display_text(field);
+                    col = col.saturating_add(text.chars().count());
+                    out.push_str(&text);
+                }
+                if Some(index) != last_data {
+                    out.push(',');
+                    col = col.saturating_add(1);
+                }
+            }
         }
-        out.push_str(&calcvba_runtime::write_display_text(field));
     }
     if !trailing_separator_suppresses_newline(seps) {
         out.push_str("\r\n");
+    } else if last_data.is_some() {
+        out.push(',');
     }
-    out
+    Ok(out)
 }
 pub fn console_print(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
     Ok(host.console().print_line_variant(print_joined(args))?)
@@ -381,6 +434,10 @@ pub fn file_seek(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant
     Ok(host
         .fs()
         .seek_variant(req(args, 0)?, arg_or_empty(args, 1))?)
+}
+pub fn file_attr(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
+    // `FileAttr(n, 1)` is the open mode; `FileAttr(n, 2)` (the OS handle) is not supported.
+    Ok(host.fs().file_attr_variant(req(args, 0)?, req(args, 1)?)?)
 }
 pub fn file_loc(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
     Ok(host.fs().loc_variant(req(args, 0)?)?)
@@ -631,7 +688,10 @@ fn print_joined(args: &[Variant]) -> Variant {
 
 #[cfg(test)]
 mod tests {
-    use super::{assemble_print_record, assemble_print_record_with_column, assemble_write_record};
+    use super::{
+        assemble_print_record, assemble_print_record_with_column, assemble_write_record,
+        assemble_write_record_with_column,
+    };
     use calcvba_runtime::Variant;
 
     #[test]
@@ -707,9 +767,14 @@ mod tests {
     }
 
     #[test]
-    fn print_record_rejects_nonpositive_tab_column() {
-        let fields = [Variant::from_i32(0)];
-        assert!(assemble_print_record_with_column("n", "t", &fields, 0, 0).is_err());
+    fn print_record_treats_nonpositive_tab_column_as_one() {
+        // Excel: `Tab(0)` (and a negative column) count as `Tab(1)`.
+        for column in [0, -3] {
+            let fields = [Variant::from_i32(column)];
+            let record =
+                assemble_print_record_with_column("n", "t", &fields, 0, 0).expect("record");
+            assert_eq!(record, "\r\n");
+        }
     }
 
     #[test]
@@ -796,5 +861,72 @@ mod tests {
         // `Write #` emits nothing for an Empty field (just the delimiting comma).
         let fields = [Variant::empty(), Variant::from_string("z")];
         assert_eq!(assemble_write_record(",n", &fields), ",\"z\"\r\n");
+    }
+
+    #[test]
+    fn print_empty_items_advance_one_print_zone_each() {
+        let a_b = [
+            Variant::from_string("a"),
+            Variant::empty(),
+            Variant::from_string("b"),
+        ];
+        let record = assemble_print_record_with_column(",,n", "vev", &a_b, 0, 0).expect("record");
+        assert_eq!(record, format!("a{}b\r\n", " ".repeat(27)));
+        let lead = [Variant::empty(), Variant::from_string("x")];
+        let record = assemble_print_record_with_column(",n", "ev", &lead, 0, 0).expect("record");
+        assert_eq!(record, format!("{}x\r\n", " ".repeat(14)));
+    }
+
+    #[test]
+    fn spc_of_a_negative_is_zero_and_tab_zero_is_tab_one() {
+        let fields = [
+            Variant::from_string("a"),
+            Variant::from_i32(-2),
+            Variant::from_string("b"),
+            Variant::from_i32(0),
+            Variant::from_string("c"),
+        ];
+        let record =
+            assemble_print_record_with_column("nnnnn", "vsvtv", &fields, 0, 0).expect("record");
+        assert_eq!(record, "ab\r\nc\r\n");
+    }
+
+    #[test]
+    fn an_item_longer_than_the_width_is_not_wrapped() {
+        let fields = [Variant::from_string("abcdef")];
+        let record = assemble_print_record_with_column("n", "v", &fields, 0, 5).expect("record");
+        assert_eq!(record, "abcdef\r\n");
+    }
+
+    #[test]
+    fn write_empty_item_and_trailing_separator() {
+        let a_b = [
+            Variant::from_string("a"),
+            Variant::empty(),
+            Variant::from_string("b"),
+        ];
+        let record = assemble_write_record_with_column(",,n", "vev", &a_b, 0).expect("record");
+        assert_eq!(record, "\"a\",,\"b\"\r\n");
+        // A trailing `;` or `,` writes the comma and no line end.
+        let a = [Variant::from_string("a")];
+        assert_eq!(
+            assemble_write_record_with_column(";", "v", &a, 0).expect("record"),
+            "\"a\","
+        );
+        assert_eq!(
+            assemble_write_record_with_column(",", "v", &a, 0).expect("record"),
+            "\"a\","
+        );
+    }
+
+    #[test]
+    fn write_spc_and_tab_move_the_column_without_a_comma_of_their_own() {
+        let fields = [
+            Variant::from_string("a"),
+            Variant::from_i32(3),
+            Variant::from_string("b"),
+        ];
+        let record = assemble_write_record_with_column("nnn", "vsv", &fields, 0).expect("record");
+        assert_eq!(record, "\"a\",   \"b\"\r\n");
     }
 }

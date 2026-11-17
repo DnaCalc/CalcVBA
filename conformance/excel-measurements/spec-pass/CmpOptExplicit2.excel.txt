@@ -1,0 +1,1 @@
+compile error: Duplicate Option statement @ Option Explicit

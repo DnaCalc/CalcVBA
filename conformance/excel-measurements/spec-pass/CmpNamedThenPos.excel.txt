@@ -1,0 +1,1 @@
+compile error: Syntax error @ Run = "namedThenPos=" & Sh(PA(a:=1, 2)) & vbLf: Exit Function

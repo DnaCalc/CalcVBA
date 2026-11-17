@@ -3838,8 +3838,11 @@ fn enumerate_typelib_coclass_names(ptlib: *mut c_void) -> Vec<String> {
 }
 
 /// `TYPEFLAG_FAPPOBJECT`, `TYPEFLAG_FCANCREATE` and `TYPEFLAG_FNONEXTENSIBLE` from oaidl.h.
+#[cfg(target_os = "windows")]
 const TYPEFLAG_FAPPOBJECT: u16 = 0x0001;
+#[cfg(target_os = "windows")]
 const TYPEFLAG_FCANCREATE: u16 = 0x0002;
+#[cfg(target_os = "windows")]
 const TYPEFLAG_FNONEXTENSIBLE: u16 = 0x0080;
 
 /// The library's application objects: its `TYPEFLAG_FAPPOBJECT` coclasses, whose default

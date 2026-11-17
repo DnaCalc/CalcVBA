@@ -1,0 +1,1 @@
+compile error: Expected: Text or Binary @ Option Compare Foo

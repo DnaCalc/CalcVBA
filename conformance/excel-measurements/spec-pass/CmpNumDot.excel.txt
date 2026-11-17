@@ -1,0 +1,1 @@
+numDot=Double:0.5

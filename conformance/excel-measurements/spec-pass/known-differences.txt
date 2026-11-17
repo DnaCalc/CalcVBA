@@ -1,0 +1,180 @@
+# Lines Excel answers that CalcVBA still answers differently, as 'Module: line' (see spec_pass_excel.rs).
+# Prefixed 'vm3 ' or 'jit ' when only that executor differs. Rebuilt by make_known_differences.py.
+CmpCallByVal: compile error: Type mismatch @ G ByVal k
+CmpCaret: run fails
+CmpCatBytes: compile error: Type mismatch @ Run = "catBytes=" & Sh(bb & "!") & vbLf: Exit Function
+CmpCcCont: run fails
+CmpCcDup: compile error: Duplicate definition @ #Const P = 4
+CmpCcEndIf: run fails
+CmpCcIfCont: run fails
+CmpCcString: compile error: Type mismatch @ #If S Then
+CmpCcSuffix: ccSuffix=String:yes
+CmpCcVba6: ccVba6=String:vba6
+CmpCommentCont: commentCont=a
+CmpDate13PM: run fails
+CmpDate2Part: run fails
+CmpDate3PM: run fails
+CmpDateAttachedAM: run fails
+CmpDateDash: run fails
+CmpDateMonYear: run fails
+CmpDateNoonPM: run fails
+CmpDateYMD2: run fails
+CmpDateYY29: dateYY29=Date:47119
+CmpDateYY: dateYY=Date:36161
+CmpEnumDbl: run fails
+CmpGotoFor: hangs
+CmpNamedThenPos: compile error: Syntax error @ Run = "namedThenPos=" & Sh(PA(a:=1, 2)) & vbLf: Exit Function
+CmpNumBig: run fails
+CmpNumD: run fails
+CmpNumDot: run fails
+CmpNumOct: run fails
+CmpOptBase1Amp: optBase1Amp=Long:1
+CmpOptBase2: compile error: Expected: 0 or 1 @ Option Base 2
+CmpOptCompareFoo: compile error: Expected: Text or Binary @ Option Compare Foo
+CmpOptExplicit2: compile error: Duplicate Option statement @ Option Explicit
+CmpPropMismatch: compile error: Definitions of property procedures for the same property are inconsistent, or property procedure has an optional parameter, a ParamArray, or an invalid Set final parameter @ Property Let P(ByRef i As Long, ByVal v As Long)
+SpecConst: vbAlias=Long:64
+SpecConst: vbAppTaskManager=Long:3
+SpecConst: vbButtonFace=Long:-2147483633
+SpecConst: vbCalGreg=Long:0
+SpecConst: vbCalHijri=Long:1
+SpecConst: vbFormControlMenu=Long:0
+SpecConst: vbHide=Long:0
+SpecConst: vbIMEModeNoControl=Long:0
+SpecConst: vbIMEModeOn=Long:1
+SpecConst: vbKeyF1=Integer:112
+SpecConst: vbKeyReturn=Integer:13
+SpecConst: vbMaximizedFocus=Long:3
+SpecConst: vbNormalFocus=Long:1
+SpecConst: vbNormalNoFocus=Long:4
+SpecConst: vbWindowText=Long:-2147483640
+SpecExpr: run fails
+SpecLib2: run fails
+SpecOps: and3e9=ERR6
+SpecOps: byteAndNull=Byte:0
+SpecOps: catArray=ERR13
+SpecOps: catErr=ERR13
+SpecOps: dateOverDecl=ERR6
+SpecOps: dateOverVar=Double:2958466
+SpecOps: decAdd=Decimal:2
+SpecOps: decDiv3=Decimal:0.3333333333333333333333333333
+SpecOps: decMul=Decimal:0.3
+SpecOps: decOverflow=ERR6
+SpecOps: decSubPrec=Decimal:0.0000000000000000000000000001
+SpecOps: emptyEmptyAdd=Integer:0
+SpecOps: emptyEmptyMul=Integer:0
+SpecOps: emptyMinusTrue=Integer:1
+SpecOps: emptyPlusStr5=String:[5]
+SpecOps: emptyPlusStrA=String:[a]
+SpecOps: emptyTrue=Integer:-1
+SpecOps: errEqNum=ERR13
+SpecOps: errLtErr=Boolean:False
+SpecOps: fiveImpNull=Integer:-6
+SpecOps: fiveOrNull=Integer:5
+SpecOps: intAndNull=Integer:0
+SpecOps: likeEmptyBr=Boolean:True
+SpecOps: likeOpenBr=ERR93
+SpecOps: likeRevRange=ERR93
+SpecOps: llAndNull=LongLong:0
+SpecOps: negCur=Currency:-1.5
+SpecOps: negDateDecl=Date:-36527
+SpecOps: negDateVar=Date:-36527
+SpecOps: negDec=Decimal:-1.5
+SpecOps: negSng=Single:-1.5
+SpecOps: not3e9=ERR6
+SpecOps: nullImpFive=Integer:5
+SpecOps: orStrBig=ERR6
+SpecOps: sngEqDbl=Boolean:True
+SpecOps: strEqDate=Boolean:True
+SpecOps: strEqTrue=Boolean:True
+SpecOps: xorCurBig=ERR6
+SpecOps: zeroDivEmpty=ERR11
+SpecOpsText: eqLigature=Boolean:True
+SpecOpsText: likeQSurrogate=Boolean:True
+SpecOpsText: likeUmlaut=Boolean:True
+SpecStmt: run fails
+SpecTypes: boolHashFalse=Boolean:False
+SpecTypes: boolHashTrue=Boolean:True
+SpecTypes: byTrue=Byte:255
+SpecTypes: bytesToStr=String:[AB]
+SpecTypes: cbyTrue=Byte:255
+SpecTypes: ccurNearMax=Currency:922337203685477.5
+SpecTypes: cdtBig=ERR6
+SpecTypes: curTooBig=ERR6
+SpecTypes: dbl1d3=Double:1000
+SpecTypes: dblE400=ERR6
+SpecTypes: dblParen=Double:-5
+SpecTypes: dblSpSign=Double:-5
+SpecTypes: dblTrailMinus=Double:-5
+SpecTypes: dtBig=ERR6
+SpecTypes: dtSmall=ERR6
+SpecTypes: infText=String:[inf]
+SpecTypes: llBigStr=String:[9007199254740993]
+SpecTypes: llFromDec=String:[9007199254740993]
+SpecTypes: nanText=String:[-nan(ind)]
+SpecTypes: ninfText=String:[-inf]
+SpecTypes: setObjInt=ERR424
+SpecTypes: strErr=ERR13
+SpecTypes: varStrToBytes=Long:3
+vm3 SpecLib1: cboolErr=Boolean:True
+vm3 SpecLib1: cdecDbl=Decimal:123.456789012346
+vm3 SpecLib1: cdecTiny=Decimal:0.00000000000000000001
+vm3 SpecLib1: clngErr=Long:5
+vm3 SpecLib1: daddDayPre=Double:1.25
+vm3 SpecLib1: daddFrac=Date:36527
+vm3 SpecLib1: daddHourPre=Double:-1.29166666666667
+vm3 SpecLib1: daddNull=Null
+vm3 SpecLib1: dateAddStr=Date:34758
+vm3 SpecLib1: dateDiffStr=Long:2
+vm3 SpecLib1: dateDollar=String:[String 10 -]
+vm3 SpecLib1: datePartStr=Integer:3
+vm3 SpecLib1: dayNull=Null
+vm3 SpecLib1: dayStr=Integer:15
+vm3 SpecLib1: ddHours=Long:1
+vm3 SpecLib1: ddQ=Long:1
+vm3 SpecLib1: ddWWMon=Long:5
+vm3 SpecLib1: ddWneg=Long:0
+vm3 SpecLib1: ddbP6=ERR5
+vm3 SpecLib1: dpWMon=Integer:3
+vm3 SpecLib1: dpWW4=Integer:1
+vm3 SpecLib1: dpWW4b=Integer:53
+vm3 SpecLib1: dpWWFull=Integer:52
+vm3 SpecLib1: dsBigYear=ERR6
+vm3 SpecLib1: dsDay40000=ERR6
+vm3 SpecLib1: dsMon15=Date:36951
+vm3 SpecLib1: dsMonM10=Date:36192
+vm3 SpecLib1: dsYear5=Date:38353
+vm3 SpecLib1: dsYear99=Date:36161
+vm3 SpecLib1: dvDmy=Date:34730
+vm3 SpecLib1: dvMonName=String:[True 12/30]
+vm3 SpecLib1: dvNoYear=String:[True 12/30]
+vm3 SpecLib1: errBig=ERR6
+vm3 SpecLib1: errNeg=String:[Application-defined or object-defined error]
+vm3 SpecLib1: freeFileType=String:[Integer]
+vm3 SpecLib1: fvDue2=Double:1753.11670611
+vm3 SpecLib1: hexNull=Null
+vm3 SpecLib1: hexStr=String:[FF]
+vm3 SpecLib1: hourNull=Null
+vm3 SpecLib1: ipmtN0=ERR5
+vm3 SpecLib1: irrPos=ERR5
+vm3 SpecLib1: irrTwo=Double:0.1
+vm3 SpecLib1: nperBad=ERR5
+vm3 SpecLib1: npvM1=ERR5
+vm3 SpecLib1: octNull=Null
+vm3 SpecLib1: pmtN0=ERR5
+vm3 SpecLib1: rate360=Double:-4.93432115989254E-03
+vm3 SpecLib1: rateBig=Double:18.9999999999997
+vm3 SpecLib1: slnL0=ERR5
+vm3 SpecLib1: strDate=String:[2000/01/01]
+vm3 SpecLib1: strEmpty=String:[ 0]
+vm3 SpecLib1: strNull=Null
+vm3 SpecLib1: strStr=String:[ 12]
+vm3 SpecLib1: sydP6=ERR5
+vm3 SpecLib1: timeDollar=String:[String 8]
+vm3 SpecLib1: tv3pm=Date:0.625
+vm3 SpecLib1: tvDateOnly=Date:0
+vm3 SpecLib1: weekdayNull=Null
+vm3 SpecLib1: yearNull=Null
+vm3 SpecTypes: memberOnInt=ERR424
+jit SpecLib1: run fails
+jit SpecOps: nullCatNullStr=ERR94

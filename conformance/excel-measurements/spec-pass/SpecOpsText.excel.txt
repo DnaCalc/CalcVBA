@@ -1,0 +1,8 @@
+likeUmlaut=Boolean:True
+likeUmlautRange=Boolean:False
+likeUmlautRangeZ=Boolean:True
+likeLigature=Boolean:False
+eqUmlaut=Boolean:True
+eqLigature=Boolean:True
+likeUpperRange=Boolean:True
+likeQSurrogate=Boolean:True

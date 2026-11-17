@@ -1,0 +1,1 @@
+compile error: Type mismatch @ Run = "catBytes=" & Sh(bb & "!") & vbLf: Exit Function

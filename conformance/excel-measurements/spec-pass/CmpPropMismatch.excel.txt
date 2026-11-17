@@ -1,0 +1,1 @@
+compile error: Definitions of property procedures for the same property are inconsistent, or property procedure has an optional parameter, a ParamArray, or an invalid Set final parameter @ Property Let P(ByRef i As Long, ByVal v As Long)

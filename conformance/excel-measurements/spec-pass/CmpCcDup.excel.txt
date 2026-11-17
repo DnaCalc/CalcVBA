@@ -1,0 +1,1 @@
+compile error: Duplicate definition @ #Const P = 4

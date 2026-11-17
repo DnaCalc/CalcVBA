@@ -1,0 +1,15 @@
+vbKeyReturn=Integer:13
+vbKeyF1=Integer:112
+vbButtonFace=Long:-2147483633
+vbWindowText=Long:-2147483640
+vbHide=Long:0
+vbNormalFocus=Long:1
+vbMaximizedFocus=Long:3
+vbCalGreg=Long:0
+vbCalHijri=Long:1
+vbFormControlMenu=Long:0
+vbAppTaskManager=Long:3
+vbIMEModeNoControl=Long:0
+vbIMEModeOn=Long:1
+vbAlias=Long:64
+vbNormalNoFocus=Long:4

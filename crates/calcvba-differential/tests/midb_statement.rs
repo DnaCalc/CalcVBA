@@ -1,7 +1,7 @@
 //! `MidB(s, start[, length]) = x` replaces bytes of the string's UTF-16LE storage (MS-VBAL
-//! 5.4.3.x). The expectations below come from the spec text, NOT from Excel measurements
-//! (Excel was not reachable when this was written); measure them in Excel to confirm.
-//! Also `InStrB` under `Option Compare Text` (byte position, text compare).
+//! 5.4.3.x). The MidB expectations are Excel VBA's answers (probe 2026-11-17: the six cases
+//! below, UTF-16 units as hex). Also `InStrB` under `Option Compare Text` (byte position, text
+//! compare; from the spec).
 
 use calcvba_differential::{Canon, Executor, run};
 
@@ -69,6 +69,23 @@ fn midb_never_extends_the_string() {
     assert_eq!(
         units("s = \"ab\": MidB(s, 3, 8) = \"WXYZ\""),
         Canon::Str("61,57,".into())
+    );
+}
+
+#[test]
+fn midb_without_length_replaces_as_many_bytes_as_the_replacement_has() {
+    assert_eq!(
+        units("s = \"abcd\": MidB(s, 1) = \"XYZ\""),
+        Canon::Str("58,59,5A,64,".into())
+    );
+}
+
+#[test]
+fn midb_at_an_odd_start_splits_characters() {
+    // Bytes 4..6 take the first three bytes of "XY" (58 00 59).
+    assert_eq!(
+        units("s = \"abcd\": MidB(s, 4, 3) = \"XY\""),
+        Canon::Str("61,5862,5900,64,".into())
     );
 }
 

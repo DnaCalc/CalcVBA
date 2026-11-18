@@ -8247,6 +8247,7 @@ impl<'a> LowerFunc<'a> {
             }
             NativeImplId::CStr
             | NativeImplId::CDate
+            | NativeImplId::CVDate
             | NativeImplId::CBool
             | NativeImplId::CByte
             | NativeImplId::CInt

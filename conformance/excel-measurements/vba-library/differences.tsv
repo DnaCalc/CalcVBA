@@ -21,16 +21,8 @@ P_CCur	vm3	value		CCur.6=Currency:-0.0001	CCur.6=Currency:0
 P_CCur	jit	value		CCur.6=Currency:-0.0001	CCur.6=Currency:0
 P_CCur	vm3	error		CCur.25=Currency:922337203685477.5807	CCur.25=ERR6
 P_CCur	jit	error		CCur.25=Currency:922337203685477.5807	CCur.25=ERR6
-P_CDate	vm3	error		CDate.17=ERR13	CDate.17=Date:4014000000000000
-P_CDate	jit	error		CDate.17=ERR13	CDate.17=Date:4014000000000000
 P_CDate	vm3	error	locale	CDate.22=Date:40E5686000000000	CDate.22=ERR13
 P_CDate	jit	error	locale	CDate.22=Date:40E5686000000000	CDate.22=ERR13
-P_CDate	vm3	error	locale	CDate.31=Date:3FF0000000000000	CDate.31=ERR13
-P_CDate	jit	error	locale	CDate.31=Date:3FF0000000000000	CDate.31=ERR13
-P_CDate	vm3	error		CDate.32=Date:40E566E000000000	CDate.32=ERR13
-P_CDate	jit	error		CDate.32=Date:40E566E000000000	CDate.32=ERR13
-P_CDate	vm3	error		CDate.33=Date:40E566F000000000	CDate.33=ERR13
-P_CDate	jit	error		CDate.33=Date:40E566F000000000	CDate.33=ERR13
 P_CDate	vm3	value	locale	CDate.39=Date:40E2070000000000	CDate.39=Date:40E701E000000000
 P_CDate	jit	value	locale	CDate.39=Date:40E2070000000000	CDate.39=Date:40E701E000000000
 P_CDate	vm3	value	locale	CDate.40=Date:40E2072000000000	CDate.40=Date:40C5678000000000
@@ -79,14 +71,6 @@ P_CStr	vm3	value	locale	CStr.61=String:[9999/12/31 23:59:59]	CStr.61=String:[12/
 P_CStr	jit	value	locale	CStr.61=String:[9999/12/31 23:59:59]	CStr.61=String:[12/31/9999 11:59:59 PM]
 P_CStr	vm3	value	locale	CStr.62=String:[100/01/01]	CStr.62=String:[1/1/100]
 P_CStr	jit	value	locale	CStr.62=String:[100/01/01]	CStr.62=String:[1/1/100]
-P_CVDate	vm3	error		CVDate.5=ERR13	CVDate.5=ERR6
-P_CVDate	jit	error		CVDate.5=ERR13	CVDate.5=ERR6
-P_CVDate	vm3	error		CVDate.8=Null	CVDate.8=ERR94
-P_CVDate	jit	error		CVDate.8=Null	CVDate.8=ERR94
-P_CVDate	vm3	error		CVDate.10=ERR13	CVDate.10=Date:4014000000000000
-P_CVDate	jit	error		CVDate.10=ERR13	CVDate.10=Date:4014000000000000
-P_CVDate	vm3	error		CVDate.16=Date:40E566E000000000	CVDate.16=ERR13
-P_CVDate	jit	error		CVDate.16=Date:40E566E000000000	CVDate.16=ERR13
 P_CVErr	vm3	error		CVErr.30=Error:5	CVErr.30=ERR13
 P_CVErr	jit	error		CVErr.30=Error:5	CVErr.30=ERR13
 P_Calendar	vm3	missing		Calendar.1=Long:0	<failed: bind: Variable not defined: Calendar>
@@ -784,10 +768,6 @@ P_InStrRev	vm3	missing		InStrRev.28=Long:2	<failed: bind: unresolved name `Compa
 P_InStrRev	jit	missing		InStrRev.28=Long:2	<failed: bind: unresolved name `Compare` (named argument)>
 P_IsDate	vm3	error		IsDate.35=Boolean:False	IsDate.35=ERR450
 P_IsDate	jit	error		IsDate.35=Boolean:False	IsDate.35=ERR450
-P_IsDate	vm3	value		IsDate.42=Boolean:True	IsDate.42=Boolean:False
-P_IsDate	jit	value		IsDate.42=Boolean:True	IsDate.42=Boolean:False
-P_IsDate	vm3	missing		IsDate.45=Boolean:True	<failed: bind: unresolved name `Expression` (named argument)>
-P_IsDate	jit	missing		IsDate.45=Boolean:True	<failed: bind: unresolved name `Expression` (named argument)>
 P_IsMissing	vm3	value		IsMissing.11=Boolean:True	IsMissing.11=Boolean:False
 P_IsMissing	jit	value		IsMissing.11=Boolean:True	IsMissing.11=Boolean:False
 P_IsNumeric	vm3	value	locale	IsNumeric.21=Boolean:True	IsNumeric.21=Boolean:False

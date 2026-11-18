@@ -59,25 +59,6 @@ impl<'a> ProcLower<'a> {
             };
             expr = inner;
         }
-        // CVDate shares CDate's runtime implementation, but its VBA result
-        // is a Variant, so Len(CVDate(...)) remains a valid expression.
-        if matches!(callee, CoreCallee::Native(NativeImplId::CDate))
-            && expr.index_base().is_some_and(|base| {
-                let token = if base.kind() == SyntaxKind::MemberExpr {
-                    base.member_name_token()
-                } else {
-                    base.ident_name_token()
-                };
-                token.is_some_and(|token| {
-                    token
-                        .text
-                        .trim_matches(['[', ']'])
-                        .eq_ignore_ascii_case("CVDate")
-                })
-            })
-        {
-            return Ok(false);
-        }
         let member = match callee {
             CoreCallee::ExternProc { import } => {
                 let imports = self.g.imports.borrow();

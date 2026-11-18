@@ -82,6 +82,7 @@ pub fn owning_builtin(id: calcvba_bundle::NativeImplId) -> bool {
             | Join
             | Split
             | CDate
+            | CVDate
             | CBool
             | CByte
             | CCur

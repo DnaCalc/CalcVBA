@@ -699,7 +699,9 @@ pub(crate) fn scalar_unary_call_extern_shape(native_impl: NativeImplId) -> Optio
             Some("VarType/TypeName/Is*(scalar/Variant/Variant()/StringLiteral)")
         }
         NativeImplId::CStr => Some("CStr(scalar)"),
-        NativeImplId::CDate => Some("CDate(scalar/String literal/place)"),
+        NativeImplId::CDate | NativeImplId::CVDate => {
+            Some("CDate/CVDate(scalar/String literal/place)")
+        }
         NativeImplId::CBool => Some("CBool(scalar)"),
         NativeImplId::CByte => Some("CByte(scalar)"),
         NativeImplId::CInt => Some("CInt(scalar)"),

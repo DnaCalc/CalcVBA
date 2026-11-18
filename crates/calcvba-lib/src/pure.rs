@@ -1548,6 +1548,12 @@ fn parse_time_only(s: &str) -> Option<f64> {
     if !(2..=3).contains(&parts.len()) && !one_part_with_meridian {
         return None;
     }
+    if parts.iter().any(|part| {
+        let part = part.trim();
+        part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit())
+    }) {
+        return None;
+    }
     let mut h = parts[0].trim().parse::<i64>().ok()?;
     let m = match parts.get(1) {
         Some(value) => value.trim().parse::<i64>().ok()?,
@@ -2147,47 +2153,60 @@ pub fn cdate(args: &[Variant]) -> LibResult<Variant> {
     let v = need(args, 0)?;
     match v.vtype() {
         VarType::Date => Ok(v.clone()),
-        // A string parses as a date and/or time; everything else numeric IS the date
-        // serial (the integer part is the day, the fraction the time of day).
         VarType::String => cdate_from_string(&as_str(v)?),
+        VarType::Error => Err(LibError::type_mismatch("cannot convert Error to Date")),
         _ => {
-            // A number outside the Date range is Overflow (Excel: `CDate(3000000)` raises 6).
+            // Numeric CDate overflow is 6; text conversion failures are 13.
             let serial = conv_f64(v)?;
             if !calcvba_runtime::coerce::is_date_serial(serial) {
                 return Err(LibError::overflow("value does not fit in Date"));
             }
-            let serial = validate_vba_date_serial(serial)?;
-            Ok(Variant::from_date_f64(serial))
+            Ok(Variant::from_date_f64(validate_vba_date_serial(serial)?))
         }
     }
 }
 
-/// `CDate`/`CVDate` of a string: `"date"`, `"time"`, or `"date time"` — reusing the
-/// `DateValue`/`TimeValue` parsers, summing the day serial and time-of-day fraction.
+pub fn cvdate(args: &[Variant]) -> LibResult<Variant> {
+    if need(args, 0)?.vtype() == VarType::Null {
+        return Ok(Variant::null());
+    }
+    cdate(args).map_err(|error| {
+        if error.code == 6 {
+            LibError::type_mismatch("value does not fit in Date")
+        } else {
+            error
+        }
+    })
+}
+
+/// CDate/CVDate read time text before numeric text: "0.5" is 00:05,
+/// while "43831.5" is a numeric date serial because 43831 is not an hour.
 fn cdate_from_string(s: &str) -> LibResult<Variant> {
     let s = s.trim();
-    let has_date = s.contains('/')
-        || s.contains('-')
-        || s.split([' ', ',', '\t'])
-            .any(|t| month_from_name(t).is_some());
-    // A pure time ("HH:MM[:SS]") with no date component.
-    if s.contains(':') && !has_date {
-        return time_value(&[vstr(s)]);
+    if let Ok(serial) = date_time_text_serial(s) {
+        return Ok(Variant::from_date_f64(serial));
     }
-    // "date time" — split a trailing time off the date.
+    if let Ok(serial) = conv_f64(&vstr(s))
+        && calcvba_runtime::coerce::is_date_serial(serial)
+    {
+        return Ok(Variant::from_date_f64(serial));
+    }
+    Err(LibError::type_mismatch(format!("cannot parse date `{s}`")))
+}
+
+/// Date/time recognition does not include CDate's numeric-string fallback (IsDate).
+fn date_time_text_serial(s: &str) -> LibResult<f64> {
+    let s = s.trim();
+    if let Some(time) = parse_time_only(s) {
+        return Ok(time);
+    }
     if let Some((date_part, time_part)) = split_trailing_time(s) {
         let (y, m, d) = parse_date(date_part.trim())?;
-        let time = time_value(&[vstr(&time_part)])?
-            .as_date_f64()
-            .unwrap_or(0.0);
-        return Ok(Variant::from_date_f64(validate_vba_date_serial(
-            ymd_to_serial(y, m, d) + time,
-        )?));
+        let time = parse_time_value_string(&time_part)?;
+        return validate_vba_date_serial(ymd_to_serial(y, m, d) + time);
     }
     let (y, m, d) = parse_date(s)?;
-    Ok(Variant::from_date_f64(validate_vba_date_serial(
-        ymd_to_serial(y, m, d),
-    )?))
+    validate_vba_date_serial(ymd_to_serial(y, m, d))
 }
 pub fn cverr(args: &[Variant]) -> LibResult<Variant> {
     let code = as_i32(need(args, 0)?)?;
@@ -3734,7 +3753,7 @@ pub fn is_date(args: &[Variant]) -> LibResult<Variant> {
         VarType::Date => true,
         VarType::String => as_str(v)
             .ok()
-            .is_some_and(|s| cdate_from_string(&s).is_ok()),
+            .is_some_and(|s| date_time_text_serial(&s).is_ok()),
         _ => false,
     };
     Ok(vbool(ok))

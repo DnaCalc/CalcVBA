@@ -360,12 +360,12 @@ pub fn invoke_context_free(
         Sgn => pure::sgn(args),
         Round => pure::round(args),
         Sqr => pure::sqr(args),
-        Sin => pure::math1(args, f64::sin),
-        Cos => pure::math1(args, f64::cos),
+        Sin => pure::trig(args, f64::sin),
+        Cos => pure::trig(args, f64::cos),
         Log => pure::log(args),
         Exp => pure::exp(args),
         Atn => pure::math1(args, f64::atan),
-        Tan => pure::math1(args, f64::tan),
+        Tan => pure::trig(args, f64::tan),
 
         // ── DateTime ──
         Calendar | CalendarLet | UserForms | ErrObjectValue => {

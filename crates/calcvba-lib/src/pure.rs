@@ -1069,6 +1069,18 @@ pub fn math1(args: &[Variant], f: impl Fn(f64) -> f64) -> LibResult<Variant> {
     Ok(vf64(f(as_f64(need(args, 0)?)?)))
 }
 
+/// Excel rejects either sign at and above this measured argument magnitude.
+/// The adjacent accepted/refused Doubles are 43DFFFFFFDDAD22F / 43DFFFFFFDDAD230.
+pub fn trig(args: &[Variant], f: impl Fn(f64) -> f64) -> LibResult<Variant> {
+    let value = as_f64(need(args, 0)?)?;
+    if value.abs() >= 9.223_372e18 {
+        return Err(LibError::invalid_call(
+            "trigonometric argument out of range",
+        ));
+    }
+    Ok(vf64(f(value)))
+}
+
 pub fn sqr(args: &[Variant]) -> LibResult<Variant> {
     Ok(vf64(sqr_f64(as_f64(need(args, 0)?)?)?))
 }

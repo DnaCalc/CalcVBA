@@ -434,13 +434,14 @@ fn line_column_at(data: &[u8], cursor: usize) -> i32 {
     col.min(i32::MAX as usize) as i32
 }
 
-fn initial_print_column(mode: i32, data: &[u8], position: i32, len: i32) -> i32 {
-    let cursor = if mode == MODE_APPEND {
-        len.max(0) as usize
+fn initial_print_column(mode: i32, data: &[u8], position: i32) -> i32 {
+    // Append starts a new Print column counter even when the existing file
+    // ends with an unterminated line. Writes still append at EOF.
+    if mode == MODE_APPEND {
+        0
     } else {
-        position.max(0) as usize
-    };
-    line_column_at(data, cursor)
+        line_column_at(data, position.max(0) as usize)
+    }
 }
 
 pub(super) fn pseudo_file_len_from_path_token(path: i32) -> i32 {
@@ -811,8 +812,7 @@ impl FileSystemHal for StandardHostServices {
             } else {
                 (Vec::new(), 0, 0)
             };
-            let print_column =
-                initial_print_column(mode, &initial_data, initial_position, initial_len);
+            let print_column = initial_print_column(mode, &initial_data, initial_position);
             state.handles.insert(
                 handle,
                 FileHandleState {
@@ -943,7 +943,7 @@ impl FileSystemHal for StandardHostServices {
         } else {
             (Vec::new(), 0, 0)
         };
-        let print_column = initial_print_column(mode, &initial_data, initial_position, initial_len);
+        let print_column = initial_print_column(mode, &initial_data, initial_position);
         state.handles.insert(
             handle,
             FileHandleState {
@@ -1804,6 +1804,15 @@ impl FileSystemHal for StandardHostServices {
             return Err(self.unsupported(capability, "width"));
         }
         let handle_id = self.variant_to_i32(&handle, capability, "width", "handle")?;
+        if width.vtype() == VarType::Null {
+            return Err(HalError::adapter_fault(
+                self.profile,
+                capability,
+                "width",
+                "Invalid use of Null",
+            )
+            .with_host_error_code(94));
+        }
         let width = self.variant_to_i32(&width, capability, "width", "width")?;
         if !(0..=255).contains(&width) {
             return Err(HalError::adapter_fault(
@@ -2677,6 +2686,19 @@ mod vba_file_tests {
 
     fn int(n: i32) -> Variant {
         Variant::from_i32(n)
+    }
+
+    #[test]
+    fn append_starts_a_new_print_column_and_null_width_raises_94() {
+        let dir = Scratch::new("append-width");
+        let host = host();
+        std::fs::write(dir.0.join("a.txt"), b"ab").unwrap();
+        open(&host, dir.path("a.txt"), super::MODE_APPEND, 1, 0).unwrap();
+        assert_eq!(host.print_column_variant(int(1)).unwrap(), int(0));
+        host.width_variant(int(1), int(3)).unwrap();
+        assert_eq!(code(host.width_variant(int(1), Variant::null())), Some(94));
+        assert_eq!(host.print_width_variant(int(1)).unwrap(), int(3));
+        host.close_variant(int(1)).unwrap();
     }
 
     #[test]

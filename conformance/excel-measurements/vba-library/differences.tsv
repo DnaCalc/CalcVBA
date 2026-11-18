@@ -828,42 +828,6 @@ P_InStrRev	vm3	value		InStrRev.27=Long:2	InStrRev.27=Long:3
 P_InStrRev	jit	value		InStrRev.27=Long:2	InStrRev.27=Long:3
 P_InStrRev	vm3	missing		InStrRev.28=Long:2	<failed: bind: unresolved name `Compare` (named argument)>
 P_InStrRev	jit	missing		InStrRev.28=Long:2	<failed: bind: unresolved name `Compare` (named argument)>
-P_InputB	vm3	missing		InputB.1=String:[2,4,String:[{123}25185{125}{123}25699{125}]]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1858, message: "expected `)`" }, ParseError { offset: 1927, mess>
-P_InputB	jit	missing		InputB.1=String:[2,4,String:[{123}25185{125}{123}25699{125}]]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1858, message: "expected `)`" }, ParseError { offset: 1927, mess>
-P_InputB	vm3	missing		InputB.2=String:[2,4,String:[{123}25185{125}{123}25699{125}]]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1810, message: "expected `)`" }, ParseError { offset: 1879, mess>
-P_InputB	jit	missing		InputB.2=String:[2,4,String:[{123}25185{125}{123}25699{125}]]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1810, message: "expected `)`" }, ParseError { offset: 1879, mess>
-P_InputB	vm3	missing		InputB.3=String:[0,1]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1811, message: "expected `)`" }, ParseError { offset: 1866, mess>
-P_InputB	jit	missing		InputB.3=String:[0,1]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1811, message: "expected `)`" }, ParseError { offset: 1866, mess>
-P_InputB	vm3	missing		InputB.4=String:[2,2]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1870, message: "expected `)`" }, ParseError { offset: 1870, mess>
-P_InputB	jit	missing		InputB.4=String:[2,2]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1870, message: "expected `)`" }, ParseError { offset: 1870, mess>
-P_InputB	vm3	missing		InputB.5=ERR62	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1773, message: "expected `)`" }, ParseError { offset: 2009, mess>
-P_InputB	jit	missing		InputB.5=ERR62	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1773, message: "expected `)`" }, ParseError { offset: 2009, mess>
-P_InputB	vm3	missing		InputB.6=ERR62	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1773, message: "expected `)`" }, ParseError { offset: 1792, mess>
-P_InputB	jit	missing		InputB.6=ERR62	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1773, message: "expected `)`" }, ParseError { offset: 1792, mess>
-P_InputB	vm3	missing		InputB.7=ERR54	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1762, message: "expected `)`" }, ParseError { offset: 2013, mess>
-P_InputB	jit	missing		InputB.7=ERR54	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1762, message: "expected `)`" }, ParseError { offset: 2013, mess>
-P_InputB	vm3	missing		InputB.8=ERR5	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1775, message: "expected `)`" }, ParseError { offset: 2014, mess>
-P_InputB	jit	missing		InputB.8=ERR5	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1775, message: "expected `)`" }, ParseError { offset: 2014, mess>
-P_InputB	vm3	missing		InputB.9=ERR94	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1777, message: "expected `)`" }, ParseError { offset: 2011, mess>
-P_InputB	jit	missing		InputB.9=ERR94	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1777, message: "expected `)`" }, ParseError { offset: 2011, mess>
-P_InputB	vm3	missing		InputB.10=ERR52	<failed: bind: unsupported construct: literal Hash>
-P_InputB	jit	missing		InputB.10=ERR52	<failed: bind: unsupported construct: literal Hash>
-P_InputB	vm3	missing		InputB.11=String:[String:[]]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1779, message: "expected `)`" }, ParseError { offset: 1779, mess>
-P_InputB	jit	missing		InputB.11=String:[String:[]]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1779, message: "expected `)`" }, ParseError { offset: 1779, mess>
-P_InputB	vm3	missing		InputB.12=String:[3,1]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1826, message: "expected `)`" }, ParseError { offset: 1877, mess>
-P_InputB	jit	missing		InputB.12=String:[3,1]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1826, message: "expected `)`" }, ParseError { offset: 1877, mess>
-P_InputB	vm3	missing		InputB.13=String:[String:[abcd]]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1837, message: "expected `)`" }, ParseError { offset: 1837, mess>
-P_InputB	jit	missing		InputB.13=String:[String:[abcd]]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1837, message: "expected `)`" }, ParseError { offset: 1837, mess>
-P_InputB	vm3	missing		InputB.14=String:[String,String]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1825, message: "expected `)`" }, ParseError { offset: 1825, mess>
-P_InputB	jit	missing		InputB.14=String:[String,String]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1825, message: "expected `)`" }, ParseError { offset: 1825, mess>
-P_InputB	vm3	missing		InputB.15=String:[3:97,100]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1829, message: "expected `)`" }, ParseError { offset: 1897, mess>
-P_InputB	jit	missing		InputB.15=String:[3:97,100]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1829, message: "expected `)`" }, ParseError { offset: 1897, mess>
-P_InputB	vm3	missing		InputB.16=ERR52	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1785, message: "expected `)`" }, ParseError { offset: 2013, mess>
-P_InputB	jit	missing		InputB.16=ERR52	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1785, message: "expected `)`" }, ParseError { offset: 2013, mess>
-P_InputB	vm3	missing		InputB.17=String:[97,0,255,98]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1856, message: "expected `)`" }, ParseError { offset: 1932, mess>
-P_InputB	jit	missing		InputB.17=String:[97,0,255,98]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1856, message: "expected `)`" }, ParseError { offset: 1932, mess>
-P_InputB	vm3	missing		InputB.18=String:[5,False]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1832, message: "expected `)`" }, ParseError { offset: 1887, mess>
-P_InputB	jit	missing		InputB.18=String:[5,False]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1832, message: "expected `)`" }, ParseError { offset: 1887, mess>
 P_IsDate	vm3	error		IsDate.35=Boolean:False	IsDate.35=ERR450
 P_IsDate	jit	error		IsDate.35=Boolean:False	IsDate.35=ERR450
 P_IsDate	vm3	value		IsDate.42=Boolean:True	IsDate.42=Boolean:False
@@ -1320,8 +1284,6 @@ P_Replace	vm3	value		Replace.13=String:[AXC]	Replace.13=String:[ABC]
 P_Replace	jit	value		Replace.13=String:[AXC]	Replace.13=String:[ABC]
 P_Replace	vm3	value		Replace.24=String:[aXb]	Replace.24=String:[a{196}b]
 P_Replace	jit	value		Replace.24=String:[aXb]	Replace.24=String:[a{196}b]
-P_Reset	vm3	missing		Reset.5=String:[ok]	<failed: bind: duplicate label `Reset` in current scope>
-P_Reset	jit	missing		Reset.5=String:[ok]	<failed: bind: duplicate label `Reset` in current scope>
 P_Right	vm3	missing		Right.8=String:[bc]	<failed: bind: unresolved name `String` (named argument)>
 P_Right	jit	missing		Right.8=String:[bc]	<failed: bind: unresolved name `String` (named argument)>
 P_Right	vm3	error		Right.14=ERR5	Right.14=String:[abc]
@@ -1584,10 +1546,6 @@ P_WeekdayName	vm3	error		WeekdayName.15=ERR94	WeekdayName.15=String:[Sunday]
 P_WeekdayName	jit	error		WeekdayName.15=ERR94	WeekdayName.15=String:[Sunday]
 P_WeekdayName	vm3	missing		WeekdayName.18=String:[Tue]	<failed: bind: unresolved name `Weekday` (named argument)>
 P_WeekdayName	jit	missing		WeekdayName.18=String:[Tue]	<failed: bind: unresolved name `Weekday` (named argument)>
-P_Width	vm3	value		Width.12=String:[String:[abWXYZ{123}13{125}{123}10{125}]]	Width.12=String:[String:[ab{123}13{125}{123}10{125}WXYZ{123}13{125}{123}10{125}]]
-P_Width	jit	value		Width.12=String:[String:[abWXYZ{123}13{125}{123}10{125}]]	Width.12=String:[String:[ab{123}13{125}{123}10{125}WXYZ{123}13{125}{123}10{125}]]
-P_Width	vm3	error		Width.14=ERR94	Width.14=Empty
-P_Width	jit	error		Width.14=ERR94	Width.14=Empty
 P_Year	vm3	value	locale	Year.12=Integer:2001	Year.12=Integer:2029
 P_Year	jit	value	locale	Year.12=Integer:2001	Year.12=Integer:2029
 P_Year	vm3	value	locale	Year.13=Integer:2001	Year.13=Integer:1930

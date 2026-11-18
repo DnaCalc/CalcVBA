@@ -751,7 +751,9 @@ impl<'a> Parser<'a> {
             .iter()
             .rev()
             .find(|(kind, _)| !kind.is_trivia() && *kind != SyntaxKind::TypeSuffix)
-            .is_some_and(|(_, text)| text.eq_ignore_ascii_case("Input"));
+            .is_some_and(|(_, text)| {
+                text.eq_ignore_ascii_case("Input") || text.eq_ignore_ascii_case("InputB")
+            });
         self.start_node(SyntaxKind::ArgList);
         if self.at(SyntaxKind::LParen) {
             self.bump_lparen();
@@ -4001,6 +4003,9 @@ End Property
             "Input(2, #f)",
             "Input$(2, #f)",
             "Input(FileNumber:=#f, Number:=2)",
+            "InputB(2, #f)",
+            "InputB$(2, #f)",
+            "InputB(FileNumber:=#f, Number:=2)",
         ] {
             let src = format!("Sub T()\nx = {expression}\nEnd Sub\n");
             let p = parse(&src);

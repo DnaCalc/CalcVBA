@@ -1489,9 +1489,10 @@ pub fn date_serial(args: &[Variant]) -> LibResult<Variant> {
     let y = validate_dateserial_arg(as_i64(need(args, 0)?)?)?;
     let m = validate_dateserial_arg(as_i64(need(args, 1)?)?)?;
     let d = validate_dateserial_arg(as_i64(need(args, 2)?)?)?;
-    // A year of 0-99 is two-digit (0-29 -> 2000s, 30-99 -> 1900s); negative years and years
-    // past 9999 are invalid.
+    // Negative years are relative to 2000 (Excel: -1 -> 1999, -100 -> 1900).
+    // Positive two-digit years use the current default window; host cutoff remains separate.
     let y = match y {
+        ..=-1 => y + 2000,
         0..=29 => y + 2000,
         30..=99 => y + 1900,
         100..=9999 => y,

@@ -33,7 +33,7 @@ pub enum CollectionError {
     NotFound,
     /// `Add` with a key already present → error 457.
     DuplicateKey,
-    /// `Add` given both `before` and `after`, or a key that is not in the collection → error 5.
+    /// Empty collection, both insertion anchors, or an absent string key → error 5.
     BadArgument,
     /// `Add` given a key that is not a String → error 13.
     TypeMismatch,
@@ -111,6 +111,10 @@ impl CollectionData {
 
     /// Zero-based position of `sel`, or [`CollectionError::NotFound`].
     fn resolve_index(&self, sel: &Selector) -> Result<usize, CollectionError> {
+        // Excel reports error5 for addressing an empty collection, including an Add anchor.
+        if self.entries.is_empty() {
+            return Err(CollectionError::BadArgument);
+        }
         match sel {
             Selector::Index(i) => {
                 let zero = i

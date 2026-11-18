@@ -2900,32 +2900,61 @@ pub fn npv(args: &[Variant]) -> LibResult<Variant> {
 }
 
 pub fn irr(args: &[Variant]) -> LibResult<Variant> {
-    let flows = cashflows(need(args, 0)?)?;
+    let no_root = || LibError::invalid_call("IRR failed to converge");
+    let array = need(args, 0)?;
+    if array.vtype() == VarType::ArrayVariant && array.as_safearray().is_none() {
+        return Err(no_root());
+    }
+    let flows = cashflows(array)?;
     // A rate exists only when the flows change sign.
     if !flows.iter().any(|c| *c > 0.0) || !flows.iter().any(|c| *c < 0.0) {
         return Err(LibError::invalid_call(
             "IRR requires positive and negative flows",
         ));
     }
-    // Newton on the polynomial in x = 1 + rate, by Horner's rule (steady rounding near the root).
-    let mut x = 1.0 + opt_f64(args, 1, 0.1)?;
-    for _ in 0..100 {
-        let (mut p, mut dp) = (0.0, 0.0);
-        for c in &flows {
-            dp = dp * x + p;
-            p = p * x + c;
+    // Evaluate each discounted payment in order. The polynomial has the same
+    // roots, but Newton's method on it chooses different roots and accepts
+    // cases for which Excel reports error 5 (P_IRR.3/.10/.13/.14/.21).
+    let npv = |rate: f64| -> LibResult<f64> {
+        if rate <= -1.0 || !rate.is_finite() {
+            return Err(no_root());
         }
-        if dp.abs() < 1e-12 {
-            break;
+        let (mut denominator, mut total) = (1.0, 0.0);
+        for flow in &flows {
+            denominator += denominator * rate;
+            total += flow / denominator;
         }
-        let next = x - p / dp;
-        let done = (next - x).abs() < 1e-13;
-        x = next;
-        if done {
-            break;
+        if total.is_finite() {
+            Ok(total)
+        } else {
+            Err(no_root())
         }
+    };
+    let tolerance = flows.iter().map(|v| v.abs()).fold(0.0, f64::max) * 1e-9;
+    let mut rate0 = opt_f64(args, 1, 0.1)?;
+    let mut value0 = npv(rate0)?;
+    if value0.abs() < tolerance {
+        return Ok(vf64(rate0));
     }
-    finite_result(x - 1.0)
+    let mut rate1 = rate0 + if value0 > 0.0 { 1e-5 } else { -1e-5 };
+    let mut value1 = npv(rate1)?;
+    for _ in 0..40 {
+        if value0 == value1 {
+            rate0 += if rate1 > rate0 { -1e-5 } else { 1e-5 };
+            value0 = npv(rate0)?;
+            if value0 == value1 {
+                return Err(no_root());
+            }
+        }
+        rate0 = rate1 - (rate1 - rate0) * value1 / (value1 - value0);
+        value0 = npv(rate0)?;
+        if value0.abs() < tolerance && (rate0 - rate1).abs() < 1e-7 {
+            return Ok(vf64(rate0));
+        }
+        std::mem::swap(&mut rate0, &mut rate1);
+        std::mem::swap(&mut value0, &mut value1);
+    }
+    Err(no_root())
 }
 
 pub fn mirr(args: &[Variant]) -> LibResult<Variant> {
@@ -4579,6 +4608,44 @@ mod tests {
             .unwrap_err()
             .code,
             13
+        );
+    }
+
+    #[test]
+    fn irr_excel_convergence_and_error_cases() {
+        let flows = |values: &[f64]| {
+            Variant::from_safearray(
+                SafeArray::from_typed_variants(
+                    calcvba_runtime::safe_array::VT_R8_VALUE,
+                    values.iter().copied().map(vf64).collect(),
+                )
+                .unwrap(),
+            )
+        };
+        let series = flows(&[-100.0, 30.0, 40.0, 50.0, 60.0]);
+        for (guess, bits) in [(0.5, 0x3FCF_DB68_EA9C_0B5B), (-0.5, 0x3FCF_DB68_EA9C_0995)] {
+            assert_eq!(
+                irr(&[series.clone(), vf64(guess)])
+                    .unwrap()
+                    .as_f64()
+                    .unwrap()
+                    .to_bits(),
+                bits
+            );
+        }
+        assert_eq!(irr(&[series.clone(), vf64(100.0)]).unwrap_err().code, 5);
+        assert_eq!(irr(&[series.clone(), vf64(-1.0)]).unwrap_err().code, 5);
+        assert_eq!(irr(&[series, Variant::null()]).unwrap_err().code, 94);
+        for values in [&[-1000.0, 1.0][..], &[-100.0, 0.0001], &[0.0, 0.0]] {
+            assert_eq!(irr(&[flows(values)]).unwrap_err().code, 5);
+        }
+        assert_eq!(
+            irr(&[Variant::unallocated_array(
+                calcvba_runtime::safe_array::VT_R8_VALUE
+            )])
+            .unwrap_err()
+            .code,
+            5
         );
     }
 

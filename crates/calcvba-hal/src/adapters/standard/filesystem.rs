@@ -22,7 +22,7 @@ const VB_ARCHIVE: i32 = 0x0020;
 /// The bits `SetAttr` is permitted to change (directory/volume are intrinsic).
 const VB_SETTABLE_ATTRS: i32 = VB_READONLY | VB_HIDDEN | VB_SYSTEM | VB_ARCHIVE;
 
-/// The documented VBA attribute bits for a path (VBA `GetAttr`).
+/// Attribute bits used when filtering `Dir` entries.
 fn file_attribute_bits(meta: &fs::Metadata) -> i32 {
     #[cfg(target_os = "windows")]
     {
@@ -41,6 +41,29 @@ fn file_attribute_bits(meta: &fs::Metadata) -> i32 {
             bits |= VB_DIRECTORY;
         }
         bits
+    }
+}
+
+/// `GetAttr` preserves flags absent from Rust's handle-based metadata result.
+fn path_attribute_bits(path: &Path) -> std::io::Result<i32> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileAttributesW, INVALID_FILE_ATTRIBUTES,
+        };
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        // SAFETY: wide is a NUL-terminated path and remains live for the call.
+        let attrs = unsafe { GetFileAttributesW(wide.as_ptr()) };
+        if attrs == INVALID_FILE_ATTRIBUTES {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok((attrs & !0x80) as i32)
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        fs::metadata(path).map(|meta| file_attribute_bits(&meta))
     }
 }
 
@@ -118,6 +141,20 @@ fn io_error_code(err: &std::io::Error, not_found: i32, other: i32) -> i32 {
         ErrorKind::AlreadyExists | ErrorKind::DirectoryNotEmpty => 75,
         _ => other,
     }
+}
+
+/// The path-reading functions distinguish a missing file from a missing parent.
+fn metadata_error_code(err: &std::io::Error, path: &Path) -> i32 {
+    if path.as_os_str().is_empty() {
+        return 53;
+    }
+    #[cfg(windows)]
+    match err.raw_os_error() {
+        Some(3) => return 76,   // ERROR_PATH_NOT_FOUND
+        Some(123) => return 52, // ERROR_INVALID_NAME (including wildcards)
+        _ => {}
+    }
+    io_error_code(err, 53, 53)
 }
 
 #[derive(Debug, Default)]
@@ -1712,7 +1749,7 @@ impl FileSystemHal for StandardHostServices {
                     "filelen",
                     format!("failed to stat {}: {err}", p.display()),
                 )
-                .with_host_error_code(io_error_code(&err, 53, 53))
+                .with_host_error_code(metadata_error_code(&err, &p))
             })?;
             // VBA `FileLen` returns a `Long`.
             Ok(Variant::from_i32(len.len().min(i32::MAX as u64) as i32))
@@ -1755,17 +1792,17 @@ impl FileSystemHal for StandardHostServices {
         }
         if self.native_fs_enabled() {
             let p = self.variant_to_path(&path, capability, "getattr", "path")?;
-            let meta = fs::metadata(&p).map_err(|err| {
+            let bits = path_attribute_bits(&p).map_err(|err| {
                 HalError::adapter_fault(
                     self.profile,
                     capability,
                     "getattr",
                     format!("failed to stat {}: {err}", p.display()),
                 )
-                .with_host_error_code(io_error_code(&err, 53, 53))
+                .with_host_error_code(metadata_error_code(&err, &p))
             })?;
-            // VBA `GetAttr` returns an `Integer` of the documented attribute bits.
-            Ok(Variant::from_i32(file_attribute_bits(&meta)))
+            // Excel returns a Long, including filesystem-specific high bits.
+            Ok(Variant::from_i32(bits))
         } else {
             Ok(Variant::from_i32(0))
         }
@@ -1847,6 +1884,17 @@ impl FileSystemHal for StandardHostServices {
         }
         if self.native_fs_enabled() {
             let p = self.variant_to_path(&path, capability, "filedatetime", "path")?;
+            // A bare directory name is accepted, but its trailing separator is
+            // not (Excel P_FileDateTime.14).
+            if p.as_os_str().to_string_lossy().ends_with(['\\', '/']) {
+                return Err(HalError::adapter_fault(
+                    self.profile,
+                    capability,
+                    "filedatetime",
+                    "file not found",
+                )
+                .with_host_error_code(53));
+            }
             let meta = fs::metadata(&p).map_err(|err| {
                 HalError::adapter_fault(
                     self.profile,
@@ -1854,7 +1902,7 @@ impl FileSystemHal for StandardHostServices {
                     "filedatetime",
                     format!("failed to stat {}: {err}", p.display()),
                 )
-                .with_host_error_code(io_error_code(&err, 53, 53))
+                .with_host_error_code(metadata_error_code(&err, &p))
             })?;
             let modified = meta.modified().map_err(|err| {
                 HalError::adapter_fault(

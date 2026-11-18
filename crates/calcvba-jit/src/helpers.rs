@@ -1745,7 +1745,7 @@ pub(crate) fn declare_imports(module: &mut impl Module) -> Result<Imports, JitEr
     bound_slot_sig.params.push(AbiParam::new(ptr_ty));
     bound_slot_sig.params.push(AbiParam::new(ptr_ty));
     bound_slot_sig.params.push(AbiParam::new(types::I32));
-    bound_slot_sig.params.push(AbiParam::new(types::I32));
+    bound_slot_sig.params.push(AbiParam::new(ptr_ty));
     bound_slot_sig.params.push(AbiParam::new(types::I32));
     bound_slot_sig.params.push(AbiParam::new(types::I32));
     bound_slot_sig.returns.push(AbiParam::new(types::I32));
@@ -7292,12 +7292,12 @@ pub(crate) unsafe extern "C" fn rt_jit_bound_to_slot(
     run: *mut JitRun,
     operand: *const JitVariantOperandDesc,
     which: i32,
-    dimension: i32,
+    dimension: *const JitVariantOperandDesc,
     dst_area: u32,
     dst_index: u32,
 ) -> i32 {
     status_guard(|| {
-        if state.is_null() || run.is_null() || operand.is_null() {
+        if state.is_null() || run.is_null() || operand.is_null() || dimension.is_null() {
             return ST_FAULT;
         }
         // SAFETY: null was rejected and the compiled caller writes one descriptor
@@ -7316,6 +7316,23 @@ pub(crate) unsafe extern "C" fn rt_jit_bound_to_slot(
                 // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
                 unsafe { rt_raise_expected_array(state) }
             };
+        };
+        // SAFETY: the compiled caller supplies a second live stack descriptor.
+        let dimension = unsafe { *dimension };
+        let Some(dimension) = variant_operand_value_from_compiled_desc!(run_ref, dimension) else {
+            return ST_FAULT;
+        };
+        let dimension = match calcvba_eval::arith::int(&dimension) {
+            Ok(value) => value,
+            Err(error) => {
+                // SAFETY: no typed state borrow overlaps operand reads.
+                let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
+                    return ST_FAULT;
+                };
+                exec.err_engine
+                    .raise(Fault::from_arith(error), current_unit_source(run));
+                return ST_FAULT;
+            }
         };
         if dimension <= 0 {
             // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.

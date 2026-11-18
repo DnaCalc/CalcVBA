@@ -5137,10 +5137,11 @@ impl<'a> LowerFunc<'a> {
             index: builder.ins().iconst(types::I32, operand_index as i64),
         };
         let operand_ptr = self.emit_variant_operand_descriptors(builder, module, &[operand])?;
-        let dimension = match dimension {
-            Some(dimension) => self.lower_operand_i32(builder, module, dimension)?,
-            None => builder.ins().iconst(types::I32, 1),
-        };
+        let dimension = self.lower_variant_operand(
+            builder,
+            dimension.unwrap_or(&OxOperand::Const(OxConst::I32(1))),
+        )?;
+        let dimension = self.emit_variant_operand_descriptors(builder, module, &[dimension])?;
         let which = match which {
             BoundWhich::Lower => 0,
             BoundWhich::Upper => 1,

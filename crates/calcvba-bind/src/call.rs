@@ -221,7 +221,7 @@ impl<'a> ProcLower<'a> {
                     SpecialForm::Switch => NativeImplId::Switch,
                     _ => unreachable!(),
                 };
-                let args = self.bind_args(arglist, None)?;
+                let args = self.bind_native_args(id, arglist)?;
                 Ok(value_bound(
                     CoreValue::Call {
                         callee: CoreCallee::Native(id),

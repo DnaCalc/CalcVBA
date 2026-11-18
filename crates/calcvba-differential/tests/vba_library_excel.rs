@@ -9,8 +9,9 @@
 //! With `VBA_LIBRARY_REPORT=<path>` the test also writes every difference, with CalcVBA's
 //! answer, to that file.
 //!
-//! The two executor tests are `#[ignore]`d while many modules fail to bind (each failing module is
-//! re-run once per case): `cargo test -p calcvba-differential --test vba_library_excel -- --ignored`.
+//! Both executors run in ordinary workspace checks. For a selected module use
+//! `VBA_LIBRARY_ONLY=P_Left cargo test -p calcvba-differential --test vba_library_excel matches_excel`.
+//! The cases are still isolated if a module cannot bind or run as a whole.
 
 use calcvba_differential::{Canon, Executor, run_modules};
 use calcvba_symbol::manifest::ModuleKind::Procedural;
@@ -427,6 +428,15 @@ fn accepted_refusals() -> (Vec<String>, Vec<String>) {
         let Ok(source) = std::fs::read_to_string(dir().join(format!("probes/{module}.bas"))) else {
             continue;
         };
+        let keep: u32 = prefix
+            .strip_prefix("Case ")
+            .expect("numbered refusal case")
+            .parse()
+            .expect("case number");
+        let answer = std::fs::read_to_string(dir().join(format!("probes/{module}.excel.txt")))
+            .expect("refusal probe answers");
+        let numbers: Vec<_> = answer.lines().filter_map(case_number).collect();
+        let source = isolate(&source, keep, &numbers);
         let restored: Vec<String> = source
             .lines()
             .map(|l| {
@@ -446,8 +456,28 @@ fn accepted_refusals() -> (Vec<String>, Vec<String>) {
             ("ProbeFmt", Procedural, fmt.as_str()),
             (module, Procedural, restored.as_str()),
         ];
-        let outcome = run_modules(Executor::Vm3, &modules, "VBAProject");
-        let refused = outcome.unsupported.is_some() || outcome.result.is_err();
+        // Check this restored line's compilation, independently of unrelated
+        // cases and runtime errors. Application execution cannot prove refusal.
+        use calcvba_symbol::manifest as sym;
+        let manifest = sym::SymbolProjectManifest {
+            project_name: "VBAProject".into(),
+            project_kind: sym::ProjectKind::Source,
+            modules: modules
+                .iter()
+                .map(|(name, kind, source)| sym::ModuleUnit {
+                    module_name: (*name).into(),
+                    module_kind: *kind,
+                    attributes: sym::ModuleAttributes::named(*name),
+                    source: (*source).into(),
+                })
+                .collect(),
+            references: Vec::new(),
+            reference_projects: Vec::new(),
+            conditional_constants: Default::default(),
+            conditional_compilation_target: Default::default(),
+        };
+        let refused =
+            calcvba_bind::bind_program(&manifest, &calcvba_symbol::CatalogTypeLibResolver).is_err();
         let entry = format!("refusal: {module} {original}");
         match (refused, known.contains(&entry)) {
             (false, false) => wrong.push(format!("{entry} -- Excel: {message}")),
@@ -559,13 +589,11 @@ fn err_object_values_match_excel() {
 }
 
 #[test]
-#[ignore = "slow until library named arguments bind (modules that fail run once per case); run with --ignored"]
 fn vm3_matches_excel() {
     check(Executor::Vm3);
 }
 
 #[test]
-#[ignore = "slow until library named arguments bind (modules that fail run once per case); run with --ignored"]
 fn jit_matches_excel() {
     check(Executor::Jit);
 }

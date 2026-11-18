@@ -86,3 +86,62 @@ fn every_typelib_constant_resolves() {
         missing.join("\n")
     );
 }
+
+#[test]
+fn intrinsic_parameter_names_follow_the_captured_typelib() {
+    use calcvba_bundle::NativeImplId;
+    use calcvba_symbol::catalog::{intrinsic_entry, name_to_intrinsic};
+    let mut checked = 0;
+    for row in FUNCTIONS.lines().skip(1) {
+        let columns: Vec<_> = row.split('\t').collect();
+        if matches!(
+            columns[0],
+            "Collection" | "ErrObject" | "RegExp" | "Match" | "MatchCollection" | "SubMatches"
+        ) {
+            continue;
+        }
+        if columns[3] != "function" || columns[7].contains("ParamArray") {
+            continue;
+        }
+        let id = match columns[1] {
+            "IIf" => Some(NativeImplId::IIf),
+            name => name_to_intrinsic(name),
+        };
+        let Some(id) = id else {
+            continue;
+        }; // Class members and structural pointer helpers.
+        let entry = intrinsic_entry(id);
+        if matches!(
+            id,
+            NativeImplId::Abs
+                | NativeImplId::Fix
+                | NativeImplId::Int
+                | NativeImplId::Sgn
+                | NativeImplId::InStr
+                | NativeImplId::InStrB
+                | NativeImplId::StrComp
+        ) {
+            assert!(
+                entry.param_names.is_empty(),
+                "{} refuses named arguments in Excel",
+                columns[1]
+            );
+            continue;
+        }
+        let Some(maximum) = entry.sig.max_args else {
+            continue;
+        };
+        // CDec's extra pvar is an ABI output; source arity excludes it.
+        let expected: Vec<_> = columns[7]
+            .split(", ")
+            .filter_map(|p| {
+                p.split_once(':')
+                    .map(|(name, _)| name.trim_start_matches('?'))
+            })
+            .take(maximum as usize)
+            .collect();
+        assert_eq!(entry.param_names, expected, "{}.{}", columns[0], columns[1]);
+        checked += 1;
+    }
+    assert!(checked > 120, "only {checked} callable signatures checked");
+}

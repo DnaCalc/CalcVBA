@@ -156,7 +156,9 @@ pub(crate) fn need(args: &[Variant], index: usize) -> LibResult<&Variant> {
 }
 
 pub(crate) fn opt(args: &[Variant], index: usize) -> Option<&Variant> {
-    args.get(index)
+    args.get(index).filter(|arg| {
+        !(arg.vtype() == VarType::Error && arg.as_error_code() == Some(0x8002_0004u32 as i32))
+    })
 }
 
 /// Read any numeric Variant as `f64`. Reads `LongLong`/`Single`/`Currency`

@@ -475,22 +475,54 @@ fn split_with_limit(s: &str, delim: &str, limit: i32, text: bool) -> Vec<Variant
 /// string array whose elements contain (or, when `include` is False, omit) the
 /// `match` substring, returned as a fresh 0-based array.
 pub fn filter(args: &[Variant]) -> LibResult<Variant> {
-    let array = need(args, 0)?
-        .as_safearray()
-        .ok_or_else(|| LibError::type_mismatch("Filter expects a source array"))?;
-    let needle = as_str(need(args, 1)?)?;
-    let include = match arg_present(args, 2) {
-        Some(v) => as_bool_lenient(v),
+    let source = need(args, 0)?;
+    if !matches!(
+        source.array_element_vartype(),
+        Some(VT_BSTR_VALUE | VT_VARIANT_VALUE)
+    ) {
+        return Err(LibError::type_mismatch(
+            "Filter expects a String or Variant array",
+        ));
+    }
+    let needle = string_units(need(args, 1)?)?;
+    let include = match opt(args, 2).filter(|v| !missing_sentinel(v)) {
+        Some(v) => as_f64(&cbool(std::slice::from_ref(v))?)? != 0.0,
         None => true,
     };
     let text = text_compare(args, 3)?;
-    let needle_cmp = norm_compare(needle, text);
+    let Some(array) = source.as_safearray() else {
+        return Ok(Variant::unallocated_array(VT_BSTR_VALUE));
+    };
+    if array.dimensions() != 1 {
+        return Err(LibError::type_mismatch(
+            "Filter expects a one-dimensional array",
+        ));
+    }
+    let elements = array.variant_elements().unwrap_or_default();
+    if elements.is_empty() {
+        return Ok(Variant::unallocated_array(VT_BSTR_VALUE));
+    }
+    let needle_cmp: Vec<u16> = needle
+        .into_iter()
+        .map(|unit| if text { fold_unit(unit) } else { unit })
+        .collect();
     let mut out: Vec<Variant> = Vec::new();
-    for element in array.variant_elements().unwrap_or_default() {
-        let s = as_str(&element)?;
-        let contains = norm_compare(s, text).contains(&needle_cmp);
+    for element in elements {
+        if element.vtype() == VarType::Error {
+            return Err(LibError::type_mismatch(
+                "Filter cannot convert an Error element to String",
+            ));
+        }
+        let units = string_units(&element)?;
+        let contains = needle_cmp.is_empty()
+            || units.windows(needle_cmp.len()).any(|part| {
+                part.iter()
+                    .copied()
+                    .map(|unit| if text { fold_unit(unit) } else { unit })
+                    .eq(needle_cmp.iter().copied())
+            });
         if contains == include {
-            out.push(element);
+            out.push(Variant::from_utf16_units(&units));
         }
     }
     string_array(out)

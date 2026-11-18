@@ -2934,16 +2934,15 @@ pub fn irr(args: &[Variant]) -> LibResult<Variant> {
         if rate <= -1.0 || !rate.is_finite() {
             return Err(no_root());
         }
-        let (mut denominator, mut total) = (1.0, 0.0);
+        // VBA keeps the running discount factor and sum in x87 extended precision.
+        // Rounding each payment to Double loses the captured IRR.1/.11/.15/.19 bits.
+        let x = X80::of;
+        let (mut denominator, mut total) = (x(1.0), x(0.0));
         for flow in &flows {
-            denominator += denominator * rate;
-            total += flow / denominator;
+            denominator = denominator.add(denominator.mul(x(rate)));
+            total = total.add(x(*flow).div(denominator));
         }
-        if total.is_finite() {
-            Ok(total)
-        } else {
-            Err(no_root())
-        }
+        total.to_f64().ok_or_else(no_root)
     };
     let tolerance = flows.iter().map(|v| v.abs()).fold(0.0, f64::max) * 1e-9;
     let mut rate0 = opt_f64(args, 1, 0.1)?;

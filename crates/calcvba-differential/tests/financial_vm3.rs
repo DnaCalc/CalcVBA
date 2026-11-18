@@ -1,8 +1,8 @@
 //! Financial depreciation/amortization intrinsics on vm3
 //! (gap: financial-ipmt-ppmt-sln-syd-ddb-absent).
 //!
-//! Expected values are live-verified against VBA 7.1. The exact integer-valued
-//! results (SLN/SYD/DDB) are asserted by value; the irrational IPmt/PPmt results
+//! Integer-valued depreciation results are asserted by value; the final-period
+//! salvage payment uses the exact captured P_DDB.3 bits. The irrational IPmt/PPmt results
 //! are checked inside the program against the live values within a tight
 //! tolerance (so the assertion does not depend on last-bit f64 identity), and the
 //! single annuity-due edge case (`IPmt(per:=1, type:=1) = 0`) is pinned too.
@@ -25,7 +25,7 @@ Sub Main()
     syd1 = SYD(10000, 1000, 5, 1)
     syd5 = SYD(10000, 1000, 5, 5)
     ddb1 = DDB(10000, 1000, 5, 1)
-    ddb5 = DDB(10000, 1000, 5, 5)
+    ddb5 = DDB(2400, 300, 10, 10)
     ddbf3 = DDB(10000, 1000, 5, 1, 3)
     amortOk = True
     amortOk = amortOk And (Abs(IPmt(0.1 / 12, 1, 36, 10000) - (-83.3333333333333)) < 0.0000001)
@@ -51,8 +51,8 @@ End Sub
     assert!(has_f64(&snap, 600.0), "SYD(...,5)=600: {snap:?}");
     assert!(has_f64(&snap, 4000.0), "DDB(...,1)=4000: {snap:?}");
     assert!(
-        has_f64(&snap, 296.0),
-        "DDB(...,5)=296 (salvage-floored): {snap:?}"
+        has_f64(&snap, f64::from_bits(0x4036_1F5F_40D8_37B8)),
+        "DDB(2400,300,10,10), captured salvage-floored payment: {snap:?}"
     );
     assert!(
         has_f64(&snap, 6000.0),

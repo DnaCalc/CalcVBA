@@ -2838,36 +2838,51 @@ pub fn syd(args: &[Variant]) -> LibResult<Variant> {
 }
 
 /// `DDB(cost, salvage, life, period, [factor = 2])` → double-declining-balance
-/// depreciation for `period`. Uses the closed form `book(start) - book(end)` with
-/// the salvage floor (depreciation never takes book value below `salvage`) —
-/// live-verified against VBA (`DDB(10000,1000,5,5) = 296`, the salvage-capped final
-/// period; `DDB(…, factor:=3)` honours the rate override).
+/// depreciation for `period`. Compute the period's payment and subtract any
+/// excess depreciation beyond salvage, in the order measured by `P_DDB`.
 pub fn ddb(args: &[Variant]) -> LibResult<Variant> {
     let cost = as_f64(need(args, 0)?)?;
     let salvage = as_f64(need(args, 1)?)?;
     let life = as_f64(need(args, 2)?)?;
     let period = as_f64(need(args, 3)?)?;
     let factor = opt_f64(args, 4, 2.0)?;
-    if cost < 0.0 || salvage < 0.0 || life <= 0.0 || period <= 0.0 || period > life || factor <= 0.0
-    {
+    if salvage < 0.0 || period <= 0.0 || period > life || factor <= 0.0 {
         return Err(LibError::invalid_call("DDB argument out of range"));
     }
-    let rate = factor / life;
-    let (book_start, book_end) = if rate >= 1.0 {
-        // A rate at/above 1 fully depreciates in the first period.
-        (if period == 1.0 { cost } else { 0.0 }, 0.0)
-    } else {
-        (
-            cost * (1.0 - rate).powf(period - 1.0),
-            cost * (1.0 - rate).powf(period),
-        )
-    };
-    let depreciation = if book_end < salvage {
-        book_start - salvage
-    } else {
-        book_start - book_end
-    };
-    Ok(vf64(depreciation.max(0.0)))
+    if cost <= 0.0 {
+        return Ok(vf64(0.0));
+    }
+    if life < 2.0 || (life == 2.0 && period <= 1.0) {
+        return Ok(vf64(cost - salvage));
+    }
+    if life == 2.0 {
+        return Ok(vf64(0.0));
+    }
+    if period <= 1.0 {
+        return Ok(vf64((cost * factor / life).min(cost - salvage)));
+    }
+    let rate = (life - factor) / life;
+    // Excel rounds the powers to Double, then evaluates each payment/total
+    // expression in extended precision before storing it as a Double.
+    let x = X80::of;
+    let growth = rate.powf(period - 1.0);
+    let end = rate.powf(period);
+    if !growth.is_finite() || !end.is_finite() {
+        return Err(LibError::overflow("DDB power is not finite"));
+    }
+    let payment = x(factor)
+        .mul(x(cost))
+        .div(x(life))
+        .mul(x(growth))
+        .to_f64()
+        .ok_or_else(|| LibError::overflow("DDB"))?;
+    let total = x(cost)
+        .mul(x(1.0).sub(x(end)))
+        .to_f64()
+        .ok_or_else(|| LibError::overflow("DDB"))?;
+    let excess = total - cost + salvage;
+    let depreciation = payment - excess.max(0.0);
+    finite_result(depreciation.max(0.0))
 }
 
 pub fn nper(args: &[Variant]) -> LibResult<Variant> {

@@ -1,0 +1,54 @@
+ErrObject.1=N=5;S=VBAProject;D=Invalid procedure call or argument;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000005
+ErrObject.2=N=5;S=src;D=Invalid procedure call or argument;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000005
+ErrObject.3=N=5;S=src;D=desc;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000005
+ErrObject.4=N=5;S=VBAProject;D=desc;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000005
+ErrObject.5=N=5;S=s;D=d;HF=hf.hlp;HC=123
+ErrObject.6=N=6;S=VBAProject;D=Overflow;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000006
+ErrObject.7=N=9;S=VBAProject;D=Subscript out of range;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000009
+ErrObject.8=N=11;S=VBAProject;D=Division by zero;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000011
+ErrObject.9=N=13;S=VBAProject;D=Type mismatch;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000013
+ErrObject.10=N=91;S=VBAProject;D=Object variable or With block variable not set;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000091
+ErrObject.11=N=-2147220504;S=VBAProject;D=Automation error;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000440
+ErrObject.12=N=-2147220504;S=S;D=D;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000440
+ErrObject.13=N=1000;S=VBAProject;D=Application-defined or object-defined error;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000095
+ErrObject.14=N=5;S=VBAProject;D=Invalid procedure call or argument;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000005
+ErrObject.15=N=65535;S=VBAProject;D=Application-defined or object-defined error;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000095
+ErrObject.16=N=5;S=VBAProject;D=Invalid procedure call or argument;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000005
+ErrObject.17=N=5;S=VBAProject;D=Invalid procedure call or argument;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000005
+ErrObject.18=N=-2147467259;S=VBAProject;D=Automation error{10}Unspecified error ;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000440
+ErrObject.19=N=-5;S=VBAProject;D=Automation error;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000440
+ErrObject.20=N=-2147221504;S=VBAProject;D=Automation error{10}Invalid OLEVERB structure ;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000440
+ErrObject.21=N=0;S=;D=;HF=;HC=0
+ErrObject.22=N=11;S=;D=;HF=;HC=0
+ErrObject.23=N=1000;S=;D=;HF=;HC=0
+ErrObject.24=N=0;S=;D=abc;HF=;HC=0
+ErrObject.25=N=0;S=x;D=;HF=h.hlp;HC=7
+ErrObject.26=N=11;S=;D=mine;HF=;HC=0
+ErrObject.27=N=5;S=s;D=d;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000005
+ErrObject.28=N=0;S=;D=;HF=;HC=0
+ErrObject.29=N=0;S=;D=;HF=;HC=0
+ErrObject.30=N=11;S=VBAProject;D=Division by zero;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000011
+ErrObject.31=N=6;S=VBAProject;D=Overflow;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000006
+ErrObject.32=N=13;S=VBAProject;D=Type mismatch;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000013
+ErrObject.33=Long
+ErrObject.34=ErrObject,Long,String,Long
+ErrObject.35=N=13;S=VBAProject;D=Type mismatch;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000013
+ErrObject.36=N=94;S=VBAProject;D=Invalid use of Null;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000094
+ErrObject.37=N=5;S=123;D=Invalid procedure call or argument;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000005
+ErrObject.38=N=94;S=VBAProject;D=Invalid use of Null;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000094
+ErrObject.39=N=5;S=s2;D=d1;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000005
+ErrObject.40=N=0;S=;D=;HF=;HC=0
+ErrObject.41=N=5;S=VBAProject;D=d;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=55
+ErrObject.42=N=429;S=VBAProject;D=ActiveX component can't create object;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000429
+ErrObject.43=N=53;S=VBAProject;D=File not found;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000053
+ErrObject.44=N=438;S=VBAProject;D=Object doesn't support this property or method;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000438
+ErrObject.45=N=424;S=VBAProject;D=Object required;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000424
+ErrObject.46=N=7;S=VBAProject;D=Out of memory;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000007
+ErrObject.47=N=457;S=VBAProject;D=This key is already associated with an element of this collection;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000457
+ErrObject.48=N=6;S=s;D=d;HF=hf.hlp;HC=123
+ErrObject.49=N=0;S=;D=;HF=;HC=0
+ErrObject.50=inh=N=5;S=s1;D=d1;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000005|after=N=0;S=;D=;HF=;HC=0
+ErrObject.51=ret=5 after=N=5;S=inner;D=inner desc;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000005
+ErrObject.52=caught N=5;S=VBAProject;D=thrown;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000005|caught N=11;S=VBAProject;D=Division by zero;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000011
+ErrObject.53=inh=5;cleared=0;after=N=0;S=;D=;HF=;HC=0|after exit sub in handler: N=0;S=;D=;HF=;HC=0
+ErrObject.54=

@@ -1,0 +1,5 @@
+MacScript.1=ERR5
+MacScript.2=ERR5
+MacScript.3=ERR5
+MacScript.4=ERR94
+MacScript.5=ERR5

@@ -1,0 +1,20 @@
+SaveSetting.1=String:[v1]
+SaveSetting.2=String:[v2]
+SaveSetting.3=String:[a=b;c d]
+SaveSetting.4=String:[]
+SaveSetting.5=String:[{233}{955}]
+SaveSetting.6=Long:300
+SaveSetting.7=String:[v]
+SaveSetting.8=String:[ab]
+SaveSetting.9=String:[named]
+SaveSetting.10=String:[v]
+SaveSetting.11=String:[42]
+SaveSetting.12=ERR94
+SaveSetting.13=String:[]
+SaveSetting.14=String:[v]
+SaveSetting.15=ERR5
+SaveSetting.16=ERR5
+SaveSetting.17=String:[  spaced  ]
+SaveSetting.18=String:[line1{13}{10}line2]
+SaveSetting.19=String:[1.5]
+SaveSetting.20=String:[True]

@@ -1,0 +1,12 @@
+Now.1=String:[Date]
+Now.2=Boolean:True
+Now.3=Boolean:True
+Now.4=Boolean:True
+Now.5=Boolean:True
+Now.6=Boolean:True
+Now.7=Boolean:True
+Now.8=Boolean:True
+Now.9=Boolean:True
+Now.10=Boolean:True
+Now.11=Boolean:True
+Now.12=String:[Date]

@@ -1,0 +1,16 @@
+IsError.1=Boolean:True
+IsError.2=Boolean:True
+IsError.3=Boolean:True
+IsError.4=Boolean:True
+IsError.5=Boolean:False
+IsError.6=Boolean:False
+IsError.7=Boolean:False
+IsError.8=Boolean:False
+IsError.9=Boolean:False
+IsError.10=Boolean:True
+IsError.11=Boolean:True
+IsError.12=Boolean:False
+IsError.13=Boolean:True
+IsError.14=ERR11
+IsError.15=Boolean:False
+IsError.16=String:[True|7|10]

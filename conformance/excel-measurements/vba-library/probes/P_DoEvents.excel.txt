@@ -1,0 +1,10 @@
+DoEvents.1=Integer:0
+DoEvents.2=String:[Integer]
+DoEvents.3=Long:2
+DoEvents.4=String:[statement form ok]
+DoEvents.5=String:[compile-refused]
+DoEvents.6=Boolean:True
+DoEvents.7=Long:1
+DoEvents.8=Integer:0
+DoEvents.9=Integer:0
+DoEvents.10=Boolean:True

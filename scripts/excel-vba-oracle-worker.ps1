@@ -467,8 +467,18 @@ function Set-GuardianControl {
         allow_dismiss = $AllowDismiss
         written_utc = [DateTime]::UtcNow.ToString("o")
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $temporary -Encoding utf8NoBOM
-    if ([IO.File]::Exists($Path)) { [IO.File]::Replace($temporary, $Path, [NullString]::Value) }
-    else { [IO.File]::Move($temporary, $Path) }
+    # The guardian reads this file while it is replaced; a read in progress makes Replace fail
+    # ("Unable to remove the file to be replaced"), so retry for a short while.
+    for ($attempt = 1; ; $attempt++) {
+        try {
+            if ([IO.File]::Exists($Path)) { [IO.File]::Replace($temporary, $Path, [NullString]::Value) }
+            else { [IO.File]::Move($temporary, $Path) }
+            break
+        } catch [System.IO.IOException] {
+            if ($attempt -ge 50) { throw }
+            Start-Sleep -Milliseconds 20
+        }
+    }
     return [pscustomobject]@{ case_id = $CaseId; operation_id = $OperationId; phase = $Phase; sequence = $script:GuardianControlSequence }
 }
 

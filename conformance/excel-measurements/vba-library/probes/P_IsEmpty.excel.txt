@@ -1,0 +1,16 @@
+IsEmpty.1=Boolean:True
+IsEmpty.2=Boolean:True
+IsEmpty.3=Boolean:False
+IsEmpty.4=Boolean:False
+IsEmpty.5=Boolean:False
+IsEmpty.6=Boolean:False
+IsEmpty.7=Boolean:False
+IsEmpty.8=Boolean:False
+IsEmpty.9=Boolean:False
+IsEmpty.10=Boolean:False
+IsEmpty.11=Boolean:False
+IsEmpty.12=Boolean:True
+IsEmpty.13=Boolean:False
+IsEmpty.14=Boolean:False
+IsEmpty.15=Boolean:True
+IsEmpty.16=Boolean:False

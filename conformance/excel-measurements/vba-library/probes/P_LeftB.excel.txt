@@ -1,0 +1,18 @@
+LeftB.1=String:[String lenb=4 [61006200]]
+LeftB.2=String:[String lenb=3 [610062]]
+LeftB.3=String:[String lenb=0 []]
+LeftB.4=String:[String lenb=6 [610062006300]]
+LeftB.5=ERR5
+LeftB.6=String:[Null]
+LeftB.7=ERR94
+LeftB.8=String:[String lenb=2 [6100]]
+LeftB.9=String:[String lenb=2 [6100]]
+LeftB.10=String:[String lenb=4 [31003200]]
+LeftB.11=String:[String lenb=1 [AC]]
+LeftB.12=String:[String lenb=0 []]
+LeftB.13=String:[String lenb=0 []]
+LeftB.14=String:[String lenb=2 [6100]]
+LeftB.15=String:[String lenb=2 [6100]]
+LeftB.16=ERR94
+LeftB.17=String:[String lenb=3 [3DD800]]
+LeftB.18=String:[String lenb=2 [6100]]

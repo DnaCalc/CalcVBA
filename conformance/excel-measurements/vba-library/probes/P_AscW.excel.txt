@@ -1,0 +1,16 @@
+AscW.1=Integer:65
+AscW.2=Integer:65
+AscW.3=ERR5
+AscW.4=ERR94
+AscW.5=Integer:233
+AscW.6=Integer:8364
+AscW.7=Integer:-32768
+AscW.8=Integer:-1
+AscW.9=Integer:-10179
+AscW.10=Integer:-8704
+AscW.11=Integer:26085
+AscW.12=Integer:49
+AscW.13=ERR5
+AscW.14=Integer:122
+AscW.15=Integer:8364
+AscW.16=Integer:160

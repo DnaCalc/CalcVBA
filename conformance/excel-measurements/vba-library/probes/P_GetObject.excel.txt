@@ -1,0 +1,15 @@
+GetObject.1=ERR13
+GetObject.2=ERR429
+GetObject.3=String:[Dictionary]
+GetObject.4=String:[Dictionary]
+GetObject.5=ERR429
+GetObject.6=ERR429
+GetObject.7=ERR429
+GetObject.8=ERR432
+GetObject.9=ERR94
+GetObject.10=ERR5
+GetObject.11=ERR429
+GetObject.12=Long:0
+GetObject.13=Boolean:True
+GetObject.14=ERR94
+GetObject.15=String:[Dictionary]

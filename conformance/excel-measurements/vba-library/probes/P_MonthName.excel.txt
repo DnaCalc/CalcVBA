@@ -1,0 +1,17 @@
+MonthName.1=String:[January]
+MonthName.2=String:[December]
+MonthName.3=String:[Jan]
+MonthName.4=String:[Sept]
+MonthName.5=String:[May]
+MonthName.6=ERR5
+MonthName.7=ERR5
+MonthName.8=ERR5
+MonthName.9=ERR94
+MonthName.10=ERR94
+MonthName.11=String:[March]
+MonthName.12=String:[February]
+MonthName.13=String:[April]
+MonthName.14=String:[February]
+MonthName.15=String:[Jun]
+MonthName.16=String:[June]
+MonthName.17=ERR5

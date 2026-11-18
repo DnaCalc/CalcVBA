@@ -247,7 +247,7 @@ pub fn run(executor: Executor, source: &str) -> RunOutcome {
 pub fn run_with_project(executor: Executor, source: &str, project_name: &str) -> RunOutcome {
     let _balance_guard = balance_measurement_lock()
         .lock()
-        .expect("balance measurement lock poisoned");
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     run_with_project_locked(executor, source, project_name)
 }
 
@@ -306,7 +306,7 @@ pub fn run_with_engine_setup(
     };
     let _balance_guard = balance_measurement_lock()
         .lock()
-        .expect("balance measurement lock poisoned");
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let before = current_thread_live_handle_counts();
     let outcome = match executor {
         Executor::Vm3 => {
@@ -353,7 +353,7 @@ pub fn run_modules(
     };
     let _balance_guard = balance_measurement_lock()
         .lock()
-        .expect("balance measurement lock poisoned");
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let before = current_thread_live_handle_counts();
     let engine = vm3_oracle_engine();
     let outcome = match executor {
@@ -374,7 +374,7 @@ pub fn run_manifest(
 ) -> RunOutcome {
     let _balance_guard = balance_measurement_lock()
         .lock()
-        .expect("balance measurement lock poisoned");
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let before = current_thread_live_handle_counts();
     let engine = vm3_oracle_engine();
     let outcome = match executor {
@@ -400,7 +400,7 @@ pub fn run_project_closure(
 ) -> RunOutcome {
     let _balance_guard = balance_measurement_lock()
         .lock()
-        .expect("balance measurement lock poisoned");
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let before = current_thread_live_handle_counts();
     let engine = vm3_oracle_engine();
     let outcome = match executor {
@@ -469,7 +469,7 @@ pub fn run_project_closure(
 pub fn run_ox_programs(executor: Executor, programs: &[calcvba_oxir::OxProgram]) -> RunOutcome {
     let _balance_guard = balance_measurement_lock()
         .lock()
-        .expect("balance measurement lock poisoned");
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let before = current_thread_live_handle_counts();
     let host = vm3_oracle_engine().host_services();
     let outcome = match executor {
@@ -610,7 +610,7 @@ pub fn run_with_timeout(
     std::thread::spawn(move || {
         let _guard = balance_measurement_lock()
             .lock()
-            .expect("balance measurement lock poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if started_tx.send(()).is_err() {
             return;
         }
@@ -22611,7 +22611,11 @@ End Sub
             for entry in entries.flatten() {
                 let p = entry.path();
                 if p.is_dir() {
-                    stack.push(p);
+                    // The VBA library probes need ProbeFmt.bas beside them and have their own
+                    // differential test (vba_library_excel.rs); run standalone they only fail to bind.
+                    if !p.ends_with("vba-library") {
+                        stack.push(p);
+                    }
                 } else if p.extension().is_some_and(|e| e == "bas") {
                     out.push(p);
                 }

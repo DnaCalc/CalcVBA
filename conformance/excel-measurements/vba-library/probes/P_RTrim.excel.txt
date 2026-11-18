@@ -1,0 +1,16 @@
+RTrim.1=String:[  abc]
+RTrim.2=String:[abc]
+RTrim.3=String:[]
+RTrim.4=String:[]
+RTrim.5=Null
+RTrim.6=String:[]
+RTrim.7=String:[123]
+RTrim.8=String:[  abc]
+RTrim.9=ERR94
+RTrim.10=String:[abc{9}]
+RTrim.11=String:[abc{160}]
+RTrim.12=String:[abc]
+RTrim.13=String:[abc{13}{10}]
+RTrim.14=String:[abc]
+RTrim.15=String:[a  b]
+RTrim.16=String:[1.5]

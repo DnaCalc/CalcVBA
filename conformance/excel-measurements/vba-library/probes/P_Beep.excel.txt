@@ -1,0 +1,3 @@
+Beep.1=String:[returned]
+Beep.2=Long:0
+Beep.3=String:[no further calls]

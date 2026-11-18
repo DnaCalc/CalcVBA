@@ -151,7 +151,16 @@ impl<'a> ProcLower<'a> {
         }
         if intent == AssignmentIntent::Let && !types::is_object(&target_ty) {
             val = self.bind_default_member_value_context(val, value_label)?;
-            val = let_value(val);
+            // A UDT value (a record-returning function's static type arrives as the type's
+            // name) never holds an object: no default-member read.
+            let is_udt = |ty: &VarTypeRef| match ty {
+                VarTypeRef::Udt(_) => true,
+                VarTypeRef::Object(name) => self.g.env.is_udt(name),
+                _ => false,
+            };
+            if !is_udt(&val.ty) && !is_udt(&target_ty) {
+                val = let_value(val);
+            }
         }
         // A declared scalar variable holds its declared type: coerce the value to the
         // target type on store (unconditionally — the value's static type is not a

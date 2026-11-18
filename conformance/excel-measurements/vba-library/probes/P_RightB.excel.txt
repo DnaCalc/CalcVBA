@@ -1,0 +1,13 @@
+RightB.1=String:[ef]
+RightB.2=String:[{26112}]
+RightB.3=String:[]
+RightB.4=String:[abc]
+RightB.5=ERR5
+RightB.6=Null
+RightB.7=ERR94
+RightB.8=String:[f]
+RightB.9=ERR94
+RightB.10=String:[45]
+RightB.11=Long:3
+RightB.12=String:[]
+RightB.13=String:[c]

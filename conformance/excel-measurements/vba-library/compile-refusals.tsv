@@ -1,0 +1,22 @@
+module	vbe_message	source
+P_Abs	Syntax error	Case 24: v = Abs(Number:=-2)                                  ' named argument
+P_CallByName	Argument in ParamArray may not be named	Case 21: Set c = New Collection: v = CallByName(Object:=c, ProcName:="Count", CallType:=VbGet)   ' named arguments
+P_DDB	Syntax error	Case 23: v = DDB(2400, 300, 10, 1, )                          ' omitted factor
+P_DoEvents	Syntax error	Case 5: Call DoEvents: v = "call form ok"                 ' Call form
+P_Fix	Syntax error	Case 35: v = Fix(Number:=-2.7)   ' named argument
+P_InStr	Syntax error	Case 34: v = InStr(Start:=2, String1:="abcb", String2:="b")   ' named arguments
+P_LBound	Syntax error	Case 43: v = LBound(CVar(fa))                  ' CVar of an array
+P_Len	Variable required - can't assign to this expression	Case 3: v = Len(123)                         ' number as text: 3
+P_Sgn	Syntax error	Case 21: v = Sgn(Number:=-2)                                  ' named argument
+P_StrComp	Syntax error	Case 21: v = StrComp(String1:="a", String2:="b", Compare:=vbBinaryCompare)  ' named
+P_UBound	Syntax error	Case 46: v = UBound(CVar(fa))                  ' CVar of an array
+P_InStr	Syntax error	Case 35: v = InStr(String1:="abcb", String2:="b")             ' named, start omitted
+P_InStrB	Syntax error	Case 15: v = InStrB(Start:=1, String1:="abc", String2:="c")   ' named arguments
+P_Int	Syntax error	Case 35: v = Int(Number:=-2.7)   ' named argument
+P_Len	Variable required - can't assign to this expression	Case 11: v = Len(1.5)                        ' literal: text length
+P_LenB	Variable required - can't assign to this expression	Case 3: v = LenB(123)                        ' number as text
+P_InStr	Object doesn't support named arguments	Case 36: v = InStr(1, "abc", "b", Compare:=vbTextCompare)     ' named compare
+P_InStrB	Object doesn't support named arguments	Case 16: v = InStrB(1, "abc", "c", Compare:=vbBinaryCompare)  ' named compare
+P_Len	Variable required - can't assign to this expression	Case 17: v = Len(True)                       ' Boolean literal
+P_LenB	Variable required - can't assign to this expression	Case 21: v = LenB(1.5)                       ' literal text
+P_LenB	Variable required - can't assign to this expression	Case 24: v = LenB(True)                      ' Boolean literal

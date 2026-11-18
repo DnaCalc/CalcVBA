@@ -1,0 +1,10 @@
+MsgBox.1=String:[0,1,2,3,4,5]
+MsgBox.2=String:[16,32,48,64]
+MsgBox.3=String:[0,256,512,768]
+MsgBox.4=String:[0,4096]
+MsgBox.5=String:[16384,65536,524288,1048576]
+MsgBox.6=String:[1,2,3,4,5,6,7]
+MsgBox.7=String:[Long]
+MsgBox.8=Long:292
+MsgBox.9=Long:4
+MsgBox.10=Long:3

@@ -1,0 +1,15 @@
+CurDir.1=String:[String]
+CurDir.2=String:[String]
+CurDir.3=Boolean:True
+CurDir.4=Boolean:True
+CurDir.5=Boolean:True
+CurDir.6=Boolean:True
+CurDir.7=Boolean:True
+CurDir.8=ERR5
+CurDir.9=ERR13
+CurDir.10=ERR13
+CurDir.11=String:[3:\]
+CurDir.12=Boolean:False
+CurDir.13=String:[String]
+CurDir.14=Boolean:True
+CurDir.15=Boolean:True

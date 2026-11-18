@@ -1,0 +1,16 @@
+Err.1=String:[11|Division by zero]
+Err.2=String:[1000|Application-defined or object-defined error|True]
+Err.3=String:[1000|MySrc|My description|h.hlp|77]
+Err.4=String:[0|||0]
+Err.5=String:[11|Division by zero]
+Err.6=String:[9|Subscript out of range]
+Err.7=String:[-2147220504|Automation error]
+Err.8=String:[0|set by hand]
+Err.9=String:[5|Invalid procedure call or argument]
+Err.10=String:[5|Invalid procedure call or argument]
+Err.11=String:[13|Type mismatch|0]
+Err.12=String:[ErrObject]
+Err.13=Long:0
+Err.14=Long:0
+Err.15=String:[ErrObject]
+Err.16=String:[String|String|Long]

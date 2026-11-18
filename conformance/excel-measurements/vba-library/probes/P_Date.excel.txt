@@ -1,0 +1,14 @@
+Date.1=String:[Date]
+Date.2=Boolean:True
+Date.3=String:[String]
+Date.4=Long:10
+Date.5=String:[--]
+Date.6=Boolean:True
+Date.7=Boolean:True
+Date.8=Boolean:True
+Date.9=Boolean:True
+Date.10=Boolean:True
+Date.11=Boolean:True
+Date.12=Boolean:True
+Date.13=String:[Date]
+Date.14=String:[Date]

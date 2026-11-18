@@ -1,0 +1,16 @@
+Trim.1=String:[abc]
+Trim.2=String:[a  b]
+Trim.3=String:[]
+Trim.4=String:[]
+Trim.5=Null
+Trim.6=String:[]
+Trim.7=String:[123]
+Trim.8=String:[abc]
+Trim.9=ERR94
+Trim.10=String:[{9}abc{9}]
+Trim.11=String:[{160}abc{160}]
+Trim.12=String:[abc]
+Trim.13=String:[{160} abc]
+Trim.14=String:[abc]
+Trim.15=String:[String]
+Trim.16=String:[String]

@@ -1,0 +1,12 @@
+Timer.1=String:[Single]
+Timer.2=Boolean:True
+Timer.3=Boolean:True
+Timer.4=Boolean:True
+Timer.5=Boolean:True
+Timer.6=Boolean:True
+Timer.7=String:[Single]
+Timer.8=String:[Double]
+Timer.9=String:[Single]
+Timer.10=Boolean:True
+Timer.11=Boolean:True
+Timer.12=Boolean:True

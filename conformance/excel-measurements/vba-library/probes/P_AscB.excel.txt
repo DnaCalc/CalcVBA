@@ -1,0 +1,14 @@
+AscB.1=Byte:65
+AscB.2=Byte:65
+AscB.3=ERR5
+AscB.4=ERR94
+AscB.5=Byte:233
+AscB.6=Byte:172
+AscB.7=Byte:0
+AscB.8=Byte:229
+AscB.9=Byte:49
+AscB.10=ERR5
+AscB.11=Byte:90
+AscB.12=Byte:200
+AscB.13=Byte:0
+AscB.14=Byte:172

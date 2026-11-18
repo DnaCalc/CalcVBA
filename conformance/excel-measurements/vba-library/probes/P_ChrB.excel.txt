@@ -1,0 +1,15 @@
+ChrB.1=String:[String lenb=1 [41]]
+ChrB.2=String:[String lenb=1 [00]]
+ChrB.3=String:[String lenb=1 [FF]]
+ChrB.4=ERR6
+ChrB.5=ERR6
+ChrB.6=ERR94
+ChrB.7=String:[String lenb=1 [42]]
+ChrB.8=String:[String lenb=1 [43]]
+ChrB.9=String:[String lenb=1 [44]]
+ChrB.10=String:[String lenb=1 [42]]
+ChrB.11=String:[String lenb=1 [00]]
+ChrB.12=String:[String lenb=2 [4100]]
+ChrB.13=Boolean:True
+ChrB.14=Long:0
+ChrB.15=String:[String lenb=2 [E901]]

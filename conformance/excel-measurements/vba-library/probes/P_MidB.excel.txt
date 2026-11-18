@@ -1,0 +1,17 @@
+MidB.1=String:[bc]
+MidB.2=String:[{25088}]
+MidB.3=String:[{25088}{25344}{25600}{25856}{26112}]
+MidB.4=String:[]
+MidB.5=ERR5
+MidB.6=String:[]
+MidB.7=ERR5
+MidB.8=String:[c]
+MidB.9=Null
+MidB.10=ERR94
+MidB.11=String:[23]
+MidB.12=String:[bc]
+MidB.13=ERR94
+MidB.14=Long:3
+MidB.15=String:[]
+MidB.16=String:[b]
+MidB.17=String:[]

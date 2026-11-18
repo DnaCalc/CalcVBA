@@ -1,0 +1,16 @@
+IsMissing.1=Boolean:True
+IsMissing.2=Boolean:False
+IsMissing.3=Boolean:False
+IsMissing.4=Boolean:False
+IsMissing.5=Boolean:False
+IsMissing.6=Boolean:False
+IsMissing.7=Boolean:False
+IsMissing.8=Boolean:True
+IsMissing.9=Boolean:True
+IsMissing.10=Boolean:False
+IsMissing.11=Boolean:True
+IsMissing.12=Boolean:False
+IsMissing.13=String:[Error|10|True|False]
+IsMissing.14=Boolean:False
+IsMissing.15=Boolean:False
+IsMissing.16=Boolean:False

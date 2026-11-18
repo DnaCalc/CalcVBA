@@ -1,0 +1,11 @@
+Erl.1=Long:30
+Erl.2=Long:0
+Erl.3=Long:200
+Erl.4=Long:2
+Erl.5=Long:65535
+Erl.6=String:[Long:8:11]
+Erl.7=Long:0
+Erl.8=Long:1
+Erl.9=String:[Long]
+Erl.10=Long:0
+Erl.11=Long:0

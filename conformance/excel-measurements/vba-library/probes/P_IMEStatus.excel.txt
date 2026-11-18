@@ -1,0 +1,9 @@
+IMEStatus.1=Long:0
+IMEStatus.2=String:[Long]
+IMEStatus.3=Long:3
+IMEStatus.4=Boolean:True
+IMEStatus.5=Long:0
+IMEStatus.6=Boolean:True
+IMEStatus.7=String:[0,1,2,3,4]
+IMEStatus.8=String:[5,6,7,8]
+IMEStatus.9=Long:0

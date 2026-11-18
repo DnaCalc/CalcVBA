@@ -9985,9 +9985,13 @@ pub(crate) unsafe extern "C" fn rt_jit_lib_invoke_to_slot(
                         // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
                         return unsafe { rt_raise_runtime_error_number(state, 91) };
                     }
+                    // `VarType` reads only a VBA class object's default Property Get, as VM3; any
+                    // other object is vbObject (a Scripting.Dictionary's default `Item(Key)`
+                    // needs an argument: Excel answers 9, examples/native/breadth).
                     if var_type
-                        && arg.as_object_ref().is_some_and(|o| o.is_project_instance())
-                        && !project_has_default_get(run, arg)
+                        && !arg.as_object_ref().is_some_and(|o| {
+                            o.is_project_instance() && project_has_default_get(run, arg)
+                        })
                     {
                         continue;
                     }

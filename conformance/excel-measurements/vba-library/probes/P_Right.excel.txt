@@ -1,0 +1,15 @@
+Right.1=String:[def]
+Right.2=String:[]
+Right.3=String:[abc]
+Right.4=ERR5
+Right.5=Null
+Right.6=ERR94
+Right.7=String:[bc]
+Right.8=String:[bc]
+Right.9=String:[45]
+Right.10=String:[]
+Right.11=String:[]
+Right.12=ERR94
+Right.13=String:[bc]
+Right.14=ERR5
+Right.15=String:[c]

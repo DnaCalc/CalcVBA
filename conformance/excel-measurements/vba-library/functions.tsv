@@ -1,0 +1,201 @@
+module	name	dollar_form	kind	hidden	in_ms_vbal	returns	params
+_HiddenModule	Array		function		NO	VARIANT	ArgList:VARIANT()*, ParamArray
+_HiddenModule	Input	yes	function		NO	VARIANT	Number:I4, FileNumber:I2
+_HiddenModule	InputB	yes	function		NO	VARIANT	Number:I4, FileNumber:I2
+_HiddenModule	ObjPtr		function	yes	NO	LONG_PTR	Ptr:UNKNOWN
+_HiddenModule	StrPtr		function	yes	NO	LONG_PTR	Ptr:BSTR
+_HiddenModule	VarPtr		function	yes	NO	LONG_PTR	Ptr:VOID*
+_HiddenModule	Width		function		NO	VOID	FileNumber:I2, Width:I2
+Collection	_NewEnum		function		NO	UNKNOWN	
+Collection	Add		function		yes	VOID	Item:VARIANT*, ?Key:VARIANT*, ?Before:VARIANT*, ?After:VARIANT*
+Collection	Count		function		yes	I4	
+Collection	Item		function		yes	VARIANT	Index:VARIANT*
+Collection	Remove		function		yes	VOID	Index:VARIANT*
+Conversion	CBool		function		yes	BOOL	Expression:VARIANT*
+Conversion	CByte		function		yes	UI1	Expression:VARIANT*
+Conversion	CCur		function		yes	CY	Expression:VARIANT*
+Conversion	CDate		function		yes	DATE	Expression:VARIANT*
+Conversion	CDbl		function		yes	R8	Expression:VARIANT*
+Conversion	CDec		function		yes	HRESULT	Expression:VARIANT*, pvar:VARIANT*
+Conversion	CInt		function		yes	I2	Expression:VARIANT*
+Conversion	CLng		function		yes	I4	Expression:VARIANT*
+Conversion	CLngLng		function		yes	I8	Expression:VARIANT*
+Conversion	CLngPtr		function		yes	LONG_PTR	Expression:VARIANT*
+Conversion	CSng		function		yes	R4	Expression:VARIANT*
+Conversion	CStr		function		yes	BSTR	Expression:VARIANT*
+Conversion	CVar		function		yes	VARIANT	Expression:VARIANT*
+Conversion	CVDate		function		yes	VARIANT	Expression:VARIANT*
+Conversion	CVErr		function		yes	VARIANT	Expression:VARIANT*
+Conversion	Error	yes	function		yes	VARIANT	?ErrorNumber:VARIANT*
+Conversion	Fix		function		yes	VARIANT	Number:VARIANT*
+Conversion	Hex	yes	function		yes	VARIANT	Number:VARIANT*
+Conversion	Int		function		yes	VARIANT	Number:VARIANT*
+Conversion	MacID		function	yes	NO	I4	Constant:BSTR
+Conversion	Oct	yes	function		yes	VARIANT	Number:VARIANT*
+Conversion	Str	yes	function		yes	VARIANT	Number:VARIANT*
+Conversion	Val		function		yes	R8	String:BSTR
+DateTime	Calendar		property		yes	VOID	p0:VbCalendar
+DateTime	Date	yes	property		yes	VOID	p0:BSTR
+DateTime	DateAdd		function		yes	VARIANT	Interval:BSTR, Number:R8, Date:VARIANT*
+DateTime	DateDiff		function		yes	VARIANT	Interval:BSTR, Date1:VARIANT*, Date2:VARIANT*, ?FirstDayOfWeek:VbDayOfWeek, ?FirstWeekOfYear:VbFirstWeekOfYear
+DateTime	DatePart		function		yes	VARIANT	Interval:BSTR, Date:VARIANT*, ?FirstDayOfWeek:VbDayOfWeek, ?FirstWeekOfYear:VbFirstWeekOfYear
+DateTime	DateSerial		function		yes	VARIANT	Year:I2, Month:I2, Day:I2
+DateTime	DateValue		function		yes	VARIANT	Date:BSTR
+DateTime	Day		function		yes	VARIANT	Date:VARIANT*
+DateTime	Hour		function		yes	VARIANT	Time:VARIANT*
+DateTime	Minute		function		yes	VARIANT	Time:VARIANT*
+DateTime	Month		function		yes	VARIANT	Date:VARIANT*
+DateTime	Now		property		yes	VARIANT	
+DateTime	Second		function		yes	VARIANT	Time:VARIANT*
+DateTime	Time	yes	property		yes	VOID	p0:BSTR
+DateTime	Timer		property		yes	R4	
+DateTime	TimeSerial		function		yes	VARIANT	Hour:I2, Minute:I2, Second:I2
+DateTime	TimeValue		function		yes	VARIANT	Time:BSTR
+DateTime	Weekday		function		yes	VARIANT	Date:VARIANT*, ?FirstDayOfWeek:VbDayOfWeek
+DateTime	Year		function		yes	VARIANT	Date:VARIANT*
+ErrObject	Clear		function		yes	VOID	
+ErrObject	Description		property		yes	VOID	p0:BSTR
+ErrObject	HelpContext		property		yes	VOID	p0:I4
+ErrObject	HelpFile		property		yes	VOID	p0:BSTR
+ErrObject	LastDllError		property		NO	I4	
+ErrObject	Number		property		yes	VOID	p0:I4
+ErrObject	Raise		function		yes	VOID	Number:I4, ?Source:VARIANT*, ?Description:VARIANT*, ?HelpFile:VARIANT*, ?HelpContext:VARIANT*
+ErrObject	Source		property		yes	VOID	p0:BSTR
+FileSystem	ChDir		function		yes	VOID	Path:BSTR
+FileSystem	ChDrive		function		yes	VOID	Drive:BSTR
+FileSystem	CurDir	yes	function		yes	VARIANT	?Drive:VARIANT*
+FileSystem	Dir		function		yes	BSTR	?PathName:VARIANT*, ?Attributes:VbFileAttribute
+FileSystem	EOF		function		yes	BOOL	FileNumber:I2
+FileSystem	FileAttr		function		yes	I4	FileNumber:I2, ?ReturnType:I2
+FileSystem	FileCopy		function		yes	VOID	Source:BSTR, Destination:BSTR
+FileSystem	FileDateTime		function		yes	VARIANT	PathName:BSTR
+FileSystem	FileLen		function		yes	I4	PathName:BSTR
+FileSystem	FreeFile		function		yes	I2	?RangeNumber:VARIANT*
+FileSystem	GetAttr		function		yes	VbFileAttribute	PathName:BSTR
+FileSystem	Kill		function		yes	VOID	PathName:VARIANT*
+FileSystem	Loc		function		yes	I4	FileNumber:I2
+FileSystem	LOF		function		yes	I4	FileNumber:I2
+FileSystem	MkDir		function		yes	VOID	Path:BSTR
+FileSystem	Reset		function		NO	VOID	
+FileSystem	RmDir		function		yes	VOID	Path:BSTR
+FileSystem	Seek		function		yes	I4	FileNumber:I2
+FileSystem	SetAttr		function		yes	VOID	PathName:BSTR, Attributes:VbFileAttribute
+Financial	DDB		function		yes	R8	Cost:R8, Salvage:R8, Life:R8, Period:R8, ?Factor:VARIANT*
+Financial	FV		function		yes	R8	Rate:R8, NPer:R8, Pmt:R8, ?PV:VARIANT*, ?Due:VARIANT*
+Financial	IPmt		function		yes	R8	Rate:R8, Per:R8, NPer:R8, PV:R8, ?FV:VARIANT*, ?Due:VARIANT*
+Financial	IRR		function		yes	R8	ValueArray:R8()*, ?Guess:VARIANT*
+Financial	MIRR		function		yes	R8	ValueArray:R8()*, FinanceRate:R8, ReinvestRate:R8
+Financial	NPer		function		yes	R8	Rate:R8, Pmt:R8, PV:R8, ?FV:VARIANT*, ?Due:VARIANT*
+Financial	NPV		function		yes	R8	Rate:R8, ValueArray:R8()*
+Financial	Pmt		function		yes	R8	Rate:R8, NPer:R8, PV:R8, ?FV:VARIANT*, ?Due:VARIANT*
+Financial	PPmt		function		yes	R8	Rate:R8, Per:R8, NPer:R8, PV:R8, ?FV:VARIANT*, ?Due:VARIANT*
+Financial	PV		function		yes	R8	Rate:R8, NPer:R8, Pmt:R8, ?FV:VARIANT*, ?Due:VARIANT*
+Financial	Rate		function		yes	R8	NPer:R8, Pmt:R8, PV:R8, ?FV:VARIANT*, ?Due:VARIANT*, ?Guess:VARIANT*
+Financial	SLN		function		yes	R8	Cost:R8, Salvage:R8, Life:R8
+Financial	SYD		function		yes	R8	Cost:R8, Salvage:R8, Life:R8, Period:R8
+Information	Erl		function	yes	NO	I4	
+Information	Err		function		NO	ErrObject*	
+Information	IMEStatus		function		yes	VbIMEStatus	
+Information	IsArray		function		yes	BOOL	VarName:VARIANT*
+Information	IsDate		function		yes	BOOL	Expression:VARIANT*
+Information	IsEmpty		function		yes	BOOL	Expression:VARIANT*
+Information	IsError		function		yes	BOOL	Expression:VARIANT*
+Information	IsMissing		function		yes	BOOL	ArgName:VARIANT*
+Information	IsNull		function		yes	BOOL	Expression:VARIANT*
+Information	IsNumeric		function		yes	BOOL	Expression:VARIANT*
+Information	IsObject		function		yes	BOOL	Expression:VARIANT*
+Information	QBColor		function		yes	I4	Color:I2
+Information	RGB		function		yes	I4	Red:I2, Green:I2, Blue:I2
+Information	TypeName		function		yes	BSTR	VarName:VARIANT*
+Information	VarType		function		yes	VbVarType	VarName:VARIANT*
+Interaction	AppActivate		function		yes	VOID	Title:VARIANT*, ?Wait:VARIANT*
+Interaction	Beep		function		yes	VOID	
+Interaction	CallByName		function		yes	VARIANT	Object:DISPATCH, ProcName:BSTR, CallType:VbCallType, Args:VARIANT()*, lcid:I4, ParamArray
+Interaction	Choose		function		yes	VARIANT	Index:R4, Choice:VARIANT()*, ParamArray
+Interaction	Command	yes	function		yes	BSTR	
+Interaction	CreateObject		function		yes	VARIANT	Class:BSTR, ?ServerName:BSTR
+Interaction	DeleteSetting		function		yes	VOID	AppName:BSTR, ?Section:VARIANT, ?Key:VARIANT
+Interaction	DoEvents		function		yes	I2	
+Interaction	Environ	yes	function		yes	VARIANT	Expression:VARIANT*
+Interaction	GetAllSettings		function		yes	VARIANT	AppName:BSTR, Section:BSTR
+Interaction	GetObject		function		yes	VARIANT	?PathName:VARIANT*, ?Class:VARIANT*
+Interaction	GetSetting		function		yes	BSTR	AppName:BSTR, Section:BSTR, Key:BSTR, ?Default:VARIANT
+Interaction	IIf		function		yes	VARIANT	Expression:VARIANT*, TruePart:VARIANT*, FalsePart:VARIANT*
+Interaction	InputBox		function		yes	BSTR	Prompt:VARIANT*, ?Title:VARIANT*, ?Default:VARIANT*, ?XPos:VARIANT*, ?YPos:VARIANT*, ?HelpFile:VARIANT*, ?Context:VARIANT*
+Interaction	MacScript		function	yes	NO	BSTR	Script:BSTR
+Interaction	MsgBox		function		yes	VbMsgBoxResult	Prompt:VARIANT*, ?Buttons:VbMsgBoxStyle, ?Title:VARIANT*, ?HelpFile:VARIANT*, ?Context:VARIANT*
+Interaction	Partition		function		yes	VARIANT	Number:VARIANT*, Start:VARIANT*, Stop:VARIANT*, Interval:VARIANT*
+Interaction	SaveSetting		function		yes	VOID	AppName:BSTR, Section:BSTR, Key:BSTR, Setting:BSTR
+Interaction	SendKeys		function		yes	VOID	String:BSTR, ?Wait:VARIANT*
+Interaction	Shell		function		yes	R8	PathName:VARIANT*, ?WindowStyle:VbAppWinStyle
+Interaction	Switch		function		yes	VARIANT	VarExpr:VARIANT()*, ParamArray
+Match	FirstIndex		property		NO	I4	
+Match	Length		property		NO	I4	
+Match	SubMatches		property		NO	DISPATCH	
+Match	Value		property		NO	BSTR	
+MatchCollection	_NewEnum		property		NO	UNKNOWN	
+MatchCollection	Count		property		yes	I4	
+MatchCollection	Item		property		yes	DISPATCH	Index:I4
+Math	Abs		function		yes	VARIANT	Number:VARIANT*
+Math	Atn		function		yes	R8	Number:R8
+Math	Cos		function		yes	R8	Number:R8
+Math	Exp		function		yes	R8	Number:R8
+Math	Log		function		yes	R8	Number:R8
+Math	Randomize		function		yes	VOID	?Number:VARIANT*
+Math	Rnd		function		yes	R4	?Number:VARIANT*
+Math	Round		function		yes	VARIANT	Number:VARIANT*, ?NumDigitsAfterDecimal:I4
+Math	Sgn		function		yes	VARIANT	Number:VARIANT*
+Math	Sin		function		yes	R8	Number:R8
+Math	Sqr		function		yes	R8	Number:R8
+Math	Tan		function		yes	R8	Number:R8
+RegExp	Execute		function		NO	DISPATCH	sourceString:BSTR
+RegExp	Global		property		NO	VOID	p0:BOOL
+RegExp	IgnoreCase		property		NO	VOID	p0:BOOL
+RegExp	Multiline		property		NO	VOID	p0:BOOL
+RegExp	Pattern		property		NO	VOID	p0:BSTR
+RegExp	Replace		function		yes	BSTR	sourceString:BSTR, replaceVar:VARIANT
+RegExp	Test		function		NO	BOOL	sourceString:BSTR
+Strings	Asc		function		yes	I2	String:BSTR
+Strings	AscB		function		yes	UI1	String:BSTR
+Strings	AscW		function		yes	I2	String:BSTR
+Strings	Chr	yes	function		yes	VARIANT	CharCode:I4
+Strings	ChrB	yes	function		yes	VARIANT	CharCode:UI1
+Strings	ChrW	yes	function		yes	VARIANT	CharCode:I4
+Strings	Filter		function		yes	VARIANT	SourceArray:VARIANT*, Match:BSTR, ?Include:BOOL, ?Compare:VbCompareMethod
+Strings	Format	yes	function		yes	VARIANT	Expression:VARIANT*, ?Format:VARIANT*, ?FirstDayOfWeek:VbDayOfWeek, ?FirstWeekOfYear:VbFirstWeekOfYear
+Strings	FormatCurrency		function		yes	BSTR	Expression:VARIANT*, ?NumDigitsAfterDecimal:INT, ?IncludeLeadingDigit:VbTriState, ?UseParensForNegativeNumbers:VbTriState, ?GroupDigits:VbTriState
+Strings	FormatDateTime		function		yes	BSTR	Expression:VARIANT*, ?NamedFormat:VbDateTimeFormat
+Strings	FormatNumber		function		yes	BSTR	Expression:VARIANT*, ?NumDigitsAfterDecimal:INT, ?IncludeLeadingDigit:VbTriState, ?UseParensForNegativeNumbers:VbTriState, ?GroupDigits:VbTriState
+Strings	FormatPercent		function		yes	BSTR	Expression:VARIANT*, ?NumDigitsAfterDecimal:INT, ?IncludeLeadingDigit:VbTriState, ?UseParensForNegativeNumbers:VbTriState, ?GroupDigits:VbTriState
+Strings	InStr		function		yes	VARIANT	?Start:VARIANT*, ?String1:VARIANT*, ?String2:VARIANT*, ?Compare:VbCompareMethod
+Strings	InStrB		function		yes	VARIANT	?Start:VARIANT*, ?String1:VARIANT*, ?String2:VARIANT*, ?Compare:VbCompareMethod
+Strings	InStrRev		function		yes	I4	StringCheck:BSTR, StringMatch:BSTR, ?Start:I4, ?Compare:VbCompareMethod
+Strings	Join		function		yes	BSTR	SourceArray:VARIANT*, ?Delimiter:VARIANT*
+Strings	LCase	yes	function		yes	VARIANT	String:VARIANT*
+Strings	Left	yes	function		yes	VARIANT	String:VARIANT*, Length:I4
+Strings	LeftB	yes	function		yes	VARIANT	String:VARIANT*, Length:I4
+Strings	Len		function		yes	VARIANT	Expression:VARIANT*
+Strings	LenB		function		yes	VARIANT	Expression:VARIANT*
+Strings	LTrim	yes	function		yes	VARIANT	String:VARIANT*
+Strings	Mid	yes	function		yes	VARIANT	String:VARIANT*, Start:I4, ?Length:VARIANT*
+Strings	MidB	yes	function		yes	VARIANT	String:VARIANT*, Start:I4, ?Length:VARIANT*
+Strings	MonthName		function		yes	BSTR	Month:INT, ?Abbreviate:BOOL
+Strings	Replace		function		yes	BSTR	Expression:BSTR, Find:BSTR, Replace:BSTR, ?Start:I4, ?Count:I4, ?Compare:VbCompareMethod
+Strings	Right	yes	function		yes	VARIANT	String:VARIANT*, Length:I4
+Strings	RightB	yes	function		yes	VARIANT	String:VARIANT*, Length:I4
+Strings	RTrim	yes	function		yes	VARIANT	String:VARIANT*
+Strings	Space	yes	function		yes	VARIANT	Number:I4
+Strings	Split		function		yes	VARIANT	Expression:BSTR, ?Delimiter:VARIANT*, ?Limit:I4, ?Compare:VbCompareMethod
+Strings	StrComp		function		yes	VARIANT	String1:VARIANT*, String2:VARIANT*, ?Compare:VbCompareMethod
+Strings	StrConv		function		yes	VARIANT	String:VARIANT*, Conversion:VbStrConv, ?LocaleID:I4
+Strings	String	yes	function		yes	VARIANT	Number:I4, Character:VARIANT*
+Strings	StrReverse		function		yes	BSTR	Expression:BSTR
+Strings	Trim	yes	function		yes	VARIANT	String:VARIANT*
+Strings	UCase	yes	function		yes	VARIANT	String:VARIANT*
+Strings	WeekdayName		function		yes	BSTR	Weekday:INT, ?Abbreviate:BOOL, ?FirstDayOfWeek:VbDayOfWeek
+SubMatches	_NewEnum		property		NO	UNKNOWN	
+SubMatches	Count		property		yes	I4	
+SubMatches	Item		property		yes	VARIANT	Index:I4
+VBEGlobal	Load		function		yes	HRESULT	Object:DISPATCH
+VBEGlobal	Unload		function		yes	HRESULT	Object:DISPATCH
+VBEGlobal	UserForms		property		NO	HRESULT	pdispRetVal:DISPATCH*

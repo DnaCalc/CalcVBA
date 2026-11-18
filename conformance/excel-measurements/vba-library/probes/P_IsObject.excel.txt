@@ -1,0 +1,14 @@
+IsObject.1=Boolean:True
+IsObject.2=Boolean:True
+IsObject.3=Boolean:True
+IsObject.4=Boolean:True
+IsObject.5=Boolean:False
+IsObject.6=Boolean:False
+IsObject.7=Boolean:False
+IsObject.8=Boolean:False
+IsObject.9=Boolean:True
+IsObject.10=Boolean:True
+IsObject.11=Boolean:False
+IsObject.12=Boolean:False
+IsObject.13=Boolean:False
+IsObject.14=Boolean:False

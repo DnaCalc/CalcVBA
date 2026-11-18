@@ -7178,7 +7178,17 @@ impl<'a> LowerFunc<'a> {
                         matches!(place_ty(self.program, self.func, dst), Ok(OxTy::Variant))
                     }
                 };
-                if pure_module && variant_destination {
+                // A record argument has no Variant form the native library ABI can carry (the
+                // typed checks name the record shapes they lower); keep their refusal.
+                let record_argument = args.iter().any(|arg| match arg {
+                    calcvba_oxir::OxArg::ByRef(place)
+                    | calcvba_oxir::OxArg::ByVal(OxOperand::Use(place)) => matches!(
+                        place_ty(self.program, self.func, *place),
+                        Ok(OxTy::Record(_))
+                    ),
+                    _ => false,
+                });
+                if pure_module && variant_destination && !record_argument {
                     Ok(())
                 } else {
                     Err(error)

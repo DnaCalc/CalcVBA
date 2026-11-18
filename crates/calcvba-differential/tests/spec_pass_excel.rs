@@ -74,7 +74,9 @@ const CASES: &[(&str, &str, &str)] = cases!(
     "CmpPropOptional",
 );
 
-/// SpecStmt cases that touch the file system through Windows paths; checked on Windows only.
+/// SpecStmt cases that touch the file system. `run_modules` runs under the restricted host policy
+/// (no real file system), so these are checked by `spec_pass_laned_vm3.rs` on a native-policy
+/// engine (temp directory, Linux and Windows) instead.
 const FILE_KEYS: &[&str] = &[
     "openMissing",
     "openTwice",
@@ -133,9 +135,7 @@ fn known(executor: Executor) -> std::collections::BTreeSet<&'static str> {
 }
 
 fn skipped(module: &str, line: &str) -> bool {
-    module == "SpecStmt"
-        && !cfg!(windows)
-        && FILE_KEYS.contains(&line.split('=').next().unwrap_or(""))
+    module == "SpecStmt" && FILE_KEYS.contains(&line.split('=').next().unwrap_or(""))
 }
 
 /// The lines (as `Module: line`) where `executor` differs from Excel, and any known-differences

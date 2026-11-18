@@ -1,0 +1,16 @@
+Asc.1=Integer:65
+Asc.2=Integer:65
+Asc.3=ERR5
+Asc.4=ERR94
+Asc.5=Integer:233
+Asc.6=Integer:128
+Asc.7=Integer:63
+Asc.8=Integer:200
+Asc.9=Integer:49
+Asc.10=Integer:120
+Asc.11=Integer:160
+Asc.12=Integer:128
+Asc.13=ERR5
+Asc.14=Integer:63
+Asc.15=Integer:223
+Asc.16=Integer:150

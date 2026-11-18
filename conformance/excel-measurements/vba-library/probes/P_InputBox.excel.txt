@@ -1,0 +1,3 @@
+InputBox.1=Long:0
+InputBox.2=Long:-2
+InputBox.3=Boolean:True

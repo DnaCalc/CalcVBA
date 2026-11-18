@@ -1,0 +1,15 @@
+ChDir.1=Boolean:True
+ChDir.2=Boolean:True
+ChDir.3=Boolean:True
+ChDir.4=Boolean:True
+ChDir.5=ERR76
+ChDir.6=ERR76
+ChDir.7=ERR76
+ChDir.8=String:[3:True]
+ChDir.9=Boolean:True
+ChDir.10=Boolean:True
+ChDir.11=ERR94
+ChDir.12=ERR76
+ChDir.13=String:[False,True]
+ChDir.14=Boolean:True
+ChDir.15=Boolean:True

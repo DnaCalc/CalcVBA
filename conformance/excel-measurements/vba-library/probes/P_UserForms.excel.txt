@@ -1,0 +1,8 @@
+UserForms.1=String:[Object]
+UserForms.2=Integer:0
+UserForms.3=String:[Integer]
+UserForms.4=Boolean:True
+UserForms.5=Boolean:False
+UserForms.6=Long:0
+UserForms.7=ERR9
+UserForms.8=Long:9

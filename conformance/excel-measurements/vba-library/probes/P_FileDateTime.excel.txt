@@ -1,0 +1,17 @@
+FileDateTime.1=String:[Date]
+FileDateTime.2=Boolean:True
+FileDateTime.3=Boolean:True
+FileDateTime.4=String:[Date,True]
+FileDateTime.5=ERR53
+FileDateTime.6=ERR76
+FileDateTime.7=ERR53
+FileDateTime.8=ERR94
+FileDateTime.9=ERR52
+FileDateTime.10=Boolean:True
+FileDateTime.11=Boolean:True
+FileDateTime.12=String:[Date]
+FileDateTime.13=String:[Date]
+FileDateTime.14=ERR53
+FileDateTime.15=Boolean:True
+FileDateTime.16=ERR53
+FileDateTime.17=ERR53

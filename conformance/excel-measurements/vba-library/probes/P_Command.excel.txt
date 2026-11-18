@@ -1,0 +1,8 @@
+Command.1=String:[String]
+Command.2=String:[String]
+Command.3=Boolean:True
+Command.4=Boolean:True
+Command.5=Long:8
+Command.6=String:[String]
+Command.7=Boolean:True
+Command.8=Boolean:True

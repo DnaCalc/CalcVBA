@@ -1,0 +1,13 @@
+ChDrive.1=Boolean:True
+ChDrive.2=Boolean:True
+ChDrive.3=Boolean:True
+ChDrive.4=Boolean:True
+ChDrive.5=Boolean:True
+ChDrive.6=ERR5
+ChDrive.7=ERR94
+ChDrive.8=ERR5
+ChDrive.9=Boolean:True
+ChDrive.10=Boolean:True
+ChDrive.11=ERR5
+ChDrive.12=ERR5
+ChDrive.13=Boolean:True

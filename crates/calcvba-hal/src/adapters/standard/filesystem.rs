@@ -3,6 +3,7 @@ use crate::{
     model::CapabilityId,
     traits::FileSystemHal,
 };
+use calcvba_runtime::vba_record::VbaRecordFieldKind;
 use calcvba_runtime::{VarType, Variant, bstr::BStr, vba_date::ymd_to_serial};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
@@ -262,6 +263,80 @@ fn deserialize_record(vtype: VarType, bytes: &[u8]) -> Variant {
     }
 }
 
+/// Fixed UDT file storage is packed field-by-field, without native alignment
+/// padding. Fixed strings contain ANSI bytes rather than the native UTF-16.
+fn serialize_udt_field(kind: &VbaRecordFieldKind, value: &Variant) -> Result<Vec<u8>, String> {
+    use VbaRecordFieldKind as F;
+    let size = kind.file_len()?;
+    let mut bytes = Vec::with_capacity(size);
+    match kind {
+        F::Record(layout) => {
+            for (index, field) in layout.fields().iter().enumerate() {
+                bytes.extend(serialize_udt_field(
+                    field.kind(),
+                    &value.read_record_field_variant(index)?,
+                )?);
+            }
+        }
+        F::FixedArray { element, .. } => {
+            let array = value.as_safearray().ok_or("expected fixed array field")?;
+            for index in 0..array.len() {
+                bytes.extend(serialize_udt_field(
+                    element,
+                    &array.variant_element(index)?,
+                )?);
+            }
+        }
+        F::FixedString { .. } => {
+            bytes = serialize_record(value, MODE_BINARY, true);
+            bytes.resize(size, 0);
+            bytes.truncate(size);
+        }
+        _ => bytes = serialize_record(value, MODE_BINARY, false),
+    }
+    Ok(bytes)
+}
+
+fn deserialize_udt_field(
+    kind: &VbaRecordFieldKind,
+    shape: &Variant,
+    bytes: &[u8],
+) -> Result<Variant, String> {
+    use VbaRecordFieldKind as F;
+    match kind {
+        F::Record(layout) => {
+            let mut record = shape.clone();
+            let mut offset = 0;
+            for (index, field) in layout.fields().iter().enumerate() {
+                let end = offset + field.kind().file_len()?;
+                let value = deserialize_udt_field(
+                    field.kind(),
+                    &shape.read_record_field_variant(index)?,
+                    &bytes[offset..end],
+                )?;
+                record.write_record_field_variant(index, &value)?;
+                offset = end;
+            }
+            Ok(record)
+        }
+        F::FixedArray { element, .. } => {
+            let mut array = shape.as_safearray().ok_or("expected fixed array field")?;
+            let size = element.file_len()?;
+            for index in 0..array.len() {
+                let offset = index * size;
+                let value = deserialize_udt_field(
+                    element,
+                    &array.variant_element(index)?,
+                    &bytes[offset..offset + size],
+                )?;
+                array.set_variant_element(index, &value)?;
+            }
+            Ok(Variant::from_safearray(array))
+        }
+        _ => Ok(deserialize_record(shape.vtype(), bytes)),
+    }
+}
+
 impl FileSystemState {
     pub(super) fn first_free_in(&self, start: i32, end: i32) -> Option<i32> {
         let in_use: BTreeSet<i32> = self.handles.keys().copied().collect();
@@ -310,14 +385,13 @@ fn seek_report(entry: &FileHandleState) -> i32 {
 
 /// The value VBA `Loc(filenumber)` reports: the number of the last record
 /// read/written (Random); the 1-based offset of the last byte (Binary), which is
-/// exactly the 0-based next-byte cursor; or `current byte position \ 128` for the
-/// sequential modes. The sequential value is documented by Microsoft as "neither
-/// used nor required"; the `\ 128` form matches a live `Output` probe (200→1,
-/// 400→3) and the documented formula.
+/// exactly the 0-based next-byte cursor. Input rounds up to 128-byte blocks,
+/// with a minimum of one; Output/Append count complete blocks (Excel P_Loc).
 fn loc_report(entry: &FileHandleState) -> i32 {
     match entry.mode {
         MODE_RANDOM if entry.record_len > 0 => entry.position / entry.record_len,
         MODE_BINARY | MODE_RANDOM => entry.position,
+        0 => (entry.position.saturating_add(127) / 128).max(1),
         _ => entry.position / 128,
     }
 }
@@ -1380,7 +1454,11 @@ impl FileSystemHal for StandardHostServices {
             entry.data.resize(end, 0);
         }
         entry.data[pos..end].copy_from_slice(bytes);
-        entry.position = end as i32;
+        entry.position = if entry.mode == MODE_APPEND {
+            entry.position.saturating_add(bytes.len() as i32)
+        } else {
+            end as i32
+        };
         entry.len = entry.data.len() as i32;
         entry.print_column = print_column_after_text(entry.print_column, &text);
         Ok(Variant::from_i32(bytes.len() as i32))
@@ -1412,7 +1490,11 @@ impl FileSystemHal for StandardHostServices {
             entry.data.resize(end, 0);
         }
         entry.data[pos..end].copy_from_slice(bytes);
-        entry.position = end as i32;
+        entry.position = if entry.mode == MODE_APPEND {
+            entry.position.saturating_add(bytes.len() as i32)
+        } else {
+            end as i32
+        };
         entry.len = entry.data.len() as i32;
         entry.print_column = print_column_after_text(entry.print_column, &text);
         Ok(Variant::from_i32(0))
@@ -1482,6 +1564,10 @@ impl FileSystemHal for StandardHostServices {
             return Ok(Variant::from_string(BStr::empty()));
         }
         let remaining = &entry.data[pos..];
+        let dos_eof = (entry.mode == 0)
+            .then(|| remaining.iter().position(|&b| b == 26))
+            .flatten();
+        let remaining = &remaining[..dos_eof.unwrap_or(remaining.len())];
         let line_end = remaining
             .iter()
             .position(|&b| b == b'\n')
@@ -1493,8 +1579,11 @@ impl FileSystemHal for StandardHostServices {
                 }
             })
             .unwrap_or((remaining.len(), remaining.len()));
-        let line = String::from_utf8_lossy(&remaining[..line_end.0]).into_owned();
+        let line = calcvba_runtime::ansi::ansi_decode(&remaining[..line_end.0]);
         entry.position += line_end.1 as i32;
+        if dos_eof == Some(line_end.1) {
+            entry.input_text_eof = true;
+        }
         Ok(Variant::from_string(line))
     }
 
@@ -1534,7 +1623,16 @@ impl FileSystemHal for StandardHostServices {
         let mut state = self.borrow_fs(capability, "put")?;
         let entry = self.fs_entry_mut(&mut state, handle_id, "put")?;
         let mode = entry.mode;
-        let bytes = serialize_record(&value, mode, fixed);
+        let bytes = if let Some(layout) = value.vba_record_layout() {
+            serialize_udt_field(&VbaRecordFieldKind::Record(layout.clone()), &value).map_err(
+                |message| {
+                    HalError::adapter_fault(self.profile, capability, "put", message)
+                        .with_host_error_code(13)
+                },
+            )?
+        } else {
+            serialize_record(&value, mode, fixed)
+        };
         // Random mode positions by fixed-width record slot (`(rec-1)*stride`),
         // padding the slot; Binary mode positions by byte offset.
         let (offset, slot) = if mode == MODE_RANDOM {
@@ -1600,6 +1698,9 @@ impl FileSystemHal for StandardHostServices {
             return self.get_array_record(handle_id, explicit, code & 0x0FFF, &str_len);
         }
         let vt = VarType::from_u16(code).unwrap_or(VarType::Empty);
+        if vt == VarType::Record {
+            return self.get_udt_record(handle_id, explicit, &str_len);
+        }
         let fixed_numeric = record_size(vt);
         // `str_len` carries the string length intent: > 0 = a fixed-length string of
         // that many bytes (no prefix, any mode); <= 0 = a variable string, where
@@ -2083,6 +2184,45 @@ impl FileSystemHal for StandardHostServices {
 }
 
 impl StandardHostServices {
+    fn get_udt_record(
+        &self,
+        handle: i32,
+        explicit: Option<i32>,
+        shape: &Variant,
+    ) -> HalResult<Variant> {
+        let capability = CapabilityId::FileSystemIo;
+        let fault = |message| {
+            HalError::adapter_fault(self.profile, capability, "get", message)
+                .with_host_error_code(13)
+        };
+        let layout = shape
+            .vba_record_layout()
+            .ok_or_else(|| fault("expected record layout".to_string()))?;
+        let kind = VbaRecordFieldKind::Record(layout.clone());
+        let size = kind.file_len().map_err(fault)?;
+        let mut state = self.borrow_fs(capability, "get")?;
+        let entry = self.fs_entry_mut(&mut state, handle, "get")?;
+        let stride = if entry.mode == MODE_RANDOM && entry.record_len > 0 {
+            entry.record_len as usize
+        } else {
+            size
+        };
+        let offset = match explicit {
+            Some(rec) if rec >= 1 => ((rec - 1) as usize)
+                .saturating_mul(if entry.mode == MODE_RANDOM { stride } else { 1 }),
+            _ => entry.position.max(0) as usize,
+        };
+        let start = offset.min(entry.data.len());
+        let end = offset.saturating_add(size).min(entry.data.len());
+        let mut bytes = entry.data[start..end].to_vec();
+        let short = bytes.len() < size;
+        bytes.resize(size, 0);
+        let value = deserialize_udt_field(&kind, shape, &bytes).map_err(fault)?;
+        entry.get_hit_eof = short;
+        entry.position = offset.saturating_add(stride) as i32;
+        Ok(value)
+    }
+
     /// `Get #n, [rec], array`: read one element per slot of `shape` (the target array) into
     /// a new array of the same bounds. A short read zero-fills and marks the file at EOF.
     fn get_array_record(
@@ -2376,6 +2516,52 @@ fn wildcard_casefold(text: &str) -> String {
 mod record_io_tests {
     use super::{MODE_BINARY, MODE_RANDOM, deserialize_record, record_size, serialize_record};
     use calcvba_runtime::{VarType, Variant};
+
+    #[test]
+    fn udt_file_bytes_omit_native_padding_and_encode_fixed_strings_as_ansi() {
+        use calcvba_runtime::vba_record::{
+            VbaRecord, VbaRecordFieldKind as F, VbaRecordFieldSpec, VbaRecordLayout,
+        };
+        let layout = std::sync::Arc::new(
+            VbaRecordLayout::new(vec![
+                VbaRecordFieldSpec::anonymous(F::Long),
+                VbaRecordFieldSpec::anonymous(F::FixedString { len: 6 }),
+            ])
+            .unwrap(),
+        );
+        let mut record = VbaRecord::new_default(layout.clone()).unwrap();
+        record
+            .write_field_variant(0, &Variant::from_i32(29))
+            .unwrap();
+        record
+            .write_field_variant(1, &Variant::from_string("abc"))
+            .unwrap();
+        let source = Variant::from_vba_record(record);
+        let kind = F::Record(layout);
+        let bytes = super::serialize_udt_field(&kind, &source).unwrap();
+        assert_eq!(bytes, [29, 0, 0, 0, b'a', b'b', b'c', b' ', b' ', b' ']);
+        let mut target = source.clone();
+        target
+            .write_record_field_variant(0, &Variant::from_i32(99))
+            .unwrap();
+        target
+            .write_record_field_variant(1, &Variant::from_string("xxxxxx"))
+            .unwrap();
+        let result = super::deserialize_udt_field(&kind, &target, &bytes).unwrap();
+        assert_eq!(
+            result.read_record_field_variant(0).unwrap().as_i32(),
+            Some(29)
+        );
+        assert_eq!(
+            result
+                .read_record_field_variant(1)
+                .unwrap()
+                .as_bstr()
+                .unwrap()
+                .as_str(),
+            "abc   "
+        );
+    }
 
     #[test]
     fn long_serializes_little_endian_and_round_trips() {

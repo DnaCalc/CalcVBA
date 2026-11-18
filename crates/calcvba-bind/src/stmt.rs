@@ -2174,7 +2174,8 @@ impl<'a> ProcLower<'a> {
                     num: NumericMode::Widening,
                 }
             }
-            calcvba_symbol::signature::VarTypeRef::Array(_) => self.bind_expr(*target_node)?.value,
+            calcvba_symbol::signature::VarTypeRef::Array(_)
+            | calcvba_symbol::signature::VarTypeRef::Udt(_) => self.bind_expr(*target_node)?.value,
             _ => CoreValue::Const(CoreConst::I32(0)),
         };
         let args = vec![
@@ -2265,6 +2266,7 @@ fn record_type_code(
         VarTypeRef::Builtin(B::Currency) => Vt::Currency,
         VarTypeRef::Builtin(B::Date) => Vt::Date,
         VarTypeRef::Builtin(B::String) | VarTypeRef::FixedString(_) => Vt::String,
+        VarTypeRef::Udt(_) => Vt::Record,
         _ => Vt::Empty,
     };
     vt as i32

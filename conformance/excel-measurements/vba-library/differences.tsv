@@ -313,10 +313,6 @@ P_DoEvents	vm3	type		DoEvents.8=Integer:0	DoEvents.8=Long:0
 P_DoEvents	jit	type		DoEvents.8=Integer:0	DoEvents.8=Long:0
 P_DoEvents	vm3	type		DoEvents.9=Integer:0	DoEvents.9=Long:0
 P_DoEvents	jit	type		DoEvents.9=Integer:0	DoEvents.9=Long:0
-P_EOF	vm3	value		EOF.4=String:[String:[ab],True]	EOF.4=String:[String:[ab{123}26{125}cd],True]
-P_EOF	jit	value		EOF.4=String:[String:[ab],True]	EOF.4=String:[String:[ab{123}26{125}cd],True]
-P_EOF	vm3	error		EOF.16=ERR94	EOF.16=ERR52
-P_EOF	jit	error		EOF.16=ERR94	EOF.16=ERR52
 P_Environ	vm3	value		Environ.3=String:[String]	Environ.3=String:[Long]
 P_Environ	jit	value		Environ.3=String:[String]	Environ.3=String:[Long]
 P_Environ	vm3	value		Environ.4=String:[String]	Environ.4=String:[Long]
@@ -1007,20 +1003,6 @@ P_LenB	vm3	value		LenB.20=Long:3	LenB.20=Long:0
 P_LenB	jit	value		LenB.20=Long:3	LenB.20=Long:0
 P_LenB	vm3	error		LenB.22=ERR13	LenB.22=Long:4
 P_LenB	jit	error		LenB.22=ERR13	LenB.22=Long:4
-P_Loc	vm3	value		Loc.3=String:[1,3,4]	Loc.3=String:[0,2,3]
-P_Loc	jit	value		Loc.3=String:[1,3,4]	Loc.3=String:[0,2,3]
-P_Loc	vm3	value		Loc.5=String:[0,0]	Loc.5=String:[0,2]
-P_Loc	jit	value		Loc.5=String:[0,0]	Loc.5=String:[0,2]
-P_Loc	vm3	error		Loc.10=String:[1,2,1:1]	Loc.10=ERR13
-P_Loc	jit	error		Loc.10=String:[1,2,1:1]	Loc.10=ERR13
-P_Loc	vm3	value		Loc.11=Long:1	Loc.11=Long:0
-P_Loc	jit	value		Loc.11=Long:1	Loc.11=Long:0
-P_Loc	vm3	error		Loc.12=ERR94	Loc.12=ERR52
-P_Loc	jit	error		Loc.12=ERR94	Loc.12=ERR52
-P_Loc	vm3	value		Loc.13=Long:3	Loc.13=Long:2
-P_Loc	jit	value		Loc.13=Long:3	Loc.13=Long:2
-P_Loc	vm3	value		Loc.14=Long:1	Loc.14=Long:0
-P_Loc	jit	value		Loc.14=Long:1	Loc.14=Long:0
 P_Log	vm3	missing		Log.24=Double:0000000000000000|0	<failed: bind: unresolved name `Number` (named argument)>
 P_Log	jit	missing		Log.24=Double:0000000000000000|0	<failed: bind: unresolved name `Number` (named argument)>
 P_MIRR	vm3	value		MIRR.1=Double:3FC023DA3B11CED0|0.126094130365905	MIRR.1=Double:3FC023DA3B11CEC8|0.126094130365905
@@ -1447,10 +1429,6 @@ P_Second	vm3	error		Second.17=ERR13	Second.17=Integer:0
 P_Second	jit	error		Second.17=ERR13	Second.17=Integer:0
 P_Second	vm3	missing		Second.18=Integer:30	<failed: bind: unresolved name `Time` (named argument)>
 P_Second	jit	missing		Second.18=Integer:30	<failed: bind: unresolved name `Time` (named argument)>
-P_Seek	vm3	value		Seek.7=String:[1,3]	Seek.7=String:[1,7]
-P_Seek	jit	value		Seek.7=String:[1,3]	Seek.7=String:[1,7]
-P_Seek	vm3	error		Seek.18=ERR94	Seek.18=Empty
-P_Seek	jit	error		Seek.18=ERR94	Seek.18=Empty
 P_Shell	vm3	error		Shell.1=ERR53	Shell.1=Long:1
 P_Shell	jit	error		Shell.1=ERR53	Shell.1=Long:1
 P_Shell	vm3	error		Shell.2=ERR53	Shell.2=Long:1

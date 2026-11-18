@@ -2205,7 +2205,8 @@ mod tests {
 
         let loc = crate::traits::FileSystemHal::loc_variant(&host, handle_variant.clone())
             .expect("variant loc");
-        assert_eq!(loc, Variant::from_i32(0));
+        // Excel P_Loc.11/.14: sequential Input starts in the first 128-byte block.
+        assert_eq!(loc, Variant::from_i32(1));
 
         // The `Seek #n, pos` STATEMENT form (position present) repositions and yields no
         // value — the discarded result is `Empty`. (The 1-based `Seek(f)` FUNCTION form is

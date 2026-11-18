@@ -529,16 +529,45 @@ pub fn filter(args: &[Variant]) -> LibResult<Variant> {
 }
 
 pub fn join(args: &[Variant]) -> LibResult<Variant> {
-    let array = need(args, 0)?
-        .as_safearray()
+    let source = need(args, 0)?;
+    let element_type = source
+        .array_element_vartype()
         .ok_or_else(|| LibError::type_mismatch("Join expects an array"))?;
-    let delim = match opt(args, 1) {
-        Some(v) => as_str(v)?,
-        None => " ".to_string(),
+    if !matches!(element_type, VT_BSTR_VALUE | VT_VARIANT_VALUE) {
+        return Err(LibError::invalid_call(
+            "Join requires a String or Variant array",
+        ));
+    }
+    let delimiter = match opt(args, 1).filter(|value| !missing_sentinel(value)) {
+        Some(value) => string_units(value)?,
+        None => vec![u16::from(b' ')],
     };
-    let parts = array.variant_elements().unwrap_or_default();
-    let texts: LibResult<Vec<String>> = parts.iter().map(as_str).collect();
-    Ok(vstr(texts?.join(&delim)))
+    let Some(array) = source.as_safearray() else {
+        return Ok(vstr(""));
+    };
+    if array.dimensions() != 1 {
+        return Err(LibError::invalid_call(
+            "Join requires a one-dimensional array",
+        ));
+    }
+    let mut result = Vec::new();
+    for (index, element) in array
+        .variant_elements()
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+    {
+        if element.vtype() == VarType::Error {
+            return Err(LibError::type_mismatch(
+                "Join cannot convert an Error element to String",
+            ));
+        }
+        if index != 0 {
+            result.extend_from_slice(&delimiter);
+        }
+        result.extend(string_units(element)?);
+    }
+    Ok(Variant::from_utf16_units(&result))
 }
 
 /// `Replace(expr, find, replace, [start], [count], [compare])`. Per VBA the
@@ -2301,8 +2330,14 @@ fn conv_f64(value: &Variant) -> LibResult<f64> {
         return Ok(f64::from(code));
     }
     if value.vtype() == VarType::String {
-        return parse_vba_numeric_string(&as_str(value)?)
-            .ok_or_else(|| LibError::type_mismatch("expected a numeric value"));
+        let text = as_str(value)?;
+        let exponent = text.find(['e', 'E', 'd', 'D']).unwrap_or(text.len());
+        let (mantissa, exponent) = text.split_at(exponent);
+        // Excel ignores spaces and nonbreaking spaces in the mantissa, but not
+        // tabs or spaces inside the exponent ("1 000" works; "1e3 0" fails).
+        let text = mantissa.replace([' ', '\u{a0}'], "") + exponent;
+        return calcvba_runtime::coerce::parse_vba_number(&text)
+            .map_err(|error| LibError::new(error.code(), default_error_message(error.code())));
     }
     as_f64(value)
 }
@@ -2572,10 +2607,12 @@ pub fn cdbl(args: &[Variant]) -> LibResult<Variant> {
 /// `CSng` — to `Single`; a value outside the `Single` range overflows.
 pub fn csng(args: &[Variant]) -> LibResult<Variant> {
     let value = conv_f64(need(args, 0)?)?;
-    if value.is_finite() && value.abs() > f64::from(f32::MAX) {
+    let narrowed = value as f32;
+    // Values just above MAX can still round to MAX. Check after rounding.
+    if value.is_finite() && !narrowed.is_finite() {
         return Err(LibError::overflow("value does not fit in Single"));
     }
-    Ok(Variant::from_f32(value as f32))
+    Ok(Variant::from_f32(narrowed))
 }
 /// `CInt` — to `Integer` (banker's rounding, range −32768..32767).
 pub fn cint(args: &[Variant]) -> LibResult<Variant> {

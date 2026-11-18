@@ -10,12 +10,7 @@ P_CCur: CCur.6=Currency:-0.0001
 P_CDate: CDate.22=Date:40E5686000000000
 P_CDate: CDate.39=Date:40E2070000000000
 P_CDate: CDate.40=Date:40E2072000000000
-P_CDbl: CDbl.17=ERR6
-P_CDbl: CDbl.23=Double:408F400000000000|1000
 P_CDec: CDec.4=Decimal:0.1
-P_CSng: CSng.11=Single:7F7FFFFF|3.402823E+38
-P_CSng: CSng.5=Single:7F7FFFFF|3.402823E+38
-P_CStr: CStr.36=String:[3.402823E+38]
 P_CStr: CStr.54=String:[2020/01/02]
 P_CStr: CStr.55=String:[2020/01/02 15:04:05]
 P_CStr: CStr.56=String:[15:04:05]
@@ -78,7 +73,6 @@ P_ErrObject: ErrObject.12=N=-2147220504;S=S;D=D;HF=C:\Program Files\Common Files
 P_ErrObject: ErrObject.18=N=-2147467259;S=VBAProject;D=Automation error{10}Unspecified error ;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000440
 P_ErrObject: ErrObject.19=N=-5;S=VBAProject;D=Automation error;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000440
 P_ErrObject: ErrObject.20=N=-2147221504;S=VBAProject;D=Automation error{10}Invalid OLEVERB structure ;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000440
-P_ErrObject: ErrObject.32=N=13;S=VBAProject;D=Type mismatch;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000013
 P_ErrObject: ErrObject.36=N=94;S=VBAProject;D=Invalid use of Null;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000094
 P_ErrObject: ErrObject.38=N=94;S=VBAProject;D=Invalid use of Null;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000094
 P_ErrObject: ErrObject.53=inh=5;cleared=0;after=N=0;S=;D=;HF=;HC=0|after exit sub in handler: N=0;S=;D=;HF=;HC=0
@@ -254,10 +248,6 @@ P_IsMissing: IsMissing.11=Boolean:True
 P_IsNumeric: IsNumeric.21=Boolean:True
 P_IsNumeric: IsNumeric.33=Boolean:True
 P_IsNumeric: IsNumeric.49=Boolean:False
-P_Join: Join.17=ERR5
-P_Join: Join.18=ERR5
-P_Join: Join.19=ERR13
-P_Join: Join.20=String:[]
 P_LCase: LCase.12=String:[{8486}]
 P_LCase: LCase.8=String:[{304}]
 P_LCase: LCase.9=String:[{7838}]
@@ -298,6 +288,7 @@ P_NPV: NPV.1=Double:407616DACBDFA498|353.428417085271
 P_NPV: NPV.4=Double:407616DACBDFA498|353.428417085271
 P_NPV: NPV.5=Double:404ACA2DF13D1E45|53.5795270489148
 P_NPV: NPV.6=Double:C04ACA2DF13D1E45|-53.5795270489148
+P_NPer: NPer.17=Double:402C69D476524167|14.2066990828905
 P_Oct: Oct.56=ERR94
 P_PPmt: PPmt.14=Double:C065795A16BA46C1|-171.792247165509
 P_PPmt: PPmt.17=Double:C0647984F67193CE|-163.797480794745

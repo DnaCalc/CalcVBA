@@ -27,30 +27,8 @@ P_CDate	vm3	value	locale	CDate.39=Date:40E2070000000000	CDate.39=Date:40E701E000
 P_CDate	jit	value	locale	CDate.39=Date:40E2070000000000	CDate.39=Date:40E701E000000000
 P_CDate	vm3	value	locale	CDate.40=Date:40E2072000000000	CDate.40=Date:40C5678000000000
 P_CDate	jit	value	locale	CDate.40=Date:40E2072000000000	CDate.40=Date:40C5678000000000
-P_CDbl	vm3	error		CDbl.17=ERR6	CDbl.17=ERR13
-P_CDbl	jit	error		CDbl.17=ERR6	CDbl.17=ERR13
-P_CDbl	vm3	error		CDbl.23=Double:408F400000000000|1000	CDbl.23=ERR13
-P_CDbl	jit	error		CDbl.23=Double:408F400000000000|1000	CDbl.23=ERR13
 P_CDec	vm3	value		CDec.4=Decimal:0.1	CDec.4=Decimal:0.100000001490116
 P_CDec	jit	value		CDec.4=Decimal:0.1	CDec.4=Decimal:0.100000001490116
-P_CLngLng	vm3	error		CLngLng.9=LongLong:-9223372036854775808	CLngLng.9=ERR6
-P_CLngLng	jit	error		CLngLng.9=LongLong:-9223372036854775808	CLngLng.9=ERR6
-P_CLngLng	vm3	error		CLngLng.11=LongLong:9223372036854775807	CLngLng.11=ERR6
-P_CLngLng	jit	error		CLngLng.11=LongLong:9223372036854775807	CLngLng.11=ERR6
-P_CLngLng	vm3	error		CLngLng.13=LongLong:-9223372036854775808	CLngLng.13=ERR6
-P_CLngLng	jit	error		CLngLng.13=LongLong:-9223372036854775808	CLngLng.13=ERR6
-P_CLngLng	vm3	error		CLngLng.16=LongLong:9223372036854775807	CLngLng.16=ERR6
-P_CLngLng	jit	error		CLngLng.16=LongLong:9223372036854775807	CLngLng.16=ERR6
-P_CLngLng	vm3	value		CLngLng.17=LongLong:4294967295	CLngLng.17=LongLong:-1
-P_CLngLng	jit	value		CLngLng.17=LongLong:4294967295	CLngLng.17=LongLong:-1
-P_CLngLng	vm3	error		CLngLng.26=LongLong:9223372036854775807	CLngLng.26=ERR6
-P_CLngLng	jit	error		CLngLng.26=LongLong:9223372036854775807	CLngLng.26=ERR6
-P_CLngPtr	vm3	value		CLngPtr.10=LongLong:4294967295	CLngPtr.10=LongLong:-1
-P_CLngPtr	jit	value		CLngPtr.10=LongLong:4294967295	CLngPtr.10=LongLong:-1
-P_CSng	vm3	error		CSng.5=Single:7F7FFFFF|3.402823E+38	CSng.5=ERR6
-P_CSng	jit	error		CSng.5=Single:7F7FFFFF|3.402823E+38	CSng.5=ERR6
-P_CSng	vm3	error		CSng.11=Single:7F7FFFFF|3.402823E+38	CSng.11=ERR6
-P_CSng	jit	error		CSng.11=Single:7F7FFFFF|3.402823E+38	CSng.11=ERR6
 P_CStr	vm3	error		CStr.36=String:[3.402823E+38]	CStr.36=ERR6
 P_CStr	jit	error		CStr.36=String:[3.402823E+38]	CStr.36=ERR6
 P_CStr	vm3	value	locale	CStr.54=String:[2020/01/02]	CStr.54=String:[1/2/2020]

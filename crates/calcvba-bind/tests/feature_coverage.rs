@@ -678,10 +678,8 @@ fn numeric_conversion_intrinsics_accept_vba_radix_strings() {
 fn numeric_conversion_intrinsics_reject_invalid_vba_radix_strings() {
     let err = run_result("Sub Main()\nDim x As Integer\nx = CInt(\"&HZZ\")\nEnd Sub")
         .expect_err("invalid hex string should be a runtime error");
-    assert!(
-        err.contains("expected a numeric value"),
-        "unexpected diagnostic: {err}"
-    );
+    // Error13 uses the canonical text captured by P_Error.2.
+    assert_eq!(err, "runtime error: 13 Type mismatch");
 }
 
 #[test]

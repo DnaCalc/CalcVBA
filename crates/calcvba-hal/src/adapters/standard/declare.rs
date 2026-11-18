@@ -700,6 +700,11 @@ fn ansi_array(host: &StandardHostServices, value: Variant) -> HalResult<Variant>
             *slot = ansi;
         }
     }
+    // VBA's ANSI String() temporary retains FADF_BSTR ownership, but its
+    // hidden VARTYPE is VT_EMPTY. Native callees use that metadata to tell
+    // byte BSTRs apart from ordinary Unicode String() elements.
+    // SAFETY: this frame owns the String array copy and its descriptor.
+    unsafe { set_string_array_vartype(pointer, 0) };
     Ok(copy)
 }
 
@@ -721,6 +726,30 @@ fn unicode_array(cell: &mut Variant) {
                     .and_then(|text| text.clone_raw_bstr().ok())
                     .unwrap_or(core::ptr::null_mut())
             };
+        }
+    }
+    // The temporary is a runtime Unicode String() again, including when the
+    // callee replaced its descriptor with ReDim.
+    // SAFETY: the call frame owns the returned String array descriptor.
+    unsafe { set_string_array_vartype(pointer, VT_BSTR) };
+}
+
+/// # Safety
+/// `pointer` is null or a live String SAFEARRAY owned by this call frame.
+unsafe fn set_string_array_vartype(pointer: *mut core::ffi::c_void, vartype: u16) {
+    if pointer.is_null() {
+        return;
+    }
+    // SAFETY: FADF_HAVEVARTYPE reserves the four bytes immediately before
+    // the descriptor for its VARTYPE; FADF_BSTR continues to own the strings.
+    unsafe {
+        let array = pointer.cast::<windows_sys::Win32::System::Com::SAFEARRAY>();
+        if (*array).fFeatures & calcvba_runtime::safe_array::FADF_HAVEVARTYPE_VALUE != 0 {
+            pointer
+                .cast::<u8>()
+                .sub(4)
+                .cast::<u32>()
+                .write(u32::from(vartype));
         }
     }
 }

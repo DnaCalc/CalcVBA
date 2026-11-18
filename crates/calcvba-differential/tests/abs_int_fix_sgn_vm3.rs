@@ -50,17 +50,19 @@ fn assert_raises(body: &str, number: i32) {
 }
 
 #[test]
-fn abs_preserves_subtype_and_promotes_on_overflow() {
+fn abs_preserves_subtype_and_raises_on_typed_overflow() {
     assert_value("    r = Abs(CInt(-5))\n", &canon(&Variant::from_i16(5)));
     assert_value("    r = Abs(CLng(-5))\n", &canon(&Variant::from_i32(5)));
     assert_value("    r = Abs(CDbl(-5.7))\n", &canon(&Variant::from_f64(5.7)));
-    // Integer.MIN promotes to Long; Long.MIN promotes to Double.
+    // Typed Integer/Long minima overflow; Variant minima promote (Excel P_AbsEdges).
+    assert_raises("    r = Abs(CInt(-32768))\n", 6);
+    assert_raises("    r = Abs(CLng(-2147483648#))\n", 6);
     assert_value(
-        "    r = Abs(CInt(-32768))\n",
+        "    Dim v As Variant\n    v = CInt(-32768)\n    r = Abs(v)\n",
         &canon(&Variant::from_i32(32768)),
     );
     assert_value(
-        "    r = Abs(CLng(-2147483648#))\n",
+        "    Dim v As Variant\n    v = CLng(-2147483648#)\n    r = Abs(v)\n",
         &canon(&Variant::from_f64(2147483648.0)),
     );
 }

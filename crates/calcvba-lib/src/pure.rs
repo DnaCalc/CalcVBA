@@ -1095,13 +1095,10 @@ pub fn exp(args: &[Variant]) -> LibResult<Variant> {
     Ok(vf64(value))
 }
 
-/// `Abs` / `Int` / `Fix` — the three "type-preserving" unary math functions.
-/// Unlike the transcendentals they return the argument's own numeric subtype
-/// (so `Int(CCur(3.7))` is a `Currency`, `Fix(CDate(...))` is a `Date`), and
-/// `Abs` *promotes* on overflow rather than wrapping (`Abs(CInt(-32768))` is a
-/// `Long`, `Abs(CLng(&H80000000))` is a `Double`). Empty → `Integer` 0, Null →
-/// Null, Boolean → `Integer`, a numeric String → `Double`. Verified against
-/// live Office VBA 7.1.
+/// `Abs` / `Int` / `Fix` preserve the argument's numeric subtype. Abs promotes
+/// overflowing Variant integers; the binder keeps a typed integer operand's
+/// result type, so its minimum raises error 6. Empty -> Integer 0, Null -> Null,
+/// Boolean -> Integer, and a numeric String -> Double.
 #[derive(Clone, Copy)]
 enum Math1Op {
     Abs,

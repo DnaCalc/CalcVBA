@@ -14533,13 +14533,13 @@ End Sub
     }
 
     #[test]
-    fn jit_matches_vm3_builtin_abs_integer_min_promotes() {
-        assert_jit_matches_vm3_contains(JIT_BUILTIN_ABS_INTEGER_MIN, Variant::from_i32(32768));
+    fn jit_matches_vm3_builtin_abs_integer_min_overflows() {
+        assert_jit_matches_vm3_raises(JIT_BUILTIN_ABS_INTEGER_MIN, 6);
     }
 
     #[test]
-    fn jit_matches_vm3_builtin_abs_long_min_promotes() {
-        assert_jit_matches_vm3_contains(JIT_BUILTIN_ABS_LONG_MIN, Variant::from_f64(2147483648.0));
+    fn jit_matches_vm3_builtin_abs_long_min_overflows() {
+        assert_jit_matches_vm3_raises(JIT_BUILTIN_ABS_LONG_MIN, 6);
     }
 
     #[test]

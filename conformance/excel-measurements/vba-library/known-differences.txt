@@ -1,7 +1,5 @@
 # VBA library lines CalcVBA still answers differently from Excel (see vba_library_excel.rs).
 # 'vm3 '/'jit ' prefix: only that executor differs. Rebuilt by make_known_differences.py.
-P_Abs: Abs.6=ERR6
-P_Abs: Abs.8=ERR6
 P_ArrayBase1: ArrayBase1.13=String:[0,1,8]
 P_Asc: Asc.14=Integer:63
 P_CCur: CCur.25=Currency:922337203685477.5807

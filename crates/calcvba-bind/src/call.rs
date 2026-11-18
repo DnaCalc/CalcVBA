@@ -194,7 +194,8 @@ impl<'a> ProcLower<'a> {
         arglist: Option<SyntaxNode<'_>>,
     ) -> Result<Bound, BindError> {
         self.reject_sub_in_value_context(name, binding)?;
-        self.bind_call_route_any(name, binding, arglist)
+        let bound = self.bind_call_route_any(name, binding, arglist)?;
+        self.preserve_typed_abs_result(bound, arglist)
     }
 
     /// Lower a resolved statement-position call. Unlike value context, this may
@@ -205,7 +206,8 @@ impl<'a> ProcLower<'a> {
         binding: &Binding,
         arglist: Option<SyntaxNode<'_>>,
     ) -> Result<Bound, BindError> {
-        self.bind_call_route_any(name, binding, arglist)
+        let bound = self.bind_call_route_any(name, binding, arglist)?;
+        self.preserve_typed_abs_result(bound, arglist)
     }
 
     fn bind_call_route_any(
@@ -479,6 +481,45 @@ impl<'a> ProcLower<'a> {
             other => Err(BindError::Unsupported(format!(
                 "call route {other:?} for `{name}`"
             ))),
+        }
+    }
+
+    fn preserve_typed_abs_result(
+        &mut self,
+        bound: Bound,
+        arglist: Option<SyntaxNode<'_>>,
+    ) -> Result<Bound, BindError> {
+        if !self.is_vba_library_call(&bound.value, "Math", "Abs") {
+            return Ok(bound);
+        }
+        let Some(ArgItem::Positional(expr, _) | ArgItem::Named { value: expr, .. }) =
+            arglist.and_then(|args| args.arg_items().into_iter().next())
+        else {
+            return Ok(bound);
+        };
+        let operand = self.bind_expr(expr)?;
+        let ty = match operand.ty {
+            ty @ VarTypeRef::Builtin(
+                BuiltinType::Integer
+                | BuiltinType::Long
+                | BuiltinType::LongLong
+                | BuiltinType::LongPtr,
+            ) => Some(ty),
+            _ => [
+                ("CInt", BuiltinType::Integer),
+                ("CLng", BuiltinType::Long),
+                ("CLngLng", BuiltinType::LongLong),
+                ("CLngPtr", BuiltinType::LongPtr),
+            ]
+            .into_iter()
+            .find(|(name, _)| self.is_vba_library_call(&operand.value, "Conversion", name))
+            .map(|(_, ty)| builtin(ty)),
+        };
+        // Variant integer minima promote in the library. Typed integer operands
+        // must keep their type, so the same magnitude raises overflow instead.
+        match ty {
+            Some(ty) => Ok(value_bound(self.g.coerce_store(bound.value, &ty), ty)),
+            None => Ok(bound),
         }
     }
 
@@ -2939,7 +2980,9 @@ impl<'a> ProcLower<'a> {
                 place: Some(place),
             });
         }
-        self.bind_call_route(name, binding, arglist)
+        // A qualified VBA.Abs is the Variant library call, not the typed intrinsic.
+        self.reject_sub_in_value_context(name, binding)?;
+        self.bind_call_route_any(name, binding, arglist)
     }
 
     fn finish_value_or_call_statement(
@@ -2972,7 +3015,7 @@ impl<'a> ProcLower<'a> {
                 place: Some(place),
             });
         }
-        self.bind_call_route_statement(name, binding, arglist)
+        self.bind_call_route_any(name, binding, arglist)
     }
 
     /// True if `name` is a bare namespace qualifier for `name.Member`: either a

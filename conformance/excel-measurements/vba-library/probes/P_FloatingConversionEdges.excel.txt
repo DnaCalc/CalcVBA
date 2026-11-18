@@ -33,3 +33,4 @@ FloatingConversionEdges.32=Single:FF7FFFFF|-3.402823E+38
 FloatingConversionEdges.33=ERR6
 FloatingConversionEdges.34=Single:7F7FFFFF|3.402823E+38
 FloatingConversionEdges.35=ERR6
+FloatingConversionEdges.36=String:[13:Type mismatch]

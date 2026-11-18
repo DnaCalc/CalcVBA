@@ -1,8 +1,4 @@
 module	executor	class	locale	excel	calcvba
-P_Abs	vm3	error		Abs.6=ERR6	Abs.6=Long:32768
-P_Abs	jit	error		Abs.6=ERR6	Abs.6=Long:32768
-P_Abs	vm3	error		Abs.8=ERR6	Abs.8=Double:41E0000000000000|2147483648
-P_Abs	jit	error		Abs.8=ERR6	Abs.8=Double:41E0000000000000|2147483648
 P_ArrayBase1	vm3	value		ArrayBase1.13=String:[0,1,8]	ArrayBase1.13=String:[1,2,7]
 P_ArrayBase1	jit	value		ArrayBase1.13=String:[0,1,8]	ArrayBase1.13=String:[1,2,7]
 P_Asc	vm3	missing		Asc.10=Integer:120	<failed: bind: unresolved name `String` (named argument)>

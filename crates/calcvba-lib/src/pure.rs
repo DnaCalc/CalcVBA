@@ -2893,12 +2893,27 @@ pub fn nper(args: &[Variant]) -> LibResult<Variant> {
     );
     let fv = opt_f64(args, 3, 0.0)?;
     let t = due_flag(args, 4)?;
-    finite_result(if i == 0.0 {
-        -(pv + fv) / pmt
+    if i <= -1.0 || (i == 0.0 && pmt == 0.0) {
+        return Err(LibError::invalid_call("NPer argument out of range"));
+    }
+    if i == 0.0 {
+        return finite_result(-(pv + fv) / pmt);
+    }
+    let payment = if t != 0.0 {
+        pmt * (1.0 + i) / i
     } else {
-        let a = pmt * (1.0 + i * t);
-        ((a - fv * i) / (a + pv * i)).ln() / (1.0 + i).ln()
-    })
+        pmt / i
+    };
+    let (mut future, mut present) = (-fv + payment, pv + payment);
+    if future < 0.0 && present < 0.0 {
+        future = -future;
+        present = -present;
+    } else if future <= 0.0 || present <= 0.0 {
+        return Err(LibError::invalid_call("NPer logarithm out of range"));
+    }
+    // Separate logarithms preserve Excel's rounding, including its cancellation
+    // at tiny rates (P_NPer.13). ln(future/present) gives a different answer.
+    finite_result((future.ln() - present.ln()) / (1.0 + i).ln())
 }
 
 pub fn npv(args: &[Variant]) -> LibResult<Variant> {
@@ -4633,6 +4648,35 @@ mod tests {
             .unwrap_err()
             .code,
             13
+        );
+    }
+
+    #[test]
+    fn nper_excel_logarithm_order_and_domain() {
+        for (rate, payment, present, bits) in [
+            (0.05 / 12.0, -200.0, 10000.0, 0x404C_1796_D6F4_A714),
+            (1e-12, -100.0, 1000.0, 0x4024_01D1_9EB1_60F0),
+        ] {
+            assert_eq!(
+                nper(&[vf64(rate), vf64(payment), vf64(present)])
+                    .unwrap()
+                    .as_f64()
+                    .unwrap()
+                    .to_bits(),
+                bits
+            );
+        }
+        assert_eq!(
+            nper(&[vf64(-1.0), vf64(-100.0), vf64(1000.0)])
+                .unwrap_err()
+                .code,
+            5
+        );
+        assert_eq!(
+            nper(&[vf64(0.0), vf64(0.0), vf64(1000.0)])
+                .unwrap_err()
+                .code,
+            5
         );
     }
 

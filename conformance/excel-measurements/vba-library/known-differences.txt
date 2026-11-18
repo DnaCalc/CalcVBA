@@ -242,7 +242,6 @@ P_GetAllSettings: GetAllSettings.7=String:[String()|0:0|0:1|K=a=b;c;]
 P_GetAllSettings: GetAllSettings.8=String:[String()|0:0|0:1|K=;]
 P_GetSetting: GetSetting.20=String:[True]
 P_Hex: Hex.56=ERR94
-P_Hour: Hour.15=Integer:0
 P_IPmt: IPmt.2=Double:C08A02A805A6ED97|-832.332042030454
 P_IPmt: IPmt.3=Double:C011D1DEBC1B94FF|-4.45495122831676
 P_IPmt: IPmt.4=Double:C0861FF4EC8E1448|-707.99459181785
@@ -298,7 +297,6 @@ P_LenB: LenB.7=Integer:4
 P_LenB: LenB.8=Integer:2
 P_LenB: LenB.9=Integer:8
 P_Mid: Mid.23=ERR5
-P_Minute: Minute.14=Integer:5
 P_Month: Month.13=Integer:12
 P_MonthName: MonthName.10=ERR94
 P_MonthName: MonthName.4=String:[Sept]

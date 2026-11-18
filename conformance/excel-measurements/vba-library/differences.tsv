@@ -689,8 +689,6 @@ P_Hex	jit	missing		Hex.45=String:[FF]	<failed: bind: unresolved name `Number` (n
 P_Hex	vm3	error		Hex.56=ERR94	Hex.56=Null
 P_Hex	jit	error		Hex.56=ERR94	Hex.56=Null
 P_Hex	jit	missing		Hex.58=String:[FF]	<declined: "T: CallNative { dst: Some(Temp(TempId(124))), callee: Builtin(Hex), args: [Named { name: \"Number\", value: Const(I16(255)), by_ref: None }] }: M4-4 >
-P_Hour	vm3	value		Hour.15=Integer:0	Hour.15=Integer:12
-P_Hour	jit	value		Hour.15=Integer:0	Hour.15=Integer:12
 P_IIf	jit	missing		IIf.32=String:[a]	<declined: "T: CallNative { dst: Some(Temp(TempId(66))), callee: Builtin(IIf), args: [Named { name: \"Expression\", value: Const(Bool(true)), by_ref: None }, Nam>
 P_IMEStatus	vm3	missing		IMEStatus.1=Long:0	<failed: bind: Variable not defined: IMEStatus>
 P_IMEStatus	jit	missing		IMEStatus.1=Long:0	<failed: bind: Variable not defined: IMEStatus>
@@ -976,8 +974,6 @@ P_Mid	vm3	error		Mid.23=ERR5	Mid.23=String:[]
 P_Mid	jit	error		Mid.23=ERR5	Mid.23=String:[]
 P_MidB	vm3	missing		MidB.16=String:[b]	<failed: bind: unresolved name `String` (named argument)>
 P_MidB	jit	missing		MidB.16=String:[b]	<failed: bind: unresolved name `String` (named argument)>
-P_Minute	vm3	value		Minute.14=Integer:5	Minute.14=Integer:0
-P_Minute	jit	value		Minute.14=Integer:5	Minute.14=Integer:0
 P_Month	vm3	error	locale	Month.13=Integer:12	Month.13=ERR13
 P_Month	jit	error	locale	Month.13=Integer:12	Month.13=ERR13
 P_MonthName	vm3	value	locale	MonthName.4=String:[Sept]	MonthName.4=String:[Sep]

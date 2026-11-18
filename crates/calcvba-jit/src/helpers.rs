@@ -4308,6 +4308,41 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
             )
         };
     }
+    if calcvba_lib::regexp::is_object(&object) {
+        // SAFETY: this short read only borrow ends before storing the result.
+        let argv = match collection_call_arg_values_for_jit(unsafe { &*run }, args) {
+            Ok(args) => args,
+            Err(status) => return status,
+        };
+        let mut arg_names = Vec::with_capacity(names.len());
+        for name in names {
+            // SAFETY: compiled descriptors retain their source text for this call.
+            match unsafe { call_arg_name_preserved(*name) } {
+                Ok(name) => arg_names.push(name),
+                Err(status) => return status,
+            }
+        }
+        let value = match calcvba_lib::regexp::dispatch(&object, name, kind, &argv, &arg_names) {
+            Ok(value) => value,
+            Err(error) => {
+                // SAFETY: the active JIT entry owns the live same-thread error state.
+                let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
+                    return ST_FAULT;
+                };
+                exec.err_engine
+                    .raise(Fault::from_lib(error), current_unit_source(run));
+                return ST_FAULT;
+            }
+        };
+        if let Some((area, index)) = dst {
+            // SAFETY: dispatch has returned; no run borrow is held.
+            let Some(slot) = slot_mut(unsafe { &mut *run }, area, index) else {
+                return ST_FAULT;
+            };
+            return store_slot(state, slot, value);
+        }
+        return ST_OK;
+    }
     if object.route_key() == VBA_COLLECTION_ROUTE_KEY {
         let is_new_enum =
             vba_collection_native_method_for_jit(if name.is_empty() { "Item" } else { name })
@@ -5421,9 +5456,10 @@ pub(crate) unsafe extern "C" fn rt_jit_call_by_name_to_slot(
         };
         if kind != ProjectMemberKind::Method
             && object.as_object_ref().is_some_and(|object| {
-                object.native_collection_snapshot().is_some()
-                    || object.is_project_instance()
-                        && object.route_key() == VBA_COLLECTION_ROUTE_KEY
+                !calcvba_lib::regexp::is_object(&object)
+                    && (object.native_collection_snapshot().is_some()
+                        || object.is_project_instance()
+                            && object.route_key() == VBA_COLLECTION_ROUTE_KEY)
             })
         {
             // SAFETY: the active JIT entry owns this same-thread error state.

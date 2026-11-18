@@ -20,6 +20,7 @@ pub use triage::{
 };
 mod host;
 mod pure;
+pub mod regexp;
 /// Unboxed numeric kernels shared by Variant callers and native exports.
 pub use pure::{abs_f64, sqr_f64};
 /// Host-independent value operations shared with owning typed execution.

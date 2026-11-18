@@ -956,6 +956,16 @@ impl<'h> Vm3<'h> {
         args: Vec<Variant>,
         capture: Option<(&mut [Variant], &[usize])>,
     ) -> Result<Variant, Vm3Error> {
+        if calcvba_lib::regexp::is_object(&object) {
+            return calcvba_lib::regexp::dispatch(
+                &object,
+                name,
+                kind_hint.unwrap_or(ProjectMemberKind::Method),
+                &args,
+                &[],
+            )
+            .map_err(|e| Vm3Error::Fault(Fault::from_lib(e)));
+        }
         if object.route_key() == VBA_COLLECTION_ROUTE_KEY {
             return self.dispatch_collection_values(&object, name, args);
         }
@@ -2794,9 +2804,10 @@ impl<'h> Vm3<'h> {
                 };
                 if invoke_kind != TypeLibMemberInvokeKind::Method
                     && recv_v.as_object_ref().is_some_and(|object| {
-                        object.native_collection_snapshot().is_some()
-                            || object.is_project_instance()
-                                && object.route_key() == VBA_COLLECTION_ROUTE_KEY
+                        !calcvba_lib::regexp::is_object(&object)
+                            && (object.native_collection_snapshot().is_some()
+                                || object.is_project_instance()
+                                    && object.route_key() == VBA_COLLECTION_ROUTE_KEY)
                     })
                 {
                     return Err(Vm3Error::Fault(Fault::new(
@@ -4285,6 +4296,9 @@ impl<'h> Vm3<'h> {
         if object.route_key() == VBA_COLLECTION_ROUTE_KEY {
             return Some("Collection".to_string());
         }
+        if calcvba_lib::regexp::is_object(object) {
+            return Some(object.class_descriptor().type_name().to_string());
+        }
         if object.is_project_instance() {
             return self
                 .exec
@@ -4461,6 +4475,9 @@ impl<'h> Vm3<'h> {
         // A built-in `Collection` carries the reserved sentinel route key; its members dispatch
         // to the shared keyed-Collection logic over the box-owned `CollectionData`, not a
         // program class (W3). Checked BEFORE the `program.classes` lookup the sentinel can't index.
+        if calcvba_lib::regexp::is_object(&object) {
+            return self.dispatch_regexp(&object, name, project_member_kind(invoke_kind), args);
+        }
         if object.route_key() == VBA_COLLECTION_ROUTE_KEY {
             return self.dispatch_collection_method(&object, name, args);
         }
@@ -4676,6 +4693,28 @@ impl<'h> Vm3<'h> {
             .map_err(Vm3Error::Fault)
     }
 
+    fn dispatch_regexp(
+        &mut self,
+        object: &ObjectRef,
+        name: &str,
+        kind: ProjectMemberKind,
+        args: &[OxCallArg],
+    ) -> Result<Variant, Vm3Error> {
+        let names: Vec<_> = args
+            .iter()
+            .map(|arg| {
+                if let OxCallArg::Named { name, .. } = arg {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let args = self.collection_args(args)?;
+        calcvba_lib::regexp::dispatch(object, name, kind, &args, &names)
+            .map_err(|e| Vm3Error::Fault(Fault::from_lib(e)))
+    }
+
     /// Marshal a Collection member's call args to by-value `Variant`s (omitted → `MISSING_ARG`,
     /// the sentinel the shared dispatcher recognises). The built-in Collection never writes
     /// back, so a ByRef arg is read by value.
@@ -4867,6 +4906,9 @@ impl<'h> Vm3<'h> {
         args: &[OxCallArg],
     ) -> Result<Variant, Vm3Error> {
         let object = variant_to_object(&recv_v)?;
+        if calcvba_lib::regexp::is_object(&object) {
+            return self.dispatch_regexp(&object, "", project_member_kind(invoke_kind), args);
+        }
         if object.route_key() == VBA_COLLECTION_ROUTE_KEY {
             // A Collection's value with no index (`v = c`): its default `Item` gets no
             // argument, which VBA reports as 450 (probe let12).
@@ -4894,6 +4936,16 @@ impl<'h> Vm3<'h> {
         args: Vec<Variant>,
     ) -> Result<Variant, Vm3Error> {
         let object = variant_to_object(&recv_v)?;
+        if calcvba_lib::regexp::is_object(&object) {
+            return calcvba_lib::regexp::dispatch(
+                &object,
+                "",
+                project_member_kind(invoke_kind),
+                &args,
+                &[],
+            )
+            .map_err(|e| Vm3Error::Fault(Fault::from_lib(e)));
+        }
         if object.route_key() == VBA_COLLECTION_ROUTE_KEY {
             if args.is_empty() {
                 return Err(Vm3Error::Fault(Fault::new(450, default_error_message(450))));

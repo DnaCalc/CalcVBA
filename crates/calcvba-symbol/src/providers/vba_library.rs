@@ -87,7 +87,7 @@ impl Provider for VbaLibraryProvider {
         &self,
         recv: &VarTypeRef,
         name: &str,
-        _want: Option<ProjectMemberKind>,
+        want: Option<ProjectMemberKind>,
     ) -> Option<Binding> {
         let VarTypeRef::Object(type_name) = recv else {
             return None;
@@ -97,6 +97,9 @@ impl Provider for VbaLibraryProvider {
         // via a predeclared/`NativeImplId` route.
         if is_collection_type(type_name) {
             return collection_member(name);
+        }
+        if let Some(binding) = regexp_member(type_name, name, want) {
+            return Some(binding);
         }
         let object = predeclared_object(type_name)?;
         let route = predeclared_member(object, name)?;
@@ -112,7 +115,14 @@ impl Provider for VbaLibraryProvider {
             binding.is_default = true;
             return Some(binding);
         }
-        None
+        let member = if type_name.rsplit('.').next()?.eq_ignore_ascii_case("Match") {
+            "Value"
+        } else {
+            "Item"
+        };
+        let mut binding = regexp_member(type_name, member, None)?;
+        binding.is_default = true;
+        Some(binding)
     }
 
     fn resolve_qualified(&self, parts: &[&str]) -> Option<Binding> {
@@ -157,6 +167,11 @@ impl Provider for VbaLibraryProvider {
             return matches_owner.then_some(binding);
         }
         None
+    }
+
+    fn resolve_coclass(&self, name: &str) -> Option<String> {
+        let lower = fold_identifier(name);
+        matches!(lower.as_str(), "regexp" | "vba.regexp").then(|| "VBScript.RegExp".to_string())
     }
 
     fn resolve_extern_coclass(&self, name: &str) -> Option<(String, String)> {
@@ -215,6 +230,43 @@ fn collection_member(name: &str) -> Option<Binding> {
             param_types: Vec::new(),
             param_names: Vec::new(),
             param_optional: Vec::new(),
+            param_optional_defaults: Vec::new(),
+            variadic: false,
+            has_receiver: true,
+        },
+    ))
+}
+
+/// VBA 7.1 regex class members use the native object's ordinary late dispatch.
+fn regexp_member(type_name: &str, name: &str, want: Option<ProjectMemberKind>) -> Option<Binding> {
+    let lower = fold_identifier(type_name);
+    let class = lower.strip_prefix("vba.").unwrap_or(&lower);
+    let member = fold_identifier(name);
+    let (kind, params): (ProjectMemberKind, &[&str]) = match (class, member.as_str()) {
+        ("regexp", "pattern" | "global" | "ignorecase" | "multiline") => {
+            (want.unwrap_or(ProjectMemberKind::PropertyGet), &[])
+        }
+        ("regexp", "test" | "execute") => (ProjectMemberKind::Method, &["sourceString"]),
+        ("regexp", "replace") => (ProjectMemberKind::Method, &["sourceString", "replaceVar"]),
+        ("match", "value" | "firstindex" | "length" | "submatches") => {
+            (ProjectMemberKind::PropertyGet, &[])
+        }
+        ("matchcollection" | "submatches", "count" | "_newenum") => {
+            (ProjectMemberKind::PropertyGet, &[])
+        }
+        ("matchcollection" | "submatches", "item") => (ProjectMemberKind::PropertyGet, &["Index"]),
+        _ => return None,
+    };
+    Some(Binding::new(
+        None,
+        DispatchRoute::ExternMember {
+            unit: VBA_UNIT.to_string(),
+            owner: type_name.to_string(),
+            member: name.to_string(),
+            kind,
+            param_types: Vec::new(),
+            param_names: params.iter().map(|p| (*p).to_string()).collect(),
+            param_optional: vec![false; params.len()],
             param_optional_defaults: Vec::new(),
             variadic: false,
             has_receiver: true,

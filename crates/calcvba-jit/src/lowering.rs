@@ -2942,6 +2942,7 @@ impl<'a> LowerFunc<'a> {
         let bare = type_name.rsplit('.').next().unwrap_or(type_name);
         let known = iid.is_some()
             || bare.eq_ignore_ascii_case("Collection")
+            || calcvba_lib::regexp::class_name(type_name).is_some()
             || bare.eq_ignore_ascii_case("Object")
             || self.programs.iter().any(|program| {
                 program

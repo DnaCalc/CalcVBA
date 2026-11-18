@@ -13,5 +13,6 @@ calcvba-runtime.workspace = true
 calcvba-hal.workspace = true
 calcvba-com.workspace = true
 calcvba-oxir.workspace = true
+regress = { version = "0.12.0", features = ["utf16"] }
 [lints]
 workspace = true

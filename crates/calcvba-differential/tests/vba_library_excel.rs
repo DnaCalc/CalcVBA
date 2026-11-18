@@ -408,6 +408,27 @@ fn excel_compile_refusals_are_refused() {
     );
 }
 
+/// Keep the 90 measured class cases in ordinary workspace regression runs.
+#[test]
+fn regexp_classes_match_excel() {
+    let fmt = std::fs::read_to_string(dir().join("probes/ProbeFmt.bas")).unwrap();
+    for executor in [Executor::Vm3, Executor::Jit] {
+        for module in ["P_RegExp", "P_Match", "P_MatchCollection"] {
+            let source =
+                std::fs::read_to_string(dir().join(format!("probes/{module}.bas"))).unwrap();
+            let answer =
+                std::fs::read_to_string(dir().join(format!("probes/{module}.excel.txt"))).unwrap();
+            let actual = run_text(executor, &fmt, module, &source)
+                .unwrap_or_else(|e| panic!("{executor:?} {module}: {e}"));
+            assert_eq!(
+                actual.replace("\r\n", "\n"),
+                answer.replace("\r\n", "\n"),
+                "{executor:?} {module}"
+            );
+        }
+    }
+}
+
 #[test]
 #[ignore = "slow until library named arguments bind (modules that fail run once per case); run with --ignored"]
 fn vm3_matches_excel() {

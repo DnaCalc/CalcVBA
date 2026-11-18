@@ -563,6 +563,9 @@ fn activation_target(value: &Variant) -> String {
 
 pub fn create_object(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
     let prog_id = req(args, 0)?;
+    if activation_target(&prog_id).eq_ignore_ascii_case("VBScript.RegExp") {
+        return Ok(crate::regexp::new_regexp());
+    }
     host.authorize_com_activation("create_object", &activation_target(&prog_id))?;
     Ok(host.com().create_object_variant(prog_id)?)
 }

@@ -22,6 +22,7 @@ calcvba-hal.workspace = true
 calcvba-oxir.workspace = true
 calcvba-rt-abi.workspace = true
 calcvba-runtime.workspace = true
+calcvba-lib.workspace = true
 thiserror.workspace = true
 
 [features]

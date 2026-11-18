@@ -2242,8 +2242,14 @@ fn conv_f64(value: &Variant) -> LibResult<f64> {
         return Ok(f64::from(code));
     }
     if value.vtype() == VarType::String {
-        return parse_vba_numeric_string(&as_str(value)?)
-            .ok_or_else(|| LibError::type_mismatch("expected a numeric value"));
+        let text = as_str(value)?;
+        let exponent = text.find(['e', 'E', 'd', 'D']).unwrap_or(text.len());
+        let (mantissa, exponent) = text.split_at(exponent);
+        // Excel ignores spaces and nonbreaking spaces in the mantissa, but not
+        // tabs or spaces inside the exponent ("1 000" works; "1e3 0" fails).
+        let text = mantissa.replace([' ', '\u{a0}'], "") + exponent;
+        return calcvba_runtime::coerce::parse_vba_number(&text)
+            .map_err(|error| LibError::new(error.code(), default_error_message(error.code())));
     }
     as_f64(value)
 }
@@ -2513,10 +2519,12 @@ pub fn cdbl(args: &[Variant]) -> LibResult<Variant> {
 /// `CSng` — to `Single`; a value outside the `Single` range overflows.
 pub fn csng(args: &[Variant]) -> LibResult<Variant> {
     let value = conv_f64(need(args, 0)?)?;
-    if value.is_finite() && value.abs() > f64::from(f32::MAX) {
+    let narrowed = value as f32;
+    // Values just above MAX can still round to MAX. Check after rounding.
+    if value.is_finite() && !narrowed.is_finite() {
         return Err(LibError::overflow("value does not fit in Single"));
     }
-    Ok(Variant::from_f32(value as f32))
+    Ok(Variant::from_f32(narrowed))
 }
 /// `CInt` — to `Integer` (banker's rounding, range −32768..32767).
 pub fn cint(args: &[Variant]) -> LibResult<Variant> {

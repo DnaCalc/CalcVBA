@@ -1345,17 +1345,8 @@ P_UserForms	vm3	missing		UserForms.7=ERR9	<failed: bind: Sub or Function not def
 P_UserForms	jit	missing		UserForms.7=ERR9	<failed: bind: Sub or Function not defined>
 P_UserForms	vm3	missing		UserForms.8=Long:9	<failed: bind: Variable not defined: UserForms>
 P_UserForms	jit	missing		UserForms.8=Long:9	<failed: bind: Variable not defined: UserForms>
-P_Val	jit	error		Val.27=ERR6	Val.27=Double:7FF0000000000000|inf
-P_Val	vm3	value		Val.37=Double:0000000000000000|0	Val.37=Double:41F0000000000000|4294967296
-P_Val	jit	value		Val.37=Double:0000000000000000|0	Val.37=Double:41F0000000000000|4294967296
-P_Val	vm3	value		Val.68=Double:4028000000000000|12	Val.68=Double:3FF0000000000000|1
-P_Val	jit	value		Val.68=Double:4028000000000000|12	Val.68=Double:3FF0000000000000|1
-P_Val	vm3	error		Val.87=ERR13	Val.87=Double:0000000000000000|0
-P_Val	jit	error		Val.87=ERR13	Val.87=Double:0000000000000000|0
 P_Val	vm3	value	locale	Val.88=Double:409F900000000000|2020	Val.88=Double:3FF0000000000000|1
 P_Val	jit	value	locale	Val.88=Double:409F900000000000|2020	Val.88=Double:3FF0000000000000|1
-P_Val	vm3	missing		Val.89=Double:4028000000000000|12	<failed: bind: unresolved name `String` (named argument)>
-P_Val	jit	missing		Val.89=Double:4028000000000000|12	<failed: bind: unresolved name `String` (named argument)>
 P_VarType	vm3	value		VarType.16=Long:9	VarType.16=Long:0
 P_VarType	jit	value		VarType.16=Long:9	VarType.16=Long:0
 P_VarType	vm3	missing		VarType.49=Long:3	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>

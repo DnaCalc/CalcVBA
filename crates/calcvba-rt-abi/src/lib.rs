@@ -2568,7 +2568,11 @@ pub unsafe extern "C" fn rt_lib_invoke_with_policy(
             // contract guarantees `argc` consecutive initialized Variants.
             unsafe { slice::from_raw_parts(args, argc) }
         };
-        if string_typed_alias != 0 && argv.iter().any(|arg| arg.vtype() == VarType::Null) {
+        // Format$ accepts a Null value (captured empty result); other $ aliases reject Null.
+        if string_typed_alias != 0
+            && id != NativeImplId::Format
+            && argv.iter().any(|arg| arg.vtype() == VarType::Null)
+        {
             // SAFETY: the exported helper contract guarantees that non-null `state` is the live, uniquely borrowed execution state.
             return unsafe { seat_fault(state, Fault::new(94, "invalid use of Null")) };
         }

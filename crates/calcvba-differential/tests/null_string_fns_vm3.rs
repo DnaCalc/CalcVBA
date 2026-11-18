@@ -3,7 +3,8 @@
 //! VBA returns `Null` when a string function is given a `Null` argument; vm3 instead reached
 //! `variant_to_vba_string`, which raises Type mismatch 13. The `Null` is held in a variable
 //! so the call is evaluated at run time, not constant-folded. Unsuffixed Variant-returning
-//! forms propagate `Null` to `Null`; string-typed `$` aliases raise error 94.
+//! forms propagate `Null` to `Null`; string-typed `$` aliases raise error 94, except
+//! Format$, which formats Null as empty text.
 
 use calcvba_differential::{Canon, Executor, canon, run};
 use calcvba_runtime::Variant;
@@ -65,7 +66,7 @@ fn string_functions_propagate_null() {
 }
 
 #[test]
-fn string_typed_aliases_raise_94_on_null() {
+fn string_typed_aliases_reject_null_except_format() {
     for expr in [
         "Left$(n, 2)",
         "LeftB$(n, 2)",
@@ -81,10 +82,14 @@ fn string_typed_aliases_raise_94_on_null() {
         "ChrW$(n)",
         "Space$(n)",
         "String$(2, n)",
-        "Format$(n)",
     ] {
         assert_eq!(error_number_with_null(expr), 94, "{expr}");
     }
+    // Captured P_Format3.56: the $ alias accepts a Null value.
+    assert_eq!(
+        eval_with_null("Format$(n, \"0\")"),
+        canon(&Variant::from_string(""))
+    );
 }
 
 #[test]

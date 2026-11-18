@@ -1034,24 +1034,6 @@ P_NPV	vm3	missing		NPV.14=Double:407616DACBDFA498|353.428417085271	<failed: bind
 P_NPV	jit	missing		NPV.14=Double:407616DACBDFA498|353.428417085271	<failed: bind: unresolved name `Rate` (named argument)>
 P_NPV	vm3	value		NPV.15=Double:4023FFFFFFFE742D|9.99999999982	NPV.15=Double:4023FFFFFFFE7420|9.99999999981998
 P_NPV	jit	value		NPV.15=Double:4023FFFFFFFE742D|9.99999999982	NPV.15=Double:4023FFFFFFFE7420|9.99999999981998
-P_NPer	vm3	lastbit		NPer.1=Double:404C1796D6F4A714|56.184290761432	NPer.1=Double:404C1796D6F4A716|56.184290761432
-P_NPer	jit	lastbit		NPer.1=Double:404C1796D6F4A714|56.184290761432	NPer.1=Double:404C1796D6F4A716|56.184290761432
-P_NPer	vm3	value		NPer.2=Double:404BF5FE47830858|55.9218224897201	NPer.2=Double:404BF5FE4783085F|55.9218224897202
-P_NPer	jit	value		NPer.2=Double:404BF5FE47830858|55.9218224897201	NPer.2=Double:404BF5FE4783085F|55.9218224897202
-P_NPer	vm3	lastbit		NPer.8=Double:403928AAE9C5E2D0|25.1588579280968	NPer.8=Double:403928AAE9C5E2CE|25.1588579280968
-P_NPer	jit	lastbit		NPer.8=Double:403928AAE9C5E2D0|25.1588579280968	NPer.8=Double:403928AAE9C5E2CE|25.1588579280968
-P_NPer	vm3	lastbit		NPer.10=Double:401A50B47B0A7A93|6.57881347896059	NPer.10=Double:401A50B47B0A7A92|6.57881347896059
-P_NPer	jit	lastbit		NPer.10=Double:401A50B47B0A7A93|6.57881347896059	NPer.10=Double:401A50B47B0A7A92|6.57881347896059
-P_NPer	vm3	value		NPer.12=Double:4035CCF93AEBFB52|21.8006779504897	NPer.12=Double:4035CCF93AEBFB70|21.8006779504898
-P_NPer	jit	value		NPer.12=Double:4035CCF93AEBFB52|21.8006779504897	NPer.12=Double:4035CCF93AEBFB70|21.8006779504898
-P_NPer	vm3	value		NPer.13=Double:402401D19EB160F0|10.0035523978736	NPer.13=Double:4023FF8B98534791|9.99911190048786
-P_NPer	jit	value		NPer.13=Double:402401D19EB160F0|10.0035523978736	NPer.13=Double:4023FF8B98534791|9.99911190048786
-P_NPer	vm3	lastbit		NPer.14=Double:C01D1714F6039EE1|-7.27254089734171	NPer.14=Double:C01D1714F6039EE0|-7.27254089734171
-P_NPer	jit	lastbit		NPer.14=Double:C01D1714F6039EE1|-7.27254089734171	NPer.14=Double:C01D1714F6039EE0|-7.27254089734171
-P_NPer	vm3	error		NPer.15=ERR5	NPer.15=Double:0000000000000000|0
-P_NPer	jit	error		NPer.15=ERR5	NPer.15=Double:0000000000000000|0
-P_NPer	vm3	missing		NPer.17=Double:402C69D476524167|14.2066990828905	<failed: bind: unresolved name `Rate` (named argument)>
-P_NPer	jit	missing		NPer.17=Double:402C69D476524167|14.2066990828905	<failed: bind: unresolved name `Rate` (named argument)>
 P_Oct	vm3	missing		Oct.45=String:[377]	<failed: bind: unresolved name `Number` (named argument)>
 P_Oct	jit	missing		Oct.45=String:[377]	<failed: bind: unresolved name `Number` (named argument)>
 P_Oct	vm3	error		Oct.56=ERR94	Oct.56=Null
@@ -1248,18 +1230,6 @@ P_Rnd	jit	missing		Rnd.30=ERR13	<declined: "T: CallExtern { dst: Some(Temp(TempI
 P_Rnd	jit	missing		Rnd.31=String:[Single:3E656218|0.224007Single:3E656218|0.224007Single:3E656218|0.224007Single:3E656218|0.224007]	<declined: "T: CallExtern { dst: Some(Temp(TempId(69))), import: ImportId(11), args: [ByVal(Const(Str(\"-1\")))] }: M4-4 CallExtern Rnd([number]) subset lowers o>
 P_Rnd	vm3	missing		Rnd.32=String:[Single:3E656218|0.224007,Single:3D12D310|3.584582E-02,Single:3DB0D980|8.635235E-02]	<failed: bind: unresolved name `Number` (named argument)>
 P_Rnd	jit	missing		Rnd.32=String:[Single:3E656218|0.224007,Single:3D12D310|3.584582E-02,Single:3DB0D980|8.635235E-02]	<failed: bind: unresolved name `Number` (named argument)>
-P_Round	vm3	error		Round.23=ERR5	Round.23=Double:400921FB54442D11|3.14159265358979
-P_Round	jit	error		Round.23=ERR5	Round.23=Double:400921FB54442D11|3.14159265358979
-P_Round	vm3	type		Round.35=Date:4000000000000000	Round.35=Double:4000000000000000|2
-P_Round	jit	type		Round.35=Date:4000000000000000	Round.35=Double:4000000000000000|2
-P_Round	vm3	type		Round.36=Integer:-1	Round.36=Double:BFF0000000000000|-1
-P_Round	jit	type		Round.36=Integer:-1	Round.36=Double:BFF0000000000000|-1
-P_Round	vm3	type		Round.40=Integer:0	Round.40=Double:0000000000000000|0
-P_Round	jit	type		Round.40=Integer:0	Round.40=Double:0000000000000000|0
-P_Round	vm3	lastbit		Round.47=Double:0000000000000000|0	Round.47=Double:8000000000000000|-0
-P_Round	jit	lastbit		Round.47=Double:0000000000000000|0	Round.47=Double:8000000000000000|-0
-P_Round	vm3	missing		Round.48=Double:4000000000000000|2	<failed: bind: unresolved name `Number` (named argument)>
-P_Round	jit	missing		Round.48=Double:4000000000000000|2	<failed: bind: unresolved name `Number` (named argument)>
 P_SLN	vm3	error		SLN.13=ERR6	SLN.13=ERR5
 P_SLN	jit	error		SLN.13=ERR6	SLN.13=ERR5
 P_SLN	vm3	missing		SLN.15=Double:403E000000000000|30	<failed: bind: unresolved name `Cost` (named argument)>

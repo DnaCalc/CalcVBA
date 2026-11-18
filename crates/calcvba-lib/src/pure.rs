@@ -930,19 +930,19 @@ fn array_bytes(array: &SafeArray) -> LibResult<Vec<u8>> {
 }
 
 /// `Format(expr, [mask])` — delegates to the [`crate::format`] engine (named
-/// formats, custom numeric masks, custom date/time masks). No mask (or an empty
-/// mask) → string passthrough (`CStr`).
+/// formats, custom numeric masks, custom date/time masks). With no mask, use
+/// general text; Null and Empty format as empty text.
 pub fn format(args: &[Variant]) -> LibResult<Variant> {
     let value = need(args, 0)?;
     let mask = match opt(args, 1) {
-        Some(v) if !matches!(v.vtype(), VarType::Empty) => as_str(v)?,
-        _ => return cstr(args),
+        Some(v) if !matches!(v.vtype(), VarType::Empty) && !missing_sentinel(v) => as_str(v)?,
+        _ => String::new(),
     };
-    if mask.is_empty() {
-        return cstr(args);
-    }
     let first_day = first_day_of_week(args, 2)?;
     let first_week = first_week_of_year(args, 3)?;
+    if matches!(value.vtype(), VarType::ArrayVariant | VarType::Error) {
+        return Err(LibError::type_mismatch("Format expects a scalar value"));
+    }
     Ok(vstr(crate::format::apply_with(
         value, &mask, first_day, first_week,
     )))
@@ -1282,6 +1282,14 @@ pub fn round(args: &[Variant]) -> LibResult<Variant> {
         VarType::Byte | VarType::Integer | VarType::Long | VarType::LongLong => {
             return Ok(value.clone());
         }
+        VarType::Boolean => {
+            return Ok(Variant::from_i16(if value.as_bool().unwrap_or(false) {
+                -1
+            } else {
+                0
+            }));
+        }
+        VarType::Empty => return Ok(Variant::from_i16(0)),
         VarType::Currency => {
             let scaled = value.as_currency_scaled_i64().unwrap_or(0);
             if digits >= 4 {
@@ -1312,19 +1320,37 @@ pub fn round(args: &[Variant]) -> LibResult<Variant> {
             )));
         }
         VarType::Single => {
+            if digits > 22 {
+                return Err(LibError::invalid_call("Round digits must not exceed 22"));
+            }
             let x = f64::from(value.as_f32().unwrap_or(0.0));
-            let factor = 10f64.powi(digits.min(60) as i32);
-            return Ok(Variant::from_f32(
-                ((x * factor).round_ties_even() / factor) as f32,
-            ));
+            return Ok(Variant::from_f32(round_float(x, digits) as f32));
         }
         _ => {}
     }
+    if digits > 22 {
+        return Err(LibError::invalid_call("Round digits must not exceed 22"));
+    }
     let x = as_f64(value)?;
-    let factor = 10f64.powi(digits.min(300) as i32);
+    let rounded = round_float(x, digits);
+    if value.vtype() == VarType::Date {
+        Ok(Variant::from_date_f64(rounded))
+    } else {
+        Ok(vf64(rounded))
+    }
+}
+
+fn round_float(x: f64, digits: u32) -> f64 {
+    let factor = 10f64.powi(digits as i32);
     let scaled = x * factor;
     let rounded = scaled.round_ties_even();
-    Ok(vf64(rounded / factor))
+    // Excel preserves negative zero at an exact negative half tie, but clears
+    // the sign when an ordinary negative value rounds to zero (P_RoundEdges).
+    if rounded == 0.0 && scaled != -0.5 {
+        0.0
+    } else {
+        rounded / factor
+    }
 }
 
 /// `magnitude / 10^drop`, rounded half to even.
@@ -2893,12 +2919,27 @@ pub fn nper(args: &[Variant]) -> LibResult<Variant> {
     );
     let fv = opt_f64(args, 3, 0.0)?;
     let t = due_flag(args, 4)?;
-    finite_result(if i == 0.0 {
-        -(pv + fv) / pmt
+    if i <= -1.0 || (i == 0.0 && pmt == 0.0) {
+        return Err(LibError::invalid_call("NPer argument out of range"));
+    }
+    if i == 0.0 {
+        return finite_result(-(pv + fv) / pmt);
+    }
+    let payment = if t != 0.0 {
+        pmt * (1.0 + i) / i
     } else {
-        let a = pmt * (1.0 + i * t);
-        ((a - fv * i) / (a + pv * i)).ln() / (1.0 + i).ln()
-    })
+        pmt / i
+    };
+    let (mut future, mut present) = (-fv + payment, pv + payment);
+    if future < 0.0 && present < 0.0 {
+        future = -future;
+        present = -present;
+    } else if future <= 0.0 || present <= 0.0 {
+        return Err(LibError::invalid_call("NPer logarithm out of range"));
+    }
+    // Separate logarithms preserve Excel's rounding, including its cancellation
+    // at tiny rates (P_NPer.13). ln(future/present) gives a different answer.
+    finite_result((future.ln() - present.ln()) / (1.0 + i).ln())
 }
 
 pub fn npv(args: &[Variant]) -> LibResult<Variant> {
@@ -4193,6 +4234,39 @@ mod tests {
     }
 
     #[test]
+    fn round_excel_types_digit_limit_and_signed_zero() {
+        let date = round(&[Variant::from_date_f64(2.5)]).unwrap();
+        assert_eq!(date.vtype(), VarType::Date);
+        assert_eq!(date.as_date_f64(), Some(2.0));
+        assert_eq!(
+            round(&[Variant::from_bool(true)]).unwrap(),
+            Variant::from_i16(-1)
+        );
+        assert_eq!(round(&[Variant::empty()]).unwrap(), Variant::from_i16(0));
+        for value in [
+            vf64(2.5),
+            Variant::from_f32(2.5),
+            Variant::from_date_f64(2.5),
+        ] {
+            assert_eq!(round(&[value, vi32(23)]).unwrap_err().code, 5);
+        }
+        assert_eq!(
+            round(&[Variant::from_u8(1), vi32(23)]).unwrap(),
+            Variant::from_u8(1)
+        );
+        for (value, digits, bits) in [(-0.05, 1, 1u64 << 63), (-0.49, 0, 0), (-1e-300, 5, 0)] {
+            assert_eq!(
+                round(&[vf64(value), vi32(digits)])
+                    .unwrap()
+                    .as_f64()
+                    .unwrap()
+                    .to_bits(),
+                bits
+            );
+        }
+    }
+
+    #[test]
     fn split_honours_limit_and_compare() {
         // No limit → all substrings.
         assert_eq!(split_(&[vs("a,b,c"), vs(",")]), ["a", "b", "c"]);
@@ -4632,6 +4706,35 @@ mod tests {
             .unwrap_err()
             .code,
             13
+        );
+    }
+
+    #[test]
+    fn nper_excel_logarithm_order_and_domain() {
+        for (rate, payment, present, bits) in [
+            (0.05 / 12.0, -200.0, 10000.0, 0x404C_1796_D6F4_A714),
+            (1e-12, -100.0, 1000.0, 0x4024_01D1_9EB1_60F0),
+        ] {
+            assert_eq!(
+                nper(&[vf64(rate), vf64(payment), vf64(present)])
+                    .unwrap()
+                    .as_f64()
+                    .unwrap()
+                    .to_bits(),
+                bits
+            );
+        }
+        assert_eq!(
+            nper(&[vf64(-1.0), vf64(-100.0), vf64(1000.0)])
+                .unwrap_err()
+                .code,
+            5
+        );
+        assert_eq!(
+            nper(&[vf64(0.0), vf64(0.0), vf64(1000.0)])
+                .unwrap_err()
+                .code,
+            5
         );
     }
 

@@ -5177,7 +5177,11 @@ impl<'h> Vm3<'h> {
         argv: &[Variant],
         string_typed_alias: bool,
     ) -> Result<Variant, Vm3Error> {
-        if string_typed_alias && argv.iter().any(|arg| arg.vtype() == VarType::Null) {
+        // Format$ accepts a Null value (captured empty result); other $ aliases reject Null.
+        if string_typed_alias
+            && id != NativeImplId::Format
+            && argv.iter().any(|arg| arg.vtype() == VarType::Null)
+        {
             return Err(Vm3Error::Fault(Fault::new(94, "invalid use of Null")));
         }
         if id == NativeImplId::ErrorText && argv.is_empty() {

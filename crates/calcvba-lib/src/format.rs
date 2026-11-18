@@ -62,6 +62,9 @@ pub fn apply_with(value: &Variant, mask: &str, first_day: i32, first_week: i32) 
         first_day,
         first_week,
     };
+    if value.vtype() == VarType::Empty {
+        return String::new();
+    }
     let trimmed = mask.trim();
     if trimmed.is_empty() {
         return general_string(value);
@@ -77,12 +80,11 @@ pub fn apply_with(value: &Variant, mask: &str, first_day: i32, first_week: i32) 
     if let Some(out) = named(value, trimmed) {
         return out;
     }
+    if has_string_mask_chars(trimmed) {
+        return format_string(&general_string(value), trimmed);
+    }
     if value.vtype() == VarType::String {
-        // A string mask (`@ & < >`) formats text; a number mask formats a numeric string and
-        // returns any other text unchanged.
-        if has_string_mask_chars(trimmed) {
-            return format_string(&general_string(value), trimmed);
-        }
+        // A number mask formats numeric text and returns other text unchanged.
         let numeric = value
             .as_bstr()
             .and_then(|b| parse_vba_numeric_string(&b.as_str()))
@@ -141,9 +143,9 @@ fn literal_text(section: &str) -> String {
 }
 
 /// `Format` of text with a string mask: `@` is a character or a space, `&` a character or
-/// nothing (both filled from the right), `>` upper-cases and `<` lower-cases the result. Text
-/// longer than the placeholders keeps its extra leading characters. The second section is for
-/// empty text.
+/// nothing. Padding goes before the source unless `!` requests left alignment; `>`
+/// upper-cases and `<` lower-cases. Surplus source characters follow the mask.
+/// The second section is for empty text.
 fn format_string(text: &str, mask: &str) -> String {
     let sections: Vec<&str> = mask.split(';').collect();
     let section = if text.is_empty() && sections.len() >= 2 {
@@ -153,6 +155,7 @@ fn format_string(text: &str, mask: &str) -> String {
     };
     let mut upper = false;
     let mut lower = false;
+    let mut left = false;
     // Pattern items: Some(true) = `@`, Some(false) = `&`, None carries a literal.
     let mut items: Vec<(Option<bool>, char)> = Vec::new();
     let mut chars = section.chars();
@@ -168,38 +171,38 @@ fn format_string(text: &str, mask: &str) -> String {
             }
             '@' => items.push((Some(true), ' ')),
             '&' => items.push((Some(false), ' ')),
+            '!' => left = true,
             '>' => upper = true,
             '<' => lower = true,
             other => items.push((None, other)),
         }
     }
-    let mut source: Vec<char> = text.chars().collect();
-    let mut rendered: Vec<String> = Vec::with_capacity(items.len());
-    for (kind, literal) in items.iter().rev() {
-        rendered.push(match kind {
-            None => literal.to_string(),
-            Some(pad_space) => match source.pop() {
-                Some(c) => c.to_string(),
-                None if *pad_space => " ".to_string(),
-                None => String::new(),
-            },
-        });
-    }
-    rendered.reverse();
-    let leading: String = source.into_iter().collect();
-    let first_placeholder = items.iter().position(|(kind, _)| kind.is_some());
+    let mut source = text.chars();
+    let placeholders = items.iter().filter(|(kind, _)| kind.is_some()).count();
+    let mut padding = if left {
+        0
+    } else {
+        placeholders.saturating_sub(text.chars().count())
+    };
     let mut out = String::new();
-    match first_placeholder {
-        Some(at) => {
-            out.extend(rendered[..at].iter().map(String::as_str));
-            out.push_str(&leading);
-            out.extend(rendered[at..].iter().map(String::as_str));
-        }
-        None => {
-            out.extend(rendered.iter().map(String::as_str));
-            out.push_str(&leading);
+    for (kind, literal) in items {
+        match kind {
+            None => out.push(literal),
+            Some(pad_space) => {
+                if padding > 0 {
+                    padding -= 1;
+                    if pad_space {
+                        out.push(' ');
+                    }
+                } else if let Some(c) = source.next() {
+                    out.push(c);
+                } else if pad_space {
+                    out.push(' ');
+                }
+            }
         }
     }
+    out.extend(source);
     if upper {
         out = out.to_uppercase();
     } else if lower {

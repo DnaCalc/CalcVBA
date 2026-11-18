@@ -3039,12 +3039,23 @@ pub fn npv(args: &[Variant]) -> LibResult<Variant> {
     if rate == -1.0 {
         return Err(LibError::invalid_call("NPV requires rate <> -1"));
     }
-    let flows = cashflows(need(args, 1)?)?;
-    let mut acc = 0.0;
-    for (k, cf) in flows.iter().enumerate() {
-        acc += cf / (1.0 + rate).powi(k as i32 + 1);
+    let array = need(args, 1)?;
+    if array.vtype() == VarType::ArrayVariant && array.as_safearray().is_none() {
+        return Err(LibError::invalid_call("NPV requires an allocated array"));
     }
-    finite_result(acc)
+    let flows = cashflows(array)?;
+    let x = X80::of;
+    let rate = x(rate);
+    let (mut denominator, mut acc) = (x(1.0), x(0.0));
+    // Excel retains the denominator and sum in extended precision. Its ordered
+    // denominator update also differs from multiplication by (1 + rate) near -1.
+    for cf in flows {
+        denominator = denominator.add(denominator.mul(rate));
+        acc = acc.add(x(cf).div(denominator));
+    }
+    acc.to_f64()
+        .map(vf64)
+        .ok_or_else(|| LibError::overflow("NPV total"))
 }
 
 pub fn irr(args: &[Variant]) -> LibResult<Variant> {

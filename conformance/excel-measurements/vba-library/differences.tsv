@@ -950,22 +950,6 @@ P_MonthName	vm3	error		MonthName.10=ERR94	MonthName.10=String:[March]
 P_MonthName	jit	error		MonthName.10=ERR94	MonthName.10=String:[March]
 P_MonthName	vm3	missing		MonthName.14=String:[February]	<failed: bind: unresolved name `Month` (named argument)>
 P_MonthName	jit	missing		MonthName.14=String:[February]	<failed: bind: unresolved name `Month` (named argument)>
-P_NPV	vm3	lastbit		NPV.1=Double:407616DACBDFA498|353.428417085271	NPV.1=Double:407616DACBDFA494|353.428417085271
-P_NPV	jit	lastbit		NPV.1=Double:407616DACBDFA498|353.428417085271	NPV.1=Double:407616DACBDFA494|353.428417085271
-P_NPV	vm3	lastbit		NPV.4=Double:407616DACBDFA498|353.428417085271	NPV.4=Double:407616DACBDFA494|353.428417085271
-P_NPV	jit	lastbit		NPV.4=Double:407616DACBDFA498|353.428417085271	NPV.4=Double:407616DACBDFA494|353.428417085271
-P_NPV	vm3	lastbit		NPV.5=Double:404ACA2DF13D1E45|53.5795270489148	NPV.5=Double:404ACA2DF13D1E44|53.5795270489148
-P_NPV	jit	lastbit		NPV.5=Double:404ACA2DF13D1E45|53.5795270489148	NPV.5=Double:404ACA2DF13D1E44|53.5795270489148
-P_NPV	vm3	lastbit		NPV.6=Double:C04ACA2DF13D1E45|-53.5795270489148	NPV.6=Double:C04ACA2DF13D1E44|-53.5795270489148
-P_NPV	jit	lastbit		NPV.6=Double:C04ACA2DF13D1E45|-53.5795270489148	NPV.6=Double:C04ACA2DF13D1E44|-53.5795270489148
-P_NPV	vm3	lastbit		NPV.12=Double:4027FC021D85D2A3|11.9922036386354	NPV.12=Double:4027FC021D85D2A4|11.9922036386354
-P_NPV	jit	lastbit		NPV.12=Double:4027FC021D85D2A3|11.9922036386354	NPV.12=Double:4027FC021D85D2A4|11.9922036386354
-P_NPV	vm3	error		NPV.13=ERR5	NPV.13=ERR13
-P_NPV	jit	error		NPV.13=ERR5	NPV.13=ERR13
-P_NPV	vm3	missing		NPV.14=Double:407616DACBDFA498|353.428417085271	<failed: bind: unresolved name `Rate` (named argument)>
-P_NPV	jit	missing		NPV.14=Double:407616DACBDFA498|353.428417085271	<failed: bind: unresolved name `Rate` (named argument)>
-P_NPV	vm3	value		NPV.15=Double:4023FFFFFFFE742D|9.99999999982	NPV.15=Double:4023FFFFFFFE7420|9.99999999981998
-P_NPV	jit	value		NPV.15=Double:4023FFFFFFFE742D|9.99999999982	NPV.15=Double:4023FFFFFFFE7420|9.99999999981998
 P_Oct	vm3	missing		Oct.45=String:[377]	<failed: bind: unresolved name `Number` (named argument)>
 P_Oct	jit	missing		Oct.45=String:[377]	<failed: bind: unresolved name `Number` (named argument)>
 P_Oct	vm3	error		Oct.56=ERR94	Oct.56=Null

@@ -2171,7 +2171,7 @@ mod tests {
         let environ =
             crate::traits::ProcessEnvHal::environ_variant(&host, Variant::from_string("PATH"))
                 .expect("variant environ");
-        assert_eq!(environ, Variant::from_i32(4));
+        assert_eq!(environ, Variant::from_string("C:\\Windows\\System32"));
 
         let dir = crate::traits::ProcessEnvHal::dir_variant(
             &host,
@@ -2787,7 +2787,7 @@ mod tests {
         assert_eq!(
             host.environ_variant(Variant::from_string(BStr::from("PATH")))
                 .expect("environ"),
-            Variant::from_i32(4)
+            Variant::from_string("C:\\Windows\\System32")
         );
         assert_eq!(
             host.dir_variant(
@@ -3163,9 +3163,70 @@ mod tests {
             host.command_variant().expect("command"),
             Variant::from_string("")
         );
-        assert_eq!(host.environ_variant(rv(88)).expect("environ"), rv(88));
+        assert_eq!(
+            host.environ_variant(rv(88)).expect("environ"),
+            Variant::from_string("")
+        );
         assert_eq!(host.dir_variant(rv(0), rv(0)).expect("dir"), rv(0));
         assert_eq!(host.dir_variant(rv(5), rv(0)).expect("dir"), rv(1));
+    }
+
+    #[test]
+    fn native_environment_indices_use_an_owned_environment() {
+        let Some(profile) = current_native_profile() else {
+            return;
+        };
+        const CHILD: &str = "CALCVBA_ENVIRON_OWNED_CHILD";
+        if std::env::var_os(CHILD).is_some_and(|value| value == "1") {
+            let host = StandardHostServices::new(profile, HostPolicy::native());
+            assert_eq!(
+                host.environ_variant(rv(1)).unwrap(),
+                Variant::from_string("!CALCVBA_FIRST=first")
+            );
+            assert_eq!(
+                host.environ_variant(rv(255)).unwrap(),
+                Variant::from_string("")
+            );
+            assert_eq!(
+                host.environ_variant(Variant::from_string("!CALCVBA_FIRST"))
+                    .unwrap(),
+                Variant::from_string("first")
+            );
+            assert_eq!(
+                host.environ_variant(Variant::from_f64(1.5)).unwrap(),
+                host.environ_variant(rv(2)).unwrap()
+            );
+            assert_eq!(
+                host.environ_variant(rv(32000)).unwrap_err().host_error_code,
+                Some(5)
+            );
+            assert_eq!(
+                host.environ_variant(Variant::null())
+                    .unwrap_err()
+                    .host_error_code,
+                Some(94)
+            );
+            return;
+        }
+        // This child owns its entire input environment, so native enumeration cannot
+        // inspect the test runner's environment. No environment values are printed.
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "adapters::standard::tests::native_environment_indices_use_an_owned_environment",
+            ])
+            .env_clear()
+            .env(CHILD, "1")
+            .env("!CALCVBA_FIRST", "first")
+            .env("ZZ_CALCVBA_LAST", "last")
+            .output()
+            .expect("owned environment test child");
+        assert!(
+            output.status.success(),
+            "owned child {:?}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]

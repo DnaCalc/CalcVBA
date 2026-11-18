@@ -2701,6 +2701,11 @@ pub fn ccur(args: &[Variant]) -> LibResult<Variant> {
     // Exact sources keep every digit; a Double converts from its exact binary value.
     let scaled = match arg.vtype() {
         VarType::Currency => arg.as_currency_scaled_i64(),
+        VarType::String => Some(
+            calcvba_runtime::coerce::currency_scaled_from_text(&as_str(arg)?).map_err(|error| {
+                LibError::new(error.code(), default_error_message(error.code()))
+            })?,
+        ),
         VarType::Decimal => arg
             .as_decimal96()
             .and_then(|d| d.round_scaled_i128(4))

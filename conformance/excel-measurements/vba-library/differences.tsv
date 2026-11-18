@@ -11,12 +11,6 @@ P_AscW	vm3	missing		AscW.14=Integer:122	<failed: bind: unresolved name `String` 
 P_AscW	jit	missing		AscW.14=Integer:122	<failed: bind: unresolved name `String` (named argument)>
 P_Atn	vm3	missing		Atn.21=Double:3FE921FB54442D18|0.785398163397448	<failed: bind: unresolved name `Number` (named argument)>
 P_Atn	jit	missing		Atn.21=Double:3FE921FB54442D18|0.785398163397448	<failed: bind: unresolved name `Number` (named argument)>
-P_CCur	vm3	value		CCur.5=Currency:0.0001	CCur.5=Currency:0
-P_CCur	jit	value		CCur.5=Currency:0.0001	CCur.5=Currency:0
-P_CCur	vm3	value		CCur.6=Currency:-0.0001	CCur.6=Currency:0
-P_CCur	jit	value		CCur.6=Currency:-0.0001	CCur.6=Currency:0
-P_CCur	vm3	error		CCur.25=Currency:922337203685477.5807	CCur.25=ERR6
-P_CCur	jit	error		CCur.25=Currency:922337203685477.5807	CCur.25=ERR6
 P_CDate	vm3	error	locale	CDate.22=Date:40E5686000000000	CDate.22=ERR13
 P_CDate	jit	error	locale	CDate.22=Date:40E5686000000000	CDate.22=ERR13
 P_CDate	vm3	value	locale	CDate.39=Date:40E2070000000000	CDate.39=Date:40E701E000000000

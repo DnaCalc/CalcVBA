@@ -1238,6 +1238,17 @@ pub fn coerce_numeric(v: &Variant, target: NumericCoerceTarget) -> R {
             if let Some(scaled) = exact_currency_operand(v) {
                 return checked_currency(scaled?);
             }
+            if v.vtype() == VarType::String {
+                return calcvba_runtime::coerce::currency_scaled_from_text(&as_string(v))
+                    .map(Variant::from_currency_scaled_i64)
+                    .map_err(|error| {
+                        if error.code() == 6 {
+                            ArithError::overflow()
+                        } else {
+                            ArithError::type_mismatch()
+                        }
+                    });
+            }
             typed::currency_from_f64(num(v)?).map(Variant::from_currency_scaled_i64)
         }
         NumericCoerceTarget::Date => {

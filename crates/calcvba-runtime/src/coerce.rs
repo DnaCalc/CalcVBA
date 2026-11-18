@@ -434,6 +434,11 @@ pub fn coerce_to(value: &Variant, target: VarType) -> Result<Variant, String> {
 /// date text, `Decimal` keeps every digit.
 fn string_to_number(text: &str, target: VarType) -> Result<Variant, String> {
     let overflow = || "runtime error: 6 (Overflow)".to_string();
+    if target == VarType::Currency {
+        return currency_scaled_from_text(text)
+            .map(Variant::from_currency_scaled_i64)
+            .map_err(NumberTextError::message);
+    }
     if target == VarType::Boolean
         && let Some(b) = parse_bool_text(text)
     {
@@ -493,12 +498,6 @@ pub fn currency_scaled_from_f64(value: f64) -> Option<i64> {
     if !value.is_finite() {
         return None;
     }
-    // Where the floating product is exact enough (below 2^53), keep its rounding: `0.00005`
-    // gives the product 0.5, which rounds to even (0).
-    let product = value * 10_000.0;
-    if product.abs() < 9_007_199_254_740_992.0 {
-        return Some(product.round_ties_even() as i64);
-    }
     let bits = value.to_bits();
     let negative = bits >> 63 == 1;
     let exp_bits = ((bits >> 52) & 0x7FF) as i32;
@@ -530,6 +529,61 @@ pub fn currency_scaled_from_f64(value: f64) -> Option<i64> {
     };
     let signed = if negative { -magnitude } else { magnitude };
     i64::try_from(signed).ok()
+}
+
+/// Currency text rounds the decimal digits directly to four places, without
+/// passing through Double or a Decimal with a limited number of digits.
+pub fn currency_scaled_from_text(text: &str) -> Result<i64, NumberTextError> {
+    let exponent = text.find(['e', 'E', 'd', 'D']).unwrap_or(text.len());
+    let (mantissa, exponent) = text.split_at(exponent);
+    let text = mantissa.replace([' ', '\u{a0}'], "") + exponent;
+    let t = text.trim();
+    if let Some(integer) = parse_vba_prefixed_integer(t) {
+        return integer.checked_mul(10_000).ok_or(NumberTextError::Overflow);
+    }
+    let (negative, body) = number_text_parts(t).ok_or(NumberTextError::Mismatch)?;
+    let (mantissa, exponent) = match body.find(['e', 'E', 'd', 'D']) {
+        Some(i) => (&body[..i], &body[i + 1..]),
+        None => (body, "0"),
+    };
+    // Excel refuses exponent magnitudes starting at 1073741820 as text errors,
+    // even for zero and for exponents that would otherwise underflow to zero.
+    let exponent: i64 = exponent.parse().map_err(|_| NumberTextError::Mismatch)?;
+    if exponent.unsigned_abs() >= 1_073_741_820 {
+        return Err(NumberTextError::Mismatch);
+    }
+    let whole = mantissa.find('.').unwrap_or(mantissa.len());
+    let digits: Vec<u8> = mantissa.bytes().filter(|b| *b != b'.').collect();
+    let Some(first) = digits.iter().position(|b| *b != b'0') else {
+        let fractional = digits.len() - whole;
+        return if exponent - fractional as i64 > 14 {
+            Err(NumberTextError::Overflow)
+        } else {
+            Ok(0)
+        };
+    };
+    let point = whole as i64 + exponent + 4 - first as i64;
+    if point < 0 {
+        return Ok(0);
+    }
+    if point > 19 {
+        return Err(NumberTextError::Overflow);
+    }
+    let digits = &digits[first..];
+    let point = point as usize;
+    let mut magnitude = 0i128;
+    for index in 0..point {
+        magnitude = magnitude * 10 + i128::from(digits.get(index).copied().unwrap_or(b'0') - b'0');
+    }
+    if let Some(&next) = digits.get(point)
+        && (next > b'5'
+            || (next == b'5'
+                && (magnitude % 2 != 0 || digits[point + 1..].iter().any(|b| *b != b'0'))))
+    {
+        magnitude += 1;
+    }
+    let signed = if negative { -magnitude } else { magnitude };
+    i64::try_from(signed).map_err(|_| NumberTextError::Overflow)
 }
 
 /// Is `serial` inside the Date range (1 January 100 to 31 December 9999, VarDateFromR8)?
@@ -917,7 +971,11 @@ mod tests {
         assert_eq!(cy(922_337_203_685_477.5 + 0.125), None);
         assert_eq!(cy(-922_337_203_685_477.5), Some(-9_223_372_036_854_775_000));
         assert_eq!(cy(1.5), Some(15_000));
-        assert_eq!(cy(0.00005), Some(0), "the product 0.5 rounds to even");
+        assert_eq!(
+            cy(0.00005),
+            Some(1),
+            "the binary value is above the decimal tie"
+        );
         assert_eq!(cy(-0.0001), Some(-1));
         assert_eq!(cy(f64::NAN), None);
     }

@@ -303,14 +303,6 @@ P_DeleteSetting	vm3	value		DeleteSetting.16=String:[Empty|False]	DeleteSetting.1
 P_DeleteSetting	jit	value		DeleteSetting.16=String:[Empty|False]	DeleteSetting.16=String:[String()|True]
 P_DeleteSetting	vm3	error		DeleteSetting.20=ERR5	DeleteSetting.20=Empty
 P_DeleteSetting	jit	error		DeleteSetting.20=ERR5	DeleteSetting.20=Empty
-P_Dir	vm3	error		Dir.15=String:[]	Dir.15=ERR5
-P_Dir	jit	error		Dir.15=String:[]	Dir.15=ERR5
-P_Dir	vm3	value		Dir.17=String:[a.txt]	Dir.17=String:[A.TXT]
-P_Dir	jit	value		Dir.17=String:[a.txt]	Dir.17=String:[A.TXT]
-P_Dir	vm3	error		Dir.20=ERR13	Dir.20=ERR5
-P_Dir	jit	error		Dir.20=ERR13	Dir.20=ERR5
-P_Dir	vm3	error		Dir.21=String:[a.txt/String]	Dir.21=ERR5
-P_Dir	jit	error		Dir.21=String:[a.txt/String]	Dir.21=ERR5
 P_DoEvents	vm3	type		DoEvents.1=Integer:0	DoEvents.1=Long:0
 P_DoEvents	jit	type		DoEvents.1=Integer:0	DoEvents.1=Long:0
 P_DoEvents	vm3	value		DoEvents.2=String:[Integer]	DoEvents.2=String:[Long]
@@ -1217,14 +1209,6 @@ P_Minute	vm3	error		Minute.17=ERR13	Minute.17=Integer:0
 P_Minute	jit	error		Minute.17=ERR13	Minute.17=Integer:0
 P_Minute	vm3	missing		Minute.18=Integer:15	<failed: bind: unresolved name `Time` (named argument)>
 P_Minute	jit	missing		Minute.18=Integer:15	<failed: bind: unresolved name `Time` (named argument)>
-P_MkDir	vm3	value		MkDir.1=String:[n1,268435472]	MkDir.1=String:[n1,16]
-P_MkDir	jit	value		MkDir.1=String:[n1,268435472]	MkDir.1=String:[n1,16]
-P_MkDir	vm3	error		MkDir.7=ERR94	MkDir.7=ERR5
-P_MkDir	jit	error		MkDir.7=ERR94	MkDir.7=ERR5
-P_MkDir	vm3	error		MkDir.8=ERR76	MkDir.8=ERR75
-P_MkDir	jit	error		MkDir.8=ERR76	MkDir.8=ERR75
-P_MkDir	vm3	error		MkDir.18=ERR76	MkDir.18=ERR75
-P_MkDir	jit	error		MkDir.18=ERR76	MkDir.18=ERR75
 P_Month	vm3	error	locale	Month.13=Integer:12	Month.13=ERR13
 P_Month	jit	error	locale	Month.13=Integer:12	Month.13=ERR13
 P_Month	vm3	error		Month.18=ERR13	Month.18=Integer:1
@@ -1453,14 +1437,6 @@ P_Right	vm3	missing		Right.15=String:[c]	<failed: bind: unresolved name `String`
 P_Right	jit	missing		Right.15=String:[c]	<failed: bind: unresolved name `String` (named argument)>
 P_RightB	vm3	missing		RightB.13=String:[c]	<failed: bind: unresolved name `String` (named argument)>
 P_RightB	jit	missing		RightB.13=String:[c]	<failed: bind: unresolved name `String` (named argument)>
-P_RmDir	vm3	error		RmDir.5=ERR94	RmDir.5=ERR5
-P_RmDir	jit	error		RmDir.5=ERR94	RmDir.5=ERR5
-P_RmDir	vm3	error		RmDir.8=ERR76	RmDir.8=ERR75
-P_RmDir	jit	error		RmDir.8=ERR76	RmDir.8=ERR75
-P_RmDir	vm3	error		RmDir.9=ERR75	RmDir.9=ERR70
-P_RmDir	jit	error		RmDir.9=ERR75	RmDir.9=ERR70
-P_RmDir	vm3	error		RmDir.10=ERR76	RmDir.10=ERR75
-P_RmDir	jit	error		RmDir.10=ERR76	RmDir.10=ERR75
 P_Rnd	vm3	value		Rnd.17=String:[,Single:3E636CC4|0.2220946,Single:3F3F1130|0.746356,Single:3F072B33|0.5280029]	Rnd.17=String:[,Single:3F2BC131|0.6709166,Single:3EFCBE60|0.4936399,Single:3BA09980|4.901111E-03]
 P_Rnd	jit	value		Rnd.17=String:[,Single:3E636CC4|0.2220946,Single:3F3F1130|0.746356,Single:3F072B33|0.5280029]	Rnd.17=String:[,Single:3F2BC131|0.6709166,Single:3EFCBE60|0.4936399,Single:3BA09980|4.901111E-03]
 P_Rnd	vm3	value		Rnd.18=String:[,Single:3EC43C62|0.3832732,Single:3D748300|5.969524E-02,Single:3E4A18CC|0.1973602]	Rnd.18=String:[,Single:3F372F31|0.7155638,Single:3F141530|0.5784483,Single:3DC0F998|9.422606E-02]

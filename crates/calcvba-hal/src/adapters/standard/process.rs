@@ -296,10 +296,7 @@ impl ProcessEnvHal for StandardHostServices {
         if self.native_process_enabled() {
             let is_continuation = match path.vtype() {
                 VarType::Empty | VarType::Null => true,
-                VarType::String => path
-                    .as_bstr()
-                    .map(|text| text.as_str().is_empty())
-                    .unwrap_or(false),
+                VarType::String => false,
                 _ => {
                     self.variant_to_i32(&path, capability, "dir", "path")
                         .unwrap_or(1)
@@ -326,7 +323,17 @@ impl ProcessEnvHal for StandardHostServices {
                 return Ok(Variant::from_string(next));
             }
 
-            let target = self.variant_to_path(&path, capability, "dir", "path")?;
+            // Explicit Dir("") starts a fresh search in the current directory;
+            // only the omitted pathname continues the previous search.
+            let target = if path.as_bstr().is_some_and(|text| text.is_empty()) {
+                std::env::current_dir()
+                    .map(|dir| dir.join("*"))
+                    .map_err(|err| {
+                        HalError::adapter_fault(self.profile, capability, "dir", err.to_string())
+                    })?
+            } else {
+                self.variant_to_path(&path, capability, "dir", "path")?
+            };
             let attrs = self
                 .variant_to_i32(&attrs, capability, "dir", "attributes")
                 .unwrap_or(0);

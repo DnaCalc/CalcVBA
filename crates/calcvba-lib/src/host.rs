@@ -92,10 +92,10 @@ pub fn file_kill(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant
     Ok(host.fs().kill_variant(req(args, 0)?)?)
 }
 pub fn file_mkdir(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
-    Ok(host.fs().mkdir_variant(req(args, 0)?)?)
+    Ok(host.fs().mkdir_variant(string_arg(args, 0)?)?)
 }
 pub fn file_rmdir(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
-    Ok(host.fs().rmdir_variant(req(args, 0)?)?)
+    Ok(host.fs().rmdir_variant(string_arg(args, 0)?)?)
 }
 pub fn file_cur_dir(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
     // The optional Variant accepts only a String when supplied. In particular,
@@ -565,6 +565,9 @@ pub fn environ(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> 
     Ok(host.process().environ_variant(req(args, 0)?)?)
 }
 pub fn dir(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
+    if opt(args, 0).is_some_and(|path| path.vtype() != VarType::String) {
+        return Err(LibError::type_mismatch("Dir pathname must be a String"));
+    }
     Ok(host
         .process()
         .dir_variant(arg_or_empty(args, 0), arg_or_empty(args, 1))?)

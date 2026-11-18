@@ -157,6 +157,18 @@ fn metadata_error_code(err: &std::io::Error, path: &Path) -> i32 {
     io_error_code(err, 53, 53)
 }
 
+fn directory_error_code(err: &std::io::Error) -> i32 {
+    #[cfg(windows)]
+    if matches!(err.raw_os_error(), Some(123 | 267)) {
+        return 76; // invalid name / not a directory
+    }
+    if err.kind() == std::io::ErrorKind::PermissionDenied {
+        75
+    } else {
+        io_error_code(err, 76, 75)
+    }
+}
+
 #[derive(Debug, Default)]
 pub(super) struct FileSystemState {
     pub(super) handles: BTreeMap<i32, FileHandleState>,
@@ -1039,7 +1051,7 @@ impl FileSystemHal for StandardHostServices {
                     "mkdir",
                     format!("failed to create directory {path_text}: {err}"),
                 )
-                .with_host_error_code(io_error_code(&err, 76, 75))
+                .with_host_error_code(directory_error_code(&err))
             })?;
         }
         Ok(Variant::from_i32(0))
@@ -1071,7 +1083,7 @@ impl FileSystemHal for StandardHostServices {
                     "rmdir",
                     format!("failed to remove directory {path_text}: {err}"),
                 )
-                .with_host_error_code(io_error_code(&err, 76, 75))
+                .with_host_error_code(directory_error_code(&err))
             })?;
         }
         Ok(Variant::from_i32(0))
@@ -2077,7 +2089,11 @@ pub(super) fn dir_listing(raw: &str, target: &Path, attrs: i32) -> std::io::Resu
     };
     let wildcard = path_contains_wildcards(&pattern);
     let candidates = if wildcard {
-        expand_host_wildcard_paths(&pattern)?
+        match expand_host_wildcard_paths(&pattern) {
+            Ok(paths) => paths,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(err) => return Err(err),
+        }
     } else if pattern.exists() {
         vec![pattern.clone()]
     } else {
@@ -2086,6 +2102,24 @@ pub(super) fn dir_listing(raw: &str, target: &Path, attrs: i32) -> std::io::Resu
     let filtered = VB_HIDDEN | VB_SYSTEM | VB_DIRECTORY;
     let wanted = attrs & filtered;
     let name_of = |path: &Path| {
+        #[cfg(windows)]
+        if !wildcard {
+            let parent = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            if let Some(name) = path.file_name()
+                && let Ok(entries) = fs::read_dir(parent)
+                && let Some(entry) = entries.filter_map(Result::ok).find(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .eq_ignore_ascii_case(&name.to_string_lossy())
+                })
+            {
+                return entry.file_name().to_string_lossy().to_string();
+            }
+        }
         path.file_name()
             .map(|value| value.to_string_lossy().to_string())
             .unwrap_or_else(|| path.display().to_string())

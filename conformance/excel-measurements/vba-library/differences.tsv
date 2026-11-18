@@ -219,10 +219,6 @@ P_DatePart	vm3	value		DatePart.26=Integer:29	DatePart.26=Integer:30
 P_DatePart	jit	value		DatePart.26=Integer:29	DatePart.26=Integer:30
 P_DateSerial	vm3	value		DateSerial.10=Date:40E72F8000000000	DateSerial.10=Date:40C5678000000000
 P_DateSerial	jit	value		DateSerial.10=Date:40E72F8000000000	DateSerial.10=Date:40C5678000000000
-P_DateSerial	vm3	error		DateSerial.19=Date:40E1A82000000000	DateSerial.19=ERR5
-P_DateSerial	jit	error		DateSerial.19=Date:40E1A82000000000	DateSerial.19=ERR5
-P_DateSerial	vm3	error		DateSerial.37=Date:40E1A82000000000	DateSerial.37=ERR5
-P_DateSerial	jit	error		DateSerial.37=Date:40E1A82000000000	DateSerial.37=ERR5
 P_DateValue	vm3	error	locale	DateValue.7=Date:40E56AA000000000	DateValue.7=ERR13
 P_DateValue	jit	error	locale	DateValue.7=Date:40E56AA000000000	DateValue.7=ERR13
 P_DateValue	vm3	value	locale	DateValue.11=Date:40E2070000000000	DateValue.11=Date:40E701E000000000

@@ -138,6 +138,35 @@ fn native_windows_shell(command: &str, style: i32) -> std::io::Result<u32> {
     Ok(task)
 }
 
+/// The virtual host has a small, stable environment, like its clock and process model.
+/// Native hosts read their own environment instead.
+fn deterministic_environment(
+    profile: crate::model::HalProfileId,
+) -> &'static [(&'static str, &'static str)] {
+    if profile == crate::model::HalProfileId::Windows {
+        &[
+            ("COMSPEC", "C:\\Windows\\System32\\cmd.exe"),
+            ("PATH", "C:\\Windows\\System32"),
+            ("TEMP", "C:\\Temp"),
+            ("WINDIR", "C:\\Windows"),
+        ]
+    } else {
+        &[("PATH", "/usr/bin:/bin"), ("TEMP", "/tmp")]
+    }
+}
+
+fn environment_value(value: &std::ffi::OsStr) -> Variant {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        Variant::from_utf16_units(&value.encode_wide().collect::<Vec<_>>())
+    }
+    #[cfg(not(windows))]
+    {
+        Variant::from_string(value.to_string_lossy().into_owned())
+    }
+}
+
 impl ProcessEnvHal for StandardHostServices {
     fn command_variant(&self) -> HalResult<Variant> {
         let capability = CapabilityId::ProcessEnv;
@@ -369,39 +398,64 @@ impl ProcessEnvHal for StandardHostServices {
         if !self.supports(capability) {
             return Err(self.unsupported(capability, "environ"));
         }
-        if self.native_process_enabled()
-            && let Some(name) = key.as_bstr()
-        {
-            let value = std::env::var_os(name.as_str())
-                .map(|value| value.to_string_lossy().to_string())
+        let virtual_table = deterministic_environment(self.profile);
+        if let Some(text) = key.as_bstr() {
+            let text = text.as_str();
+            let name = text.trim_matches(' ');
+            if name.is_empty() {
+                return Err(HalError::adapter_fault(
+                    self.profile,
+                    capability,
+                    "environ",
+                    "Invalid procedure call or argument",
+                )
+                .with_host_error_code(5));
+            }
+            if self.native_process_enabled() {
+                let value = std::env::var_os(name).unwrap_or_default();
+                return Ok(environment_value(&value));
+            }
+            let value = virtual_table
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| *value)
                 .unwrap_or_default();
             return Ok(Variant::from_string(value));
         }
-        if self.native_process_enabled() {
-            let mut vars: Vec<(std::ffi::OsString, std::ffi::OsString)> =
-                std::env::vars_os().collect();
-            if vars.is_empty() {
-                return Ok(Variant::from_string(BStr::empty()));
-            }
-            vars.sort_by(|a, b| a.0.cmp(&b.0));
-            let key = self
-                .variant_to_i32(&key, capability, "environ", "key")
-                .unwrap_or(0);
-            let idx = (key.unsigned_abs() as usize) % vars.len();
-            let entry = format!(
-                "{}={}",
-                vars[idx].0.to_string_lossy(),
-                vars[idx].1.to_string_lossy()
-            );
-            return Ok(Variant::from_string(entry));
+        // MS-VBAL: non-string keys are Let-coercible to Long, with ties-to-even rounding.
+        let index = calcvba_eval::arith::coerce_for_byref_target(&key, VarType::Long as u16)
+            .map_err(|error| {
+                HalError::adapter_fault(self.profile, capability, "environ", error.message)
+                    .with_host_error_code(error.code)
+            })?
+            .as_i32()
+            .expect("Long coercion returns a Long");
+        // Legacy VB's environment index range; additional boundary cases are queued for Excel.
+        if !(1..=255).contains(&index) {
+            return Err(HalError::adapter_fault(
+                self.profile,
+                capability,
+                "environ",
+                "Invalid procedure call or argument",
+            )
+            .with_host_error_code(5));
         }
-        let key = match key.as_bstr() {
-            Some(text) => text.as_str().len().min(i32::MAX as usize) as i32,
-            None => self
-                .variant_to_i32(&key, capability, "environ", "key")
-                .unwrap_or(0),
-        };
-        Ok(Variant::from_i32(key))
+        if self.native_process_enabled() {
+            let mut variables: Vec<_> = std::env::vars_os().collect();
+            variables.sort_by(|a, b| a.0.cmp(&b.0));
+            let Some((name, value)) = variables.get((index - 1) as usize) else {
+                return Ok(Variant::from_string(""));
+            };
+            let mut entry = name.clone();
+            entry.push("=");
+            entry.push(value);
+            return Ok(environment_value(&entry));
+        }
+        let entry = virtual_table
+            .get((index - 1) as usize)
+            .map(|(name, value)| format!("{name}={value}"))
+            .unwrap_or_default();
+        Ok(Variant::from_string(entry))
     }
 
     fn dir_variant(&self, path: Variant, attrs: Variant) -> HalResult<Variant> {

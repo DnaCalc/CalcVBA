@@ -1,4 +1,4 @@
 Sub Main()
     Dim x
-    x = Len(1234)
+    x = Len(CVar(1234))
 End Sub

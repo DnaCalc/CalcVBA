@@ -1,16 +1,21 @@
 """Writes portability-matrix.tsv: every VBA library procedure (functions.tsv) plus the
-statements and language features that touch the host, classified for running Windows VBA on
-Linux. See docs/design/linux-portability.md for the classes and modes.
+statements and language features that touch the host, for the two VBA dialects (Windows Excel,
+Mac Excel) and the hosts CalcVBA runs on (Windows, macOS, Linux, wasm WASI, wasm browser).
+See docs/design/portability.md.
 
-Classes:
-  pure      result depends only on the arguments; portable when the implementation is
-            platform-independent (see the note column for current exceptions)
-  locale    depends on regional settings; portable once the locale is configured, not taken
-            from the Linux host
-  shim      Windows behaviour can be emulated on Linux (paths, attributes, registry, encodings)
-  host      the value legitimately depends on the machine (clock, environment, processes);
-            portable in shape, not in value
-  windows   needs Windows itself (Win32 DLLs, COM servers, window manager): reject or replace
+Columns:
+  class        what the feature depends on, relative to the Windows dialect:
+               pure | locale | shim | host | windows
+  mac_dialect  how Excel for Mac's VBA differs ("to measure" until measured on a Mac)
+  windows, macos, linux, wasi, browser
+               what CalcVBA has to do on that host to give the reference dialect's answer:
+                 native   the host's own facility gives it directly
+                 model    CalcVBA's own model (locale, maths): the same code on every host
+                 shim     emulation (path map, stores, code page, ...)
+                 host     a machine value (clock, environment, UI host)
+                 replace  only through a portable replacement (portable class, emulated Declare)
+                 reject   cannot work there: refused at load with the reason
+  today        what CalcVBA does now (surveyed 2026-11-18)
 
 python -I make_portability_matrix.py
 """
@@ -19,140 +24,122 @@ import csv
 import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+HOSTS = ("windows", "macos", "linux", "wasi", "browser")
 
-# (class, CalcVBA on Linux today, shim or check)
-FILE = "shim"
-PATH_NOTE = "Windows paths passed to the OS unchanged (backslash and C:\\ are filename characters)"
-PATH_SHIM = "path mapping (drive letters to roots, \\ to /), case-insensitive lookup"
-C = {
-    # Strings / Conversion that touch the code page
-    "Asc": ("shim", "ANSI table hard-coded Windows-1252 off Windows", "configured ANSI code page (the Windows machine's ACP)"),
-    "AscB": ("pure", "", ""),
-    "Chr": ("shim", "Windows-1252 table", "configured ANSI code page"),
-    "ChrB": ("pure", "", ""),
-    "StrConv": ("shim", "vbUnicode/vbFromUnicode via Windows-1252; vbWide/vbNarrow/Kana by table", "configured code page and LCID"),
-    "String": ("shim", "character codes 128-255 via Windows-1252", "configured ANSI code page"),
-    "StrComp": ("locale", "vbTextCompare uses Rust lower-casing, CompareStringW on Windows", "a portable text-compare table matching CompareStringW for the configured LCID"),
-    "InStr": ("locale", "vbTextCompare as StrComp", "as StrComp"),
-    "InStrB": ("locale", "vbTextCompare as StrComp", "as StrComp"),
-    "InStrRev": ("locale", "vbTextCompare as StrComp", "as StrComp"),
-    "Replace": ("locale", "vbTextCompare as StrComp", "as StrComp"),
-    "Split": ("locale", "vbTextCompare as StrComp", "as StrComp"),
-    "Filter": ("locale", "vbTextCompare as StrComp", "as StrComp"),
-    "LCase": ("locale", "Rust Unicode case mapping", "match LCMapStringW for the configured LCID"),
-    "UCase": ("locale", "Rust Unicode case mapping", "match LCMapStringW for the configured LCID"),
-    "Format": ("locale", "fixed en-US conventions on every host", "locale model (date order, separators, names)"),
-    "FormatCurrency": ("locale", "fixed conventions", "locale model"),
-    "FormatDateTime": ("locale", "fixed en-US date text", "locale model"),
-    "FormatNumber": ("locale", "fixed conventions", "locale model"),
-    "FormatPercent": ("locale", "fixed conventions", "locale model"),
-    "MonthName": ("locale", "English names", "locale model"),
-    "WeekdayName": ("locale", "English names", "locale model"),
-    "CStr": ("locale", "dates as en-US M/D/YYYY", "locale model"),
-    "Str": ("pure", "", ""),
-    "Val": ("pure", "", ""),
-    "CDate": ("locale", "ambiguous text dates refused instead of read by the locale", "locale model"),
-    "CVDate": ("locale", "as CDate", "locale model"),
-    "DateValue": ("locale", "as CDate", "locale model"),
-    "TimeValue": ("locale", "fixed AM/PM forms", "locale model"),
-    "IsDate": ("locale", "as CDate", "locale model"),
-    "IsNumeric": ("locale", "period decimal only", "locale model"),
-    "CDbl": ("locale", "period decimal only for strings", "locale model"),
-    "CSng": ("locale", "as CDbl", "locale model"),
-    "CCur": ("locale", "as CDbl", "locale model"),
-    "CDec": ("locale", "as CDbl", "locale model"),
-    "Calendar": ("locale", "not implemented", "locale model (Gregorian/Hijri)"),
-    # Math
-    "Sin": ("pure", "calls the platform libm: last bit differs Linux vs Windows (dc-q6brh.112)", "one Excel-exact implementation"),
-    "Cos": ("pure", "platform libm", "one Excel-exact implementation"),
-    "Tan": ("pure", "platform libm", "one Excel-exact implementation"),
-    "Atn": ("pure", "platform libm", "one Excel-exact implementation"),
-    "Exp": ("pure", "platform libm", "one Excel-exact implementation"),
-    "Log": ("pure", "platform libm", "one Excel-exact implementation"),
-    "Sqr": ("pure", "IEEE sqrt is exact on every platform", ""),
-    # DateTime
-    "Now": ("host", "local time via localtime_r", "time zone and clock are the machine's; a fixed clock in deterministic mode"),
-    "Date": ("host", "local date", "as Now"),
-    "Time": ("host", "local time", "as Now"),
-    "Timer": ("host", "local seconds since midnight", "as Now"),
-    # FileSystem
-    "ChDir": (FILE, PATH_NOTE, PATH_SHIM),
-    "ChDrive": (FILE, "does nothing on Linux", "drive map: ChDrive selects a mapped root"),
-    "CurDir": (FILE, "the process directory; drive argument ignored", "report the mapped Windows path (C:\\...)"),
-    "Dir": (FILE, "wildcards case-sensitive; hidden/system/archive never reported", PATH_SHIM + "; attribute store"),
-    "EOF": ("pure", "", ""),
-    "FileAttr": ("pure", "", ""),
-    "FileCopy": (FILE, PATH_NOTE, PATH_SHIM),
-    "FileDateTime": (FILE, "mtime in local time", PATH_SHIM),
-    "FileLen": (FILE, PATH_NOTE, PATH_SHIM),
-    "FreeFile": ("pure", "", ""),
-    "GetAttr": (FILE, "only vbReadOnly and vbDirectory", "attribute store (xattr or sidecar) for hidden/system/archive"),
-    "SetAttr": (FILE, "only the read-only bit", "attribute store"),
-    "Kill": (FILE, "wildcards case-sensitive", PATH_SHIM),
-    "Loc": ("pure", "", ""),
-    "LOF": ("pure", "", ""),
-    "MkDir": (FILE, PATH_NOTE, PATH_SHIM),
-    "RmDir": (FILE, PATH_NOTE, PATH_SHIM),
-    "Reset": ("pure", "", ""),
-    "Seek": ("pure", "", ""),
-    "Input": ("shim", "ANSI via Windows-1252", "configured code page"),
-    "InputB": ("pure", "", ""),
-    "Width": ("pure", "", ""),
-    # Interaction
-    "AppActivate": ("windows", "error 5 off Windows", "reject in strict mode; no shim (window manager)"),
-    "Beep": ("host", "does nothing", "terminal bell or nothing"),
-    "CallByName": ("pure", "", ""),
-    "Command": ("host", "process arguments", ""),
-    "CreateObject": ("windows", "only Scripting.Dictionary (engine class); other ProgIDs unsupported off Windows", "portable classes for common ProgIDs (Scripting.FileSystemObject, VBScript.RegExp, ADODB.Stream?); reject the rest"),
-    "GetObject": ("windows", "unsupported off Windows", "reject; no running-object table"),
-    "DeleteSetting": ("shim", "in memory only (on Windows too)", "settings store: a file under XDG config, the registry on Windows"),
-    "GetAllSettings": ("shim", "in memory only", "settings store"),
-    "GetSetting": ("shim", "in memory only", "settings store"),
-    "SaveSetting": ("shim", "in memory only", "settings store"),
-    "DoEvents": ("pure", "yield", ""),
-    "Environ": ("shim", "names case-sensitive; no TEMP/TMP/USERPROFILE/APPDATA; Environ(n) order differs", "case-insensitive names, synthesised Windows variables mapped to Linux equivalents, VBA's 1-based order"),
-    "InputBox": ("host", "prompt to stderr, returns the default on linux-stdio", "UI host decides (scripted responses, a dialog in a GUI host)"),
-    "MsgBox": ("host", "prompt to stderr, returns the default", "UI host decides"),
-    "MacScript": ("windows", "Mac-only in VBA: error on Windows", "same error everywhere"),
-    "SendKeys": ("windows", "error 5 everywhere", "reject in strict mode"),
-    "Shell": ("windows", "runs sh -c with the text: a Windows command line will not run", "reject in strict mode, or a command map for known programs"),
-    "IMEStatus": ("host", "not implemented", "0 (no IME)"),
-    "MacID": ("windows", "not implemented", "the same error as Windows Excel"),
-    # Information
-    "Err": ("pure", "", ""),
-    "Erl": ("pure", "", ""),
-    # Hidden module
-    "VarPtr": ("pure", "real addresses", "values differ per run on any host"),
-    "StrPtr": ("pure", "real addresses", "values differ per run on any host"),
-    "ObjPtr": ("pure", "real addresses", "values differ per run on any host"),
-    # VBEGlobal
-    "Load": ("host", "not implemented", "needs a forms host (CalcForms)"),
-    "Unload": ("host", "not implemented", "needs a forms host (CalcForms)"),
-    "UserForms": ("host", "not implemented", "needs a forms host (CalcForms)"),
+# Verdict rows per class, (windows, macos, linux, wasi, browser).
+BY_CLASS = {
+    "pure": ("native", "native", "native", "native", "native"),
+    "locale": ("model", "model", "model", "model", "model"),
+    "file": ("native", "shim", "shim", "shim", "shim"),
+    "store": ("native", "shim", "shim", "shim", "shim"),
+    "codepage": ("model", "model", "model", "model", "model"),
+    "envvar": ("native", "shim", "shim", "shim", "shim"),
+    "clock": ("host", "host", "host", "host", "host"),
+    "ui": ("host", "host", "host", "host", "host"),
+    "forms": ("host", "host", "host", "reject", "host"),
+    "math": ("model", "model", "model", "model", "model"),
+    "win32": ("native", "replace", "replace", "replace", "replace"),
+    "com": ("native", "replace", "replace", "replace", "replace"),
+    "winonly": ("native", "reject", "reject", "reject", "reject"),
+    "process": ("native", "shim", "shim", "reject", "reject"),
 }
-DEFAULT = ("pure", "", "")
+CLASS_OF = {"file": "shim", "store": "shim", "codepage": "shim", "envvar": "shim", "clock": "host",
+            "ui": "host", "forms": "host", "math": "pure", "win32": "windows", "com": "windows",
+            "winonly": "windows", "process": "windows", "pure": "pure", "locale": "locale"}
 
-# Statements and language features outside the library list.
+PATH_TODAY = "Windows paths go to the OS unchanged; wildcards case-sensitive off Windows"
+MAC_PATHS = "POSIX paths with / (Excel 2016+); sandboxed file access (to measure)"
+L = "locale"
+# name -> (kind, mac_dialect, today)
+F = {
+    "Asc": ("codepage", "code page for 128-255 may be Mac Roman (to measure)", "Windows-1252 table off Windows"),
+    "Chr": ("codepage", "as Asc (to measure)", "Windows-1252 table off Windows"),
+    "String": ("codepage", "as Asc (to measure)", "Windows-1252 table off Windows"),
+    "StrConv": ("codepage", "vbUnicode/vbFromUnicode code page; vbWide/Kana (to measure)", "Windows-1252 table off Windows"),
+    "Input": ("codepage", "as Asc (to measure)", "Windows-1252 table off Windows"),
+    "StrComp": (L, "text compare rules of the Mac locale (to measure)", "Rust case folding off Windows, CompareStringW on Windows"),
+    "InStr": (L, "as StrComp", "as StrComp"), "InStrB": (L, "as StrComp", "as StrComp"),
+    "InStrRev": (L, "as StrComp", "as StrComp"), "Replace": (L, "as StrComp", "as StrComp"),
+    "Split": (L, "as StrComp", "as StrComp"), "Filter": (L, "as StrComp", "as StrComp"),
+    "LCase": (L, "to measure", "Rust Unicode case mapping"), "UCase": (L, "to measure", "Rust Unicode case mapping"),
+    "Format": (L, "Mac regional settings (to measure)", "fixed en-US conventions on every host"),
+    "FormatCurrency": (L, "Mac regional settings", "fixed conventions"),
+    "FormatDateTime": (L, "Mac regional settings", "fixed en-US"),
+    "FormatNumber": (L, "Mac regional settings", "fixed conventions"),
+    "FormatPercent": (L, "Mac regional settings", "fixed conventions"),
+    "MonthName": (L, "Mac language", "English"), "WeekdayName": (L, "Mac language", "English"),
+    "CStr": (L, "Mac regional settings for dates", "en-US M/D/YYYY dates"),
+    "CDate": (L, "Mac regional settings", "ambiguous text dates refused"),
+    "CVDate": (L, "as CDate", "as CDate"), "DateValue": (L, "as CDate", "as CDate"),
+    "TimeValue": (L, "as CDate", "fixed AM/PM forms"), "IsDate": (L, "as CDate", "as CDate"),
+    "IsNumeric": (L, "Mac decimal separator", "period decimal only"),
+    "CDbl": (L, "Mac decimal separator", "period decimal only"), "CSng": (L, "as CDbl", "as CDbl"),
+    "CCur": (L, "as CDbl", "as CDbl"), "CDec": (L, "as CDbl", "as CDbl"),
+    "Calendar": (L, "to measure", "not implemented"),
+    "Sin": ("math", "Mac Excel's maths library may differ from Windows Excel in the last bit (to measure)", "platform libm (Linux and Windows already differ: dc-q6brh.112)"),
+    "Cos": ("math", "as Sin", "platform libm"), "Tan": ("math", "as Sin", "platform libm"),
+    "Atn": ("math", "as Sin", "platform libm"), "Exp": ("math", "as Sin", "platform libm"),
+    "Log": ("math", "as Sin", "platform libm"),
+    "Now": ("clock", "same", "local time"), "Date": ("clock", "same", "local date"),
+    "Time": ("clock", "same", "local time"), "Timer": ("clock", "resolution differs (to measure)", "local seconds since midnight, f32"),
+    "ChDir": ("file", MAC_PATHS, PATH_TODAY), "ChDrive": ("file", "no drives: error or no-op (to measure)", "no-op off Windows"),
+    "CurDir": ("file", MAC_PATHS, "process directory; drive argument ignored"),
+    "Dir": ("file", "POSIX paths; MacID file-type filters; case-insensitive on default APFS (to measure)", PATH_TODAY + "; no hidden/system/archive"),
+    "FileCopy": ("file", MAC_PATHS, PATH_TODAY), "FileDateTime": ("file", MAC_PATHS, "mtime, local time"),
+    "FileLen": ("file", MAC_PATHS, PATH_TODAY), "GetAttr": ("file", "attribute bits on Mac (to measure)", "only read-only and directory off Windows"),
+    "SetAttr": ("file", "to measure", "only the read-only bit off Windows"), "Kill": ("file", MAC_PATHS, PATH_TODAY),
+    "MkDir": ("file", MAC_PATHS, PATH_TODAY), "RmDir": ("file", MAC_PATHS, PATH_TODAY),
+    "SaveSetting": ("store", "stored in a preferences plist, not a registry (to measure)", "in memory on every host"),
+    "GetSetting": ("store", "as SaveSetting", "in memory"), "GetAllSettings": ("store", "as SaveSetting", "in memory"),
+    "DeleteSetting": ("store", "as SaveSetting", "in memory"),
+    "Environ": ("envvar", "Unix variables (HOME, USER, TMPDIR); no TEMP or USERPROFILE", "case-sensitive names off Windows; Environ(n) order differs"),
+    "Command": ("clock", "to measure", "process arguments"),
+    "Beep": ("ui", "same", "no-op"), "MsgBox": ("ui", "Mac dialog; some button styles differ (to measure)", "prompt to stderr on linux-stdio"),
+    "InputBox": ("ui", "as MsgBox", "default returned on linux-stdio"), "DoEvents": ("pure", "same", "yield"),
+    "IMEStatus": ("ui", "to measure", "not implemented"),
+    "AppActivate": ("winonly", "activates by application name (to measure)", "error 5 off Windows"),
+    "SendKeys": ("winonly", "not supported on Mac (to measure)", "error 5 everywhere"),
+    "Shell": ("process", "runs a POSIX command (to measure)", "sh -c off Windows, cmd /C on Windows"),
+    "CreateObject": ("com", "no COM on Mac: Scripting.Dictionary and other ProgIDs fail (to measure the error)", "only Scripting.Dictionary off Windows"),
+    "GetObject": ("com", "no COM on Mac (to measure)", "unsupported off Windows"),
+    "MacID": ("pure", "Mac file-type IDs (works on Mac)", "not implemented"),
+    "MacScript": ("winonly", "AppleScript; deprecated in sandboxed Excel 2016+ for AppleScriptTask (to measure)", "not implemented"),
+    "Load": ("forms", "UserForms on Mac (to measure)", "not implemented"),
+    "Unload": ("forms", "as Load", "not implemented"), "UserForms": ("forms", "as Load", "not implemented"),
+    "VarPtr": ("pure", "same", "real addresses"), "StrPtr": ("pure", "same", "real addresses"),
+    "ObjPtr": ("pure", "same", "real addresses"),
+}
+# Mac-native verdict overrides: things the Mac dialect itself has (used when the target is Mac VBA
+# on a macOS host); the per-host verdicts above assume Windows-dialect code.
 EXTRA = [
-    ("Language", "Declare (Win32 DLLs: kernel32, user32, ...)", "windows",
-     "dlopen of lib<name>.so (libkernel32.so does not exist); integer arguments only, max 6",
-     "emulated table for common kernel32/user32 calls (GetTickCount, Sleep, RtlMoveMemory, QueryPerformanceCounter, GetTempPath...), reject the rest in strict mode"),
-    ("Language", "Declare (C runtime: msvcrt, ucrtbase)", "shim", "mapped to libc.so.6", "keep; check argument types"),
-    ("Language", "AddressOf (callbacks to Win32 APIs)", "windows", "callback thunks are Windows x64 only", "reject in strict mode"),
-    ("Language", "#If Win64 / Win32 / Mac / VBA7", "shim", "Linux is treated as Win64 Windows (Win64 = Win32 = True)", "keep as Windows (the code was written for it), configurable per project"),
-    ("Language", "LongPtr", "pure", "follows the target pointer width (64-bit)", ""),
-    ("Language", "Early-bound COM references (Scripting, ADODB, MSXML, Excel...)", "windows", "type libraries need Windows COM", "portable classes for the common libraries, reject others"),
-    ("Statements", "Open / Close / Get / Put", FILE, PATH_NOTE + "; Open creates missing parent folders (VBA raises 76)", PATH_SHIM),
-    ("Statements", "Print # / Write # / Line Input #", "shim", "CRLF on every platform (as VBA); text written as UTF-8, not ANSI", "write and read text files in the configured ANSI code page"),
-    ("Statements", "Input #", "shim", "quoted fields Latin-1, unquoted UTF-8", "configured ANSI code page"),
-    ("Statements", "Name ... As", FILE, PATH_NOTE + "; creates the target's parent folders", PATH_SHIM),
-    ("Statements", "Lock / Unlock", "shim", "check", "advisory locks"),
-    ("Statements", "Like with Option Compare Text", "locale", "Rust case folding", "as StrComp"),
-    ("Statements", "Option Compare Text (=, <, ... on strings)", "locale", "Rust case folding", "as StrComp"),
-    ("Statements", "Date literals #m/d/yyyy#", "pure", "fixed month/day/year grammar (MS-VBAL)", ""),
-    ("Runtime", "Floating point arithmetic + - * /", "pure", "IEEE; same on every platform", ""),
-    ("Runtime", "^ operator", "pure", "platform libm pow", "one Excel-exact implementation"),
+    ("Language", "Declare into Win32 DLLs (kernel32, user32, ...)", "win32",
+     "absent on Mac: Mac Declares name dylibs", "dlopen lib<name>.so off Windows (fails); integers only"),
+    ("Language", "Declare into Mac dylibs (libc.dylib, ...)", "pure",
+     "native on Mac", "dlopen off Windows; integer arguments only"),
+    ("Language", "Declare into the C runtime (msvcrt, ucrtbase)", "win32",
+     "absent", "mapped to libc.so.6 off Windows"),
+    ("Language", "AddressOf (callbacks)", "winonly", "absent for Win32 APIs (to measure for dylibs)",
+     "callback thunks on Windows x64 only"),
+    ("Language", "#If Win64 / Win32 / Mac / VBA7", "pure", "Mac = True, Win32 = Win64 = False, VBA7 = True",
+     "Linux and wasm are treated as 64-bit Windows; macOS profile as Mac"),
+    ("Language", "LongPtr / pointer width", "pure", "64-bit", "the target pointer width; wasm32 is 32-bit (to decide: keep 64-bit VBA semantics)"),
+    ("Language", "Early-bound references (Scripting, ADODB, MSXML, ...)", "com", "absent on Mac", "type libraries need Windows COM"),
+    ("Statements", "Open / Close / Get / Put", "file", MAC_PATHS, PATH_TODAY + "; Open creates missing parent folders (VBA: 76)"),
+    ("Statements", "Print # / Write # / Line Input #", "codepage", "line end and code page on Mac (to measure)",
+     "CRLF everywhere; text as UTF-8, not ANSI"),
+    ("Statements", "Name ... As", "file", MAC_PATHS, PATH_TODAY + "; creates the target's parent folders"),
+    ("Statements", "Option Compare Text, Like", L, "Mac locale rules (to measure)", "Rust case folding off Windows"),
+    ("Runtime", "^ operator", "math", "as Sin", "platform libm pow"),
+    ("Runtime", "Execution engine (JIT)", "pure", "",
+     "VM3 everywhere; the JIT needs runtime code generation: not in wasm, MAP_JIT on Apple Silicon"),
+    ("Runtime", "Blocking calls (MsgBox, InputBox, DoEvents, Wait-style loops)", "ui", "same as Windows",
+     "synchronous; a browser main thread cannot block: run VBA in a worker with a synchronous host channel"),
 ]
+
+
+def verdicts(kind):
+    v = list(BY_CLASS[kind])
+    return v
 
 
 def main():
@@ -160,17 +147,25 @@ def main():
     out = []
     for r in rows:
         if r["module"] in ("Collection", "ErrObject", "RegExp", "Match", "MatchCollection", "SubMatches"):
-            cls, today, shim = DEFAULT
+            kind, mac, today = "pure", "same; RegExp in VBA 7.1 for Mac (to measure)" if r["module"] in ("RegExp", "Match", "MatchCollection", "SubMatches") else "same", ""
         else:
-            cls, today, shim = C.get(r["name"], DEFAULT)
-        out.append((r["module"], r["name"] + ("/$" if r["dollar_form"] else ""), cls, today, shim))
-    out += EXTRA
+            kind, mac, today = F.get(r["name"], ("pure", "same (to measure)", ""))
+        out.append((r["module"], r["name"] + ("/$" if r["dollar_form"] else ""), CLASS_OF[kind], mac, *verdicts(kind), today))
+    for area, feature, kind, mac, today in EXTRA:
+        v = verdicts(kind)
+        if feature.startswith("Declare into Mac"):
+            v = ["reject", "native", "replace", "reject", "reject"]
+        if feature.startswith("Execution engine"):
+            v = ["native", "shim", "native", "shim", "shim"]
+        out.append((area, feature, CLASS_OF[kind], mac, *v, today))
     with open(os.path.join(HERE, "portability-matrix.tsv"), "w", encoding="utf-8", newline="\n") as f:
-        f.write("area\tfeature\tclass\tcalcvba_on_linux_today\tshim_or_check\n")
+        f.write("area\tfeature\tclass\tmac_dialect\t" + "\t".join(HOSTS) + "\ttoday\n")
         for row in out:
             f.write("\t".join(row) + "\n")
     from collections import Counter
-    print(Counter(r[2] for r in out))
+    print("classes:", Counter(r[2] for r in out))
+    for i, h in enumerate(HOSTS):
+        print(h, Counter(r[4 + i] for r in out))
 
 
 if __name__ == "__main__":

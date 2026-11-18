@@ -7714,12 +7714,12 @@ impl<'a> LowerFunc<'a> {
         if let Some(arg) = args.first() {
             let OxArg::ByVal(operand) = arg else {
                 return Err(JitError::unsupported(format!(
-                    "M4-4 CallExtern {shape} subset lowers only an optional ByVal numeric argument"
+                    "M4-4 CallExtern {shape} subset lowers only an optional ByVal Variant argument"
                 )));
             };
             if !self.is_supported_random_extern_operand(operand, native_impl)? {
                 return Err(JitError::unsupported(format!(
-                    "M4-4 CallExtern {shape} subset lowers only supported optional ByVal numeric arguments, got {operand:?}"
+                    "M4-4 CallExtern {shape} subset lowers only supported optional ByVal Variant arguments, got {operand:?}"
                 )));
             }
         }
@@ -8380,9 +8380,9 @@ impl<'a> LowerFunc<'a> {
         native_impl: NativeImplId,
     ) -> Result<bool, JitError> {
         match native_impl {
-            NativeImplId::Rnd | NativeImplId::Randomize => {
-                self.is_supported_non_null_numeric_unary_extern_operand(operand)
-            }
+            NativeImplId::Rnd | NativeImplId::Randomize => Ok(self
+                .is_supported_non_null_numeric_unary_extern_operand(operand)?
+                || self.is_supported_variant_extern_operand(operand)?),
             _ => Ok(false),
         }
     }

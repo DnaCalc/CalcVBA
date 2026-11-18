@@ -2604,13 +2604,18 @@ pub unsafe extern "C" fn rt_lib_invoke_with_policy(
             Ok(value) => Ok(value),
             Err(calcvba_lib::ContextFreeInvokeError::Library(err)) => Err(err),
             Err(calcvba_lib::ContextFreeInvokeError::ContextRequired) => {
+                let argv = match calcvba_lib::prepare_contextual_args(id, argv, host) {
+                    Ok(argv) => argv,
+                    // SAFETY: the exported helper contract supplies the live execution state.
+                    Err(err) => return unsafe { seat_fault(state, Fault::from_lib(err)) },
+                };
                 // SAFETY: contextual IDs only access library state and the contextual
                 // dispatcher has no host/callback parameter. This short state borrow
                 // therefore cannot survive re-entry.
                 let Some(exec) = (unsafe { state_from_raw(state) }) else {
                     return ST_FAULT;
                 };
-                calcvba_lib::invoke_contextual(id, argv, &mut exec.lib)
+                calcvba_lib::invoke_contextual(id, &argv, &mut exec.lib)
             }
         };
         match result {

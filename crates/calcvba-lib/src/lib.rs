@@ -566,6 +566,19 @@ pub fn invoke_context_free(
     result.map_err(ContextFreeInvokeError::Library)
 }
 
+/// Read any host input needed by a contextual call before borrowing its library state.
+/// Omitted `Randomize` uses the system timer; explicit `Empty` is the measured zero seed.
+pub fn prepare_contextual_args<'a>(
+    id: NativeImplId,
+    args: &'a [Variant],
+    host: &dyn HostServices,
+) -> LibResult<std::borrow::Cow<'a, [Variant]>> {
+    if id == NativeImplId::Randomize && opt(args, 0).is_none() {
+        return Ok(std::borrow::Cow::Owned(vec![host::timer(host)?]));
+    }
+    Ok(std::borrow::Cow::Borrowed(args))
+}
+
 /// Invoke one of the context-dependent built-ins.
 ///
 /// This dispatcher has no host parameter by construction. Passing a context-free
@@ -627,6 +640,28 @@ mod dispatch_policy_tests {
             invoke_context_free(NativeImplId::DoEvents, &[], &host),
             Err(ContextFreeInvokeError::Library(_))
         ));
+    }
+
+    #[test]
+    fn randomize_reads_timer_before_contextual_dispatch_and_keeps_explicit_empty() {
+        let host = NullHostServices::new(HostPolicy::default());
+        let args = prepare_contextual_args(NativeImplId::Randomize, &[], &host).unwrap();
+        assert_eq!(args[0].as_f32(), Some(45_296.0));
+        let mut implicit = LibContext::default();
+        let mut explicit = LibContext::default();
+        invoke_contextual(NativeImplId::Randomize, &args, &mut implicit).unwrap();
+        invoke_contextual(
+            NativeImplId::Randomize,
+            &[host::timer(&host).unwrap()],
+            &mut explicit,
+        )
+        .unwrap();
+        assert_eq!(implicit.rng_state, explicit.rng_state);
+        let empty = [Variant::empty()];
+        let args = prepare_contextual_args(NativeImplId::Randomize, &empty, &host).unwrap();
+        assert_eq!(args[0].vtype(), Vt::Empty);
+        invoke_contextual(NativeImplId::Randomize, &args, &mut explicit).unwrap();
+        assert_eq!(explicit.rng_state, 0);
     }
 
     #[test]

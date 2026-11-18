@@ -510,6 +510,5 @@ P_WeekdayName: WeekdayName.15=ERR94
 P_Year: Year.12=Integer:2001
 P_Year: Year.13=Integer:2001
 jit P_Val: Val.27=ERR6
-P_Reset: Reset.5=String:[ok]
 P_Width: Width.12=String:[String:[abWXYZ{123}13{125}{123}10{125}]]
 P_Width: Width.14=ERR94

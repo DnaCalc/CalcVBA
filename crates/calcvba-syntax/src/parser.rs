@@ -1888,7 +1888,6 @@ impl<'a> Parser<'a> {
         // File-I/O statements whose leading word lexes as an identifier
         // (Put/Seek/Width/Unlock/Reset), routed by statement-position + shape.
         if self.current() == SyntaxKind::Ident
-            && !self.peek_is_label_colon()
             && let Some(which) = self.ident_file_stmt_kind()
         {
             self.parse_ident_file_stmt(which);
@@ -3102,7 +3101,11 @@ impl<'a> Parser<'a> {
             "reset" => FileIoIdent::Reset,
             _ => return None,
         };
-        if self.peek_keyword_used_as_name() {
+        // Reset has no operands: a following colon separates statements, as
+        // in `Reset: Reset`, rather than declaring a label named Reset.
+        if self.peek_keyword_used_as_name()
+            && !(which == FileIoIdent::Reset && self.peek_is_label_colon())
+        {
             return None;
         }
         match which {
@@ -3659,6 +3662,18 @@ End Property
         assert!(has_node_kind(&p.syntax(), SyntaxKind::OpenStmt));
         assert_eq!(collect_nodes(&p.syntax(), SyntaxKind::CloseStmt).len(), 2); // Close + Reset
         assert!(has_node_kind(&p.syntax(), SyntaxKind::FileNumber));
+    }
+
+    #[test]
+    fn reset_before_a_colon_is_a_close_statement() {
+        let p = parse_ok(&in_sub("Reset: Reset: x = 1"));
+        assert_eq!(collect_nodes(&p.syntax(), SyntaxKind::CloseStmt).len(), 2);
+        assert!(!has_node_kind(&p.syntax(), SyntaxKind::LabelStmt));
+        let label = parse_ok(&in_sub("Seek: x = 1\nGoTo Seek"));
+        assert_eq!(
+            collect_nodes(&label.syntax(), SyntaxKind::LabelStmt).len(),
+            1
+        );
     }
 
     #[test]

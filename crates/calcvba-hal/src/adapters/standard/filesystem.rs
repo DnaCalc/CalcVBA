@@ -1162,7 +1162,7 @@ impl FileSystemHal for StandardHostServices {
         }
         let range_selector =
             self.variant_to_i32(&range_selector, capability, "free_file", "range_selector")?;
-        let (start, end) = if range_selector == 1 {
+        let (start, end) = if range_selector != 0 {
             (256, 511)
         } else {
             (1, 255)
@@ -1176,6 +1176,7 @@ impl FileSystemHal for StandardHostServices {
                 "free_file",
                 format!("no free file number in range {start}..={end}"),
             )
+            .with_host_error_code(67)
         })?;
         hal_contract_assert!(
             (start..=end).contains(&candidate),
@@ -1639,7 +1640,7 @@ impl FileSystemHal for StandardHostServices {
         Ok(Variant::empty())
     }
 
-    fn cur_dir_variant(&self, _drive: Variant) -> HalResult<Variant> {
+    fn cur_dir_variant(&self, drive: Variant) -> HalResult<Variant> {
         let capability = CapabilityId::FileSystemIo;
         if !self.supports(capability) {
             return Err(self.unsupported(capability, "curdir"));
@@ -1647,7 +1648,23 @@ impl FileSystemHal for StandardHostServices {
         // A read of process state; the deterministic lane reports the empty
         // string rather than leaking the real working directory.
         if self.native_fs_enabled() {
-            let dir = std::env::current_dir().map_err(|err| {
+            let letter = drive.as_bstr().and_then(|s| s.as_str().chars().next());
+            if letter.is_some_and(|letter| !letter.is_ascii_alphabetic()) {
+                return Err(HalError::adapter_fault(
+                    self.profile,
+                    capability,
+                    "curdir",
+                    "invalid drive letter",
+                ));
+            }
+            #[cfg(windows)]
+            let dir = match letter {
+                Some(letter) => std::path::absolute(format!("{letter}:")),
+                None => std::env::current_dir(),
+            };
+            #[cfg(not(windows))]
+            let dir = std::env::current_dir();
+            let dir = dir.map_err(|err| {
                 HalError::adapter_fault(self.profile, capability, "curdir", err.to_string())
             })?;
             Ok(Variant::from_string(BStr::from(

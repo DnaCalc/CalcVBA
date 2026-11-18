@@ -135,10 +135,6 @@ P_CallByName	vm3	missing		CallByName.30=String:[]	<failed: bind: unsupported con
 P_CallByName	jit	missing		CallByName.30=String:[]	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
 P_CallByName	vm3	missing		CallByName.31=ERR5	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
 P_CallByName	jit	missing		CallByName.31=ERR5	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
-P_ChDir	vm3	error		ChDir.11=ERR94	ChDir.11=ERR76
-P_ChDir	jit	error		ChDir.11=ERR94	ChDir.11=ERR76
-P_ChDrive	vm3	error		ChDrive.7=ERR94	ChDrive.7=ERR5
-P_ChDrive	jit	error		ChDrive.7=ERR94	ChDrive.7=ERR5
 P_Chr	vm3	error		Chr.5=ERR5	Chr.5=String:[{256}]
 P_Chr	jit	error		Chr.5=ERR5	Chr.5=String:[{256}]
 P_Chr	vm3	error		Chr.6=ERR5	Chr.6=String:[{65535}]
@@ -223,12 +219,6 @@ P_CreateObject	vm3	error		CreateObject.16=ERR94	CreateObject.16=ERR5
 P_CreateObject	jit	error		CreateObject.16=ERR94	CreateObject.16=ERR5
 P_CreateObject	vm3	error		CreateObject.17=ERR429	CreateObject.17=String:[NoDots]
 P_CreateObject	jit	error		CreateObject.17=ERR429	CreateObject.17=String:[NoDots]
-P_CurDir	vm3	error		CurDir.8=ERR5	CurDir.8=String:[C:\Work\DnaCalc\CalcVBA\crates\calcvba-differential]
-P_CurDir	jit	error		CurDir.8=ERR5	CurDir.8=String:[C:\Work\DnaCalc\CalcVBA\crates\calcvba-differential]
-P_CurDir	vm3	error		CurDir.9=ERR13	CurDir.9=String:[C:\Work\DnaCalc\CalcVBA\crates\calcvba-differential]
-P_CurDir	jit	error		CurDir.9=ERR13	CurDir.9=String:[C:\Work\DnaCalc\CalcVBA\crates\calcvba-differential]
-P_CurDir	vm3	error		CurDir.10=ERR13	CurDir.10=Boolean:True
-P_CurDir	jit	error		CurDir.10=ERR13	CurDir.10=Boolean:True
 P_DDB	vm3	lastbit		DDB.2=Double:4078000000000000|384	DDB.2=Double:4077FFFFFFFFFFFC|384
 P_DDB	jit	lastbit		DDB.2=Double:4078000000000000|384	DDB.2=Double:4077FFFFFFFFFFFC|384
 P_DDB	vm3	value		DDB.3=Double:40361F5F40D837B8|22.1225472000003	DDB.3=Double:40361F5F40D83790|22.1225472000002
@@ -427,10 +417,6 @@ P_FV	vm3	lastbit		FV.7=Double:0000000000000000|0	FV.7=Double:8000000000000000|-0
 P_FV	jit	lastbit		FV.7=Double:0000000000000000|0	FV.7=Double:8000000000000000|-0
 P_FV	vm3	missing		FV.18=Double:4098E6F84775E061|1593.7424601	<failed: bind: unresolved name `Rate` (named argument)>
 P_FV	jit	missing		FV.18=Double:4098E6F84775E061|1593.7424601	<failed: bind: unresolved name `Rate` (named argument)>
-P_FileAttr	vm3	error		FileAttr.6=Long:32	FileAttr.6=ERR5
-P_FileAttr	jit	error		FileAttr.6=Long:32	FileAttr.6=ERR5
-P_FileAttr	vm3	error		FileAttr.16=ERR94	FileAttr.16=ERR5
-P_FileAttr	jit	error		FileAttr.16=ERR94	FileAttr.16=ERR5
 P_FileCopy	vm3	error		FileCopy.4=ERR75	FileCopy.4=ERR5
 P_FileCopy	jit	error		FileCopy.4=ERR75	FileCopy.4=ERR5
 P_FileCopy	vm3	error		FileCopy.5=ERR53	FileCopy.5=ERR5
@@ -783,14 +769,6 @@ P_FormatPercent	vm3	value	locale	FormatPercent.28=String:[(123{160}450.0%)]	Form
 P_FormatPercent	jit	value	locale	FormatPercent.28=String:[(123{160}450.0%)]	FormatPercent.28=String:[(123,450.0%)]
 P_FormatPercent	vm3	error		FormatPercent.29=String:[500.0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000%]	FormatPercent.29=ERR5
 P_FormatPercent	jit	error		FormatPercent.29=String:[500.0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000%]	FormatPercent.29=ERR5
-P_FreeFile	vm3	value		FreeFile.7=Integer:256	FreeFile.7=Integer:1
-P_FreeFile	jit	value		FreeFile.7=Integer:256	FreeFile.7=Integer:1
-P_FreeFile	vm3	value		FreeFile.8=Integer:256	FreeFile.8=Integer:1
-P_FreeFile	jit	value		FreeFile.8=Integer:256	FreeFile.8=Integer:1
-P_FreeFile	vm3	error		FreeFile.9=ERR94	FreeFile.9=Integer:1
-P_FreeFile	jit	error		FreeFile.9=ERR94	FreeFile.9=Integer:1
-P_FreeFile	vm3	error		FreeFile.18=ERR67	FreeFile.18=ERR5
-P_FreeFile	jit	error		FreeFile.18=ERR67	FreeFile.18=ERR5
 P_GetAllSettings	vm3	value		GetAllSettings.2=String:[String()|0:0|0:1|K1=a;]	GetAllSettings.2=String:[String()|0:2|0:1|K1=a;K2=b;K3=c;]
 P_GetAllSettings	jit	value		GetAllSettings.2=String:[String()|0:0|0:1|K1=a;]	GetAllSettings.2=String:[String()|0:2|0:1|K1=a;K2=b;K3=c;]
 P_GetAllSettings	vm3	value		GetAllSettings.3=String:[notarray:Empty]	GetAllSettings.3=String:[String()|0:2|0:1|K1=a;K2=b;K3=c;]

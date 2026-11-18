@@ -76,7 +76,8 @@ pub fn timer(host: &dyn HostServices) -> LibResult<Variant> {
 
 // ── File / console I/O ──
 pub fn free_file(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
-    Ok(host.fs().free_file_variant(arg_or_empty(args, 0))?)
+    let range = opt(args, 0).map(as_i32).transpose()?.unwrap_or(0);
+    Ok(host.fs().free_file_variant(Variant::from_i32(range))?)
 }
 pub fn file_open(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
     // args: path, packed mode ((file_number << 16) | mode_code), record length.
@@ -97,12 +98,17 @@ pub fn file_rmdir(args: &[Variant], host: &dyn HostServices) -> LibResult<Varian
     Ok(host.fs().rmdir_variant(req(args, 0)?)?)
 }
 pub fn file_cur_dir(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
+    // The optional Variant accepts only a String when supplied. In particular,
+    // explicit Empty and Null differ from an omitted drive (Excel P_CurDir).
+    if opt(args, 0).is_some_and(|drive| drive.vtype() != VarType::String) {
+        return Err(LibError::type_mismatch("CurDir drive must be a String"));
+    }
     Ok(host
         .fs()
         .cur_dir_variant(opt(args, 0).cloned().unwrap_or_else(Variant::empty))?)
 }
 pub fn file_ch_dir(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
-    Ok(host.fs().ch_dir_variant(req(args, 0)?)?)
+    Ok(host.fs().ch_dir_variant(string_arg(args, 0)?)?)
 }
 pub fn file_len(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
     Ok(host.fs().file_len_variant(req(args, 0)?)?)
@@ -117,7 +123,7 @@ pub fn file_set_attr(args: &[Variant], host: &dyn HostServices) -> LibResult<Var
     Ok(host.fs().set_attr_variant(req(args, 0)?, req(args, 1)?)?)
 }
 pub fn file_ch_drive(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
-    Ok(host.fs().ch_drive_variant(req(args, 0)?)?)
+    Ok(host.fs().ch_drive_variant(string_arg(args, 0)?)?)
 }
 pub fn file_date_time(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
     Ok(host.fs().file_date_time_variant(req(args, 0)?)?)
@@ -443,7 +449,11 @@ pub fn file_seek(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant
 }
 pub fn file_attr(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
     // `FileAttr(n, 1)` is the open mode; `FileAttr(n, 2)` (the OS handle) is not supported.
-    Ok(host.fs().file_attr_variant(req(args, 0)?, req(args, 1)?)?)
+    let handle = as_i32(need(args, 0)?)?;
+    let kind = opt(args, 1).map(as_i32).transpose()?.unwrap_or(1);
+    Ok(host
+        .fs()
+        .file_attr_variant(Variant::from_i32(handle), Variant::from_i32(kind))?)
 }
 pub fn file_loc(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
     Ok(host.fs().loc_variant(req(args, 0)?)?)

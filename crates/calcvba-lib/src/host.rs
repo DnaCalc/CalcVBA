@@ -599,7 +599,11 @@ fn activation_target(value: &Variant) -> String {
 }
 
 pub fn create_object(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
-    let prog_id = req(args, 0)?;
+    let prog_id = Variant::from_string(as_str(need(args, 0)?)?);
+    if let Some(server) = opt(args, 1) {
+        // The current COM host interface has no ServerName parameter (dc-q6brh.26).
+        let _ = as_str(server)?;
+    }
     if activation_target(&prog_id).eq_ignore_ascii_case("VBScript.RegExp") {
         return Ok(crate::regexp::new_regexp());
     }
@@ -611,6 +615,25 @@ pub fn create_object(args: &[Variant], host: &dyn HostServices) -> LibResult<Var
 /// bind) is decided by the argument shape, which the HAL resolves: an omitted `pathname`
 /// arrives as `Empty`, distinguishing it from a present `""`.
 pub fn get_object(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
+    let pathname_arg = opt(args, 0);
+    let class_arg = opt(args, 1);
+    if pathname_arg.is_none() && class_arg.is_none() {
+        return Err(LibError::type_mismatch(
+            "GetObject requires a pathname or class",
+        ));
+    }
+    if pathname_arg
+        .into_iter()
+        .chain(class_arg)
+        .any(|value| value.vtype() == VarType::Null)
+    {
+        return Err(LibError::invalid_use_of_null());
+    }
+    if pathname_arg.is_none_or(|value| value.vtype() == VarType::Empty)
+        && class_arg.is_some_and(|value| as_str(value).is_ok_and(|text| text.is_empty()))
+    {
+        return Err(LibError::new(429, "ActiveX component can't create object"));
+    }
     let (pathname, class) = (arg_or_empty(args, 0), arg_or_empty(args, 1));
     let class_text = activation_target(&class);
     let path_text = activation_target(&pathname);

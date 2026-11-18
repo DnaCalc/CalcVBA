@@ -2776,9 +2776,9 @@ mod tests {
                 .expect("variant ProgID should activate deterministic projection object");
         assert!(object.raw() != 0);
 
-        let numeric_object = create_object_variant_test(&host, Variant::from_i32(123))
-            .expect("numeric ProgID should coerce through Variant-native string path");
-        assert!(numeric_object.raw() != 0);
+        let error = create_object_variant_test(&host, Variant::from_i32(123))
+            .expect_err("the coerced ProgID 123 is not a registered class");
+        assert_eq!(error.host_error_code, Some(429));
     }
 
     #[test]
@@ -4873,10 +4873,13 @@ mod tests {
                 host.shell_variant(rv(shell_cmd), rv(0)).expect("shell should succeed"),
                 Variant::from_i32(shell_expected)
             );
-            let first_object = host.create_object_test(&create_object_prop_test_prog_id_name(prog_id))
-                .expect("create_object should succeed");
-            let second_object = host.create_object_test(&create_object_prop_test_prog_id_name(prog_id))
-                .expect("create_object should remain stable for the same ProgID within one host");
+            let missing = host.create_object_test(&create_object_prop_test_prog_id_name(prog_id))
+                .expect_err("an unregistered class must not fabricate an object");
+            prop_assert_eq!(missing.host_error_code, Some(429));
+            let first_object = host.create_object_test(TEST_DISPATCH_PROG_ID_NAME)
+                .expect("registered deterministic fixture should activate");
+            let second_object = host.create_object_test(TEST_DISPATCH_PROG_ID_NAME)
+                .expect("registered deterministic fixture remains stable within one host");
             prop_assert_eq!(first_object.compat_identity(), second_object.compat_identity());
             let request = ComInvokeRequest::legacy(object, member, arg);
             let semantic = host

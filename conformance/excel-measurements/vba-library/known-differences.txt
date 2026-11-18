@@ -68,15 +68,6 @@ P_Cos: Cos.2=Double:3FE14A280FB5068B|0.54030230586814
 P_Cos: Cos.3=Double:3FE14A280FB5068B|0.54030230586814
 P_Cos: Cos.6=ERR5
 P_Cos: Cos.7=Double:BFE06C154609D33E|-0.51319373778697
-P_CreateObject: CreateObject.10=ERR429
-P_CreateObject: CreateObject.11=ERR429
-P_CreateObject: CreateObject.12=ERR429
-P_CreateObject: CreateObject.13=ERR429
-P_CreateObject: CreateObject.14=ERR429
-P_CreateObject: CreateObject.15=ERR429
-P_CreateObject: CreateObject.16=ERR94
-P_CreateObject: CreateObject.17=ERR429
-P_CreateObject: CreateObject.4=Long:9
 P_DDB: DDB.12=Double:C082C00000000000|-600
 P_DDB: DDB.14=Double:0000000000000000|0
 P_DDB: DDB.16=Double:407AD5336963EEFB|429.32505167996
@@ -318,12 +309,6 @@ P_GetAllSettings: GetAllSettings.5=String:[String()|0:2|0:1|b=2;a=1;c=3;]
 P_GetAllSettings: GetAllSettings.6=String:[String()|0:0|0:1|K2=b;]
 P_GetAllSettings: GetAllSettings.7=String:[String()|0:0|0:1|K=a=b;c;]
 P_GetAllSettings: GetAllSettings.8=String:[String()|0:0|0:1|K=;]
-P_GetObject: GetObject.11=ERR429
-P_GetObject: GetObject.12=Long:0
-P_GetObject: GetObject.14=ERR94
-P_GetObject: GetObject.1=ERR13
-P_GetObject: GetObject.7=ERR429
-P_GetObject: GetObject.9=ERR94
 P_GetSetting: GetSetting.20=String:[True]
 P_Hex: Hex.56=ERR94
 P_Hour: Hour.15=Integer:0
@@ -550,14 +535,12 @@ P_Val: Val.37=Double:0000000000000000|0
 P_Val: Val.68=Double:4028000000000000|12
 P_Val: Val.87=ERR13
 P_Val: Val.88=Double:409F900000000000|2020
-P_VarType: VarType.16=Long:9
 P_Weekday: Weekday.31=ERR13
 P_WeekdayName: WeekdayName.15=ERR94
 P_Year: Year.12=Integer:2001
 P_Year: Year.13=Integer:2001
 P_Year: Year.18=ERR13
 P_Year: Year.20=ERR13
-jit P_CreateObject: CreateObject.8=String:[Dictionary]
 jit P_Val: Val.27=ERR6
 refusal: P_DoEvents Case 5: Call DoEvents: v = "call form ok"                 ' Call form
 refusal: P_LBound Case 43: v = LBound(CVar(fa))                  ' CVar of an array

@@ -5185,6 +5185,11 @@ impl<'h> Vm3<'h> {
                 self.exec.err_engine.err.description.clone(),
             ));
         }
+        if let Some(class) =
+            calcvba_rt_abi::object_types::builtin_dictionary_class(self.cur_program(), id, argv)
+        {
+            return self.new_project_instance(class);
+        }
         if id == NativeImplId::TypeName
             && let Some(object) = argv.first().and_then(|a| a.as_object_ref())
             && let Some(name) = self.object_type_name(&object)
@@ -5282,15 +5287,11 @@ impl<'h> Vm3<'h> {
         self.exec
             .programs
             .get(object.bundle_id() as usize)
-            .and_then(|lp| lp.program.classes.get(object.route_key() as usize))
-            .is_some_and(|class| {
-                class.methods.iter().any(|m| {
-                    m.is_default_member
-                        && matches!(
-                            m.kind,
-                            ProjectMemberKind::PropertyGet | ProjectMemberKind::Method
-                        )
-                })
+            .is_some_and(|loaded| {
+                calcvba_rt_abi::object_types::has_parameterless_default_get(
+                    loaded.program,
+                    object.route_key() as usize,
+                )
             })
     }
 

@@ -7407,44 +7407,21 @@ impl<'a> LowerFunc<'a> {
                 }
                 Ok(())
             }
-            NativeImplId::CreateObject => {
+            NativeImplId::CreateObject | NativeImplId::GetObject => {
                 self.validate_call_extern_variant_destination(dst, shape)?;
-                if args.len() != 1 {
+                let minimum = usize::from(native_impl == NativeImplId::CreateObject);
+                if !(minimum..=2).contains(&args.len()) {
                     return Err(JitError::unsupported(format!(
-                        "M4-4 CallNative {shape} subset requires exactly one argument, got {}",
-                        args.len()
+                        "CallNative {shape} requires {minimum} to two arguments"
                     )));
                 }
-                let OxCallArg::Operand(prog_id) = &args[0] else {
-                    return Err(JitError::unsupported(format!(
-                        "CallNative {shape} requires an ordinary ProgID operand"
-                    )));
-                };
-                if self.is_supported_variant_extern_operand(prog_id)? {
-                    Ok(())
-                } else {
-                    Err(JitError::unsupported(format!(
-                        "CallNative {shape} does not support ProgID operand {prog_id:?}"
-                    )))
-                }
-            }
-            NativeImplId::GetObject => {
-                self.validate_call_extern_variant_destination(dst, shape)?;
-                if !(1..=2).contains(&args.len()) {
-                    return Err(JitError::unsupported(
-                        "CallNative GetObject requires one or two positional arguments",
-                    ));
-                }
+                // The Variant descriptor ABI supports scalar/object/array operands; the
+                // library applies VBA coercion. Names have already been ordered by the binder.
                 for arg in args {
-                    match arg {
-                        OxCallArg::Omitted => {}
-                        OxCallArg::Operand(operand)
-                            if self.is_supported_variant_extern_operand(operand)? => {}
-                        _ => {
-                            return Err(JitError::unsupported(format!(
-                                "CallNative GetObject requires supported Variant operands or omitted arguments, got {arg:?}"
-                            )));
-                        }
+                    if !matches!(arg, OxCallArg::Operand(_) | OxCallArg::Omitted) {
+                        return Err(JitError::unsupported(format!(
+                            "CallNative {shape} requires operands or omitted arguments, got {arg:?}"
+                        )));
                     }
                 }
                 Ok(())

@@ -7,15 +7,16 @@
 //! The engine Dictionary is safe: it touches nothing outside its own memory. With it, the
 //! binder entry points call [`with_builtin_scripting`], which rewrites a manifest that uses it:
 //!
-//! - `CreateObject("Scripting.Dictionary")` becomes `DnaScripting.NewDictionary()`;
+//! - unshadowed literal CreateObject calls keep the existing NewDictionary factory path;
 //! - the type name `Scripting.Dictionary` (and a bare `Dictionary` after `As` or `New` when
 //!   the manifest references the Scripting library and has no module of that name) becomes
 //!   `DnaScriptingDictionary`;
 //! - two modules are added: the class `DnaScriptingDictionary` (plain VBA source, below) and
 //!   the factory module `DnaScripting`.
 //!
-//! Both executors therefore run the same VBA code on every platform. A ProgID computed at run
-//! time is not recognised and still goes through the COM activation policy.
+//! Both executors therefore run the same VBA code on every platform. Computed ProgIDs and
+//! empty-path GetObject also create this class through the owning runtime's constructor;
+//! other class names go through the COM activation policy.
 
 use std::borrow::Cow;
 
@@ -307,12 +308,30 @@ pub fn with_builtin_scripting(
         .iter()
         .any(|m| m.module_name.eq_ignore_ascii_case("Dictionary"));
     let bare = has_scripting_ref && !own_dictionary;
-    let mut changed = false;
+    // Runtime class names and empty-path GetObject use the same compiled class as literal
+    // CreateObject. Tokenization excludes strings/comments and does not rewrite shadowed calls.
+    let mut changed = manifest.modules.iter().any(|module| {
+        calcvba_syntax::lexer::tokenize(&module.source)
+            .iter()
+            .any(|(kind, text)| {
+                matches!(
+                    kind,
+                    calcvba_syntax::SyntaxKind::Ident | calcvba_syntax::SyntaxKind::BracketedIdent
+                ) && matches!(
+                    text.trim_matches(['[', ']']).to_ascii_lowercase().as_str(),
+                    "createobject" | "getobject"
+                )
+            })
+    });
+    let public_creation_shadow = manifest.modules.iter().any(|module| {
+        module.module_kind == ModuleKind::Procedural && declares_create_object(&module.source, true)
+    });
     let modules: Vec<ModuleUnit> = manifest
         .modules
         .iter()
         .map(|module| {
-            let source = rewrite_source(&module.source, bare);
+            let shadowed = public_creation_shadow || declares_create_object(&module.source, false);
+            let source = rewrite_source(&module.source, bare, shadowed);
             if source != module.source {
                 changed = true;
                 ModuleUnit {
@@ -399,15 +418,15 @@ fn previous_word(out: &str) -> String {
     trimmed[start..].to_ascii_lowercase()
 }
 
-fn rewrite_source(source: &str, bare: bool) -> String {
+fn rewrite_source(source: &str, bare: bool, creation_shadowed: bool) -> String {
     let mut result = String::with_capacity(source.len());
     for line in source.split_inclusive('\n') {
-        result.push_str(&rewrite_line(line, bare));
+        result.push_str(&rewrite_line(line, bare, creation_shadowed));
     }
     result
 }
 
-fn rewrite_line(line: &str, bare: bool) -> String {
+fn rewrite_line(line: &str, bare: bool, creation_shadowed: bool) -> String {
     let chars: Vec<char> = line.chars().collect();
     let mut out = String::with_capacity(line.len() + 16);
     let mut i = 0;
@@ -456,6 +475,7 @@ fn rewrite_line(line: &str, bare: bool) -> String {
                 }
                 if starts_with_ci(&chars, i, "CreateObject")
                     && chars.get(i + 12).is_none_or(|n| !is_ident(*n))
+                    && (after_vba || !creation_shadowed)
                     && let Some(end) = create_object_end(&chars, i + 12)
                 {
                     if after_vba {
@@ -519,6 +539,33 @@ fn create_object_end(chars: &[char], mut i: usize) -> Option<usize> {
     (chars.get(i) == Some(&')')).then_some(i + 1)
 }
 
+/// Project procedures take precedence over unqualified library calls. Use the parser's
+/// declaration names so comments, literals, bracketed names and multiline headers agree
+/// with the binder; class methods shadow only their own module.
+fn declares_create_object(source: &str, public_only: bool) -> bool {
+    fn declares(node: calcvba_syntax::SyntaxNode<'_>, public_only: bool) -> bool {
+        use calcvba_syntax::SyntaxKind as K;
+        if matches!(
+            node.kind(),
+            K::SubDecl | K::FunctionDecl | K::PropertyDecl | K::DeclareStmt
+        ) {
+            return node.proc_name_token().is_some_and(|name| {
+                name.text
+                    .trim_matches(['[', ']'])
+                    .eq_ignore_ascii_case("CreateObject")
+            }) && (!public_only
+                || !node
+                    .child_tokens()
+                    .iter()
+                    .any(|token| token.kind == K::KwPrivate));
+        }
+        node.child_nodes()
+            .into_iter()
+            .any(|child| declares(child, public_only))
+    }
+    declares(calcvba_syntax::parse(source).syntax(), public_only)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -543,9 +590,9 @@ mod tests {
     }
 
     #[test]
-    fn rewrites_progid_and_type_names_outside_strings_and_comments() {
+    fn rewrites_unshadowed_progid_and_type_names_outside_strings_and_comments() {
         let src = "Dim d As Scripting.Dictionary\nSet d = CreateObject( \"scripting.dictionary\" )\nx = \"Scripting.Dictionary\" ' CreateObject(\"Scripting.Dictionary\")\nSet e = VBA.CreateObject(\"Scripting.Dictionary\")\n";
-        let out = rewrite_source(src, false);
+        let out = rewrite_source(src, false, false);
         assert_eq!(
             out,
             "Dim d As DnaScriptingDictionary\nSet d = DnaScripting.NewDictionary()\nx = \"Scripting.Dictionary\" ' CreateObject(\"Scripting.Dictionary\")\nSet e = DnaScripting.NewDictionary()\n"
@@ -557,6 +604,7 @@ mod tests {
         let out = rewrite_source(
             "Dim a As Dictionary, b As New Dictionary\nx = Dictionary.Count\n",
             true,
+            false,
         );
         assert_eq!(
             out,

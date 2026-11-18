@@ -147,3 +147,70 @@ pub fn set_type_mismatch<'p>(
     // A foreign object is never a project class or a Collection.
     target_is_project || bare.eq_ignore_ascii_case("Collection")
 }
+
+/// Resolve local creation of the engine-provided Dictionary class. The public runtime name
+/// marks the injected implementation; a user's class with the same source name is not one.
+pub fn builtin_dictionary_class(
+    program: &calcvba_oxir::OxProgram,
+    id: calcvba_bundle::NativeImplId,
+    args: &[calcvba_runtime::Variant],
+) -> Option<usize> {
+    use calcvba_runtime::VarType;
+    let present = |index: usize| {
+        args.get(index)
+            .filter(|value| value.as_error_code() != Some(0x8002_0004u32 as i32))
+    };
+    let empty_string =
+        |value: &calcvba_runtime::Variant| value.as_bstr().is_some_and(|text| text.is_empty());
+    let class = match id {
+        calcvba_bundle::NativeImplId::CreateObject
+            if present(1)
+                .is_none_or(|server| server.vtype() == VarType::Empty || empty_string(server)) =>
+        {
+            present(0)?
+        }
+        calcvba_bundle::NativeImplId::GetObject if present(0).is_some_and(empty_string) => {
+            present(1)?
+        }
+        _ => return None,
+    };
+    if !class
+        .as_bstr()?
+        .as_str()
+        .eq_ignore_ascii_case("Scripting.Dictionary")
+    {
+        return None;
+    }
+    program
+        .classes
+        .iter()
+        .position(|class| class.runtime_type_name.as_deref() == Some("Dictionary"))
+}
+
+/// A zero-argument value read may use only a default getter whose parameters are optional.
+/// In particular Dictionary.Item(Key) is not a default value for VarType.
+pub fn has_parameterless_default_get(program: &calcvba_oxir::OxProgram, class: usize) -> bool {
+    program.classes.get(class).is_some_and(|class| {
+        class.methods.iter().any(|method| {
+            method.is_default_member
+                && matches!(
+                    method.kind,
+                    calcvba_bundle::ProjectMemberKind::PropertyGet
+                        | calcvba_bundle::ProjectMemberKind::Method
+                )
+                && program.funcs.get(method.proc.0).is_some_and(|function| {
+                    function
+                        .locals
+                        .iter()
+                        .take(function.param_count)
+                        .skip(crate::hidden_me_receiver_param_count(function))
+                        .all(|local| {
+                            local
+                                .param
+                                .as_ref()
+                                .is_some_and(|param| param.optional || param.variadic)
+                        })
+                })
+        })
+    })
+}

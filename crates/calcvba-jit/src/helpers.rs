@@ -4078,18 +4078,10 @@ fn project_has_default_get(run: *mut JitRun, value: &Variant) -> bool {
     };
     // SAFETY: the image's program is live for the run.
     let program = unsafe { &*image.program };
-    program
-        .classes
-        .get(object.route_key() as usize)
-        .is_some_and(|class| {
-            class.methods.iter().any(|m| {
-                m.is_default_member
-                    && matches!(
-                        m.kind,
-                        ProjectMemberKind::PropertyGet | ProjectMemberKind::Method
-                    )
-            })
-        })
+    calcvba_rt_abi::object_types::has_parameterless_default_get(
+        program,
+        object.route_key() as usize,
+    )
 }
 
 pub(crate) unsafe fn invoke_project_default_member_values(
@@ -10010,6 +10002,25 @@ pub(crate) unsafe extern "C" fn rt_jit_lib_invoke_to_slot(
             .get(native_id as usize)
             .copied()
         {
+            // SAFETY: the compiled caller owns the live run; only immutable metadata is read.
+            let builtin =
+                current_program_image(unsafe { &*run }).and_then(|(program_index, image)| {
+                    // SAFETY: each program image remains live and immutable throughout the run.
+                    let program = unsafe { &*image.program };
+                    calcvba_rt_abi::object_types::builtin_dictionary_class(program, id, &argv)
+                        .map(|class| (program_index, class))
+                });
+            if let Some((program_index, class)) = builtin {
+                let mut value = Variant::empty();
+                // SAFETY: metadata/operand borrows ended. The installed compiled ProcInvoker
+                // runs Class_Initialize on this owning thread; value is unique output storage.
+                let status =
+                    unsafe { rt_project_new_object(state, program_index, class, &mut value) };
+                if status != ST_OK {
+                    return status;
+                }
+                answer = Some(value);
+            }
             let var_type = id == calcvba_bundle::NativeImplId::VarType;
             let is_vba_object = |v: &Variant| {
                 v.as_object_ref()

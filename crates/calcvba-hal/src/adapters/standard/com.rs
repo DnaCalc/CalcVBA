@@ -44,14 +44,14 @@ fn dynamic_member_name_unresolved(profile: HalProfileId, name: &str) -> HalError
     )
 }
 
-/// A `GetObject` argument as an optional, trimmed, non-empty class/ProgID string. An
-/// `Empty`/`Null`/`Error` (omitted) variant — or a blank string — yields `None`.
+/// A `GetObject` argument as an optional non-empty class/ProgID string. An
+/// `Empty`/`Null`/`Error` (omitted) variant or an empty string yields `None`.
 fn com_optional_string(value: &Variant) -> Option<String> {
     match value.vtype() {
         VarType::Empty | VarType::Null | VarType::Error => None,
         _ => variant_to_vba_string(value)
             .ok()
-            .map(|text| text.as_str().trim().to_string())
+            .map(|text| text.as_str().to_string())
             .filter(|text| !text.is_empty()),
     }
 }
@@ -466,14 +466,15 @@ impl ComHal for StandardHostServices {
             HalError::adapter_fault(self.profile, capability, "create_object", detail)
         })?;
         let prog_id_text = prog_id_value.as_str();
-        let prog_id_name = prog_id_text.trim();
-        if prog_id_name.is_empty() {
+        let prog_id_name = prog_id_text.as_str();
+        if prog_id_name.is_empty() || prog_id_name.trim() != prog_id_name {
             return Err(HalError::adapter_fault(
                 self.profile,
                 capability,
                 "create_object",
-                "CreateObject requires a non-empty ProgID string",
-            ));
+                "ActiveX component can't create object",
+            )
+            .with_host_error_code(429));
         }
         if let Some(projection) = &self.portable_objects
             && let Some(dispatch) = projection.create_object(prog_id_name)
@@ -509,6 +510,15 @@ impl ComHal for StandardHostServices {
                 }
                 Err(err) => return Err(err),
             }
+        }
+        if known_typelib_identity_for_prog_id_name(prog_id_name).is_none() {
+            return Err(HalError::adapter_fault(
+                self.profile,
+                capability,
+                "create_object",
+                "ActiveX component can't create object",
+            )
+            .with_host_error_code(429));
         }
         let object = allocate_projection_object_ref(self, prog_id_name, None)?;
         #[cfg(target_os = "windows")]

@@ -510,7 +510,63 @@ fn remove_file_with_retry(host_path: &PathBuf) -> std::io::Result<()> {
     Err(last_err.unwrap_or_else(|| std::io::Error::other("remove_file retry loop exhausted")))
 }
 
+fn same_host_path(left: &Path, right: &Path) -> bool {
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => {
+            #[cfg(windows)]
+            {
+                left.to_string_lossy()
+                    .eq_ignore_ascii_case(&right.to_string_lossy())
+            }
+            #[cfg(not(windows))]
+            {
+                left == right
+            }
+        }
+        _ => false,
+    }
+}
+
 impl StandardHostServices {
+    fn kill_host_file(&self, path: &PathBuf) -> HalResult<()> {
+        let capability = CapabilityId::FileSystemIo;
+        let fault = |code| {
+            HalError::adapter_fault(self.profile, capability, "kill", path.display().to_string())
+                .with_host_error_code(code)
+        };
+        let attrs = path_attribute_bits(path).map_err(|_| fault(53))?;
+        if attrs & (VB_HIDDEN | VB_SYSTEM | VB_DIRECTORY) != 0 {
+            return Err(fault(53));
+        }
+        if attrs & VB_READONLY != 0 {
+            return Err(fault(75));
+        }
+        if self
+            .borrow_fs(capability, "kill")?
+            .handles
+            .values()
+            .any(|entry| {
+                entry
+                    .host_path
+                    .as_deref()
+                    .is_some_and(|open| same_host_path(open, path))
+            })
+        {
+            return Err(fault(55));
+        }
+        #[cfg(windows)]
+        let result = remove_file_with_retry(path);
+        #[cfg(not(windows))]
+        let result = fs::remove_file(path);
+        result.map_err(|err| {
+            fault(if err.kind() == std::io::ErrorKind::NotFound {
+                53
+            } else {
+                75
+            })
+        })
+    }
+
     /// The 1-based inclusive lock range for `Lock`/`Unlock`: no args = whole file,
     /// one arg = a single record, `start To end` = the explicit range.
     fn lock_range(
@@ -972,6 +1028,10 @@ impl FileSystemHal for StandardHostServices {
                     })?
                     .into_iter()
                     .filter(|path| path.is_file())
+                    .filter(|path| {
+                        path_attribute_bits(path)
+                            .is_ok_and(|attrs| attrs & (VB_HIDDEN | VB_SYSTEM) == 0)
+                    })
                     .collect::<Vec<_>>();
                 if matched_paths.is_empty() {
                     return Err(HalError::adapter_fault(
@@ -983,44 +1043,14 @@ impl FileSystemHal for StandardHostServices {
                     .with_host_error_code(53));
                 }
                 for matched_path in matched_paths {
-                    #[cfg(target_os = "windows")]
-                    let remove_result = remove_file_with_retry(&matched_path);
-                    #[cfg(not(target_os = "windows"))]
-                    let remove_result = fs::remove_file(&matched_path);
-
-                    remove_result.map_err(|err| {
-                        HalError::adapter_fault(
-                            self.profile,
-                            capability,
-                            "kill",
-                            format!(
-                                "failed to remove host path {} expanded from {}: {err}",
-                                matched_path.display(),
-                                path_text
-                            ),
-                        )
-                        .with_host_error_code(io_error_code(&err, 53, 75))
-                    })?;
+                    self.kill_host_file(&matched_path)?;
                 }
             }
             return Ok(Variant::from_i32(0));
         }
         if self.native_fs_enabled() {
             let host_path = PathBuf::from(path_text.as_str());
-            #[cfg(target_os = "windows")]
-            let remove_result = remove_file_with_retry(&host_path);
-            #[cfg(not(target_os = "windows"))]
-            let remove_result = fs::remove_file(&host_path);
-
-            remove_result.map_err(|err| {
-                HalError::adapter_fault(
-                    self.profile,
-                    capability,
-                    "kill",
-                    format!("failed to remove host path {}: {err}", host_path.display()),
-                )
-                .with_host_error_code(io_error_code(&err, 53, 75))
-            })?;
+            self.kill_host_file(&host_path)?;
         }
         Ok(Variant::from_i32(0))
     }
@@ -1781,6 +1811,29 @@ impl FileSystemHal for StandardHostServices {
         if self.native_fs_enabled() {
             let src = self.variant_to_path(&source, capability, "filecopy", "source")?;
             let dst = self.variant_to_path(&dest, capability, "filecopy", "destination")?;
+            let fault = |code| {
+                HalError::adapter_fault(self.profile, capability, "filecopy", "file copy failed")
+                    .with_host_error_code(code)
+            };
+            if src.as_os_str().is_empty() || dst.as_os_str().is_empty() {
+                return Err(fault(75));
+            }
+            if same_host_path(&src, &dst) {
+                return Err(fault(70));
+            }
+            if self
+                .borrow_fs(capability, "filecopy")?
+                .handles
+                .values()
+                .any(|entry| {
+                    entry.host_path.as_deref().is_some_and(|open| {
+                        (entry.mode != 0 && same_host_path(open, &src))
+                            || same_host_path(open, &dst)
+                    })
+                })
+            {
+                return Err(fault(55));
+            }
             fs::copy(&src, &dst).map_err(|err| {
                 HalError::adapter_fault(
                     self.profile,
@@ -1792,7 +1845,22 @@ impl FileSystemHal for StandardHostServices {
                         dst.display()
                     ),
                 )
+                .with_host_error_code(
+                    if matches!(
+                        err.kind(),
+                        std::io::ErrorKind::PermissionDenied
+                            | std::io::ErrorKind::InvalidInput
+                            | std::io::ErrorKind::IsADirectory
+                    ) {
+                        75
+                    } else {
+                        metadata_error_code(&err, &src)
+                    },
+                )
             })?;
+            // VBA creates ordinary destination attributes rather than copying
+            // the source's read-only/hidden/system flags.
+            apply_file_attributes(&dst, VB_ARCHIVE).map_err(|_| fault(75))?;
         }
         Ok(Variant::from_i32(0))
     }
@@ -1851,6 +1919,13 @@ impl FileSystemHal for StandardHostServices {
                     capability,
                     "setattr",
                     format!("failed to set attributes on {}: {err}", p.display()),
+                )
+                .with_host_error_code(
+                    if cfg!(windows) && err.raw_os_error() == Some(123) {
+                        52
+                    } else {
+                        io_error_code(&err, 53, 5)
+                    },
                 )
             })?;
         }

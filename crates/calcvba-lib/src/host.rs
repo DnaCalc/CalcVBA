@@ -89,7 +89,7 @@ pub fn file_close(args: &[Variant], host: &dyn HostServices) -> LibResult<Varian
     Ok(host.fs().close_variant(req(args, 0)?)?)
 }
 pub fn file_kill(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
-    Ok(host.fs().kill_variant(req(args, 0)?)?)
+    Ok(host.fs().kill_variant(string_arg(args, 0)?)?)
 }
 pub fn file_mkdir(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
     Ok(host.fs().mkdir_variant(string_arg(args, 0)?)?)
@@ -114,13 +114,18 @@ pub fn file_len(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant>
     Ok(host.fs().file_len_variant(string_arg(args, 0)?)?)
 }
 pub fn file_copy(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
-    Ok(host.fs().file_copy_variant(req(args, 0)?, req(args, 1)?)?)
+    Ok(host
+        .fs()
+        .file_copy_variant(string_arg(args, 0)?, string_arg(args, 1)?)?)
 }
 pub fn file_get_attr(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
     Ok(host.fs().get_attr_variant(string_arg(args, 0)?)?)
 }
 pub fn file_set_attr(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
-    Ok(host.fs().set_attr_variant(req(args, 0)?, req(args, 1)?)?)
+    Ok(host.fs().set_attr_variant(
+        string_arg(args, 0)?,
+        Variant::from_i32(as_i32(need(args, 1)?)?),
+    )?)
 }
 pub fn file_ch_drive(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
     Ok(host.fs().ch_drive_variant(string_arg(args, 0)?)?)

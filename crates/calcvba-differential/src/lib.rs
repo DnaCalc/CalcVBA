@@ -15168,7 +15168,8 @@ End Sub
             jit.handle_balance
         );
         let d_value = 43846.5515625_f64;
-        let time_value = d_value - 43846.0;
+        // Captured P_TimeValueEdges.33: text conversion rounds to whole seconds.
+        let time_value = f64::from_bits(0x3FE1_A666_6666_6666);
         assert_eq!(
             jit.result.expect("jit result"),
             vec![

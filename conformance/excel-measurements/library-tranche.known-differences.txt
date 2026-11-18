@@ -2,7 +2,6 @@
 Vm3	Chr.-1
 Vm3	Chr.256
 Vm3	Chr.65535
-Vm3	Cos.15
 Vm3	FormatG.15
 Vm3	FormatP.12
 Vm3	FormatP.13
@@ -26,7 +25,6 @@ Vm3	InStrRev.2.0
 Vm3	InStrRev.3.0
 Vm3	InStrRev.7.0
 Vm3	InStrRev.9.0
-Vm3	Sin.15
 Vm3	StrComp.2.0
 Vm3	StrComp.2.1
 Vm3	StrComp.2.2
@@ -67,11 +65,9 @@ Vm3	StrCompT.9.1
 Vm3	StrCompT.9.2
 Vm3	StrCompT.9.3
 Vm3	StrCompT.9.9
-Vm3	Tan.15
 Jit	Chr.-1
 Jit	Chr.256
 Jit	Chr.65535
-Jit	Cos.15
 Jit	FormatG.15
 Jit	FormatP.12
 Jit	FormatP.13
@@ -95,7 +91,6 @@ Jit	InStrRev.2.0
 Jit	InStrRev.3.0
 Jit	InStrRev.7.0
 Jit	InStrRev.9.0
-Jit	Sin.15
 Jit	StrComp.2.0
 Jit	StrComp.2.1
 Jit	StrComp.2.2
@@ -136,4 +131,3 @@ Jit	StrCompT.9.1
 Jit	StrCompT.9.2
 Jit	StrCompT.9.3
 Jit	StrCompT.9.9
-Jit	Tan.15

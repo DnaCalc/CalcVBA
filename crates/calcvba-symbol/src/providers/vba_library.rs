@@ -418,7 +418,15 @@ fn intrinsic_param_optional_defaults(
     entry: &crate::catalog::IntrinsicEntry,
 ) -> Vec<Option<CoreConst>> {
     match entry.sig.max_args {
-        Some(max) => vec![None; usize::from(max)],
+        Some(max) => {
+            let mut defaults = vec![None; usize::from(max)];
+            // Omitted Include is True; an explicitly supplied Empty is False.
+            // Recording the declared default also preserves gaps before a named Compare.
+            if entry.id == calcvba_bundle::NativeImplId::Filter {
+                defaults[2] = Some(CoreConst::Bool(true));
+            }
+            defaults
+        }
         None => Vec::new(),
     }
 }

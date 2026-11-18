@@ -475,38 +475,99 @@ fn split_with_limit(s: &str, delim: &str, limit: i32, text: bool) -> Vec<Variant
 /// string array whose elements contain (or, when `include` is False, omit) the
 /// `match` substring, returned as a fresh 0-based array.
 pub fn filter(args: &[Variant]) -> LibResult<Variant> {
-    let array = need(args, 0)?
-        .as_safearray()
-        .ok_or_else(|| LibError::type_mismatch("Filter expects a source array"))?;
-    let needle = as_str(need(args, 1)?)?;
-    let include = match arg_present(args, 2) {
-        Some(v) => as_bool_lenient(v),
+    let source = need(args, 0)?;
+    if !matches!(
+        source.array_element_vartype(),
+        Some(VT_BSTR_VALUE | VT_VARIANT_VALUE)
+    ) {
+        return Err(LibError::type_mismatch(
+            "Filter expects a String or Variant array",
+        ));
+    }
+    let needle = string_units(need(args, 1)?)?;
+    let include = match opt(args, 2).filter(|v| !missing_sentinel(v)) {
+        Some(v) => as_f64(&cbool(std::slice::from_ref(v))?)? != 0.0,
         None => true,
     };
     let text = text_compare(args, 3)?;
-    let needle_cmp = norm_compare(needle, text);
+    let Some(array) = source.as_safearray() else {
+        return Ok(Variant::unallocated_array(VT_BSTR_VALUE));
+    };
+    if array.dimensions() != 1 {
+        return Err(LibError::type_mismatch(
+            "Filter expects a one-dimensional array",
+        ));
+    }
+    let elements = array.variant_elements().unwrap_or_default();
+    if elements.is_empty() {
+        return Ok(Variant::unallocated_array(VT_BSTR_VALUE));
+    }
+    let needle_cmp: Vec<u16> = needle
+        .into_iter()
+        .map(|unit| if text { fold_unit(unit) } else { unit })
+        .collect();
     let mut out: Vec<Variant> = Vec::new();
-    for element in array.variant_elements().unwrap_or_default() {
-        let s = as_str(&element)?;
-        let contains = norm_compare(s, text).contains(&needle_cmp);
+    for element in elements {
+        if element.vtype() == VarType::Error {
+            return Err(LibError::type_mismatch(
+                "Filter cannot convert an Error element to String",
+            ));
+        }
+        let units = string_units(&element)?;
+        let contains = needle_cmp.is_empty()
+            || units.windows(needle_cmp.len()).any(|part| {
+                part.iter()
+                    .copied()
+                    .map(|unit| if text { fold_unit(unit) } else { unit })
+                    .eq(needle_cmp.iter().copied())
+            });
         if contains == include {
-            out.push(element);
+            out.push(Variant::from_utf16_units(&units));
         }
     }
     string_array(out)
 }
 
 pub fn join(args: &[Variant]) -> LibResult<Variant> {
-    let array = need(args, 0)?
-        .as_safearray()
+    let source = need(args, 0)?;
+    let element_type = source
+        .array_element_vartype()
         .ok_or_else(|| LibError::type_mismatch("Join expects an array"))?;
-    let delim = match opt(args, 1) {
-        Some(v) => as_str(v)?,
-        None => " ".to_string(),
+    if !matches!(element_type, VT_BSTR_VALUE | VT_VARIANT_VALUE) {
+        return Err(LibError::invalid_call(
+            "Join requires a String or Variant array",
+        ));
+    }
+    let delimiter = match opt(args, 1).filter(|value| !missing_sentinel(value)) {
+        Some(value) => string_units(value)?,
+        None => vec![u16::from(b' ')],
     };
-    let parts = array.variant_elements().unwrap_or_default();
-    let texts: LibResult<Vec<String>> = parts.iter().map(as_str).collect();
-    Ok(vstr(texts?.join(&delim)))
+    let Some(array) = source.as_safearray() else {
+        return Ok(vstr(""));
+    };
+    if array.dimensions() != 1 {
+        return Err(LibError::invalid_call(
+            "Join requires a one-dimensional array",
+        ));
+    }
+    let mut result = Vec::new();
+    for (index, element) in array
+        .variant_elements()
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+    {
+        if element.vtype() == VarType::Error {
+            return Err(LibError::type_mismatch(
+                "Join cannot convert an Error element to String",
+            ));
+        }
+        if index != 0 {
+            result.extend_from_slice(&delimiter);
+        }
+        result.extend(string_units(element)?);
+    }
+    Ok(Variant::from_utf16_units(&result))
 }
 
 /// `Replace(expr, find, replace, [start], [count], [compare])`. Per VBA the
@@ -857,6 +918,10 @@ pub fn str_conv(args: &[Variant]) -> LibResult<Variant> {
         return Ok(Variant::from_safearray(array));
     }
 
+    if !(0..=255).contains(&mode) || (mode & VB_UNICODE != 0 && mode != VB_UNICODE) {
+        return Err(LibError::invalid_call("invalid StrConv conversion flags"));
+    }
+
     if mode & VB_UNICODE != 0 && mode & VB_FROM_UNICODE != 0 {
         return Err(LibError::invalid_call(
             "vbUnicode and vbFromUnicode are mutually exclusive",
@@ -878,12 +943,25 @@ pub fn str_conv(args: &[Variant]) -> LibResult<Variant> {
             calcvba_runtime::ansi::ansi_decode(&string_bytes(input)?)
         }
     } else {
-        as_str(need(args, 0)?)?
+        let input = need(args, 0)?;
+        if let Some(array) = input.as_safearray() {
+            // A Byte() used as a String supplies UTF16LE bytes. vbUnicode above
+            // instead decodes each source byte using the ANSI code page.
+            as_str(&Variant::from_bstr_bytes(&array_bytes(&array)?))?
+        } else {
+            as_str(input)?
+        }
     };
 
     s = match mode & VB_PROPER_CASE {
-        VB_UPPER_CASE => s.to_uppercase(),
-        VB_LOWER_CASE => s.to_lowercase(),
+        VB_UPPER_CASE => s
+            .chars()
+            .map(|c| simple_case(c, c.to_uppercase()))
+            .collect(),
+        VB_LOWER_CASE => s
+            .chars()
+            .map(|c| simple_case(c, c.to_lowercase()))
+            .collect(),
         VB_PROPER_CASE => proper_case(&s),
         _ => s,
     };
@@ -899,18 +977,28 @@ pub fn str_conv(args: &[Variant]) -> LibResult<Variant> {
     Ok(vstr(s))
 }
 
+// StrConv case mapping preserves a character rather than expanding it (captured sharp-s).
+fn simple_case(original: char, mut mapped: impl Iterator<Item = char>) -> char {
+    let first = mapped.next().unwrap_or(original);
+    if mapped.next().is_some() {
+        original
+    } else {
+        first
+    }
+}
+
 fn proper_case(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut word_start = true;
     for c in s.chars() {
-        if c.is_whitespace() {
+        if matches!(c, '\0' | '\t' | '\n' | '\x0b' | '\x0c' | '\r' | ' ') {
             out.push(c);
             word_start = true;
         } else if word_start {
-            out.extend(c.to_uppercase());
+            out.push(simple_case(c, c.to_uppercase()));
             word_start = false;
         } else {
-            out.extend(c.to_lowercase());
+            out.push(simple_case(c, c.to_lowercase()));
         }
     }
     out

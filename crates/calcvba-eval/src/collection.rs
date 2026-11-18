@@ -100,6 +100,9 @@ fn optional_selector(arg: Option<&Variant>) -> Option<Selector> {
 /// A required `Item`/`Remove` selector. Omitted → [`CollectionError::ArgNotOptional`] (449).
 fn required_selector(arg: Option<&Variant>) -> Result<Selector, CollectionError> {
     match arg {
+        Some(v) if v.vtype() == calcvba_runtime::VarType::Null => {
+            Err(CollectionError::TypeMismatch)
+        }
         Some(v) if !is_missing_arg(v) => Ok(variant_selector(v)),
         _ => Err(CollectionError::ArgNotOptional),
     }

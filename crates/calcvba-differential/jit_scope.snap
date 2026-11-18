@@ -789,9 +789,9 @@ inline/builtin_abs_currency	compiled
 inline/builtin_abs_double	compiled
 inline/builtin_abs_empty	compiled
 inline/builtin_abs_integer	compiled
-inline/builtin_abs_integer_min	compiled
+inline/builtin_abs_integer_min	raised
 inline/builtin_abs_long	compiled
-inline/builtin_abs_long_min	compiled
+inline/builtin_abs_long_min	raised
 inline/builtin_abs_longlong	compiled
 inline/builtin_abs_null	compiled
 inline/builtin_abs_single	compiled

@@ -963,14 +963,6 @@ impl StandardHostServices {
             .spawn()
     }
 
-    #[cfg(target_os = "windows")]
-    fn spawn_probe_shell_process_text(
-        &self,
-        command: &str,
-    ) -> std::io::Result<std::process::Child> {
-        Command::new("cmd").args(["/C", command]).spawn()
-    }
-
     #[cfg(not(target_os = "windows"))]
     fn spawn_probe_shell_process(&self, _command: i32) -> std::io::Result<std::process::Child> {
         Command::new("sh").arg("-c").arg("true").spawn()

@@ -213,8 +213,8 @@ fn cases() -> Vec<(String, String, String)> {
     out
 }
 
-/// Run the modules on an engine with the native host policy (a real file system), as the
-/// file-system probes need; `run_modules` runs under the restricted policy.
+/// Run the Windows file-system probes or Shell with native host services.
+/// `run_modules` uses the deterministic policy.
 fn run_native(executor: Executor, modules: &[(&str, &str)]) -> Result<String, String> {
     // These probes share process current-directory state and scratch paths.
     // Keep their runtime calls on the invoking thread and serialize the two tests.
@@ -245,7 +245,12 @@ fn run_native(executor: Executor, modules: &[(&str, &str)]) -> Result<String, St
         Executor::Vm3 => HostConfig::vm3(),
         Executor::Jit => HostConfig::jit(),
     };
-    let mut engine = Engine::new(config).with_runtime_profile(RuntimeProfileId::WindowsHeadless);
+    let profile = if modules.iter().any(|(name, _)| *name == "P_Shell") {
+        RuntimeProfileId::default_for_hal_profile(calcvba_hal::model::native_host_profile())
+    } else {
+        RuntimeProfileId::WindowsHeadless
+    };
+    let mut engine = Engine::new(config).with_runtime_profile(profile);
     engine.set_host_policy(calcvba_hal::model::HostPolicy::native());
     let outcome = match executor {
         Executor::Vm3 => engine.execute_manifest_snapshot_with_err_vm3(&manifest),
@@ -268,7 +273,7 @@ fn run_native(executor: Executor, modules: &[(&str, &str)]) -> Result<String, St
 
 /// Run `module` (with ProbeFmt and a Main that stores its `Run()` result) and return the text.
 fn run_text(executor: Executor, fmt: &str, module: &str, source: &str) -> Result<String, String> {
-    if WINDOWS_ONLY_PREFIX.contains(&module) {
+    if WINDOWS_ONLY_PREFIX.contains(&module) || module == "P_Shell" {
         let main =
             format!("Public result As String\nSub Main()\n    result = {module}.Run()\nEnd Sub\n");
         let modules = [("Main", main.as_str()), ("ProbeFmt", fmt), (module, source)];

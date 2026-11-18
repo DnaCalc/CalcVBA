@@ -542,9 +542,20 @@ pub fn app_activate(args: &[Variant], host: &dyn HostServices) -> LibResult<Vari
         .app_activate_variant(req(args, 0)?, optional_bool_arg(args, 1)?)?)
 }
 pub fn shell(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
-    Ok(host
+    let command = as_str(need(args, 0)?)?;
+    if command.is_empty() {
+        return Err(LibError::invalid_call("Shell requires a command"));
+    }
+    let style = opt(args, 1).map(as_i32).transpose()?.unwrap_or(2);
+    // Published styles plus the measured intervening Win32 values 5 and 7 (P_Shell).
+    // Other Win32 styles await the queued Excel measurements.
+    if !(0..=7).contains(&style) {
+        return Err(LibError::invalid_call("Invalid Shell window style"));
+    }
+    let task = host
         .process()
-        .shell_variant(req(args, 0)?, arg_or_empty(args, 1))?)
+        .shell_variant(Variant::from_string(command), Variant::from_i32(style))?;
+    Ok(Variant::from_f64(as_f64(&task)?))
 }
 pub fn command(host: &dyn HostServices) -> LibResult<Variant> {
     Ok(host.process().command_variant()?)

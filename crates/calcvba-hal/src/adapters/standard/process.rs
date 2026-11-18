@@ -33,6 +33,111 @@ pub(super) struct SettingsState {
     values: BTreeMap<(String, String, String), SettingEntry>,
 }
 
+/// The executable portion of a command line, without launching it.
+fn shell_program(command: &str) -> &str {
+    let command = command.trim_start();
+    if let Some(quoted) = command.strip_prefix('"') {
+        quoted.split('"').next().unwrap_or_default()
+    } else if std::path::Path::new(command).is_file() {
+        command
+    } else {
+        command.split_whitespace().next().unwrap_or_default()
+    }
+}
+
+fn shell_program_exists(command: &str) -> bool {
+    let program = shell_program(command);
+    if program.is_empty() {
+        return false;
+    }
+    let exists = |path: &std::path::Path| {
+        path.is_file()
+            || (cfg!(windows) && path.extension().is_none() && path.with_extension("exe").is_file())
+    };
+    let path = std::path::Path::new(program);
+    if exists(path) {
+        return true;
+    }
+    if program.contains(['/', '\\', ':']) {
+        return false;
+    }
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|directory| exists(&directory.join(program)))
+    })
+}
+
+fn shell_launch_error(profile: crate::model::HalProfileId, error: std::io::Error) -> HalError {
+    let number = match error.kind() {
+        std::io::ErrorKind::NotFound => 53,
+        std::io::ErrorKind::PermissionDenied => 70,
+        _ => 5,
+    };
+    HalError::adapter_fault(
+        profile,
+        CapabilityId::ProcessEnv,
+        "shell",
+        error.to_string(),
+    )
+    .with_host_error_code(number)
+}
+
+#[cfg(windows)]
+fn native_windows_shell(command: &str, style: i32) -> std::io::Result<u32> {
+    use windows_sys::Win32::{
+        Foundation::CloseHandle,
+        System::Threading::{
+            CreateProcessW, PROCESS_INFORMATION, STARTF_USESHOWWINDOW, STARTUPINFOW,
+        },
+    };
+    let program = shell_program(command).to_ascii_lowercase();
+    // CreateProcess requires the command interpreter for batch files. Preserve their
+    // async launch while passing the same startup window style as an executable.
+    let line = if program.ends_with(".cmd") || program.ends_with(".bat") {
+        if !shell_program_exists(command) {
+            return Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+        }
+        format!("cmd.exe /c \"{command}\"")
+    } else {
+        command.to_string()
+    };
+    let mut command_line: Vec<u16> = line.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: all fields of these Win32 structs accept zero initialization.
+    let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
+    startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+    startup.dwFlags = STARTF_USESHOWWINDOW;
+    startup.wShowWindow = style as u16;
+    // SAFETY: all fields of PROCESS_INFORMATION accept zero initialization.
+    let mut process: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: buffers and structs stay live for the synchronous API call. The command
+    // buffer is writable and terminated; null security/env/directory arguments select
+    // the caller defaults. No handle inheritance or callback is requested.
+    let created = unsafe {
+        CreateProcessW(
+            std::ptr::null(),
+            command_line.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            0,
+            std::ptr::null(),
+            std::ptr::null(),
+            &startup,
+            &mut process,
+        )
+    };
+    if created == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let task = process.dwProcessId;
+    // SAFETY: successful CreateProcess transferred these two owned handles. Closing
+    // them releases our references without waiting for or terminating the child.
+    unsafe {
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+    }
+    Ok(task)
+}
+
 impl ProcessEnvHal for StandardHostServices {
     fn command_variant(&self) -> HalResult<Variant> {
         let capability = CapabilityId::ProcessEnv;
@@ -209,18 +314,29 @@ impl ProcessEnvHal for StandardHostServices {
             && !text.as_str().trim().is_empty()
         {
             let command_text = text.as_str();
-            let child = self
-                .spawn_probe_shell_process_text(&command_text)
-                .map_err(|err| {
-                    HalError::adapter_fault(
+            #[cfg(windows)]
+            {
+                let style =
+                    self.variant_to_i32(&_window_style, capability, "shell", "window_style")?;
+                let task = native_windows_shell(&command_text, style)
+                    .map_err(|error| shell_launch_error(self.profile, error))?;
+                return Ok(Variant::from_f64(f64::from(task)));
+            }
+            #[cfg(not(windows))]
+            {
+                // An interpreter would return a task ID and fail later for a missing
+                // executable. VBA reports the failure before returning from Shell.
+                if !shell_program_exists(&command_text) {
+                    return Err(shell_launch_error(
                         self.profile,
-                        capability,
-                        "shell",
-                        format!("failed to spawn probe shell process: {err}"),
-                    )
-                })?;
-            let child_id = i32::try_from(child.id()).unwrap_or(i32::MAX).max(1);
-            return Ok(Variant::from_f64(f64::from(child_id)));
+                        std::io::ErrorKind::NotFound.into(),
+                    ));
+                }
+                let child = self
+                    .spawn_probe_shell_process_text(&command_text)
+                    .map_err(|error| shell_launch_error(self.profile, error))?;
+                return Ok(Variant::from_f64(f64::from(child.id())));
+            }
         }
         if self.native_process_enabled() {
             let command = self

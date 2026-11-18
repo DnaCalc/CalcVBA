@@ -18,5 +18,5 @@ Dir.17=String:[a.txt]
 Dir.18=String:[5:a.txt|ab1.txt|b.txt|h.txt|ro.txt|]
 Dir.19=String:[c.dat]
 Dir.20=ERR13
-Dir.21=String:[52e10480-7cc8-458b-a155-517be24193cfExcelDna.log/String]
+Dir.21=String:[a.txt/String]
 Dir.22=String:[a.txt/c.dat/]

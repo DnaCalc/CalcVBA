@@ -303,6 +303,14 @@ P_DeleteSetting	vm3	value		DeleteSetting.16=String:[Empty|False]	DeleteSetting.1
 P_DeleteSetting	jit	value		DeleteSetting.16=String:[Empty|False]	DeleteSetting.16=String:[String()|True]
 P_DeleteSetting	vm3	error		DeleteSetting.20=ERR5	DeleteSetting.20=Empty
 P_DeleteSetting	jit	error		DeleteSetting.20=ERR5	DeleteSetting.20=Empty
+P_Dir	vm3	error		Dir.15=String:[]	Dir.15=ERR5
+P_Dir	jit	error		Dir.15=String:[]	Dir.15=ERR5
+P_Dir	vm3	value		Dir.17=String:[a.txt]	Dir.17=String:[A.TXT]
+P_Dir	jit	value		Dir.17=String:[a.txt]	Dir.17=String:[A.TXT]
+P_Dir	vm3	error		Dir.20=ERR13	Dir.20=ERR5
+P_Dir	jit	error		Dir.20=ERR13	Dir.20=ERR5
+P_Dir	vm3	error		Dir.21=String:[a.txt/String]	Dir.21=ERR5
+P_Dir	jit	error		Dir.21=String:[a.txt/String]	Dir.21=ERR5
 P_DoEvents	vm3	type		DoEvents.1=Integer:0	DoEvents.1=Long:0
 P_DoEvents	jit	type		DoEvents.1=Integer:0	DoEvents.1=Long:0
 P_DoEvents	vm3	value		DoEvents.2=String:[Integer]	DoEvents.2=String:[Long]
@@ -313,6 +321,10 @@ P_DoEvents	vm3	type		DoEvents.8=Integer:0	DoEvents.8=Long:0
 P_DoEvents	jit	type		DoEvents.8=Integer:0	DoEvents.8=Long:0
 P_DoEvents	vm3	type		DoEvents.9=Integer:0	DoEvents.9=Long:0
 P_DoEvents	jit	type		DoEvents.9=Integer:0	DoEvents.9=Long:0
+P_EOF	vm3	value		EOF.4=String:[String:[ab],True]	EOF.4=String:[String:[ab{123}26{125}cd],True]
+P_EOF	jit	value		EOF.4=String:[String:[ab],True]	EOF.4=String:[String:[ab{123}26{125}cd],True]
+P_EOF	vm3	error		EOF.16=ERR94	EOF.16=ERR52
+P_EOF	jit	error		EOF.16=ERR94	EOF.16=ERR52
 P_Environ	vm3	value		Environ.3=String:[String]	Environ.3=String:[Long]
 P_Environ	jit	value		Environ.3=String:[String]	Environ.3=String:[Long]
 P_Environ	vm3	value		Environ.4=String:[String]	Environ.4=String:[Long]
@@ -405,6 +417,44 @@ P_FV	vm3	lastbit		FV.7=Double:0000000000000000|0	FV.7=Double:8000000000000000|-0
 P_FV	jit	lastbit		FV.7=Double:0000000000000000|0	FV.7=Double:8000000000000000|-0
 P_FV	vm3	missing		FV.18=Double:4098E6F84775E061|1593.7424601	<failed: bind: unresolved name `Rate` (named argument)>
 P_FV	jit	missing		FV.18=Double:4098E6F84775E061|1593.7424601	<failed: bind: unresolved name `Rate` (named argument)>
+P_FileCopy	vm3	error		FileCopy.4=ERR75	FileCopy.4=ERR5
+P_FileCopy	jit	error		FileCopy.4=ERR75	FileCopy.4=ERR5
+P_FileCopy	vm3	error		FileCopy.5=ERR53	FileCopy.5=ERR5
+P_FileCopy	jit	error		FileCopy.5=ERR53	FileCopy.5=ERR5
+P_FileCopy	vm3	error		FileCopy.6=ERR76	FileCopy.6=ERR5
+P_FileCopy	jit	error		FileCopy.6=ERR76	FileCopy.6=ERR5
+P_FileCopy	vm3	error		FileCopy.7=ERR55	FileCopy.7=Empty
+P_FileCopy	jit	error		FileCopy.7=ERR55	FileCopy.7=Empty
+P_FileCopy	vm3	value		FileCopy.9=Long:0	FileCopy.9=Long:3
+P_FileCopy	jit	value		FileCopy.9=Long:0	FileCopy.9=Long:3
+P_FileCopy	vm3	error		FileCopy.10=ERR52	FileCopy.10=ERR5
+P_FileCopy	jit	error		FileCopy.10=ERR52	FileCopy.10=ERR5
+P_FileCopy	vm3	error		FileCopy.11=ERR70	FileCopy.11=ERR5
+P_FileCopy	jit	error		FileCopy.11=ERR70	FileCopy.11=ERR5
+P_FileCopy	vm3	error		FileCopy.13=ERR75	FileCopy.13=ERR5
+P_FileCopy	jit	error		FileCopy.13=ERR75	FileCopy.13=ERR5
+P_FileCopy	vm3	error		FileCopy.14=ERR75	FileCopy.14=ERR5
+P_FileCopy	jit	error		FileCopy.14=ERR75	FileCopy.14=ERR5
+P_FileCopy	vm3	error		FileCopy.16=ERR75	FileCopy.16=ERR5
+P_FileCopy	jit	error		FileCopy.16=ERR75	FileCopy.16=ERR5
+P_FileCopy	vm3	error		FileCopy.17=ERR94	FileCopy.17=ERR5
+P_FileCopy	jit	error		FileCopy.17=ERR94	FileCopy.17=ERR5
+P_FileCopy	vm3	error		FileCopy.20=ERR75	FileCopy.20=ERR5
+P_FileCopy	jit	error		FileCopy.20=ERR75	FileCopy.20=ERR5
+P_FileDateTime	vm3	error		FileDateTime.6=ERR76	FileDateTime.6=ERR53
+P_FileDateTime	jit	error		FileDateTime.6=ERR76	FileDateTime.6=ERR53
+P_FileDateTime	vm3	error		FileDateTime.8=ERR94	FileDateTime.8=ERR53
+P_FileDateTime	jit	error		FileDateTime.8=ERR94	FileDateTime.8=ERR53
+P_FileDateTime	vm3	error		FileDateTime.9=ERR52	FileDateTime.9=ERR53
+P_FileDateTime	jit	error		FileDateTime.9=ERR52	FileDateTime.9=ERR53
+P_FileDateTime	vm3	error		FileDateTime.14=ERR53	FileDateTime.14=String:[Date]
+P_FileDateTime	jit	error		FileDateTime.14=ERR53	FileDateTime.14=String:[Date]
+P_FileLen	vm3	error		FileLen.10=ERR94	FileLen.10=ERR53
+P_FileLen	jit	error		FileLen.10=ERR94	FileLen.10=ERR53
+P_FileLen	vm3	error		FileLen.11=ERR52	FileLen.11=ERR53
+P_FileLen	jit	error		FileLen.11=ERR52	FileLen.11=ERR53
+P_FileLen	vm3	error		FileLen.18=ERR76	FileLen.18=ERR53
+P_FileLen	jit	error		FileLen.18=ERR76	FileLen.18=ERR53
 P_Filter	vm3	type		Filter.6=String()[unallocated]	Filter.6=String()[0,-1]{}
 P_Filter	jit	type		Filter.6=String()[unallocated]	Filter.6=String()[0,-1]{}
 P_Filter	vm3	error		Filter.7=String()[0,0]{String:[22]}	Filter.7=ERR13
@@ -743,6 +793,16 @@ P_GetAllSettings	vm3	value		GetAllSettings.17=String:[K=1]	GetAllSettings.17=Str
 P_GetAllSettings	jit	value		GetAllSettings.17=String:[K=1]	GetAllSettings.17=String:[a=1]
 P_GetAllSettings	vm3	error		GetAllSettings.18=ERR9	GetAllSettings.18=String:[b]
 P_GetAllSettings	jit	error		GetAllSettings.18=ERR9	GetAllSettings.18=String:[b]
+P_GetAttr	vm3	value		GetAttr.6=Long:268435472	GetAttr.6=Long:16
+P_GetAttr	jit	value		GetAttr.6=Long:268435472	GetAttr.6=Long:16
+P_GetAttr	vm3	error		GetAttr.11=ERR76	GetAttr.11=ERR53
+P_GetAttr	jit	error		GetAttr.11=ERR76	GetAttr.11=ERR53
+P_GetAttr	vm3	error		GetAttr.13=ERR94	GetAttr.13=ERR53
+P_GetAttr	jit	error		GetAttr.13=ERR94	GetAttr.13=ERR53
+P_GetAttr	vm3	error		GetAttr.14=ERR52	GetAttr.14=ERR53
+P_GetAttr	jit	error		GetAttr.14=ERR52	GetAttr.14=ERR53
+P_GetAttr	vm3	value		GetAttr.16=Long:268435472	GetAttr.16=Long:16
+P_GetAttr	jit	value		GetAttr.16=Long:268435472	GetAttr.16=Long:16
 P_GetObject	vm3	error		GetObject.1=ERR13	GetObject.1=ERR5
 P_GetObject	jit	missing		GetObject.1=ERR13	<declined: "T: CallNative { dst: Some(Temp(TempId(3))), callee: Builtin(GetObject), args: [] }: CallNative GetObject requires one or two positional arguments">
 P_GetObject	vm3	error		GetObject.5=ERR429	GetObject.5=ERR432
@@ -862,6 +922,42 @@ P_InStrRev	vm3	value		InStrRev.27=Long:2	InStrRev.27=Long:3
 P_InStrRev	jit	value		InStrRev.27=Long:2	InStrRev.27=Long:3
 P_InStrRev	vm3	missing		InStrRev.28=Long:2	<failed: bind: unresolved name `Compare` (named argument)>
 P_InStrRev	jit	missing		InStrRev.28=Long:2	<failed: bind: unresolved name `Compare` (named argument)>
+P_InputB	vm3	missing		InputB.1=String:[2,4,String:[{123}25185{125}{123}25699{125}]]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1858, message: "expected `)`" }, ParseError { offset: 1927, mess>
+P_InputB	jit	missing		InputB.1=String:[2,4,String:[{123}25185{125}{123}25699{125}]]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1858, message: "expected `)`" }, ParseError { offset: 1927, mess>
+P_InputB	vm3	missing		InputB.2=String:[2,4,String:[{123}25185{125}{123}25699{125}]]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1810, message: "expected `)`" }, ParseError { offset: 1879, mess>
+P_InputB	jit	missing		InputB.2=String:[2,4,String:[{123}25185{125}{123}25699{125}]]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1810, message: "expected `)`" }, ParseError { offset: 1879, mess>
+P_InputB	vm3	missing		InputB.3=String:[0,1]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1811, message: "expected `)`" }, ParseError { offset: 1866, mess>
+P_InputB	jit	missing		InputB.3=String:[0,1]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1811, message: "expected `)`" }, ParseError { offset: 1866, mess>
+P_InputB	vm3	missing		InputB.4=String:[2,2]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1870, message: "expected `)`" }, ParseError { offset: 1870, mess>
+P_InputB	jit	missing		InputB.4=String:[2,2]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1870, message: "expected `)`" }, ParseError { offset: 1870, mess>
+P_InputB	vm3	missing		InputB.5=ERR62	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1773, message: "expected `)`" }, ParseError { offset: 2009, mess>
+P_InputB	jit	missing		InputB.5=ERR62	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1773, message: "expected `)`" }, ParseError { offset: 2009, mess>
+P_InputB	vm3	missing		InputB.6=ERR62	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1773, message: "expected `)`" }, ParseError { offset: 1792, mess>
+P_InputB	jit	missing		InputB.6=ERR62	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1773, message: "expected `)`" }, ParseError { offset: 1792, mess>
+P_InputB	vm3	missing		InputB.7=ERR54	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1762, message: "expected `)`" }, ParseError { offset: 2013, mess>
+P_InputB	jit	missing		InputB.7=ERR54	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1762, message: "expected `)`" }, ParseError { offset: 2013, mess>
+P_InputB	vm3	missing		InputB.8=ERR5	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1775, message: "expected `)`" }, ParseError { offset: 2014, mess>
+P_InputB	jit	missing		InputB.8=ERR5	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1775, message: "expected `)`" }, ParseError { offset: 2014, mess>
+P_InputB	vm3	missing		InputB.9=ERR94	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1777, message: "expected `)`" }, ParseError { offset: 2011, mess>
+P_InputB	jit	missing		InputB.9=ERR94	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1777, message: "expected `)`" }, ParseError { offset: 2011, mess>
+P_InputB	vm3	missing		InputB.10=ERR52	<failed: bind: unsupported construct: literal Hash>
+P_InputB	jit	missing		InputB.10=ERR52	<failed: bind: unsupported construct: literal Hash>
+P_InputB	vm3	missing		InputB.11=String:[String:[]]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1779, message: "expected `)`" }, ParseError { offset: 1779, mess>
+P_InputB	jit	missing		InputB.11=String:[String:[]]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1779, message: "expected `)`" }, ParseError { offset: 1779, mess>
+P_InputB	vm3	missing		InputB.12=String:[3,1]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1826, message: "expected `)`" }, ParseError { offset: 1877, mess>
+P_InputB	jit	missing		InputB.12=String:[3,1]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1826, message: "expected `)`" }, ParseError { offset: 1877, mess>
+P_InputB	vm3	missing		InputB.13=String:[String:[abcd]]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1837, message: "expected `)`" }, ParseError { offset: 1837, mess>
+P_InputB	jit	missing		InputB.13=String:[String:[abcd]]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1837, message: "expected `)`" }, ParseError { offset: 1837, mess>
+P_InputB	vm3	missing		InputB.14=String:[String,String]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1825, message: "expected `)`" }, ParseError { offset: 1825, mess>
+P_InputB	jit	missing		InputB.14=String:[String,String]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1825, message: "expected `)`" }, ParseError { offset: 1825, mess>
+P_InputB	vm3	missing		InputB.15=String:[3:97,100]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1829, message: "expected `)`" }, ParseError { offset: 1897, mess>
+P_InputB	jit	missing		InputB.15=String:[3:97,100]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1829, message: "expected `)`" }, ParseError { offset: 1897, mess>
+P_InputB	vm3	missing		InputB.16=ERR52	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1785, message: "expected `)`" }, ParseError { offset: 2013, mess>
+P_InputB	jit	missing		InputB.16=ERR52	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1785, message: "expected `)`" }, ParseError { offset: 2013, mess>
+P_InputB	vm3	missing		InputB.17=String:[97,0,255,98]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1856, message: "expected `)`" }, ParseError { offset: 1932, mess>
+P_InputB	jit	missing		InputB.17=String:[97,0,255,98]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1856, message: "expected `)`" }, ParseError { offset: 1932, mess>
+P_InputB	vm3	missing		InputB.18=String:[5,False]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1832, message: "expected `)`" }, ParseError { offset: 1887, mess>
+P_InputB	jit	missing		InputB.18=String:[5,False]	<failed: bind: symbol model error: syntax parse failed in module P_InputB: [ParseError { offset: 1832, message: "expected `)`" }, ParseError { offset: 1887, mess>
 P_IsDate	vm3	error		IsDate.35=Boolean:False	IsDate.35=ERR450
 P_IsDate	jit	error		IsDate.35=Boolean:False	IsDate.35=ERR450
 P_IsDate	vm3	value		IsDate.42=Boolean:True	IsDate.42=Boolean:False
@@ -890,6 +986,20 @@ P_Join	vm3	error		Join.19=ERR13	Join.19=String:[a,Error 5]
 P_Join	jit	error		Join.19=ERR13	Join.19=String:[a,Error 5]
 P_Join	vm3	error		Join.20=String:[]	Join.20=ERR13
 P_Join	jit	error		Join.20=String:[]	Join.20=ERR13
+P_Kill	vm3	error		Kill.5=ERR75	Kill.5=Empty
+P_Kill	jit	error		Kill.5=ERR75	Kill.5=Empty
+P_Kill	vm3	error		Kill.6=ERR53	Kill.6=String:[[]]
+P_Kill	jit	error		Kill.6=ERR53	Kill.6=String:[[]]
+P_Kill	vm3	error		Kill.7=ERR53	Kill.7=String:[[]]
+P_Kill	jit	error		Kill.7=ERR53	Kill.7=String:[[]]
+P_Kill	vm3	error		Kill.8=ERR55	Kill.8=Empty
+P_Kill	jit	error		Kill.8=ERR55	Kill.8=Empty
+P_Kill	vm3	error		Kill.9=ERR53	Kill.9=ERR70
+P_Kill	jit	error		Kill.9=ERR53	Kill.9=ERR70
+P_Kill	vm3	error		Kill.13=ERR94	Kill.13=ERR5
+P_Kill	jit	error		Kill.13=ERR94	Kill.13=ERR5
+P_Kill	vm3	value		Kill.18=String:[75:b.txt|c.txt|]	Kill.18=String:[0:]
+P_Kill	jit	value		Kill.18=String:[75:b.txt|c.txt|]	Kill.18=String:[0:]
 P_LBound	jit	missing		LBound.10=ERR94	<declined: "T: Bound { dst: Temp(TempId(23)), which: Lower, array: Use(Local(LocalId(4))), dimension: Some(Const(Null)) }: i32 operand not lowered in M4-4: Const>
 P_LBound	jit	missing		LBound.11=Long:2	<declined: "T: Bound { dst: Temp(TempId(25)), which: Lower, array: Use(Local(LocalId(4))), dimension: Some(Const(Str(\"3\"))) }: i32 operand not lowered in M4-4:>
 P_LBound	jit	missing		LBound.12=Long:0	<declined: "T: Bound { dst: Temp(TempId(27)), which: Lower, array: Use(Local(LocalId(4))), dimension: Some(Const(F64(4609434218613702656))) }: i32 operand not lo>
@@ -905,6 +1015,8 @@ P_LCase	vm3	missing		LCase.16=String:[abc]	<failed: bind: unresolved name `Strin
 P_LCase	jit	missing		LCase.16=String:[abc]	<failed: bind: unresolved name `String` (named argument)>
 P_LCase	vm3	missing		LCase.22=String:[q{229}]	<failed: bind: unresolved name `String` (named argument)>
 P_LCase	jit	missing		LCase.22=String:[q{229}]	<failed: bind: unresolved name `String` (named argument)>
+P_LOF	vm3	error		LOF.13=ERR94	LOF.13=ERR52
+P_LOF	jit	error		LOF.13=ERR94	LOF.13=ERR52
 P_LTrim	vm3	missing		LTrim.12=String:[y]	<failed: bind: unresolved name `String` (named argument)>
 P_LTrim	jit	missing		LTrim.12=String:[y]	<failed: bind: unresolved name `String` (named argument)>
 P_LTrim	vm3	value		LTrim.13=String:[a]	LTrim.13=String:[{12288}a]
@@ -967,6 +1079,20 @@ P_LenB	vm3	value		LenB.20=Long:3	LenB.20=Long:0
 P_LenB	jit	value		LenB.20=Long:3	LenB.20=Long:0
 P_LenB	vm3	error		LenB.22=ERR13	LenB.22=Long:4
 P_LenB	jit	error		LenB.22=ERR13	LenB.22=Long:4
+P_Loc	vm3	value		Loc.3=String:[1,3,4]	Loc.3=String:[0,2,3]
+P_Loc	jit	value		Loc.3=String:[1,3,4]	Loc.3=String:[0,2,3]
+P_Loc	vm3	value		Loc.5=String:[0,0]	Loc.5=String:[0,2]
+P_Loc	jit	value		Loc.5=String:[0,0]	Loc.5=String:[0,2]
+P_Loc	vm3	error		Loc.10=String:[1,2,1:1]	Loc.10=ERR13
+P_Loc	jit	error		Loc.10=String:[1,2,1:1]	Loc.10=ERR13
+P_Loc	vm3	value		Loc.11=Long:1	Loc.11=Long:0
+P_Loc	jit	value		Loc.11=Long:1	Loc.11=Long:0
+P_Loc	vm3	error		Loc.12=ERR94	Loc.12=ERR52
+P_Loc	jit	error		Loc.12=ERR94	Loc.12=ERR52
+P_Loc	vm3	value		Loc.13=Long:3	Loc.13=Long:2
+P_Loc	jit	value		Loc.13=Long:3	Loc.13=Long:2
+P_Loc	vm3	value		Loc.14=Long:1	Loc.14=Long:0
+P_Loc	jit	value		Loc.14=Long:1	Loc.14=Long:0
 P_Log	vm3	missing		Log.24=Double:0000000000000000|0	<failed: bind: unresolved name `Number` (named argument)>
 P_Log	jit	missing		Log.24=Double:0000000000000000|0	<failed: bind: unresolved name `Number` (named argument)>
 P_MIRR	vm3	value		MIRR.1=Double:3FC023DA3B11CED0|0.126094130365905	MIRR.1=Double:3FC023DA3B11CEC8|0.126094130365905
@@ -1117,6 +1243,14 @@ P_Minute	vm3	error		Minute.17=ERR13	Minute.17=Integer:0
 P_Minute	jit	error		Minute.17=ERR13	Minute.17=Integer:0
 P_Minute	vm3	missing		Minute.18=Integer:15	<failed: bind: unresolved name `Time` (named argument)>
 P_Minute	jit	missing		Minute.18=Integer:15	<failed: bind: unresolved name `Time` (named argument)>
+P_MkDir	vm3	value		MkDir.1=String:[n1,268435472]	MkDir.1=String:[n1,16]
+P_MkDir	jit	value		MkDir.1=String:[n1,268435472]	MkDir.1=String:[n1,16]
+P_MkDir	vm3	error		MkDir.7=ERR94	MkDir.7=ERR5
+P_MkDir	jit	error		MkDir.7=ERR94	MkDir.7=ERR5
+P_MkDir	vm3	error		MkDir.8=ERR76	MkDir.8=ERR75
+P_MkDir	jit	error		MkDir.8=ERR76	MkDir.8=ERR75
+P_MkDir	vm3	error		MkDir.18=ERR76	MkDir.18=ERR75
+P_MkDir	jit	error		MkDir.18=ERR76	MkDir.18=ERR75
 P_Month	vm3	error	locale	Month.13=Integer:12	Month.13=ERR13
 P_Month	jit	error	locale	Month.13=Integer:12	Month.13=ERR13
 P_Month	vm3	error		Month.18=ERR13	Month.18=Integer:1
@@ -1335,6 +1469,8 @@ P_Replace	vm3	value		Replace.13=String:[AXC]	Replace.13=String:[ABC]
 P_Replace	jit	value		Replace.13=String:[AXC]	Replace.13=String:[ABC]
 P_Replace	vm3	value		Replace.24=String:[aXb]	Replace.24=String:[a{196}b]
 P_Replace	jit	value		Replace.24=String:[aXb]	Replace.24=String:[a{196}b]
+P_Reset	vm3	missing		Reset.5=String:[ok]	<failed: bind: duplicate label `Reset` in current scope>
+P_Reset	jit	missing		Reset.5=String:[ok]	<failed: bind: duplicate label `Reset` in current scope>
 P_Right	vm3	missing		Right.8=String:[bc]	<failed: bind: unresolved name `String` (named argument)>
 P_Right	jit	missing		Right.8=String:[bc]	<failed: bind: unresolved name `String` (named argument)>
 P_Right	vm3	error		Right.14=ERR5	Right.14=String:[abc]
@@ -1343,6 +1479,14 @@ P_Right	vm3	missing		Right.15=String:[c]	<failed: bind: unresolved name `String`
 P_Right	jit	missing		Right.15=String:[c]	<failed: bind: unresolved name `String` (named argument)>
 P_RightB	vm3	missing		RightB.13=String:[c]	<failed: bind: unresolved name `String` (named argument)>
 P_RightB	jit	missing		RightB.13=String:[c]	<failed: bind: unresolved name `String` (named argument)>
+P_RmDir	vm3	error		RmDir.5=ERR94	RmDir.5=ERR5
+P_RmDir	jit	error		RmDir.5=ERR94	RmDir.5=ERR5
+P_RmDir	vm3	error		RmDir.8=ERR76	RmDir.8=ERR75
+P_RmDir	jit	error		RmDir.8=ERR76	RmDir.8=ERR75
+P_RmDir	vm3	error		RmDir.9=ERR75	RmDir.9=ERR70
+P_RmDir	jit	error		RmDir.9=ERR75	RmDir.9=ERR70
+P_RmDir	vm3	error		RmDir.10=ERR76	RmDir.10=ERR75
+P_RmDir	jit	error		RmDir.10=ERR76	RmDir.10=ERR75
 P_Rnd	vm3	value		Rnd.17=String:[,Single:3E636CC4|0.2220946,Single:3F3F1130|0.746356,Single:3F072B33|0.5280029]	Rnd.17=String:[,Single:3F2BC131|0.6709166,Single:3EFCBE60|0.4936399,Single:3BA09980|4.901111E-03]
 P_Rnd	jit	value		Rnd.17=String:[,Single:3E636CC4|0.2220946,Single:3F3F1130|0.746356,Single:3F072B33|0.5280029]	Rnd.17=String:[,Single:3F2BC131|0.6709166,Single:3EFCBE60|0.4936399,Single:3BA09980|4.901111E-03]
 P_Rnd	vm3	value		Rnd.18=String:[,Single:3EC43C62|0.3832732,Single:3D748300|5.969524E-02,Single:3E4A18CC|0.1973602]	Rnd.18=String:[,Single:3F372F31|0.7155638,Single:3F141530|0.5784483,Single:3DC0F998|9.422606E-02]
@@ -1391,6 +1535,20 @@ P_Second	vm3	error		Second.17=ERR13	Second.17=Integer:0
 P_Second	jit	error		Second.17=ERR13	Second.17=Integer:0
 P_Second	vm3	missing		Second.18=Integer:30	<failed: bind: unresolved name `Time` (named argument)>
 P_Second	jit	missing		Second.18=Integer:30	<failed: bind: unresolved name `Time` (named argument)>
+P_Seek	vm3	value		Seek.7=String:[1,3]	Seek.7=String:[1,7]
+P_Seek	jit	value		Seek.7=String:[1,3]	Seek.7=String:[1,7]
+P_Seek	vm3	error		Seek.18=ERR94	Seek.18=Empty
+P_Seek	jit	error		Seek.18=ERR94	Seek.18=Empty
+P_SetAttr	vm3	error		SetAttr.9=ERR53	SetAttr.9=ERR5
+P_SetAttr	jit	error		SetAttr.9=ERR53	SetAttr.9=ERR5
+P_SetAttr	vm3	error		SetAttr.10=ERR53	SetAttr.10=ERR5
+P_SetAttr	jit	error		SetAttr.10=ERR53	SetAttr.10=ERR5
+P_SetAttr	vm3	error		SetAttr.12=ERR94	SetAttr.12=ERR5
+P_SetAttr	jit	error		SetAttr.12=ERR94	SetAttr.12=ERR5
+P_SetAttr	vm3	error		SetAttr.17=ERR52	SetAttr.17=ERR5
+P_SetAttr	jit	error		SetAttr.17=ERR52	SetAttr.17=ERR5
+P_SetAttr	vm3	error		SetAttr.18=String:[75,True]	SetAttr.18=ERR5
+P_SetAttr	jit	error		SetAttr.18=String:[75,True]	SetAttr.18=ERR5
 P_Shell	vm3	error		Shell.1=ERR53	Shell.1=Long:1
 P_Shell	jit	error		Shell.1=ERR53	Shell.1=Long:1
 P_Shell	vm3	error		Shell.2=ERR53	Shell.2=Long:1
@@ -1618,6 +1776,10 @@ P_WeekdayName	vm3	error		WeekdayName.15=ERR94	WeekdayName.15=String:[Sunday]
 P_WeekdayName	jit	error		WeekdayName.15=ERR94	WeekdayName.15=String:[Sunday]
 P_WeekdayName	vm3	missing		WeekdayName.18=String:[Tue]	<failed: bind: unresolved name `Weekday` (named argument)>
 P_WeekdayName	jit	missing		WeekdayName.18=String:[Tue]	<failed: bind: unresolved name `Weekday` (named argument)>
+P_Width	vm3	value		Width.12=String:[String:[abWXYZ{123}13{125}{123}10{125}]]	Width.12=String:[String:[ab{123}13{125}{123}10{125}WXYZ{123}13{125}{123}10{125}]]
+P_Width	jit	value		Width.12=String:[String:[abWXYZ{123}13{125}{123}10{125}]]	Width.12=String:[String:[ab{123}13{125}{123}10{125}WXYZ{123}13{125}{123}10{125}]]
+P_Width	vm3	error		Width.14=ERR94	Width.14=Empty
+P_Width	jit	error		Width.14=ERR94	Width.14=Empty
 P_Year	vm3	value	locale	Year.12=Integer:2001	Year.12=Integer:2029
 P_Year	jit	value	locale	Year.12=Integer:2001	Year.12=Integer:2029
 P_Year	vm3	value	locale	Year.13=Integer:2001	Year.13=Integer:1930

@@ -85,7 +85,7 @@ Private Function Lst(ByVal pat As String, ByVal attr As Long) As String
 End Function
 
 Private Function T(ByVal k As Long) As String
-    Dim v As Variant, s As String, e As Long, v2 As Variant, v3 As Variant
+    Dim v As Variant, s As String, e As Long, v2 As Variant, v3 As Variant, before As String
     On Error GoTo fail
     Wipe
     Setup
@@ -116,7 +116,11 @@ Private Function T(ByVal k As Long) As String
         Case 18: v = Lst(Dr & "\*.txt", vbHidden)                           ' hidden filter on a pattern
         Case 19: v = Dir(PathName:=Dr & "\c.dat", Attributes:=vbNormal)     ' named arguments
         Case 20: v = Dir(Null)                                              ' Null: error 94
-        Case 21: v = Dir("") & "/" & TypeName(Dir(""))                      ' empty pattern
+        Case 21   ' empty pattern in a controlled directory
+            before = CurDir
+            ChDir Dr
+            v = Dir("") & "/" & TypeName(Dir(""))
+            ChDir before
         Case 22
             v = Dir(Dr & "\*.txt"): v2 = Dir(Dr & "\*.dat"): v3 = Dir()    ' a new pattern restarts the sequence
             v = v & "/" & v2 & "/" & v3
@@ -132,9 +136,12 @@ fail:
 End Function
 
 Public Function Run() As String
-    Dim k As Long, s As String
+    Dim k As Long, s As String, before As String
+    before = CurDir
+    ChDir Environ("TEMP")
     For k = 1 To N
         s = s & T(k) & vbLf
     Next
+    ChDir before
     Run = s
 End Function

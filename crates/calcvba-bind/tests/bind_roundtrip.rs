@@ -3788,7 +3788,7 @@ fn raise_event_rejects_invalid_argument_syntax() {
         ),
         (
             "Public Event Fired(ByVal v As Long)\nPublic Sub Fire()\n    RaiseEvent Fired(,)\nEnd Sub\n",
-            "ArgumentNotOptional",
+            "expected argument after `,`",
         ),
         (
             "Public Event Fired(ByVal v As Long)\nPublic Sub Fire()\n    RaiseEvent Fired\nEnd Sub\n",

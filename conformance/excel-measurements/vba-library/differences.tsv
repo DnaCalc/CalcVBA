@@ -237,8 +237,6 @@ P_DDB	vm3	lastbit		DDB.19=Double:3FCC71C71C71C71C|0.222222222222222	DDB.19=Doubl
 P_DDB	jit	lastbit		DDB.19=Double:3FCC71C71C71C71C|0.222222222222222	DDB.19=Double:3FCC71C71C71C71D|0.222222222222222
 P_DDB	vm3	lastbit		DDB.21=Double:4057BBCF460D0208|94.9345259787589	DDB.21=Double:4057BBCF460D0204|94.9345259787588
 P_DDB	jit	lastbit		DDB.21=Double:4057BBCF460D0208|94.9345259787589	DDB.21=Double:4057BBCF460D0204|94.9345259787588
-P_DDB	vm3	missing		DDB.24=Double:407E000000000000|480	<failed: bind: unresolved name `Cost` (named argument)>
-P_DDB	jit	missing		DDB.24=Double:407E000000000000|480	<failed: bind: unresolved name `Cost` (named argument)>
 P_DDB	vm3	lastbit		DDB.25=Double:42CE75737E5CC66B|66979595336076.8	DDB.25=Double:42CE75737E5CC668|66979595336076.8
 P_DDB	jit	lastbit		DDB.25=Double:42CE75737E5CC66B|66979595336076.8	DDB.25=Double:42CE75737E5CC668|66979595336076.8
 P_DateAdd	vm3	value		DateAdd.21=Date:BFF4555555555556	DateAdd.21=Date:3FE8AAAAAAAAAAAB
@@ -894,11 +892,6 @@ P_Join	vm3	error		Join.19=ERR13	Join.19=String:[a,Error 5]
 P_Join	jit	error		Join.19=ERR13	Join.19=String:[a,Error 5]
 P_Join	vm3	error		Join.20=String:[]	Join.20=ERR13
 P_Join	jit	error		Join.20=String:[]	Join.20=ERR13
-P_LBound	jit	missing		LBound.10=ERR94	<declined: "T: Bound { dst: Temp(TempId(23)), which: Lower, array: Use(Local(LocalId(4))), dimension: Some(Const(Null)) }: i32 operand not lowered in M4-4: Const>
-P_LBound	jit	missing		LBound.11=Long:2	<declined: "T: Bound { dst: Temp(TempId(25)), which: Lower, array: Use(Local(LocalId(4))), dimension: Some(Const(Str(\"3\"))) }: i32 operand not lowered in M4-4:>
-P_LBound	jit	missing		LBound.12=Long:0	<declined: "T: Bound { dst: Temp(TempId(27)), which: Lower, array: Use(Local(LocalId(4))), dimension: Some(Const(F64(4609434218613702656))) }: i32 operand not lo>
-P_LBound	jit	missing		LBound.13=Long:0	<declined: "T: Bound { dst: Temp(TempId(29)), which: Lower, array: Use(Local(LocalId(4))), dimension: Some(Const(F64(4612811918334230528))) }: i32 operand not lo>
-P_LBound	jit	missing		LBound.15=ERR9	<declined: "T: Bound { dst: Temp(TempId(33)), which: Lower, array: Use(Local(LocalId(4))), dimension: Some(Const(Empty)) }: i32 operand not lowered in M4-4: Cons>
 P_LCase	vm3	value		LCase.8=String:[{304}]	LCase.8=String:[i{775}]
 P_LCase	jit	value		LCase.8=String:[{304}]	LCase.8=String:[i{775}]
 P_LCase	vm3	value		LCase.9=String:[{7838}]	LCase.9=String:[{223}]
@@ -1544,11 +1537,6 @@ P_TypeName	vm3	missing		TypeName.59=String:[ErrObject]	<failed: bind: unsupporte
 P_TypeName	jit	missing		TypeName.59=String:[ErrObject]	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
 P_TypeName	vm3	missing		TypeName.70=String:[Integer]	<failed: bind: unresolved name `VarName` (named argument)>
 P_TypeName	jit	missing		TypeName.70=String:[Integer]	<failed: bind: unresolved name `VarName` (named argument)>
-P_UBound	jit	missing		UBound.10=ERR94	<declined: "T: Bound { dst: Temp(TempId(23)), which: Upper, array: Use(Local(LocalId(4))), dimension: Some(Const(Null)) }: i32 operand not lowered in M4-4: Const>
-P_UBound	jit	missing		UBound.11=Long:4	<declined: "T: Bound { dst: Temp(TempId(25)), which: Upper, array: Use(Local(LocalId(4))), dimension: Some(Const(Str(\"2\"))) }: i32 operand not lowered in M4-4:>
-P_UBound	jit	missing		UBound.12=Long:4	<declined: "T: Bound { dst: Temp(TempId(27)), which: Upper, array: Use(Local(LocalId(4))), dimension: Some(Const(F64(4609434218613702656))) }: i32 operand not lo>
-P_UBound	jit	missing		UBound.13=Long:4	<declined: "T: Bound { dst: Temp(TempId(29)), which: Upper, array: Use(Local(LocalId(4))), dimension: Some(Const(F64(4612811918334230528))) }: i32 operand not lo>
-P_UBound	jit	missing		UBound.15=ERR9	<declined: "T: Bound { dst: Temp(TempId(33)), which: Upper, array: Use(Local(LocalId(4))), dimension: Some(Const(Empty)) }: i32 operand not lowered in M4-4: Cons>
 P_UCase	vm3	value	locale	UCase.7=String:[{223}]	UCase.7=String:[SS]
 P_UCase	jit	value	locale	UCase.7=String:[{223}]	UCase.7=String:[SS]
 P_UCase	vm3	value		UCase.10=String:[{305}]	UCase.10=String:[I]

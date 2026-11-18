@@ -44,6 +44,12 @@ pub enum BindError {
     /// VBA's generic compile-time type mismatch diagnostic.
     #[error("Type mismatch")]
     TypeMismatch,
+    /// A typed non-string expression was used where VBA requires storage.
+    #[error("Variable required - can't assign to this expression")]
+    VariableRequired,
+    /// A library intrinsic was used in a syntactic form VBA does not accept.
+    #[error("Syntax error")]
+    SyntaxError,
     /// A project `Type` value converted to or from a Variant, or passed where a Variant or a
     /// late-bound argument is expected. VBA keeps no `IRecordInfo` for a project's own Types, so
     /// it refuses every such conversion at compile time.
@@ -262,6 +268,16 @@ impl BindError {
                 "Label not defined",
             )
             .with_help(format!("Define `{name}` in this procedure, or fix the branch target.")),
+            BindError::VariableRequired => Diagnostic::error(
+                "BIND-E-VARIABLE-REQUIRED",
+                DiagnosticPhase::Bind,
+                "Variable required - can't assign to this expression",
+            ),
+            BindError::SyntaxError => Diagnostic::error(
+                "BIND-E-SYNTAX-ERROR",
+                DiagnosticPhase::Bind,
+                "Syntax error",
+            ),
             BindError::Malformed(message) => Diagnostic::error(
                 "BIND-E-MALFORMED-CONSTRUCT",
                 DiagnosticPhase::Bind,

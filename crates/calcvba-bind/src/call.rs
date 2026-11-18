@@ -27,6 +27,183 @@ use crate::types;
 use crate::{Bound, ProcLower};
 
 impl<'a> ProcLower<'a> {
+    fn validate_len_operand(&mut self, arglist: Option<SyntaxNode<'_>>) -> Result<(), BindError> {
+        let Some(item) = arglist.and_then(|args| args.arg_items().into_iter().next()) else {
+            return Ok(());
+        };
+        let expr = match item {
+            ArgItem::Positional(expr, _) | ArgItem::Named { value: expr, .. } => expr,
+            ArgItem::Omitted => return Ok(()),
+        };
+        let value = self.bind_expr(expr)?;
+        let needs_variable = matches!(&value.ty, VarTypeRef::Builtin(kind) if *kind != BuiltinType::String)
+            || matches!(value.ty, VarTypeRef::Udt(_))
+            || self.len_numeric_library_expression(expr, &value.value)?;
+        if needs_variable && self.bind_place(expr).is_err() {
+            return Err(BindError::VariableRequired);
+        }
+        Ok(())
+    }
+
+    fn len_numeric_library_expression(
+        &mut self,
+        mut expr: SyntaxNode<'_>,
+        value: &CoreValue,
+    ) -> Result<bool, BindError> {
+        let CoreValue::Call { callee, .. } = value else {
+            return Ok(false);
+        };
+        while expr.kind() == SyntaxKind::ParenExpr {
+            let Some(inner) = expr.paren_inner() else {
+                break;
+            };
+            expr = inner;
+        }
+        // CVDate shares CDate's runtime implementation, but its VBA result
+        // is a Variant, so Len(CVDate(...)) remains a valid expression.
+        if matches!(callee, CoreCallee::Native(NativeImplId::CDate))
+            && expr.index_base().is_some_and(|base| {
+                let token = if base.kind() == SyntaxKind::MemberExpr {
+                    base.member_name_token()
+                } else {
+                    base.ident_name_token()
+                };
+                token.is_some_and(|token| {
+                    token
+                        .text
+                        .trim_matches(['[', ']'])
+                        .eq_ignore_ascii_case("CVDate")
+                })
+            })
+        {
+            return Ok(false);
+        }
+        let member = match callee {
+            CoreCallee::ExternProc { import } => {
+                let imports = self.g.imports.borrow();
+                let Some(item) = imports.imports.get(*import) else {
+                    return Ok(false);
+                };
+                let ExportToken::ModuleFunc { member, .. } = &item.token else {
+                    return Ok(false);
+                };
+                if !item.unit.eq_ignore_ascii_case("VBA") {
+                    return Ok(false);
+                }
+                fold_identifier(member)
+            }
+            CoreCallee::Native(id) => match id.library_member() {
+                Some((_, member)) => fold_identifier(member),
+                None => return Ok(false),
+            },
+            _ => return Ok(false),
+        };
+        if matches!(member.as_str(), "abs" | "fix" | "int" | "sgn") {
+            // These intrinsics preserve a Variant operand's dynamic result;
+            // a typed operand produces a numeric value expression (Excel).
+            let first = expr
+                .index_arg_list()
+                .and_then(|args| args.arg_items().into_iter().next());
+            return match first {
+                Some(ArgItem::Positional(arg, _) | ArgItem::Named { value: arg, .. }) => {
+                    let bound = self.bind_expr(arg)?;
+                    Ok(matches!(
+                        bound.ty,
+                        VarTypeRef::Builtin(_) | VarTypeRef::FixedString(_)
+                    ) || self.len_numeric_library_expression(arg, &bound.value)?)
+                }
+                _ => Ok(false),
+            };
+        }
+        // The non-Variant numeric/Boolean returns in VBA's public typelib.
+        // Keep the runtime call's Variant carrier; this is only Len syntax.
+        Ok(matches!(
+            member.as_str(),
+            "cbool"
+                | "cbyte"
+                | "ccur"
+                | "cdate"
+                | "cdbl"
+                | "cint"
+                | "clng"
+                | "clnglng"
+                | "clngptr"
+                | "csng"
+                | "macid"
+                | "val"
+                | "timer"
+                | "eof"
+                | "fileattr"
+                | "filelen"
+                | "freefile"
+                | "getattr"
+                | "loc"
+                | "lof"
+                | "seek"
+                | "ddb"
+                | "fv"
+                | "ipmt"
+                | "irr"
+                | "mirr"
+                | "nper"
+                | "npv"
+                | "pmt"
+                | "ppmt"
+                | "pv"
+                | "rate"
+                | "sln"
+                | "syd"
+                | "erl"
+                | "imestatus"
+                | "isarray"
+                | "isdate"
+                | "isempty"
+                | "iserror"
+                | "ismissing"
+                | "isnull"
+                | "isnumeric"
+                | "isobject"
+                | "qbcolor"
+                | "rgb"
+                | "vartype"
+                | "doevents"
+                | "msgbox"
+                | "shell"
+                | "atn"
+                | "cos"
+                | "exp"
+                | "log"
+                | "rnd"
+                | "sin"
+                | "sqr"
+                | "tan"
+                | "asc"
+                | "ascb"
+                | "ascw"
+                | "instrrev"
+        ))
+    }
+
+    pub(crate) fn is_vba_library_call(
+        &self,
+        value: &CoreValue,
+        module: &str,
+        member: &str,
+    ) -> bool {
+        let CoreValue::Call { callee, .. } = value else {
+            return false;
+        };
+        match callee {
+            CoreCallee::ExternProc { import } => self.g.imports.borrow().imports.get(*import).is_some_and(|item| {
+                item.unit.eq_ignore_ascii_case("VBA")
+                    && matches!(&item.token, ExportToken::ModuleFunc { module: owner, member: name, .. }
+                        if owner.eq_ignore_ascii_case(module) && name.eq_ignore_ascii_case(member))
+            }),
+            CoreCallee::Native(id) => id.library_member().is_some_and(|(owner, name)| owner.eq_ignore_ascii_case(module) && name.eq_ignore_ascii_case(member)),
+            _ => false,
+        }
+    }
+
     /// Lower a resolved name + optional argument list to a value (a call, a
     /// constant, or a special form).
     pub(crate) fn bind_call_route(
@@ -98,6 +275,11 @@ impl<'a> ProcLower<'a> {
                     return Err(BindError::Unsupported(format!(
                         "`{name}` is a referenced coclass member; call it on a receiver"
                     )));
+                }
+                if unit.eq_ignore_ascii_case("VBA")
+                    && (member.eq_ignore_ascii_case("Len") || member.eq_ignore_ascii_case("LenB"))
+                {
+                    self.validate_len_operand(arglist)?;
                 }
                 let import = self.g.intern_import(BundleImport {
                     unit: unit.clone(),
@@ -264,6 +446,11 @@ impl<'a> ProcLower<'a> {
                     _ => return Err(BindError::Malformed(format!("`{name}` array argument"))),
                 };
                 let array = self.bind_expr(expr)?;
+                // Excel accepts CVar(array) on its own, but its conversion
+                // syntax cannot be the array operand of LBound/UBound.
+                if self.is_vba_library_call(&array.value, "Conversion", "CVar") {
+                    return Err(BindError::SyntaxError);
+                }
                 Ok(value_bound(
                     CoreValue::Bound {
                         which,
@@ -358,6 +545,9 @@ impl<'a> ProcLower<'a> {
         id: NativeImplId,
         arglist: Option<SyntaxNode<'_>>,
     ) -> Result<Vec<CoreArg>, BindError> {
+        if matches!(id, NativeImplId::Len | NativeImplId::LenB) {
+            self.validate_len_operand(arglist)?;
+        }
         let entry = calcvba_symbol::catalog::intrinsic_entry(id);
         let udt_ok = matches!(id, NativeImplId::Len | NativeImplId::LenB);
         if entry.param_names.is_empty() {

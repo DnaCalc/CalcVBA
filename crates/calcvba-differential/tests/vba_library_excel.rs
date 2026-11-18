@@ -433,6 +433,7 @@ fn accepted_refusals() -> (Vec<String>, Vec<String>) {
     };
     let fmt = std::fs::read_to_string(dir().join("probes/ProbeFmt.bas")).expect("ProbeFmt.bas");
     let (mut wrong, mut fixed) = (Vec::new(), Vec::new());
+    let (mut refused_count, mut accepted_count) = (0, 0);
     for row in log.lines().skip(1).filter(|l| !l.trim().is_empty()) {
         let mut cols = row.splitn(3, '\t');
         let (module, message, original) = (
@@ -496,6 +497,11 @@ fn accepted_refusals() -> (Vec<String>, Vec<String>) {
         };
         let refused =
             calcvba_bind::bind_program(&manifest, &calcvba_symbol::CatalogTypeLibResolver).is_err();
+        if refused {
+            refused_count += 1;
+        } else {
+            accepted_count += 1;
+        }
         let entry = format!("refusal: {module} {original}");
         match (refused, known.contains(&entry)) {
             (false, false) => wrong.push(format!("{entry} -- Excel: {message}")),
@@ -503,6 +509,7 @@ fn accepted_refusals() -> (Vec<String>, Vec<String>) {
             _ => {}
         }
     }
+    eprintln!("Excel compile refusals: {refused_count} refused, {accepted_count} accepted");
     (wrong, fixed)
 }
 

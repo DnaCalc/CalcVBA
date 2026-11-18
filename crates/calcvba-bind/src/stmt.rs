@@ -646,6 +646,13 @@ impl<'a> ProcLower<'a> {
             return self.bind_debug_statement(member, arglist);
         }
         let bound = self.bind_call_from_callee(callee, arglist)?;
+        if node
+            .first_significant_token()
+            .is_some_and(|token| token.kind == SyntaxKind::KwCall)
+            && self.is_vba_library_call(&bound.value, "Interaction", "DoEvents")
+        {
+            return Err(BindError::SyntaxError);
+        }
         Ok(vec![CoreStmt::Eval(bound.value)])
     }
 

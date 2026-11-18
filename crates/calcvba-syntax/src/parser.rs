@@ -773,6 +773,9 @@ impl<'a> Parser<'a> {
                 argument += 1;
                 self.eat_expr_whitespace();
                 // Support empty argument slots: f(a,,b)
+                if self.at(SyntaxKind::RParen) {
+                    self.error("expected argument after `,`".into());
+                }
                 if !self.at(SyntaxKind::Comma) && !self.at(SyntaxKind::RParen) && !self.at_eof() {
                     self.parse_function_arg(input_function, argument);
                 }
@@ -821,6 +824,9 @@ impl<'a> Parser<'a> {
             }
             self.bump(); // , or ;
             self.eat_expr_whitespace();
+            if !allow_semicolon && self.is_expr_stop(self.current()) {
+                self.error("expected argument after `,`".into());
+            }
             if !self.is_expr_stop(self.current()) && !is_separator(self) {
                 self.parse_bare_arg();
             }

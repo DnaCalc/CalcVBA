@@ -510,17 +510,6 @@ P_WeekdayName: WeekdayName.15=ERR94
 P_Year: Year.12=Integer:2001
 P_Year: Year.13=Integer:2001
 jit P_Val: Val.27=ERR6
-refusal: P_DoEvents Case 5: Call DoEvents: v = "call form ok"                 ' Call form
-refusal: P_LBound Case 43: v = LBound(CVar(fa))                  ' CVar of an array
-refusal: P_Len Case 11: v = Len(1.5)                        ' literal: text length
-refusal: P_Len Case 17: v = Len(True)                       ' Boolean literal
-refusal: P_Len Case 3: v = Len(123)                         ' number as text: 3
-refusal: P_LenB Case 21: v = LenB(1.5)                       ' literal text
-refusal: P_LenB Case 24: v = LenB(True)                      ' Boolean literal
-refusal: P_LenB Case 3: v = LenB(123)                        ' number as text
-refusal: P_UBound Case 46: v = UBound(CVar(fa))                  ' CVar of an array
-# DDB trailing omission was already accepted; unrelated named arguments masked it (dc-q6brh.7).
-refusal: P_DDB Case 23: v = DDB(2400, 300, 10, 1, )                          ' omitted factor
 P_InputB: InputB.10=ERR52
 P_InputB: InputB.11=String:[String:[]]
 P_InputB: InputB.12=String:[3,1]

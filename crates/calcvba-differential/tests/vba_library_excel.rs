@@ -216,6 +216,12 @@ fn cases() -> Vec<(String, String, String)> {
 /// Run the modules on an engine with the native host policy (a real file system), as the
 /// file-system probes need; `run_modules` runs under the restricted policy.
 fn run_native(executor: Executor, modules: &[(&str, &str)]) -> Result<String, String> {
+    // These probes share process current-directory state and scratch paths.
+    // Keep their runtime calls on the invoking thread and serialize the two tests.
+    static NATIVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = NATIVE_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     use calcvba_engine::{Engine, HostConfig, RuntimeProfileId, SnapshotOutcome};
     use calcvba_symbol::manifest as sym;
     let manifest = sym::SymbolProjectManifest {
@@ -309,7 +315,10 @@ fn run_text(executor: Executor, fmt: &str, module: &str, source: &str) -> Result
 /// only fails its own line.
 fn isolate(source: &str, keep: u32, cases: &[u32]) -> String {
     let drop: Vec<u32> = cases.iter().copied().filter(|&j| j != keep).collect();
-    blank(source, &drop)
+    // Blanking the Select Case arms still runs setup and cleanup for every
+    // other case. The file probes do that work outside Select Case, so run
+    // only the selected iteration of the standard probe driver.
+    blank(source, &drop).replace("For k = 1 To N", &format!("For k = {keep} To {keep}"))
 }
 
 /// The case number of a probe answer line `Func.k=value`.
@@ -354,7 +363,11 @@ fn compare(executor: Executor) -> (Vec<String>, Vec<String>, Vec<String>) {
                 .map(|(i, want)| {
                     let k = case_number(want).unwrap_or(i as u32 + 1);
                     match run_text(executor, &fmt, &module, &isolate(&source, k, &numbers)) {
-                        Ok(text) => text.lines().nth(i).unwrap_or("<missing>").to_string(),
+                        Ok(text) => text
+                            .lines()
+                            .find(|line| case_number(line) == Some(k))
+                            .unwrap_or("<missing>")
+                            .to_string(),
                         Err(why) => {
                             let why: String = why.chars().take(160).collect();
                             format!("<{why}>")

@@ -1479,20 +1479,11 @@ fn date_arg(v: &Variant) -> LibResult<f64> {
     Ok(serial)
 }
 
-/// VBA `TimeValue` returns the TIME-OF-DAY part of its argument. Like `DateValue` it accepts a
-/// `Date` or a numeric serial (not just a string) — `TimeValue(Now)` is the current time — and
-/// must NOT round-trip a `Date` through string formatting (which dropped precision and, once
-/// dates render as "General Date", misparsed the formatted text). Strings parse as `h[:m[:s]]`.
+/// `TimeValue` takes a String argument. Date coercion rounds to display seconds;
+/// numeric arguments are parsed as text rather than treated as date serials.
 pub fn time_value(args: &[Variant]) -> LibResult<Variant> {
-    let v = need(args, 0)?;
-    let serial = match v.vtype() {
-        VarType::Date => v.as_date_f64().unwrap_or(0.0),
-        VarType::String => parse_time_value_string(&as_str(v)?)?,
-        VarType::Null => return Ok(Variant::null()),
-        _ => conv_f64(v)?,
-    };
-    // Keep only the time-of-day fraction (drop the integer date part).
-    Ok(Variant::from_date_f64(serial - serial.trunc()))
+    let text = as_str(need(args, 0)?)?;
+    Ok(Variant::from_date_f64(parse_time_value_string(&text)?))
 }
 
 /// Whether `(y, m, d)` is a real calendar date. The month/day are normalized by
@@ -1533,7 +1524,7 @@ fn split_trailing_time(s: &str) -> Option<(&str, String)> {
     let (before, last) = s.trim().rsplit_once(' ')?;
     if last.eq_ignore_ascii_case("am") || last.eq_ignore_ascii_case("pm") {
         let (date_part, time_part) = before.trim_end().rsplit_once(' ')?;
-        if time_part.contains(':') {
+        if time_part.contains([':', '.']) || time_part.bytes().all(|b| b.is_ascii_digit()) {
             return Some((date_part.trim(), format!("{time_part} {last}")));
         }
     } else if last.contains(':') {
@@ -1551,7 +1542,7 @@ fn parse_time_only(s: &str) -> Option<f64> {
         text = text[..text.len() - 2].trim_end();
     }
 
-    let parts: Vec<&str> = text.split(':').collect();
+    let parts: Vec<&str> = text.split([':', '.']).collect();
     // `3 PM` is a time; a bare number is not.
     let one_part_with_meridian = parts.len() == 1 && meridian.is_some();
     if !(2..=3).contains(&parts.len()) && !one_part_with_meridian {
@@ -1563,15 +1554,15 @@ fn parse_time_only(s: &str) -> Option<f64> {
         None => 0,
     };
     let sec = match parts.get(2) {
-        Some(value) => value.trim().parse::<f64>().ok()?,
-        None => 0.0,
+        Some(value) => value.trim().parse::<i64>().ok()?,
+        None => 0,
     };
-    if !(0..=59).contains(&m) || !(0.0..60.0).contains(&sec) {
+    if !(0..=59).contains(&m) || !(0..=59).contains(&sec) {
         return None;
     }
     match meridian {
         Some("am") => {
-            if !(1..=12).contains(&h) {
+            if !(0..=23).contains(&h) {
                 return None;
             }
             if h == 12 {
@@ -1579,17 +1570,17 @@ fn parse_time_only(s: &str) -> Option<f64> {
             }
         }
         Some("pm") => {
-            if !(1..=12).contains(&h) {
+            if !(0..=23).contains(&h) {
                 return None;
             }
-            if h != 12 {
+            if h < 12 {
                 h += 12;
             }
         }
         _ if !(0..=23).contains(&h) => return None,
         _ => {}
     }
-    Some((h as f64 * 3600.0 + m as f64 * 60.0 + sec) / 86400.0)
+    Some((h as f64 * 3600.0 + m as f64 * 60.0 + sec as f64) / 86400.0)
 }
 
 fn parse_date_raw(s: &str) -> Option<(i64, i64, i64)> {

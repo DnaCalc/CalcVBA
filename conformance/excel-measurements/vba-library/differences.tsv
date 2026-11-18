@@ -25,8 +25,6 @@ P_CDate	vm3	error		CDate.17=ERR13	CDate.17=Date:4014000000000000
 P_CDate	jit	error		CDate.17=ERR13	CDate.17=Date:4014000000000000
 P_CDate	vm3	error	locale	CDate.22=Date:40E5686000000000	CDate.22=ERR13
 P_CDate	jit	error	locale	CDate.22=Date:40E5686000000000	CDate.22=ERR13
-P_CDate	vm3	error	locale	CDate.28=ERR13	CDate.28=Date:3FE0AEFB11D33F56
-P_CDate	jit	error	locale	CDate.28=ERR13	CDate.28=Date:3FE0AEFB11D33F56
 P_CDate	vm3	error	locale	CDate.31=Date:3FF0000000000000	CDate.31=ERR13
 P_CDate	jit	error	locale	CDate.31=Date:3FF0000000000000	CDate.31=ERR13
 P_CDate	vm3	error		CDate.32=Date:40E566E000000000	CDate.32=ERR13
@@ -1387,16 +1385,6 @@ P_Tan	vm3	lastbit		Tan.20=Double:BFF8EB245CBEE3A7|-1.5574077246549	Tan.20=Double
 P_Tan	jit	lastbit		Tan.20=Double:BFF8EB245CBEE3A7|-1.5574077246549	Tan.20=Double:BFF8EB245CBEE3A6|-1.5574077246549
 P_Tan	vm3	missing		Tan.22=Double:3FF8EB245CBEE3A7|1.5574077246549	<failed: bind: unresolved name `Number` (named argument)>
 P_Tan	jit	missing		Tan.22=Double:3FF8EB245CBEE3A7|1.5574077246549	<failed: bind: unresolved name `Number` (named argument)>
-P_TimeValue	vm3	error		TimeValue.10=Date:3FE1555555555555	TimeValue.10=ERR13
-P_TimeValue	jit	error		TimeValue.10=Date:3FE1555555555555	TimeValue.10=ERR13
-P_TimeValue	vm3	error		TimeValue.14=ERR94	TimeValue.14=Null
-P_TimeValue	jit	error		TimeValue.14=ERR94	TimeValue.14=Null
-P_TimeValue	vm3	error		TimeValue.15=ERR13	TimeValue.15=Date:0000000000000000
-P_TimeValue	jit	error		TimeValue.15=ERR13	TimeValue.15=Date:0000000000000000
-P_TimeValue	vm3	error		TimeValue.18=ERR13	TimeValue.18=Date:3FDC08A0CE512957
-P_TimeValue	jit	error		TimeValue.18=ERR13	TimeValue.18=Date:3FDC08A0CE512957
-P_TimeValue	vm3	value		TimeValue.26=Date:3FDAAAAAAAAAAAAB	TimeValue.26=Date:3FDAAAAAAAAA0000
-P_TimeValue	jit	value		TimeValue.26=Date:3FDAAAAAAAAAAAAB	TimeValue.26=Date:3FDAAAAAAAAA0000
 P_Trim	vm3	value		Trim.12=String:[abc]	Trim.12=String:[{12288}abc]
 P_Trim	jit	value		Trim.12=String:[abc]	Trim.12=String:[{12288}abc]
 P_Trim	vm3	missing		Trim.14=String:[abc]	<failed: bind: unresolved name `String` (named argument)>

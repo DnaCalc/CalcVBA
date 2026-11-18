@@ -15358,7 +15358,8 @@ End Sub
 
     #[test]
     fn jit_matches_vm3_builtin_date_value_time_value_exprs() {
-        let time_value = 43846.5515625_f64 - 43846.0;
+        // Excel TimeValue coerces a Date to text and reads whole seconds.
+        let time_value = f64::from_bits(0x3FE1_A666_6666_6666);
         assert_jit_matches_vm3_contains(
             JIT_BUILTIN_DATE_VALUE_TIME_VALUE_EXPRS,
             Variant::from_date_f64(43846.0),

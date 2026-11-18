@@ -27,6 +27,7 @@ if (-not $SkipBuild) {
 $dll=Join-Path $Directory 'calcvba_excel.dll'
 Copy-Item -LiteralPath (Join-Path $repo 'target\debug\calcvba_excel.dll') -Destination $dll
 $modules=@()
+$sourceCases=@()
 foreach ($path in $ModulePath) {
     $full=[IO.Path]::GetFullPath($path)
     $name=[IO.Path]::GetFileNameWithoutExtension($full)
@@ -34,10 +35,17 @@ foreach ($path in $ModulePath) {
     # A file in exported form (VERSION header) is imported, keeping its member attributes.
     $import=(Get-Content -LiteralPath $full -TotalCount 1) -match '^VERSION '
     $modules+=[ordered]@{name=$name;kind=$kind;path=$full;import=$import}
+    # VBE export can round a Double literal to 15 significant digits even
+    # though VBA's compiled code retains the original bits. Supply the same
+    # input text to CalcVBA, saved as raw UTF-16 for the VBA loader to read.
+    $sourcePath=Join-Path $Directory ("source-$name.utf16")
+    [IO.File]::WriteAllBytes($sourcePath,[Text.Encoding]::Unicode.GetBytes([IO.File]::ReadAllText($full)))
+    $sourceCases+='        Case "'+$name.Replace('"','""')+'": path = "'+$sourcePath.Replace('"','""')+'"'
 }
 if (-not $Module) { $Module=$modules[0].name }
 $loaders=Join-Path $repo 'tools\calcvba-excel\loaders'
-$loader=(Get-Content -Raw -LiteralPath (Join-Path $loaders 'CalcVBALoader.bas')).Replace('<DLL>',$dll)
+$sourceMap="    Select Case moduleName`n"+($sourceCases -join "`n")+"`n    End Select"
+$loader=(Get-Content -Raw -LiteralPath (Join-Path $loaders 'CalcVBALoader.bas')).Replace('<DLL>',$dll).Replace("    '<ORIGINAL_SOURCE_PATHS>",$sourceMap)
 $compareTemplate=if ($Xll) { 'CalcVBAXllCompare.bas' } else { 'CalcVBACompare.bas' }
 $compareText=Get-Content -Raw -LiteralPath (Join-Path $loaders $compareTemplate)
 $loaderPath=Join-Path $Directory 'CalcVBALoader.bas'; Set-Content -LiteralPath $loaderPath -Value $loader -Encoding utf8NoBOM

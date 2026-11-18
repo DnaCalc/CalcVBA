@@ -8,7 +8,8 @@ Public Function CompareAll() As String
     Dim code As String, comp As Object, vba As String
     If Not Application.RegisterXLL("<DLL>") Then CompareAll = "RegisterXLL refused <DLL>": Exit Function
     Set comp = ThisWorkbook.VBProject.VBComponents("<MODULE>")
-    code = comp.CodeModule.Lines(1, comp.CodeModule.CountOfLines)
+    code = CalcVBALoader.OriginalModuleText("<MODULE>")
+    If Len(code) = 0 Then code = comp.CodeModule.Lines(1, comp.CodeModule.CountOfLines)
     vba = Application.Run("<MODULE>.<ENTRY>")
     CompareAll = "== VBA" & vbLf & vba & "== VM3" & vbLf & Application.Run("CALCVBA.RUN", code, "<MODULE>", "<ENTRY>", 0) & vbLf _
         & "== JIT" & vbLf & Application.Run("CALCVBA.RUN", code, "<MODULE>", "<ENTRY>", 1) & vbLf

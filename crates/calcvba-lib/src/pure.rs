@@ -1282,6 +1282,14 @@ pub fn round(args: &[Variant]) -> LibResult<Variant> {
         VarType::Byte | VarType::Integer | VarType::Long | VarType::LongLong => {
             return Ok(value.clone());
         }
+        VarType::Boolean => {
+            return Ok(Variant::from_i16(if value.as_bool().unwrap_or(false) {
+                -1
+            } else {
+                0
+            }));
+        }
+        VarType::Empty => return Ok(Variant::from_i16(0)),
         VarType::Currency => {
             let scaled = value.as_currency_scaled_i64().unwrap_or(0);
             if digits >= 4 {
@@ -1312,19 +1320,37 @@ pub fn round(args: &[Variant]) -> LibResult<Variant> {
             )));
         }
         VarType::Single => {
+            if digits > 22 {
+                return Err(LibError::invalid_call("Round digits must not exceed 22"));
+            }
             let x = f64::from(value.as_f32().unwrap_or(0.0));
-            let factor = 10f64.powi(digits.min(60) as i32);
-            return Ok(Variant::from_f32(
-                ((x * factor).round_ties_even() / factor) as f32,
-            ));
+            return Ok(Variant::from_f32(round_float(x, digits) as f32));
         }
         _ => {}
     }
+    if digits > 22 {
+        return Err(LibError::invalid_call("Round digits must not exceed 22"));
+    }
     let x = as_f64(value)?;
-    let factor = 10f64.powi(digits.min(300) as i32);
+    let rounded = round_float(x, digits);
+    if value.vtype() == VarType::Date {
+        Ok(Variant::from_date_f64(rounded))
+    } else {
+        Ok(vf64(rounded))
+    }
+}
+
+fn round_float(x: f64, digits: u32) -> f64 {
+    let factor = 10f64.powi(digits as i32);
     let scaled = x * factor;
     let rounded = scaled.round_ties_even();
-    Ok(vf64(rounded / factor))
+    // Excel preserves negative zero at an exact negative half tie, but clears
+    // the sign when an ordinary negative value rounds to zero (P_RoundEdges).
+    if rounded == 0.0 && scaled != -0.5 {
+        0.0
+    } else {
+        rounded / factor
+    }
 }
 
 /// `magnitude / 10^drop`, rounded half to even.
@@ -4206,6 +4232,39 @@ mod tests {
         assert_eq!(cur.as_currency_scaled_i64(), Some(20_000));
         let single = round(&[Variant::from_f32(1.25), Variant::from_i32(1)]).unwrap();
         assert_eq!(single.as_f32(), Some(1.2));
+    }
+
+    #[test]
+    fn round_excel_types_digit_limit_and_signed_zero() {
+        let date = round(&[Variant::from_date_f64(2.5)]).unwrap();
+        assert_eq!(date.vtype(), VarType::Date);
+        assert_eq!(date.as_date_f64(), Some(2.0));
+        assert_eq!(
+            round(&[Variant::from_bool(true)]).unwrap(),
+            Variant::from_i16(-1)
+        );
+        assert_eq!(round(&[Variant::empty()]).unwrap(), Variant::from_i16(0));
+        for value in [
+            vf64(2.5),
+            Variant::from_f32(2.5),
+            Variant::from_date_f64(2.5),
+        ] {
+            assert_eq!(round(&[value, vi32(23)]).unwrap_err().code, 5);
+        }
+        assert_eq!(
+            round(&[Variant::from_u8(1), vi32(23)]).unwrap(),
+            Variant::from_u8(1)
+        );
+        for (value, digits, bits) in [(-0.05, 1, 1u64 << 63), (-0.49, 0, 0), (-1e-300, 5, 0)] {
+            assert_eq!(
+                round(&[vf64(value), vi32(digits)])
+                    .unwrap()
+                    .as_f64()
+                    .unwrap()
+                    .to_bits(),
+                bits
+            );
+        }
     }
 
     #[test]

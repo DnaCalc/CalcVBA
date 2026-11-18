@@ -1230,18 +1230,6 @@ P_Rnd	jit	missing		Rnd.30=ERR13	<declined: "T: CallExtern { dst: Some(Temp(TempI
 P_Rnd	jit	missing		Rnd.31=String:[Single:3E656218|0.224007Single:3E656218|0.224007Single:3E656218|0.224007Single:3E656218|0.224007]	<declined: "T: CallExtern { dst: Some(Temp(TempId(69))), import: ImportId(11), args: [ByVal(Const(Str(\"-1\")))] }: M4-4 CallExtern Rnd([number]) subset lowers o>
 P_Rnd	vm3	missing		Rnd.32=String:[Single:3E656218|0.224007,Single:3D12D310|3.584582E-02,Single:3DB0D980|8.635235E-02]	<failed: bind: unresolved name `Number` (named argument)>
 P_Rnd	jit	missing		Rnd.32=String:[Single:3E656218|0.224007,Single:3D12D310|3.584582E-02,Single:3DB0D980|8.635235E-02]	<failed: bind: unresolved name `Number` (named argument)>
-P_Round	vm3	error		Round.23=ERR5	Round.23=Double:400921FB54442D11|3.14159265358979
-P_Round	jit	error		Round.23=ERR5	Round.23=Double:400921FB54442D11|3.14159265358979
-P_Round	vm3	type		Round.35=Date:4000000000000000	Round.35=Double:4000000000000000|2
-P_Round	jit	type		Round.35=Date:4000000000000000	Round.35=Double:4000000000000000|2
-P_Round	vm3	type		Round.36=Integer:-1	Round.36=Double:BFF0000000000000|-1
-P_Round	jit	type		Round.36=Integer:-1	Round.36=Double:BFF0000000000000|-1
-P_Round	vm3	type		Round.40=Integer:0	Round.40=Double:0000000000000000|0
-P_Round	jit	type		Round.40=Integer:0	Round.40=Double:0000000000000000|0
-P_Round	vm3	lastbit		Round.47=Double:0000000000000000|0	Round.47=Double:8000000000000000|-0
-P_Round	jit	lastbit		Round.47=Double:0000000000000000|0	Round.47=Double:8000000000000000|-0
-P_Round	vm3	missing		Round.48=Double:4000000000000000|2	<failed: bind: unresolved name `Number` (named argument)>
-P_Round	jit	missing		Round.48=Double:4000000000000000|2	<failed: bind: unresolved name `Number` (named argument)>
 P_SLN	vm3	error		SLN.13=ERR6	SLN.13=ERR5
 P_SLN	jit	error		SLN.13=ERR6	SLN.13=ERR5
 P_SLN	vm3	missing		SLN.15=Double:403E000000000000|30	<failed: bind: unresolved name `Cost` (named argument)>

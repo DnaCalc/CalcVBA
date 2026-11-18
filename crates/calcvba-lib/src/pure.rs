@@ -2492,7 +2492,60 @@ pub fn clng(args: &[Variant]) -> LibResult<Variant> {
 }
 /// `CLngLng` / `CLngPtr` (on the 64-bit runtime) — to `LongLong` (banker's rounding).
 pub fn clnglng(args: &[Variant]) -> LibResult<Variant> {
-    Ok(Variant::from_i64(conv_i64(need(args, 0)?)?))
+    let arg = need(args, 0)?;
+    let overflow = || LibError::overflow("value does not fit in LongLong");
+    if let Some(value) = arg.as_i64() {
+        return Ok(Variant::from_i64(value));
+    }
+    let decimal = if arg.vtype() == VarType::String {
+        let text = as_str(arg)?;
+        let text = text.trim();
+        let (negative, body) = match text.as_bytes().first() {
+            Some(b'-') => (true, &text[1..]),
+            Some(b'+') => (false, &text[1..]),
+            _ => (false, text),
+        };
+        if let Some(body) = body.strip_prefix('&') {
+            let (radix, digits) = match body.as_bytes().first() {
+                Some(b'h' | b'H') => (16, &body[1..]),
+                Some(b'o' | b'O') => (8, &body[1..]),
+                _ => (8, body),
+            };
+            if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+                return Err(LibError::type_mismatch("expected a numeric value"));
+            }
+            // A CLngLng string uses the target's 64-bit two's-complement width,
+            // including when the same token would be a signed Long literal.
+            let value = u64::from_str_radix(digits, radix).map_err(|_| overflow())? as i64;
+            let value = if negative {
+                value.checked_neg().ok_or_else(overflow)?
+            } else {
+                value
+            };
+            return Ok(Variant::from_i64(value));
+        }
+        parse_decimal96_text(text)
+    } else {
+        arg.as_decimal96().or_else(|| {
+            arg.as_currency_scaled_i64()
+                .map(decimal96_from_currency_scaled)
+        })
+    };
+    if let Some(decimal) = decimal {
+        let value = decimal
+            .round_scaled_i128(0)
+            .and_then(|value| i64::try_from(value).ok())
+            .ok_or_else(overflow)?;
+        return Ok(Variant::from_i64(value));
+    }
+    let rounded = conv_f64(arg)?.round_ties_even();
+    // -2^63 is representable, whereas +2^63 (also i64::MAX as Double) overflows.
+    if !rounded.is_finite()
+        || !(-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&rounded)
+    {
+        return Err(overflow());
+    }
+    Ok(Variant::from_i64(rounded as i64))
 }
 /// `CByte` — to `Byte` (banker's rounding, range 0..255).
 pub fn cbyte(args: &[Variant]) -> LibResult<Variant> {

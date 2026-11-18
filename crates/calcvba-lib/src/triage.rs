@@ -129,6 +129,7 @@ pub const fn capabilities_of(id: NativeImplId) -> &'static [Capability] {
         | Str
         | Val
         | CDate
+        | CVDate
         | CVErr
         | CBool
         | CByte

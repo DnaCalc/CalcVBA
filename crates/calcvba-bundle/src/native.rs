@@ -266,6 +266,8 @@ native_impl_ids! {
     /// `EvaluateForeign(object, text)`: a foreign name `[text]`, the object's
     /// `DISPID_EVALUATE` member called with the text.
     EvaluateForeign,
+    /// Variant date conversion: Null is returned and conversion failures raise 13.
+    CVDate,
 }
 
 /// The `VBA`-typelib-style module a library function belongs to. Provenance for
@@ -337,7 +339,7 @@ impl NativeImplId {
             | DateDiff | Year | Month | Day | Weekday | Hour | Minute | Second | MonthName
             | WeekdayName | DatePart | DateNow | TimeNow | DateNowText | TimeNowText | Now
             | Timer => M::DateTime,
-            Hex | Oct | CStr | Str | Val | CDate | CVErr | CBool | CByte | CInt | CLng
+            Hex | Oct | CStr | Str | Val | CDate | CVDate | CVErr | CBool | CByte | CInt | CLng
             | CLngLng | CLngPtr | CSng | CDbl | CCur | CDec | CVar | MacID => M::Conversion,
             Rnd | Randomize => M::Random,
             Fv | Pv | Pmt | Npv | Irr | Mirr | Rate | NPer | IPmt | PPmt | Sln | Syd | Ddb => {
@@ -540,6 +542,7 @@ impl NativeImplId {
             Str => "Str",
             Val => "Val",
             CDate => "CDate",
+            CVDate => "CVDate",
             CVErr => "CVErr",
             CBool => "CBool",
             CByte => "CByte",
@@ -761,7 +764,7 @@ impl NativeImplId {
             DateDiff => 5,
             DateNow | TimeNow | DateNowText | TimeNowText | Now | Timer => 0,
             // ── Conversion ── (all single-argument)
-            Hex | Oct | CStr | Str | Val | CDate | CVErr | CBool | CByte | CInt | CLng
+            Hex | Oct | CStr | Str | Val | CDate | CVDate | CVErr | CBool | CByte | CInt | CLng
             | CLngLng | CLngPtr | CSng | CDbl | CCur | CDec | CVar => 1,
             // ── Random ──
             Rnd | Randomize => 1,

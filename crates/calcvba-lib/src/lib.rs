@@ -408,6 +408,7 @@ pub fn invoke_context_free(
         Str => pure::str_fn(args),
         Val => pure::val(args),
         CDate => pure::cdate(args),
+        CVDate => pure::cvdate(args),
         CVErr => pure::cverr(args),
         CDbl => pure::cdbl(args),
         CSng => pure::csng(args),

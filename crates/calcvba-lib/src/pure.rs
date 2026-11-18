@@ -889,6 +889,10 @@ pub fn str_conv(args: &[Variant]) -> LibResult<Variant> {
         return Ok(Variant::from_safearray(array));
     }
 
+    if !(0..=255).contains(&mode) || (mode & VB_UNICODE != 0 && mode != VB_UNICODE) {
+        return Err(LibError::invalid_call("invalid StrConv conversion flags"));
+    }
+
     if mode & VB_UNICODE != 0 && mode & VB_FROM_UNICODE != 0 {
         return Err(LibError::invalid_call(
             "vbUnicode and vbFromUnicode are mutually exclusive",
@@ -910,12 +914,25 @@ pub fn str_conv(args: &[Variant]) -> LibResult<Variant> {
             calcvba_runtime::ansi::ansi_decode(&string_bytes(input)?)
         }
     } else {
-        as_str(need(args, 0)?)?
+        let input = need(args, 0)?;
+        if let Some(array) = input.as_safearray() {
+            // A Byte() used as a String supplies UTF16LE bytes. vbUnicode above
+            // instead decodes each source byte using the ANSI code page.
+            as_str(&Variant::from_bstr_bytes(&array_bytes(&array)?))?
+        } else {
+            as_str(input)?
+        }
     };
 
     s = match mode & VB_PROPER_CASE {
-        VB_UPPER_CASE => s.to_uppercase(),
-        VB_LOWER_CASE => s.to_lowercase(),
+        VB_UPPER_CASE => s
+            .chars()
+            .map(|c| simple_case(c, c.to_uppercase()))
+            .collect(),
+        VB_LOWER_CASE => s
+            .chars()
+            .map(|c| simple_case(c, c.to_lowercase()))
+            .collect(),
         VB_PROPER_CASE => proper_case(&s),
         _ => s,
     };
@@ -931,18 +948,28 @@ pub fn str_conv(args: &[Variant]) -> LibResult<Variant> {
     Ok(vstr(s))
 }
 
+// StrConv case mapping preserves a character rather than expanding it (captured sharp-s).
+fn simple_case(original: char, mut mapped: impl Iterator<Item = char>) -> char {
+    let first = mapped.next().unwrap_or(original);
+    if mapped.next().is_some() {
+        original
+    } else {
+        first
+    }
+}
+
 fn proper_case(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut word_start = true;
     for c in s.chars() {
-        if c.is_whitespace() {
+        if matches!(c, '\0' | '\t' | '\n' | '\x0b' | '\x0c' | '\r' | ' ') {
             out.push(c);
             word_start = true;
         } else if word_start {
-            out.extend(c.to_uppercase());
+            out.push(simple_case(c, c.to_uppercase()));
             word_start = false;
         } else {
-            out.extend(c.to_lowercase());
+            out.push(simple_case(c, c.to_lowercase()));
         }
     }
     out
@@ -1413,7 +1440,8 @@ pub(crate) fn day_of_week(year: i32, month: u32, day: u32) -> i32 {
 }
 
 fn validate_vba_date_serial(serial: f64) -> LibResult<f64> {
-    if serial.is_finite() && (VBA_DATE_MIN_SERIAL..VBA_DATE_MAX_EXCLUSIVE_SERIAL).contains(&serial)
+    if serial.is_finite()
+        && (VBA_DATE_MIN_SERIAL..VBA_DATE_MAX_EXCLUSIVE_SERIAL).contains(&serial.trunc())
     {
         Ok(serial)
     } else {
@@ -1484,14 +1512,21 @@ pub fn time_serial(args: &[Variant]) -> LibResult<Variant> {
 }
 
 pub fn date_value(args: &[Variant]) -> LibResult<Variant> {
-    let v = need(args, 0)?;
-    if v.vtype() == VarType::Null {
-        return Ok(Variant::null());
-    }
-    let serial = date_arg(v)?;
-    Ok(Variant::from_date_f64(validate_vba_date_serial(
-        serial.trunc(),
-    )?))
+    let value = need(args, 0)?;
+    let serial = if let Some(date) = value
+        .as_date_f64()
+        .filter(|_| value.vtype() == VarType::Date)
+    {
+        // Date-to-text coercion rounds seconds, including carry into the next day.
+        let (year, month, day) = serial_to_ymd(date);
+        validate_vba_date_serial(ymd_to_serial(year, month, day))
+            .map_err(|_| LibError::type_mismatch("date out of range"))?
+    } else {
+        let text = as_str(value)?;
+        date_time_text_serial(&text)
+            .map_err(|_| LibError::type_mismatch(format!("cannot parse date `{text}`")))?
+    };
+    Ok(Variant::from_date_f64(serial.trunc()))
 }
 
 /// A date argument: a `Date` or numeric serial, or a string read as `CDate` reads it.
@@ -1578,6 +1613,12 @@ fn parse_time_only(s: &str) -> Option<f64> {
     // `3 PM` is a time; a bare number is not.
     let one_part_with_meridian = parts.len() == 1 && meridian.is_some();
     if !(2..=3).contains(&parts.len()) && !one_part_with_meridian {
+        return None;
+    }
+    if parts.iter().any(|part| {
+        let part = part.trim();
+        part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit())
+    }) {
         return None;
     }
     let mut h = parts[0].trim().parse::<i64>().ok()?;
@@ -2179,47 +2220,61 @@ pub fn cdate(args: &[Variant]) -> LibResult<Variant> {
     let v = need(args, 0)?;
     match v.vtype() {
         VarType::Date => Ok(v.clone()),
-        // A string parses as a date and/or time; everything else numeric IS the date
-        // serial (the integer part is the day, the fraction the time of day).
         VarType::String => cdate_from_string(&as_str(v)?),
+        VarType::Error => Err(LibError::type_mismatch("cannot convert Error to Date")),
         _ => {
-            // A number outside the Date range is Overflow (Excel: `CDate(3000000)` raises 6).
+            // Numeric CDate overflow is 6; text conversion failures are 13.
             let serial = conv_f64(v)?;
             if !calcvba_runtime::coerce::is_date_serial(serial) {
                 return Err(LibError::overflow("value does not fit in Date"));
             }
-            let serial = validate_vba_date_serial(serial)?;
-            Ok(Variant::from_date_f64(serial))
+            Ok(Variant::from_date_f64(validate_vba_date_serial(serial)?))
         }
     }
 }
 
-/// `CDate`/`CVDate` of a string: `"date"`, `"time"`, or `"date time"` — reusing the
-/// `DateValue`/`TimeValue` parsers, summing the day serial and time-of-day fraction.
+pub fn cvdate(args: &[Variant]) -> LibResult<Variant> {
+    if need(args, 0)?.vtype() == VarType::Null {
+        return Ok(Variant::null());
+    }
+    cdate(args).map_err(|error| {
+        if error.code == 6 {
+            LibError::type_mismatch("value does not fit in Date")
+        } else {
+            error
+        }
+    })
+}
+
+/// CDate/CVDate read time text before numeric text: "0.5" is 00:05,
+/// while "43831.5" is a numeric date serial because 43831 is not an hour.
 fn cdate_from_string(s: &str) -> LibResult<Variant> {
     let s = s.trim();
-    let has_date = s.contains('/')
-        || s.contains('-')
-        || s.split([' ', ',', '\t'])
-            .any(|t| month_from_name(t).is_some());
-    // A pure time ("HH:MM[:SS]") with no date component.
-    if s.contains(':') && !has_date {
-        return time_value(&[vstr(s)]);
+    if let Ok(serial) = date_time_text_serial(s) {
+        return Ok(Variant::from_date_f64(serial));
     }
-    // "date time" — split a trailing time off the date.
+    if let Ok(serial) = conv_f64(&vstr(s))
+        && calcvba_runtime::coerce::is_date_serial(serial)
+    {
+        return Ok(Variant::from_date_f64(serial));
+    }
+    Err(LibError::type_mismatch(format!("cannot parse date `{s}`")))
+}
+
+/// Date/time recognition does not include CDate's numeric-string fallback (IsDate).
+fn date_time_text_serial(s: &str) -> LibResult<f64> {
+    let s = s.trim();
+    if let Some(time) = parse_time_only(s) {
+        return Ok(time);
+    }
     if let Some((date_part, time_part)) = split_trailing_time(s) {
         let (y, m, d) = parse_date(date_part.trim())?;
-        let time = time_value(&[vstr(&time_part)])?
-            .as_date_f64()
-            .unwrap_or(0.0);
-        return Ok(Variant::from_date_f64(validate_vba_date_serial(
-            ymd_to_serial(y, m, d) + time,
-        )?));
+        let time = parse_time_value_string(&time_part)?;
+        let day = ymd_to_serial(y, m, d);
+        return validate_vba_date_serial(if day < 0.0 { day - time } else { day + time });
     }
     let (y, m, d) = parse_date(s)?;
-    Ok(Variant::from_date_f64(validate_vba_date_serial(
-        ymd_to_serial(y, m, d),
-    )?))
+    validate_vba_date_serial(ymd_to_serial(y, m, d))
 }
 pub fn cverr(args: &[Variant]) -> LibResult<Variant> {
     let code = as_i32(need(args, 0)?)?;
@@ -3766,7 +3821,7 @@ pub fn is_date(args: &[Variant]) -> LibResult<Variant> {
         VarType::Date => true,
         VarType::String => as_str(v)
             .ok()
-            .is_some_and(|s| cdate_from_string(&s).is_ok()),
+            .is_some_and(|s| date_time_text_serial(&s).is_ok()),
         _ => false,
     };
     Ok(vbool(ok))

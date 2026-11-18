@@ -1,6 +1,4 @@
 # Cases the engines still answer differently from Excel (Vm3). Fix, then delete the line.
-Vm3	abs.Integer0
-Vm3	abs.Long0
 Vm3	bin.Currency0.add.LongLong0
 Vm3	bin.Currency0.add.LongLong2
 Vm3	bin.Currency0.mul.LongLong0

@@ -68,6 +68,6 @@ fn val_ignores_ascii_whitespace_before_parsing() {
 #[test]
 fn val_radix_prefix_behavior_stays_intact() {
     assert_eq!(value("Val(\"&H F F trailing\")"), f64v(255.0));
-    assert_eq!(value("Val(\"+ &H7F\")"), f64v(127.0));
-    assert_eq!(value("Val(\"- &O10\")"), f64v(-8.0));
+    assert_eq!(value("Val(\"+ &H7F\")"), f64v(0.0));
+    assert_eq!(value("Val(\"- &O10\")"), f64v(0.0));
 }

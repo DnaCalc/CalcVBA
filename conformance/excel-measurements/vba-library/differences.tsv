@@ -1,8 +1,4 @@
 module	executor	class	locale	excel	calcvba
-P_Abs	vm3	error		Abs.6=ERR6	Abs.6=Long:32768
-P_Abs	jit	error		Abs.6=ERR6	Abs.6=Long:32768
-P_Abs	vm3	error		Abs.8=ERR6	Abs.8=Double:41E0000000000000|2147483648
-P_Abs	jit	error		Abs.8=ERR6	Abs.8=Double:41E0000000000000|2147483648
 P_ArrayBase1	vm3	value		ArrayBase1.13=String:[0,1,8]	ArrayBase1.13=String:[1,2,7]
 P_ArrayBase1	jit	value		ArrayBase1.13=String:[0,1,8]	ArrayBase1.13=String:[1,2,7]
 P_Asc	vm3	missing		Asc.10=Integer:120	<failed: bind: unresolved name `String` (named argument)>
@@ -149,16 +145,10 @@ P_Cos	vm3	lastbit		Cos.2=Double:3FE14A280FB5068B|0.54030230586814	Cos.2=Double:3
 P_Cos	jit	lastbit		Cos.2=Double:3FE14A280FB5068B|0.54030230586814	Cos.2=Double:3FE14A280FB5068C|0.54030230586814
 P_Cos	vm3	lastbit		Cos.3=Double:3FE14A280FB5068B|0.54030230586814	Cos.3=Double:3FE14A280FB5068C|0.54030230586814
 P_Cos	jit	lastbit		Cos.3=Double:3FE14A280FB5068B|0.54030230586814	Cos.3=Double:3FE14A280FB5068C|0.54030230586814
-P_Cos	vm3	error		Cos.6=ERR5	Cos.6=Double:BFE2699022ADC4C1|-0.575386111957549
-P_Cos	jit	error		Cos.6=ERR5	Cos.6=Double:BFE2699022ADC4C1|-0.575386111957549
-P_Cos	vm3	lastbit		Cos.7=Double:BFE06C154609D33E|-0.51319373778697	Cos.7=Double:BFE06C154609D33F|-0.51319373778697
-P_Cos	jit	lastbit		Cos.7=Double:BFE06C154609D33E|-0.51319373778697	Cos.7=Double:BFE06C154609D33F|-0.51319373778697
-P_Cos	vm3	error		Cos.17=ERR5	Cos.17=Double:3FE0BE2CEF01C8F4|0.523214785395139
-P_Cos	jit	error		Cos.17=ERR5	Cos.17=Double:3FE0BE2CEF01C8F4|0.523214785395139
 P_Cos	vm3	lastbit		Cos.22=Double:3FE14A280FB5068B|0.54030230586814	Cos.22=Double:3FE14A280FB5068C|0.54030230586814
 P_Cos	jit	lastbit		Cos.22=Double:3FE14A280FB5068B|0.54030230586814	Cos.22=Double:3FE14A280FB5068C|0.54030230586814
-P_Cos	vm3	missing		Cos.24=Double:3FE14A280FB5068B|0.54030230586814	<failed: bind: unresolved name `Number` (named argument)>
-P_Cos	jit	missing		Cos.24=Double:3FE14A280FB5068B|0.54030230586814	<failed: bind: unresolved name `Number` (named argument)>
+P_Cos	vm3	lastbit		Cos.24=Double:3FE14A280FB5068B|0.54030230586814	Cos.24=Double:3FE14A280FB5068C|0.54030230586814
+P_Cos	jit	lastbit		Cos.24=Double:3FE14A280FB5068B|0.54030230586814	Cos.24=Double:3FE14A280FB5068C|0.54030230586814
 P_CreateObject	vm3	value		CreateObject.4=Long:9	CreateObject.4=Long:0
 P_CreateObject	jit	value		CreateObject.4=Long:9	CreateObject.4=Long:0
 P_CreateObject	jit	missing		CreateObject.8=String:[Dictionary]	<declined: "T: CallNative { dst: Some(Temp(TempId(17))), callee: Builtin(CreateObject), args: [Operand(Const(Str(\"Scripting.Dictionary\"))), Operand(Const(Str(\>
@@ -960,22 +950,6 @@ P_MonthName	vm3	error		MonthName.10=ERR94	MonthName.10=String:[March]
 P_MonthName	jit	error		MonthName.10=ERR94	MonthName.10=String:[March]
 P_MonthName	vm3	missing		MonthName.14=String:[February]	<failed: bind: unresolved name `Month` (named argument)>
 P_MonthName	jit	missing		MonthName.14=String:[February]	<failed: bind: unresolved name `Month` (named argument)>
-P_NPV	vm3	lastbit		NPV.1=Double:407616DACBDFA498|353.428417085271	NPV.1=Double:407616DACBDFA494|353.428417085271
-P_NPV	jit	lastbit		NPV.1=Double:407616DACBDFA498|353.428417085271	NPV.1=Double:407616DACBDFA494|353.428417085271
-P_NPV	vm3	lastbit		NPV.4=Double:407616DACBDFA498|353.428417085271	NPV.4=Double:407616DACBDFA494|353.428417085271
-P_NPV	jit	lastbit		NPV.4=Double:407616DACBDFA498|353.428417085271	NPV.4=Double:407616DACBDFA494|353.428417085271
-P_NPV	vm3	lastbit		NPV.5=Double:404ACA2DF13D1E45|53.5795270489148	NPV.5=Double:404ACA2DF13D1E44|53.5795270489148
-P_NPV	jit	lastbit		NPV.5=Double:404ACA2DF13D1E45|53.5795270489148	NPV.5=Double:404ACA2DF13D1E44|53.5795270489148
-P_NPV	vm3	lastbit		NPV.6=Double:C04ACA2DF13D1E45|-53.5795270489148	NPV.6=Double:C04ACA2DF13D1E44|-53.5795270489148
-P_NPV	jit	lastbit		NPV.6=Double:C04ACA2DF13D1E45|-53.5795270489148	NPV.6=Double:C04ACA2DF13D1E44|-53.5795270489148
-P_NPV	vm3	lastbit		NPV.12=Double:4027FC021D85D2A3|11.9922036386354	NPV.12=Double:4027FC021D85D2A4|11.9922036386354
-P_NPV	jit	lastbit		NPV.12=Double:4027FC021D85D2A3|11.9922036386354	NPV.12=Double:4027FC021D85D2A4|11.9922036386354
-P_NPV	vm3	error		NPV.13=ERR5	NPV.13=ERR13
-P_NPV	jit	error		NPV.13=ERR5	NPV.13=ERR13
-P_NPV	vm3	missing		NPV.14=Double:407616DACBDFA498|353.428417085271	<failed: bind: unresolved name `Rate` (named argument)>
-P_NPV	jit	missing		NPV.14=Double:407616DACBDFA498|353.428417085271	<failed: bind: unresolved name `Rate` (named argument)>
-P_NPV	vm3	value		NPV.15=Double:4023FFFFFFFE742D|9.99999999982	NPV.15=Double:4023FFFFFFFE7420|9.99999999981998
-P_NPV	jit	value		NPV.15=Double:4023FFFFFFFE742D|9.99999999982	NPV.15=Double:4023FFFFFFFE7420|9.99999999981998
 P_Oct	vm3	missing		Oct.45=String:[377]	<failed: bind: unresolved name `Number` (named argument)>
 P_Oct	jit	missing		Oct.45=String:[377]	<failed: bind: unresolved name `Number` (named argument)>
 P_Oct	vm3	error		Oct.56=ERR94	Oct.56=Null
@@ -1220,12 +1194,6 @@ P_Shell	vm3	missing		Shell.17=ERR53	<failed: bind: unresolved name `PathName` (n
 P_Shell	jit	missing		Shell.17=ERR53	<failed: bind: unresolved name `PathName` (named argument)>
 P_Shell	vm3	error		Shell.19=ERR5	Shell.19=Long:1
 P_Shell	jit	error		Shell.19=ERR5	Shell.19=Long:1
-P_Sin	vm3	error		Sin.7=ERR5	Sin.7=Double:BFEA2C16B010E385|-0.817881912115909
-P_Sin	jit	error		Sin.7=ERR5	Sin.7=Double:BFEA2C16B010E385|-0.817881912115909
-P_Sin	vm3	error		Sin.19=ERR5	Sin.19=Double:BFEB453AB76BF397|-0.852200849767189
-P_Sin	jit	error		Sin.19=ERR5	Sin.19=Double:BFEB453AB76BF397|-0.852200849767189
-P_Sin	vm3	missing		Sin.25=Double:3FEAED548F090CEE|0.841470984807897	<failed: bind: unresolved name `Number` (named argument)>
-P_Sin	jit	missing		Sin.25=Double:3FEAED548F090CEE|0.841470984807897	<failed: bind: unresolved name `Number` (named argument)>
 P_Space	vm3	missing		Space.10=String:[  ]	<failed: bind: unresolved name `Number` (named argument)>
 P_Space	jit	missing		Space.10=String:[  ]	<failed: bind: unresolved name `Number` (named argument)>
 P_Space	vm3	missing		Space.14=String:[ ]	<failed: bind: unresolved name `Number` (named argument)>
@@ -1317,18 +1285,14 @@ P_Tan	vm3	lastbit		Tan.2=Double:3FF8EB245CBEE3A7|1.5574077246549	Tan.2=Double:3F
 P_Tan	jit	lastbit		Tan.2=Double:3FF8EB245CBEE3A7|1.5574077246549	Tan.2=Double:3FF8EB245CBEE3A6|1.5574077246549
 P_Tan	vm3	lastbit		Tan.3=Double:BFF8EB245CBEE3A7|-1.5574077246549	Tan.3=Double:BFF8EB245CBEE3A6|-1.5574077246549
 P_Tan	jit	lastbit		Tan.3=Double:BFF8EB245CBEE3A7|-1.5574077246549	Tan.3=Double:BFF8EB245CBEE3A6|-1.5574077246549
-P_Tan	vm3	error		Tan.6=ERR5	Tan.6=Double:3FF6BE411F37AC77|1.42144882387472
-P_Tan	jit	error		Tan.6=ERR5	Tan.6=Double:3FF6BE411F37AC77|1.42144882387472
 P_Tan	vm3	lastbit		Tan.7=Double:BFFAC23600A95BE5|-1.67241478212758	Tan.7=Double:BFFAC23600A95BE4|-1.67241478212758
 P_Tan	jit	lastbit		Tan.7=Double:BFFAC23600A95BE5|-1.67241478212758	Tan.7=Double:BFFAC23600A95BE4|-1.67241478212758
 P_Tan	vm3	lastbit		Tan.15=Double:4181CBBADD13289F|37320539.6343548	Tan.15=Double:4181CBBADD13289E|37320539.6343548
 P_Tan	jit	lastbit		Tan.15=Double:4181CBBADD13289F|37320539.6343548	Tan.15=Double:4181CBBADD13289E|37320539.6343548
-P_Tan	vm3	error		Tan.16=ERR5	Tan.16=Double:BFFA0F79C1B6B257|-1.6287782256069
-P_Tan	jit	error		Tan.16=ERR5	Tan.16=Double:BFFA0F79C1B6B257|-1.6287782256069
 P_Tan	vm3	lastbit		Tan.20=Double:BFF8EB245CBEE3A7|-1.5574077246549	Tan.20=Double:BFF8EB245CBEE3A6|-1.5574077246549
 P_Tan	jit	lastbit		Tan.20=Double:BFF8EB245CBEE3A7|-1.5574077246549	Tan.20=Double:BFF8EB245CBEE3A6|-1.5574077246549
-P_Tan	vm3	missing		Tan.22=Double:3FF8EB245CBEE3A7|1.5574077246549	<failed: bind: unresolved name `Number` (named argument)>
-P_Tan	jit	missing		Tan.22=Double:3FF8EB245CBEE3A7|1.5574077246549	<failed: bind: unresolved name `Number` (named argument)>
+P_Tan	vm3	lastbit		Tan.22=Double:3FF8EB245CBEE3A7|1.5574077246549	Tan.22=Double:3FF8EB245CBEE3A6|1.5574077246549
+P_Tan	jit	lastbit		Tan.22=Double:3FF8EB245CBEE3A7|1.5574077246549	Tan.22=Double:3FF8EB245CBEE3A6|1.5574077246549
 P_Trim	vm3	value		Trim.12=String:[abc]	Trim.12=String:[{12288}abc]
 P_Trim	jit	value		Trim.12=String:[abc]	Trim.12=String:[{12288}abc]
 P_Trim	vm3	missing		Trim.14=String:[abc]	<failed: bind: unresolved name `String` (named argument)>
@@ -1365,17 +1329,8 @@ P_UserForms	vm3	missing		UserForms.7=ERR9	<failed: bind: Sub or Function not def
 P_UserForms	jit	missing		UserForms.7=ERR9	<failed: bind: Sub or Function not defined>
 P_UserForms	vm3	missing		UserForms.8=Long:9	<failed: bind: Variable not defined: UserForms>
 P_UserForms	jit	missing		UserForms.8=Long:9	<failed: bind: Variable not defined: UserForms>
-P_Val	jit	error		Val.27=ERR6	Val.27=Double:7FF0000000000000|inf
-P_Val	vm3	value		Val.37=Double:0000000000000000|0	Val.37=Double:41F0000000000000|4294967296
-P_Val	jit	value		Val.37=Double:0000000000000000|0	Val.37=Double:41F0000000000000|4294967296
-P_Val	vm3	value		Val.68=Double:4028000000000000|12	Val.68=Double:3FF0000000000000|1
-P_Val	jit	value		Val.68=Double:4028000000000000|12	Val.68=Double:3FF0000000000000|1
-P_Val	vm3	error		Val.87=ERR13	Val.87=Double:0000000000000000|0
-P_Val	jit	error		Val.87=ERR13	Val.87=Double:0000000000000000|0
 P_Val	vm3	value	locale	Val.88=Double:409F900000000000|2020	Val.88=Double:3FF0000000000000|1
 P_Val	jit	value	locale	Val.88=Double:409F900000000000|2020	Val.88=Double:3FF0000000000000|1
-P_Val	vm3	missing		Val.89=Double:4028000000000000|12	<failed: bind: unresolved name `String` (named argument)>
-P_Val	jit	missing		Val.89=Double:4028000000000000|12	<failed: bind: unresolved name `String` (named argument)>
 P_VarType	vm3	value		VarType.16=Long:9	VarType.16=Long:0
 P_VarType	jit	value		VarType.16=Long:9	VarType.16=Long:0
 P_VarType	vm3	missing		VarType.49=Long:3	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>

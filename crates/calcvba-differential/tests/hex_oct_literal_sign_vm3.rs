@@ -111,10 +111,7 @@ fn val_of_radix_string_applies_the_sign_rule() {
         "    r = Val(\"&O37777777777\")\n",
         &canon(&Variant::from_f64(-1.0)),
     );
-    assert_value(
-        "    r = Val(\"+&H7F\")\n",
-        &canon(&Variant::from_f64(127.0)),
-    );
+    assert_value("    r = Val(\"+&H7F\")\n", &canon(&Variant::from_f64(0.0)));
 }
 
 // LongLong-width string conversions carry the sign rule in `parse_vba_radix`;

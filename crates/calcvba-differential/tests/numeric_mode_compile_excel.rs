@@ -12,14 +12,10 @@ const EXCEL: &str =
 
 /// Case ids the engine still decides differently from Excel.
 const KNOWN: &[&str] = &[
-    // Abs(LongLong) and CLngLng(..) are typed LongLong in Office; the engine types them Variant.
-    "asgq.Byte.abs",
+    // CLngLng(..) is typed LongLong in Office; the engine still types it Variant.
     "asgq.Byte.clnglng",
-    "asgq.Currency.abs",
     "asgq.Currency.clnglng",
-    "asgq.Integer.abs",
     "asgq.Integer.clnglng",
-    "asgq.Long.abs",
     "asgq.Long.clnglng",
 ];
 

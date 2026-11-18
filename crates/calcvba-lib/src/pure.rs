@@ -1157,6 +1157,18 @@ pub fn math1(args: &[Variant], f: impl Fn(f64) -> f64) -> LibResult<Variant> {
     Ok(vf64(f(as_f64(need(args, 0)?)?)))
 }
 
+/// Excel rejects either sign at and above this measured argument magnitude.
+/// The adjacent accepted/refused Doubles are 43DFFFFFFDDAD22F / 43DFFFFFFDDAD230.
+pub fn trig(args: &[Variant], f: impl Fn(f64) -> f64) -> LibResult<Variant> {
+    let value = as_f64(need(args, 0)?)?;
+    if value.abs() >= 9.223_372e18 {
+        return Err(LibError::invalid_call(
+            "trigonometric argument out of range",
+        ));
+    }
+    Ok(vf64(f(value)))
+}
+
 pub fn sqr(args: &[Variant]) -> LibResult<Variant> {
     Ok(vf64(sqr_f64(as_f64(need(args, 0)?)?)?))
 }
@@ -1183,13 +1195,10 @@ pub fn exp(args: &[Variant]) -> LibResult<Variant> {
     Ok(vf64(value))
 }
 
-/// `Abs` / `Int` / `Fix` — the three "type-preserving" unary math functions.
-/// Unlike the transcendentals they return the argument's own numeric subtype
-/// (so `Int(CCur(3.7))` is a `Currency`, `Fix(CDate(...))` is a `Date`), and
-/// `Abs` *promotes* on overflow rather than wrapping (`Abs(CInt(-32768))` is a
-/// `Long`, `Abs(CLng(&H80000000))` is a `Double`). Empty → `Integer` 0, Null →
-/// Null, Boolean → `Integer`, a numeric String → `Double`. Verified against
-/// live Office VBA 7.1.
+/// `Abs` / `Int` / `Fix` preserve the argument's numeric subtype. Abs promotes
+/// overflowing Variant integers; the binder keeps a typed integer operand's
+/// result type, so its minimum raises error 6. Empty -> Integer 0, Null -> Null,
+/// Boolean -> Integer, and a numeric String -> Double.
 #[derive(Clone, Copy)]
 enum Math1Op {
     Abs,
@@ -2192,20 +2201,75 @@ pub fn str_fn(args: &[Variant]) -> LibResult<Variant> {
 }
 /// FIDELITY: parses a leading numeric prefix.
 pub fn val(args: &[Variant]) -> LibResult<Variant> {
-    let s = as_str(need(args, 0)?)?;
+    let arg = need(args, 0)?;
+    if arg.vtype() == VarType::Error {
+        return Err(LibError::type_mismatch(default_error_message(13)));
+    }
+    let s = as_str(arg)?;
     let compact: String = s
-        .bytes()
-        .filter(|byte| !is_val_ignored_space(*byte))
-        .map(char::from)
+        .chars()
+        .filter(|ch| !matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{3000}'))
         .collect();
     let text = compact.as_str();
-    if let Some((value, _rest)) = parse_vba_prefixed_integer_token(text, true, true) {
-        return Ok(vf64(value as f64));
+    if let Some(value) = val_radix_prefix(text)? {
+        return Ok(vf64(value));
     }
-    Ok(vf64(val_decimal_prefix(text).unwrap_or(0.0)))
+    let (value, rest) = val_decimal_prefix(text).unwrap_or((0.0, ""));
+    if !value.is_finite() {
+        return Err(LibError::overflow(default_error_message(6)));
+    }
+    if rest.starts_with('%') {
+        if value.fract() != 0.0 {
+            return Err(LibError::type_mismatch(default_error_message(13)));
+        }
+        if !(i16::MIN as f64..=i16::MAX as f64).contains(&value) {
+            return Err(LibError::overflow(default_error_message(6)));
+        }
+    }
+    Ok(vf64(value))
 }
 
-fn val_decimal_prefix(text: &str) -> Option<f64> {
+/// Unlike source literals and conversion functions, Val truncates unsuffixed
+/// radix text to 32 bits. A leading sign prevents radix recognition altogether.
+fn val_radix_prefix(text: &str) -> LibResult<Option<f64>> {
+    let Some(rest) = text.strip_prefix('&') else {
+        return Ok(None);
+    };
+    let (radix, digits) = match rest.as_bytes().first() {
+        Some(b'H' | b'h') => (16, &rest[1..]),
+        Some(b'O' | b'o') => (8, &rest[1..]),
+        _ => (8, rest),
+    };
+    let end = digits
+        .bytes()
+        .position(|b| !char::from(b).is_digit(radix))
+        .unwrap_or(digits.len());
+    if end == 0 {
+        return Ok(Some(0.0));
+    }
+    let magnitude = u64::from_str_radix(&digits[..end], radix)
+        .map_err(|_| LibError::overflow(default_error_message(6)))?;
+    let suffix = digits.as_bytes().get(end).copied();
+    let wide = matches!(suffix, Some(b'^' | b'!' | b'#' | b'@'));
+    let magnitude = if wide {
+        magnitude
+    } else {
+        magnitude as u32 as u64
+    };
+    let width_suffix = match suffix {
+        Some(b'^' | b'&') => suffix,
+        _ => None,
+    };
+    let width = calcvba_runtime::vba_radix_width(magnitude, width_suffix)
+        .ok_or_else(|| LibError::overflow(default_error_message(6)))?;
+    let value = calcvba_runtime::vba_radix_signed_value(magnitude, width);
+    if suffix == Some(b'%') && i16::try_from(value).is_err() {
+        return Err(LibError::overflow(default_error_message(6)));
+    }
+    Ok(Some(value as f64))
+}
+
+fn val_decimal_prefix(text: &str) -> Option<(f64, &str)> {
     let bytes = text.as_bytes();
     let mut pos = 0usize;
     if matches!(bytes.get(pos), Some(b'+' | b'-')) {
@@ -2244,7 +2308,7 @@ fn val_decimal_prefix(text: &str) -> Option<f64> {
     }
 
     let token = text[..pos].replace(['d', 'D'], "E");
-    token.parse::<f64>().ok()
+    token.parse::<f64>().ok().map(|value| (value, &text[pos..]))
 }
 pub fn cdate(args: &[Variant]) -> LibResult<Variant> {
     let v = need(args, 0)?;
@@ -3063,12 +3127,23 @@ pub fn npv(args: &[Variant]) -> LibResult<Variant> {
     if rate == -1.0 {
         return Err(LibError::invalid_call("NPV requires rate <> -1"));
     }
-    let flows = cashflows(need(args, 1)?)?;
-    let mut acc = 0.0;
-    for (k, cf) in flows.iter().enumerate() {
-        acc += cf / (1.0 + rate).powi(k as i32 + 1);
+    let array = need(args, 1)?;
+    if array.vtype() == VarType::ArrayVariant && array.as_safearray().is_none() {
+        return Err(LibError::invalid_call("NPV requires an allocated array"));
     }
-    finite_result(acc)
+    let flows = cashflows(array)?;
+    let x = X80::of;
+    let rate = x(rate);
+    let (mut denominator, mut acc) = (x(1.0), x(0.0));
+    // Excel retains the denominator and sum in extended precision. Its ordered
+    // denominator update also differs from multiplication by (1 + rate) near -1.
+    for cf in flows {
+        denominator = denominator.add(denominator.mul(rate));
+        acc = acc.add(x(cf).div(denominator));
+    }
+    acc.to_f64()
+        .map(vf64)
+        .ok_or_else(|| LibError::overflow("NPV total"))
 }
 
 pub fn irr(args: &[Variant]) -> LibResult<Variant> {
@@ -4015,8 +4090,8 @@ mod tests {
         assert_eq!(val_("&HFFFFFFFF"), -1.0);
         assert_eq!(val_("&HFFFF&"), 65_535.0);
         assert_eq!(val_("&O37777777777"), -1.0);
-        assert_eq!(val_("+&H7F"), 127.0);
-        assert_eq!(val_("-&O10"), -8.0);
+        assert_eq!(val_("+&H7F"), 0.0);
+        assert_eq!(val_("-&O10"), 0.0);
         assert_eq!(val_("&H F F"), 255.0);
         assert_eq!(val_("&H10 trailing"), 16.0);
     }

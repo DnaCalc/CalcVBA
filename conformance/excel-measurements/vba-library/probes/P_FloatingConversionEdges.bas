@@ -1,7 +1,7 @@
 Attribute VB_Name = "P_FloatingConversionEdges"
 Option Explicit
 ' Excel-backed floating conversion overflow, embedded spaces and Single rounding.
-Private Const N As Long = 35
+Private Const N As Long = 36
 Private Function T(ByVal k As Long) As String
     Dim v As Variant
     On Error GoTo fail
@@ -41,6 +41,12 @@ Private Function T(ByVal k As Long) As String
         Case 33: v = CSng(-3.40282356779734E38)
         Case 34: v = CSng("3.40282347E38")
         Case 35: v = CSng("3.5E38")
+        Case 36
+            On Error Resume Next
+            v = CInt("&HZZ")
+            v = CStr(Err.Number) & ":" & Err.Description
+            Err.Clear
+            On Error GoTo fail
     End Select
     T = "FloatingConversionEdges." & k & "=" & Sh(v)
     Exit Function

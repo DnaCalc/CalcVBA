@@ -247,30 +247,20 @@ P_DateAdd	vm3	value		DateAdd.22=Date:BFF7555555555556	DateAdd.22=Date:3FEEAAAAAA
 P_DateAdd	jit	value		DateAdd.22=Date:BFF7555555555556	DateAdd.22=Date:3FEEAAAAAAAAAAAB
 P_DateAdd	vm3	error		DateAdd.33=ERR5	DateAdd.33=Date:40E5670000000000
 P_DateAdd	jit	error		DateAdd.33=ERR5	DateAdd.33=Date:40E5670000000000
-P_DateAdd	vm3	missing		DateAdd.47=Date:40E5722000000000	<failed: bind: unresolved name `Interval` (named argument)>
-P_DateAdd	jit	missing		DateAdd.47=Date:40E5722000000000	<failed: bind: unresolved name `Interval` (named argument)>
 P_DateDiff	vm3	value		DateDiff.23=Long:1	DateDiff.23=Long:0
 P_DateDiff	jit	value		DateDiff.23=Long:1	DateDiff.23=Long:0
 P_DateDiff	vm3	value		DateDiff.24=Long:24	DateDiff.24=Long:-12
 P_DateDiff	jit	value		DateDiff.24=Long:24	DateDiff.24=Long:-12
 P_DateDiff	vm3	error		DateDiff.39=ERR94	DateDiff.39=Long:1
 P_DateDiff	jit	error		DateDiff.39=ERR94	DateDiff.39=Long:1
-P_DateDiff	vm3	missing		DateDiff.48=Long:5	<failed: bind: unresolved name `Interval` (named argument)>
-P_DateDiff	jit	missing		DateDiff.48=Long:5	<failed: bind: unresolved name `Interval` (named argument)>
 P_DatePart	vm3	value		DatePart.25=Integer:6	DatePart.25=Integer:17
 P_DatePart	jit	value		DatePart.25=Integer:6	DatePart.25=Integer:17
 P_DatePart	vm3	value		DatePart.26=Integer:29	DatePart.26=Integer:30
 P_DatePart	jit	value		DatePart.26=Integer:29	DatePart.26=Integer:30
-P_DatePart	vm3	missing		DatePart.44=Integer:7	<failed: bind: unresolved name `Interval` (named argument)>
-P_DatePart	jit	missing		DatePart.44=Integer:7	<failed: bind: unresolved name `Interval` (named argument)>
 P_DateSerial	vm3	value		DateSerial.10=Date:40E72F8000000000	DateSerial.10=Date:40C5678000000000
 P_DateSerial	jit	value		DateSerial.10=Date:40E72F8000000000	DateSerial.10=Date:40C5678000000000
 P_DateSerial	vm3	error		DateSerial.19=Date:40E1A82000000000	DateSerial.19=ERR5
 P_DateSerial	jit	error		DateSerial.19=Date:40E1A82000000000	DateSerial.19=ERR5
-P_DateSerial	vm3	missing		DateSerial.35=Date:40E59DC000000000	<failed: bind: unresolved name `Year` (named argument)>
-P_DateSerial	jit	missing		DateSerial.35=Date:40E59DC000000000	<failed: bind: unresolved name `Year` (named argument)>
-P_DateSerial	vm3	missing		DateSerial.36=Date:40E59DC000000000	<failed: bind: unresolved name `Day` (named argument)>
-P_DateSerial	jit	missing		DateSerial.36=Date:40E59DC000000000	<failed: bind: unresolved name `Day` (named argument)>
 P_DateSerial	vm3	error		DateSerial.37=Date:40E1A82000000000	DateSerial.37=ERR5
 P_DateSerial	jit	error		DateSerial.37=Date:40E1A82000000000	DateSerial.37=ERR5
 P_DateValue	vm3	error	locale	DateValue.7=Date:40E56AA000000000	DateValue.7=ERR13
@@ -285,16 +275,6 @@ P_DateValue	vm3	error		DateValue.19=ERR13	DateValue.19=Date:0000000000000000
 P_DateValue	jit	error		DateValue.19=ERR13	DateValue.19=Date:0000000000000000
 P_DateValue	vm3	error		DateValue.20=ERR13	DateValue.20=Date:405EC00000000000
 P_DateValue	jit	error		DateValue.20=ERR13	DateValue.20=Date:405EC00000000000
-P_DateValue	vm3	missing	locale	DateValue.24=Date:40E5670000000000	<failed: bind: unresolved name `Date` (named argument)>
-P_DateValue	jit	missing	locale	DateValue.24=Date:40E5670000000000	<failed: bind: unresolved name `Date` (named argument)>
-P_Day	vm3	error		Day.18=ERR13	Day.18=Integer:1
-P_Day	jit	error		Day.18=ERR13	Day.18=Integer:1
-P_Day	vm3	error		Day.20=ERR13	Day.20=Integer:31
-P_Day	jit	error		Day.20=ERR13	Day.20=Integer:31
-P_Day	vm3	missing		Day.21=ERR13	<panic: attempt to add with overflow>
-P_Day	jit	error		Day.21=ERR13	Day.21=ERR0
-P_Day	vm3	missing		Day.23=Integer:15	<failed: bind: unresolved name `Date` (named argument)>
-P_Day	jit	missing		Day.23=Integer:15	<failed: bind: unresolved name `Date` (named argument)>
 P_DeleteSetting	vm3	error		DeleteSetting.3=String:[gone]	DeleteSetting.3=ERR5
 P_DeleteSetting	jit	error		DeleteSetting.3=String:[gone]	DeleteSetting.3=ERR5
 P_DeleteSetting	vm3	error		DeleteSetting.11=String:[gone]	DeleteSetting.11=ERR5
@@ -483,8 +463,6 @@ P_Format	vm3	value		Format.57=String:[1{160}235]	Format.57=String:[1,234]
 P_Format	jit	value		Format.57=String:[1{160}235]	Format.57=String:[1,234]
 P_Format	vm3	value		Format.59=String:[Ge0eral 0u5ber]	Format.59=String:[Ge0eral 0u5ber;x]
 P_Format	jit	value		Format.59=String:[Ge0eral 0u5ber]	Format.59=String:[Ge0eral 0u5ber;x]
-P_Format	vm3	missing		Format.62=String:[3.5]	<failed: bind: unresolved name `Expression` (named argument)>
-P_Format	jit	missing		Format.62=String:[3.5]	<failed: bind: unresolved name `Expression` (named argument)>
 P_Format	vm3	value		Format.63=String:[1.2346E+4]	Format.63=String:[1.2346E+04]
 P_Format	jit	value		Format.63=String:[1.2346E+4]	Format.63=String:[1.2346E+04]
 P_Format	vm3	value		Format.64=String:[0.300000000000000000]	Format.64=String:[0.300000000000000044]
@@ -533,8 +511,6 @@ P_Format2	vm3	value		Format2.75=String:[:03]	Format2.75=String:[[14]:07]
 P_Format2	jit	value		Format2.75=String:[:03]	Format2.75=String:[[14]:07]
 P_Format2	vm3	value		Format2.76=String:[p]	Format2.76=String:[a/p]
 P_Format2	jit	value		Format2.76=String:[p]	Format2.76=String:[a/p]
-P_Format2	vm3	missing		Format2.79=String:[2024]	<failed: bind: unresolved name `Expression` (named argument)>
-P_Format2	jit	missing		Format2.79=String:[2024]	<failed: bind: unresolved name `Expression` (named argument)>
 P_Format3	vm3	value		Format3.2=String:[hello   ]	Format3.2=String:[!   hello]
 P_Format3	jit	value		Format3.2=String:[hello   ]	Format3.2=String:[!   hello]
 P_Format3	vm3	value		Format3.9=String:[[a]bc]	Format3.9=String:[[abc]]
@@ -657,8 +633,6 @@ P_FormatDateTime	vm3	value	locale	FormatDateTime.20=String:[00:00:00]	FormatDate
 P_FormatDateTime	jit	value	locale	FormatDateTime.20=String:[00:00:00]	FormatDateTime.20=String:[12/30/1899]
 P_FormatDateTime	vm3	value	locale	FormatDateTime.21=String:[15 March 2023]	FormatDateTime.21=String:[Wednesday, March 15, 2023]
 P_FormatDateTime	jit	value	locale	FormatDateTime.21=String:[15 March 2023]	FormatDateTime.21=String:[Wednesday, March 15, 2023]
-P_FormatDateTime	vm3	missing	locale	FormatDateTime.24=String:[14:07]	<failed: bind: unresolved name `Expression` (named argument)>
-P_FormatDateTime	jit	missing	locale	FormatDateTime.24=String:[14:07]	<failed: bind: unresolved name `Expression` (named argument)>
 P_FormatDateTime	vm3	value	locale	FormatDateTime.25=String:[1 January 0100]	FormatDateTime.25=String:[Friday, January 1, 0100]
 P_FormatDateTime	jit	value	locale	FormatDateTime.25=String:[1 January 0100]	FormatDateTime.25=String:[Friday, January 1, 0100]
 P_FormatNumber	vm3	value	locale	FormatNumber.1=String:[1{160}234.57]	FormatNumber.1=String:[1,234.57]
@@ -767,12 +741,6 @@ P_Hex	jit	error		Hex.56=ERR94	Hex.56=Null
 P_Hex	jit	missing		Hex.58=String:[FF]	<declined: "T: CallNative { dst: Some(Temp(TempId(124))), callee: Builtin(Hex), args: [Named { name: \"Number\", value: Const(I16(255)), by_ref: None }] }: M4-4 >
 P_Hour	vm3	value		Hour.15=Integer:0	Hour.15=Integer:12
 P_Hour	jit	value		Hour.15=Integer:0	Hour.15=Integer:12
-P_Hour	vm3	error		Hour.17=ERR13	Hour.17=Integer:0
-P_Hour	jit	error		Hour.17=ERR13	Hour.17=Integer:0
-P_Hour	vm3	error		Hour.18=ERR13	Hour.18=Integer:0
-P_Hour	jit	error		Hour.18=ERR13	Hour.18=Integer:0
-P_Hour	vm3	missing		Hour.19=Integer:6	<failed: bind: unresolved name `Time` (named argument)>
-P_Hour	jit	missing		Hour.19=Integer:6	<failed: bind: unresolved name `Time` (named argument)>
 P_IIf	jit	missing		IIf.32=String:[a]	<declined: "T: CallNative { dst: Some(Temp(TempId(66))), callee: Builtin(IIf), args: [Named { name: \"Expression\", value: Const(Bool(true)), by_ref: None }, Nam>
 P_IMEStatus	vm3	missing		IMEStatus.1=Long:0	<failed: bind: Variable not defined: IMEStatus>
 P_IMEStatus	jit	missing		IMEStatus.1=Long:0	<failed: bind: Variable not defined: IMEStatus>
@@ -1147,20 +1115,8 @@ P_MidB	vm3	missing		MidB.16=String:[b]	<failed: bind: unresolved name `String` (
 P_MidB	jit	missing		MidB.16=String:[b]	<failed: bind: unresolved name `String` (named argument)>
 P_Minute	vm3	value		Minute.14=Integer:5	Minute.14=Integer:0
 P_Minute	jit	value		Minute.14=Integer:5	Minute.14=Integer:0
-P_Minute	vm3	error		Minute.16=ERR13	Minute.16=Integer:0
-P_Minute	jit	error		Minute.16=ERR13	Minute.16=Integer:0
-P_Minute	vm3	error		Minute.17=ERR13	Minute.17=Integer:0
-P_Minute	jit	error		Minute.17=ERR13	Minute.17=Integer:0
-P_Minute	vm3	missing		Minute.18=Integer:15	<failed: bind: unresolved name `Time` (named argument)>
-P_Minute	jit	missing		Minute.18=Integer:15	<failed: bind: unresolved name `Time` (named argument)>
 P_Month	vm3	error	locale	Month.13=Integer:12	Month.13=ERR13
 P_Month	jit	error	locale	Month.13=Integer:12	Month.13=ERR13
-P_Month	vm3	error		Month.18=ERR13	Month.18=Integer:1
-P_Month	jit	error		Month.18=ERR13	Month.18=Integer:1
-P_Month	vm3	error		Month.20=ERR13	Month.20=Integer:12
-P_Month	jit	error		Month.20=ERR13	Month.20=Integer:12
-P_Month	vm3	missing		Month.21=Integer:3	<failed: bind: unresolved name `Date` (named argument)>
-P_Month	jit	missing		Month.21=Integer:3	<failed: bind: unresolved name `Date` (named argument)>
 P_MonthName	vm3	value	locale	MonthName.4=String:[Sept]	MonthName.4=String:[Sep]
 P_MonthName	jit	value	locale	MonthName.4=String:[Sept]	MonthName.4=String:[Sep]
 P_MonthName	vm3	error		MonthName.10=ERR94	MonthName.10=String:[March]
@@ -1423,12 +1379,6 @@ P_SaveSetting	vm3	error		SaveSetting.15=ERR5	SaveSetting.15=String:[v]
 P_SaveSetting	jit	error		SaveSetting.15=ERR5	SaveSetting.15=String:[v]
 P_SaveSetting	vm3	error		SaveSetting.16=ERR5	SaveSetting.16=String:[v]
 P_SaveSetting	jit	error		SaveSetting.16=ERR5	SaveSetting.16=String:[v]
-P_Second	vm3	error		Second.16=ERR13	Second.16=Integer:0
-P_Second	jit	error		Second.16=ERR13	Second.16=Integer:0
-P_Second	vm3	error		Second.17=ERR13	Second.17=Integer:0
-P_Second	jit	error		Second.17=ERR13	Second.17=Integer:0
-P_Second	vm3	missing		Second.18=Integer:30	<failed: bind: unresolved name `Time` (named argument)>
-P_Second	jit	missing		Second.18=Integer:30	<failed: bind: unresolved name `Time` (named argument)>
 P_Shell	vm3	error		Shell.1=ERR53	Shell.1=Long:1
 P_Shell	jit	error		Shell.1=ERR53	Shell.1=Long:1
 P_Shell	vm3	error		Shell.2=ERR53	Shell.2=Long:1
@@ -1574,10 +1524,6 @@ P_Tan	vm3	lastbit		Tan.20=Double:BFF8EB245CBEE3A7|-1.5574077246549	Tan.20=Double
 P_Tan	jit	lastbit		Tan.20=Double:BFF8EB245CBEE3A7|-1.5574077246549	Tan.20=Double:BFF8EB245CBEE3A6|-1.5574077246549
 P_Tan	vm3	missing		Tan.22=Double:3FF8EB245CBEE3A7|1.5574077246549	<failed: bind: unresolved name `Number` (named argument)>
 P_Tan	jit	missing		Tan.22=Double:3FF8EB245CBEE3A7|1.5574077246549	<failed: bind: unresolved name `Number` (named argument)>
-P_TimeSerial	vm3	missing		TimeSerial.24=Date:3FD0B05B05B05B06	<failed: bind: unresolved name `Hour` (named argument)>
-P_TimeSerial	jit	missing		TimeSerial.24=Date:3FD0B05B05B05B06	<failed: bind: unresolved name `Hour` (named argument)>
-P_TimeSerial	vm3	missing		TimeSerial.25=Date:3FD0B05B05B05B06	<failed: bind: unresolved name `Second` (named argument)>
-P_TimeSerial	jit	missing		TimeSerial.25=Date:3FD0B05B05B05B06	<failed: bind: unresolved name `Second` (named argument)>
 P_TimeValue	vm3	error		TimeValue.10=Date:3FE1555555555555	TimeValue.10=ERR13
 P_TimeValue	jit	error		TimeValue.10=Date:3FE1555555555555	TimeValue.10=ERR13
 P_TimeValue	vm3	error		TimeValue.14=ERR94	TimeValue.14=Null
@@ -1586,8 +1532,6 @@ P_TimeValue	vm3	error		TimeValue.15=ERR13	TimeValue.15=Date:0000000000000000
 P_TimeValue	jit	error		TimeValue.15=ERR13	TimeValue.15=Date:0000000000000000
 P_TimeValue	vm3	error		TimeValue.18=ERR13	TimeValue.18=Date:3FDC08A0CE512957
 P_TimeValue	jit	error		TimeValue.18=ERR13	TimeValue.18=Date:3FDC08A0CE512957
-P_TimeValue	vm3	missing		TimeValue.25=Date:3FD0B05B05B05B06	<failed: bind: unresolved name `Time` (named argument)>
-P_TimeValue	jit	missing		TimeValue.25=Date:3FD0B05B05B05B06	<failed: bind: unresolved name `Time` (named argument)>
 P_TimeValue	vm3	value		TimeValue.26=Date:3FDAAAAAAAAAAAAB	TimeValue.26=Date:3FDAAAAAAAAA0000
 P_TimeValue	jit	value		TimeValue.26=Date:3FDAAAAAAAAAAAAB	TimeValue.26=Date:3FDAAAAAAAAA0000
 P_Trim	vm3	value		Trim.12=String:[abc]	Trim.12=String:[{12288}abc]
@@ -1648,10 +1592,6 @@ P_VarType	vm3	missing		VarType.49=Long:3	<failed: bind: unsupported construct: c
 P_VarType	jit	missing		VarType.49=Long:3	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
 P_VarType	vm3	missing		VarType.62=Long:2	<failed: bind: unresolved name `VarName` (named argument)>
 P_VarType	jit	missing		VarType.62=Long:2	<failed: bind: unresolved name `VarName` (named argument)>
-P_Weekday	vm3	error		Weekday.31=ERR13	Weekday.31=Integer:7
-P_Weekday	jit	error		Weekday.31=ERR13	Weekday.31=Integer:7
-P_Weekday	vm3	missing		Weekday.32=Integer:7	<failed: bind: unresolved name `Date` (named argument)>
-P_Weekday	jit	missing		Weekday.32=Integer:7	<failed: bind: unresolved name `Date` (named argument)>
 P_WeekdayName	vm3	error		WeekdayName.15=ERR94	WeekdayName.15=String:[Sunday]
 P_WeekdayName	jit	error		WeekdayName.15=ERR94	WeekdayName.15=String:[Sunday]
 P_WeekdayName	vm3	missing		WeekdayName.18=String:[Tue]	<failed: bind: unresolved name `Weekday` (named argument)>
@@ -1664,9 +1604,3 @@ P_Year	vm3	value	locale	Year.12=Integer:2001	Year.12=Integer:2029
 P_Year	jit	value	locale	Year.12=Integer:2001	Year.12=Integer:2029
 P_Year	vm3	value	locale	Year.13=Integer:2001	Year.13=Integer:1930
 P_Year	jit	value	locale	Year.13=Integer:2001	Year.13=Integer:1930
-P_Year	vm3	error		Year.18=ERR13	Year.18=Integer:10000
-P_Year	jit	error		Year.18=ERR13	Year.18=Integer:10000
-P_Year	vm3	error		Year.20=ERR13	Year.20=Integer:99
-P_Year	jit	error		Year.20=ERR13	Year.20=Integer:99
-P_Year	vm3	missing		Year.21=Integer:2021	<failed: bind: unresolved name `Date` (named argument)>
-P_Year	jit	missing		Year.21=Integer:2021	<failed: bind: unresolved name `Date` (named argument)>

@@ -1349,9 +1349,9 @@ fn round_half_even_div(magnitude: u128, drop: u32) -> u128 {
 /// Sakamoto's algorithm (ported from the legacy VM): 0 = Sunday … 6 = Saturday.
 pub(crate) fn day_of_week(year: i32, month: u32, day: u32) -> i32 {
     let table = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
-    let m = month as i32;
-    let y = if m < 3 { year - 1 } else { year };
-    (y + y / 4 - y / 100 + y / 400 + table[(m - 1) as usize] + day as i32).rem_euclid(7)
+    let m = month as i64;
+    let y = i64::from(year) - i64::from(m < 3);
+    (y + y / 4 - y / 100 + y / 400 + table[(m - 1) as usize] + i64::from(day)).rem_euclid(7) as i32
 }
 
 fn validate_vba_date_serial(serial: f64) -> LibResult<f64> {
@@ -1438,7 +1438,7 @@ pub fn date_value(args: &[Variant]) -> LibResult<Variant> {
 
 /// A date argument: a `Date` or numeric serial, or a string read as `CDate` reads it.
 fn date_arg(v: &Variant) -> LibResult<f64> {
-    match v.vtype() {
+    let serial = match v.vtype() {
         VarType::Date => Ok(v.as_date_f64().unwrap_or(0.0)),
         // Date text parses as `CDate` parses it; a numeric string is its serial.
         VarType::String => match cdate_from_string(&as_str(v)?) {
@@ -1446,7 +1446,11 @@ fn date_arg(v: &Variant) -> LibResult<f64> {
             Err(error) => as_f64(v).map_err(|_| error),
         },
         _ => as_f64(v),
+    }?;
+    if !calcvba_runtime::coerce::is_date_serial(serial) {
+        return Err(LibError::type_mismatch("date argument out of range"));
     }
+    Ok(serial)
 }
 
 /// VBA `TimeValue` returns the TIME-OF-DAY part of its argument. Like `DateValue` it accepts a
@@ -1820,11 +1824,11 @@ fn first_week_of_year(args: &[Variant], index: usize) -> LibResult<i32> {
 /// belongs to the last week of the previous year, and (except under `vbFirstJan1`) one on or
 /// after week 1 of the next year is week 1.
 pub(crate) fn week_of_year(y: i64, m: i64, d: i64, first_day: i32, first_week: i32) -> i64 {
-    let day = days_from_civil(y, m, d);
-    let week_one_start = |year: i64| -> i64 {
-        let jan1 = days_from_civil(year, 1, 1);
+    let day = i128::from(days_from_civil(y, m, d));
+    let week_one_start = |year: i64| -> i128 {
+        let jan1 = i128::from(days_from_civil(year, 1, 1));
         // Days from the start of the week to Jan 1 (1970-01-01 was a Thursday).
-        let before = (jan1 + 4 - i64::from(first_day - 1)).rem_euclid(7);
+        let before = (jan1 + 4 - (i128::from(first_day) - 1)).rem_euclid(7);
         let week_start = jan1 - before;
         match first_week {
             2 if 7 - before < 4 => week_start + 7,
@@ -1834,15 +1838,15 @@ pub(crate) fn week_of_year(y: i64, m: i64, d: i64, first_day: i32, first_week: i
     };
     // Under vbFirstJan1 the days of the last week stay in this year (Dec 31 can be week 53);
     // under the other two rules they belong to week 1 once it has started.
-    if first_week != 1 && day >= week_one_start(y + 1) {
+    if first_week != 1 && day >= week_one_start(y.saturating_add(1)) {
         return 1;
     }
     let start = if day >= week_one_start(y) {
         week_one_start(y)
     } else {
-        week_one_start(y - 1)
+        week_one_start(y.saturating_sub(1))
     };
-    (day - start) / 7 + 1
+    ((day - start) / 7 + 1).clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
 }
 
 fn weekday_number(year: i32, month: u32, day: u32, first: i32) -> i32 {
@@ -3673,6 +3677,39 @@ pub fn mac_script(args: &[Variant]) -> LibResult<Variant> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn date_parts_reject_out_of_range_serials_before_calendar_conversion() {
+        for serial in [
+            -657_435.0,
+            2_958_466.0,
+            -1e30,
+            1e30,
+            f64::MIN,
+            f64::MAX,
+            f64::NAN,
+            f64::INFINITY,
+        ] {
+            for part in [
+                DatePart::Year,
+                DatePart::Month,
+                DatePart::Day,
+                DatePart::Weekday,
+                DatePart::Hour,
+                DatePart::Minute,
+                DatePart::Second,
+            ] {
+                assert_eq!(
+                    date_part(&[Variant::from_f64(serial)], part)
+                        .unwrap_err()
+                        .code,
+                    13
+                );
+            }
+            // Format uses the same calendar helpers through a separate path.
+            let _ = crate::format::apply_with(&Variant::from_f64(serial), "ww y dddd", 1, 1);
+        }
+    }
 
     fn vs(s: &str) -> Variant {
         Variant::from_string(s.to_string())

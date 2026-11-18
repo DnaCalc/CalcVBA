@@ -11,7 +11,13 @@
 pub const VBA_EPOCH_DAYS_FROM_UNIX: i64 = -25569;
 
 /// Days since 1970-01-01 for a proleptic-Gregorian `(y, m, d)` (Howard Hinnant's algorithm).
+/// Counts outside the i64 day carrier saturate; VBA-facing callers check Date bounds.
 pub fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    days_from_civil_wide(y, m, d).clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
+}
+
+fn days_from_civil_wide(y: i64, m: i64, d: i64) -> i128 {
+    let (y, m, d) = (i128::from(y), i128::from(m), i128::from(d));
     // A month outside 1-12 carries into the year (`DateSerial(2000, 15, 1)` is March 2001).
     let y = y + (m - 1).div_euclid(12);
     let m = (m - 1).rem_euclid(12) + 1;
@@ -26,6 +32,10 @@ pub fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 /// Proleptic-Gregorian `(y, m, d)` for a days-since-1970-01-01 count (inverse of
 /// [`days_from_civil`]).
 pub fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    civil_from_days_wide(i128::from(z))
+}
+
+fn civil_from_days_wide(z: i128) -> (i64, i64, i64) {
     let z = z + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
     let doe = z - era * 146097;
@@ -35,12 +45,13 @@ pub fn civil_from_days(z: i64) -> (i64, i64, i64) {
     let mp = (5 * doy + 2) / 153;
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    (if m <= 2 { y + 1 } else { y }, m, d)
+    // An i64 day count plus the epoch offset has a year well inside i64.
+    ((if m <= 2 { y + 1 } else { y }) as i64, m as i64, d as i64)
 }
 
 /// The VBA `Date` serial for a `(y, m, d)`.
 pub fn ymd_to_serial(y: i64, m: i64, d: i64) -> f64 {
-    (days_from_civil(y, m, d) - VBA_EPOCH_DAYS_FROM_UNIX) as f64
+    (days_from_civil_wide(y, m, d) - i128::from(VBA_EPOCH_DAYS_FROM_UNIX)) as f64
 }
 
 /// Proleptic-Gregorian leap year (divisible by 4, except centuries not divisible by 400).
@@ -64,7 +75,7 @@ fn serial_day_and_seconds(serial: f64) -> (i64, i64) {
     let frac = (serial - serial.trunc()).abs();
     let mut total = (frac * 86_400.0).round() as i64;
     if total >= 86_400 {
-        day += 1;
+        day = day.saturating_add(1);
         total -= 86_400;
     }
     (day, total)
@@ -73,7 +84,7 @@ fn serial_day_and_seconds(serial: f64) -> (i64, i64) {
 /// The `(year, month, day)` of a VBA `Date` serial.
 pub fn serial_to_ymd(serial: f64) -> (i64, i64, i64) {
     let (day, _) = serial_day_and_seconds(serial);
-    civil_from_days(day + VBA_EPOCH_DAYS_FROM_UNIX)
+    civil_from_days_wide(i128::from(day) + i128::from(VBA_EPOCH_DAYS_FROM_UNIX))
 }
 
 /// The `(hour, minute, second)` of a VBA `Date` serial's time-of-day fraction.
@@ -125,6 +136,47 @@ pub fn format_write_date(serial: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn civil_calendar_round_trips_extreme_day_counts() {
+        for day in [
+            i64::MIN,
+            i64::MIN + 1,
+            -719_469,
+            -1,
+            0,
+            i64::MAX - 1,
+            i64::MAX,
+        ] {
+            let (year, month, date) = civil_from_days(day);
+            assert!((1..=12).contains(&month));
+            assert!((1..=days_in_month(year, month)).contains(&date));
+            assert_eq!(days_from_civil(year, month, date), day);
+        }
+        assert_eq!(days_from_civil(i64::MAX, i64::MAX, i64::MAX), i64::MAX);
+        assert_eq!(days_from_civil(i64::MIN, i64::MIN, i64::MIN), i64::MIN);
+    }
+
+    #[test]
+    fn invalid_serial_display_cannot_overflow_calendar_math() {
+        for serial in [
+            f64::MIN,
+            -1e30,
+            1e30,
+            f64::MAX,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NAN,
+        ] {
+            let (_, month, date) = serial_to_ymd(serial);
+            assert!((1..=12).contains(&month));
+            assert!((1..=31).contains(&date));
+            let _ = format_general_date(serial);
+            let _ = format_write_date(serial);
+        }
+        assert!(ymd_to_serial(i64::MAX, i64::MAX, i64::MAX).is_finite());
+        assert!(ymd_to_serial(i64::MIN, i64::MIN, i64::MIN).is_finite());
+    }
 
     #[test]
     fn general_date_date_only() {

@@ -2958,28 +2958,38 @@ pub fn irr(args: &[Variant]) -> LibResult<Variant> {
 }
 
 pub fn mirr(args: &[Variant]) -> LibResult<Variant> {
-    let flows = cashflows(need(args, 0)?)?;
+    let invalid = || LibError::invalid_call("MIRR argument out of range");
+    let array = need(args, 0)?;
+    if array.vtype() == VarType::ArrayVariant && array.as_safearray().is_none() {
+        return Err(invalid());
+    }
+    let flows = cashflows(array)?;
     let finance = as_f64(need(args, 1)?)?;
     let reinvest = as_f64(need(args, 2)?)?;
-    let n = flows.len() as i32;
-    let neg: f64 = flows
-        .iter()
-        .enumerate()
-        .filter(|(_, cf)| **cf < 0.0)
-        .map(|(k, cf)| cf / (1.0 + finance).powi(k as i32))
-        .sum();
-    let pos: f64 = flows
-        .iter()
-        .enumerate()
-        .filter(|(_, cf)| **cf > 0.0)
-        .map(|(k, cf)| cf * (1.0 + reinvest).powi(n - 1 - k as i32))
-        .sum();
-    if neg == 0.0 || n <= 1 {
-        return Err(LibError::invalid_call(
-            "MIRR requires positive and negative flows",
-        ));
+    let n = flows.len() as f64;
+    if finance == -1.0 || reinvest == -1.0 || n <= 1.0 {
+        return Err(invalid());
     }
-    Ok(vf64((-pos / neg).powf(1.0 / (n as f64 - 1.0)) - 1.0))
+    let present_value = |rate: f64, positive: bool| {
+        let (mut denominator, mut total) = (1.0, 0.0);
+        for flow in &flows {
+            denominator += denominator * rate;
+            if if positive { *flow > 0.0 } else { *flow < 0.0 } {
+                total += flow / denominator;
+            }
+        }
+        total
+    };
+    let negative = present_value(finance, false);
+    if negative == 0.0 {
+        return Err(LibError::new(11, "MIRR has no negative cash flow"));
+    }
+    let positive = present_value(reinvest, true);
+    let growth = -positive * (reinvest + 1.0).powf(n) / (negative * (finance + 1.0));
+    if growth < 0.0 {
+        return Err(invalid());
+    }
+    finite_result(growth.powf(1.0 / (n - 1.0)) - 1.0)
 }
 
 /// An x87 80-bit extended value: a 64-bit significand rounded to nearest-even after every
@@ -4643,6 +4653,65 @@ mod tests {
             irr(&[Variant::unallocated_array(
                 calcvba_runtime::safe_array::VT_R8_VALUE
             )])
+            .unwrap_err()
+            .code,
+            5
+        );
+    }
+
+    #[test]
+    fn mirr_excel_ordered_cashflows_and_errors() {
+        let flows = |values: &[f64]| {
+            Variant::from_safearray(SafeArray::from_variants(
+                values.iter().copied().map(vf64).collect(),
+            ))
+        };
+        for (values, finance, reinvest, bits) in [
+            (
+                &[-120000.0, 39000.0, 30000.0, 21000.0, 37000.0, 46000.0][..],
+                0.1,
+                0.12,
+                0x3FC0_23DA_3B11_CED0,
+            ),
+            (
+                &[-100.0, 300.0, -300.0, 150.0],
+                0.1,
+                0.12,
+                0x3FC2_EF92_009E_4178,
+            ),
+        ] {
+            assert_eq!(
+                mirr(&[flows(values), vf64(finance), vf64(reinvest)])
+                    .unwrap()
+                    .as_f64()
+                    .unwrap()
+                    .to_bits(),
+                bits
+            );
+        }
+        let mixed = flows(&[-100.0, 50.0, 60.0]);
+        for (finance, reinvest) in [(-1.0, 0.12), (0.1, -1.0)] {
+            assert_eq!(
+                mirr(&[mixed.clone(), vf64(finance), vf64(reinvest)])
+                    .unwrap_err()
+                    .code,
+                5
+            );
+        }
+        for values in [&[10.0, 20.0, 30.0][..], &[0.0, 0.0, 0.0]] {
+            assert_eq!(
+                mirr(&[flows(values), vf64(0.1), vf64(0.12)])
+                    .unwrap_err()
+                    .code,
+                11
+            );
+        }
+        assert_eq!(
+            mirr(&[
+                Variant::unallocated_array(calcvba_runtime::safe_array::VT_R8_VALUE),
+                vf64(0.1),
+                vf64(0.1)
+            ])
             .unwrap_err()
             .code,
             5

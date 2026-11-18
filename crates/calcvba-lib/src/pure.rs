@@ -2572,11 +2572,11 @@ fn rnd_negative_seed(value: f64) -> u64 {
     ((bits & RND_MASK) + ((bits >> 24) & 0xFF)) & RND_MASK
 }
 
-/// The 16 bits `Randomize` takes from its argument: the high half of the XOR of the Double's two
-/// 32-bit words. They replace the middle two bytes of the 24-bit state.
+/// `Randomize` XORs the two 16-bit halves of the Double's high 32-bit word.
+/// They replace the middle two bytes of the 24-bit state.
 fn randomize_seed_word(value: f64) -> u64 {
     let bits = value.to_bits();
-    ((bits ^ (bits >> 32)) >> 16) & 0xFFFF
+    ((bits >> 32) ^ (bits >> 48)) & 0xFFFF
 }
 
 /// An optional numeric argument, treating an `Empty` placeholder as omitted.
@@ -2585,7 +2585,7 @@ fn numeric_arg(args: &[Variant], index: usize) -> Option<&Variant> {
 }
 
 pub fn rnd(args: &[Variant], ctx: &mut LibContext) -> LibResult<Variant> {
-    let value = match numeric_arg(args, 0) {
+    let value = match opt(args, 0) {
         Some(v) => as_f64(v)?,
         None => 1.0, // omitted ⇒ next in sequence
     };
@@ -2603,12 +2603,9 @@ pub fn rnd(args: &[Variant], ctx: &mut LibContext) -> LibResult<Variant> {
 }
 
 pub fn randomize(args: &[Variant], ctx: &mut LibContext) -> LibResult<Variant> {
-    let seed = match numeric_arg(args, 0) {
-        Some(v) => randomize_seed_word(as_f64(v)?),
-        // No argument: VBA seeds from the system timer. Without host access here,
-        // fold the current state forward deterministically.
-        None => ctx.rng_state.wrapping_mul(RND_MULT).wrapping_add(RND_INC),
-    };
+    // The caller supplies the host timer when the source argument is omitted, before
+    // borrowing the contextual state. Explicit Empty coerces to zero.
+    let seed = randomize_seed_word(as_f64(need(args, 0)?)?);
     // VBA replaces the high 16 bits of the 24-bit state, preserving the low byte.
     ctx.rng_state = ((ctx.rng_state & 0xFF) | ((seed & 0xFFFF) << 8)) & RND_MASK;
     Ok(vunit())
@@ -4459,6 +4456,19 @@ mod tests {
         let second = as_f64(&rnd(&[], &mut repeatable).unwrap()).unwrap();
         assert_eq!(repeatable.rng_state, 0x11_73_30);
         assert_eq!(second, 0.06816387176513672);
+    }
+
+    #[test]
+    fn rnd_matches_excel_full_period() {
+        // P_Rnd.34: the next value after the 2^24-state cycle repeats the first.
+        let mut ctx = LibContext::default();
+        let first = rnd(&[Variant::from_i32(-1)], &mut ctx).unwrap();
+        for _ in 1..16_777_216 {
+            rng_step(&mut ctx);
+        }
+        let repeated = rnd(&[], &mut ctx).unwrap();
+        assert_eq!(first.as_f32().unwrap().to_bits(), 0x3E65_6218);
+        assert_eq!(first.as_f32(), repeated.as_f32());
     }
 
     #[test]

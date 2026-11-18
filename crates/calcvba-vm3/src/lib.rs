@@ -5195,7 +5195,9 @@ impl<'h> Vm3<'h> {
             return Ok(Variant::from_string(name));
         }
         if calcvba_lib::is_contextual(id) {
-            return calcvba_lib::invoke_contextual(id, argv, &mut self.exec.lib)
+            let argv = calcvba_lib::prepare_contextual_args(id, argv, self.exec.host)
+                .map_err(|e| Vm3Error::Fault(Fault::from_lib(e)))?;
+            return calcvba_lib::invoke_contextual(id, &argv, &mut self.exec.lib)
                 .map_err(|e| Vm3Error::Fault(Fault::from_lib(e)));
         }
 

@@ -278,6 +278,7 @@ fn compare(executor: Executor) -> (Vec<String>, Vec<String>, Vec<String>) {
             .enumerate()
             .map(|(i, l)| case_number(l).unwrap_or(i as u32 + 1))
             .collect();
+        eprintln!("{executor:?} {module}: starting");
         let started = std::time::Instant::now();
         // A module that does not bind or run is run once per case (the others blanked), so the
         // failure counts against the cases that cause it.
@@ -414,6 +415,33 @@ fn regexp_classes_match_excel() {
     let fmt = std::fs::read_to_string(dir().join("probes/ProbeFmt.bas")).unwrap();
     for executor in [Executor::Vm3, Executor::Jit] {
         for module in ["P_RegExp", "P_Match", "P_MatchCollection"] {
+            let source =
+                std::fs::read_to_string(dir().join(format!("probes/{module}.bas"))).unwrap();
+            let answer =
+                std::fs::read_to_string(dir().join(format!("probes/{module}.excel.txt"))).unwrap();
+            let actual = run_text(executor, &fmt, module, &source)
+                .unwrap_or_else(|e| panic!("{executor:?} {module}: {e}"));
+            assert_eq!(
+                actual.replace("\r\n", "\n"),
+                answer.replace("\r\n", "\n"),
+                "{executor:?} {module}"
+            );
+        }
+    }
+}
+
+/// Keep the measured portable names and empty UserForms collection in workspace checks.
+#[test]
+fn missing_library_names_match_excel() {
+    let fmt = std::fs::read_to_string(dir().join("probes/ProbeFmt.bas")).unwrap();
+    for executor in [Executor::Vm3, Executor::Jit] {
+        for module in [
+            "P_Calendar",
+            "P_IMEStatus",
+            "P_MacID",
+            "P_MacScript",
+            "P_UserForms",
+        ] {
             let source =
                 std::fs::read_to_string(dir().join(format!("probes/{module}.bas"))).unwrap();
             let answer =

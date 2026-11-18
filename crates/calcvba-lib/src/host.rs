@@ -413,6 +413,12 @@ pub fn file_input_chars(args: &[Variant], host: &dyn HostServices) -> LibResult<
         .fs()
         .input_chars_variant(Variant::from_i32(handle), Variant::from_i32(count))?)
 }
+/// InputB returns the input's ANSI bytes in a byte-length BSTR, including odd lengths.
+pub fn file_input_bytes(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
+    let text = file_input_chars(args, host)?;
+    let bytes = calcvba_runtime::ansi::ansi_encode(&as_str(&text)?);
+    Ok(Variant::from_bstr_bytes(&bytes))
+}
 pub fn console_input(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
     Ok(host.console().input_fields_variant(req(args, 0)?)?)
 }

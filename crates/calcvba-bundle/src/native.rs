@@ -103,6 +103,8 @@ native_impl_ids! {
     Tan,
 
     // ── DateTime ─────────────────────────────────────────────
+    Calendar,
+    CalendarLet,
     DateSerial,
     TimeSerial,
     DateValue,
@@ -147,6 +149,15 @@ native_impl_ids! {
     CCur,
     CDec,
     CVar,
+    MacID,
+    MacScript,
+    IMEStatus,
+    UserForms,
+    Load,
+    Unload,
+    FileInputBytes,
+    FileReset,
+    FileWidthFunction,
 
     // ── Random ───────────────────────────────────────────────
     Rnd,
@@ -321,26 +332,32 @@ impl NativeImplId {
             | AscW | Space | StringRepeat | StrReverse | StrConv | Format | FormatNumber
             | FormatCurrency | FormatPercent | FormatDateTime | Filter => M::Strings,
             Abs | Int | Fix | Sgn | Round | Sqr | Sin | Cos | Log | Exp | Atn | Tan => M::Math,
-            DateSerial | TimeSerial | DateValue | TimeValue | DateAdd | DateDiff | Year | Month
-            | Day | Weekday | Hour | Minute | Second | MonthName | WeekdayName | DatePart
-            | DateNow | TimeNow | DateNowText | TimeNowText | Now | Timer => M::DateTime,
+            Calendar | CalendarLet | DateSerial | TimeSerial | DateValue | TimeValue | DateAdd
+            | DateDiff | Year | Month | Day | Weekday | Hour | Minute | Second | MonthName
+            | WeekdayName | DatePart | DateNow | TimeNow | DateNowText | TimeNowText | Now
+            | Timer => M::DateTime,
             Hex | Oct | CStr | Str | Val | CDate | CVErr | CBool | CByte | CInt | CLng
-            | CLngLng | CLngPtr | CSng | CDbl | CCur | CDec | CVar => M::Conversion,
+            | CLngLng | CLngPtr | CSng | CDbl | CCur | CDec | CVar | MacID => M::Conversion,
             Rnd | Randomize => M::Random,
             Fv | Pv | Pmt | Npv | Irr | Mirr | Rate | NPer | IPmt | PPmt | Sln | Syd | Ddb => {
                 M::Financial
             }
             IsArray | VarType | TypeName | IsNumeric | IsError | IsDate | IsObject | IsNull
-            | IsEmpty | IsMissing | ErrorText | IIf | Choose | Switch | Rgb | QbColor => {
-                M::Information
-            }
+            | IsEmpty | IsMissing | ErrorText | IIf | Choose | Switch | Rgb | QbColor
+            | IMEStatus => M::Information,
             FreeFile | FileOpen | FileClose | FileKill | FileMkDir | FileRmDir | FileCurDir
             | FileChDir | FileLen | FileCopy | FileGetAttr | FileSetAttr | FileChDrive
             | FileDateTime | FileRead | FileWrite | FilePrint | ConsolePrint | FileInput
             | ConsoleInput | FileLineInput | ConsoleLineInput | FileEof | FileLof | FileSeek
             | FileAttr | FileLoc | FilePut | FileGetInto | FileWidth | FileRename | FileLock
-            | FileUnlock | FileInputChars => M::FileIo,
-            Command
+            | FileUnlock | FileInputChars | FileInputBytes | FileReset | FileWidthFunction => {
+                M::FileIo
+            }
+            UserForms
+            | Load
+            | Unload
+            | MacScript
+            | Command
             | GetSetting
             | GetAllSettings
             | SaveSetting
@@ -488,6 +505,11 @@ impl NativeImplId {
             Atn => "Atn",
             Tan => "Tan",
             // ── DateTime ──
+            Calendar => "Calendar",
+            CalendarLet => return None,
+            MacID => "MacID",
+            MacScript => "MacScript",
+            IMEStatus => "IMEStatus",
             DateSerial => "DateSerial",
             TimeSerial => "TimeSerial",
             DateValue => "DateValue",
@@ -729,6 +751,8 @@ impl NativeImplId {
             Abs | Int | Fix | Sgn | Sqr | Sin | Cos | Log | Exp | Atn | Tan => 1,
             Round => 2,
             // ── DateTime ──
+            CalendarLet | MacID | MacScript => 1,
+            Calendar | IMEStatus => 0,
             Year | Month | Day | Hour | Minute | Second | DateValue | TimeValue => 1,
             Weekday | MonthName => 2,
             DateSerial | TimeSerial | DateAdd => 3,

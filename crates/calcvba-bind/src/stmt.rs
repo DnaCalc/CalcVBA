@@ -136,6 +136,24 @@ impl<'a> ProcLower<'a> {
         {
             return Ok(stmts);
         }
+        let calendar_binding = match target_node.kind() {
+            SyntaxKind::IdentExpr => target_node
+                .ident_name_token()
+                .and_then(|t| self.resolve(t.text)),
+            SyntaxKind::MemberExpr => target_node
+                .member_name_token()
+                .and_then(|t| self.qualified_namespace_member_binding(target_node, t.text)),
+            _ => None,
+        };
+        if calendar_binding.is_some_and(|b| matches!(b.route, DispatchRoute::ExternMember { ref unit, ref owner, ref member, has_receiver: false, .. } if unit == "VBA" && owner == "DateTime" && member == "Calendar")) {
+            if intent == AssignmentIntent::Set {
+                return Err(BindError::InvalidAssignment("Set assignment to Calendar".into()));
+            }
+            return Ok(vec![CoreStmt::Eval(CoreValue::Call {
+                callee: CoreCallee::Native(NativeImplId::CalendarLet),
+                args: vec![CoreArg::ByVal(val.value.clone())],
+            })]);
+        }
         if let Some(stmts) = self.try_foreign_assignment(target_node, intent, &val)? {
             return Ok(stmts);
         }

@@ -2601,7 +2601,7 @@ pub unsafe extern "C" fn rt_lib_invoke_with_policy(
             Ok(value) => Ok(value),
             Err(calcvba_lib::ContextFreeInvokeError::Library(err)) => Err(err),
             Err(calcvba_lib::ContextFreeInvokeError::ContextRequired) => {
-                // SAFETY: contextual IDs are Rnd/Randomize only and the contextual
+                // SAFETY: contextual IDs only access library state and the contextual
                 // dispatcher has no host/callback parameter. This short state borrow
                 // therefore cannot survive re-entry.
                 let Some(exec) = (unsafe { state_from_raw(state) }) else {

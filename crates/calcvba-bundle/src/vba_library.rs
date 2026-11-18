@@ -322,12 +322,14 @@ mod tests {
                     | ErrorText
                     | Rgb
                     | QbColor
+                    | IMEStatus
             )
         };
         let interaction_by_name = |id| {
             matches!(
                 id,
-                Command
+                MacScript
+                    | Command
                     | GetSetting
                     | GetAllSettings
                     | SaveSetting
@@ -376,7 +378,10 @@ mod tests {
         for &id in NativeImplId::ALL {
             let migrated = match id.module() {
                 M::Strings | M::Math | M::DateTime | M::Conversion | M::Random | M::Financial => {
-                    !matches!(id, MidStmt | MidBStmt | LSetStmt | RSetStmt | Like)
+                    !matches!(
+                        id,
+                        MidStmt | MidBStmt | LSetStmt | RSetStmt | Like | CalendarLet
+                    )
                 }
                 M::Information => information_by_name(id),
                 M::Interaction => interaction_by_name(id),

@@ -3655,6 +3655,24 @@ pub fn switch(args: &[Variant]) -> LibResult<Variant> {
     Ok(Variant::null())
 }
 
+/// Mac four-character codes are big-endian ANSI bytes, padded with spaces.
+pub fn mac_id(args: &[Variant]) -> LibResult<Variant> {
+    let value = as_str(need(args, 0)?)?;
+    let mut bytes = [b' '; 4];
+    for (slot, byte) in bytes
+        .iter_mut()
+        .zip(calcvba_runtime::ansi::ansi_encode(&value))
+    {
+        *slot = byte;
+    }
+    Ok(vi32(i32::from_be_bytes(bytes)))
+}
+
+pub fn mac_script(args: &[Variant]) -> LibResult<Variant> {
+    as_str(need(args, 0)?)?;
+    Err(LibError::invalid_call("MacScript is unavailable"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

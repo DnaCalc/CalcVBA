@@ -101,7 +101,11 @@ impl Provider for VbaLibraryProvider {
         if let Some(binding) = regexp_member(type_name, name, want) {
             return Some(binding);
         }
-        let object = predeclared_object(type_name)?;
+        let object = predeclared_object(if type_name.eq_ignore_ascii_case("ErrObject") {
+            "Err"
+        } else {
+            type_name
+        })?;
         let route = predeclared_member(object, name)?;
         Some(Binding::new(None, route))
     }
@@ -132,37 +136,21 @@ impl Provider for VbaLibraryProvider {
         // `Math.Abs(x)`, `Strings.Left(s, 2)`: a VBA library module named without the `VBA.` prefix. A
         // project module of that name is found first (the project provider comes before this one).
         // `VbVarType.vbString`: a library constant named through its enum, without the `VBA.` prefix.
-        if parts.len() == 2 && fold_identifier(parts[0]).starts_with("vb") {
+        if parts.len() == 2 && is_constant_owner(parts[0]) {
             let binding = self.resolve(parts[1])?;
             return matches!(binding.route, DispatchRoute::ConstValue(_)).then_some(binding);
         }
         if parts.len() == 2 && is_vba_library_module(parts[0]) {
             let owner = fold_identifier(parts[0]);
             let binding = self.resolve(parts[1])?;
-            let matches_owner = match &binding.route {
-                DispatchRoute::Native(id) => id
-                    .library_member()
-                    .is_some_and(|(module, _)| fold_identifier(module) == owner),
-                DispatchRoute::ExternMember { owner: module, .. } => {
-                    fold_identifier(module) == owner
-                }
-                _ => false,
-            };
-            return matches_owner.then_some(binding);
+            return binding_owner_matches(&owner, &binding).then_some(binding);
         }
         if parts.len() == 3 && fold_identifier(parts[0]) == "vba" {
             let owner = fold_identifier(parts[1]);
             let binding = self.resolve(parts[2])?;
             let matches_owner = match &binding.route {
-                DispatchRoute::Native(id) => id
-                    .library_member()
-                    .is_some_and(|(module, _)| fold_identifier(module) == owner),
-                DispatchRoute::ExternMember { owner: module, .. } => {
-                    fold_identifier(module) == owner
-                }
-                // `VBA.VbCompareMethod.vbTextCompare`: a library constant named through its enum.
-                DispatchRoute::ConstValue(_) => owner.starts_with("vb"),
-                _ => false,
+                DispatchRoute::ConstValue(_) => is_constant_owner(&owner),
+                _ => binding_owner_matches(&owner, &binding),
             };
             return matches_owner.then_some(binding);
         }
@@ -198,6 +186,71 @@ fn is_vba_library_module(name: &str) -> bool {
             | "financial"
             | "fileio"
             | "random"
+            | "vbeglobal"
+    )
+}
+
+fn binding_owner_matches(owner: &str, binding: &Binding) -> bool {
+    use calcvba_bundle::{LibraryModule, NativeImplId};
+    match &binding.route {
+        DispatchRoute::Native(id) => match id {
+            NativeImplId::UserForms | NativeImplId::Load | NativeImplId::Unload => {
+                owner == "vbeglobal"
+            }
+            _ => match id.module() {
+                LibraryModule::Interaction => owner == "interaction",
+                LibraryModule::FileIo => owner == "filesystem" || owner == "fileio",
+                _ => id
+                    .library_member()
+                    .is_some_and(|(module, _)| module.eq_ignore_ascii_case(owner)),
+            },
+        },
+        DispatchRoute::ExternMember {
+            owner: module,
+            member,
+            ..
+        } => {
+            module.eq_ignore_ascii_case(owner)
+                || (module == "Random" && owner == "math")
+                || matches!(
+                    (owner, member.to_ascii_lowercase().as_str()),
+                    ("conversion", "error" | "error$" | "fix" | "int")
+                        | ("filesystem", "dir")
+                        | ("strings", "monthname" | "weekdayname")
+                )
+        }
+        DispatchRoute::PredeclaredObject(PredeclaredObjectId::Err) => owner == "information",
+        DispatchRoute::SpecialForm(SpecialForm::Erl) => owner == "information",
+        DispatchRoute::SpecialForm(
+            SpecialForm::IIf | SpecialForm::Choose | SpecialForm::Switch | SpecialForm::CallByName,
+        ) => owner == "interaction",
+        _ => false,
+    }
+}
+
+fn is_constant_owner(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "vbvartype"
+            | "vbappwinstyle"
+            | "vbcalendar"
+            | "vbcalltype"
+            | "vbcomparemethod"
+            | "vbdatetimeformat"
+            | "vbdayofweek"
+            | "vbfileattribute"
+            | "vbfirstweekofyear"
+            | "vbimestatus"
+            | "vbmsgboxresult"
+            | "vbmsgboxstyle"
+            | "vbqueryclose"
+            | "vbstrconv"
+            | "vbtristate"
+            | "constants"
+            | "colorconstants"
+            | "formshowconstants"
+            | "keycodeconstants"
+            | "systemcolorconstants"
     )
 }
 
@@ -218,6 +271,7 @@ fn collection_member(name: &str) -> Option<Binding> {
         "item" => ("Item", ProjectMemberKind::Method),
         "count" => ("Count", ProjectMemberKind::PropertyGet),
         "remove" => ("Remove", ProjectMemberKind::Method),
+        "_newenum" => ("_NewEnum", ProjectMemberKind::PropertyGet),
         _ => return None,
     };
     Some(Binding::new(
@@ -478,9 +532,9 @@ pub fn library_constant(name: &str) -> Option<CoreConst> {
         "vbapptaskmanager" => int(3),
         "vbformmdiform" => int(4),
         // VbIMEStatus.
-        "vbimemodenocontrol" => int(0),
-        "vbimemodeon" => int(1),
-        "vbimemodeoff" => int(2),
+        "vbimenoop" | "vbimemodenocontrol" => int(0),
+        "vbimeon" | "vbimemodeon" => int(1),
+        "vbimeoff" | "vbimemodeoff" => int(2),
         "vbimemodedisable" | "vbimedisable" => int(3),
         "vbimemodehiragana" | "vbimehiragana" => int(4),
         "vbimemodekatakana" | "vbimekatakanadbl" => int(5),
@@ -489,6 +543,8 @@ pub fn library_constant(name: &str) -> Option<CoreConst> {
         "vbimemodealpha" | "vbimealphasng" => int(8),
         "vbimemodehangulfull" => int(9),
         "vbimemodehangul" => int(10),
+        "vbmsgbox" => int(-2147483625),
+        "vbmsgboxtext" => int(-2147483624),
         // SystemColorConstants.
         "vbscrollbars" => int(-2147483648),
         "vbdesktop" => int(-2147483647),

@@ -89,6 +89,17 @@ pub const fn capabilities_of(id: NativeImplId) -> &'static [Capability] {
         | Exp
         | Atn
         | Tan
+        | Calendar
+        | CalendarLet
+        | MacID
+        | MacScript
+        | IMEStatus
+        | UserForms
+        | Load
+        | Unload
+        | FileInputBytes
+        | FileReset
+        | FileWidthFunction
         | DateSerial
         | TimeSerial
         | DateValue

@@ -4308,7 +4308,7 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
             )
         };
     }
-    if calcvba_lib::regexp::is_object(&object) {
+    if calcvba_lib::objects::is_object(&object) {
         // SAFETY: this short read only borrow ends before storing the result.
         let argv = match collection_call_arg_values_for_jit(unsafe { &*run }, args) {
             Ok(args) => args,
@@ -4322,7 +4322,7 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
                 Err(status) => return status,
             }
         }
-        let value = match calcvba_lib::regexp::dispatch(&object, name, kind, &argv, &arg_names) {
+        let value = match calcvba_lib::objects::dispatch(&object, name, kind, &argv, &arg_names) {
             Ok(value) => value,
             Err(error) => {
                 // SAFETY: the active JIT entry owns the live same-thread error state.
@@ -5456,7 +5456,7 @@ pub(crate) unsafe extern "C" fn rt_jit_call_by_name_to_slot(
         };
         if kind != ProjectMemberKind::Method
             && object.as_object_ref().is_some_and(|object| {
-                !calcvba_lib::regexp::is_object(&object)
+                !calcvba_lib::objects::is_object(&object)
                     && (object.native_collection_snapshot().is_some()
                         || object.is_project_instance()
                             && object.route_key() == VBA_COLLECTION_ROUTE_KEY)

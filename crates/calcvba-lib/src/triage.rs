@@ -95,6 +95,7 @@ pub const fn capabilities_of(id: NativeImplId) -> &'static [Capability] {
         | MacScript
         | IMEStatus
         | UserForms
+        | ErrObjectValue
         | Load
         | Unload
         | FileInputBytes

@@ -4322,15 +4322,20 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
                 Err(status) => return status,
             }
         }
-        let value = match calcvba_lib::objects::dispatch(&object, name, kind, &argv, &arg_names) {
+        // SAFETY: argument evaluation is complete; this call cannot re-enter the host.
+        let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
+            return ST_FAULT;
+        };
+        let value = match calcvba_rt_abi::invoke_library_object(
+            exec, &object, name, kind, &argv, &arg_names,
+        ) {
             Ok(value) => value,
             Err(error) => {
                 // SAFETY: the active JIT entry owns the live same-thread error state.
                 let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
                     return ST_FAULT;
                 };
-                exec.err_engine
-                    .raise(Fault::from_lib(error), current_unit_source(run));
+                exec.err_engine.raise(error, current_unit_source(run));
                 return ST_FAULT;
             }
         };

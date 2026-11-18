@@ -93,7 +93,7 @@ impl From<HalError> for LibError {
     }
 }
 
-/// Mutable per-execution library state: RNG, Calendar and the UserForms identity.
+/// Mutable per-execution library state: RNG, Calendar and built-in object identities.
 /// Contextual built-ins never call the host; context-free built-ins receive no
 /// mutable context, which permits a host operation such as `DoEvents` to re-enter
 /// the owning VBA session without aliasing this state.
@@ -104,6 +104,7 @@ pub struct LibContext {
     /// VBA.DateTime.Calendar (Gregorian = 0, Hijri = 1).
     pub calendar: i32,
     user_forms: Option<Variant>,
+    err_object: Option<Variant>,
 }
 
 impl Default for LibContext {
@@ -114,6 +115,7 @@ impl Default for LibContext {
             rng_state: 0x0005_0000,
             calendar: 0,
             user_forms: None,
+            err_object: None,
         }
     }
 }
@@ -142,6 +144,7 @@ pub const fn is_contextual(id: NativeImplId) -> bool {
             | NativeImplId::Calendar
             | NativeImplId::CalendarLet
             | NativeImplId::UserForms
+            | NativeImplId::ErrObjectValue
     )
 }
 
@@ -363,7 +366,9 @@ pub fn invoke_context_free(
         Tan => pure::math1(args, f64::tan),
 
         // ── DateTime ──
-        Calendar | CalendarLet | UserForms => return Err(ContextFreeInvokeError::ContextRequired),
+        Calendar | CalendarLet | UserForms | ErrObjectValue => {
+            return Err(ContextFreeInvokeError::ContextRequired);
+        }
         Load | Unload => objects::load_unload(args),
         FileInputBytes => host::file_input_bytes(args, host),
         FileReset => host::file_close(&[vi32(0)], host),
@@ -433,6 +438,14 @@ pub fn invoke_context_free(
 
         // ── Information ──
         IsArray => pure::is_vtype(args, |t| matches!(t, Vt::ArrayVariant)),
+        VarType
+            if args
+                .first()
+                .and_then(Variant::as_object_ref)
+                .is_some_and(|object| objects::is_err(&object)) =>
+        {
+            Ok(vi32(3))
+        }
         VarType => match args
             .first()
             .and_then(Variant::as_object_ref)
@@ -561,6 +574,9 @@ pub fn invoke_contextual(
     ctx: &mut LibContext,
 ) -> LibResult<Variant> {
     match id {
+        NativeImplId::ErrObjectValue => {
+            Ok(ctx.err_object.get_or_insert_with(objects::new_err).clone())
+        }
         NativeImplId::UserForms => {
             if !args.is_empty() {
                 return Err(LibError::new(9, "Subscript out of range"));
@@ -624,6 +640,7 @@ mod dispatch_policy_tests {
             vec![
                 NativeImplId::Calendar,
                 NativeImplId::CalendarLet,
+                NativeImplId::ErrObjectValue,
                 NativeImplId::UserForms,
                 NativeImplId::Rnd,
                 NativeImplId::Randomize

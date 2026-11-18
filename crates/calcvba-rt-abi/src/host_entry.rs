@@ -1601,7 +1601,7 @@ impl ScalarLayout {
                         assignment_iids.insert(target_type_name.clone(), None);
                         continue;
                     }
-                    if let Some(class) = calcvba_lib::regexp::class_name(target_type_name) {
+                    if let Some(class) = calcvba_lib::objects::class_name(target_type_name) {
                         assignment_classes.insert(target_type_name.clone(), class.to_string());
                     }
                     let iid = if bare.is_empty()
@@ -1609,7 +1609,7 @@ impl ScalarLayout {
                         || bare.eq_ignore_ascii_case("Variant")
                         || target_type_name.eq_ignore_ascii_case("VBA.Collection")
                         || target_type_name.eq_ignore_ascii_case("Collection")
-                        || calcvba_lib::regexp::class_name(target_type_name).is_some()
+                        || calcvba_lib::objects::class_name(target_type_name).is_some()
                     {
                         None
                     } else {

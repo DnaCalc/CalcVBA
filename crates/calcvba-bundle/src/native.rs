@@ -152,6 +152,7 @@ native_impl_ids! {
     MacID,
     MacScript,
     IMEStatus,
+    ErrObjectValue,
     UserForms,
     Load,
     Unload,
@@ -344,7 +345,7 @@ impl NativeImplId {
             }
             IsArray | VarType | TypeName | IsNumeric | IsError | IsDate | IsObject | IsNull
             | IsEmpty | IsMissing | ErrorText | IIf | Choose | Switch | Rgb | QbColor
-            | IMEStatus => M::Information,
+            | IMEStatus | ErrObjectValue => M::Information,
             FreeFile | FileOpen | FileClose | FileKill | FileMkDir | FileRmDir | FileCurDir
             | FileChDir | FileLen | FileCopy | FileGetAttr | FileSetAttr | FileChDrive
             | FileDateTime | FileRead | FileWrite | FilePrint | ConsolePrint | FileInput

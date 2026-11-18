@@ -3,6 +3,9 @@
 //! This crate is intentionally free of Cranelift and interpreter-frame state. It hosts
 //! the VM-agnostic cells and helper decisions that both engines must share.
 
+mod library_object;
+pub use library_object::invoke_library_object;
+
 use calcvba_bundle::{
     ArrayElementType, NativeImplId, NumericCoerceTarget, NumericMode, ProjectMemberKind,
     StringCompareMode,

@@ -50,9 +50,6 @@ P_CallByName: CallByName.17=ERR438
 P_CallByName: CallByName.18=ERR438
 P_CallByName: CallByName.19=ERR450
 P_CallByName: CallByName.22=ERR5
-P_CallByName: CallByName.29=Long:0
-P_CallByName: CallByName.30=String:[]
-P_CallByName: CallByName.31=ERR5
 P_Chr: Chr.13=String:[B]
 P_Chr: Chr.15=String:[{129}]
 P_Chr: Chr.16=String:[{141}]
@@ -159,9 +156,6 @@ P_Environ: Environ.8=ERR5
 P_Environ: Environ.9=ERR5
 P_Erl: Erl.10=Long:0
 P_Erl: Erl.11=Long:0
-P_Err: Err.12=String:[ErrObject]
-P_Err: Err.13=Long:0
-P_Err: Err.15=String:[ErrObject]
 P_Err: Err.6=String:[9|Subscript out of range]
 P_Err: Err.7=String:[-2147220504|Automation error]
 P_ErrObject: ErrObject.11=N=-2147220504;S=VBAProject;D=Automation error;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000440
@@ -170,7 +164,6 @@ P_ErrObject: ErrObject.18=N=-2147467259;S=VBAProject;D=Automation error{10}Unspe
 P_ErrObject: ErrObject.19=N=-5;S=VBAProject;D=Automation error;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000440
 P_ErrObject: ErrObject.20=N=-2147221504;S=VBAProject;D=Automation error{10}Invalid OLEVERB structure ;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000440
 P_ErrObject: ErrObject.32=N=13;S=VBAProject;D=Type mismatch;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000013
-P_ErrObject: ErrObject.34=ErrObject,Long,String,Long
 P_ErrObject: ErrObject.36=N=94;S=VBAProject;D=Invalid use of Null;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000094
 P_ErrObject: ErrObject.38=N=94;S=VBAProject;D=Invalid use of Null;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000094
 P_ErrObject: ErrObject.53=inh=5;cleared=0;after=N=0;S=;D=;HF=;HC=0|after exit sub in handler: N=0;S=;D=;HF=;HC=0
@@ -409,7 +402,6 @@ P_IsNumeric: IsNumeric.21=Boolean:True
 P_IsNumeric: IsNumeric.33=Boolean:True
 P_IsNumeric: IsNumeric.49=Boolean:False
 P_IsNumeric: IsNumeric.55=Boolean:True
-P_IsObject: IsObject.10=Boolean:True
 P_Join: Join.16=String:[p;q]
 P_Join: Join.17=ERR5
 P_Join: Join.18=ERR5
@@ -515,7 +507,6 @@ P_Pmt: Pmt.20=Double:C05636528DBFAC53|-88.8487886783417
 P_Pmt: Pmt.2=Double:4090C692AF15F640|1073.64324602428
 P_Pmt: Pmt.3=Double:C090B4C0D059DAAC|-1069.18829479596
 P_Pmt: Pmt.5=Double:C0513E21A7E539A6|-68.9708041895416
-P_Ptr: Ptr.24=String:[True,True]
 P_QBColor: QBColor.17=ERR6
 P_QBColor: QBColor.31=Long:128
 P_RGB: RGB.12=ERR6
@@ -640,7 +631,6 @@ P_TimeValue: TimeValue.26=Date:3FDAAAAAAAAAAAAB
 P_Trim: Trim.12=String:[abc]
 P_Trim: Trim.14=String:[abc]
 P_TypeName: TypeName.49=ERR6
-P_TypeName: TypeName.59=String:[ErrObject]
 P_TypeName: TypeName.70=String:[Integer]
 P_UCase: UCase.10=String:[{305}]
 P_UCase: UCase.12=String:[{931}{962}]
@@ -653,7 +643,6 @@ P_Val: Val.87=ERR13
 P_Val: Val.88=Double:409F900000000000|2020
 P_Val: Val.89=Double:4028000000000000|12
 P_VarType: VarType.16=Long:9
-P_VarType: VarType.49=Long:3
 P_VarType: VarType.62=Long:2
 P_Weekday: Weekday.31=ERR13
 P_Weekday: Weekday.32=Integer:7

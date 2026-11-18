@@ -114,16 +114,16 @@ pub fn set_type_mismatch<'p>(
     };
     let target_is_project =
         source_program.is_some_and(declares) || programs.into_iter().any(declares);
-    if let Some(required) = calcvba_lib::regexp::class_name(target_type_name)
+    if let Some(required) = calcvba_lib::objects::class_name(target_type_name)
         && !target_is_project
     {
-        return !calcvba_lib::regexp::is_object(object)
+        return !calcvba_lib::objects::is_object(object)
             || !object
                 .class_descriptor()
                 .name
                 .eq_ignore_ascii_case(required);
     }
-    if calcvba_lib::regexp::is_object(object) {
+    if calcvba_lib::objects::is_object(object) {
         return target_is_project || bare.eq_ignore_ascii_case("Collection");
     }
     let is_collection = object.is_compat_object() && object.route_key() == COLLECTION_ROUTE_KEY;

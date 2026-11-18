@@ -101,11 +101,10 @@ impl Provider for VbaLibraryProvider {
         if let Some(binding) = regexp_member(type_name, name, want) {
             return Some(binding);
         }
-        let object = predeclared_object(if type_name.eq_ignore_ascii_case("ErrObject") {
-            "Err"
-        } else {
-            type_name
-        })?;
+        if is_err_object_type(type_name) {
+            return err_object_member(name, want);
+        }
+        let object = predeclared_object(type_name)?;
         let route = predeclared_member(object, name)?;
         Some(Binding::new(None, route))
     }
@@ -116,6 +115,11 @@ impl Provider for VbaLibraryProvider {
         };
         if is_collection_type(type_name) {
             let mut binding = collection_member("Item")?;
+            binding.is_default = true;
+            return Some(binding);
+        }
+        if is_err_object_type(type_name) {
+            let mut binding = err_object_member("Number", Some(ProjectMemberKind::PropertyGet))?;
             binding.is_default = true;
             return Some(binding);
         }
@@ -322,6 +326,40 @@ fn regexp_member(type_name: &str, name: &str, want: Option<ProjectMemberKind>) -
             param_names: params.iter().map(|p| (*p).to_string()).collect(),
             param_optional: vec![false; params.len()],
             param_optional_defaults: Vec::new(),
+            variadic: false,
+            has_receiver: true,
+        },
+    ))
+}
+
+fn is_err_object_type(type_name: &str) -> bool {
+    type_name.eq_ignore_ascii_case("ErrObject") || type_name.eq_ignore_ascii_case("VBA.ErrObject")
+}
+
+fn err_object_member(name: &str, want: Option<ProjectMemberKind>) -> Option<Binding> {
+    let (kind, params): (ProjectMemberKind, &[&str]) = match name.to_ascii_lowercase().as_str() {
+        "raise" => (
+            ProjectMemberKind::Method,
+            &["Number", "Source", "Description", "HelpFile", "HelpContext"],
+        ),
+        "clear" => (ProjectMemberKind::Method, &[]),
+        "number" | "description" | "source" | "helpfile" | "helpcontext" => {
+            (want.unwrap_or(ProjectMemberKind::PropertyGet), &[])
+        }
+        "lastdllerror" => (ProjectMemberKind::PropertyGet, &[]),
+        _ => return None,
+    };
+    Some(Binding::new(
+        None,
+        DispatchRoute::ExternMember {
+            unit: VBA_UNIT.into(),
+            owner: "ErrObject".into(),
+            member: name.into(),
+            kind,
+            param_types: Vec::new(),
+            param_names: params.iter().map(|p| (*p).into()).collect(),
+            param_optional: (0..params.len()).map(|i| i > 0).collect(),
+            param_optional_defaults: vec![None; params.len()],
             variadic: false,
             has_receiver: true,
         },

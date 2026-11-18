@@ -957,14 +957,15 @@ impl<'h> Vm3<'h> {
         capture: Option<(&mut [Variant], &[usize])>,
     ) -> Result<Variant, Vm3Error> {
         if calcvba_lib::objects::is_object(&object) {
-            return calcvba_lib::objects::dispatch(
+            return calcvba_rt_abi::invoke_library_object(
+                &mut self.exec,
                 &object,
                 name,
                 kind_hint.unwrap_or(ProjectMemberKind::Method),
                 &args,
                 &[],
             )
-            .map_err(|e| Vm3Error::Fault(Fault::from_lib(e)));
+            .map_err(Vm3Error::Fault);
         }
         if object.route_key() == VBA_COLLECTION_ROUTE_KEY {
             return self.dispatch_collection_values(&object, name, args);
@@ -4716,8 +4717,8 @@ impl<'h> Vm3<'h> {
             })
             .collect();
         let args = self.collection_args(args)?;
-        calcvba_lib::objects::dispatch(object, name, kind, &args, &names)
-            .map_err(|e| Vm3Error::Fault(Fault::from_lib(e)))
+        calcvba_rt_abi::invoke_library_object(&mut self.exec, object, name, kind, &args, &names)
+            .map_err(Vm3Error::Fault)
     }
 
     /// Marshal a Collection member's call args to by-value `Variant`s (omitted → `MISSING_ARG`,
@@ -4947,14 +4948,15 @@ impl<'h> Vm3<'h> {
     ) -> Result<Variant, Vm3Error> {
         let object = variant_to_object(&recv_v)?;
         if calcvba_lib::objects::is_object(&object) {
-            return calcvba_lib::objects::dispatch(
+            return calcvba_rt_abi::invoke_library_object(
+                &mut self.exec,
                 &object,
                 "",
                 project_member_kind(invoke_kind),
                 &args,
                 &[],
             )
-            .map_err(|e| Vm3Error::Fault(Fault::from_lib(e)));
+            .map_err(Vm3Error::Fault);
         }
         if object.route_key() == VBA_COLLECTION_ROUTE_KEY {
             if args.is_empty() {

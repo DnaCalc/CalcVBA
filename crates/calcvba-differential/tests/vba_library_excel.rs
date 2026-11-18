@@ -49,20 +49,39 @@ const HEAVY: &[(&str, u32)] = &[
     ("P_Rnd", 34), // 16,777,215 Rnd calls (the LCG period)
 ];
 
-/// `source` with the given cases of the probe's `Select Case k` reduced to `Case j: v = Empty`.
+/// Replace dropped probe cases with one `Case Else: v = Empty`. Keeping an empty
+/// branch per dropped case makes debug JIT compilation unnecessarily expensive.
 fn blank(source: &str, drop: &[u32]) -> String {
     let mut out = Vec::new();
-    let (mut in_select, mut depth, mut dropping) = (false, 0usize, false);
+    let (mut in_select, mut depth, mut dropping, mut blanked) = (false, 0usize, false, false);
     for line in source.lines() {
         let t = line.trim_start();
         let lower = t.to_ascii_lowercase();
         if !in_select {
             out.push(line.to_string());
             in_select = lower.starts_with("select case k");
+            blanked = false;
             continue;
         }
         if depth == 0 && lower.starts_with("end select") {
+            if blanked {
+                out.push("        Case Else: v = Empty".to_string());
+            }
             in_select = false;
+            dropping = false;
+            out.push(line.to_string());
+            continue;
+        }
+        if depth == 0 && lower.starts_with("case else") {
+            if blanked {
+                let labels = drop
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                out.push(format!("        Case {labels}: v = Empty"));
+                blanked = false;
+            }
             dropping = false;
             out.push(line.to_string());
             continue;
@@ -75,7 +94,7 @@ fn blank(source: &str, drop: &[u32]) -> String {
             if let Some(n) = number {
                 dropping = drop.contains(&n);
                 if dropping {
-                    out.push(format!("        Case {n}: v = Empty"));
+                    blanked = true;
                     continue;
                 }
             }
@@ -90,6 +109,49 @@ fn blank(source: &str, drop: &[u32]) -> String {
         }
     }
     out.join("\n") + "\n"
+}
+
+#[test]
+fn isolated_probe_cases_preserve_nested_selects_and_else_behavior() {
+    let source = r#"
+Private Function T(ByVal k As Long) As String
+    Dim v As Variant
+    Select Case k
+        Case 1
+            Select Case 2
+                Case 1: v = "wrong"
+                Case Else: v = "nested"
+            End Select
+        Case 2
+            Select Case 1
+                Case Else: Err.Raise 5
+            End Select
+        Case 3: Err.Raise 6
+        Case Else: v = "original else"
+    End Select
+    T = "C." & k & "=" & TypeName(v) & ":" & v
+End Function
+Public Function Run() As String
+    Dim k As Long, s As String
+    For k = 1 To 4
+        s = s & T(k) & vbLf
+    Next
+    Run = s
+End Function
+"#;
+    for executor in [Executor::Vm3, Executor::Jit] {
+        let actual = run_text(executor, "", "P_Isolation", &blank(source, &[2, 3])).unwrap();
+        assert_eq!(
+            actual,
+            "C.1=String:nested\nC.2=Empty:\nC.3=Empty:\nC.4=String:original else\n"
+        );
+        let source = source.replace("        Case Else: v = \"original else\"\n", "");
+        let actual = run_text(executor, "", "P_Isolation", &blank(&source, &[2, 3])).unwrap();
+        assert_eq!(
+            actual,
+            "C.1=String:nested\nC.2=Empty:\nC.3=Empty:\nC.4=Empty:\n"
+        );
+    }
 }
 
 fn dir() -> PathBuf {
@@ -451,6 +513,45 @@ fn missing_library_names_match_excel() {
             assert_eq!(
                 actual.replace("\r\n", "\n"),
                 answer.replace("\r\n", "\n"),
+                "{executor:?} {module}"
+            );
+        }
+    }
+}
+
+/// The eleven captured uses that require Err to be a first-class object value.
+#[test]
+fn err_object_values_match_excel() {
+    let fmt = std::fs::read_to_string(dir().join("probes/ProbeFmt.bas")).unwrap();
+    for executor in [Executor::Vm3, Executor::Jit] {
+        for (module, keep) in [
+            ("P_Err", &[12, 13, 15][..]),
+            ("P_ErrObject", &[34][..]),
+            ("P_TypeName", &[59][..]),
+            ("P_IsObject", &[10][..]),
+            ("P_VarType", &[49][..]),
+            ("P_CallByName", &[29, 30, 31][..]),
+            ("P_Ptr", &[24][..]),
+        ] {
+            let source =
+                std::fs::read_to_string(dir().join(format!("probes/{module}.bas"))).unwrap();
+            let answer =
+                std::fs::read_to_string(dir().join(format!("probes/{module}.excel.txt"))).unwrap();
+            let drop: Vec<_> = answer
+                .lines()
+                .filter_map(case_number)
+                .filter(|n| !keep.contains(n))
+                .collect();
+            let actual = run_text(executor, &fmt, module, &blank(&source, &drop))
+                .unwrap_or_else(|e| panic!("{executor:?} {module}: {e}"));
+            for (have, want) in actual.lines().zip(answer.lines()) {
+                if case_number(want).is_some_and(|n| keep.contains(&n)) {
+                    assert_eq!(have, want, "{executor:?} {module}");
+                }
+            }
+            assert_eq!(
+                actual.lines().count(),
+                answer.lines().count(),
                 "{executor:?} {module}"
             );
         }

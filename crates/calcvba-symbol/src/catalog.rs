@@ -192,6 +192,7 @@ pub const fn intrinsic_entry(id: NativeImplId) -> IntrinsicEntry {
         MacID => e_params(MacID, &["MacID"], sig(1, 1), &["Constant"], Ordinary),
         MacScript => e_params(MacScript, &["MacScript"], sig(1, 1), &["Script"], Ordinary),
         IMEStatus => e(IMEStatus, &["IMEStatus"], sig(0, 0), Ordinary),
+        ErrObjectValue => e(ErrObjectValue, &[], sig(0, 0), Ordinary),
         UserForms => e(UserForms, &["UserForms"], sig(0, 1), Ordinary),
         Load => e_params(Load, &["Load"], sig(1, 1), &["Object"], Ordinary),
         Unload => e_params(Unload, &["Unload"], sig(1, 1), &["Object"], Ordinary),

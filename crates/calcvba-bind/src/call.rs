@@ -139,6 +139,18 @@ impl<'a> ProcLower<'a> {
                     VarTypeRef::Variant,
                 ))
             }
+            DispatchRoute::PredeclaredObject(PredeclaredObjectId::Err) => {
+                if arglist.is_some_and(|a| !a.arg_items().is_empty()) {
+                    return Err(BindError::WrongNumberOfArgumentsOrInvalidPropertyAssignment);
+                }
+                Ok(value_bound(
+                    CoreValue::Call {
+                        callee: CoreCallee::Native(NativeImplId::ErrObjectValue),
+                        args: Vec::new(),
+                    },
+                    VarTypeRef::Object("ErrObject".into()),
+                ))
+            }
             DispatchRoute::Native(id) => {
                 let args = self.bind_native_args(*id, arglist)?;
                 Ok(value_bound(

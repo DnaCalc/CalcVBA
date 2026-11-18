@@ -1381,7 +1381,8 @@ pub(crate) fn day_of_week(year: i32, month: u32, day: u32) -> i32 {
 }
 
 fn validate_vba_date_serial(serial: f64) -> LibResult<f64> {
-    if serial.is_finite() && (VBA_DATE_MIN_SERIAL..VBA_DATE_MAX_EXCLUSIVE_SERIAL).contains(&serial)
+    if serial.is_finite()
+        && (VBA_DATE_MIN_SERIAL..VBA_DATE_MAX_EXCLUSIVE_SERIAL).contains(&serial.trunc())
     {
         Ok(serial)
     } else {
@@ -1452,14 +1453,21 @@ pub fn time_serial(args: &[Variant]) -> LibResult<Variant> {
 }
 
 pub fn date_value(args: &[Variant]) -> LibResult<Variant> {
-    let v = need(args, 0)?;
-    if v.vtype() == VarType::Null {
-        return Ok(Variant::null());
-    }
-    let serial = date_arg(v)?;
-    Ok(Variant::from_date_f64(validate_vba_date_serial(
-        serial.trunc(),
-    )?))
+    let value = need(args, 0)?;
+    let serial = if let Some(date) = value
+        .as_date_f64()
+        .filter(|_| value.vtype() == VarType::Date)
+    {
+        // Date-to-text coercion rounds seconds, including carry into the next day.
+        let (year, month, day) = serial_to_ymd(date);
+        validate_vba_date_serial(ymd_to_serial(year, month, day))
+            .map_err(|_| LibError::type_mismatch("date out of range"))?
+    } else {
+        let text = as_str(value)?;
+        date_time_text_serial(&text)
+            .map_err(|_| LibError::type_mismatch(format!("cannot parse date `{text}`")))?
+    };
+    Ok(Variant::from_date_f64(serial.trunc()))
 }
 
 /// A date argument: a `Date` or numeric serial, or a string read as `CDate` reads it.
@@ -2203,7 +2211,8 @@ fn date_time_text_serial(s: &str) -> LibResult<f64> {
     if let Some((date_part, time_part)) = split_trailing_time(s) {
         let (y, m, d) = parse_date(date_part.trim())?;
         let time = parse_time_value_string(&time_part)?;
-        return validate_vba_date_serial(ymd_to_serial(y, m, d) + time);
+        let day = ymd_to_serial(y, m, d);
+        return validate_vba_date_serial(if day < 0.0 { day - time } else { day + time });
     }
     let (y, m, d) = parse_date(s)?;
     validate_vba_date_serial(ymd_to_serial(y, m, d))

@@ -229,12 +229,6 @@ P_DateValue	vm3	value	locale	DateValue.11=Date:40E2070000000000	DateValue.11=Dat
 P_DateValue	jit	value	locale	DateValue.11=Date:40E2070000000000	DateValue.11=Date:40E701E000000000
 P_DateValue	vm3	value	locale	DateValue.12=Date:40E2072000000000	DateValue.12=Date:40C5678000000000
 P_DateValue	jit	value	locale	DateValue.12=Date:40E2072000000000	DateValue.12=Date:40C5678000000000
-P_DateValue	vm3	error		DateValue.18=ERR94	DateValue.18=Null
-P_DateValue	jit	error		DateValue.18=ERR94	DateValue.18=Null
-P_DateValue	vm3	error		DateValue.19=ERR13	DateValue.19=Date:0000000000000000
-P_DateValue	jit	error		DateValue.19=ERR13	DateValue.19=Date:0000000000000000
-P_DateValue	vm3	error		DateValue.20=ERR13	DateValue.20=Date:405EC00000000000
-P_DateValue	jit	error		DateValue.20=ERR13	DateValue.20=Date:405EC00000000000
 P_DeleteSetting	vm3	error		DeleteSetting.3=String:[gone]	DeleteSetting.3=ERR5
 P_DeleteSetting	jit	error		DeleteSetting.3=String:[gone]	DeleteSetting.3=ERR5
 P_DeleteSetting	vm3	error		DeleteSetting.11=String:[gone]	DeleteSetting.11=ERR5

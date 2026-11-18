@@ -41,3 +41,7 @@ DateConversionEdges.40=Date:BFF0000000000000
 DateConversionEdges.41=Null
 DateConversionEdges.42=Null
 DateConversionEdges.43=Long:10
+DateConversionEdges.44=Date:BFF8000000000000
+DateConversionEdges.45=Date:BFF8000000000000
+DateConversionEdges.46=Date:C124103480000000
+DateConversionEdges.47=Date:3FE0000000000000

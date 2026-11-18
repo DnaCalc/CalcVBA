@@ -1,7 +1,7 @@
 Attribute VB_Name = "P_DateConversionEdges"
 Option Explicit
 ' Excel-backed CDate/CVDate Variant and conversion boundaries.
-Private Const N As Long = 43
+Private Const N As Long = 47
 Private Function T(ByVal k As Long) As String
     Dim v As Variant
     On Error GoTo fail
@@ -49,6 +49,10 @@ Private Function T(ByVal k As Long) As String
         Case 41: v = VBA.CVDate(Null)
         Case 42: v = VBA.Conversion.CVDate(Null)
         Case 43: v = Len(CVDate(1))
+        Case 44: v = CDate("12/29/1899 12:00 PM")
+        Case 45: v = CVDate("12/29/1899 12:00 PM")
+        Case 46: v = CDate("1/1/100 6:00 AM")
+        Case 47: v = CVDate("12/30/1899 12:00 PM")
     End Select
     T = "DateConversionEdges." & k & "=" & Sh(v)
     Exit Function

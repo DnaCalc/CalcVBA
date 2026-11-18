@@ -1,0 +1,217 @@
+area	feature	class	calcvba_on_linux_today	shim_or_check
+_HiddenModule	Array	pure		
+_HiddenModule	Input/$	shim	ANSI via Windows-1252	configured code page
+_HiddenModule	InputB/$	pure		
+_HiddenModule	ObjPtr	pure	real addresses	values differ per run on any host
+_HiddenModule	StrPtr	pure	real addresses	values differ per run on any host
+_HiddenModule	VarPtr	pure	real addresses	values differ per run on any host
+_HiddenModule	Width	pure		
+Collection	_NewEnum	pure		
+Collection	Add	pure		
+Collection	Count	pure		
+Collection	Item	pure		
+Collection	Remove	pure		
+Conversion	CBool	pure		
+Conversion	CByte	pure		
+Conversion	CCur	locale	as CDbl	locale model
+Conversion	CDate	locale	ambiguous text dates refused instead of read by the locale	locale model
+Conversion	CDbl	locale	period decimal only for strings	locale model
+Conversion	CDec	locale	as CDbl	locale model
+Conversion	CInt	pure		
+Conversion	CLng	pure		
+Conversion	CLngLng	pure		
+Conversion	CLngPtr	pure		
+Conversion	CSng	locale	as CDbl	locale model
+Conversion	CStr	locale	dates as en-US M/D/YYYY	locale model
+Conversion	CVar	pure		
+Conversion	CVDate	locale	as CDate	locale model
+Conversion	CVErr	pure		
+Conversion	Error/$	pure		
+Conversion	Fix	pure		
+Conversion	Hex/$	pure		
+Conversion	Int	pure		
+Conversion	MacID	windows	not implemented	the same error as Windows Excel
+Conversion	Oct/$	pure		
+Conversion	Str/$	pure		
+Conversion	Val	pure		
+DateTime	Calendar	locale	not implemented	locale model (Gregorian/Hijri)
+DateTime	Date/$	host	local date	as Now
+DateTime	DateAdd	pure		
+DateTime	DateDiff	pure		
+DateTime	DatePart	pure		
+DateTime	DateSerial	pure		
+DateTime	DateValue	locale	as CDate	locale model
+DateTime	Day	pure		
+DateTime	Hour	pure		
+DateTime	Minute	pure		
+DateTime	Month	pure		
+DateTime	Now	host	local time via localtime_r	time zone and clock are the machine's; a fixed clock in deterministic mode
+DateTime	Second	pure		
+DateTime	Time/$	host	local time	as Now
+DateTime	Timer	host	local seconds since midnight	as Now
+DateTime	TimeSerial	pure		
+DateTime	TimeValue	locale	fixed AM/PM forms	locale model
+DateTime	Weekday	pure		
+DateTime	Year	pure		
+ErrObject	Clear	pure		
+ErrObject	Description	pure		
+ErrObject	HelpContext	pure		
+ErrObject	HelpFile	pure		
+ErrObject	LastDllError	pure		
+ErrObject	Number	pure		
+ErrObject	Raise	pure		
+ErrObject	Source	pure		
+FileSystem	ChDir	shim	Windows paths passed to the OS unchanged (backslash and C:\ are filename characters)	path mapping (drive letters to roots, \ to /), case-insensitive lookup
+FileSystem	ChDrive	shim	does nothing on Linux	drive map: ChDrive selects a mapped root
+FileSystem	CurDir/$	shim	the process directory; drive argument ignored	report the mapped Windows path (C:\...)
+FileSystem	Dir	shim	wildcards case-sensitive; hidden/system/archive never reported	path mapping (drive letters to roots, \ to /), case-insensitive lookup; attribute store
+FileSystem	EOF	pure		
+FileSystem	FileAttr	pure		
+FileSystem	FileCopy	shim	Windows paths passed to the OS unchanged (backslash and C:\ are filename characters)	path mapping (drive letters to roots, \ to /), case-insensitive lookup
+FileSystem	FileDateTime	shim	mtime in local time	path mapping (drive letters to roots, \ to /), case-insensitive lookup
+FileSystem	FileLen	shim	Windows paths passed to the OS unchanged (backslash and C:\ are filename characters)	path mapping (drive letters to roots, \ to /), case-insensitive lookup
+FileSystem	FreeFile	pure		
+FileSystem	GetAttr	shim	only vbReadOnly and vbDirectory	attribute store (xattr or sidecar) for hidden/system/archive
+FileSystem	Kill	shim	wildcards case-sensitive	path mapping (drive letters to roots, \ to /), case-insensitive lookup
+FileSystem	Loc	pure		
+FileSystem	LOF	pure		
+FileSystem	MkDir	shim	Windows paths passed to the OS unchanged (backslash and C:\ are filename characters)	path mapping (drive letters to roots, \ to /), case-insensitive lookup
+FileSystem	Reset	pure		
+FileSystem	RmDir	shim	Windows paths passed to the OS unchanged (backslash and C:\ are filename characters)	path mapping (drive letters to roots, \ to /), case-insensitive lookup
+FileSystem	Seek	pure		
+FileSystem	SetAttr	shim	only the read-only bit	attribute store
+Financial	DDB	pure		
+Financial	FV	pure		
+Financial	IPmt	pure		
+Financial	IRR	pure		
+Financial	MIRR	pure		
+Financial	NPer	pure		
+Financial	NPV	pure		
+Financial	Pmt	pure		
+Financial	PPmt	pure		
+Financial	PV	pure		
+Financial	Rate	pure		
+Financial	SLN	pure		
+Financial	SYD	pure		
+Information	Erl	pure		
+Information	Err	pure		
+Information	IMEStatus	host	not implemented	0 (no IME)
+Information	IsArray	pure		
+Information	IsDate	locale	as CDate	locale model
+Information	IsEmpty	pure		
+Information	IsError	pure		
+Information	IsMissing	pure		
+Information	IsNull	pure		
+Information	IsNumeric	locale	period decimal only	locale model
+Information	IsObject	pure		
+Information	QBColor	pure		
+Information	RGB	pure		
+Information	TypeName	pure		
+Information	VarType	pure		
+Interaction	AppActivate	windows	error 5 off Windows	reject in strict mode; no shim (window manager)
+Interaction	Beep	host	does nothing	terminal bell or nothing
+Interaction	CallByName	pure		
+Interaction	Choose	pure		
+Interaction	Command/$	host	process arguments	
+Interaction	CreateObject	windows	only Scripting.Dictionary (engine class); other ProgIDs unsupported off Windows	portable classes for common ProgIDs (Scripting.FileSystemObject, VBScript.RegExp, ADODB.Stream?); reject the rest
+Interaction	DeleteSetting	shim	in memory only (on Windows too)	settings store: a file under XDG config, the registry on Windows
+Interaction	DoEvents	pure	yield	
+Interaction	Environ/$	shim	names case-sensitive; no TEMP/TMP/USERPROFILE/APPDATA; Environ(n) order differs	case-insensitive names, synthesised Windows variables mapped to Linux equivalents, VBA's 1-based order
+Interaction	GetAllSettings	shim	in memory only	settings store
+Interaction	GetObject	windows	unsupported off Windows	reject; no running-object table
+Interaction	GetSetting	shim	in memory only	settings store
+Interaction	IIf	pure		
+Interaction	InputBox	host	prompt to stderr, returns the default on linux-stdio	UI host decides (scripted responses, a dialog in a GUI host)
+Interaction	MacScript	windows	Mac-only in VBA: error on Windows	same error everywhere
+Interaction	MsgBox	host	prompt to stderr, returns the default	UI host decides
+Interaction	Partition	pure		
+Interaction	SaveSetting	shim	in memory only	settings store
+Interaction	SendKeys	windows	error 5 everywhere	reject in strict mode
+Interaction	Shell	windows	runs sh -c with the text: a Windows command line will not run	reject in strict mode, or a command map for known programs
+Interaction	Switch	pure		
+Match	FirstIndex	pure		
+Match	Length	pure		
+Match	SubMatches	pure		
+Match	Value	pure		
+MatchCollection	_NewEnum	pure		
+MatchCollection	Count	pure		
+MatchCollection	Item	pure		
+Math	Abs	pure		
+Math	Atn	pure	platform libm	one Excel-exact implementation
+Math	Cos	pure	platform libm	one Excel-exact implementation
+Math	Exp	pure	platform libm	one Excel-exact implementation
+Math	Log	pure	platform libm	one Excel-exact implementation
+Math	Randomize	pure		
+Math	Rnd	pure		
+Math	Round	pure		
+Math	Sgn	pure		
+Math	Sin	pure	calls the platform libm: last bit differs Linux vs Windows (dc-q6brh.112)	one Excel-exact implementation
+Math	Sqr	pure	IEEE sqrt is exact on every platform	
+Math	Tan	pure	platform libm	one Excel-exact implementation
+RegExp	Execute	pure		
+RegExp	Global	pure		
+RegExp	IgnoreCase	pure		
+RegExp	Multiline	pure		
+RegExp	Pattern	pure		
+RegExp	Replace	pure		
+RegExp	Test	pure		
+Strings	Asc	shim	ANSI table hard-coded Windows-1252 off Windows	configured ANSI code page (the Windows machine's ACP)
+Strings	AscB	pure		
+Strings	AscW	pure		
+Strings	Chr/$	shim	Windows-1252 table	configured ANSI code page
+Strings	ChrB/$	pure		
+Strings	ChrW/$	pure		
+Strings	Filter	locale	vbTextCompare as StrComp	as StrComp
+Strings	Format/$	locale	fixed en-US conventions on every host	locale model (date order, separators, names)
+Strings	FormatCurrency	locale	fixed conventions	locale model
+Strings	FormatDateTime	locale	fixed en-US date text	locale model
+Strings	FormatNumber	locale	fixed conventions	locale model
+Strings	FormatPercent	locale	fixed conventions	locale model
+Strings	InStr	locale	vbTextCompare as StrComp	as StrComp
+Strings	InStrB	locale	vbTextCompare as StrComp	as StrComp
+Strings	InStrRev	locale	vbTextCompare as StrComp	as StrComp
+Strings	Join	pure		
+Strings	LCase/$	locale	Rust Unicode case mapping	match LCMapStringW for the configured LCID
+Strings	Left/$	pure		
+Strings	LeftB/$	pure		
+Strings	Len	pure		
+Strings	LenB	pure		
+Strings	LTrim/$	pure		
+Strings	Mid/$	pure		
+Strings	MidB/$	pure		
+Strings	MonthName	locale	English names	locale model
+Strings	Replace	locale	vbTextCompare as StrComp	as StrComp
+Strings	Right/$	pure		
+Strings	RightB/$	pure		
+Strings	RTrim/$	pure		
+Strings	Space/$	pure		
+Strings	Split	locale	vbTextCompare as StrComp	as StrComp
+Strings	StrComp	locale	vbTextCompare uses Rust lower-casing, CompareStringW on Windows	a portable text-compare table matching CompareStringW for the configured LCID
+Strings	StrConv	shim	vbUnicode/vbFromUnicode via Windows-1252; vbWide/vbNarrow/Kana by table	configured code page and LCID
+Strings	String/$	shim	character codes 128-255 via Windows-1252	configured ANSI code page
+Strings	StrReverse	pure		
+Strings	Trim/$	pure		
+Strings	UCase/$	locale	Rust Unicode case mapping	match LCMapStringW for the configured LCID
+Strings	WeekdayName	locale	English names	locale model
+SubMatches	_NewEnum	pure		
+SubMatches	Count	pure		
+SubMatches	Item	pure		
+VBEGlobal	Load	host	not implemented	needs a forms host (CalcForms)
+VBEGlobal	Unload	host	not implemented	needs a forms host (CalcForms)
+VBEGlobal	UserForms	host	not implemented	needs a forms host (CalcForms)
+Language	Declare (Win32 DLLs: kernel32, user32, ...)	windows	dlopen of lib<name>.so (libkernel32.so does not exist); integer arguments only, max 6	emulated table for common kernel32/user32 calls (GetTickCount, Sleep, RtlMoveMemory, QueryPerformanceCounter, GetTempPath...), reject the rest in strict mode
+Language	Declare (C runtime: msvcrt, ucrtbase)	shim	mapped to libc.so.6	keep; check argument types
+Language	AddressOf (callbacks to Win32 APIs)	windows	callback thunks are Windows x64 only	reject in strict mode
+Language	#If Win64 / Win32 / Mac / VBA7	shim	Linux is treated as Win64 Windows (Win64 = Win32 = True)	keep as Windows (the code was written for it), configurable per project
+Language	LongPtr	pure	follows the target pointer width (64-bit)	
+Language	Early-bound COM references (Scripting, ADODB, MSXML, Excel...)	windows	type libraries need Windows COM	portable classes for the common libraries, reject others
+Statements	Open / Close / Get / Put	shim	Windows paths passed to the OS unchanged (backslash and C:\ are filename characters); Open creates missing parent folders (VBA raises 76)	path mapping (drive letters to roots, \ to /), case-insensitive lookup
+Statements	Print # / Write # / Line Input #	shim	CRLF on every platform (as VBA); text written as UTF-8, not ANSI	write and read text files in the configured ANSI code page
+Statements	Input #	shim	quoted fields Latin-1, unquoted UTF-8	configured ANSI code page
+Statements	Name ... As	shim	Windows paths passed to the OS unchanged (backslash and C:\ are filename characters); creates the target's parent folders	path mapping (drive letters to roots, \ to /), case-insensitive lookup
+Statements	Lock / Unlock	shim	check	advisory locks
+Statements	Like with Option Compare Text	locale	Rust case folding	as StrComp
+Statements	Option Compare Text (=, <, ... on strings)	locale	Rust case folding	as StrComp
+Statements	Date literals #m/d/yyyy#	pure	fixed month/day/year grammar (MS-VBAL)	
+Runtime	Floating point arithmetic + - * /	pure	IEEE; same on every platform	
+Runtime	^ operator	pure	platform libm pow	one Excel-exact implementation

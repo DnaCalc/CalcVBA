@@ -441,20 +441,6 @@ P_FileCopy	vm3	error		FileCopy.17=ERR94	FileCopy.17=ERR5
 P_FileCopy	jit	error		FileCopy.17=ERR94	FileCopy.17=ERR5
 P_FileCopy	vm3	error		FileCopy.20=ERR75	FileCopy.20=ERR5
 P_FileCopy	jit	error		FileCopy.20=ERR75	FileCopy.20=ERR5
-P_FileDateTime	vm3	error		FileDateTime.6=ERR76	FileDateTime.6=ERR53
-P_FileDateTime	jit	error		FileDateTime.6=ERR76	FileDateTime.6=ERR53
-P_FileDateTime	vm3	error		FileDateTime.8=ERR94	FileDateTime.8=ERR53
-P_FileDateTime	jit	error		FileDateTime.8=ERR94	FileDateTime.8=ERR53
-P_FileDateTime	vm3	error		FileDateTime.9=ERR52	FileDateTime.9=ERR53
-P_FileDateTime	jit	error		FileDateTime.9=ERR52	FileDateTime.9=ERR53
-P_FileDateTime	vm3	error		FileDateTime.14=ERR53	FileDateTime.14=String:[Date]
-P_FileDateTime	jit	error		FileDateTime.14=ERR53	FileDateTime.14=String:[Date]
-P_FileLen	vm3	error		FileLen.10=ERR94	FileLen.10=ERR53
-P_FileLen	jit	error		FileLen.10=ERR94	FileLen.10=ERR53
-P_FileLen	vm3	error		FileLen.11=ERR52	FileLen.11=ERR53
-P_FileLen	jit	error		FileLen.11=ERR52	FileLen.11=ERR53
-P_FileLen	vm3	error		FileLen.18=ERR76	FileLen.18=ERR53
-P_FileLen	jit	error		FileLen.18=ERR76	FileLen.18=ERR53
 P_Filter	vm3	type		Filter.6=String()[unallocated]	Filter.6=String()[0,-1]{}
 P_Filter	jit	type		Filter.6=String()[unallocated]	Filter.6=String()[0,-1]{}
 P_Filter	vm3	error		Filter.7=String()[0,0]{String:[22]}	Filter.7=ERR13
@@ -793,16 +779,6 @@ P_GetAllSettings	vm3	value		GetAllSettings.17=String:[K=1]	GetAllSettings.17=Str
 P_GetAllSettings	jit	value		GetAllSettings.17=String:[K=1]	GetAllSettings.17=String:[a=1]
 P_GetAllSettings	vm3	error		GetAllSettings.18=ERR9	GetAllSettings.18=String:[b]
 P_GetAllSettings	jit	error		GetAllSettings.18=ERR9	GetAllSettings.18=String:[b]
-P_GetAttr	vm3	value		GetAttr.6=Long:268435472	GetAttr.6=Long:16
-P_GetAttr	jit	value		GetAttr.6=Long:268435472	GetAttr.6=Long:16
-P_GetAttr	vm3	error		GetAttr.11=ERR76	GetAttr.11=ERR53
-P_GetAttr	jit	error		GetAttr.11=ERR76	GetAttr.11=ERR53
-P_GetAttr	vm3	error		GetAttr.13=ERR94	GetAttr.13=ERR53
-P_GetAttr	jit	error		GetAttr.13=ERR94	GetAttr.13=ERR53
-P_GetAttr	vm3	error		GetAttr.14=ERR52	GetAttr.14=ERR53
-P_GetAttr	jit	error		GetAttr.14=ERR52	GetAttr.14=ERR53
-P_GetAttr	vm3	value		GetAttr.16=Long:268435472	GetAttr.16=Long:16
-P_GetAttr	jit	value		GetAttr.16=Long:268435472	GetAttr.16=Long:16
 P_GetObject	vm3	error		GetObject.1=ERR13	GetObject.1=ERR5
 P_GetObject	jit	missing		GetObject.1=ERR13	<declined: "T: CallNative { dst: Some(Temp(TempId(3))), callee: Builtin(GetObject), args: [] }: CallNative GetObject requires one or two positional arguments">
 P_GetObject	vm3	error		GetObject.5=ERR429	GetObject.5=ERR432
@@ -1015,8 +991,6 @@ P_LCase	vm3	missing		LCase.16=String:[abc]	<failed: bind: unresolved name `Strin
 P_LCase	jit	missing		LCase.16=String:[abc]	<failed: bind: unresolved name `String` (named argument)>
 P_LCase	vm3	missing		LCase.22=String:[q{229}]	<failed: bind: unresolved name `String` (named argument)>
 P_LCase	jit	missing		LCase.22=String:[q{229}]	<failed: bind: unresolved name `String` (named argument)>
-P_LOF	vm3	error		LOF.13=ERR94	LOF.13=ERR52
-P_LOF	jit	error		LOF.13=ERR94	LOF.13=ERR52
 P_LTrim	vm3	missing		LTrim.12=String:[y]	<failed: bind: unresolved name `String` (named argument)>
 P_LTrim	jit	missing		LTrim.12=String:[y]	<failed: bind: unresolved name `String` (named argument)>
 P_LTrim	vm3	value		LTrim.13=String:[a]	LTrim.13=String:[{12288}a]

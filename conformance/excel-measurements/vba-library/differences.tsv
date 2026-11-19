@@ -1,16 +1,6 @@
 module	executor	class	locale	excel	calcvba
 P_ArrayBase1	vm3	value		ArrayBase1.13=String:[0,1,8]	ArrayBase1.13=String:[1,2,7]
 P_ArrayBase1	jit	value		ArrayBase1.13=String:[0,1,8]	ArrayBase1.13=String:[1,2,7]
-P_Asc	vm3	missing		Asc.10=Integer:120	<failed: bind: unresolved name `String` (named argument)>
-P_Asc	jit	missing		Asc.10=Integer:120	<failed: bind: unresolved name `String` (named argument)>
-P_Asc	vm3	value	locale	Asc.14=Integer:63	Asc.14=Integer:129
-P_Asc	jit	value	locale	Asc.14=Integer:63	Asc.14=Integer:129
-P_AscB	vm3	missing		AscB.11=Byte:90	<failed: bind: unresolved name `String` (named argument)>
-P_AscB	jit	missing		AscB.11=Byte:90	<failed: bind: unresolved name `String` (named argument)>
-P_AscW	vm3	missing		AscW.14=Integer:122	<failed: bind: unresolved name `String` (named argument)>
-P_AscW	jit	missing		AscW.14=Integer:122	<failed: bind: unresolved name `String` (named argument)>
-P_Atn	vm3	missing		Atn.21=Double:3FE921FB54442D18|0.785398163397448	<failed: bind: unresolved name `Number` (named argument)>
-P_Atn	jit	missing		Atn.21=Double:3FE921FB54442D18|0.785398163397448	<failed: bind: unresolved name `Number` (named argument)>
 P_CDate	vm3	error	locale	CDate.22=Date:40E5686000000000	CDate.22=ERR13
 P_CDate	jit	error	locale	CDate.22=Date:40E5686000000000	CDate.22=ERR13
 P_CDate	vm3	value	locale	CDate.39=Date:40E2070000000000	CDate.39=Date:40E701E000000000
@@ -19,8 +9,6 @@ P_CDate	vm3	value	locale	CDate.40=Date:40E2072000000000	CDate.40=Date:40C5678000
 P_CDate	jit	value	locale	CDate.40=Date:40E2072000000000	CDate.40=Date:40C5678000000000
 P_CDec	vm3	value		CDec.4=Decimal:0.1	CDec.4=Decimal:0.100000001490116
 P_CDec	jit	value		CDec.4=Decimal:0.1	CDec.4=Decimal:0.100000001490116
-P_CStr	vm3	error		CStr.36=String:[3.402823E+38]	CStr.36=ERR6
-P_CStr	jit	error		CStr.36=String:[3.402823E+38]	CStr.36=ERR6
 P_CStr	vm3	value	locale	CStr.54=String:[2020/01/02]	CStr.54=String:[1/2/2020]
 P_CStr	jit	value	locale	CStr.54=String:[2020/01/02]	CStr.54=String:[1/2/2020]
 P_CStr	vm3	value	locale	CStr.55=String:[2020/01/02 15:04:05]	CStr.55=String:[1/2/2020 3:04:05 PM]
@@ -41,36 +29,6 @@ P_CStr	vm3	value	locale	CStr.62=String:[100/01/01]	CStr.62=String:[1/1/100]
 P_CStr	jit	value	locale	CStr.62=String:[100/01/01]	CStr.62=String:[1/1/100]
 P_CVErr	vm3	error		CVErr.30=Error:5	CVErr.30=ERR13
 P_CVErr	jit	error		CVErr.30=Error:5	CVErr.30=ERR13
-P_Calendar	vm3	missing		Calendar.1=Long:0	<failed: bind: Variable not defined: Calendar>
-P_Calendar	jit	missing		Calendar.1=Long:0	<failed: bind: Variable not defined: Calendar>
-P_Calendar	vm3	missing		Calendar.2=String:[Long]	<failed: bind: Variable not defined: Calendar>
-P_Calendar	jit	missing		Calendar.2=String:[Long]	<failed: bind: Variable not defined: Calendar>
-P_Calendar	vm3	missing		Calendar.3=Long:0	<failed: bind: Variable not defined: Calendar>
-P_Calendar	jit	missing		Calendar.3=Long:0	<failed: bind: Variable not defined: Calendar>
-P_Calendar	vm3	missing		Calendar.4=Long:0	<failed: bind: Variable not defined: Calendar>
-P_Calendar	jit	missing		Calendar.4=Long:0	<failed: bind: Variable not defined: Calendar>
-P_Calendar	vm3	missing		Calendar.5=Long:0	<failed: bind: Variable not defined: Calendar>
-P_Calendar	jit	missing		Calendar.5=Long:0	<failed: bind: Variable not defined: Calendar>
-P_Calendar	vm3	missing		Calendar.6=ERR5	<failed: bind: Variable not defined: Calendar>
-P_Calendar	jit	missing		Calendar.6=ERR5	<failed: bind: Variable not defined: Calendar>
-P_Calendar	vm3	missing		Calendar.7=ERR5	<failed: bind: Variable not defined: Calendar>
-P_Calendar	jit	missing		Calendar.7=ERR5	<failed: bind: Variable not defined: Calendar>
-P_Calendar	vm3	missing		Calendar.8=Long:1	<failed: bind: Variable not defined: Calendar>
-P_Calendar	jit	missing		Calendar.8=Long:1	<failed: bind: Variable not defined: Calendar>
-P_Calendar	vm3	missing		Calendar.9=Integer:2020	<failed: bind: Variable not defined: Calendar>
-P_Calendar	jit	missing		Calendar.9=Integer:2020	<failed: bind: Variable not defined: Calendar>
-P_Calendar	vm3	missing		Calendar.10=String:[Integer]	<failed: bind: Variable not defined: Calendar>
-P_Calendar	jit	missing		Calendar.10=String:[Integer]	<failed: bind: Variable not defined: Calendar>
-P_Calendar	vm3	missing		Calendar.11=Long:1	<failed: bind: Variable not defined: Calendar>
-P_Calendar	jit	missing		Calendar.11=Long:1	<failed: bind: Variable not defined: Calendar>
-P_Calendar	vm3	missing		Calendar.12=ERR94	<failed: bind: Variable not defined: Calendar>
-P_Calendar	jit	missing		Calendar.12=ERR94	<failed: bind: Variable not defined: Calendar>
-P_Calendar	vm3	missing		Calendar.13=ERR13	<failed: bind: Variable not defined: Calendar>
-P_Calendar	jit	missing		Calendar.13=ERR13	<failed: bind: Variable not defined: Calendar>
-P_Calendar	vm3	missing		Calendar.14=Long:0	<failed: bind: unresolved name `Calendar` (member)>
-P_Calendar	jit	missing		Calendar.14=Long:0	<failed: bind: unresolved name `Calendar` (member)>
-P_Calendar	vm3	missing		Calendar.15=Integer:2020	<failed: bind: Variable not defined: Calendar>
-P_Calendar	jit	missing		Calendar.15=Integer:2020	<failed: bind: Variable not defined: Calendar>
 P_CallByName	vm3	error		CallByName.17=ERR438	CallByName.17=ERR5
 P_CallByName	jit	error		CallByName.17=ERR438	CallByName.17=ERR5
 P_CallByName	vm3	error		CallByName.18=ERR438	CallByName.18=ERR5
@@ -79,62 +37,24 @@ P_CallByName	vm3	error		CallByName.19=ERR450	CallByName.19=Empty
 P_CallByName	jit	error		CallByName.19=ERR450	CallByName.19=Empty
 P_CallByName	vm3	error		CallByName.22=ERR5	CallByName.22=ERR91
 P_CallByName	jit	error		CallByName.22=ERR5	CallByName.22=ERR91
-P_CallByName	vm3	missing		CallByName.29=Long:0	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
-P_CallByName	jit	missing		CallByName.29=Long:0	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
-P_CallByName	vm3	missing		CallByName.30=String:[]	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
-P_CallByName	jit	missing		CallByName.30=String:[]	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
-P_CallByName	vm3	missing		CallByName.31=ERR5	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
-P_CallByName	jit	missing		CallByName.31=ERR5	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
 P_Chr	vm3	error		Chr.5=ERR5	Chr.5=String:[{256}]
 P_Chr	jit	error		Chr.5=ERR5	Chr.5=String:[{256}]
 P_Chr	vm3	error		Chr.6=ERR5	Chr.6=String:[{65535}]
 P_Chr	jit	error		Chr.6=ERR5	Chr.6=String:[{65535}]
-P_Chr	vm3	missing		Chr.13=String:[B]	<failed: bind: unresolved name `CharCode` (named argument)>
-P_Chr	jit	missing		Chr.13=String:[B]	<failed: bind: unresolved name `CharCode` (named argument)>
-P_Chr	vm3	value	locale	Chr.15=String:[{129}]	Chr.15=String:[{65533}]
-P_Chr	jit	value	locale	Chr.15=String:[{129}]	Chr.15=String:[{65533}]
-P_Chr	vm3	value	locale	Chr.16=String:[{141}]	Chr.16=String:[{65533}]
-P_Chr	jit	value	locale	Chr.16=String:[{141}]	Chr.16=String:[{65533}]
-P_Chr	vm3	missing		Chr.21=String:[C]	<failed: bind: unresolved name `CharCode` (named argument)>
-P_Chr	jit	missing		Chr.21=String:[C]	<failed: bind: unresolved name `CharCode` (named argument)>
 P_Chr	vm3	error		Chr.23=ERR5	Chr.23=String:[{32768}]
 P_Chr	jit	error		Chr.23=ERR5	Chr.23=String:[{32768}]
 P_ChrB	vm3	error		ChrB.4=ERR6	ChrB.4=ERR5
 P_ChrB	jit	error		ChrB.4=ERR6	ChrB.4=ERR5
 P_ChrB	vm3	error		ChrB.5=ERR6	ChrB.5=ERR5
 P_ChrB	jit	error		ChrB.5=ERR6	ChrB.5=ERR5
-P_ChrB	vm3	missing		ChrB.9=String:[String lenb=1 [44]]	<failed: bind: unresolved name `CharCode` (named argument)>
-P_ChrB	jit	missing		ChrB.9=String:[String lenb=1 [44]]	<failed: bind: unresolved name `CharCode` (named argument)>
 P_ChrB	vm3	value		ChrB.12=String:[String lenb=2 [4100]]	ChrB.12=String:[String lenb=0 []]
 P_ChrB	jit	value		ChrB.12=String:[String lenb=2 [4100]]	ChrB.12=String:[String lenb=0 []]
 P_ChrB	vm3	value		ChrB.13=Boolean:True	ChrB.13=Boolean:False
 P_ChrB	jit	value		ChrB.13=Boolean:True	ChrB.13=Boolean:False
 P_ChrB	vm3	value		ChrB.15=String:[String lenb=2 [E901]]	ChrB.15=String:[String lenb=0 []]
 P_ChrB	jit	value		ChrB.15=String:[String lenb=2 [E901]]	ChrB.15=String:[String lenb=0 []]
-P_ChrW	vm3	missing		ChrW.16=String:[B]	<failed: bind: unresolved name `CharCode` (named argument)>
-P_ChrW	jit	missing		ChrW.16=String:[B]	<failed: bind: unresolved name `CharCode` (named argument)>
-P_ChrW	vm3	missing		ChrW.22=String:[{8364}]	<failed: bind: unresolved name `CharCode` (named argument)>
-P_ChrW	jit	missing		ChrW.22=String:[{8364}]	<failed: bind: unresolved name `CharCode` (named argument)>
-P_Collection	vm3	error		Collection.26=ERR5	Collection.26=ERR9
-P_Collection	jit	error		Collection.26=ERR5	Collection.26=ERR9
-P_Collection	vm3	error		Collection.37=ERR13	Collection.37=ERR9
-P_Collection	jit	error		Collection.37=ERR13	Collection.37=ERR9
-P_Collection	vm3	error		Collection.43=ERR5	Collection.43=ERR9
-P_Collection	jit	error		Collection.43=ERR5	Collection.43=ERR9
 P_Collection	vm3	value		Collection.44=String:[n=3 Integer:1;Integer:2;Integer:3;count=3|n=4 Integer:1;Integer:2;Integer:3;Integer:99;count=4|n=3 Integer:1;Integer:2;Integer:3;count=2]	Collection.44=String:[n=3 Integer:1;Integer:2;Integer:3;count=3|n=3 Integer:1;Integer:2;Integer:3;count=4|n=3 Integer:1;Integer:2;Integer:3;count=2]
 P_Collection	jit	value		Collection.44=String:[n=3 Integer:1;Integer:2;Integer:3;count=3|n=4 Integer:1;Integer:2;Integer:3;Integer:99;count=4|n=3 Integer:1;Integer:2;Integer:3;count=2]	Collection.44=String:[n=3 Integer:1;Integer:2;Integer:3;count=3|n=3 Integer:1;Integer:2;Integer:3;count=4|n=3 Integer:1;Integer:2;Integer:3;count=2]
-P_Collection	vm3	error		Collection.52=ERR5	Collection.52=ERR9
-P_Collection	jit	error		Collection.52=ERR5	Collection.52=ERR9
-P_Constants	vm3	value		Constants.76=vbIMENoOp:Long:0	Constants.76=vbIMENoOp:Empty
-P_Constants	jit	value		Constants.76=vbIMENoOp:Long:0	Constants.76=vbIMENoOp:Empty
-P_Constants	vm3	value		Constants.78=vbIMEOn:Long:1	Constants.78=vbIMEOn:Empty
-P_Constants	jit	value		Constants.78=vbIMEOn:Long:1	Constants.78=vbIMEOn:Empty
-P_Constants	vm3	value		Constants.80=vbIMEOff:Long:2	Constants.80=vbIMEOff:Empty
-P_Constants	jit	value		Constants.80=vbIMEOff:Long:2	Constants.80=vbIMEOff:Empty
-P_Constants	vm3	value		Constants.264=vbMsgBox:Long:-2147483625	Constants.264=vbMsgBox:Empty
-P_Constants	jit	value		Constants.264=vbMsgBox:Long:-2147483625	Constants.264=vbMsgBox:Empty
-P_Constants	vm3	value		Constants.265=vbMsgBoxText:Long:-2147483624	Constants.265=vbMsgBoxText:Empty
-P_Constants	jit	value		Constants.265=vbMsgBoxText:Long:-2147483624	Constants.265=vbMsgBoxText:Empty
 P_Cos	vm3	lastbit		Cos.2=Double:3FE14A280FB5068B|0.54030230586814	Cos.2=Double:3FE14A280FB5068C|0.54030230586814
 P_Cos	jit	lastbit		Cos.2=Double:3FE14A280FB5068B|0.54030230586814	Cos.2=Double:3FE14A280FB5068C|0.54030230586814
 P_Cos	vm3	lastbit		Cos.3=Double:3FE14A280FB5068B|0.54030230586814	Cos.3=Double:3FE14A280FB5068C|0.54030230586814
@@ -143,26 +63,6 @@ P_Cos	vm3	lastbit		Cos.22=Double:3FE14A280FB5068B|0.54030230586814	Cos.22=Double
 P_Cos	jit	lastbit		Cos.22=Double:3FE14A280FB5068B|0.54030230586814	Cos.22=Double:3FE14A280FB5068C|0.54030230586814
 P_Cos	vm3	lastbit		Cos.24=Double:3FE14A280FB5068B|0.54030230586814	Cos.24=Double:3FE14A280FB5068C|0.54030230586814
 P_Cos	jit	lastbit		Cos.24=Double:3FE14A280FB5068B|0.54030230586814	Cos.24=Double:3FE14A280FB5068C|0.54030230586814
-P_CreateObject	vm3	value		CreateObject.4=Long:9	CreateObject.4=Long:0
-P_CreateObject	jit	value		CreateObject.4=Long:9	CreateObject.4=Long:0
-P_CreateObject	jit	missing		CreateObject.8=String:[Dictionary]	<declined: "T: CallNative { dst: Some(Temp(TempId(17))), callee: Builtin(CreateObject), args: [Operand(Const(Str(\"Scripting.Dictionary\"))), Operand(Const(Str(\>
-P_CreateObject	jit	missing		CreateObject.9=String:[Dictionary]	<declined: "T: CallNative { dst: Some(Temp(TempId(19))), callee: Builtin(CreateObject), args: [Named { name: \"Class\", value: Const(Str(\"Scripting.Dictionary\">
-P_CreateObject	vm3	error		CreateObject.10=ERR429	CreateObject.10=String:[1]
-P_CreateObject	jit	error		CreateObject.10=ERR429	CreateObject.10=String:[1]
-P_CreateObject	vm3	error		CreateObject.11=ERR429	CreateObject.11=String:[NoSuchClass]
-P_CreateObject	jit	error		CreateObject.11=ERR429	CreateObject.11=String:[NoSuchClass]
-P_CreateObject	vm3	error		CreateObject.12=ERR429	CreateObject.12=ERR5
-P_CreateObject	jit	error		CreateObject.12=ERR429	CreateObject.12=ERR5
-P_CreateObject	vm3	error		CreateObject.13=ERR429	CreateObject.13=String:[Dictionary]
-P_CreateObject	jit	error		CreateObject.13=ERR429	CreateObject.13=String:[Dictionary]
-P_CreateObject	vm3	error		CreateObject.14=ERR429	CreateObject.14=String:[Dictionary]
-P_CreateObject	jit	error		CreateObject.14=ERR429	CreateObject.14=String:[Dictionary]
-P_CreateObject	vm3	error		CreateObject.15=ERR429	CreateObject.15=String:[Scripting]
-P_CreateObject	jit	error		CreateObject.15=ERR429	CreateObject.15=String:[Scripting]
-P_CreateObject	vm3	error		CreateObject.16=ERR94	CreateObject.16=ERR5
-P_CreateObject	jit	error		CreateObject.16=ERR94	CreateObject.16=ERR5
-P_CreateObject	vm3	error		CreateObject.17=ERR429	CreateObject.17=String:[NoDots]
-P_CreateObject	jit	error		CreateObject.17=ERR429	CreateObject.17=String:[NoDots]
 P_DateAdd	vm3	value		DateAdd.21=Date:BFF4555555555556	DateAdd.21=Date:3FE8AAAAAAAAAAAB
 P_DateAdd	jit	value		DateAdd.21=Date:BFF4555555555556	DateAdd.21=Date:3FE8AAAAAAAAAAAB
 P_DateAdd	vm3	value		DateAdd.22=Date:BFF7555555555556	DateAdd.22=Date:3FEEAAAAAAAAAAAB
@@ -205,48 +105,6 @@ P_DoEvents	vm3	type		DoEvents.8=Integer:0	DoEvents.8=Long:0
 P_DoEvents	jit	type		DoEvents.8=Integer:0	DoEvents.8=Long:0
 P_DoEvents	vm3	type		DoEvents.9=Integer:0	DoEvents.9=Long:0
 P_DoEvents	jit	type		DoEvents.9=Integer:0	DoEvents.9=Long:0
-P_Environ	vm3	value		Environ.3=String:[String]	Environ.3=String:[Long]
-P_Environ	jit	value		Environ.3=String:[String]	Environ.3=String:[Long]
-P_Environ	vm3	value		Environ.4=String:[String]	Environ.4=String:[Long]
-P_Environ	jit	value		Environ.4=String:[String]	Environ.4=String:[Long]
-P_Environ	vm3	value		Environ.5=Boolean:True	Environ.5=Boolean:False
-P_Environ	jit	value		Environ.5=Boolean:True	Environ.5=Boolean:False
-P_Environ	vm3	value		Environ.6=Boolean:True	Environ.6=Boolean:False
-P_Environ	jit	value		Environ.6=Boolean:True	Environ.6=Boolean:False
-P_Environ	vm3	value		Environ.7=String:[String]	Environ.7=String:[Long]
-P_Environ	jit	value		Environ.7=String:[String]	Environ.7=String:[Long]
-P_Environ	vm3	error		Environ.8=ERR5	Environ.8=Long:0
-P_Environ	jit	error		Environ.8=ERR5	Environ.8=Long:0
-P_Environ	vm3	error		Environ.9=ERR5	Environ.9=Long:-1
-P_Environ	jit	error		Environ.9=ERR5	Environ.9=Long:-1
-P_Environ	vm3	error		Environ.10=ERR5	Environ.10=Long:0
-P_Environ	jit	error		Environ.10=ERR5	Environ.10=Long:0
-P_Environ	vm3	type		Environ.11=String:[]	Environ.11=Long:19
-P_Environ	jit	type		Environ.11=String:[]	Environ.11=Long:19
-P_Environ	vm3	type		Environ.12=String:[]	Environ.12=Long:19
-P_Environ	jit	type		Environ.12=String:[]	Environ.12=Long:19
-P_Environ	vm3	error		Environ.14=ERR5	Environ.14=Long:0
-P_Environ	jit	error		Environ.14=ERR5	Environ.14=Long:0
-P_Environ	vm3	error		Environ.15=ERR5	Environ.15=Long:1
-P_Environ	jit	error		Environ.15=ERR5	Environ.15=Long:1
-P_Environ	vm3	type		Environ.16=String:[]	Environ.16=Long:5
-P_Environ	jit	type		Environ.16=String:[]	Environ.16=Long:5
-P_Environ	vm3	error		Environ.18=ERR5	Environ.18=Long:32000
-P_Environ	jit	error		Environ.18=ERR5	Environ.18=Long:32000
-P_Environ	vm3	value		Environ.19=Boolean:True	Environ.19=Boolean:False
-P_Environ	jit	value		Environ.19=Boolean:True	Environ.19=Boolean:False
-P_Environ	vm3	type		Environ.21=String:[]	Environ.21=Long:1
-P_Environ	jit	type		Environ.21=String:[]	Environ.21=Long:1
-P_Environ	vm3	error		Environ.22=ERR94	Environ.22=Long:0
-P_Environ	jit	error		Environ.22=ERR94	Environ.22=Long:0
-P_Environ	vm3	error		Environ.23=ERR5	Environ.23=Long:0
-P_Environ	jit	error		Environ.23=ERR5	Environ.23=Long:0
-P_Environ	vm3	error		Environ.24=ERR5	Environ.24=Long:1
-P_Environ	jit	error		Environ.24=ERR5	Environ.24=Long:1
-P_Environ	vm3	missing		Environ.27=String:[]	<failed: bind: unresolved name `Expression` (named argument)>
-P_Environ	jit	missing		Environ.27=String:[]	<failed: bind: unresolved name `Expression` (named argument)>
-P_Environ	vm3	error		Environ.30=ERR13	Environ.30=Long:0
-P_Environ	jit	error		Environ.30=ERR13	Environ.30=Long:0
 P_Erl	vm3	value		Erl.10=Long:0	Erl.10=Long:1
 P_Erl	jit	value		Erl.10=Long:0	Erl.10=Long:1
 P_Erl	vm3	value		Erl.11=Long:0	Erl.11=Long:1
@@ -255,12 +113,6 @@ P_Err	vm3	value		Err.6=String:[9|Subscript out of range]	Err.6=String:[9|subscri
 P_Err	jit	value		Err.6=String:[9|Subscript out of range]	Err.6=String:[9|subscript out of range]
 P_Err	vm3	value		Err.7=String:[-2147220504|Automation error]	Err.7=String:[-2147220504|Application-defined or object-defined error]
 P_Err	jit	value		Err.7=String:[-2147220504|Automation error]	Err.7=String:[-2147220504|Application-defined or object-defined error]
-P_Err	vm3	missing		Err.12=String:[ErrObject]	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
-P_Err	jit	missing		Err.12=String:[ErrObject]	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
-P_Err	vm3	missing		Err.13=Long:0	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
-P_Err	jit	missing		Err.13=Long:0	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
-P_Err	vm3	missing		Err.15=String:[ErrObject]	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
-P_Err	jit	missing		Err.15=String:[ErrObject]	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
 P_ErrObject	vm3	type		ErrObject.11=N=-2147220504;S=VBAProject;D=Automation error;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000440	ErrObject.11=N=-2147220504;S=VBAProject;D=Application-defined or object-defined error;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000095
 P_ErrObject	jit	type		ErrObject.11=N=-2147220504;S=VBAProject;D=Automation error;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000440	ErrObject.11=N=-2147220504;S=VBAProject;D=Application-defined or object-defined error;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000095
 P_ErrObject	vm3	value		ErrObject.12=N=-2147220504;S=S;D=D;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000440	ErrObject.12=N=-2147220504;S=S;D=D;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000095
@@ -271,10 +123,6 @@ P_ErrObject	vm3	type		ErrObject.19=N=-5;S=VBAProject;D=Automation error;HF=C:\Pr
 P_ErrObject	jit	type		ErrObject.19=N=-5;S=VBAProject;D=Automation error;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000440	ErrObject.19=N=-5;S=VBAProject;D=Application-defined or object-defined error;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000095
 P_ErrObject	vm3	type		ErrObject.20=N=-2147221504;S=VBAProject;D=Automation error{10}Invalid OLEVERB structure ;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000440	ErrObject.20=N=-2147221504;S=VBAProject;D=Application-defined or object-defined error;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000095
 P_ErrObject	jit	type		ErrObject.20=N=-2147221504;S=VBAProject;D=Automation error{10}Invalid OLEVERB structure ;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000440	ErrObject.20=N=-2147221504;S=VBAProject;D=Application-defined or object-defined error;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000095
-P_ErrObject	vm3	type		ErrObject.32=N=13;S=VBAProject;D=Type mismatch;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000013	ErrObject.32=N=13;S=VBAProject;D=expected a numeric value;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000013
-P_ErrObject	jit	type		ErrObject.32=N=13;S=VBAProject;D=Type mismatch;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000013	ErrObject.32=N=13;S=VBAProject;D=expected a numeric value;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000013
-P_ErrObject	vm3	missing		ErrObject.34=ErrObject,Long,String,Long	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
-P_ErrObject	jit	missing		ErrObject.34=ErrObject,Long,String,Long	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
 P_ErrObject	vm3	type		ErrObject.36=N=94;S=VBAProject;D=Invalid use of Null;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000094	ErrObject.36=N=5;S=;D=Invalid procedure call or argument;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000005
 P_ErrObject	jit	type		ErrObject.36=N=94;S=VBAProject;D=Invalid use of Null;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000094	ErrObject.36=N=5;S=;D=Invalid procedure call or argument;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000005
 P_ErrObject	vm3	type		ErrObject.38=N=94;S=VBAProject;D=Invalid use of Null;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000094	ErrObject.38=N=5;S=VBAProject;D=;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000005
@@ -283,36 +131,12 @@ P_ErrObject	vm3	value		ErrObject.53=inh=5;cleared=0;after=N=0;S=;D=;HF=;HC=0|aft
 P_ErrObject	jit	value		ErrObject.53=inh=5;cleared=0;after=N=0;S=;D=;HF=;HC=0|after exit sub in handler: N=0;S=;D=;HF=;HC=0	ErrObject.53=inh=5;cleared=0;after=N=0;S=;D=;HF=;HC=0|after exit sub in handler: N=5;S=hs;D=hd;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000005
 P_ErrObject	vm3	type		ErrObject.54=	ErrObject.54=N=5;S=VBAProject;D=Invalid procedure call or argument;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000005|second=N=11;S=VBAProject;D=Division by zero;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000011
 P_ErrObject	jit	type		ErrObject.54=	ErrObject.54=N=5;S=VBAProject;D=Invalid procedure call or argument;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000005|second=N=11;S=VBAProject;D=Division by zero;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000011
-P_Error	vm3	missing		Error.24=String:[Type mismatch]	<failed: bind: unresolved name `ErrorNumber` (named argument)>
-P_Error	jit	missing		Error.24=String:[Type mismatch]	<failed: bind: unresolved name `ErrorNumber` (named argument)>
-P_Error	vm3	missing		Error.25=String:[Invalid procedure call or argument]	<failed: bind: unresolved name `ErrorNumber` (named argument)>
-P_Error	jit	missing		Error.25=String:[Invalid procedure call or argument]	<failed: bind: unresolved name `ErrorNumber` (named argument)>
-P_Exp	vm3	missing		Exp.27=Double:4005BF0A8B145769|2.71828182845905	<failed: bind: unresolved name `Number` (named argument)>
-P_Exp	jit	missing		Exp.27=Double:4005BF0A8B145769|2.71828182845905	<failed: bind: unresolved name `Number` (named argument)>
 P_FV	vm3	lastbit		FV.2=Double:4119811CC264D2D1|417863.189837736	FV.2=Double:4119811CC264D2D0|417863.189837736
 P_FV	jit	lastbit		FV.2=Double:4119811CC264D2D1|417863.189837736	FV.2=Double:4119811CC264D2D0|417863.189837736
 P_FV	vm3	lastbit		FV.6=Double:C0B05B7C23BAF030|-4187.4849202	FV.6=Double:C0B05B7C23BAF031|-4187.48492020001
 P_FV	jit	lastbit		FV.6=Double:C0B05B7C23BAF030|-4187.4849202	FV.6=Double:C0B05B7C23BAF031|-4187.48492020001
 P_FV	vm3	lastbit		FV.7=Double:0000000000000000|0	FV.7=Double:8000000000000000|-0
 P_FV	jit	lastbit		FV.7=Double:0000000000000000|0	FV.7=Double:8000000000000000|-0
-P_FV	vm3	missing		FV.18=Double:4098E6F84775E061|1593.7424601	<failed: bind: unresolved name `Rate` (named argument)>
-P_FV	jit	missing		FV.18=Double:4098E6F84775E061|1593.7424601	<failed: bind: unresolved name `Rate` (named argument)>
-P_Filter	vm3	type		Filter.6=String()[unallocated]	Filter.6=String()[0,-1]{}
-P_Filter	jit	type		Filter.6=String()[unallocated]	Filter.6=String()[0,-1]{}
-P_Filter	vm3	error		Filter.7=String()[0,0]{String:[22]}	Filter.7=ERR13
-P_Filter	jit	error		Filter.7=String()[0,0]{String:[22]}	Filter.7=ERR13
-P_Filter	vm3	missing		Filter.14=String()[0,0]{String:[y2]}	<failed: bind: unresolved name `SourceArray` (named argument)>
-P_Filter	jit	missing		Filter.14=String()[0,0]{String:[y2]}	<failed: bind: unresolved name `SourceArray` (named argument)>
-P_Filter	vm3	error		Filter.17=ERR13	Filter.17=String()[0,0]{String:[a]}
-P_Filter	jit	error		Filter.17=ERR13	Filter.17=String()[0,0]{String:[a]}
-P_Filter	vm3	missing		Filter.18=String()[0,0]{String:[b]}	<failed: bind: unresolved name `Include` (named argument)>
-P_Filter	jit	missing		Filter.18=String()[0,0]{String:[b]}	<failed: bind: unresolved name `Include` (named argument)>
-P_Filter	vm3	error		Filter.20=String()[unallocated]	Filter.20=ERR13
-P_Filter	jit	error		Filter.20=String()[unallocated]	Filter.20=ERR13
-P_Filter	vm3	error		Filter.21=ERR13	Filter.21=String()[0,0]{String:[a]}
-P_Filter	jit	error		Filter.21=ERR13	Filter.21=String()[0,0]{String:[a]}
-P_Filter	vm3	value		Filter.24=String()[0,0]{String:[b]}	Filter.24=String()[0,0]{String:[a]}
-P_Filter	jit	value		Filter.24=String()[0,0]{String:[b]}	Filter.24=String()[0,0]{String:[a]}
 P_Format	vm3	value	locale	Format.2=String:[R1{160}234.57]	Format.2=String:[$1,234.57]
 P_Format	jit	value	locale	Format.2=String:[R1{160}234.57]	Format.2=String:[$1,234.57]
 P_Format	vm3	value		Format.4=String:[1{160}234.57]	Format.4=String:[1,234.57]
@@ -423,38 +247,10 @@ P_Format2	vm3	value		Format2.75=String:[:03]	Format2.75=String:[[14]:07]
 P_Format2	jit	value		Format2.75=String:[:03]	Format2.75=String:[[14]:07]
 P_Format2	vm3	value		Format2.76=String:[p]	Format2.76=String:[a/p]
 P_Format2	jit	value		Format2.76=String:[p]	Format2.76=String:[a/p]
-P_Format3	vm3	value		Format3.2=String:[hello   ]	Format3.2=String:[!   hello]
-P_Format3	jit	value		Format3.2=String:[hello   ]	Format3.2=String:[!   hello]
-P_Format3	vm3	value		Format3.9=String:[[a]bc]	Format3.9=String:[[abc]]
-P_Format3	jit	value		Format3.9=String:[[a]bc]	Format3.9=String:[[abc]]
-P_Format3	vm3	value		Format3.12=String:[  123]	Format3.12=String:[@@@@@]
-P_Format3	jit	value		Format3.12=String:[  123]	Format3.12=String:[@@@@@]
-P_Format3	vm3	value		Format3.15=String:[h suffixello]	Format3.15=String:[hello suffix]
-P_Format3	jit	value		Format3.15=String:[h suffixello]	Format3.15=String:[hello suffix]
-P_Format3	vm3	value		Format3.27=String:[True]	Format3.27=String:[-@]
-P_Format3	jit	value		Format3.27=String:[True]	Format3.27=String:[-@]
-P_Format3	vm3	value		Format3.28=String:[]	Format3.28=String:[0.00]
-P_Format3	jit	value		Format3.28=String:[]	Format3.28=String:[0.00]
-P_Format3	vm3	value		Format3.29=String:[]	Format3.29=String:[@]
-P_Format3	jit	value		Format3.29=String:[]	Format3.29=String:[@]
-P_Format3	vm3	error		Format3.31=String:[]	Format3.31=ERR94
-P_Format3	jit	error		Format3.31=String:[]	Format3.31=ERR94
 P_Format3	vm3	value		Format3.37=String:[79{160}228{160}162{160}514{160}264{160}337{160}593{160}543{160}950{160}335]	Format3.37=String:[79,228,162,514,264,337,593,543,950,336]
 P_Format3	jit	value		Format3.37=String:[79{160}228{160}162{160}514{160}264{160}337{160}593{160}543{160}950{160}335]	Format3.37=String:[79,228,162,514,264,337,593,543,950,336]
 P_Format3	vm3	value		Format3.45=String:[123{160}456{160}789]	Format3.45=String:[123,456,789]
 P_Format3	jit	value		Format3.45=String:[123{160}456{160}789]	Format3.45=String:[123,456,789]
-P_Format3	vm3	error		Format3.53=ERR13	Format3.53=String:[0]
-P_Format3	jit	error		Format3.53=ERR13	Format3.53=String:[0]
-P_Format3	vm3	error		Format3.56=String:[]	Format3.56=ERR94
-P_Format3	jit	error		Format3.56=String:[]	Format3.56=ERR94
-P_Format3	vm3	error		Format3.59=ERR13	Format3.59=String:[0]
-P_Format3	jit	error		Format3.59=ERR13	Format3.59=String:[0]
-P_Format3	vm3	value		Format3.63=String:[1234.5]	Format3.63=String:[@]
-P_Format3	jit	value		Format3.63=String:[1234.5]	Format3.63=String:[@]
-P_Format3	vm3	value		Format3.64=String:[-5]	Format3.64=String:[@;0eg]
-P_Format3	jit	value		Format3.64=String:[-5]	Format3.64=String:[@;0eg]
-P_Format3	vm3	value		Format3.65=String:[1.5]	Format3.65=String:[>]
-P_Format3	jit	value		Format3.65=String:[1.5]	Format3.65=String:[>]
 P_FormatCurrency	vm3	value	locale	FormatCurrency.1=String:[R1{160}234.57]	FormatCurrency.1=String:[$1,234.57]
 P_FormatCurrency	jit	value	locale	FormatCurrency.1=String:[R1{160}234.57]	FormatCurrency.1=String:[$1,234.57]
 P_FormatCurrency	vm3	value	locale	FormatCurrency.2=String:[R1{160}235]	FormatCurrency.2=String:[$1,235]
@@ -629,61 +425,16 @@ P_GetAllSettings	vm3	value		GetAllSettings.17=String:[K=1]	GetAllSettings.17=Str
 P_GetAllSettings	jit	value		GetAllSettings.17=String:[K=1]	GetAllSettings.17=String:[a=1]
 P_GetAllSettings	vm3	error		GetAllSettings.18=ERR9	GetAllSettings.18=String:[b]
 P_GetAllSettings	jit	error		GetAllSettings.18=ERR9	GetAllSettings.18=String:[b]
-P_GetObject	vm3	error		GetObject.1=ERR13	GetObject.1=ERR5
-P_GetObject	jit	missing		GetObject.1=ERR13	<declined: "T: CallNative { dst: Some(Temp(TempId(3))), callee: Builtin(GetObject), args: [] }: CallNative GetObject requires one or two positional arguments">
-P_GetObject	vm3	error		GetObject.5=ERR429	GetObject.5=ERR432
-P_GetObject	jit	missing		GetObject.5=ERR429	<declined: "T: CallNative { dst: Some(Temp(TempId(11))), callee: Builtin(GetObject), args: [Named { name: \"Class\", value: Const(Str(\"CalcVbaProbe.NoSuchClass\>
-P_GetObject	vm3	error		GetObject.7=ERR429	GetObject.7=String:[NoSuchClass]
-P_GetObject	jit	error		GetObject.7=ERR429	GetObject.7=String:[NoSuchClass]
-P_GetObject	vm3	error		GetObject.9=ERR94	GetObject.9=ERR5
-P_GetObject	jit	error		GetObject.9=ERR94	GetObject.9=ERR5
-P_GetObject	vm3	error		GetObject.11=ERR429	GetObject.11=ERR5
-P_GetObject	jit	error		GetObject.11=ERR429	GetObject.11=ERR5
-P_GetObject	vm3	error		GetObject.12=Long:0	GetObject.12=ERR5
-P_GetObject	jit	error		GetObject.12=Long:0	GetObject.12=ERR5
-P_GetObject	vm3	error		GetObject.14=ERR94	GetObject.14=ERR5
-P_GetObject	jit	error		GetObject.14=ERR94	GetObject.14=ERR5
-P_GetObject	jit	missing		GetObject.15=String:[Dictionary]	<declined: "T: CallNative { dst: Some(Temp(TempId(31))), callee: Builtin(GetObject), args: [Named { name: \"PathName\", value: Const(Str(\"\")), by_ref: None }, >
 P_GetSetting	vm3	value		GetSetting.20=String:[True]	GetSetting.20=String:[  sp  ]
 P_GetSetting	jit	value		GetSetting.20=String:[True]	GetSetting.20=String:[  sp  ]
-P_Hex	vm3	missing		Hex.45=String:[FF]	<failed: bind: unresolved name `Number` (named argument)>
-P_Hex	jit	missing		Hex.45=String:[FF]	<failed: bind: unresolved name `Number` (named argument)>
 P_Hex	vm3	error		Hex.56=ERR94	Hex.56=Null
 P_Hex	jit	error		Hex.56=ERR94	Hex.56=Null
-P_Hex	jit	missing		Hex.58=String:[FF]	<declined: "T: CallNative { dst: Some(Temp(TempId(124))), callee: Builtin(Hex), args: [Named { name: \"Number\", value: Const(I16(255)), by_ref: None }] }: M4-4 >
-P_IIf	jit	missing		IIf.32=String:[a]	<declined: "T: CallNative { dst: Some(Temp(TempId(66))), callee: Builtin(IIf), args: [Named { name: \"Expression\", value: Const(Bool(true)), by_ref: None }, Nam>
-P_IMEStatus	vm3	missing		IMEStatus.1=Long:0	<failed: bind: Variable not defined: IMEStatus>
-P_IMEStatus	jit	missing		IMEStatus.1=Long:0	<failed: bind: Variable not defined: IMEStatus>
-P_IMEStatus	vm3	missing		IMEStatus.2=String:[Long]	<failed: bind: Variable not defined: IMEStatus>
-P_IMEStatus	jit	missing		IMEStatus.2=String:[Long]	<failed: bind: Variable not defined: IMEStatus>
-P_IMEStatus	vm3	missing		IMEStatus.3=Long:3	<failed: bind: Variable not defined: IMEStatus>
-P_IMEStatus	jit	missing		IMEStatus.3=Long:3	<failed: bind: Variable not defined: IMEStatus>
-P_IMEStatus	vm3	missing		IMEStatus.4=Boolean:True	<failed: bind: Variable not defined: IMEStatus>
-P_IMEStatus	jit	missing		IMEStatus.4=Boolean:True	<failed: bind: Variable not defined: IMEStatus>
-P_IMEStatus	vm3	missing		IMEStatus.5=Long:0	<failed: bind: Variable not defined: IMEStatus>
-P_IMEStatus	jit	missing		IMEStatus.5=Long:0	<failed: bind: Variable not defined: IMEStatus>
-P_IMEStatus	vm3	missing		IMEStatus.6=Boolean:True	<failed: bind: Variable not defined: IMEStatus>
-P_IMEStatus	jit	missing		IMEStatus.6=Boolean:True	<failed: bind: Variable not defined: IMEStatus>
-P_IMEStatus	vm3	missing		IMEStatus.7=String:[0,1,2,3,4]	<failed: bind: Variable not defined: vbIMENoOp>
-P_IMEStatus	jit	missing		IMEStatus.7=String:[0,1,2,3,4]	<failed: bind: Variable not defined: vbIMENoOp>
-P_IMEStatus	vm3	missing		IMEStatus.9=Long:0	<failed: bind: Sub or Function not defined>
-P_IMEStatus	jit	missing		IMEStatus.9=Long:0	<failed: bind: Sub or Function not defined>
 P_IPmt	vm3	lastbit		IPmt.2=Double:C08A02A805A6ED97|-832.332042030454	IPmt.2=Double:C08A02A805A6ED98|-832.332042030454
 P_IPmt	jit	lastbit		IPmt.2=Double:C08A02A805A6ED97|-832.332042030454	IPmt.2=Double:C08A02A805A6ED98|-832.332042030454
 P_IPmt	vm3	value		IPmt.3=Double:C011D1DEBC1B94FF|-4.45495122831676	IPmt.3=Double:C011D1DEBC1B9333|-4.45495122831635
 P_IPmt	jit	value		IPmt.3=Double:C011D1DEBC1B94FF|-4.45495122831676	IPmt.3=Double:C011D1DEBC1B9333|-4.45495122831635
 P_IPmt	vm3	lastbit		IPmt.4=Double:C0861FF4EC8E1448|-707.99459181785	IPmt.4=Double:C0861FF4EC8E1447|-707.99459181785
 P_IPmt	jit	lastbit		IPmt.4=Double:C0861FF4EC8E1448|-707.99459181785	IPmt.4=Double:C0861FF4EC8E1447|-707.99459181785
-P_IPmt	vm3	missing		IPmt.17=Double:C059000000000000|-100	<failed: bind: unresolved name `Rate` (named argument)>
-P_IPmt	jit	missing		IPmt.17=Double:C059000000000000|-100	<failed: bind: unresolved name `Rate` (named argument)>
-P_IRR	vm3	lastbit		IRR.1=Double:3FCFDB68EA9C0B22|0.248883356624071	IRR.1=Double:3FCFDB68EA9C0B24|0.248883356624071
-P_IRR	jit	lastbit		IRR.1=Double:3FCFDB68EA9C0B22|0.248883356624071	IRR.1=Double:3FCFDB68EA9C0B24|0.248883356624071
-P_IRR	vm3	lastbit		IRR.11=Double:3FE965FEA53D6E3D|0.7937005259841	IRR.11=Double:3FE965FEA53D6E3C|0.7937005259841
-P_IRR	jit	lastbit		IRR.11=Double:3FE965FEA53D6E3D|0.7937005259841	IRR.11=Double:3FE965FEA53D6E3C|0.7937005259841
-P_IRR	vm3	lastbit		IRR.15=Double:3FCFDB68EA9C0B22|0.248883356624071	IRR.15=Double:3FCFDB68EA9C0B24|0.248883356624071
-P_IRR	jit	lastbit		IRR.15=Double:3FCFDB68EA9C0B22|0.248883356624071	IRR.15=Double:3FCFDB68EA9C0B24|0.248883356624071
-P_IRR	vm3	lastbit		IRR.19=Double:3FCFDB68EA9BECBF|0.248883356623855	IRR.19=Double:3FCFDB68EA9BECC0|0.248883356623855
-P_IRR	jit	lastbit		IRR.19=Double:3FCFDB68EA9BECBF|0.248883356623855	IRR.19=Double:3FCFDB68EA9BECC0|0.248883356623855
 P_InStr	vm3	value		InStr.12=Long:5	InStr.12=Long:4
 P_InStr	jit	value		InStr.12=Long:5	InStr.12=Long:4
 P_InStr	vm3	error		InStr.21=ERR5	InStr.21=Long:0
@@ -706,16 +457,12 @@ P_InStrRev	vm3	value		InStrRev.7=Long:3	InStrRev.7=Long:4
 P_InStrRev	jit	value		InStrRev.7=Long:3	InStrRev.7=Long:4
 P_InStrRev	vm3	value		InStrRev.9=Long:0	InStrRev.9=Long:1
 P_InStrRev	jit	value		InStrRev.9=Long:0	InStrRev.9=Long:1
-P_InStrRev	vm3	missing		InStrRev.20=Long:4	<failed: bind: unresolved name `StringCheck` (named argument)>
-P_InStrRev	jit	missing		InStrRev.20=Long:4	<failed: bind: unresolved name `StringCheck` (named argument)>
 P_InStrRev	vm3	error		InStrRev.24=ERR5	InStrRev.24=Long:0
 P_InStrRev	jit	error		InStrRev.24=ERR5	InStrRev.24=Long:0
 P_InStrRev	vm3	value		InStrRev.25=Long:2	InStrRev.25=Long:0
 P_InStrRev	jit	value		InStrRev.25=Long:2	InStrRev.25=Long:0
 P_InStrRev	vm3	value		InStrRev.27=Long:2	InStrRev.27=Long:3
 P_InStrRev	jit	value		InStrRev.27=Long:2	InStrRev.27=Long:3
-P_InStrRev	vm3	missing		InStrRev.28=Long:2	<failed: bind: unresolved name `Compare` (named argument)>
-P_InStrRev	jit	missing		InStrRev.28=Long:2	<failed: bind: unresolved name `Compare` (named argument)>
 P_IsDate	vm3	error		IsDate.35=Boolean:False	IsDate.35=ERR450
 P_IsDate	jit	error		IsDate.35=Boolean:False	IsDate.35=ERR450
 P_IsMissing	vm3	value		IsMissing.11=Boolean:True	IsMissing.11=Boolean:False
@@ -726,48 +473,18 @@ P_IsNumeric	vm3	value		IsNumeric.33=Boolean:True	IsNumeric.33=Boolean:False
 P_IsNumeric	jit	value		IsNumeric.33=Boolean:True	IsNumeric.33=Boolean:False
 P_IsNumeric	vm3	error		IsNumeric.49=Boolean:False	IsNumeric.49=ERR450
 P_IsNumeric	jit	error		IsNumeric.49=Boolean:False	IsNumeric.49=ERR450
-P_IsNumeric	vm3	missing		IsNumeric.55=Boolean:True	<failed: bind: unresolved name `Expression` (named argument)>
-P_IsNumeric	jit	missing		IsNumeric.55=Boolean:True	<failed: bind: unresolved name `Expression` (named argument)>
-P_IsObject	vm3	missing		IsObject.10=Boolean:True	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
-P_IsObject	jit	missing		IsObject.10=Boolean:True	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
-P_Join	vm3	missing		Join.16=String:[p;q]	<failed: bind: unresolved name `SourceArray` (named argument)>
-P_Join	jit	missing		Join.16=String:[p;q]	<failed: bind: unresolved name `SourceArray` (named argument)>
-P_Join	vm3	error		Join.17=ERR5	Join.17=String:[a,c,b,d]
-P_Join	jit	error		Join.17=ERR5	Join.17=String:[a,c,b,d]
-P_Join	vm3	error		Join.18=ERR5	Join.18=String:[1,2,3]
-P_Join	jit	error		Join.18=ERR5	Join.18=String:[1,2,3]
-P_Join	vm3	error		Join.19=ERR13	Join.19=String:[a,Error 5]
-P_Join	jit	error		Join.19=ERR13	Join.19=String:[a,Error 5]
-P_Join	vm3	error		Join.20=String:[]	Join.20=ERR13
-P_Join	jit	error		Join.20=String:[]	Join.20=ERR13
 P_LCase	vm3	value		LCase.8=String:[{304}]	LCase.8=String:[i{775}]
 P_LCase	jit	value		LCase.8=String:[{304}]	LCase.8=String:[i{775}]
 P_LCase	vm3	value		LCase.9=String:[{7838}]	LCase.9=String:[{223}]
 P_LCase	jit	value		LCase.9=String:[{7838}]	LCase.9=String:[{223}]
 P_LCase	vm3	value		LCase.12=String:[{8486}]	LCase.12=String:[{969}]
 P_LCase	jit	value		LCase.12=String:[{8486}]	LCase.12=String:[{969}]
-P_LCase	vm3	missing		LCase.16=String:[abc]	<failed: bind: unresolved name `String` (named argument)>
-P_LCase	jit	missing		LCase.16=String:[abc]	<failed: bind: unresolved name `String` (named argument)>
-P_LCase	vm3	missing		LCase.22=String:[q{229}]	<failed: bind: unresolved name `String` (named argument)>
-P_LCase	jit	missing		LCase.22=String:[q{229}]	<failed: bind: unresolved name `String` (named argument)>
-P_LTrim	vm3	missing		LTrim.12=String:[y]	<failed: bind: unresolved name `String` (named argument)>
-P_LTrim	jit	missing		LTrim.12=String:[y]	<failed: bind: unresolved name `String` (named argument)>
 P_LTrim	vm3	value		LTrim.13=String:[a]	LTrim.13=String:[{12288}a]
 P_LTrim	jit	value		LTrim.13=String:[a]	LTrim.13=String:[{12288}a]
-P_LTrim	vm3	missing		LTrim.19=String:[z]	<failed: bind: unresolved name `String` (named argument)>
-P_LTrim	jit	missing		LTrim.19=String:[z]	<failed: bind: unresolved name `String` (named argument)>
-P_Left	vm3	missing		Left.8=String:[ab]	<failed: bind: unresolved name `String` (named argument)>
-P_Left	jit	missing		Left.8=String:[ab]	<failed: bind: unresolved name `String` (named argument)>
 P_Left	vm3	error		Left.17=ERR5	Left.17=String:[abc]
 P_Left	jit	error		Left.17=ERR5	Left.17=String:[abc]
 P_Left	vm3	error		Left.18=ERR6	Left.18=String:[abc]
 P_Left	jit	error		Left.18=ERR6	Left.18=String:[abc]
-P_Left	vm3	missing		Left.23=String:[a]	<failed: bind: unresolved name `String` (named argument)>
-P_Left	jit	missing		Left.23=String:[a]	<failed: bind: unresolved name `String` (named argument)>
-P_LeftB	vm3	missing		LeftB.9=String:[String lenb=2 [6100]]	<failed: bind: unresolved name `String` (named argument)>
-P_LeftB	jit	missing		LeftB.9=String:[String lenb=2 [6100]]	<failed: bind: unresolved name `String` (named argument)>
-P_LeftB	vm3	missing		LeftB.18=String:[String lenb=2 [6100]]	<failed: bind: unresolved name `String` (named argument)>
-P_LeftB	jit	missing		LeftB.18=String:[String lenb=2 [6100]]	<failed: bind: unresolved name `String` (named argument)>
 P_Len	vm3	type		Len.7=Integer:4	Len.7=Long:1
 P_Len	jit	type		Len.7=Integer:4	Len.7=Long:1
 P_Len	vm3	type		Len.8=Integer:2	Len.8=Long:1
@@ -812,143 +529,16 @@ P_LenB	vm3	value		LenB.20=Long:3	LenB.20=Long:0
 P_LenB	jit	value		LenB.20=Long:3	LenB.20=Long:0
 P_LenB	vm3	error		LenB.22=ERR13	LenB.22=Long:4
 P_LenB	jit	error		LenB.22=ERR13	LenB.22=Long:4
-P_Log	vm3	missing		Log.24=Double:0000000000000000|0	<failed: bind: unresolved name `Number` (named argument)>
-P_Log	jit	missing		Log.24=Double:0000000000000000|0	<failed: bind: unresolved name `Number` (named argument)>
-P_MacID	vm3	missing		MacID.1=Long:1413830740	<failed: bind: Sub or Function not defined>
-P_MacID	jit	missing		MacID.1=Long:1413830740	<failed: bind: Sub or Function not defined>
-P_MacID	vm3	missing		MacID.2=Long:538976288	<failed: bind: Sub or Function not defined>
-P_MacID	jit	missing		MacID.2=Long:538976288	<failed: bind: Sub or Function not defined>
-P_MacID	vm3	missing		MacID.3=Long:1633837924	<failed: bind: Sub or Function not defined>
-P_MacID	jit	missing		MacID.3=Long:1633837924	<failed: bind: Sub or Function not defined>
-P_MacID	vm3	missing		MacID.4=ERR94	<failed: bind: Sub or Function not defined>
-P_MacID	jit	missing		MacID.4=ERR94	<failed: bind: Sub or Function not defined>
-P_MacID	vm3	missing		MacID.5=Long:891297824	<failed: bind: Sub or Function not defined>
-P_MacID	jit	missing		MacID.5=Long:891297824	<failed: bind: Sub or Function not defined>
-P_MacID	vm3	missing		MacID.6=Long:1413830740	<failed: bind: Sub or Function not defined>
-P_MacID	jit	missing		MacID.6=Long:1413830740	<failed: bind: Sub or Function not defined>
-P_MacScript	vm3	missing		MacScript.1=ERR5	<failed: bind: Sub or Function not defined>
-P_MacScript	jit	missing		MacScript.1=ERR5	<failed: bind: Sub or Function not defined>
-P_MacScript	vm3	missing		MacScript.2=ERR5	<failed: bind: Sub or Function not defined>
-P_MacScript	jit	missing		MacScript.2=ERR5	<failed: bind: Sub or Function not defined>
-P_MacScript	vm3	missing		MacScript.3=ERR5	<failed: bind: Sub or Function not defined>
-P_MacScript	jit	missing		MacScript.3=ERR5	<failed: bind: Sub or Function not defined>
-P_MacScript	vm3	missing		MacScript.4=ERR94	<failed: bind: Sub or Function not defined>
-P_MacScript	jit	missing		MacScript.4=ERR94	<failed: bind: Sub or Function not defined>
-P_MacScript	vm3	missing		MacScript.5=ERR5	<failed: bind: Sub or Function not defined>
-P_MacScript	jit	missing		MacScript.5=ERR5	<failed: bind: Sub or Function not defined>
-P_Match	vm3	missing		Match.1=String:[bbb]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.1=String:[bbb]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.2=Long:2	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.2=Long:2	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.3=Long:3	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.3=Long:3	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.4=String:[Match]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.4=String:[Match]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.5=String:[String,Long,Long,SubMatches]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.5=String:[String,Long,Long,SubMatches]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.6=Long:0	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.6=Long:0	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.7=String:[2,Long]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.7=String:[2,Long]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.8=String:[10]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.8=String:[10]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.9=String:[20]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.9=String:[20]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.10=ERR5	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.10=ERR5	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.11=ERR5	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.11=ERR5	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.12=String:[String:10;String:20;]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.12=String:[String:10;String:20;]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.13=String:[bbb]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.13=String:[bbb]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.14=String:[0,0,]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.14=String:[0,0,]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.15=Long:6	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.15=Long:6	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.16=Long:2	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.16=Long:2	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.17=String:[3,a{123}13{125}b]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.17=String:[3,a{123}13{125}b]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.18=String:[ABC]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.18=String:[ABC]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.19=String:[ab,a,b]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.19=String:[ab,a,b]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.20=String:[2Empty]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.20=String:[2Empty]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.21=Boolean:True	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.21=Boolean:True	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.22=String:[String,8]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.22=String:[String,8]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.23=String:[SubMatches]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.23=String:[SubMatches]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.24=String:[Empty]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.24=String:[Empty]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.25=String:[233,1]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.25=String:[233,1]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	vm3	missing		Match.26=String:[11k]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Match	jit	missing		Match.26=String:[11k]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	vm3	missing		MatchCollection.1=Long:3	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	jit	missing		MatchCollection.1=Long:3	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	vm3	missing		MatchCollection.2=String:[MatchCollection,Long]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	jit	missing		MatchCollection.2=String:[MatchCollection,Long]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	vm3	missing		MatchCollection.3=Long:1	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	jit	missing		MatchCollection.3=Long:1	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	vm3	missing		MatchCollection.4=Long:5	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	jit	missing		MatchCollection.4=Long:5	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	vm3	missing		MatchCollection.5=ERR5	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	jit	missing		MatchCollection.5=ERR5	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	vm3	missing		MatchCollection.6=ERR5	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	jit	missing		MatchCollection.6=ERR5	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	vm3	missing		MatchCollection.7=Long:5	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	jit	missing		MatchCollection.7=Long:5	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	vm3	missing		MatchCollection.8=Long:3	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	jit	missing		MatchCollection.8=Long:3	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	vm3	missing		MatchCollection.9=ERR13	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	jit	missing		MatchCollection.9=ERR13	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	vm3	missing		MatchCollection.10=String:[1;3;5;]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	jit	missing		MatchCollection.10=String:[1;3;5;]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	vm3	missing		MatchCollection.11=String:[Match;Match;Match;]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	jit	missing		MatchCollection.11=String:[Match;Match;Match;]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	vm3	missing		MatchCollection.12=String:[0/]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	jit	missing		MatchCollection.12=String:[0/]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	vm3	missing		MatchCollection.13=Long:3	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	jit	missing		MatchCollection.13=Long:3	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	vm3	missing		MatchCollection.14=Long:1	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	jit	missing		MatchCollection.14=Long:1	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	vm3	missing		MatchCollection.15=Long:2	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	jit	missing		MatchCollection.15=Long:2	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	vm3	missing		MatchCollection.16=String:[3,1]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	jit	missing		MatchCollection.16=String:[3,1]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	vm3	missing		MatchCollection.17=String:[3,2]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	jit	missing		MatchCollection.17=String:[3,2]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	vm3	missing		MatchCollection.18=Long:3	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	jit	missing		MatchCollection.18=Long:3	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	vm3	missing		MatchCollection.19=String:[a]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	jit	missing		MatchCollection.19=String:[a]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	vm3	missing		MatchCollection.20=String:[True,Match]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_MatchCollection	jit	missing		MatchCollection.20=String:[True,Match]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_Mid	vm3	missing		Mid.21=String:[cd]	<failed: bind: unresolved name `String` (named argument)>
-P_Mid	jit	missing		Mid.21=String:[cd]	<failed: bind: unresolved name `String` (named argument)>
-P_Mid	vm3	missing		Mid.22=String:[cdef]	<failed: bind: unresolved name `String` (named argument)>
-P_Mid	jit	missing		Mid.22=String:[cdef]	<failed: bind: unresolved name `String` (named argument)>
 P_Mid	vm3	error		Mid.23=ERR5	Mid.23=String:[]
 P_Mid	jit	error		Mid.23=ERR5	Mid.23=String:[]
-P_MidB	vm3	missing		MidB.16=String:[b]	<failed: bind: unresolved name `String` (named argument)>
-P_MidB	jit	missing		MidB.16=String:[b]	<failed: bind: unresolved name `String` (named argument)>
 P_Month	vm3	error	locale	Month.13=Integer:12	Month.13=ERR13
 P_Month	jit	error	locale	Month.13=Integer:12	Month.13=ERR13
 P_MonthName	vm3	value	locale	MonthName.4=String:[Sept]	MonthName.4=String:[Sep]
 P_MonthName	jit	value	locale	MonthName.4=String:[Sept]	MonthName.4=String:[Sep]
 P_MonthName	vm3	error		MonthName.10=ERR94	MonthName.10=String:[March]
 P_MonthName	jit	error		MonthName.10=ERR94	MonthName.10=String:[March]
-P_MonthName	vm3	missing		MonthName.14=String:[February]	<failed: bind: unresolved name `Month` (named argument)>
-P_MonthName	jit	missing		MonthName.14=String:[February]	<failed: bind: unresolved name `Month` (named argument)>
-P_Oct	vm3	missing		Oct.45=String:[377]	<failed: bind: unresolved name `Number` (named argument)>
-P_Oct	jit	missing		Oct.45=String:[377]	<failed: bind: unresolved name `Number` (named argument)>
 P_Oct	vm3	error		Oct.56=ERR94	Oct.56=Null
 P_Oct	jit	error		Oct.56=ERR94	Oct.56=Null
-P_Oct	jit	missing		Oct.58=String:[377]	<declined: "T: CallNative { dst: Some(Temp(TempId(124))), callee: Builtin(Oct), args: [Named { name: \"Number\", value: Const(I16(255)), by_ref: None }] }: M4-4 >
 P_PPmt	vm3	value		PPmt.1=Double:C06E09EACE050754|-240.309912690946	PPmt.1=Double:C06E09EACE05075C|-240.309912690946
 P_PPmt	jit	value		PPmt.1=Double:C06E09EACE050754|-240.309912690946	PPmt.1=Double:C06E09EACE05075C|-240.309912690946
 P_PPmt	vm3	lastbit		PPmt.2=Double:C06E29F56213FBA4|-241.311203993825	PPmt.2=Double:C06E29F56213FBA8|-241.311203993825
@@ -963,8 +553,8 @@ P_PPmt	vm3	value		PPmt.6=Double:C06E09EACE050754|-240.309912690946	PPmt.6=Double
 P_PPmt	jit	value		PPmt.6=Double:C06E09EACE050754|-240.309912690946	PPmt.6=Double:C06E09EACE05075C|-240.309912690946
 P_PPmt	vm3	lastbit		PPmt.14=Double:C065795A16BA46C1|-171.792247165509	PPmt.14=Double:C065795A16BA46BF|-171.792247165509
 P_PPmt	jit	lastbit		PPmt.14=Double:C065795A16BA46C1|-171.792247165509	PPmt.14=Double:C065795A16BA46BF|-171.792247165509
-P_PPmt	vm3	missing		PPmt.17=Double:C0647984F67193CE|-163.797480794745	<failed: bind: unresolved name `Rate` (named argument)>
-P_PPmt	jit	missing		PPmt.17=Double:C0647984F67193CE|-163.797480794745	<failed: bind: unresolved name `Rate` (named argument)>
+P_PPmt	vm3	lastbit		PPmt.17=Double:C0647984F67193CE|-163.797480794745	PPmt.17=Double:C0647984F67193CC|-163.797480794745
+P_PPmt	jit	lastbit		PPmt.17=Double:C0647984F67193CE|-163.797480794745	PPmt.17=Double:C0647984F67193CC|-163.797480794745
 P_PV	vm3	lastbit		PV.1=Double:410869FB29A05610|199999.395325348	PV.1=Double:410869FB29A05611|199999.395325348
 P_PV	jit	lastbit		PV.1=Double:410869FB29A05610|199999.395325348	PV.1=Double:410869FB29A05611|199999.395325348
 P_PV	vm3	lastbit		PV.2=Double:41088405CF221227|200832.726139204	PV.2=Double:41088405CF221228|200832.726139204
@@ -975,8 +565,8 @@ P_PV	vm3	lastbit		PV.10=Double:40E903EA961DF51B|51231.3308248317	PV.10=Double:40
 P_PV	jit	lastbit		PV.10=Double:40E903EA961DF51B|51231.3308248317	PV.10=Double:40E903EA961DF51A|51231.3308248317
 P_PV	vm3	error		PV.11=ERR11	PV.11=ERR5
 P_PV	jit	error		PV.11=ERR11	PV.11=ERR5
-P_PV	vm3	missing		PV.14=Double:40851F3813DBD586|675.902381627516	<failed: bind: unresolved name `Rate` (named argument)>
-P_PV	jit	missing		PV.14=Double:40851F3813DBD586|675.902381627516	<failed: bind: unresolved name `Rate` (named argument)>
+P_PV	vm3	lastbit		PV.14=Double:40851F3813DBD586|675.902381627516	PV.14=Double:40851F3813DBD585|675.902381627515
+P_PV	jit	lastbit		PV.14=Double:40851F3813DBD586|675.902381627516	PV.14=Double:40851F3813DBD585|675.902381627515
 P_Pmt	vm3	lastbit		Pmt.1=Double:C090C692AF15F640|-1073.64324602428	Pmt.1=Double:C090C692AF15F641|-1073.64324602428
 P_Pmt	jit	lastbit		Pmt.1=Double:C090C692AF15F640|-1073.64324602428	Pmt.1=Double:C090C692AF15F641|-1073.64324602428
 P_Pmt	vm3	lastbit		Pmt.2=Double:4090C692AF15F640|1073.64324602428	Pmt.2=Double:4090C692AF15F641|1073.64324602428
@@ -987,228 +577,36 @@ P_Pmt	vm3	lastbit		Pmt.5=Double:C0513E21A7E539A6|-68.9708041895416	Pmt.5=Double:
 P_Pmt	jit	lastbit		Pmt.5=Double:C0513E21A7E539A6|-68.9708041895416	Pmt.5=Double:C0513E21A7E539A5|-68.9708041895415
 P_Pmt	vm3	lastbit		Pmt.14=Double:C045C57682649F6C|-43.5426791182825	Pmt.14=Double:C045C57682649F6B|-43.5426791182825
 P_Pmt	jit	lastbit		Pmt.14=Double:C045C57682649F6C|-43.5426791182825	Pmt.14=Double:C045C57682649F6B|-43.5426791182825
-P_Pmt	vm3	missing		Pmt.20=Double:C05636528DBFAC53|-88.8487886783417	<failed: bind: unresolved name `Rate` (named argument)>
-P_Pmt	jit	missing		Pmt.20=Double:C05636528DBFAC53|-88.8487886783417	<failed: bind: unresolved name `Rate` (named argument)>
-P_Ptr	vm3	missing		Ptr.24=String:[True,True]	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
-P_Ptr	jit	missing		Ptr.24=String:[True,True]	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
 P_QBColor	vm3	error		QBColor.17=ERR6	QBColor.17=ERR5
 P_QBColor	jit	error		QBColor.17=ERR6	QBColor.17=ERR5
-P_QBColor	vm3	missing		QBColor.31=Long:128	<failed: bind: unresolved name `Color` (named argument)>
-P_QBColor	jit	missing		QBColor.31=Long:128	<failed: bind: unresolved name `Color` (named argument)>
 P_RGB	vm3	error		RGB.12=ERR6	RGB.12=Long:255
 P_RGB	jit	error		RGB.12=ERR6	RGB.12=Long:255
 P_RTrim	vm3	value		RTrim.12=String:[abc]	RTrim.12=String:[abc{12288}]
 P_RTrim	jit	value		RTrim.12=String:[abc]	RTrim.12=String:[abc{12288}]
-P_RTrim	vm3	missing		RTrim.14=String:[abc]	<failed: bind: unresolved name `String` (named argument)>
-P_RTrim	jit	missing		RTrim.14=String:[abc]	<failed: bind: unresolved name `String` (named argument)>
-P_Randomize	vm3	value		Randomize.6=String:[,Single:3F6FE831|0.9371367,Single:3D5EA300|5.435467E-02,Single:3E7A80CC|0.2446319]	Randomize.6=String:[,Single:3D7E8310|6.213671E-02,Single:3F2DEA30|0.6793547,Single:3EBD4066|0.3696319]
-P_Randomize	jit	value		Randomize.6=String:[,Single:3F6FE831|0.9371367,Single:3D5EA300|5.435467E-02,Single:3E7A80CC|0.2446319]	Randomize.6=String:[,Single:3D7E8310|6.213671E-02,Single:3F2DEA30|0.6793547,Single:3EBD4066|0.3696319]
-P_Randomize	vm3	value		Randomize.8=String:[,Single:3DA04188|7.824999E-02,Single:3E0628C0|0.1310148,Single:3F03C033|0.5146515]	Randomize.8=String:[,Single:3D668310|5.627733E-02,Single:3F326A30|0.6969328,Single:3EA24066|0.3168976]
-P_Randomize	jit	value		Randomize.8=String:[,Single:3DA04188|7.824999E-02,Single:3E0628C0|0.1310148,Single:3F03C033|0.5146515]	Randomize.8=String:[,Single:3D668310|5.627733E-02,Single:3F326A30|0.6969328,Single:3EA24066|0.3168976]
-P_Randomize	vm3	value		Randomize.9=String:[,Single:3F1AD531|0.6048155,Single:3B919800|4.443169E-03,Single:3F08F533|0.5349914]	Randomize.9=String:[,Single:3EADB062|0.3392363,Single:3F191A30|0.5980558,Single:3EBA2066|0.3635284]
-P_Randomize	jit	value		Randomize.9=String:[,Single:3F1AD531|0.6048155,Single:3B919800|4.443169E-03,Single:3F08F533|0.5349914]	Randomize.9=String:[,Single:3EADB062|0.3392363,Single:3F191A30|0.5980558,Single:3EBA2066|0.3635284]
-P_Randomize	vm3	value		Randomize.10=String:[,Single:3EE62862|0.4495268,Single:3E5198C0|0.2046843,Single:3F3B2C33|0.7311432]	Randomize.10=String:[,Single:3D690310|5.688769E-02,Single:3EA3E460|0.3201017,Single:3F128833|0.5723907]
-P_Randomize	jit	value		Randomize.10=String:[,Single:3EE62862|0.4495268,Single:3E5198C0|0.2046843,Single:3F3B2C33|0.7311432]	Randomize.10=String:[,Single:3D690310|5.688769E-02,Single:3EA3E460|0.3201017,Single:3F128833|0.5723907]
-P_Randomize	vm3	value		Randomize.11=String:[,Single:3EDC0E62|0.4297972,Single:3F4F8D30|0.8107481,Single:3E8B6E66|0.2723266]	Randomize.11=String:[,Single:3F3F1E31|0.7465544,Single:3F784830|0.9698515,Single:3EEF0C66|0.4668915]
-P_Randomize	jit	value		Randomize.11=String:[,Single:3EDC0E62|0.4297972,Single:3F4F8D30|0.8107481,Single:3E8B6E66|0.2723266]	Randomize.11=String:[,Single:3F3F1E31|0.7465544,Single:3F784830|0.9698515,Single:3EEF0C66|0.4668915]
-P_Randomize	vm3	value		Randomize.12=String:[,Single:3EEEBE62|0.4662963,Single:3D9C2980|7.625103E-02,Single:3EB39E66|0.3508179]	Randomize.12=String:[,Single:3F0C4E31|0.5480681,Single:3EA17060|0.3153105,Single:3E38D8CC|0.1805145]
-P_Randomize	jit	value		Randomize.12=String:[,Single:3EEEBE62|0.4662963,Single:3D9C2980|7.625103E-02,Single:3EB39E66|0.3508179]	Randomize.12=String:[,Single:3F0C4E31|0.5480681,Single:3EA17060|0.3153105,Single:3E38D8CC|0.1805145]
-P_Randomize	vm3	value		Randomize.14=String:[,Single:3F62D531|0.8860655,Single:3E248CC0|0.1606932,Single:3D87A998|6.624144E-02]	Randomize.14=String:[,Single:3F1A0A31|0.601718,Single:3DBC2180|9.186077E-02,Single:3D1D2330|3.836364E-02]
-P_Randomize	jit	value		Randomize.14=String:[,Single:3F62D531|0.8860655,Single:3E248CC0|0.1606932,Single:3D87A998|6.624144E-02]	Randomize.14=String:[,Single:3F1A0A31|0.601718,Single:3DBC2180|9.186077E-02,Single:3D1D2330|3.836364E-02]
-P_Randomize	jit	missing		Randomize.16=String:[,Single:3F556531|0.8335753,Single:3F117330|0.5681639,Single:3DC02998|9.382933E-02]	<declined: "T: CallExtern { dst: None, import: ImportId(12), args: [ByVal(Const(Bool(true)))] }: M4-4 CallExtern Randomize([number]) subset lowers only supported>
-P_Randomize	vm3	value		Randomize.17=String:[,Single:3EAA6A62|0.3328429,Single:3EA40660|0.3203611,Single:3DB2A998|8.723754E-02]	Randomize.17=String:[,Single:3F51A231|0.8188811,Single:3F50BC30|0.8153715,Single:3F3E2A33|0.7428314]
-P_Randomize	jit	missing		Randomize.17=String:[,Single:3EAA6A62|0.3328429,Single:3EA40660|0.3203611,Single:3DB2A998|8.723754E-02]	<declined: "T: CallExtern { dst: None, import: ImportId(12), args: [ByVal(Const(Empty))] }: M4-4 CallExtern Randomize([number]) subset lowers only supported opti>
-P_Randomize	vm3	missing		Randomize.18=String:[,Single:3C9C2620|1.906115E-02,Single:3F72FF30|0.9492064,Single:3E0D84CC|0.1382019]	<failed: bind: unresolved name `Number` (named argument)>
-P_Randomize	jit	missing		Randomize.18=String:[,Single:3C9C2620|1.906115E-02,Single:3F72FF30|0.9492064,Single:3E0D84CC|0.1382019]	<failed: bind: unresolved name `Number` (named argument)>
-P_Randomize	jit	missing		Randomize.19=ERR94	<declined: "T: CallExtern { dst: None, import: ImportId(12), args: [ByVal(Const(Null))] }: M4-4 CallExtern Randomize([number]) subset lowers only supported optio>
-P_Randomize	jit	missing		Randomize.20=ERR13	<declined: "T: CallExtern { dst: None, import: ImportId(12), args: [ByVal(Const(Str(\"abc\")))] }: M4-4 CallExtern Randomize([number]) subset lowers only support>
-P_RegExp	vm3	missing		RegExp.1=String:[String:[]Boolean:FalseBoolean:FalseBoolean:False]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.1=String:[String:[]Boolean:FalseBoolean:FalseBoolean:False]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.2=Boolean:True	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.2=Boolean:True	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.3=Boolean:False	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.3=Boolean:False	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.4=Boolean:False	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.4=Boolean:False	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.5=Boolean:True	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.5=Boolean:True	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.6=String:[n=1:[0,2,a1]]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.6=String:[n=1:[0,2,a1]]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.7=String:[n=3:[0,2,a1][2,2,a2][4,2,a3]]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.7=String:[n=3:[0,2,a1][2,2,a2][4,2,a3]]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.8=Boolean:False	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.8=Boolean:False	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.9=Boolean:True	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.9=Boolean:True	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.10=Boolean:True	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.10=Boolean:True	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.11=Boolean:True	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.11=Boolean:True	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.12=String:[world hello]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.12=String:[world hello]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.13=String:[f[o][o]]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.13=String:[f[o][o]]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.14=String:[a<a|c>c]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.14=String:[a<a|c>c]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.15=String:[a$c]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.15=String:[a$c]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.16=String:[a$3c]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.16=String:[a$3c]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.17=String:[aXa2]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.17=String:[aXa2]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.18=String:[aXaX]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.18=String:[aXaX]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.19=String:[abc]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.19=String:[abc]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.20=String:[a5c]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.20=String:[a5c]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.21=ERR13	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.21=ERR13	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.22=String:[ac]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.22=String:[ac]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.23=String:[bbb,2,3]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.23=String:[bbb,2,3]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.24=String:[2,10,20]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.24=String:[2,10,20]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.25=String:[EmptyString:[b]]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.25=String:[EmptyString:[b]]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.26=ERR5020	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.26=ERR5020	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.27=ERR5019	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.27=ERR5019	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.28=ERR5018	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.28=ERR5018	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.29=ERR5017	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.29=ERR5017	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.30=String:[n=1:[0,1,a]]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.30=String:[n=1:[0,1,a]]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.31=String:[n=1:[3,1,a]]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.31=String:[n=1:[3,1,a]]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.32=ERR5017	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.32=ERR5017	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.33=String:[n=1:[0,6,abc1 d]]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.33=String:[n=1:[0,6,abc1 d]]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.34=String:[n=3:[0,2,aa][6,2,aa][8,2,aa]]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.34=String:[n=3:[0,2,aa][6,2,aa][8,2,aa]]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.35=String:[n=2:[0,3,<a>][3,3,<b>]]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.35=String:[n=2:[0,3,<a>][3,3,<b>]]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.36=Boolean:False	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.36=Boolean:False	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.37=Boolean:True	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.37=Boolean:True	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.38=Boolean:False	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.38=Boolean:False	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.39=String:[n=2:[0,1,{123}55357{125}][1,1,{123}56832{125}]]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.39=String:[n=2:[0,1,{123}55357{125}][1,1,{123}56832{125}]]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.40=Boolean:True	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.40=Boolean:True	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.41=String:[n=4:[0,0,][1,0,][2,0,][3,0,]]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.41=String:[n=4:[0,0,][1,0,][2,0,][3,0,]]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.42=Boolean:True	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.42=Boolean:True	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.43=String:[cot,True,1]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.43=String:[cot,True,1]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	vm3	missing		RegExp.44=String:[True,True,RegExp,MatchCollection]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
-P_RegExp	jit	missing		RegExp.44=String:[True,True,RegExp,MatchCollection]	<failed: bind: unsupported construct: New VBA.RegExp (only project classes are creatable)>
 P_Replace	vm3	value		Replace.13=String:[AXC]	Replace.13=String:[ABC]
 P_Replace	jit	value		Replace.13=String:[AXC]	Replace.13=String:[ABC]
 P_Replace	vm3	value		Replace.24=String:[aXb]	Replace.24=String:[a{196}b]
 P_Replace	jit	value		Replace.24=String:[aXb]	Replace.24=String:[a{196}b]
-P_Right	vm3	missing		Right.8=String:[bc]	<failed: bind: unresolved name `String` (named argument)>
-P_Right	jit	missing		Right.8=String:[bc]	<failed: bind: unresolved name `String` (named argument)>
 P_Right	vm3	error		Right.14=ERR5	Right.14=String:[abc]
 P_Right	jit	error		Right.14=ERR5	Right.14=String:[abc]
-P_Right	vm3	missing		Right.15=String:[c]	<failed: bind: unresolved name `String` (named argument)>
-P_Right	jit	missing		Right.15=String:[c]	<failed: bind: unresolved name `String` (named argument)>
-P_RightB	vm3	missing		RightB.13=String:[c]	<failed: bind: unresolved name `String` (named argument)>
-P_RightB	jit	missing		RightB.13=String:[c]	<failed: bind: unresolved name `String` (named argument)>
-P_Rnd	vm3	value		Rnd.17=String:[,Single:3E636CC4|0.2220946,Single:3F3F1130|0.746356,Single:3F072B33|0.5280029]	Rnd.17=String:[,Single:3F2BC131|0.6709166,Single:3EFCBE60|0.4936399,Single:3BA09980|4.901111E-03]
-P_Rnd	jit	value		Rnd.17=String:[,Single:3E636CC4|0.2220946,Single:3F3F1130|0.746356,Single:3F072B33|0.5280029]	Rnd.17=String:[,Single:3F2BC131|0.6709166,Single:3EFCBE60|0.4936399,Single:3BA09980|4.901111E-03]
-P_Rnd	vm3	value		Rnd.18=String:[,Single:3EC43C62|0.3832732,Single:3D748300|5.969524E-02,Single:3E4A18CC|0.1973602]	Rnd.18=String:[,Single:3F372F31|0.7155638,Single:3F141530|0.5784483,Single:3DC0F998|9.422606E-02]
-P_Rnd	jit	value		Rnd.18=String:[,Single:3EC43C62|0.3832732,Single:3D748300|5.969524E-02,Single:3E4A18CC|0.1973602]	Rnd.18=String:[,Single:3F372F31|0.7155638,Single:3F141530|0.5784483,Single:3DC0F998|9.422606E-02]
-P_Rnd	vm3	value		Rnd.19=String:[,Single:3F621E31|0.8832732,Single:3F0F4830|0.5596952,Single:3F328633|0.6973602]	Rnd.19=String:[,Single:3E5CBCC4|0.2155638,Single:3DA0A980|0.0784483,Single:3F181F33|0.5942261]
-P_Rnd	jit	value		Rnd.19=String:[,Single:3F621E31|0.8832732,Single:3F0F4830|0.5596952,Single:3F328633|0.6973602]	Rnd.19=String:[,Single:3E5CBCC4|0.2155638,Single:3DA0A980|0.0784483,Single:3F181F33|0.5942261]
-P_Rnd	jit	missing		Rnd.20=String:[,Single:3C9C2620|1.906115E-02,Single:3F72FF30|0.9492064,Single:3E0D84CC|0.1382019]	<declined: "T: CallExtern { dst: None, import: ImportId(12), args: [ByVal(Const(Str(\"7\")))] }: M4-4 CallExtern Randomize([number]) subset lowers only supported>
-P_Rnd	vm3	missing		Rnd.25=String:[,Single:3F64F931|0.8944274,Single:3F32B730|0.6981077,Single:3F443933|0.7664978]	<failed: bind: unresolved name `Number` (named argument)>
-P_Rnd	jit	missing		Rnd.25=String:[,Single:3F64F931|0.8944274,Single:3F32B730|0.6981077,Single:3F443933|0.7664978]	<failed: bind: unresolved name `Number` (named argument)>
-P_Rnd	jit	missing		Rnd.26=ERR94	<declined: "T: CallExtern { dst: None, import: ImportId(12), args: [ByVal(Const(Null))] }: M4-4 CallExtern Randomize([number]) subset lowers only supported optio>
-P_Rnd	jit	missing		Rnd.27=ERR13	<declined: "T: CallExtern { dst: None, import: ImportId(12), args: [ByVal(Const(Str(\"abc\")))] }: M4-4 CallExtern Randomize([number]) subset lowers only support>
-P_Rnd	vm3	value		Rnd.28=String:[,Single:3EAA6A62|0.3328429,Single:3EA40660|0.3203611,Single:3DB2A998|8.723754E-02]	Rnd.28=String:[,Single:3F51A231|0.8188811,Single:3F50BC30|0.8153715,Single:3F3E2A33|0.7428314]
-P_Rnd	jit	missing		Rnd.28=String:[,Single:3EAA6A62|0.3328429,Single:3EA40660|0.3203611,Single:3DB2A998|8.723754E-02]	<declined: "T: CallExtern { dst: None, import: ImportId(12), args: [ByVal(Const(Empty))] }: M4-4 CallExtern Randomize([number]) subset lowers only supported opti>
-P_Rnd	jit	missing		Rnd.29=ERR94	<declined: "T: CallExtern { dst: Some(Temp(TempId(61))), import: ImportId(11), args: [ByVal(Const(Null))] }: M4-4 CallExtern Rnd([number]) subset lowers only sup>
-P_Rnd	jit	missing		Rnd.30=ERR13	<declined: "T: CallExtern { dst: Some(Temp(TempId(63))), import: ImportId(11), args: [ByVal(Const(Str(\"abc\")))] }: M4-4 CallExtern Rnd([number]) subset lowers >
-P_Rnd	jit	missing		Rnd.31=String:[Single:3E656218|0.224007Single:3E656218|0.224007Single:3E656218|0.224007Single:3E656218|0.224007]	<declined: "T: CallExtern { dst: Some(Temp(TempId(69))), import: ImportId(11), args: [ByVal(Const(Str(\"-1\")))] }: M4-4 CallExtern Rnd([number]) subset lowers o>
-P_Rnd	vm3	missing		Rnd.32=String:[Single:3E656218|0.224007,Single:3D12D310|3.584582E-02,Single:3DB0D980|8.635235E-02]	<failed: bind: unresolved name `Number` (named argument)>
-P_Rnd	jit	missing		Rnd.32=String:[Single:3E656218|0.224007,Single:3D12D310|3.584582E-02,Single:3DB0D980|8.635235E-02]	<failed: bind: unresolved name `Number` (named argument)>
 P_SLN	vm3	error		SLN.13=ERR6	SLN.13=ERR5
 P_SLN	jit	error		SLN.13=ERR6	SLN.13=ERR5
-P_SLN	vm3	missing		SLN.15=Double:403E000000000000|30	<failed: bind: unresolved name `Cost` (named argument)>
-P_SLN	jit	missing		SLN.15=Double:403E000000000000|30	<failed: bind: unresolved name `Cost` (named argument)>
 P_SYD	vm3	error		SYD.13=ERR5	SYD.13=Double:4072555555555555|293.333333333333
 P_SYD	jit	error		SYD.13=ERR5	SYD.13=Double:4072555555555555|293.333333333333
-P_SYD	vm3	missing		SYD.17=Double:406E000000000000|240	<failed: bind: unresolved name `Cost` (named argument)>
-P_SYD	jit	missing		SYD.17=Double:406E000000000000|240	<failed: bind: unresolved name `Cost` (named argument)>
 P_SaveSetting	vm3	error		SaveSetting.15=ERR5	SaveSetting.15=String:[v]
 P_SaveSetting	jit	error		SaveSetting.15=ERR5	SaveSetting.15=String:[v]
 P_SaveSetting	vm3	error		SaveSetting.16=ERR5	SaveSetting.16=String:[v]
 P_SaveSetting	jit	error		SaveSetting.16=ERR5	SaveSetting.16=String:[v]
-P_Shell	vm3	error		Shell.1=ERR53	Shell.1=Long:1
-P_Shell	jit	error		Shell.1=ERR53	Shell.1=Long:1
-P_Shell	vm3	error		Shell.2=ERR53	Shell.2=Long:1
-P_Shell	jit	error		Shell.2=ERR53	Shell.2=Long:1
-P_Shell	vm3	error		Shell.3=ERR53	Shell.3=Long:1
-P_Shell	jit	error		Shell.3=ERR53	Shell.3=Long:1
-P_Shell	vm3	error		Shell.4=ERR53	Shell.4=Long:1
-P_Shell	jit	error		Shell.4=ERR53	Shell.4=Long:1
-P_Shell	vm3	error		Shell.5=ERR53	Shell.5=Long:1
-P_Shell	jit	error		Shell.5=ERR53	Shell.5=Long:1
-P_Shell	vm3	error		Shell.6=ERR53	Shell.6=Long:1
-P_Shell	jit	error		Shell.6=ERR53	Shell.6=Long:1
-P_Shell	vm3	error		Shell.7=ERR53	Shell.7=Long:1
-P_Shell	jit	error		Shell.7=ERR53	Shell.7=Long:1
-P_Shell	vm3	error		Shell.8=ERR5	Shell.8=Long:1
-P_Shell	jit	error		Shell.8=ERR5	Shell.8=Long:1
-P_Shell	vm3	error		Shell.9=ERR5	Shell.9=Long:1
-P_Shell	jit	error		Shell.9=ERR5	Shell.9=Long:1
-P_Shell	vm3	error		Shell.10=ERR53	Shell.10=Long:1
-P_Shell	jit	error		Shell.10=ERR53	Shell.10=Long:1
-P_Shell	vm3	error		Shell.11=ERR53	Shell.11=Long:1
-P_Shell	jit	error		Shell.11=ERR53	Shell.11=Long:1
-P_Shell	vm3	error		Shell.12=ERR5	Shell.12=Long:0
-P_Shell	jit	error		Shell.12=ERR5	Shell.12=Long:0
-P_Shell	vm3	error		Shell.13=ERR94	Shell.13=Long:0
-P_Shell	jit	error		Shell.13=ERR94	Shell.13=Long:0
-P_Shell	vm3	error		Shell.14=ERR53	Shell.14=Long:1
-P_Shell	jit	error		Shell.14=ERR53	Shell.14=Long:1
-P_Shell	vm3	error		Shell.15=ERR53	Shell.15=Long:1
-P_Shell	jit	error		Shell.15=ERR53	Shell.15=Long:1
-P_Shell	vm3	error		Shell.16=ERR53	Shell.16=Long:1
-P_Shell	jit	error		Shell.16=ERR53	Shell.16=Long:1
-P_Shell	vm3	missing		Shell.17=ERR53	<failed: bind: unresolved name `PathName` (named argument)>
-P_Shell	jit	missing		Shell.17=ERR53	<failed: bind: unresolved name `PathName` (named argument)>
-P_Shell	vm3	error		Shell.19=ERR5	Shell.19=Long:1
-P_Shell	jit	error		Shell.19=ERR5	Shell.19=Long:1
-P_Space	vm3	missing		Space.10=String:[  ]	<failed: bind: unresolved name `Number` (named argument)>
-P_Space	jit	missing		Space.10=String:[  ]	<failed: bind: unresolved name `Number` (named argument)>
-P_Space	vm3	missing		Space.14=String:[ ]	<failed: bind: unresolved name `Number` (named argument)>
-P_Space	jit	missing		Space.14=String:[ ]	<failed: bind: unresolved name `Number` (named argument)>
-P_Split	vm3	missing		Split.23=String()[0,1]{String:[a],String:[b]}	<failed: bind: unresolved name `Expression` (named argument)>
-P_Split	jit	missing		Split.23=String()[0,1]{String:[a],String:[b]}	<failed: bind: unresolved name `Expression` (named argument)>
 P_Split	vm3	type		Split.33=String()[0,0]{String:[a b]}	Split.33=String()[0,1]{String:[a],String:[b]}
 P_Split	jit	type		Split.33=String()[0,0]{String:[a b]}	Split.33=String()[0,1]{String:[a],String:[b]}
-P_Sqr	vm3	missing		Sqr.23=Double:3FF0000000000000|1	<failed: bind: unresolved name `Number` (named argument)>
-P_Sqr	jit	missing		Sqr.23=Double:3FF0000000000000|1	<failed: bind: unresolved name `Number` (named argument)>
 P_Str	vm3	value		Str.24=String:[False]	Str.24=String:[ False]
 P_Str	jit	value		Str.24=String:[False]	Str.24=String:[ False]
 P_Str	vm3	value	locale	Str.25=String:[2020/01/02]	Str.25=String:[ 1/2/2020]
 P_Str	jit	value	locale	Str.25=String:[2020/01/02]	Str.25=String:[ 1/2/2020]
 P_Str	vm3	value	locale	Str.26=String:[15:04:05]	Str.26=String:[ 3:04:05 PM]
 P_Str	jit	value	locale	Str.26=String:[15:04:05]	Str.26=String:[ 3:04:05 PM]
-P_Str	vm3	missing		Str.37=String:[ 5]	<failed: bind: unresolved name `Number` (named argument)>
-P_Str	jit	missing		Str.37=String:[ 5]	<failed: bind: unresolved name `Number` (named argument)>
 P_Str	vm3	error		Str.42=ERR94	Str.42=Null
 P_Str	jit	error		Str.42=ERR94	Str.42=Null
-P_Str	jit	missing		Str.43=String:[ 7]	<declined: "T: CallNative { dst: Some(Temp(TempId(94))), callee: Builtin(Str), args: [Named { name: \"Number\", value: Const(I16(7)), by_ref: None }] }: M4-4 Cal>
 P_StrComp	vm3	type		StrComp.1=Integer:0	StrComp.1=Long:0
 P_StrComp	jit	type		StrComp.1=Integer:0	StrComp.1=Long:0
 P_StrComp	vm3	type		StrComp.2=Integer:-1	StrComp.2=Long:-1
@@ -1235,46 +633,30 @@ P_StrComp	vm3	type		StrComp.15=Integer:0	StrComp.15=Long:0
 P_StrComp	jit	type		StrComp.15=Integer:0	StrComp.15=Long:0
 P_StrComp	vm3	type		StrComp.16=Integer:0	StrComp.16=Long:0
 P_StrComp	jit	type		StrComp.16=Integer:0	StrComp.16=Long:0
-P_StrComp	vm3	type	locale	StrComp.17=Integer:-1	StrComp.17=Long:1
-P_StrComp	jit	type	locale	StrComp.17=Integer:-1	StrComp.17=Long:1
+P_StrComp	vm3	type	locale	StrComp.17=Integer:-1	StrComp.17=Long:-1
+P_StrComp	jit	type	locale	StrComp.17=Integer:-1	StrComp.17=Long:-1
 P_StrComp	vm3	type		StrComp.18=Integer:1	StrComp.18=Long:1
 P_StrComp	jit	type		StrComp.18=Integer:1	StrComp.18=Long:1
 P_StrComp	vm3	type		StrComp.19=Integer:1	StrComp.19=Long:1
 P_StrComp	jit	type		StrComp.19=Integer:1	StrComp.19=Long:1
 P_StrComp	vm3	value		StrComp.20=String:[Integer]	StrComp.20=String:[Long]
 P_StrComp	jit	value		StrComp.20=String:[Integer]	StrComp.20=String:[Long]
-P_StrComp	vm3	type	locale	StrComp.22=Integer:1	StrComp.22=Long:-1
-P_StrComp	jit	type	locale	StrComp.22=Integer:1	StrComp.22=Long:-1
+P_StrComp	vm3	type	locale	StrComp.22=Integer:1	StrComp.22=Long:1
+P_StrComp	jit	type	locale	StrComp.22=Integer:1	StrComp.22=Long:1
 P_StrComp	vm3	type		StrComp.23=Integer:1	StrComp.23=Long:1
 P_StrComp	jit	type		StrComp.23=Integer:1	StrComp.23=Long:1
 P_StrComp	vm3	type		StrComp.24=Integer:-1	StrComp.24=Long:-1
 P_StrComp	jit	type		StrComp.24=Integer:-1	StrComp.24=Long:-1
 P_StrComp	vm3	type		StrComp.25=Integer:-1	StrComp.25=Long:-1
 P_StrComp	jit	type		StrComp.25=Integer:-1	StrComp.25=Long:-1
-P_StrConv	vm3	value		StrConv.5=String:[A{0}B]	StrConv.5=String:[A{0}b]
-P_StrConv	jit	value		StrConv.5=String:[A{0}B]	StrConv.5=String:[A{0}b]
-P_StrConv	vm3	error		StrConv.17=String:[{17215}]	StrConv.17=ERR13
-P_StrConv	jit	error		StrConv.17=String:[{17215}]	StrConv.17=ERR13
-P_StrConv	vm3	error		StrConv.29=ERR5	StrConv.29=String:[A{0}B{0}C{0}]
-P_StrConv	jit	error		StrConv.29=ERR5	StrConv.29=String:[A{0}B{0}C{0}]
-P_StrConv	vm3	error		StrConv.34=ERR5	StrConv.34=String:[abc]
-P_StrConv	jit	error		StrConv.34=ERR5	StrConv.34=String:[abc]
-P_StrConv	vm3	value		StrConv.39=String:[{196}{223}{376}]	StrConv.39=String:[{196}SS{376}]
-P_StrConv	jit	value		StrConv.39=String:[{196}{223}{376}]	StrConv.39=String:[{196}SS{376}]
-P_StrConv	vm3	missing		StrConv.42=String:[ABC]	<failed: bind: unresolved name `String` (named argument)>
-P_StrConv	jit	missing		StrConv.42=String:[ABC]	<failed: bind: unresolved name `String` (named argument)>
 P_StrConv	vm3	error		StrConv.44=ERR5	StrConv.44=String:[ABC]
 P_StrConv	jit	error		StrConv.44=ERR5	StrConv.44=String:[ABC]
 P_StrReverse	vm3	value		StrReverse.7=String:[{56832}{55357}a]	StrReverse.7=String:[{55357}{56832}a]
 P_StrReverse	jit	value		StrReverse.7=String:[{56832}{55357}a]	StrReverse.7=String:[{55357}{56832}a]
-P_StrReverse	vm3	missing		StrReverse.11=String:[zyx]	<failed: bind: unresolved name `Expression` (named argument)>
-P_StrReverse	jit	missing		StrReverse.11=String:[zyx]	<failed: bind: unresolved name `Expression` (named argument)>
 P_String	vm3	error		String.5=ERR6	String.5=String:[AA]
 P_String	jit	error		String.5=ERR6	String.5=String:[AA]
 P_String	vm3	error		String.9=Null	String.9=ERR94
 P_String	jit	error		String.9=Null	String.9=ERR94
-P_String	vm3	missing		String.16=String:[zz]	<failed: bind: unresolved name `Number` (named argument)>
-P_String	jit	missing		String.16=String:[zz]	<failed: bind: unresolved name `Number` (named argument)>
 P_Tan	vm3	lastbit		Tan.2=Double:3FF8EB245CBEE3A7|1.5574077246549	Tan.2=Double:3FF8EB245CBEE3A6|1.5574077246549
 P_Tan	jit	lastbit		Tan.2=Double:3FF8EB245CBEE3A7|1.5574077246549	Tan.2=Double:3FF8EB245CBEE3A6|1.5574077246549
 P_Tan	vm3	lastbit		Tan.3=Double:BFF8EB245CBEE3A7|-1.5574077246549	Tan.3=Double:BFF8EB245CBEE3A6|-1.5574077246549
@@ -1289,52 +671,20 @@ P_Tan	vm3	lastbit		Tan.22=Double:3FF8EB245CBEE3A7|1.5574077246549	Tan.22=Double:
 P_Tan	jit	lastbit		Tan.22=Double:3FF8EB245CBEE3A7|1.5574077246549	Tan.22=Double:3FF8EB245CBEE3A6|1.5574077246549
 P_Trim	vm3	value		Trim.12=String:[abc]	Trim.12=String:[{12288}abc]
 P_Trim	jit	value		Trim.12=String:[abc]	Trim.12=String:[{12288}abc]
-P_Trim	vm3	missing		Trim.14=String:[abc]	<failed: bind: unresolved name `String` (named argument)>
-P_Trim	jit	missing		Trim.14=String:[abc]	<failed: bind: unresolved name `String` (named argument)>
 P_TypeName	vm3	error		TypeName.49=ERR6	TypeName.49=String:[Integer]
 P_TypeName	jit	error		TypeName.49=ERR6	TypeName.49=String:[Integer]
-P_TypeName	vm3	missing		TypeName.59=String:[ErrObject]	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
-P_TypeName	jit	missing		TypeName.59=String:[ErrObject]	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
-P_TypeName	vm3	missing		TypeName.70=String:[Integer]	<failed: bind: unresolved name `VarName` (named argument)>
-P_TypeName	jit	missing		TypeName.70=String:[Integer]	<failed: bind: unresolved name `VarName` (named argument)>
 P_UCase	vm3	value	locale	UCase.7=String:[{223}]	UCase.7=String:[SS]
 P_UCase	jit	value	locale	UCase.7=String:[{223}]	UCase.7=String:[SS]
 P_UCase	vm3	value		UCase.10=String:[{305}]	UCase.10=String:[I]
 P_UCase	jit	value		UCase.10=String:[{305}]	UCase.10=String:[I]
 P_UCase	vm3	value		UCase.12=String:[{931}{962}]	UCase.12=String:[{931}{931}]
 P_UCase	jit	value		UCase.12=String:[{931}{962}]	UCase.12=String:[{931}{931}]
-P_UCase	vm3	missing		UCase.16=String:[ABC]	<failed: bind: unresolved name `String` (named argument)>
-P_UCase	jit	missing		UCase.16=String:[ABC]	<failed: bind: unresolved name `String` (named argument)>
 P_UCase	vm3	value		UCase.18=String:[{64257}]	UCase.18=String:[FI]
 P_UCase	jit	value		UCase.18=String:[{64257}]	UCase.18=String:[FI]
-P_UserForms	vm3	missing		UserForms.1=String:[Object]	<failed: bind: Variable not defined: UserForms>
-P_UserForms	jit	missing		UserForms.1=String:[Object]	<failed: bind: Variable not defined: UserForms>
-P_UserForms	vm3	missing		UserForms.2=Integer:0	<failed: bind: Variable not defined: UserForms>
-P_UserForms	jit	missing		UserForms.2=Integer:0	<failed: bind: Variable not defined: UserForms>
-P_UserForms	vm3	missing		UserForms.3=String:[Integer]	<failed: bind: Variable not defined: UserForms>
-P_UserForms	jit	missing		UserForms.3=String:[Integer]	<failed: bind: Variable not defined: UserForms>
-P_UserForms	vm3	missing		UserForms.4=Boolean:True	<failed: bind: Variable not defined: UserForms>
-P_UserForms	jit	missing		UserForms.4=Boolean:True	<failed: bind: Variable not defined: UserForms>
-P_UserForms	vm3	missing		UserForms.5=Boolean:False	<failed: bind: Variable not defined: UserForms>
-P_UserForms	jit	missing		UserForms.5=Boolean:False	<failed: bind: Variable not defined: UserForms>
-P_UserForms	vm3	missing		UserForms.6=Long:0	<failed: bind: Variable not defined: UserForms>
-P_UserForms	jit	missing		UserForms.6=Long:0	<failed: bind: Variable not defined: UserForms>
-P_UserForms	vm3	missing		UserForms.7=ERR9	<failed: bind: Sub or Function not defined>
-P_UserForms	jit	missing		UserForms.7=ERR9	<failed: bind: Sub or Function not defined>
-P_UserForms	vm3	missing		UserForms.8=Long:9	<failed: bind: Variable not defined: UserForms>
-P_UserForms	jit	missing		UserForms.8=Long:9	<failed: bind: Variable not defined: UserForms>
 P_Val	vm3	value	locale	Val.88=Double:409F900000000000|2020	Val.88=Double:3FF0000000000000|1
 P_Val	jit	value	locale	Val.88=Double:409F900000000000|2020	Val.88=Double:3FF0000000000000|1
-P_VarType	vm3	value		VarType.16=Long:9	VarType.16=Long:0
-P_VarType	jit	value		VarType.16=Long:9	VarType.16=Long:0
-P_VarType	vm3	missing		VarType.49=Long:3	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
-P_VarType	jit	missing		VarType.49=Long:3	<failed: bind: unsupported construct: call route PredeclaredObject(Err) for `Err`>
-P_VarType	vm3	missing		VarType.62=Long:2	<failed: bind: unresolved name `VarName` (named argument)>
-P_VarType	jit	missing		VarType.62=Long:2	<failed: bind: unresolved name `VarName` (named argument)>
 P_WeekdayName	vm3	error		WeekdayName.15=ERR94	WeekdayName.15=String:[Sunday]
 P_WeekdayName	jit	error		WeekdayName.15=ERR94	WeekdayName.15=String:[Sunday]
-P_WeekdayName	vm3	missing		WeekdayName.18=String:[Tue]	<failed: bind: unresolved name `Weekday` (named argument)>
-P_WeekdayName	jit	missing		WeekdayName.18=String:[Tue]	<failed: bind: unresolved name `Weekday` (named argument)>
 P_Year	vm3	value	locale	Year.12=Integer:2001	Year.12=Integer:2029
 P_Year	jit	value	locale	Year.12=Integer:2001	Year.12=Integer:2029
 P_Year	vm3	value	locale	Year.13=Integer:2001	Year.13=Integer:1930

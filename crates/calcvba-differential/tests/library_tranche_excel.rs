@@ -61,6 +61,15 @@ fn known(executor: Executor) -> BTreeSet<String> {
     KNOWN
         .lines()
         .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        // An optional `linux `/`windows `/`macos ` prefix limits a line to that host (dc-q6brh.112).
+        .filter_map(|l| {
+            for host in ["linux", "windows", "macos"] {
+                if let Some(rest) = l.strip_prefix(host).and_then(|r| r.strip_prefix(' ')) {
+                    return (host == std::env::consts::OS).then_some(rest);
+                }
+            }
+            Some(l)
+        })
         .filter_map(|l| l.split_once('\t'))
         .filter(|(t, _)| *t == tag)
         .map(|(_, id)| id.to_string())

@@ -1,7 +1,8 @@
 # VBA library lines CalcVBA still answers differently from Excel (see vba_library_excel.rs).
 # 'vm3 '/'jit ' prefix: only that executor differs. Rebuilt by make_known_differences.py.
+# A leading 'linux '/'windows '/'macos ' limits a line to that host (host libm or code page, dc-q6brh.112).
 P_ArrayBase1: ArrayBase1.13=String:[0,1,8]
-P_Asc: Asc.14=Integer:63
+linux P_Asc: Asc.14=Integer:63
 P_CDate: CDate.22=Date:40E5686000000000
 P_CDate: CDate.39=Date:40E2070000000000
 P_CDate: CDate.40=Date:40E2072000000000
@@ -20,8 +21,8 @@ P_CallByName: CallByName.17=ERR438
 P_CallByName: CallByName.18=ERR438
 P_CallByName: CallByName.19=ERR450
 P_CallByName: CallByName.22=ERR5
-P_Chr: Chr.15=String:[{129}]
-P_Chr: Chr.16=String:[{141}]
+linux P_Chr: Chr.15=String:[{129}]
+linux P_Chr: Chr.16=String:[{141}]
 P_Chr: Chr.23=ERR5
 P_Chr: Chr.5=ERR5
 P_Chr: Chr.6=ERR5
@@ -348,5 +349,5 @@ P_Val: Val.88=Double:409F900000000000|2020
 P_WeekdayName: WeekdayName.15=ERR94
 P_Year: Year.12=Integer:2001
 P_Year: Year.13=Integer:2001
-P_NPer: NPer.17=Double:402C69D476524167|14.2066990828905
-P_Cos: Cos.7=Double:BFE06C154609D33E|-0.51319373778697
+linux P_NPer: NPer.17=Double:402C69D476524167|14.2066990828905
+linux P_Cos: Cos.7=Double:BFE06C154609D33E|-0.51319373778697

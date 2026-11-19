@@ -282,7 +282,7 @@ fn bind_one(
         use calcvba_bundle::VarTypeRef;
         match ty {
             VarTypeRef::Udt(name) | VarTypeRef::Object(name) if env.is_udt(name) => {
-                names.insert(name.clone());
+                names.insert(env.canonical_udt_name(name).unwrap_or(name).to_string());
             }
             VarTypeRef::Array(element) | VarTypeRef::FixedArray { element, .. } => {
                 record_names(element, env, names)
@@ -312,7 +312,7 @@ fn bind_one(
             && let Some(name) = &d.return_record_type
             && env.is_udt(name)
         {
-            names.insert(name.clone());
+            names.insert(env.canonical_udt_name(name).unwrap_or(name).to_string());
         }
     }
     let record_types = names
@@ -786,8 +786,13 @@ fn build_external_calls(
             param_types: d.param_types.clone(),
             param_by_ref: d.param_by_ref.clone(),
             return_type: d.return_type,
-            return_record_name: d.return_record_type.clone().filter(|name| env.is_udt(name)),
-            return_record_fields: d.return_record_type.as_ref().and_then(|name| {
+            return_record_name: d
+                .return_record_type
+                .as_deref()
+                .filter(|name| env.is_udt(name))
+                .map(|name| env.canonical_udt_name(name).unwrap_or(name).to_string()),
+            return_record_fields: d.return_record_type.as_deref().and_then(|name| {
+                let name = env.canonical_udt_name(name).unwrap_or(name);
                 records
                     .iter()
                     .find(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
@@ -1037,7 +1042,14 @@ impl Lower<'_> {
 
     fn resolve_udt_type(&self, ty: VarTypeRef) -> VarTypeRef {
         match ty {
-            VarTypeRef::Object(name) if self.env.is_udt(&name) => VarTypeRef::Udt(name),
+            VarTypeRef::Object(name) | VarTypeRef::Udt(name) if self.env.is_udt(&name) => {
+                VarTypeRef::Udt(
+                    self.env
+                        .canonical_udt_name(&name)
+                        .unwrap_or(&name)
+                        .to_string(),
+                )
+            }
             VarTypeRef::Object(name) if self.env.is_enum_type(&name) => {
                 VarTypeRef::Builtin(calcvba_symbol::signature::BuiltinType::Long)
             }

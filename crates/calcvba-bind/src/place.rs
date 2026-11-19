@@ -79,6 +79,8 @@ impl<'a> ProcLower<'a> {
                 let elem_ty = match base_ty {
                     VarTypeRef::Array(inner) => self.g.resolve_udt_type(*inner),
                     VarTypeRef::FixedArray { element, .. } => self.g.resolve_udt_type(*element),
+                    // A Variant field holds whatever array it is given (`d.items(i) = v`).
+                    VarTypeRef::Variant => VarTypeRef::Variant,
                     _ if base_is_record_field => {
                         return Err(BindError::ExpectedArray {
                             name: base.text().trim().to_string(),

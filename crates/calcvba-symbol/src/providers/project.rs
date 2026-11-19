@@ -109,11 +109,37 @@ impl ProjectProvider {
         match parts {
             [member] => self.resolve(member),
             [owner, member] => self.resolve_public_owner_member(owner, member, None),
-            [project, owner, member] if fold_identifier(project) == self.project_folded => {
-                self.resolve_public_owner_member(owner, member, None)
+            [project, owner, member] if fold_identifier(project) == self.project_folded => self
+                .resolve_public_owner_member(owner, member, None)
+                .or_else(|| self.resolve_module_enum_member(project, owner, member)),
+            [module, enum_, member] => self.resolve_module_enum_member(module, enum_, member),
+            [project, module, enum_, member] if fold_identifier(project) == self.project_folded => {
+                self.resolve_module_enum_member(module, enum_, member)
             }
             _ => None,
         }
+    }
+
+    /// `Module.EnumName.Member`: a public enum member qualified by its declaring module.
+    fn resolve_module_enum_member(
+        &self,
+        module: &str,
+        enum_: &str,
+        member: &str,
+    ) -> Option<Binding> {
+        let module_members = self.modules.get(&fold_identifier(module))?;
+        let owner = module_members
+            .get(&fold_identifier(enum_))?
+            .iter()
+            .find(|entry| entry.kind == SymbolKind::Enum && is_project_public_member(**entry))?
+            .owner;
+        self.enums
+            .get(&fold_identifier(enum_))?
+            .get(&fold_identifier(member))?
+            .iter()
+            .copied()
+            .find(|entry| entry.owner == owner && is_project_public_member(*entry))
+            .map(|entry| binding_for_want(entry, None))
     }
 
     fn resolve_owner_member(

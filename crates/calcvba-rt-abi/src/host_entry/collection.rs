@@ -52,31 +52,8 @@ pub fn invoke(
     };
     // Collection is a base-library class; its argument names are language
     // semantics, independent of any host application or COM object library.
-    let names: &[&str] = match kind {
-        M::Add => &["Item", "Key", "Before", "After"],
-        M::Item | M::Remove => &["Index"],
-        M::Count => &[],
-    };
-    let missing = || Variant::from_error_code(0x80020004u32 as i32);
-    let mut ordered = vec![missing(); names.len()];
-    let mut occupied = vec![false; names.len()];
-    for (position, (value, argument)) in values.iter().zip(arguments).enumerate() {
-        let index = match argument.name.as_deref() {
-            Some(name) => names
-                .iter()
-                .position(|n| n.eq_ignore_ascii_case(name))
-                .ok_or(448)?,
-            None => position,
-        };
-        if index >= names.len() {
-            return Err(450);
-        }
-        if occupied[index] {
-            return Err(448);
-        }
-        occupied[index] = true;
-        ordered[index] = value.clone();
-    }
+    let names: Vec<Option<String>> = arguments.iter().map(|a| a.name.clone()).collect();
+    let ordered = calcvba_eval::collection::order_collection_args(kind, values, &names)?;
     object
         .with_native_collection(|data| dispatch_collection(kind, data, &ordered))
         .ok_or(438)?

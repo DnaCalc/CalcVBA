@@ -173,7 +173,9 @@ pub fn scan_module(
         target,
         proc_is_static: false,
     };
-    ctx.walk(module_scope, module_syntax, true)?;
+    with_module_type_scope(&module_name, module_syntax, || {
+        ctx.walk(module_scope, module_syntax, true)
+    })?;
     Ok(scan)
 }
 
@@ -2299,6 +2301,24 @@ fn fixed_string_len_from_core_const(value: CoreConst) -> Option<u32> {
 /// Scan every `Type … End Type` block reachable from the module roots into a
 /// `folded type name → ordered [(folded field name, field type)]` map — the binder's
 /// UDT field table (field indices + types for `p.X` access and record allocation).
+/// Folded names of the module-level `Type` and `Enum` blocks declared in one module.
+pub fn module_type_space_names(root: SyntaxNode<'_>) -> std::collections::HashSet<String> {
+    fn walk(node: SyntaxNode<'_>, out: &mut std::collections::HashSet<String>) {
+        if matches!(node.kind(), SyntaxKind::TypeBlock | SyntaxKind::EnumBlock) {
+            if let Some(token) = first_identifier_token(node) {
+                out.insert(fold_identifier(normalize_identifier_token(token.text)));
+            }
+            return;
+        }
+        for child in node.child_nodes() {
+            walk(child, out);
+        }
+    }
+    let mut out = std::collections::HashSet::new();
+    walk(root, &mut out);
+    out
+}
+
 pub fn collect_udt_fields(
     module_roots: &[SyntaxNode<'_>],
 ) -> std::collections::HashMap<String, Vec<(String, VarTypeRef)>> {
@@ -2403,6 +2423,48 @@ fn type_ref_name(node: SyntaxNode<'_>) -> String {
     normalize_identifier_token(name).to_string()
 }
 
+thread_local! {
+    /// The module whose declarations are being decoded, with the folded names of its own
+    /// `Type`/`Enum` blocks. VBA resolves an unqualified type name to the declaring
+    /// module's own type before public types of other modules, so such a reference is
+    /// recorded module-qualified (`arraybuffer.ty`): two modules may each declare `Ty`.
+    static MODULE_TYPE_SCOPE: std::cell::RefCell<Option<(String, std::collections::HashSet<String>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with unqualified references to `module_root`'s own types qualified by `module_name`.
+pub fn with_module_type_scope<R>(
+    module_name: &str,
+    module_root: SyntaxNode<'_>,
+    f: impl FnOnce() -> R,
+) -> R {
+    struct Restore(Option<(String, std::collections::HashSet<String>)>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let previous = self.0.take();
+            MODULE_TYPE_SCOPE.with(|scope| *scope.borrow_mut() = previous);
+        }
+    }
+    let names = module_type_space_names(module_root);
+    let previous =
+        MODULE_TYPE_SCOPE.with(|scope| scope.replace(Some((fold_identifier(module_name), names))));
+    let _restore = Restore(previous);
+    f()
+}
+
+fn module_qualified_type_name(folded: &str) -> Option<String> {
+    if folded.contains('.') {
+        return None;
+    }
+    MODULE_TYPE_SCOPE.with(|scope| {
+        scope
+            .borrow()
+            .as_ref()
+            .filter(|(_, names)| names.contains(folded))
+            .map(|(module, _)| format!("{module}.{folded}"))
+    })
+}
+
 /// Decode the shared parser's TypeRef node using the declaration type vocabulary.
 pub fn type_ref_node(node: SyntaxNode<'_>) -> VarTypeRef {
     let name = type_ref_name(node);
@@ -2420,7 +2482,9 @@ pub fn type_ref_node(node: SyntaxNode<'_>) -> VarTypeRef {
         "string" => VarTypeRef::Builtin(BuiltinType::String),
         "variant" | "" => VarTypeRef::Variant,
         "object" => VarTypeRef::Object("object".to_string()),
-        other => VarTypeRef::Object(other.to_string()),
+        other => VarTypeRef::Object(
+            module_qualified_type_name(other).unwrap_or_else(|| other.to_string()),
+        ),
     }
 }
 

@@ -1324,8 +1324,8 @@ impl<'a> Lowerer<'a> {
                 let mut upper_bounds = Vec::with_capacity(bounds.len());
                 let mut lower_bounds = Vec::with_capacity(bounds.len());
                 for b in bounds {
-                    upper_bounds.push(self.lower_value(&b.upper)?.0);
-                    lower_bounds.push(self.lower_value(&b.lower)?.0);
+                    upper_bounds.push(self.lower_array_bound(&b.upper)?);
+                    lower_bounds.push(self.lower_array_bound(&b.lower)?);
                 }
                 // A simple target is resized in place; a COMPOUND target (e.g. a member
                 // array `ReDim b.arr(n)`) builds the new array into a temp, which is then
@@ -2471,6 +2471,17 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok((OxOperand::temp(temp), ty))
             }
+            CoreValue::RecordFieldOf { record, index } => {
+                let (rec, receiver_ty) = self.lower_value(record)?;
+                let ty = self.record_field_result_ty(&receiver_ty, *index, false);
+                let t = self.new_temp(ty.clone());
+                self.emit(OxInst::RecordGet {
+                    dst: OxPlace::Temp(t),
+                    record: rec,
+                    index: *index,
+                });
+                Ok((OxOperand::temp(t), ty))
+            }
             CoreValue::NewRecord { fields } => Ok(self.lower_new_record_value(fields, None)),
             // A `VB_PredeclaredId` class → its lazily-created global singleton instance.
             CoreValue::Predeclared { class } => {
@@ -2722,6 +2733,24 @@ impl<'a> Lowerer<'a> {
             }
         };
         Ok((OxOperand::temp(t), ty))
+    }
+
+    /// A `ReDim` bound as a Long operand. A Variant-carried bound (a record field read,
+    /// `ReDim .items(.count)`) is converted as VBA converts a subscript.
+    fn lower_array_bound(&mut self, value: &CoreValue) -> Result<OxOperand> {
+        let (operand, ty) = self.lower_value(value)?;
+        if matches!(ty, OxTy::Long | OxTy::Integer | OxTy::Byte | OxTy::Bool) {
+            return Ok(operand);
+        }
+        let t = self.new_temp(OxTy::Long);
+        self.emit(OxInst::Coerce {
+            dst: OxPlace::Temp(t),
+            src: operand,
+            target: crate::value::OxCoerceTarget::Numeric(
+                calcvba_bundle::NumericCoerceTarget::Long,
+            ),
+        });
+        Ok(OxOperand::temp(t))
     }
 
     fn lower_coerce(

@@ -258,6 +258,14 @@ fn is_constant_owner(name: &str) -> bool {
     )
 }
 
+/// Is `name` (any case, optionally `VBA.`-qualified) one of the VBA library's enum types
+/// (`VbCompareMethod`)? A variable or UDT field of such a type is a Long.
+pub fn is_library_enum_type(name: &str) -> bool {
+    let folded = fold_identifier(name);
+    let bare = folded.strip_prefix("vba.").unwrap_or(&folded);
+    bare != "constants" && is_constant_owner(bare)
+}
+
 fn is_collection_type(type_name: &str) -> bool {
     let folded = fold_identifier(type_name);
     let bare = folded.strip_prefix("vba.").unwrap_or(&folded);

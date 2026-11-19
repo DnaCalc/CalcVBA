@@ -5518,6 +5518,7 @@ fn collect_value_callees<'a>(value: &'a CoreValue, out: &mut Vec<&'a CoreCallee>
     match value {
         CoreValue::Unary { expr, .. }
         | CoreValue::Coerce { value: expr, .. }
+        | CoreValue::RecordFieldOf { record: expr, .. }
         | CoreValue::LetValue(expr) => {
             collect_value_callees(expr, out);
         }

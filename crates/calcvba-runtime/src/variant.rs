@@ -1210,6 +1210,18 @@ impl Variant {
         }
     }
 
+    /// Whether this cell holds an object, directly or through a `VT_BYREF` reference (a typed
+    /// object variable or a Variant holding one, passed ByRef).
+    pub fn holds_object_through_ref(&self) -> bool {
+        match self.byref_target() {
+            None => self.vtype() == VarType::Object,
+            Some((0x09 | 0x0D, _)) => true,
+            // SAFETY: a VT_BYREF | VT_VARIANT cell refers to a live Variant (`by_ref`'s contract).
+            Some((0x0C, ptr)) => unsafe { (*ptr.cast::<Variant>()).holds_object_through_ref() },
+            Some(_) => false,
+        }
+    }
+
     /// The target type (`vt` without `VT_BYREF`, `VT_ARRAY` kept) and address of a `VT_BYREF`
     /// cell.
     pub fn byref_target(&self) -> Option<(u16, *mut u8)> {

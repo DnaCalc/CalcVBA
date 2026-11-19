@@ -1742,7 +1742,12 @@ impl<'a> ProcLower<'a> {
                 let Some(type_name) = type_block_name(type_block) else {
                     continue;
                 };
-                if fold_identifier(type_name.trim_matches(['[', ']'])) != udt {
+                let type_name = fold_identifier(type_name.trim_matches(['[', ']']));
+                // `udt` is the declaration's canonical `project.module.type` name.
+                let qualified = format!("{}.{type_name}", fold_identifier(module.module_name));
+                if type_name != udt
+                    && self.g.env.canonical_udt_name(&qualified) != Some(udt.as_str())
+                {
                     continue;
                 }
                 for type_field in type_block.type_fields() {

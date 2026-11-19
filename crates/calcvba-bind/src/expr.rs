@@ -552,7 +552,10 @@ impl<'a> ProcLower<'a> {
         // `obj.Member(args)` — a method/property call, or an index into a member
         // array. The member binder decides by resolving the member.
         if base.kind() == SyntaxKind::MemberExpr {
-            return self.bind_member_call(base, node.index_arg_list());
+            // `Module.Arr(i)`: a module-qualified variable indexed like the bare name.
+            if !self.is_qualified_module_variable(base) {
+                return self.bind_member_call(base, node.index_arg_list());
+            }
         }
         // A call or parenthesized expression may yield an array as well as an
         // object. Variant receivers decide between indexing and dispatch at run time.
@@ -590,6 +593,19 @@ impl<'a> ProcLower<'a> {
             value: CoreValue::Load(place.clone()),
             ty,
             place: Some(place),
+        })
+    }
+
+    /// Is `member` (`Module.Name`) a module-qualified non-object variable, which an argument
+    /// list indexes (`Module.Arr(i)`), rather than a procedure or property it calls?
+    pub(crate) fn is_qualified_module_variable(&self, member: SyntaxNode<'_>) -> bool {
+        member.member_name_token().is_some_and(|name| {
+            self.qualified_namespace_member_binding(member, name.text)
+                .filter(|binding| matches!(binding.route, DispatchRoute::Value))
+                .and_then(|binding| binding.symbol)
+                .filter(|sym| self.g.env.const_value(*sym).is_none())
+                .and_then(|sym| self.place_for_symbol(sym))
+                .is_some_and(|(_, ty)| !matches!(ty, VarTypeRef::Object(_)))
         })
     }
 

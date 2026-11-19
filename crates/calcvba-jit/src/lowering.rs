@@ -4806,6 +4806,10 @@ impl<'a> LowerFunc<'a> {
             // Constant bound expressions can retain a conservative Dynamic
             // shape. The operation's fixed flag still fixes the allocation.
             is_m4_4_array_ty_for_element(dst_ty, element)
+                // `ReDim rec.items(n) As Udt` resizes a materialized record-field temp,
+                // whose array carrier is typed as a dynamic Variant array.
+                || (matches!(element, ArrayElementType::Record(_))
+                    && is_m4_4_dynamic_variant_array_ty(dst_ty))
         };
         if !supported_dst {
             return Err(JitError::unsupported(format!(
@@ -4906,7 +4910,12 @@ impl<'a> LowerFunc<'a> {
                 "M4-4 ArrayGet lowering requires at least one subscript",
             ));
         }
-        if indices.len() == 1 && is_m4_4_long_array_ty(array_ty) {
+        // Non-integer subscripts (`a(v)` with a Variant `v`) are converted by the helper, as
+        // VM3 converts them.
+        let direct_indices = indices
+            .iter()
+            .all(|index| self.can_lower_direct_i32_operand(index));
+        if indices.len() == 1 && direct_indices && is_m4_4_long_array_ty(array_ty) {
             let index_value = self.lower_operand_i32(builder, module, &indices[0])?;
             let (array_area, array_index) = place_addr(*array_place);
             let array_area = builder.ins().iconst(types::I32, i64::from(array_area));
@@ -4932,7 +4941,7 @@ impl<'a> LowerFunc<'a> {
             return Ok(());
         }
 
-        let dynamic = *array_ty == OxTy::Variant;
+        let dynamic = *array_ty == OxTy::Variant || !direct_indices;
         let indices_ptr = if dynamic {
             let operands = indices
                 .iter()
@@ -5036,7 +5045,11 @@ impl<'a> LowerFunc<'a> {
                 "M4-4 ArraySet lowering requires at least one subscript",
             ));
         }
+        let direct_indices = indices
+            .iter()
+            .all(|index| self.can_lower_direct_i32_operand(index));
         if indices.len() == 1
+            && direct_indices
             && is_m4_4_long_array_ty(array_ty)
             && self.can_lower_direct_i32_operand(value)
         {
@@ -5062,7 +5075,7 @@ impl<'a> LowerFunc<'a> {
             return Ok(());
         }
 
-        let dynamic = *array_ty == OxTy::Variant;
+        let dynamic = *array_ty == OxTy::Variant || !direct_indices;
         let indices_ptr = if dynamic {
             let operands = indices
                 .iter()
@@ -5341,7 +5354,16 @@ impl<'a> LowerFunc<'a> {
                 // reference when the frame is seeded (`byref_variant_reference`).
                 let variant_reference =
                     *param_ty == OxTy::Variant && actual.is_byref_variant_reference();
-                if actual != param_ty && !same_array_element && !variant_reference {
+                // A record field passed ByRef to a UDT parameter is copied into a Variant-carried
+                // temp holding the record (written back after the call); the slot is the same.
+                let record_field_copy = matches!(place, OxPlace::Temp(_))
+                    && *actual == OxTy::Variant
+                    && matches!(param_ty, OxTy::Record(_));
+                if actual != param_ty
+                    && !same_array_element
+                    && !variant_reference
+                    && !record_field_copy
+                {
                     return Err(JitError::unsupported(format!(
                         "M4-4 static call subset requires exact ByRef type match, got {actual:?} for {param_ty:?} at {place:?}"
                     )));

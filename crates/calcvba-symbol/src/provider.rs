@@ -297,6 +297,8 @@ pub struct ResolutionEnvironment {
     /// `(folded field name, field type)`. The binder reads field index + type for
     /// `p.X` access and the field count for record allocation.
     udt_fields: HashMap<String, Vec<(String, crate::signature::VarTypeRef)>>,
+    /// Folded UDT alias → canonical folded `project.module.type` name.
+    canonical_udts: HashMap<String, String>,
     /// Folded declared enum type names, including module/project-qualified aliases.
     enum_types: HashSet<String>,
     /// Folded unqualified type names that have multiple public type-space owners,
@@ -573,10 +575,20 @@ impl ResolutionEnvironment {
             .contains_key(&crate::model::fold_identifier(name))
     }
 
+    /// The canonical folded name of UDT `name` (`project.module.type`), if it is one.
+    pub fn canonical_udt_name(&self, name: &str) -> Option<&str> {
+        self.canonical_udts
+            .get(&crate::model::fold_identifier(name))
+            .map(String::as_str)
+    }
+
     /// Is `name` (any case) a declared enum type?
     pub fn is_enum_type(&self, name: &str) -> bool {
-        self.enum_types
-            .contains(&crate::model::fold_identifier(name))
+        let folded = crate::model::fold_identifier(name);
+        self.enum_types.contains(&folded)
+            || (!self.udt_fields.contains_key(&folded)
+                && !self.enum_types.contains(&folded)
+                && crate::providers::vba_library::is_library_enum_type(&folded))
     }
 
     /// Is an unqualified type reference ambiguous across public type-space owners?
@@ -921,6 +933,10 @@ fn used_coclass_names(
 #[derive(Default)]
 struct TypeNameIndex {
     udt_fields: HashMap<String, Vec<(String, VarTypeRef)>>,
+    /// Folded UDT alias (`ty`, `module.ty`, `project.module.ty`) → its declaration's
+    /// canonical `project.module.ty`, so every spelling of one type is one type.
+    canonical_udts: HashMap<String, String>,
+    public_bare_udts: HashSet<String>,
     enum_types: HashSet<String>,
     public_candidates: BTreeMap<String, BTreeMap<String, Vec<TypeNameCandidate>>>,
 }
@@ -938,7 +954,9 @@ impl TypeNameIndex {
         scan: &ModuleScan,
         syntax: SyntaxNode<'_>,
     ) {
-        let module_udts = scanner::collect_udt_fields(&[syntax]);
+        let module_udts = scanner::with_module_type_scope(module_name, syntax, || {
+            scanner::collect_udt_fields(&[syntax])
+        });
         let module_folded = crate::model::fold_identifier(module_name);
         let project_folded = crate::model::fold_identifier(project_name);
         for member in &scan.members {
@@ -954,10 +972,23 @@ impl TypeNameIndex {
             match member.kind {
                 SymbolKind::Type => {
                     if let Some(fields) = module_udts.get(&name) {
-                        for alias in aliases {
+                        let canonical = aliases[2].clone();
+                        // A bare name prefers the first Public type over a Private one:
+                        // another module's unqualified reference cannot see the latter.
+                        let public = member.visibility == Visibility::Public;
+                        let replace_bare = public && self.public_bare_udts.insert(name.clone());
+                        for (index, alias) in aliases.into_iter().enumerate() {
+                            if index == 0 && replace_bare {
+                                self.udt_fields.insert(alias.clone(), fields.clone());
+                                self.canonical_udts.insert(alias, canonical.clone());
+                                continue;
+                            }
                             self.udt_fields
-                                .entry(alias)
+                                .entry(alias.clone())
                                 .or_insert_with(|| fields.clone());
+                            self.canonical_udts
+                                .entry(alias)
+                                .or_insert_with(|| canonical.clone());
                         }
                     }
                 }
@@ -1013,7 +1044,12 @@ fn validate_type_refs(
     for module in modules {
         let project_name = crate::model::fold_identifier(&module.project_name);
         if let Some(names) = ambiguous_type_names.get(&project_name) {
-            validate_type_refs_in(module.parse.syntax(), names)?;
+            // A module's own Type/Enum shadows public types of other modules.
+            let local = scanner::module_type_space_names(module.parse.syntax());
+            let names: HashSet<String> = names.difference(&local).cloned().collect();
+            if !names.is_empty() {
+                validate_type_refs_in(module.parse.syntax(), &names)?;
+            }
         }
     }
     Ok(())
@@ -1780,6 +1816,7 @@ pub fn build_resolution_environment_with_project_surfaces(
         const_values,
         optional_defaults,
         udt_fields: type_index.udt_fields,
+        canonical_udts: type_index.canonical_udts,
         enum_types: type_index.enum_types,
         ambiguous_type_names,
         external_project_names,

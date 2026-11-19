@@ -25,6 +25,45 @@ pub enum CollectionMethod {
     Remove,
 }
 
+/// Put a call's arguments in `method`'s parameter order (`Item, Key, Before, After` /
+/// `Index`): `names[i]` is the name a named argument was written with (`Before:=1`). Gaps are
+/// the omitted sentinel. Errors are VBA run-time error numbers: 448 for an unknown or repeated
+/// name, 450 for too many arguments.
+pub fn order_collection_args(
+    method: CollectionMethod,
+    values: &[Variant],
+    names: &[Option<String>],
+) -> Result<Vec<Variant>, i32> {
+    if names.iter().all(Option::is_none) {
+        return Ok(values.to_vec());
+    }
+    let parameters: &[&str] = match method {
+        CollectionMethod::Add => &["Item", "Key", "Before", "After"],
+        CollectionMethod::Item | CollectionMethod::Remove => &["Index"],
+        CollectionMethod::Count => &[],
+    };
+    let mut ordered = vec![Variant::from_error_code(MISSING_ARG); parameters.len()];
+    let mut occupied = vec![false; parameters.len()];
+    for (position, value) in values.iter().enumerate() {
+        let index = match names.get(position).and_then(Option::as_deref) {
+            Some(name) => parameters
+                .iter()
+                .position(|parameter| parameter.eq_ignore_ascii_case(name))
+                .ok_or(448)?,
+            None => position,
+        };
+        if index >= parameters.len() {
+            return Err(450);
+        }
+        if occupied[index] {
+            return Err(448);
+        }
+        occupied[index] = true;
+        ordered[index] = value.clone();
+    }
+    Ok(ordered)
+}
+
 /// The shared keyed-`Collection` dispatch: run `method` against `data` (the receiver's
 /// box-owned [`CollectionData`], reached via `ObjectRef::with_native_collection`) with the
 /// positional method `args` (omitted optionals arrive as the `MISSING_ARG` sentinel). Returns

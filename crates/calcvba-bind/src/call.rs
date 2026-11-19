@@ -1848,6 +1848,10 @@ impl<'a> ProcLower<'a> {
         let Some(member) = base.member_name_token().map(|t| t.text) else {
             return Ok(None);
         };
+        // `Module.Arr(i) = v` assigns the element place.
+        if self.is_qualified_module_variable(base) {
+            return Ok(None);
+        }
         let recv = self.member_receiver_bound(base)?;
         let recv = self.document_member_receiver(recv, member, Some(kind));
         // The index argument list lives on the enclosing IndexExpr (`target`).
@@ -2737,6 +2741,23 @@ impl<'a> ProcLower<'a> {
             });
         }
         let recv = self.member_receiver_bound(node)?;
+        // A field of a UDT-valued call result (`GetDescriptor(a).count`).
+        if recv.place.is_none()
+            && let VarTypeRef::Udt(udt) = self.g.resolve_udt_type(recv.ty.clone())
+            && let Some((index, field_ty)) = self
+                .g
+                .env
+                .udt_field(&udt, crate::unbracket_identifier(member))
+                .map(|(i, t)| (i, t.clone()))
+        {
+            return Ok(value_bound(
+                CoreValue::RecordFieldOf {
+                    record: Box::new(recv.value),
+                    index,
+                },
+                self.g.resolve_udt_type(field_ty),
+            ));
+        }
         self.bind_member_value(recv, member)
     }
 
@@ -2924,8 +2945,13 @@ impl<'a> ProcLower<'a> {
         let Some(binding) = self.g.env.resolve_qualified(&part_refs) else {
             return false;
         };
+        // `Module.EnumName` qualifies its members (`Module.EnumName.Member`).
+        let is_enum = binding
+            .symbol
+            .and_then(|id| self.g.env.symbols.symbol(id))
+            .is_some_and(|symbol| symbol.kind == SymbolKind::Enum);
         match binding.route {
-            DispatchRoute::Value => !self.binding_is_module(&binding),
+            DispatchRoute::Value => !self.binding_is_module(&binding) && !is_enum,
             DispatchRoute::ConstValue(_)
             | DispatchRoute::PredeclaredObject(_)
             | DispatchRoute::ComObjectRoot { .. } => true,
@@ -3280,6 +3306,7 @@ impl<'a> ProcLower<'a> {
                     let elem_ty = match field_ty {
                         VarTypeRef::Array(inner) => self.g.resolve_udt_type(*inner),
                         VarTypeRef::FixedArray { element, .. } => self.g.resolve_udt_type(*element),
+                        VarTypeRef::Variant => VarTypeRef::Variant,
                         _ => {
                             return Err(BindError::ExpectedArray {
                                 name: format!(".{member}"),

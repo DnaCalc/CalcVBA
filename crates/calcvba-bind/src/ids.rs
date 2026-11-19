@@ -529,7 +529,9 @@ impl IdAllocator {
 
 fn normalize_declared_type(env: &ResolutionEnvironment, ty: VarTypeRef) -> VarTypeRef {
     match ty {
-        VarTypeRef::Object(name) if env.is_udt(&name) => VarTypeRef::Udt(name),
+        VarTypeRef::Object(name) | VarTypeRef::Udt(name) if env.is_udt(&name) => {
+            VarTypeRef::Udt(env.canonical_udt_name(&name).unwrap_or(&name).to_string())
+        }
         VarTypeRef::Object(name) if env.is_enum_type(&name) => {
             VarTypeRef::Builtin(BuiltinType::Long)
         }

@@ -1950,6 +1950,20 @@ impl<'h> Vm3<'h> {
             // the callee reads and writes the storage itself (the JIT's
             // `rt_jit_make_ref_to_slot` does the same).
             OxInst::MakeRef { dst, base, path } => {
+                // `v(i)` passed ByRef where the Variant `v` holds an object: the default
+                // member's value is passed, as for any property result.
+                if let (OxAddrBase::Place(place), [OxAddrStep::Index(indices)]) =
+                    (base, path.as_slice())
+                {
+                    let loc = self.resolve(place);
+                    let holds_object = self
+                        .read_loc_mut(loc)?
+                        .is_some_and(|cell| cell.holds_object_through_ref());
+                    if holds_object {
+                        let recv = self.read(place)?;
+                        return self.index_value_into(recv, indices, dst);
+                    }
+                }
                 let steps = self.address_steps(path)?;
                 let root = self.address_root(base)?;
                 let fault = |number: i32| {
@@ -2553,7 +2567,7 @@ impl<'h> Vm3<'h> {
                     .withevents
                     .get(&key)
                     .map(|b| b.source.clone())
-                    .unwrap_or_else(|| Variant::from_i32(0));
+                    .unwrap_or_else(Variant::nothing);
                 self.store(dst, value)?;
             }
             OxInst::WithEventsSet {
@@ -4691,7 +4705,16 @@ impl<'h> Vm3<'h> {
                 return self.collection_new_enum_object(object);
             }
         };
+        let names: Vec<_> = args
+            .iter()
+            .map(|arg| match arg {
+                OxCallArg::Named { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
         let argv = self.collection_args(args)?;
+        let argv = calcvba_eval::collection::order_collection_args(method, &argv, &names)
+            .map_err(|number| Vm3Error::Fault(Fault::new(number, default_error_message(number))))?;
         object
             .with_native_collection(|data| dispatch_collection(method, data, &argv))
             .ok_or_else(|| Vm3Error::Fault(Fault::new(424, "Object required")))?
@@ -5968,6 +5991,10 @@ impl<'h> Vm3<'h> {
             return Ok(None);
         }
         let loc = self.resolve(place);
+        // An `As New` variable is created when it is referenced, as the JIT reads it.
+        if self.as_new_slots.contains_key(&loc) {
+            self.read_loc_as_new(loc)?;
+        }
         let Some(cell) = self.read_loc_mut(loc)? else {
             return Ok(None);
         };

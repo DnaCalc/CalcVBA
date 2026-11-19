@@ -669,6 +669,11 @@ pub enum CoreValue {
         array: Box<CoreValue>,
         dimension: Option<Box<CoreValue>>,
     },
+    /// Read field `index` of a UDT-valued expression result (`MakeRecord(x).count`).
+    RecordFieldOf {
+        record: Box<CoreValue>,
+        index: usize,
+    },
     /// Read an element of an expression result. The receiver is evaluated once;
     /// unlike a place, the result cannot be used as a caller-backed ByRef alias.
     Index {

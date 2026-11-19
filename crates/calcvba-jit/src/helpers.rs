@@ -3382,7 +3382,7 @@ pub(crate) unsafe extern "C" fn rt_jit_withevents_get_to_slot(
             .withevents
             .get(&key)
             .map(|binding| binding.source.clone())
-            .unwrap_or_else(|| Variant::from_i32(0));
+            .unwrap_or_else(Variant::nothing);
         let _ = exec;
         // SAFETY: callback-capable lookup returned and no typed run borrow is live.
         let run = unsafe { &mut *run };
@@ -4384,6 +4384,7 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
                 &object,
                 if name.is_empty() { "Item" } else { name },
                 args,
+                names,
             )
         } {
             Ok(value) => value,
@@ -4496,6 +4497,7 @@ pub(crate) unsafe fn dispatch_collection_member_for_jit(
     object: &ObjectRef,
     name: &str,
     args: &[JitCallArgDesc],
+    names: &[JitCallArgNameDesc],
 ) -> Result<Variant, i32> {
     let native = vba_collection_native_method_for_jit(name)
         // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
@@ -4511,6 +4513,14 @@ pub(crate) unsafe fn dispatch_collection_member_for_jit(
         }
     };
     let argv = collection_call_arg_values_for_jit(run, args)?;
+    let mut arg_names = Vec::with_capacity(names.len());
+    for name in names {
+        // SAFETY: compiled descriptors retain their source text for this call.
+        arg_names.push(unsafe { call_arg_name_preserved(*name) }?);
+    }
+    let argv = calcvba_eval::collection::order_collection_args(method, &argv, &arg_names)
+        // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
+        .map_err(|number| unsafe { rt_raise_runtime_error_number(state, number) })?;
     object
         .with_native_collection(|data| dispatch_collection(method, data, &argv))
         .ok_or(ST_FAULT)?
@@ -5179,6 +5189,47 @@ pub(crate) unsafe extern "C" fn rt_jit_addr_of_to_slot(
             match variant_operand_value_from_compiled_desc!(run_ref, operand) {
                 Some(value) => values.push(value),
                 None => return ST_FAULT,
+            }
+        }
+        // `v(i)` passed ByRef where the Variant `v` holds an object: the default member's
+        // value is passed, as VM3 passes it.
+        if kind.is_none()
+            && let (OxAddrBase::Place(place), [OxAddrStep::Index(_)]) = (base, path.as_slice())
+        {
+            let (area, index) = place_addr(*place);
+            // SAFETY: the active run is live; no typed borrow spans this read.
+            let recv = match slot_ref(unsafe { &*run }, area, index) {
+                Some(cell) if cell.holds_object_through_ref() => Some(cell.clone()),
+                Some(_) => None,
+                None => return ST_FAULT,
+            };
+            if let Some(recv) = recv {
+                // SAFETY: the checked JIT entry owns the live unique state; `run`, the owned
+                // receiver and `values` remain live for the call.
+                let value = match unsafe {
+                    invoke_project_default_member_values(
+                        run,
+                        state,
+                        recv,
+                        ProjectMemberKind::PropertyGet,
+                        &values,
+                    )
+                } {
+                    Ok(value) => value,
+                    Err(status) => return status,
+                };
+                // SAFETY: default-member entry returned and no typed run borrow spans it.
+                let run = unsafe { &mut *run };
+                let Ok(dst_area) = u32::try_from(dst_area) else {
+                    return ST_FAULT;
+                };
+                let Ok(dst_index) = u32::try_from(dst_index) else {
+                    return ST_FAULT;
+                };
+                let Some(slot) = slot_mut(run, dst_area, dst_index) else {
+                    return ST_FAULT;
+                };
+                return store_slot(state, slot, value);
             }
         }
         let mut values = values.into_iter();

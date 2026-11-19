@@ -131,3 +131,7 @@ Jit	StrCompT.9.1
 Jit	StrCompT.9.2
 Jit	StrCompT.9.3
 Jit	StrCompT.9.9
+windows Vm3	Sin.6
+windows Vm3	Sin.8
+windows Jit	Sin.6
+windows Jit	Sin.8

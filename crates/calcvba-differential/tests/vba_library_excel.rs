@@ -160,6 +160,17 @@ fn dir() -> PathBuf {
         .join("../../conformance/excel-measurements/vba-library")
 }
 
+/// A known line may start with a host (`linux `, `windows `, `macos `): it then applies only on
+/// that host, because the host maths library or code page decides the answer (dc-q6brh.112).
+fn host_line(line: &str) -> Option<&str> {
+    for host in ["linux", "windows", "macos"] {
+        if let Some(rest) = line.strip_prefix(host).and_then(|r| r.strip_prefix(' ')) {
+            return (host == std::env::consts::OS).then_some(rest);
+        }
+    }
+    Some(line)
+}
+
 fn known(executor: Executor) -> BTreeSet<String> {
     let own = match executor {
         Executor::Vm3 => "vm3 ",
@@ -169,6 +180,7 @@ fn known(executor: Executor) -> BTreeSet<String> {
     text.lines()
         .map(str::trim_end)
         .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .filter_map(host_line)
         .filter_map(|l| {
             if let Some(rest) = l.strip_prefix(own) {
                 Some(rest.to_string())

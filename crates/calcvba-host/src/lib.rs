@@ -289,7 +289,8 @@ impl Module {
 }
 
 /// Bind-once dynamic adapter. Arguments/results retain exact VBA carriers.
-/// Host ByRef arguments are private copies; native ByRef host ABI remains open.
+/// ByRef arguments given as host cells alias them (call_values_by_ref,
+/// call_values_with_writebacks); other ByRef arguments are private copies.
 #[derive(Clone)]
 pub struct BoundProcedure {
     owner: Rc<()>,
@@ -861,17 +862,81 @@ impl<'a> Session<'a> {
             .map(|v| v.borrow_slot().ok_or(Error::ArgumentMismatch))
             .collect::<Result<Vec<_>, _>>()?;
         let mut frame = self.new_value_activation(bound, &inputs)?;
-        frame.enable_writebacks(args.len())?;
         drop(inputs);
-        let result = self.execute_frame(&mut frame, context, u64::MAX);
-        // VBA mutations made before an unhandled error still reach the caller.
-        for (index, value) in frame.take_writebacks().map_err(|n| self.typed_error(n))? {
-            args[index] = value;
-        }
-        if result? != 0 {
+        let base = args.as_mut_ptr();
+        // SAFETY: args stays mutably borrowed, and untouched, until the frame drops.
+        let cells = (0..args.len())
+            .map(|i| Some(unsafe { base.add(i) }))
+            .collect::<Vec<_>>();
+        // SAFETY: each cell is a live element of args, which outlives the frame.
+        unsafe { frame.alias_host_cells(&cells) }?;
+        if self.execute_frame(&mut frame, context, u64::MAX)? != 0 {
             return Err(Error::Backend("unexpected synchronous suspension".into()));
         }
         Ok(frame.result())
+    }
+    fn call_values_by_ref(
+        &self,
+        bound: &BoundProcedure,
+        args: &[calcvba_host_api::ValueArg<'_>],
+        context: &mut TypedContext,
+    ) -> Result<calcvba_host_api::Value, Error> {
+        use calcvba_host_api::ValueArg;
+        self.validate(bound)?;
+        let _activation = self.enter_typed(context)?;
+        // A reentrant call cannot alias a cell an outer frame holds: that frame may
+        // still have borrowed its value. One call may name a cell twice (F x, x).
+        if args
+            .iter()
+            .any(|arg| matches!(arg, ValueArg::ByRef(cell) if cell.is_lent()))
+        {
+            return Err(Error::Reentry);
+        }
+        // Loans outlive the frame (declared first, dropped last).
+        let loans = args
+            .iter()
+            .map(|arg| match arg {
+                ValueArg::ByRef(cell) => Some(cell.lend()),
+                ValueArg::Value(_) => None,
+            })
+            .collect::<Vec<_>>();
+        // The frame starts from a copy of each cell (checked like any argument); the
+        // copy is released when the parameter is pointed at the cell.
+        let copies = args
+            .iter()
+            .map(|arg| match arg {
+                ValueArg::ByRef(cell) => cell.get().map(Some),
+                ValueArg::Value(_) => Ok(None),
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|n| self.typed_error(n))?;
+        let inputs = args
+            .iter()
+            .zip(&copies)
+            .map(|(arg, copy)| match (arg, copy) {
+                (ValueArg::Value(slot), _) => Ok(*slot),
+                (ValueArg::ByRef(_), Some(copy)) => {
+                    copy.borrow_slot().ok_or(Error::ArgumentMismatch)
+                }
+                (ValueArg::ByRef(_), None) => Err(Error::ArgumentMismatch),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut frame = self.new_value_activation(bound, &inputs)?;
+        drop(inputs);
+        drop(copies);
+        let cells = loans
+            .iter()
+            .map(|loan| loan.as_ref().map(|loan| loan.as_ptr()))
+            .collect::<Vec<_>>();
+        // SAFETY: each loan keeps its cell held (not replaceable) past the frame's drop.
+        unsafe { frame.alias_host_cells(&cells) }?;
+        if self.execute_frame(&mut frame, context, u64::MAX)? != 0 {
+            return Err(Error::Backend("unexpected synchronous suspension".into()));
+        }
+        let result = frame.result();
+        drop(frame);
+        drop(loans);
+        Ok(result)
     }
     fn new_activation(
         &self,

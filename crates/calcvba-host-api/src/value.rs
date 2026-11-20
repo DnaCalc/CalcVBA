@@ -242,6 +242,100 @@ impl From<OwnedValue> for Value {
     }
 }
 
+impl Value {
+    /// A copy of this value with its own owners (strings, records and arrays copied,
+    /// objects retained). Fails with the VBA error number (7: out of memory).
+    pub fn duplicate(&self) -> Result<Value, i32> {
+        match self.borrow_slot() {
+            None => Ok(Value::Empty),
+            // SAFETY: the slot borrows this live value's exact carrier for the copy.
+            Some(slot) => unsafe { retain_bits(slot.ty(), slot.bits()) },
+        }
+    }
+}
+
+/// Host storage for a ByRef argument. Passed with [`ValueArg::ByRef`], the cell is the
+/// parameter: the procedure reads and writes it in place, so each write is in the cell
+/// as soon as it happens (a host callback made during the call sees it) and nothing is
+/// copied back afterwards. Passing one cell twice gives two parameters one storage, as
+/// `F x, x` does in VBA. The cell cannot be replaced while a call holds it, and a call
+/// made from a callback cannot be given a cell an outer call holds.
+pub struct ByRefCell {
+    value: std::cell::UnsafeCell<Value>,
+    lent: std::cell::Cell<usize>,
+    // The frame that writes the cell belongs to this thread.
+    _thread: std::marker::PhantomData<*mut ()>,
+}
+impl ByRefCell {
+    pub fn new(value: Value) -> Self {
+        Self {
+            value: std::cell::UnsafeCell::new(value),
+            lent: std::cell::Cell::new(0),
+            _thread: std::marker::PhantomData,
+        }
+    }
+    pub fn ty(&self) -> ValueType {
+        // SAFETY: brief shared read; no reference spans VBA execution.
+        unsafe { &*self.value.get() }.ty()
+    }
+    /// A copy of the current value, also during the call that holds the cell.
+    pub fn get(&self) -> Result<Value, i32> {
+        // SAFETY: brief shared read between VBA operations; writes install the new
+        // value before releasing the old one, and no reference into it survives.
+        unsafe { &*self.value.get() }.duplicate()
+    }
+    /// Replace the value. Refused (the value is handed back) while a call holds the cell.
+    pub fn set(&self, value: Value) -> Result<Value, Value> {
+        if self.is_lent() {
+            return Err(value);
+        }
+        // SAFETY: not lent, so no frame aliases the cell; unique access on this thread.
+        Ok(unsafe { std::ptr::replace(self.value.get(), value) })
+    }
+    pub fn is_lent(&self) -> bool {
+        self.lent.get() != 0
+    }
+    pub fn into_inner(self) -> Value {
+        self.value.into_inner()
+    }
+    /// For providers: hold the cell for one call. While the loan lives, `set` is
+    /// refused and [`CellLoan::as_ptr`] may be given to the frame as the parameter's
+    /// storage.
+    pub fn lend(&self) -> CellLoan<'_> {
+        self.lent.set(self.lent.get() + 1);
+        CellLoan { cell: self }
+    }
+}
+impl std::fmt::Debug for ByRefCell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // SAFETY: brief shared read for formatting.
+        f.debug_tuple("ByRefCell")
+            .field(unsafe { &*self.value.get() })
+            .finish()
+    }
+}
+pub struct CellLoan<'a> {
+    cell: &'a ByRefCell,
+}
+impl CellLoan<'_> {
+    pub fn as_ptr(&self) -> *mut Value {
+        self.cell.value.get()
+    }
+}
+impl Drop for CellLoan<'_> {
+    fn drop(&mut self) {
+        self.cell.lent.set(self.cell.lent.get() - 1);
+    }
+}
+/// One argument of [`crate::Session::call_values_by_ref`].
+#[derive(Clone, Copy)]
+pub enum ValueArg<'a> {
+    /// A value the procedure gets a copy of (ByVal, or ByRef to a temporary).
+    Value(ValueSlot<'a>),
+    /// Host storage a ByRef parameter aliases. A ByVal parameter takes a copy of it.
+    ByRef(&'a ByRefCell),
+}
+
 pub enum ValueProgress {
     Suspended,
     Returned(Value),

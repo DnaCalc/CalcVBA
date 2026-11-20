@@ -806,6 +806,13 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
   are still resolved by `ObjectRefExt::query_interface_descriptor`). The native lane's `Is`
   takes a Variant operand's object through the template's Object coercion instead of reading
   the cell's header as a pointer.
+- *dc-yqq0.10, host API.* A host ByRef argument is the caller's storage: the root frame's ByRef
+  parameter is an alias (`Activation::alias_host`) to the host's `Value`, followed by every
+  slot read/write, by descendants it is passed to, and by the JIT's ByRef slot helpers.
+  `call_values_with_writebacks` aliases its `&mut [Value]` (no snapshot or copy-back; ByRef
+  Variant, records, arrays and objects are accepted); `call_values_by_ref` takes `ByRefCell`s,
+  which a host callback can read during the call and cannot replace while lent. Event
+  handlers alias the event's argument cells. Test `calcvba-host/tests/typed_incoming_byref.rs`.
 - *dc-yqq0.14.* `TypeLibResolver::dictionary_source` defaults to
   `DictionarySource::platform_default` (8b); the Windows validation runs are in
   `RUN-ON-WINDOWS.txt`.

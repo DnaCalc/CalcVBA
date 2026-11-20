@@ -293,15 +293,16 @@ impl Session<'_> {
         let mut stack = self
             .new_internal_stack(unit, procedure, &inputs)
             .map_err(number)?;
-        stack.enable_writebacks(inputs.len()).map_err(number)?;
         drop(inputs);
+        // The handler's ByRef parameters (after Me) are the event's own argument cells.
+        let base = args.as_mut_ptr();
+        let cells = std::iter::once(None)
+            // SAFETY: args stays mutably borrowed, and untouched, until the stack drops.
+            .chain((0..args.len()).map(|i| Some(unsafe { base.add(i) })))
+            .collect::<Vec<_>>();
+        // SAFETY: each cell is a live element of args, which outlives the stack.
+        unsafe { stack.alias_host_cells(&cells) }.map_err(number)?;
         let result = self.execute_frame(&mut stack, context, u64::MAX);
-        for (index, value) in stack.take_writebacks()? {
-            if index == 0 || index > args.len() {
-                return Err(13);
-            }
-            args[index - 1] = value;
-        }
         let status = result.map_err(|error| {
             if self.automatic.unhandled.borrow().is_none() {
                 *self.automatic.unhandled.borrow_mut() = Some(error.clone());

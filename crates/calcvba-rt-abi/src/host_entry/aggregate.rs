@@ -373,7 +373,13 @@ pub(super) unsafe fn evaluate(raw: *mut RawActivation, inst: &OxInst) -> Result<
                 .iter()
                 .map(|place| {
                     place
-                        .map(|p| layout.slot(p).map(|index| Alias { frame: raw, index }))
+                        .map(|p| {
+                            layout.slot(p).map(|index| Alias {
+                                frame: raw,
+                                index,
+                                host: std::ptr::null_mut(),
+                            })
+                        })
                         .transpose()
                 })
                 .collect::<Result<Vec<_>, _>>()

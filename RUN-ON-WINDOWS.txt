@@ -129,3 +129,18 @@ cfg(windows)-only failure, pull again before each push.
 13. Miri (Linux only; nothing to run on Windows): scripts/run-miri.sh now also runs the
     exposed-provenance wire decoder tests (permissive provenance) and calcvba-com's library
     tests (libffi/dlopen tests skipped, deliberate 'static leaks ignored).
+
+14. dc-yqq0.10-host (lane vx2): host ByRef arguments alias the caller's storage. The root
+    frame's ByRef parameters point at the host's Value (rt-abi Activation::alias_host, an
+    Alias to a host cell next to the parent-frame one), so VM3 and the JIT write it in place;
+    the old snapshot/copy-back (TypedStack enable_writebacks/take_writebacks) is gone.
+    call_values_with_writebacks(&mut [Value]) aliases its elements and now accepts ByRef
+    Variant/Record/Array/Object parameters (it refused them). New host-api ByRefCell +
+    ValueArg + Session::call_values_by_ref: the cell is the parameter, a host callback during
+    the call sees each write, the cell refuses set() while lent. Event handlers
+    (automatic_session call_event) alias the event's argument cells the same way. Run:
+      cargo test -p calcvba-host --no-fail-fast
+    Look at: typed_excel_events and automatic_events (0 tests on Linux; Cancel ByRef from a
+    handler, now written in place, not copied back), typed_native_com, typed_incoming_byref
+    (2 tests, VM3+JIT), and any Excel-event handler with a ByRef Variant parameter (it was
+    refused before, it runs now).

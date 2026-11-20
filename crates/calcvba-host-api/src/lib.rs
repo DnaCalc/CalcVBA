@@ -332,8 +332,8 @@ pub trait Session {
             "provider has no extended value-slot API".into(),
         ))
     }
-    /// Synchronous primitive ByRef copyback. Values are updated even when the
-    /// body raises an error; unsupported structural aliases are refused before effects.
+    /// Synchronous call whose ByRef parameters alias `args`: the body writes each one
+    /// in place (also before an error it raises); ByVal parameters take copies.
     fn call_values_with_writebacks(
         &self,
         _handle: &BoundProcedure,
@@ -342,6 +342,19 @@ pub trait Session {
     ) -> Result<Value, Error> {
         Err(Error::UnsupportedSignature(
             "provider has no synchronous copyback API".into(),
+        ))
+    }
+    /// Synchronous call whose ByRef parameters given a [`ByRefCell`] are that cell:
+    /// writes are in the cell as they happen, visible to host callbacks during the
+    /// call, with no copy-back.
+    fn call_values_by_ref(
+        &self,
+        _handle: &BoundProcedure,
+        _args: &[ValueArg<'_>],
+        _context: &mut TypedContext,
+    ) -> Result<Value, Error> {
+        Err(Error::UnsupportedSignature(
+            "provider has no ByRef cell API".into(),
         ))
     }
     fn begin_values(

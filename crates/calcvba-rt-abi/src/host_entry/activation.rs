@@ -28,16 +28,33 @@ pub struct RawActivation {
     pub(super) iterators: std::collections::HashMap<usize, calcvba_host_api::HostEnumerator>,
     pub(super) param_arrays: std::collections::HashMap<usize, Vec<Option<Alias>>>,
 }
+/// A ByRef parameter's storage elsewhere: a slot of an ancestor frame, or (for a
+/// root parameter) the host's own cell. At most one of the two is set.
 #[derive(Clone, Copy)]
 pub(super) struct Alias {
     pub(super) frame: *mut RawActivation,
     pub(super) index: usize,
+    pub(super) host: *mut Value,
 }
 impl Alias {
     const NONE: Self = Self {
         frame: std::ptr::null_mut(),
         index: 0,
+        host: std::ptr::null_mut(),
     };
+}
+/// The carrier bits a host cell holds, borrowed as a frame slot would hold them:
+/// primitives by value, a String as its BSTR, a Variant as the address of the cell's
+/// Variant, aggregates and objects as their owned pointers.
+///
+/// # Safety
+/// host is a live host cell admitted by Activation::alias_host.
+unsafe fn host_bits(host: *const Value) -> Result<ScalarBits, i32> {
+    // SAFETY: brief shared read; no reference to the cell survives this call.
+    unsafe { &*host }
+        .borrow_slot()
+        .map(ValueSlot::bits)
+        .ok_or(13)
 }
 pub struct Activation<'a> {
     raw: RawActivation,
@@ -420,6 +437,33 @@ impl<'a> Activation<'a> {
             }
         }
     }
+    /// Make ByRef parameter `index` the host's own cell: reads and writes of the
+    /// parameter, from this frame and from descendants it passes it to, go to `cell`
+    /// as they happen. The private copy made by construction is released first.
+    ///
+    /// # Safety
+    /// cell is a live Value of this parameter's exact carrier that outlives this
+    /// activation. While this frame or a descendant runs, nothing else holds a Rust
+    /// reference to it or replaces it; brief shared reads between VBA operations are
+    /// allowed. Only the frame-owning thread uses it.
+    pub unsafe fn alias_host(&mut self, index: usize, cell: *mut Value) -> Result<(), i32> {
+        let ty = *self.layout.parameters.get(index).ok_or(13)?;
+        if cell.is_null()
+            || !self.layout.by_ref_parameters.get(index).copied().unwrap_or(false)
+            // SAFETY: the caller supplies a live cell; brief shared read.
+            || unsafe { &*cell }.ty() != ty
+        {
+            return Err(13);
+        }
+        // SAFETY: exact initialized parameter carrier owned by this frame.
+        unsafe { clear_slot(&mut self.raw, index, ty) }?;
+        self.raw.aliases[index] = Alias {
+            frame: std::ptr::null_mut(),
+            index: 0,
+            host: cell,
+        };
+        Ok(())
+    }
     pub fn clear_temps(&mut self, from: usize) {
         for i in self.layout.local_count + from..self.layout.global_base {
             // SAFETY: initialized admitted local slots, with no overlapping entry.
@@ -544,6 +588,7 @@ impl<'a> Activation<'a> {
                 child.raw.aliases[i] = Alias {
                     frame: parent_raw,
                     index,
+                    host: std::ptr::null_mut(),
                 };
             }
         }
@@ -736,11 +781,14 @@ pub unsafe fn read_global(
 pub(super) unsafe fn slot_identity(raw: *mut RawActivation, index: usize) -> Result<usize, i32> {
     // SAFETY: brief read of the admitted frame; aliases retain live ancestors.
     let frame = unsafe { &*raw };
-    if let Some(alias) = frame.aliases.get(index)
-        && !alias.frame.is_null()
-    {
-        // SAFETY: boxed ancestor activations outlive descendants.
-        return unsafe { slot_identity(alias.frame, alias.index) };
+    if let Some(alias) = frame.aliases.get(index) {
+        if !alias.frame.is_null() {
+            // SAFETY: boxed ancestor activations outlive descendants.
+            return unsafe { slot_identity(alias.frame, alias.index) };
+        }
+        if !alias.host.is_null() {
+            return Ok(alias.host.addr());
+        }
     }
     if index >= frame.global_base {
         let index = index - frame.global_base;
@@ -774,6 +822,14 @@ pub unsafe fn write_slot(
     }
     // SAFETY: caller provides one initialized readable physical carrier.
     let bits = unsafe { *bits };
+    if !alias.host.is_null() {
+        // Retain the borrowed input (it may be the cell's own value) before the store.
+        // SAFETY: the input owner spans this retaining copy.
+        let value = unsafe { calcvba_host_api::value::retain_bits(ty, bits) }?;
+        // SAFETY: write_owned validates against this frame's layout and installs
+        // into the host cell before releasing the old value.
+        return unsafe { write_owned(raw, index, ty, value) };
+    }
     if matches!(ty, ScalarType::HostObject | ScalarType::Array)
         || (ty == ScalarType::Record && !bits.as_object().is_null())
     {
@@ -932,6 +988,23 @@ pub unsafe fn write_owned(
         }
         _ => {}
     }
+    if !alias.host.is_null() {
+        let host = alias.host;
+        if let Value::Variant(value) = value {
+            // SAFETY: alias_host admitted a Variant cell; its type never changes while
+            // lent. The mutable borrow ends before the old value is released.
+            let cell = match unsafe { &mut *host } {
+                Value::Variant(cell) => std::ptr::from_mut(cell),
+                _ => return Err(13),
+            };
+            // SAFETY: the cell's Variant stays at this address; install, then release.
+            drop(unsafe { cell.replace(value) });
+        } else {
+            // SAFETY: same carrier (checked above); install, then release the old owner.
+            drop(unsafe { host.replace(value) });
+        }
+        return Ok(());
+    }
     // SAFETY: short field reads; no reference spans dropping a replaced owner.
     let (base, globals, len) = unsafe { ((*raw).global_base, (*raw).globals, (*raw).global_len) };
     if index >= base {
@@ -1015,6 +1088,10 @@ pub unsafe fn read_slot(
             index = alias.index;
             continue;
         }
+        if !alias.host.is_null() {
+            // SAFETY: an admitted live host cell, read in place.
+            return unsafe { host_bits(alias.host) };
+        }
         return if index >= base {
             // The alias may cross source units. Read the target unit's store,
             // retaining scratch on the requesting frame rather than its parked
@@ -1076,13 +1153,22 @@ pub(super) unsafe fn alias_value(alias: Alias) -> Result<Variant, i32> {
             }
             Ok((*(*raw).globals.add(offset)).clone())
         } else {
-            if ty == ScalarType::Array && (*raw).slots[index].as_object().is_null() {
+            let host = (&*raw)
+                .aliases
+                .get(index)
+                .map_or(std::ptr::null_mut(), |a| a.host);
+            let bits = if host.is_null() {
+                (*raw).slots[index]
+            } else {
+                host_bits(host)?
+            };
+            if ty == ScalarType::Array && bits.as_object().is_null() {
                 return Ok(Variant::unallocated_array(
                     *layout.array_slots.get(&index).ok_or(5)?,
                 ));
             }
             Ok(super::value::to_variant(
-                calcvba_host_api::value::retain_bits(ty, (*raw).slots[index])?,
+                calcvba_host_api::value::retain_bits(ty, bits)?,
             ))
         }
     }

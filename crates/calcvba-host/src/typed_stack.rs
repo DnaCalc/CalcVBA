@@ -29,8 +29,6 @@ pub(crate) struct TypedStack {
     classes: Option<calcvba_rt_abi::TypedClassContext>,
     terminations: std::collections::VecDeque<(i32, i32, i32)>,
     owns_drain: bool,
-    writeback_slots: Vec<usize>,
-    writebacks: Vec<(usize, Value)>,
     automatic: std::rc::Rc<crate::events::AutomaticEvents>,
 }
 impl TypedStack {
@@ -261,59 +259,34 @@ impl TypedStack {
             classes,
             terminations: Default::default(),
             owns_drain: false,
-            writeback_slots: Vec::new(),
-            writebacks: Vec::new(),
             automatic,
         }
     }
-    /// Enable explicit synchronous copyback of root ByRef scalar parameters.
-    /// Structural/object aliases require a separate caller-owned cell contract.
-    pub(crate) fn enable_writebacks(&mut self, count: usize) -> Result<(), crate::Error> {
-        let layout = self.frames[0].activation.layout();
-        for (index, (&ty, &by_ref)) in layout
-            .parameters
-            .iter()
-            .zip(&layout.by_ref_parameters)
-            .take(count)
-            .enumerate()
-        {
-            if !by_ref {
+    /// Alias the root's ByRef parameters to host cells: `cells[i]` (when given and the
+    /// parameter is ByRef, not a ParamArray element) becomes parameter `i`'s storage, so
+    /// the body's writes reach the host as they happen, with no copy-back. A ByVal
+    /// parameter given a cell keeps its private copy.
+    ///
+    /// # Safety
+    /// Each cell is a live host Value that outlives this stack, and nothing else holds a
+    /// Rust reference to it or replaces it while the stack runs (Activation::alias_host).
+    pub(crate) unsafe fn alias_host_cells(
+        &mut self,
+        cells: &[Option<*mut Value>],
+    ) -> Result<(), crate::Error> {
+        let root = &mut self.frames[0].activation;
+        let layout = root.layout();
+        let tail = layout.param_array.unwrap_or(usize::MAX);
+        let by_ref = layout.by_ref_parameters.clone();
+        for (index, cell) in cells.iter().enumerate() {
+            let Some(cell) = *cell else { continue };
+            if index >= tail || !by_ref.get(index).copied().unwrap_or(false) {
                 continue;
             }
-            if !matches!(
-                ty,
-                ScalarType::Long | ScalarType::Double | ScalarType::Boolean | ScalarType::String
-            ) {
-                return Err(crate::Error::UnsupportedSignature(
-                    "synchronous host copyback supports primitive ByRef parameters only".into(),
-                ));
-            }
-            self.writeback_slots.push(index);
+            // SAFETY: forwarded host-cell contract.
+            unsafe { root.alias_host(index, cell) }.map_err(|_| crate::Error::ArgumentMismatch)?;
         }
         Ok(())
-    }
-    fn snapshot_writebacks(&mut self) -> Result<(), i32> {
-        let root = &mut self.frames[0].activation;
-        let mut values = Vec::with_capacity(self.writeback_slots.len());
-        for &index in &self.writeback_slots {
-            let ty = root.layout().parameters[index];
-            let bits = root.read(
-                &OxOperand::Use(OxPlace::Local(calcvba_oxir::LocalId(index))),
-                ty,
-            )?;
-            // SAFETY: the retained root owns the exact admitted primitive carrier.
-            values.push((index, unsafe {
-                calcvba_host_api::value::retain_bits(ty, bits)
-            }?));
-        }
-        self.writebacks = values;
-        Ok(())
-    }
-    pub(crate) fn take_writebacks(&mut self) -> Result<Vec<(usize, Value)>, i32> {
-        if !self.frames[0].finished {
-            self.snapshot_writebacks()?;
-        }
-        Ok(std::mem::take(&mut self.writebacks))
     }
     pub(crate) fn result(&mut self) -> Value {
         self.frames[0].activation.take_result()
@@ -550,9 +523,6 @@ impl TypedStack {
             match result {
                 Ok(SUSPENDED) => return Ok(SUSPENDED),
                 Ok(0) => {
-                    if self.frames.len() == 1 && !self.frames[0].finished {
-                        self.snapshot_writebacks()?;
-                    }
                     let frame = self.frames.last_mut().ok_or(5)?;
                     if !frame.finished {
                         frame.activation.release_locals_except_result();

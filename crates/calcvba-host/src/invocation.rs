@@ -191,7 +191,8 @@ impl OwnedSession {
         self.cell
             .with_dependent(|_, session| session.call_values(bound, args, context))
     }
-    /// Run synchronously and copy primitive root ByRef values back, including on errors.
+    /// Run synchronously with ByRef parameters aliasing `args` (written in place,
+    /// including before an error).
     pub fn call_values_with_writebacks(
         &self,
         bound: &BoundProcedure,
@@ -201,6 +202,17 @@ impl OwnedSession {
         self.ensure_event_dispatcher();
         self.cell
             .with_dependent(|_, session| session.call_values_with_writebacks(bound, args, context))
+    }
+    /// Run synchronously with ByRef parameters aliasing the given host cells.
+    pub fn call_values_by_ref(
+        &self,
+        bound: &BoundProcedure,
+        args: &[api::ValueArg<'_>],
+        context: &mut TypedContext,
+    ) -> Result<api::Value, Error> {
+        self.ensure_event_dispatcher();
+        self.cell
+            .with_dependent(|_, session| session.call_values_by_ref(bound, args, context))
     }
     pub fn bind_values(
         &self,

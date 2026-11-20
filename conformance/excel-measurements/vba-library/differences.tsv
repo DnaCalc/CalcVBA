@@ -47,12 +47,6 @@ P_ChrB	vm3	error		ChrB.4=ERR6	ChrB.4=ERR5
 P_ChrB	jit	error		ChrB.4=ERR6	ChrB.4=ERR5
 P_ChrB	vm3	error		ChrB.5=ERR6	ChrB.5=ERR5
 P_ChrB	jit	error		ChrB.5=ERR6	ChrB.5=ERR5
-P_ChrB	vm3	value		ChrB.12=String:[String lenb=2 [4100]]	ChrB.12=String:[String lenb=0 []]
-P_ChrB	jit	value		ChrB.12=String:[String lenb=2 [4100]]	ChrB.12=String:[String lenb=0 []]
-P_ChrB	vm3	value		ChrB.13=Boolean:True	ChrB.13=Boolean:False
-P_ChrB	jit	value		ChrB.13=Boolean:True	ChrB.13=Boolean:False
-P_ChrB	vm3	value		ChrB.15=String:[String lenb=2 [E901]]	ChrB.15=String:[String lenb=0 []]
-P_ChrB	jit	value		ChrB.15=String:[String lenb=2 [E901]]	ChrB.15=String:[String lenb=0 []]
 P_Collection	vm3	value		Collection.44=String:[n=3 Integer:1;Integer:2;Integer:3;count=3|n=4 Integer:1;Integer:2;Integer:3;Integer:99;count=4|n=3 Integer:1;Integer:2;Integer:3;count=2]	Collection.44=String:[n=3 Integer:1;Integer:2;Integer:3;count=3|n=3 Integer:1;Integer:2;Integer:3;count=4|n=3 Integer:1;Integer:2;Integer:3;count=2]
 P_Collection	jit	value		Collection.44=String:[n=3 Integer:1;Integer:2;Integer:3;count=3|n=4 Integer:1;Integer:2;Integer:3;Integer:99;count=4|n=3 Integer:1;Integer:2;Integer:3;count=2]	Collection.44=String:[n=3 Integer:1;Integer:2;Integer:3;count=3|n=3 Integer:1;Integer:2;Integer:3;count=4|n=3 Integer:1;Integer:2;Integer:3;count=2]
 P_Cos	vm3	lastbit		Cos.2=Double:3FE14A280FB5068B|0.54030230586814	Cos.2=Double:3FE14A280FB5068C|0.54030230586814
@@ -87,12 +81,6 @@ P_DateValue	vm3	value	locale	DateValue.11=Date:40E2070000000000	DateValue.11=Dat
 P_DateValue	jit	value	locale	DateValue.11=Date:40E2070000000000	DateValue.11=Date:40E701E000000000
 P_DateValue	vm3	value	locale	DateValue.12=Date:40E2072000000000	DateValue.12=Date:40C5678000000000
 P_DateValue	jit	value	locale	DateValue.12=Date:40E2072000000000	DateValue.12=Date:40C5678000000000
-P_DeleteSetting	vm3	error		DeleteSetting.3=String:[gone]	DeleteSetting.3=ERR5
-P_DeleteSetting	jit	error		DeleteSetting.3=String:[gone]	DeleteSetting.3=ERR5
-P_DeleteSetting	vm3	error		DeleteSetting.11=String:[gone]	DeleteSetting.11=ERR5
-P_DeleteSetting	jit	error		DeleteSetting.11=String:[gone]	DeleteSetting.11=ERR5
-P_DeleteSetting	vm3	value		DeleteSetting.16=String:[Empty|False]	DeleteSetting.16=String:[String()|True]
-P_DeleteSetting	jit	value		DeleteSetting.16=String:[Empty|False]	DeleteSetting.16=String:[String()|True]
 P_DeleteSetting	vm3	error		DeleteSetting.20=ERR5	DeleteSetting.20=Empty
 P_DeleteSetting	jit	error		DeleteSetting.20=ERR5	DeleteSetting.20=Empty
 P_DoEvents	vm3	type		DoEvents.1=Integer:0	DoEvents.1=Long:0
@@ -131,82 +119,26 @@ P_ErrObject	vm3	value		ErrObject.53=inh=5;cleared=0;after=N=0;S=;D=;HF=;HC=0|aft
 P_ErrObject	jit	value		ErrObject.53=inh=5;cleared=0;after=N=0;S=;D=;HF=;HC=0|after exit sub in handler: N=0;S=;D=;HF=;HC=0	ErrObject.53=inh=5;cleared=0;after=N=0;S=;D=;HF=;HC=0|after exit sub in handler: N=5;S=hs;D=hd;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000005
 P_ErrObject	vm3	type		ErrObject.54=	ErrObject.54=N=5;S=VBAProject;D=Invalid procedure call or argument;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000005|second=N=11;S=VBAProject;D=Division by zero;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000011
 P_ErrObject	jit	type		ErrObject.54=	ErrObject.54=N=5;S=VBAProject;D=Invalid procedure call or argument;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000005|second=N=11;S=VBAProject;D=Division by zero;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000011
-P_FV	vm3	lastbit		FV.2=Double:4119811CC264D2D1|417863.189837736	FV.2=Double:4119811CC264D2D0|417863.189837736
-P_FV	jit	lastbit		FV.2=Double:4119811CC264D2D1|417863.189837736	FV.2=Double:4119811CC264D2D0|417863.189837736
-P_FV	vm3	lastbit		FV.6=Double:C0B05B7C23BAF030|-4187.4849202	FV.6=Double:C0B05B7C23BAF031|-4187.48492020001
-P_FV	jit	lastbit		FV.6=Double:C0B05B7C23BAF030|-4187.4849202	FV.6=Double:C0B05B7C23BAF031|-4187.48492020001
-P_FV	vm3	lastbit		FV.7=Double:0000000000000000|0	FV.7=Double:8000000000000000|-0
-P_FV	jit	lastbit		FV.7=Double:0000000000000000|0	FV.7=Double:8000000000000000|-0
 P_Format	vm3	value	locale	Format.2=String:[R1{160}234.57]	Format.2=String:[$1,234.57]
 P_Format	jit	value	locale	Format.2=String:[R1{160}234.57]	Format.2=String:[$1,234.57]
 P_Format	vm3	value		Format.4=String:[1{160}234.57]	Format.4=String:[1,234.57]
 P_Format	jit	value		Format.4=String:[1{160}234.57]	Format.4=String:[1,234.57]
 P_Format	vm3	value	locale	Format.12=String:[-R1{160}234.50]	Format.12=String:[-$1,234.50]
 P_Format	jit	value	locale	Format.12=String:[-R1{160}234.50]	Format.12=String:[-$1,234.50]
-P_Format	vm3	value		Format.15=String:[.5]	Format.15=String:[0.5]
-P_Format	jit	value		Format.15=String:[.5]	Format.15=String:[0.5]
 P_Format	vm3	value		Format.16=String:[1{160}234{160}568]	Format.16=String:[1,234,568]
 P_Format	jit	value		Format.16=String:[1{160}234{160}568]	Format.16=String:[1,234,568]
-P_Format	vm3	value		Format.17=String:[1{160}235]	Format.17=String:[1,234,567,]
-P_Format	jit	value		Format.17=String:[1{160}235]	Format.17=String:[1,234,567,]
-P_Format	vm3	value		Format.18=String:[1234567890.0]	Format.18=String:[1234567890.0,,]
-P_Format	jit	value		Format.18=String:[1234567890.0]	Format.18=String:[1234567890.0,,]
-P_Format	vm3	value		Format.21=String:[1.23e-04]	Format.21=String:[1.23E-04]
-P_Format	jit	value		Format.21=String:[1.23e-04]	Format.21=String:[1.23E-04]
-P_Format	vm3	value		Format.22=String:[1.23E04]	Format.22=String:[1.23E+04]
-P_Format	jit	value		Format.22=String:[1.23E04]	Format.22=String:[1.23E+04]
-P_Format	vm3	value		Format.23=String:[1.23e+04]	Format.23=String:[1.23E+04]
-P_Format	jit	value		Format.23=String:[1.23e+04]	Format.23=String:[1.23E+04]
+P_Format	vm3	value		Format.17=String:[1{160}235]	Format.17=String:[1,235]
+P_Format	jit	value		Format.17=String:[1{160}235]	Format.17=String:[1,235]
 P_Format	vm3	value		Format.24=String:[$1{160}234.50]	Format.24=String:[$1,234.50]
 P_Format	jit	value		Format.24=String:[$1{160}234.50]	Format.24=String:[$1,234.50]
-P_Format	vm3	value		Format.31=String:[1]	Format.31=String:[0]
-P_Format	jit	value		Format.31=String:[1]	Format.31=String:[0]
-P_Format	vm3	value		Format.33=String:[3]	Format.33=String:[2]
-P_Format	jit	value		Format.33=String:[3]	Format.33=String:[2]
-P_Format	vm3	value		Format.34=String:[0.13]	Format.34=String:[0.12]
-P_Format	jit	value		Format.34=String:[0.13]	Format.34=String:[0.12]
-P_Format	vm3	value		Format.35=String:[2.68]	Format.35=String:[2.67]
-P_Format	jit	value		Format.35=String:[2.68]	Format.35=String:[2.67]
-P_Format	vm3	value		Format.36=String:[-3]	Format.36=String:[-2]
-P_Format	jit	value		Format.36=String:[-3]	Format.36=String:[-2]
-P_Format	vm3	value		Format.37=String:[1E+300]	Format.37=String:[1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000]
-P_Format	jit	value		Format.37=String:[1E+300]	Format.37=String:[1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000]
 P_Format	vm3	value		Format.39=String:[1{160}000{160}000{160}000{160}000{160}000]	Format.39=String:[1,000,000,000,000,000]
 P_Format	jit	value		Format.39=String:[1{160}000{160}000{160}000{160}000{160}000]	Format.39=String:[1,000,000,000,000,000]
-P_Format	vm3	value		Format.40=String:[123456789012346000]	Format.40=String:[123456789012345680]
-P_Format	jit	value		Format.40=String:[123456789012346000]	Format.40=String:[123456789012345680]
-P_Format	vm3	value		Format.41=String:[.50]	Format.41=String:[0.50]
-P_Format	jit	value		Format.41=String:[.50]	Format.41=String:[0.50]
-P_Format	vm3	value		Format.42=String:[5.]	Format.42=String:[5]
-P_Format	jit	value		Format.42=String:[5.]	Format.42=String:[5]
-P_Format	vm3	value		Format.43=String:[]	Format.43=String:[0]
-P_Format	jit	value		Format.43=String:[]	Format.43=String:[0]
-P_Format	vm3	value		Format.44=String:[]	Format.44=String:[0]
-P_Format	jit	value		Format.44=String:[]	Format.44=String:[0]
-P_Format	vm3	value		Format.45=String:[(555) 123-4567]	Format.45=String:[(5551234567]
-P_Format	jit	value		Format.45=String:[(555) 123-4567]	Format.45=String:[(5551234567]
-P_Format	vm3	value		Format.46=String:[0.00]	Format.46=String:[-0.00]
-P_Format	jit	value		Format.46=String:[0.00]	Format.46=String:[-0.00]
 P_Format	vm3	value		Format.47=String:[1{160}234.50]	Format.47=String:[1,234.50]
 P_Format	jit	value		Format.47=String:[1{160}234.50]	Format.47=String:[1,234.50]
-P_Format	vm3	value		Format.54=String:[#1234.50]	Format.54=String:[1234.50]
-P_Format	jit	value		Format.54=String:[#1234.50]	Format.54=String:[1234.50]
 P_Format	vm3	value		Format.55=String:[1{160}234.50-]	Format.55=String:[1,234.50-]
 P_Format	jit	value		Format.55=String:[1{160}234.50-]	Format.55=String:[1,234.50-]
-P_Format	vm3	value		Format.56=String:[1234.5]	Format.56=String:[1234.5,]
-P_Format	jit	value		Format.56=String:[1234.5]	Format.56=String:[1234.5,]
-P_Format	vm3	value		Format.57=String:[1{160}235]	Format.57=String:[1,234]
-P_Format	jit	value		Format.57=String:[1{160}235]	Format.57=String:[1,234]
-P_Format	vm3	value		Format.59=String:[Ge0eral 0u5ber]	Format.59=String:[Ge0eral 0u5ber;x]
-P_Format	jit	value		Format.59=String:[Ge0eral 0u5ber]	Format.59=String:[Ge0eral 0u5ber;x]
-P_Format	vm3	value		Format.63=String:[1.2346E+4]	Format.63=String:[1.2346E+04]
-P_Format	jit	value		Format.63=String:[1.2346E+4]	Format.63=String:[1.2346E+04]
-P_Format	vm3	value		Format.64=String:[0.300000000000000000]	Format.64=String:[0.300000000000000044]
-P_Format	jit	value		Format.64=String:[0.300000000000000000]	Format.64=String:[0.300000000000000044]
-P_Format	vm3	value		Format.65=String:[% 1234.5]	Format.65=String:[% 123450.0]
-P_Format	jit	value		Format.65=String:[% 1234.5]	Format.65=String:[% 123450.0]
-P_Format	vm3	value		Format.66=String:[100.%]	Format.66=String:[100%]
-P_Format	jit	value		Format.66=String:[100.%]	Format.66=String:[100%]
+P_Format	vm3	value		Format.57=String:[1{160}235]	Format.57=String:[1,235]
+P_Format	jit	value		Format.57=String:[1{160}235]	Format.57=String:[1,235]
 P_Format2	vm3	value	locale	Format2.1=String:[2024/03/05 14:07:09]	Format2.1=String:[3/5/2024 2:07:09 PM]
 P_Format2	jit	value	locale	Format2.1=String:[2024/03/05 14:07:09]	Format2.1=String:[3/5/2024 2:07:09 PM]
 P_Format2	vm3	value	locale	Format2.2=String:[5 March 2024]	Format2.2=String:[Tuesday, March 5, 2024]
@@ -227,28 +159,12 @@ P_Format2	vm3	value	locale	Format2.15=String:[5 March 2024]	Format2.15=String:[T
 P_Format2	jit	value	locale	Format2.15=String:[5 March 2024]	Format2.15=String:[Tuesday05]
 P_Format2	vm3	value	locale	Format2.41=String:[14:07:09]	Format2.41=String:[ttttt]
 P_Format2	jit	value	locale	Format2.41=String:[14:07:09]	Format2.41=String:[ttttt]
-P_Format2	vm3	value		Format2.43=String:[02:07 pm]	Format2.43=String:[02:07 PM]
-P_Format2	jit	value		Format2.43=String:[02:07 pm]	Format2.43=String:[02:07 PM]
-P_Format2	vm3	value		Format2.45=String:[02:07 p]	Format2.45=String:[02:07 P]
-P_Format2	jit	value		Format2.45=String:[02:07 p]	Format2.45=String:[02:07 P]
 P_Format2	vm3	value	locale	Format2.46=String:[02:07 pm]	Format2.46=String:[02:07 PM]
 P_Format2	jit	value	locale	Format2.46=String:[02:07 pm]	Format2.46=String:[02:07 PM]
 P_Format2	vm3	value	locale	Format2.47=String:[2024/03/05 14:07:09]	Format2.47=String:[c]
 P_Format2	jit	value	locale	Format2.47=String:[2024/03/05 14:07:09]	Format2.47=String:[c]
-P_Format2	vm3	value		Format2.55=String:[2024-03-05T14:07:09]	Format2.55=String:[2024-03-05\T14:07:09]
-P_Format2	jit	value		Format2.55=String:[2024-03-05T14:07:09]	Format2.55=String:[2024-03-05\T14:07:09]
-P_Format2	vm3	value		Format2.58=String:[abc]	Format2.58=String:[1899-12-30]
-P_Format2	jit	value		Format2.58=String:[abc]	Format2.58=String:[1899-12-30]
-P_Format2	vm3	value		Format2.66=String:[2024 year 03]	Format2.66=String:[2024 "65ear" 03]
-P_Format2	jit	value		Format2.66=String:[2024 year 03]	Format2.66=String:[2024 "65ear" 03]
-P_Format2	vm3	value		Format2.72=String:[14:07:09.000]	Format2.72=String:[hh:mm:ss.45357]
-P_Format2	jit	value		Format2.72=String:[14:07:09.000]	Format2.72=String:[hh:mm:ss.45357]
-P_Format2	vm3	value		Format2.75=String:[:03]	Format2.75=String:[[14]:07]
-P_Format2	jit	value		Format2.75=String:[:03]	Format2.75=String:[[14]:07]
-P_Format2	vm3	value		Format2.76=String:[p]	Format2.76=String:[a/p]
-P_Format2	jit	value		Format2.76=String:[p]	Format2.76=String:[a/p]
-P_Format3	vm3	value		Format3.37=String:[79{160}228{160}162{160}514{160}264{160}337{160}593{160}543{160}950{160}335]	Format3.37=String:[79,228,162,514,264,337,593,543,950,336]
-P_Format3	jit	value		Format3.37=String:[79{160}228{160}162{160}514{160}264{160}337{160}593{160}543{160}950{160}335]	Format3.37=String:[79,228,162,514,264,337,593,543,950,336]
+P_Format3	vm3	value		Format3.37=String:[79{160}228{160}162{160}514{160}264{160}337{160}593{160}543{160}950{160}335]	Format3.37=String:[79,228,162,514,264,300,000,000,000,000]
+P_Format3	jit	value		Format3.37=String:[79{160}228{160}162{160}514{160}264{160}337{160}593{160}543{160}950{160}335]	Format3.37=String:[79,228,162,514,264,300,000,000,000,000]
 P_Format3	vm3	value		Format3.45=String:[123{160}456{160}789]	Format3.45=String:[123,456,789]
 P_Format3	jit	value		Format3.45=String:[123{160}456{160}789]	Format3.45=String:[123,456,789]
 P_FormatCurrency	vm3	value	locale	FormatCurrency.1=String:[R1{160}234.57]	FormatCurrency.1=String:[$1,234.57]
@@ -331,12 +247,8 @@ P_FormatDateTime	vm3	value	locale	FormatDateTime.14=String:[1899/12/30]	FormatDa
 P_FormatDateTime	jit	value	locale	FormatDateTime.14=String:[1899/12/30]	FormatDateTime.14=String:[12/30/1899]
 P_FormatDateTime	vm3	value	locale	FormatDateTime.15=String:[14:07:09]	FormatDateTime.15=String:[2:07:09 PM]
 P_FormatDateTime	jit	value	locale	FormatDateTime.15=String:[14:07:09]	FormatDateTime.15=String:[2:07:09 PM]
-P_FormatDateTime	vm3	value	locale	FormatDateTime.17=String:[2024/03/05 14:07:09]	FormatDateTime.17=String:[12/30/1899]
-P_FormatDateTime	jit	value	locale	FormatDateTime.17=String:[2024/03/05 14:07:09]	FormatDateTime.17=String:[12/30/1899]
-P_FormatDateTime	vm3	error		FormatDateTime.18=ERR13	FormatDateTime.18=String:[12/30/1899]
-P_FormatDateTime	jit	error		FormatDateTime.18=ERR13	FormatDateTime.18=String:[12/30/1899]
-P_FormatDateTime	vm3	value		FormatDateTime.19=String:[]	FormatDateTime.19=String:[12/30/1899]
-P_FormatDateTime	jit	value		FormatDateTime.19=String:[]	FormatDateTime.19=String:[12/30/1899]
+P_FormatDateTime	vm3	error	locale	FormatDateTime.17=String:[2024/03/05 14:07:09]	FormatDateTime.17=ERR13
+P_FormatDateTime	jit	error	locale	FormatDateTime.17=String:[2024/03/05 14:07:09]	FormatDateTime.17=ERR13
 P_FormatDateTime	vm3	value	locale	FormatDateTime.20=String:[00:00:00]	FormatDateTime.20=String:[12/30/1899]
 P_FormatDateTime	jit	value	locale	FormatDateTime.20=String:[00:00:00]	FormatDateTime.20=String:[12/30/1899]
 P_FormatDateTime	vm3	value	locale	FormatDateTime.21=String:[15 March 2023]	FormatDateTime.21=String:[Wednesday, March 15, 2023]
@@ -401,40 +313,8 @@ P_FormatPercent	vm3	value	locale	FormatPercent.28=String:[(123{160}450.0%)]	Form
 P_FormatPercent	jit	value	locale	FormatPercent.28=String:[(123{160}450.0%)]	FormatPercent.28=String:[(123,450.0%)]
 P_FormatPercent	vm3	error		FormatPercent.29=String:[500.0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000%]	FormatPercent.29=ERR5
 P_FormatPercent	jit	error		FormatPercent.29=String:[500.0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000%]	FormatPercent.29=ERR5
-P_GetAllSettings	vm3	value		GetAllSettings.2=String:[String()|0:0|0:1|K1=a;]	GetAllSettings.2=String:[String()|0:2|0:1|K1=a;K2=b;K3=c;]
-P_GetAllSettings	jit	value		GetAllSettings.2=String:[String()|0:0|0:1|K1=a;]	GetAllSettings.2=String:[String()|0:2|0:1|K1=a;K2=b;K3=c;]
-P_GetAllSettings	vm3	value		GetAllSettings.3=String:[notarray:Empty]	GetAllSettings.3=String:[String()|0:2|0:1|K1=a;K2=b;K3=c;]
-P_GetAllSettings	jit	value		GetAllSettings.3=String:[notarray:Empty]	GetAllSettings.3=String:[String()|0:2|0:1|K1=a;K2=b;K3=c;]
-P_GetAllSettings	vm3	value		GetAllSettings.5=String:[String()|0:2|0:1|b=2;a=1;c=3;]	GetAllSettings.5=String:[String()|0:5|0:1|a=1;b=2;c=3;K1=a;K2=b;K3=c;]
-P_GetAllSettings	jit	value		GetAllSettings.5=String:[String()|0:2|0:1|b=2;a=1;c=3;]	GetAllSettings.5=String:[String()|0:5|0:1|a=1;b=2;c=3;K1=a;K2=b;K3=c;]
-P_GetAllSettings	vm3	value		GetAllSettings.6=String:[String()|0:0|0:1|K2=b;]	GetAllSettings.6=String:[String()|0:4|0:1|a=1;b=2;c=3;K2=b;K3=c;]
-P_GetAllSettings	jit	value		GetAllSettings.6=String:[String()|0:0|0:1|K2=b;]	GetAllSettings.6=String:[String()|0:4|0:1|a=1;b=2;c=3;K2=b;K3=c;]
-P_GetAllSettings	vm3	value		GetAllSettings.7=String:[String()|0:0|0:1|K=a=b;c;]	GetAllSettings.7=String:[String()|0:5|0:1|a=1;b=2;c=3;K=a=b;c;K2=b;K3=c;]
-P_GetAllSettings	jit	value		GetAllSettings.7=String:[String()|0:0|0:1|K=a=b;c;]	GetAllSettings.7=String:[String()|0:5|0:1|a=1;b=2;c=3;K=a=b;c;K2=b;K3=c;]
-P_GetAllSettings	vm3	value		GetAllSettings.8=String:[String()|0:0|0:1|K=;]	GetAllSettings.8=String:[String()|0:5|0:1|a=1;b=2;c=3;K=;K2=b;K3=c;]
-P_GetAllSettings	jit	value		GetAllSettings.8=String:[String()|0:0|0:1|K=;]	GetAllSettings.8=String:[String()|0:5|0:1|a=1;b=2;c=3;K=;K2=b;K3=c;]
-P_GetAllSettings	vm3	value		GetAllSettings.11=String:[0,1]	GetAllSettings.11=String:[5,1]
-P_GetAllSettings	jit	value		GetAllSettings.11=String:[0,1]	GetAllSettings.11=String:[5,1]
-P_GetAllSettings	vm3	value		GetAllSettings.12=String:[String()|0:0|0:1|K=1;]	GetAllSettings.12=String:[String()|0:5|0:1|a=1;b=2;c=3;K=1;K2=b;K3=c;]
-P_GetAllSettings	jit	value		GetAllSettings.12=String:[String()|0:0|0:1|K=1;]	GetAllSettings.12=String:[String()|0:5|0:1|a=1;b=2;c=3;K=1;K2=b;K3=c;]
-P_GetAllSettings	vm3	error		GetAllSettings.13=ERR5	GetAllSettings.13=String:[notarray:Empty]
-P_GetAllSettings	jit	error		GetAllSettings.13=ERR5	GetAllSettings.13=String:[notarray:Empty]
-P_GetAllSettings	vm3	value		GetAllSettings.14=String:[String()|0:0|0:1|K=1;]	GetAllSettings.14=String:[String()|0:5|0:1|a=1;b=2;c=3;K=1;K2=b;K3=c;]
-P_GetAllSettings	jit	value		GetAllSettings.14=String:[String()|0:0|0:1|K=1;]	GetAllSettings.14=String:[String()|0:5|0:1|a=1;b=2;c=3;K=1;K2=b;K3=c;]
-P_GetAllSettings	vm3	value		GetAllSettings.17=String:[K=1]	GetAllSettings.17=String:[a=1]
-P_GetAllSettings	jit	value		GetAllSettings.17=String:[K=1]	GetAllSettings.17=String:[a=1]
-P_GetAllSettings	vm3	error		GetAllSettings.18=ERR9	GetAllSettings.18=String:[b]
-P_GetAllSettings	jit	error		GetAllSettings.18=ERR9	GetAllSettings.18=String:[b]
-P_GetSetting	vm3	value		GetSetting.20=String:[True]	GetSetting.20=String:[  sp  ]
-P_GetSetting	jit	value		GetSetting.20=String:[True]	GetSetting.20=String:[  sp  ]
 P_Hex	vm3	error		Hex.56=ERR94	Hex.56=Null
 P_Hex	jit	error		Hex.56=ERR94	Hex.56=Null
-P_IPmt	vm3	lastbit		IPmt.2=Double:C08A02A805A6ED97|-832.332042030454	IPmt.2=Double:C08A02A805A6ED98|-832.332042030454
-P_IPmt	jit	lastbit		IPmt.2=Double:C08A02A805A6ED97|-832.332042030454	IPmt.2=Double:C08A02A805A6ED98|-832.332042030454
-P_IPmt	vm3	value		IPmt.3=Double:C011D1DEBC1B94FF|-4.45495122831676	IPmt.3=Double:C011D1DEBC1B9333|-4.45495122831635
-P_IPmt	jit	value		IPmt.3=Double:C011D1DEBC1B94FF|-4.45495122831676	IPmt.3=Double:C011D1DEBC1B9333|-4.45495122831635
-P_IPmt	vm3	lastbit		IPmt.4=Double:C0861FF4EC8E1448|-707.99459181785	IPmt.4=Double:C0861FF4EC8E1447|-707.99459181785
-P_IPmt	jit	lastbit		IPmt.4=Double:C0861FF4EC8E1448|-707.99459181785	IPmt.4=Double:C0861FF4EC8E1447|-707.99459181785
 P_InStr	vm3	value		InStr.12=Long:5	InStr.12=Long:4
 P_InStr	jit	value		InStr.12=Long:5	InStr.12=Long:4
 P_InStr	vm3	error		InStr.21=ERR5	InStr.21=Long:0
@@ -451,8 +331,6 @@ P_InStrB	vm3	value		InStrB.7=Long:1	InStrB.7=Long:0
 P_InStrB	jit	value		InStrB.7=Long:1	InStrB.7=Long:0
 P_InStrB	vm3	value		InStrB.11=Long:0	InStrB.11=Long:3
 P_InStrB	jit	value		InStrB.11=Long:0	InStrB.11=Long:3
-P_InStrB	vm3	value		InStrB.17=Long:5	InStrB.17=Long:0
-P_InStrB	jit	value		InStrB.17=Long:5	InStrB.17=Long:0
 P_InStrRev	vm3	value		InStrRev.7=Long:3	InStrRev.7=Long:4
 P_InStrRev	jit	value		InStrRev.7=Long:3	InStrRev.7=Long:4
 P_InStrRev	vm3	value		InStrRev.9=Long:0	InStrRev.9=Long:1
@@ -485,50 +363,6 @@ P_Left	vm3	error		Left.17=ERR5	Left.17=String:[abc]
 P_Left	jit	error		Left.17=ERR5	Left.17=String:[abc]
 P_Left	vm3	error		Left.18=ERR6	Left.18=String:[abc]
 P_Left	jit	error		Left.18=ERR6	Left.18=String:[abc]
-P_Len	vm3	type		Len.7=Integer:4	Len.7=Long:1
-P_Len	jit	type		Len.7=Integer:4	Len.7=Long:1
-P_Len	vm3	type		Len.8=Integer:2	Len.8=Long:1
-P_Len	jit	type		Len.8=Integer:2	Len.8=Long:1
-P_Len	vm3	type		Len.9=Integer:8	Len.9=Long:8
-P_Len	jit	type		Len.9=Integer:8	Len.9=Long:8
-P_Len	vm3	error		Len.15=ERR13	Len.15=Long:7
-P_Len	jit	error		Len.15=ERR13	Len.15=Long:7
-P_Len	vm3	type		Len.18=Integer:2	Len.18=Long:5
-P_Len	jit	type		Len.18=Integer:2	Len.18=Long:5
-P_Len	vm3	type		Len.19=Integer:8	Len.19=Long:1
-P_Len	jit	type		Len.19=Integer:8	Len.19=Long:1
-P_Len	vm3	type		Len.20=Integer:8	Len.20=Long:11
-P_Len	jit	type		Len.20=Integer:8	Len.20=Long:11
-P_Len	vm3	type		Len.21=Integer:8	Len.21=Long:1
-P_Len	jit	type		Len.21=Integer:8	Len.21=Long:1
-P_Len	vm3	type		Len.22=Integer:4	Len.22=Long:1
-P_Len	jit	type		Len.22=Integer:4	Len.22=Long:1
-P_Len	vm3	type		Len.23=Integer:1	Len.23=Long:1
-P_Len	jit	type		Len.23=Integer:1	Len.23=Long:1
-P_Len	vm3	type		Len.24=Integer:22	Len.24=Long:22
-P_Len	jit	type		Len.24=Integer:22	Len.24=Long:22
-P_LenB	vm3	value		LenB.6=Long:2	LenB.6=Long:4
-P_LenB	jit	value		LenB.6=Long:2	LenB.6=Long:4
-P_LenB	vm3	type		LenB.7=Integer:4	LenB.7=Long:4
-P_LenB	jit	type		LenB.7=Integer:4	LenB.7=Long:4
-P_LenB	vm3	type		LenB.8=Integer:2	LenB.8=Long:2
-P_LenB	jit	type		LenB.8=Integer:2	LenB.8=Long:2
-P_LenB	vm3	type		LenB.9=Integer:8	LenB.9=Long:8
-P_LenB	jit	type		LenB.9=Integer:8	LenB.9=Long:8
-P_LenB	vm3	type		LenB.10=Integer:10	LenB.10=Long:10
-P_LenB	jit	type		LenB.10=Integer:10	LenB.10=Long:10
-P_LenB	vm3	value		LenB.14=Long:6	LenB.14=Long:8
-P_LenB	jit	value		LenB.14=Long:6	LenB.14=Long:8
-P_LenB	vm3	type		LenB.16=Integer:32	LenB.16=Long:32
-P_LenB	jit	type		LenB.16=Integer:32	LenB.16=Long:32
-P_LenB	vm3	type		LenB.17=Integer:8	LenB.17=Long:8
-P_LenB	jit	type		LenB.17=Integer:8	LenB.17=Long:8
-P_LenB	vm3	type		LenB.18=Integer:2	LenB.18=Long:2
-P_LenB	jit	type		LenB.18=Integer:2	LenB.18=Long:2
-P_LenB	vm3	value		LenB.20=Long:3	LenB.20=Long:0
-P_LenB	jit	value		LenB.20=Long:3	LenB.20=Long:0
-P_LenB	vm3	error		LenB.22=ERR13	LenB.22=Long:4
-P_LenB	jit	error		LenB.22=ERR13	LenB.22=Long:4
 P_Mid	vm3	error		Mid.23=ERR5	Mid.23=String:[]
 P_Mid	jit	error		Mid.23=ERR5	Mid.23=String:[]
 P_Month	vm3	error	locale	Month.13=Integer:12	Month.13=ERR13
@@ -539,44 +373,6 @@ P_MonthName	vm3	error		MonthName.10=ERR94	MonthName.10=String:[March]
 P_MonthName	jit	error		MonthName.10=ERR94	MonthName.10=String:[March]
 P_Oct	vm3	error		Oct.56=ERR94	Oct.56=Null
 P_Oct	jit	error		Oct.56=ERR94	Oct.56=Null
-P_PPmt	vm3	value		PPmt.1=Double:C06E09EACE050754|-240.309912690946	PPmt.1=Double:C06E09EACE05075C|-240.309912690946
-P_PPmt	jit	value		PPmt.1=Double:C06E09EACE050754|-240.309912690946	PPmt.1=Double:C06E09EACE05075C|-240.309912690946
-P_PPmt	vm3	lastbit		PPmt.2=Double:C06E29F56213FBA4|-241.311203993825	PPmt.2=Double:C06E29F56213FBA8|-241.311203993825
-P_PPmt	jit	lastbit		PPmt.2=Double:C06E29F56213FBA4|-241.311203993825	PPmt.2=Double:C06E29F56213FBA8|-241.311203993825
-P_PPmt	vm3	lastbit		PPmt.3=Double:C090B4C0D059DAAB|-1069.18829479596	PPmt.3=Double:C090B4C0D059DAAE|-1069.18829479596
-P_PPmt	jit	lastbit		PPmt.3=Double:C090B4C0D059DAAB|-1069.18829479596	PPmt.3=Double:C090B4C0D059DAAE|-1069.18829479596
-P_PPmt	vm3	value		PPmt.4=Double:C0769319684B4220|-361.193702978113	PPmt.4=Double:C0769319684B4226|-361.193702978113
-P_PPmt	jit	value		PPmt.4=Double:C0769319684B4220|-361.193702978113	PPmt.4=Double:C0769319684B4226|-361.193702978113
-P_PPmt	vm3	lastbit		PPmt.5=Double:C090B4C0D059DAAC|-1069.18829479596	PPmt.5=Double:C090B4C0D059DAAD|-1069.18829479596
-P_PPmt	jit	lastbit		PPmt.5=Double:C090B4C0D059DAAC|-1069.18829479596	PPmt.5=Double:C090B4C0D059DAAD|-1069.18829479596
-P_PPmt	vm3	value		PPmt.6=Double:C06E09EACE050754|-240.309912690946	PPmt.6=Double:C06E09EACE05075C|-240.309912690946
-P_PPmt	jit	value		PPmt.6=Double:C06E09EACE050754|-240.309912690946	PPmt.6=Double:C06E09EACE05075C|-240.309912690946
-P_PPmt	vm3	lastbit		PPmt.14=Double:C065795A16BA46C1|-171.792247165509	PPmt.14=Double:C065795A16BA46BF|-171.792247165509
-P_PPmt	jit	lastbit		PPmt.14=Double:C065795A16BA46C1|-171.792247165509	PPmt.14=Double:C065795A16BA46BF|-171.792247165509
-P_PPmt	vm3	lastbit		PPmt.17=Double:C0647984F67193CE|-163.797480794745	PPmt.17=Double:C0647984F67193CC|-163.797480794745
-P_PPmt	jit	lastbit		PPmt.17=Double:C0647984F67193CE|-163.797480794745	PPmt.17=Double:C0647984F67193CC|-163.797480794745
-P_PV	vm3	lastbit		PV.1=Double:410869FB29A05610|199999.395325348	PV.1=Double:410869FB29A05611|199999.395325348
-P_PV	jit	lastbit		PV.1=Double:410869FB29A05610|199999.395325348	PV.1=Double:410869FB29A05611|199999.395325348
-P_PV	vm3	lastbit		PV.2=Double:41088405CF221227|200832.726139204	PV.2=Double:41088405CF221228|200832.726139204
-P_PV	jit	lastbit		PV.2=Double:41088405CF221227|200832.726139204	PV.2=Double:41088405CF221228|200832.726139204
-P_PV	vm3	lastbit		PV.5=Double:40826E5A37E32EFC|589.794051909324	PV.5=Double:40826E5A37E32EF8|589.794051909324
-P_PV	jit	lastbit		PV.5=Double:40826E5A37E32EFC|589.794051909324	PV.5=Double:40826E5A37E32EF8|589.794051909324
-P_PV	vm3	lastbit		PV.10=Double:40E903EA961DF51B|51231.3308248317	PV.10=Double:40E903EA961DF51A|51231.3308248317
-P_PV	jit	lastbit		PV.10=Double:40E903EA961DF51B|51231.3308248317	PV.10=Double:40E903EA961DF51A|51231.3308248317
-P_PV	vm3	error		PV.11=ERR11	PV.11=ERR5
-P_PV	jit	error		PV.11=ERR11	PV.11=ERR5
-P_PV	vm3	lastbit		PV.14=Double:40851F3813DBD586|675.902381627516	PV.14=Double:40851F3813DBD585|675.902381627515
-P_PV	jit	lastbit		PV.14=Double:40851F3813DBD586|675.902381627516	PV.14=Double:40851F3813DBD585|675.902381627515
-P_Pmt	vm3	lastbit		Pmt.1=Double:C090C692AF15F640|-1073.64324602428	Pmt.1=Double:C090C692AF15F641|-1073.64324602428
-P_Pmt	jit	lastbit		Pmt.1=Double:C090C692AF15F640|-1073.64324602428	Pmt.1=Double:C090C692AF15F641|-1073.64324602428
-P_Pmt	vm3	lastbit		Pmt.2=Double:4090C692AF15F640|1073.64324602428	Pmt.2=Double:4090C692AF15F641|1073.64324602428
-P_Pmt	jit	lastbit		Pmt.2=Double:4090C692AF15F640|1073.64324602428	Pmt.2=Double:4090C692AF15F641|1073.64324602428
-P_Pmt	vm3	lastbit		Pmt.3=Double:C090B4C0D059DAAC|-1069.18829479596	Pmt.3=Double:C090B4C0D059DAAD|-1069.18829479596
-P_Pmt	jit	lastbit		Pmt.3=Double:C090B4C0D059DAAC|-1069.18829479596	Pmt.3=Double:C090B4C0D059DAAD|-1069.18829479596
-P_Pmt	vm3	lastbit		Pmt.5=Double:C0513E21A7E539A6|-68.9708041895416	Pmt.5=Double:C0513E21A7E539A5|-68.9708041895415
-P_Pmt	jit	lastbit		Pmt.5=Double:C0513E21A7E539A6|-68.9708041895416	Pmt.5=Double:C0513E21A7E539A5|-68.9708041895415
-P_Pmt	vm3	lastbit		Pmt.14=Double:C045C57682649F6C|-43.5426791182825	Pmt.14=Double:C045C57682649F6B|-43.5426791182825
-P_Pmt	jit	lastbit		Pmt.14=Double:C045C57682649F6C|-43.5426791182825	Pmt.14=Double:C045C57682649F6B|-43.5426791182825
 P_QBColor	vm3	error		QBColor.17=ERR6	QBColor.17=ERR5
 P_QBColor	jit	error		QBColor.17=ERR6	QBColor.17=ERR5
 P_RGB	vm3	error		RGB.12=ERR6	RGB.12=Long:255
@@ -607,48 +403,6 @@ P_Str	vm3	value	locale	Str.26=String:[15:04:05]	Str.26=String:[ 3:04:05 PM]
 P_Str	jit	value	locale	Str.26=String:[15:04:05]	Str.26=String:[ 3:04:05 PM]
 P_Str	vm3	error		Str.42=ERR94	Str.42=Null
 P_Str	jit	error		Str.42=ERR94	Str.42=Null
-P_StrComp	vm3	type		StrComp.1=Integer:0	StrComp.1=Long:0
-P_StrComp	jit	type		StrComp.1=Integer:0	StrComp.1=Long:0
-P_StrComp	vm3	type		StrComp.2=Integer:-1	StrComp.2=Long:-1
-P_StrComp	jit	type		StrComp.2=Integer:-1	StrComp.2=Long:-1
-P_StrComp	vm3	type		StrComp.3=Integer:1	StrComp.3=Long:1
-P_StrComp	jit	type		StrComp.3=Integer:1	StrComp.3=Long:1
-P_StrComp	vm3	type		StrComp.4=Integer:1	StrComp.4=Long:1
-P_StrComp	jit	type		StrComp.4=Integer:1	StrComp.4=Long:1
-P_StrComp	vm3	type		StrComp.5=Integer:0	StrComp.5=Long:0
-P_StrComp	jit	type		StrComp.5=Integer:0	StrComp.5=Long:0
-P_StrComp	vm3	error		StrComp.6=ERR5	StrComp.6=Long:1
-P_StrComp	jit	error		StrComp.6=ERR5	StrComp.6=Long:1
-P_StrComp	vm3	type		StrComp.7=Integer:0	StrComp.7=Long:1
-P_StrComp	jit	type		StrComp.7=Integer:0	StrComp.7=Long:1
-P_StrComp	vm3	error		StrComp.8=ERR5	StrComp.8=Long:1
-P_StrComp	jit	error		StrComp.8=ERR5	StrComp.8=Long:1
-P_StrComp	vm3	type		StrComp.12=Integer:-1	StrComp.12=Long:-1
-P_StrComp	jit	type		StrComp.12=Integer:-1	StrComp.12=Long:-1
-P_StrComp	vm3	type		StrComp.13=Integer:0	StrComp.13=Long:0
-P_StrComp	jit	type		StrComp.13=Integer:0	StrComp.13=Long:0
-P_StrComp	vm3	type		StrComp.14=Integer:-1	StrComp.14=Long:-1
-P_StrComp	jit	type		StrComp.14=Integer:-1	StrComp.14=Long:-1
-P_StrComp	vm3	type		StrComp.15=Integer:0	StrComp.15=Long:0
-P_StrComp	jit	type		StrComp.15=Integer:0	StrComp.15=Long:0
-P_StrComp	vm3	type		StrComp.16=Integer:0	StrComp.16=Long:0
-P_StrComp	jit	type		StrComp.16=Integer:0	StrComp.16=Long:0
-P_StrComp	vm3	type	locale	StrComp.17=Integer:-1	StrComp.17=Long:-1
-P_StrComp	jit	type	locale	StrComp.17=Integer:-1	StrComp.17=Long:-1
-P_StrComp	vm3	type		StrComp.18=Integer:1	StrComp.18=Long:1
-P_StrComp	jit	type		StrComp.18=Integer:1	StrComp.18=Long:1
-P_StrComp	vm3	type		StrComp.19=Integer:1	StrComp.19=Long:1
-P_StrComp	jit	type		StrComp.19=Integer:1	StrComp.19=Long:1
-P_StrComp	vm3	value		StrComp.20=String:[Integer]	StrComp.20=String:[Long]
-P_StrComp	jit	value		StrComp.20=String:[Integer]	StrComp.20=String:[Long]
-P_StrComp	vm3	type	locale	StrComp.22=Integer:1	StrComp.22=Long:1
-P_StrComp	jit	type	locale	StrComp.22=Integer:1	StrComp.22=Long:1
-P_StrComp	vm3	type		StrComp.23=Integer:1	StrComp.23=Long:1
-P_StrComp	jit	type		StrComp.23=Integer:1	StrComp.23=Long:1
-P_StrComp	vm3	type		StrComp.24=Integer:-1	StrComp.24=Long:-1
-P_StrComp	jit	type		StrComp.24=Integer:-1	StrComp.24=Long:-1
-P_StrComp	vm3	type		StrComp.25=Integer:-1	StrComp.25=Long:-1
-P_StrComp	jit	type		StrComp.25=Integer:-1	StrComp.25=Long:-1
 P_StrConv	vm3	error		StrConv.44=ERR5	StrConv.44=String:[ABC]
 P_StrConv	jit	error		StrConv.44=ERR5	StrConv.44=String:[ABC]
 P_StrReverse	vm3	value		StrReverse.7=String:[{56832}{55357}a]	StrReverse.7=String:[{55357}{56832}a]

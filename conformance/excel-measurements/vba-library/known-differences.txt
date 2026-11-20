@@ -26,9 +26,6 @@ linux P_Chr: Chr.16=String:[{141}]
 P_Chr: Chr.23=ERR5
 P_Chr: Chr.5=ERR5
 P_Chr: Chr.6=ERR5
-P_ChrB: ChrB.12=String:[String lenb=2 [4100]]
-P_ChrB: ChrB.13=Boolean:True
-P_ChrB: ChrB.15=String:[String lenb=2 [E901]]
 P_ChrB: ChrB.4=ERR6
 P_ChrB: ChrB.5=ERR6
 P_Collection: Collection.44=String:[n=3 Integer:1;Integer:2;Integer:3;count=3|n=4 Integer:1;Integer:2;Integer:3;Integer:99;count=4|n=3 Integer:1;Integer:2;Integer:3;count=2]
@@ -172,7 +169,6 @@ P_InStr: InStr.23=ERR5
 P_InStr: InStr.41=Long:3
 P_InStr: InStr.44=ERR5
 P_InStrB: InStrB.11=Long:0
-P_InStrB: InStrB.17=Long:5
 P_InStrB: InStrB.7=Long:1
 P_InStrRev: InStrRev.24=ERR5
 P_InStrRev: InStrRev.25=Long:2

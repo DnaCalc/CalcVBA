@@ -63,6 +63,21 @@ namespace OxVba.TestEventServer
 
         [DispId(114)]
         object ReturnDecimalObject();
+        [DispId(128)]
+        object ReturnIntObject();
+
+        [DispId(129)]
+        object ReturnUIntObject();
+
+        [DispId(130)]
+        object CallMember(object target, string name);
+
+        [DispId(131)]
+        void Hold(object target);
+
+        [DispId(132)]
+        void Drop();
+
 
         [DispId(115)]
         object ReturnSignedByteArray();
@@ -210,6 +225,39 @@ namespace OxVba.TestEventServer
         {
             return -123.45m;
         }
+        // COM interop marshals a boxed IntPtr as VT_INT and a boxed UIntPtr as VT_UINT (dc-yqq0.18).
+        public object ReturnIntObject()
+        {
+            return new IntPtr(-7);
+        }
+
+        public object ReturnUIntObject()
+        {
+            return new UIntPtr(4000000000u);
+        }
+
+        // A foreign late-bound caller and holder for VBA objects (dc-69djs).
+        public object CallMember(object target, string name)
+        {
+            return target.GetType().InvokeMember(name, System.Reflection.BindingFlags.InvokeMethod, null, target, null);
+        }
+
+        private object held;
+
+        public void Hold(object target)
+        {
+            held = target;
+        }
+
+        public void Drop()
+        {
+            if (held != null && Marshal.IsComObject(held))
+            {
+                Marshal.FinalReleaseComObject(held);
+            }
+            held = null;
+        }
+
 
         public object ReturnSignedByteArray()
         {

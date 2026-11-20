@@ -2,6 +2,7 @@ use crate::{
     ComCallbackPayload, ComCallbackToken, ComInvokeArg, ComInvokeKind, ComInvokeRequest,
     ComMemberToken, ComSubscriptionToken, ComValue,
 };
+use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::{ObjectRef, RuntimeByRefSlot, Variant};
 
 macro_rules! define_dynamic_token {
@@ -263,6 +264,7 @@ impl From<ComCallbackPayload> for DynamicEventPayload {
 #[cfg(test)]
 mod tests {
     use crate::{ComInvokeArg, ComInvokeKind, ComInvokeRequest, ComValue};
+    use calcvba_runtime::ObjectRefExt;
     use calcvba_runtime::{ObjectRef, RuntimeByRefSlot, RuntimeValueType, VarType};
 
     use super::{DynamicCallKind, DynamicCallRequest, DynamicMemberSelector, DynamicValue};

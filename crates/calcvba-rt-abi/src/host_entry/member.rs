@@ -9,6 +9,7 @@ use calcvba_host_api::{
     object::planned_slots::{CallerSyncPhase, MemberArguments, invoke_planned_member},
 };
 use calcvba_oxir::{OxCallArg, OxInst};
+use calcvba_runtime::ObjectRefExt;
 
 /// Document source instances retain the native host identity in a reserved
 /// compiler field. Untyped host members and Is use that same identity.

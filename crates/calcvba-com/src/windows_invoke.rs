@@ -5,6 +5,7 @@ use crate::{
     take_variant_result_value, take_variant_result_variant,
 };
 use calcvba_diagnostics::{Diagnostic, DiagnosticPhase, extract_prefixed_code};
+use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::{
     ObjectRef, RuntimeByRefSlot, RuntimeByRefWriteback, RuntimeCallResult, RuntimeValueType,
     Variant,

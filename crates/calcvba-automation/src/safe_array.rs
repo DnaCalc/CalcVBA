@@ -1313,7 +1313,7 @@ impl SafeArray {
         self.variant_elements()
     }
 
-    pub(crate) fn try_variant_elements(&self) -> Result<Option<Vec<Variant>>, String> {
+    pub fn try_variant_elements(&self) -> Result<Option<Vec<Variant>>, String> {
         let data = self.data();
         if data.is_null() {
             return Ok(None);

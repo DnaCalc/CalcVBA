@@ -3,6 +3,7 @@ use calcvba_com::{
     DynamicCallRequest, DynamicEventPayload, DynamicObjectBridge, DynamicObjectToken, DynamicValue,
 };
 use calcvba_runtime::ObjectRef;
+use calcvba_runtime::ObjectRefExt;
 
 pub struct HalComDynamicBridge<'a> {
     _profile: HalProfileId,

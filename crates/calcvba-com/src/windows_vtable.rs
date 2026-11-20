@@ -24,6 +24,7 @@
 // (windows_invoke.rs allows the same lint); keeping the failure shape identical
 // is what lets S3 route vtable faults through the existing render/classify lane.
 #![allow(clippy::result_large_err)]
+use calcvba_runtime::ObjectRefExt;
 
 use crate::windows_ffi_bridge::{FfiArg, FfiReturnType, call_via_libffi};
 use crate::windows_invoke::{

@@ -29,6 +29,7 @@ use crate::typelib::{
     TypeLibParamType, TypeLibWireType,
 };
 use crate::windows_client::{IID_IDISPATCH, OwnedComInterface, query_interface_pointer};
+use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::{ObjectRef, VarType, Variant, WIRE_SIZE};
 use std::cell::RefCell;
 use std::collections::HashMap;

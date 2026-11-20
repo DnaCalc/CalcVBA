@@ -3,6 +3,7 @@ use super::library::{NativeLibrary, NativeMemberPlan};
 use super::*;
 use crate::{TypeLibInterfaceMetadata, WindowsComBridge, windows_client::OwnedComInterface};
 use calcvba_host_api::{HostObject, HostSlot};
+use calcvba_runtime::ObjectRefExt;
 use std::{ffi::c_void, rc::Rc};
 
 pub(super) struct NativeReceiver {

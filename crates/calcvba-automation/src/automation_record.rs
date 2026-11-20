@@ -59,7 +59,7 @@ pub unsafe fn clear_record(cell: *mut u8, descriptor: *const u32) -> i32 {
     // SAFETY: each owner offset and width was checked by the compiler.
     unsafe {
         let (size, fields) = shape(descriptor);
-        for field in fields.chunks_exact(2) {
+        for field in fields.as_chunks::<2>().0 {
             let cell = cell.add(field[0] as usize);
             match field[1] {
                 8 => {
@@ -106,7 +106,7 @@ pub unsafe fn copy_record(dst: *mut u8, src: *const u8, descriptor: *const u32) 
         let mut words = vec![0u64; size.div_ceil(8)];
         let stage = words.as_mut_ptr().cast::<u8>();
         ptr::copy_nonoverlapping(src, stage, size);
-        for field in fields.chunks_exact(2) {
+        for field in fields.as_chunks::<2>().0 {
             ptr::write_bytes(
                 stage.add(field[0] as usize),
                 0,
@@ -117,7 +117,7 @@ pub unsafe fn copy_record(dst: *mut u8, src: *const u8, descriptor: *const u32) 
                 },
             );
         }
-        for field in fields.chunks_exact(2) {
+        for field in fields.as_chunks::<2>().0 {
             let offset = field[0] as usize;
             let hr = if field[1] == 12 {
                 VariantCopyInd(stage.add(offset).cast(), src.add(offset).cast())

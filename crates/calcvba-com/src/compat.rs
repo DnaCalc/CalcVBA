@@ -1,6 +1,7 @@
 //! Explicit COM compatibility adapters for scalar slot-token projections.
 
 use crate::ComValue;
+use calcvba_runtime::ObjectRefExt;
 
 pub fn com_value_from_runtime_token(value: i32) -> ComValue {
     ComValue::I32(value)

@@ -1,3 +1,4 @@
+use calcvba_runtime::ObjectRefExt;
 use core::ffi::c_void;
 use std::sync::Arc;
 

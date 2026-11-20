@@ -1,4 +1,5 @@
 use crate::ComValue;
+use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::{
     ComRecord, CurrencyValue, Decimal96, F64Subtype, F64Value, ObjectRef, VarType, Variant,
     VbaRecord, VbaRecordFieldKind, VbaRecordLayout,

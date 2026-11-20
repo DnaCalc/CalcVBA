@@ -6,7 +6,7 @@
 //! memory, `Release`). A runtime `VT_RECORD` cell holds these two pointers as its `BRECORD`,
 //! so a cell can be handed to oleaut32 unchanged and cleared by it.
 
-use calcvba_automation::com::IRecordInfoVtbl;
+use crate::com::IRecordInfoVtbl;
 use core::ffi::c_void;
 
 /// An owned COM record: `pvRecord` from the task allocator and one `IRecordInfo` reference.
@@ -288,7 +288,7 @@ impl Eq for ComRecord {}
 /// references and live records.
 #[doc(hidden)]
 pub mod test_support {
-    use calcvba_automation::com::{Guid, HResult, IRecordInfoVtbl, IUnknownVtbl};
+    use crate::com::{Guid, HResult, IRecordInfoVtbl, IUnknownVtbl};
     use core::ffi::c_void;
     use std::sync::atomic::{AtomicIsize, Ordering};
 

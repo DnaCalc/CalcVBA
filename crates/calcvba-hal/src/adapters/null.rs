@@ -1,3 +1,4 @@
+use calcvba_runtime::ObjectRefExt;
 use std::sync::Arc;
 
 use crate::{
@@ -392,6 +393,7 @@ mod tests {
             TimeLocaleHal, UiInteractionHal,
         },
     };
+    use calcvba_runtime::ObjectRefExt;
     use calcvba_runtime::{ObjectRef, Variant};
 
     use super::NullHostServices;

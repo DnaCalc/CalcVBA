@@ -17,6 +17,7 @@
 //! VBA specifications and reproducible Excel/VBA behavior remain semantic
 //! authority. See `docs/ARCHITECTURE.md`.
 
+use calcvba_runtime::ObjectRefExt;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ptr::NonNull;

@@ -26,6 +26,7 @@ use calcvba_com::{
     build_typelib_metadata, member_token_and_spec_from_typelib_metadata_name,
     resolve_typelib_identity_for_prog_id_name,
 };
+use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::{ObjectRef, VarType, Variant, variant_to_vba_string};
 use std::sync::Arc;
 

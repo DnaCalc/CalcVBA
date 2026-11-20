@@ -3,6 +3,7 @@ use crate::{
     model::{CapabilityId, HalProfileId},
     traits::{DynLinkDescriptorView, DynamicLinkHal},
 };
+use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::{BindingHandle, DynLinkSymbol, RuntimeCallArgument, Variant};
 use std::collections::BTreeMap;
 #[cfg(target_os = "windows")]

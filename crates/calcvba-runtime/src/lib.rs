@@ -1,32 +1,34 @@
-//! calcvba-runtime: core Variant representation and runtime semantics scaffolding.
+//! calcvba-runtime: VBA's runtime semantics over the Automation values of `calcvba-automation`,
+//! which it re-exports at their historical paths (`calcvba_runtime::variant`, `::bstr`,
+//! `::safe_array`, ...).
 
 pub mod address;
 pub mod alloc;
 pub mod ansi;
 pub mod arithmetic;
-pub mod bstr;
+pub use calcvba_automation::bstr;
 pub mod builtins;
 pub mod call_frame;
 pub mod callback_thunks;
 pub mod coerce;
 pub mod collection;
-pub mod com_record;
+pub use calcvba_automation::com_record;
 pub mod date;
-pub mod decimal;
+pub use calcvba_automation::decimal;
 pub mod events;
 pub mod interop_plan;
-pub mod live_counters;
+pub use calcvba_automation::live_counters;
 pub mod object_owner;
 pub mod object_ref;
 pub mod pointer_helpers;
-pub mod safe_array;
+pub use calcvba_automation::safe_array;
 pub mod string_compare;
-pub mod value_types;
-pub mod variant;
+pub use calcvba_automation::value_types;
+pub use calcvba_automation::variant;
 pub mod vba_date;
 pub mod vba_error;
 pub mod vba_radix;
-pub mod vba_record;
+pub use calcvba_automation::vba_record;
 
 pub use call_frame::{
     RuntimeByRefSlot, RuntimeByRefWriteback, RuntimeCallArgument, RuntimeCallContext,
@@ -49,9 +51,9 @@ pub use interop_plan::{
 pub use live_counters::current_thread_live_handle_counts;
 pub use live_counters::{HandleBalance, LiveHandleCounts, live_handle_counts};
 pub use object_ref::{
-    Guid, IUnknownVtbl, ObjectRef, RUNTIME_CLASS_LIFECYCLE_NONE, RUNTIME_GUID_ICONNECTIONPOINT,
-    RUNTIME_GUID_ICONNECTIONPOINTCONTAINER, RUNTIME_GUID_IDISPATCH, RUNTIME_GUID_IUNKNOWN,
-    RUNTIME_ICONNECTIONPOINT_INTERFACE_IDENTITY,
+    Guid, IUnknownVtbl, ObjectRef, ObjectRefExt, RUNTIME_CLASS_LIFECYCLE_NONE,
+    RUNTIME_GUID_ICONNECTIONPOINT, RUNTIME_GUID_ICONNECTIONPOINTCONTAINER, RUNTIME_GUID_IDISPATCH,
+    RUNTIME_GUID_IUNKNOWN, RUNTIME_ICONNECTIONPOINT_INTERFACE_IDENTITY,
     RUNTIME_ICONNECTIONPOINTCONTAINER_INTERFACE_IDENTITY, RUNTIME_IDISPATCH_INTERFACE_IDENTITY,
     RUNTIME_IUNKNOWN_INTERFACE_IDENTITY, RawRuntimeIUnknown, RuntimeApartmentModel,
     RuntimeClassActivationDescriptor, RuntimeClassAsNewFieldDescriptor, RuntimeClassDescriptor,
@@ -84,4 +86,4 @@ pub use vba_record::{
 };
 
 #[cfg(windows)]
-pub mod automation_record;
+pub use calcvba_automation::automation_record;

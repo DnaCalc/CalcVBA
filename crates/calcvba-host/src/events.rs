@@ -6,6 +6,7 @@ use calcvba_host_api::{
     object::{EventDescriptor, EventParameter},
 };
 use calcvba_rt_abi::automatic_events::{AutomaticBinding, AutomaticEventState, BindingKey};
+use calcvba_runtime::ObjectRefExt;
 use std::{collections::HashMap, rc::Weak};
 
 pub(crate) struct AutomaticEvents {

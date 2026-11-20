@@ -1,3 +1,4 @@
+use calcvba_runtime::ObjectRefExt;
 pub const DISPATCH_INVOKE_MISSING_ARG_TOKEN: i32 = i32::MIN + 2_048;
 
 use calcvba_runtime::{
@@ -477,6 +478,7 @@ pub struct ComCallbackPayload {
 #[cfg(test)]
 mod tests {
     use super::{ComCallbackValue, ComInvokeArg, ComMemberToken, ComValue};
+    use calcvba_runtime::ObjectRefExt;
     use calcvba_runtime::{
         CurrencyValue, Decimal96, F64Value, ObjectRef, VarType, Variant, bstr::BStr,
         safe_array::SafeArray,

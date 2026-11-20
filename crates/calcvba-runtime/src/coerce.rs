@@ -1,3 +1,4 @@
+use crate::ObjectRefExt;
 use crate::bstr::BStr;
 use crate::variant::{VarType, Variant};
 
@@ -816,7 +817,7 @@ pub fn print_display_text(value: &Variant) -> String {
             .unwrap_or_else(|| "<array:invalid>".to_string()),
         VarType::Object => value
             .as_object_ref()
-            .map(|handle| format!("<object:{handle}>"))
+            .map(|handle| format!("<object:{}>", handle.display_text()))
             .unwrap_or_else(|| "<object:invalid>".to_string()),
         VarType::Record => value
             .as_com_record()

@@ -11,6 +11,7 @@ use crate::{
     source_interface_event_spec_supported, try_advise_dispatch_event_sink,
     try_advise_single_i32_source_interface_event_sink, unadvise_connection_point,
 };
+use calcvba_runtime::ObjectRefExt;
 
 use calcvba_runtime::ObjectRef;
 use std::collections::BTreeMap;
@@ -1175,6 +1176,7 @@ mod tests {
         ComBinding, ComEventPath, ComEventSpec, ComEventSubscription, ComEventTriggerSpec,
         ComInvokeArg, ComMemberToken, ComObjectToken, ComValue,
     };
+    use calcvba_runtime::ObjectRefExt;
     use calcvba_runtime::{ObjectRef, bstr::BStr};
     use std::sync::{Arc, Mutex};
 

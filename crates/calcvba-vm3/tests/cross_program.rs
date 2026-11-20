@@ -13,6 +13,7 @@ use calcvba_bundle::{
 use calcvba_hal::HostPolicy;
 use calcvba_hal::adapters::null::NullHostServices;
 use calcvba_oxir::elaborate::elaborate;
+use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::RuntimeProjectClassIdentity;
 use calcvba_vm3::{Vm3, Vm3Error};
 

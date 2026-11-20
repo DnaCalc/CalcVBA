@@ -76,7 +76,7 @@ impl Drop for ObjectOwnerScope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ObjectRef, Variant};
+    use crate::{ObjectRef, ObjectRefExt, Variant};
     fn object(id: i32) -> ObjectRef {
         let descriptor = ObjectRef::from_compat_identity(9).class_descriptor();
         ObjectRef::from_project_instance(id, 0, 0, true, descriptor)

@@ -9,6 +9,7 @@ use crate::{
     LibContext, LibError, LibResult, alloc_count, as_f64, as_i32, as_i64, as_str, as_usize, need,
     opt, vbool, vf64, vi32, vstr, vunit,
 };
+use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::{
     Decimal96, Variant, default_error_message,
     safe_array::{SafeArray, VT_BSTR_VALUE, VT_UI1_VALUE, VT_VARIANT_VALUE},

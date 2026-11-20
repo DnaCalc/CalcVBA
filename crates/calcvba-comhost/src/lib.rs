@@ -12,6 +12,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(unused_assignments)]
 
+use calcvba_runtime::ObjectRefExt;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;

@@ -2,6 +2,7 @@
 //! This module executes no source instructions, procedure bodies or CFGs.
 use calcvba_hal::{HalProfileId, HostPolicy, HostServices, adapters::builder::HostBuilder};
 use calcvba_rt_abi::{ExecState, native_export::Context};
+use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::{VarType, Variant, bstr::BStr};
 use std::{ffi::c_void, ptr, sync::Arc};
 use windows_sys::Win32::System::Variant::{VARIANT, VariantClear};

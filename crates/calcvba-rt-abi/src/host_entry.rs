@@ -5,6 +5,7 @@ use calcvba_bundle::{NumericCoerceTarget as N, NumericMode};
 use calcvba_oxir::{
     ArithOp, OxCoerceTarget, OxConst, OxFunc, OxInst, OxOperand, OxPlace, OxTerminator, OxTy,
 };
+use calcvba_runtime::ObjectRefExt;
 
 pub use calcvba_host_api::{
     Arguments, MAX_TYPED_ARGS, Scalar, ScalarBits, TYPED_ENTRY_ABI, TypedContext,

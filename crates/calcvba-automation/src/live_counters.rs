@@ -61,7 +61,8 @@ mod imp {
             })
         };
     }
-    pub(crate) fn variant_constructed() {
+    #[doc(hidden)]
+    pub fn variant_constructed() {
         let _ = VARIANT_CONSTRUCTIONS.try_with(|n| n.set(n.get().saturating_add(1)));
     }
     /// Cumulative owning Variant constructor calls on this thread. Unlike live
@@ -84,42 +85,50 @@ mod imp {
         });
     }
 
-    pub(crate) fn bstr_allocated() {
+    #[doc(hidden)]
+    pub fn bstr_allocated() {
         LIVE_BSTRS.fetch_add(1, Ordering::AcqRel);
         update_thread(|counts| counts.bstrs += 1);
     }
 
-    pub(crate) fn bstr_freed() {
+    #[doc(hidden)]
+    pub fn bstr_freed() {
         LIVE_BSTRS.fetch_sub(1, Ordering::AcqRel);
         update_thread(|counts| counts.bstrs -= 1);
     }
 
-    pub(crate) fn object_box_allocated() {
+    #[doc(hidden)]
+    pub fn object_box_allocated() {
         LIVE_OBJECT_BOXES.fetch_add(1, Ordering::AcqRel);
         update_thread(|counts| counts.object_boxes += 1);
     }
 
-    pub(crate) fn object_box_freed() {
+    #[doc(hidden)]
+    pub fn object_box_freed() {
         LIVE_OBJECT_BOXES.fetch_sub(1, Ordering::AcqRel);
         update_thread(|counts| counts.object_boxes -= 1);
     }
 
-    pub(crate) fn safearray_allocated() {
+    #[doc(hidden)]
+    pub fn safearray_allocated() {
         LIVE_SAFEARRAYS.fetch_add(1, Ordering::AcqRel);
         update_thread(|counts| counts.safearrays += 1);
     }
 
-    pub(crate) fn safearray_freed() {
+    #[doc(hidden)]
+    pub fn safearray_freed() {
         LIVE_SAFEARRAYS.fetch_sub(1, Ordering::AcqRel);
         update_thread(|counts| counts.safearrays -= 1);
     }
 
-    pub(crate) fn record_buffer_allocated() {
+    #[doc(hidden)]
+    pub fn record_buffer_allocated() {
         LIVE_RECORD_BUFFERS.fetch_add(1, Ordering::AcqRel);
         update_thread(|counts| counts.record_buffers += 1);
     }
 
-    pub(crate) fn record_buffer_freed() {
+    #[doc(hidden)]
+    pub fn record_buffer_freed() {
         LIVE_RECORD_BUFFERS.fetch_sub(1, Ordering::AcqRel);
         update_thread(|counts| counts.record_buffers -= 1);
     }
@@ -158,14 +167,22 @@ mod imp {
 mod imp {
     use super::LiveHandleCounts;
 
-    pub(crate) fn bstr_allocated() {}
-    pub(crate) fn bstr_freed() {}
-    pub(crate) fn object_box_allocated() {}
-    pub(crate) fn object_box_freed() {}
-    pub(crate) fn safearray_allocated() {}
-    pub(crate) fn safearray_freed() {}
-    pub(crate) fn record_buffer_allocated() {}
-    pub(crate) fn record_buffer_freed() {}
+    #[doc(hidden)]
+    pub fn bstr_allocated() {}
+    #[doc(hidden)]
+    pub fn bstr_freed() {}
+    #[doc(hidden)]
+    pub fn object_box_allocated() {}
+    #[doc(hidden)]
+    pub fn object_box_freed() {}
+    #[doc(hidden)]
+    pub fn safearray_allocated() {}
+    #[doc(hidden)]
+    pub fn safearray_freed() {}
+    #[doc(hidden)]
+    pub fn record_buffer_allocated() {}
+    #[doc(hidden)]
+    pub fn record_buffer_freed() {}
 
     /// Return the process-wide live-carrier snapshot.
     ///
@@ -182,8 +199,9 @@ pub use imp::current_thread_live_handle_counts;
 pub use imp::current_thread_variant_constructions;
 pub use imp::live_handle_counts;
 #[cfg(any(test, feature = "live-counters"))]
-pub(crate) use imp::variant_constructed;
-pub(crate) use imp::{
+pub use imp::variant_constructed;
+#[doc(hidden)]
+pub use imp::{
     bstr_allocated, bstr_freed, object_box_allocated, object_box_freed, record_buffer_allocated,
     record_buffer_freed, safearray_allocated, safearray_freed,
 };

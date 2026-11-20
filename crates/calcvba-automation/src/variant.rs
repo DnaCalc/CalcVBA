@@ -91,139 +91,205 @@ const fn is_array_element_vartype(vt: u16) -> bool {
     )
 }
 
-/// Fully initialized eight-byte payload of [`VariantCore`].
+/// The value union of a `VARIANT` (offset 8): the platform's `llVal`/`dblVal`/... scalars, one
+/// pointer (`bstrVal`, `punkVal`, `pdispVal`, `parray`, `byref`), or `BRECORD`.
 ///
-/// This used to be a public union whose short scalar fields allowed safe code
-/// to initialize only one, two, or four bytes. A later safe `data_bytes`,
-/// `Debug`, equality, or wire read then observed the uninitialized tail. The
-/// byte carrier makes that state unrepresentable: every safe constructor writes
-/// all eight bytes.
-///
-/// Downstream code that previously used a union scalar literal should migrate
-/// to the matching `from_*` constructor. Code that owns an exact ABI payload
-/// should use [`Self::from_bytes`].
+/// Pointers are stored as pointers, so they keep their provenance; integers and floats as
+/// their bytes. Every constructor initialises the whole union (it starts zeroed), so the
+/// safe byte reads ([`Self::bytes`], [`Self::tail`]) never see uninitialised memory.
 ///
 /// ```compile_fail
-/// use calcvba_runtime::variant::VariantData;
+/// use calcvba_automation::variant::VariantData;
 ///
-/// // The former public short union field no longer exists, so safe external
-/// // code cannot create a payload with six uninitialized trailing bytes.
+/// // The union's fields are private: a payload is built by the constructors only.
 /// let _partial = VariantData { i16_val: 7 };
 /// ```
 ///
-/// The former union's raw-pointer member also made the carrier neither `Send`
-/// nor `Sync`. The zero-sized marker preserves that safety boundary without
-/// changing layout:
+/// The pointer members make the carrier neither `Send` nor `Sync`:
 ///
 /// ```compile_fail
-/// use calcvba_runtime::VariantData;
+/// use calcvba_automation::VariantData;
 /// fn require_send<T: Send>() {}
 /// require_send::<VariantData>();
 /// ```
 ///
 /// ```compile_fail
-/// use calcvba_runtime::VariantData;
+/// use calcvba_automation::VariantData;
 /// fn require_sync<T: Sync>() {}
 /// require_sync::<VariantData>();
 /// ```
 #[repr(C, align(8))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct VariantData {
-    bytes: [u8; 8],
-    /// The rest of the platform union: `BRECORD.pRecInfo` on 64-bit targets (eight bytes),
-    /// empty where pointers are 32-bit. Zero for every type except `VT_RECORD`.
-    tail: [u8; PAYLOAD_TAIL],
-    not_send_sync: core::marker::PhantomData<*mut core::ffi::c_void>,
+    union: Payload,
 }
 
+/// `BRECORD { pvRecord, pRecInfo }`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Brecord {
+    record: *mut core::ffi::c_void,
+    record_info: *mut core::ffi::c_void,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+union Payload {
+    bytes: [u8; crate::abi::PAYLOAD_SIZE],
+    pointer: *mut core::ffi::c_void,
+    record: Brecord,
+}
+
+const _: () = assert!(core::mem::size_of::<Payload>() == crate::abi::PAYLOAD_SIZE);
+const _: () = assert!(core::mem::size_of::<VariantData>() == crate::abi::PAYLOAD_SIZE);
+
+impl core::fmt::Debug for VariantData {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("VariantData")
+            .field("bytes", &self.bytes())
+            .field("tail", &self.tail())
+            .finish()
+    }
+}
+
+impl PartialEq for VariantData {
+    fn eq(&self, other: &Self) -> bool {
+        self.all_bytes() == other.all_bytes()
+    }
+}
+
+impl Eq for VariantData {}
+
 /// Bytes of the value union after the first eight.
-pub const PAYLOAD_TAIL: usize = calcvba_automation::abi::PAYLOAD_SIZE - 8;
+pub const PAYLOAD_TAIL: usize = crate::abi::PAYLOAD_SIZE - 8;
 /// Bytes of a whole cell, and of its wire form: the platform `VARIANT` size.
-pub const WIRE_SIZE: usize = calcvba_automation::abi::VARIANT_SIZE;
+pub const WIRE_SIZE: usize = crate::abi::VARIANT_SIZE;
 
 impl VariantData {
-    /// Construct a fully initialized raw payload from all eight ABI bytes.
-    ///
-    /// The active carrier contract is simulated x64 little-endian. These bytes
-    /// are initialized but otherwise unvalidated and non-owning: this function
-    /// does not allocate, retain, recover pointer provenance, or make pointer-tag
-    /// bytes safe to dereference. Safe code cannot promote this payload into an
-    /// owning [`Variant`]. Use validated wire decoding for untrusted input; the
-    /// unsafe trusted decoder is the only pointer-recovery route.
+    const ZERO: Self = Self {
+        union: Payload {
+            bytes: [0; crate::abi::PAYLOAD_SIZE],
+        },
+    };
+
+    /// A payload whose first eight union bytes are `bytes` (little-endian scalars) and whose
+    /// tail is zero. The bytes are not validated and own nothing; an integer stored here is not
+    /// a pointer (it has no provenance), which is why only the unsafe trusted decoders turn
+    /// such bytes into owned values.
     pub const fn from_bytes(bytes: [u8; 8]) -> Self {
+        let mut all = [0u8; crate::abi::PAYLOAD_SIZE];
+        let mut index = 0;
+        while index < 8 {
+            all[index] = bytes[index];
+            index += 1;
+        }
         Self {
-            bytes,
-            tail: [0; PAYLOAD_TAIL],
-            not_send_sync: core::marker::PhantomData,
+            union: Payload { bytes: all },
         }
     }
 
-    /// Encode an `i16` into the low two little-endian bytes.
-    ///
-    /// The six unused ABI bytes are zero-filled, not sign-extended. The result
-    /// is an initialized, unvalidated, non-owning raw carrier.
+    /// Encode an `i16` into the low two little-endian bytes (the rest zero).
     pub const fn from_i16(value: i16) -> Self {
         let value = value.to_le_bytes();
         Self::from_bytes([value[0], value[1], 0, 0, 0, 0, 0, 0])
     }
 
-    /// Encode an `i32` into the low four little-endian bytes.
-    ///
-    /// The four unused ABI bytes are zero-filled, not sign-extended. The result
-    /// is an initialized, unvalidated, non-owning raw carrier.
+    /// Encode an `i32` into the low four little-endian bytes (the rest zero).
     pub const fn from_i32(value: i32) -> Self {
         let value = value.to_le_bytes();
         Self::from_bytes([value[0], value[1], value[2], value[3], 0, 0, 0, 0])
     }
 
-    /// Encode an `i64` into all eight simulated-x64 little-endian bytes.
-    ///
-    /// The result is initialized but unvalidated and non-owning.
+    /// Encode an `i64` into the eight little-endian bytes.
     pub const fn from_i64(value: i64) -> Self {
         Self::from_bytes(value.to_le_bytes())
     }
 
-    /// Encode an IEEE-754 `f64` into all eight little-endian ABI bytes.
-    ///
-    /// The result is initialized but unvalidated and non-owning.
+    /// Encode an IEEE-754 `f64` into the eight little-endian bytes.
     pub const fn from_f64(value: f64) -> Self {
         Self::from_bytes(value.to_le_bytes())
     }
 
-    /// Store the exposed address of a process-local pointer in the complete
-    /// x64 byte carrier.
-    ///
-    /// Recovering a dereferenceable pointer later requires the matching Rust
-    /// Exposed Provenance API and a live originating allocation. This method
-    /// only creates the initialized, unvalidated, non-owning ABI bytes; it does
-    /// not extend any lifetime or make the bytes safe to promote into an owning
-    /// [`Variant`].
-    pub fn from_exposed_pointer<T>(pointer: *const T) -> Self {
-        let address = u64::try_from(pointer.expose_provenance())
-            .expect("Variant pointer address must fit the x64 carrier");
-        Self::from_bytes(address.to_le_bytes())
+    /// A payload holding one pointer (`bstrVal`, `punkVal`, `parray`, `byref`, ...), with its
+    /// provenance. Owns nothing by itself.
+    pub const fn from_pointer<T>(pointer: *const T) -> Self {
+        let mut data = Self::ZERO;
+        data.union.pointer = pointer.cast_mut().cast();
+        data
     }
 
-    pub const fn bytes(self) -> [u8; 8] {
-        self.bytes
+    /// The pointer member (`bstrVal`, `punkVal`, `parray`, `byref`, `pvRecord`).
+    pub const fn pointer(self) -> *mut core::ffi::c_void {
+        // SAFETY: every union byte is initialised (constructors start from zero); reading the
+        // pointer member is a plain load of pointer-sized bytes.
+        unsafe { self.union.pointer }
     }
 
-    const fn from_union(bytes: [u8; 8], tail: [u8; PAYLOAD_TAIL]) -> Self {
-        Self {
-            bytes,
-            tail,
-            not_send_sync: core::marker::PhantomData,
-        }
+    const fn from_record(
+        record: *mut core::ffi::c_void,
+        record_info: *mut core::ffi::c_void,
+    ) -> Self {
+        let mut data = Self::ZERO;
+        data.union.record = Brecord {
+            record,
+            record_info,
+        };
+        data
+    }
+
+    /// `BRECORD`'s two pointers.
+    const fn record(self) -> (*mut core::ffi::c_void, *mut core::ffi::c_void) {
+        // SAFETY: as for `pointer`; `Brecord` is two pointer-sized members.
+        let record = unsafe { self.union.record };
+        (record.record, record.record_info)
+    }
+
+    fn all_bytes(self) -> [u8; crate::abi::PAYLOAD_SIZE] {
+        // SAFETY: every union byte is initialised; reading pointer bytes as integers is a
+        // pointer-to-integer transmute, which keeps only the address.
+        unsafe { self.union.bytes }
+    }
+
+    /// The first eight union bytes, little-endian (a pointer as its address).
+    pub fn bytes(self) -> [u8; 8] {
+        let mut out = [0u8; 8];
+        out.copy_from_slice(&self.all_bytes()[..8]);
+        out
     }
 
     /// The union bytes after the first eight (see [`PAYLOAD_TAIL`]).
-    pub const fn tail(self) -> [u8; PAYLOAD_TAIL] {
-        self.tail
+    pub fn tail(self) -> [u8; PAYLOAD_TAIL] {
+        let mut out = [0u8; PAYLOAD_TAIL];
+        out.copy_from_slice(&self.all_bytes()[8..]);
+        out
+    }
+
+    /// Rebuilds the pointer member (`two`: both `BRECORD` members) from addresses exposed
+    /// earlier with `expose_provenance`, for the trusted decoders of wire bytes.
+    fn with_exposed_pointers(self, two: bool) -> Self {
+        let all = self.all_bytes();
+        let address = |at: usize| {
+            let mut word = [0u8; POINTER_SIZE];
+            word.copy_from_slice(&all[at..at + POINTER_SIZE]);
+            core::ptr::with_exposed_provenance_mut(usize::from_le_bytes(word))
+        };
+        let mut data = Self {
+            union: Payload { bytes: all },
+        };
+        if two {
+            data.union.record = Brecord {
+                record: address(0),
+                record_info: address(POINTER_SIZE),
+            };
+        } else {
+            data.union.pointer = address(0);
+        }
+        data
     }
 }
 
 /// The platform's Automation `VARIANT`: 24 bytes on 64-bit targets, 16 where pointers are
-/// 32-bit (`calcvba_automation::abi`).
+/// 32-bit (`crate::abi`).
 ///
 /// The fields are private so safe downstream code must use fully initialized
 /// constructors. This changes only Rust source access: `repr(C)`, size,
@@ -232,8 +298,8 @@ impl VariantData {
 /// accessors below.
 ///
 /// ```compile_fail
-/// use calcvba_runtime::{VarType, VariantCore};
-/// use calcvba_runtime::variant::VariantData;
+/// use calcvba_automation::{VarType, VariantCore};
+/// use calcvba_automation::variant::VariantData;
 ///
 /// // Direct field construction is intentionally sealed at the safe boundary.
 /// let _core = VariantCore {
@@ -248,13 +314,13 @@ impl VariantData {
 /// `VariantCore` retains the former union's cross-thread ownership boundary:
 ///
 /// ```compile_fail
-/// use calcvba_runtime::VariantCore;
+/// use calcvba_automation::VariantCore;
 /// fn require_send<T: Send>() {}
 /// require_send::<VariantCore>();
 /// ```
 ///
 /// ```compile_fail
-/// use calcvba_runtime::VariantCore;
+/// use calcvba_automation::VariantCore;
 /// fn require_sync<T: Sync>() {}
 /// require_sync::<VariantCore>();
 /// ```
@@ -407,7 +473,7 @@ impl VariantCore {
     /// The union bytes after the first eight that this type uses: `BRECORD.pRecInfo` for
     /// `VT_RECORD` (and the record layout of a UDT array) on 64-bit targets, zero for every
     /// other type.
-    pub const fn value_tail(&self) -> [u8; PAYLOAD_TAIL] {
+    pub fn value_tail(&self) -> [u8; PAYLOAD_TAIL] {
         if self.vt == VarType::Record as u16 || self.vt == VT_ARRAY_OF_RECORDS {
             self.data.tail()
         } else {
@@ -415,46 +481,66 @@ impl VariantCore {
         }
     }
 
-    /// A `VT_RECORD` core: `BRECORD { pvRecord, pRecInfo }` across the union, as addresses.
-    fn record(record_data: usize, record_info: usize) -> Self {
+    /// A `VT_RECORD` core: `BRECORD { pvRecord, pRecInfo }`.
+    fn record(record_data: *mut core::ffi::c_void, record_info: *mut core::ffi::c_void) -> Self {
         Self::two_pointers(VarType::Record as u16, record_data, record_info)
     }
 
     /// A UDT array's core: the `SAFEARRAY*` where `parray` is, and the record layout in the
     /// `pRecInfo` position. VBA keeps a UDT array's layout in its compiled code, never in a
     /// Variant (a UDT array cannot enter one), so this cell is internal to the engine.
-    fn record_array(parray: usize, layout: usize) -> Self {
-        Self::two_pointers(VT_ARRAY_OF_RECORDS, parray, layout)
+    fn record_array(parray: *mut core::ffi::c_void, layout: *const VbaRecordLayout) -> Self {
+        Self::two_pointers(VT_ARRAY_OF_RECORDS, parray, layout.cast_mut().cast())
     }
 
-    fn two_pointers(vt: u16, first: usize, second: usize) -> Self {
-        let mut union = [0u8; 8 + PAYLOAD_TAIL];
-        union[..POINTER_SIZE].copy_from_slice(&first.to_le_bytes());
-        union[POINTER_SIZE..2 * POINTER_SIZE].copy_from_slice(&second.to_le_bytes());
-        let mut bytes = [0u8; 8];
-        bytes.copy_from_slice(&union[..8]);
-        let mut tail = [0u8; PAYLOAD_TAIL];
-        tail.copy_from_slice(&union[8..]);
+    fn two_pointers(
+        vt: u16,
+        first: *mut core::ffi::c_void,
+        second: *mut core::ffi::c_void,
+    ) -> Self {
         Self {
             vt,
             reserved1: 0,
             reserved2: 0,
             reserved3: 0,
-            data: VariantData::from_union(bytes, tail),
+            data: VariantData::from_record(first, second),
         }
     }
 
-    /// The `BRECORD` addresses `(pvRecord, pRecInfo)` of a `VT_RECORD` core, or
-    /// `(parray, layout)` of a UDT array's core.
-    fn record_addresses(&self) -> (usize, usize) {
-        let mut union = [0u8; 8 + PAYLOAD_TAIL];
-        union[..8].copy_from_slice(&self.data.bytes());
-        union[8..].copy_from_slice(&self.data.tail());
-        let mut data = [0u8; POINTER_SIZE];
-        data.copy_from_slice(&union[..POINTER_SIZE]);
-        let mut info = [0u8; POINTER_SIZE];
-        info.copy_from_slice(&union[POINTER_SIZE..2 * POINTER_SIZE]);
-        (usize::from_le_bytes(data), usize::from_le_bytes(info))
+    /// A core holding one pointer member (`bstrVal`, `punkVal`, `parray`, `byref`) for `vt`.
+    pub const fn from_pointer<T>(vt: u16, pointer: *const T) -> Self {
+        assert!(VarType::from_u16(vt).is_some(), "unsupported VARTYPE");
+        Self {
+            vt,
+            reserved1: 0,
+            reserved2: 0,
+            reserved3: 0,
+            data: VariantData::from_pointer(pointer),
+        }
+    }
+
+    /// The pointer member (`bstrVal`, `punkVal`, `parray`, `byref`, `pvRecord`).
+    pub const fn pointer(&self) -> *mut core::ffi::c_void {
+        self.data.pointer()
+    }
+
+    /// `(pvRecord, pRecInfo)` of a `VT_RECORD` core, or `(parray, layout)` of a UDT array's.
+    fn record_pointers(&self) -> (*mut core::ffi::c_void, *mut core::ffi::c_void) {
+        self.data.record()
+    }
+
+    /// The same core with its pointer members rebuilt from exposed addresses (see
+    /// [`VariantData::with_exposed_pointers`]); scalars are unchanged.
+    fn with_exposed_pointers(mut self) -> Self {
+        let two = self.vt == VarType::Record as u16 || self.vt == VT_ARRAY_OF_RECORDS;
+        let pointer = matches!(
+            self.vtype(),
+            VarType::String | VarType::Object | VarType::ArrayVariant | VarType::ByRef
+        );
+        if two || pointer {
+            self.data = self.data.with_exposed_pointers(two);
+        }
+        self
     }
 
     pub const fn reserved1(&self) -> u16 {
@@ -469,11 +555,15 @@ impl VariantCore {
         self.reserved3
     }
 
-    pub const fn data_bytes(&self) -> [u8; 8] {
+    pub fn data_bytes(&self) -> [u8; 8] {
         self.data.bytes()
     }
 
     pub fn to_wire_bytes(&self) -> [u8; WIRE_SIZE] {
+        // Wire bytes carry addresses only; exposing the pointer members lets the trusted
+        // decoders (`Variant::from_trusted_wire_bytes`) rebuild them in this process.
+        let (first, second) = self.data.record();
+        let _ = (first.expose_provenance(), second.expose_provenance());
         let mut out = [0u8; WIRE_SIZE];
         out[0..2].copy_from_slice(&self.vt.to_le_bytes());
         out[2..4].copy_from_slice(&self.reserved1.to_le_bytes());
@@ -504,9 +594,11 @@ impl VariantCore {
         payload.copy_from_slice(&bytes[8..16]);
         let mut core = Self::from_raw_parts(vtype_raw, reserved1, reserved2, reserved3, payload);
         if vtype_raw == VarType::Record as u16 || vtype_raw == VT_ARRAY_OF_RECORDS {
-            let mut tail = [0u8; PAYLOAD_TAIL];
-            tail.copy_from_slice(&bytes[16..]);
-            core.data = VariantData::from_union(payload, tail);
+            let mut all = [0u8; crate::abi::PAYLOAD_SIZE];
+            all.copy_from_slice(&bytes[8..]);
+            core.data = VariantData {
+                union: Payload { bytes: all },
+            };
         }
         Ok(core)
     }
@@ -516,49 +608,17 @@ impl VariantCore {
 /// `core` must be a `VT_RECORD` core produced by [`Variant::from_com_record`] or
 /// [`Variant::from_vba_record`] whose cell is still live for `'a`.
 unsafe fn record_cell_of<'a>(core: &VariantCore) -> Option<RecordCell<'a>> {
-    let (data, info) = core.record_addresses();
-    if data == 0 {
+    let (data, info) = core.record_pointers();
+    if data.is_null() {
         return None;
     }
-    Some(if info != 0 {
+    Some(if !info.is_null() {
         // SAFETY: guaranteed by the caller.
-        RecordCell::Com(unsafe {
-            ComRecordRef::from_raw_parts(
-                core::ptr::with_exposed_provenance_mut(info),
-                core::ptr::with_exposed_provenance_mut(data),
-            )
-        })
+        RecordCell::Com(unsafe { ComRecordRef::from_raw_parts(info, data) })
     } else {
         // SAFETY: guaranteed by the caller.
-        RecordCell::Vba(unsafe { &*core::ptr::with_exposed_provenance::<VbaRecord>(data) })
+        RecordCell::Vba(unsafe { &*data.cast::<VbaRecord>() })
     })
-}
-
-fn exposed_pointer_to_bytes<T>(ptr: *const T) -> [u8; 8] {
-    // `VariantCore` deliberately carries the x64 address representation as eight
-    // bytes. Exposing provenance here records that a later
-    // `with_exposed_provenance` recovery may use this allocation's provenance. The
-    // owning Variant must keep the allocation/reference live between these calls.
-    u64::try_from(ptr.expose_provenance())
-        .expect("Variant pointer address must fit the x64 carrier")
-        .to_le_bytes()
-}
-
-fn exposed_pointer_address(bytes: [u8; 8]) -> usize {
-    usize::try_from(u64::from_le_bytes(bytes))
-        .expect("Variant x64 pointer carrier must fit the target address space")
-}
-
-fn raw_bstr_ptr_to_bytes(ptr: *mut u16) -> [u8; 8] {
-    exposed_pointer_to_bytes(ptr.cast_const())
-}
-
-fn raw_iunknown_ptr_to_bytes(ptr: *mut RawRuntimeIUnknown) -> [u8; 8] {
-    exposed_pointer_to_bytes(ptr.cast_const())
-}
-
-fn raw_safearray_ptr_to_bytes(ptr: *mut core::ffi::c_void) -> [u8; 8] {
-    exposed_pointer_to_bytes(ptr.cast_const())
 }
 
 const POINTER_SIZE: usize = core::mem::size_of::<usize>();
@@ -574,18 +634,6 @@ enum RecordCell<'a> {
     Vba(&'a VbaRecord),
 }
 
-fn bytes_to_raw_bstr(bytes: [u8; 8]) -> *mut u16 {
-    core::ptr::with_exposed_provenance_mut(exposed_pointer_address(bytes))
-}
-
-fn bytes_to_raw_iunknown(bytes: [u8; 8]) -> *mut RawRuntimeIUnknown {
-    core::ptr::with_exposed_provenance_mut(exposed_pointer_address(bytes))
-}
-
-fn bytes_to_raw_safearray(bytes: [u8; 8]) -> *mut core::ffi::c_void {
-    core::ptr::with_exposed_provenance_mut(exposed_pointer_address(bytes))
-}
-
 /// Owning runtime Variant.
 ///
 /// Runtime values retain their historical single-thread ownership boundary.
@@ -593,13 +641,13 @@ fn bytes_to_raw_safearray(bytes: [u8; 8]) -> *mut core::ffi::c_void {
 /// protocol rather than an accidental auto-trait derived from scalar payloads.
 ///
 /// ```compile_fail
-/// use calcvba_runtime::Variant;
+/// use calcvba_automation::Variant;
 /// fn require_send<T: Send>() {}
 /// require_send::<Variant>();
 /// ```
 ///
 /// ```compile_fail
-/// use calcvba_runtime::Variant;
+/// use calcvba_automation::Variant;
 /// fn require_sync<T: Sync>() {}
 /// require_sync::<Variant>();
 /// ```
@@ -628,8 +676,8 @@ impl Variant {
     /// record layout, which a later `ReDim` or a callee that allocates the array needs.
     pub fn unallocated_record_array(layout: Arc<VbaRecordLayout>) -> Self {
         Self::from_core(VariantCore::record_array(
-            0,
-            Arc::into_raw(layout).expose_provenance(),
+            core::ptr::null_mut(),
+            Arc::into_raw(layout),
         ))
     }
 
@@ -651,7 +699,7 @@ impl Variant {
         if self.core.raw_vt() != VT_ARRAY_OF_RECORDS {
             return core::ptr::null();
         }
-        core::ptr::with_exposed_provenance(self.core.record_addresses().1)
+        self.core.record_pointers().1.cast_const().cast()
     }
 
     pub fn unallocated_array(element_vartype: u16) -> Self {
@@ -760,7 +808,9 @@ impl Variant {
         if !supported {
             return Err(vt);
         }
-        let core = VariantCore::from_wire_bytes(bytes).map_err(|_| vt)?;
+        let core = VariantCore::from_wire_bytes(bytes)
+            .map_err(|_| vt)?
+            .with_exposed_pointers();
         // The callee allocated what the cell holds; from here the runtime frees it, so the live
         // counters see it as one of its own.
         let payload = bytes[8..16].iter().any(|byte| *byte != 0);
@@ -782,19 +832,19 @@ impl Variant {
     /// in this process and the source allocation/object must still be live for the
     /// whole call. Arbitrary or stale pointer bytes are undefined behavior.
     pub unsafe fn from_trusted_wire_bytes(bytes: [u8; WIRE_SIZE]) -> Result<Self, String> {
-        let core = VariantCore::from_wire_bytes(bytes)?;
+        let core = VariantCore::from_wire_bytes(bytes)?.with_exposed_pointers();
         match core.vtype() {
             VarType::String => {
-                let ptr = bytes_to_raw_bstr(core.data_bytes());
+                let ptr = core.pointer().cast::<u16>();
                 // SAFETY: guaranteed by this unsafe fn's caller.
                 let cloned = unsafe { borrow_raw_bstr(ptr) }.try_to_owned()?;
-                Ok(Self::from_core(VariantCore::from_bytes(
-                    VarType::String,
-                    raw_bstr_ptr_to_bytes(cloned.into_raw_bstr()),
+                Ok(Self::from_core(VariantCore::from_pointer(
+                    VarType::String as u16,
+                    cloned.into_raw_bstr(),
                 )))
             }
             VarType::Object => {
-                let ptr = bytes_to_raw_iunknown(core.data_bytes());
+                let ptr = core.pointer().cast::<RawRuntimeIUnknown>();
                 // SAFETY: guaranteed by this unsafe fn's caller.
                 let object = unsafe { ObjectRef::from_raw_iunknown_addref(ptr) };
                 Ok(match object {
@@ -803,7 +853,7 @@ impl Variant {
                 })
             }
             VarType::ArrayVariant => {
-                let ptr = bytes_to_raw_safearray(core.data_bytes());
+                let ptr = core.pointer();
                 let view = Self { core };
                 let layout = view.record_array_layout();
                 // The view only borrows the wire's pointers.
@@ -1106,10 +1156,7 @@ impl Variant {
     pub fn from_string(value: impl Into<BStr>) -> Self {
         let text = value.into();
         let raw = text.into_raw_bstr();
-        Self::from_core(VariantCore::from_bytes(
-            VarType::String,
-            raw_bstr_ptr_to_bytes(raw),
-        ))
+        Self::from_core(VariantCore::from_pointer(VarType::String as u16, raw))
     }
 
     /// Build a `String` Variant DIRECTLY from raw UTF-16 code units, preserving any
@@ -1145,7 +1192,7 @@ impl Variant {
             .expect("String Variant BSTR clone should succeed")
     }
 
-    pub(crate) fn try_as_bstr(&self) -> Result<Option<BStr>, String> {
+    pub fn try_as_bstr(&self) -> Result<Option<BStr>, String> {
         if self.vtype() != VarType::String {
             return Ok(None);
         }
@@ -1153,7 +1200,7 @@ impl Variant {
         // pointer this Variant owns until drop. BorrowedBStr has no destructor, so
         // error or unwind while cloning cannot take the source allocation with it.
         Ok(Some(
-            unsafe { borrow_raw_bstr(bytes_to_raw_bstr(self.data_bytes())) }.try_to_owned()?,
+            unsafe { borrow_raw_bstr(self.core.pointer().cast::<u16>()) }.try_to_owned()?,
         ))
     }
 
@@ -1163,10 +1210,7 @@ impl Variant {
 
     pub fn from_object_ref(value: ObjectRef) -> Self {
         let raw = value.into_raw_iunknown();
-        Self::from_core(VariantCore::from_bytes(
-            VarType::Object,
-            raw_iunknown_ptr_to_bytes(raw),
-        ))
+        Self::from_core(VariantCore::from_pointer(VarType::Object as u16, raw))
     }
 
     pub fn nothing() -> Self {
@@ -1181,7 +1225,9 @@ impl Variant {
         // IUnknown pointer on which this Variant holds one retained reference until drop,
         // keeping the object alive for the AddRef taken here on behalf of the returned
         // ObjectRef.
-        unsafe { ObjectRef::from_raw_iunknown_addref(bytes_to_raw_iunknown(self.data_bytes())) }
+        unsafe {
+            ObjectRef::from_raw_iunknown_addref(self.core.pointer().cast::<RawRuntimeIUnknown>())
+        }
     }
 
     /// A `VT_BYREF | vt` cell referring to storage of type `vt` at `target` (for `VT_ARRAY | vt`
@@ -1191,13 +1237,7 @@ impl Variant {
     /// # Safety
     /// `target` is live storage of type `vt` for as long as the cell is read or written.
     pub unsafe fn by_ref(vt: u16, target: *mut u8) -> Self {
-        Self::from_core(VariantCore::from_raw_parts(
-            0x4000 | vt,
-            0,
-            0,
-            0,
-            exposed_pointer_to_bytes(target.cast_const()),
-        ))
+        Self::from_core(VariantCore::from_pointer(0x4000 | vt, target))
     }
 
     /// A copy of a `VT_BYREF` cell that refers to the same target (a reference passed on to a
@@ -1228,10 +1268,7 @@ impl Variant {
         if self.vtype() != VarType::ByRef {
             return None;
         }
-        Some((
-            self.core.raw_vt() & !0x4000,
-            core::ptr::with_exposed_provenance_mut(exposed_pointer_address(self.data_bytes())),
-        ))
+        Some((self.core.raw_vt() & !0x4000, self.core.pointer().cast()))
     }
 
     /// The value a `VT_BYREF` cell refers to (VBA's `VariantCopyInd`).
@@ -1343,19 +1380,10 @@ impl Variant {
         let vt = 0x2000 | value.element_vartype();
         if let Some(layout) = value.vba_record_layout() {
             let raw = value.into_raw_safearray_ptr();
-            return Self::from_core(VariantCore::record_array(
-                raw.expose_provenance(),
-                Arc::into_raw(layout).expose_provenance(),
-            ));
+            return Self::from_core(VariantCore::record_array(raw, Arc::into_raw(layout)));
         }
         let raw = value.into_raw_safearray_ptr();
-        Self::from_core(VariantCore::from_raw_parts(
-            vt,
-            0,
-            0,
-            0,
-            raw_safearray_ptr_to_bytes(raw),
-        ))
+        Self::from_core(VariantCore::from_pointer(vt, raw))
     }
 
     /// A non-owning array view of a SAFEARRAY descriptor owned elsewhere (a record's
@@ -1372,20 +1400,11 @@ impl Variant {
         if let Some(layout) = record {
             // The view borrows the caller's layout reference; it is never dropped.
             return core::mem::ManuallyDrop::new(Self {
-                core: VariantCore::record_array(
-                    raw.expose_provenance(),
-                    Arc::as_ptr(layout).expose_provenance(),
-                ),
+                core: VariantCore::record_array(raw, Arc::as_ptr(layout)),
             });
         }
         core::mem::ManuallyDrop::new(Self {
-            core: VariantCore::from_raw_parts(
-                0x2000 | element_vt,
-                0,
-                0,
-                0,
-                raw_safearray_ptr_to_bytes(raw),
-            ),
+            core: VariantCore::from_pointer(0x2000 | element_vt, raw),
         })
     }
 
@@ -1406,10 +1425,7 @@ impl Variant {
         // `from_safearray`/clone); `clone_from_raw_safearray` verifies the provenance
         // prefix and deep-clones, leaving ownership with this Variant.
         unsafe {
-            SafeArray::try_clone_from_raw_safearray(
-                bytes_to_raw_safearray(self.data_bytes()),
-                self.record_array_layout(),
-            )
+            SafeArray::try_clone_from_raw_safearray(self.core.pointer(), self.record_array_layout())
         }
     }
 
@@ -1423,7 +1439,7 @@ impl Variant {
     /// parameter bound to a typed array reads and writes the caller's array.
     fn array_descriptor(&self) -> Option<*mut core::ffi::c_void> {
         match self.vtype() {
-            VarType::ArrayVariant => Some(bytes_to_raw_safearray(self.data_bytes())),
+            VarType::ArrayVariant => Some(self.core.pointer()),
             VarType::ByRef => {
                 let (vt, target) = self.byref_target()?;
                 // SAFETY: a `VT_BYREF | VT_ARRAY` reference targets a live `SAFEARRAY*` slot.
@@ -1439,14 +1455,13 @@ impl Variant {
         if self.vtype() != VarType::String {
             return core::ptr::null_mut();
         }
-        bytes_to_raw_bstr(self.data_bytes())
+        self.core.pointer().cast::<u16>()
     }
 
     /// A pointer to the union payload (offset 8) of the cell at `cell`, with the cell's
     /// provenance: the storage a `VT_BYREF` reference to a typed variable points at.
     pub fn payload_ptr(cell: *mut Variant) -> *mut u8 {
-        cell.cast::<u8>()
-            .wrapping_add(calcvba_automation::abi::PAYLOAD_OFFSET)
+        cell.cast::<u8>().wrapping_add(crate::abi::PAYLOAD_OFFSET)
     }
 
     /// The address of this cell's union payload (offset 8): where a typed variable's value,
@@ -1454,19 +1469,20 @@ impl Variant {
     pub fn payload_address(&self) -> usize {
         (self as *const Self)
             .expose_provenance()
-            .wrapping_add(calcvba_automation::abi::PAYLOAD_OFFSET)
+            .wrapping_add(crate::abi::PAYLOAD_OFFSET)
     }
 
     /// The memory and layout of the engine UDT value this cell holds.
-    pub(crate) fn engine_record_memory(&self) -> Option<(*mut u8, Arc<VbaRecordLayout>)> {
+    #[doc(hidden)]
+    pub fn engine_record_memory(&self) -> Option<(*mut u8, Arc<VbaRecordLayout>)> {
         if self.vtype() != VarType::Record {
             return None;
         }
-        let (data, info) = self.core.record_addresses();
-        if data == 0 || info != 0 {
+        let (data, info) = self.core.record_pointers();
+        if data.is_null() || !info.is_null() {
             return None;
         }
-        let record = core::ptr::with_exposed_provenance_mut::<VbaRecord>(data);
+        let record = data.cast::<VbaRecord>();
         // SAFETY: an engine record cell owns this box (`from_vba_record`); the record's
         // memory is its own allocation, addressed without borrowing the cell.
         unsafe { Some(((*record).data_mut_ptr(), Arc::clone((*record).layout()))) }
@@ -1479,7 +1495,7 @@ impl Variant {
         }
         // SAFETY: an ArrayVariant owns its descriptor (or null) until drop; the view only
         // reads `fFeatures`.
-        unsafe { SafeArray::borrow_raw(bytes_to_raw_safearray(self.data_bytes()), None) }
+        unsafe { SafeArray::borrow_raw(self.core.pointer(), None) }
             .is_some_and(|array| array.is_fixed_size())
     }
 
@@ -1494,7 +1510,7 @@ impl Variant {
         if self.is_fixed_size_array() == fixed {
             return;
         }
-        let raw = bytes_to_raw_safearray(self.data_bytes());
+        let raw = self.core.pointer();
         // SAFETY: `&mut self` gives exclusive access to the descriptor this ArrayVariant owns;
         // the view only rewrites its fixed-size bits.
         let view = unsafe { SafeArray::borrow_raw(raw, None) };
@@ -1641,16 +1657,13 @@ impl Variant {
         let (record_info, record_data) = value.into_raw_parts();
         // A null `pRecInfo` marks an engine record; a COM record always has its IRecordInfo.
         assert!(!record_info.is_null(), "COM record without IRecordInfo");
-        Self::from_core(VariantCore::record(
-            record_data.expose_provenance(),
-            record_info.expose_provenance(),
-        ))
+        Self::from_core(VariantCore::record(record_data, record_info))
     }
 
     /// A `VT_RECORD` cell holding an engine UDT value (no `IRecordInfo`).
     pub fn from_vba_record(value: VbaRecord) -> Self {
         let raw = Box::into_raw(Box::new(value));
-        Self::from_core(VariantCore::record(raw.expose_provenance(), 0))
+        Self::from_core(VariantCore::record(raw.cast(), core::ptr::null_mut()))
     }
 
     fn record_cell(&self) -> Option<RecordCell<'_>> {
@@ -1678,12 +1691,12 @@ impl Variant {
         if self.vtype() != VarType::Record {
             return None;
         }
-        let (data, info) = self.core.record_addresses();
-        if data == 0 || info != 0 {
+        let (data, info) = self.core.record_pointers();
+        if data.is_null() || !info.is_null() {
             return None;
         }
         // SAFETY: `&mut self` proves exclusive access to the boxed engine record it owns.
-        Some(unsafe { &mut *core::ptr::with_exposed_provenance_mut::<VbaRecord>(data) })
+        Some(unsafe { &mut *data.cast::<VbaRecord>() })
     }
 
     /// The COM record (`BRECORD`) this cell holds, borrowed.
@@ -1795,16 +1808,16 @@ impl Variant {
         }
     }
 
-    pub(crate) fn try_clone(&self) -> Result<Self, String> {
+    pub fn try_clone(&self) -> Result<Self, String> {
         match self.vtype() {
             VarType::String => {
                 crate::vba_record::owning_boundary("variant-bstr-clone")?;
-                let source = bytes_to_raw_bstr(self.data_bytes());
+                let source = self.core.pointer().cast::<u16>();
                 // SAFETY: this String Variant keeps `source` live for the borrow.
                 let cloned = unsafe { borrow_raw_bstr(source) }.try_to_owned()?;
-                Ok(Self::from_core(VariantCore::from_bytes(
-                    VarType::String,
-                    raw_bstr_ptr_to_bytes(cloned.into_raw_bstr()),
+                Ok(Self::from_core(VariantCore::from_pointer(
+                    VarType::String as u16,
+                    cloned.into_raw_bstr(),
                 )))
             }
             VarType::Object => {
@@ -1853,10 +1866,10 @@ impl Drop for Variant {
             // BSTR until cleared), so reconstituting the `BStr` here takes that ownership
             // and its drop frees the allocation exactly once.
             VarType::String => unsafe {
-                let _ = BStr::from_raw_bstr(bytes_to_raw_bstr(self.data_bytes()));
+                let _ = BStr::from_raw_bstr(self.core.pointer().cast::<u16>());
             },
             VarType::Object => {
-                let raw = bytes_to_raw_iunknown(self.data_bytes());
+                let raw = self.core.pointer().cast::<RawRuntimeIUnknown>();
                 if !raw.is_null() {
                     // SAFETY: `raw` was checked non-null above and an Object Variant holds
                     // exactly one retained reference taken at construction
@@ -1870,7 +1883,7 @@ impl Drop for Variant {
                 }
             }
             VarType::ArrayVariant => {
-                let raw = bytes_to_raw_safearray(self.data_bytes());
+                let raw = self.core.pointer();
                 let layout = self.record_array_layout_ptr();
                 // SAFETY: a UDT array cell owns one strong layout reference from
                 // `Arc::into_raw`; it is released exactly once here.
@@ -1880,21 +1893,14 @@ impl Drop for Variant {
                 drop(unsafe { SafeArray::from_raw_safearray_owned(raw, layout) });
             }
             VarType::Record => {
-                let (data, info) = self.core.record_addresses();
-                if info != 0 {
+                let (data, info) = self.core.record_pointers();
+                if !info.is_null() {
                     // SAFETY: a COM record cell owns its `BRECORD` (`from_com_record`); this
                     // releases it once, as `VariantClear` does.
-                    drop(unsafe {
-                        ComRecord::from_raw_parts(
-                            core::ptr::with_exposed_provenance_mut(info),
-                            core::ptr::with_exposed_provenance_mut(data),
-                        )
-                    });
-                } else if data != 0 {
+                    drop(unsafe { ComRecord::from_raw_parts(info, data) });
+                } else if !data.is_null() {
                     // SAFETY: an engine record cell owns the box from `from_vba_record`.
-                    drop(unsafe {
-                        Box::from_raw(core::ptr::with_exposed_provenance_mut::<VbaRecord>(data))
-                    });
+                    drop(unsafe { Box::from_raw(data.cast::<VbaRecord>()) });
                 }
             }
             _ => {}
@@ -1914,7 +1920,10 @@ impl core::fmt::Debug for Variant {
                 dbg.field("string", &self.as_bstr());
             }
             VarType::Object => {
-                dbg.field("object", &self.as_object_ref().map(|value| value.raw()));
+                dbg.field(
+                    "object",
+                    &self.as_object_ref().map(|value| value.raw_iunknown()),
+                );
             }
             VarType::ArrayVariant => {
                 dbg.field("array", &self.as_safearray());
@@ -1944,8 +1953,8 @@ impl PartialEq for Variant {
         match self.vtype() {
             VarType::String => self.as_bstr() == other.as_bstr(),
             VarType::Object => {
-                bytes_to_raw_iunknown(self.data_bytes())
-                    == bytes_to_raw_iunknown(other.data_bytes())
+                self.core.pointer().cast::<RawRuntimeIUnknown>()
+                    == other.core.pointer().cast::<RawRuntimeIUnknown>()
             }
             VarType::ArrayVariant => self.as_safearray() == other.as_safearray(),
             VarType::ByRef => self.byref_target() == other.byref_target(),
@@ -2262,18 +2271,15 @@ mod tests {
     fn com_variant_layout_shape() {
         assert_eq!(
             core::mem::size_of::<VariantCore>(),
-            calcvba_automation::abi::VARIANT_SIZE
+            crate::abi::VARIANT_SIZE
         );
         assert_eq!(core::mem::align_of::<VariantCore>(), 8);
         assert_eq!(
             core::mem::size_of::<VariantData>(),
-            calcvba_automation::abi::PAYLOAD_SIZE
+            crate::abi::PAYLOAD_SIZE
         );
         assert_eq!(core::mem::align_of::<VariantData>(), 8);
-        assert_eq!(
-            core::mem::size_of::<Variant>(),
-            calcvba_automation::abi::VARIANT_SIZE
-        );
+        assert_eq!(core::mem::size_of::<Variant>(), crate::abi::VARIANT_SIZE);
         assert_eq!(core::mem::align_of::<Variant>(), 8);
         // SAFETY (all five): `offset_of` calls the closure with `base` pointing to
         // live, aligned `MaybeUninit<VariantCore>` storage; `addr_of!` computes the

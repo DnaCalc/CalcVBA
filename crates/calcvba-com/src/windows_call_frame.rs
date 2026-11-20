@@ -320,6 +320,7 @@ unsafe fn alloc_bstr(text: &str) -> windows_sys::core::BSTR {
 mod tests {
     use super::*;
     use crate::windows_client::COM_DISP_E_TYPEMISMATCH;
+    use calcvba_runtime::ObjectRefExt;
     use calcvba_runtime::{RuntimeCallSource, bstr::BStr, safe_array::SafeArray};
     use windows_sys::Win32::System::Com::DISPATCH_METHOD;
     use windows_sys::Win32::System::Variant::{

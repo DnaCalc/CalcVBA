@@ -7,6 +7,7 @@
 //! to a Variant cell, `VT_BYREF | vt` to typed storage), and the result moves into the runtime
 //! as it is. Objects are their interface pointers. VM3, the JIT and the typed host stack call
 //! these functions; nothing here keeps per-object state.
+use calcvba_runtime::ObjectRefExt;
 pub mod early;
 mod events;
 pub use events::{EventConnection, advise_events};

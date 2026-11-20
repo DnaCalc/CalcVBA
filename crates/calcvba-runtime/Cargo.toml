@@ -7,7 +7,7 @@ authors.workspace = true
 repository.workspace = true
 
 [features]
-live-counters = []
+live-counters = ["calcvba-automation/live-counters"]
 
 [dependencies]
 calcvba-automation.workspace = true
@@ -26,5 +26,6 @@ windows-sys = { version = "0.59", features = [
 
 [dev-dependencies]
 proptest.workspace = true
+calcvba-automation = { workspace = true, features = ["live-counters"] }
 [lints]
 workspace = true

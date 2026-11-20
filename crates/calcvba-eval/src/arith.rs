@@ -12,6 +12,7 @@
 
 use crate::typed::{self, CheckedIntBinOp};
 use calcvba_bundle::{NumericCoerceTarget, NumericMode, StringCompareMode};
+use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::arithmetic::DecimalOp;
 use calcvba_runtime::decimal::Decimal96;
 use calcvba_runtime::decimal::DecimalError;

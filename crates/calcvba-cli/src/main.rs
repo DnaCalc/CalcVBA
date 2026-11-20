@@ -11,6 +11,7 @@
 //! The run commands accept a platform host profile. The legacy compiler and host execution paths
 //! remain removed; `build` is the clean wrapper-artifact lane.
 
+use calcvba_runtime::ObjectRefExt;
 mod office;
 use std::path::{Path, PathBuf};
 use std::{env, fs};
@@ -771,7 +772,7 @@ fn format_variant_value(value: &Variant) -> String {
             None => "array:<invalid>".to_string(),
         },
         VarType::Object => match value.as_object_ref() {
-            Some(handle) => format!("object:{handle}"),
+            Some(handle) => format!("object:{}", handle.display_text()),
             None => "object:<null>".to_string(),
         },
         VarType::Record => match value.as_com_record() {

@@ -7,6 +7,7 @@ use calcvba_oxir::{
 use calcvba_rt_abi::host_entry::LinkedTarget;
 use calcvba_rt_abi::host_entry::activation::{Activation, CONTROL, SUSPENDED};
 use calcvba_rt_abi::{ErrEngine, Fault, FaultAction, ResumeTarget, SavedErrState};
+use calcvba_runtime::ObjectRefExt;
 use calcvba_vm3::typed::TypedInterpreter;
 
 struct Frame {

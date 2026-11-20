@@ -10,6 +10,7 @@ use calcvba_rt_abi::{
     host_entry::value::{from_variant, to_variant},
     native_export::{Context, NativeMemberBinding, NativeMemberCall},
 };
+use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::{ObjectRef, Variant};
 use std::{collections::HashMap, rc::Rc};
 

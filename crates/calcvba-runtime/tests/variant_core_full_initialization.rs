@@ -1,3 +1,4 @@
+use calcvba_runtime::ObjectRefExt;
 use std::sync::Arc;
 
 use calcvba_runtime::{
@@ -48,12 +49,13 @@ fn variant_core_full_initialization_external_api_and_runtime_paths() {
     assert_eq!(VariantData::from_f64(3.5).bytes(), 3.5_f64.to_le_bytes());
     let pointer_pointee = 17u32;
     let pointer = core::ptr::from_ref(&pointer_pointee);
-    assert_eq!(
-        VariantData::from_exposed_pointer(pointer).bytes(),
-        u64::try_from(pointer.expose_provenance())
-            .expect("x64 pointer address")
-            .to_le_bytes()
-    );
+    let data = VariantData::from_pointer(pointer);
+    assert_eq!(data.pointer().cast_const().cast::<u32>(), pointer);
+    let mut address = [0u8; 8];
+    address[..core::mem::size_of::<usize>()].copy_from_slice(&pointer.addr().to_le_bytes());
+    assert_eq!(data.bytes(), address);
+    // SAFETY: the pointer member keeps the provenance of `pointer_pointee`.
+    assert_eq!(unsafe { *data.pointer().cast::<u32>() }, 17);
 
     let raw_core = VariantCore::from_parts(
         VarType::Decimal,

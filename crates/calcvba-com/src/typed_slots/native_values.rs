@@ -10,6 +10,7 @@ use crate::{
     windows_ffi_bridge::{FfiArg, FfiReturnType, call_via_libffi},
 };
 use calcvba_host_api::{HostObject, TypedFault, Value, object::planned_slots::MemberArguments};
+use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::{VarType, Variant};
 use std::ffi::c_void;
 use windows_sys::Win32::{

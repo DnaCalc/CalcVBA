@@ -4,6 +4,7 @@ use crate::{
     TypeLibEventDispatchPath, TypeLibEventMetadata, TypeLibMemberInvokeKind, TypeLibMetadataBlob,
     TypeLibParamType, TypeLibWireType, runtime_class_descriptor_from_typelib_metadata,
 };
+use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::{
     ObjectRef, RuntimeClassDescriptor, RuntimeDispatchPlan, RuntimeDispatchPlanCache,
     RuntimeInterfaceId, RuntimeMemberInvokeKind, Variant,
@@ -657,6 +658,7 @@ mod tests {
         TypeLibMemberInvokeKind, TypeLibMemberMetadata, TypeLibMetadataBlob, TypeLibParamType,
         TypeLibResolvedIdentity, TypeLibWireType,
     };
+    use calcvba_runtime::ObjectRefExt;
     use calcvba_runtime::{ObjectRef, RuntimeInterfaceId, RuntimeMemberInvokeKind, VarType};
 
     fn sample_typelib_identity() -> TypeLibResolvedIdentity {

@@ -9,6 +9,7 @@
 use crate::{LibError, LibResult, as_f64, as_i32, as_str, need, opt, vunit};
 use calcvba_com::{ComCallbackToken, ComMemberToken, ComSubscriptionToken};
 use calcvba_hal::HostServices;
+use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::Variant;
 use calcvba_runtime::coerce::coerce_to;
 use calcvba_runtime::object_ref::ObjectRef;

@@ -158,6 +158,7 @@ mod tests {
     use super::{create_runtime_object_dispatch, runtime_object_from_dispatch};
     use crate::{IID_IDISPATCH, release_dispatch};
     use calcvba_runtime::ObjectRef;
+    use calcvba_runtime::ObjectRefExt;
     use std::ffi::c_void;
 
     #[test]

@@ -1,5 +1,6 @@
 //! VBA 7.1's regular-expression objects. State and returned objects are owned by
 //! the ordinary runtime boxes; both executors call this same dispatcher.
+use calcvba_runtime::ObjectRefExt;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use calcvba_bundle::ProjectMemberKind;

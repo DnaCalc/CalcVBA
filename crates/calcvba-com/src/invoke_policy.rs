@@ -293,6 +293,7 @@ mod tests {
         TypeLibWireType,
     };
     use calcvba_runtime::ObjectRef;
+    use calcvba_runtime::ObjectRefExt;
 
     use super::{
         UnboundRuntimeInvokePlan, canonicalize_member_known_args, legacy_runtime_arg_values,

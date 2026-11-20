@@ -6,6 +6,7 @@ use calcvba_hal::{
 };
 use calcvba_host::{Backend, ProcedureKind, provider::Provider};
 use calcvba_host_api as api;
+use calcvba_runtime::ObjectRefExt;
 use std::{rc::Rc, sync::Arc};
 #[path = "support/native_identity.rs"]
 mod native_identity;

@@ -1,11 +1,11 @@
 use core::ffi::c_void;
-use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU32, Ordering};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 
 use crate::Variant;
+pub use calcvba_automation::object_ref::{ObjectRef, RawRuntimeIUnknown};
 
 pub const RUNTIME_S_OK: i32 = 0;
 pub const RUNTIME_E_NOINTERFACE: i32 = 0x8000_4002u32 as i32;
@@ -638,11 +638,6 @@ fn runtime_interface_descriptor_key(interface: &RuntimeInterfaceDescriptor) -> u
 }
 
 #[repr(C)]
-pub struct RawRuntimeIUnknown {
-    pub vtbl: *const IUnknownVtbl,
-}
-
-#[repr(C)]
 struct CompatObjectBase {
     unknown: RawRuntimeIUnknown,
     ref_count: AtomicU32,
@@ -773,7 +768,7 @@ pub fn retained_parked_termination_object(instance_id: i32) -> Option<ObjectRef>
             (*owner).running_termination.set(true);
             let unknown = owner.cast::<RawRuntimeIUnknown>();
             compat_add_ref(unknown.cast());
-            Some(ObjectRef(NonNull::new_unchecked(unknown)))
+            ObjectRef::from_raw_iunknown_owned(unknown)
         }
     })
 }
@@ -974,20 +969,173 @@ fn compat_owner_from_this(this: *mut c_void) -> *mut CompatObjectBase {
     compat_owner_from_unknown(this.cast::<RawRuntimeIUnknown>())
 }
 
-#[repr(transparent)]
-pub struct ObjectRef(NonNull<RawRuntimeIUnknown>);
+/// The runtime's operations on an object reference: project instances (identity, class,
+/// fields, termination), built-in native state, and interface projections. A foreign COM
+/// object answers the neutral value (`0`, `false`, `None`).
+pub trait ObjectRefExt: Sized {
+    /// The identity of a runtime object, or `<foreign>` for a foreign COM object (the text the
+    /// runtime prints for an object reference).
+    fn display_text(&self) -> String;
 
-impl ObjectRef {
-    pub fn from_compat_identity(compat_identity: i32) -> Self {
+    fn from_compat_identity(compat_identity: i32) -> Self;
+
+    fn from_compat_identity_with_descriptor(
+        compat_identity: i32,
+        class_descriptor: &'static RuntimeClassDescriptor,
+    ) -> Self;
+
+    /// Allocates a fresh project-class instance: a distinct `CompatObjectBase` (a distinct
+    /// IUnknown, hence a distinct identity for `Is`) with its own per-instance `instance_id`
+    /// and the class's `route_key` for member dispatch. Refcount starts at 1; the instance is
+    /// not pinned by any route map, so its lifetime tracks real references. `has_terminate`
+    /// marks classes with a `Class_Terminate`, so the last release enqueues it for the VM.
+    fn from_project_instance(
+        instance_id: i32,
+        route_key: i32,
+        bundle_id: i32,
+        has_terminate: bool,
+        class_descriptor: &'static RuntimeClassDescriptor,
+    ) -> Self;
+
+    fn query_iunknown(&self) -> Self;
+
+    /// The identity of a runtime compat object; 0 for a foreign COM object (which is its own
+    /// interface pointer and carries none).
+    fn compat_identity(&self) -> i32;
+
+    fn raw(&self) -> i32;
+
+    /// Whether this is a runtime placeholder for `Nothing` (a compat object with identity 0). A
+    /// foreign object is its interface pointer and never is (step 8a), whatever `raw()` says.
+    fn is_nothing_placeholder(&self) -> bool;
+
+    /// The identity VBA's `Is` compares: a runtime object's identity number, and for a foreign
+    /// object its `IUnknown` address (COM identity: `QueryInterface` for `IUnknown` returns the
+    /// same pointer from every interface of one object).
+    fn is_identity(&self) -> usize;
+
+    /// Class/route key for project-dynamic dispatch (which class's route this instance uses).
+    /// Only valid for compat (project-class) objects, like `compat_identity`/`class_descriptor`.
+    fn route_key(&self) -> i32;
+
+    /// The bundle (".NET assembly") that owns this instance's class â€” `(bundle_id,
+    /// route_key)` selects the class dispatch table in a multi-bundle VM. `0` for
+    /// single-bundle runs.
+    fn bundle_id(&self) -> i32;
+
+    fn is_project_instance(&self) -> bool;
+
+    fn object_owner_id(&self) -> Option<u64>;
+
+    /// True when this `ObjectRef` wraps one of our `CompatObjectBase` boxes (a project-class or
+    /// internal object), as opposed to a foreign COM interface obtained via
+    /// `from_raw_iunknown_addref`. Reading the vtbl pointer is safe for any IUnknown (every COM
+    /// object's first field is its vtbl); comparing it to our static vtbl tells the two apart.
+    /// `compat_identity`/`route_key`/`class_descriptor`/`terminates_on_release` are only valid
+    /// when this returns true.
+    fn is_compat_object(&self) -> bool;
+
+    /// True when releasing this instance's last reference should run a `Class_Terminate`. Safe for
+    /// any `ObjectRef`: foreign COM objects (which carry no such flag) report `false`.
+    fn terminates_on_release(&self) -> bool;
+
+    /// Class_Terminate is not scheduled when Class_Initialize failed.
+    fn mark_initialization_failed(&self);
+
+    fn class_descriptor(&self) -> &'static RuntimeClassDescriptor;
+
+    fn try_class_descriptor(&self) -> Option<&'static RuntimeClassDescriptor>;
+
+    fn object_identity(&self) -> RuntimeObjectIdentity;
+
+    fn try_object_identity(&self) -> Option<RuntimeObjectIdentity>;
+
+    fn project_field_get(&self, token: i32) -> Option<Variant>;
+
+    fn project_field_set(&self, token: i32, value: Variant) -> bool;
+
+    /// Borrow instance field `token` IN PLACE (no clone) and run `f` against it
+    /// (`None` if the field is absent). This is the O(1) field-element-access
+    /// counterpart to [`Self::project_field_get`]: a field-held array can be indexed
+    /// without cloning the whole array. Returns `None` if this is not a project
+    /// instance. The closure must not call back into this object's fields (it holds a
+    /// shared `RefCell` borrow for its duration).
+    fn with_project_field<R>(&self, token: i32, f: impl FnOnce(Option<&Variant>) -> R)
+    -> Option<R>;
+
+    /// Mutably borrow instance field `token` IN PLACE (no clone / store-back) and run
+    /// `f` against it â€” the write counterpart to [`Self::with_project_field`]. `None`
+    /// if this is not a project instance, or if the field is absent (it must already
+    /// hold the array â€” class init dimensions array fields before they are indexed).
+    fn with_project_field_mut<R>(&self, token: i32, f: impl FnOnce(&mut Variant) -> R)
+    -> Option<R>;
+
+    /// The cell of instance field `token`, created (Empty, or Nothing for an object field)
+    /// if absent: its address is stable until the instance releases its fields. `None` if
+    /// this is not a project instance.
+    fn project_field_cell(&self, token: i32) -> Option<*mut Variant>;
+
+    /// Run `f` against this instance's built-in native-`Collection` state, lazily creating an
+    /// empty [`crate::collection::CollectionData`] on first use. Returns `None` if this
+    /// `ObjectRef` is not one of our compat boxes (a foreign COM object has no native state).
+    ///
+    /// The state rides the object box's `native_state` slot, so `Set c2 = c1` (which clones the
+    /// `ObjectRef` to the same box) shares one collection â€” VBA reference semantics â€” and box
+    /// teardown reclaims it, so there is no VM-side store and no leak. The shared keyed-method
+    /// logic (`calcvba_eval::collection::dispatch_collection`) runs inside `f`.
+    fn with_native_collection<R>(
+        &self,
+        f: impl FnOnce(&mut crate::collection::CollectionData) -> R,
+    ) -> Option<R>;
+
+    /// A snapshot of this instance's native `Collection` values in insertion order, or `None`
+    /// if it has no native collection â€” a foreign COM object, or a compat object that never had
+    /// one (a project instance, or a `Collection` with no items added yet). Unlike
+    /// [`Self::with_native_collection`] this does NOT lazily create a collection, so it is safe
+    /// to probe any object (e.g. `For Each`) without planting empty state on project instances.
+    fn native_collection_snapshot(&self) -> Option<Vec<Variant>>;
+
+    fn query_interface_descriptor(
+        &self,
+        iid: RuntimeInterfaceId,
+    ) -> Option<&'static RuntimeInterfaceDescriptor>;
+
+    fn query_interface_descriptor_by_guid(
+        &self,
+        guid: Guid,
+    ) -> Option<&'static RuntimeInterfaceDescriptor>;
+
+    fn query_interface_projection(
+        &self,
+        iid: RuntimeInterfaceId,
+    ) -> Option<RuntimeInterfaceProjection>;
+
+    fn query_interface_projection_by_guid(&self, guid: Guid) -> Option<RuntimeInterfaceProjection>;
+
+    fn strong_count(&self) -> u32;
+
+    fn strong_count_for_test(&self) -> u32;
+}
+
+impl ObjectRefExt for ObjectRef {
+    fn display_text(&self) -> String {
+        if self.is_compat_object() {
+            self.compat_identity().to_string()
+        } else {
+            "<foreign>".to_string()
+        }
+    }
+
+    fn from_compat_identity(compat_identity: i32) -> Self {
         Self::from_compat_identity_with_descriptor(compat_identity, &COMPAT_OBJECT_CLASS_DESCRIPTOR)
     }
 
-    pub fn from_compat_identity_with_descriptor(
+    fn from_compat_identity_with_descriptor(
         compat_identity: i32,
         class_descriptor: &'static RuntimeClassDescriptor,
     ) -> Self {
         // Legacy/template path: identity key and route key coincide; no terminate hook.
-        Self::from_compat_object(
+        from_compat_object(
             compat_identity,
             compat_identity,
             0,
@@ -997,19 +1145,14 @@ impl ObjectRef {
         )
     }
 
-    /// Allocates a fresh project-class instance: a distinct `CompatObjectBase` (a distinct
-    /// IUnknown, hence a distinct identity for `Is`) with its own per-instance `instance_id`
-    /// and the class's `route_key` for member dispatch. Refcount starts at 1; the instance is
-    /// not pinned by any route map, so its lifetime tracks real references. `has_terminate`
-    /// marks classes with a `Class_Terminate`, so the last release enqueues it for the VM.
-    pub fn from_project_instance(
+    fn from_project_instance(
         instance_id: i32,
         route_key: i32,
         bundle_id: i32,
         has_terminate: bool,
         class_descriptor: &'static RuntimeClassDescriptor,
     ) -> Self {
-        Self::from_compat_object(
+        from_compat_object(
             instance_id,
             route_key,
             bundle_id,
@@ -1019,60 +1162,15 @@ impl ObjectRef {
         )
     }
 
-    fn from_compat_object(
-        compat_identity: i32,
-        route_key: i32,
-        bundle_id: i32,
-        terminates_on_release: bool,
-        class_descriptor: &'static RuntimeClassDescriptor,
-        project_instance: bool,
-    ) -> Self {
-        let stable_object_id = compat_identity as u32 as u64;
-        let boxed = Box::new(CompatObjectBase {
-            unknown: RawRuntimeIUnknown {
-                vtbl: &COMPAT_OBJECT_VTBL,
-            },
-            ref_count: AtomicU32::new(1),
-            object_owner: crate::object_owner::RuntimeObjectOwner::current().downgrade(),
-            project_instance,
-            identity: RuntimeObjectIdentity {
-                stable_object_id,
-                compat_identity,
-                route_key,
-                bundle_id,
-                terminates_on_release,
-                class_descriptor,
-                lifetime_policy: RuntimeLifetimePolicy::RefCounted,
-                apartment_model: RuntimeApartmentModel::Unknown,
-            },
-            class_descriptor,
-            fields: RefCell::new(BTreeMap::new()),
-            native_state: RefCell::new(None),
-            parked_for_termination: Cell::new(false),
-            running_termination: Cell::new(false),
-            terminated: Cell::new(false),
-        });
-        let raw = Box::into_raw(boxed);
-        crate::live_counters::object_box_allocated();
-        // `raw` came from `Box::into_raw` of the freshly allocated `CompatObjectBase` above.
-        // `repr(C)` puts `unknown` first, so this cast has the field's exact address while
-        // retaining provenance for the complete allocation; AddRef/Release need that full-box
-        // provenance when they recover `CompatObjectBase` and touch the adjacent refcount.
-        let unknown = raw.cast::<RawRuntimeIUnknown>();
-        Self(NonNull::new(unknown).expect("compat object unknown pointer must be non-null"))
-    }
-
-    pub fn query_iunknown(&self) -> Self {
+    fn query_iunknown(&self) -> Self {
         self.clone()
     }
 
-    /// The identity of a runtime compat object; 0 for a foreign COM object (which is its own
-    /// interface pointer and carries none).
-    pub fn compat_identity(&self) -> i32 {
+    fn compat_identity(&self) -> i32 {
         if !self.is_compat_object() {
             return 0;
         }
-        let owner = compat_owner_from_unknown(self.0.as_ptr());
+        let owner = compat_owner_from_unknown(self.raw_iunknown());
         // SAFETY: `self.0` points at a live `CompatObjectBase`. Every `ObjectRef` in the
         // workspace is such a box: the safe constructors mint them, the COM bridge wraps even
         // foreign IDispatch/IUnknown objects in compat boxes keyed by a binding handle
@@ -1085,24 +1183,19 @@ impl ObjectRef {
         unsafe { (*owner).identity.compat_identity }
     }
 
-    pub fn raw(&self) -> i32 {
+    fn raw(&self) -> i32 {
         self.compat_identity()
     }
 
-    /// Whether this is a runtime placeholder for `Nothing` (a compat object with identity 0). A
-    /// foreign object is its interface pointer and never is (step 8a), whatever `raw()` says.
-    pub fn is_nothing_placeholder(&self) -> bool {
+    fn is_nothing_placeholder(&self) -> bool {
         self.is_compat_object() && self.compat_identity() == 0
     }
 
-    /// The identity VBA's `Is` compares: a runtime object's identity number, and for a foreign
-    /// object its `IUnknown` address (COM identity: `QueryInterface` for `IUnknown` returns the
-    /// same pointer from every interface of one object).
-    pub fn is_identity(&self) -> usize {
+    fn is_identity(&self) -> usize {
         if self.is_compat_object() {
             return self.compat_identity() as u32 as usize;
         }
-        let this = self.0.as_ptr();
+        let this = self.raw_iunknown();
         let mut unknown: *mut c_void = core::ptr::null_mut();
         // SAFETY: this ObjectRef retains a live COM object whose first field is its IUnknown
         // vtable; the reference QueryInterface returns is released at once (only its address is
@@ -1121,93 +1214,69 @@ impl ObjectRef {
         unknown as usize
     }
 
-    /// Class/route key for project-dynamic dispatch (which class's route this instance uses).
-    /// Only valid for compat (project-class) objects, like `compat_identity`/`class_descriptor`.
-    pub fn route_key(&self) -> i32 {
+    fn route_key(&self) -> i32 {
         if !self.is_compat_object() {
             return 0;
         }
-        let owner = compat_owner_from_unknown(self.0.as_ptr());
+        let owner = compat_owner_from_unknown(self.raw_iunknown());
         // SAFETY: documented contract (doc above and `is_compat_object`): callers only invoke
         // this on compat objects, so `owner` is the live `CompatObjectBase` (`#[repr(C)]`,
         // `unknown` first) kept alive by this `ObjectRef`'s retained reference.
         unsafe { (*owner).identity.route_key }
     }
 
-    /// The bundle (".NET assembly") that owns this instance's class â€” `(bundle_id,
-    /// route_key)` selects the class dispatch table in a multi-bundle VM. `0` for
-    /// single-bundle runs.
-    pub fn bundle_id(&self) -> i32 {
+    fn bundle_id(&self) -> i32 {
         if !self.is_compat_object() {
             return 0;
         }
-        let owner = compat_owner_from_unknown(self.0.as_ptr());
+        let owner = compat_owner_from_unknown(self.raw_iunknown());
         // SAFETY: documented contract as for `route_key`: only called on compat objects, so
         // `owner` is the live `CompatObjectBase` kept alive by this `ObjectRef`'s reference.
         unsafe { (*owner).identity.bundle_id }
     }
 
-    pub fn is_project_instance(&self) -> bool {
+    fn is_project_instance(&self) -> bool {
         if !self.is_compat_object() {
             return false;
         }
         // SAFETY: private vtable proof establishes the complete retained allocation.
-        unsafe { (*compat_owner_from_unknown(self.0.as_ptr())).project_instance }
+        unsafe { (*compat_owner_from_unknown(self.raw_iunknown())).project_instance }
     }
 
-    pub fn raw_iunknown(&self) -> *mut RawRuntimeIUnknown {
-        self.0.as_ptr()
-    }
-    pub fn object_owner_id(&self) -> Option<u64> {
+    fn object_owner_id(&self) -> Option<u64> {
         if !self.is_compat_object() {
             return None;
         }
         // SAFETY: private-vtable proof retains this complete compat allocation.
         Some(unsafe {
-            (*compat_owner_from_unknown(self.0.as_ptr()))
+            (*compat_owner_from_unknown(self.raw_iunknown()))
                 .object_owner
                 .id
         })
     }
 
-    /// Transfer this owned runtime IUnknown reference to a same-thread carrier.
-    /// The consumer must eventually adopt it with from_raw_iunknown_owned.
-    pub fn into_raw_iunknown(self) -> *mut RawRuntimeIUnknown {
-        let owner = core::mem::ManuallyDrop::new(self);
-        owner.0.as_ptr()
-    }
-
-    /// True when this `ObjectRef` wraps one of our `CompatObjectBase` boxes (a project-class or
-    /// internal object), as opposed to a foreign COM interface obtained via
-    /// `from_raw_iunknown_addref`. Reading the vtbl pointer is safe for any IUnknown (every COM
-    /// object's first field is its vtbl); comparing it to our static vtbl tells the two apart.
-    /// `compat_identity`/`route_key`/`class_descriptor`/`terminates_on_release` are only valid
-    /// when this returns true.
-    pub fn is_compat_object(&self) -> bool {
+    fn is_compat_object(&self) -> bool {
         // SAFETY: every COM-shaped object's first pointer-sized field is its vtbl (see doc
         // above), so this read is valid for compat boxes and foreign IUnknowns alike; `self.0`
         // is non-null and the object is alive because this `ObjectRef` holds a retained
         // reference to it.
-        let vtbl = unsafe { (*self.0.as_ptr()).vtbl };
+        let vtbl = unsafe { (*self.raw_iunknown()).vtbl };
         std::ptr::eq(vtbl, &COMPAT_OBJECT_VTBL)
     }
 
-    /// True when releasing this instance's last reference should run a `Class_Terminate`. Safe for
-    /// any `ObjectRef`: foreign COM objects (which carry no such flag) report `false`.
-    pub fn terminates_on_release(&self) -> bool {
+    fn terminates_on_release(&self) -> bool {
         if !self.is_compat_object() {
             return false;
         }
-        let owner = compat_owner_from_unknown(self.0.as_ptr());
+        let owner = compat_owner_from_unknown(self.raw_iunknown());
         // SAFETY: guarded by the `is_compat_object()` check above (vtbl identity), so `owner` is
         // the live `CompatObjectBase` kept alive by this `ObjectRef`'s retained reference.
         unsafe { (*owner).identity.terminates_on_release }
     }
 
-    /// Class_Terminate is not scheduled when Class_Initialize failed.
-    pub fn mark_initialization_failed(&self) {
+    fn mark_initialization_failed(&self) {
         if self.is_project_instance() {
-            let owner = compat_owner_from_unknown(self.0.as_ptr());
+            let owner = compat_owner_from_unknown(self.raw_iunknown());
             // SAFETY: the private vtable proves this retained project box, and
             // its lifecycle cells are used only on the owning VBA thread.
             unsafe {
@@ -1216,7 +1285,7 @@ impl ObjectRef {
         }
     }
 
-    pub fn class_descriptor(&self) -> &'static RuntimeClassDescriptor {
+    fn class_descriptor(&self) -> &'static RuntimeClassDescriptor {
         debug_assert!(
             self.is_compat_object(),
             "class_descriptor is only valid for runtime compat objects"
@@ -1225,18 +1294,18 @@ impl ObjectRef {
             .expect("class_descriptor is only valid for runtime compat objects")
     }
 
-    pub fn try_class_descriptor(&self) -> Option<&'static RuntimeClassDescriptor> {
+    fn try_class_descriptor(&self) -> Option<&'static RuntimeClassDescriptor> {
         if !self.is_compat_object() {
             return None;
         }
-        let owner = compat_owner_from_unknown(self.0.as_ptr());
+        let owner = compat_owner_from_unknown(self.raw_iunknown());
         // SAFETY: documented contract (`is_compat_object`): only valid on compat objects, so
         // `owner` is the live `CompatObjectBase` kept alive by this `ObjectRef`'s retained
         // reference; the descriptor read out of it is `&'static`.
         Some(unsafe { (*owner).class_descriptor })
     }
 
-    pub fn object_identity(&self) -> RuntimeObjectIdentity {
+    fn object_identity(&self) -> RuntimeObjectIdentity {
         debug_assert!(
             self.is_compat_object(),
             "object_identity is only valid for runtime compat objects"
@@ -1245,38 +1314,32 @@ impl ObjectRef {
             .expect("object_identity is only valid for runtime compat objects")
     }
 
-    pub fn try_object_identity(&self) -> Option<RuntimeObjectIdentity> {
+    fn try_object_identity(&self) -> Option<RuntimeObjectIdentity> {
         if !self.is_compat_object() {
             return None;
         }
-        let owner = compat_owner_from_unknown(self.0.as_ptr());
+        let owner = compat_owner_from_unknown(self.raw_iunknown());
         // SAFETY: documented contract as for `class_descriptor`: only called on compat objects,
         // so `owner` is the live `CompatObjectBase` kept alive by this `ObjectRef`'s reference.
         Some(unsafe { (*owner).identity })
     }
 
-    pub fn project_field_get(&self, token: i32) -> Option<Variant> {
+    fn project_field_get(&self, token: i32) -> Option<Variant> {
         if !self.is_project_instance() {
             return None;
         }
-        compat_field_get(compat_owner_from_unknown(self.0.as_ptr()), token)
+        compat_field_get(compat_owner_from_unknown(self.raw_iunknown()), token)
     }
 
-    pub fn project_field_set(&self, token: i32, value: Variant) -> bool {
+    fn project_field_set(&self, token: i32, value: Variant) -> bool {
         if !self.is_project_instance() {
             return false;
         }
-        compat_field_set(compat_owner_from_unknown(self.0.as_ptr()), token, value);
+        compat_field_set(compat_owner_from_unknown(self.raw_iunknown()), token, value);
         true
     }
 
-    /// Borrow instance field `token` IN PLACE (no clone) and run `f` against it
-    /// (`None` if the field is absent). This is the O(1) field-element-access
-    /// counterpart to [`Self::project_field_get`]: a field-held array can be indexed
-    /// without cloning the whole array. Returns `None` if this is not a project
-    /// instance. The closure must not call back into this object's fields (it holds a
-    /// shared `RefCell` borrow for its duration).
-    pub fn with_project_field<R>(
+    fn with_project_field<R>(
         &self,
         token: i32,
         f: impl FnOnce(Option<&Variant>) -> R,
@@ -1284,7 +1347,7 @@ impl ObjectRef {
         if !self.is_project_instance() {
             return None;
         }
-        let owner = compat_owner_from_unknown(self.0.as_ptr());
+        let owner = compat_owner_from_unknown(self.raw_iunknown());
         // SAFETY: `is_project_instance()` (a vtbl-identity check) guards that `owner` is a
         // live `CompatObjectBase` kept alive by this `ObjectRef`'s retained reference; the
         // `RefCell` borrow is single-threaded (`ObjectRef` is neither `Send` nor `Sync`).
@@ -1294,11 +1357,7 @@ impl ObjectRef {
         }
     }
 
-    /// Mutably borrow instance field `token` IN PLACE (no clone / store-back) and run
-    /// `f` against it â€” the write counterpart to [`Self::with_project_field`]. `None`
-    /// if this is not a project instance, or if the field is absent (it must already
-    /// hold the array â€” class init dimensions array fields before they are indexed).
-    pub fn with_project_field_mut<R>(
+    fn with_project_field_mut<R>(
         &self,
         token: i32,
         f: impl FnOnce(&mut Variant) -> R,
@@ -1306,7 +1365,7 @@ impl ObjectRef {
         if !self.is_project_instance() {
             return None;
         }
-        let owner = compat_owner_from_unknown(self.0.as_ptr());
+        let owner = compat_owner_from_unknown(self.raw_iunknown());
         // SAFETY: as in `with_project_field` â€” `owner` is a live `CompatObjectBase` held
         // alive by this `ObjectRef`; the exclusive `RefCell` borrow is single-threaded.
         unsafe {
@@ -1318,14 +1377,11 @@ impl ObjectRef {
         }
     }
 
-    /// The cell of instance field `token`, created (Empty, or Nothing for an object field)
-    /// if absent: its address is stable until the instance releases its fields. `None` if
-    /// this is not a project instance.
-    pub fn project_field_cell(&self, token: i32) -> Option<*mut Variant> {
+    fn project_field_cell(&self, token: i32) -> Option<*mut Variant> {
         if !self.is_project_instance() {
             return None;
         }
-        let owner = compat_owner_from_unknown(self.0.as_ptr());
+        let owner = compat_owner_from_unknown(self.raw_iunknown());
         // SAFETY: as in `with_project_field_mut`; the returned pointer addresses the boxed
         // cell, not the map, so later inserts do not move it.
         unsafe {
@@ -1336,22 +1392,14 @@ impl ObjectRef {
         }
     }
 
-    /// Run `f` against this instance's built-in native-`Collection` state, lazily creating an
-    /// empty [`crate::collection::CollectionData`] on first use. Returns `None` if this
-    /// `ObjectRef` is not one of our compat boxes (a foreign COM object has no native state).
-    ///
-    /// The state rides the object box's `native_state` slot, so `Set c2 = c1` (which clones the
-    /// `ObjectRef` to the same box) shares one collection â€” VBA reference semantics â€” and box
-    /// teardown reclaims it, so there is no VM-side store and no leak. The shared keyed-method
-    /// logic (`calcvba_eval::collection::dispatch_collection`) runs inside `f`.
-    pub fn with_native_collection<R>(
+    fn with_native_collection<R>(
         &self,
         f: impl FnOnce(&mut crate::collection::CollectionData) -> R,
     ) -> Option<R> {
         if !self.is_compat_object() {
             return None;
         }
-        let owner = compat_owner_from_unknown(self.0.as_ptr());
+        let owner = compat_owner_from_unknown(self.raw_iunknown());
         // SAFETY: guarded by `is_compat_object()` (vtbl identity) above, so `owner` is the live
         // `CompatObjectBase` kept alive by this `ObjectRef`'s retained reference; the `RefCell`
         // borrow is single-threaded (`ObjectRef` is neither `Send` nor `Sync`).
@@ -1362,23 +1410,18 @@ impl ObjectRef {
         }
     }
 
-    /// A snapshot of this instance's native `Collection` values in insertion order, or `None`
-    /// if it has no native collection â€” a foreign COM object, or a compat object that never had
-    /// one (a project instance, or a `Collection` with no items added yet). Unlike
-    /// [`Self::with_native_collection`] this does NOT lazily create a collection, so it is safe
-    /// to probe any object (e.g. `For Each`) without planting empty state on project instances.
-    pub fn native_collection_snapshot(&self) -> Option<Vec<Variant>> {
+    fn native_collection_snapshot(&self) -> Option<Vec<Variant>> {
         if !self.is_compat_object() {
             return None;
         }
-        let owner = compat_owner_from_unknown(self.0.as_ptr());
+        let owner = compat_owner_from_unknown(self.raw_iunknown());
         // SAFETY: guarded by `is_compat_object()` (vtbl identity), so `owner` is the live
         // `CompatObjectBase` kept alive by this `ObjectRef`'s retained reference; the borrow is
         // single-threaded (`ObjectRef` is neither `Send` nor `Sync`).
         unsafe { (*owner).native_state.borrow().as_ref().map(|c| c.values()) }
     }
 
-    pub fn query_interface_descriptor(
+    fn query_interface_descriptor(
         &self,
         iid: RuntimeInterfaceId,
     ) -> Option<&'static RuntimeInterfaceDescriptor> {
@@ -1392,7 +1435,7 @@ impl ObjectRef {
             .find(|descriptor| descriptor.id == iid)
     }
 
-    pub fn query_interface_descriptor_by_guid(
+    fn query_interface_descriptor_by_guid(
         &self,
         guid: Guid,
     ) -> Option<&'static RuntimeInterfaceDescriptor> {
@@ -1406,7 +1449,7 @@ impl ObjectRef {
             .find(|descriptor| descriptor.identity.guid == guid)
     }
 
-    pub fn query_interface_projection(
+    fn query_interface_projection(
         &self,
         iid: RuntimeInterfaceId,
     ) -> Option<RuntimeInterfaceProjection> {
@@ -1418,10 +1461,7 @@ impl ObjectRef {
         })
     }
 
-    pub fn query_interface_projection_by_guid(
-        &self,
-        guid: Guid,
-    ) -> Option<RuntimeInterfaceProjection> {
+    fn query_interface_projection_by_guid(&self, guid: Guid) -> Option<RuntimeInterfaceProjection> {
         let descriptor = self.query_interface_descriptor_by_guid(guid)?;
         Some(RuntimeInterfaceProjection {
             object_identity: self.try_object_identity()?,
@@ -1430,114 +1470,64 @@ impl ObjectRef {
         })
     }
 
-    /// Construct an object reference from an owned raw `IUnknown` pointer.
-    ///
-    /// # Safety
-    ///
-    /// `raw` must either be null or point to a valid runtime `IUnknown` pointer
-    /// whose ownership is transferred to the returned `ObjectRef`.
-    pub unsafe fn from_raw_iunknown_owned(raw: *mut RawRuntimeIUnknown) -> Option<Self> {
-        NonNull::new(raw).map(Self)
-    }
-
-    /// Construct an object reference from a borrowed raw `IUnknown` pointer.
-    ///
-    /// # Safety
-    ///
-    /// `raw` must either be null or point to a valid runtime `IUnknown` pointer.
-    /// When non-null, the pointed object must support `AddRef`, and this
-    /// function will retain it for the returned `ObjectRef`.
-    pub unsafe fn from_raw_iunknown_addref(raw: *mut RawRuntimeIUnknown) -> Option<Self> {
-        let raw = NonNull::new(raw)?;
-        // SAFETY: this fn's caller contract guarantees `raw` (non-null here) points to a valid
-        // IUnknown whose first field is its vtbl and whose `add_ref` may be invoked; the
-        // reference taken here is owned by the returned `ObjectRef` and balanced in `Drop`.
-        unsafe {
-            let vtbl = (*raw.as_ptr()).vtbl;
-            ((*vtbl).add_ref)(raw.as_ptr().cast());
-        }
-        Some(Self(raw))
-    }
-
-    pub fn strong_count(&self) -> u32 {
+    fn strong_count(&self) -> u32 {
         if !self.is_compat_object() {
             return 0;
         }
-        let owner = compat_owner_from_unknown(self.0.as_ptr());
+        let owner = compat_owner_from_unknown(self.raw_iunknown());
         // SAFETY: documented compat-object contract as for `class_descriptor`; the box is alive
         // because this `ObjectRef` holds a retained reference, and `ref_count` is atomic.
         unsafe { (*owner).ref_count.load(Ordering::Acquire) }
     }
 
-    pub fn strong_count_for_test(&self) -> u32 {
+    fn strong_count_for_test(&self) -> u32 {
         self.strong_count()
     }
 }
 
-impl Clone for ObjectRef {
-    fn clone(&self) -> Self {
-        // SAFETY: this `ObjectRef` owns a retained reference (every constructor either starts
-        // the count at 1, AddRefs, or takes ownership of an existing reference), so `self.0`
-        // points at a live IUnknown; reading its vtbl and calling `add_ref` retains one more
-        // reference, which the clone owns.
-        unsafe {
-            let vtbl = (*self.0.as_ptr()).vtbl;
-            ((*vtbl).add_ref)(self.0.as_ptr().cast());
-        }
-        Self(self.0)
-    }
-}
-
-impl Drop for ObjectRef {
-    fn drop(&mut self) {
-        // SAFETY: releases the one reference this `ObjectRef` owns; the object is live up to
-        // this call precisely because that reference exists, and the pointer is never touched
-        // afterwards even if `release` frees the box.
-        unsafe {
-            let vtbl = (*self.0.as_ptr()).vtbl;
-            ((*vtbl).release)(self.0.as_ptr().cast());
-        }
-    }
-}
-
-impl core::fmt::Debug for ObjectRef {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // `compat_identity` is only meaningful on our own `CompatObjectBase` boxes; gate on the
-        // vtbl-identity check so a (future) foreign IUnknown wrapper formats without an
-        // out-of-bounds read past its vtbl. `is_compat_object` is safe for any IUnknown.
-        let compat_identity = self.is_compat_object().then(|| self.compat_identity());
-        f.debug_struct("ObjectRef")
-            .field("compat_identity", &compat_identity)
-            .field("ptr", &self.0)
-            .finish()
-    }
-}
-
-impl core::fmt::Display for ObjectRef {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // Gate on `is_compat_object` (see `Debug` above): only compat boxes carry a
-        // `compat_identity`; a foreign IUnknown wrapper renders as `<foreign>` rather than
-        // reading uninitialized identity bytes past its vtbl.
-        if self.is_compat_object() {
-            write!(f, "{}", self.compat_identity())
-        } else {
-            write!(f, "<foreign>")
-        }
-    }
-}
-
-impl PartialEq for ObjectRef {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
-    }
-}
-
-impl Eq for ObjectRef {}
-
-impl Hash for ObjectRef {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.hash(state);
-    }
+fn from_compat_object(
+    compat_identity: i32,
+    route_key: i32,
+    bundle_id: i32,
+    terminates_on_release: bool,
+    class_descriptor: &'static RuntimeClassDescriptor,
+    project_instance: bool,
+) -> ObjectRef {
+    let stable_object_id = compat_identity as u32 as u64;
+    let boxed = Box::new(CompatObjectBase {
+        unknown: RawRuntimeIUnknown {
+            vtbl: &COMPAT_OBJECT_VTBL,
+        },
+        ref_count: AtomicU32::new(1),
+        object_owner: crate::object_owner::RuntimeObjectOwner::current().downgrade(),
+        project_instance,
+        identity: RuntimeObjectIdentity {
+            stable_object_id,
+            compat_identity,
+            route_key,
+            bundle_id,
+            terminates_on_release,
+            class_descriptor,
+            lifetime_policy: RuntimeLifetimePolicy::RefCounted,
+            apartment_model: RuntimeApartmentModel::Unknown,
+        },
+        class_descriptor,
+        fields: RefCell::new(BTreeMap::new()),
+        native_state: RefCell::new(None),
+        parked_for_termination: Cell::new(false),
+        running_termination: Cell::new(false),
+        terminated: Cell::new(false),
+    });
+    let raw = Box::into_raw(boxed);
+    crate::live_counters::object_box_allocated();
+    // `raw` came from `Box::into_raw` of the freshly allocated `CompatObjectBase` above.
+    // `repr(C)` puts `unknown` first, so this cast has the field's exact address while
+    // retaining provenance for the complete allocation; AddRef/Release need that full-box
+    // provenance when they recover `CompatObjectBase` and touch the adjacent refcount.
+    let unknown = raw.cast::<RawRuntimeIUnknown>();
+    // SAFETY: a fresh object whose one reference is handed over.
+    unsafe { ObjectRef::from_raw_iunknown_owned(unknown) }
+        .expect("compat object unknown pointer must be non-null")
 }
 
 #[cfg(test)]
@@ -1548,10 +1538,10 @@ mod tests {
     use core::sync::atomic::{AtomicU32, Ordering};
 
     use super::{
-        Guid, IUnknownVtbl, ObjectRef, RUNTIME_CLASS_LIFECYCLE_NONE, RUNTIME_E_NOINTERFACE,
-        RUNTIME_GUID_IDISPATCH, RUNTIME_GUID_IUNKNOWN, RUNTIME_IDISPATCH_INTERFACE_IDENTITY,
-        RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR, RUNTIME_S_OK, RawRuntimeIUnknown,
-        RuntimeApartmentModel, RuntimeClassDescriptor, RuntimeDescriptorIssue,
+        Guid, IUnknownVtbl, ObjectRef, ObjectRefExt, RUNTIME_CLASS_LIFECYCLE_NONE,
+        RUNTIME_E_NOINTERFACE, RUNTIME_GUID_IDISPATCH, RUNTIME_GUID_IUNKNOWN,
+        RUNTIME_IDISPATCH_INTERFACE_IDENTITY, RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR, RUNTIME_S_OK,
+        RawRuntimeIUnknown, RuntimeApartmentModel, RuntimeClassDescriptor, RuntimeDescriptorIssue,
         RuntimeDispatchPlanCache, RuntimeInterfaceDescriptor, RuntimeInterfaceId,
         RuntimeInterfaceIdentity, RuntimeInterfaceKind, RuntimeLifetimePolicy,
         RuntimeMemberDescriptor, RuntimeMemberInvokeKind, RuntimeParamDescriptor, RuntimeValueType,
@@ -2701,6 +2691,5 @@ mod tests {
                 .query_interface_projection_by_guid(RUNTIME_GUID_IUNKNOWN)
                 .is_none()
         );
-        assert_eq!(object.to_string(), "<foreign>");
     }
 }

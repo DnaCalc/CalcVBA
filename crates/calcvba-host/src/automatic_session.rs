@@ -1,6 +1,7 @@
 //! Owning event entry and host document identity binding, shared by VM3 and JIT.
 use super::*;
 use calcvba_host_api::{self as api, Value};
+use calcvba_runtime::ObjectRefExt;
 fn number(error: Error) -> i32 {
     match error {
         Error::Runtime { number, .. } => number,

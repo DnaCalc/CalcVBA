@@ -1320,6 +1320,7 @@ mod tests {
     use super::{Engine, HostConfig};
     use calcvba_bundle::ProjectMemberKind;
     use calcvba_oxir::OxImage;
+    use calcvba_runtime::ObjectRefExt;
     use calcvba_runtime::Variant;
     use calcvba_symbol::manifest::{
         ModuleAttributes, ModuleKind, ModuleUnit, ProjectKind, SymbolProjectManifest,

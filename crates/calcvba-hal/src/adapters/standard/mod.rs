@@ -1,3 +1,4 @@
+use calcvba_runtime::ObjectRefExt;
 // Macros must be defined before mod declarations so child modules can use them.
 #[cfg(debug_assertions)]
 macro_rules! hal_contract_assert {
@@ -1707,6 +1708,7 @@ fn parse_excep_wcode(message: &str) -> Option<u16> {
 // production-side invariants are stated at the production unsafe sites.
 #[allow(clippy::undocumented_unsafe_blocks)]
 mod tests {
+    use calcvba_runtime::ObjectRefExt;
     #[cfg(target_os = "windows")]
     use std::sync::OnceLock;
     use std::{
@@ -4750,7 +4752,8 @@ mod tests {
             .expect("string ProgID should resolve native COM activation");
         assert!(
             !object.is_compat_object() && !object.is_nothing_placeholder(),
-            "expected the native object's interface pointer from direct ProgID activation, got {object}"
+            "expected the native object's interface pointer from direct ProgID activation, got {}",
+            object.display_text()
         );
     }
 

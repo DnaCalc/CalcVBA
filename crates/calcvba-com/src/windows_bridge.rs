@@ -20,6 +20,7 @@ use crate::{
     validate_named_arg_order,
 };
 use calcvba_diagnostics::{Diagnostic, DiagnosticPhase, extract_prefixed_code};
+use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::{ObjectRef, RuntimeCallResult, Variant};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};

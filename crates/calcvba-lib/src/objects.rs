@@ -1,6 +1,7 @@
 //! Portable built-in library objects; dispatch stays on the owning runtime thread.
 use crate::{LibError, LibResult};
 use calcvba_bundle::ProjectMemberKind;
+use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::{
     ObjectRef, Variant,
     object_ref::{COMPAT_OBJECT_CLASS_DESCRIPTOR, RuntimeClassDescriptor},

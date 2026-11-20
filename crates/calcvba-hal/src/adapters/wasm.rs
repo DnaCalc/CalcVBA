@@ -1,3 +1,4 @@
+use calcvba_runtime::ObjectRefExt;
 use std::sync::Arc;
 
 use crate::{
@@ -448,6 +449,7 @@ mod tests {
             HostServices, ProcessEnvHal, TimeLocaleHal, UiInteractionHal,
         },
     };
+    use calcvba_runtime::ObjectRefExt;
     use calcvba_runtime::{ObjectRef, Variant};
 
     use super::WasmHostServices;

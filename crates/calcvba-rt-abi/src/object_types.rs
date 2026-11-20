@@ -1,6 +1,7 @@
 //! Nominal object checks shared by the interpreters and compiled entries.
 use crate::Fault;
 use calcvba_runtime::ObjectRef;
+use calcvba_runtime::ObjectRefExt;
 
 pub fn matches_type(
     host: &dyn calcvba_hal::HostServices,

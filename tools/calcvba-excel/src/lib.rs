@@ -14,6 +14,7 @@
 //! from VBA), objects as `IDispatch*`, results as `VARIANT*`.
 #![cfg(all(windows, target_arch = "x86_64"))]
 
+use calcvba_runtime::ObjectRefExt;
 pub mod xll;
 
 use calcvba_engine::{Engine, HostConfig, SnapshotOutcome};

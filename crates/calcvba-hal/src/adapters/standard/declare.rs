@@ -25,6 +25,7 @@ use calcvba_com::call::{ComArg, ComArgValue};
 use calcvba_com::windows_ffi_bridge::{
     FfiReturnType, OwnedLibrary, PreparedNativeCall, get_proc_address, get_proc_address_ordinal,
 };
+use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::{VarType, Variant};
 use std::rc::Rc;
 use std::sync::Arc;

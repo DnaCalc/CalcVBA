@@ -1,6 +1,7 @@
 //! JIT engine, compiled image, frames, and run-state helpers.
 
 use super::*;
+use calcvba_runtime::ObjectRefExt;
 
 #[derive(Debug, Default)]
 pub struct JitEngine;

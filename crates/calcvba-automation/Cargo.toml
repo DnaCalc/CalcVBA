@@ -7,15 +7,25 @@ authors.workspace = true
 repository.workspace = true
 description = "Automation value layouts (VARIANT, BSTR, SAFEARRAY, IRecordInfo) shared by CalcVBA and other in-process libraries."
 
-[dependencies]
+[features]
+# Live-handle counters for BSTRs, SAFEARRAYs, record buffers and objects (tests and leak checks).
+live-counters = []
 
-[target.'cfg(target_os = "windows")'.dev-dependencies]
+[dependencies]
+serde.workspace = true
+rkyv.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_System_Com",
     "Win32_System_Ole",
     "Win32_System_Variant",
 ] }
+
+[dev-dependencies]
+proptest.workspace = true
 
 [lints]
 workspace = true

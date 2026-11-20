@@ -12,6 +12,7 @@
 //! completeness of the real VBA library. Member-level signature, VM3/JIT,
 //! host/locale and Excel evidence is governed by system clause `LIB-VBA-001`.
 
+use calcvba_runtime::ObjectRefExt;
 mod format;
 pub mod triage;
 pub use triage::{

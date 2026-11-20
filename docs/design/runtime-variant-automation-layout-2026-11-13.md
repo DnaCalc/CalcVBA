@@ -372,6 +372,25 @@ keep working for DnaCalc. Today `Variant`, `SafeArray`, `VbaRecord`, `ObjectRef`
 form one dependency cycle; it breaks once records are `BRECORD` and arrays carry `IRecordInfo*`,
 because the shared crate then needs only the `IRecordInfo` interface. `Variant` stays `!Send`.
 
+*As built 2026-11-20 (dc-yqq0.12).* `calcvba-automation` now holds the values: `variant`
+(`VarType`, `VariantData`, `VariantCore`, the owning `Variant`), `bstr`, `safe_array`,
+`com_record`, `vba_record` (UDT layouts and record memory), `object_ref` (`ObjectRef`, one COM
+reference: `AddRef` on clone, `Release` on drop, and `RawRuntimeIUnknown`), `decimal`,
+`value_types` (Currency, F64), `live_counters` (feature `live-counters`) and, on Windows,
+`automation_record`. `calcvba-runtime` re-exports each module at its old path
+(`calcvba_runtime::variant`, `::bstr`, `::safe_array`, ...), so DnaCalc's paths are unchanged.
+Two departures from the list above: `vba_record` moved too, because the engine's UDT cell
+(`VT_RECORD` with a boxed `VbaRecord` and a null `pRecInfo`) and UDT arrays (the layout in the
+`pRecInfo` position) still need it for drop and clone; and the project-object half of
+`ObjectRef` (compat identity, class descriptor, fields, native collection state, termination)
+stays in `calcvba-runtime` as the `ObjectRefExt` trait, which callers import. The payload is a
+typed `#[repr(C)]` union (`bytes`, one `pointer`, `BRECORD`): pointers are stored and loaded as
+pointers, so the cell keeps their provenance, and the byte carrier with exposed provenance is
+gone. Only the trusted wire decoders (`Variant::from_trusted_wire_bytes`,
+`Variant::adopt_automation`, for bytes from `to_wire_bytes` or a foreign callee) rebuild
+pointers with `with_exposed_provenance`, and `to_wire_bytes` exposes the pointers it writes.
+Checks: Linux, `x86_64-pc-windows-msvc`, `i686-pc-windows-msvc` and `wasm32-unknown-unknown`.
+
 DnaCalc (`calc-vba`, `calc-host-vba`, pinned at `219403627`) needs, when it moves its pin:
 `VarType::ArrayVariant` checks (`calc-vba/src/runtime/mod.rs:644, 806`) replaced by an array
 predicate, and the new crate at the same revision. Its matches on `VarType` already have

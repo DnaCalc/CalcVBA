@@ -4,6 +4,7 @@ use calcvba_bundle::{ArrayElementType, coreir::CoreConst};
 use calcvba_hal::{HostServices, adapters::builder::HostBuilder};
 use calcvba_oxir::{FuncId, OxProgram, OxTy};
 use calcvba_rt_abi::host_entry::LinkedTarget;
+use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::Variant;
 use calcvba_symbol::{TypeLibResolver, manifest as sym};
 use std::{

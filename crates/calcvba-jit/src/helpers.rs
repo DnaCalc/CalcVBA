@@ -1,6 +1,7 @@
 //! Helper registration, Cranelift imports, and compiled-entry shims.
 
 use super::*;
+use calcvba_runtime::ObjectRefExt;
 
 #[derive(Clone, Copy)]
 pub(crate) struct Imports {

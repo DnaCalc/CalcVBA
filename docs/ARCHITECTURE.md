@@ -41,7 +41,11 @@ Validation is ordinary executable code, not a formal proof.
 
 ## Runtime values and language services
 
-- `calcvba-runtime`: Variant, BSTR, SAFEARRAY, object identity, records and errors.
+- `calcvba-automation`: the platform values themselves: the `VARIANT` cell (`Variant`), BSTR,
+  SAFEARRAY, `BRECORD` records, interface references, Decimal and Currency, laid out as
+  the platform's Automation ABI on every target.
+- `calcvba-runtime`: VBA's runtime semantics over those values (project objects, collections,
+  coercion, dates, errors, address-of), re-exporting `calcvba-automation`.
 - `calcvba-eval`: shared value, arithmetic, coercion, collection and array semantics.
 - `calcvba-lib`: VBA library functions over those values and host services.
 - `calcvba-rt-abi`: shared VM/JIT helpers, physical typed slots and owning calls.

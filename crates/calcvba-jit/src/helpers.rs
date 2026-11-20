@@ -6364,19 +6364,8 @@ pub(crate) unsafe extern "C" fn rt_jit_array_literal_to_slot(
             }
             Some(targets)
         };
-        let array = if lower_bound == 0 {
-            SafeArray::from_variants(values)
-        } else {
-            let Ok(count) = u32::try_from(argc) else {
-                return ST_FAULT;
-            };
-            SafeArray::from_variants_nd(
-                vec![SafeArrayBound {
-                    count,
-                    lower: lower_bound,
-                }],
-                values,
-            )
+        let Ok(array) = SafeArray::array_literal(lower_bound, values) else {
+            return ST_FAULT;
         };
         // SAFETY: null was rejected and operand clones no longer borrow from `run`.
         let run = unsafe { &mut *run };

@@ -36,30 +36,27 @@ mod native_record_pin {
             // SAFETY: all-zero VARIANT is VT_EMPTY.
             Self(unsafe { std::mem::zeroed() })
         }
-        /// A copy of a runtime cell as an Automation `VARIANT` (`VariantCopyInd`): the cell is
-        /// the platform's own layout, so this is the runtime's clone, references read through.
+        /// A copy of a runtime cell as an Automation `VARIANT` (`VariantCopyInd`, references
+        /// read through): the cell is the platform's own layout, so oleaut32 copies it, and the
+        /// copy is oleaut32's to free (`VariantClear` in `Drop`, or the record's owner). The
+        /// runtime's live counters see neither, as they see no other foreign allocation.
         /// Objects and records are refused, as before: a record field cannot carry their binding.
         pub(super) fn from_value(value: &Value) -> Result<Self, String> {
             if matches!(value.vtype(), crate::VarType::ProcRef) {
                 return Err("procedure references cannot be marshaled as VARIANT values".into());
             }
-            let copy = value.try_clone()?;
-            if matches!(
-                copy.vtype(),
-                crate::VarType::Object | crate::VarType::Record
-            ) || matches!(copy.core().raw_vt() & 0x0fff, 9 | 13 | 36)
-                && copy.vtype() == crate::VarType::ArrayVariant
-            {
+            let mut copy = Self::empty();
+            // SAFETY: `value` is a live runtime cell laid out as a VARIANT; `copy` is empty.
+            checked(unsafe { VariantCopyInd(&mut copy.0, (&raw const *value).cast::<VARIANT>()) })?;
+            // SAFETY: an initialised VARIANT.
+            let vt = unsafe { copy.0.Anonymous.Anonymous.vt };
+            if matches!(vt & 0x0fff, 9 | 13 | 36) {
+                // `copy` is cleared on return.
                 return Err(
                     "Record pointer Variant payload requires host object/record binding".into(),
                 );
             }
-            let copy = core::mem::ManuallyDrop::new(copy);
-            // SAFETY: the runtime cell and VARIANT share one layout; the copy's ownership
-            // moves into the native cell.
-            Ok(Self(unsafe {
-                core::ptr::read((&raw const *copy).cast::<VARIANT>())
-            }))
+            Ok(copy)
         }
     }
     impl Drop for NativeValue {
@@ -714,4 +711,60 @@ fn advance_windows_safearray_indices(
         ));
     }
     Err("SAFEARRAY multidimensional index progression exhausted early".to_string())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::AutomationRecord;
+    use crate::{
+        Variant,
+        bstr::BStr,
+        current_thread_live_handle_counts,
+        safe_array::SafeArray,
+        vba_record::{VbaRecord, VbaRecordFieldKind, VbaRecordFieldSpec, VbaRecordLayout},
+    };
+    use std::sync::Arc;
+
+    /// The Automation projection of a record's Variant fields copies them through oleaut32 and
+    /// frees them there: the runtime's BSTR and SAFEARRAY counters stay balanced.
+    #[test]
+    fn variant_fields_projected_for_a_declare_balance_the_live_counters() {
+        let layout = Arc::new(
+            VbaRecordLayout::new(vec![
+                VbaRecordFieldSpec::named("Text", VbaRecordFieldKind::Variant),
+                VbaRecordFieldSpec::named("Items", VbaRecordFieldKind::Variant),
+            ])
+            .expect("record layout"),
+        );
+        let mut record = VbaRecord::new_default(layout).expect("record");
+        record
+            .write_field_variant(0, &Variant::from_string(BStr::from("payload")))
+            .expect("String field");
+        let items = SafeArray::from_variants(vec![
+            Variant::from_string(BStr::from("a")),
+            Variant::from_string(BStr::from("b")),
+        ]);
+        record
+            .write_field_variant(1, &Variant::from_safearray(items))
+            .expect("array field");
+        let before = current_thread_live_handle_counts();
+        for _ in 0..3 {
+            let unicode = AutomationRecord::from_record(&record).expect("Unicode projection");
+            let back = unicode.read().expect("read back");
+            assert_eq!(
+                back.read_record_field_variant(0)
+                    .expect("field")
+                    .as_bstr()
+                    .map(|text| text.to_string()),
+                Some("payload".into())
+            );
+            drop(back);
+            drop(unicode);
+            drop(AutomationRecord::from_declared_record(&record).expect("ANSI projection"));
+        }
+        assert_eq!(
+            before.balance_to(current_thread_live_handle_counts()),
+            Default::default()
+        );
+    }
 }

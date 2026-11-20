@@ -8,7 +8,10 @@
 //! Cases an engine still answers differently are listed in `variant-layout.known-differences.txt`
 //! (`<executor>\t<id>`; `DECLINED` when the engine refuses the whole module). The test fails on
 //! any new difference and on any listed difference that is now fixed.
-#![cfg(all(windows, target_pointer_width = "64"))]
+#![cfg(any(
+    all(windows, target_pointer_width = "64"),
+    all(target_os = "linux", target_pointer_width = "64")
+))]
 
 use calcvba_differential::{Canon, Executor, run_with_engine_setup};
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,6 +22,19 @@ const EXCEL: &str =
 const KNOWN: &str =
     include_str!("../../../conformance/excel-measurements/variant-layout.known-differences.txt");
 
+/// The probe's `CopyMemory` as the platform's C library has it (`RtlMoveMemory` on Windows,
+/// `memmove` in glibc), so the probe runs off Windows too.
+fn platform(source: &str) -> String {
+    if cfg!(windows) {
+        source.to_string()
+    } else {
+        source.replace(
+            r#"Lib "kernel32" Alias "RtlMoveMemory""#,
+            r#"Lib "libc.so.6" Alias "memmove""#,
+        )
+    }
+}
+
 fn lines(text: &str) -> BTreeMap<String, String> {
     text.lines()
         .filter_map(|l| l.split_once('='))
@@ -28,11 +44,16 @@ fn lines(text: &str) -> BTreeMap<String, String> {
 
 /// Every difference id for this executor; `DECLINED` when the engine does not run the module.
 fn differences(executor: Executor) -> BTreeMap<String, String> {
+    let module = platform(MODULE);
     let source = format!(
-        "Public result As String\r\n{MODULE}\r\nSub Main()\r\n  result = RunAll()\r\nEnd Sub\r\n"
+        "Public result As String\r\n{module}\r\nSub Main()\r\n  result = RunAll()\r\nEnd Sub\r\n"
     );
     // The probe reads cells with `CopyMemory`, so the native Declare lane is on, as in Excel.
     let outcome = run_with_engine_setup(executor, &source, &|engine| {
+        // Off Windows the host's own profile, whose native lane loads the C library.
+        if !cfg!(windows) {
+            engine.set_runtime_profile(calcvba_engine::RuntimeProfileId::LinuxStdio);
+        }
         engine.set_host_policy(calcvba_hal::HostPolicy::native());
     });
     let declined = |why: String| BTreeMap::from([("DECLINED".to_string(), why)]);

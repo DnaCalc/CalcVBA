@@ -634,16 +634,22 @@ enum RecordCell<'a> {
     Vba(&'a VbaRecord),
 }
 
-/// Whether a callee's `VARIANT` of type `vt` can move into the runtime as it is: the types VBA
-/// has (Integer, Long, Single, Double, Currency, Date, String, Object, Error, Boolean, Variant
-/// arrays, Unknown, Decimal, Byte, LongLong, records) and arrays of them.
+/// Whether a callee's `VARIANT` of type `vt` can move into the runtime as it is. Scalars: every
+/// type the runtime cell holds, including the ones VBA has no declared type for (`VT_I1`,
+/// `VT_UI2`, `VT_UI4`, `VT_UI8`): Office VBA keeps those in a Variant (`VarType` 16, 18, 19, 21)
+/// and converts them like any number. Arrays: of the types VBA declares (Integer, Long,
+/// Single, Double, Currency, Date, String, Object, Error, Boolean, Variant, Unknown, Decimal,
+/// Byte, LongLong); an array of the other integer types raises 458 in VBA. Records never move
+/// in (see [`Variant::adoption_error_number`]).
 fn adoptable_vt(vt: u16) -> bool {
     let element = vt & 0x0FFF;
-    let vba_type = matches!(element, 0x00..=0x0B | 0x0D | 0x0E | 0x11 | 0x14 | 0x24)
-        || (element == 0x0C && vt & 0x2000 != 0);
+    let array_element = matches!(element, 0x02..=0x0B | 0x0D | 0x0E | 0x11 | 0x14 | 0x0C);
     match vt & 0xF000 {
-        0 => vba_type && element != 0x0C,
-        0x2000 => vba_type && element > 0x01,
+        0 => matches!(
+            element,
+            0x00..=0x0B | 0x0D | 0x0E | 0x10..=0x15
+        ),
+        0x2000 => array_element,
         _ => false,
     }
 }
@@ -801,10 +807,11 @@ impl Variant {
 
     /// Takes ownership of an Automation `VARIANT` a COM callee produced (an `[out, retval]`, or
     /// a value a callee stored through a reference): the cell moves into the runtime as it is, no
-    /// copy, with its `vt` kept (`VT_UNKNOWN` stays 13). `Err(vt)` for a type VBA has no type for
-    /// (`VT_I1`, `VT_UI2`, `VT_UI4`, `VT_UI8`, `VT_INT`, `VT_UINT`, a reference, or any other
-    /// `vt` the runtime cell does not hold): VBA raises 458 there, and the caller still owns
-    /// `bytes` and clears it.
+    /// copy, with its `vt` kept (`VT_UNKNOWN` stays 13, `VT_I1` stays 16, `VT_UI8` 21).
+    /// `Err(vt)` for a cell VBA does not take (an array of `VT_I1`, `VT_UI2`, `VT_UI4` or
+    /// `VT_UI8`, `VT_INT`, `VT_UINT`, a reference, a record or an array of records, or any other
+    /// `vt` the runtime cell does not hold): the caller still owns `bytes`, clears it and raises
+    /// [`Self::adoption_error_number`].
     ///
     /// # Safety
     /// `bytes` is a `VARIANT` the caller owns (its BSTR, interface, `SAFEARRAY` or record are
@@ -836,6 +843,19 @@ impl Variant {
         // the provenance of its pointer members.
         let core = unsafe { cell.cast::<VariantCore>().read_unaligned() };
         Ok(Self::adopt_core(core))
+    }
+
+    /// The VBA error for a callee's `VARIANT` that [`Self::adopt_automation`] refused: 13 (Type
+    /// mismatch) for a record or an array of records, as Office VBA raises at `v = obj.Member`
+    /// when the member returns a `VT_RECORD` (whose `IRecordInfo` names no type the project
+    /// knows); 458 (a variable uses an Automation type not supported in Visual Basic) for
+    /// everything else.
+    pub const fn adoption_error_number(vt: u16) -> u16 {
+        if vt & 0x0FFF == VarType::Record as u16 {
+            13
+        } else {
+            458
+        }
     }
 
     fn adopt_core(core: VariantCore) -> Self {
@@ -2032,12 +2052,71 @@ mod tests {
         safe_array::{SafeArray, VT_I4_VALUE},
     };
 
-    use super::{VarType, Variant, VariantCore, VariantData};
+    use super::{VarType, Variant, VariantCore, VariantData, WIRE_SIZE};
 
     fn offset_of<T, U>(field: fn(*const T) -> *const U) -> usize {
         let value = core::mem::MaybeUninit::<T>::uninit();
         let base = value.as_ptr();
         field(base) as usize - base as usize
+    }
+
+    fn automation_bytes(vt: u16, payload: u64) -> [u8; WIRE_SIZE] {
+        let mut bytes = [0u8; WIRE_SIZE];
+        bytes[..2].copy_from_slice(&vt.to_le_bytes());
+        bytes[8..16].copy_from_slice(&payload.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn adoption_keeps_the_integer_subtypes_vba_does_not_declare() {
+        // Excel (COM datatype oracle): `v = obj.Member` keeps VT_I1, VT_UI2, VT_UI4 and VT_UI8.
+        let cases = [
+            (0x0010, 0xFB, VarType::SignedByte),
+            (0x0012, 65000, VarType::UnsignedInteger),
+            (0x0013, 4_000_000_000, VarType::UnsignedLong),
+            (0x0015, 9_000_000_000, VarType::UnsignedLongLong),
+        ];
+        for (vt, payload, expected) in cases {
+            // SAFETY: a scalar VARIANT owns nothing.
+            let value = unsafe { Variant::adopt_automation(automation_bytes(vt, payload)) }
+                .unwrap_or_else(|vt| panic!("vt {vt:#06x} refused"));
+            assert_eq!(value.vtype(), expected);
+            assert_eq!(value.core.raw_vt(), vt);
+        }
+        // SAFETY: as above.
+        let signed = unsafe { Variant::adopt_automation(automation_bytes(0x0010, 0xFB)) }.unwrap();
+        assert_eq!(signed.as_i8(), Some(-5));
+        // SAFETY: as above.
+        let wide = unsafe { Variant::adopt_automation(automation_bytes(0x0015, 9_000_000_000)) };
+        assert_eq!(wide.unwrap().as_u64(), Some(9_000_000_000));
+    }
+
+    #[test]
+    fn adoption_refuses_arrays_of_those_types_with_458_and_records_with_13() {
+        // Excel: arrays of VT_I1/UI2/UI4/UI8 raise 458; a VT_RECORD or an array of them, 13.
+        for (vt, number) in [
+            (0x2010, 458),
+            (0x2012, 458),
+            (0x2013, 458),
+            (0x2015, 458),
+            (0x0016, 458),
+            (0x0024, 13),
+            (0x2024, 13),
+        ] {
+            // SAFETY: null payloads; a refused cell stays the caller's.
+            let refused = unsafe { Variant::adopt_automation(automation_bytes(vt, 0)) };
+            assert_eq!(refused.err(), Some(vt), "vt {vt:#06x}");
+            assert_eq!(Variant::adoption_error_number(vt), number, "vt {vt:#06x}");
+            // SAFETY: as above.
+            let in_place =
+                unsafe { Variant::adopt_automation_cell(automation_bytes(vt, 0).as_ptr().cast()) };
+            assert_eq!(in_place.err(), Some(vt), "vt {vt:#06x} in place");
+        }
+        // Arrays of the declared types still move in (a null SAFEARRAY* here).
+        for vt in [0x2002, 0x2003, 0x2008, 0x200C, 0x2011, 0x2014] {
+            // SAFETY: an unallocated array owns nothing.
+            assert!(unsafe { Variant::adopt_automation(automation_bytes(vt, 0)) }.is_ok());
+        }
     }
 
     #[test]

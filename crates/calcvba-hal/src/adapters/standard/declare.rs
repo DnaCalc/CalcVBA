@@ -828,7 +828,13 @@ pub(super) fn invoke(
             // SAFETY: the callee's VARIANT result, in `result`, is ours to take.
             match unsafe { Variant::adopt_automation_cell(result.as_ptr().cast()) } {
                 Ok(value) => value,
-                Err(_) => return Err(vba_fault(host, 458, "unsupported Variant result type")),
+                Err(vt) => {
+                    return Err(vba_fault(
+                        host,
+                        i32::from(Variant::adoption_error_number(vt)),
+                        "unsupported Variant result type",
+                    ));
+                }
             }
         }
         ResultShape::Record(_) => record

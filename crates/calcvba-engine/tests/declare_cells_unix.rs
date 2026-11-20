@@ -147,3 +147,51 @@ End Sub\n";
         assert_eq!(text(&values), "10|10|h", "{name}");
     }
 }
+
+#[test]
+fn variants_of_the_integer_types_vba_does_not_declare_keep_their_subtype() {
+    // A COM callee can hand back VT_I1, VT_UI2, VT_UI4 or VT_UI8; Office VBA keeps them in the
+    // Variant (VarType 16, 18, 19, 21) and CStr converts them (Excel: COM datatype oracle,
+    // 16:-5, 18:65000, 19:4000000000, 21:9000000000). The cells are written in place here.
+    let source = "Private Declare PtrSafe Sub CopyPtr Lib \"libc.so.6\" Alias \"memcpy\" (ByVal dst As LongPtr, ByVal src As LongPtr, ByVal n As LongPtr)\n\
+Public result As String\n\
+Function Typed(ByVal vt As Integer, ByVal payload As LongLong) As String\n\
+    Dim v As Variant\n\
+    v = 0&\n\
+    CopyPtr VarPtr(v) + 8, VarPtr(payload), 8\n\
+    CopyPtr VarPtr(v), VarPtr(vt), 2\n\
+    Typed = CStr(VarType(v)) & \":\" & CStr(v)\n\
+End Function\n\
+Sub Main()\n\
+    result = Typed(16, 251) & \"|\" & Typed(18, 65000) & \"|\" & Typed(19, 4000000000^) & \"|\" & Typed(21, 9000000000^)\n\
+End Sub\n";
+    for (name, values) in run(source) {
+        assert_eq!(
+            text(&values),
+            "16:-5|18:65000|19:4000000000|21:9000000000",
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn an_empty_array_literal_has_vt_zero_before_its_descriptor() {
+    // Excel (design doc step 6): `Array()` has vt 0 at psa-4; `Array(1)` has VT_VARIANT (12).
+    let source = "Private Declare PtrSafe Sub CopyPtr Lib \"libc.so.6\" Alias \"memcpy\" (ByVal dst As LongPtr, ByVal src As LongPtr, ByVal n As LongPtr)\n\
+Public result As String\n\
+Function Prefix(ByRef v As Variant) As String\n\
+    Dim psa As LongPtr, vt As Long, features As Integer\n\
+    CopyPtr VarPtr(psa), VarPtr(v) + 8, 8\n\
+    CopyPtr VarPtr(vt), psa - 4, 4\n\
+    CopyPtr VarPtr(features), psa + 2, 2\n\
+    Prefix = CStr(vt) & \":\" & Hex$(features) & \":\" & CStr(UBound(v) - LBound(v) + 1)\n\
+End Function\n\
+Sub Main()\n\
+    Dim a As Variant, b As Variant\n\
+    a = Array(): b = Array(1, 2)\n\
+    result = Prefix(a) & \"|\" & Prefix(b)\n\
+End Sub\n";
+    for (name, values) in run(source) {
+        assert_eq!(text(&values), "0:880:0|12:880:2", "{name}");
+    }
+}

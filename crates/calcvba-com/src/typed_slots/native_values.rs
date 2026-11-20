@@ -111,12 +111,12 @@ impl NativeVariant {
         // possibly replaced by it), and nothing else frees them.
         let value = match unsafe { Variant::adopt_automation_cell((&raw const *taken).cast()) } {
             Ok(value) => value,
-            Err(_) => {
+            Err(vt) => {
                 let mut cell = core::mem::ManuallyDrop::into_inner(taken);
                 // SAFETY: the cell is a VARIANT this frame owns; clearing releases what it holds.
                 unsafe { VariantClear((&raw mut cell).cast()) };
                 core::mem::forget(cell);
-                return Err(fault(458));
+                return Err(fault(i32::from(Variant::adoption_error_number(vt))));
             }
         };
         map_objects(value, &mut |object| {

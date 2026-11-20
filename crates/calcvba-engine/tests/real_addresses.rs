@@ -3,7 +3,7 @@
 //! (`temp/variant-layout-probe/addr7/AddrProbe.bas`, captured 2026-11-14 in one owned Excel),
 //! except the UDT offsets, which are section 2 of the variant-layout design. The ByRef Variant
 //! lines (`VT_BYREF` cells) belong to step 7b.
-#![cfg(target_os = "windows")]
+#![cfg(any(windows, all(target_os = "linux", target_pointer_width = "64")))]
 
 use calcvba_engine::{Engine, HostConfig};
 use calcvba_hal::model::HostPolicy;
@@ -179,6 +179,19 @@ WRITE_UDT_ELEMENT_FIELD 6
 WRITE_ELEMENT 3
 ";
 
+/// The probe's `CopyMemory` as the platform's C library has it (`RtlMoveMemory` on Windows,
+/// `memmove` in glibc), so the probe runs off Windows too.
+fn platform(source: &str) -> String {
+    if cfg!(windows) {
+        source.to_string()
+    } else {
+        source.replace(
+            r#"Lib "kernel32" Alias "RtlMoveMemory""#,
+            r#"Lib "libc.so.6" Alias "memmove""#,
+        )
+    }
+}
+
 fn module(name: &str, kind: ModuleKind, source: &str) -> ModuleUnit {
     ModuleUnit {
         module_name: name.into(),
@@ -194,7 +207,7 @@ fn pointer_helpers_give_real_addresses_on_vm3_and_jit() {
         project_name: "Proj".into(),
         project_kind: ProjectKind::Source,
         modules: vec![
-            module("AddrProbe", ModuleKind::Procedural, PROBE),
+            module("AddrProbe", ModuleKind::Procedural, &platform(PROBE)),
             module("AddrClass", ModuleKind::Class, CLASS),
         ],
         references: Vec::new(),

@@ -7,7 +7,7 @@ cfg(windows)-only failure, pull again before each push.
    manual_checked_div findings in untouched Windows code, which stable does not have):
      ./scripts/check.ps1
 
-2. dc-yqq0.12 (61a39081+): the values moved to calcvba-automation; ObjectRef's project
+2. dc-yqq0.12 (5a467416): the values moved to calcvba-automation; ObjectRef's project
    operations are the ObjectRefExt trait. Windows-only code that only compiles there:
      cargo test -p calcvba-automation -p calcvba-runtime --no-fail-fast
      cargo test -p calcvba-com --no-fail-fast
@@ -60,3 +60,36 @@ cfg(windows)-only failure, pull again before each push.
 7. dc-yqq0.10 (pointer_helpers record projection over cell copies):
      cargo test -p calcvba-runtime --no-fail-fast
      cargo test -p calcvba-engine --test declare_cells --test real_addresses --no-fail-fast
+
+--- Lane vx2 (Linux), newest last ---
+
+8. dc-yqq0.8, COM datatype oracle (from-windows 16:02, 7 of 13). Changed: scalar VT_I1,
+   VT_UI2, VT_UI4 and VT_UI8 results are adopted as they are (VarType 16/18/19/21); arrays
+   of them still raise 458; a VT_RECORD or an array of VT_RECORD raises 13 when it is
+   adopted (no clone of an FADF_RECORD SAFEARRAY any more, so no panic).
+   windows_variant.rs safe_array_element_typed_nd / safe_array_element_to_variant now keep
+   VT_I1/I2/UI1/UI2/I8/UI4/UI8/UINT element subtypes (were widened to Long or narrowed).
+   Run:
+     rerun ox.ps1 (COM datatype oracle, C:\Work\DnaCalc\CalcVBA\temp\comdt\) and report
+       the 13 cases; expect 13 of 13.
+     cargo test -p calcvba-engine --test com_matrix_types -- --ignored --test-threads=1 t6
+       (new t6b_late_bound_edge_vt_returns_match_excel: verdict 127)
+     cargo test -p calcvba-com --no-fail-fast
+     cargo test -p calcvba-engine --test com_matrix_types --test com_matrix_methods --test com_matrix_properties --test com_matrix_objects --test com_matrix_collections --test com_matrix_errors --test com_matrix_events --test com_matrix_getobject --test com_matrix_adversary --no-fail-fast
+     cargo test -p calcvba-host --test typed_native_com --no-fail-fast
+   Look at: any test that asserted a SAFEARRAY element of VT_I2/VT_UI1 read back as Long
+   (from_i32), or VT_I8 narrowed to Long: that asserts the old widening; Excel's subtype
+   is the element's own. Excel question: VT_INT (22) and VT_UINT (23) scalar results are
+   still refused with 458 (no Excel data); add them to ox.ps1 if TestEventServer can return
+   them.
+
+9. dc-yqq0.6: NativeValue::from_value (calcvba-runtime pointer_helpers.rs, Windows-only) now
+   copies a record's Variant field with VariantCopyInd instead of the runtime clone (whose BSTR
+   and SAFEARRAY were counted live and then freed by VariantClear uncounted). Also: an empty
+   Array() now has vt 0 at psa-4 (Excel), and a SAFEARRAY copy keeps the hidden vt/IID bytes.
+   Run:
+     cargo test -p calcvba-runtime --lib --no-fail-fast -- pointer_helpers
+       (new variant_fields_projected_for_a_declare_balance_the_live_counters: balance 0)
+     cargo test -p calcvba-runtime --no-fail-fast
+     cargo test -p calcvba-engine --test declare_cells --test real_addresses --test array_descriptor_features --no-fail-fast
+   Look at: the balance assertion; any Declare record test with Variant fields.

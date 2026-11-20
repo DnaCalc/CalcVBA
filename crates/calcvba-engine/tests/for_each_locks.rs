@@ -4,7 +4,7 @@
 //! Source and expected output are Excel x64's (`temp/variant-layout-probe/redim7c/ForEachProbe.bas`,
 //! captured 2026-11-14 in one owned Excel). The probe reads `cLocks` through `CopyMemory`, so it
 //! runs with the native Declare lane.
-#![cfg(windows)]
+#![cfg(any(windows, all(target_os = "linux", target_pointer_width = "64")))]
 
 use calcvba_engine::{Engine, HostConfig};
 use calcvba_hal::HostPolicy;
@@ -149,10 +149,24 @@ VARIANT_FOREACH_OVERWRITE err=10
 VARIANT_FOREACH_AFTER vt=8204
 ";
 
+/// The probe's `CopyMemory` as the platform's C library has it (`RtlMoveMemory` on Windows,
+/// `memmove` in glibc), so the probe runs off Windows too.
+fn platform(source: &str) -> String {
+    if cfg!(windows) {
+        source.to_string()
+    } else {
+        source.replace(
+            r#"Lib "kernel32" Alias "RtlMoveMemory""#,
+            r#"Lib "libc.so.6" Alias "memmove""#,
+        )
+    }
+}
+
 #[test]
 fn for_each_locks_the_array_on_vm3_and_jit() {
+    let module = platform(MODULE);
     let source = format!(
-        "Public result As String{nl}{MODULE}{nl}Sub Main(){nl}    result = RunAll(){nl}End Sub{nl}",
+        "Public result As String{nl}{module}{nl}Sub Main(){nl}    result = RunAll(){nl}End Sub{nl}",
         nl = "
 "
     );

@@ -31,8 +31,7 @@ use calcvba_build::{
 };
 use calcvba_bundle::ProjectMemberKind;
 use calcvba_com::{
-    disp_params_to_runtime_call_frame, runtime_call_error_to_excepinfo,
-    runtime_call_result_to_variant, variant_to_com_value,
+    runtime_call_error_to_excepinfo, runtime_call_result_to_variant, variant_to_com_value,
 };
 use calcvba_engine::{Engine, ExecBackend, HostConfig, ProjectRuntimeSession, RuntimeProfileId};
 use calcvba_runtime::{
@@ -1038,31 +1037,39 @@ unsafe extern "system" fn dispatch_get_ids_of_names(
     };
 
     *dispids = member.dispid;
+    let property_put = matches!(
+        member.invoke_kind,
+        ComInvokeKind::PropertyPut | ComInvokeKind::PropertyPutRef
+    );
+    let mut status = S_OK;
     for index in 1..name_count as usize {
-        let Some(param_name) = wide_ptr_to_string(*names.add(index)) else {
-            return DISP_E_UNKNOWNNAME;
-        };
-        if matches!(
-            member.invoke_kind,
-            ComInvokeKind::PropertyPut | ComInvokeKind::PropertyPutRef
-        ) && member
+        let param_name = wide_ptr_to_string(*names.add(index)).unwrap_or_default();
+        // A parameter's DISPID is its position, as in a type library; a Property Let/Set's
+        // value is DISPID_PROPERTYPUT. An unknown name is DISPID_UNKNOWN, the others still
+        // filled in.
+        let position = member
             .parameter_names
-            .last()
-            .is_some_and(|name| name.eq_ignore_ascii_case(&param_name))
-        {
-            *dispids.add(index) = calcvba_com::COM_DISPID_PROPERTYPUT;
-        } else {
-            return DISP_E_UNKNOWNNAME;
-        }
+            .iter()
+            .position(|name| name.eq_ignore_ascii_case(&param_name));
+        *dispids.add(index) = match position {
+            Some(position) if property_put && position + 1 == member.parameter_names.len() => {
+                calcvba_com::COM_DISPID_PROPERTYPUT
+            }
+            Some(position) => position as i32,
+            None => {
+                status = DISP_E_UNKNOWNNAME;
+                -1
+            }
+        };
     }
-    S_OK
+    status
 }
 
 unsafe extern "system" fn dispatch_invoke(
     this: *mut c_void,
     dispid: i32,
     _riid: *const GUID,
-    lcid: u32,
+    _lcid: u32,
     flags: u16,
     params: *mut DISPPARAMS,
     result: *mut VARIANT,
@@ -1088,39 +1095,32 @@ unsafe extern "system" fn dispatch_invoke(
     };
 
     let count = arg_count(params);
-    if count > member.parameter_types.len()
-        || (count..member.parameter_types.len())
-            .any(|i| !member.parameter_optional.get(i).copied().unwrap_or(false))
-    {
-        return 0x8002_000Eu32 as i32; // DISP_E_BADPARAMCOUNT
-    }
-    let aliases = host_argument_aliases(member, params);
+    let slots = match argument_slots(member, params) {
+        Ok(slots) => slots,
+        Err((hr, position)) => {
+            if !arg_err.is_null() {
+                *arg_err = position;
+            }
+            return hr;
+        }
+    };
+    let aliases = host_argument_aliases(member, params, &slots);
     let mut invoke_error = None;
     let mut final_args = None;
     let outcome = with_session(|session| {
-        let mut args = if member_has_object_parameters(member) || disp_params_contain_object(params)
-        {
-            generated_server_object_aware_args(member, params, session)
-                .map_err(|message| format!("failed to marshal COM arguments: {message}"))?
-        } else {
-            // MS-OAUT IDispatch::Invoke defines DISPPARAMS.rgvarg in reverse argument
-            // order. Route through calcvba-com's shared normalizer so in-process servers
-            // use the same canonical declaration-order frame as every COM boundary.
-            let frame = disp_params_to_runtime_call_frame(dispid, flags, params, lcid)
-                .map_err(|err| format!("failed to marshal COM arguments: {}", err.message))?;
-            let mut args: Vec<Variant> = frame
-                .positional_args
-                .into_iter()
-                .map(|arg| arg.value)
-                .collect();
-            if let Some(property_put_arg) = frame.property_put_arg {
-                args.push(property_put_arg.value);
-            }
-            args
-        };
-        args.resize_with(member.parameter_types.len(), || {
-            Variant::from_error_code(0x8002_0004u32 as i32)
-        });
+        let mut args = Vec::with_capacity(slots.len());
+        for (index, (param, slot)) in member.parameter_types.iter().zip(&slots).enumerate() {
+            args.push(match slot {
+                Some(slot) => {
+                    generated_server_variant_arg(*param, &*(*params).rgvarg.add(*slot), session)
+                        .map_err(|message| {
+                            format!("failed to marshal COM argument {index}: {message}")
+                        })?
+                }
+                // An omitted optional argument is Missing (DISP_E_PARAMNOTFOUND).
+                None => Variant::from_error_code(0x8002_0004u32 as i32),
+            });
+        }
         let result = session.invoke_member_values_with_writebacks(
             object.object.clone(),
             &member.name,
@@ -1136,7 +1136,7 @@ unsafe extern "system" fn dispatch_invoke(
         })
     });
     if let Some(args) = final_args
-        && let Err(message) = write_back_host_arguments(member, params, &args)
+        && let Err(message) = write_back_host_arguments(member, params, &slots, &args)
     {
         return write_runtime_exception(Some(13), message, excep_info, arg_err, count);
     }
@@ -1171,71 +1171,68 @@ unsafe extern "system" fn dispatch_invoke(
     }
 }
 
-fn member_has_object_parameters(member: &ComMemberDescriptor) -> bool {
-    member
-        .parameter_types
-        .iter()
-        .any(|param| matches!(param, ComParamType::Object | ComParamType::ByRefObject))
-}
-
-unsafe fn disp_params_contain_object(params: *const DISPPARAMS) -> bool {
-    if params.is_null() {
-        return false;
-    }
-    let params = &*params;
-    let arg_count = params.cArgs as usize;
-    if arg_count == 0 || params.rgvarg.is_null() {
-        return false;
-    }
-    (0..arg_count).any(|index| variant_contains_dispatch_or_unknown(&*params.rgvarg.add(index)))
-}
-
-unsafe fn generated_server_object_aware_args(
+/// For each formal parameter, the index in `DISPPARAMS.rgvarg` of its argument (`None` when
+/// omitted). Positional arguments sit at the end of `rgvarg`, last first; named arguments at
+/// the front, named by `rgdispidNamedArgs` (a parameter's position, or DISPID_PROPERTYPUT for a
+/// Property Let/Set value). `Err((HRESULT, puArgErr))` as oleaut's `DispInvoke` reports it.
+unsafe fn argument_slots(
     member: &ComMemberDescriptor,
     params: *const DISPPARAMS,
-    session: &mut ProjectRuntimeSession,
-) -> Result<Vec<Variant>, String> {
+) -> Result<Vec<Option<usize>>, (i32, u32)> {
+    const DISP_E_PARAMNOTFOUND: i32 = 0x8002_0004u32 as i32;
+    const DISP_E_BADPARAMCOUNT: i32 = 0x8002_000Eu32 as i32;
+    const DISP_E_PARAMNOTOPTIONAL: i32 = 0x8002_000Fu32 as i32;
+    let formals = member.parameter_types.len();
+    let mut slots = vec![None; formals];
     if params.is_null() {
-        return Err("IDispatch::Invoke received null DISPPARAMS".to_string());
+        return Ok(slots);
     }
     let params = &*params;
-    let arg_count = params.cArgs as usize;
-    let expected_count = member.parameter_types.len();
-    if arg_count > expected_count {
-        return Err(format!(
-            "expected {expected_count} argument(s) for {}, got {arg_count}",
-            member.name
+    let count = params.cArgs as usize;
+    let named = params.cNamedArgs as usize;
+    if named > count
+        || (count > 0 && params.rgvarg.is_null())
+        || (named > 0 && params.rgdispidNamedArgs.is_null())
+    {
+        return Err((E_POINTER, 0));
+    }
+    let positional = count - named;
+    if positional > formals {
+        return Err((DISP_E_BADPARAMCOUNT, 0));
+    }
+    for (logical, slot) in slots.iter_mut().enumerate().take(positional) {
+        *slot = Some(count - 1 - logical);
+    }
+    for index in 0..named {
+        let dispid = *params.rgdispidNamedArgs.add(index);
+        let formal = if dispid == calcvba_com::COM_DISPID_PROPERTYPUT && formals > 0 {
+            formals - 1
+        } else {
+            usize::try_from(dispid).map_err(|_| (DISP_E_PARAMNOTFOUND, index as u32))?
+        };
+        match slots.get_mut(formal) {
+            Some(slot @ None) => *slot = Some(index),
+            _ => return Err((DISP_E_PARAMNOTFOUND, index as u32)),
+        }
+    }
+    if let Some(missing) = slots.iter().enumerate().position(|(formal, slot)| {
+        slot.is_none()
+            && !member
+                .parameter_optional
+                .get(formal)
+                .copied()
+                .unwrap_or(false)
+    }) {
+        return Err((
+            if named == 0 {
+                DISP_E_BADPARAMCOUNT
+            } else {
+                DISP_E_PARAMNOTOPTIONAL
+            },
+            missing as u32,
         ));
     }
-    if arg_count > 0 && params.rgvarg.is_null() {
-        return Err("IDispatch::Invoke DISPPARAMS had cArgs > 0 with null rgvarg".to_string());
-    }
-    let property_put = matches!(
-        member.invoke_kind,
-        ComInvokeKind::PropertyPut | ComInvokeKind::PropertyPutRef
-    );
-    if params.cNamedArgs != 0
-        && !(property_put
-            && params.cNamedArgs == 1
-            && !params.rgdispidNamedArgs.is_null()
-            && *params.rgdispidNamedArgs == -3)
-    {
-        return Err(
-            "object-argument WrappedComServer Invoke currently supports positional arguments only"
-                .to_string(),
-        );
-    }
-
-    let mut args = Vec::with_capacity(expected_count);
-    for (logical_index, param) in member.parameter_types.iter().take(arg_count).enumerate() {
-        let com_index = arg_count - 1 - logical_index;
-        let variant = &*params.rgvarg.add(com_index);
-        args.push(
-            generated_server_variant_arg(*param, variant, session)
-                .map_err(|message| format!("argument {logical_index}: {message}"))?,
-        );
-    }
-    Ok(args)
+    Ok(slots)
 }
 
 // Recover local project identities before binding foreign Automation objects.
@@ -3731,6 +3728,18 @@ unsafe fn resolve_runtime_object(object: ObjectRef) -> Result<*mut c_void, Strin
             "runtime object class index {class_index} is outside the COM descriptor"
         ));
     }
+    // One COM object per project object, as VBA hands out: a live wrapper is reused (with a
+    // new reference for the caller), so a client's `Is` sees the same identity every time.
+    let existing = WRAPPERS.with(|wrappers| {
+        wrappers
+            .borrow()
+            .get(&object.raw())
+            .and_then(|list| list.first().copied())
+    });
+    if let Some(existing) = existing {
+        dispatch_add_ref(existing.cast());
+        return Ok(existing.cast());
+    }
     Ok(allocate_dispatch_object(class_index, object))
 }
 
@@ -4107,18 +4116,19 @@ impl Drop for NativeVariantOwner {
 unsafe fn host_argument_aliases(
     member: &ComMemberDescriptor,
     params: *mut DISPPARAMS,
+    slots: &[Option<usize>],
 ) -> Vec<usize> {
     let mut aliases: Vec<_> = (0..member.parameter_types.len()).collect();
     if params.is_null() {
         return aliases;
     }
-    let count = (*params).cArgs as usize;
     let mut identities = HashMap::new();
-    for (index, formal) in member.parameter_types.iter().enumerate().take(count) {
+    for (index, (formal, slot)) in member.parameter_types.iter().zip(slots).enumerate() {
+        let Some(slot) = slot else { continue };
         if !formal.is_by_ref() {
             continue;
         }
-        let mut argument = &*(*params).rgvarg.add(count - 1 - index);
+        let mut argument = &*(*params).rgvarg.add(*slot);
         // An Automation forwarding VARIANT can itself refer to a ByRef value.
         for _ in 0..32 {
             if argument.Anonymous.Anonymous.vt != (VT_BYREF | VT_VARIANT) {
@@ -4232,23 +4242,18 @@ unsafe fn transfer_host_writeback(target: &mut VARIANT, value: &mut VARIANT) -> 
 unsafe fn write_back_host_arguments(
     member: &ComMemberDescriptor,
     params: *mut DISPPARAMS,
+    slots: &[Option<usize>],
     args: &[Variant],
 ) -> Result<(), String> {
     if params.is_null() {
         return Ok(());
     }
-    let count = (*params).cArgs as usize;
-    for (index, (formal, value)) in member
-        .parameter_types
-        .iter()
-        .zip(args)
-        .enumerate()
-        .take(count)
-    {
+    for ((formal, value), slot) in member.parameter_types.iter().zip(args).zip(slots) {
+        let Some(slot) = slot else { continue };
         if !formal.is_by_ref() {
             continue;
         }
-        let target = &mut *(*params).rgvarg.add(count - 1 - index);
+        let target = &mut *(*params).rgvarg.add(*slot);
         if target.Anonymous.Anonymous.vt & VT_BYREF == 0 {
             continue;
         }

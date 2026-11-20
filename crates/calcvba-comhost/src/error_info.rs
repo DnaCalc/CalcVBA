@@ -28,12 +28,21 @@ fn publish_project_error(error: &calcvba_engine::PhaseDiagnostic) -> i32 {
     } else {
         fault.code
     };
-    let source = fault.source.as_deref().unwrap_or_else(|| {
+    let default_source = calcvba_runtime::Utf16String::from(
         descriptor()
             .map(|d| d.project_name.as_str())
-            .unwrap_or("CalcVBA")
-    });
-    let wide = |text: &str| text.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+            .unwrap_or("CalcVBA"),
+    );
+    let source = fault.source.as_ref().unwrap_or(&default_source);
+    let empty_help = calcvba_runtime::Utf16String::new();
+    let help_file = fault.help_file.as_ref().unwrap_or(&empty_help);
+    let wide = |text: &calcvba_runtime::Utf16String| {
+        text.as_units()
+            .iter()
+            .copied()
+            .chain(Some(0))
+            .collect::<Vec<_>>()
+    };
     // SAFETY: CreateErrorInfo supplies an owned ICreateErrorInfo with the
     // documented Automation vtable. Each input stays live through its setter;
     // QI and SetErrorInfo retain their own references before ours are released.
@@ -44,10 +53,7 @@ fn publish_project_error(error: &calcvba_engine::PhaseDiagnostic) -> i32 {
             (table.set_guid)(create, &IID_IDISPATCH);
             (table.set_source)(create, wide(source).as_ptr());
             (table.set_description)(create, wide(&fault.message).as_ptr());
-            (table.set_help_file)(
-                create,
-                wide(fault.help_file.as_deref().unwrap_or("")).as_ptr(),
-            );
+            (table.set_help_file)(create, wide(help_file).as_ptr());
             (table.set_help_context)(create, fault.help_context.unwrap_or(0) as u32);
             let mut info = ptr::null_mut();
             if (table.query_interface)(create, &IID_IERRORINFO, &mut info) >= 0 && !info.is_null() {

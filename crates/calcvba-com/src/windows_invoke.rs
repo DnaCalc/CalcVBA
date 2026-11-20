@@ -85,9 +85,9 @@ struct RawIDispatch {
 #[cfg(target_os = "windows")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComInvokeExceptionInfo {
-    pub source: Option<String>,
-    pub description: Option<String>,
-    pub help_file: Option<String>,
+    pub source: Option<calcvba_runtime::Utf16String>,
+    pub description: Option<calcvba_runtime::Utf16String>,
+    pub help_file: Option<calcvba_runtime::Utf16String>,
     pub help_context: Option<u32>,
     pub scode: Option<i32>,
     pub wcode: Option<u16>,
@@ -158,10 +158,10 @@ impl ComInvokeFailure {
 
     /// The COM-supplied `EXCEPINFO.bstrDescription`, when present — the text VBA
     /// would surface as `Err.Description` (e.g. "Database already exists.").
-    pub fn vba_description(&self) -> Option<&str> {
+    pub fn vba_description(&self) -> Option<&calcvba_runtime::Utf16String> {
         self.excep
             .as_ref()
-            .and_then(|excep| excep.description.as_deref())
+            .and_then(|excep| excep.description.as_ref())
     }
 
     pub fn render(&self) -> String {
@@ -181,19 +181,19 @@ impl ComInvokeFailure {
             if let Some(source) = &excep.source {
                 message.push_str(&format!(
                     " excep_source=\"{}\"",
-                    sanitize_error_text(source)
+                    sanitize_error_text(&source.to_string_lossy())
                 ));
             }
             if let Some(description) = &excep.description {
                 message.push_str(&format!(
                     " excep_description=\"{}\"",
-                    sanitize_error_text(description)
+                    sanitize_error_text(&description.to_string_lossy())
                 ));
             }
             if let Some(help_file) = &excep.help_file {
                 message.push_str(&format!(
                     " excep_help_file=\"{}\"",
-                    sanitize_error_text(help_file)
+                    sanitize_error_text(&help_file.to_string_lossy())
                 ));
             }
             if let Some(help_context) = excep.help_context {
@@ -385,6 +385,27 @@ pub(crate) unsafe fn bstr_to_string_and_free(bstr: windows_sys::core::BSTR) -> O
 
 #[cfg(target_os = "windows")]
 #[allow(unsafe_op_in_unsafe_fn)]
+/// Read a callee-transferred BSTR into a lossless [`calcvba_runtime::Utf16String`]
+/// and free it with `SysFreeString` (we own the transferred string).
+///
+/// # Safety
+/// `bstr`, when non-null, must be a BSTR whose ownership has transferred to us
+/// (so freeing it exactly once here is correct) and which is otherwise valid.
+pub(crate) unsafe fn bstr_to_utf16_and_free(
+    bstr: windows_sys::core::BSTR,
+) -> Option<calcvba_runtime::Utf16String> {
+    if bstr.is_null() {
+        return None;
+    }
+    let len = usize::try_from(SysStringLen(bstr)).unwrap_or(0);
+    let slice = std::slice::from_raw_parts(bstr, len);
+    let text = calcvba_runtime::Utf16String::from_units(slice.to_vec());
+    SysFreeString(bstr);
+    Some(text)
+}
+
+#[cfg(target_os = "windows")]
+#[allow(unsafe_op_in_unsafe_fn)]
 /// Consume any owned BSTR fields from an `EXCEPINFO` and convert the non-empty details into the
 /// shared invoke-failure payload used by the Windows COM bridge.
 ///
@@ -392,9 +413,9 @@ pub(crate) unsafe fn bstr_to_string_and_free(bstr: windows_sys::core::BSTR) -> O
 /// The caller must provide a valid writable `EXCEPINFO` pointer whose BSTR fields, when non-null,
 /// are owned by the caller and may be released exactly once by this function.
 pub unsafe fn take_excepinfo(excep: &mut EXCEPINFO) -> Option<ComInvokeExceptionInfo> {
-    let source = bstr_to_string_and_free(excep.bstrSource);
-    let description = bstr_to_string_and_free(excep.bstrDescription);
-    let help_file = bstr_to_string_and_free(excep.bstrHelpFile);
+    let source = bstr_to_utf16_and_free(excep.bstrSource);
+    let description = bstr_to_utf16_and_free(excep.bstrDescription);
+    let help_file = bstr_to_utf16_and_free(excep.bstrHelpFile);
     excep.bstrSource = std::ptr::null_mut();
     excep.bstrDescription = std::ptr::null_mut();
     excep.bstrHelpFile = std::ptr::null_mut();
@@ -4765,8 +4786,8 @@ mod vba_error_number_tests {
             hr: Some(0x8002_0009u32 as i32), // DISP_E_EXCEPTION
             arg_err: None,
             excep: Some(ComInvokeExceptionInfo {
-                source: Some("Server".to_string()),
-                description: Some("Database already exists.".to_string()),
+                source: Some("Server".into()),
+                description: Some("Database already exists.".into()),
                 help_file: None,
                 help_context: None,
                 scode,
@@ -4827,7 +4848,10 @@ mod vba_error_number_tests {
         // DISP_E_EXCEPTION (0x80020009) carries the real number in EXCEPINFO.scode.
         let failure = excep_failure(Some(0x800A_0C84u32 as i32), None);
         assert_eq!(failure.vba_error_number(), 3204);
-        assert_eq!(failure.vba_description(), Some("Database already exists."));
+        assert_eq!(
+            failure.vba_description().map(|s| s.to_string_lossy()),
+            Some("Database already exists.".to_string())
+        );
     }
 
     #[test]

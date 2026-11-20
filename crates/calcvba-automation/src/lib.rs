@@ -25,6 +25,7 @@ pub mod value_types;
 pub mod variant;
 pub mod vba_record;
 
+pub use bstr::Utf16String;
 pub use com_record::{ComRecord, ComRecordRef};
 pub use decimal::Decimal96;
 #[cfg(any(test, feature = "live-counters"))]

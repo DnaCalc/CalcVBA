@@ -2,6 +2,7 @@
 
 use crate::model::{CapabilityId, HalProfileId};
 use calcvba_diagnostics::{Diagnostic, DiagnosticPhase};
+use calcvba_runtime::Utf16String;
 use thiserror::Error;
 
 pub type HalResult<T> = Result<T, HalError>;
@@ -18,9 +19,9 @@ pub enum HalErrorKind {
 /// detail remains in HalError::message instead of contaminating Err.Description.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HostErrorInfo {
-    pub source: Option<String>,
-    pub description: Option<String>,
-    pub help_file: Option<String>,
+    pub source: Option<Utf16String>,
+    pub description: Option<Utf16String>,
+    pub help_file: Option<Utf16String>,
     pub help_context: Option<u32>,
 }
 

@@ -1209,8 +1209,11 @@ impl Engine {
                 SnapshotOutcome::Raised {
                     err: FinalErr {
                         number: fault.code,
-                        source: fault.source.unwrap_or_else(|| oxp.unit_name.clone()),
-                        description: fault.message,
+                        source: fault
+                            .source
+                            .map(|s| s.to_string_lossy())
+                            .unwrap_or_else(|| oxp.unit_name.clone()),
+                        description: fault.message.to_string_lossy(),
                         last_dll_error: fault_last_dll_error,
                     },
                 }
@@ -1444,8 +1447,8 @@ End Sub
         let fault = error.vba_fault().unwrap();
         assert_eq!(fault.code, 457);
         assert_eq!(fault.message, "failure");
-        assert_eq!(fault.source.as_deref(), Some("Probe"));
-        assert_eq!(fault.help_file.as_deref(), Some("probe.chm"));
+        assert_eq!(fault.source, Some("Probe".into()));
+        assert_eq!(fault.help_file, Some("probe.chm".into()));
         assert_eq!(fault.help_context, Some(91));
     }
 

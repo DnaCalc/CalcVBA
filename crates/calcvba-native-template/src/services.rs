@@ -3,7 +3,7 @@
 use calcvba_hal::{HalProfileId, HostPolicy, HostServices, adapters::builder::HostBuilder};
 use calcvba_rt_abi::{ExecState, native_export::Context};
 use calcvba_runtime::ObjectRefExt;
-use calcvba_runtime::{VarType, Variant, bstr::BStr};
+use calcvba_runtime::{VarType, Variant};
 use std::{ffi::c_void, ptr, sync::Arc};
 use windows_sys::Win32::System::Variant::{VARIANT, VariantClear};
 
@@ -70,9 +70,9 @@ pub(super) unsafe fn typed_fault(
         state.err_engine.raise(
             calcvba_rt_abi::Fault {
                 code: fault.number,
-                message: fault.description,
-                source: fault.source,
-                help_file: fault.help_file,
+                message: fault.description.into(),
+                source: fault.source.map(Into::into),
+                help_file: fault.help_file.map(Into::into),
                 help_context: fault.help_context,
             },
             source,
@@ -535,9 +535,9 @@ pub(super) unsafe fn finish(context: *mut Context, status: i32) -> Result<(), i3
         let error = &(*runtime(context)).exec.err_engine.err;
         let number = if error.number == 0 { 5 } else { error.number };
         let text = super::errors::ErrorText {
-            source: BStr::from(error.source.as_str()),
-            description: BStr::from(error.description.as_str()),
-            help_file: BStr::from(error.help_file.as_str()),
+            source: error.source.to_bstr(),
+            description: error.description.to_bstr(),
+            help_file: error.help_file.to_bstr(),
             help_context: error.help_context,
         };
         super::errors::clear(context);
@@ -918,9 +918,9 @@ pub unsafe extern "C" fn cvb_error_get(
             let error = &(*runtime(context)).exec.err_engine;
             let value = match field {
                 0 => Variant::from_i32(error.err.number),
-                1 => Variant::from_string(error.err.description.as_str()),
-                2 => Variant::from_string(error.err.source.as_str()),
-                3 => Variant::from_string(error.err.help_file.as_str()),
+                1 => Variant::from_string(&error.err.description),
+                2 => Variant::from_string(&error.err.source),
+                3 => Variant::from_string(&error.err.help_file),
                 4 => Variant::from_i32(error.err.help_context),
                 5 => Variant::from_i32(windows_sys::Win32::Foundation::GetLastError() as i32),
                 6 => Variant::from_i32(error.erl_line),
@@ -1009,9 +1009,12 @@ pub(super) unsafe fn raise_explicit(
         let fault = runtime.exec.err_engine.explicit_fault(
             number,
             calcvba_rt_abi::RaiseFields {
-                source: (flags & 1 != 0).then(|| text.source.as_str()),
-                description: (flags & 2 != 0).then(|| text.description.as_str()),
-                help_file: (flags & 4 != 0).then(|| text.help_file.as_str()),
+                source: (flags & 1 != 0)
+                    .then(|| calcvba_runtime::Utf16String::from_bstr(&text.source)),
+                description: (flags & 2 != 0)
+                    .then(|| calcvba_runtime::Utf16String::from_bstr(&text.description)),
+                help_file: (flags & 4 != 0)
+                    .then(|| calcvba_runtime::Utf16String::from_bstr(&text.help_file)),
                 help_context: (flags & 8 != 0).then_some(text.help_context),
             },
             flags & 0x10 != 0,

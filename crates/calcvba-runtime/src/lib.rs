@@ -31,6 +31,7 @@ pub mod vba_error;
 pub mod vba_radix;
 pub use calcvba_automation::vba_record;
 
+pub use bstr::Utf16String;
 pub use call_frame::{
     RuntimeByRefSlot, RuntimeByRefWriteback, RuntimeCallArgument, RuntimeCallContext,
     RuntimeCallError, RuntimeCallFrame, RuntimeCallKind, RuntimeCallResult, RuntimeCallSelector,

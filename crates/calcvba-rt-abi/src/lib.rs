@@ -26,7 +26,7 @@ use calcvba_runtime::object_ref::{
     RuntimeInterfaceId, RuntimeInterfaceIdentity, RuntimeInterfaceKind, RuntimeMemberDescriptor,
     RuntimeMemberInvokeKind, RuntimeParamDescriptor, RuntimeProjectClassIdentity, RuntimeValueType,
 };
-use calcvba_runtime::{VarType, Variant};
+use calcvba_runtime::{Utf16String, VarType, Variant};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::marker::PhantomData;
@@ -120,15 +120,15 @@ pub const INSTANCE_ID_BASE: i32 = 0x1000_0000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fault {
     pub code: i32,
-    pub message: String,
-    pub source: Option<String>,
-    pub help_file: Option<String>,
+    pub message: Utf16String,
+    pub source: Option<Utf16String>,
+    pub help_file: Option<Utf16String>,
     pub help_context: Option<i32>,
 }
 
 impl Fault {
     /// A fault with an explicit VBA error code and message.
-    pub fn new(code: i32, message: impl Into<String>) -> Self {
+    pub fn new(code: i32, message: impl Into<Utf16String>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -142,7 +142,7 @@ impl Fault {
     pub fn from_arith(e: ArithError) -> Self {
         Self {
             code: e.code,
-            message: e.message,
+            message: e.message.into(),
             source: None,
             help_file: None,
             help_context: None,
@@ -171,7 +171,7 @@ impl Fault {
         let info = e.host_error_info.unwrap_or_default();
         Self {
             code: e.host_error_code.unwrap_or(5),
-            message: info.description.unwrap_or(e.message),
+            message: info.description.unwrap_or_else(|| e.message.into()),
             source: info.source,
             help_file: info.help_file,
             help_context: info.help_context.map(|value| value as i32),
@@ -199,9 +199,9 @@ pub struct ResumePoint {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ErrState {
     pub number: i32,
-    pub description: String,
-    pub source: String,
-    pub help_file: String,
+    pub description: Utf16String,
+    pub source: Utf16String,
+    pub help_file: Utf16String,
     pub help_context: i32,
     pub inherit_fields: bool,
 }
@@ -209,9 +209,9 @@ pub struct ErrState {
 /// Explicit Err.Raise fields; None preserves omission independently of empty text.
 #[derive(Default)]
 pub struct RaiseFields {
-    pub source: Option<String>,
-    pub description: Option<String>,
-    pub help_file: Option<String>,
+    pub source: Option<Utf16String>,
+    pub description: Option<Utf16String>,
+    pub help_file: Option<Utf16String>,
     pub help_context: Option<i32>,
 }
 
@@ -2584,7 +2584,7 @@ pub unsafe extern "C" fn rt_lib_invoke_with_policy(
             let Some(exec) = (unsafe { state_from_raw(state) }) else {
                 return ST_FAULT;
             };
-            let text = Variant::from_string(exec.err_engine.err.description.clone());
+            let text = Variant::from_string(&exec.err_engine.err.description);
             // SAFETY: the exported helper contract guarantees live unique state and aligned, initialized, uniquely writable typed output storage.
             return unsafe { write_out(state, out, text) };
         }
@@ -3050,10 +3050,10 @@ pub unsafe extern "C" fn rt_err_i32_field(
 /// state and the selected Err string remain alive and unmodified.
 /// Specifically, non-null `state` must be uniquely borrowed; non-null `out_ptr` and `out_len` must identify initialized, uniquely writable pointer and `i32` slots and must not overlap.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rt_err_string_field_utf8(
+pub unsafe extern "C" fn rt_err_string_field_utf16(
     state: *mut RawExecState,
     field: u32,
-    out_ptr: *mut *const u8,
+    out_ptr: *mut *const u16,
     out_len: *mut i32,
 ) -> i32 {
     with_status(|| {
@@ -3069,12 +3069,13 @@ pub unsafe extern "C" fn rt_err_string_field_utf8(
             // SAFETY: the exported helper contract guarantees that non-null `state` is the live, uniquely borrowed execution state.
             _ => return unsafe { seat_fault(state, Fault::new(5, "Err field is not string")) },
         };
-        let Ok(len) = i32::try_from(value.len()) else {
+        let units = value.as_units();
+        let Ok(len) = i32::try_from(units.len()) else {
             // SAFETY: the exported helper contract guarantees that non-null `state` is the live, uniquely borrowed execution state.
             return unsafe { seat_fault(state, Fault::new(5, "Err field string is too long")) };
         };
         // SAFETY: the exported helper contract guarantees live unique state and aligned, initialized, uniquely writable typed output storage.
-        let status = unsafe { write_out(state, out_ptr, value.as_ptr()) };
+        let status = unsafe { write_out(state, out_ptr, units.as_ptr()) };
         if status != ST_OK {
             return status;
         }
@@ -3104,6 +3105,14 @@ pub unsafe extern "C" fn rt_erl_get(state: *mut RawExecState, out: *mut i32) -> 
     })
 }
 
+fn coerced_string_utf16(value: &Variant) -> Result<Utf16String, Fault> {
+    let coerced = arith::coerce_string(value).map_err(Fault::from_arith)?;
+    Ok(coerced
+        .as_bstr()
+        .map(|b| Utf16String::from_bstr(&b))
+        .unwrap_or_default())
+}
+
 fn apply_err_field_set(exec: &mut ExecState<'_>, field: u32, value: &Variant) -> Result<(), Fault> {
     match field {
         RT_ERR_FIELD_NUMBER => {
@@ -3120,20 +3129,17 @@ fn apply_err_field_set(exec: &mut ExecState<'_>, field: u32, value: &Variant) ->
             Ok(())
         }
         RT_ERR_FIELD_DESCRIPTION => {
-            let coerced = arith::coerce_string(value).map_err(Fault::from_arith)?;
-            exec.err_engine.err.description = arith::as_string(&coerced);
+            exec.err_engine.err.description = coerced_string_utf16(value)?;
             exec.err_engine.err.inherit_fields = true;
             Ok(())
         }
         RT_ERR_FIELD_SOURCE => {
-            let coerced = arith::coerce_string(value).map_err(Fault::from_arith)?;
-            exec.err_engine.err.source = arith::as_string(&coerced);
+            exec.err_engine.err.source = coerced_string_utf16(value)?;
             exec.err_engine.err.inherit_fields = true;
             Ok(())
         }
         RT_ERR_FIELD_HELP_FILE => {
-            let coerced = arith::coerce_string(value).map_err(Fault::from_arith)?;
-            exec.err_engine.err.help_file = arith::as_string(&coerced);
+            exec.err_engine.err.help_file = coerced_string_utf16(value)?;
             exec.err_engine.err.inherit_fields = true;
             Ok(())
         }
@@ -3638,7 +3644,7 @@ impl ErrEngine {
                 if inherit {
                     self.err.description.clone()
                 } else {
-                    default_error_message(number)
+                    default_error_message(number).into()
                 }
             }),
             source: fields
@@ -3654,7 +3660,7 @@ impl ErrEngine {
     }
 
     /// Populate `Err` from a raised fault and stash it for the landing pad.
-    pub fn raise(&mut self, mut fault: Fault, default_source: impl Into<String>) {
+    pub fn raise(&mut self, mut fault: Fault, default_source: impl Into<Utf16String>) {
         self.err.number = fault.code;
         self.err.description = fault.message.clone();
         self.err.inherit_fields = true;
@@ -3669,7 +3675,7 @@ impl ErrEngine {
         let help_file = fault
             .help_file
             .clone()
-            .unwrap_or_else(default_error_help_file);
+            .unwrap_or_else(|| default_error_help_file().into());
         self.err.help_file = help_file.clone();
         fault.help_file = Some(help_file);
 
@@ -3779,9 +3785,61 @@ mod tests {
         let fault = Fault::from_hal(error);
         assert_eq!(fault.code, 13);
         assert_eq!(fault.message, "exact server text");
-        assert_eq!(fault.source.as_deref(), Some("Host.Library"));
-        assert_eq!(fault.help_file.as_deref(), Some("host-help.chm"));
+        assert_eq!(fault.source, Some(Utf16String::from("Host.Library")));
+        assert_eq!(fault.help_file, Some(Utf16String::from("host-help.chm")));
         assert_eq!(fault.help_context, Some(0x8000_0001u32 as i32));
+    }
+
+    #[test]
+    fn hal_fault_lone_surrogates_survive_err_engine_and_utf16_abi() {
+        let source_units = [0x0053u16, 0xD800, 0x0072, 0x0063];
+        let desc_units = [0x0044u16, 0xDC00, 0x002D, 0xDFFF];
+        let help_units = [0x0048u16, 0xD801, 0x002E, 0x0063, 0x0068, 0x006D];
+        let error = calcvba_hal::HalError::adapter_fault(
+            calcvba_hal::model::HalProfileId::Linux,
+            calcvba_hal::model::CapabilityId::ComActivationDispatch,
+            "invoke_late_bound",
+            "transport fallback",
+        )
+        .with_host_error_code(1000)
+        .with_host_error_info(calcvba_hal::error::HostErrorInfo {
+            source: Some(Utf16String::from_units(source_units)),
+            description: Some(Utf16String::from_units(desc_units)),
+            help_file: Some(Utf16String::from_units(help_units)),
+            help_context: Some(42),
+        });
+        let fault = Fault::from_hal(error);
+        assert_eq!(fault.message.as_units(), &desc_units);
+        assert_eq!(
+            fault.source.as_ref().map(Utf16String::as_units),
+            Some(&source_units[..])
+        );
+        assert_eq!(
+            fault.help_file.as_ref().map(Utf16String::as_units),
+            Some(&help_units[..])
+        );
+
+        let host =
+            calcvba_hal::adapters::null::NullHostServices::new(calcvba_hal::HostPolicy::default());
+        let mut state = ExecState::new(&host);
+        state.err_engine.raise(fault, "VBAProject");
+
+        for (field, expected) in [
+            (RT_ERR_FIELD_SOURCE, &source_units[..]),
+            (RT_ERR_FIELD_DESCRIPTION, &desc_units[..]),
+            (RT_ERR_FIELD_HELP_FILE, &help_units[..]),
+        ] {
+            let mut ptr = std::ptr::null();
+            let mut len = 0;
+            // SAFETY: uniquely borrowed live ExecState and initialized local out slots.
+            let status = unsafe {
+                rt_err_string_field_utf16(exec_state_as_raw(&mut state), field, &mut ptr, &mut len)
+            };
+            assert_eq!(status, ST_OK);
+            // SAFETY: pointer/len borrow into live state's Err UTF-16 buffer.
+            let units = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+            assert_eq!(units, expected);
+        }
     }
     #[test]
     fn execution_budget_exhaustion_never_wraps_or_modifies_vba_err() {
@@ -4005,9 +4063,9 @@ mod tests {
 
             state.err_engine.err = ErrState {
                 number: 100,
-                description: "previous description".to_string(),
-                source: "PreviousSource".to_string(),
-                help_file: "previous.chm".to_string(),
+                description: "previous description".into(),
+                source: "PreviousSource".into(),
+                help_file: "previous.chm".into(),
                 help_context: 77,
                 inherit_fields: true,
             };
@@ -4031,9 +4089,9 @@ mod tests {
 
             state.err_engine.err = ErrState {
                 number: 100,
-                description: "previous description".to_string(),
-                source: "PreviousSource".to_string(),
-                help_file: "previous.chm".to_string(),
+                description: "previous description".into(),
+                source: "PreviousSource".into(),
+                help_file: "previous.chm".into(),
                 help_context: 77,
                 inherit_fields: true,
             };
@@ -4085,16 +4143,16 @@ mod tests {
 
             let mut ptr = std::ptr::null();
             let mut len = 0;
-            let status = rt_err_string_field_utf8(
+            let status = rt_err_string_field_utf16(
                 exec_state_as_raw(&mut state),
                 RT_ERR_FIELD_DESCRIPTION,
                 &mut ptr,
                 &mut len,
             );
             assert_eq!(status, ST_OK);
-            // SAFETY: the ABI returned a pointer/length to the live state's UTF-8 string.
+            // SAFETY: the ABI returned a pointer/length to the live state's UTF-16 string.
             let description =
-                std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len as usize));
+                Utf16String::from_units(std::slice::from_raw_parts(ptr, len as usize));
             assert_eq!(description, default_error_message(9));
 
             let status = rt_err_clear(exec_state_as_raw(&mut state));
@@ -4108,7 +4166,7 @@ mod tests {
             assert_eq!(status, ST_OK);
             assert_eq!(number, 0);
 
-            let status = rt_err_string_field_utf8(
+            let status = rt_err_string_field_utf16(
                 exec_state_as_raw(&mut state),
                 RT_ERR_FIELD_DESCRIPTION,
                 &mut ptr,

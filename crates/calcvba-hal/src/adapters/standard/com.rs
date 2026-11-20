@@ -250,7 +250,7 @@ fn try_bind_projection_object_metadata(
 fn argument_coercion(value: &Variant, vt: u16) -> Result<Variant, calcvba_com::call::ComFault> {
     calcvba_eval::arith::coerce_for_byref_target(value, vt).map_err(|error| {
         calcvba_com::call::ComFault {
-            description: Some(error.message),
+            description: Some(error.message.into()),
             ..calcvba_com::call::ComFault::number(error.code)
         }
     })

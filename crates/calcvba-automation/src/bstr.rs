@@ -312,6 +312,167 @@ impl core::fmt::Display for BStr {
     }
 }
 
+/// Lossless UTF-16 code-unit string for VBA runtime error text and metadata
+/// (`Err.Description`, `Err.Source`, `Err.HelpFile`, HAL/COM fault text).
+///
+/// Unlike Rust's `String`, `Utf16String` preserves unpaired UTF-16 surrogates
+/// (`0xD800..=0xDFFF`) and embedded NULs verbatim; unlike [`BStr`], it is a
+/// pure Rust buffer that does not allocate Automation handles or perturb
+/// [`crate::live_counters`] when held in long-lived runtime state such as `Err`.
+#[derive(Clone, Default, PartialEq, Eq, Hash)]
+pub struct Utf16String(Vec<u16>);
+
+impl Utf16String {
+    pub const fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    pub fn from_units(units: impl Into<Vec<u16>>) -> Self {
+        Self(units.into())
+    }
+
+    pub fn from_bstr(bstr: &BStr) -> Self {
+        Self(bstr.to_utf16_units())
+    }
+
+    pub fn as_units(&self) -> &[u16] {
+        &self.0
+    }
+
+    pub fn len_units(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn to_bstr(&self) -> BStr {
+        BStr::from_utf16_units(&self.0)
+            .expect("Utf16String payload length should fit in u32 byte count")
+    }
+
+    pub fn to_string_lossy(&self) -> String {
+        String::from_utf16_lossy(&self.0)
+    }
+}
+
+impl core::fmt::Debug for Utf16String {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("Utf16String")
+            .field(&self.to_string_lossy())
+            .finish()
+    }
+}
+
+impl core::fmt::Display for Utf16String {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.to_string_lossy())
+    }
+}
+
+impl From<&str> for Utf16String {
+    fn from(value: &str) -> Self {
+        Self(value.encode_utf16().collect())
+    }
+}
+
+impl From<String> for Utf16String {
+    fn from(value: String) -> Self {
+        Self::from(value.as_str())
+    }
+}
+
+impl From<&String> for Utf16String {
+    fn from(value: &String) -> Self {
+        Self::from(value.as_str())
+    }
+}
+
+impl From<BStr> for Utf16String {
+    fn from(value: BStr) -> Self {
+        Self::from_bstr(&value)
+    }
+}
+
+impl From<&BStr> for Utf16String {
+    fn from(value: &BStr) -> Self {
+        Self::from_bstr(value)
+    }
+}
+
+impl From<Vec<u16>> for Utf16String {
+    fn from(units: Vec<u16>) -> Self {
+        Self(units)
+    }
+}
+
+impl From<&[u16]> for Utf16String {
+    fn from(units: &[u16]) -> Self {
+        Self(units.to_vec())
+    }
+}
+
+impl From<Utf16String> for BStr {
+    fn from(value: Utf16String) -> Self {
+        value.to_bstr()
+    }
+}
+
+impl From<&Utf16String> for BStr {
+    fn from(value: &Utf16String) -> Self {
+        value.to_bstr()
+    }
+}
+
+impl From<Utf16String> for String {
+    fn from(value: Utf16String) -> Self {
+        value.to_string_lossy()
+    }
+}
+
+impl From<&Utf16String> for String {
+    fn from(value: &Utf16String) -> Self {
+        value.to_string_lossy()
+    }
+}
+
+impl PartialEq<str> for Utf16String {
+    fn eq(&self, other: &str) -> bool {
+        self.0.iter().copied().eq(other.encode_utf16())
+    }
+}
+
+impl PartialEq<&str> for Utf16String {
+    fn eq(&self, other: &&str) -> bool {
+        self == *other
+    }
+}
+
+impl PartialEq<String> for Utf16String {
+    fn eq(&self, other: &String) -> bool {
+        self == other.as_str()
+    }
+}
+
+impl PartialEq<Utf16String> for str {
+    fn eq(&self, other: &Utf16String) -> bool {
+        other == self
+    }
+}
+
+impl PartialEq<Utf16String> for &str {
+    fn eq(&self, other: &Utf16String) -> bool {
+        other == *self
+    }
+}
+
+impl PartialEq<Utf16String> for String {
+    fn eq(&self, other: &Utf16String) -> bool {
+        other == self.as_str()
+    }
+}
+
 #[cfg(any(not(target_os = "windows"), miri))]
 fn raw_bstr_layout_bytes(len_bytes: usize) -> Result<std::alloc::Layout, String> {
     let payload_bytes = len_bytes
@@ -624,5 +785,27 @@ mod tests {
         let value = BStr::from_utf16_lossy(&[0x0041, 0xD83D, 0xDE00]);
         assert_eq!(value.as_str(), "A😀");
         assert!(!value.is_empty());
+    }
+
+    #[test]
+    fn utf16_string_preserves_lone_surrogates_without_handle_accounting() {
+        use super::Utf16String;
+        let handles_before = thread_live_handle_counts();
+        let units = [0x0041u16, 0xD800, 0x002D, 0xDC00, 0x0000, 0xDFFF];
+        let text = Utf16String::from_units(units);
+        assert_eq!(text.as_units(), &units);
+        assert_eq!(text.len_units(), units.len());
+        assert!(!text.is_empty());
+        assert_eq!(thread_live_handle_counts(), handles_before);
+        // Must not compare equal to its lossy U+FFFD rendering.
+        assert_ne!(text, text.to_string_lossy());
+        let bstr = text.to_bstr();
+        assert_eq!(bstr.payload_units(), &units);
+        let roundtrip = Utf16String::from_bstr(&bstr);
+        assert_eq!(roundtrip, text);
+        assert_eq!(roundtrip.as_units(), &units);
+        drop(bstr);
+        assert_eq!(thread_live_handle_counts(), handles_before);
+        assert_eq!(Utf16String::from("Overflow"), "Overflow");
     }
 }

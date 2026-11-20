@@ -67,6 +67,8 @@ pub(crate) const JIT_VARIANT_OPERAND_NOTHING: i32 = 12;
 pub(crate) const JIT_VARIANT_OPERAND_NULL_STR: i32 = 13;
 /// Missing: `VT_ERROR` holding `DISP_E_PARAMNOTFOUND`.
 pub(crate) const JIT_VARIANT_OPERAND_MISSING: i32 = 14;
+/// Lossless UTF-16 code-unit slice (`value = ptr as u64`, `index = unit_len as i32`).
+pub(crate) const JIT_VARIANT_OPERAND_STR_UTF16: i32 = 15;
 pub(crate) const JIT_ASSIGN_INTENT_IMPLICIT: i32 = 0;
 pub(crate) const JIT_ASSIGN_INTENT_LET: i32 = 1;
 pub(crate) const JIT_ASSIGN_INTENT_SET: i32 = 2;

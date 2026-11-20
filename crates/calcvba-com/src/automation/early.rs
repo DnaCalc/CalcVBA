@@ -261,7 +261,7 @@ fn vtable_interface(
     }
     let refuse = |reason: &str| {
         Err(Fault {
-            description: Some(format!("COM-E-EARLY-UNSUPPORTED: {reason}")),
+            description: Some(format!("COM-E-EARLY-UNSUPPORTED: {reason}").into()),
             ..Fault::number(430)
         })
     };

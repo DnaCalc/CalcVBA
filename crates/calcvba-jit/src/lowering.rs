@@ -1959,7 +1959,7 @@ impl<'a> LowerFunc<'a> {
                 let ptr_out = builder.ins().stack_addr(ptr_ty, ptr_slot, 0);
                 let len_out = builder.ins().stack_addr(ptr_ty, len_slot, 0);
                 let raw_field = builder.ins().iconst(types::I32, i64::from(raw_field));
-                let callee = self.import(builder, module, self.imports.err_string_field_utf8);
+                let callee = self.import(builder, module, self.imports.err_string_field_utf16);
                 let call = builder
                     .ins()
                     .call(callee, &[self.state, raw_field, ptr_out, len_out]);
@@ -1969,7 +1969,7 @@ impl<'a> LowerFunc<'a> {
                 let len = builder.ins().stack_load(types::I32, len_slot, 0);
                 match place_ty(self.program, self.func, dst)? {
                     OxTy::Str | OxTy::Variant => {
-                        self.emit_store_utf8_variant_value(builder, module, dst, ptr, len)
+                        self.emit_store_utf16_variant_value(builder, module, dst, ptr, len)
                     }
                     ty => Err(JitError::unsupported(format!(
                         "M4-4 Err string field read lowers only String/Variant destinations, got {ty:?}"
@@ -2075,7 +2075,7 @@ impl<'a> LowerFunc<'a> {
         Ok(())
     }
 
-    fn emit_store_utf8_variant_value(
+    fn emit_store_utf16_variant_value(
         &self,
         builder: &mut FunctionBuilder<'_>,
         module: &mut impl Module,
@@ -2093,7 +2093,7 @@ impl<'a> LowerFunc<'a> {
         let operand = LoweredVariantOperand {
             kind: builder
                 .ins()
-                .iconst(types::I32, i64::from(JIT_VARIANT_OPERAND_STR_UTF8)),
+                .iconst(types::I32, i64::from(JIT_VARIANT_OPERAND_STR_UTF16)),
             value,
             area: zero,
             index: len,

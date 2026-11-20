@@ -115,8 +115,8 @@ impl EventExecutor for JitEventExecutor {
                 let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
                     return Err(EventFault {
                         number: 51,
-                        description: default_error_message(51).to_string(),
-                        source: String::new(),
+                        description: default_error_message(51).into(),
+                        source: calcvba_runtime::Utf16String::new(),
                     });
                 };
                 let err = &exec.err_engine.err;

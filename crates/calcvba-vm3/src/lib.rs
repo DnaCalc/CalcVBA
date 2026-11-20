@@ -1232,7 +1232,7 @@ impl<'h> Vm3<'h> {
             Err(-1) => Err(Vm3Error::BudgetExceeded),
             Err(number) => {
                 let mut fault = Fault::new(number, calcvba_rt_abi::default_error_message(number));
-                fault.source = Some(source.clone());
+                fault.source = Some(source.as_str().into());
                 self.exec.err_engine.raise(fault.clone(), source.clone());
                 Err(Vm3Error::Fault(fault))
             }
@@ -1255,10 +1255,10 @@ impl<'h> Vm3<'h> {
     pub fn err_number(&self) -> i32 {
         self.exec.err_engine.err.number
     }
-    pub fn err_description(&self) -> &str {
+    pub fn err_description(&self) -> &calcvba_runtime::Utf16String {
         &self.exec.err_engine.err.description
     }
-    pub fn err_source(&self) -> &str {
+    pub fn err_source(&self) -> &calcvba_runtime::Utf16String {
         &self.exec.err_engine.err.source
     }
     pub fn erl(&self) -> i32 {
@@ -1623,12 +1623,12 @@ impl<'h> Vm3<'h> {
             .raise(fault, self.cur_program().unit_name.clone());
     }
 
-    /// Evaluate an operand and coerce it to its VBA string form — used for an explicit
-    /// `Err.Raise` Source/Description argument.
-    fn operand_string(&mut self, op: &OxOperand) -> Result<String, Vm3Error> {
+    /// Evaluate an operand and coerce it to its lossless VBA UTF-16 string form —
+    /// used for explicit `Err.Raise` Source/Description/HelpFile arguments.
+    fn operand_string(&mut self, op: &OxOperand) -> Result<calcvba_runtime::Utf16String, Vm3Error> {
         let v = self.operand(op)?;
         Ok(calcvba_runtime::variant_to_vba_string(&v)
-            .map(|b| b.as_str())
+            .map(|b| calcvba_runtime::Utf16String::from_bstr(&b))
             .unwrap_or_default())
     }
 
@@ -1638,7 +1638,7 @@ impl<'h> Vm3<'h> {
     fn raise_runtime_error(&mut self, code: i32) -> Result<(), Vm3Error> {
         self.route_fault(Fault {
             code,
-            message: default_error_message(code),
+            message: default_error_message(code).into(),
             source: None,
             help_file: None,
             help_context: None,
@@ -1860,14 +1860,10 @@ impl<'h> Vm3<'h> {
                 let v = match field {
                     ErrField::Number => Variant::from_i32(self.exec.err_engine.err.number),
                     ErrField::Description => {
-                        Variant::from_string(self.exec.err_engine.err.description.clone())
+                        Variant::from_string(&self.exec.err_engine.err.description)
                     }
-                    ErrField::Source => {
-                        Variant::from_string(self.exec.err_engine.err.source.clone())
-                    }
-                    ErrField::HelpFile => {
-                        Variant::from_string(self.exec.err_engine.err.help_file.clone())
-                    }
+                    ErrField::Source => Variant::from_string(&self.exec.err_engine.err.source),
+                    ErrField::HelpFile => Variant::from_string(&self.exec.err_engine.err.help_file),
                     ErrField::HelpContext => {
                         Variant::from_i32(self.exec.err_engine.err.help_context)
                     }
@@ -1898,21 +1894,30 @@ impl<'h> Vm3<'h> {
                         let coerced = arith::coerce_string(&value)
                             .map_err(Fault::from_arith)
                             .map_err(Vm3Error::Fault)?;
-                        self.exec.err_engine.err.description = arith::as_string(&coerced);
+                        self.exec.err_engine.err.description = coerced
+                            .as_bstr()
+                            .map(|b| calcvba_runtime::Utf16String::from_bstr(&b))
+                            .unwrap_or_default();
                         self.exec.err_engine.err.inherit_fields = true;
                     }
                     ErrField::Source => {
                         let coerced = arith::coerce_string(&value)
                             .map_err(Fault::from_arith)
                             .map_err(Vm3Error::Fault)?;
-                        self.exec.err_engine.err.source = arith::as_string(&coerced);
+                        self.exec.err_engine.err.source = coerced
+                            .as_bstr()
+                            .map(|b| calcvba_runtime::Utf16String::from_bstr(&b))
+                            .unwrap_or_default();
                         self.exec.err_engine.err.inherit_fields = true;
                     }
                     ErrField::HelpFile => {
                         let coerced = arith::coerce_string(&value)
                             .map_err(Fault::from_arith)
                             .map_err(Vm3Error::Fault)?;
-                        self.exec.err_engine.err.help_file = arith::as_string(&coerced);
+                        self.exec.err_engine.err.help_file = coerced
+                            .as_bstr()
+                            .map(|b| calcvba_runtime::Utf16String::from_bstr(&b))
+                            .unwrap_or_default();
                         self.exec.err_engine.err.inherit_fields = true;
                     }
                     ErrField::HelpContext => {
@@ -2394,12 +2399,15 @@ impl<'h> Vm3<'h> {
                     }
                     self.take_event_abort()?;
                     next.map_err(|fault| {
-                        Vm3Error::Fault(Fault::new(
-                            fault.number,
-                            fault
+                        Vm3Error::Fault(Fault {
+                            code: fault.number,
+                            message: fault
                                 .description
-                                .unwrap_or_else(|| default_error_message(fault.number).to_string()),
-                        ))
+                                .unwrap_or_else(|| default_error_message(fault.number).into()),
+                            source: fault.source,
+                            help_file: fault.help_file,
+                            help_context: fault.help_context.map(|v| v as i32),
+                        })
                     })?
                 } else if let Some(state) = self.for_each.get(&key) {
                     if state.position >= state.elements.len() {
@@ -5210,9 +5218,7 @@ impl<'h> Vm3<'h> {
             return Err(Vm3Error::Fault(Fault::new(94, "invalid use of Null")));
         }
         if id == NativeImplId::ErrorText && argv.is_empty() {
-            return Ok(Variant::from_string(
-                self.exec.err_engine.err.description.clone(),
-            ));
+            return Ok(Variant::from_string(&self.exec.err_engine.err.description));
         }
         if let Some(class) =
             calcvba_rt_abi::object_types::builtin_dictionary_class(self.cur_program(), id, argv)

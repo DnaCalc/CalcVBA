@@ -464,7 +464,7 @@ impl PolicyHost {
             HalError::policy_denied(self.inner.profile(), capability.hal_capability(), op)
                 .with_host_error_code(number)
                 .with_host_error_info(HostErrorInfo {
-                    description: Some(description.to_string()),
+                    description: Some(description.into()),
                     ..HostErrorInfo::default()
                 });
         // The library path reads `message` for `Err.Description`; keep both paths identical.

@@ -445,8 +445,8 @@ fn a_denial_carries_the_stable_code() {
     assert_eq!(err.stable_code, POLICY_DENIED_CODE);
     assert_eq!(err.host_error_code, Some(70));
     assert_eq!(
-        err.host_error_info.expect("info").description.as_deref(),
-        Some("Permission denied")
+        err.host_error_info.expect("info").description,
+        Some("Permission denied".into())
     );
 }
 

@@ -3480,12 +3480,20 @@ mod tests {
             .excep
             .expect("GetErrorInfo should have produced rich exception info");
         assert_eq!(
-            excep.source.as_deref(),
+            excep
+                .source
+                .as_ref()
+                .map(|s| s.to_string_lossy())
+                .as_deref(),
             Some(DUAL_RAISE_ERROR_SOURCE),
             "IErrorInfo Source must surface"
         );
         assert_eq!(
-            excep.description.as_deref(),
+            excep
+                .description
+                .as_ref()
+                .map(|s| s.to_string_lossy())
+                .as_deref(),
             Some(DUAL_RAISE_ERROR_DESCRIPTION),
             "IErrorInfo Description must surface"
         );

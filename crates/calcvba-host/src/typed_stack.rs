@@ -45,9 +45,9 @@ impl TypedStack {
             self.err().raise(
                 Fault {
                     code: number,
-                    message: fault.description,
-                    source: fault.source,
-                    help_file: fault.help_file,
+                    message: fault.description.into(),
+                    source: fault.source.map(Into::into),
+                    help_file: fault.help_file.map(Into::into),
                     help_context: fault.help_context,
                 },
                 unit,
@@ -216,12 +216,12 @@ impl TypedStack {
         crate::Error::Runtime {
             number,
             description: if err.number == number {
-                err.description.clone()
+                err.description.to_string_lossy()
             } else {
                 calcvba_rt_abi::default_error_message(number)
             },
             vba_source: if err.number == number {
-                err.source.clone()
+                err.source.to_string_lossy()
             } else {
                 source.into()
             },
@@ -598,9 +598,9 @@ impl TypedStack {
                                 },
                                 |fault| Fault {
                                     code: fault.number,
-                                    message: fault.description,
-                                    source: fault.source,
-                                    help_file: fault.help_file,
+                                    message: fault.description.into(),
+                                    source: fault.source.map(Into::into),
+                                    help_file: fault.help_file.map(Into::into),
                                     help_context: fault.help_context,
                                 },
                             );
@@ -627,9 +627,9 @@ impl TypedStack {
                         || Fault::new(number, calcvba_rt_abi::default_error_message(number)),
                         |fault| Fault {
                             code: fault.number,
-                            message: fault.description,
-                            source: fault.source,
-                            help_file: fault.help_file,
+                            message: fault.description.into(),
+                            source: fault.source.map(Into::into),
+                            help_file: fault.help_file.map(Into::into),
                             help_context: fault.help_context,
                         },
                     );
@@ -1150,9 +1150,9 @@ impl TypedStack {
                         ErrField::Number => Value::Long(err.err.number),
                         ErrField::HelpContext => Value::Long(err.err.help_context),
                         ErrField::LastDllError => Value::Long(err.last_dll_error),
-                        ErrField::Description => Value::String(err.err.description.as_str().into()),
-                        ErrField::Source => Value::String(err.err.source.as_str().into()),
-                        ErrField::HelpFile => Value::String(err.err.help_file.as_str().into()),
+                        ErrField::Description => Value::String(err.err.description.to_bstr()),
+                        ErrField::Source => Value::String(err.err.source.to_bstr()),
+                        ErrField::HelpFile => Value::String(err.err.help_file.to_bstr()),
                     };
                     self.frames
                         .last_mut()
@@ -1236,8 +1236,12 @@ impl TypedStack {
                     .map(|op| frame.read(op, ScalarType::Long).map(ScalarBits::as_long))
                     .transpose()?;
                 let text = |op: &Option<OxOperand>| match op {
-                    Some(OxOperand::Const(OxConst::Str(s))) => Some(s.clone()),
-                    Some(OxOperand::Const(OxConst::NullStr)) => Some(String::new()),
+                    Some(OxOperand::Const(OxConst::Str(s))) => {
+                        Some(calcvba_runtime::Utf16String::from(s))
+                    }
+                    Some(OxOperand::Const(OxConst::NullStr)) => {
+                        Some(calcvba_runtime::Utf16String::new())
+                    }
                     _ => None,
                 };
                 let err = self.err();
@@ -1246,7 +1250,7 @@ impl TypedStack {
                     if inherit {
                         err.err.description.clone()
                     } else {
-                        calcvba_rt_abi::default_error_message(number)
+                        calcvba_rt_abi::default_error_message(number).into()
                     }
                 });
                 let fault = Fault {

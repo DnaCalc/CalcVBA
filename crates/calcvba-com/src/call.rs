@@ -1,7 +1,7 @@
 //! The shape of a call on a COM object, shared by every platform: the HAL's object calls take
 //! these, and on Windows `crate::automation` performs them over the runtime cell (step 8 of the
 //! VARIANT-layout programme).
-use calcvba_runtime::Variant;
+use calcvba_runtime::{Utf16String, Variant};
 
 /// Which member a call names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,9 +70,9 @@ impl<'a> ComArg<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComFault {
     pub number: i32,
-    pub description: Option<String>,
-    pub source: Option<String>,
-    pub help_file: Option<String>,
+    pub description: Option<Utf16String>,
+    pub source: Option<Utf16String>,
+    pub help_file: Option<Utf16String>,
     pub help_context: Option<u32>,
     pub hresult: Option<i32>,
 }

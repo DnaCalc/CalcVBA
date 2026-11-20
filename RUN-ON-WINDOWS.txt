@@ -163,3 +163,15 @@ cfg(windows)-only failure, pull again before each push.
       (`Guid::deterministic(project_name, "IWidget")`, matching `calcvba-build`/`calcvba-comhost`);
       Excel generates per-session GUIDs for project classes, so confirm only that `SafeArrayGetIID`
       returns S_OK with a non-IDispatch IID distinct per class and preserved across `ReDim Preserve`.
+
+16. dc-yqq0.19: `Err.Raise` Source/Description/HelpFile, `ErrState`, `Fault`, `RaiseFields`,
+    `HostErrorInfo`, `ComFault`, `ComInvokeExceptionInfo`, `EventFault`, `LibError`,
+    `rt_err_string_field_utf16`, `calcvba-comhost` `EXCEPINFO`, and `calcvba-native-template`
+    `cvb_raise_dynamic`/`cvb_error_get` now store lossless UTF-16 (`Utf16String`) / BSTR units so
+    unpaired surrogates survive through VM3, the JIT, rt-abi, HAL faults, COM `EXCEPINFO`/
+    `IErrorInfo`, and native exports. Run:
+      cargo test -p calcvba-com --no-fail-fast
+      cargo test -p calcvba-hal --no-fail-fast
+      cargo test -p calcvba-rt-abi --no-fail-fast
+      cargo test -p calcvba-differential --test err_object_value --test handle_balance --no-fail-fast
+      cargo test -p calcvba-comhost --no-fail-fast

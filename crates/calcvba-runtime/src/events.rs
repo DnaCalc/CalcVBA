@@ -6,7 +6,7 @@
 //! ([`ExecutorScope`]); a sink hands the event to [`deliver`], which runs the handler on the
 //! innermost executor, so an event fired inside a handler nests the same way. Outside any host
 //! call there is no executor, and the event is not delivered.
-use crate::Variant;
+use crate::{Utf16String, Variant};
 use std::cell::RefCell;
 use std::ptr::NonNull;
 
@@ -14,8 +14,8 @@ use std::ptr::NonNull;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventFault {
     pub number: i32,
-    pub description: String,
-    pub source: String,
+    pub description: Utf16String,
+    pub source: Utf16String,
 }
 
 /// Runs WithEvents handlers for the subscriptions a VM made.

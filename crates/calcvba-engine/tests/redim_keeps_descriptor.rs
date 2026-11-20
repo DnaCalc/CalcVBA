@@ -9,7 +9,7 @@
 //! slot) rather than VBE7's `VarPtr`, which loads only inside Office; in Excel that slot is
 //! `ArrPtr`'s for Long and Variant arrays, and for a String array another slot holding the same
 //! descriptor.
-#![cfg(windows)]
+#![cfg(any(windows, all(target_os = "linux", target_pointer_width = "64")))]
 
 use calcvba_engine::{Engine, HostConfig};
 use calcvba_hal::HostPolicy;
@@ -102,10 +102,24 @@ VARIANT_PRESERVE psa_same=True vt=8204
 VARIANT_REDIM psa_same=False vt=8204
 ";
 
+/// The probe's `CopyMemory` as the platform's C library has it (`RtlMoveMemory` on Windows,
+/// `memmove` in glibc), so the probe runs off Windows too.
+fn platform(source: &str) -> String {
+    if cfg!(windows) {
+        source.to_string()
+    } else {
+        source.replace(
+            r#"Lib "kernel32" Alias "RtlMoveMemory""#,
+            r#"Lib "libc.so.6" Alias "memmove""#,
+        )
+    }
+}
+
 #[test]
 fn redim_keeps_the_descriptor_on_vm3_and_jit() {
+    let module = platform(MODULE);
     let source = format!(
-        "Public result As String{nl}{MODULE}{nl}Sub Main(){nl}    result = RunAll(){nl}End Sub{nl}",
+        "Public result As String{nl}{module}{nl}Sub Main(){nl}    result = RunAll(){nl}End Sub{nl}",
         nl = "\n"
     );
     for (name, config) in [("vm3", HostConfig::vm3()), ("jit", HostConfig::jit())] {

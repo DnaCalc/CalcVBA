@@ -243,7 +243,7 @@ fn refuses_malformed_and_incompatible_inputs() {
     assert!(finish_template(&crt, &[]).is_err());
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, target_arch = "x86_64"))]
 #[test]
 fn named_exports_load_rebase_and_unwind_through_nonleaf_generated_frame() {
     use std::sync::atomic::{AtomicUsize, Ordering};

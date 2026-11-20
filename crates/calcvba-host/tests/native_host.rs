@@ -1,4 +1,4 @@
-#![cfg(windows)]
+#![cfg(all(windows, target_arch = "x86_64"))]
 use calcvba_com::{
     DUAL_FIXTURE_INTERFACE_IID, OptionalParamDefault, SourceTypeKind,
     TypeLibMemberInvokeKind as Kind, TypeLibMemberMetadata, TypeLibMetadataBlob,

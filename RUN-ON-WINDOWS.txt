@@ -175,3 +175,22 @@ cfg(windows)-only failure, pull again before each push.
       cargo test -p calcvba-rt-abi --no-fail-fast
       cargo test -p calcvba-differential --test err_object_value --test handle_balance --no-fail-fast
       cargo test -p calcvba-comhost --no-fail-fast
+
+17. dc-yqq0.9: portable `FADF_RECORD` `SAFEARRAY` support (`SafeArrayCreateEx`, `SafeArrayPutElement`,
+    `SafeArrayPtrOfIndex`, `SafeArrayGetDim/Elemsize/LBound/UBound/RecordInfo`, `SafeArrayCopy`,
+    `SafeArrayDestroy`, `VariantClear`/`VariantCopyInd` for `VT_ARRAY | VT_RECORD`) in
+    `calcvba-automation::oleaut`, unifying `AutomationRecordArray` across Windows and non-Windows;
+    32-bit Windows (`i686-pc-windows-msvc`) `Declare` fixes (`param_vt("LongPtr")` -> `VT_I4` on
+    32-bit, `FfiParamType::Variant` passing `ByVal Variant` as a libffi struct aggregate matching
+    Win32 stdcall / Win64 / SysV), plus x64-only `cfg` on `calcvba-pe/tests/patch.rs` and
+    `calcvba-host/tests/native_host.rs` so the entire workspace `--all-targets` except
+    `calcvba-native-template` type-checks cleanly on `i686-pc-windows-msvc`. Run on Windows (x64
+    and, where available, 32-bit `i686-pc-windows-msvc`):
+      cargo test -p calcvba-automation --lib --no-fail-fast
+      cargo test -p calcvba-runtime --lib --no-fail-fast
+      cargo test -p calcvba-engine --test declare_cells --test real_addresses --no-fail-fast
+      cargo test -p calcvba-hal --no-fail-fast
+    Look at: `declare_cells::a_record_holding_strings_is_passed_in_its_ansi_layout`,
+    `declare_cells::a_udt_array_is_passed_as_an_fadf_record_safearray_and_copied_back`,
+    `oleaut::tests::record_safearray_round_trips_nd_bounds_copy_and_destroys_cleanly`, and
+    `pointer_helpers::tests::record_array_projected_for_a_declare_handles_nd_bounds_strings_variants_and_balances_counters`.

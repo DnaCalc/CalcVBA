@@ -216,3 +216,30 @@ End Sub\n";
         assert_eq!(text(&values), "4|AAcd|h\u{e9}llo|7", "{name}");
     }
 }
+
+#[test]
+fn a_udt_array_is_passed_as_an_fadf_record_safearray_and_copied_back() {
+    // Passing a UDT array to a Declare off Windows projects it to an FADF_RECORD SAFEARRAY
+    // backed by our portable registration-free IRecordInfo; both 1D and 2D UDT arrays with
+    // Strings and Variants cross the Declare boundary and copy back cleanly on VM3 and JIT.
+    let source = "Private Type TItem\n    id As Long\n    tag As String * 4\n    label As String\n    extra As Variant\nEnd Type\n\
+Private Declare PtrSafe Sub ReadPsa Lib \"libc.so.6\" Alias \"memcpy\" (ByRef dst As LongPtr, ByRef arr() As TItem, ByVal n As LongPtr)\n\
+Public result As String\n\
+Sub Main()\n\
+    Dim items(1 To 2) As TItem, grid(1 To 2, 0 To 1) As TItem\n\
+    Dim psa As LongPtr, psa2 As LongPtr\n\
+    items(1).id = 11: items(1).tag = \"ABCD\": items(1).label = \"first\": items(1).extra = 100&\n\
+    items(2).id = 22: items(2).tag = \"WXYZ\": items(2).label = \"second\": items(2).extra = \"val\"\n\
+    grid(2, 1).id = 99: grid(2, 1).tag = \"GRID\": grid(2, 1).label = \"cell\": grid(2, 1).extra = \"ok\"\n\
+    ReadPsa psa, items, 8\n\
+    ReadPsa psa2, grid, 8\n\
+    result = CStr(psa <> 0) & \"|\" & CStr(items(1).id) & \",\" & items(1).tag & \",\" & items(1).label & \",\" & CStr(items(1).extra) & \"|\" & CStr(items(2).id) & \",\" & items(2).tag & \",\" & items(2).label & \",\" & CStr(items(2).extra) & \"|\" & CStr(psa2 <> 0) & \",\" & CStr(grid(2, 1).id) & \",\" & grid(2, 1).tag & \",\" & grid(2, 1).label & \",\" & CStr(grid(2, 1).extra)\n\
+End Sub\n";
+    for (name, values) in run(source) {
+        assert_eq!(
+            text(&values),
+            "True|11,ABCD,first,100|22,WXYZ,second,val|True,99,GRID,cell,ok",
+            "{name}"
+        );
+    }
+}

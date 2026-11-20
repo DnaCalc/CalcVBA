@@ -172,3 +172,48 @@ End Sub\n";
         assert_eq!(text(&values), "True,0", "{name}");
     }
 }
+
+#[test]
+fn a_record_holding_strings_is_passed_in_its_ansi_layout() {
+    // VBA passes a UDT with Strings to a Declare in its ANSI layout: String * 4 is four ANSI
+    // bytes (lstrlenA sees 4 before the zero Byte), String is an ANSI BSTR (LPSTR), and writes
+    // into the ANSI buffer convert back into the Unicode record.
+    let source = "Private Type TText\n    f As String * 4\n    z As Byte\n    s As String\n    n As Long\nEnd Type\n\
+Private Declare PtrSafe Function StrLenA Lib \"kernel32\" Alias \"lstrlenA\" (ByRef r As TText) As Long\n\
+Private Declare PtrSafe Sub FillMemory Lib \"kernel32\" Alias \"RtlFillMemory\" (ByRef r As TText, ByVal n As LongPtr, ByVal b As Byte)\n\
+Public result As String\n\
+Sub Main()\n\
+    Dim t As TText\n\
+    t.f = \"abcd\": t.s = \"h\" & ChrW(233) & \"llo\": t.n = 7\n\
+    result = CStr(StrLenA(t))\n\
+    FillMemory t, 2, 65\n\
+    result = result & \"|\" & t.f & \"|\" & t.s & \"|\" & CStr(t.n)\n\
+End Sub\n";
+    for (name, values) in run(source) {
+        assert_eq!(text(&values), "4|AAcd|h\u{e9}llo|7", "{name}");
+    }
+}
+
+#[test]
+fn a_udt_array_is_passed_as_an_fadf_record_safearray_and_copied_back() {
+    let source = "Private Type TItem\n    id As Long\n    tag As String * 4\n    label As String\n    extra As Variant\nEnd Type\n\
+Private Declare PtrSafe Sub ReadPsa Lib \"kernel32\" Alias \"RtlMoveMemory\" (ByRef dst As LongPtr, ByRef arr() As TItem, ByVal n As LongPtr)\n\
+Public result As String\n\
+Sub Main()\n\
+    Dim items(1 To 2) As TItem, grid(1 To 2, 0 To 1) As TItem\n\
+    Dim psa As LongPtr, psa2 As LongPtr\n\
+    items(1).id = 11: items(1).tag = \"ABCD\": items(1).label = \"first\": items(1).extra = 100&\n\
+    items(2).id = 22: items(2).tag = \"WXYZ\": items(2).label = \"second\": items(2).extra = \"val\"\n\
+    grid(2, 1).id = 99: grid(2, 1).tag = \"GRID\": grid(2, 1).label = \"cell\": grid(2, 1).extra = \"ok\"\n\
+    ReadPsa psa, items, 8\n\
+    ReadPsa psa2, grid, 8\n\
+    result = CStr(psa <> 0) & \"|\" & CStr(items(1).id) & \",\" & items(1).tag & \",\" & items(1).label & \",\" & CStr(items(1).extra) & \"|\" & CStr(items(2).id) & \",\" & items(2).tag & \",\" & items(2).label & \",\" & CStr(items(2).extra) & \"|\" & CStr(psa2 <> 0) & \",\" & CStr(grid(2, 1).id) & \",\" & grid(2, 1).tag & \",\" & grid(2, 1).label & \",\" & CStr(grid(2, 1).extra)\n\
+End Sub\n";
+    for (name, values) in run(source) {
+        assert_eq!(
+            text(&values),
+            "True|11,ABCD,first,100|22,WXYZ,second,val|True,99,GRID,cell,ok",
+            "{name}"
+        );
+    }
+}

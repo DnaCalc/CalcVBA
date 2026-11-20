@@ -23,7 +23,8 @@ use crate::model::CapabilityId;
 use crate::traits::{DynLinkDescriptorView, write_through_reference};
 use calcvba_com::call::{ComArg, ComArgValue};
 use calcvba_com::windows_ffi_bridge::{
-    FfiReturnType, OwnedLibrary, PreparedNativeCall, get_proc_address, get_proc_address_ordinal,
+    FfiParamType, FfiReturnType, OwnedLibrary, PreparedNativeCall, get_proc_address,
+    get_proc_address_ordinal,
 };
 use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::ansi::{ansi_decode_units, ansi_encode_units};
@@ -107,20 +108,21 @@ fn vba_fault(host: &StandardHostServices, number: i32, message: impl Into<String
 }
 
 /// The native type of one argument slot.
-fn slot_type(param_type: &str, by_ref: bool) -> FfiReturnType {
+fn slot_type(param_type: &str, by_ref: bool) -> FfiParamType {
     if by_ref {
-        return FfiReturnType::LongPtr;
+        return FfiParamType::Scalar(FfiReturnType::LongPtr);
     }
     match param_type {
-        "Long" => FfiReturnType::Long,
-        "Integer" => FfiReturnType::Integer,
-        "Byte" => FfiReturnType::Byte,
-        "Boolean" => FfiReturnType::Boolean,
-        "Double" | "Date" => FfiReturnType::Double,
-        "Single" => FfiReturnType::Single,
-        "LongLong" | "Currency" => FfiReturnType::LongLong,
-        // LongPtr, String (an LPSTR), Variant (a pointer to a copy), Any, Array.
-        _ => FfiReturnType::LongPtr,
+        "Long" => FfiParamType::Scalar(FfiReturnType::Long),
+        "Integer" => FfiParamType::Scalar(FfiReturnType::Integer),
+        "Byte" => FfiParamType::Scalar(FfiReturnType::Byte),
+        "Boolean" => FfiParamType::Scalar(FfiReturnType::Boolean),
+        "Double" | "Date" => FfiParamType::Scalar(FfiReturnType::Double),
+        "Single" => FfiParamType::Scalar(FfiReturnType::Single),
+        "LongLong" | "Currency" => FfiParamType::Scalar(FfiReturnType::LongLong),
+        "Variant" => FfiParamType::Variant,
+        // LongPtr, String (an LPSTR), Any, Array.
+        _ => FfiParamType::Scalar(FfiReturnType::LongPtr),
     }
 }
 
@@ -149,7 +151,14 @@ fn param_vt(param_type: &str) -> Option<u16> {
         "Single" => VT_R4,
         "Currency" => VT_CY,
         "Date" => VT_DATE,
-        "LongLong" | "LongPtr" => VT_I8,
+        "LongLong" => VT_I8,
+        "LongPtr" => {
+            if core::mem::size_of::<usize>() == 8 {
+                VT_I8
+            } else {
+                VT_I4
+            }
+        }
         "String" => VT_BSTR,
         "Variant" => VT_VARIANT,
         _ => return None,
@@ -276,7 +285,7 @@ fn prepare(
     library: Option<Arc<OwnedLibrary>>,
     address: usize,
 ) -> HalResult<DeclarePlan> {
-    let slots: Vec<FfiReturnType> = (0..descriptor.param_count)
+    let slots: Vec<FfiParamType> = (0..descriptor.param_count)
         .map(|index| {
             slot_type(
                 descriptor
@@ -293,18 +302,22 @@ fn prepare(
             .map_err(|message| fault(host, message))?
             .0;
         (
-            PreparedNativeCall::aggregate_return(address, &slots, bytes),
+            PreparedNativeCall::aggregate_return_with_params(address, &slots, bytes),
             ResultShape::Record(layout.clone()),
         )
     } else if descriptor.return_type.as_deref() == Some("Variant") {
         (
-            PreparedNativeCall::aggregate_return(address, &slots, calcvba_runtime::WIRE_SIZE),
+            PreparedNativeCall::aggregate_return_with_params(
+                address,
+                &slots,
+                calcvba_runtime::WIRE_SIZE,
+            ),
             ResultShape::Variant,
         )
     } else {
         let return_type = descriptor.return_type.as_deref();
         (
-            PreparedNativeCall::new(address, &slots, scalar_result(return_type)),
+            PreparedNativeCall::new_with_params(address, &slots, scalar_result(return_type)),
             ResultShape::Scalar(return_type.map(str::to_string)),
         )
     };
@@ -444,14 +457,24 @@ fn array_element_vt(value: &Variant) -> Option<u16> {
     (vt & VT_ARRAY != 0).then_some(vt & 0x0FFF)
 }
 
-/// One argument's slot word plus what follows the call.
+/// One marshalled argument slot for `libffi::low::call_return_into`.
+enum MarshalledSlot {
+    /// A scalar or pointer value stored in `words[i]`; its libffi `avalue` is `&mut word`.
+    Word(u64),
+    /// A by-value `VARIANT` aggregate boxed in `After::Keep`; its libffi `avalue` is the
+    /// `Variant*` directly so libffi handles the target ABI (hidden pointer on Win64, 16-byte
+    /// stack struct on Win32 stdcall, 24-byte stack struct on SysV x86-64).
+    ByValVariant(*mut Variant),
+}
+
+/// One argument's slot plus what follows the call.
 fn marshal<'a>(
     host: &StandardHostServices,
     param_type: &str,
     by_ref: bool,
     arg: ComArgValue<'a>,
     after: &mut Vec<After<'a>>,
-) -> HalResult<u64> {
+) -> HalResult<MarshalledSlot> {
     let (value, reference): (Variant, Option<&'a Variant>) = match arg {
         ComArgValue::Value(value) => (value.clone(), None),
         // Cloning a reference reads its target.
@@ -480,22 +503,23 @@ fn marshal<'a>(
             cell,
             target: reference,
         });
-        return Ok(word);
+        return Ok(MarshalledSlot::Word(word));
     }
 
     if !by_ref {
         return match param_type {
             "Variant" => {
-                // A pointer to a copy of the cell (an x64 by-value aggregate).
                 let mut cell = Box::new(value);
-                let word = address((&mut *cell as *mut Variant).cast());
+                let ptr = &raw mut *cell;
                 after.push(After::Keep(cell));
-                Ok(word)
+                Ok(MarshalledSlot::ByValVariant(ptr))
             }
-            "Any" | "Array" => byval_any(host, value, after),
+            "Any" | "Array" => byval_any(host, value, after).map(MarshalledSlot::Word),
             _ => {
                 let vt = param_vt(param_type).unwrap_or(VT_I4);
-                Ok(payload_word(&coerce(host, &value, vt)?))
+                Ok(MarshalledSlot::Word(payload_word(&coerce(
+                    host, &value, vt,
+                )?)))
             }
         };
     }
@@ -516,7 +540,7 @@ fn marshal<'a>(
                 array,
                 target: reference,
             });
-            return Ok(word);
+            return Ok(MarshalledSlot::Word(word));
         }
         if array_element_vt(&value) == Some(VT_BSTR) {
             let mut cell = Box::new(ansi_array(host, value)?);
@@ -525,15 +549,19 @@ fn marshal<'a>(
                 cell,
                 target: reference,
             });
-            return Ok(word);
+            return Ok(MarshalledSlot::Word(word));
         }
         return match target {
             // A typed array variable: its own SAFEARRAY* slot.
-            Some((vt, pointer)) if vt & VT_ARRAY != 0 => Ok(direct(pointer, Some(vt), after)),
+            Some((vt, pointer)) if vt & VT_ARRAY != 0 => {
+                Ok(MarshalledSlot::Word(direct(pointer, Some(vt), after)))
+            }
             // A Variant holding the array: the parray field of its cell.
             Some((VT_VARIANT, pointer)) if value.holds_array() => {
                 direct(pointer, None, after);
-                Ok(address(Variant::payload_ptr(pointer.cast())))
+                Ok(MarshalledSlot::Word(address(Variant::payload_ptr(
+                    pointer.cast(),
+                ))))
             }
             _ => {
                 let mut cell = Box::new(value);
@@ -545,7 +573,7 @@ fn marshal<'a>(
                     target: reference,
                     before,
                 });
-                Ok(word)
+                Ok(MarshalledSlot::Word(word))
             }
         };
     }
@@ -561,7 +589,7 @@ fn marshal<'a>(
             // SAFETY: the reference's target is the live record variable for the call.
             && let Some(data) = unsafe { Variant::vba_record_data_at(pointer.cast()) }
         {
-            return Ok(address(data));
+            return Ok(MarshalledSlot::Word(address(data)));
         }
         let record = value
             .as_vba_record()
@@ -574,7 +602,7 @@ fn marshal<'a>(
             record,
             target: reference,
         });
-        return Ok(word);
+        return Ok(MarshalledSlot::Word(word));
     }
 
     // The caller's storage itself when it has the parameter's type (or any type for As Any).
@@ -588,11 +616,11 @@ fn marshal<'a>(
             None => true,
         };
         if matches {
-            return Ok(if vt == VT_VARIANT {
+            return Ok(MarshalledSlot::Word(if vt == VT_VARIANT {
                 direct(pointer, None, after)
             } else {
                 address(pointer)
-            });
+            }));
         }
     }
     // A temporary of the parameter's type.
@@ -614,7 +642,7 @@ fn marshal<'a>(
         target: reference,
         before,
     });
-    Ok(word)
+    Ok(MarshalledSlot::Word(word))
 }
 
 /// A ByVal `As Any` (or ByVal array) argument: a pointer value, an object's interface pointer,
@@ -773,7 +801,7 @@ pub(super) fn invoke(
     }
     let plan = plan(host, descriptor)?;
     let mut after: Vec<After<'_>> = Vec::with_capacity(args.len());
-    let mut words: Vec<u64> = Vec::with_capacity(args.len());
+    let mut slots: Vec<MarshalledSlot> = Vec::with_capacity(args.len());
     for (index, arg) in args.iter().enumerate() {
         let param_type = descriptor
             .param_types
@@ -784,14 +812,17 @@ pub(super) fn invoke(
             && by_ref
             && let Some(word) = runtime_own_storage(arg.value)
         {
-            words.push(word);
+            slots.push(MarshalledSlot::Word(word));
             continue;
         }
-        words.push(marshal(host, param_type, by_ref, arg.value, &mut after)?);
+        slots.push(marshal(host, param_type, by_ref, arg.value, &mut after)?);
     }
-    let mut cells: Vec<*mut core::ffi::c_void> = words
+    let mut cells: Vec<*mut core::ffi::c_void> = slots
         .iter_mut()
-        .map(|word| (word as *mut u64).cast())
+        .map(|slot| match slot {
+            MarshalledSlot::Word(word) => (word as *mut u64).cast(),
+            MarshalledSlot::ByValVariant(ptr) => (*ptr).cast(),
+        })
         .collect();
     // The result: up to a VARIANT, or a record's declared shape.
     let result_bytes = match &plan.result {

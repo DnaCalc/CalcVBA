@@ -50,6 +50,26 @@ pub enum FfiReturnType {
     LongPtr,
 }
 
+/// Native parameter ABI slot for [`PreparedNativeCall`]: either a scalar/pointer
+/// ([`FfiReturnType`]) or a by-value Automation `VARIANT` aggregate (`WIRE_SIZE`
+/// bytes, 8-byte aligned — hidden pointer on Win64, 16-byte stack aggregate on
+/// 32-bit Windows stdcall, 24-byte stack aggregate on 64-bit SysV).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FfiParamType {
+    Scalar(FfiReturnType),
+    Variant,
+}
+
+fn param_ffi_type(param: FfiParamType) -> LibffiType {
+    match param {
+        FfiParamType::Scalar(scalar) => x64_return_type(scalar),
+        FfiParamType::Variant => {
+            let words = calcvba_runtime::WIRE_SIZE / core::mem::size_of::<u64>();
+            LibffiType::structure((0..words).map(|_| LibffiType::u64()))
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum PreparedX64Arg {
     Long(i32),
@@ -966,12 +986,24 @@ fn last_os_error() -> u32 {
 
 impl PreparedNativeCall {
     pub fn aggregate_return(address: usize, arguments: &[FfiReturnType], bytes: usize) -> Self {
+        let params: Vec<FfiParamType> = arguments
+            .iter()
+            .copied()
+            .map(FfiParamType::Scalar)
+            .collect();
+        Self::aggregate_return_with_params(address, &params, bytes)
+    }
+    pub fn aggregate_return_with_params(
+        address: usize,
+        arguments: &[FfiParamType],
+        bytes: usize,
+    ) -> Self {
         // Win64 returns eligible 1/2/4/8-byte POD aggregates in RAX; larger
         // aggregates use the hidden result pointer prepared by libffi (likewise elsewhere,
         // by each ABI's own rule).
         Self {
             cif: declare_cif(
-                arguments.iter().copied().map(x64_return_type),
+                arguments.iter().copied().map(param_ffi_type),
                 LibffiType::structure((0..bytes).map(|_| LibffiType::u8())),
             ),
             address,
@@ -1014,9 +1046,23 @@ impl PreparedNativeCall {
     }
     /// The caller retains the loaded library for the lifetime of this plan.
     pub fn new(address: usize, arguments: &[FfiReturnType], result: FfiReturnType) -> Self {
+        let params: Vec<FfiParamType> = arguments
+            .iter()
+            .copied()
+            .map(FfiParamType::Scalar)
+            .collect();
+        Self::new_with_params(address, &params, result)
+    }
+
+    /// The caller retains the loaded library for the lifetime of this plan.
+    pub fn new_with_params(
+        address: usize,
+        arguments: &[FfiParamType],
+        result: FfiReturnType,
+    ) -> Self {
         Self {
             cif: declare_cif(
-                arguments.iter().copied().map(x64_return_type),
+                arguments.iter().copied().map(param_ffi_type),
                 x64_return_type(result),
             ),
             address,

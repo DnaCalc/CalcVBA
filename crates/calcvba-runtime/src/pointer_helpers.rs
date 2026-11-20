@@ -36,111 +36,30 @@ mod native_record_pin {
             // SAFETY: all-zero VARIANT is VT_EMPTY.
             Self(unsafe { std::mem::zeroed() })
         }
+        /// A copy of a runtime cell as an Automation `VARIANT` (`VariantCopyInd`): the cell is
+        /// the platform's own layout, so this is the runtime's clone, references read through.
+        /// Objects and records are refused, as before: a record field cannot carry their binding.
         pub(super) fn from_value(value: &Value) -> Result<Self, String> {
-            let mut result = Self::empty();
-            // SAFETY: result owns fresh VT_EMPTY storage; each branch initializes
-            // a complete matching payload before exposing the type tag.
-            unsafe {
-                match value.vtype() {
-                    crate::VarType::ProcRef => {
-                        return Err(
-                            "procedure references cannot be marshaled as VARIANT values".into()
-                        );
-                    }
-                    crate::VarType::Error => {
-                        let code = value.as_error_code().ok_or("Error payload missing")?;
-                        result.0.Anonymous.Anonymous.vt = 10;
-                        result.0.Anonymous.Anonymous.Anonymous.scode =
-                            if (0..=65535).contains(&code) {
-                                (0x800a_0000u32 | code as u32) as i32
-                            } else {
-                                code
-                            };
-                    }
-                    crate::VarType::String => {
-                        let text = value.try_as_bstr()?.ok_or("String payload missing")?;
-                        let bytes = text
-                            .to_utf16_units()
-                            .len()
-                            .checked_mul(2)
-                            .ok_or("BSTR extent overflow")?;
-                        let units = text.to_utf16_units();
-                        let raw = SysAllocStringByteLen(
-                            units.as_ptr().cast(),
-                            u32::try_from(bytes).map_err(|_| "BSTR too large")?,
-                        )
-                        .cast_mut();
-                        if bytes != 0 && raw.is_null() {
-                            return Err("BSTR allocation failed".into());
-                        }
-                        result.0.Anonymous.Anonymous.vt = 8;
-                        result.0.Anonymous.Anonymous.Anonymous.bstrVal = raw;
-                    }
-                    crate::VarType::ArrayVariant => {
-                        let array = value.try_as_safearray()?.ok_or("Array payload missing")?;
-                        let kind = array.element_vartype();
-                        if matches!(kind, 9 | 13 | 36) {
-                            return Err(
-                                "Record pointer Variant array requires host object/record metadata"
-                                    .into(),
-                            );
-                        }
-                        result.0.Anonymous.Anonymous.vt = 0x2000 | kind;
-                        if let Some(bounds) = array.bounds() {
-                            let native_bounds: Vec<_> = bounds
-                                .iter()
-                                .map(|b| SAFEARRAYBOUND {
-                                    cElements: b.count,
-                                    lLbound: b.lower,
-                                })
-                                .collect();
-                            let raw = SafeArrayCreate(
-                                kind,
-                                native_bounds.len() as u32,
-                                native_bounds.as_ptr(),
-                            );
-                            if raw.is_null() {
-                                return Err("SAFEARRAY allocation failed".into());
-                            }
-                            result.0.Anonymous.Anonymous.Anonymous.parray = raw;
-                            let values = array.try_variant_elements()?.unwrap_or_default();
-                            let mut indices: Vec<_> = bounds.iter().map(|b| b.lower).collect();
-                            for (i, value) in values.iter().enumerate() {
-                                let native = Self::from_value(value)?;
-                                let data = if kind == 12 {
-                                    (&native.0 as *const VARIANT).cast()
-                                } else if kind == 8 {
-                                    native.0.Anonymous.Anonymous.Anonymous.bstrVal.cast()
-                                } else {
-                                    (&native.0 as *const VARIANT).cast::<u8>().add(8).cast()
-                                };
-                                checked(SafeArrayPutElement(raw, indices.as_ptr(), data))?;
-                                if i + 1 != values.len() {
-                                    super::advance_windows_safearray_indices(
-                                        &mut indices,
-                                        &bounds,
-                                    )?;
-                                }
-                            }
-                        }
-                    }
-                    crate::VarType::Object | crate::VarType::Record => {
-                        return Err(
-                            "Record pointer Variant payload requires host object/record binding"
-                                .into(),
-                        );
-                    }
-                    _ => {
-                        let bytes = value.to_wire_bytes();
-                        ptr::copy_nonoverlapping(
-                            bytes.as_ptr(),
-                            (&mut result.0 as *mut VARIANT).cast(),
-                            bytes.len(),
-                        );
-                    }
-                }
+            if matches!(value.vtype(), crate::VarType::ProcRef) {
+                return Err("procedure references cannot be marshaled as VARIANT values".into());
             }
-            Ok(result)
+            let copy = value.try_clone()?;
+            if matches!(
+                copy.vtype(),
+                crate::VarType::Object | crate::VarType::Record
+            ) || matches!(copy.core().raw_vt() & 0x0fff, 9 | 13 | 36)
+                && copy.vtype() == crate::VarType::ArrayVariant
+            {
+                return Err(
+                    "Record pointer Variant payload requires host object/record binding".into(),
+                );
+            }
+            let copy = core::mem::ManuallyDrop::new(copy);
+            // SAFETY: the runtime cell and VARIANT share one layout; the copy's ownership
+            // moves into the native cell.
+            Ok(Self(unsafe {
+                core::ptr::read((&raw const *copy).cast::<VARIANT>())
+            }))
         }
     }
     impl Drop for NativeValue {
@@ -152,89 +71,32 @@ mod native_record_pin {
         }
     }
 
+    /// A runtime copy of a borrowed `VARIANT` (`VariantCopyInd`), read in place so its pointers
+    /// keep their provenance. Objects and records are refused, as `from_value` refuses them.
     pub(super) unsafe fn value_from_native(input: *const VARIANT) -> Result<Value, String> {
-        let mut value = NativeValue::empty();
-        // SAFETY: copy/dereference the borrowed live VARIANT into a private owner.
-        unsafe {
-            checked(VariantCopyInd(&mut value.0, input))?;
-            let kind = value.0.Anonymous.Anonymous.vt;
-            if kind == 10 {
-                let code = value.0.Anonymous.Anonymous.Anonymous.scode;
-                return Ok(Value::from_error_code(
-                    if code as u32 & 0xffff_0000 == 0x800a_0000 {
-                        code & 0xffff
-                    } else {
-                        code
-                    },
-                ));
-            }
-            if kind == 8 {
-                return Ok(Value::from_string(BStr::clone_from_raw_bstr(
-                    value.0.Anonymous.Anonymous.Anonymous.bstrVal.cast_mut(),
-                )?));
-            }
-            if kind & 0x2000 != 0 {
-                let array = value.0.Anonymous.Anonymous.Anonymous.parray;
-                if array.is_null() {
-                    return Err("Variant record field contains an unallocated SAFEARRAY".into());
-                }
-                let element = kind & 0xfff;
-                if matches!(element, 9 | 13 | 36) {
-                    return Err(
-                        "Record pointer array copyback requires host object/record metadata".into(),
-                    );
-                }
-                let rank = SafeArrayGetDim(array);
-                let mut bounds = Vec::new();
-                let mut count = 1usize;
-                for dimension in 1..=rank {
-                    let mut lower = 0;
-                    let mut upper = 0;
-                    checked(SafeArrayGetLBound(array, dimension, &mut lower))?;
-                    checked(SafeArrayGetUBound(array, dimension, &mut upper))?;
-                    let length = u32::try_from(i64::from(upper) - i64::from(lower) + 1)
-                        .map_err(|_| "Invalid SAFEARRAY bounds")?;
-                    count = count
-                        .checked_mul(length as usize)
-                        .ok_or("SAFEARRAY extent overflow")?;
-                    bounds.push(crate::safe_array::SafeArrayBound {
-                        lower,
-                        count: length,
-                    });
-                }
-                let mut indices: Vec<_> = bounds.iter().map(|b| b.lower).collect();
-                let mut values = Vec::with_capacity(count);
-                for index in 0..count {
-                    let mut item = NativeValue::empty();
-                    let data = if element == 12 {
-                        (&mut item.0 as *mut VARIANT).cast()
-                    } else {
-                        item.0.Anonymous.Anonymous.vt = element;
-                        (&mut item.0 as *mut VARIANT).cast::<u8>().add(8).cast()
-                    };
-                    checked(SafeArrayGetElement(array, indices.as_ptr(), data))?;
-                    values.push(value_from_native(&item.0)?);
-                    if index + 1 != count {
-                        super::advance_windows_safearray_indices(&mut indices, &bounds)?;
-                    }
-                }
-                return Ok(Value::from_safearray(SafeArray::from_typed_variants_nd(
-                    bounds, element, values,
-                )?));
-            }
-            if matches!(kind, 9 | 13 | 36) {
-                return Err(
-                    "Record pointer Variant copyback requires host object/record binding".into(),
-                );
-            }
-            let mut bytes = [0u8; crate::variant::WIRE_SIZE];
-            ptr::copy_nonoverlapping(
-                (&value.0 as *const VARIANT).cast(),
-                bytes.as_mut_ptr(),
-                bytes.len(),
+        // SAFETY: the caller's live VARIANT, laid out as the runtime cell.
+        let copy = unsafe { Value::from_trusted_cell(&input.cast::<crate::VariantCore>().read()) }?;
+        let copy = if copy.vtype() == crate::VarType::ByRef {
+            copy.try_clone()?
+        } else {
+            copy
+        };
+        if matches!(
+            copy.vtype(),
+            crate::VarType::Object | crate::VarType::Record
+        ) {
+            return Err(
+                "Record pointer Variant copyback requires host object/record binding".into(),
             );
-            Value::from_wire_bytes(bytes)
         }
+        if copy.vtype() == crate::VarType::ArrayVariant
+            && matches!(copy.core().raw_vt() & 0x0fff, 9 | 13 | 36)
+        {
+            return Err(
+                "Record pointer array copyback requires host object/record metadata".into(),
+            );
+        }
+        Ok(copy)
     }
 
     fn shape(kind: &Field, representation: Representation) -> Result<(usize, usize), String> {

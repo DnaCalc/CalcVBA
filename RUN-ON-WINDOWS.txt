@@ -42,10 +42,7 @@ cfg(windows)-only failure, pull again before each push.
      cargo test -p calcvba-com --no-fail-fast
 
 5. dc-yqq0.14 (default flip done in 8b: TypeLibResolver::dictionary_source is
-   DictionarySource::platform_default). Drop the now-redundant explicit
-   `platform_default()` opt-ins in crates/calcvba-differential/tests/jit_windows_vm3_parity.rs:39
-   and crates/calcvba-host/tests/typed_native_com.rs:251,490 if they still pass without them, and
-   run:
+   DictionarySource::platform_default). Validation runs from the bead:
      cargo test -p calcvba-differential --test validation_round4 --test capability_policy --no-fail-fast
      cargo test -p calcvba-engine --test vba_web_load_shapes --no-fail-fast
      cargo test -p calcvba-differential --lib --no-fail-fast -- golden_snapshot
@@ -59,3 +56,7 @@ cfg(windows)-only failure, pull again before each push.
      argument is refused with a message.
    - 32-bit Windows: calcvba-com does not compile for i686-pc-windows-msvc (windows_vtable is
      x86_64-only but automation.rs calls it); this predates the lane.
+
+7. dc-yqq0.10 (pointer_helpers record projection over cell copies):
+     cargo test -p calcvba-runtime --no-fail-fast
+     cargo test -p calcvba-engine --test declare_cells --test real_addresses --no-fail-fast

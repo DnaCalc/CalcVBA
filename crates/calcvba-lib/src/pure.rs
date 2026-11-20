@@ -28,7 +28,10 @@ const VBA_DATE_MAX_EXCLUSIVE_SERIAL: f64 = 2_958_466.0; // 10000-01-01
 pub fn len(args: &[Variant]) -> LibResult<Variant> {
     let value = need(args, 0)?;
     if let Some(len) = value.vba_record_len() {
-        return Ok(vi32(len as i32));
+        return Ok(integer_or_long(len));
+    }
+    if value.vtype() == VarType::Error {
+        return Err(LibError::type_mismatch("Len of an error value"));
     }
     // Count UTF-16 CODE UNITS (VBA's string length): read them directly off a String
     // Variant's BSTR so a lone/paired surrogate half counts as one unit each (a UTF-8
@@ -2056,28 +2059,32 @@ pub fn weekday_name(args: &[Variant]) -> LibResult<Variant> {
     Ok(vstr(if abbreviate { &name[..3] } else { name }))
 }
 
-/// `LenB(value)` — byte count. For strings, VBA reports UTF-16 payload bytes;
-/// for scalar variables it reports the storage width of the value's VarType.
+/// `LenB(value)` — byte count. A String is its UTF-16 payload bytes; any other Variant is
+/// measured as its text (a Variant holding a Long 5 is 2 bytes, as in Excel). A variable
+/// declared with a fixed-size type reports its storage size; the binder folds that case.
 pub fn len_b(args: &[Variant]) -> LibResult<Variant> {
     let value = need(args, 0)?;
     if let Some(bytes) = value.vba_record_memory_len() {
-        return Ok(vi32(bytes as i32));
+        return Ok(integer_or_long(bytes));
     }
     let bytes = match value.vtype() {
         VarType::String => match value.string_byte_len() {
             Some(bytes) => bytes as usize,
             None => as_str(value)?.encode_utf16().count() * 2,
         },
-        VarType::Boolean | VarType::Integer | VarType::UnsignedInteger => 2,
-        VarType::Byte | VarType::SignedByte => 1,
-        VarType::Long | VarType::UnsignedLong | VarType::UnsignedInt | VarType::Error => 4,
-        VarType::LongLong | VarType::UnsignedLongLong => 8,
-        VarType::Single => 4,
-        VarType::Double | VarType::Currency | VarType::Date => 8,
         VarType::Empty | VarType::Null => 0,
+        VarType::Error => return Err(LibError::type_mismatch("LenB of an error value")),
         _ => as_str(value)?.encode_utf16().count() * 2,
     };
     Ok(vi32(bytes as i32))
+}
+
+/// A UDT's `Len`/`LenB` is an Integer in Excel (a Long only when it would not fit).
+fn integer_or_long(size: usize) -> Variant {
+    match i16::try_from(size) {
+        Ok(n) => Variant::from_i16(n),
+        Err(_) => vi32(size as i32),
+    }
 }
 
 pub fn vba_datepart(args: &[Variant]) -> LibResult<Variant> {

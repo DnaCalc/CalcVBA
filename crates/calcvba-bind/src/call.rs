@@ -484,11 +484,59 @@ impl<'a> ProcLower<'a> {
         }
     }
 
+    /// `Len(x)` / `LenB(x)` of a variable declared with a fixed-size type is the Integer storage
+    /// size of that type (Excel: `Len(longVar)` is the Integer 4, `LenB(fixedStr5)` the Integer
+    /// 10), not the length of its text; a Variant holding the same value is measured as text.
+    /// The static type decides, so the call folds to a constant here. `String`, `Variant`,
+    /// objects, arrays and UDTs stay with the library.
+    fn fold_len_of_typed_operand(
+        &mut self,
+        bound: &Bound,
+        arglist: Option<SyntaxNode<'_>>,
+    ) -> Result<Option<Bound>, BindError> {
+        let bytes = if self.is_vba_library_call(&bound.value, "Strings", "LenB") {
+            true
+        } else if self.is_vba_library_call(&bound.value, "Strings", "Len") {
+            false
+        } else {
+            return Ok(None);
+        };
+        let Some(ArgItem::Positional(expr, _) | ArgItem::Named { value: expr, .. }) =
+            arglist.and_then(|args| args.arg_items().into_iter().next())
+        else {
+            return Ok(None);
+        };
+        let operand = self.bind_expr(expr)?;
+        let size: i16 = match operand.ty {
+            VarTypeRef::Builtin(BuiltinType::Byte) => 1,
+            VarTypeRef::Builtin(BuiltinType::Boolean | BuiltinType::Integer) => 2,
+            VarTypeRef::Builtin(BuiltinType::Long | BuiltinType::Single) => 4,
+            VarTypeRef::Builtin(
+                BuiltinType::LongLong
+                | BuiltinType::LongPtr
+                | BuiltinType::Double
+                | BuiltinType::Currency
+                | BuiltinType::Date,
+            ) => 8,
+            VarTypeRef::FixedString(n) if bytes => {
+                i16::try_from(n.saturating_mul(2)).unwrap_or(i16::MAX)
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(value_bound(
+            CoreValue::Const(CoreConst::I16(size)),
+            builtin(BuiltinType::Integer),
+        )))
+    }
+
     fn preserve_typed_abs_result(
         &mut self,
         bound: Bound,
         arglist: Option<SyntaxNode<'_>>,
     ) -> Result<Bound, BindError> {
+        if let Some(folded) = self.fold_len_of_typed_operand(&bound, arglist)? {
+            return Ok(folded);
+        }
         if !self.is_vba_library_call(&bound.value, "Math", "Abs") {
             return Ok(bound);
         }

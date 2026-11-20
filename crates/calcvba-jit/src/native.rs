@@ -878,7 +878,11 @@ pub fn compile_native_scalars(
                     {
                         let constant = OxInst::Assign {
                             dst: *dst,
-                            value: OxOperand::Const(calcvba_oxir::OxConst::I32(length)),
+                            value: OxOperand::Const(match i16::try_from(length) {
+                                // Excel's `Len(udt)` is an Integer unless the size overflows it.
+                                Ok(small) => calcvba_oxir::OxConst::I16(small),
+                                Err(_) => calcvba_oxir::OxConst::I32(length),
+                            }),
                         };
                         values.instruction(module, &mut b, &constant, foreign_state);
                         continue;

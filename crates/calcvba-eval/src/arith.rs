@@ -735,6 +735,26 @@ pub fn concat(l: &Variant, r: &Variant) -> R {
     if no_text(l) || no_text(r) {
         return Err(ArithError::type_mismatch());
     }
+    // A `ChrB` byte string has an odd byte length that code units cannot carry; join those
+    // by bytes so `ChrB(65) & ChrB(66)` stays a two-byte string.
+    let odd = |v: &Variant| v.string_byte_len().is_some_and(|n| n % 2 == 1);
+    if odd(l) || odd(r) {
+        let bytes_of = |v: &Variant| -> Vec<u8> {
+            if is_null(v) {
+                Vec::new()
+            } else {
+                v.string_bytes().unwrap_or_else(|| {
+                    as_string(v)
+                        .encode_utf16()
+                        .flat_map(u16::to_le_bytes)
+                        .collect()
+                })
+            }
+        };
+        let mut bytes = bytes_of(l);
+        bytes.extend(bytes_of(r));
+        return Ok(Variant::from_bstr_bytes(&bytes));
+    }
     let mut units = Vec::new();
     if !is_null(l) {
         units.extend(concat_units(l));

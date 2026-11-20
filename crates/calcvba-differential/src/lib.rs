@@ -15451,8 +15451,8 @@ End Sub
 
     #[test]
     fn jit_matches_vm3_stdlib_advanced_strcomp() {
-        assert_jit_matches_vm3_contains(JIT_STDLIB_ADVANCED_STRCOMP, Variant::from_i32(-1));
-        assert_jit_matches_vm3_contains(JIT_STDLIB_ADVANCED_STRCOMP, Variant::from_i32(0));
+        assert_jit_matches_vm3_contains(JIT_STDLIB_ADVANCED_STRCOMP, Variant::from_i16(-1));
+        assert_jit_matches_vm3_contains(JIT_STDLIB_ADVANCED_STRCOMP, Variant::from_i16(0));
     }
 
     #[test]
@@ -16123,8 +16123,8 @@ End Sub
 
     #[test]
     fn jit_matches_vm3_builtin_strcomp_variant_exprs() {
-        assert_jit_matches_vm3_contains(JIT_BUILTIN_STRCOMP_VARIANT_EXPRS, Variant::from_i32(0));
-        assert_jit_matches_vm3_contains(JIT_BUILTIN_STRCOMP_VARIANT_EXPRS, Variant::from_i32(-1));
+        assert_jit_matches_vm3_contains(JIT_BUILTIN_STRCOMP_VARIANT_EXPRS, Variant::from_i16(0));
+        assert_jit_matches_vm3_contains(JIT_BUILTIN_STRCOMP_VARIANT_EXPRS, Variant::from_i16(-1));
     }
 
     #[test]
@@ -16177,7 +16177,7 @@ End Sub
         );
         assert_jit_matches_vm3_contains(
             JIT_BUILTIN_STRING_LITERAL_VARIANT_ARGS,
-            Variant::from_i32(-1),
+            Variant::from_i16(-1),
         );
         assert_jit_matches_vm3_contains_canon(
             JIT_BUILTIN_STRING_LITERAL_VARIANT_ARGS,
@@ -16398,7 +16398,7 @@ End Sub
             Canon::Str("231".into()),
         );
         assert_jit_matches_vm3_contains(JIT_BUILTIN_STATIC_STRING_OPERANDS, Variant::from_i32(2));
-        assert_jit_matches_vm3_contains(JIT_BUILTIN_STATIC_STRING_OPERANDS, Variant::from_i32(-1));
+        assert_jit_matches_vm3_contains(JIT_BUILTIN_STATIC_STRING_OPERANDS, Variant::from_i16(-1));
         assert_jit_matches_vm3_contains_canon(
             JIT_BUILTIN_STATIC_STRING_OPERANDS,
             Canon::Str("199199".into()),
@@ -16982,7 +16982,7 @@ End Sub
         assert_jit_matches_vm3_contains(JIT_BUILTIN_STRING_OPTIONAL_ARGS, Variant::from_i32(2));
         assert_jit_matches_vm3_contains(JIT_BUILTIN_STRING_OPTIONAL_ARGS, Variant::from_i32(5));
         assert_jit_matches_vm3_contains(JIT_BUILTIN_STRING_OPTIONAL_ARGS, Variant::from_i32(6));
-        assert_jit_matches_vm3_contains(JIT_BUILTIN_STRING_OPTIONAL_ARGS, Variant::from_i32(0));
+        assert_jit_matches_vm3_contains(JIT_BUILTIN_STRING_OPTIONAL_ARGS, Variant::from_i16(0));
         assert_jit_matches_vm3_contains_canon(
             JIT_BUILTIN_STRING_OPTIONAL_ARGS,
             Canon::Str("bcxbc".into()),
@@ -17017,7 +17017,7 @@ End Sub
         );
         assert_jit_matches_vm3_contains(
             JIT_BUILTIN_STATIC_STRING_OPTIONAL_ARGS,
-            Variant::from_i32(0),
+            Variant::from_i16(0),
         );
         assert_jit_matches_vm3_contains_canon(
             JIT_BUILTIN_STATIC_STRING_OPTIONAL_ARGS,

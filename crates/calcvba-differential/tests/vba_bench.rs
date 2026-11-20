@@ -30,7 +30,8 @@ const SIZES: &[(&str, u32)] = &[
 const REPS: usize = 3;
 
 fn once(executor: Executor, name: &str, n: u32) -> (f64, String) {
-    let main = format!("Public result As Double\nSub Main()\n    result = B_Work.{name}({n})\nEnd Sub\n");
+    let main =
+        format!("Public result As Double\nSub Main()\n    result = B_Work.{name}({n})\nEnd Sub\n");
     let modules = [
         ("Main", ModuleKind::Procedural, main.as_str()),
         ("B_Acc", ModuleKind::Class, ACC),

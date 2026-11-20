@@ -44,6 +44,9 @@ fn assert_val(mode: &str, body: &str, expected: &Canon) {
 fn i32v(n: i32) -> Canon {
     canon(&Variant::from_i32(n))
 }
+fn i16v(n: i16) -> Canon {
+    canon(&Variant::from_i16(n))
+}
 fn strv(s: &str) -> Canon {
     canon(&Variant::from_string(s.to_string()))
 }
@@ -59,8 +62,8 @@ fn instr_respects_compare() {
 
 #[test]
 fn strcomp_respects_compare() {
-    assert_val("Binary", "    r = StrComp(\"a\", \"A\")\n", &i32v(1));
-    assert_val("Text", "    r = StrComp(\"a\", \"A\")\n", &i32v(0));
+    assert_val("Binary", "    r = StrComp(\"a\", \"A\")\n", &i16v(1));
+    assert_val("Text", "    r = StrComp(\"a\", \"A\")\n", &i16v(0));
 }
 
 #[test]

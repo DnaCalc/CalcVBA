@@ -898,6 +898,16 @@ impl<'a> Parser<'a> {
         j < self.tokens.len() && self.tokens[j].0 == SyntaxKind::ColonEq
     }
 
+    /// `name:` is a label only at the start of a line; after a `:` separator
+    /// (`Case 21: Randomize: v = 1`) it is a statement, as in VBA.
+    fn at_label_position(&self) -> bool {
+        let mut i = self.pos;
+        while i > 0 && self.tokens[i - 1].0 == SyntaxKind::Whitespace {
+            i -= 1;
+        }
+        i == 0 || self.tokens[i - 1].0 == SyntaxKind::Newline
+    }
+
     fn peek_is_label_colon(&self) -> bool {
         let mut j = self.pos + 1;
         while j < self.tokens.len() && self.tokens[j].0 == SyntaxKind::Whitespace {
@@ -1953,10 +1963,15 @@ impl<'a> Parser<'a> {
             SyntaxKind::KwInput if self.peek_next_non_trivia_is(SyntaxKind::Hash) => {
                 self.parse_input_stmt()
             }
-            k if Self::is_contextual_name_keyword(k) && self.peek_is_label_colon() => {
+            k if Self::is_contextual_name_keyword(k)
+                && self.peek_is_label_colon()
+                && self.at_label_position() =>
+            {
                 self.parse_label_stmt()
             }
-            SyntaxKind::Ident | SyntaxKind::BracketedIdent if self.peek_is_label_colon() => {
+            SyntaxKind::Ident | SyntaxKind::BracketedIdent
+                if self.peek_is_label_colon() && self.at_label_position() =>
+            {
                 self.parse_label_stmt()
             }
             SyntaxKind::IntLiteral => self.parse_line_number_label_stmt(),
@@ -3662,6 +3677,14 @@ End Property
         assert!(has_node_kind(&p.syntax(), SyntaxKind::OpenStmt));
         assert_eq!(collect_nodes(&p.syntax(), SyntaxKind::CloseStmt).len(), 2); // Close + Reset
         assert!(has_node_kind(&p.syntax(), SyntaxKind::FileNumber));
+    }
+
+    #[test]
+    fn a_name_and_colon_after_a_separator_is_a_statement_not_a_label() {
+        let p = parse_ok(&in_sub(
+            "Select Case 1\nCase 1: Randomize: x = 1\nCase 2: Randomize: x = 2\nEnd Select\nBeep: x = 3",
+        ));
+        assert_eq!(collect_nodes(&p.syntax(), SyntaxKind::LabelStmt).len(), 1);
     }
 
     #[test]

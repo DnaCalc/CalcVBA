@@ -2112,10 +2112,12 @@ mod tests {
                 unsafe { Variant::adopt_automation_cell(automation_bytes(vt, 0).as_ptr().cast()) };
             assert_eq!(in_place.err(), Some(vt), "vt {vt:#06x} in place");
         }
-        // Arrays of the declared types still move in (a null SAFEARRAY* here).
+        // Arrays of the declared types still move in (a null SAFEARRAY* here; read in place,
+        // so no address is rebuilt from an integer).
         for vt in [0x2002, 0x2003, 0x2008, 0x200C, 0x2011, 0x2014] {
+            let cell = automation_bytes(vt, 0);
             // SAFETY: an unallocated array owns nothing.
-            assert!(unsafe { Variant::adopt_automation(automation_bytes(vt, 0)) }.is_ok());
+            assert!(unsafe { Variant::adopt_automation_cell(cell.as_ptr().cast()) }.is_ok());
         }
     }
 
@@ -2444,9 +2446,9 @@ mod tests {
     }
 
     #[test]
-    // Wire bytes carry addresses only; Miri cannot follow exposed provenance.
-    #[cfg_attr(miri, ignore = "decodes exposed addresses")]
-    fn string_variant_wire_roundtrip_clones_bstr_payload() {
+    // Wire bytes carry exposed addresses: under Miri this runs with permissive provenance
+    // (`scripts/run-miri.sh`, the `exposed_wire` tests).
+    fn exposed_wire_string_roundtrip_clones_bstr_payload() {
         let original = Variant::from_string("A\0BC");
         let wire = original.to_wire_bytes();
         // SAFETY: `wire` was just produced from `original`, which stays live for

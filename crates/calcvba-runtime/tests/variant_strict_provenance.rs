@@ -288,3 +288,72 @@ fn variant_strict_provenance_pointer_carriers_roundtrip_mutate_and_balance() {
     assert_eq!(live_com_records(), 0);
     assert_eq!(before.balance_to(live_handle_counts()), Default::default());
 }
+
+/// The wire decoder (`from_trusted_wire_bytes`) rebuilds every pointer carrier from the exposed
+/// addresses `to_wire_bytes` wrote: an independent copy of each payload, counters balanced.
+/// Under Miri it needs permissive provenance (`scripts/run-miri.sh` runs the `exposed_wire`
+/// tests on their own with `-Zmiri-permissive-provenance`), as integer-to-pointer casts are
+/// what it tests.
+#[test]
+fn exposed_wire_decoder_rebuilds_each_pointer_carrier() {
+    let before = live_handle_counts();
+    {
+        let layout = Arc::new(
+            VbaRecordLayout::new(vec![VbaRecordFieldSpec::named(
+                "Value",
+                VbaRecordFieldKind::Long,
+            )])
+            .expect("VBA record layout"),
+        );
+        let mut vba_record = VbaRecord::new_default(layout).expect("VBA record");
+        vba_record
+            .write_field_variant(0, &Variant::from_i32(41))
+            .expect("record field");
+        let values = [
+            Variant::from_string("A\0BC"),
+            Variant::zeroed(VarType::String),
+            Variant::from_object_ref(ObjectRef::from_compat_identity(73)),
+            Variant::nothing(),
+            Variant::from_safearray(SafeArray::from_variants(vec![
+                Variant::from_i32(4),
+                Variant::from_string("x"),
+            ])),
+            Variant::unallocated_array(VT_VARIANT_VALUE),
+            Variant::from_vba_record(vba_record),
+            Variant::zeroed(VarType::Record),
+            Variant::from_com_record(make_com_record(51)),
+        ];
+        for value in &values {
+            // SAFETY: the wire bytes were just written from `value`, which stays live.
+            let copy = unsafe { Variant::from_trusted_wire_bytes(value.to_wire_bytes()) }
+                .unwrap_or_else(|error| panic!("{:?}: {error}", value.vtype()));
+            assert_eq!(copy.vtype(), value.vtype());
+            match value.vtype() {
+                VarType::Object => assert_eq!(
+                    copy.as_object_ref().map(|o| o.raw_iunknown()),
+                    value.as_object_ref().map(|o| o.raw_iunknown())
+                ),
+                VarType::Record if value.as_com_record().is_some() => {
+                    assert_eq!(com_record_value(&copy), 51);
+                    assert_ne!(copy.data_bytes(), value.data_bytes());
+                }
+                VarType::Record => assert_eq!(
+                    copy.read_record_field_variant(0)
+                        .ok()
+                        .and_then(|v| v.as_i32()),
+                    value
+                        .read_record_field_variant(0)
+                        .ok()
+                        .and_then(|v| v.as_i32())
+                ),
+                _ => assert_eq!(&copy, value),
+            }
+            // A payload that owns storage is copied, not shared.
+            if value.data_bytes() != [0; 8] && value.vtype() != VarType::Object {
+                assert_ne!(copy.data_bytes(), value.data_bytes());
+            }
+        }
+    }
+    assert_eq!(live_com_records(), 0);
+    assert_eq!(before.balance_to(live_handle_counts()), Default::default());
+}

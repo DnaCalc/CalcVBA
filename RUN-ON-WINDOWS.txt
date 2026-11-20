@@ -125,3 +125,7 @@ cfg(windows)-only failure, pull again before each push.
     Look at: records with String / String * n / Variant fields passed to a Declare, and UDT
     arrays to a Declare (the array code itself is unchanged, its VariantClear now goes through
     the oleaut wrapper).
+
+13. Miri (Linux only; nothing to run on Windows): scripts/run-miri.sh now also runs the
+    exposed-provenance wire decoder tests (permissive provenance) and calcvba-com's library
+    tests (libffi/dlopen tests skipped, deliberate 'static leaks ignored).

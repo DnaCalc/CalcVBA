@@ -523,15 +523,22 @@ fn object_element(value: &Variant) -> Result<*mut RawRuntimeIUnknown, String> {
         .map_or(core::ptr::null_mut(), ObjectRef::into_raw_iunknown))
 }
 
-fn variant_i64(value: &Variant) -> Result<i64, String> {
+/// An integer element of any exact subtype (VT_I1 to VT_UI8), widened so a VT_UI8 above
+/// `i64::MAX` still fits; each writer range-checks it into its own width.
+fn variant_i64(value: &Variant) -> Result<i128, String> {
     if matches!(value.vtype(), VarType::Empty) {
         return Ok(0);
     }
     value
         .as_i64()
-        .or_else(|| value.as_i32().map(i64::from))
-        .or_else(|| value.as_i16().map(i64::from))
-        .or_else(|| value.as_u8().map(i64::from))
+        .map(i128::from)
+        .or_else(|| value.as_u64().map(i128::from))
+        .or_else(|| value.as_i32().map(i128::from))
+        .or_else(|| value.as_u32().map(i128::from))
+        .or_else(|| value.as_i16().map(i128::from))
+        .or_else(|| value.as_u16().map(i128::from))
+        .or_else(|| value.as_i8().map(i128::from))
+        .or_else(|| value.as_u8().map(i128::from))
         .ok_or_else(|| format!("expected integer-compatible SAFEARRAY element, got {value:?}"))
 }
 
@@ -695,7 +702,10 @@ unsafe fn encode_element_variant(
         // SAFETY: kind == I8 sized/aligned the slot for i64; plain-data write,
         // exactly once into the zeroed buffer.
         SafeArrayElementKind::I8 => unsafe {
-            ptr.cast::<i64>().write(variant_i64(value)?);
+            ptr.cast::<i64>().write(
+                i64::try_from(variant_i64(value)?)
+                    .map_err(|_| "LongLong SAFEARRAY element out of range".to_string())?,
+            );
         },
         // SAFETY: kind == Ui8 sized/aligned the slot for u64; plain-data write,
         // exactly once into the zeroed buffer.
@@ -830,7 +840,8 @@ unsafe fn replace_element_variant(
         },
         // SAFETY: kind == I8, so the slot is a live, aligned `i64` scalar.
         SafeArrayElementKind::I8 => unsafe {
-            *ptr.cast::<i64>() = variant_i64(value)?;
+            *ptr.cast::<i64>() = i64::try_from(variant_i64(value)?)
+                .map_err(|_| "LongLong SAFEARRAY element out of range".to_string())?;
         },
         // SAFETY: kind == Ui8, so the slot is a live, aligned `u64` scalar.
         SafeArrayElementKind::Ui8 => unsafe {

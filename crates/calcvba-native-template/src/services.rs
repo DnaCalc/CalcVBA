@@ -253,7 +253,13 @@ pub(super) unsafe fn read(
             if data.parray.is_null() {
                 return Ok(Variant::unallocated_array(vt & 0x0fff));
             }
-            return read_array(context, data.parray);
+            // An ANSI string array is translated element by element; any other array is
+            // one SafeArrayCopy whose cell the runtime adopts as it is.
+            if (*data.parray).fFeatures & 0x100 != 0 {
+                return read_array(context, data.parray);
+            }
+            ArrayView::new(data.parray)?;
+            return adopt_copy(&value);
         }
         if matches!(vt, 9 | 13) {
             if data.punkVal.is_null() {
@@ -266,14 +272,8 @@ pub(super) unsafe fn read(
                 return Ok(Variant::from_object_ref(object));
             }
         }
-        // The COM value model deliberately normalizes narrow integer wire
-        // arguments. Internal VBA values must retain their actual subtype.
-        match vt {
-            2 => return Ok(Variant::from_i16(data.iVal)),
-            17 => return Ok(Variant::from_u8(data.bVal)),
-            20 => return Ok(Variant::from_i64(data.llVal)),
-            4 => return Ok(Variant::from_f32(data.fltVal)),
-            _ => {}
+        if !matches!(vt, 9 | 13) {
+            return adopt_copy(&value);
         }
         let host = (*runtime(context))._host.clone();
         let mut query = |pointer| {
@@ -302,6 +302,27 @@ pub(super) unsafe fn read(
             "native value",
         )
         .map_err(|_| 13)
+    }
+}
+
+/// A runtime Variant holding its own copy of `value` (oleaut's `VariantCopy`: a BSTR, a
+/// SAFEARRAY and its elements copied, objects AddRef'd), the cell adopted with its exact `vt`.
+///
+/// # Safety
+/// `value` is a live, initialised VARIANT that is not `VT_BYREF`.
+unsafe fn adopt_copy(value: &VARIANT) -> Result<Variant, i32> {
+    let mut copy = super::values::OwnedVariant::empty();
+    // SAFETY: `value` is live and `copy` is an empty VARIANT this function owns.
+    unsafe {
+        super::values::status(windows_sys::Win32::System::Variant::VariantCopy(
+            &mut copy.0,
+            value,
+        ))?;
+        let adopted =
+            Variant::adopt_automation_cell((&raw const copy.0).cast()).map_err(|_| 458)?;
+        // The runtime owns the copied payload now; the wrapper must not clear it.
+        std::mem::forget(copy);
+        Ok(adopted)
     }
 }
 

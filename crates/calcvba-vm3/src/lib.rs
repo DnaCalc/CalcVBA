@@ -4103,9 +4103,20 @@ impl<'h> Vm3<'h> {
         }
         // Host args follow `me` at locals 1.. as direct values — no caller-operand resolution,
         // no ByRef aliasing (the host marshals by value).
-        for (i, v) in args.into_iter().enumerate() {
+        for (i, mut v) in args.into_iter().enumerate() {
             if v.vtype() == VarType::Null && self.byval_scalar_param(target_prog, proc, i + 1) {
                 return Err(Vm3Error::Fault(Fault::new(13, "Type mismatch")));
+            }
+            // A host passes an omitted argument as Missing; an Optional parameter then starts
+            // as a call that leaves it out starts it (its default, Missing, or its type's zero).
+            if v.vtype() == VarType::Error
+                && v.as_error_code() == Some(MISSING_ARG)
+                && let Some(local) = self.exec.programs[target_prog].program.funcs[proc.0]
+                    .locals
+                    .get(i + 1)
+                && let Some(omitted) = omitted_param_value(local)
+            {
+                v = omitted?;
             }
             if let Some(slot) = frame.locals.get_mut(i + 1) {
                 *slot = v;

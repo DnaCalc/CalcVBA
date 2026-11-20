@@ -651,11 +651,22 @@ pub fn trim(args: &[Variant], left: bool, right: bool) -> LibResult<Variant> {
 }
 
 /// `StrComp(s1, s2, [compare])` — optional trailing compare mode (0=binary, 1=text).
+///
+/// Excel's `StrComp` returns an Integer. The mode is not a plain 0/1 switch: -1 and 2
+/// (`vbDatabaseCompare`) are error 5, 0 is binary and any other value compares as text
+/// (probe P_StrComp.6-.8: mode 3 compares "a" and "A" equal).
 pub fn str_comp(args: &[Variant]) -> LibResult<Variant> {
-    let text = text_compare(args, 2)?;
+    let text = match arg_present(args, 2) {
+        Some(v) => match as_i32(v)? {
+            -1 | 2 => return Err(LibError::invalid_call("StrComp compare mode")),
+            0 => false,
+            _ => true,
+        },
+        None => false,
+    };
     let a = compare_units(need(args, 0)?)?;
     let b = compare_units(need(args, 1)?)?;
-    Ok(vi32(
+    Ok(Variant::from_i16(
         match calcvba_runtime::string_compare::compare_utf16(&a, &b, text) {
             std::cmp::Ordering::Less => -1,
             std::cmp::Ordering::Equal => 0,
@@ -4818,19 +4829,19 @@ mod tests {
         assert_eq!(
             str_comp(&[high.clone(), low.clone()])
                 .unwrap()
-                .as_i32()
+                .as_i16()
                 .unwrap(),
             -1
         );
-        assert_eq!(str_comp(&[low, high.clone()]).unwrap().as_i32().unwrap(), 1);
-        assert_eq!(str_comp(&[high, same]).unwrap().as_i32().unwrap(), 0);
+        assert_eq!(str_comp(&[low, high.clone()]).unwrap().as_i16().unwrap(), 1);
+        assert_eq!(str_comp(&[high, same]).unwrap().as_i16().unwrap(), 0);
         // Text mode (compare = 1) still ASCII case-folds without disturbing surrogates.
         let upper = Variant::from_string("A".to_string());
         let lower = Variant::from_string("a".to_string());
         assert_eq!(
             str_comp(&[upper, lower, Variant::from_i32(1)])
                 .unwrap()
-                .as_i32()
+                .as_i16()
                 .unwrap(),
             0
         );

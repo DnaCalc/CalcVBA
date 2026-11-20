@@ -350,7 +350,7 @@ fn jit_value(outcome: Result<JitOutcome, JitError>) -> Result<Variant, PhaseDiag
     if outcome.raised {
         let mut fault = calcvba_rt_abi::Fault::new(outcome.err.number, outcome.err.description);
         if !outcome.err.source.is_empty() {
-            fault.source = Some(outcome.err.source);
+            fault.source = Some(outcome.err.source.into());
         }
         let message = format!("runtime error {}: {}", fault.code, fault.message);
         return Err(PhaseDiagnostic::from_diagnostic(OxDiagnostic::error(

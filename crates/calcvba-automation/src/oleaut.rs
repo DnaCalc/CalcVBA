@@ -188,6 +188,8 @@ pub unsafe fn safe_array_create_ex(
             core::mem::size_of::<crate::safe_array::SafeArrayBound>()
                 == core::mem::size_of::<windows_sys::Win32::System::Com::SAFEARRAYBOUND>()
         );
+        // SAFETY: the caller passes `dims` valid bounds and an `extra` matching `vt`, as
+        // SafeArrayCreateEx requires; the bound layout is asserted above.
         unsafe {
             windows_sys::Win32::System::Ole::SafeArrayCreateEx(vt, dims, bounds.cast(), extra)
                 .cast()

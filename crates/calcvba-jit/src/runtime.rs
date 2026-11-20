@@ -504,8 +504,11 @@ impl<'p> CompiledImage<'p> {
                                 values: Vec::new(),
                                 err: JitFinalErr {
                                     number: fault.code,
-                                    source: fault.source.unwrap_or_default(),
-                                    description: fault.message,
+                                    source: fault
+                                        .source
+                                        .map(|s| s.to_string_lossy())
+                                        .unwrap_or_default(),
+                                    description: fault.message.to_string_lossy(),
                                     last_dll_error: exec.err_engine.last_dll_error,
                                 },
                                 raised: true,

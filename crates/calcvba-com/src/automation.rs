@@ -35,7 +35,7 @@ fn fault_from_hresult(
     hr: i32,
     excepinfo: Option<crate::windows_invoke::ComInvokeExceptionInfo>,
 ) -> Fault {
-    let info = crate::windows_vtable::take_error_info();
+    let info = crate::windows_error_info::take_error_info();
     let failure = crate::windows_invoke::ComInvokeFailure {
         label: "automation",
         dispid: 0,
@@ -250,7 +250,7 @@ impl Dispatch {
         // SAFETY: as above.
         let mut exception: EXCEPINFO = unsafe { core::mem::zeroed() };
         let mut argument_error = u32::MAX;
-        crate::windows_vtable::clear_thread_error_info();
+        crate::windows_error_info::clear_thread_error_info();
         let receiver = self.raw();
         // SAFETY: a retained IDispatch; the argument cells are borrowed bit copies or references
         // the caller keeps live (this function's contract); the result and exception cells are

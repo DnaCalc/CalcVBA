@@ -1,26 +1,65 @@
-//! Automation-layout projections of VBA records and record arrays for `Declare` calls
-//! (Windows). `VarPtr`, `StrPtr` and `ObjPtr` give real addresses (`crate::address`).
+//! Automation-layout projections of VBA records and record arrays for `Declare` calls: the
+//! Unicode layout and the ANSI one a `Declare` passes. Records project on every platform (the
+//! oleaut32 calls are `calcvba_automation::oleaut`, the real ones on Windows); UDT arrays need
+//! `SafeArrayCreateEx` with an `IRecordInfo` and are Windows-only. `VarPtr`, `StrPtr` and `ObjPtr`
+//! give real addresses (`crate::address`).
 
-#[cfg(windows)]
-mod native_record_pin {
+mod record_pin {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Representation {
         Canonical,
         Unicode,
         Ansi,
     }
+    #[cfg(windows)]
+    use crate::safe_array::SafeArray;
     use crate::{
         Variant as Value,
         bstr::BStr,
-        safe_array::SafeArray,
         vba_record::{VbaRecord, VbaRecordFieldKind as Field, VbaRecordLayout},
     };
-    use std::{ptr, sync::Arc};
-    use windows_sys::Win32::{
-        Foundation::{SysAllocStringByteLen, SysFreeString, SysStringByteLen},
-        Globalization::{CP_ACP, MultiByteToWideChar, WideCharToMultiByte},
-        System::{Com::SAFEARRAYBOUND, Ole::*, Variant::*},
+    use calcvba_automation::oleaut::{
+        sys_alloc_string_byte_len as SysAllocStringByteLen, sys_free_string as SysFreeString,
+        sys_string_byte_len as SysStringByteLen,
     };
+    use std::{ptr, sync::Arc};
+    #[cfg(windows)]
+    use windows_sys::Win32::{
+        Globalization::{CP_ACP, MultiByteToWideChar, WideCharToMultiByte},
+        System::{Com::SAFEARRAYBOUND, Ole::*},
+    };
+
+    /// An Automation `VARIANT` cell (the runtime cell has its layout).
+    #[cfg(windows)]
+    #[allow(clippy::upper_case_acronyms)]
+    pub(super) type VARIANT = windows_sys::Win32::System::Variant::VARIANT;
+    #[cfg(not(windows))]
+    #[allow(clippy::upper_case_acronyms)]
+    pub(super) type VARIANT = crate::VariantCore;
+
+    /// `VariantCopyInd` over the platform cell.
+    unsafe fn variant_copy_ind(dst: *mut VARIANT, source: *const VARIANT) -> i32 {
+        // SAFETY: forwarded from the caller.
+        unsafe { calcvba_automation::oleaut::variant_copy_ind(dst.cast(), source.cast()) }
+    }
+
+    /// `VariantClear` over the platform cell.
+    unsafe fn variant_clear(cell: *mut VARIANT) -> i32 {
+        // SAFETY: forwarded from the caller.
+        unsafe { calcvba_automation::oleaut::variant_clear(cell.cast()) }
+    }
+
+    /// The `vt` of a cell.
+    fn vt_of(cell: &VARIANT) -> u16 {
+        // SAFETY: every VARIANT starts with its two-byte vt.
+        unsafe { (&raw const *cell).cast::<u16>().read() }
+    }
+
+    /// Sets the `vt` of a cell (its payload stays as it is).
+    fn set_vt(cell: &mut VARIANT, vt: u16) {
+        // SAFETY: as above; writing the vt alone leaves a valid cell for a POD payload.
+        unsafe { (&raw mut *cell).cast::<u16>().write(vt) }
+    }
 
     fn checked(hr: i32) -> Result<(), String> {
         if hr < 0 {
@@ -47,9 +86,10 @@ mod native_record_pin {
             }
             let mut copy = Self::empty();
             // SAFETY: `value` is a live runtime cell laid out as a VARIANT; `copy` is empty.
-            checked(unsafe { VariantCopyInd(&mut copy.0, (&raw const *value).cast::<VARIANT>()) })?;
-            // SAFETY: an initialised VARIANT.
-            let vt = unsafe { copy.0.Anonymous.Anonymous.vt };
+            checked(unsafe {
+                variant_copy_ind(&mut copy.0, (&raw const *value).cast::<VARIANT>())
+            })?;
+            let vt = vt_of(&copy.0);
             if matches!(vt & 0x0fff, 9 | 13 | 36) {
                 // `copy` is cleared on return.
                 return Err(
@@ -63,7 +103,7 @@ mod native_record_pin {
         fn drop(&mut self) {
             // SAFETY: this guard owns every native payload in its VARIANT.
             unsafe {
-                VariantClear(&mut self.0);
+                variant_clear(&mut self.0);
             }
         }
     }
@@ -114,6 +154,15 @@ mod native_record_pin {
             Representation::Ansi => layout.declare_field_offset(index),
         }
     }
+    #[cfg(not(windows))]
+    fn ansi_bytes(units: &[u16]) -> Result<Vec<u8>, String> {
+        Ok(crate::ansi::ansi_encode_units(units))
+    }
+    #[cfg(not(windows))]
+    fn wide_units(bytes: &[u8]) -> Result<Vec<u16>, String> {
+        Ok(crate::ansi::ansi_decode_units(bytes))
+    }
+    #[cfg(windows)]
     fn ansi_bytes(units: &[u16]) -> Result<Vec<u8>, String> {
         if units.is_empty() {
             return Ok(Vec::new());
@@ -151,6 +200,7 @@ mod native_record_pin {
             Ok(result)
         }
     }
+    #[cfg(windows)]
     fn wide_units(bytes: &[u8]) -> Result<Vec<u16>, String> {
         if bytes.is_empty() {
             return Ok(Vec::new());
@@ -190,12 +240,12 @@ mod native_record_pin {
                             NativeValue::from_value(&*src.cast::<Value>())?
                         } else {
                             let mut value = NativeValue::empty();
-                            checked(VariantCopyInd(&mut value.0, src.cast()))?;
+                            checked(variant_copy_ind(&mut value.0, src.cast()))?;
                             value
                         };
-                        checked(VariantClear(dst.cast()))?;
+                        checked(variant_clear(dst.cast()))?;
                         dst.cast::<VARIANT>().write(value.0);
-                        value.0.Anonymous.Anonymous.vt = 0;
+                        set_vt(&mut value.0, 0);
                     }
                 }
                 Field::String => {
@@ -223,8 +273,7 @@ mod native_record_pin {
                         let value = SysAllocStringByteLen(
                             pointer.cast(),
                             u32::try_from(len).map_err(|_| "BSTR extent overflow")?,
-                        )
-                        .cast_mut();
+                        );
                         if len != 0 && value.is_null() {
                             return Err("Native record BSTR allocation failed".into());
                         }
@@ -469,16 +518,18 @@ mod native_record_pin {
                     if *kind == 8 {
                         SysFreeString(cell.cast::<*mut u16>().read());
                     } else {
-                        VariantClear(cell.cast());
+                        variant_clear(cell.cast());
                     }
                 }
             }
         }
     }
+    #[cfg(windows)]
     pub struct AutomationRecordArray {
         cell: Box<VARIANT>,
         layout: Arc<VbaRecordLayout>,
     }
+    #[cfg(windows)]
     impl AutomationRecordArray {
         /// The native form of a UDT array value: `array` is `None` while unallocated.
         pub fn from_array(
@@ -616,67 +667,30 @@ mod native_record_pin {
             }
         }
     }
+    #[cfg(windows)]
     impl Drop for AutomationRecordArray {
         fn drop(&mut self) {
             // SAFETY: consume this cell's one retained array/record-info owner.
             unsafe {
-                VariantClear(&mut *self.cell);
+                variant_clear(&mut *self.cell);
             }
         }
     }
 }
+#[cfg(not(windows))]
+pub use portable_record_array::AutomationRecordArray;
+pub use record_pin::AutomationRecord;
 #[cfg(windows)]
-pub use native_record_pin::{AutomationRecord, AutomationRecordArray};
-#[cfg(not(windows))]
-pub use portable_record_pin::{AutomationRecord, AutomationRecordArray};
+pub use record_pin::AutomationRecordArray;
 
-/// Off Windows the ANSI projection of records holding Strings, and of UDT arrays, is not built
-/// yet: these refuse, and a `Declare` taking such an argument fails with that message. A record
-/// without Strings is passed as its own memory and does not come here.
+/// Off Windows a UDT array cannot be passed to a `Declare` yet (it needs `SafeArrayCreateEx`
+/// with the record's `IRecordInfo`): it is refused with this message.
 #[cfg(not(windows))]
-mod portable_record_pin {
-    use crate::{
-        Variant as Value,
-        safe_array::SafeArray,
-        vba_record::{VbaRecord, VbaRecordLayout},
-    };
+mod portable_record_array {
+    use crate::{Variant as Value, safe_array::SafeArray, vba_record::VbaRecordLayout};
     use std::sync::Arc;
 
-    const REFUSED: &str =
-        "a record holding Strings, or a UDT array, cannot be passed to a Declare off Windows yet";
-
-    #[derive(Debug)]
-    pub struct AutomationRecord(());
-    impl AutomationRecord {
-        pub fn from_record(_record: &VbaRecord) -> Result<Self, String> {
-            Err(REFUSED.into())
-        }
-        pub fn from_declared_record(_record: &VbaRecord) -> Result<Self, String> {
-            Err(REFUSED.into())
-        }
-        /// # Safety
-        /// As on Windows; this stand-in reads nothing.
-        pub unsafe fn from_automation(
-            _source: *const u8,
-            _layout: Arc<VbaRecordLayout>,
-        ) -> Result<Self, String> {
-            Err(REFUSED.into())
-        }
-        pub fn empty_declared(_layout: Arc<VbaRecordLayout>) -> Result<Self, String> {
-            Err(REFUSED.into())
-        }
-        pub fn as_mut_ptr(&mut self) -> *mut u8 {
-            core::ptr::null_mut()
-        }
-        pub fn read(&self) -> Result<Value, String> {
-            Err(REFUSED.into())
-        }
-        /// # Safety
-        /// As on Windows; this stand-in writes nothing.
-        pub unsafe fn copy_back_automation(&self, _destination: *mut u8) -> Result<(), String> {
-            Err(REFUSED.into())
-        }
-    }
+    const REFUSED: &str = "a UDT array cannot be passed to a Declare off Windows yet";
 
     pub struct AutomationRecordArray(());
     impl AutomationRecordArray {
@@ -713,7 +727,7 @@ fn advance_windows_safearray_indices(
     Err("SAFEARRAY multidimensional index progression exhausted early".to_string())
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
 mod tests {
     use super::AutomationRecord;
     use crate::{

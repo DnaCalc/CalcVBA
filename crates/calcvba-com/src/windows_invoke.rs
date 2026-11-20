@@ -3396,6 +3396,9 @@ pub(crate) unsafe fn invoke_vtable_member_spec_result_with_shared_state(
 /// Non-x64 Windows stub: the libffi this-call vtable marshaller is x64-only
 /// (`windows_vtable` is gated to `target_arch = "x86_64"`), so every member
 /// falls back to the IDispatch path here.
+///
+/// # Safety
+/// As the x64 function: `_dispatch` is a live interface pointer (unused here).
 #[cfg(all(target_os = "windows", not(target_arch = "x86_64")))]
 #[allow(clippy::result_large_err)]
 pub unsafe fn try_vtable_member_spec_invoke_with_shared_state(
@@ -3409,6 +3412,10 @@ pub unsafe fn try_vtable_member_spec_invoke_with_shared_state(
     Ok(None)
 }
 
+/// The result form of [`try_vtable_member_spec_invoke_with_shared_state`] (non-x64 stub).
+///
+/// # Safety
+/// As the x64 function: `_dispatch` is a live interface pointer (unused here).
 #[cfg(all(target_os = "windows", not(target_arch = "x86_64")))]
 #[allow(clippy::result_large_err)]
 pub unsafe fn try_vtable_member_spec_invoke_result_with_shared_state(

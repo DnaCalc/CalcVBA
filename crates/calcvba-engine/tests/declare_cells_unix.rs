@@ -195,3 +195,24 @@ End Sub\n";
         assert_eq!(text(&values), "0:880:0|12:880:2", "{name}");
     }
 }
+
+#[test]
+fn a_record_holding_strings_is_passed_in_its_ansi_layout() {
+    // VBA passes a UDT with Strings to a Declare in the ANSI layout: a String * 4 is four ANSI
+    // bytes (strlen sees 4 before the zero Byte), a String a char* to an ANSI copy, and what the
+    // callee writes comes back into the record.
+    let source = "Private Type TText\n    f As String * 4\n    z As Byte\n    s As String\n    n As Long\nEnd Type\n\
+Private Declare PtrSafe Function StrLenA Lib \"libc.so.6\" Alias \"strlen\" (ByRef r As TText) As LongPtr\n\
+Private Declare PtrSafe Function FillA Lib \"libc.so.6\" Alias \"memset\" (ByRef r As TText, ByVal c As Long, ByVal n As LongPtr) As LongPtr\n\
+Public result As String\n\
+Sub Main()\n\
+    Dim t As TText\n\
+    t.f = \"abcd\": t.s = \"h\" & ChrW(233) & \"llo\": t.n = 7\n\
+    result = CStr(StrLenA(t))\n\
+    FillA t, 65, 2\n\
+    result = result & \"|\" & t.f & \"|\" & t.s & \"|\" & CStr(t.n)\n\
+End Sub\n";
+    for (name, values) in run(source) {
+        assert_eq!(text(&values), "4|AAcd|h\u{e9}llo|7", "{name}");
+    }
+}

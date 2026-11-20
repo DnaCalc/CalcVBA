@@ -938,11 +938,14 @@ where
     I: IntoIterator<Item = LibffiType>,
     I::IntoIter: ExactSizeIterator,
 {
-    #[allow(unused_mut)]
-    let mut cif = LibffiCif::new(arguments, result);
     #[cfg(all(target_os = "windows", target_arch = "x86"))]
-    cif.set_abi(libffi::raw::ffi_abi_FFI_STDCALL);
-    cif
+    {
+        LibffiCif::new_with_abi(arguments, result, libffi::raw::ffi_abi_FFI_STDCALL)
+    }
+    #[cfg(not(all(target_os = "windows", target_arch = "x86")))]
+    {
+        LibffiCif::new(arguments, result)
+    }
 }
 
 /// This thread's last OS error after a native call (`Err.LastDllError`): `GetLastError` on

@@ -93,3 +93,35 @@ cfg(windows)-only failure, pull again before each push.
      cargo test -p calcvba-runtime --no-fail-fast
      cargo test -p calcvba-engine --test declare_cells --test real_addresses --test array_descriptor_features --no-fail-fast
    Look at: the balance assertion; any Declare record test with Variant fields.
+
+10. dc-yqq0.13: a class-typed object variable (Dim o As Collection, As Class1, a typelib
+    interface) passed to a ByRef Variant parameter of a project procedure now goes through a
+    temporary holding the same object, copied back after the call (elaborator; VM3 and JIT).
+    The Excel variant-layout comparison has no known differences left (BIND.TypedObjectVar
+    fixed on Linux). Run:
+      cargo test -p calcvba-differential --test variant_layout_excel --no-fail-fast
+        (expect 2/2 with an empty variant-layout.known-differences.txt)
+      cargo test -p calcvba-engine --test byref_variant_references --test byref_element_references --no-fail-fast
+
+11. dc-yqq0.9: 32-bit Windows. calcvba-com, calcvba-hal, calcvba-runtime, calcvba-engine and
+    calcvba-host now type-check for i686-pc-windows-msvc (clippy -D warnings clean for com,
+    runtime, hal): the IErrorInfo helpers moved out of the x86_64-only windows_vtable into
+    windows_error_info, the stdcall CIF uses Cif::new_with_abi. Still not compiling on i686:
+    calcvba-native-template (members.rs:415, services.rs:484 call typed_slots functions that
+    exist only on x86_64; native template is your rewrite). Run, if a 32-bit toolchain is there:
+      cargo build -p calcvba-com -p calcvba-engine --target i686-pc-windows-msvc
+      cargo test -p calcvba-com --target i686-pc-windows-msvc --no-fail-fast
+    and on x64 (the move touched windows_vtable, automation.rs, early.rs):
+      cargo test -p calcvba-com --no-fail-fast
+
+12. dc-yqq0.9: the record projection for Declare (calcvba-runtime pointer_helpers record_pin)
+    is now one module on every platform: its oleaut32 calls go through
+    calcvba_automation::oleaut (the real functions on Windows), its ANSI conversion stays
+    WideCharToMultiByte/MultiByteToWideChar on Windows. UDT arrays (AutomationRecordArray)
+    remain Windows-only. Run:
+      cargo test -p calcvba-runtime --no-fail-fast
+      cargo test -p calcvba-engine --test declare_cells --test real_addresses --no-fail-fast
+      cargo test -p calcvba-hal --no-fail-fast
+    Look at: records with String / String * n / Variant fields passed to a Declare, and UDT
+    arrays to a Declare (the array code itself is unchanged, its VariantClear now goes through
+    the oleaut wrapper).

@@ -1,4 +1,10 @@
 //! calcvba-com: Windows-first COM bridge, metadata facade, and wire translation boundary.
+// 32-bit Windows has no early-bound vtable lane yet (`windows_vtable` is x86_64-only), so the
+// typelib-to-vtable planning helpers it would call are unused there.
+#![cfg_attr(
+    all(target_os = "windows", target_arch = "x86"),
+    allow(dead_code, unused_imports)
+)]
 pub mod access_policy;
 #[cfg(target_os = "windows")]
 pub mod automation;
@@ -32,6 +38,8 @@ pub mod windows_call_frame;
 pub mod windows_client;
 #[cfg(target_os = "windows")]
 pub mod windows_connection_point;
+#[cfg(target_os = "windows")]
+mod windows_error_info;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod windows_ffi_bridge;
 #[cfg(target_os = "windows")]

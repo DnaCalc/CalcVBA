@@ -721,7 +721,7 @@ unsafe fn call_vtable(
     let slot = usize::from(member.vtable_slot.unwrap_or_default());
     // SAFETY: zero is VT_EMPTY.
     let mut returned: VARIANT = unsafe { core::mem::zeroed() };
-    crate::windows_vtable::clear_thread_error_info();
+    crate::windows_error_info::clear_thread_error_info();
     // SAFETY: `interface` is the declared interface and `slot` lies inside its vtable (checked by
     // `vtable_interface`); each argument VARIANT carries a value of its `VARTYPE` or a pointer to
     // live storage of it, all of which outlive the call.

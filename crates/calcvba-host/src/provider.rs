@@ -748,6 +748,10 @@ fn array_element(value: &calcvba_bundle::ArrayElementType) -> api::ArrayElement 
             name: None,
             iid: None,
         },
+        E::Interface(iid) => T::Object {
+            name: None,
+            iid: Some(*iid),
+        },
         E::DynamicArray(element) => T::Array {
             element: Box::new(match array_element(element) {
                 A::Scalar(ty) => ty,

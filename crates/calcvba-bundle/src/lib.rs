@@ -117,9 +117,12 @@ pub enum ArrayElementType {
         element: Box<ArrayElementType>,
         bounds: Vec<FixedArrayBound>,
     },
-    /// An object-typed UDT field (`As Object`, `As Collection`, a class): an interface pointer
-    /// in the record, as in VBA.
+    /// An untyped object array element or UDT field (`As Object`: `IID_IDispatch`).
     Object,
+    /// A class- or interface-typed object array element (`As Collection`, `As Class1`,
+    /// an imported COM interface): `VT_DISPATCH` with `FADF_HAVEIID` carrying this
+    /// 16-byte COM IID at `psa - 16` (`SafeArrayGetIID`).
+    Interface([u8; 16]),
     /// A dynamic-array UDT field (`d() As Long`): a `SAFEARRAY*` in the record, as in VBA.
     DynamicArray(Box<ArrayElementType>),
 }

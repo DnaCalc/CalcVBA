@@ -1,8 +1,9 @@
 //! Automation-layout projections of VBA records and record arrays for `Declare` calls: the
-//! Unicode layout and the ANSI one a `Declare` passes. Records project on every platform (the
-//! oleaut32 calls are `calcvba_automation::oleaut`, the real ones on Windows); UDT arrays need
-//! `SafeArrayCreateEx` with an `IRecordInfo` and are Windows-only. `VarPtr`, `StrPtr` and `ObjPtr`
-//! give real addresses (`crate::address`).
+//! Unicode layout and the ANSI one a `Declare` passes. Records and UDT arrays (`FADF_RECORD`
+//! `SAFEARRAY`s with registration-free `IRecordInfo`) project on every platform (the oleaut32
+//! calls go through `calcvba_automation::oleaut`, calling real oleaut32 on Windows and the
+//! binary-identical portable implementation elsewhere). `VarPtr`, `StrPtr` and `ObjPtr` give
+//! real addresses (`crate::address`).
 
 mod record_pin {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,23 +12,24 @@ mod record_pin {
         Unicode,
         Ansi,
     }
-    #[cfg(windows)]
-    use crate::safe_array::SafeArray;
+    use crate::safe_array::{SafeArray, SafeArrayBound};
     use crate::{
         Variant as Value,
         bstr::BStr,
         vba_record::{VbaRecord, VbaRecordFieldKind as Field, VbaRecordLayout},
     };
     use calcvba_automation::oleaut::{
+        safe_array_create_ex as SafeArrayCreateEx, safe_array_get_dim as SafeArrayGetDim,
+        safe_array_get_elemsize as SafeArrayGetElemsize,
+        safe_array_get_lbound as SafeArrayGetLBound, safe_array_get_ubound as SafeArrayGetUBound,
+        safe_array_ptr_of_index as SafeArrayPtrOfIndex,
+        safe_array_put_element as SafeArrayPutElement,
         sys_alloc_string_byte_len as SysAllocStringByteLen, sys_free_string as SysFreeString,
         sys_string_byte_len as SysStringByteLen,
     };
-    use std::{ptr, sync::Arc};
+    use std::{ffi::c_void, ptr, sync::Arc};
     #[cfg(windows)]
-    use windows_sys::Win32::{
-        Globalization::{CP_ACP, MultiByteToWideChar, WideCharToMultiByte},
-        System::{Com::SAFEARRAYBOUND, Ole::*},
-    };
+    use windows_sys::Win32::Globalization::{CP_ACP, MultiByteToWideChar, WideCharToMultiByte};
 
     /// An Automation `VARIANT` cell (the runtime cell has its layout).
     #[cfg(windows)]
@@ -524,12 +526,33 @@ mod record_pin {
             }
         }
     }
-    #[cfg(windows)]
+    /// Address of the `parray` pointer slot at `PAYLOAD_OFFSET` (8) inside a platform `VARIANT`.
+    fn cell_parray_slot(cell: &mut VARIANT) -> *mut *mut c_void {
+        // SAFETY: every platform VARIANT stores its pointer union (`parray`) at `PAYLOAD_OFFSET`.
+        unsafe {
+            (&raw mut *cell)
+                .cast::<u8>()
+                .add(calcvba_automation::abi::PAYLOAD_OFFSET)
+                .cast::<*mut c_void>()
+        }
+    }
+
+    /// Reads the `parray` pointer from a platform `VARIANT`.
+    fn read_cell_parray(cell: &VARIANT) -> *mut c_void {
+        // SAFETY: every platform VARIANT stores its pointer union (`parray`) at `PAYLOAD_OFFSET`.
+        unsafe {
+            (&raw const *cell)
+                .cast::<u8>()
+                .add(calcvba_automation::abi::PAYLOAD_OFFSET)
+                .cast::<*mut c_void>()
+                .read()
+        }
+    }
+
     pub struct AutomationRecordArray {
         cell: Box<VARIANT>,
         layout: Arc<VbaRecordLayout>,
     }
-    #[cfg(windows)]
     impl AutomationRecordArray {
         /// The native form of a UDT array value: `array` is `None` while unallocated.
         pub fn from_array(
@@ -542,7 +565,7 @@ mod record_pin {
             };
             // SAFETY: the private VARIANT exclusively owns the new descriptor.
             unsafe {
-                result.cell.Anonymous.Anonymous.vt = 0x2024;
+                set_vt(&mut result.cell, 0x2024);
                 if let Some(array) = array
                     && let Some(bounds) = array.bounds()
                 {
@@ -567,24 +590,12 @@ mod record_pin {
                     }
                     descriptor.extend([hash as u32, (hash >> 32) as u32, 0x45564143, 0x5245434f]);
                     let info = crate::automation_record::create_record_info(descriptor.as_ptr());
-                    let native_bounds: Vec<_> = bounds
-                        .iter()
-                        .map(|b| SAFEARRAYBOUND {
-                            cElements: b.count,
-                            lLbound: b.lower,
-                        })
-                        .collect();
-                    let raw = SafeArrayCreateEx(
-                        36,
-                        native_bounds.len() as u32,
-                        native_bounds.as_ptr(),
-                        info,
-                    );
+                    let raw = SafeArrayCreateEx(36, bounds.len() as u32, bounds.as_ptr(), info);
                     crate::automation_record::release_record_info(info);
                     if raw.is_null() {
                         return Err("Native record array allocation failed".into());
                     }
-                    result.cell.Anonymous.Anonymous.Anonymous.parray = raw;
+                    cell_parray_slot(&mut result.cell).write(raw);
                     let values = array.try_variant_elements()?.unwrap_or_default();
                     let mut indices: Vec<_> = bounds.iter().map(|b| b.lower).collect();
                     for (i, value) in values.iter().enumerate() {
@@ -598,25 +609,20 @@ mod record_pin {
                             native.as_mut_ptr().cast(),
                         ))?;
                         if i + 1 != values.len() {
-                            super::advance_windows_safearray_indices(&mut indices, &bounds)?;
+                            super::advance_safearray_indices(&mut indices, &bounds)?;
                         }
                     }
                 }
             }
             Ok(result)
         }
-        pub fn as_cell_ptr(&mut self) -> *mut std::ffi::c_void {
-            // SAFETY: the boxed VARIANT's array pointer cell has a stable address.
-            unsafe {
-                (&mut self.cell.Anonymous.Anonymous.Anonymous.parray
-                    as *mut *mut windows_sys::Win32::System::Com::SAFEARRAY)
-                    .cast()
-            }
+        pub fn as_cell_ptr(&mut self) -> *mut c_void {
+            cell_parray_slot(&mut self.cell).cast()
         }
         pub fn read(&self) -> Result<Value, String> {
             // SAFETY: the callee returned a nullable live same-layout SAFEARRAY.
             unsafe {
-                let array = self.cell.Anonymous.Anonymous.Anonymous.parray;
+                let array = read_cell_parray(&self.cell);
                 if array.is_null() {
                     return Ok(Value::unallocated_record_array(self.layout.clone()));
                 }
@@ -636,7 +642,7 @@ mod record_pin {
                     count = count
                         .checked_mul(length as usize)
                         .ok_or("Record array extent overflow")?;
-                    bounds.push(crate::safe_array::SafeArrayBound {
+                    bounds.push(SafeArrayBound {
                         lower,
                         count: length,
                     });
@@ -656,7 +662,7 @@ mod record_pin {
                     )?;
                     records.push(record);
                     if i + 1 != count {
-                        super::advance_windows_safearray_indices(&mut indices, &bounds)?;
+                        super::advance_safearray_indices(&mut indices, &bounds)?;
                     }
                 }
                 Ok(Value::from_safearray(SafeArray::from_vba_records_nd(
@@ -667,7 +673,6 @@ mod record_pin {
             }
         }
     }
-    #[cfg(windows)]
     impl Drop for AutomationRecordArray {
         fn drop(&mut self) {
             // SAFETY: consume this cell's one retained array/record-info owner.
@@ -677,39 +682,9 @@ mod record_pin {
         }
     }
 }
-#[cfg(not(windows))]
-pub use portable_record_array::AutomationRecordArray;
-pub use record_pin::AutomationRecord;
-#[cfg(windows)]
-pub use record_pin::AutomationRecordArray;
+pub use record_pin::{AutomationRecord, AutomationRecordArray};
 
-/// Off Windows a UDT array cannot be passed to a `Declare` yet (it needs `SafeArrayCreateEx`
-/// with the record's `IRecordInfo`): it is refused with this message.
-#[cfg(not(windows))]
-mod portable_record_array {
-    use crate::{Variant as Value, safe_array::SafeArray, vba_record::VbaRecordLayout};
-    use std::sync::Arc;
-
-    const REFUSED: &str = "a UDT array cannot be passed to a Declare off Windows yet";
-
-    pub struct AutomationRecordArray(());
-    impl AutomationRecordArray {
-        pub fn from_array(
-            _layout: Arc<VbaRecordLayout>,
-            _array: Option<&SafeArray>,
-        ) -> Result<Self, String> {
-            Err(REFUSED.into())
-        }
-        pub fn as_cell_ptr(&mut self) -> *mut std::ffi::c_void {
-            core::ptr::null_mut()
-        }
-        pub fn read(&self) -> Result<Value, String> {
-            Err(REFUSED.into())
-        }
-    }
-}
-#[cfg(target_os = "windows")]
-fn advance_windows_safearray_indices(
+fn advance_safearray_indices(
     indices: &mut [i32],
     bounds: &[crate::safe_array::SafeArrayBound],
 ) -> Result<(), String> {
@@ -729,12 +704,12 @@ fn advance_windows_safearray_indices(
 
 #[cfg(test)]
 mod tests {
-    use super::AutomationRecord;
+    use super::{AutomationRecord, AutomationRecordArray};
     use crate::{
         Variant,
         bstr::BStr,
         current_thread_live_handle_counts,
-        safe_array::SafeArray,
+        safe_array::{SafeArray, SafeArrayBound},
         vba_record::{VbaRecord, VbaRecordFieldKind, VbaRecordFieldSpec, VbaRecordLayout},
     };
     use std::sync::Arc;
@@ -775,6 +750,122 @@ mod tests {
             drop(back);
             drop(unicode);
             drop(AutomationRecord::from_declared_record(&record).expect("ANSI projection"));
+        }
+        assert_eq!(
+            before.balance_to(current_thread_live_handle_counts()),
+            Default::default()
+        );
+    }
+
+    #[test]
+    fn record_array_projected_for_a_declare_handles_nd_bounds_strings_variants_and_balances_counters()
+     {
+        let layout = Arc::new(
+            VbaRecordLayout::new(vec![
+                VbaRecordFieldSpec::named("Id", VbaRecordFieldKind::Long),
+                VbaRecordFieldSpec::named("Tag", VbaRecordFieldKind::FixedString { len: 4 }),
+                VbaRecordFieldSpec::named("Name", VbaRecordFieldKind::String),
+                VbaRecordFieldSpec::named("Payload", VbaRecordFieldKind::Variant),
+            ])
+            .expect("record layout"),
+        );
+        let bounds = vec![
+            SafeArrayBound { count: 2, lower: 1 },
+            SafeArrayBound {
+                count: 2,
+                lower: 10,
+            },
+        ];
+        let mut records = Vec::new();
+        for n in 0..4i32 {
+            let mut rec = VbaRecord::new_default(Arc::clone(&layout)).expect("record");
+            rec.write_field_variant(0, &Variant::from_i32(100 + n))
+                .expect("Id");
+            rec.write_field_variant(1, &Variant::from_string(format!("T{n:03}")))
+                .expect("Tag");
+            rec.write_field_variant(2, &Variant::from_string(format!("item-{n}")))
+                .expect("Name");
+            rec.write_field_variant(3, &Variant::from_string(format!("v-{n}")))
+                .expect("Payload");
+            records.push(rec);
+        }
+        let array = SafeArray::from_vba_records_nd(bounds.clone(), Arc::clone(&layout), records)
+            .expect("record safearray");
+        let before = current_thread_live_handle_counts();
+        {
+            // Unallocated record array round-trips as unallocated.
+            let empty =
+                AutomationRecordArray::from_array(Arc::clone(&layout), None).expect("empty array");
+            let read_empty = empty.read().expect("read empty");
+            assert_eq!(read_empty.record_array_layout(), Some(Arc::clone(&layout)));
+            assert!(read_empty.try_as_safearray().unwrap().is_none());
+            drop(read_empty);
+            drop(empty);
+
+            // Allocated 2D record array: verify native descriptor, mutate element (2, 11) in place, read back.
+            let mut projected =
+                AutomationRecordArray::from_array(Arc::clone(&layout), Some(&array))
+                    .expect("projected record array");
+            // SAFETY: `as_cell_ptr` points to the live `SAFEARRAY*` slot owned by `projected`.
+            unsafe {
+                let psa = *projected.as_cell_ptr().cast::<*mut core::ffi::c_void>();
+                assert!(!psa.is_null());
+                assert_eq!(calcvba_automation::oleaut::safe_array_get_dim(psa), 2);
+                assert_eq!(
+                    calcvba_automation::oleaut::safe_array_get_elemsize(psa) as usize,
+                    layout.size()
+                );
+                let mut elem = core::ptr::null_mut();
+                let idx = [2i32, 11i32]; // flat index 3
+                assert_eq!(
+                    calcvba_automation::oleaut::safe_array_ptr_of_index(
+                        psa,
+                        idx.as_ptr(),
+                        &mut elem
+                    ),
+                    0
+                );
+                assert_eq!(elem.cast::<i32>().read(), 103);
+                elem.cast::<i32>().write(777);
+            }
+            let back = projected.read().expect("read projected array");
+            let back_sa = back
+                .try_as_safearray()
+                .expect("safearray")
+                .expect("allocated");
+            assert_eq!(back_sa.bounds(), Some(bounds));
+            let elems = back_sa.variant_elements().expect("elements");
+            assert_eq!(elems.len(), 4);
+            let rec3 = elems[3].as_vba_record().expect("record 3");
+            assert_eq!(rec3.read_field_variant(0).unwrap().as_i32(), Some(777));
+            assert_eq!(
+                rec3.read_field_variant(1)
+                    .unwrap()
+                    .as_bstr()
+                    .unwrap()
+                    .as_str(),
+                "T003"
+            );
+            assert_eq!(
+                rec3.read_field_variant(2)
+                    .unwrap()
+                    .as_bstr()
+                    .unwrap()
+                    .as_str(),
+                "item-3"
+            );
+            assert_eq!(
+                rec3.read_field_variant(3)
+                    .unwrap()
+                    .as_bstr()
+                    .unwrap()
+                    .as_str(),
+                "v-3"
+            );
+            drop(elems);
+            drop(back_sa);
+            drop(back);
+            drop(projected);
         }
         assert_eq!(
             before.balance_to(current_thread_live_handle_counts()),

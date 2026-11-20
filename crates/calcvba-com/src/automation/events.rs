@@ -184,8 +184,8 @@ unsafe extern "system" fn sink_invoke(
                     excepinfo,
                     &calcvba_runtime::events::EventFault {
                         number: 458,
-                        description: calcvba_runtime::default_error_message(458).to_string(),
-                        source: String::new(),
+                        description: calcvba_runtime::default_error_message(458).into(),
+                        source: calcvba_runtime::Utf16String::new(),
                     },
                 );
             }
@@ -208,8 +208,8 @@ unsafe extern "system" fn sink_invoke(
             excepinfo,
             &calcvba_runtime::events::EventFault {
                 number: 51,
-                description: calcvba_runtime::default_error_message(51).to_string(),
-                source: String::new(),
+                description: calcvba_runtime::default_error_message(51).into(),
+                source: calcvba_runtime::Utf16String::new(),
             },
         ),
     }
@@ -218,8 +218,8 @@ unsafe extern "system" fn sink_invoke(
 /// `DISP_E_EXCEPTION` with VBA's error in `EXCEPINFO` (`scode` is the VBA error's HRESULT).
 fn fail(excepinfo: *mut EXCEPINFO, fault: &calcvba_runtime::events::EventFault) -> i32 {
     if !excepinfo.is_null() {
-        let bstr = |text: &str| {
-            let wide: Vec<u16> = text.encode_utf16().collect();
+        let bstr = |text: &calcvba_runtime::Utf16String| {
+            let wide = text.as_units();
             // SAFETY: a counted UTF-16 copy; the EXCEPINFO's receiver frees it.
             unsafe {
                 windows_sys::Win32::Foundation::SysAllocStringLen(wide.as_ptr(), wide.len() as u32)

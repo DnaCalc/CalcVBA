@@ -12,6 +12,7 @@ pub mod call_frame;
 pub mod callback_thunks;
 pub mod coerce;
 pub mod collection;
+pub use calcvba_automation::com;
 pub use calcvba_automation::com_record;
 pub mod date;
 pub use calcvba_automation::decimal;
@@ -19,6 +20,7 @@ pub mod events;
 pub use calcvba_automation::live_counters;
 pub mod object_owner;
 pub mod object_ref;
+pub use calcvba_automation::oleaut;
 pub mod pointer_helpers;
 pub use calcvba_automation::safe_array;
 pub mod string_compare;
@@ -29,6 +31,7 @@ pub mod vba_error;
 pub mod vba_radix;
 pub use calcvba_automation::vba_record;
 
+pub use bstr::Utf16String;
 pub use call_frame::{
     RuntimeByRefSlot, RuntimeByRefWriteback, RuntimeCallArgument, RuntimeCallContext,
     RuntimeCallError, RuntimeCallFrame, RuntimeCallKind, RuntimeCallResult, RuntimeCallSelector,

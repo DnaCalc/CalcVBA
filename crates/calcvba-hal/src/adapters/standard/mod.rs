@@ -1300,7 +1300,7 @@ impl StandardHostServices {
         let description = fault
             .description
             .clone()
-            .unwrap_or_else(|| calcvba_runtime::default_error_message(fault.number).to_string());
+            .unwrap_or_else(|| calcvba_runtime::default_error_message(fault.number).into());
         let mut message = format!("COM call failed with VBA error {}", fault.number);
         if let Some(hr) = fault.hresult {
             message.push_str(&format!(" (HRESULT {:#010X})", hr as u32));
@@ -1326,7 +1326,9 @@ impl StandardHostServices {
         // Recover the real VBA Err.Number (and description) the COM server
         // raised before `failure` is consumed by `render()`.
         let vba_error_number = failure.vba_error_number();
-        let vba_description = failure.vba_description().map(str::to_string);
+        let vba_description = failure
+            .vba_description()
+            .map(calcvba_runtime::Utf16String::to_string_lossy);
         let mut error_info = failure
             .excep
             .as_ref()
@@ -1342,7 +1344,11 @@ impl StandardHostServices {
         // retain their existing diagnostic until their system-message lane exists.
         if failure.hr.is_some() && vba_error_number > 0 {
             let info = error_info.get_or_insert_with(Default::default);
-            if info.description.as_deref().is_none_or(str::is_empty) {
+            if info
+                .description
+                .as_ref()
+                .is_none_or(calcvba_runtime::Utf16String::is_empty)
+            {
                 info.description =
                     Some(calcvba_runtime::default_error_message(vba_error_number).into());
             }
@@ -4182,8 +4188,10 @@ mod tests {
         assert_eq!(
             err.host_error_info
                 .as_ref()
-                .and_then(|info| info.description.as_deref()),
-            Some("controlled dispatch exception"),
+                .and_then(|info| info.description.as_ref()),
+            Some(&calcvba_runtime::Utf16String::from(
+                "controlled dispatch exception"
+            )),
             "{}",
             err.message
         );

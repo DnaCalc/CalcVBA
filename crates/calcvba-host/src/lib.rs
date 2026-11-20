@@ -1165,8 +1165,8 @@ fn vm_error(error: calcvba_vm3::Vm3Error) -> Error {
         calcvba_vm3::Vm3Error::BudgetExceeded => Error::BudgetExceeded,
         calcvba_vm3::Vm3Error::Fault(f) => Error::Runtime {
             number: f.code,
-            description: f.message,
-            vba_source: f.source.unwrap_or_default(),
+            description: f.message.to_string_lossy(),
+            vba_source: f.source.map(|s| s.to_string_lossy()).unwrap_or_default(),
         },
         other => Error::Backend(other.to_string()),
     }

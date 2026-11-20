@@ -171,10 +171,14 @@ mod native {
             number,
             description: info
                 .as_ref()
-                .and_then(|e| e.description.clone())
+                .and_then(|e| e.description.as_ref().map(|s| s.to_string_lossy()))
                 .unwrap_or_else(|| calcvba_runtime::default_error_message(number).into()),
-            source: info.as_ref().and_then(|e| e.source.clone()),
-            help_file: info.as_ref().and_then(|e| e.help_file.clone()),
+            source: info
+                .as_ref()
+                .and_then(|e| e.source.as_ref().map(|s| s.to_string_lossy())),
+            help_file: info
+                .as_ref()
+                .and_then(|e| e.help_file.as_ref().map(|s| s.to_string_lossy())),
             help_context: info.and_then(|e| e.help_context).map(|n| n as i32),
         }
     }

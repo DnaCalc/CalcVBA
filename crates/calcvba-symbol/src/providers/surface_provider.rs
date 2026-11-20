@@ -310,6 +310,16 @@ impl Provider for SurfaceProvider {
         }
     }
 
+    fn resolve_extern_class_identity(&self, name: &str) -> Option<(String, String)> {
+        let ty = self.type_by_name(name)?;
+        match ty.kind {
+            SurfaceTypeKind::Coclass { .. } => {
+                Some((self.surface.project_name.clone(), ty.name.clone()))
+            }
+            _ => None,
+        }
+    }
+
     fn resolve_extern_predeclared(&self, name: &str) -> Option<(String, String)> {
         // A bare class name (`ThisWorkbook`) or project-qualified (`Host.ThisWorkbook`)
         // naming a `VB_PredeclaredId` coclass → its singleton in this project's bundle.

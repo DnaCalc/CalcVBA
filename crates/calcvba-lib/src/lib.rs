@@ -31,34 +31,36 @@ pub use pure::{cstr as convert_to_string, var_type as variant_type_code};
 use calcvba_bundle::NativeImplId;
 use calcvba_hal::{HalError, HostServices};
 use calcvba_runtime::variant::VarType as Vt;
-use calcvba_runtime::{Variant, coerce::coerce_to, variant::VarType, variant_to_vba_string};
+use calcvba_runtime::{
+    Utf16String, Variant, coerce::coerce_to, variant::VarType, variant_to_vba_string,
+};
 
 /// A VBA run-time error raised by a library body (number + message).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LibError {
     pub code: i32,
-    pub message: String,
+    pub message: Utf16String,
 }
 
 pub type LibResult<T> = Result<T, LibError>;
 
 impl LibError {
-    pub fn new(code: i32, message: impl Into<String>) -> Self {
+    pub fn new(code: i32, message: impl Into<Utf16String>) -> Self {
         Self {
             code,
             message: message.into(),
         }
     }
     /// Run-time error 13 — Type mismatch.
-    pub fn type_mismatch(message: impl Into<String>) -> Self {
+    pub fn type_mismatch(message: impl Into<Utf16String>) -> Self {
         Self::new(13, message)
     }
     /// Run-time error 6 — Overflow.
-    pub fn overflow(_detail: impl Into<String>) -> Self {
+    pub fn overflow(_detail: impl Into<Utf16String>) -> Self {
         Self::new(6, "Overflow")
     }
     /// Run-time error 5 — Invalid procedure call or argument.
-    pub fn invalid_call(message: impl Into<String>) -> Self {
+    pub fn invalid_call(message: impl Into<Utf16String>) -> Self {
         Self::new(5, message)
     }
     /// Run-time error 94 — Invalid use of Null.
@@ -87,7 +89,7 @@ impl From<HalError> for LibError {
                 code,
                 err.host_error_info
                     .and_then(|info| info.description)
-                    .unwrap_or(err.message),
+                    .unwrap_or_else(|| err.message.into()),
             ),
             None => LibError::invalid_call(format!("{err:?}")),
         }

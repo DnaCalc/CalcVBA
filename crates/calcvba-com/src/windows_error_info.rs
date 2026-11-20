@@ -2,7 +2,7 @@
 //! every Windows target.
 #![cfg(target_os = "windows")]
 
-use crate::windows_invoke::{ComInvokeExceptionInfo, bstr_to_string_and_free};
+use crate::windows_invoke::{ComInvokeExceptionInfo, bstr_to_utf16_and_free};
 use std::ffi::c_void;
 
 // ── IErrorInfo + Get/SetErrorInfo ──
@@ -78,21 +78,21 @@ pub(crate) fn take_error_info() -> Option<ComInvokeExceptionInfo> {
 
         let mut source_bstr: windows_sys::core::BSTR = std::ptr::null_mut();
         let source = if (vtbl.get_source)(perrinfo, &mut source_bstr) >= 0 {
-            bstr_to_string_and_free(source_bstr)
+            bstr_to_utf16_and_free(source_bstr)
         } else {
             None
         };
 
         let mut description_bstr: windows_sys::core::BSTR = std::ptr::null_mut();
         let description = if (vtbl.get_description)(perrinfo, &mut description_bstr) >= 0 {
-            bstr_to_string_and_free(description_bstr)
+            bstr_to_utf16_and_free(description_bstr)
         } else {
             None
         };
 
         let mut help_file_bstr: windows_sys::core::BSTR = std::ptr::null_mut();
         let help_file = if (vtbl.get_help_file)(perrinfo, &mut help_file_bstr) >= 0 {
-            bstr_to_string_and_free(help_file_bstr)
+            bstr_to_utf16_and_free(help_file_bstr)
         } else {
             None
         };

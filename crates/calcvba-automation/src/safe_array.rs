@@ -419,6 +419,375 @@ mod sys {
     }
 }
 
+/// Portable `FADF_RECORD` `SAFEARRAY` primitives backing [`crate::oleaut`] off Windows.
+///
+/// Mirrors oleaut32's exact descriptor layout (`IRecordInfo*` in the last pointer-sized slot
+/// of the 16 hidden bytes before the `SAFEARRAY` header, `rgsabound` stored rightmost dimension
+/// first, `pvData` allocated via `sys::alloc_data`) and drives the `IRecordInfo` COM vtable
+/// (`AddRef`, `Release`, `RecordInit`, `RecordClear`, `RecordCopy`, `GetSize`). These descriptors
+/// are foreign/Automation allocations (not tracked in `live_counters::safearray_*`, matching
+/// `oleaut32!SafeArrayCreateEx` / `SafeArrayDestroy` on Windows).
+#[cfg(not(windows))]
+pub(crate) mod record_oleaut {
+    use super::{
+        FADF_RECORD_VALUE, HIDDEN_SIZE, MAX_SAFEARRAY_RANK, RawSafeArray, SafeArrayBound,
+        VT_RECORD_VALUE, bounds_total_len, element_index, hidden_bytes, raw_bounds_slice, sys,
+    };
+    use core::ffi::c_void;
+
+    const S_OK: i32 = 0;
+    const E_INVALIDARG: i32 = 0x8007_0057_u32 as i32;
+    const E_OUTOFMEMORY: i32 = 0x8007_000E_u32 as i32;
+    const DISP_E_BADINDEX: i32 = 0x8002_000B_u32 as i32;
+    const DISP_E_ARRAYISLOCKED: i32 = 0x8002_000D_u32 as i32;
+
+    /// Prefix of the COM `IRecordInfo` vtable (slots 0..=8).
+    #[repr(C)]
+    struct RecordInfoVtbl {
+        query_interface: *const c_void,
+        add_ref: unsafe extern "system" fn(this: *mut c_void) -> u32,
+        release: unsafe extern "system" fn(this: *mut c_void) -> u32,
+        record_init: unsafe extern "system" fn(this: *mut c_void, pvnew: *mut c_void) -> i32,
+        record_clear:
+            unsafe extern "system" fn(this: *mut c_void, pvexisting: *const c_void) -> i32,
+        record_copy: unsafe extern "system" fn(
+            this: *mut c_void,
+            pvexisting: *const c_void,
+            pvnew: *mut c_void,
+        ) -> i32,
+        get_guid: *const c_void,
+        get_name: *const c_void,
+        get_size: unsafe extern "system" fn(this: *mut c_void, pcbsize: *mut u32) -> i32,
+    }
+
+    unsafe fn vtbl(info: *mut c_void) -> &'static RecordInfoVtbl {
+        // SAFETY: `info` is a live COM `IRecordInfo` pointer whose first field is its vtable.
+        unsafe { &*(*info.cast::<*const RecordInfoVtbl>()) }
+    }
+
+    unsafe fn record_info_slot(header: *const RawSafeArray) -> *mut *mut c_void {
+        // SAFETY: `HIDDEN_SIZE` (16) bytes precede every descriptor; `FADF_RECORD` stores
+        // `IRecordInfo*` in the last pointer-sized slot immediately before `header`.
+        unsafe {
+            hidden_bytes(header)
+                .add(HIDDEN_SIZE - core::mem::size_of::<*mut c_void>())
+                .cast::<*mut c_void>()
+        }
+    }
+
+    /// True when `raw` is a non-null `SAFEARRAY` with `FADF_RECORD` set.
+    pub(crate) unsafe fn is_record_array(raw: *const c_void) -> bool {
+        if raw.is_null() {
+            return false;
+        }
+        // SAFETY: caller passes a live descriptor.
+        unsafe { ((*raw.cast::<RawSafeArray>()).f_features & FADF_RECORD_VALUE) != 0 }
+    }
+
+    /// `SafeArrayCreateEx(VT_RECORD, dims, bounds, pvExtra)`.
+    pub(crate) unsafe fn create_ex(
+        vt: u16,
+        dims: u32,
+        bounds: *const SafeArrayBound,
+        extra: *mut c_void,
+    ) -> *mut c_void {
+        if vt != VT_RECORD_VALUE
+            || extra.is_null()
+            || bounds.is_null()
+            || dims == 0
+            || dims as usize > MAX_SAFEARRAY_RANK
+        {
+            return core::ptr::null_mut();
+        }
+        let mut cb_elements = 0u32;
+        // SAFETY: `extra` is a live `IRecordInfo`; `GetSize` writes the record byte width.
+        let hr = unsafe { (vtbl(extra).get_size)(extra, &mut cb_elements) };
+        if hr < 0 {
+            return core::ptr::null_mut();
+        }
+        // SAFETY: caller supplies `dims` contiguous `SafeArrayBound` entries (dim 1 first).
+        let bounds_slice = unsafe { core::slice::from_raw_parts(bounds, dims as usize) };
+        let Ok(len) = bounds_total_len(bounds_slice) else {
+            return core::ptr::null_mut();
+        };
+        if len.checked_mul(cb_elements as usize).is_none() {
+            return core::ptr::null_mut();
+        }
+        let Some(header) = sys::alloc_descriptor(dims as u16, None) else {
+            return core::ptr::null_mut();
+        };
+        // SAFETY: `header` is a fresh zeroed descriptor with `HIDDEN_SIZE` prefix and `dims` bounds.
+        unsafe {
+            (*header).f_features = FADF_RECORD_VALUE;
+            (*header).cb_elements = cb_elements;
+            (*header).c_locks = 0;
+            (*header).pv_data = core::ptr::null_mut();
+            // Store `rgsabound` rightmost dimension first, matching oleaut32.
+            let dst = core::ptr::addr_of_mut!((*header).rgsabound).cast::<SafeArrayBound>();
+            for (slot, bound) in bounds_slice.iter().rev().enumerate() {
+                dst.add(slot).write(*bound);
+            }
+            (vtbl(extra).add_ref)(extra);
+            record_info_slot(header).write(extra);
+        }
+        if len > 0 {
+            // SAFETY: `header` has bounds and `cb_elements` set and null `pv_data`.
+            if !unsafe { sys::alloc_data(header) } {
+                // SAFETY: undo the retained `IRecordInfo` reference and free descriptor.
+                unsafe {
+                    (vtbl(extra).release)(extra);
+                    sys::destroy(header);
+                }
+                return core::ptr::null_mut();
+            }
+            // SAFETY: `pv_data` holds `len * cb_elements` bytes; initialize each record slot.
+            unsafe {
+                let data = (*header).pv_data.cast::<u8>();
+                let stride = cb_elements as usize;
+                for index in 0..len {
+                    let elem = data.add(index * stride).cast::<c_void>();
+                    if (vtbl(extra).record_init)(extra, elem) < 0 {
+                        for prev in 0..index {
+                            let _ = (vtbl(extra).record_clear)(
+                                extra,
+                                data.add(prev * stride).cast::<c_void>(),
+                            );
+                        }
+                        (vtbl(extra).release)(extra);
+                        sys::destroy(header);
+                        return core::ptr::null_mut();
+                    }
+                }
+            }
+        }
+        header.cast()
+    }
+
+    pub(crate) unsafe fn get_dim(raw: *const c_void) -> u32 {
+        if raw.is_null() {
+            return 0;
+        }
+        // SAFETY: caller passes a live descriptor.
+        u32::from(unsafe { (*raw.cast::<RawSafeArray>()).c_dims })
+    }
+
+    pub(crate) unsafe fn get_elemsize(raw: *const c_void) -> u32 {
+        if raw.is_null() {
+            return 0;
+        }
+        // SAFETY: caller passes a live descriptor.
+        unsafe { (*raw.cast::<RawSafeArray>()).cb_elements }
+    }
+
+    pub(crate) unsafe fn get_lbound(raw: *const c_void, dim: u32, out: *mut i32) -> i32 {
+        if raw.is_null() || out.is_null() {
+            return E_INVALIDARG;
+        }
+        let header = raw.cast::<RawSafeArray>();
+        // SAFETY: live descriptor; `raw_bounds_slice` lists rightmost dim first.
+        let bounds = unsafe { raw_bounds_slice(header) };
+        let dim = dim as usize;
+        if dim == 0 || dim > bounds.len() {
+            return DISP_E_BADINDEX;
+        }
+        // SAFETY: `out` is a valid writable `i32`.
+        unsafe { out.write(bounds[bounds.len() - dim].lower) };
+        S_OK
+    }
+
+    pub(crate) unsafe fn get_ubound(raw: *const c_void, dim: u32, out: *mut i32) -> i32 {
+        if raw.is_null() || out.is_null() {
+            return E_INVALIDARG;
+        }
+        let header = raw.cast::<RawSafeArray>();
+        // SAFETY: live descriptor; `raw_bounds_slice` lists rightmost dim first.
+        let bounds = unsafe { raw_bounds_slice(header) };
+        let dim = dim as usize;
+        if dim == 0 || dim > bounds.len() {
+            return DISP_E_BADINDEX;
+        }
+        let bound = bounds[bounds.len() - dim];
+        let Ok(upper) = i32::try_from(i64::from(bound.lower) + i64::from(bound.count) - 1) else {
+            return DISP_E_BADINDEX;
+        };
+        // SAFETY: `out` is a valid writable `i32`.
+        unsafe { out.write(upper) };
+        S_OK
+    }
+
+    pub(crate) unsafe fn get_record_info(raw: *const c_void, out: *mut *mut c_void) -> i32 {
+        if raw.is_null() || out.is_null() {
+            return E_INVALIDARG;
+        }
+        // SAFETY: caller passes a live descriptor.
+        if !unsafe { is_record_array(raw) } {
+            return E_INVALIDARG;
+        }
+        let header = raw.cast::<RawSafeArray>();
+        // SAFETY: `FADF_RECORD` stores `IRecordInfo*` at `record_info_slot`.
+        unsafe {
+            let info = record_info_slot(header).read();
+            if !info.is_null() {
+                (vtbl(info).add_ref)(info);
+            }
+            out.write(info);
+        }
+        S_OK
+    }
+
+    pub(crate) unsafe fn ptr_of_index(
+        raw: *mut c_void,
+        indices: *const i32,
+        out: *mut *mut c_void,
+    ) -> i32 {
+        if raw.is_null() || indices.is_null() || out.is_null() {
+            return E_INVALIDARG;
+        }
+        let header = raw.cast::<RawSafeArray>();
+        // SAFETY: live descriptor and `c_dims` caller indices (dim 1 first).
+        let (bounds, subscripts, data, cb_elements) = unsafe {
+            let mut bounds = raw_bounds_slice(header).to_vec();
+            bounds.reverse();
+            let raw_indices = core::slice::from_raw_parts(indices, bounds.len());
+            let subscripts: Vec<i64> = raw_indices.iter().copied().map(i64::from).collect();
+            (
+                bounds,
+                subscripts,
+                (*header).pv_data.cast::<u8>(),
+                (*header).cb_elements as usize,
+            )
+        };
+        let Some(flat) = element_index(&bounds, &subscripts) else {
+            return DISP_E_BADINDEX;
+        };
+        if data.is_null() {
+            return DISP_E_BADINDEX;
+        }
+        // SAFETY: `flat` is in bounds of `pv_data` (`len * cb_elements`).
+        unsafe { out.write(data.add(flat * cb_elements).cast()) };
+        S_OK
+    }
+
+    pub(crate) unsafe fn put_element(
+        raw: *mut c_void,
+        indices: *const i32,
+        value: *const c_void,
+    ) -> i32 {
+        if raw.is_null() || indices.is_null() || value.is_null() {
+            return E_INVALIDARG;
+        }
+        // SAFETY: live descriptor.
+        if !unsafe { is_record_array(raw) } {
+            return E_INVALIDARG;
+        }
+        let mut elem = core::ptr::null_mut();
+        // SAFETY: forwarded from caller.
+        let hr = unsafe { ptr_of_index(raw, indices, &mut elem) };
+        if hr < 0 {
+            return hr;
+        }
+        let header = raw.cast::<RawSafeArray>();
+        // SAFETY: `FADF_RECORD` owns a live `IRecordInfo*`; `RecordCopy` deep-copies `value` into `elem`.
+        unsafe {
+            let info = record_info_slot(header).read();
+            if info.is_null() {
+                return E_INVALIDARG;
+            }
+            (vtbl(info).record_copy)(info, value, elem)
+        }
+    }
+
+    pub(crate) unsafe fn destroy(raw: *mut c_void) -> i32 {
+        if raw.is_null() {
+            return S_OK;
+        }
+        // SAFETY: live descriptor.
+        if !unsafe { is_record_array(raw) } {
+            return E_INVALIDARG;
+        }
+        let header = raw.cast::<RawSafeArray>();
+        // SAFETY: caller transfers ownership of this live `FADF_RECORD` descriptor.
+        unsafe {
+            if (*header).c_locks > 0 {
+                return DISP_E_ARRAYISLOCKED;
+            }
+            let info = record_info_slot(header).read();
+            let data = (*header).pv_data.cast::<u8>();
+            let len = bounds_total_len(raw_bounds_slice(header)).unwrap_or(0);
+            let stride = (*header).cb_elements as usize;
+            if !data.is_null() && !info.is_null() {
+                for index in 0..len {
+                    let _ = (vtbl(info).record_clear)(info, data.add(index * stride).cast());
+                }
+            }
+            if !info.is_null() {
+                (vtbl(info).release)(info);
+            }
+            sys::destroy(header);
+        }
+        S_OK
+    }
+
+    pub(crate) unsafe fn copy(raw: *mut c_void, out: *mut *mut c_void) -> i32 {
+        if out.is_null() {
+            return E_INVALIDARG;
+        }
+        if raw.is_null() {
+            // SAFETY: writable out slot.
+            unsafe { out.write(core::ptr::null_mut()) };
+            return S_OK;
+        }
+        // SAFETY: live descriptor.
+        if !unsafe { is_record_array(raw) } {
+            return E_INVALIDARG;
+        }
+        let header = raw.cast::<RawSafeArray>();
+        // SAFETY: read source descriptor metadata and retained `IRecordInfo`.
+        let (info, bounds, len, stride, src_data) = unsafe {
+            let info = record_info_slot(header).read();
+            let mut bounds = raw_bounds_slice(header).to_vec();
+            bounds.reverse();
+            let len = bounds_total_len(&bounds).unwrap_or(0);
+            (
+                info,
+                bounds,
+                len,
+                (*header).cb_elements as usize,
+                (*header).pv_data.cast::<u8>(),
+            )
+        };
+        if info.is_null() {
+            return E_INVALIDARG;
+        }
+        // SAFETY: `info` and `bounds` match the live source array.
+        let copy =
+            unsafe { create_ex(VT_RECORD_VALUE, bounds.len() as u32, bounds.as_ptr(), info) };
+        if copy.is_null() {
+            return E_OUTOFMEMORY;
+        }
+        if len > 0 && !src_data.is_null() {
+            // SAFETY: both `src_data` and `dst_data` hold `len * stride` initialized record slots.
+            unsafe {
+                let dst_data = (*copy.cast::<RawSafeArray>()).pv_data.cast::<u8>();
+                for index in 0..len {
+                    let hr = (vtbl(info).record_copy)(
+                        info,
+                        src_data.add(index * stride).cast(),
+                        dst_data.add(index * stride).cast(),
+                    );
+                    if hr < 0 {
+                        let _ = destroy(copy);
+                        return hr;
+                    }
+                }
+            }
+        }
+        // SAFETY: writable out slot.
+        unsafe { out.write(copy) };
+        S_OK
+    }
+}
+
 fn default_bounds_for_len(len: usize) -> Result<Vec<SafeArrayBound>, String> {
     Ok(vec![SafeArrayBound {
         count: u32::try_from(len).map_err(|_| {
@@ -1281,6 +1650,44 @@ impl SafeArray {
         self
     }
 
+    /// The 16-byte interface IID stored at `psa - 16` when `FADF_HAVEIID` is set
+    /// (`SafeArrayGetIID`).
+    pub fn iid(&self) -> Option<[u8; 16]> {
+        if self.feature_flags() & FADF_HAVEIID_VALUE == 0 {
+            return None;
+        }
+        let mut out = [0u8; HIDDEN_SIZE];
+        // SAFETY: `self.header` is a live descriptor with its 16 hidden prefix bytes.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                hidden_bytes(self.header.as_ptr()),
+                out.as_mut_ptr(),
+                HIDDEN_SIZE,
+            );
+        }
+        Some(out)
+    }
+
+    /// Write the 16-byte interface IID at `psa - 16` when `FADF_HAVEIID` is set
+    /// (`SafeArraySetIID`).
+    pub fn set_iid(&mut self, iid: [u8; 16]) {
+        if self.feature_flags() & FADF_HAVEIID_VALUE == 0 {
+            return;
+        }
+        // SAFETY: `&mut self` gives exclusive access to this live descriptor and its
+        // 16 hidden prefix bytes.
+        unsafe {
+            hidden_bytes(self.header.as_ptr()).copy_from_nonoverlapping(iid.as_ptr(), HIDDEN_SIZE);
+        }
+    }
+
+    /// Consume `self`, writing its `FADF_HAVEIID` interface IID.
+    #[must_use]
+    pub fn with_iid(mut self, iid: [u8; 16]) -> Self {
+        self.set_iid(iid);
+        self
+    }
+
     fn element_kind(&self) -> Option<SafeArrayElementKind> {
         if self.record.is_some() {
             return None;
@@ -1519,6 +1926,7 @@ impl SafeArray {
         if !same_record
             || self.dimensions() != other.dimensions()
             || self.element_vartype() != other.element_vartype()
+            || self.iid() != other.iid()
             || element_size_of(self) != element_size_of(other)
         {
             return false;
@@ -3365,6 +3773,35 @@ mod tests {
             unknown.feature_flags(),
             super::FADF_HAVEIID_VALUE | FADF_UNKNOWN_VALUE
         );
+        assert_eq!(
+            dispatch.iid(),
+            Some(crate::com::IID_IDISPATCH.to_le_bytes())
+        );
+        assert_eq!(unknown.iid(), Some(crate::com::IID_IUNKNOWN.to_le_bytes()));
+        assert_eq!(bstr.iid(), None);
+
+        let custom_iid = crate::com::IID_VBA_COLLECTION.to_le_bytes();
+        let mut classed =
+            SafeArray::from_typed_variants(VT_DISPATCH_VALUE, vec![Variant::nothing()])
+                .expect("typed dispatch array")
+                .with_iid(custom_iid);
+        assert_eq!(classed.iid(), Some(custom_iid));
+        assert_eq!(classed.clone().iid(), Some(custom_iid));
+
+        let mut other_same = SafeArray::from_typed_variants(
+            VT_DISPATCH_VALUE,
+            vec![Variant::nothing(), Variant::nothing()],
+        )
+        .expect("typed dispatch array")
+        .with_iid(custom_iid);
+        assert!(classed.swap_storage(&mut other_same));
+        assert_eq!(classed.iid(), Some(custom_iid));
+        assert_eq!(classed.len(), 2);
+
+        let mut other_diff =
+            SafeArray::from_typed_variants(VT_DISPATCH_VALUE, vec![Variant::nothing()])
+                .expect("typed dispatch array");
+        assert!(!classed.swap_storage(&mut other_diff));
     }
 
     #[test]

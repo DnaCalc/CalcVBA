@@ -463,7 +463,7 @@ pub(crate) fn is_m4_4_dynamic_array_ty_for_element(ty: &OxTy, element: &ArrayEle
         ArrayElementType::Byte => is_m4_4_dynamic_byte_array_ty(ty),
         ArrayElementType::Boolean => is_m4_4_dynamic_boolean_array_ty(ty),
         // Object and class arrays are `VT_DISPATCH` arrays.
-        ArrayElementType::Object => matches!(
+        ArrayElementType::Object | ArrayElementType::Interface(_) => matches!(
             ty,
             OxTy::Array(slot, ArrayShape::Dynamic) if matches!(slot.as_ref(), OxTy::Object(_))
         ),
@@ -495,7 +495,7 @@ pub(crate) fn is_m4_4_fixed_array_ty_for_element(ty: &OxTy, element: &ArrayEleme
         ArrayElementType::Integer => is_m4_4_fixed_integer_array_ty(ty),
         ArrayElementType::Byte => is_m4_4_fixed_byte_array_ty(ty),
         ArrayElementType::Boolean => is_m4_4_fixed_boolean_array_ty(ty),
-        ArrayElementType::Object => matches!(
+        ArrayElementType::Object | ArrayElementType::Interface(_) => matches!(
             ty,
             OxTy::Array(slot, ArrayShape::Fixed { .. }) if matches!(slot.as_ref(), OxTy::Object(_))
         ),

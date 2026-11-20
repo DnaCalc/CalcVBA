@@ -748,9 +748,15 @@ unsafe fn invoke_dispatch_arguments(
         };
         fault.number = failure.vba_error_number();
         if let Some(info) = failure.excep {
-            fault.description = info.description.unwrap_or(fault.description);
-            fault.source = info.source.or(fault.source);
-            fault.help_file = info.help_file.or(fault.help_file);
+            fault.description = info
+                .description
+                .map(|s| s.to_string_lossy())
+                .unwrap_or(fault.description);
+            fault.source = info.source.map(|s| s.to_string_lossy()).or(fault.source);
+            fault.help_file = info
+                .help_file
+                .map(|s| s.to_string_lossy())
+                .or(fault.help_file);
             fault.help_context = info.help_context.map(|v| v as i32).or(fault.help_context);
         }
         fault

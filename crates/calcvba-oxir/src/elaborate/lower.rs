@@ -947,7 +947,10 @@ impl<'a> Lowerer<'a> {
                 Box::new(self.ox_ty_for_array_element(element)),
                 ArrayShape::Dynamic,
             );
-        } else if matches!(field, ArrayElementType::Object) {
+        } else if matches!(
+            field,
+            ArrayElementType::Object | ArrayElementType::Interface(_)
+        ) {
             // An object field holds an interface pointer: reading it yields an object reference.
             return OxTy::Object(ObjClass::Untyped);
         }
@@ -983,6 +986,7 @@ impl<'a> Lowerer<'a> {
                 .map_or(OxTy::Variant, |index| OxTy::Record(RecordLayoutId(index))),
             ArrayElementType::Variant
             | ArrayElementType::Object
+            | ArrayElementType::Interface(_)
             | ArrayElementType::DynamicArray(_)
             | ArrayElementType::FixedArray { .. } => OxTy::Variant,
         }
@@ -3687,7 +3691,9 @@ impl<'a> Lowerer<'a> {
                     )
                 })
             }
-            Shape::Field(ArrayElementType::Object) => Some(OxTy::Object(ObjClass::Untyped)),
+            Shape::Field(ArrayElementType::Object | ArrayElementType::Interface(_)) => {
+                Some(OxTy::Object(ObjClass::Untyped))
+            }
             Shape::Field(element) => Some(self.ox_ty_for_array_element(&element)),
         }
     }

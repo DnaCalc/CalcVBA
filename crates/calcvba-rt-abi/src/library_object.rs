@@ -1,7 +1,7 @@
 //! Calls on the owning runtime's ErrObject, shared by VM3 and compiled code.
 use crate::{ExecState, Fault, RaiseFields, arith};
 use calcvba_bundle::{NumericCoerceTarget, ProjectMemberKind};
-use calcvba_runtime::{ObjectRef, Variant, variant::VarType};
+use calcvba_runtime::{ObjectRef, Utf16String, Variant, variant::VarType};
 
 /// Built-in object dispatch. This uses the active runtime's error state directly;
 /// aliases of Err never hold a stale copy of Number or Description.
@@ -53,12 +53,10 @@ pub fn invoke_library_object(
         return Ok(match field {
             crate::RT_ERR_FIELD_NUMBER => Variant::from_i32(exec.err_engine.err.number),
             crate::RT_ERR_FIELD_DESCRIPTION => {
-                Variant::from_string(exec.err_engine.err.description.clone())
+                Variant::from_string(&exec.err_engine.err.description)
             }
-            crate::RT_ERR_FIELD_SOURCE => Variant::from_string(exec.err_engine.err.source.clone()),
-            crate::RT_ERR_FIELD_HELP_FILE => {
-                Variant::from_string(exec.err_engine.err.help_file.clone())
-            }
+            crate::RT_ERR_FIELD_SOURCE => Variant::from_string(&exec.err_engine.err.source),
+            crate::RT_ERR_FIELD_HELP_FILE => Variant::from_string(&exec.err_engine.err.help_file),
             crate::RT_ERR_FIELD_HELP_CONTEXT => Variant::from_i32(exec.err_engine.err.help_context),
             crate::RT_ERR_FIELD_LAST_DLL_ERROR => Variant::from_i32(exec.err_engine.last_dll_error),
             _ => unreachable!(),
@@ -103,14 +101,8 @@ pub fn invoke_library_object(
                 .map_err(Fault::from_arith)?
                 .as_i32()
                 .unwrap_or(0);
-            let string = |index: usize| -> Result<Option<String>, Fault> {
-                ordered[index]
-                    .map(|value| {
-                        arith::coerce_string(value)
-                            .map(|s| arith::as_string(&s))
-                            .map_err(Fault::from_arith)
-                    })
-                    .transpose()
+            let string = |index: usize| -> Result<Option<Utf16String>, Fault> {
+                ordered[index].map(crate::coerced_string_utf16).transpose()
             };
             let fields = RaiseFields {
                 source: string(1)?,

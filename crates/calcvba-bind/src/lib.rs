@@ -1068,9 +1068,11 @@ impl Lower<'_> {
     /// elements map to their scalar tag; a **UDT element** becomes a recursive
     /// [`ArrayElementType::Record`] carrying each field's layout (so the VM seeds a
     /// default record per element, recursing into nested scalar-UDT subfields). A
-    /// field that is itself an *array* (of UDT or otherwise) stays `Variant` —
-    /// unallocated until its own `ReDim`. The recursion terminates because VBA
-    /// forbids by-value self-referential UDTs.
+    /// class- or interface-typed object element carries its COM interface IID
+    /// ([`ArrayElementType::Interface`]) so the SAFEARRAY carries that IID at `psa - 16`
+    /// rather than `IID_IDispatch`. A field that is itself an *array* (of UDT or
+    /// otherwise) stays `Variant` — unallocated until its own `ReDim`. The recursion
+    /// terminates because VBA forbids by-value self-referential UDTs.
     fn array_element_layout(&self, elem: &VarTypeRef) -> calcvba_bundle::ArrayElementType {
         match self.resolve_udt_type(elem.clone()) {
             VarTypeRef::Udt(udt) => {
@@ -1084,6 +1086,9 @@ impl Lower<'_> {
                     })
                     .unwrap_or_default();
                 calcvba_bundle::ArrayElementType::Record(fields)
+            }
+            VarTypeRef::Object(name) => {
+                resolve_object_array_element(self.env, self.manifest, &name)
             }
             other => crate::types::array_element_of_with(self.type_ctx, &other),
         }
@@ -1105,12 +1110,108 @@ impl Lower<'_> {
                 }
             }
             // VBA stores these UDT fields as pointers: an interface pointer and a SAFEARRAY*.
-            VarTypeRef::Object(_) => calcvba_bundle::ArrayElementType::Object,
+            VarTypeRef::Object(name) => {
+                resolve_object_array_element(self.env, self.manifest, &name)
+            }
             VarTypeRef::Array(element) => calcvba_bundle::ArrayElementType::DynamicArray(Box::new(
                 self.array_field_layout(&element),
             )),
             other => crate::types::array_element_of_with(self.type_ctx, &other),
         }
+    }
+
+    fn array_element_for_var_type(
+        &self,
+        ty: &VarTypeRef,
+    ) -> Option<calcvba_bundle::ArrayElementType> {
+        match ty {
+            VarTypeRef::Array(inner) => Some(self.array_element_layout(inner)),
+            VarTypeRef::FixedArray { element, .. } => Some(self.array_element_layout(element)),
+            _ => None,
+        }
+    }
+}
+
+/// Resolve an object element type name (`Object`, `Collection`, a project class, an
+/// imported COM interface, or a referenced project class) to `ArrayElementType::Object`
+/// (`IID_IDispatch`) or `ArrayElementType::Interface(iid)`.
+pub(crate) fn resolve_object_array_element(
+    env: &ResolutionEnvironment,
+    manifest: &SymbolProjectManifest,
+    name: &str,
+) -> calcvba_bundle::ArrayElementType {
+    use calcvba_runtime::com::{Guid, IID_IDISPATCH, IID_VBA_COLLECTION};
+    if name.eq_ignore_ascii_case("Object") {
+        return calcvba_bundle::ArrayElementType::Object;
+    }
+    let active_class_name = match name.split_once('.') {
+        Some((project, class)) if project.eq_ignore_ascii_case(&manifest.project_name) => {
+            Some(class)
+        }
+        Some(_) => None,
+        None => Some(name),
+    };
+    if let Some(candidate) = active_class_name {
+        for module in &manifest.modules {
+            if let Some(canonical) = ids::class_name_for(manifest, &module.module_name)
+                && canonical.eq_ignore_ascii_case(candidate)
+            {
+                let iid = Guid::deterministic(&manifest.project_name, &format!("I{canonical}"))
+                    .to_le_bytes();
+                return calcvba_bundle::ArrayElementType::Interface(iid);
+            }
+        }
+    }
+    if let Some(iid) = env.object_interface(name).and_then(|meta| meta.iid) {
+        let mut bytes = [0u8; 16];
+        bytes[..4].copy_from_slice(&iid.data1.to_le_bytes());
+        bytes[4..6].copy_from_slice(&iid.data2.to_le_bytes());
+        bytes[6..8].copy_from_slice(&iid.data3.to_le_bytes());
+        bytes[8..].copy_from_slice(&iid.data4);
+        if bytes == IID_IDISPATCH.to_le_bytes() {
+            return calcvba_bundle::ArrayElementType::Object;
+        }
+        return calcvba_bundle::ArrayElementType::Interface(bytes);
+    }
+    if let Some((unit, class)) = env.resolve_extern_class_identity(name) {
+        if unit.eq_ignore_ascii_case("VBA") && class.eq_ignore_ascii_case("Collection") {
+            return calcvba_bundle::ArrayElementType::Interface(IID_VBA_COLLECTION.to_le_bytes());
+        }
+        let iid = Guid::deterministic(&unit, &format!("I{class}")).to_le_bytes();
+        return calcvba_bundle::ArrayElementType::Interface(iid);
+    }
+    calcvba_bundle::ArrayElementType::Object
+}
+
+pub(crate) fn array_element_in_env(
+    ctx: types::TypeContext,
+    env: &ResolutionEnvironment,
+    manifest: &SymbolProjectManifest,
+    ty: &VarTypeRef,
+) -> Option<calcvba_bundle::ArrayElementType> {
+    fn of(
+        ctx: types::TypeContext,
+        env: &ResolutionEnvironment,
+        manifest: &SymbolProjectManifest,
+        elem: &VarTypeRef,
+    ) -> calcvba_bundle::ArrayElementType {
+        match elem {
+            VarTypeRef::Object(name) if !env.is_udt(name) && !env.is_enum_type(name) => {
+                resolve_object_array_element(env, manifest, name)
+            }
+            VarTypeRef::FixedArray { element, bounds } => {
+                calcvba_bundle::ArrayElementType::FixedArray {
+                    element: Box::new(of(ctx, env, manifest, element)),
+                    bounds: bounds.clone(),
+                }
+            }
+            other => types::array_element_of_with(ctx, other),
+        }
+    }
+    match ty {
+        VarTypeRef::Array(inner) => Some(of(ctx, env, manifest, inner)),
+        VarTypeRef::FixedArray { element, .. } => Some(of(ctx, env, manifest, element)),
+        _ => None,
     }
 }
 

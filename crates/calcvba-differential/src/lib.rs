@@ -504,8 +504,11 @@ pub fn run_ox_programs(executor: Executor, programs: &[calcvba_oxir::OxProgram])
                         result: Err(format!("VBA error {}", fault.code)),
                         err: FinalErr {
                             number: fault.code,
-                            source: fault.source.unwrap_or(entry_unit),
-                            description: fault.message,
+                            source: fault
+                                .source
+                                .map(|s| s.to_string_lossy())
+                                .unwrap_or(entry_unit),
+                            description: fault.message.to_string_lossy(),
                             last_dll_error: 0,
                         },
                         raised: true,

@@ -59,7 +59,7 @@ pub(crate) struct Imports {
     pub(crate) validate_assignment: ClifFuncId,
     pub(crate) err_clear: ClifFuncId,
     pub(crate) err_i32_field: ClifFuncId,
-    pub(crate) err_string_field_utf8: ClifFuncId,
+    pub(crate) err_string_field_utf16: ClifFuncId,
     pub(crate) erl_get: ClifFuncId,
     pub(crate) err_set_field: ClifFuncId,
     pub(crate) set_line_number: ClifFuncId,
@@ -292,8 +292,8 @@ pub(crate) fn register_symbols(builder: &mut JITBuilder) {
     builder.symbol("rt_err_clear", rt_err_clear as *const u8);
     builder.symbol("rt_err_i32_field", rt_err_i32_field as *const u8);
     builder.symbol(
-        "rt_err_string_field_utf8",
-        rt_err_string_field_utf8 as *const u8,
+        "rt_err_string_field_utf16",
+        rt_err_string_field_utf16 as *const u8,
     );
     builder.symbol("rt_erl_get", rt_erl_get as *const u8);
     builder.symbol("rt_jit_err_field_set", rt_jit_err_field_set as *const u8);
@@ -1217,21 +1217,27 @@ pub(crate) fn declare_imports(module: &mut impl Module) -> Result<Imports, JitEr
         .declare_function("rt_err_i32_field", Linkage::Import, &err_i32_field_sig)
         .map_err(module_err)?;
 
-    let mut err_string_field_utf8_sig = module.make_signature();
-    err_string_field_utf8_sig.params.push(AbiParam::new(ptr_ty));
-    err_string_field_utf8_sig
+    let mut err_string_field_utf16_sig = module.make_signature();
+    err_string_field_utf16_sig
+        .params
+        .push(AbiParam::new(ptr_ty));
+    err_string_field_utf16_sig
         .params
         .push(AbiParam::new(types::I32));
-    err_string_field_utf8_sig.params.push(AbiParam::new(ptr_ty));
-    err_string_field_utf8_sig.params.push(AbiParam::new(ptr_ty));
-    err_string_field_utf8_sig
+    err_string_field_utf16_sig
+        .params
+        .push(AbiParam::new(ptr_ty));
+    err_string_field_utf16_sig
+        .params
+        .push(AbiParam::new(ptr_ty));
+    err_string_field_utf16_sig
         .returns
         .push(AbiParam::new(types::I32));
-    let err_string_field_utf8 = module
+    let err_string_field_utf16 = module
         .declare_function(
-            "rt_err_string_field_utf8",
+            "rt_err_string_field_utf16",
             Linkage::Import,
-            &err_string_field_utf8_sig,
+            &err_string_field_utf16_sig,
         )
         .map_err(module_err)?;
 
@@ -2286,7 +2292,7 @@ pub(crate) fn declare_imports(module: &mut impl Module) -> Result<Imports, JitEr
         validate_assignment,
         err_clear,
         err_i32_field,
-        err_string_field_utf8,
+        err_string_field_utf16,
         erl_get,
         err_set_field,
         set_line_number,
@@ -4705,7 +4711,7 @@ pub(crate) unsafe extern "C" fn raise_values(
         let text = |index: usize| {
             values[index].as_ref().map(|value| {
                 calcvba_runtime::variant_to_vba_string(value)
-                    .map(|s| s.as_str())
+                    .map(|s| calcvba_runtime::Utf16String::from_bstr(&s))
                     .unwrap_or_default()
             })
         };

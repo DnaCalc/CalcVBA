@@ -4302,11 +4302,19 @@ unsafe fn write_project_exception(
         } else {
             fault.code
         };
-        (*excep_info).bstrSource =
-            BStr::from(fault.source.as_deref().unwrap_or(default_source)).into_raw_bstr() as _;
-        (*excep_info).bstrDescription = BStr::from(fault.message.as_str()).into_raw_bstr() as _;
-        (*excep_info).bstrHelpFile =
-            BStr::from(fault.help_file.as_deref().unwrap_or("")).into_raw_bstr() as _;
+        (*excep_info).bstrSource = fault
+            .source
+            .as_ref()
+            .map(calcvba_runtime::Utf16String::to_bstr)
+            .unwrap_or_else(|| BStr::from(default_source))
+            .into_raw_bstr() as _;
+        (*excep_info).bstrDescription = fault.message.to_bstr().into_raw_bstr() as _;
+        (*excep_info).bstrHelpFile = fault
+            .help_file
+            .as_ref()
+            .map(calcvba_runtime::Utf16String::to_bstr)
+            .unwrap_or_else(|| BStr::from(""))
+            .into_raw_bstr() as _;
         (*excep_info).dwHelpContext = fault.help_context.unwrap_or(0) as u32;
     }
     0x8002_0009u32 as i32 // DISP_E_EXCEPTION

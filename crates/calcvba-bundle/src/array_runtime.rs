@@ -62,7 +62,8 @@ fn unallocated_record_array_retains_layout_but_projects_a_null_native_pointer() 
     }
 }
 /// Choose the actual element type for ReDim. A Variant keeps its contained
-/// array's type unless the source explicitly supplies an As clause.
+/// array's type (and interface IID, for class-typed arrays) unless the source
+/// explicitly supplies an As clause.
 pub fn resolve_redim_element(
     current: &Variant,
     declared: &ArrayElementType,
@@ -70,9 +71,18 @@ pub fn resolve_redim_element(
     preserve: bool,
 ) -> Result<ArrayElementType, i32> {
     let old = current.array_element_vartype();
+    let old_iid = current.array_element_iid();
+    let dispatch_iid = calcvba_runtime::com::IID_IDISPATCH.to_le_bytes();
     let element = if inherit_current {
         if let Some(vt) = old {
-            let element = array_element_type_for_vartype(vt);
+            let element = if vt == VT_DISPATCH_VALUE {
+                match old_iid {
+                    Some(iid) if iid != dispatch_iid => ArrayElementType::Interface(iid),
+                    _ => ArrayElementType::Object,
+                }
+            } else {
+                array_element_type_for_vartype(vt)
+            };
             if safearray_vartype_for_element(&element) != vt {
                 return Err(13);
             }
@@ -83,8 +93,21 @@ pub fn resolve_redim_element(
     } else {
         declared.clone()
     };
-    if preserve && old.is_some_and(|vt| vt != safearray_vartype_for_element(&element)) {
-        return Err(13);
+    if preserve {
+        if old.is_some_and(|vt| vt != safearray_vartype_for_element(&element)) {
+            return Err(13);
+        }
+        if old == Some(VT_DISPATCH_VALUE)
+            && let Some(existing_iid) = old_iid
+        {
+            let target_iid = match &element {
+                ArrayElementType::Interface(iid) => *iid,
+                _ => dispatch_iid,
+            };
+            if existing_iid != target_iid {
+                return Err(13);
+            }
+        }
     }
     Ok(element)
 }
@@ -115,12 +138,16 @@ pub fn redim_safearray_from_elements(
             .collect::<Result<Vec<_>, String>>()?;
         return Ok(SafeArray::from_vba_records_nd(bounds, layout, records)?.with_fixed_size(fixed));
     }
-    Ok(SafeArray::from_typed_variants_nd(
+    let mut array = SafeArray::from_typed_variants_nd(
         bounds,
         safearray_vartype_for_element(element_type),
         elems,
     )?
-    .with_fixed_size(fixed))
+    .with_fixed_size(fixed);
+    if let ArrayElementType::Interface(iid) = element_type {
+        array.set_iid(*iid);
+    }
+    Ok(array)
 }
 
 /// The SAFEARRAY element vartype (`VT_*`) for a declared array element type.
@@ -139,8 +166,8 @@ pub fn safearray_vartype_for_element(element_type: &ArrayElementType) -> u16 {
         ArrayElementType::Date => VT_DATE_VALUE,
         ArrayElementType::String | ArrayElementType::FixedString(_) => VT_BSTR_VALUE,
         ArrayElementType::Boolean => VT_BOOL_VALUE,
-        // Object arrays are `VT_DISPATCH` arrays, as VBA allocates them (`&H440`).
-        ArrayElementType::Object => VT_DISPATCH_VALUE,
+        // Object and class arrays are `VT_DISPATCH` arrays, as VBA allocates them (`&H440`).
+        ArrayElementType::Object | ArrayElementType::Interface(_) => VT_DISPATCH_VALUE,
         ArrayElementType::DynamicArray(_) => VT_VARIANT_VALUE,
     }
 }
@@ -189,7 +216,7 @@ pub fn default_array_element(element_type: &ArrayElementType) -> Result<Variant,
         ArrayElementType::String => Variant::from_string(""),
         ArrayElementType::FixedString(len) => Variant::from_utf16_units(&vec![0; *len]),
         ArrayElementType::Boolean => Variant::from_bool(false),
-        ArrayElementType::Object => Variant::nothing(),
+        ArrayElementType::Object | ArrayElementType::Interface(_) => Variant::nothing(),
         ArrayElementType::DynamicArray(element) => {
             Variant::unallocated_array(safearray_vartype_for_element(element))
         }
@@ -258,10 +285,43 @@ pub fn vba_record_field_kind(
                 bounds,
             }
         }
-        ArrayElementType::Object => VbaRecordFieldKind::Object,
+        ArrayElementType::Object | ArrayElementType::Interface(_) => VbaRecordFieldKind::Object,
         ArrayElementType::DynamicArray(element) => VbaRecordFieldKind::DynamicArray {
             element: Box::new(vba_record_field_kind(element)?),
         },
     };
     Ok(kind)
+}
+
+#[test]
+fn redim_and_resolve_preserve_class_interface_iid() {
+    let iid_a = calcvba_runtime::com::IID_VBA_COLLECTION.to_le_bytes();
+    let iid_b = calcvba_runtime::com::Guid::deterministic("Demo", "IWidget").to_le_bytes();
+    let array = redim_safearray_from_elements(
+        vec![SafeArrayBound { count: 2, lower: 0 }],
+        &ArrayElementType::Interface(iid_a),
+        vec![Variant::nothing(), Variant::nothing()],
+        false,
+    )
+    .unwrap();
+    assert_eq!(array.element_vartype(), VT_DISPATCH_VALUE);
+    assert_eq!(array.iid(), Some(iid_a));
+
+    let cell = Variant::from_safearray(array);
+    assert_eq!(
+        resolve_redim_element(&cell, &ArrayElementType::Variant, true, true),
+        Ok(ArrayElementType::Interface(iid_a))
+    );
+    assert_eq!(
+        resolve_redim_element(&cell, &ArrayElementType::Interface(iid_a), false, true),
+        Ok(ArrayElementType::Interface(iid_a))
+    );
+    assert_eq!(
+        resolve_redim_element(&cell, &ArrayElementType::Interface(iid_b), false, true),
+        Err(13)
+    );
+    assert_eq!(
+        resolve_redim_element(&cell, &ArrayElementType::Object, false, true),
+        Err(13)
+    );
 }

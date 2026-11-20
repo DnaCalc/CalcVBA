@@ -449,8 +449,11 @@ impl<'p> CompiledImage<'p> {
                             values: Vec::new(),
                             err: JitFinalErr {
                                 number: fault.code,
-                                source: fault.source.unwrap_or_default(),
-                                description: fault.message,
+                                source: fault
+                                    .source
+                                    .map(|s| s.to_string_lossy())
+                                    .unwrap_or_default(),
+                                description: fault.message.to_string_lossy(),
                                 last_dll_error: exec.err_engine.last_dll_error,
                             },
                             raised: true,
@@ -542,8 +545,11 @@ impl<'p> CompiledImage<'p> {
                             values: Vec::new(),
                             err: JitFinalErr {
                                 number: fault.code,
-                                source: fault.source.unwrap_or_default(),
-                                description: fault.message,
+                                source: fault
+                                    .source
+                                    .map(|s| s.to_string_lossy())
+                                    .unwrap_or_default(),
+                                description: fault.message.to_string_lossy(),
                                 last_dll_error: exec.err_engine.last_dll_error,
                             },
                             raised: true,
@@ -1132,8 +1138,8 @@ pub(crate) fn array_slot_vartype(element: &OxTy) -> u16 {
 pub(crate) fn err_from_exec(exec: &ExecState<'_>) -> JitFinalErr {
     JitFinalErr {
         number: exec.err_engine.err.number,
-        source: exec.err_engine.err.source.clone(),
-        description: exec.err_engine.err.description.clone(),
+        source: exec.err_engine.err.source.to_string_lossy(),
+        description: exec.err_engine.err.description.to_string_lossy(),
         last_dll_error: exec.err_engine.last_dll_error,
     }
 }
@@ -1524,6 +1530,20 @@ pub(crate) unsafe fn variant_operand_value(
             };
             let text = std::str::from_utf8(bytes).ok()?;
             Some(Variant::from_string(text.to_owned()))
+        }
+        JIT_VARIANT_OPERAND_STR_UTF16 => {
+            let len = usize::try_from(operand.index).ok()?;
+            let ptr = usize::try_from(operand.value).ok()? as *const u16;
+            let units = if len == 0 {
+                &[]
+            } else {
+                if ptr.is_null() {
+                    return None;
+                }
+                // SAFETY: upheld by this private decoder's descriptor contract.
+                unsafe { std::slice::from_raw_parts(ptr, len) }
+            };
+            Some(Variant::from_utf16_units(units))
         }
         _ => None,
     }

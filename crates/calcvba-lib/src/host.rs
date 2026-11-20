@@ -24,13 +24,22 @@ fn arg_or_empty(args: &[Variant], index: usize) -> Variant {
 }
 
 fn string_arg(args: &[Variant], index: usize) -> LibResult<Variant> {
-    Ok(Variant::from_string(as_str(need(args, index)?)?))
+    string_value(need(args, index)?)
+}
+
+/// The argument's VBA string as a String Variant, its code units kept (an unpaired surrogate
+/// stays itself, as VBA passes it on).
+fn string_value(value: &Variant) -> LibResult<Variant> {
+    as_str(value)?; // Null raises 94, as before.
+    Ok(Variant::from_utf16_units(
+        calcvba_runtime::variant_to_vba_string(value)?.payload_units(),
+    ))
 }
 
 fn optional_string_arg(args: &[Variant], index: usize) -> LibResult<Variant> {
     match opt(args, index) {
         Some(value) if matches!(value.vtype(), VarType::Empty) => Ok(Variant::empty()),
-        Some(value) => Ok(Variant::from_string(as_str(value)?)),
+        Some(value) => string_value(value),
         None => Ok(Variant::empty()),
     }
 }
@@ -611,7 +620,7 @@ fn activation_target(value: &Variant) -> String {
 }
 
 pub fn create_object(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
-    let prog_id = Variant::from_string(as_str(need(args, 0)?)?);
+    let prog_id = string_value(need(args, 0)?)?;
     if let Some(server) = opt(args, 1) {
         // The current COM host interface has no ServerName parameter (dc-q6brh.26).
         let _ = as_str(server)?;

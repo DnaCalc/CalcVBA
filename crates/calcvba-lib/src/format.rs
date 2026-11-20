@@ -136,31 +136,40 @@ pub fn apply_units(value: &Variant, mask: &str, first_day: i32, first_week: i32)
 /// [`format_string`] over code units: each character of the text (a surrogate pair, or one
 /// unpaired surrogate) fills one placeholder.
 fn format_string_units(units: &[u16], mask: &str) -> Vec<u16> {
-    // Text without unpaired surrogates takes the String path unchanged.
-    if let Ok(text) = String::from_utf16(units) {
-        return format_string(&text, mask).encode_utf16().collect();
-    }
-    // Otherwise each unpaired surrogate stands in as a private-use character that the mask
-    // cannot contain, and is put back afterwards.
-    const STAND_IN: u32 = 0xF_0000;
-    let mut text = String::new();
+    let text: Vec<u16> = format_string(&with_stand_ins(units), mask)
+        .encode_utf16()
+        .collect();
+    restore_unpaired(&text)
+}
+
+/// Each unpaired surrogate stands in as a supplementary private-use character, so text that
+/// holds one can go through `str`-based code; [`restore_unpaired`] puts them back.
+const STAND_IN: u32 = 0xF_0000;
+
+/// The units as text, an unpaired surrogate as its stand-in.
+pub fn with_stand_ins(units: &[u16]) -> String {
+    char::decode_utf16(units.iter().copied())
+        .map(|item| match item {
+            Ok(c) => c,
+            Err(unpaired) => char::from_u32(STAND_IN + u32::from(unpaired.unpaired_surrogate()))
+                .expect("supplementary private-use character"),
+        })
+        .collect()
+}
+
+/// The units with each stand-in back as its unpaired surrogate (units already unpaired are kept).
+pub fn restore_unpaired(units: &[u16]) -> Vec<u16> {
+    let mut out = Vec::with_capacity(units.len());
     for item in char::decode_utf16(units.iter().copied()) {
         match item {
-            Ok(c) => text.push(c),
-            Err(unpaired) => text.push(
-                char::from_u32(STAND_IN + u32::from(unpaired.unpaired_surrogate()))
-                    .expect("supplementary private-use character"),
-            ),
-        }
-    }
-    let mut out = Vec::new();
-    for c in format_string(&text, mask).chars() {
-        let code = u32::from(c);
-        if (STAND_IN + 0xD800..STAND_IN + 0xE000).contains(&code) {
-            out.push((code - STAND_IN) as u16);
-        } else {
-            let mut buf = [0u16; 2];
-            out.extend_from_slice(c.encode_utf16(&mut buf));
+            Ok(c) if (STAND_IN + 0xD800..STAND_IN + 0xE000).contains(&u32::from(c)) => {
+                out.push((u32::from(c) - STAND_IN) as u16);
+            }
+            Ok(c) => {
+                let mut buf = [0u16; 2];
+                out.extend_from_slice(c.encode_utf16(&mut buf));
+            }
+            Err(unpaired) => out.push(unpaired.unpaired_surrogate()),
         }
     }
     out

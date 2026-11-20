@@ -72,23 +72,6 @@ fn arg_present(args: &[Variant], index: usize) -> Option<&Variant> {
     opt(args, index).filter(|v| !matches!(v.vtype(), VarType::Empty) && !missing_sentinel(v))
 }
 
-fn norm_compare(s: String, text: bool) -> String {
-    if !text {
-        return s;
-    }
-    // Case-fold each character on its own (Unicode lower case), so byte offsets found in the
-    // folded text stay valid in the original unless a fold changes the encoded length.
-    s.chars()
-        .map(|c| {
-            let mut lower = c.to_lowercase();
-            match (lower.next(), lower.next()) {
-                (Some(l), None) if l.len_utf8() == c.len_utf8() => l,
-                _ => c,
-            }
-        })
-        .collect()
-}
-
 /// The operand's UTF-16 code units for comparison: a String reads its BSTR units VERBATIM
 /// (lone surrogate halves preserved); a non-string coerces through its VBA string form
 /// (which carries no surrogates). Mirrors the VM operator path (`arith::cmp_order`) so
@@ -176,8 +159,9 @@ pub fn instr_b(args: &[Variant]) -> LibResult<Variant> {
     let bytes = |index: usize| -> LibResult<Vec<u8>> {
         let value = need(args, index)?;
         if text {
-            Ok(norm_compare(as_str(value)?, true)
-                .encode_utf16()
+            // Folded per code unit, as InStr folds: a lone surrogate half stays itself.
+            Ok(compare_fold_units(&units_arg(value)?, true)
+                .into_iter()
                 .flat_map(u16::to_le_bytes)
                 .collect())
         } else {
@@ -438,7 +422,7 @@ fn map_case_units(units: &[u16], upper: bool) -> Vec<u16> {
     out
 }
 
-/// The units a text comparison matches on (`norm_compare` over code units).
+/// The units a text comparison matches on: each code unit case-folded on its own.
 fn compare_fold_units(units: &[u16], text: bool) -> Vec<u16> {
     if text {
         map_case_units(units, false)
@@ -1089,8 +1073,12 @@ fn array_bytes(array: &SafeArray) -> LibResult<Vec<u8>> {
 /// general text; Null and Empty format as empty text.
 pub fn format(args: &[Variant]) -> LibResult<Variant> {
     let value = need(args, 0)?;
+    // An unpaired surrogate in the mask is literal text: it goes through as a stand-in and
+    // comes back as itself.
     let mask = match opt(args, 1) {
-        Some(v) if !matches!(v.vtype(), VarType::Empty) && !missing_sentinel(v) => as_str(v)?,
+        Some(v) if !matches!(v.vtype(), VarType::Empty) && !missing_sentinel(v) => {
+            crate::format::with_stand_ins(&units_arg(v)?)
+        }
         _ => String::new(),
     };
     let first_day = first_day_of_week(args, 2)?;
@@ -1098,9 +1086,8 @@ pub fn format(args: &[Variant]) -> LibResult<Variant> {
     if matches!(value.vtype(), VarType::ArrayVariant | VarType::Error) {
         return Err(LibError::type_mismatch("Format expects a scalar value"));
     }
-    Ok(vunits(&crate::format::apply_units(
-        value, &mask, first_day, first_week,
-    )))
+    let units = crate::format::apply_units(value, &mask, first_day, first_week);
+    Ok(vunits(&crate::format::restore_unpaired(&units)))
 }
 
 pub fn format_number(args: &[Variant]) -> LibResult<Variant> {

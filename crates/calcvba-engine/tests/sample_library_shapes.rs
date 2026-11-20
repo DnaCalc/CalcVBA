@@ -210,3 +210,17 @@ fn more_string_functions_keep_unpaired_surrogates() {
         3047,
     );
 }
+
+#[test]
+fn instrb_text_compare_and_format_masks_keep_unpaired_surrogates() {
+    // dc-yqq0.11: InStrB's text compare folds code units (a lossy fold would make ChrW(&HD800)
+    // and ChrW(&HDC00) both U+FFFD and match), and a quoted literal in a Format mask keeps an
+    // unpaired surrogate.
+    both(
+        &[std_module(
+            "Main",
+            "Public verdict As Long\nSub Main()\n    Dim s As String, f As String, n As Long\n    s = ChrW(&HD800) & \"ab\"\n    If InStrB(1, \"x\" & s, ChrW(&HD800) & \"A\", vbTextCompare) = 3 Then n = n + 1\n    If InStrB(1, \"x\" & s, ChrW(&HDC00), vbTextCompare) = 0 Then n = n + 2\n    f = Format(5, \"0\"\"\" & ChrW(&HD800) & \"\"\"\")\n    If Len(f) = 2 And AscW(Right$(f, 1)) = -10240 Then n = n + 4\n    verdict = 1000 + n\nEnd Sub\n",
+        )],
+        1007,
+    );
+}

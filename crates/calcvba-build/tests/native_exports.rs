@@ -456,3 +456,43 @@ fn native_variant_fixed_string_records_and_string_redim_roundtrip() {
         );
     }
 }
+
+/// dc-yqq0.15: `a Is b` on Variant operands takes each operand's object in the native lane
+/// (it used to read the VARIANT header as a pointer). True on the export, VM3 and the JIT.
+#[test]
+fn variant_is_compares_the_objects_in_native_vm3_and_jit() {
+    let support = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/support");
+    let temp = Directory::new();
+    let output = build_native_library(&NativeLibraryBuildOptions {
+        project_path: support.join("native_variant_is/NativeVariantIs.basproj"),
+        out_dir: temp.0.clone(),
+        template_path: None,
+    })
+    .unwrap();
+    let client = format!(
+        "Private Declare PtrSafe Function SameObject Lib \"{}\" () As Boolean\n\
+         Public observed As String\nSub Main()\n    observed = CStr(SameObject())\nEnd Sub\n",
+        output.dll_path.display()
+    );
+    let direct = std::fs::read_to_string(support.join("native_variant_is/VariantIs.bas")).unwrap()
+        + "\nPublic observed As String\nSub Main()\n    observed = CStr(SameObject())\nEnd Sub\n";
+    for config in [
+        calcvba_engine::HostConfig::vm3(),
+        calcvba_engine::HostConfig::jit(),
+    ] {
+        let mut engine = calcvba_engine::Engine::new(config);
+        engine.set_host_policy(calcvba_hal::model::HostPolicy::native());
+        for (what, source) in [("native export", &client), ("direct body", &direct)] {
+            let values = engine
+                .execute_source_with_variant_snapshot_clean(source)
+                .unwrap();
+            assert!(
+                values
+                    .iter()
+                    .filter_map(|v| v.as_bstr())
+                    .any(|v| v.to_string() == "True"),
+                "{what}: {values:?}"
+            );
+        }
+    }
+}

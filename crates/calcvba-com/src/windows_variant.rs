@@ -2851,8 +2851,10 @@ mod tests {
         let Some(record) = decoded.as_com_record() else {
             panic!("expected record value, got {decoded:?}");
         };
-        let record = record.try_to_owned().expect("record copy");
+        // Decoding already copies the payload into the runtime's own record.
         assert_eq!(info.copies.load(Ordering::SeqCst), 1);
+        let record = record.try_to_owned().expect("record copy");
+        assert_eq!(info.copies.load(Ordering::SeqCst), 2);
         assert_eq!(
             unsafe { *record.record_data_ptr().cast::<i32>() },
             123,
@@ -2902,17 +2904,18 @@ mod tests {
             },
             123
         );
-        assert_eq!(info.copies.load(Ordering::SeqCst), 2);
+        assert_eq!(info.copies.load(Ordering::SeqCst), 3);
 
         // The written VARIANT is oleaut's to clear (RecordClear, CoTaskMemFree, Release).
         unsafe {
             let _ = VariantClear(&mut roundtrip);
         }
         drop(value);
+        drop(decoded);
         assert_eq!(
             info.clears.load(Ordering::SeqCst),
-            2,
-            "the roundtrip VARIANT and the runtime copy are each cleared exactly once"
+            3,
+            "the roundtrip VARIANT and both runtime copies are each cleared exactly once"
         );
         assert_eq!(
             info.refs.load(Ordering::SeqCst),
@@ -3197,7 +3200,7 @@ mod tests {
             variant.Anonymous.Anonymous.Anonymous.ullVal = 5_000_000_000;
             assert_eq!(
                 variant_to_com_value(&variant).expect("read ui8 variant"),
-                Variant::from_i64(5_000_000_000)
+                Variant::from_u64(5_000_000_000)
             );
             let _ = VariantClear(&mut variant);
         }

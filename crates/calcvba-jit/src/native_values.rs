@@ -632,32 +632,22 @@ impl Values<'_> {
         ensure: bool,
     ) {
         let schema = &self.program.classes[class.0];
-        let mut bytes = Vec::new();
-        for value in [
-            class.0 as u32,
-            schema.name.len() as u32,
-            schema.implements.len() as u32,
-            schema.fields.len() as u32,
-        ] {
-            bytes.extend_from_slice(&value.to_le_bytes());
-        }
-        bytes.extend_from_slice(schema.name.as_bytes());
-        for name in &schema.implements {
-            bytes.extend_from_slice(&(name.len() as u32).to_le_bytes());
-            bytes.extend_from_slice(name.as_bytes());
-        }
-        for field in &schema.fields {
-            bytes.extend_from_slice(&field.token.to_le_bytes());
-            let kind = if let Some(element) = &field.array_element {
-                u32::from(calcvba_bundle::safearray_vartype_for_element(element)) | 0x2000
-            } else {
-                kind(
-                    calcvba_rt_abi::host_entry::native_scalar_type(&field.ty)
-                        .expect("admitted class field"),
-                )
-            };
-            bytes.extend_from_slice(&kind.to_le_bytes());
-        }
+        let field_kinds: Vec<u32> = schema
+            .fields
+            .iter()
+            .map(|field| {
+                if let Some(element) = &field.array_element {
+                    u32::from(calcvba_bundle::safearray_vartype_for_element(element)) | 0x2000
+                } else {
+                    kind(
+                        calcvba_rt_abi::host_entry::native_scalar_type(&field.ty)
+                            .expect("admitted class field"),
+                    )
+                }
+            })
+            .collect();
+        let bytes =
+            calcvba_rt_abi::encode_native_class_metadata(self.program, class.0, &field_kinds);
         let metadata = data(module, b, bytes, 4);
         let mut entry = |procedure: Option<FuncId>| {
             if let Some(procedure) = procedure {

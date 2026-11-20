@@ -4,7 +4,7 @@ use calcvba_runtime::safe_array::SafeArray;
 use calcvba_runtime::safe_array::VT_VARIANT_VALUE;
 use calcvba_runtime::{
     RUNTIME_CLASS_LIFECYCLE_NONE, RUNTIME_IDISPATCH_INTERFACE_IDENTITY, RuntimeClassDescriptor,
-    RuntimeInterfaceDescriptor, RuntimeInterfaceId, RuntimeMemberDescriptor,
+    RuntimeInterfaceDescriptor, RuntimeInterfaceId, RuntimeMemberBacking, RuntimeMemberDescriptor,
     RuntimeMemberInvokeKind, RuntimeParamDescriptor, RuntimeValueType,
 };
 
@@ -767,6 +767,8 @@ pub fn runtime_class_descriptor_from_typelib_metadata(
                     .map(|return_type| runtime_value_type_from_typelib_param(return_type).0),
                 is_default_member: member.is_default_member,
                 is_enumerator_member: member.token == DISPID_NEWENUM,
+                externally_visible: true,
+                backing: RuntimeMemberBacking::None,
             }
         })
         .collect::<Vec<_>>();
@@ -795,6 +797,7 @@ pub fn runtime_class_descriptor_from_typelib_metadata(
         name: class_name,
         runtime_type_name: None,
         project_identity: None,
+        default_interface_iid: None,
         predeclared: false,
         lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
         fields: &[],

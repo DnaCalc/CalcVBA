@@ -4,6 +4,7 @@ static DESCRIPTOR: RuntimeClassDescriptor = RuntimeClassDescriptor {
     name: "Collection",
     runtime_type_name: None,
     project_identity: None,
+    default_interface_iid: Some(calcvba_runtime::com::IID_VBA_COLLECTION),
     predeclared: false,
     lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
     fields: &[],

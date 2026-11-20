@@ -282,6 +282,7 @@ impl IdAllocator {
                 type_ctx,
                 module.module_scope,
                 &alloc.field_token_of,
+                &surface_facts.fields,
             )?;
             if let Some(host) = manifest
                 .modules
@@ -298,6 +299,9 @@ impl IdAllocator {
                     token: calcvba_bundle::HOST_DOCUMENT_FIELD,
                     ty: VarTypeRef::Object(host.clone()),
                     array_element: None,
+                    dispid: None,
+                    get_vtable_slot: None,
+                    put_vtable_slot: None,
                 });
             }
             let default_member = env
@@ -316,6 +320,9 @@ impl IdAllocator {
             let mut initialize = None;
             let mut terminate = None;
             let mut methods = Vec::new();
+            let mut next_internal_dispid = surface_facts.next_dispid;
+            let mut next_internal_vtable = surface_facts.next_vtable;
+            let mut internal_dispids: HashMap<String, i32> = HashMap::new();
             for info in alloc.procs.iter() {
                 if info.class_name.as_deref().map(fold_identifier) != Some(folded.clone()) {
                     continue;
@@ -325,17 +332,38 @@ impl IdAllocator {
                     "class_terminate" => terminate = Some(info.proc_id),
                     _ => {
                         let kind = member_kind_of(info.kind);
-                        let facts = surface_facts.get(&(fold_identifier(&info.name), kind));
+                        let folded_member = fold_identifier(&info.name);
+                        let is_default_member = default_member
+                            .as_ref()
+                            .is_some_and(|(name, _)| fold_identifier(name) == folded_member);
+                        let (dispid, vtable_slot) = if let Some(facts) =
+                            surface_facts.methods.get(&(folded_member.clone(), kind))
+                        {
+                            (Some(facts.dispid), facts.vtable_slot)
+                        } else {
+                            let dispid = if is_default_member {
+                                0
+                            } else if info.is_enumerator_member {
+                                -4
+                            } else {
+                                *internal_dispids.entry(folded_member).or_insert_with(|| {
+                                    let id = next_internal_dispid;
+                                    next_internal_dispid = next_internal_dispid.saturating_add(1);
+                                    id
+                                })
+                            };
+                            let slot = next_internal_vtable;
+                            next_internal_vtable = next_internal_vtable.saturating_add(1);
+                            (Some(dispid), Some(slot))
+                        };
                         methods.push(CoreClassMethod {
                             externally_visible: info.externally_visible,
                             name: info.name.clone(),
                             kind,
                             proc: info.proc_id,
-                            dispid: facts.map(|facts| facts.dispid),
-                            vtable_slot: facts.and_then(|facts| facts.vtable_slot),
-                            is_default_member: default_member.as_ref().is_some_and(|(name, _)| {
-                                fold_identifier(name) == fold_identifier(&info.name)
-                            }),
+                            dispid,
+                            vtable_slot,
+                            is_default_member,
                             is_enumerator_member: info.is_enumerator_member,
                         });
                     }
@@ -586,6 +614,7 @@ fn class_fields(
     type_ctx: types::TypeContext,
     module_scope: ScopeId,
     field_token_of: &HashMap<SymbolId, i32>,
+    field_facts: &HashMap<String, ClassFieldSurfaceFacts>,
 ) -> Result<Vec<CoreClassField>, BindError> {
     let symbols = &env.symbols;
     let mut fields = Vec::new();
@@ -607,12 +636,20 @@ fn class_fields(
             SymbolImpl::DeclaredType(t) => crate::array_element_in_env(type_ctx, env, manifest, t),
             _ => None,
         };
+        let externally_visible = sym.visibility == Some(calcvba_symbol::model::Visibility::Public);
+        let name = alloc_name(env, sym.name);
+        let facts = externally_visible
+            .then(|| field_facts.get(&fold_identifier(&name)).copied())
+            .flatten();
         fields.push(CoreClassField {
-            externally_visible: sym.visibility == Some(calcvba_symbol::model::Visibility::Public),
-            name: alloc_name(env, sym.name),
+            externally_visible,
+            name,
             token,
             ty: normalize_declared_type(env, declared_var_type(&sym.imp)),
             array_element,
+            dispid: facts.map(|facts| facts.dispid),
+            get_vtable_slot: facts.and_then(|facts| facts.get_vtable_slot),
+            put_vtable_slot: facts.and_then(|facts| facts.put_vtable_slot),
         });
     }
     fields.sort_by_key(|field| field.token);
@@ -821,33 +858,81 @@ struct ClassMemberSurfaceFacts {
     vtable_slot: Option<u16>,
 }
 
+#[derive(Clone, Copy, Default)]
+struct ClassFieldSurfaceFacts {
+    dispid: i32,
+    get_vtable_slot: Option<u16>,
+    put_vtable_slot: Option<u16>,
+}
+
+struct ClassDispatchSurfaceFacts {
+    methods: HashMap<(String, ProjectMemberKind), ClassMemberSurfaceFacts>,
+    fields: HashMap<String, ClassFieldSurfaceFacts>,
+    next_dispid: i32,
+    next_vtable: u16,
+}
+
 fn class_member_surface_facts(
     env: &ResolutionEnvironment,
     class_name: &str,
-) -> HashMap<(String, ProjectMemberKind), ClassMemberSurfaceFacts> {
-    let Some(active) = env.export_surfaces().first() else {
-        return HashMap::new();
+) -> ClassDispatchSurfaceFacts {
+    let members = env.class_dispatch_members(class_name).or_else(|| {
+        let active = env.export_surfaces().first()?;
+        let folded_class = fold_identifier(class_name);
+        active
+            .types
+            .iter()
+            .find(|ty| {
+                matches!(ty.kind, SurfaceTypeKind::Coclass { .. })
+                    && fold_identifier(&ty.name) == folded_class
+            })
+            .map(|ty| ty.members.as_slice())
+    });
+    let mut facts = ClassDispatchSurfaceFacts {
+        methods: HashMap::new(),
+        fields: HashMap::new(),
+        next_dispid: 1,
+        next_vtable: 7,
     };
-    let folded_class = fold_identifier(class_name);
-    let Some(surface_type) = active.types.iter().find(|ty| {
-        matches!(ty.kind, SurfaceTypeKind::Coclass { .. })
-            && fold_identifier(&ty.name) == folded_class
-    }) else {
-        return HashMap::new();
+    let Some(members) = members else {
+        return facts;
     };
-    surface_type
-        .members
-        .iter()
-        .map(|member| {
-            (
-                (fold_identifier(&member.name), member.member_kind),
+    for member in members {
+        if member.dispid > 0 {
+            facts.next_dispid = facts.next_dispid.max(member.dispid.saturating_add(1));
+        }
+        if let Some(slot) = member.vtable_slot {
+            facts.next_vtable = facts.next_vtable.max(slot.saturating_add(1));
+        }
+        let folded = fold_identifier(&member.name);
+        if member.origin == calcvba_symbol::surface::MemberOrigin::Field {
+            let entry = facts
+                .fields
+                .entry(folded)
+                .or_insert(ClassFieldSurfaceFacts {
+                    dispid: member.dispid,
+                    get_vtable_slot: None,
+                    put_vtable_slot: None,
+                });
+            entry.dispid = member.dispid;
+            match member.member_kind {
+                ProjectMemberKind::PropertyGet => entry.get_vtable_slot = member.vtable_slot,
+                ProjectMemberKind::PropertyLet | ProjectMemberKind::PropertySet => {
+                    entry.put_vtable_slot = member.vtable_slot
+                }
+                ProjectMemberKind::Method => {}
+            }
+        } else {
+            facts.methods.insert(
+                (folded, member.member_kind),
                 ClassMemberSurfaceFacts {
                     dispid: member.dispid,
                     vtable_slot: member.vtable_slot,
                 },
-            )
-        })
-        .collect()
+            );
+        }
+    }
+    facts
 }
 
 fn has_user_mem_id_decl(node: SyntaxNode<'_>, id: i32) -> bool {
@@ -1351,5 +1436,76 @@ mod tests {
                 ev.event_id
             );
         }
+    }
+
+    #[test]
+    fn non_exposed_class_receives_real_dispids_and_vtable_slots_matching_exposed_surface() {
+        let class_src = "\
+Public Value As Long\n\
+Public Function Twice() As Long\n    Twice = Value * 2\nEnd Function\n\
+Public Property Get Tag() As String\n    Tag = \"x\"\nEnd Property\n\
+Public Property Let Tag(ByVal v As String)\nEnd Property\n\
+Public Property Get Item() As Long\n    Attribute Item.VB_UserMemId = 0\n    Item = Value\nEnd Property\n\
+Public Property Get NewEnum() As IUnknown\n    Attribute NewEnum.VB_UserMemId = -4\nEnd Property\n\
+Friend Sub InternalStep()\nEnd Sub\n\
+Private Sub HiddenHelper()\nEnd Sub\n\
+Private Sub Class_Terminate()\nEnd Sub\n";
+        let private_manifest = with_class("Sub Main()\nEnd Sub\n", "Widget", class_src);
+        let mut exposed_manifest = private_manifest.clone();
+        exposed_manifest.modules[1].attributes.vb_exposed = true;
+
+        let priv_env = build_resolution_environment(&private_manifest, &NullTypeLibs).unwrap();
+        let priv_alloc = IdAllocator::build(&priv_env, &private_manifest).unwrap();
+        let exp_env = build_resolution_environment(&exposed_manifest, &NullTypeLibs).unwrap();
+        let exp_alloc = IdAllocator::build(&exp_env, &exposed_manifest).unwrap();
+
+        let priv_class = &priv_alloc.classes[0];
+        let exp_class = &exp_alloc.classes[0];
+        assert_eq!(priv_class.fields, exp_class.fields);
+        assert_eq!(priv_class.methods, exp_class.methods);
+
+        let value_field = &priv_class.fields[0];
+        assert_eq!(value_field.name, "Value");
+        assert_eq!(value_field.dispid, Some(1));
+        assert_eq!(value_field.get_vtable_slot, Some(7));
+        assert_eq!(value_field.put_vtable_slot, Some(8));
+
+        let find_method = |name: &str, kind: ProjectMemberKind| {
+            priv_class
+                .methods
+                .iter()
+                .find(|m| m.name.eq_ignore_ascii_case(name) && m.kind == kind)
+                .unwrap_or_else(|| panic!("missing method {name} ({kind:?})"))
+        };
+        let twice = find_method("Twice", ProjectMemberKind::Method);
+        assert_eq!(twice.dispid, Some(2));
+        assert_eq!(twice.vtable_slot, Some(9));
+
+        let tag_get = find_method("Tag", ProjectMemberKind::PropertyGet);
+        let tag_let = find_method("Tag", ProjectMemberKind::PropertyLet);
+        assert_eq!(tag_get.dispid, Some(3));
+        assert_eq!(tag_let.dispid, Some(3));
+        assert_eq!(tag_get.vtable_slot, Some(10));
+        assert_eq!(tag_let.vtable_slot, Some(11));
+
+        let item = find_method("Item", ProjectMemberKind::PropertyGet);
+        assert_eq!(item.dispid, Some(0));
+        assert_eq!(item.vtable_slot, Some(12));
+        assert!(item.is_default_member);
+
+        let new_enum = find_method("NewEnum", ProjectMemberKind::PropertyGet);
+        assert_eq!(new_enum.dispid, Some(-4));
+        assert_eq!(new_enum.vtable_slot, Some(13));
+        assert!(new_enum.is_enumerator_member);
+
+        let internal = find_method("InternalStep", ProjectMemberKind::Method);
+        assert!(!internal.externally_visible);
+        assert_eq!(internal.dispid, Some(4));
+        assert_eq!(internal.vtable_slot, Some(14));
+
+        let hidden = find_method("HiddenHelper", ProjectMemberKind::Method);
+        assert!(!hidden.externally_visible);
+        assert_eq!(hidden.dispid, Some(5));
+        assert_eq!(hidden.vtable_slot, Some(15));
     }
 }

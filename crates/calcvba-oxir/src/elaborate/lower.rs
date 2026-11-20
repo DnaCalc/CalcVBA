@@ -352,6 +352,9 @@ fn lower_class(
                 token: field.token,
                 ty: lower_declared_var_type_with_longptr_width(&field.ty, resolver, long_ptr_width),
                 array_element: field.array_element.clone(),
+                dispid: field.dispid,
+                get_vtable_slot: field.get_vtable_slot,
+                put_vtable_slot: field.put_vtable_slot,
             })
             .collect(),
         methods: c

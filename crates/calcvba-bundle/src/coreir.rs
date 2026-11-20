@@ -191,6 +191,12 @@ pub struct CoreClassField {
     pub ty: VarTypeRef,
     /// `Some` for a declared array field; mirrors [`CoreLocal::array_element`].
     pub array_element: Option<ArrayElementType>,
+    /// COM/VBA dispatch id assigned to this public field's property accessors, if public.
+    pub dispid: Option<i32>,
+    /// Dual-interface vtable slot for the public field's PropertyGet accessor.
+    pub get_vtable_slot: Option<u16>,
+    /// Dual-interface vtable slot for the public field's PropertyLet/PropertySet accessor.
+    pub put_vtable_slot: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -342,6 +342,9 @@ mod tests {
                     token: 0,
                     ty: OxTy::Object(ObjClass::Class(ClassId(0))),
                     array_element: None,
+                    dispid: None,
+                    get_vtable_slot: None,
+                    put_vtable_slot: None,
                 }],
                 methods: Vec::new(),
                 as_new_fields: vec![crate::program::OxClassAsNewField {
@@ -523,6 +526,9 @@ mod tests {
             token: 0,
             ty: OxTy::Variant,
             array_element: None,
+            dispid: None,
+            get_vtable_slot: None,
+            put_vtable_slot: None,
         });
         let errs = verify_program(&p).expect_err("duplicate class field token must be rejected");
         assert!(

@@ -23,7 +23,10 @@ use crate::providers::surface_provider::SurfaceProvider;
 use crate::providers::vba_library::VbaLibraryProvider;
 use crate::scanner::{self, ModuleScan};
 use crate::signature::{SignatureTable, VarTypeRef};
-use crate::surface::{ProjectExportSurface, synthesize_export_surface};
+use crate::surface::{
+    ProjectExportSurface, SurfaceMember, synthesize_export_surface,
+    synthesize_project_class_dispatch_members,
+};
 
 /// The context a resolution happens in: the innermost source scope and, for
 /// member access, the receiver's static type.
@@ -291,6 +294,9 @@ pub struct ResolutionEnvironment {
     /// project's (same order as `manifest.reference_projects`). The binder reads
     /// these to build per-class dispid→method dispatch maps (WS-H).
     surfaces: Vec<ProjectExportSurface>,
+    /// Dual-interface dispatch members (DISPIDs and vtable slots) for every active
+    /// class/document module, keyed by folded class name — exposed or not (dc-yqq0.21).
+    active_class_members: HashMap<String, Vec<SurfaceMember>>,
     /// Folded compile-time `Const`/`Enum`-member values for the whole closure
     /// (active + referenced), keyed by `SymbolId`. Const-folding is a published
     /// type-system property, computed once here and read uniformly by the binder.
@@ -565,6 +571,14 @@ impl ResolutionEnvironment {
     /// The synthesized export surfaces (active first, then referenced projects).
     pub fn export_surfaces(&self) -> &[ProjectExportSurface] {
         &self.surfaces
+    }
+
+    /// Dual-interface dispatch members (DISPIDs and vtable slots) for an active
+    /// class or document module, whether or not it is COM-exposed.
+    pub fn class_dispatch_members(&self, class_name: &str) -> Option<&[SurfaceMember]> {
+        self.active_class_members
+            .get(&crate::model::fold_identifier(class_name))
+            .map(Vec::as_slice)
     }
 
     /// The folded compile-time value of a `Const` / `Enum` member symbol (anywhere
@@ -1752,6 +1766,13 @@ pub fn build_resolution_environment_with_project_surfaces(
         &const_values,
         Some(&optional_defaults),
     );
+    let active_class_members = synthesize_project_class_dispatch_members(
+        &manifest.modules,
+        &active_scans,
+        &symbols,
+        &signatures,
+        Some(&optional_defaults),
+    );
     let mut surfaces = vec![active_surface];
     surfaces.extend(referenced_surfaces.iter().cloned());
     surfaces.extend(external_project_surfaces.iter().cloned());
@@ -1827,6 +1848,7 @@ pub fn build_resolution_environment_with_project_surfaces(
         providers,
         module_csts,
         surfaces,
+        active_class_members,
         const_values,
         optional_defaults,
         udt_fields: type_index.udt_fields,

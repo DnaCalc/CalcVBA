@@ -194,3 +194,39 @@ cfg(windows)-only failure, pull again before each push.
     `declare_cells::a_udt_array_is_passed_as_an_fadf_record_safearray_and_copied_back`,
     `oleaut::tests::record_safearray_round_trips_nd_bounds_copy_and_destroys_cleanly`, and
     `pointer_helpers::tests::record_array_projected_for_a_declare_handles_nd_bounds_strings_variants_and_balances_counters`.
+
+--- Lane vx4 (Linux), newest last ---
+
+18. dc-yqq0.21 (shared class descriptor, real DISPIDs and vtable slots for every class):
+    VM3, rt-abi/JIT, and the native AOT template now share one descriptor builder
+    (`calcvba_runtime::build_runtime_class_descriptor` via `calcvba_rt_abi::class_descriptor`),
+    and every class (exposed or not) gets DISPIDs and vtable slots (>= 7) on all members and
+    public fields, plus `default_interface_iid` (`Guid::deterministic(unit, "I{Class}")`).
+    Provisional DISPID rule until Excel measurement returns: `0` for `VB_UserMemId = 0`, `-4`
+    for `VB_UserMemId = -4`, sequential `1, 2, ...` per unique public member name (shared by
+    Property Get/Let/Set and Public field Get/Let/Set); vtable slots start at 7 in source order.
+    Windows measurements and checks needed:
+    - Excel `ITypeInfo` DISPID & vtable-slot measurement (Windows half of dc-yqq0.21):
+      Create an Excel VBA class module `Measure` (default non-exposed) with:
+        Public Value As Long
+        Public Tag As Variant
+        Public Child As Object
+        Public Function Twice() As Long
+        Public Sub Touch()
+        Public Property Get Prop() As Long
+        Public Property Let Prop(ByVal v As Long)
+        Public Property Get DefItem() As Long          ' Attribute DefItem.VB_UserMemId = 0
+        Public Property Get NewEnum() As IUnknown      ' Attribute NewEnum.VB_UserMemId = -4
+        Friend Sub FriendStep()
+        Private Sub PrivateStep()
+      Pass an instance to a small COM probe calling `IDispatch::GetTypeInfo(0, 0, &ti)` and
+      dumping every `FUNCDESC` (`memid`, `invkind`, `oVft / sizeof(void*)`, `cParams`, name)
+      plus `GetIDsOfNames` on each member name. Report the exact table in `from-windows.md` so
+      the provisional DISPID/slot rule can be updated to match Excel VBA's exact values (and
+      check whether a `Public Tag As Variant` field gets 2 or 3 vtable slots: Get/Put/PutRef).
+    - Run touched suites on Windows:
+      cargo test -p calcvba-symbol -p calcvba-bind -p calcvba-oxir -p calcvba-runtime -p calcvba-rt-abi -p calcvba-vm3 -p calcvba-jit --no-fail-fast
+      cargo test -p calcvba-build --test native_exports --test native_executable --test wrapped_com_server_smoke --no-fail-fast
+    - Native template metadata stays backward-compatible with prebuilt v1 `assets/native/*.dll`
+      (same prefix + `CVBD` v1 trailer); rebuild native templates (`./scripts/build-native-template.ps1`)
+      when ready so the shipped templates use the shared builder too.

@@ -44,15 +44,17 @@ use calcvba_oxir::{
 use calcvba_rt_abi::{
     ErrorMode, EventBinding, ExecState, Fault, FaultAction, LoadedProgram, MarshalArgRef,
     ProcInvoker, ResumePoint, ResumeTarget, SavedErrState, marshal_ox_args, marshal_ox_call_args,
-    ox_const_variant, take_termination_batch, variant_changed,
+    ox_const_variant, runtime_class_descriptors_for_program, take_termination_batch,
+    variant_changed,
 };
 use calcvba_runtime::object_ref::{
-    Guid, ObjectRef, RUNTIME_CLASS_LIFECYCLE_NONE, RUNTIME_IDISPATCH_INTERFACE_IDENTITY,
-    RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR, RuntimeClassActivationDescriptor,
-    RuntimeClassAsNewFieldDescriptor, RuntimeClassDescriptor, RuntimeClassFieldDescriptor,
-    RuntimeClassLifecycleDescriptor, RuntimeInterfaceDescriptor, RuntimeInterfaceId,
-    RuntimeInterfaceIdentity, RuntimeInterfaceKind, RuntimeMemberDescriptor,
-    RuntimeMemberInvokeKind, RuntimeParamDescriptor, RuntimeProjectClassIdentity, RuntimeValueType,
+    ObjectRef, RUNTIME_CLASS_LIFECYCLE_NONE, RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR,
+    RuntimeClassDescriptor,
+};
+#[cfg(test)]
+use calcvba_runtime::object_ref::{
+    RuntimeClassActivationDescriptor, RuntimeInterfaceId, RuntimeInterfaceKind,
+    RuntimeMemberBacking, RuntimeMemberInvokeKind, RuntimeProjectClassIdentity, RuntimeValueType,
 };
 use calcvba_runtime::safe_array::{SafeArray, SafeArrayBound};
 use calcvba_runtime::variant::VarType;
@@ -76,6 +78,7 @@ static VBA_COLLECTION_DESCRIPTOR: RuntimeClassDescriptor = RuntimeClassDescripto
     name: "Collection",
     runtime_type_name: None,
     project_identity: None,
+    default_interface_iid: Some(calcvba_runtime::com::IID_VBA_COLLECTION),
     predeclared: false,
     lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
     fields: &[],
@@ -84,30 +87,6 @@ static VBA_COLLECTION_DESCRIPTOR: RuntimeClassDescriptor = RuntimeClassDescripto
     interfaces: &[RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR],
 };
 
-fn synthetic_dispatch_id(index: usize, default_member: bool) -> i32 {
-    if default_member {
-        0
-    } else {
-        i32::try_from(index)
-            .ok()
-            .and_then(|value| value.checked_add(1))
-            .unwrap_or(i32::MAX)
-    }
-}
-
-fn runtime_member_invoke_kind(kind: ProjectMemberKind) -> RuntimeMemberInvokeKind {
-    match kind {
-        ProjectMemberKind::Method => RuntimeMemberInvokeKind::Method,
-        ProjectMemberKind::PropertyGet => RuntimeMemberInvokeKind::PropertyGet,
-        ProjectMemberKind::PropertyLet => RuntimeMemberInvokeKind::PropertyLet,
-        ProjectMemberKind::PropertySet => RuntimeMemberInvokeKind::PropertySet,
-    }
-}
-
-fn leak_runtime_str(value: &str) -> &'static str {
-    Box::leak(value.to_string().into_boxed_str())
-}
-
 fn hidden_me_receiver_param_count(func: &calcvba_oxir::OxFunc) -> usize {
     usize::from(
         func.param_count > 0
@@ -115,228 +94,6 @@ fn hidden_me_receiver_param_count(func: &calcvba_oxir::OxFunc) -> usize {
                 local.param.is_some() && local.name.eq_ignore_ascii_case("Me")
             }),
     )
-}
-
-fn runtime_member_params(func: &calcvba_oxir::OxFunc) -> Vec<RuntimeParamDescriptor> {
-    func.locals
-        .iter()
-        .take(func.param_count)
-        .skip(hidden_me_receiver_param_count(func))
-        .map(|local| {
-            let param = local.param.as_ref();
-            RuntimeParamDescriptor {
-                name: leak_runtime_str(&local.name),
-                value_type: runtime_value_type(&local.ty),
-                by_ref: param.map(|p| p.by_ref).unwrap_or(false),
-                optional: param.map(|p| p.optional).unwrap_or(false),
-                param_array: param.map(|p| p.variadic).unwrap_or(false),
-            }
-        })
-        .collect()
-}
-
-struct RuntimeMemberDescriptorInput<'a> {
-    program: &'a OxProgram,
-    method: &'a calcvba_oxir::program::OxClassMethod,
-    display_name: &'a str,
-    dispatch_index: usize,
-    dispatch_id: Option<i32>,
-    vtable_slot: Option<u16>,
-    is_default_member: bool,
-    is_enumerator_member: bool,
-}
-
-fn runtime_member_descriptor(input: RuntimeMemberDescriptorInput<'_>) -> RuntimeMemberDescriptor {
-    let RuntimeMemberDescriptorInput {
-        program,
-        method,
-        display_name,
-        dispatch_index,
-        dispatch_id,
-        vtable_slot,
-        is_default_member,
-        is_enumerator_member,
-    } = input;
-    let proc = program.funcs.get(method.proc.0);
-    let params: &'static [RuntimeParamDescriptor] = Box::leak(
-        proc.map(runtime_member_params)
-            .unwrap_or_default()
-            .into_boxed_slice(),
-    );
-    RuntimeMemberDescriptor {
-        name: leak_runtime_str(display_name),
-        dispatch_id: dispatch_id
-            .unwrap_or_else(|| synthetic_dispatch_id(dispatch_index, is_default_member)),
-        vtable_slot,
-        invoke_kind: runtime_member_invoke_kind(method.kind),
-        arity: params.len(),
-        params,
-        return_type: proc.and_then(runtime_return_type),
-        is_default_member,
-        is_enumerator_member,
-    }
-}
-
-fn runtime_return_type(func: &calcvba_oxir::OxFunc) -> Option<RuntimeValueType> {
-    func.return_local
-        .and_then(|local| func.locals.get(local.0))
-        .map(|local| runtime_value_type(&local.ty))
-}
-
-fn runtime_value_type(ty: &OxTy) -> RuntimeValueType {
-    match ty {
-        OxTy::Bool => RuntimeValueType::Boolean,
-        OxTy::Byte => RuntimeValueType::Byte,
-        OxTy::Integer => RuntimeValueType::Integer,
-        OxTy::Long => RuntimeValueType::Long,
-        OxTy::LongLong => RuntimeValueType::LongLong,
-        OxTy::Currency => RuntimeValueType::Currency,
-        OxTy::Single => RuntimeValueType::Single,
-        OxTy::Double => RuntimeValueType::Double,
-        OxTy::Date => RuntimeValueType::Date,
-        OxTy::Decimal => RuntimeValueType::Decimal,
-        OxTy::Str | OxTy::FixedStr(_) => RuntimeValueType::String,
-        OxTy::Object(_) => RuntimeValueType::Object,
-        OxTy::Record(_) => RuntimeValueType::Record,
-        OxTy::Array(_, _) => RuntimeValueType::Array,
-        OxTy::Variant | OxTy::ProcRef => RuntimeValueType::Variant,
-    }
-}
-
-const PROJECT_INTERFACE_GUID_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const PROJECT_INTERFACE_GUID_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-fn fnv1a64(seed: u64, input: &str) -> u64 {
-    let mut hash = seed;
-    for byte in input.bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(PROJECT_INTERFACE_GUID_PRIME);
-    }
-    hash
-}
-
-fn runtime_project_interface_guid(unit_name: &str, interface_name: &str) -> Guid {
-    let key = format!(
-        "oxvba:project-interface:{}:{}",
-        unit_name.to_ascii_lowercase(),
-        interface_name.to_ascii_lowercase()
-    );
-    let hi = fnv1a64(PROJECT_INTERFACE_GUID_OFFSET, &key);
-    let lo = fnv1a64(!PROJECT_INTERFACE_GUID_OFFSET, &key);
-    let lo_bytes = lo.to_be_bytes();
-    Guid::new((hi >> 32) as u32, (hi >> 16) as u16, hi as u16, lo_bytes)
-}
-
-fn runtime_array_element_type(element: &ArrayElementType) -> RuntimeValueType {
-    match element {
-        ArrayElementType::Variant => RuntimeValueType::Variant,
-        ArrayElementType::Integer => RuntimeValueType::Integer,
-        ArrayElementType::Long => RuntimeValueType::Long,
-        ArrayElementType::LongLong => RuntimeValueType::LongLong,
-        ArrayElementType::Byte => RuntimeValueType::Byte,
-        ArrayElementType::Single => RuntimeValueType::Single,
-        ArrayElementType::Double => RuntimeValueType::Double,
-        ArrayElementType::Currency => RuntimeValueType::Currency,
-        ArrayElementType::Date => RuntimeValueType::Date,
-        ArrayElementType::String | ArrayElementType::FixedString(_) => RuntimeValueType::String,
-        ArrayElementType::Boolean => RuntimeValueType::Boolean,
-        ArrayElementType::Record(_) => RuntimeValueType::Record,
-        ArrayElementType::FixedArray { .. } | ArrayElementType::DynamicArray(_) => {
-            RuntimeValueType::Array
-        }
-        ArrayElementType::Object | ArrayElementType::Interface(_) => RuntimeValueType::Object,
-    }
-}
-
-fn runtime_class_field_descriptor(
-    field: &calcvba_oxir::OxClassField,
-) -> RuntimeClassFieldDescriptor {
-    RuntimeClassFieldDescriptor {
-        name: leak_runtime_str(&field.name),
-        token: field.token,
-        value_type: runtime_value_type(&field.ty),
-        array_element_type: field.array_element.as_ref().map(runtime_array_element_type),
-    }
-}
-
-fn runtime_class_activation_descriptor(binding: &OxAsNew) -> RuntimeClassActivationDescriptor {
-    match binding {
-        OxAsNew::ProjectClass { class } => RuntimeClassActivationDescriptor::ProjectClass {
-            class_index: class.0,
-        },
-        OxAsNew::ExternClass { import } => RuntimeClassActivationDescriptor::ExternClass {
-            import_index: import.0,
-        },
-        OxAsNew::ComClass { prog_id } => RuntimeClassActivationDescriptor::ComClass {
-            prog_id: leak_runtime_str(prog_id),
-        },
-    }
-}
-
-fn runtime_as_new_field_descriptor(
-    field: &calcvba_oxir::program::OxClassAsNewField,
-) -> RuntimeClassAsNewFieldDescriptor {
-    RuntimeClassAsNewFieldDescriptor {
-        field_token: field.field,
-        activation: runtime_class_activation_descriptor(&field.binding),
-    }
-}
-
-fn runtime_project_interface_descriptor(
-    program: &OxProgram,
-    class: &calcvba_oxir::OxClass,
-    interface_name: &str,
-) -> Option<RuntimeInterfaceDescriptor> {
-    let bare_interface = interface_name.rsplit('.').next().unwrap_or(interface_name);
-    let interface_class = program
-        .classes
-        .iter()
-        .find(|candidate| candidate.name.eq_ignore_ascii_case(bare_interface))?;
-    let mut members = Vec::new();
-    for interface_method in &interface_class.methods {
-        let mangled = format!("{bare_interface}_{}", interface_method.name);
-        let Some(implementation_method) = class.methods.iter().find(|method| {
-            method.kind == interface_method.kind && method.name.eq_ignore_ascii_case(&mangled)
-        }) else {
-            continue;
-        };
-        let index = members.len();
-        members.push(runtime_member_descriptor(RuntimeMemberDescriptorInput {
-            program,
-            method: implementation_method,
-            display_name: &interface_method.name,
-            dispatch_index: index,
-            dispatch_id: interface_method.dispid.or(implementation_method.dispid),
-            vtable_slot: interface_method
-                .vtable_slot
-                .or(implementation_method.vtable_slot),
-            is_default_member: interface_method.is_default_member
-                || implementation_method.is_default_member,
-            is_enumerator_member: interface_method.is_enumerator_member
-                || implementation_method.is_enumerator_member,
-        }));
-    }
-    let members: &'static [RuntimeMemberDescriptor] = Box::leak(members.into_boxed_slice());
-    let qualified_name = if program.unit_name.is_empty() {
-        bare_interface.to_string()
-    } else {
-        format!("{}.{}", program.unit_name, bare_interface)
-    };
-    let identity_name = leak_runtime_str(&qualified_name);
-    Some(RuntimeInterfaceDescriptor {
-        id: RuntimeInterfaceId::Unsupported,
-        identity: RuntimeInterfaceIdentity::custom(
-            runtime_project_interface_guid(&program.unit_name, bare_interface),
-            identity_name,
-            RuntimeInterfaceKind::Custom,
-            None,
-            None,
-            None,
-        ),
-        name: leak_runtime_str(bare_interface),
-        members,
-        dual_dispatch: false,
-    })
 }
 
 /// A failure to execute an OxIR program on vm3.
@@ -635,19 +392,11 @@ impl<'h> Vm3<'h> {
         Some(element)
     }
 
-    /// Build a program's mutable runtime tables: one leaked `&'static` runtime descriptor per
-    /// class (the shape `ObjectRef::from_project_instance` requires, as vm2's `LoadedBundle`
-    /// leaks them; bounded by class count), the `(binding,event)→handler` route table, and the
-    /// zeroed module-global slots.
+    /// Build a program's mutable runtime tables: one shared `&'static` runtime descriptor per
+    /// class from `calcvba_rt_abi::runtime_class_descriptors_for_program`, the
+    /// `(binding,event)→handler` route table, and the zeroed module-global slots.
     fn build_loaded(program: &'h OxProgram) -> Result<LoadedProgram<'h>, Vm3Error> {
-        let class_descriptors: Vec<&'static RuntimeClassDescriptor> = program
-            .classes
-            .iter()
-            .enumerate()
-            .map(|(class_index, class)| {
-                Self::build_runtime_class_descriptor(program, class_index, class)
-            })
-            .collect();
+        let class_descriptors = runtime_class_descriptors_for_program(program);
         let mut event_routes: HashMap<(i32, i32), usize> = HashMap::new();
         for route in &program.event_routes {
             event_routes.insert((route.binding, route.event), route.handler);
@@ -665,99 +414,6 @@ impl<'h> Vm3<'h> {
             predeclared_singletons: HashMap::new(),
             event_routes,
         })
-    }
-
-    fn build_runtime_class_descriptor(
-        program: &OxProgram,
-        class_index: usize,
-        class: &calcvba_oxir::OxClass,
-    ) -> &'static RuntimeClassDescriptor {
-        let name: &'static str = leak_runtime_str(&class.name);
-        let project_identity = RuntimeProjectClassIdentity {
-            unit_name: leak_runtime_str(&program.unit_name),
-            class_index,
-        };
-        let fields: &'static [RuntimeClassFieldDescriptor] = Box::leak(
-            class
-                .fields
-                .iter()
-                .map(runtime_class_field_descriptor)
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
-        let as_new_fields: &'static [RuntimeClassAsNewFieldDescriptor] = Box::leak(
-            class
-                .as_new_fields
-                .iter()
-                .map(runtime_as_new_field_descriptor)
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
-        let implements: &'static [&'static str] = Box::leak(
-            class
-                .implements
-                .iter()
-                .map(|interface| leak_runtime_str(interface))
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
-        let lifecycle = RuntimeClassLifecycleDescriptor {
-            has_initialize: class.initialize.is_some(),
-            has_terminate: class.terminate.is_some(),
-        };
-        let members: &'static [RuntimeMemberDescriptor] = Box::leak(
-            class
-                .methods
-                .iter()
-                .enumerate()
-                .map(|(index, method)| {
-                    let proc = program.funcs.get(method.proc.0);
-                    let params: &'static [RuntimeParamDescriptor] = Box::leak(
-                        proc.map(runtime_member_params)
-                            .unwrap_or_default()
-                            .into_boxed_slice(),
-                    );
-                    RuntimeMemberDescriptor {
-                        name: leak_runtime_str(&method.name),
-                        dispatch_id: method.dispid.unwrap_or_else(|| {
-                            synthetic_dispatch_id(index, method.is_default_member)
-                        }),
-                        vtable_slot: method.vtable_slot,
-                        invoke_kind: runtime_member_invoke_kind(method.kind),
-                        arity: params.len(),
-                        params,
-                        return_type: proc.and_then(runtime_return_type),
-                        is_default_member: method.is_default_member,
-                        is_enumerator_member: method.is_enumerator_member,
-                    }
-                })
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
-        let dispatch = RuntimeInterfaceDescriptor {
-            id: RuntimeInterfaceId::IDispatch,
-            identity: RUNTIME_IDISPATCH_INTERFACE_IDENTITY,
-            name: "IDispatch",
-            members,
-            dual_dispatch: true,
-        };
-        let mut interface_descriptors = vec![RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR, dispatch];
-        interface_descriptors.extend(class.implements.iter().filter_map(|interface| {
-            runtime_project_interface_descriptor(program, class, interface)
-        }));
-        let interfaces: &'static [RuntimeInterfaceDescriptor] =
-            Box::leak(interface_descriptors.into_boxed_slice());
-        &*Box::leak(Box::new(RuntimeClassDescriptor {
-            name,
-            runtime_type_name: class.runtime_type_name.as_deref().map(leak_runtime_str),
-            project_identity: Some(project_identity),
-            predeclared: class.predeclared,
-            lifecycle,
-            fields,
-            as_new_fields,
-            implements,
-            interfaces,
-        }))
     }
 
     /// The index of the loaded program declaring unit `name` (its `unit_name`), for resolving a
@@ -6757,18 +6413,22 @@ mod tests {
             vec![ox_param_local("Me"), ox_param_local("value")],
             2,
         );
-        let params = runtime_member_params(&with_me);
+        let params = calcvba_rt_abi::runtime_member_params(&with_me);
         assert_eq!(params.len(), 1);
         assert_eq!(params[0].name, "value");
 
         let without_me = ox_func_with_params("Touch", vec![ox_param_local("value")], 1);
-        let params = runtime_member_params(&without_me);
+        let params = calcvba_rt_abi::runtime_member_params(&without_me);
         assert_eq!(params.len(), 1);
         assert_eq!(params[0].name, "value");
 
         let mut non_param_me = ox_param_local("Me");
         non_param_me.param = None;
-        let params = runtime_member_params(&ox_func_with_params("Touch", vec![non_param_me], 1));
+        let params = calcvba_rt_abi::runtime_member_params(&ox_func_with_params(
+            "Touch",
+            vec![non_param_me],
+            1,
+        ));
         assert_eq!(params.len(), 1);
         assert_eq!(params[0].name, "Me");
     }
@@ -7337,18 +6997,24 @@ mod tests {
                 terminate: Some(ProcId(5)),
                 fields: vec![
                     CoreClassField {
-                        externally_visible: true,
+                        externally_visible: false,
                         name: "mCount".into(),
                         token: 11,
                         ty: VarTypeRef::Builtin(BuiltinType::Long),
                         array_element: None,
+                        dispid: None,
+                        get_vtable_slot: None,
+                        put_vtable_slot: None,
                     },
                     CoreClassField {
-                        externally_visible: true,
+                        externally_visible: false,
                         name: "Items".into(),
                         token: 12,
                         ty: VarTypeRef::Array(Box::new(VarTypeRef::Builtin(BuiltinType::Long))),
                         array_element: Some(ArrayElementType::Long),
+                        dispid: None,
+                        get_vtable_slot: None,
+                        put_vtable_slot: None,
                     },
                     CoreClassField {
                         externally_visible: true,
@@ -7356,6 +7022,9 @@ mod tests {
                         token: 13,
                         ty: VarTypeRef::Object("Widget".into()),
                         array_element: None,
+                        dispid: Some(1),
+                        get_vtable_slot: Some(9),
+                        put_vtable_slot: Some(10),
                     },
                 ],
                 methods: vec![
@@ -7468,12 +7137,19 @@ mod tests {
             obj.query_interface_descriptor(RuntimeInterfaceId::IUnknown)
                 .is_some()
         );
+        assert_eq!(class_descriptor.validate_com_export_shape(), Ok(()));
+        assert_eq!(
+            class_descriptor.default_interface_iid,
+            Some(calcvba_runtime::Guid::deterministic("T", "IWidget"))
+        );
         let dispatch = obj
             .query_interface_descriptor(RuntimeInterfaceId::IDispatch)
             .expect("project instances should advertise IDispatch");
         assert_eq!(dispatch.name, "IDispatch");
         assert!(dispatch.dual_dispatch);
-        assert_eq!(dispatch.members.len(), 4);
+        // Sorted by vtable slot: Value Get (7), Value Let (8), Child Get (9), Child Set (10),
+        // NewEnum (12), Reset (13 — filled by the shared descriptor builder).
+        assert_eq!(dispatch.members.len(), 6);
 
         let get = &dispatch.members[0];
         assert_eq!(get.name, "Value");
@@ -7499,10 +7175,34 @@ mod tests {
         assert!(!put.params[0].by_ref);
         assert_eq!(put.return_type, None);
 
-        let method = &dispatch.members[2];
+        let child_get = &dispatch.members[2];
+        assert_eq!(child_get.name, "Child");
+        assert_eq!(child_get.dispatch_id, 1);
+        assert_eq!(child_get.vtable_slot, Some(9));
+        assert_eq!(child_get.invoke_kind, RuntimeMemberInvokeKind::PropertyGet);
+        assert_eq!(child_get.backing, RuntimeMemberBacking::Field(13));
+
+        let child_set = &dispatch.members[3];
+        assert_eq!(child_set.name, "Child");
+        assert_eq!(child_set.dispatch_id, 1);
+        assert_eq!(child_set.vtable_slot, Some(10));
+        assert_eq!(child_set.invoke_kind, RuntimeMemberInvokeKind::PropertySet);
+        assert_eq!(child_set.backing, RuntimeMemberBacking::Field(13));
+
+        let new_enum = &dispatch.members[4];
+        assert_eq!(new_enum.name, "NewEnum");
+        assert_eq!(new_enum.dispatch_id, -4);
+        assert_eq!(new_enum.vtable_slot, Some(12));
+        assert_eq!(new_enum.invoke_kind, RuntimeMemberInvokeKind::PropertyGet);
+        assert!(!new_enum.is_default_member);
+        assert!(new_enum.is_enumerator_member);
+        assert_eq!(new_enum.arity, 0);
+        assert_eq!(new_enum.return_type, Some(RuntimeValueType::Object));
+
+        let method = &dispatch.members[5];
         assert_eq!(method.name, "Reset");
-        assert_eq!(method.dispatch_id, 3);
-        assert_eq!(method.vtable_slot, None);
+        assert_eq!(method.dispatch_id, 2);
+        assert_eq!(method.vtable_slot, Some(13));
         assert_eq!(method.invoke_kind, RuntimeMemberInvokeKind::Method);
         assert!(!method.is_default_member);
         assert!(!method.is_enumerator_member);
@@ -7513,16 +7213,6 @@ mod tests {
         assert!(method.params[0].optional);
         assert!(!method.params[0].param_array);
         assert_eq!(method.return_type, None);
-
-        let new_enum = &dispatch.members[3];
-        assert_eq!(new_enum.name, "NewEnum");
-        assert_eq!(new_enum.dispatch_id, -4);
-        assert_eq!(new_enum.vtable_slot, Some(12));
-        assert_eq!(new_enum.invoke_kind, RuntimeMemberInvokeKind::PropertyGet);
-        assert!(!new_enum.is_default_member);
-        assert!(new_enum.is_enumerator_member);
-        assert_eq!(new_enum.arity, 0);
-        assert_eq!(new_enum.return_type, Some(RuntimeValueType::Object));
 
         drop(obj);
         drop(widget);

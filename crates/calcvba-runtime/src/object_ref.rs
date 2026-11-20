@@ -189,7 +189,7 @@ pub struct RuntimeInterfaceProjection {
     pub interface_descriptor: &'static RuntimeInterfaceDescriptor,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RuntimeMemberInvokeKind {
     Method,
     PropertyGet,
@@ -197,7 +197,7 @@ pub enum RuntimeMemberInvokeKind {
     PropertySet,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeValueType {
     Variant,
     Long,
@@ -215,6 +215,16 @@ pub enum RuntimeValueType {
     LongPtr,
     Record,
     Array,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeMemberBacking {
+    /// A compiled/interpreted VBA procedure (`FuncId(proc_index)` in the object's program).
+    Proc(usize),
+    /// A public class field backed directly by `CompatObjectBase.fields[token]`.
+    Field(i32),
+    /// No direct runtime target (e.g. imported typelib or synthetic test descriptor).
+    None,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -237,6 +247,8 @@ pub struct RuntimeMemberDescriptor {
     pub return_type: Option<RuntimeValueType>,
     pub is_default_member: bool,
     pub is_enumerator_member: bool,
+    pub externally_visible: bool,
+    pub backing: RuntimeMemberBacking,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,7 +272,7 @@ pub struct RuntimeClassAsNewFieldDescriptor {
     pub activation: RuntimeClassActivationDescriptor,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RuntimeClassLifecycleDescriptor {
     pub has_initialize: bool,
     pub has_terminate: bool,
@@ -293,6 +305,8 @@ pub struct RuntimeClassDescriptor {
     /// Public type name of an engine-supplied class, separate from its nominal identity.
     pub runtime_type_name: Option<&'static str>,
     pub project_identity: Option<RuntimeProjectClassIdentity>,
+    /// Default dual-interface IID for this class (`Guid::deterministic(unit, "I{Class}")`).
+    pub default_interface_iid: Option<Guid>,
     pub predeclared: bool,
     pub lifecycle: RuntimeClassLifecycleDescriptor,
     pub fields: &'static [RuntimeClassFieldDescriptor],
@@ -416,6 +430,37 @@ impl RuntimeClassDescriptor {
         self.runtime_type_name.unwrap_or(self.name)
     }
 
+    /// The class's default dual `IDispatch` interface descriptor, if present.
+    pub fn dispatch_interface(&self) -> Option<&'static RuntimeInterfaceDescriptor> {
+        self.interfaces
+            .iter()
+            .find(|interface| interface.id == RuntimeInterfaceId::IDispatch)
+    }
+
+    /// Look up a dual-interface member by DISPID and invoke kind.
+    pub fn member_by_dispid(
+        &self,
+        dispid: i32,
+        invoke_kind: RuntimeMemberInvokeKind,
+        public_only: bool,
+    ) -> Option<&'static RuntimeMemberDescriptor> {
+        let dispatch = self.dispatch_interface()?;
+        dispatch.members.iter().find(|member| {
+            member.dispatch_id == dispid
+                && member.invoke_kind == invoke_kind
+                && (!public_only || member.externally_visible)
+        })
+    }
+
+    /// Look up a dual-interface member by vtable slot (`>= 7`).
+    pub fn member_by_vtable_slot(&self, slot: u16) -> Option<&'static RuntimeMemberDescriptor> {
+        let dispatch = self.dispatch_interface()?;
+        dispatch
+            .members
+            .iter()
+            .find(|member| member.vtable_slot == Some(slot))
+    }
+
     /// Validate Linux-testable descriptor facts that future COM export code must be able to trust.
     pub fn validate_com_export_shape(&self) -> Result<(), RuntimeDescriptorIssue> {
         let mut seen_guids = BTreeSet::new();
@@ -451,6 +496,7 @@ pub const COMPAT_OBJECT_CLASS_DESCRIPTOR: RuntimeClassDescriptor = RuntimeClassD
     name: "OxVba.CompatObject",
     runtime_type_name: None,
     project_identity: None,
+    default_interface_iid: None,
     predeclared: false,
     lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
     fields: &[],
@@ -1437,6 +1483,11 @@ impl ObjectRefExt for ObjectRef {
         if guid == RUNTIME_GUID_IUNKNOWN {
             return Some(runtime_iunknown_interface_descriptor());
         }
+        if class_descriptor.default_interface_iid == Some(guid)
+            && let Some(dispatch) = class_descriptor.dispatch_interface()
+        {
+            return Some(dispatch);
+        }
         class_descriptor
             .interfaces
             .iter()
@@ -1538,7 +1589,8 @@ mod tests {
         RawRuntimeIUnknown, RuntimeApartmentModel, RuntimeClassDescriptor, RuntimeDescriptorIssue,
         RuntimeDispatchPlanCache, RuntimeInterfaceDescriptor, RuntimeInterfaceId,
         RuntimeInterfaceIdentity, RuntimeInterfaceKind, RuntimeLifetimePolicy,
-        RuntimeMemberDescriptor, RuntimeMemberInvokeKind, RuntimeParamDescriptor, RuntimeValueType,
+        RuntimeMemberBacking, RuntimeMemberDescriptor, RuntimeMemberInvokeKind,
+        RuntimeParamDescriptor, RuntimeValueType,
     };
 
     #[test]
@@ -1670,6 +1722,7 @@ mod tests {
             name: "Project.Widget",
             runtime_type_name: None,
             project_identity: None,
+            default_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             fields: &[],
@@ -1701,6 +1754,7 @@ mod tests {
             name: "VBA.Collection",
             runtime_type_name: None,
             project_identity: None,
+            default_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             fields: &[],
@@ -1765,6 +1819,7 @@ mod tests {
             name: "Project.Widget",
             runtime_type_name: None,
             project_identity: None,
+            default_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             fields: &[],
@@ -1818,6 +1873,8 @@ mod tests {
             return_type: Some(RuntimeValueType::Variant),
             is_default_member: true,
             is_enumerator_member: false,
+            externally_visible: true,
+            backing: RuntimeMemberBacking::None,
         };
         static DISPATCH_INTERFACE: RuntimeInterfaceDescriptor = RuntimeInterfaceDescriptor {
             id: RuntimeInterfaceId::IDispatch,
@@ -1830,6 +1887,7 @@ mod tests {
             name: "Project.Widget",
             runtime_type_name: None,
             project_identity: None,
+            default_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             fields: &[],
@@ -1862,6 +1920,8 @@ mod tests {
             return_type: Some(RuntimeValueType::Long),
             is_default_member: true,
             is_enumerator_member: false,
+            externally_visible: true,
+            backing: RuntimeMemberBacking::None,
         };
         static LET_VALUE: RuntimeMemberDescriptor = RuntimeMemberDescriptor {
             name: "Value",
@@ -1879,6 +1939,8 @@ mod tests {
             return_type: None,
             is_default_member: true,
             is_enumerator_member: false,
+            externally_visible: true,
+            backing: RuntimeMemberBacking::None,
         };
         static NEW_ENUM: RuntimeMemberDescriptor = RuntimeMemberDescriptor {
             name: "_NewEnum",
@@ -1890,6 +1952,8 @@ mod tests {
             return_type: Some(RuntimeValueType::Object),
             is_default_member: false,
             is_enumerator_member: true,
+            externally_visible: true,
+            backing: RuntimeMemberBacking::None,
         };
         static DISPATCH_INTERFACE: RuntimeInterfaceDescriptor = RuntimeInterfaceDescriptor {
             id: RuntimeInterfaceId::IDispatch,
@@ -1902,6 +1966,7 @@ mod tests {
             name: "Project.Widget",
             runtime_type_name: None,
             project_identity: None,
+            default_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             fields: &[],
@@ -1925,6 +1990,8 @@ mod tests {
             return_type: Some(RuntimeValueType::Long),
             is_default_member: true,
             is_enumerator_member: false,
+            externally_visible: true,
+            backing: RuntimeMemberBacking::None,
         };
         static BAD_SLOT: RuntimeMemberDescriptor = RuntimeMemberDescriptor {
             name: "FastValue",
@@ -1936,6 +2003,8 @@ mod tests {
             return_type: Some(RuntimeValueType::Long),
             is_default_member: false,
             is_enumerator_member: false,
+            externally_visible: true,
+            backing: RuntimeMemberBacking::None,
         };
         static BAD_SETTER: RuntimeMemberDescriptor = RuntimeMemberDescriptor {
             name: "Child",
@@ -1947,6 +2016,8 @@ mod tests {
             return_type: None,
             is_default_member: false,
             is_enumerator_member: false,
+            externally_visible: true,
+            backing: RuntimeMemberBacking::None,
         };
         static BAD_ENUM: RuntimeMemberDescriptor = RuntimeMemberDescriptor {
             name: "_NewEnum",
@@ -1958,6 +2029,8 @@ mod tests {
             return_type: Some(RuntimeValueType::Object),
             is_default_member: false,
             is_enumerator_member: true,
+            externally_visible: true,
+            backing: RuntimeMemberBacking::None,
         };
         static BAD_ARITY: RuntimeMemberDescriptor = RuntimeMemberDescriptor {
             name: "Echo",
@@ -1975,6 +2048,8 @@ mod tests {
             return_type: None,
             is_default_member: false,
             is_enumerator_member: false,
+            externally_visible: true,
+            backing: RuntimeMemberBacking::None,
         };
         static BAD_DEFAULT_INTERFACE: RuntimeInterfaceDescriptor = RuntimeInterfaceDescriptor {
             id: RuntimeInterfaceId::IDispatch,
@@ -2093,6 +2168,7 @@ mod tests {
             name: "Project.Widget",
             runtime_type_name: None,
             project_identity: None,
+            default_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             fields: &[],
@@ -2123,6 +2199,8 @@ mod tests {
             return_type: Some(RuntimeValueType::Variant),
             is_default_member: true,
             is_enumerator_member: false,
+            externally_visible: true,
+            backing: RuntimeMemberBacking::None,
         };
         static SET_VALUE_MEMBER: RuntimeMemberDescriptor = RuntimeMemberDescriptor {
             name: "Value",
@@ -2140,6 +2218,8 @@ mod tests {
             return_type: None,
             is_default_member: true,
             is_enumerator_member: false,
+            externally_visible: true,
+            backing: RuntimeMemberBacking::None,
         };
         static INTERFACE: RuntimeInterfaceDescriptor = RuntimeInterfaceDescriptor {
             id: RuntimeInterfaceId::IDispatch,
@@ -2207,6 +2287,8 @@ mod tests {
             return_type: Some(RuntimeValueType::Variant),
             is_default_member: true,
             is_enumerator_member: false,
+            externally_visible: true,
+            backing: RuntimeMemberBacking::None,
         };
         static SECOND_VALUE_MEMBER: RuntimeMemberDescriptor = RuntimeMemberDescriptor {
             name: "Value",
@@ -2218,6 +2300,8 @@ mod tests {
             return_type: Some(RuntimeValueType::Variant),
             is_default_member: true,
             is_enumerator_member: false,
+            externally_visible: true,
+            backing: RuntimeMemberBacking::None,
         };
         static FIRST_INTERFACE: RuntimeInterfaceDescriptor = RuntimeInterfaceDescriptor {
             id: RuntimeInterfaceId::IDispatch,
@@ -2271,6 +2355,8 @@ mod tests {
             return_type: Some(RuntimeValueType::Variant),
             is_default_member: true,
             is_enumerator_member: false,
+            externally_visible: true,
+            backing: RuntimeMemberBacking::None,
         };
         static PUT_VALUE_MEMBER: RuntimeMemberDescriptor = RuntimeMemberDescriptor {
             name: "Value",
@@ -2288,6 +2374,8 @@ mod tests {
             return_type: None,
             is_default_member: true,
             is_enumerator_member: false,
+            externally_visible: true,
+            backing: RuntimeMemberBacking::None,
         };
         static INTERFACE: RuntimeInterfaceDescriptor = RuntimeInterfaceDescriptor {
             id: RuntimeInterfaceId::IDispatch,
@@ -2330,6 +2418,8 @@ mod tests {
             return_type: Some(RuntimeValueType::Variant),
             is_default_member: true,
             is_enumerator_member: false,
+            externally_visible: true,
+            backing: RuntimeMemberBacking::None,
         };
         static METHOD_VALUE: RuntimeMemberDescriptor = RuntimeMemberDescriptor {
             name: "Value",
@@ -2341,6 +2431,8 @@ mod tests {
             return_type: Some(RuntimeValueType::Variant),
             is_default_member: false,
             is_enumerator_member: false,
+            externally_visible: true,
+            backing: RuntimeMemberBacking::None,
         };
         static INTERFACE: RuntimeInterfaceDescriptor = RuntimeInterfaceDescriptor {
             id: RuntimeInterfaceId::IDispatch,
@@ -2380,6 +2472,8 @@ mod tests {
             return_type: Some(RuntimeValueType::Variant),
             is_default_member: true,
             is_enumerator_member: false,
+            externally_visible: true,
+            backing: RuntimeMemberBacking::None,
         };
         static SECOND: RuntimeMemberDescriptor = RuntimeMemberDescriptor {
             name: "Item",
@@ -2391,6 +2485,8 @@ mod tests {
             return_type: Some(RuntimeValueType::Variant),
             is_default_member: true,
             is_enumerator_member: false,
+            externally_visible: true,
+            backing: RuntimeMemberBacking::None,
         };
         static INTERFACE: RuntimeInterfaceDescriptor = RuntimeInterfaceDescriptor {
             id: RuntimeInterfaceId::IDispatch,
@@ -2436,6 +2532,8 @@ mod tests {
             return_type: Some(RuntimeValueType::Variant),
             is_default_member: true,
             is_enumerator_member: false,
+            externally_visible: true,
+            backing: RuntimeMemberBacking::None,
         };
         static DISPATCH_INTERFACE: RuntimeInterfaceDescriptor = RuntimeInterfaceDescriptor {
             id: RuntimeInterfaceId::IDispatch,
@@ -2455,6 +2553,7 @@ mod tests {
             name: "Project.Widget",
             runtime_type_name: None,
             project_identity: None,
+            default_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             fields: &[],
@@ -2517,6 +2616,8 @@ mod tests {
             return_type: Some(RuntimeValueType::Variant),
             is_default_member: true,
             is_enumerator_member: false,
+            externally_visible: true,
+            backing: RuntimeMemberBacking::None,
         };
         static DISPATCH_INTERFACE: RuntimeInterfaceDescriptor = RuntimeInterfaceDescriptor {
             id: RuntimeInterfaceId::IDispatch,
@@ -2529,6 +2630,7 @@ mod tests {
             name: "Project.Widget",
             runtime_type_name: None,
             project_identity: None,
+            default_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             fields: &[],

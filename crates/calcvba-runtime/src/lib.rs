@@ -10,6 +10,7 @@ pub use calcvba_automation::bstr;
 pub mod builtins;
 pub mod call_frame;
 pub mod callback_thunks;
+pub mod class_descriptor;
 pub mod coerce;
 pub mod collection;
 pub use calcvba_automation::com;
@@ -40,6 +41,11 @@ pub use call_frame::{
 pub use callback_thunks::{
     CallbackExecutor, CallbackRegistration, CallbackThunkError, register_callback,
 };
+pub use class_descriptor::{
+    RuntimeClassActivationSpec, RuntimeClassAsNewFieldSpec, RuntimeClassFieldSpec,
+    RuntimeClassSpec, RuntimeImplementedInterfaceSpec, RuntimeMemberSpec, RuntimeParamSpec,
+    build_runtime_class_descriptor, default_class_interface_iid, runtime_project_interface_guid,
+};
 pub use coerce::{print_display_text, variant_to_vba_string, write_display_text};
 pub use com_record::{ComRecord, ComRecordRef};
 pub use decimal::Decimal96;
@@ -56,9 +62,9 @@ pub use object_ref::{
     RuntimeClassFieldDescriptor, RuntimeClassLifecycleDescriptor, RuntimeDescriptorIssue,
     RuntimeDispatchCacheKey, RuntimeDispatchPlan, RuntimeDispatchPlanCache,
     RuntimeInterfaceDescriptor, RuntimeInterfaceId, RuntimeInterfaceIdentity, RuntimeInterfaceKind,
-    RuntimeInterfaceProjection, RuntimeLifetimePolicy, RuntimeMemberDescriptor,
-    RuntimeMemberInvokeKind, RuntimeObjectIdentity, RuntimeParamDescriptor,
-    RuntimeProjectClassIdentity, RuntimeValueType,
+    RuntimeInterfaceProjection, RuntimeLifetimePolicy, RuntimeMemberBacking,
+    RuntimeMemberDescriptor, RuntimeMemberInvokeKind, RuntimeObjectIdentity,
+    RuntimeParamDescriptor, RuntimeProjectClassIdentity, RuntimeValueType,
 };
 pub use object_ref::{
     finish_pending_termination, has_pending_terminations, reset_pending_terminations,

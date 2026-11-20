@@ -138,6 +138,15 @@ pub struct OxClassField {
     /// Element layout for declared array fields.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub array_element: Option<ArrayElementType>,
+    /// COM/VBA dispatch id assigned to this public field's property accessors, if public.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispid: Option<i32>,
+    /// Dual-interface vtable slot for the public field's PropertyGet accessor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub get_vtable_slot: Option<u16>,
+    /// Dual-interface vtable slot for the public field's PropertyLet/PropertySet accessor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub put_vtable_slot: Option<u16>,
 }
 
 /// A project class: lifecycle hooks, late-bound member table, implemented interfaces.

@@ -97,67 +97,14 @@ impl Default for Classes {
     }
 }
 
-unsafe fn definition(metadata: *const u8, terminate: usize) -> Definition {
-    // SAFETY: the compiler emits this immutable, length-prefixed class schema.
+unsafe fn definition(metadata: *const u8, initialize: usize, terminate: usize) -> Definition {
+    // SAFETY: the compiler emits this immutable class metadata via `encode_native_class_metadata`,
+    // and the shared descriptor builder interns it once for the process lifetime.
     unsafe {
-        let mut at = metadata;
-        let mut word = || {
-            let value = at.cast::<u32>().read_unaligned();
-            at = at.add(4);
-            value
-        };
-        let class = word();
-        let name_len = word() as usize;
-        let implements_count = word();
-        let field_count = word();
-        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(at, name_len));
-        at = at.add(name_len);
-        let mut implements = Vec::new();
-        for _ in 0..implements_count {
-            let len = at.cast::<u32>().read_unaligned() as usize;
-            at = at.add(4);
-            let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(at, len));
-            at = at.add(len);
-            implements.push(name);
-        }
-        let mut fields = Vec::new();
-        for _ in 0..field_count {
-            let token = at.cast::<i32>().read_unaligned();
-            let kind = at.add(4).cast::<u32>().read_unaligned();
-            at = at.add(8);
-            fields.push((token, kind));
-        }
-        // Like the VM/JIT descriptor pool, immutable class identities live for
-        // the process lifetime. Strings borrow the loaded image's schema only
-        // while copying into that pool; no pointer into the DLL escapes it.
-        let (unit, display) = name.rsplit_once('.').unwrap_or(("", name));
-        let project_identity = (!unit.is_empty()).then(|| RuntimeProjectClassIdentity {
-            unit_name: Box::leak(unit.to_owned().into_boxed_str()),
-            class_index: class as usize,
-        });
-        let name = Box::leak(display.to_owned().into_boxed_str());
-        let implements = Box::leak(
-            implements
-                .into_iter()
-                .map(|name| &*Box::leak(name.to_owned().into_boxed_str()))
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
+        let (fields, spec) =
+            calcvba_rt_abi::decode_native_class_metadata(metadata, initialize != 0, terminate != 0);
         Definition {
-            descriptor: Box::leak(Box::new(RuntimeClassDescriptor {
-                name,
-                runtime_type_name: None,
-                project_identity,
-                predeclared: false,
-                lifecycle: RuntimeClassLifecycleDescriptor {
-                    has_initialize: false,
-                    has_terminate: terminate != 0,
-                },
-                fields: &[],
-                as_new_fields: &[],
-                implements,
-                interfaces: &[RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR],
-            })),
+            descriptor: calcvba_runtime::build_runtime_class_descriptor(&spec),
             fields,
             terminate: (terminate != 0).then(|| std::mem::transmute::<usize, Lifecycle>(terminate)),
         }
@@ -185,7 +132,7 @@ pub unsafe extern "C" fn cvb_class_new(
                 let definition = classes
                     .definitions
                     .entry(class)
-                    .or_insert_with(|| definition(metadata, terminate));
+                    .or_insert_with(|| definition(metadata, initialize, terminate));
                 let id = classes.next;
                 classes.next = id.checked_add(1).ok_or(7)?;
                 (

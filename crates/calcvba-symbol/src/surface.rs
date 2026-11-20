@@ -394,79 +394,8 @@ pub fn synthesize_export_surface(
             SurfaceTypeKind::Coclass { .. } => global_attr || global_instancing(attrs.instancing),
         };
 
-        let mut members = Vec::new();
-        let mut events = Vec::new();
-        let mut next_dispid = 1i32;
-        let mut next_vtable = 7u16;
-        let mut next_event_id = 0i32;
-        for member in &scan.members {
-            // Events are assigned an id over the FULL event set in scan order — Public
-            // AND Private — because the runtime/binder index (`ids.event_index_of`)
-            // counts every `Event` regardless of visibility. The id must match for a
-            // cross-bundle `WithEvents` sink to route correctly; only Public events are
-            // then exposed in the surface.
-            if member.kind == SymbolKind::Event {
-                let event_id = next_event_id;
-                next_event_id += 1;
-                if member.visibility == Visibility::Public {
-                    events.push(SurfaceEvent {
-                        name: member_name(symbols, member),
-                        callback_arity: event_arity(symbols, signatures, member.symbol),
-                        symbol: member.symbol,
-                        event_id,
-                    });
-                }
-                continue;
-            }
-            if member.visibility != Visibility::Public {
-                continue;
-            }
-            match member.kind {
-                SymbolKind::Procedure | SymbolKind::Function => {
-                    let dispid = take_dispid(member, &mut next_dispid);
-                    members.push(method_member(
-                        member,
-                        dispid,
-                        is_class,
-                        &mut next_vtable,
-                        symbols,
-                        signatures,
-                        optional_defaults,
-                    ));
-                }
-                SymbolKind::Property => {
-                    let dispid = take_dispid(member, &mut next_dispid);
-                    let sources = PropertySurfaceSources {
-                        symbols,
-                        signatures,
-                        optional_defaults,
-                    };
-                    property_members(
-                        member,
-                        dispid,
-                        is_class,
-                        &mut next_vtable,
-                        &sources,
-                        &mut members,
-                    );
-                }
-                // A public field surfaces as a read/write property pair. A
-                // `WithEventsField` is Private-only in VBA (no `Public WithEvents`)
-                // and is not an exportable accessor, so it never reaches the surface.
-                SymbolKind::Field => {
-                    let dispid = take_dispid(member, &mut next_dispid);
-                    field_members(
-                        member,
-                        dispid,
-                        is_class,
-                        &mut next_vtable,
-                        symbols,
-                        &mut members,
-                    );
-                }
-                _ => {}
-            }
-        }
+        let (members, events) =
+            synthesize_module_members(scan, is_class, symbols, signatures, optional_defaults);
 
         // A coclass publishes the interfaces it implements; a hidden module has none.
         let implements = if is_class {
@@ -495,6 +424,123 @@ pub fn synthesize_export_surface(
         consts,
         interfaces,
     }
+}
+
+/// Synthesize dual-interface dispatch members (DISPIDs and vtable slots) for every class and
+/// document module in a project, whether or not the class is COM-exposed (`VB_Exposed`).
+///
+/// Uses the same provisional rule as [`synthesize_export_surface`] (`dc-yqq0.21`, pending Excel
+/// `ITypeInfo` DISPID measurement on Windows): `0` for `VB_UserMemId = 0`, `-4` for
+/// `VB_UserMemId = -4`, otherwise sequential `1, 2, ...` per unique public member name (shared
+/// across Property Get/Let/Set and public field Get/Let/Set), and dual vtable slots starting at 7.
+pub fn synthesize_project_class_dispatch_members(
+    modules: &[ModuleUnit],
+    scans: &[ModuleScan],
+    symbols: &SymbolTable,
+    signatures: &SignatureTable,
+    optional_defaults: Option<&FoldedOptionalDefaults>,
+) -> HashMap<String, Vec<SurfaceMember>> {
+    let mut out = HashMap::new();
+    for (module, scan) in modules.iter().zip(scans.iter()) {
+        if !matches!(module.module_kind, ModuleKind::Class | ModuleKind::Document) {
+            continue;
+        }
+        let (members, _) =
+            synthesize_module_members(scan, true, symbols, signatures, optional_defaults);
+        out.insert(crate::model::fold_identifier(&scan.module_name), members);
+    }
+    out
+}
+
+fn synthesize_module_members(
+    scan: &ModuleScan,
+    is_class: bool,
+    symbols: &SymbolTable,
+    signatures: &SignatureTable,
+    optional_defaults: Option<&FoldedOptionalDefaults>,
+) -> (Vec<SurfaceMember>, Vec<SurfaceEvent>) {
+    let mut members = Vec::new();
+    let mut events = Vec::new();
+    let mut next_dispid = 1i32;
+    let mut next_vtable = 7u16;
+    let mut next_event_id = 0i32;
+    for member in &scan.members {
+        // Events are assigned an id over the FULL event set in scan order — Public
+        // AND Private — because the runtime/binder index (`ids.event_index_of`)
+        // counts every `Event` regardless of visibility. The id must match for a
+        // cross-bundle `WithEvents` sink to route correctly; only Public events are
+        // then exposed in the surface.
+        if member.kind == SymbolKind::Event {
+            let event_id = next_event_id;
+            next_event_id += 1;
+            if member.visibility == Visibility::Public {
+                events.push(SurfaceEvent {
+                    name: member_name(symbols, member),
+                    callback_arity: event_arity(symbols, signatures, member.symbol),
+                    symbol: member.symbol,
+                    event_id,
+                });
+            }
+            continue;
+        }
+        if member.visibility != Visibility::Public {
+            continue;
+        }
+        if is_class
+            && matches!(
+                member.name_folded.as_str(),
+                "class_initialize" | "class_terminate"
+            )
+        {
+            continue;
+        }
+        match member.kind {
+            SymbolKind::Procedure | SymbolKind::Function => {
+                let dispid = take_dispid(member, &mut next_dispid);
+                members.push(method_member(
+                    member,
+                    dispid,
+                    is_class,
+                    &mut next_vtable,
+                    symbols,
+                    signatures,
+                    optional_defaults,
+                ));
+            }
+            SymbolKind::Property => {
+                let dispid = take_dispid(member, &mut next_dispid);
+                let sources = PropertySurfaceSources {
+                    symbols,
+                    signatures,
+                    optional_defaults,
+                };
+                property_members(
+                    member,
+                    dispid,
+                    is_class,
+                    &mut next_vtable,
+                    &sources,
+                    &mut members,
+                );
+            }
+            // A public field surfaces as a read/write property pair. A
+            // `WithEventsField` is Private-only in VBA (no `Public WithEvents`)
+            // and is not an exportable accessor, so it never reaches the surface.
+            SymbolKind::Field => {
+                let dispid = take_dispid(member, &mut next_dispid);
+                field_members(
+                    member,
+                    dispid,
+                    is_class,
+                    &mut next_vtable,
+                    symbols,
+                    &mut members,
+                );
+            }
+            _ => {}
+        }
+    }
+    (members, events)
 }
 
 /// `Public Enum` members + `Public Const`s of a (non-private) module, each with its

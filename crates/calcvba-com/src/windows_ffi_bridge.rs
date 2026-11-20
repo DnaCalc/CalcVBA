@@ -7,9 +7,8 @@
 use std::ffi::c_void;
 
 #[cfg(target_os = "windows")]
-use libffi::middle::{
-    Arg as LibffiArg, Cif as LibffiCif, CodePtr as LibffiCodePtr, Type as LibffiType,
-};
+use libffi::middle::Arg as LibffiArg;
+use libffi::middle::{Cif as LibffiCif, CodePtr as LibffiCodePtr, Type as LibffiType};
 #[cfg(target_os = "windows")]
 use std::collections::HashMap;
 #[cfg(target_os = "windows")]
@@ -51,7 +50,6 @@ pub enum FfiReturnType {
     LongPtr,
 }
 
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 #[derive(Debug, Clone, Copy)]
 enum PreparedX64Arg {
     Long(i32),
@@ -64,7 +62,6 @@ enum PreparedX64Arg {
     Pointer(*mut c_void),
 }
 
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 impl PreparedX64Arg {
     fn from_ffi_arg(arg: &FfiArg) -> Self {
         match arg {
@@ -94,6 +91,7 @@ impl PreparedX64Arg {
         }
     }
 
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     fn as_arg(&self) -> LibffiArg<'_> {
         match self {
             Self::Long(v) => LibffiArg::new(v),
@@ -108,7 +106,6 @@ impl PreparedX64Arg {
     }
 }
 
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 fn x64_return_type(return_type: FfiReturnType) -> LibffiType {
     match return_type {
         FfiReturnType::Void => LibffiType::void(),
@@ -621,6 +618,43 @@ struct SoCache {
 #[cfg(all(not(target_os = "windows"), not(target_os = "wasi")))]
 static SO_CACHE: Mutex<Option<SoCache>> = Mutex::new(None);
 
+/// One owned `dlopen` reference. Keep it alive while using its exports.
+#[cfg(all(not(target_os = "windows"), not(target_os = "wasi")))]
+#[derive(Debug)]
+pub struct OwnedLibrary(usize);
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "wasi")))]
+impl OwnedLibrary {
+    pub fn load(library: &str) -> Result<Self, String> {
+        let translated = translate_library_name(library);
+        let c_name = std::ffi::CString::new(translated.as_str())
+            .map_err(|_| format!("library name `{library}` contains null byte"))?;
+        // SAFETY: dlerror only clears this thread's pending dl error state.
+        unsafe { libc::dlerror() };
+        // SAFETY: `c_name` is a live NUL-terminated string; dlopen returns null on failure.
+        let handle = unsafe { libc::dlopen(c_name.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+        if handle.is_null() {
+            return Err(format!(
+                "dlopen failed for `{library}` (translated to `{translated}`): {}",
+                dlerror_string()
+            ));
+        }
+        Ok(Self(handle as usize))
+    }
+
+    pub fn handle(&self) -> usize {
+        self.0
+    }
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "wasi")))]
+impl Drop for OwnedLibrary {
+    fn drop(&mut self) {
+        // SAFETY: this value owns exactly the reference `load` acquired.
+        unsafe { libc::dlclose(self.0 as *mut c_void) };
+    }
+}
+
 /// Translates a VBA-style library name to a platform-appropriate shared library path.
 ///
 /// VBA `Declare` statements reference Windows DLL names like `"kernel32"` or
@@ -889,20 +923,51 @@ unsafe fn invoke_c_abi_raw(proc_addr: usize, args: &[i64], _return_type: FfiRetu
 
 /// A fixed native signature prepared once by an owning runtime/import entry.
 /// Invocation borrows exact argument cells and performs no CIF construction.
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+///
+/// The CIF uses the platform's `Declare` convention: Win64 on Windows x64, `stdcall` on 32-bit
+/// Windows (as VBA's `Declare` is), and the C ABI elsewhere.
 pub struct PreparedNativeCall {
     cif: LibffiCif,
     address: usize,
     arguments: usize,
 }
 
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+/// The CIF for the platform's `Declare` convention (see [`PreparedNativeCall`]).
+fn declare_cif<I>(arguments: I, result: LibffiType) -> LibffiCif
+where
+    I: IntoIterator<Item = LibffiType>,
+    I::IntoIter: ExactSizeIterator,
+{
+    #[allow(unused_mut)]
+    let mut cif = LibffiCif::new(arguments, result);
+    #[cfg(all(target_os = "windows", target_arch = "x86"))]
+    cif.set_abi(libffi::raw::ffi_abi_FFI_STDCALL);
+    cif
+}
+
+/// This thread's last OS error after a native call (`Err.LastDllError`): `GetLastError` on
+/// Windows, `errno` elsewhere.
+fn last_os_error() -> u32 {
+    #[cfg(target_os = "windows")]
+    {
+        // SAFETY: GetLastError reads this thread's OS error state.
+        unsafe { GetLastError() }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::io::Error::last_os_error()
+            .raw_os_error()
+            .map_or(0, |code| code as u32)
+    }
+}
+
 impl PreparedNativeCall {
     pub fn aggregate_return(address: usize, arguments: &[FfiReturnType], bytes: usize) -> Self {
         // Win64 returns eligible 1/2/4/8-byte POD aggregates in RAX; larger
-        // aggregates use the hidden result pointer prepared by libffi.
+        // aggregates use the hidden result pointer prepared by libffi (likewise elsewhere,
+        // by each ABI's own rule).
         Self {
-            cif: LibffiCif::new(
+            cif: declare_cif(
                 arguments.iter().copied().map(x64_return_type),
                 LibffiType::structure((0..bytes).map(|_| LibffiType::u8())),
             ),
@@ -912,7 +977,7 @@ impl PreparedNativeCall {
     }
     pub fn aggregate_from_args(address: usize, arguments: &[FfiArg], bytes: usize) -> Self {
         Self {
-            cif: LibffiCif::new(
+            cif: declare_cif(
                 arguments
                     .iter()
                     .map(PreparedX64Arg::from_ffi_arg)
@@ -947,7 +1012,7 @@ impl PreparedNativeCall {
     /// The caller retains the loaded library for the lifetime of this plan.
     pub fn new(address: usize, arguments: &[FfiReturnType], result: FfiReturnType) -> Self {
         Self {
-            cif: LibffiCif::new(
+            cif: declare_cif(
                 arguments.iter().copied().map(x64_return_type),
                 x64_return_type(result),
             ),
@@ -971,8 +1036,8 @@ impl PreparedNativeCall {
                 arguments.as_mut_ptr(),
                 result,
             );
-            GetLastError()
         }
+        last_os_error()
     }
 }
 

@@ -12,7 +12,6 @@
 //! re-exports all of it and adds VBA's semantics.
 
 pub mod abi;
-#[cfg(windows)]
 pub mod automation_record;
 pub mod bstr;
 pub mod com;
@@ -20,6 +19,7 @@ pub mod com_record;
 pub mod decimal;
 pub mod live_counters;
 pub mod object_ref;
+pub mod oleaut;
 pub mod safe_array;
 pub mod value_types;
 pub mod variant;

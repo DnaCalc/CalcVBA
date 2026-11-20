@@ -1,5 +1,6 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
+use crate::COM_DISPID_PROPERTYPUT;
 use crate::fixture_typelib_catalog::TEST_DISPID_COUNT;
 use crate::windows_client::{
     COM_CONNECT_E_CANNOTCONNECT, COM_CONNECT_E_NOCONNECTION, COM_DISP_E_BADPARAMCOUNT,
@@ -15,7 +16,7 @@ use crate::windows_variant::{
     set_variant_from_com_value as com_set_variant_from_com_value,
     variant_to_com_value as com_variant_to_com_value,
 };
-use crate::{COM_DISPID_PROPERTYPUT, ComValue};
+use calcvba_runtime::Variant;
 use std::{
     collections::BTreeMap,
     sync::Mutex,
@@ -1448,14 +1449,14 @@ unsafe fn raw_variant_property_put_token_from_invoke_arg(
 unsafe fn raw_variant_value_from_invoke_arg(
     variant: *const VARIANT,
     arg_index: usize,
-) -> Result<ComValue, i32> {
+) -> Result<Variant, i32> {
     if variant.is_null() {
         return Err(COM_DISP_E_TYPEMISMATCH);
     }
     match raw_variant_to_com_value(&*variant) {
         Ok(value) => Ok(value),
         Err(_) if (*variant).Anonymous.Anonymous.vt == VT_EMPTY && arg_index == 0 => {
-            Ok(ComValue::I32(0))
+            Ok(Variant::from_i32(0))
         }
         Err(_) => Err(COM_DISP_E_TYPEMISMATCH),
     }
@@ -1495,7 +1496,7 @@ unsafe fn raw_variant_value_from_dispparams(
     pparams: *mut DISPPARAMS,
     logical_index: usize,
     puargerr: *mut u32,
-) -> Result<ComValue, i32> {
+) -> Result<Variant, i32> {
     if pparams.is_null() {
         return Err(COM_DISP_E_BADPARAMCOUNT);
     }
@@ -3284,9 +3285,17 @@ unsafe fn classify_variant_array_first_element_vt(
     set_variant_i32(inner_vt, pvarresult);
     COM_S_OK
 }
+/// An integer argument (`VT_I2`, `VT_I4` or `VT_UI1`) as the `long` a server parameter takes.
+fn integer_value(value: &Variant) -> Option<i32> {
+    value
+        .as_i32()
+        .or_else(|| value.as_i16().map(i32::from))
+        .or_else(|| value.as_u8().map(i32::from))
+}
+
 #[cfg(target_os = "windows")]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn raw_variant_to_com_value(variant: &VARIANT) -> Result<ComValue, String> {
+unsafe fn raw_variant_to_com_value(variant: &VARIANT) -> Result<Variant, String> {
     com_variant_to_com_value(variant)
 }
 
@@ -3294,7 +3303,7 @@ unsafe fn raw_variant_to_com_value(variant: &VARIANT) -> Result<ComValue, String
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn set_variant_dispatch_arg<F>(
     variant: *mut VARIANT,
-    value: &ComValue,
+    value: &Variant,
     resolve_object: &mut F,
 ) -> Result<(), String>
 where
@@ -3309,8 +3318,8 @@ where
     let mut add_ref_dispatch = |dispatch: *mut core::ffi::c_void| {
         raw_add_ref_dispatch(dispatch.cast::<RawIDispatch>());
     };
-    match value {
-        ComValue::Object(_) => com_set_variant_from_com_value(
+    match value.vtype() {
+        calcvba_runtime::VarType::Object => com_set_variant_from_com_value(
             variant,
             value,
             &mut resolve_dispatch,
@@ -4083,11 +4092,14 @@ unsafe extern "system" fn calcvba_dual_put_value(
     }
     let owner = as_calcvba_dual(this);
     match com_variant_to_com_value(&*value) {
-        Ok(ComValue::I32(v)) => {
-            (*owner).last_put_value.store(v, Ordering::Release);
-            COM_S_OK
-        }
-        Ok(_) => COM_DISP_E_TYPEMISMATCH,
+        // A server coerces any integer argument to its `long` parameter, as oleaut32 does.
+        Ok(value) => match integer_value(&value) {
+            Some(v) => {
+                (*owner).last_put_value.store(v, Ordering::Release);
+                COM_S_OK
+            }
+            None => COM_DISP_E_TYPEMISMATCH,
+        },
         Err(_) => COM_DISP_E_TYPEMISMATCH,
     }
 }

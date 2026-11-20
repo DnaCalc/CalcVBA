@@ -2790,7 +2790,7 @@ unsafe fn optional_param_default_for(
             // never mutates or frees it — the typelib retains ownership).
             let pdex = &*(pdex as *const PARAMDESCEX);
             if let Ok(value) = crate::variant_to_com_value(&pdex.var_default_value)
-                && let Some(default) = crate::ComDefaultValue::from_com_value(&value)
+                && let Some(default) = crate::ComDefaultValue::from_variant(&value)
             {
                 return OptionalParamDefault::HasDefault(default);
             }
@@ -4365,7 +4365,7 @@ fn enumerate_typelib_constants(
                                 as *const windows_sys::Win32::System::Variant::VARIANT),
                         )
                         .map_err(|e| format!("constant {owner}.{name}: {e}"))?;
-                        let value = crate::ComDefaultValue::from_com_value(&value)
+                        let value = crate::ComDefaultValue::from_variant(&value)
                             .ok_or("unsupported constant carrier")?;
                         Ok(Some(crate::TypeLibConstantMetadata {
                             owner: owner.clone(),

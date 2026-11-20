@@ -57,8 +57,7 @@ use calcvba_runtime::object_ref::{
 use calcvba_runtime::safe_array::{SafeArray, SafeArrayBound};
 use calcvba_runtime::variant::VarType;
 use calcvba_runtime::{
-    CallbackExecutor, CallbackRegistration, InteropInvokeKind, Variant, VbaRecord,
-    VerifiedInteropPlan, register_callback,
+    CallbackExecutor, CallbackRegistration, Variant, VbaRecord, register_callback,
 };
 
 /// `DISP_E_PARAMNOTFOUND` — the sentinel an omitted optional argument carries into a
@@ -5007,7 +5006,6 @@ impl<'h> Vm3<'h> {
         invoke_kind: TypeLibMemberInvokeKind,
         args: Vec<Variant>,
     ) -> Result<Variant, Vm3Error> {
-        let _plan = verified_late_dispatch_plan(&member, invoke_kind, &[])?;
         let call_args: Vec<_> = args.iter().map(calcvba_com::call::ComArg::value).collect();
         let host = self.exec.host;
         let result = {
@@ -5059,7 +5057,6 @@ impl<'h> Vm3<'h> {
         invoke_kind: TypeLibMemberInvokeKind,
         args: &[OxCallArg],
     ) -> Result<Variant, Vm3Error> {
-        let _plan = verified_late_dispatch_plan(&member, invoke_kind, args)?;
         // The argument cells: ByVal values (borrowed by the call), and for a ByRef place the
         // `VT_BYREF` reference to its storage, which the callee writes through.
         let mut cells = Vec::with_capacity(args.len());
@@ -5402,7 +5399,6 @@ impl<'h> Vm3<'h> {
                 .map(|rt| Cow::Owned(format!("{rt:?}"))),
         };
 
-        let _plan = verified_declare_plan(descriptor)?;
         let _callback_regs =
             self.prepare_native_callback_args(descriptor, &param_type_strings, &mut cells)?;
         let call_args = com_call_args(args, &cells);
@@ -6342,120 +6338,6 @@ fn project_member_kind(k: TypeLibMemberInvokeKind) -> ProjectMemberKind {
 /// The dynamic COM dispatch kind (the late-bound `IDispatch::Invoke` flag hint) a call-site
 /// accessor selects. Mirrors vm2's `member_kind_to_dynamic` composed with the invoke-kind→
 /// member-kind mapping: `Put`→`Let`, `PutRef`→`Set`.
-fn interop_invoke_kind(k: TypeLibMemberInvokeKind) -> InteropInvokeKind {
-    match k {
-        TypeLibMemberInvokeKind::Method => InteropInvokeKind::Method,
-        TypeLibMemberInvokeKind::PropertyGet => InteropInvokeKind::PropertyGet,
-        TypeLibMemberInvokeKind::PropertyPut => InteropInvokeKind::PropertyPut,
-        TypeLibMemberInvokeKind::PropertyPutRef => InteropInvokeKind::PropertyPutRef,
-    }
-}
-
-fn late_dispatch_member_identity(member: &DynamicMemberSelector) -> (String, bool) {
-    match member {
-        DynamicMemberSelector::Name(name) => (name.clone(), false),
-        DynamicMemberSelector::TokenNamed { name, .. } => (name.clone(), false),
-        DynamicMemberSelector::DefaultMember => (String::new(), true),
-        DynamicMemberSelector::Token(_) => (String::new(), true),
-    }
-}
-
-fn verified_late_dispatch_plan(
-    member: &DynamicMemberSelector,
-    invoke_kind: TypeLibMemberInvokeKind,
-    args: &[OxCallArg],
-) -> Result<VerifiedInteropPlan, Vm3Error> {
-    let (member_name, default_member) = late_dispatch_member_identity(member);
-    let named_arg_count = args
-        .iter()
-        .filter(|arg| matches!(arg, OxCallArg::Named { .. }))
-        .count();
-    let byref_slots = args
-        .iter()
-        .enumerate()
-        .filter_map(|(index, arg)| arg_is_by_ref(arg).then_some(index as u32))
-        .collect();
-    VerifiedInteropPlan::late_dispatch(
-        member_name,
-        default_member,
-        interop_invoke_kind(invoke_kind),
-        named_arg_count,
-        byref_slots,
-    )
-    .map_err(|err| Vm3Error::Fault(Fault::new(5, err.message)))
-}
-
-fn verified_declare_plan(
-    descriptor: &calcvba_bundle::ExternalCallDescriptor,
-) -> Result<VerifiedInteropPlan, Vm3Error> {
-    let entry = if descriptor.alias.is_empty() {
-        descriptor.declared_name.clone()
-    } else {
-        descriptor.alias.clone()
-    };
-    VerifiedInteropPlan::declare_x64(
-        descriptor.descriptor_id,
-        descriptor.library.clone(),
-        entry,
-        descriptor.calling_convention.clone(),
-        descriptor.param_by_ref.clone(),
-        descriptor.return_type.as_ref().map(|ty| format!("{ty:?}")),
-    )
-    .map_err(|err| Vm3Error::Fault(Fault::new(5, err.message)))
-}
-
-#[cfg(test)]
-mod interop_plan_tests {
-    use super::*;
-    use calcvba_bundle::{DeclareParamType, ExternalCallDescriptor};
-    use calcvba_runtime::DynLinkSymbol;
-
-    #[test]
-    fn interop_plan_late_dispatch_verifies() {
-        let plan = verified_late_dispatch_plan(
-            &DynamicMemberSelector::Name("Count".to_string()),
-            TypeLibMemberInvokeKind::PropertyGet,
-            &[],
-        )
-        .expect("late plan");
-        assert!(
-            plan.identity.canonical.contains("late-dispatch"),
-            "{}",
-            plan.identity.canonical
-        );
-        assert!(plan.identity.canonical.contains("member=Count"));
-    }
-
-    #[test]
-    fn interop_plan_declare_verifies() {
-        let descriptor = ExternalCallDescriptor {
-            descriptor_id: 1,
-            declared_name: "NativeSqrt".to_string(),
-            library: "msvcrt".to_string(),
-            alias: "sqrt".to_string(),
-            ordinal_alias: false,
-            symbol: DynLinkSymbol::new(0),
-            marshal_lane: "m1-native-ffi".to_string(),
-            calling_convention: "CDecl".to_string(),
-            selection_policy: "case-insensitive".to_string(),
-            param_count: 1,
-            param_types: vec![DeclareParamType::Double],
-            param_by_ref: vec![false],
-            return_type: Some(DeclareParamType::Double),
-            return_record_fields: None,
-            return_record_name: None,
-        };
-        let plan = verified_declare_plan(&descriptor).expect("declare plan");
-        assert!(
-            plan.identity.canonical.contains("declare-x64"),
-            "{}",
-            plan.identity.canonical
-        );
-        assert!(plan.identity.canonical.contains("lib=msvcrt"));
-        assert!(plan.identity.canonical.contains("entry=sqrt"));
-    }
-}
-
 /// The member of a COM object call.
 fn com_member(member: &DynamicMemberSelector) -> calcvba_com::call::ComMember<'_> {
     match member {

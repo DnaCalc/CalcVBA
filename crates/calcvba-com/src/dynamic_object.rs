@@ -1,6 +1,6 @@
 use crate::{
     ComCallbackPayload, ComCallbackToken, ComInvokeArg, ComInvokeKind, ComInvokeRequest,
-    ComMemberToken, ComSubscriptionToken, ComValue,
+    ComMemberToken, ComSubscriptionToken,
 };
 use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::{ObjectRef, RuntimeByRefSlot, Variant};
@@ -74,43 +74,24 @@ pub struct DynamicValue {
 }
 
 impl DynamicValue {
-    /// Builds a dynamic value from the shared COM carrier, retaining the exact
-    /// runtime [`Variant`] payload.
-    pub fn from_com_value(value: ComValue) -> Self {
-        Self {
-            value: value
-                .to_variant()
-                .expect("dynamic COM values must be exact VARIANT-compatible"),
-        }
-    }
-
-    /// Builds a dynamic value from a retained runtime [`Variant`].
+    /// A dynamic value: the runtime cell itself.
     pub fn from_variant(value: Variant) -> Self {
         Self { value }
     }
 
-    /// Projects the retained dynamic `Variant` back into the shared COM
-    /// carrier.
-    pub fn to_com_value(&self) -> ComValue {
-        ComValue::from_variant(&self.value)
-            .expect("dynamic COM VARIANT payload must project to ComValue")
-    }
-
-    /// Retained value-model payload for dynamic COM dispatch.
+    /// The value's cell.
     pub fn variant(&self) -> &Variant {
         &self.value
     }
-}
 
-impl From<ComValue> for DynamicValue {
-    fn from(value: ComValue) -> Self {
-        Self::from_com_value(value)
+    pub fn into_variant(self) -> Variant {
+        self.value
     }
 }
 
-impl From<DynamicValue> for ComValue {
-    fn from(value: DynamicValue) -> Self {
-        value.to_com_value()
+impl From<Variant> for DynamicValue {
+    fn from(value: Variant) -> Self {
+        Self::from_variant(value)
     }
 }
 
@@ -175,7 +156,7 @@ pub struct DynamicCallArg {
 impl From<ComInvokeArg> for DynamicCallArg {
     fn from(value: ComInvokeArg) -> Self {
         Self {
-            value: value.value.map(|value| value.to_com_value().into()),
+            value: value.value.map(|value| value.into_variant().into()),
             name: value.name,
             by_ref: value.by_ref,
         }
@@ -185,7 +166,7 @@ impl From<ComInvokeArg> for DynamicCallArg {
 impl From<DynamicCallArg> for ComInvokeArg {
     fn from(value: DynamicCallArg) -> Self {
         Self {
-            value: value.value.map(|value| value.to_com_value().into()),
+            value: value.value.map(|value| value.into_variant().into()),
             name: value.name,
             by_ref: value.by_ref,
         }
@@ -255,7 +236,7 @@ impl From<ComCallbackPayload> for DynamicEventPayload {
             args: value
                 .args
                 .into_iter()
-                .map(|value| value.to_com_value().into())
+                .map(|value| value.into_variant().into())
                 .collect(),
         }
     }
@@ -263,9 +244,9 @@ impl From<ComCallbackPayload> for DynamicEventPayload {
 
 #[cfg(test)]
 mod tests {
-    use crate::{ComInvokeArg, ComInvokeKind, ComInvokeRequest, ComValue};
+    use crate::{ComInvokeArg, ComInvokeKind, ComInvokeRequest};
     use calcvba_runtime::ObjectRefExt;
-    use calcvba_runtime::{ObjectRef, RuntimeByRefSlot, RuntimeValueType, VarType};
+    use calcvba_runtime::{ObjectRef, RuntimeByRefSlot, RuntimeValueType, VarType, Variant};
 
     use super::{DynamicCallKind, DynamicCallRequest, DynamicMemberSelector, DynamicValue};
 
@@ -274,7 +255,7 @@ mod tests {
         let request = ComInvokeRequest {
             object: ObjectRef::from_compat_identity(20_004),
             member: 0.into(),
-            args: vec![ComInvokeArg::named_value(ComValue::I32(7), "value")],
+            args: vec![ComInvokeArg::named_value(Variant::from_i32(7), "value")],
             invoke_kind_hint: Some(ComInvokeKind::PropertyPut),
         };
 
@@ -286,9 +267,9 @@ mod tests {
 
     #[test]
     fn dynamic_value_retains_payload_as_variant() {
-        let value = DynamicValue::from_com_value(ComValue::I32(7));
+        let value = DynamicValue::from_variant(Variant::from_i32(7));
         assert_eq!(value.variant().vtype(), VarType::Long);
-        assert_eq!(value.to_com_value(), ComValue::I32(7));
+        assert_eq!(value.into_variant(), Variant::from_i32(7));
     }
 
     #[test]
@@ -296,12 +277,13 @@ mod tests {
         // W1-com-005: a COM server can return VT_UI8 above i64::MAX; passing
         // that Variant back as a call argument must project, not abort.
         let value = DynamicValue::from_variant(calcvba_runtime::Variant::from_u64(u64::MAX));
-        let com = value.to_com_value();
-        assert_eq!(com, ComValue::U64(u64::MAX));
-        assert_eq!(
-            com.to_variant().expect("round trip").as_u64(),
-            Some(u64::MAX)
-        );
+        let arg: crate::ComInvokeArg = super::DynamicCallArg {
+            value: Some(value),
+            name: None,
+            by_ref: None,
+        }
+        .into();
+        assert_eq!(arg.value.expect("value").variant().as_u64(), Some(u64::MAX));
     }
 
     #[test]
@@ -310,7 +292,7 @@ mod tests {
             object: ObjectRef::from_compat_identity(20_007),
             member: DynamicMemberSelector::Token(11),
             args: vec![super::DynamicCallArg {
-                value: Some(ComValue::Null.into()),
+                value: Some(Variant::null().into()),
                 name: Some("value".to_string()),
                 by_ref: None,
             }],
@@ -328,7 +310,7 @@ mod tests {
         );
         assert_eq!(
             com_request.args[0],
-            ComInvokeArg::named_value(ComValue::Null, "value")
+            ComInvokeArg::named_value(Variant::null(), "value")
         );
     }
 
@@ -350,7 +332,7 @@ mod tests {
     #[test]
     fn dynamic_call_arg_roundtrip_preserves_byref_slot() {
         let slot = RuntimeByRefSlot::new(2, Some(RuntimeValueType::Long));
-        let arg = ComInvokeArg::positional_by_ref(ComValue::I32(7), slot);
+        let arg = ComInvokeArg::positional_by_ref(Variant::from_i32(7), slot);
 
         let dynamic: super::DynamicCallArg = arg.into();
         assert_eq!(dynamic.by_ref, Some(slot));
@@ -358,8 +340,8 @@ mod tests {
         let roundtrip: ComInvokeArg = dynamic.into();
         assert_eq!(roundtrip.by_ref, Some(slot));
         assert_eq!(
-            roundtrip.value.map(|value| value.to_com_value()),
-            Some(ComValue::I32(7))
+            roundtrip.value.map(|value| value.into_variant()),
+            Some(Variant::from_i32(7))
         );
     }
 }

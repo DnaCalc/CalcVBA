@@ -30,7 +30,7 @@ use crate::windows_ffi_bridge::{FfiArg, FfiReturnType, call_via_libffi};
 use crate::windows_invoke::{
     ComInvokeExceptionInfo, ComInvokeFailure, VtableInvocationPlan, bstr_to_string_and_free,
 };
-use crate::{ComValue, TypeLibParamType, TypeLibRecordInfo, TypeLibWireType};
+use crate::{TypeLibParamType, TypeLibRecordInfo, TypeLibWireType};
 use calcvba_runtime::{
     ComRecord, Decimal96, ObjectRef, RuntimeByRefSlot, RuntimeByRefWriteback, Variant,
 };
@@ -602,7 +602,12 @@ where
     FResolveObject: FnMut(ObjectRef) -> Result<*mut c_void, String>,
 {
     use TypeLibParamType as P;
-    let value = ComValue::from_variant(arg)?;
+    // A reference passes its target (`VariantCopyInd`).
+    let value = if arg.vtype() == calcvba_runtime::VarType::ByRef {
+        arg.try_clone()?
+    } else {
+        arg.clone()
+    };
     if let Some(element_vt) = wire_type.and_then(TypeLibWireType::safearray_element_vt)
         && wire_type.is_some_and(TypeLibWireType::is_safearray_wire)
     {
@@ -688,9 +693,10 @@ where
         // BSTR: we allocate the wide string; the callee borrows it [in]; we free
         // it after the call (InboundOwned::Bstr).
         P::String => {
-            let text = match &value {
-                ComValue::String(s) => s.to_string(),
-                other => {
+            let text = match value.as_bstr() {
+                Some(s) => s.to_string(),
+                None => {
+                    let other = &value;
                     return Err(format!(
                         "vtable VT_BSTR parameter expects a String, got {other:?}"
                     ));
@@ -736,12 +742,16 @@ where
                 None => (FfiArg::Pointer(dispatch), InboundOwned::None),
             }
         }
-        P::Record => match value {
-            ComValue::Record(record) => (
-                FfiArg::Pointer(record.record_data_ptr()),
-                InboundOwned::Record(record),
-            ),
-            other => {
+        P::Record => match value.as_com_record().map(|record| record.try_to_owned()) {
+            Some(record) => {
+                let record = record?;
+                (
+                    FfiArg::Pointer(record.record_data_ptr()),
+                    InboundOwned::Record(record),
+                )
+            }
+            None => {
+                let other = &value;
                 return Err(format!(
                     "vtable record parameter expects a Record argument, got {other:?}"
                 ));
@@ -795,7 +805,7 @@ where
 fn marshal_byref_param<FResolveObject>(
     param_type: TypeLibParamType,
     wire_type: Option<&TypeLibWireType>,
-    value: &ComValue,
+    value: &Variant,
     arg: &Variant,
     param_iid: Option<crate::ComInterfaceIid>,
     byref_slot: Option<RuntimeByRefSlot>,
@@ -884,9 +894,10 @@ where
             (ptr.cast::<c_void>(), ByRefCell::Variant(slot, cell))
         }
         P::ByRefString => {
-            let text = match value {
-                ComValue::String(s) => s.to_string(),
-                other => {
+            let text = match value.as_bstr() {
+                Some(s) => s.to_string(),
+                None => {
+                    let other = &value;
                     return Err(format!(
                         "vtable VT_BYREF|VT_BSTR parameter expects a String, got {other:?}"
                     ));
@@ -938,12 +949,12 @@ where
                     "vtable ByRef record requires explicit ByRefRecord wire metadata".to_string(),
                 );
             }
-            let ComValue::Record(record) = value else {
+            let Some(record) = value.as_com_record() else {
                 return Err(format!(
                     "vtable ByRef record parameter expects a Record argument, got {value:?}"
                 ));
             };
-            let record = record.try_clone()?;
+            let record = record.try_to_owned()?;
             let ptr = record.record_data_ptr();
             (ptr.cast::<c_void>(), ByRefCell::Record(slot, record))
         }
@@ -957,7 +968,7 @@ where
 }
 
 fn marshal_byref_safearray_param<FResolveObject>(
-    value: &ComValue,
+    value: &Variant,
     element_vt: u16,
     record_info: Option<&crate::TypeLibRecordInfo>,
     byref_slot: Option<RuntimeByRefSlot>,
@@ -987,7 +998,7 @@ where
 }
 
 fn marshal_inbound_safearray_param<FResolveObject>(
-    value: &ComValue,
+    value: &Variant,
     element_vt: u16,
     record_info: Option<&crate::TypeLibRecordInfo>,
     resolve_object: &mut FResolveObject,
@@ -995,7 +1006,7 @@ fn marshal_inbound_safearray_param<FResolveObject>(
 where
     FResolveObject: FnMut(ObjectRef) -> Result<*mut c_void, String>,
 {
-    if !matches!(value, ComValue::ArrayIntent(_)) {
+    if value.as_safearray().is_none() {
         return Err(format!(
             "vtable SAFEARRAY parameter expects an array argument, got {value:?}"
         ));
@@ -1163,7 +1174,6 @@ where
             // SAFETY: on a successful HRESULT the ByRef VARIANT cell is initialized
             // and variant_to_com_value only reads its discriminant/payload.
             let value = unsafe { crate::variant_to_com_value(cell.as_ref()) }
-                .and_then(|value| value.to_variant())
                 .map_err(|detail| validation_failure(label, dispid, detail))?;
             (*slot, value)
         }
@@ -1229,7 +1239,6 @@ where
             // marshaller; variant_to_com_value only reads it and clones the
             // SAFEARRAY into the runtime carrier.
             let value = unsafe { crate::variant_to_com_value(cell.as_ref()) }
-                .and_then(|value| value.to_variant())
                 .map_err(|detail| validation_failure(label, dispid, detail))?;
             (*slot, value)
         }
@@ -1254,12 +1263,11 @@ fn free_byref_cell(cell: ByRefCell) {
                 unsafe { SysFreeString(*cell) };
             }
         }
-        ByRefCell::Interface(_, cell) => {
-            if !(*cell).is_null() {
-                // SAFETY: the interface cell still owns this QI/transferred
-                // reference because decode did not bind it.
-                unsafe { crate::release_unknown(*cell) };
-            }
+        // The interface cell still owns this QI/transferred reference because decode
+        // did not bind it.
+        ByRefCell::Interface(_, cell) if !(*cell).is_null() => {
+            // SAFETY: see above.
+            unsafe { crate::release_unknown(*cell) };
         }
         _ => {}
     }
@@ -1514,7 +1522,6 @@ where
                 // SAFETY: on the success path the callee populated this VARIANT per its
                 // declared retval type; variant_to_com_value only reads it.
                 let value = unsafe { crate::variant_to_com_value(b.as_ref()) }
-                    .and_then(|value| value.to_variant())
                     .map_err(|detail| validation_failure(label, dispid, detail));
                 // SAFETY: take ownership of any payload the callee wrote, then clear
                 // the cell exactly once.
@@ -1557,7 +1564,6 @@ where
                 variant.Anonymous.Anonymous.vt = VT_ARRAY | element_vt;
                 variant.Anonymous.Anonymous.Anonymous.parray = *cell;
                 let value = crate::variant_to_com_value(&variant)
-                    .and_then(|value| value.to_variant())
                     .map_err(|detail| validation_failure(label, dispid, detail));
                 let _ = VariantClear(&mut variant);
                 value?
@@ -1597,73 +1603,90 @@ fn decimal96_to_windows(value: Decimal96) -> DECIMAL {
     }
 }
 
-// ── ComValue → scalar conversions (shared shapes with the dynlink path) ──
+// ── Runtime cell → scalar conversions (shared shapes with the dynlink path) ──
 
-fn com_value_to_i32(value: &ComValue, what: &str) -> Result<i32, String> {
-    match value {
-        ComValue::I32(v) => Ok(*v),
-        ComValue::I64(v) => i32::try_from(*v)
+/// The integer a cell holds (every integer subtype), as the old semantic carrier's
+/// `I32`/`I64`/`U64` arms accepted it.
+fn cell_integer(value: &Variant) -> Option<i128> {
+    value
+        .as_i32()
+        .map(i128::from)
+        .or_else(|| value.as_i16().map(i128::from))
+        .or_else(|| value.as_u8().map(i128::from))
+        .or_else(|| value.as_i8().map(i128::from))
+        .or_else(|| value.as_u16().map(i128::from))
+        .or_else(|| value.as_u32().map(i128::from))
+        .or_else(|| value.as_i64().map(i128::from))
+        .or_else(|| value.as_u64().map(i128::from))
+}
+
+fn com_value_to_i32(value: &Variant, what: &str) -> Result<i32, String> {
+    if let Some(b) = value.as_bool() {
+        return Ok(if b { -1 } else { 0 });
+    }
+    match cell_integer(value) {
+        Some(v) => i32::try_from(v)
             .map_err(|_| format!("vtable {what} parameter value {v} exceeds i32 range")),
-        ComValue::Bool(v) => Ok(if *v { -1 } else { 0 }),
-        other => Err(format!(
-            "vtable {what} parameter expects an integer, got {other:?}"
+        None => Err(format!(
+            "vtable {what} parameter expects an integer, got {value:?}"
         )),
     }
 }
 
-fn com_value_to_i16(value: &ComValue, what: &str) -> Result<i16, String> {
+fn com_value_to_i16(value: &Variant, what: &str) -> Result<i16, String> {
     let as_i32 = com_value_to_i32(value, what)?;
     i16::try_from(as_i32)
         .map_err(|_| format!("vtable {what} parameter value {as_i32} exceeds i16 range"))
 }
 
-fn com_value_to_u8(value: &ComValue) -> Result<u8, String> {
+fn com_value_to_u8(value: &Variant) -> Result<u8, String> {
     let as_i32 = com_value_to_i32(value, "VT_UI1")?;
     u8::try_from(as_i32)
         .map_err(|_| format!("vtable VT_UI1 parameter value {as_i32} exceeds u8 range"))
 }
 
-fn com_value_to_i64(value: &ComValue) -> Result<i64, String> {
-    match value {
-        ComValue::I32(v) => Ok(i64::from(*v)),
-        ComValue::I64(v) => Ok(*v),
-        ComValue::U64(v) => i64::try_from(*v)
+fn com_value_to_i64(value: &Variant) -> Result<i64, String> {
+    match cell_integer(value) {
+        Some(v) => i64::try_from(v)
             .map_err(|_| format!("vtable VT_I8 parameter value {v} exceeds i64 range")),
-        other => Err(format!(
-            "vtable VT_I8 parameter expects an integer, got {other:?}"
+        None => Err(format!(
+            "vtable VT_I8 parameter expects an integer, got {value:?}"
         )),
     }
 }
 
-fn com_value_to_f64(value: &ComValue) -> Result<f64, String> {
-    match value {
-        ComValue::F64(v) => Ok(v.as_f64()),
-        ComValue::I32(v) => Ok(f64::from(*v)),
-        ComValue::I64(v) => Ok(*v as f64),
-        other => Err(format!(
-            "vtable floating-point parameter expects a number, got {other:?}"
+fn com_value_to_f64(value: &Variant) -> Result<f64, String> {
+    if let Some(v) = value
+        .as_f64()
+        .or_else(|| value.as_f32().map(f64::from))
+        .or_else(|| value.as_date_f64())
+    {
+        return Ok(v);
+    }
+    match cell_integer(value).and_then(|v| i64::try_from(v).ok()) {
+        Some(v) => Ok(v as f64),
+        None => Err(format!(
+            "vtable floating-point parameter expects a number, got {value:?}"
         )),
     }
 }
 
-fn com_value_to_currency_i64(value: &ComValue) -> Result<i64, String> {
-    match value {
-        ComValue::Currency(v) => Ok(v.scaled_i64()),
-        ComValue::I32(v) => Ok(i64::from(*v) * 10_000),
-        ComValue::I64(v) => Ok(v.saturating_mul(10_000)),
-        other => Err(format!(
-            "vtable VT_CY parameter expects a currency/integer, got {other:?}"
+fn com_value_to_currency_i64(value: &Variant) -> Result<i64, String> {
+    if let Some(v) = value.as_currency_scaled_i64() {
+        return Ok(v);
+    }
+    match cell_integer(value).and_then(|v| i64::try_from(v).ok()) {
+        Some(v) => Ok(v.saturating_mul(10_000)),
+        None => Err(format!(
+            "vtable VT_CY parameter expects a currency/integer, got {value:?}"
         )),
     }
 }
 
-fn com_value_to_decimal(value: &ComValue) -> Result<Decimal96, String> {
-    match value {
-        ComValue::Decimal(v) => Ok(*v),
-        other => Err(format!(
-            "vtable VT_DECIMAL parameter expects a Decimal, got {other:?}"
-        )),
-    }
+fn com_value_to_decimal(value: &Variant) -> Result<Decimal96, String> {
+    value
+        .as_decimal96()
+        .ok_or_else(|| format!("vtable VT_DECIMAL parameter expects a Decimal, got {value:?}"))
 }
 
 #[cfg(test)]

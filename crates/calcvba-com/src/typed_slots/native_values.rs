@@ -82,10 +82,7 @@ impl NativeVariant {
     }
     /// The pointer in the cell's payload (an interface, BSTR or `SAFEARRAY*`), borrowed.
     fn payload_pointer(&self) -> *mut c_void {
-        let bytes = self.0.to_wire_bytes();
-        let mut address = [0u8; core::mem::size_of::<usize>()];
-        address.copy_from_slice(&bytes[8..8 + core::mem::size_of::<usize>()]);
-        std::ptr::with_exposed_provenance_mut(usize::from_le_bytes(address))
+        self.0.core().pointer()
     }
     /// The cell's raw `vt`.
     fn tag(&self) -> u16 {
@@ -108,19 +105,17 @@ impl NativeVariant {
         owner: &NativeReceiver,
         interface: Option<usize>,
     ) -> Result<Variant, TypedFault> {
-        let bytes = self.0.to_wire_bytes();
-        // The callee may have replaced what the cell held: take its bytes as they are now.
-        std::mem::forget(std::mem::replace(&mut self.0, Variant::empty()));
+        // The callee may have replaced what the cell held: take it as it is now.
+        let taken = core::mem::ManuallyDrop::new(std::mem::replace(&mut self.0, Variant::empty()));
         // SAFETY: the cell's contents are owned here (the callee's output or our own input,
         // possibly replaced by it), and nothing else frees them.
-        let value = match unsafe { Variant::adopt_automation(bytes) } {
+        let value = match unsafe { Variant::adopt_automation_cell((&raw const *taken).cast()) } {
             Ok(value) => value,
             Err(_) => {
-                let mut cell: VARIANT =
-                    // SAFETY: the bytes are a VARIANT this frame owns.
-                    unsafe { std::mem::transmute::<[u8; calcvba_runtime::WIRE_SIZE], VARIANT>(bytes) };
-                // SAFETY: as above; clearing releases what it holds.
-                unsafe { VariantClear(&mut cell) };
+                let mut cell = core::mem::ManuallyDrop::into_inner(taken);
+                // SAFETY: the cell is a VARIANT this frame owns; clearing releases what it holds.
+                unsafe { VariantClear((&raw mut cell).cast()) };
+                core::mem::forget(cell);
                 return Err(fault(458));
             }
         };

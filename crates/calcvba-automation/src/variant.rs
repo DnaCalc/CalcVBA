@@ -634,6 +634,20 @@ enum RecordCell<'a> {
     Vba(&'a VbaRecord),
 }
 
+/// Whether a callee's `VARIANT` of type `vt` can move into the runtime as it is: the types VBA
+/// has (Integer, Long, Single, Double, Currency, Date, String, Object, Error, Boolean, Variant
+/// arrays, Unknown, Decimal, Byte, LongLong, records) and arrays of them.
+fn adoptable_vt(vt: u16) -> bool {
+    let element = vt & 0x0FFF;
+    let vba_type = matches!(element, 0x00..=0x0B | 0x0D | 0x0E | 0x11 | 0x14 | 0x24)
+        || (element == 0x0C && vt & 0x2000 != 0);
+    match vt & 0xF000 {
+        0 => vba_type && element != 0x0C,
+        0x2000 => vba_type && element > 0x01,
+        _ => false,
+    }
+}
+
 /// Owning runtime Variant.
 ///
 /// Runtime values retain their historical single-thread ownership boundary.
@@ -797,29 +811,44 @@ impl Variant {
     /// owned by it and allocated by oleaut32), which nothing frees afterwards on success.
     pub unsafe fn adopt_automation(bytes: [u8; WIRE_SIZE]) -> Result<Self, u16> {
         let vt = u16::from_le_bytes([bytes[0], bytes[1]]);
-        let element = vt & 0x0FFF;
-        let vba_type = matches!(element, 0x00..=0x0B | 0x0D | 0x0E | 0x11 | 0x14 | 0x24)
-            || (element == 0x0C && vt & 0x2000 != 0);
-        let supported = match vt & 0xF000 {
-            0 => vba_type && element != 0x0C,
-            0x2000 => vba_type && element > 0x01,
-            _ => false,
-        };
-        if !supported {
+        if !adoptable_vt(vt) {
             return Err(vt);
         }
         let core = VariantCore::from_wire_bytes(bytes)
             .map_err(|_| vt)?
             .with_exposed_pointers();
+        Ok(Self::adopt_core(core))
+    }
+
+    /// As [`Self::adopt_automation`], reading the `VARIANT` in place, so its pointers keep their
+    /// provenance (no exposed addresses involved).
+    ///
+    /// # Safety
+    /// `cell` points at a readable `VARIANT` the caller owns, with [`Self::adopt_automation`]'s
+    /// ownership contract; on success the caller must not clear it.
+    pub unsafe fn adopt_automation_cell(cell: *const core::ffi::c_void) -> Result<Self, u16> {
+        // SAFETY: a readable VARIANT; its first two bytes are the vt.
+        let vt = unsafe { cell.cast::<u16>().read_unaligned() };
+        if !adoptable_vt(vt) {
+            return Err(vt);
+        }
+        // SAFETY: a readable, initialised VARIANT laid out as `VariantCore`; the read keeps
+        // the provenance of its pointer members.
+        let core = unsafe { cell.cast::<VariantCore>().read_unaligned() };
+        Ok(Self::adopt_core(core))
+    }
+
+    fn adopt_core(core: VariantCore) -> Self {
         // The callee allocated what the cell holds; from here the runtime frees it, so the live
         // counters see it as one of its own.
-        let payload = bytes[8..16].iter().any(|byte| *byte != 0);
+        let vt = core.raw_vt();
+        let payload = !core.pointer().is_null();
         if payload && vt == 0x0008 {
             crate::live_counters::bstr_allocated();
         } else if payload && vt & 0x2000 != 0 {
             crate::live_counters::safearray_allocated();
         }
-        Ok(Self::from_core(core))
+        Self::from_core(core)
     }
 
     /// Rebuilds a Variant from wire bytes that may contain process-local pointer
@@ -833,6 +862,18 @@ impl Variant {
     /// whole call. Arbitrary or stale pointer bytes are undefined behavior.
     pub unsafe fn from_trusted_wire_bytes(bytes: [u8; WIRE_SIZE]) -> Result<Self, String> {
         let core = VariantCore::from_wire_bytes(bytes)?.with_exposed_pointers();
+        // SAFETY: guaranteed by this unsafe fn's caller.
+        unsafe { Self::from_trusted_cell(&core) }
+    }
+
+    /// An owning copy of a borrowed cell (`VariantCopy`): strings, arrays and records are copied
+    /// and objects `AddRef`'d. The cell's pointers keep their provenance.
+    ///
+    /// # Safety
+    /// `core` is a copy of a live cell (from [`Self::core`] or a `VARIANT` in memory) whose
+    /// payload stays live for the call.
+    pub unsafe fn from_trusted_cell(core: &VariantCore) -> Result<Self, String> {
+        let core = *core;
         match core.vtype() {
             VarType::String => {
                 let ptr = core.pointer().cast::<u16>();
@@ -2059,7 +2100,6 @@ mod tests {
             let source_bytes = vec![0x41, 0x00, 0x00, 0x42, 0x7f];
             let source = Variant::from_bstr_bytes(&source_bytes);
             let source_carrier = source.data_bytes();
-            let source_wire = source.to_wire_bytes();
 
             for mode in [OwningFailureMode::Error, OwningFailureMode::Panic] {
                 inject_owning_boundary_failure(0, mode);
@@ -2115,9 +2155,9 @@ mod tests {
 
                 inject_owning_boundary_failure(0, mode);
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
-                    // SAFETY: `source_wire` was produced from `source`, which
-                    // remains live for this complete trusted reconstruction.
-                    unsafe { Variant::from_trusted_wire_bytes(source_wire) }
+                    // SAFETY: a copy of `source`'s cell, which stays live for this
+                    // complete trusted reconstruction.
+                    unsafe { Variant::from_trusted_cell(&source.core()) }
                 }));
                 clear_owning_boundary_failure();
                 assert_eq!(take_owning_boundary_trace(), vec!["borrowed-bstr-clone"]);
@@ -2146,7 +2186,6 @@ mod tests {
                 Variant::from_object_ref(ObjectRef::from_compat_identity(411)),
             ]));
             let array_carrier = array_source.data_bytes();
-            let array_wire = array_source.to_wire_bytes();
             for mode in [OwningFailureMode::Error, OwningFailureMode::Panic] {
                 inject_owning_boundary_failure(0, mode);
                 let outcome = catch_unwind(AssertUnwindSafe(|| array_source.try_as_safearray()));
@@ -2198,9 +2237,9 @@ mod tests {
 
                 inject_owning_boundary_failure(0, mode);
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
-                    // SAFETY: `array_wire` was produced from the still-live
+                    // SAFETY: a copy of the cell of the still-live
                     // `array_source` and is consumed within this call only.
-                    unsafe { Variant::from_trusted_wire_bytes(array_wire) }
+                    unsafe { Variant::from_trusted_cell(&array_source.core()) }
                 }));
                 clear_owning_boundary_failure();
                 assert_eq!(
@@ -2326,6 +2365,8 @@ mod tests {
     }
 
     #[test]
+    // Wire bytes carry addresses only; Miri cannot follow exposed provenance.
+    #[cfg_attr(miri, ignore = "decodes exposed addresses")]
     fn string_variant_wire_roundtrip_clones_bstr_payload() {
         let original = Variant::from_string("A\0BC");
         let wire = original.to_wire_bytes();

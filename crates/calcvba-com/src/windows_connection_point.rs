@@ -1,6 +1,5 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
-use crate::ComValue;
 use crate::windows_client::{
     COM_CONNECT_E_CANNOTCONNECT, COM_CONNECT_E_NOCONNECTION, COM_DISP_E_BADPARAMCOUNT,
     COM_DISP_E_MEMBERNOTFOUND, COM_DISP_E_PARAMNOTFOUND, COM_DISP_E_TYPEMISMATCH,
@@ -10,6 +9,7 @@ use crate::windows_client::{
     release_connection_point,
 };
 use crate::windows_variant::variant_to_com_value;
+use calcvba_runtime::Variant;
 use std::ffi::c_void;
 use std::sync::Arc;
 #[cfg(target_os = "windows")]
@@ -25,10 +25,10 @@ pub use synchronous::{
 };
 
 /// Native event argument as received by the sink. Scalar values are already
-/// projected to `ComValue`; object values carry one retained `IDispatch`
+/// runtime cells; object values carry one retained `IDispatch`
 /// reference for the runtime state to bind or release.
 pub enum WindowsEventArg {
-    Value(ComValue),
+    Value(Variant),
     Dispatch(*mut RawIDispatch),
 }
 
@@ -689,7 +689,7 @@ unsafe extern "system" fn windows_single_i32_source_event_sink_changed(
     if (*sink).expected_arity != 1 {
         return COM_DISP_E_BADPARAMCOUNT;
     }
-    let args = [WindowsEventArg::Value(ComValue::I32(value))];
+    let args = [WindowsEventArg::Value(Variant::from_i32(value))];
     let _ = ((*sink).on_event)(&args);
     COM_S_OK
 }

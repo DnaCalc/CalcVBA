@@ -39,6 +39,34 @@ pub fn ansi_decode(bytes: &[u8]) -> String {
     }
 }
 
+/// Encode UTF-16 units (a VBA String, unpaired surrogates included) to ANSI bytes, best fit,
+/// as VBA converts a `Declare` String argument. No terminator.
+pub fn ansi_encode_units(units: &[u16]) -> Vec<u8> {
+    #[cfg(target_os = "windows")]
+    {
+        windows_codec::encode_units(units)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        char::decode_utf16(units.iter().copied())
+            .map(|c| cp1252::encode_char(c.unwrap_or('?')))
+            .collect()
+    }
+}
+
+/// Decode ANSI bytes to UTF-16 units at their full length (embedded NULs kept), as VBA
+/// converts a `Declare` String buffer back.
+pub fn ansi_decode_units(bytes: &[u8]) -> Vec<u16> {
+    #[cfg(target_os = "windows")]
+    {
+        windows_codec::decode_units(bytes)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        cp1252::decode(bytes).encode_utf16().collect()
+    }
+}
+
 #[cfg(target_os = "windows")]
 mod windows_codec {
     const CP_ACP: u32 = 0;
@@ -71,6 +99,17 @@ mod windows_codec {
             return Vec::new();
         }
         let wide: Vec<u16> = text.encode_utf16().collect();
+        let out = encode_units(&wide);
+        if out.is_empty() {
+            return text.as_bytes().to_vec();
+        }
+        out
+    }
+
+    pub fn encode_units(wide: &[u16]) -> Vec<u8> {
+        if wide.is_empty() {
+            return Vec::new();
+        }
         // SAFETY: `wide` is valid for `wide.len()` UTF-16 units for the duration of
         // the call, and a null output buffer with length 0 is the documented
         // size-query mode of WideCharToMultiByte (nothing is written).
@@ -87,7 +126,7 @@ mod windows_codec {
             )
         };
         if needed <= 0 {
-            return text.as_bytes().to_vec();
+            return Vec::new();
         }
         let mut out = vec![0u8; needed as usize];
         // SAFETY: `wide` is valid for `wide.len()` UTF-16 units and `out` was
@@ -113,6 +152,17 @@ mod windows_codec {
         if bytes.is_empty() {
             return String::new();
         }
+        let wide = decode_units(bytes);
+        if wide.is_empty() {
+            return String::from_utf8_lossy(bytes).into_owned();
+        }
+        String::from_utf16_lossy(&wide)
+    }
+
+    pub fn decode_units(bytes: &[u8]) -> Vec<u16> {
+        if bytes.is_empty() {
+            return Vec::new();
+        }
         // SAFETY: `bytes` is valid for `bytes.len()` bytes for the duration of the
         // call, and a null output buffer with length 0 is the documented size-query
         // mode of MultiByteToWideChar (nothing is written).
@@ -127,7 +177,7 @@ mod windows_codec {
             )
         };
         if needed <= 0 {
-            return String::from_utf8_lossy(bytes).into_owned();
+            return Vec::new();
         }
         let mut wide = vec![0u16; needed as usize];
         // SAFETY: `bytes` is valid for `bytes.len()` bytes and `wide` was allocated
@@ -144,7 +194,8 @@ mod windows_codec {
                 needed,
             )
         };
-        String::from_utf16_lossy(&wide[..written.max(0) as usize])
+        wide.truncate(written.max(0) as usize);
+        wide
     }
 }
 
@@ -161,18 +212,18 @@ mod cp1252 {
     ];
 
     pub fn encode(text: &str) -> Vec<u8> {
-        text.chars()
-            .map(|c| {
-                let u = c as u32;
-                if u < 0x80 || (0xA0..=0xFF).contains(&u) {
-                    u as u8
-                } else if let Some(i) = HIGH.iter().position(|&h| h == c) {
-                    0x80 + i as u8
-                } else {
-                    b'?'
-                }
-            })
-            .collect()
+        text.chars().map(encode_char).collect()
+    }
+
+    pub fn encode_char(c: char) -> u8 {
+        let u = c as u32;
+        if u < 0x80 || (0xA0..=0xFF).contains(&u) {
+            u as u8
+        } else if let Some(i) = HIGH.iter().position(|&h| h == c) {
+            0x80 + i as u8
+        } else {
+            b'?'
+        }
     }
 
     pub fn decode(bytes: &[u8]) -> String {
@@ -198,6 +249,14 @@ mod tests {
         let bytes = ansi_encode("Hello");
         assert_eq!(bytes, b"Hello");
         assert_eq!(ansi_decode(&bytes), "Hello");
+    }
+
+    #[test]
+    fn units_keep_embedded_nul_and_length() {
+        let units: Vec<u16> = "a\0b".encode_utf16().collect();
+        let bytes = ansi_encode_units(&units);
+        assert_eq!(bytes, b"a\0b");
+        assert_eq!(ansi_decode_units(&bytes), units);
     }
 
     // On non-Windows the CP-1252 fallback maps é (U+00E9) to the single byte 0xE9.

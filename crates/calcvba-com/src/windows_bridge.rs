@@ -1442,13 +1442,13 @@ mod tests {
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    fn test_record_com_value(value: i32) -> crate::ComValue {
+    fn test_record_com_value(value: i32) -> Variant {
         let info = calcvba_runtime::com_record::test_support::TestRecordInfo::create(4);
         // SAFETY: a live test IRecordInfo whose reference moves into the record.
         let record = unsafe { calcvba_runtime::ComRecord::create(info) }.expect("test record");
         // SAFETY: the test record holds a `TestRecord` (four writable bytes).
         unsafe { (*record.record_data_ptr().cast::<TestRecord>()).value = value };
-        crate::ComValue::Record(record)
+        Variant::from_com_record(record)
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -1583,7 +1583,7 @@ mod tests {
         let request = ComInvokeRequest {
             object: object.clone(),
             member,
-            args: vec![ComInvokeArg::positional_value(crate::ComValue::Object(
+            args: vec![ComInvokeArg::positional_value(Variant::from_object_ref(
                 object.clone(),
             ))],
             invoke_kind_hint: Some(crate::ComInvokeKind::PropertyPutRef),
@@ -1626,7 +1626,7 @@ mod tests {
         let scalar_request = ComInvokeRequest {
             object: scalar_object.clone(),
             member: scalar_putref,
-            args: vec![ComInvokeArg::positional_value(crate::ComValue::I32(7))],
+            args: vec![ComInvokeArg::positional_value(Variant::from_i32(7))],
             invoke_kind_hint: Some(crate::ComInvokeKind::PropertyPutRef),
         };
         let before_vtable = scalar_bridge.vtable_call_count();
@@ -1679,10 +1679,7 @@ mod tests {
         let request = ComInvokeRequest {
             object: object.clone(),
             member,
-            args: vec![ComInvokeArg::positional_by_ref(
-                crate::ComValue::I32(7),
-                slot,
-            )],
+            args: vec![ComInvokeArg::positional_by_ref(Variant::from_i32(7), slot)],
             invoke_kind_hint: None,
         };
         let before_vtable = bridge.vtable_call_count();
@@ -1821,7 +1818,7 @@ mod tests {
         let bridge = WindowsComBridge::new(false);
         let empty = calcvba_runtime::safe_array::SafeArray::from_variants(Vec::new());
         let args = vec![crate::ComInvokeArg::positional_value(
-            crate::ComValue::ArrayIntent(empty),
+            Variant::from_safearray(empty),
         )];
         // SAFETY: `dispatch` is the live activated object, `dispid`/`spec` describe its
         // `SumTypedRecordArray` member, and `bridge.shared_state()` is this bridge's live

@@ -768,6 +768,73 @@ mod native_record_pin {
 }
 #[cfg(windows)]
 pub use native_record_pin::{AutomationRecord, AutomationRecordArray};
+#[cfg(not(windows))]
+pub use portable_record_pin::{AutomationRecord, AutomationRecordArray};
+
+/// Off Windows the ANSI projection of records holding Strings, and of UDT arrays, is not built
+/// yet: these refuse, and a `Declare` taking such an argument fails with that message. A record
+/// without Strings is passed as its own memory and does not come here.
+#[cfg(not(windows))]
+mod portable_record_pin {
+    use crate::{
+        Variant as Value,
+        safe_array::SafeArray,
+        vba_record::{VbaRecord, VbaRecordLayout},
+    };
+    use std::sync::Arc;
+
+    const REFUSED: &str =
+        "a record holding Strings, or a UDT array, cannot be passed to a Declare off Windows yet";
+
+    #[derive(Debug)]
+    pub struct AutomationRecord(());
+    impl AutomationRecord {
+        pub fn from_record(_record: &VbaRecord) -> Result<Self, String> {
+            Err(REFUSED.into())
+        }
+        pub fn from_declared_record(_record: &VbaRecord) -> Result<Self, String> {
+            Err(REFUSED.into())
+        }
+        /// # Safety
+        /// As on Windows; this stand-in reads nothing.
+        pub unsafe fn from_automation(
+            _source: *const u8,
+            _layout: Arc<VbaRecordLayout>,
+        ) -> Result<Self, String> {
+            Err(REFUSED.into())
+        }
+        pub fn empty_declared(_layout: Arc<VbaRecordLayout>) -> Result<Self, String> {
+            Err(REFUSED.into())
+        }
+        pub fn as_mut_ptr(&mut self) -> *mut u8 {
+            core::ptr::null_mut()
+        }
+        pub fn read(&self) -> Result<Value, String> {
+            Err(REFUSED.into())
+        }
+        /// # Safety
+        /// As on Windows; this stand-in writes nothing.
+        pub unsafe fn copy_back_automation(&self, _destination: *mut u8) -> Result<(), String> {
+            Err(REFUSED.into())
+        }
+    }
+
+    pub struct AutomationRecordArray(());
+    impl AutomationRecordArray {
+        pub fn from_array(
+            _layout: Arc<VbaRecordLayout>,
+            _array: Option<&SafeArray>,
+        ) -> Result<Self, String> {
+            Err(REFUSED.into())
+        }
+        pub fn as_cell_ptr(&mut self) -> *mut std::ffi::c_void {
+            core::ptr::null_mut()
+        }
+        pub fn read(&self) -> Result<Value, String> {
+            Err(REFUSED.into())
+        }
+    }
+}
 #[cfg(target_os = "windows")]
 fn advance_windows_safearray_indices(
     indices: &mut [i32],

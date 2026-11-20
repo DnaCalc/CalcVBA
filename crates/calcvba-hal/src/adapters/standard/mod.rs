@@ -20,7 +20,7 @@ macro_rules! hal_contract_assert {
 
 mod com;
 mod console;
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[cfg(not(target_arch = "wasm32"))]
 mod declare;
 mod descriptor;
 mod diagnostics;
@@ -1718,6 +1718,8 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     use crate::traits::{TypeLibCacheScope, TypeLibResolveRequest};
+    #[cfg(target_os = "windows")]
+    use calcvba_com::ComObjectToken;
     use calcvba_com::{ComInvokeArg, ComInvokeRequest, DynamicObjectBridge, DynamicObjectToken};
     #[cfg(target_os = "windows")]
     use calcvba_com::{
@@ -1726,8 +1728,6 @@ mod tests {
         set_variant_from_com_value as com_set_variant_from_com_value,
         variant_to_com_value as com_variant_to_com_value,
     };
-    #[cfg(target_os = "windows")]
-    use calcvba_com::{ComObjectToken, ComValue};
     use calcvba_runtime::{ObjectRef, VarType, Variant, bstr::BStr};
     use proptest::prelude::*;
 
@@ -2805,7 +2805,7 @@ mod tests {
     #[test]
     fn com_string_variant_roundtrips_through_adapter_helpers() {
         let mut variant: VARIANT = unsafe { std::mem::zeroed() };
-        let value = ComValue::String(BStr::from("Hello"));
+        let value = Variant::from_string(BStr::from("Hello"));
         let resolve_object = |_handle: ObjectRef| -> Result<*mut RawIDispatch, String> {
             Err("object dispatch resolution not expected".to_string())
         };
@@ -2833,7 +2833,7 @@ mod tests {
     fn com_object_handle_variant_uses_dispatch_pointer_lane() {
         let mut variant: VARIANT = unsafe { std::mem::zeroed() };
         let dispatch = create_calcvba_test_dispatch();
-        let value = ComValue::Object(ObjectRef::from_compat_identity(20_001));
+        let value = Variant::from_object_ref(ObjectRef::from_compat_identity(20_001));
         let resolve_object =
             |_handle: ObjectRef| -> Result<*mut RawIDispatch, String> { Ok(dispatch) };
         unsafe {
@@ -2861,7 +2861,7 @@ mod tests {
     fn com_safe_array_variant_roundtrips_through_adapter_helpers() {
         let mut variant: VARIANT = unsafe { std::mem::zeroed() };
         let value =
-            ComValue::ArrayIntent(calcvba_runtime::safe_array::SafeArray::from_variants(vec![
+            Variant::from_safearray(calcvba_runtime::safe_array::SafeArray::from_variants(vec![
                 Variant::from_i32(4),
                 Variant::from_bool(true),
                 Variant::from_string(BStr::from("Hello")),
@@ -4019,12 +4019,12 @@ mod tests {
             member: calcvba_com::DynamicMemberSelector::Name("SumPair".to_string()),
             args: vec![
                 calcvba_com::DynamicCallArg {
-                    value: Some(calcvba_com::ComValue::I32(3).into()),
+                    value: Some(Variant::from_i32(3).into()),
                     name: None,
                     by_ref: None,
                 },
                 calcvba_com::DynamicCallArg {
-                    value: Some(calcvba_com::ComValue::I32(14).into()),
+                    value: Some(Variant::from_i32(14).into()),
                     name: None,
                     by_ref: None,
                 },
@@ -4092,9 +4092,7 @@ mod tests {
         let request = ComInvokeRequest {
             object: object.clone(),
             member: super::TEST_DISPID_ECHO_VARIANT.into(),
-            args: vec![ComInvokeArg::positional_value(
-                ComValue::from_variant(&expected).expect("expected SAFEARRAY Variant to project"),
-            )],
+            args: vec![ComInvokeArg::positional_value(expected.clone())],
             invoke_kind_hint: Some(calcvba_com::ComInvokeKind::Method),
         };
         assert_eq!(

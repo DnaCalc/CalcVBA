@@ -1,8 +1,7 @@
-use crate::ComValue;
 use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::{
-    ComRecord, CurrencyValue, Decimal96, F64Subtype, F64Value, ObjectRef, VarType, Variant,
-    VbaRecord, VbaRecordFieldKind, VbaRecordLayout,
+    ComRecord, Decimal96, ObjectRef, VarType, Variant, VbaRecord, VbaRecordFieldKind,
+    VbaRecordLayout,
     bstr::BStr,
     safe_array::{
         SafeArray, SafeArrayBound, VT_BOOL_VALUE, VT_BSTR_VALUE, VT_CY_VALUE, VT_DATE_VALUE,
@@ -41,7 +40,7 @@ const INVOKE_PROPERTYPUT: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VariantResultValue {
-    Value(ComValue),
+    Value(Variant),
     Dispatch(*mut c_void),
 }
 
@@ -248,7 +247,7 @@ where
     FAddRefDispatch: FnMut(*mut c_void),
     FBindDispatch: FnMut(*mut c_void, &str, &'static str) -> Result<Variant, String>,
 {
-    match variant_to_com_value(variant).and_then(|value| value.to_variant()) {
+    match variant_to_com_value(variant) {
         Ok(value) => Ok(value),
         Err(_) => variant_to_variant_value(
             variant,
@@ -412,10 +411,8 @@ fn advance_indices_storage_order(indices: &mut [i32], bounds: &[SafeArrayBound])
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-// SAFEARRAY/VARIANT decoding is a boundary translation step. It reconstructs
-// semantic `ComValue` payloads from COM wire values rather than exposing the
-// canonical runtime carrier directly.
-unsafe fn safe_array_to_com_value(psa: *mut SAFEARRAY) -> Result<ComValue, String> {
+// A runtime copy of a borrowed SAFEARRAY (element by element).
+unsafe fn safe_array_to_com_value(psa: *mut SAFEARRAY) -> Result<Variant, String> {
     if psa.is_null() {
         return Err("VT_ARRAY result carried null SAFEARRAY".to_string());
     }
@@ -487,10 +484,10 @@ unsafe fn safe_array_to_com_value(psa: *mut SAFEARRAY) -> Result<ComValue, Strin
             };
             let units = crate::windows_ffi_bridge::utf16_from_ansi(bytes);
             SysFreeString(text);
-            values.push(ComValue::String(BStr::from_utf16_units(&units)?).to_variant()?);
+            values.push(Variant::from_string(BStr::from_utf16_units(&units)?));
             advance_indices_storage_order(&mut indices, &bounds);
         }
-        return Ok(ComValue::ArrayIntent(SafeArray::from_typed_variants_nd(
+        return Ok(Variant::from_safearray(SafeArray::from_typed_variants_nd(
             bounds, VT_BSTR, values,
         )?));
     }
@@ -500,7 +497,7 @@ unsafe fn safe_array_to_com_value(psa: *mut SAFEARRAY) -> Result<ComValue, Strin
         // SAFEARRAY record shape. The helper clones each record element into a
         // runtime-owned ComRecord while preserving the array bounds.
         let array = unsafe { record_safearray_to_variant_array(psa, &bounds, total_len) }?;
-        return Ok(ComValue::ArrayIntent(array));
+        return Ok(Variant::from_safearray(array));
     }
 
     let values = if dims == 1 {
@@ -531,7 +528,7 @@ unsafe fn safe_array_to_com_value(psa: *mut SAFEARRAY) -> Result<ComValue, Strin
     } else {
         SafeArray::from_variants_nd(bounds, values)
     };
-    Ok(ComValue::ArrayIntent(array))
+    Ok(Variant::from_safearray(array))
 }
 
 #[cfg(target_os = "windows")]
@@ -552,12 +549,12 @@ unsafe fn safe_array_element_nd(
             ));
         }
         let value = match variant_to_com_value(&element) {
-            Ok(value) => value.to_variant(),
+            Ok(value) => value,
             Err(detail) => {
                 let _ = VariantClear(&mut element);
                 return Err(detail);
             }
-        }?;
+        };
         let _ = VariantClear(&mut element);
         return Ok(value);
     }
@@ -590,63 +587,59 @@ unsafe fn safe_array_element_typed_nd(
         }};
     }
     match element_vt {
-        VT_I1 => ComValue::I32(get_element!(i8, indices) as i32).to_variant(),
-        VT_I2 => ComValue::I32(get_element!(i16, indices) as i32).to_variant(),
-        VT_I4 => ComValue::I32(get_element!(i32, indices)).to_variant(),
+        VT_I1 => Ok(Variant::from_i32(get_element!(i8, indices) as i32)),
+        VT_I2 => Ok(Variant::from_i32(get_element!(i16, indices) as i32)),
+        VT_I4 => Ok(Variant::from_i32(get_element!(i32, indices))),
         VT_I8 => {
             let val = get_element!(i64, indices);
             match i32::try_from(val) {
-                Ok(n) => ComValue::I32(n).to_variant(),
-                Err(_) => ComValue::I64(val).to_variant(),
+                Ok(n) => Ok(Variant::from_i32(n)),
+                Err(_) => Ok(Variant::from_i64(val)),
             }
         }
-        VT_INT => ComValue::I32(get_element!(i32, indices)).to_variant(),
-        VT_UI1 => ComValue::I32(get_element!(u8, indices) as i32).to_variant(),
-        VT_UI2 => ComValue::I32(get_element!(u16, indices) as i32).to_variant(),
+        VT_INT => Ok(Variant::from_i32(get_element!(i32, indices))),
+        VT_UI1 => Ok(Variant::from_i32(get_element!(u8, indices) as i32)),
+        VT_UI2 => Ok(Variant::from_i32(get_element!(u16, indices) as i32)),
         VT_UI4 => {
             let val = get_element!(u32, indices);
             match i32::try_from(val) {
-                Ok(n) => ComValue::I32(n).to_variant(),
-                Err(_) => ComValue::I64(val as i64).to_variant(),
+                Ok(n) => Ok(Variant::from_i32(n)),
+                Err(_) => Ok(Variant::from_i64(val as i64)),
             }
         }
         VT_UI8 => {
             let val = get_element!(u64, indices);
             match i32::try_from(val) {
-                Ok(n) => ComValue::I32(n).to_variant(),
+                Ok(n) => Ok(Variant::from_i32(n)),
                 Err(_) => match i64::try_from(val) {
-                    Ok(n) => ComValue::I64(n).to_variant(),
+                    Ok(n) => Ok(Variant::from_i64(n)),
                     Err(_) => Err(format!(
                         "VT_UI8 SAFEARRAY element {val} exceeds i64 carrier range"
                     )),
                 },
             }
         }
-        VT_R4_VARENUM => {
-            ComValue::F64(F64Value::from_single_f64(get_element!(f32, indices) as f64)).to_variant()
-        }
-        VT_R8_VARENUM => ComValue::F64(F64Value::from_f64(get_element!(f64, indices))).to_variant(),
+        VT_R4_VARENUM => Ok(Variant::from_f32(get_element!(f32, indices))),
+        VT_R8_VARENUM => Ok(Variant::from_f64(get_element!(f64, indices))),
         VT_CY_VARENUM => {
             let cy: CY = get_element!(CY, indices);
-            ComValue::Currency(CurrencyValue::from_scaled_i64(cy.int64)).to_variant()
+            Ok(Variant::from_currency_scaled_i64(cy.int64))
         }
-        VT_DATE_VARENUM => {
-            ComValue::F64(F64Value::from_date_f64(get_element!(f64, indices))).to_variant()
-        }
+        VT_DATE_VARENUM => Ok(Variant::from_date_f64(get_element!(f64, indices))),
         VT_DECIMAL => {
             let dec: DECIMAL = get_element!(DECIMAL, indices);
-            ComValue::Decimal(decimal96_from_windows(dec)).to_variant()
+            Ok(Variant::from_decimal96(decimal96_from_windows(dec)))
         }
         VT_UINT => {
             let val = get_element!(u32, indices);
             match i32::try_from(val) {
-                Ok(n) => ComValue::I32(n).to_variant(),
-                Err(_) => ComValue::I64(val as i64).to_variant(),
+                Ok(n) => Ok(Variant::from_i32(n)),
+                Err(_) => Ok(Variant::from_i64(val as i64)),
             }
         }
         VT_BOOL => {
             let val = get_element!(VARIANT_BOOL, indices);
-            ComValue::Bool(val != 0).to_variant()
+            Ok(Variant::from_bool(val != 0))
         }
         VT_BSTR => {
             let bstr: windows_sys::core::BSTR = get_element!(windows_sys::core::BSTR, indices);
@@ -655,7 +648,7 @@ unsafe fn safe_array_element_typed_nd(
             if !bstr.is_null() {
                 SysFreeString(bstr);
             }
-            ComValue::String(value).to_variant()
+            Ok(Variant::from_string(value))
         }
         other => Err(format!(
             "unsupported SAFEARRAY element vartype {other} in multi-dimensional array"
@@ -681,12 +674,12 @@ unsafe fn safe_array_element_to_variant(
                 ));
             }
             let value = match variant_to_com_value(&element) {
-                Ok(value) => value.to_variant(),
+                Ok(value) => value,
                 Err(detail) => {
                     let _ = VariantClear(&mut element);
                     return Err(detail);
                 }
-            }?;
+            };
             let _ = VariantClear(&mut element);
             Ok(value)
         }
@@ -699,7 +692,7 @@ unsafe fn safe_array_element_to_variant(
                     hr as u32, index
                 ));
             }
-            ComValue::I32(element as i32).to_variant()
+            Ok(Variant::from_i32(element as i32))
         }
         VT_I2 => {
             let mut element = 0i16;
@@ -710,7 +703,7 @@ unsafe fn safe_array_element_to_variant(
                     hr as u32, index
                 ));
             }
-            ComValue::I32(element as i32).to_variant()
+            Ok(Variant::from_i32(element as i32))
         }
         VT_I4 => {
             let mut element = 0i32;
@@ -721,7 +714,7 @@ unsafe fn safe_array_element_to_variant(
                     hr as u32, index
                 ));
             }
-            ComValue::I32(element).to_variant()
+            Ok(Variant::from_i32(element))
         }
         VT_I8 => {
             let mut element = 0i64;
@@ -733,8 +726,8 @@ unsafe fn safe_array_element_to_variant(
                 ));
             }
             match i32::try_from(element) {
-                Ok(narrowed) => ComValue::I32(narrowed).to_variant(),
-                Err(_) => ComValue::I64(element).to_variant(),
+                Ok(narrowed) => Ok(Variant::from_i32(narrowed)),
+                Err(_) => Ok(Variant::from_i64(element)),
             }
         }
         VT_INT => {
@@ -746,7 +739,7 @@ unsafe fn safe_array_element_to_variant(
                     hr as u32, index
                 ));
             }
-            ComValue::I32(element).to_variant()
+            Ok(Variant::from_i32(element))
         }
         VT_UI2 => {
             let mut element = 0u16;
@@ -757,7 +750,7 @@ unsafe fn safe_array_element_to_variant(
                     hr as u32, index
                 ));
             }
-            ComValue::I32(element as i32).to_variant()
+            Ok(Variant::from_i32(element as i32))
         }
         VT_UI1 => {
             let mut element = 0u8;
@@ -768,7 +761,7 @@ unsafe fn safe_array_element_to_variant(
                     hr as u32, index
                 ));
             }
-            ComValue::I32(element as i32).to_variant()
+            Ok(Variant::from_i32(element as i32))
         }
         VT_UI4 => {
             let mut element = 0u32;
@@ -780,8 +773,8 @@ unsafe fn safe_array_element_to_variant(
                 ));
             }
             match i32::try_from(element) {
-                Ok(narrowed) => ComValue::I32(narrowed).to_variant(),
-                Err(_) => ComValue::I64(element as i64).to_variant(),
+                Ok(narrowed) => Ok(Variant::from_i32(narrowed)),
+                Err(_) => Ok(Variant::from_i64(element as i64)),
             }
         }
         VT_UI8 => {
@@ -794,9 +787,9 @@ unsafe fn safe_array_element_to_variant(
                 ));
             }
             match i32::try_from(element) {
-                Ok(narrowed) => ComValue::I32(narrowed).to_variant(),
+                Ok(narrowed) => Ok(Variant::from_i32(narrowed)),
                 Err(_) => match i64::try_from(element) {
-                    Ok(narrowed) => ComValue::I64(narrowed).to_variant(),
+                    Ok(narrowed) => Ok(Variant::from_i64(narrowed)),
                     Err(_) => Err(format!(
                         "VT_UI8 SAFEARRAY element {element} exceeds i64 carrier range"
                     )),
@@ -812,7 +805,7 @@ unsafe fn safe_array_element_to_variant(
                     hr as u32, index
                 ));
             }
-            ComValue::F64(F64Value::from_single_f64(element as f64)).to_variant()
+            Ok(Variant::from_f32(element))
         }
         VT_R8_VARENUM => {
             let mut element = 0f64;
@@ -823,7 +816,7 @@ unsafe fn safe_array_element_to_variant(
                     hr as u32, index
                 ));
             }
-            ComValue::F64(F64Value::from_f64(element)).to_variant()
+            Ok(Variant::from_f64(element))
         }
         VT_CY_VARENUM => {
             let mut element: CY = std::mem::zeroed();
@@ -834,7 +827,7 @@ unsafe fn safe_array_element_to_variant(
                     hr as u32, index
                 ));
             }
-            ComValue::Currency(CurrencyValue::from_scaled_i64(element.int64)).to_variant()
+            Ok(Variant::from_currency_scaled_i64(element.int64))
         }
         VT_DATE_VARENUM => {
             let mut element = 0f64;
@@ -845,7 +838,7 @@ unsafe fn safe_array_element_to_variant(
                     hr as u32, index
                 ));
             }
-            ComValue::F64(F64Value::from_date_f64(element)).to_variant()
+            Ok(Variant::from_date_f64(element))
         }
         VT_DECIMAL => {
             let mut element: DECIMAL = std::mem::zeroed();
@@ -856,7 +849,7 @@ unsafe fn safe_array_element_to_variant(
                     hr as u32, index
                 ));
             }
-            ComValue::Decimal(decimal96_from_windows(element)).to_variant()
+            Ok(Variant::from_decimal96(decimal96_from_windows(element)))
         }
         VT_UINT => {
             let mut element = 0u32;
@@ -868,8 +861,8 @@ unsafe fn safe_array_element_to_variant(
                 ));
             }
             match i32::try_from(element) {
-                Ok(narrowed) => ComValue::I32(narrowed).to_variant(),
-                Err(_) => ComValue::I64(element as i64).to_variant(),
+                Ok(narrowed) => Ok(Variant::from_i32(narrowed)),
+                Err(_) => Ok(Variant::from_i64(element as i64)),
             }
         }
         VT_BOOL => {
@@ -881,7 +874,7 @@ unsafe fn safe_array_element_to_variant(
                     hr as u32, index
                 ));
             }
-            ComValue::Bool(element != 0).to_variant()
+            Ok(Variant::from_bool(element != 0))
         }
         VT_BSTR => {
             let mut element: windows_sys::core::BSTR = std::ptr::null_mut();
@@ -900,7 +893,7 @@ unsafe fn safe_array_element_to_variant(
             if !element.is_null() {
                 SysFreeString(element);
             }
-            ComValue::String(value).to_variant()
+            Ok(Variant::from_string(value))
         }
         other => Err(format!(
             "unsupported SAFEARRAY element vartype {other}; supported element vartypes are VT_VARIANT, VT_I1, VT_I2, VT_I4, VT_I8, VT_INT, VT_UI1, VT_UI2, VT_UI4, VT_UI8, VT_R4, VT_R8, VT_CY, VT_DATE, VT_UINT, VT_BOOL, and VT_BSTR"
@@ -956,7 +949,7 @@ where
     if element_vt == VT_EMPTY && (*psa).fFeatures & 0x100 != 0 {
         // This form contains only owning ANSI byte BSTRs, so no object binding
         // callback is needed for the shared length-aware conversion.
-        return safe_array_to_com_value(psa)?.to_variant();
+        return safe_array_to_com_value(psa);
     }
     // Collect per-dimension bounds.
     let mut bounds = Vec::with_capacity(dims as usize);
@@ -1134,7 +1127,9 @@ where
     let Some(values) = array.variant_elements() else {
         (*variant).Anonymous.Anonymous.vt = VT_I4;
         (*variant).Anonymous.Anonymous.Anonymous.lVal =
-            ComValue::ArrayIntent(array.clone()).to_legacy_dispatch_token()?;
+            crate::compat::variant_to_legacy_dispatch_token(&Variant::from_safearray(
+                array.clone(),
+            ))?;
         return Ok(());
     };
 
@@ -1165,9 +1160,8 @@ where
         let mut indices: Vec<i32> = bounds.iter().map(|b| b.lower).collect();
         for value in values.iter() {
             let mut element: VARIANT = std::mem::zeroed();
-            let value = ComValue::from_variant(value)?;
             if let Err(detail) =
-                set_variant_from_com_value(&mut element, &value, resolve_object, add_ref_dispatch)
+                set_variant_from_com_value(&mut element, value, resolve_object, add_ref_dispatch)
             {
                 let _ = VariantClear(&mut element);
                 let _ = SafeArrayDestroy(psa.cast_const());
@@ -1202,9 +1196,8 @@ where
     }
     for (offset, value) in values.iter().enumerate() {
         let mut element: VARIANT = std::mem::zeroed();
-        let value = ComValue::from_variant(value)?;
         if let Err(detail) =
-            set_variant_from_com_value(&mut element, &value, resolve_object, add_ref_dispatch)
+            set_variant_from_com_value(&mut element, value, resolve_object, add_ref_dispatch)
         {
             let _ = VariantClear(&mut element);
             let _ = SafeArrayDestroy(psa.cast_const());
@@ -1251,10 +1244,10 @@ pub(crate) unsafe fn record_info_matches(left: *mut c_void, right: *mut c_void) 
 #[allow(unsafe_op_in_unsafe_fn)]
 pub(crate) unsafe fn set_record_safearray_from_com_value(
     variant: *mut VARIANT,
-    value: &ComValue,
+    value: &Variant,
     descriptor_record_info: Option<&crate::TypeLibRecordInfo>,
 ) -> Result<(), String> {
-    let ComValue::ArrayIntent(array) = value else {
+    let Some(array) = value.as_safearray() else {
         return Err(format!(
             "vtable SAFEARRAY(VT_RECORD) parameter expects an array argument, got {value:?}"
         ));
@@ -1271,7 +1264,7 @@ pub(crate) unsafe fn set_record_safearray_from_com_value(
     if values.iter().any(|value| value.as_vba_record().is_some()) {
         return set_native_vba_record_safearray_from_values(
             variant,
-            array,
+            &array,
             &values,
             descriptor_record_info,
         );
@@ -1549,7 +1542,7 @@ unsafe fn create_com_record_from_vba_record(
         .ok_or_else(|| "descriptor layout was required before COM record creation".to_string())?;
     for (index, field) in layout.fields.iter().enumerate() {
         let value = record.read_field_variant(index)?;
-        let com_value = ComValue::from_variant(&value)?;
+        let com_value = value;
         let mut field_variant: VARIANT = std::mem::zeroed();
         let mut resolve_object = |_object: ObjectRef| -> Result<*mut c_void, String> {
             Err("object fields in native VBA record COM projection are not yet supported".into())
@@ -1899,62 +1892,60 @@ unsafe fn set_typed_array_arg(
     Ok(())
 }
 
-#[cfg(target_os = "windows")]
-#[allow(unsafe_op_in_unsafe_fn)]
-/// Convert a Windows `VARIANT` carrying the supported scalar/string/one-dimensional
-/// SAFEARRAY subset into the shared semantic `ComValue` carrier.
+/// A runtime copy of a borrowed Automation `VARIANT`, as `VariantCopyInd` makes one: references
+/// are read through, strings, records and arrays copied, and every scalar keeps its `vt`
+/// (`VT_I2` stays Integer, `VT_R4` Single). Objects are not handled here (see
+/// [`variant_to_variant_value`]).
 ///
 /// # Safety
-/// The caller must provide a valid initialized `VARIANT` reference whose pointed-to storage
-/// remains alive for the duration of this call. If the variant contains nested COM-owned payloads,
-/// they must satisfy the ownership rules required by the Windows `Variant`/`SafeArray` APIs.
-pub unsafe fn variant_to_com_value(variant: &VARIANT) -> Result<ComValue, String> {
+/// `variant` is a valid initialized `VARIANT` whose payload stays alive for the call.
+#[allow(unsafe_op_in_unsafe_fn)]
+pub unsafe fn variant_to_com_value(variant: &VARIANT) -> Result<Variant, String> {
     let vt = variant.Anonymous.Anonymous.vt;
+    let data = &variant.Anonymous.Anonymous.Anonymous;
     if vt & VT_BYREF != 0 {
         let base_vt = vt & !VT_BYREF;
-        // VT_BYREF | VT_ARRAY: dereference the pointer-to-pointer to get the SAFEARRAY*.
         if base_vt & VT_ARRAY != 0 {
-            let pparray = variant.Anonymous.Anonymous.Anonymous.pparray;
+            let pparray = data.pparray;
             if pparray.is_null() {
                 return Err("VT_BYREF|VT_ARRAY carried null pparray pointer".to_string());
             }
-            let parray = *pparray;
-            return safe_array_to_com_value(parray);
+            return safe_array_to_com_value(*pparray);
         }
-        // VT_BYREF | VT_VARIANT: dereference to the pointed-to VARIANT and recurse.
         if base_vt == VT_VARIANT {
-            let pvar = variant.Anonymous.Anonymous.Anonymous.pvarVal;
+            let pvar = data.pvarVal;
             if pvar.is_null() {
                 return Err("VT_BYREF|VT_VARIANT carried null pvarVal pointer".to_string());
             }
             return variant_to_com_value(&*pvar);
         }
-        // Scalar BYREF types: dereference the pointer to recover the underlying value.
-        let value = match base_vt {
-            VT_I2 => ComValue::I32(*variant.Anonymous.Anonymous.Anonymous.piVal as i32),
-            VT_I4 => ComValue::I32(*variant.Anonymous.Anonymous.Anonymous.plVal),
-            VT_R4_VARENUM => ComValue::F64(F64Value::from_single_f64(
-                *variant.Anonymous.Anonymous.Anonymous.pfltVal as f64,
-            )),
-            VT_R8_VARENUM => ComValue::F64(F64Value::from_f64(
-                *variant.Anonymous.Anonymous.Anonymous.pdblVal,
-            )),
-            VT_CY_VARENUM => ComValue::Currency(CurrencyValue::from_scaled_i64(
-                (*variant.Anonymous.Anonymous.Anonymous.pcyVal).int64,
-            )),
-            VT_BOOL => {
-                let val: VARIANT_BOOL = *variant.Anonymous.Anonymous.Anonymous.pboolVal;
-                ComValue::Bool(val != 0)
-            }
-            VT_BSTR => {
-                let bstr = *variant.Anonymous.Anonymous.Anonymous.pbstrVal;
-                ComValue::String(runtime_bstr_from_windows(bstr))
-            }
+        if data.byref.is_null() {
+            return Err(format!("VT_BYREF vt={vt} carried a null pointer"));
+        }
+        return Ok(match base_vt {
+            VT_I1 => Variant::from_i8(*data.pcVal as i8),
+            VT_UI1 => Variant::from_u8(*data.pbVal),
+            VT_I2 => Variant::from_i16(*data.piVal),
+            VT_UI2 => Variant::from_u16(*data.puiVal),
+            VT_I4 => Variant::from_i32(*data.plVal),
+            VT_UI4 => Variant::from_u32(*data.pulVal),
+            VT_INT => Variant::from_i32(*data.pintVal),
+            VT_UINT => Variant::from_uint(*data.puintVal),
+            VT_I8 => Variant::from_i64(*data.pllVal),
+            VT_UI8 => Variant::from_u64(*data.pullVal),
+            VT_R4_VARENUM => Variant::from_f32(*data.pfltVal),
+            VT_R8_VARENUM => Variant::from_f64(*data.pdblVal),
+            VT_CY_VARENUM => Variant::from_currency_scaled_i64((*data.pcyVal).int64),
+            VT_DATE_VARENUM => Variant::from_date_f64(*data.pdate),
+            VT_BOOL => Variant::from_bool(*data.pboolVal != 0),
+            VT_ERROR => Variant::from_scode(*data.pscode),
+            VT_BSTR => Variant::from_string(runtime_bstr_from_windows(*data.pbstrVal)),
+            VT_DECIMAL => Variant::from_decimal96(decimal96_from_windows(*data.pdecVal)),
             VT_DISPATCH => {
-                let dispatch = *variant.Anonymous.Anonymous.Anonymous.ppdispVal;
                 return Err(format!(
-                    "VT_BYREF|VT_DISPATCH dereferences to raw dispatch {dispatch:?}; \
-                     use variant_to_variant_value for object binding"
+                    "VT_BYREF|VT_DISPATCH dereferences to raw dispatch {:?}; \
+                     use variant_to_variant_value for object binding",
+                    *data.ppdispVal
                 ));
             }
             _ => {
@@ -1962,93 +1953,38 @@ pub unsafe fn variant_to_com_value(variant: &VARIANT) -> Result<ComValue, String
                     "unsupported VARIANT BYREF scalar type vt={vt} (base_vt={base_vt})"
                 ));
             }
-        };
-        return Ok(value);
+        });
     }
     if vt & VT_ARRAY != 0 {
-        let parray = variant.Anonymous.Anonymous.Anonymous.parray;
-        return safe_array_to_com_value(parray);
+        return safe_array_to_com_value(data.parray);
     }
-    let value = match vt {
-        VT_EMPTY => ComValue::Empty,
-        VT_I1 => ComValue::I32(variant.Anonymous.Anonymous.Anonymous.cVal as i32),
-        VT_I2 => ComValue::I32(variant.Anonymous.Anonymous.Anonymous.iVal as i32),
-        VT_I4 => ComValue::I32(variant.Anonymous.Anonymous.Anonymous.lVal),
-        VT_I8 => {
-            let value = variant.Anonymous.Anonymous.Anonymous.llVal;
-            match i32::try_from(value) {
-                Ok(narrowed) => ComValue::I32(narrowed),
-                Err(_) => ComValue::I64(value),
-            }
-        }
-        VT_INT => ComValue::I32(variant.Anonymous.Anonymous.Anonymous.intVal),
-        VT_UI1 => ComValue::I32(variant.Anonymous.Anonymous.Anonymous.bVal as i32),
-        VT_UI2 => ComValue::I32(variant.Anonymous.Anonymous.Anonymous.uiVal as i32),
-        VT_UI4 => {
-            let value = variant.Anonymous.Anonymous.Anonymous.ulVal;
-            match i32::try_from(value) {
-                Ok(narrowed) => ComValue::I32(narrowed),
-                Err(_) => ComValue::I64(value as i64),
-            }
-        }
-        VT_UI8 => {
-            let value = variant.Anonymous.Anonymous.Anonymous.ullVal;
-            match i32::try_from(value) {
-                Ok(narrowed) => ComValue::I32(narrowed),
-                Err(_) => match i64::try_from(value) {
-                    Ok(narrowed) => ComValue::I64(narrowed),
-                    Err(_) => {
-                        return Err(format!("VT_UI8 value {value} exceeds i64 carrier range"));
-                    }
-                },
-            }
-        }
-        VT_R4_VARENUM => ComValue::F64(F64Value::from_single_f64(
-            variant.Anonymous.Anonymous.Anonymous.fltVal as f64,
-        )),
-        VT_R8_VARENUM => ComValue::F64(F64Value::from_f64(
-            variant.Anonymous.Anonymous.Anonymous.dblVal,
-        )),
-        VT_CY_VARENUM => ComValue::Currency(CurrencyValue::from_scaled_i64(
-            variant.Anonymous.Anonymous.Anonymous.cyVal.int64,
-        )),
-        VT_DATE_VARENUM => ComValue::F64(F64Value::from_date_f64(
-            variant.Anonymous.Anonymous.Anonymous.dblVal,
-        )),
-        VT_DECIMAL => ComValue::Decimal(decimal96_from_windows(variant.Anonymous.decVal)),
-        VT_UINT => {
-            let value = variant.Anonymous.Anonymous.Anonymous.uintVal;
-            match i32::try_from(value) {
-                Ok(narrowed) => ComValue::I32(narrowed),
-                Err(_) => ComValue::I64(value as i64),
-            }
-        }
-        VT_BOOL => {
-            let value: VARIANT_BOOL = variant.Anonymous.Anonymous.Anonymous.boolVal;
-            ComValue::Bool(value != 0)
-        }
-        VT_BSTR => {
-            let bstr = variant.Anonymous.Anonymous.Anonymous.bstrVal;
-            ComValue::String(runtime_bstr_from_windows(bstr))
-        }
-        VT_RECORD_VALUE => ComValue::Record(com_record_from_variant(variant)?),
-        VT_NULL => ComValue::Null,
-        VT_ERROR => {
-            let code = variant.Anonymous.Anonymous.Anonymous.scode;
-            // VBA standard errors use FACILITY_CONTROL on the Automation wire.
-            // Preserve other HRESULTs, including DISP_E_PARAMNOTFOUND.
-            let code = if (code as u32) & 0xffff_0000 == 0x800a_0000 {
-                code & 0xffff
-            } else {
-                code
-            };
-            ComValue::ErrorCode(code)
-        }
+    Ok(match vt {
+        VT_EMPTY => Variant::empty(),
+        VT_NULL => Variant::null(),
+        VT_I1 => Variant::from_i8(data.cVal),
+        VT_UI1 => Variant::from_u8(data.bVal),
+        VT_I2 => Variant::from_i16(data.iVal),
+        VT_UI2 => Variant::from_u16(data.uiVal),
+        VT_I4 => Variant::from_i32(data.lVal),
+        VT_UI4 => Variant::from_u32(data.ulVal),
+        VT_INT => Variant::from_i32(data.intVal),
+        VT_UINT => Variant::from_uint(data.uintVal),
+        VT_I8 => Variant::from_i64(data.llVal),
+        VT_UI8 => Variant::from_u64(data.ullVal),
+        VT_R4_VARENUM => Variant::from_f32(data.fltVal),
+        VT_R8_VARENUM => Variant::from_f64(data.dblVal),
+        VT_CY_VARENUM => Variant::from_currency_scaled_i64(data.cyVal.int64),
+        VT_DATE_VARENUM => Variant::from_date_f64(data.date),
+        VT_DECIMAL => Variant::from_decimal96(decimal96_from_windows(variant.Anonymous.decVal)),
+        VT_BOOL => Variant::from_bool(data.boolVal != 0),
+        VT_BSTR => Variant::from_string(runtime_bstr_from_windows(data.bstrVal)),
+        VT_RECORD_VALUE => Variant::from_com_record(com_record_from_variant(variant)?),
+        // The SCODE as it is (`CVErr(2042)` is `&H800A07FA`).
+        VT_ERROR => Variant::from_scode(data.scode),
         vt => {
             return Err(format!("unsupported VARIANT return type vt={vt}"));
         }
-    };
-    Ok(value)
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -2108,7 +2044,7 @@ where
             }
             return bind_dispatch_result(dispatch.cast(), prog_id_hint, op);
         }
-        return variant_to_com_value(variant)?.to_variant();
+        return variant_to_com_value(variant);
     }
     if vt & VT_ARRAY != 0 {
         return safe_array_to_variant_value(
@@ -2162,7 +2098,7 @@ where
         VT_RECORD_VALUE => return Ok(Variant::from_com_record(com_record_from_variant(variant)?)),
         _ => {}
     }
-    variant_to_com_value(variant)?.to_variant()
+    variant_to_com_value(variant)
 }
 
 #[cfg(target_os = "windows")]
@@ -2196,7 +2132,7 @@ where
 
 #[cfg(target_os = "windows")]
 #[allow(unsafe_op_in_unsafe_fn)]
-/// Populate a Windows `VARIANT` from the shared semantic `ComValue` carrier for the currently
+/// Populate a Windows `VARIANT` from a runtime cell for the currently
 /// supported scalar/string/one-dimensional SAFEARRAY subset and `VT_DISPATCH`
 /// object-handle lane.
 ///
@@ -2206,7 +2142,7 @@ where
 /// matching COM reference-count increment to that pointer before the variant assumes ownership.
 pub unsafe fn set_variant_from_com_value<FResolve, FAddRef>(
     variant: *mut VARIANT,
-    value: &ComValue,
+    value: &Variant,
     resolve_object: &mut FResolve,
     add_ref_dispatch: &mut FAddRef,
 ) -> Result<(), String>
@@ -2217,80 +2153,119 @@ where
     if variant.is_null() {
         return Ok(());
     }
-    match value {
-        ComValue::Empty => {
-            (*variant).Anonymous.Anonymous.vt = VT_EMPTY;
+    let invalid = || format!("invalid {:?} payload", value.vtype());
+    let cell = &mut (*variant).Anonymous.Anonymous;
+    match value.vtype() {
+        // A reference passes its target's value (`VariantCopyInd`).
+        VarType::ByRef => {
+            return set_variant_from_com_value(
+                variant,
+                &value.try_clone()?,
+                resolve_object,
+                add_ref_dispatch,
+            );
         }
-        ComValue::Null => {
-            (*variant).Anonymous.Anonymous.vt = VT_NULL;
+        VarType::Empty => cell.vt = VT_EMPTY,
+        VarType::Null => cell.vt = VT_NULL,
+        VarType::Error => {
+            cell.vt = VT_ERROR;
+            cell.Anonymous.scode = value.as_scode().ok_or_else(invalid)?;
         }
-        ComValue::ErrorCode(code) => {
-            (*variant).Anonymous.Anonymous.vt = VT_ERROR;
-            (*variant).Anonymous.Anonymous.Anonymous.scode = if (0..=65535).contains(code) {
-                (0x800a_0000u32 | *code as u32) as i32
+        VarType::Boolean => {
+            cell.vt = VT_BOOL;
+            cell.Anonymous.boolVal = if value.as_bool().ok_or_else(invalid)? {
+                -1
             } else {
-                *code
+                0
             };
         }
-        ComValue::Bool(value) => {
-            (*variant).Anonymous.Anonymous.vt = VT_BOOL;
-            (*variant).Anonymous.Anonymous.Anonymous.boolVal = if *value { -1 } else { 0 };
+        VarType::Integer => {
+            cell.vt = VT_I2;
+            cell.Anonymous.iVal = value.as_i16().ok_or_else(invalid)?;
         }
-        ComValue::I32(value) => {
-            (*variant).Anonymous.Anonymous.vt = VT_I4;
-            (*variant).Anonymous.Anonymous.Anonymous.lVal = *value;
+        VarType::Long => {
+            cell.vt = VT_I4;
+            cell.Anonymous.lVal = value.as_i32().ok_or_else(invalid)?;
         }
-        ComValue::I64(value) => {
-            (*variant).Anonymous.Anonymous.vt = VT_I8;
-            (*variant).Anonymous.Anonymous.Anonymous.llVal = *value;
+        VarType::Byte => {
+            cell.vt = VT_UI1;
+            cell.Anonymous.bVal = value.as_u8().ok_or_else(invalid)?;
         }
-        ComValue::U64(value) => {
-            (*variant).Anonymous.Anonymous.vt = VT_UI8;
-            (*variant).Anonymous.Anonymous.Anonymous.ullVal = *value;
+        VarType::SignedByte => {
+            cell.vt = VT_I1;
+            cell.Anonymous.cVal = value.as_i8().ok_or_else(invalid)? as _;
         }
-        ComValue::F64(value) => match value.subtype() {
-            F64Subtype::Single => {
-                (*variant).Anonymous.Anonymous.vt = VT_R4_VARENUM;
-                (*variant).Anonymous.Anonymous.Anonymous.fltVal = value.as_f64() as f32;
-            }
-            F64Subtype::Double => {
-                (*variant).Anonymous.Anonymous.vt = VT_R8_VARENUM;
-                (*variant).Anonymous.Anonymous.Anonymous.dblVal = value.as_f64();
-            }
-            F64Subtype::Date => {
-                (*variant).Anonymous.Anonymous.vt = VT_DATE_VARENUM;
-                (*variant).Anonymous.Anonymous.Anonymous.dblVal = value.as_f64();
-            }
-        },
-        ComValue::Decimal(value) => {
-            (*variant).Anonymous.decVal = decimal96_to_windows(*value);
+        VarType::UnsignedInteger => {
+            cell.vt = VT_UI2;
+            cell.Anonymous.uiVal = value.as_u16().ok_or_else(invalid)?;
+        }
+        VarType::UnsignedLong => {
+            cell.vt = VT_UI4;
+            cell.Anonymous.ulVal = value.as_u32().ok_or_else(invalid)?;
+        }
+        VarType::UnsignedInt => {
+            cell.vt = VT_UINT;
+            cell.Anonymous.uintVal = value.as_u32().ok_or_else(invalid)?;
+        }
+        VarType::LongLong => {
+            cell.vt = VT_I8;
+            cell.Anonymous.llVal = value.as_i64().ok_or_else(invalid)?;
+        }
+        VarType::UnsignedLongLong => {
+            cell.vt = VT_UI8;
+            cell.Anonymous.ullVal = value.as_u64().ok_or_else(invalid)?;
+        }
+        VarType::Single => {
+            cell.vt = VT_R4_VARENUM;
+            cell.Anonymous.fltVal = value.as_f32().ok_or_else(invalid)?;
+        }
+        VarType::Double => {
+            cell.vt = VT_R8_VARENUM;
+            cell.Anonymous.dblVal = value.as_f64().ok_or_else(invalid)?;
+        }
+        VarType::Date => {
+            cell.vt = VT_DATE_VARENUM;
+            cell.Anonymous.date = value.as_date_f64().ok_or_else(invalid)?;
+        }
+        VarType::Currency => {
+            cell.vt = VT_CY_VARENUM;
+            cell.Anonymous.cyVal.int64 = value.as_currency_scaled_i64().ok_or_else(invalid)?;
+        }
+        VarType::Decimal => {
+            (*variant).Anonymous.decVal =
+                decimal96_to_windows(value.as_decimal96().ok_or_else(invalid)?);
             (*variant).Anonymous.decVal.wReserved = VT_DECIMAL;
         }
-        ComValue::Currency(value) => {
-            (*variant).Anonymous.Anonymous.vt = VT_CY_VARENUM;
-            (*variant).Anonymous.Anonymous.Anonymous.cyVal.int64 = value.scaled_i64();
+        VarType::String => {
+            let text = value.as_bstr().ok_or_else(invalid)?;
+            cell.vt = VT_BSTR;
+            cell.Anonymous.bstrVal = alloc_bstr(&text);
         }
-        ComValue::String(value) => {
-            (*variant).Anonymous.Anonymous.vt = VT_BSTR;
-            (*variant).Anonymous.Anonymous.Anonymous.bstrVal = alloc_bstr(value);
+        VarType::ArrayVariant => {
+            let array = value.as_safearray().ok_or_else(invalid)?;
+            set_variant_array_arg(variant, &array, resolve_object, add_ref_dispatch)?;
         }
-        ComValue::ArrayIntent(array) => {
-            set_variant_array_arg(variant, array, resolve_object, add_ref_dispatch)?;
-        }
-        ComValue::Object(handle) => {
-            let dispatch = resolve_object(handle.clone())?;
+        VarType::Object => {
+            let handle = value.as_object_ref().ok_or_else(invalid)?;
+            let dispatch = resolve_object(handle)?;
             if dispatch.is_null() {
                 return Err("object handle resolved to null IDispatch pointer".to_string());
             }
             add_ref_dispatch(dispatch);
-            (*variant).Anonymous.Anonymous.vt = windows_sys::Win32::System::Variant::VT_DISPATCH;
-            (*variant).Anonymous.Anonymous.Anonymous.pdispVal = dispatch;
+            let cell = &mut (*variant).Anonymous.Anonymous;
+            cell.vt = VT_DISPATCH;
+            cell.Anonymous.pdispVal = dispatch;
         }
-        ComValue::Record(record) => {
-            let (record_info, record_data) = record.try_clone()?.into_raw_parts();
-            (*variant).Anonymous.Anonymous.vt = VT_RECORD_VALUE;
-            (*variant).Anonymous.Anonymous.Anonymous.Anonymous.pRecInfo = record_info;
-            (*variant).Anonymous.Anonymous.Anonymous.Anonymous.pvRecord = record_data;
+        VarType::Record => {
+            let record = value.as_com_record().ok_or_else(invalid)?;
+            let (record_info, record_data) = record.try_to_owned()?.into_raw_parts();
+            let cell = &mut (*variant).Anonymous.Anonymous;
+            cell.vt = VT_RECORD_VALUE;
+            cell.Anonymous.Anonymous.pRecInfo = record_info;
+            cell.Anonymous.Anonymous.pvRecord = record_data;
+        }
+        VarType::ProcRef => {
+            return Err("procedure references cannot be passed to COM".to_string());
         }
     }
     Ok(())
@@ -2299,7 +2274,7 @@ where
 #[cfg(target_os = "windows")]
 #[allow(unsafe_op_in_unsafe_fn)]
 /// Consume an Invoke-owned result `VARIANT`, clear it, and classify the supported result shape as
-/// either a semantic `ComValue` or a dispatch-capable object pointer for adapter-owned binding.
+/// either a runtime value or a dispatch-capable object pointer for adapter-owned binding.
 ///
 /// # Safety
 /// The caller must provide a valid writable `VARIANT` pointer containing an Invoke-owned result
@@ -2367,12 +2342,11 @@ mod tests {
     };
     use crate::windows_test_dispatch::create_calcvba_test_enum_unknown;
     use crate::{
-        ComInterfaceIid, ComValue, TypeLibRecordField, TypeLibRecordFieldKind, TypeLibRecordInfo,
+        ComInterfaceIid, TypeLibRecordField, TypeLibRecordFieldKind, TypeLibRecordInfo,
         TypeLibRecordLayout,
     };
     use calcvba_runtime::{
-        CurrencyValue, Decimal96, F64Value, Variant, VbaRecord, VbaRecordFieldKind,
-        VbaRecordFieldSpec, VbaRecordLayout,
+        Decimal96, Variant, VbaRecord, VbaRecordFieldKind, VbaRecordFieldSpec, VbaRecordLayout,
         bstr::BStr,
         safe_array::{
             SafeArray, VT_BSTR_VALUE, VT_CY_VALUE, VT_DATE_VALUE, VT_DECIMAL_VALUE, VT_I2_VALUE,
@@ -2418,7 +2392,7 @@ mod tests {
             unsafe {
                 set_variant_from_com_value(
                     &mut variant,
-                    &ComValue::ErrorCode(number),
+                    &Variant::from_error_code(number),
                     &mut |_| panic!("error values cannot resolve objects"),
                     &mut |_| panic!("error values cannot retain dispatch"),
                 )
@@ -2427,7 +2401,7 @@ mod tests {
                 assert_eq!(variant.Anonymous.Anonymous.Anonymous.scode as u32, wire);
                 assert_eq!(
                     variant_to_com_value(&variant).unwrap(),
-                    ComValue::ErrorCode(number)
+                    Variant::from_error_code(number)
                 );
                 assert_eq!(VariantClear(&mut variant), 0);
             }
@@ -2803,11 +2777,10 @@ mod tests {
         let mut variant: VARIANT = unsafe { std::mem::zeroed() };
         variant.Anonymous.Anonymous.vt = VT_ARRAY | VT_RECORD_VALUE;
         variant.Anonymous.Anonymous.Anonymous.parray = psa;
-        let array = match unsafe { variant_to_com_value(&variant) }
-            .expect("SAFEARRAY(VT_RECORD) should decode")
-        {
-            ComValue::ArrayIntent(array) => array,
-            other => panic!("expected record SAFEARRAY, got {other:?}"),
+        let decoded =
+            unsafe { variant_to_com_value(&variant) }.expect("SAFEARRAY(VT_RECORD) should decode");
+        let Some(array) = decoded.as_safearray() else {
+            panic!("expected record SAFEARRAY, got {decoded:?}");
         };
         let values = array.variant_elements().expect("record array elements");
         assert_eq!(values.len(), 2);
@@ -2858,7 +2831,7 @@ mod tests {
             vec![record],
         )
         .expect("native record array");
-        let value = ComValue::ArrayIntent(array);
+        let value = Variant::from_safearray(array);
         let mut variant: VARIANT = unsafe { std::mem::zeroed() };
 
         let err = unsafe { set_record_safearray_from_com_value(&mut variant, &value, None) }
@@ -2874,10 +2847,11 @@ mod tests {
         let mut info = FakeRecordInfo::new();
         let source = fake_record_variant(&mut info, 123);
 
-        let record = match unsafe { variant_to_com_value(&source) }.expect("VT_RECORD converts") {
-            ComValue::Record(record) => record,
-            other => panic!("expected record value, got {other:?}"),
+        let decoded = unsafe { variant_to_com_value(&source) }.expect("VT_RECORD converts");
+        let Some(record) = decoded.as_com_record() else {
+            panic!("expected record value, got {decoded:?}");
         };
+        let record = record.try_to_owned().expect("record copy");
         assert_eq!(info.copies.load(Ordering::SeqCst), 1);
         assert_eq!(
             unsafe { *record.record_data_ptr().cast::<i32>() },
@@ -2904,14 +2878,12 @@ mod tests {
         let mut roundtrip: VARIANT = unsafe { std::mem::zeroed() };
         let mut resolve_object = |_object| Ok(std::ptr::null_mut());
         let mut add_ref = |_dispatch: *mut c_void| {};
-        let value = ComValue::Record(record);
+        let value = Variant::from_com_record(record);
         unsafe {
             set_variant_from_com_value(&mut roundtrip, &value, &mut resolve_object, &mut add_ref)
                 .expect("record VARIANT write");
         }
-        let ComValue::Record(record) = value else {
-            unreachable!()
-        };
+        let record = value.as_com_record().expect("record value");
         assert_eq!(unsafe { roundtrip.Anonymous.Anonymous.vt }, VT_RECORD_VALUE);
         assert_ne!(
             unsafe { roundtrip.Anonymous.Anonymous.Anonymous.Anonymous.pvRecord },
@@ -2936,7 +2908,7 @@ mod tests {
         unsafe {
             let _ = VariantClear(&mut roundtrip);
         }
-        drop(record);
+        drop(value);
         assert_eq!(
             info.clears.load(Ordering::SeqCst),
             2,
@@ -2967,7 +2939,7 @@ mod tests {
             let value = variant_to_com_value(&variant).expect("decode bstr");
             assert_eq!(
                 value,
-                ComValue::String(BStr::from_utf16_units(&units).expect("exact units")),
+                Variant::from_string(BStr::from_utf16_units(&units).expect("exact units")),
                 "decode must preserve the exact UTF-16 payload"
             );
             let _ = VariantClear(&mut variant);
@@ -2987,7 +2959,7 @@ mod tests {
             let value = variant_to_com_value(&variant).expect("decode odd-byte bstr");
             assert_eq!(
                 value,
-                ComValue::String(BStr::from_bytes(&bytes).expect("exact bytes")),
+                Variant::from_string(BStr::from_bytes(&bytes).expect("exact bytes")),
                 "decode must preserve the exact BSTR byte payload"
             );
             let _ = VariantClear(&mut variant);
@@ -3036,8 +3008,8 @@ mod tests {
             variant.Anonymous.Anonymous.Anonymous.parray = psa;
 
             // Decode: the runtime stores the first dimension fastest, as the OS does.
-            let ComValue::ArrayIntent(decoded) =
-                variant_to_com_value(&variant).expect("decode 2x3 array")
+            let Some(decoded) =
+                (variant_to_com_value(&variant).expect("decode 2x3 array")).as_safearray()
             else {
                 panic!("expected an array result");
             };
@@ -3075,7 +3047,7 @@ mod tests {
             let mut add_ref = |_dispatch| {};
             set_variant_from_com_value(
                 &mut variant,
-                &ComValue::ArrayIntent(array),
+                &Variant::from_safearray(array),
                 &mut resolve_object,
                 &mut add_ref,
             )
@@ -3106,7 +3078,7 @@ mod tests {
     #[test]
     fn string_variant_roundtrips_through_windows_bridge() {
         let mut variant: VARIANT = unsafe { std::mem::zeroed() };
-        let value = ComValue::String(BStr::from("Hello"));
+        let value = Variant::from_string(BStr::from("Hello"));
         let mut resolve_object =
             |_handle| Err("object dispatch resolution not expected".to_string());
         let mut add_ref = |_dispatch| {};
@@ -3124,7 +3096,7 @@ mod tests {
     #[test]
     fn string_variant_preserves_embedded_nuls_through_windows_bridge() {
         let mut variant: VARIANT = unsafe { std::mem::zeroed() };
-        let value = ComValue::String(BStr::from("A\0B"));
+        let value = Variant::from_string(BStr::from("A\0B"));
         let mut resolve_object =
             |_handle| Err("object dispatch resolution not expected".to_string());
         let mut add_ref = |_dispatch| {};
@@ -3149,7 +3121,7 @@ mod tests {
             variant.Anonymous.Anonymous.Anonymous.fltVal = 12.5;
             assert_eq!(
                 variant_to_com_value(&variant).expect("read single variant"),
-                ComValue::F64(F64Value::from_single_f64(12.5))
+                Variant::from_f32(12.5)
             );
             let _ = VariantClear(&mut variant);
         }
@@ -3163,7 +3135,7 @@ mod tests {
             variant.Anonymous.Anonymous.Anonymous.dblVal = 45200.25;
             assert_eq!(
                 variant_to_com_value(&variant).expect("read date variant"),
-                ComValue::F64(F64Value::from_date_f64(45200.25))
+                Variant::from_date_f64(45200.25)
             );
             let _ = VariantClear(&mut variant);
         }
@@ -3177,7 +3149,7 @@ mod tests {
             variant.Anonymous.Anonymous.Anonymous.cyVal.int64 = 125_000;
             assert_eq!(
                 variant_to_com_value(&variant).expect("read currency variant"),
-                ComValue::Currency(CurrencyValue::from_scaled_i64(125_000))
+                Variant::from_currency_scaled_i64(125_000)
             );
             let _ = VariantClear(&mut variant);
         }
@@ -3192,7 +3164,7 @@ mod tests {
             variant.Anonymous.decVal.wReserved = VT_DECIMAL;
             assert_eq!(
                 variant_to_com_value(&variant).expect("read decimal variant"),
-                ComValue::Decimal(Decimal96::from_parts(123_450, 0, 0, 3, true))
+                Variant::from_decimal96(Decimal96::from_parts(123_450, 0, 0, 3, true))
             );
             let _ = VariantClear(&mut variant);
         }
@@ -3201,7 +3173,7 @@ mod tests {
     #[test]
     fn scalar_i64_variant_roundtrips_through_windows_bridge() {
         let mut variant: VARIANT = unsafe { std::mem::zeroed() };
-        let value = ComValue::I64(5_000_000_000);
+        let value = Variant::from_i64(5_000_000_000);
         let mut resolve_object =
             |_handle| Err("object dispatch resolution not expected".to_string());
         let mut add_ref = |_dispatch| {};
@@ -3225,7 +3197,7 @@ mod tests {
             variant.Anonymous.Anonymous.Anonymous.ullVal = 5_000_000_000;
             assert_eq!(
                 variant_to_com_value(&variant).expect("read ui8 variant"),
-                ComValue::I64(5_000_000_000)
+                Variant::from_i64(5_000_000_000)
             );
             let _ = VariantClear(&mut variant);
         }
@@ -3239,7 +3211,7 @@ mod tests {
             variant.Anonymous.Anonymous.vt = VT_BYREF | VT_I4;
             variant.Anonymous.Anonymous.Anonymous.plVal = &mut backing;
             let value = variant_to_com_value(&variant).expect("VT_BYREF|VT_I4 should dereference");
-            assert_eq!(value, ComValue::I32(321));
+            assert_eq!(value, Variant::from_i32(321));
         }
     }
 
@@ -3268,7 +3240,7 @@ mod tests {
             let mut variant: VARIANT = std::mem::zeroed();
             variant.Anonymous.Anonymous.vt = VT_ARRAY | VT_I4;
             variant.Anonymous.Anonymous.Anonymous.parray = psa;
-            let ComValue::ArrayIntent(com) = variant_to_com_value(&variant).unwrap() else {
+            let Some(com) = (variant_to_com_value(&variant).unwrap()).as_safearray() else {
                 panic!("array expected");
             };
             assert_eq!(com.bounds().unwrap()[0].lower, -2);
@@ -3292,7 +3264,7 @@ mod tests {
     #[test]
     fn scalar_double_variant_roundtrips_through_windows_bridge() {
         let mut variant: VARIANT = unsafe { std::mem::zeroed() };
-        let value = ComValue::F64(F64Value::from_f64(3.5));
+        let value = Variant::from_f64(3.5);
         let mut resolve_object =
             |_handle| Err("object dispatch resolution not expected".to_string());
         let mut add_ref = |_dispatch| {};
@@ -3311,7 +3283,7 @@ mod tests {
     #[test]
     fn scalar_single_variant_roundtrips_through_windows_bridge() {
         let mut variant: VARIANT = unsafe { std::mem::zeroed() };
-        let value = ComValue::F64(F64Value::from_single_f64(3.5));
+        let value = Variant::from_f32(3.5);
         let mut resolve_object =
             |_handle| Err("object dispatch resolution not expected".to_string());
         let mut add_ref = |_dispatch| {};
@@ -3330,7 +3302,7 @@ mod tests {
     #[test]
     fn scalar_date_variant_roundtrips_through_windows_bridge() {
         let mut variant: VARIANT = unsafe { std::mem::zeroed() };
-        let value = ComValue::F64(F64Value::from_date_f64(45200.25));
+        let value = Variant::from_date_f64(45200.25);
         let mut resolve_object =
             |_handle| Err("object dispatch resolution not expected".to_string());
         let mut add_ref = |_dispatch| {};
@@ -3349,7 +3321,7 @@ mod tests {
     #[test]
     fn scalar_currency_variant_roundtrips_through_windows_bridge() {
         let mut variant: VARIANT = unsafe { std::mem::zeroed() };
-        let value = ComValue::Currency(CurrencyValue::from_scaled_i64(-42_500));
+        let value = Variant::from_currency_scaled_i64(-42_500);
         let mut resolve_object =
             |_handle| Err("object dispatch resolution not expected".to_string());
         let mut add_ref = |_dispatch| {};
@@ -3367,7 +3339,7 @@ mod tests {
     #[test]
     fn scalar_decimal_variant_roundtrips_through_windows_bridge() {
         let mut variant: VARIANT = unsafe { std::mem::zeroed() };
-        let value = ComValue::Decimal(Decimal96::from_parts(123_450, 0, 0, 3, false));
+        let value = Variant::from_decimal96(Decimal96::from_parts(123_450, 0, 0, 3, false));
         let mut resolve_object =
             |_handle| Err("object dispatch resolution not expected".to_string());
         let mut add_ref = |_dispatch| {};
@@ -3385,7 +3357,7 @@ mod tests {
     #[test]
     fn safe_array_variant_roundtrips_through_windows_bridge() {
         let mut variant: VARIANT = unsafe { std::mem::zeroed() };
-        let value = ComValue::ArrayIntent(SafeArray::from_variants(vec![
+        let value = Variant::from_safearray(SafeArray::from_variants(vec![
             Variant::from_i32(4),
             Variant::from_bool(true),
             Variant::from_string(BStr::from("Hello")),
@@ -3428,7 +3400,7 @@ mod tests {
             variant.Anonymous.Anonymous.Anonymous.parray = psa;
             assert_eq!(
                 variant_to_com_value(&variant).expect("read VT_I2 SAFEARRAY"),
-                ComValue::ArrayIntent(
+                Variant::from_safearray(
                     SafeArray::from_typed_variants(
                         VT_I2_VALUE,
                         vec![
@@ -3466,7 +3438,7 @@ mod tests {
             variant.Anonymous.Anonymous.Anonymous.parray = psa;
             assert_eq!(
                 variant_to_com_value(&variant).expect("read VT_I8 SAFEARRAY"),
-                ComValue::ArrayIntent(
+                Variant::from_safearray(
                     SafeArray::from_typed_variants(
                         VT_I8_VALUE,
                         vec![
@@ -3504,7 +3476,7 @@ mod tests {
             variant.Anonymous.Anonymous.Anonymous.parray = psa;
             assert_eq!(
                 variant_to_com_value(&variant).expect("read VT_UI8 SAFEARRAY"),
-                ComValue::ArrayIntent(
+                Variant::from_safearray(
                     SafeArray::from_typed_variants(
                         VT_UI8_VALUE,
                         vec![
@@ -3542,7 +3514,7 @@ mod tests {
             variant.Anonymous.Anonymous.Anonymous.parray = psa;
             assert_eq!(
                 variant_to_com_value(&variant).expect("read VT_R4_VARENUM SAFEARRAY"),
-                ComValue::ArrayIntent(
+                Variant::from_safearray(
                     SafeArray::from_typed_variants(
                         VT_R4_VALUE,
                         vec![
@@ -3584,7 +3556,7 @@ mod tests {
             variant.Anonymous.Anonymous.Anonymous.parray = psa;
             assert_eq!(
                 variant_to_com_value(&variant).expect("read VT_CY_VARENUM SAFEARRAY"),
-                ComValue::ArrayIntent(
+                Variant::from_safearray(
                     SafeArray::from_typed_variants(
                         VT_CY_VALUE,
                         vec![
@@ -3633,7 +3605,7 @@ mod tests {
             variant.Anonymous.Anonymous.Anonymous.parray = psa;
             assert_eq!(
                 variant_to_com_value(&variant).expect("read VT_DECIMAL SAFEARRAY"),
-                ComValue::ArrayIntent(
+                Variant::from_safearray(
                     SafeArray::from_typed_variants(
                         VT_DECIMAL_VALUE,
                         vec![
@@ -3675,7 +3647,7 @@ mod tests {
             variant.Anonymous.Anonymous.Anonymous.parray = psa;
             assert_eq!(
                 variant_to_com_value(&variant).expect("read VT_DATE_VARENUM SAFEARRAY"),
-                ComValue::ArrayIntent(
+                Variant::from_safearray(
                     SafeArray::from_typed_variants(
                         VT_DATE_VALUE,
                         vec![
@@ -3713,7 +3685,7 @@ mod tests {
             variant.Anonymous.Anonymous.Anonymous.parray = psa;
             assert_eq!(
                 variant_to_com_value(&variant).expect("read VT_R8_VARENUM SAFEARRAY"),
-                ComValue::ArrayIntent(
+                Variant::from_safearray(
                     SafeArray::from_typed_variants(
                         VT_R8_VALUE,
                         vec![
@@ -3754,7 +3726,7 @@ mod tests {
             variant.Anonymous.Anonymous.Anonymous.parray = psa;
             assert_eq!(
                 variant_to_com_value(&variant).expect("read VT_BSTR SAFEARRAY"),
-                ComValue::ArrayIntent(
+                Variant::from_safearray(
                     SafeArray::from_typed_variants(
                         VT_BSTR_VALUE,
                         vec![

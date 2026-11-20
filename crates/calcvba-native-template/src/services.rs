@@ -492,7 +492,7 @@ pub(super) unsafe fn write(
                 let mut retain = |_: *mut c_void| {};
                 calcvba_com::windows_variant::set_variant_from_com_value(
                     &mut native,
-                    &calcvba_com::ComValue::from_variant(value).map_err(|_| 13)?,
+                    value,
                     &mut resolve,
                     &mut retain,
                 )

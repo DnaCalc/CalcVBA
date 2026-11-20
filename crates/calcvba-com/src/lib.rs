@@ -16,7 +16,6 @@ mod fixture_typelib_catalog;
 #[cfg(any(test, feature = "fixture-typelibs"))]
 pub use fixture_typelib_catalog::TEST_DISPID_COUNT;
 pub mod invoke_policy;
-pub mod miri_variant_mock;
 pub mod model;
 pub mod platform;
 pub mod refcount;
@@ -65,7 +64,7 @@ pub use invoke_policy::{
 pub use model::{
     ComCallbackPayload, ComCallbackToken, ComCallbackValue, ComInvokeArg, ComInvokeKind,
     ComInvokeRequest, ComMemberToken, ComObjectDescriptor, ComObjectToken, ComObjectTransportKind,
-    ComSubscriptionToken, ComValue, DISPATCH_INVOKE_MISSING_ARG_TOKEN,
+    ComSubscriptionToken, DISPATCH_INVOKE_MISSING_ARG_TOKEN,
 };
 pub use platform::portable::PortableComProjection;
 pub use refcount::RefCount;

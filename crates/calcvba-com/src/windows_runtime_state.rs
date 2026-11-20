@@ -5,15 +5,15 @@ use crate::windows_connection_point::WindowsEventArg;
 use crate::windows_runtime_object::{create_runtime_object_dispatch, runtime_object_from_dispatch};
 use crate::{
     ComBinding, ComCallbackToken, ComEventPath, ComEventSpec, ComInvokeArg, ComMemberSpec,
-    ComMemberToken, ComObjectToken, ComRuntimeState, ComSubscriptionToken, ComValue,
-    DispatchEventSinkConfig, RawIDispatch, WindowsConnectionPointTransport,
-    binding_from_typelib_metadata, get_dispid_by_name, release_dispatch, release_unknown,
-    source_interface_event_spec_supported, try_advise_dispatch_event_sink,
-    try_advise_single_i32_source_interface_event_sink, unadvise_connection_point,
+    ComMemberToken, ComObjectToken, ComRuntimeState, ComSubscriptionToken, DispatchEventSinkConfig,
+    RawIDispatch, WindowsConnectionPointTransport, binding_from_typelib_metadata,
+    get_dispid_by_name, release_dispatch, release_unknown, source_interface_event_spec_supported,
+    try_advise_dispatch_event_sink, try_advise_single_i32_source_interface_event_sink,
+    unadvise_connection_point,
 };
 use calcvba_runtime::ObjectRefExt;
 
-use calcvba_runtime::ObjectRef;
+use calcvba_runtime::{ObjectRef, Variant};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::ops::{Deref, DerefMut};
@@ -205,7 +205,7 @@ fn callback_sink(
                     let object = unsafe {
                         bind_native_dispatch_result(&mut state, *dispatch, "<com-event-arg>")
                     };
-                    ComValue::Object(object)
+                    Variant::from_object_ref(object)
                 }
             })
             .collect::<Vec<_>>();
@@ -300,21 +300,21 @@ pub fn event_callback_args_from_invoke_args(
     binding: &ComBinding,
     member: ComMemberToken,
     args: &[ComInvokeArg],
-) -> Result<Option<(ComMemberToken, Vec<ComValue>)>, String> {
+) -> Result<Option<(ComMemberToken, Vec<Variant>)>, String> {
     let Some(trigger_spec) = binding.event_trigger_specs.get(&member).copied() else {
         return Ok(None);
     };
     if args.len() < trigger_spec.callback_arity {
         return Ok(None);
     }
-    let mut values: Vec<ComValue> = args
+    let mut values: Vec<Variant> = args
         .iter()
         .take(trigger_spec.callback_arity)
         .enumerate()
         .map(|(index, arg)| {
             arg.value
                 .as_ref()
-                .map(|value| value.to_com_value())
+                .map(|value| value.variant().clone())
                 .ok_or_else(|| {
                     format!(
                         "COM-E-VALUE-TRANSPORT-UNSUPPORTED: projected event trigger `{}` requires concrete callback argument {}",
@@ -326,9 +326,12 @@ pub fn event_callback_args_from_invoke_args(
         .collect::<Result<_, _>>()?;
     if trigger_spec.second_arg_is_incremented
         && values.len() >= 2
-        && let ComValue::I32(first) = values[0]
+        && let Some(first) = values[0]
+            .as_i32()
+            .or_else(|| values[0].as_i16().map(i32::from))
+            .or_else(|| values[0].as_u8().map(i32::from))
     {
-        values[1] = ComValue::I32(first.saturating_add(1));
+        values[1] = Variant::from_i32(first.saturating_add(1));
     }
     Ok(Some((trigger_spec.event_token, values)))
 }
@@ -1174,9 +1177,10 @@ mod tests {
     };
     use crate::{
         ComBinding, ComEventPath, ComEventSpec, ComEventSubscription, ComEventTriggerSpec,
-        ComInvokeArg, ComMemberToken, ComObjectToken, ComValue,
+        ComInvokeArg, ComMemberToken, ComObjectToken,
     };
     use calcvba_runtime::ObjectRefExt;
+    use calcvba_runtime::Variant;
     use calcvba_runtime::{ObjectRef, bstr::BStr};
     use std::sync::{Arc, Mutex};
 
@@ -1279,7 +1283,7 @@ mod tests {
         let values = event_callback_args_from_invoke_args(
             &binding,
             ComMemberToken::new(7),
-            &[ComInvokeArg::positional_value(ComValue::String(
+            &[ComInvokeArg::positional_value(Variant::from_string(
                 BStr::from("payload"),
             ))],
         )
@@ -1287,7 +1291,7 @@ mod tests {
         .expect("event trigger should be recognized");
 
         assert_eq!(values.0.raw(), 11);
-        assert_eq!(values.1, vec![ComValue::String(BStr::from("payload"))]);
+        assert_eq!(values.1, vec![Variant::from_string(BStr::from("payload"))]);
     }
 
     #[test]
@@ -1332,7 +1336,7 @@ mod tests {
             object.clone(),
             &binding,
             ComMemberToken::new(7),
-            &[ComInvokeArg::positional_value(ComValue::String(
+            &[ComInvokeArg::positional_value(Variant::from_string(
                 BStr::from("payload"),
             ))],
         )
@@ -1351,9 +1355,9 @@ mod tests {
             payload
                 .args
                 .iter()
-                .map(|value| value.to_com_value())
+                .map(|value| value.variant().clone())
                 .collect::<Vec<_>>(),
-            vec![ComValue::String(BStr::from("payload"))]
+            vec![Variant::from_string(BStr::from("payload"))]
         );
     }
 

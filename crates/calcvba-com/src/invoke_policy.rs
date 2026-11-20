@@ -1,7 +1,8 @@
 use crate::{
     ComBinding, ComDirectDispatchSpec, ComInvokeArg, ComInvokeRequest, ComMemberSpec,
-    ComMemberToken, ComValue, DISPATCH_INVOKE_MISSING_ARG_TOKEN,
+    ComMemberToken, DISPATCH_INVOKE_MISSING_ARG_TOKEN,
 };
+use calcvba_runtime::Variant;
 
 const COM_DISP_E_PARAMNOTFOUND: i32 = 0x8002_0004u32 as i32;
 
@@ -184,7 +185,7 @@ fn canonicalize_member_paramarray_args(
         .zip(fixed_names.iter())
         .map(|(arg, name)| arg.unwrap_or_else(|| ComInvokeArg::omitted_named(name.clone())))
         .collect();
-    result.push(ComInvokeArg::positional_value(ComValue::ArrayIntent(
+    result.push(ComInvokeArg::positional_value(Variant::from_safearray(
         pack_paramarray_tail(&tail)?,
     )));
     Ok(result)
@@ -289,11 +290,12 @@ pub fn plan_bound_runtime_invoke(
 mod tests {
     use crate::{
         ComBinding, ComDirectDispatchSpec, ComInvokeArg, ComInvokeRequest, ComMemberSpec,
-        ComMemberToken, ComValue, OptionalParamDefault, TypeLibMemberInvokeKind, TypeLibParamType,
+        ComMemberToken, OptionalParamDefault, TypeLibMemberInvokeKind, TypeLibParamType,
         TypeLibWireType,
     };
     use calcvba_runtime::ObjectRef;
     use calcvba_runtime::ObjectRefExt;
+    use calcvba_runtime::Variant;
 
     use super::{
         UnboundRuntimeInvokePlan, canonicalize_member_known_args, legacy_runtime_arg_values,
@@ -303,8 +305,8 @@ mod tests {
     #[test]
     fn validate_named_arg_order_requires_named_args_to_trail() {
         let err = validate_named_arg_order(&[
-            ComInvokeArg::named_value(ComValue::I32(1), "lhs"),
-            ComInvokeArg::positional_value(ComValue::I32(2)),
+            ComInvokeArg::named_value(Variant::from_i32(1), "lhs"),
+            ComInvokeArg::positional_value(Variant::from_i32(2)),
         ])
         .expect_err("mixed ordering should be rejected");
         assert!(err.contains("must trail positional"));
@@ -333,12 +335,15 @@ mod tests {
         };
         let args = canonicalize_member_known_args(
             &spec,
-            &[ComInvokeArg::named_value(ComValue::I32(7), "rhs")],
+            &[ComInvokeArg::named_value(Variant::from_i32(7), "rhs")],
         )
         .expect("canonicalization should succeed");
         assert_eq!(args.len(), 2);
         assert_eq!(args[0], ComInvokeArg::omitted_named("lhs"));
-        assert_eq!(args[1], ComInvokeArg::named_value(ComValue::I32(7), "rhs"));
+        assert_eq!(
+            args[1],
+            ComInvokeArg::named_value(Variant::from_i32(7), "rhs")
+        );
     }
 
     #[test]
@@ -366,8 +371,8 @@ mod tests {
         let err = canonicalize_member_known_args(
             &spec,
             &[
-                ComInvokeArg::named_value(ComValue::I32(7), "rhs"),
-                ComInvokeArg::positional_value(ComValue::I32(3)),
+                ComInvokeArg::named_value(Variant::from_i32(7), "rhs"),
+                ComInvokeArg::positional_value(Variant::from_i32(3)),
             ],
         )
         .expect_err("positional arguments after named arguments should be invalid");
@@ -403,9 +408,9 @@ mod tests {
         let args = canonicalize_member_known_args(
             &spec,
             &[
-                ComInvokeArg::positional_value(ComValue::I32(4)),
-                ComInvokeArg::positional_value(ComValue::I32(5)),
-                ComInvokeArg::positional_value(ComValue::I32(6)),
+                ComInvokeArg::positional_value(Variant::from_i32(4)),
+                ComInvokeArg::positional_value(Variant::from_i32(5)),
+                ComInvokeArg::positional_value(Variant::from_i32(6)),
             ],
         )
         .expect("ParamArray canonicalization should succeed");
@@ -415,9 +420,10 @@ mod tests {
             .value
             .as_ref()
             .expect("ParamArray call should carry one packed array")
-            .to_com_value();
-        let ComValue::ArrayIntent(array) = value else {
-            panic!("ParamArray tail should pack to ArrayIntent, got {value:?}");
+            .variant()
+            .clone();
+        let Some(array) = value.as_safearray() else {
+            panic!("ParamArray tail should pack to an array, got {value:?}");
         };
         assert_eq!(array.len(), 3);
         let elems = array
@@ -433,7 +439,7 @@ mod tests {
     fn plan_unbound_runtime_invoke_allows_named_args_for_runtime_resolution() {
         let plan = plan_unbound_runtime_invoke(
             ComMemberToken::new(9),
-            &[ComInvokeArg::named_value(ComValue::I32(5), "value")],
+            &[ComInvokeArg::named_value(Variant::from_i32(5), "value")],
             None,
         )
         .expect("named unbound dispatch should pass through for runtime resolution");
@@ -477,7 +483,7 @@ mod tests {
         let request = ComInvokeRequest {
             object: ObjectRef::from_compat_identity(20_001),
             member: ComMemberToken::new(0),
-            args: vec![ComInvokeArg::named_value(ComValue::I32(19), "value")],
+            args: vec![ComInvokeArg::named_value(Variant::from_i32(19), "value")],
             invoke_kind_hint: None,
         };
         let plan = plan_bound_runtime_invoke(&binding, &request, None)
@@ -518,7 +524,7 @@ mod tests {
         let request = ComInvokeRequest {
             object: ObjectRef::from_compat_identity(20_001),
             member: ComMemberToken::new(0),
-            args: vec![ComInvokeArg::positional_value(ComValue::I32(19))],
+            args: vec![ComInvokeArg::positional_value(Variant::from_i32(19))],
             invoke_kind_hint: None,
         };
         let plan = plan_bound_runtime_invoke(&binding, &request, None)
@@ -534,7 +540,7 @@ mod tests {
         let request = ComInvokeRequest {
             object: ObjectRef::from_compat_identity(20_001),
             member: ComMemberToken::new(0),
-            args: vec![ComInvokeArg::named_value(ComValue::I32(19), "value")],
+            args: vec![ComInvokeArg::named_value(Variant::from_i32(19), "value")],
             invoke_kind_hint: None,
         };
         let plan = plan_bound_runtime_invoke(&binding, &request, None)
@@ -575,7 +581,7 @@ mod tests {
     #[test]
     fn legacy_runtime_arg_values_preserve_omitted_token() {
         let values = legacy_runtime_arg_values(&[
-            ComInvokeArg::positional_value(ComValue::I32(3)),
+            ComInvokeArg::positional_value(Variant::from_i32(3)),
             ComInvokeArg::omitted(),
         ])
         .expect("legacy values should be recoverable");

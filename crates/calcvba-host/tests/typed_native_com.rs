@@ -2295,9 +2295,7 @@ End Function
 #[test]
 fn connection_point_dispatch_sink_runs_typed_handlers_and_rejects_stale_targets() {
     use api::{RuntimeProvider, SessionExt};
-    use calcvba_com::{
-        ComValue, DispatchEventSinkConfig, windows_connection_point::WindowsEventArg,
-    };
+    use calcvba_com::{DispatchEventSinkConfig, windows_connection_point::WindowsEventArg};
     use std::cell::{Cell, RefCell};
     struct Target {
         session: std::rc::Weak<RefCell<Box<dyn api::Session>>>,
@@ -2413,7 +2411,10 @@ fn connection_point_dispatch_sink_runs_typed_handlers_and_rejects_stale_targets(
                 let Some(target) = TARGET.with(|slot| slot.borrow().clone()) else {
                     return false;
                 };
-                let [WindowsEventArg::Value(ComValue::I32(value))] = args else {
+                let [WindowsEventArg::Value(value)] = args else {
+                    return false;
+                };
+                let Some(value) = value.as_i32() else {
                     return false;
                 };
                 target.deliveries.set(target.deliveries.get() + 1);
@@ -2424,7 +2425,7 @@ fn connection_point_dispatch_sink_runs_typed_handlers_and_rejects_stale_targets(
                         let session = target.session.upgrade().ok_or(api::Error::StaleHandle)?;
                         session
                             .borrow()
-                            .call_typed_in_context(&target.handler, (*value,), context)
+                            .call_typed_in_context(&target.handler, (value,), context)
                     })
                     .and_then(|result| result)
                 }));

@@ -46,55 +46,23 @@ unsafe fn record_size(record_info: *mut c_void) -> Result<usize, String> {
 }
 
 /// Zeroed record memory from the task allocator (`CoTaskMemAlloc`, which `VariantClear`
-/// frees), or the global allocator where there is no COM.
+/// frees; `crate::oleaut`'s task memory where there is no COM).
 fn allocate_record(size: usize) -> Result<*mut c_void, String> {
-    #[cfg(target_os = "windows")]
-    {
-        // SAFETY: plain allocation; a zero-size request still returns a unique block.
-        let memory = unsafe { windows_sys::Win32::System::Com::CoTaskMemAlloc(size.max(1)) };
-        if memory.is_null() {
-            return Err("CoTaskMemAlloc failed for a COM record".to_string());
-        }
-        // SAFETY: `memory` is a fresh block of at least `size` bytes.
-        unsafe { core::ptr::write_bytes(memory.cast::<u8>(), 0, size) };
-        Ok(memory)
+    // SAFETY: plain allocation; a zero-size request still returns a unique block.
+    let memory = unsafe { crate::oleaut::co_task_mem_alloc(size.max(1)) };
+    if memory.is_null() {
+        return Err("task memory allocation failed for a COM record".to_string());
     }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let layout = fallback_layout(size)?;
-        // SAFETY: the layout has a non-zero size.
-        let memory = unsafe { std::alloc::alloc_zeroed(layout) };
-        if memory.is_null() {
-            return Err("allocation failed for a COM record".to_string());
-        }
-        Ok(memory.cast())
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn fallback_layout(size: usize) -> Result<std::alloc::Layout, String> {
-    std::alloc::Layout::from_size_align(size.max(1), 16)
-        .map_err(|_| "COM record size overflows".to_string())
+    // SAFETY: `memory` is a fresh block of at least `size` bytes.
+    unsafe { core::ptr::write_bytes(memory.cast::<u8>(), 0, size) };
+    Ok(memory)
 }
 
 /// # Safety
-/// `memory` must come from [`allocate_record`] with the record size of `record_info`.
-unsafe fn free_record(memory: *mut c_void, record_info: *mut c_void) {
-    #[cfg(target_os = "windows")]
-    {
-        let _ = record_info;
-        // SAFETY: guaranteed by the caller.
-        unsafe { windows_sys::Win32::System::Com::CoTaskMemFree(memory) };
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        // SAFETY: guaranteed by the caller; the record size is fixed for its type.
-        let size = unsafe { record_size(record_info) }.unwrap_or(0);
-        if let Ok(layout) = fallback_layout(size) {
-            // SAFETY: allocated by `allocate_record` with this layout.
-            unsafe { std::alloc::dealloc(memory.cast(), layout) };
-        }
-    }
+/// `memory` must come from [`allocate_record`] (or the task allocator).
+unsafe fn free_record(memory: *mut c_void, _record_info: *mut c_void) {
+    // SAFETY: guaranteed by the caller.
+    unsafe { crate::oleaut::co_task_mem_free(memory) };
 }
 
 impl ComRecord {

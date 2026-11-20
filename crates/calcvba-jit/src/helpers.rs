@@ -4578,66 +4578,25 @@ pub(crate) unsafe fn raise_collection_error_for_jit(
     }
 }
 
-fn interop_invoke_kind_from_com(kind: TypeLibMemberInvokeKind) -> InteropInvokeKind {
-    match kind {
-        TypeLibMemberInvokeKind::Method => InteropInvokeKind::Method,
-        TypeLibMemberInvokeKind::PropertyGet => InteropInvokeKind::PropertyGet,
-        TypeLibMemberInvokeKind::PropertyPut => InteropInvokeKind::PropertyPut,
-        TypeLibMemberInvokeKind::PropertyPutRef => InteropInvokeKind::PropertyPutRef,
-    }
-}
-
-fn interop_invoke_kind_from_project(kind: ProjectMemberKind) -> InteropInvokeKind {
-    match kind {
-        ProjectMemberKind::Method => InteropInvokeKind::Method,
-        ProjectMemberKind::PropertyGet => InteropInvokeKind::PropertyGet,
-        ProjectMemberKind::PropertyLet => InteropInvokeKind::PropertyPut,
-        ProjectMemberKind::PropertySet => InteropInvokeKind::PropertyPutRef,
-    }
-}
-
-fn verified_late_dispatch_plan_for_jit(
-    name: &str,
-    kind: ProjectMemberKind,
-    args: &[JitCallArgDesc],
-    names: &[JitCallArgNameDesc],
-) -> Result<VerifiedInteropPlan, String> {
-    let named_arg_count = names
-        .iter()
-        .filter(|name| name.ptr != 0 && name.len > 0)
-        .count();
-    let byref_slots = args
-        .iter()
-        .enumerate()
-        .filter_map(|(index, arg)| (arg.kind == JIT_CALL_ARG_BYREF_ALIAS).then_some(index as u32))
-        .collect();
-    VerifiedInteropPlan::late_dispatch(
-        name,
-        name.is_empty(),
-        interop_invoke_kind_from_project(kind),
-        named_arg_count,
-        byref_slots,
+/// Whether a project call's accessor kind is the COM member's invoke kind (`Let` is
+/// `PROPERTYPUT`, `Set` is `PROPERTYPUTREF`).
+fn same_invoke_kind(kind: ProjectMemberKind, member: TypeLibMemberInvokeKind) -> bool {
+    matches!(
+        (kind, member),
+        (ProjectMemberKind::Method, TypeLibMemberInvokeKind::Method)
+            | (
+                ProjectMemberKind::PropertyGet,
+                TypeLibMemberInvokeKind::PropertyGet
+            )
+            | (
+                ProjectMemberKind::PropertyLet,
+                TypeLibMemberInvokeKind::PropertyPut
+            )
+            | (
+                ProjectMemberKind::PropertySet,
+                TypeLibMemberInvokeKind::PropertyPutRef
+            )
     )
-    .map_err(|err| err.message)
-}
-
-fn verified_declare_plan_for_jit(
-    descriptor: &calcvba_bundle::ExternalCallDescriptor,
-) -> Result<VerifiedInteropPlan, String> {
-    let entry = if descriptor.alias.is_empty() {
-        descriptor.declared_name.clone()
-    } else {
-        descriptor.alias.clone()
-    };
-    VerifiedInteropPlan::declare_x64(
-        descriptor.descriptor_id,
-        descriptor.library.clone(),
-        entry,
-        descriptor.calling_convention.clone(),
-        descriptor.param_by_ref.clone(),
-        descriptor.return_type.as_ref().map(|ty| format!("{ty:?}")),
-    )
-    .map_err(|err| err.message)
 }
 
 fn current_unit_source(run: *mut JitRun) -> String {
@@ -4774,14 +4733,10 @@ pub(crate) unsafe fn invoke_foreign_member_to_slot_for_jit(
     if run.is_null() || args.len() != names.len() {
         return ST_FAULT;
     }
-    if let Some(member) = early_member {
-        if interop_invoke_kind_from_project(kind)
-            != interop_invoke_kind_from_com(member.invoke_kind)
-        {
-            return raise_plan_error(state, run, "early COM accessor mismatch".into());
-        }
-    } else if let Err(message) = verified_late_dispatch_plan_for_jit(name, kind, args, names) {
-        return raise_plan_error(state, run, message);
+    if let Some(member) = early_member
+        && !same_invoke_kind(kind, member.invoke_kind)
+    {
+        return raise_plan_error(state, run, "early COM accessor mismatch".into());
     }
     // SAFETY: forwarded from this function's contract.
     unsafe {
@@ -4999,9 +4954,6 @@ pub(crate) unsafe extern "C" fn rt_jit_declare_call_to_slot(
                 }
             }
         };
-        if let Err(message) = verified_declare_plan_for_jit(&descriptor) {
-            return raise_plan_error(state, run, message);
-        }
         // ByVal arguments are values; each ByRef place is the `VT_BYREF` reference a COM call
         // gets (VM3's declare_call does the same), so the callee writes the caller's storage.
         let mut cells = Vec::with_capacity(argc);

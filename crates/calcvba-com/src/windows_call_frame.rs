@@ -10,7 +10,7 @@ use windows_sys::Win32::System::Com::{
 use windows_sys::Win32::System::Variant::{VARIANT, VT_BYREF, VT_I4, VT_VARIANT};
 
 use crate::{
-    ComValue, windows_client::COM_DISP_E_EXCEPTION, windows_client::COM_DISPID_PROPERTYPUT,
+    windows_client::COM_DISP_E_EXCEPTION, windows_client::COM_DISPID_PROPERTYPUT,
     windows_variant::set_variant_from_com_value, windows_variant::variant_to_com_value,
 };
 
@@ -87,7 +87,7 @@ pub unsafe fn disp_params_to_runtime_call_frame(
     let property_put_com_index = named_dispids
         .iter()
         .position(|dispid| *dispid == COM_DISPID_PROPERTYPUT)
-        .and_then(|index| if index < arg_count { Some(index) } else { None });
+        .filter(|&index| index < arg_count);
 
     for com_index in (0..arg_count).rev() {
         let logical_index = arg_count - 1 - com_index;
@@ -126,12 +126,11 @@ where
     FAddRef: FnMut(*mut core::ffi::c_void),
 {
     let value = result.value.clone().unwrap_or_else(Variant::empty);
-    let com_value = ComValue::from_variant(&value)?;
     // SAFETY: this unsafe fn's contract guarantees `variant` is a valid
     // writable VARIANT and that `resolve_object` returns live IDispatch
     // pointers which `add_ref_dispatch` retains before the variant assumes
     // ownership of them.
-    unsafe { set_variant_from_com_value(variant, &com_value, resolve_object, add_ref_dispatch) }
+    unsafe { set_variant_from_com_value(variant, &value, resolve_object, add_ref_dispatch) }
 }
 
 /// Applies runtime ByRef writebacks to the original COM argument array.
@@ -248,11 +247,9 @@ fn variant_to_runtime_call_argument(
     // SAFETY: the COM caller keeps this VARIANT — and any nested BSTR /
     // SAFEARRAY / interface payloads it owns until VariantClear — alive for
     // the duration of Invoke, satisfying `variant_to_com_value`'s contract.
-    let value = unsafe { variant_to_com_value(variant) }
-        .and_then(|value| value.to_variant())
-        .map_err(|message| {
-            ComCallFrameMarshalError::new(message).with_logical_arg_index(logical_index)
-        })?;
+    let value = unsafe { variant_to_com_value(variant) }.map_err(|message| {
+        ComCallFrameMarshalError::new(message).with_logical_arg_index(logical_index)
+    })?;
     let expected_type = if by_ref {
         Some(runtime_value_type_from_variant(variant))
     } else {
@@ -518,8 +515,8 @@ mod tests {
             .expect("SAFEARRAY result variant");
             assert_eq!(array_variant.Anonymous.Anonymous.vt, VT_ARRAY | VT_VARIANT);
             let com_value = variant_to_com_value(&array_variant).expect("read SAFEARRAY result");
-            let ComValue::ArrayIntent(roundtripped) = com_value else {
-                panic!("expected SAFEARRAY ComValue");
+            let Some(roundtripped) = com_value.as_safearray() else {
+                panic!("expected a SAFEARRAY value");
             };
             assert_eq!(roundtripped.len(), 2);
             VariantClear(&mut array_variant);

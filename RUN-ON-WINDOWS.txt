@@ -1,0 +1,61 @@
+Windows runs for the VARIANT migration (dc-yqq0), written by lane vx1 on Linux.
+Linux cannot run these; it only type-checks them (cargo check/clippy --target
+x86_64-pc-windows-msvc, with libffi-sys's C build stubbed out). Pull first, fix any
+cfg(windows)-only failure, pull again before each push.
+
+1. Whole check (stable toolchain; nightly clippy adds chunks_exact_to_as_chunks and
+   manual_checked_div findings in untouched Windows code, which stable does not have):
+     ./scripts/check.ps1
+
+2. dc-yqq0.12 (61a39081+): the values moved to calcvba-automation; ObjectRef's project
+   operations are the ObjectRefExt trait. Windows-only code that only compiles there:
+     cargo test -p calcvba-automation -p calcvba-runtime --no-fail-fast
+     cargo test -p calcvba-com --no-fail-fast
+     cargo test -p calcvba-native-template --no-fail-fast
+
+3. dc-yqq0.8d (ComValue deleted): the stack-A marshaller now converts VARIANT <-> the
+   runtime cell with exact subtypes. Behaviour change to verify against Excel: an
+   Integer or Byte argument now goes out as VT_I2 / VT_UI1 (before: VT_I4), and VT_I2 /
+   VT_UI1 results come back as Integer / Byte (before: Long), as VBA does (plan defect 6).
+   VT_I1/VT_UI2/VT_UI4/VT_INT/VT_UINT/VT_UI8 values keep their own vt too. Suites:
+     cargo test -p calcvba-com --no-fail-fast
+     cargo test -p calcvba-hal --no-fail-fast
+     cargo test -p calcvba-engine --test com_matrix_types --test com_matrix_methods --test com_matrix_properties --test com_matrix_objects --test com_matrix_collections --test com_matrix_errors --test com_matrix_events --test com_matrix_getobject --test com_matrix_adversary --no-fail-fast
+     cargo test -p calcvba-host --test typed_native_com --no-fail-fast
+     cargo test -p calcvba-comhost --no-fail-fast
+     cargo test -p calcvba-build --test native_exports --test wrapped_com_server_smoke --no-fail-fast
+     ./scripts/run-com-datatype-oracle.ps1
+   Tests that asserted the old narrowing (an Integer argument arriving as VT_I4 or a VT_I2
+   result read back as Long) assert the defect: change them to Excel's subtype.
+
+4. dc-yqq0.15: engine objects answer QueryInterface for IUnknown only (was S_OK for IDispatch
+   and class interfaces with the 3-slot vtable), and the native lane's `a Is b` on Variant
+   operands takes each operand's object (Object coercion, 424 for a non-object) instead of
+   reading the cell header as a pointer. Native case to add to calcvba-build native tests:
+     Public Function SameObject() As Boolean
+         Dim a As Variant, b As Variant
+         Set a = New Collection: Set b = a
+         SameObject = (a Is b) And Not (a Is New Collection)
+     End Function
+   (expect True on the native export, VM3 and the JIT). Suites:
+     cargo test -p calcvba-build --test native_exports --test wrapped_com_server_smoke --no-fail-fast
+     cargo test -p calcvba-com --no-fail-fast
+
+5. dc-yqq0.14 (default flip done in 8b: TypeLibResolver::dictionary_source is
+   DictionarySource::platform_default). Drop the now-redundant explicit
+   `platform_default()` opt-ins in crates/calcvba-differential/tests/jit_windows_vm3_parity.rs:39
+   and crates/calcvba-host/tests/typed_native_com.rs:251,490 if they still pass without them, and
+   run:
+     cargo test -p calcvba-differential --test validation_round4 --test capability_policy --no-fail-fast
+     cargo test -p calcvba-engine --test vba_web_load_shapes --no-fail-fast
+     cargo test -p calcvba-differential --lib --no-fail-fast -- golden_snapshot
+
+6. Not done on Linux (Windows-only rewrites that need these suites to develop against):
+   - comhost (plan 5.3, defects 14/15): DispInvoke over a generated vtable and typelib, named
+     arguments, routing through calcvba-host's Session so the JIT runs it, one wrapper per object.
+   - Project objects passed to COM / returned from exports: a COM-correct IDispatch.
+   - The ANSI projection of records holding Strings and of UDT arrays for Declare
+     (runtime pointer_helpers::native_record_pin) is Windows-only; off Windows such a Declare
+     argument is refused with a message.
+   - 32-bit Windows: calcvba-com does not compile for i686-pc-windows-msvc (windows_vtable is
+     x86_64-only but automation.rs calls it); this predates the lane.

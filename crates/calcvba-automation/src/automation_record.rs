@@ -1,22 +1,23 @@
-//! Windows Automation record owners and registration-free IRecordInfo for
-//! SAFEARRAY(VT_RECORD). The descriptor contains native byte extents and owning
+//! Automation record owners and registration-free IRecordInfo for SAFEARRAY(VT_RECORD), on
+//! every platform (oleaut32 on Windows, `crate::oleaut` elsewhere). The descriptor contains native byte extents and owning
 //! field offsets; canonical VariantCore bytes never cross this boundary.
+use crate::com::Guid as GUID;
+use crate::oleaut::{
+    co_task_mem_alloc as CoTaskMemAlloc, co_task_mem_free as CoTaskMemFree,
+    safe_array_copy as SafeArrayCopy, safe_array_destroy as SafeArrayDestroy,
+    sys_alloc_string_byte_len as SysAllocStringByteLen, sys_free_string as SysFreeString,
+    sys_string_byte_len as SysStringByteLen, variant_clear as VariantClear,
+    variant_copy_ind as VariantCopyInd,
+};
 use std::{
     ffi::c_void,
     ptr,
     sync::atomic::{AtomicU32, Ordering},
 };
-use windows_sys::{
-    Win32::{
-        Foundation::{SysAllocStringByteLen, SysFreeString, SysStringByteLen},
-        System::{
-            Com::{CoTaskMemAlloc, CoTaskMemFree, SAFEARRAY},
-            Ole::{SafeArrayCopy, SafeArrayDestroy},
-            Variant::{VARIANT, VariantClear, VariantCopyInd},
-        },
-    },
-    core::GUID,
-};
+/// A `VARIANT`, by address only.
+type VariantCell = c_void;
+/// A `SAFEARRAY` descriptor, by address only.
+type SafeArrayDescriptor = c_void;
 
 const E_NOINTERFACE: i32 = 0x80004002u32 as i32;
 const E_NOTIMPL: i32 = 0x80004001u32 as i32;
@@ -77,7 +78,9 @@ pub unsafe fn clear_record(cell: *mut u8, descriptor: *const u32) -> i32 {
                     interface_release(value);
                 }
                 kind if kind & 0x2000 != 0 => {
-                    let value = cell.cast::<*mut SAFEARRAY>().replace(ptr::null_mut());
+                    let value = cell
+                        .cast::<*mut SafeArrayDescriptor>()
+                        .replace(ptr::null_mut());
                     if !value.is_null() {
                         let hr = SafeArrayDestroy(value);
                         if hr < 0 {
@@ -111,7 +114,7 @@ pub unsafe fn copy_record(dst: *mut u8, src: *const u8, descriptor: *const u32) 
                 stage.add(field[0] as usize),
                 0,
                 if field[1] == 12 {
-                    std::mem::size_of::<VARIANT>()
+                    crate::abi::VARIANT_SIZE
                 } else {
                     std::mem::size_of::<*mut c_void>()
                 },
@@ -127,19 +130,22 @@ pub unsafe fn copy_record(dst: *mut u8, src: *const u8, descriptor: *const u32) 
                 stage.add(offset).cast::<*mut c_void>().write(value);
                 0
             } else if field[1] & 0x2000 != 0 {
-                let value = src.add(offset).cast::<*mut SAFEARRAY>().read();
+                let value = src.add(offset).cast::<*mut SafeArrayDescriptor>().read();
                 let mut copy = ptr::null_mut();
                 let hr = if value.is_null() {
                     0
                 } else {
                     SafeArrayCopy(value, &mut copy)
                 };
-                stage.add(offset).cast::<*mut SAFEARRAY>().write(copy);
+                stage
+                    .add(offset)
+                    .cast::<*mut SafeArrayDescriptor>()
+                    .write(copy);
                 hr
             } else {
                 let source = src.add(offset).cast::<*mut u16>().read();
                 let len = SysStringByteLen(source);
-                let value = SysAllocStringByteLen(source.cast(), len).cast_mut();
+                let value = SysAllocStringByteLen(source.cast(), len);
                 if len != 0 && value.is_null() {
                     E_OUTOFMEMORY
                 } else {
@@ -165,7 +171,7 @@ pub unsafe fn copy_record(dst: *mut u8, src: *const u8, descriptor: *const u32) 
 struct RecordVtable {
     query_interface: unsafe extern "system" fn(
         this: *mut c_void,
-        iid: *const windows_sys::core::GUID,
+        iid: *const GUID,
         ppv: *mut *mut c_void,
     ) -> i32,
     add_ref: unsafe extern "system" fn(this: *mut c_void) -> u32,
@@ -177,12 +183,8 @@ struct RecordVtable {
         pvexisting: *const c_void,
         pvnew: *mut c_void,
     ) -> i32,
-    get_guid:
-        unsafe extern "system" fn(this: *mut c_void, pguid: *mut windows_sys::core::GUID) -> i32,
-    get_name: unsafe extern "system" fn(
-        this: *mut c_void,
-        pbstrname: *mut windows_sys::core::BSTR,
-    ) -> i32,
+    get_guid: unsafe extern "system" fn(this: *mut c_void, pguid: *mut GUID) -> i32,
+    get_name: unsafe extern "system" fn(this: *mut c_void, pbstrname: *mut *mut u16) -> i32,
     get_size: unsafe extern "system" fn(this: *mut c_void, pcbsize: *mut u32) -> i32,
     get_type_info:
         unsafe extern "system" fn(this: *mut c_void, pptypeinfo: *mut *mut c_void) -> i32,
@@ -190,13 +192,13 @@ struct RecordVtable {
         this: *mut c_void,
         pvdata: *const c_void,
         szfieldname: *const u16,
-        pvarfield: *mut VARIANT,
+        pvarfield: *mut VariantCell,
     ) -> i32,
     get_field_no_copy: unsafe extern "system" fn(
         this: *mut c_void,
         pvdata: *const c_void,
         szfieldname: *const u16,
-        pvarfield: *mut VARIANT,
+        pvarfield: *mut VariantCell,
         ppvdatacarray: *mut *mut c_void,
     ) -> i32,
     put_field: unsafe extern "system" fn(
@@ -204,19 +206,19 @@ struct RecordVtable {
         wflags: u32,
         pvdata: *mut c_void,
         szfieldname: *const u16,
-        pvarfield: *const VARIANT,
+        pvarfield: *const VariantCell,
     ) -> i32,
     put_field_no_copy: unsafe extern "system" fn(
         this: *mut c_void,
         wflags: u32,
         pvdata: *mut c_void,
         szfieldname: *const u16,
-        pvarfield: *const VARIANT,
+        pvarfield: *const VariantCell,
     ) -> i32,
     get_field_names: unsafe extern "system" fn(
         this: *mut c_void,
         pcnames: *mut u32,
-        rgbstrnames: *mut windows_sys::core::BSTR,
+        rgbstrnames: *mut *mut u16,
     ) -> i32,
     is_matching_type: unsafe extern "system" fn(this: *mut c_void, precordinfo: *mut c_void) -> i32,
     record_create: unsafe extern "system" fn(this: *mut c_void) -> *mut c_void,
@@ -318,7 +320,7 @@ unsafe extern "system" fn guid(this: *mut c_void, out: *mut GUID) -> i32 {
     }
     0
 }
-unsafe extern "system" fn name(_this: *mut c_void, out: *mut windows_sys::core::BSTR) -> i32 {
+unsafe extern "system" fn name(_this: *mut c_void, out: *mut *mut u16) -> i32 {
     let units: Vec<_> = "CalcVBA native record".encode_utf16().collect();
     // SAFETY: caller owns the returned independent BSTR.
     unsafe {
@@ -345,7 +347,7 @@ unsafe extern "system" fn get_field(
     _this: *mut c_void,
     _data: *const c_void,
     _name: *const u16,
-    _out: *mut VARIANT,
+    _out: *mut VariantCell,
 ) -> i32 {
     E_NOTIMPL
 }
@@ -353,7 +355,7 @@ unsafe extern "system" fn get_field_no_copy(
     _this: *mut c_void,
     _data: *const c_void,
     _name: *const u16,
-    _out: *mut VARIANT,
+    _out: *mut VariantCell,
     _array: *mut *mut c_void,
 ) -> i32 {
     E_NOTIMPL
@@ -363,14 +365,14 @@ unsafe extern "system" fn put_field(
     _flags: u32,
     _data: *mut c_void,
     _name: *const u16,
-    _value: *const VARIANT,
+    _value: *const VariantCell,
 ) -> i32 {
     E_NOTIMPL
 }
 unsafe extern "system" fn field_names(
     _this: *mut c_void,
     count: *mut u32,
-    _names: *mut windows_sys::core::BSTR,
+    _names: *mut *mut u16,
 ) -> i32 {
     // SAFETY: there are no reflective field names in the owning ABI descriptor.
     unsafe {
@@ -434,7 +436,7 @@ unsafe extern "system" fn destroy(this: *mut c_void, record: *const c_void) -> i
     unsafe {
         let hr = clear(this, record);
         if hr >= 0 {
-            CoTaskMemFree(record);
+            CoTaskMemFree(record.cast_mut());
         }
         hr
     }

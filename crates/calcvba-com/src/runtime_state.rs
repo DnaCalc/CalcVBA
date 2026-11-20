@@ -1,8 +1,8 @@
 use crate::{
     ComCallbackPayload, ComCallbackToken, ComCallbackValue, ComMemberToken, ComObjectDescriptor,
-    ComObjectToken, ComObjectTransportKind, ComSubscriptionToken, ComValue,
-    TypeLibEventDispatchPath, TypeLibEventMetadata, TypeLibMemberInvokeKind, TypeLibMetadataBlob,
-    TypeLibParamType, TypeLibWireType, runtime_class_descriptor_from_typelib_metadata,
+    ComObjectToken, ComObjectTransportKind, ComSubscriptionToken, TypeLibEventDispatchPath,
+    TypeLibEventMetadata, TypeLibMemberInvokeKind, TypeLibMetadataBlob, TypeLibParamType,
+    TypeLibWireType, runtime_class_descriptor_from_typelib_metadata,
 };
 use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::{
@@ -317,17 +317,10 @@ pub struct ComEventCallbackValue {
 }
 
 impl ComEventCallbackValue {
-    pub fn from_com_value(value: &ComValue) -> Self {
+    pub fn from_variant(value: &Variant) -> Self {
         Self {
-            value: value
-                .to_variant()
-                .expect("COM event callback values must be exact VARIANT-compatible"),
+            value: value.clone(),
         }
-    }
-
-    pub fn to_com_value(&self) -> ComValue {
-        ComValue::from_variant(&self.value)
-            .expect("queued COM event callback VARIANT must project to ComValue")
     }
 
     pub fn variant(&self) -> &Variant {
@@ -517,7 +510,7 @@ impl<TTransport: Clone> ComRuntimeState<TTransport> {
     pub fn queue_callback_for_subscription(
         &mut self,
         subscription: ComSubscriptionToken,
-        args: &[ComValue],
+        args: &[Variant],
     ) -> bool {
         let Some(entry) = self.subscriptions.get(&subscription).cloned() else {
             return false;
@@ -531,7 +524,7 @@ impl<TTransport: Clone> ComRuntimeState<TTransport> {
                 event: entry.event,
                 args: args
                     .iter()
-                    .map(ComEventCallbackValue::from_com_value)
+                    .map(ComEventCallbackValue::from_variant)
                     .collect(),
             },
         );
@@ -543,7 +536,7 @@ impl<TTransport: Clone> ComRuntimeState<TTransport> {
         &mut self,
         object: &ObjectRef,
         event: ComMemberToken,
-        args: &[ComValue],
+        args: &[Variant],
         is_projection_transport: impl Fn(&TTransport) -> bool,
     ) -> usize {
         let targets: Vec<ComSubscriptionToken> = self
@@ -589,8 +582,7 @@ impl<TTransport: Clone> ComRuntimeState<TTransport> {
             args: payload
                 .args
                 .iter()
-                .map(ComEventCallbackValue::to_com_value)
-                .map(ComCallbackValue::from_com_value)
+                .map(|value| ComCallbackValue::from_variant(value.variant().clone()))
                 .collect(),
         })
     }
@@ -654,11 +646,12 @@ mod tests {
         member_specs_from_typelib_metadata,
     };
     use crate::{
-        ComInterfaceIid, ComMemberToken, ComValue, TypeLibEventDispatchPath, TypeLibEventMetadata,
+        ComInterfaceIid, ComMemberToken, TypeLibEventDispatchPath, TypeLibEventMetadata,
         TypeLibMemberInvokeKind, TypeLibMemberMetadata, TypeLibMetadataBlob, TypeLibParamType,
         TypeLibResolvedIdentity, TypeLibWireType,
     };
     use calcvba_runtime::ObjectRefExt;
+    use calcvba_runtime::Variant;
     use calcvba_runtime::{ObjectRef, RuntimeInterfaceId, RuntimeMemberInvokeKind, VarType};
 
     fn sample_typelib_identity() -> TypeLibResolvedIdentity {
@@ -912,7 +905,7 @@ mod tests {
         let queued = state.queue_callbacks_for_source_event(
             &object_ref,
             ComMemberToken::new(11),
-            &[ComValue::I32(7)],
+            &[Variant::from_i32(7)],
             |transport| *transport,
         );
         assert_eq!(queued, 1);
@@ -922,7 +915,7 @@ mod tests {
             .expect("queued callback should be available");
         assert_eq!(payload.subscription.raw(), subscription.raw());
         assert_eq!(payload.object.raw(), object_ref.raw());
-        assert_eq!(payload.args[0].to_com_value(), ComValue::I32(7));
+        assert_eq!(payload.args[0].variant().clone(), Variant::from_i32(7));
     }
 
     #[test]
@@ -940,7 +933,7 @@ mod tests {
             },
         );
 
-        assert!(state.queue_callback_for_subscription(subscription, &[ComValue::I32(9)]));
+        assert!(state.queue_callback_for_subscription(subscription, &[Variant::from_i32(9)]));
         let callback = *state
             .pending_callbacks
             .front()
@@ -954,7 +947,7 @@ mod tests {
         let projected = state
             .take_polled_callback()
             .expect("queued callback should still project through public payload");
-        assert_eq!(projected.args[0].to_com_value(), ComValue::I32(9));
+        assert_eq!(projected.args[0].variant().clone(), Variant::from_i32(9));
     }
 
     #[test]
@@ -973,7 +966,7 @@ mod tests {
                 transport: true,
             },
         );
-        assert!(state.queue_callback_for_subscription(subscription, &[ComValue::I32(9)]));
+        assert!(state.queue_callback_for_subscription(subscription, &[Variant::from_i32(9)]));
 
         let (_, transports, callbacks) = state
             .release_object_state(object)

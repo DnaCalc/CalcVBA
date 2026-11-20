@@ -301,6 +301,12 @@ becomes the one marshaller.**
 marshal class (Direct, AnsiStr, AnsiRecord, ArrayPtr, Callback) and an architecture, and is
 built once for VM3, the JIT and AOT; today VM3 and the JIT each build it.
 
+*As built 2026-11-20.* The per-`Declare` plan VM3 and the JIT share is the HAL's
+`declare::DeclarePlan` (library, entry point, CIF and result shape, prepared once per descriptor
+and cached; the per-argument marshal class follows from the parameter type and the argument's
+cell). `calcvba_runtime::interop_plan`, which both backends built and then discarded, is
+deleted, with its x64 hard-coding. AOT keeps its per-call-site CIF (`native-template/src/foreign.rs`).
+
 The AOT native lane already passes real slot addresses and real BSTRs (`jit/native_values.rs:1196-1366`,
 `native-template/src/foreign.rs:200-264`); it is the model for VM3 and the generic JIT.
 
@@ -727,6 +733,17 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
    - **8d, `ComValue` out of the client.** The remaining users of `ComValue` (comhost,
      `dynlink`, the native template, connection points) move in steps 9 and 10, where they are
      rewritten anyway; `ComValue` is deleted at the end of step 10.
+     *As built 2026-11-20 (8d).* `ComValue` is deleted. Every COM carrier that wrapped it
+     (`ComInvokeValue`, `ComCallbackValue`, `DynamicValue`, `ComEventCallbackValue`) holds the
+     runtime cell and converts nothing. Stack A's marshaller reads a `VARIANT` into a cell and
+     writes a cell into a `VARIANT` keeping every subtype (`variant_to_com_value`,
+     `set_variant_from_com_value`): an Integer or Byte argument goes out as `VT_I2`/`VT_UI1`, and
+     `VT_I2`/`VT_UI1`/`VT_I1`/`VT_UI2`/`VT_UI4`/`VT_INT`/`VT_UINT` results keep their type
+     (defect 6; before, all of them were Long or LongLong). `VT_ERROR` keeps its SCODE. The legacy
+     i32 token of a compat-object call is computed from the cell (`compat::variant_to_runtime_token`).
+     Typelib defaults stay a `Send` metadata carrier (`ComDefaultValue::from_variant`). The Miri
+     mock of the old marshaller (`miri_variant_mock`) is gone: the real cell runs under Miri in
+     `calcvba-automation`. Windows runs: `RUN-ON-WINDOWS.txt`.
 9. **Declare** (5.2): direct addresses, ANSI BSTR temporaries, prepared CIFs, the shared
    interop plan, `AddressOf` in the JIT.
    *As built 2026-11-15 (Windows x64).* VM3 and the JIT hand `DynamicLinkHal::invoke_declare`
@@ -754,8 +771,41 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
    JIT still build their own `interop_plan`); Unix ByRef and defect 16 (Unix keeps the value
    marshaller, as do Windows targets other than x64); the `as_str` library sites of defect 17.
    Tests: `calcvba-engine/tests/declare_cells.rs` and `real_addresses.rs` (`STRPTR_NULL=0`).
+   *As built 2026-11-20 (off Windows).* The same marshaller runs wherever native code loads
+   (`cfg(not(target_arch = "wasm32"))`): `PreparedNativeCall` is a libffi CIF with the platform's
+   `Declare` convention (Win64, `stdcall` on 32-bit Windows, the C ABI elsewhere), libraries are
+   owned `dlopen` references, and ANSI temporaries use `calcvba_runtime::ansi`'s code page
+   (`CP_ACP` on Windows, Windows-1252 elsewhere) over UTF-16 units. `calcvba_automation::oleaut`
+   gives the oleaut32/ole32 calls the values need (`SysAllocStringByteLen`, `VariantClear`,
+   `VariantCopyInd`, `SafeArrayCopy`, `CoTaskMemAlloc`, ...) with the same contracts elsewhere,
+   so the portable `IRecordInfo` (`automation_record`) builds on every platform and COM records
+   use one task allocator. Engine test `declare_cells_unix.rs` (libc `memcpy`, `memset`,
+   `strlen`, `abs`; VM3 and the JIT): ByRef scalars, array elements and records without Strings
+   are the caller's storage, a ByVal String is an ANSI buffer copied back, ByVal scalars take
+   VBA's coercion, `VarPtr` writes land, and `StrPtr(s) - 4` holds `LenB(s)` (defect 16): 7/7,
+   1/7 with the old value marshaller. Still Windows-only: the ANSI projection of records holding
+   Strings and of UDT arrays (`pointer_helpers::native_record_pin`), which refuse off Windows.
+   The trusted decoders now have a typed form (`Variant::from_trusted_cell`,
+   `Variant::adopt_automation_cell`) that reads a cell in place and keeps its pointers'
+   provenance; COM results and `Declare` Variant results use it.
 10. **Inbound** (5.3): native template services by borrow and move; comhost on `DispInvoke`
     and on the shared `Session`, so the JIT runs it; host API aliases and `take_result`.
+
+## 8b. Other beads (as built 2026-11-20)
+
+- *dc-yqq0.11.* `Format` (no mask, string masks, text a number mask leaves alone), `StrConv`
+  (all case modes, `vbUnicode`/`vbFromUnicode` over code units), `StrReverse`, `InStr` and
+  `InStrRev` (text compare folds code units) keep unpaired surrogates; `Mid$` on a Variant and
+  `Filter` already did. Engine test `more_string_functions_keep_unpaired_surrogates` (VM3, JIT):
+  11 checks, 5 before. `Asc` and the number/date parsers give the same results either way.
+- *dc-yqq0.15.* A runtime object's `QueryInterface` answers `IUnknown` only: its vtable has
+  those three slots, so IDispatch and class interfaces are `E_NOINTERFACE` (their descriptors
+  are still resolved by `ObjectRefExt::query_interface_descriptor`). The native lane's `Is`
+  takes a Variant operand's object through the template's Object coercion instead of reading
+  the cell's header as a pointer.
+- *dc-yqq0.14.* `TypeLibResolver::dictionary_source` defaults to
+  `DictionarySource::platform_default` (8b); the Windows validation runs are in
+  `RUN-ON-WINDOWS.txt`.
 
 ## 9. Tests
 

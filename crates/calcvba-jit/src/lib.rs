@@ -54,8 +54,7 @@ use calcvba_rt_abi::{
     rt_truthy_v, runtime_class_descriptors_for_program, variant_changed,
 };
 use calcvba_runtime::{
-    Decimal96, InteropInvokeKind, RUNTIME_CLASS_LIFECYCLE_NONE, RuntimeClassDescriptor, VarType,
-    Variant, VbaRecord, VerifiedInteropPlan,
+    Decimal96, RUNTIME_CLASS_LIFECYCLE_NONE, RuntimeClassDescriptor, VarType, Variant, VbaRecord,
     object_ref::{ObjectRef, RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR},
     safe_array::{
         SafeArray, SafeArrayBound, VT_BOOL_VALUE, VT_BSTR_VALUE, VT_CY_VALUE, VT_DATE_VALUE,

@@ -490,8 +490,8 @@ impl TypeLibParamType {
 /// A scalar typelib-declared parameter default value (the IDL `defaultvalue`
 /// attribute only permits constant scalars — never an object or a SAFEARRAY), in
 /// a form that is plainly `Send + Sync + Eq` so it can ride on `ComMemberSpec`
-/// inside the shared `Arc<Mutex<WindowsComClientState>>` (a full `ComValue` could
-/// carry a `!Send` `ObjectRef`/`SafeArray`, which a constant default never is).
+/// inside the shared `Arc<Mutex<WindowsComClientState>>` (a runtime `Variant` can
+/// carry a `!Send` object or array, which a constant default never is).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ComDefaultValue {
     Empty,
@@ -559,31 +559,34 @@ pub enum OptionalParamDefault {
 }
 
 impl ComDefaultValue {
-    /// Project a typelib default `ComValue` (read from `PARAMDESCEX.varDefaultValue`)
+    /// Project a typelib default (read from `PARAMDESCEX.varDefaultValue`)
     /// into the `Send`-safe scalar carrier. Returns `None` for the non-scalar kinds
     /// a constant default never legitimately is (object / SAFEARRAY / Decimal / record),
     /// which then decline a stored default (the param falls back to its optional
     /// rule).
-    pub fn from_com_value(value: &crate::ComValue) -> Option<Self> {
-        use crate::ComValue as V;
-        Some(match value {
-            V::Empty => Self::Empty,
-            V::Null => Self::Null,
-            V::Bool(b) => Self::Bool(*b),
-            V::I32(n) => Self::Int(i64::from(*n)),
-            V::I64(n) => Self::Int(*n),
-            V::U64(n) => Self::Int(i64::try_from(*n).ok()?),
-            // A VT_DATE default surfaces as an F64 with the Date subtype; preserve
-            // it so the synthesized argument materializes as a Date, not a Double.
-            V::F64(f) if f.subtype() == calcvba_runtime::F64Subtype::Date => {
-                Self::DateBits(f.as_f64().to_bits())
-            }
-            V::F64(f) => Self::FloatBits(f.as_f64().to_bits()),
-            V::Currency(c) => Self::CurrencyScaled(c.scaled_i64()),
-            V::String(s) => Self::Str(s.to_string()),
-            V::ErrorCode(code) => Self::ErrorCode(*code),
+    pub fn from_variant(value: &calcvba_runtime::Variant) -> Option<Self> {
+        use calcvba_runtime::VarType as T;
+        Some(match value.vtype() {
+            T::Empty => Self::Empty,
+            T::Null => Self::Null,
+            T::Boolean => Self::Bool(value.as_bool()?),
+            T::Integer => Self::Int(i64::from(value.as_i16()?)),
+            T::Long => Self::Int(i64::from(value.as_i32()?)),
+            T::Byte => Self::Int(i64::from(value.as_u8()?)),
+            T::SignedByte => Self::Int(i64::from(value.as_i8()?)),
+            T::UnsignedInteger => Self::Int(i64::from(value.as_u16()?)),
+            T::UnsignedLong | T::UnsignedInt => Self::Int(i64::from(value.as_u32()?)),
+            T::LongLong => Self::Int(value.as_i64()?),
+            T::UnsignedLongLong => Self::Int(i64::try_from(value.as_u64()?).ok()?),
+            // A VT_DATE default stays a Date, not a Double.
+            T::Date => Self::DateBits(value.as_date_f64()?.to_bits()),
+            T::Single => Self::FloatBits(f64::from(value.as_f32()?).to_bits()),
+            T::Double => Self::FloatBits(value.as_f64()?.to_bits()),
+            T::Currency => Self::CurrencyScaled(value.as_currency_scaled_i64()?),
+            T::String => Self::Str(value.as_bstr()?.to_string()),
+            T::Error => Self::ErrorCode(value.as_error_code()?),
             // A constant default is never an object, array, Decimal, or record.
-            V::Object(_) | V::ArrayIntent(_) | V::Decimal(_) | V::Record(_) => return None,
+            _ => return None,
         })
     }
 

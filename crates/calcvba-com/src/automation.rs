@@ -292,16 +292,11 @@ impl Dispatch {
 /// # Safety
 /// `value` is owned by the caller and not used afterwards.
 unsafe fn adopt(mut value: VARIANT) -> Result<Variant, Fault> {
-    // SAFETY: the VARIANT layout is the runtime cell's (`WIRE_SIZE` bytes).
-    let bytes = unsafe { core::mem::transmute::<VARIANT, [u8; calcvba_runtime::WIRE_SIZE]>(value) };
-    // SAFETY: the caller owns `value`, now moved into `bytes`.
-    match unsafe { Variant::adopt_automation(bytes) } {
+    // SAFETY: the caller owns `value`; the VARIANT layout is the runtime cell's, read in place.
+    match unsafe { Variant::adopt_automation_cell((&raw const value).cast()) } {
         Ok(adopted) => Ok(adopted),
         Err(_) => {
             // SAFETY: still owned here; clearing releases what it holds.
-            value =
-                unsafe { core::mem::transmute::<[u8; calcvba_runtime::WIRE_SIZE], VARIANT>(bytes) };
-            // SAFETY: as above.
             unsafe { VariantClear(&mut value) };
             Err(Fault::number(458))
         }

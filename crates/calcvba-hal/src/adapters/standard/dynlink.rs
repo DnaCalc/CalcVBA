@@ -16,10 +16,11 @@ pub(super) struct DynLinkBindingState {
     next_binding: i32,
     pub(super) descriptors: BTreeMap<u32, BindingHandle>,
     pub(super) bindings: BTreeMap<BindingHandle, DynLinkSymbol>,
-    #[cfg(target_os = "windows")]
-    pub(super) native_modules: BTreeMap<String, Arc<calcvba_com::windows_ffi_bridge::OwnedLibrary>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) native_modules:
+        BTreeMap<String, std::sync::Arc<calcvba_com::windows_ffi_bridge::OwnedLibrary>>,
     /// Each `Declare`'s library, entry point and CIF, prepared once.
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) declare_plans:
         BTreeMap<super::declare::PlanKey, std::rc::Rc<super::declare::DeclarePlan>>,
 }
@@ -335,8 +336,9 @@ impl DynamicLinkHal for StandardHostServices {
         descriptor: &DynLinkDescriptorView<'_>,
         args: &[calcvba_com::call::ComArg<'_>],
     ) -> HalResult<Variant> {
-        // The direct marshaller (design doc, step 9) for the native lane.
-        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        // The direct marshaller (design doc, step 9) for the native lane, on every platform
+        // that can load native code.
+        #[cfg(not(target_arch = "wasm32"))]
         if descriptor.marshal_lane == "m1-native-ffi" && self.native_mode_enabled() {
             let capability = CapabilityId::DynamicLinking;
             if !self.supports(capability) {
@@ -645,8 +647,7 @@ fn invoke_m1_native(
             )
         };
         // SAFETY: convert a retained native result before releasing its owner.
-        let result =
-            unsafe { calcvba_com::variant_to_com_value(&value).and_then(|v| v.to_variant()) };
+        let result = unsafe { calcvba_com::variant_to_com_value(&value) };
         // SAFETY: consume the callee's owning result after copying it.
         unsafe {
             windows_sys::Win32::System::Variant::VariantClear(&mut value);
@@ -1146,14 +1147,13 @@ fn variant_cell_from_variant(
     let mut cell: Box<windows_sys::Win32::System::Variant::VARIANT> =
         // SAFETY: an all-zero VARIANT is a valid VT_EMPTY value (VT_EMPTY == 0).
         Box::new(unsafe { std::mem::zeroed() });
-    let com_value = calcvba_com::ComValue::from_variant(value)?;
     // SAFETY: `cell` is the freshly zeroed (VT_EMPTY), live `Box<VARIANT>` above;
-    // `set_variant_from_com_value` populates it from `com_value`, and the object
+    // `set_variant_from_com_value` populates it from `value`, and the object
     // callback declines (returns Err) so no VT_UNKNOWN is stored.
     unsafe {
         calcvba_com::set_variant_from_com_value(
             &mut *cell,
-            &com_value,
+            value,
             &mut |_object| {
                 Err("native Declare ByRef Variant cannot marshal Object values".to_string())
             },

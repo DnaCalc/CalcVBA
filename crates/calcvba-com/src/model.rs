@@ -1,11 +1,7 @@
 use calcvba_runtime::ObjectRefExt;
 pub const DISPATCH_INVOKE_MISSING_ARG_TOKEN: i32 = i32::MIN + 2_048;
 
-use calcvba_runtime::{
-    ComRecord, CurrencyValue, Decimal96, F64Value, ObjectRef, RuntimeByRefSlot, Variant,
-    bstr::BStr,
-    safe_array::{SafeArray, array_tag_from_safe_array, marshal_dispatch_argument},
-};
+use calcvba_runtime::{ObjectRef, RuntimeByRefSlot, Variant};
 
 macro_rules! define_token {
     ($name:ident) => {
@@ -75,246 +71,40 @@ pub enum ComInvokeKind {
     PropertyPutRef,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ComValue {
-    Empty,
-    Null,
-    /// Standard VBA error number (0..=65535), or an unmapped HRESULT.
-    /// The native VARIANT boundary handles the 0x800A0000 wire prefix.
-    ErrorCode(i32),
-    Bool(bool),
-    I32(i32),
-    I64(i64),
-    /// `VT_UI8` payloads above `i64::MAX` — carried exactly (Excel parity
-    /// keeps UnsignedLongLong results unclamped), so `from_variant` is total
-    /// over every Variant a COM result can produce.
-    U64(u64),
-    F64(F64Value),
-    Decimal(Decimal96),
-    Currency(CurrencyValue),
-    String(BStr),
-    ArrayIntent(SafeArray),
-    Object(ObjectRef),
-    Record(ComRecord),
-}
-
-impl ComValue {
-    /// Converts a retained runtime [`Variant`] into the shared COM semantic
-    /// carrier.
-    pub fn from_variant(value: &Variant) -> Result<Self, String> {
-        Ok(match value.vtype() {
-            // A reference carries its target's value (VBA's `VariantCopyInd`).
-            calcvba_runtime::VarType::ByRef => return Self::from_variant(&value.clone()),
-            calcvba_runtime::VarType::Empty => Self::Empty,
-            calcvba_runtime::VarType::Null => Self::Null,
-            calcvba_runtime::VarType::Integer => Self::I32(
-                value
-                    .as_i16()
-                    .ok_or_else(|| "invalid Integer VARIANT payload".to_string())?
-                    as i32,
-            ),
-            calcvba_runtime::VarType::Long => Self::I32(
-                value
-                    .as_i32()
-                    .ok_or_else(|| "invalid Long VARIANT payload".to_string())?,
-            ),
-            calcvba_runtime::VarType::LongLong => Self::I64(
-                value
-                    .as_i64()
-                    .ok_or_else(|| "invalid LongLong VARIANT payload".to_string())?,
-            ),
-            calcvba_runtime::VarType::SignedByte => {
-                Self::I32(i32::from(value.as_i8().ok_or_else(|| {
-                    "invalid SignedByte VARIANT payload".to_string()
-                })?))
-            }
-            calcvba_runtime::VarType::Byte => Self::I32(i32::from(
-                value
-                    .as_u8()
-                    .ok_or_else(|| "invalid Byte VARIANT payload".to_string())?,
-            )),
-            calcvba_runtime::VarType::UnsignedInteger => {
-                Self::I32(i32::from(value.as_u16().ok_or_else(|| {
-                    "invalid UnsignedInteger VARIANT payload".to_string()
-                })?))
-            }
-            calcvba_runtime::VarType::UnsignedLong | calcvba_runtime::VarType::UnsignedInt => {
-                let value = value
-                    .as_u32()
-                    .ok_or_else(|| "invalid unsigned 32-bit VARIANT payload".to_string())?;
-                match i32::try_from(value) {
-                    Ok(narrowed) => Self::I32(narrowed),
-                    Err(_) => Self::I64(i64::from(value)),
-                }
-            }
-            calcvba_runtime::VarType::UnsignedLongLong => {
-                let value = value
-                    .as_u64()
-                    .ok_or_else(|| "invalid UnsignedLongLong VARIANT payload".to_string())?;
-                match i64::try_from(value) {
-                    Ok(narrowed) => Self::I64(narrowed),
-                    Err(_) => Self::U64(value),
-                }
-            }
-            calcvba_runtime::VarType::Single => Self::F64(F64Value::from_single_f64(
-                value
-                    .as_f32()
-                    .ok_or_else(|| "invalid Single VARIANT payload".to_string())?
-                    as f64,
-            )),
-            calcvba_runtime::VarType::Double => Self::F64(F64Value::from_f64(
-                value
-                    .as_f64()
-                    .ok_or_else(|| "invalid Double VARIANT payload".to_string())?,
-            )),
-            calcvba_runtime::VarType::Decimal => Self::Decimal(
-                value
-                    .as_decimal96()
-                    .ok_or_else(|| "invalid Decimal VARIANT payload".to_string())?,
-            ),
-            calcvba_runtime::VarType::Currency => Self::Currency(CurrencyValue::from_scaled_i64(
-                value
-                    .as_currency_scaled_i64()
-                    .ok_or_else(|| "invalid Currency VARIANT payload".to_string())?,
-            )),
-            calcvba_runtime::VarType::Date => Self::F64(F64Value::from_date_f64(
-                value
-                    .as_date_f64()
-                    .ok_or_else(|| "invalid Date VARIANT payload".to_string())?,
-            )),
-            calcvba_runtime::VarType::String => Self::String(
-                value
-                    .as_bstr()
-                    .ok_or_else(|| "invalid String VARIANT payload".to_string())?,
-            ),
-            calcvba_runtime::VarType::Boolean => Self::Bool(
-                value
-                    .as_bool()
-                    .ok_or_else(|| "invalid Boolean VARIANT payload".to_string())?,
-            ),
-            calcvba_runtime::VarType::Error => Self::ErrorCode(
-                value
-                    .as_error_code()
-                    .ok_or_else(|| "invalid Error VARIANT payload".to_string())?,
-            ),
-            calcvba_runtime::VarType::Object => Self::Object(
-                value
-                    .as_object_ref()
-                    .ok_or_else(|| "invalid Object VARIANT payload".to_string())?,
-            ),
-            calcvba_runtime::VarType::ArrayVariant => Self::ArrayIntent(
-                value
-                    .as_safearray()
-                    .ok_or_else(|| "invalid SAFEARRAY VARIANT payload".to_string())?,
-            ),
-            calcvba_runtime::VarType::Record => Self::Record(
-                value
-                    .as_com_record()
-                    .ok_or_else(|| "invalid Record VARIANT payload".to_string())?
-                    .try_to_owned()?,
-            ),
-            calcvba_runtime::VarType::ProcRef => {
-                return Err("procedure references cannot be converted to COM values".to_string());
-            }
-        })
-    }
-
-    /// Compatibility projection from scalar i32 transport into the
-    /// shared COM semantic carrier.
-    pub fn from_runtime_token(value: i32) -> Self {
-        crate::compat::com_value_from_runtime_token(value)
-    }
-
-    /// Converts the shared COM semantic carrier into a retained runtime
-    /// [`Variant`].
-    pub fn to_variant(&self) -> Result<Variant, String> {
-        Ok(match self {
-            Self::Empty => Variant::empty(),
-            Self::Null => Variant::null(),
-            Self::ErrorCode(code) => Variant::from_error_code(*code),
-            Self::Bool(value) => Variant::from_bool(*value),
-            Self::I32(value) => Variant::from_i32(*value),
-            Self::I64(value) => Variant::from_i64(*value),
-            Self::U64(value) => Variant::from_u64(*value),
-            Self::F64(value) => match value.subtype() {
-                calcvba_runtime::F64Subtype::Single => Variant::from_f32(value.as_f64() as f32),
-                calcvba_runtime::F64Subtype::Double => Variant::from_f64(value.as_f64()),
-                calcvba_runtime::F64Subtype::Date => Variant::from_date_f64(value.as_f64()),
-            },
-            Self::Decimal(value) => Variant::from_decimal96(*value),
-            Self::Currency(value) => Variant::from_currency_scaled_i64(value.scaled_i64()),
-            Self::String(value) => Variant::from_string(value.clone()),
-            Self::ArrayIntent(array) => Variant::from_safearray(array.clone()),
-            Self::Object(handle) => Variant::from_object_ref(handle.clone()),
-            Self::Record(record) => Variant::from_com_record(record.clone()),
-        })
-    }
-
-    /// Compatibility projection into scalar i32 transport.
-    pub fn to_runtime_token(&self) -> Result<i32, String> {
-        crate::compat::com_value_to_runtime_token(self)
-    }
-
-    /// Compatibility projection into legacy dispatch-token transport.
-    pub fn to_legacy_dispatch_token(&self) -> Result<i32, String> {
-        match self {
-            Self::ArrayIntent(array) => {
-                let token = array_tag_from_safe_array(array).ok_or_else(|| {
-                    "unsupported array intent for legacy dispatch transport".to_string()
-                })?;
-                Ok(marshal_dispatch_argument(token))
-            }
-            _ => self.to_runtime_token(),
-        }
-    }
-}
-
+/// An argument value for a COM invocation: the runtime cell itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComInvokeValue {
     value: Variant,
 }
 
 impl ComInvokeValue {
-    /// Builds an invoke value from the shared COM carrier, retaining the exact
-    /// runtime [`Variant`] payload.
-    pub fn from_com_value(value: ComValue) -> Self {
-        Self {
-            value: value
-                .to_variant()
-                .expect("COM invoke values must be exact VARIANT-compatible"),
-        }
-    }
-
-    /// Projects the retained invoke `Variant` back into the shared COM carrier.
-    pub fn to_com_value(&self) -> ComValue {
-        ComValue::from_variant(&self.value).expect("COM invoke VARIANT must project to ComValue")
+    pub fn from_variant(value: Variant) -> Self {
+        Self { value }
     }
 
     /// Compatibility projection into scalar i32 transport.
     pub fn to_runtime_token(&self) -> Result<i32, String> {
-        self.to_com_value().to_runtime_token()
+        crate::compat::variant_to_runtime_token(&self.value)
     }
 
     /// Compatibility projection into legacy dispatch-token transport.
     pub fn to_legacy_dispatch_token(&self) -> Result<i32, String> {
-        self.to_com_value().to_legacy_dispatch_token()
+        crate::compat::variant_to_legacy_dispatch_token(&self.value)
     }
 
-    /// Retained value-model payload for COM invocation.
+    /// The argument's cell.
     pub fn variant(&self) -> &Variant {
         &self.value
     }
-}
 
-impl From<ComValue> for ComInvokeValue {
-    fn from(value: ComValue) -> Self {
-        Self::from_com_value(value)
+    pub fn into_variant(self) -> Variant {
+        self.value
     }
 }
 
-impl From<ComInvokeValue> for ComValue {
-    fn from(value: ComInvokeValue) -> Self {
-        value.to_com_value()
+impl From<Variant> for ComInvokeValue {
+    fn from(value: Variant) -> Self {
+        Self::from_variant(value)
     }
 }
 
@@ -331,7 +121,7 @@ impl ComInvokeArg {
     /// New value-model call sites should prefer [`Self::positional_value`].
     pub fn positional(value: i32) -> Self {
         Self {
-            value: Some(ComValue::from_runtime_token(value).into()),
+            value: Some(Variant::from_i32(value).into()),
             name: None,
             by_ref: None,
         }
@@ -342,14 +132,14 @@ impl ComInvokeArg {
     /// New value-model call sites should prefer [`Self::named_value`].
     pub fn named(value: i32, name: impl Into<String>) -> Self {
         Self {
-            value: Some(ComValue::from_runtime_token(value).into()),
+            value: Some(Variant::from_i32(value).into()),
             name: Some(name.into()),
             by_ref: None,
         }
     }
 
     /// Retained value-model positional argument.
-    pub fn positional_value(value: ComValue) -> Self {
+    pub fn positional_value(value: Variant) -> Self {
         Self {
             value: Some(value.into()),
             name: None,
@@ -358,7 +148,7 @@ impl ComInvokeArg {
     }
 
     /// Retained value-model positional ByRef argument.
-    pub fn positional_by_ref(value: ComValue, slot: RuntimeByRefSlot) -> Self {
+    pub fn positional_by_ref(value: Variant, slot: RuntimeByRefSlot) -> Self {
         Self {
             value: Some(value.into()),
             name: None,
@@ -367,7 +157,7 @@ impl ComInvokeArg {
     }
 
     /// Retained value-model named argument.
-    pub fn named_value(value: ComValue, name: impl Into<String>) -> Self {
+    pub fn named_value(value: Variant, name: impl Into<String>) -> Self {
         Self {
             value: Some(value.into()),
             name: Some(name.into()),
@@ -432,37 +222,23 @@ pub struct ComCallbackValue {
 }
 
 impl ComCallbackValue {
-    /// Builds a callback value from the shared COM carrier, retaining the exact
-    /// runtime [`Variant`] payload.
-    pub fn from_com_value(value: ComValue) -> Self {
-        Self {
-            value: value
-                .to_variant()
-                .expect("COM callback values must be exact VARIANT-compatible"),
-        }
+    pub fn from_variant(value: Variant) -> Self {
+        Self { value }
     }
 
-    /// Projects the retained callback `Variant` back into the shared COM
-    /// carrier.
-    pub fn to_com_value(&self) -> ComValue {
-        ComValue::from_variant(&self.value).expect("COM callback VARIANT must project to ComValue")
-    }
-
-    /// Retained value-model payload for COM callbacks.
+    /// The callback argument's cell.
     pub fn variant(&self) -> &Variant {
         &self.value
     }
-}
 
-impl From<ComValue> for ComCallbackValue {
-    fn from(value: ComValue) -> Self {
-        Self::from_com_value(value)
+    pub fn into_variant(self) -> Variant {
+        self.value
     }
 }
 
-impl From<ComCallbackValue> for ComValue {
-    fn from(value: ComCallbackValue) -> Self {
-        value.to_com_value()
+impl From<Variant> for ComCallbackValue {
+    fn from(value: Variant) -> Self {
+        Self::from_variant(value)
     }
 }
 
@@ -477,22 +253,12 @@ pub struct ComCallbackPayload {
 
 #[cfg(test)]
 mod tests {
-    use super::{ComCallbackValue, ComInvokeArg, ComMemberToken, ComValue};
-    use calcvba_runtime::ObjectRefExt;
-    use calcvba_runtime::{
-        CurrencyValue, Decimal96, F64Value, ObjectRef, VarType, Variant, bstr::BStr,
-        safe_array::SafeArray,
-    };
+    use super::{ComCallbackValue, ComInvokeArg, ComInvokeValue, ComMemberToken};
+    use calcvba_runtime::{Decimal96, VarType, Variant, bstr::BStr, safe_array::SafeArray};
 
     #[test]
-    fn com_value_from_runtime_token_is_plain_i32() {
-        assert_eq!(ComValue::from_runtime_token(0), ComValue::I32(0));
-        assert_eq!(ComValue::from_runtime_token(-1), ComValue::I32(-1));
-    }
-
-    #[test]
-    fn com_value_array_intent_projects_to_length_token() {
-        let value = ComValue::ArrayIntent(SafeArray::vector(4));
+    fn invoke_value_array_projects_to_length_token() {
+        let value = ComInvokeValue::from_variant(Variant::from_safearray(SafeArray::vector(4)));
         assert_eq!(value.to_runtime_token().expect("array token"), 4);
         assert_eq!(
             value
@@ -503,138 +269,40 @@ mod tests {
     }
 
     #[test]
-    fn com_value_roundtrips_variant_shape() {
-        let value = ComValue::ArrayIntent(SafeArray::vector(5));
+    fn invoke_value_token_projection() {
+        let token = |value: Variant| ComInvokeValue::from_variant(value).to_runtime_token();
+        assert_eq!(token(Variant::from_i16(-3)), Ok(-3));
+        assert_eq!(token(Variant::from_i64(42)), Ok(42));
+        assert!(token(Variant::from_i64(5_000_000_000)).is_err());
+        assert!(token(Variant::from_string(BStr::from("ABC"))).is_err());
+        assert_eq!(token(Variant::from_string(BStr::from(" 12 "))), Ok(12));
         assert_eq!(
-            value.to_variant().expect("array variant"),
-            Variant::from_safearray(SafeArray::vector(5))
+            token(Variant::from_decimal96(Decimal96::from_parts(
+                123, 0, 0, 0, false
+            ))),
+            Ok(123)
         );
         assert_eq!(
-            ComValue::from_variant(&Variant::from_bool(true)).expect("bool variant"),
-            ComValue::Bool(true)
-        );
-        assert_eq!(
-            ComValue::from_variant(&Variant::from_f64(3.5)).expect("f64 variant"),
-            ComValue::F64(F64Value::from_f64(3.5))
-        );
-        assert_eq!(
-            ComValue::from_variant(&Variant::from_decimal96(Decimal96::from_parts(
-                123_450, 0, 0, 3, false
-            )))
-            .expect("decimal variant"),
-            ComValue::Decimal(Decimal96::from_parts(123_450, 0, 0, 3, false))
-        );
-        assert_eq!(
-            ComValue::from_variant(&Variant::from_currency_scaled_i64(125_000))
-                .expect("currency variant"),
-            ComValue::Currency(CurrencyValue::from_scaled_i64(125_000))
-        );
-        assert_eq!(
-            ComValue::from_variant(&Variant::from_string(BStr::from("ABC")))
-                .expect("string variant"),
-            ComValue::String(BStr::from("ABC"))
-        );
-        assert_eq!(
-            ComValue::String(BStr::from("ABC"))
-                .to_variant()
-                .expect("string variant"),
-            Variant::from_string(BStr::from("ABC"))
-        );
-        assert_eq!(
-            ComValue::F64(F64Value::from_f64(3.5))
-                .to_variant()
-                .expect("f64 variant"),
-            Variant::from_f64(3.5)
-        );
-        assert_eq!(
-            ComValue::Decimal(Decimal96::from_parts(123_450, 0, 0, 3, true))
-                .to_variant()
-                .expect("decimal variant"),
-            Variant::from_decimal96(Decimal96::from_parts(123_450, 0, 0, 3, true))
-        );
-        assert_eq!(
-            ComValue::Currency(CurrencyValue::from_scaled_i64(-42_500))
-                .to_variant()
-                .expect("currency variant"),
-            Variant::from_currency_scaled_i64(-42_500)
-        );
-        let object_value = ComValue::from_variant(&Variant::from_object_ref(
-            ObjectRef::from_compat_identity(1234),
-        ))
-        .expect("object variant");
-        let ComValue::Object(object_ref) = object_value else {
-            panic!("expected ObjectRef-backed COM value");
-        };
-        assert_eq!(object_ref.raw(), 1234);
-        let roundtripped = ComValue::Object(ObjectRef::from_compat_identity(1234))
-            .to_variant()
-            .expect("object variant");
-        let object_ref = roundtripped
-            .as_object_ref()
-            .expect("expected object-ref variant carrier");
-        assert_eq!(object_ref.raw(), 1234);
-        assert!(
-            ComValue::String(BStr::from("ABC"))
-                .to_runtime_token()
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn com_value_preserves_safe_array_payload_shape() {
-        let value = ComValue::ArrayIntent(SafeArray::from_variants(vec![
-            Variant::from_i32(4),
-            Variant::from_string(BStr::from("A")),
-        ]));
-        assert_eq!(
-            value.to_variant().expect("safe array variant"),
-            Variant::from_safearray(SafeArray::from_variants(vec![
+            token(Variant::from_safearray(SafeArray::from_variants(vec![
                 Variant::from_i32(4),
                 Variant::from_string(BStr::from("A")),
-            ]))
-        );
-        assert_eq!(value.to_runtime_token().expect("array token"), 2);
-    }
-
-    #[test]
-    fn com_value_i64_roundtrips_variant() {
-        let large: i64 = 5_000_000_000;
-        assert_eq!(
-            ComValue::from_variant(&Variant::from_i64(large)).expect("i64 variant"),
-            ComValue::I64(large)
-        );
-        assert_eq!(
-            ComValue::I64(large).to_variant().expect("i64 variant"),
-            Variant::from_i64(large)
-        );
-        // I64 that fits in i32 stays I64 (no auto-narrowing at ComValue level)
-        assert_eq!(
-            ComValue::from_variant(&Variant::from_i64(42)).expect("i64 variant"),
-            ComValue::I64(42)
+            ]))),
+            Ok(2)
         );
     }
 
     #[test]
-    fn com_value_i64_to_legacy_token_narrows_when_possible() {
-        // Fits in i32
-        assert_eq!(ComValue::I64(42).to_runtime_token().expect("fits i32"), 42);
-        // Does not fit
-        assert!(ComValue::I64(5_000_000_000).to_runtime_token().is_err());
-    }
-
-    #[test]
-    fn com_invoke_arg_retains_payload_as_variant() {
-        let arg = ComInvokeArg::positional_value(ComValue::I32(7));
+    fn com_invoke_arg_keeps_the_cell() {
+        let arg = ComInvokeArg::positional_value(Variant::from_i16(7));
         let value = arg.value.expect("invoke arg should retain a value");
-        assert_eq!(value.variant().vtype(), VarType::Long);
-        assert_eq!(value.to_com_value(), ComValue::I32(7));
+        assert_eq!(value.variant().vtype(), VarType::Integer);
+        assert_eq!(value.variant().as_i16(), Some(7));
     }
 
     #[test]
-    fn com_callback_value_retains_payload_as_variant() {
-        let value = ComCallbackValue::from_com_value(ComValue::I32(7));
-        assert_eq!(value.variant().vtype(), VarType::Long);
-        assert_eq!(value.to_com_value(), ComValue::I32(7));
+    fn com_callback_value_keeps_the_cell() {
+        let value = ComCallbackValue::from_variant(Variant::from_f32(1.5));
+        assert_eq!(value.variant().vtype(), VarType::Single);
     }
 
     #[test]

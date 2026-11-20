@@ -17,8 +17,10 @@ calcvba-runtime.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 
-[target.'cfg(target_os = "windows")'.dependencies]
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 libffi = "5.1.0"
+
+[target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_System_Com",

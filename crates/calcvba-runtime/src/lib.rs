@@ -16,7 +16,6 @@ pub use calcvba_automation::com_record;
 pub mod date;
 pub use calcvba_automation::decimal;
 pub mod events;
-pub mod interop_plan;
 pub use calcvba_automation::live_counters;
 pub mod object_owner;
 pub mod object_ref;
@@ -41,12 +40,6 @@ pub use callback_thunks::{
 pub use coerce::{print_display_text, variant_to_vba_string, write_display_text};
 pub use com_record::{ComRecord, ComRecordRef};
 pub use decimal::Decimal96;
-pub use interop_plan::{
-    InteropApartmentPolicy, InteropCallKind, InteropCallSpec, InteropCleanupPolicy,
-    InteropErrorMapping, InteropInvokeKind, InteropPlanError, InteropPlanIdentity,
-    InteropReentryPolicy, InteropTargetArch, InteropTransport, InteropWritebackOrder,
-    VerifiedInteropPlan, verify_interop_plan,
-};
 #[cfg(any(test, feature = "live-counters"))]
 pub use live_counters::current_thread_live_handle_counts;
 pub use live_counters::{HandleBalance, LiveHandleCounts, live_handle_counts};
@@ -85,5 +78,4 @@ pub use vba_record::{
     VbaRecordFieldKind, VbaRecordFieldLayout, VbaRecordFieldSpec, VbaRecordLayout,
 };
 
-#[cfg(windows)]
 pub use calcvba_automation::automation_record;

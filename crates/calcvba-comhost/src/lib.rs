@@ -1250,7 +1250,6 @@ unsafe fn generated_server_variant_arg(
         generated_server_object_variant_arg(variant, session)
     } else {
         calcvba_com::windows_variant::variant_to_com_value(variant)
-            .and_then(|value| value.to_variant())
     }
 }
 
@@ -2280,7 +2279,7 @@ unsafe fn imported_dispatch_variant_arg(
         _ if variant_contains_dispatch_or_unknown(variant) => {
             imported_dispatch_object_arg(variant, "IDispatch")
         }
-        _ => variant_to_com_value(variant).and_then(|value| value.to_variant()),
+        _ => variant_to_com_value(variant),
     }
 }
 
@@ -2507,9 +2506,7 @@ unsafe fn safearray_ptr_to_variant(array: *mut SAFEARRAY) -> Variant {
     let mut variant: VARIANT = std::mem::zeroed();
     variant.Anonymous.Anonymous.vt = VT_ARRAY | VT_VARIANT;
     variant.Anonymous.Anonymous.Anonymous.parray = array;
-    variant_to_com_value(&variant)
-        .and_then(|value| value.to_variant())
-        .unwrap_or_else(|_| Variant::empty())
+    variant_to_com_value(&variant).unwrap_or_else(|_| Variant::empty())
 }
 
 unsafe fn bstr_ptr_to_variant(value: BSTR) -> Variant {

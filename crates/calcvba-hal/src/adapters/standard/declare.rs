@@ -7,7 +7,7 @@
 //!   expression, or a variable of a different type) gets a temporary of the parameter's type,
 //!   written back through the reference after the call.
 //! - A String (ByVal or ByRef, also inside `As Any`) is an ANSI BSTR temporary, as VBA converts
-//!   it (best-fit `CP_ACP`); a null BSTR is a null pointer. After the call the temporary is
+//!   it (best-fit `CP_ACP`; Windows-1252 off Windows); a null BSTR is a null pointer. After the call the temporary is
 //!   converted back at its full byte length into the variable when there is one (a ByVal String
 //!   variable binds as a reference for that copy-back, the pre-sized-buffer idiom).
 //! - String arrays and records holding Strings are ANSI copies converted back after the call;
@@ -26,11 +26,38 @@ use calcvba_com::windows_ffi_bridge::{
     FfiReturnType, OwnedLibrary, PreparedNativeCall, get_proc_address, get_proc_address_ordinal,
 };
 use calcvba_runtime::ObjectRefExt;
+use calcvba_runtime::ansi::{ansi_decode_units, ansi_encode_units};
+use calcvba_runtime::bstr::BStr;
 use calcvba_runtime::{VarType, Variant};
 use std::rc::Rc;
 use std::sync::Arc;
-use windows_sys::Win32::Foundation::{SysAllocStringByteLen, SysFreeString, SysStringByteLen};
-use windows_sys::Win32::Globalization::{CP_ACP, MultiByteToWideChar, WideCharToMultiByte};
+
+/// The byte length of a live BSTR (its length prefix), as `SysStringByteLen`.
+///
+/// # Safety
+/// `bstr` is a live, non-null BSTR.
+unsafe fn bstr_byte_len(bstr: *const u16) -> usize {
+    // SAFETY: a BSTR's byte length is the u32 just before its payload.
+    unsafe { bstr.cast::<u8>().sub(4).cast::<u32>().read_unaligned() as usize }
+}
+
+/// Frees a BSTR the call owns (null is allowed), as `SysFreeString`.
+///
+/// # Safety
+/// `bstr` is null or a BSTR allocated by the runtime's BSTR allocator (oleaut32 on Windows).
+unsafe fn free_bstr(bstr: *mut u16) {
+    // SAFETY: guaranteed by the caller; the owner frees it on drop.
+    drop(unsafe { BStr::from_raw_bstr(bstr) });
+}
+
+/// SAFEARRAY field offsets for this target: `pvData` after the three 32-bit header words
+/// (`cDims`/`fFeatures`, `cbElements`, `cLocks`), aligned to a pointer, then `rgsabound`.
+const SA_PV_DATA: usize = if core::mem::size_of::<usize>() == 8 {
+    16
+} else {
+    12
+};
+const SA_BOUNDS: usize = SA_PV_DATA + core::mem::size_of::<usize>();
 
 const VT_I2: u16 = 0x0002;
 const VT_I4: u16 = 0x0003;
@@ -290,47 +317,10 @@ fn prepare(
 
 /// An ANSI BSTR of `units` (`CP_ACP`, best fit, as VBA converts a `Declare` String).
 fn ansi_bstr(units: &[u16]) -> Result<*mut u16, String> {
-    let bytes = if units.is_empty() {
-        Vec::new()
-    } else {
-        let len = i32::try_from(units.len()).map_err(|_| "String too long for ANSI")?;
-        // SAFETY: a size query over a live slice.
-        let required = unsafe {
-            WideCharToMultiByte(
-                CP_ACP,
-                0,
-                units.as_ptr(),
-                len,
-                core::ptr::null_mut(),
-                0,
-                core::ptr::null(),
-                core::ptr::null_mut(),
-            )
-        };
-        let mut bytes = vec![0u8; required.max(0) as usize];
-        // SAFETY: the output buffer has the queried size.
-        let written = unsafe {
-            WideCharToMultiByte(
-                CP_ACP,
-                0,
-                units.as_ptr(),
-                len,
-                bytes.as_mut_ptr(),
-                required,
-                core::ptr::null(),
-                core::ptr::null_mut(),
-            )
-        };
-        bytes.truncate(written.max(0) as usize);
-        bytes
-    };
-    let len = u32::try_from(bytes.len()).map_err(|_| "ANSI String too long")?;
-    // SAFETY: copies `len` initialized bytes into a new BSTR.
-    let bstr = unsafe { SysAllocStringByteLen(bytes.as_ptr(), len) }.cast_mut();
-    if bstr.is_null() {
-        return Err("ANSI BSTR allocation failed".into());
-    }
-    Ok(bstr)
+    let bytes = ansi_encode_units(units);
+    Ok(BStr::from_bytes(&bytes)
+        .map_err(|_| "ANSI BSTR allocation failed".to_string())?
+        .into_raw_bstr())
 }
 
 /// The Unicode String an ANSI BSTR converts back to, at its full byte length.
@@ -339,27 +329,11 @@ fn ansi_bstr(units: &[u16]) -> Result<*mut u16, String> {
 /// `bstr` is null or a live BSTR.
 unsafe fn unicode_from_ansi(bstr: *mut u16) -> Variant {
     if bstr.is_null() {
-        return Variant::from_string(calcvba_runtime::bstr::BStr::empty());
+        return Variant::from_string(BStr::empty());
     }
     // SAFETY: a live BSTR's byte length and payload.
-    let bytes = unsafe {
-        let len = SysStringByteLen(bstr) as usize;
-        core::slice::from_raw_parts(bstr.cast::<u8>(), len)
-    };
-    if bytes.is_empty() {
-        return Variant::from_string(calcvba_runtime::bstr::BStr::empty());
-    }
-    let len = i32::try_from(bytes.len()).unwrap_or(i32::MAX);
-    // SAFETY: a size query over a live slice.
-    let required =
-        unsafe { MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr(), len, core::ptr::null_mut(), 0) };
-    let mut units = vec![0u16; required.max(0) as usize];
-    // SAFETY: the output buffer has the queried size.
-    let written = unsafe {
-        MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr(), len, units.as_mut_ptr(), required)
-    };
-    units.truncate(written.max(0) as usize);
-    Variant::from_utf16_units(&units)
+    let bytes = unsafe { core::slice::from_raw_parts(bstr.cast::<u8>(), bstr_byte_len(bstr)) };
+    Variant::from_utf16_units(&ansi_decode_units(bytes))
 }
 
 /// The UTF-16 units of a String value (empty for a non-String) and whether it is a null BSTR.
@@ -645,6 +619,7 @@ fn marshal<'a>(
 
 /// A ByVal `As Any` (or ByVal array) argument: a pointer value, an object's interface pointer,
 /// or a scalar's payload.
+#[cfg_attr(not(target_os = "windows"), allow(unused_variables, clippy::ptr_arg))]
 fn byval_any<'a>(
     host: &StandardHostServices,
     value: Variant,
@@ -658,6 +633,7 @@ fn byval_any<'a>(
             if object.is_nothing_placeholder() {
                 return Ok(0);
             }
+            #[cfg(target_os = "windows")]
             if object.is_compat_object() {
                 // A project object crosses as its IDispatch, kept alive for the call.
                 let dispatch = calcvba_com::automation::project_dispatch(&object)
@@ -666,6 +642,8 @@ fn byval_any<'a>(
                 after.push(After::Keep(Box::new(dispatch)));
                 return Ok(word);
             }
+            // Elsewhere a project object is its own COM-shaped IUnknown (the portable
+            // stand-in), which the cell already holds.
             Ok(payload_word(&value))
         }
         VarType::ArrayVariant => Ok(value.raw_safearray_ptr().expose_provenance() as u64),
@@ -688,7 +666,7 @@ fn ansi_array(host: &StandardHostServices, value: Variant) -> HalResult<Variant>
             let units = if unicode.is_null() {
                 Vec::new()
             } else {
-                let len = SysStringByteLen(unicode) as usize / 2;
+                let len = bstr_byte_len(unicode) / 2;
                 core::slice::from_raw_parts(unicode, len).to_vec()
             };
             let ansi = if unicode.is_null() {
@@ -718,7 +696,7 @@ fn unicode_array(cell: &mut Variant) {
             let slot = raw_element(pointer, index).cast::<*mut u16>();
             let ansi = *slot;
             let unicode = unicode_from_ansi(ansi);
-            SysFreeString(ansi);
+            free_bstr(ansi);
             *slot = if ansi.is_null() {
                 core::ptr::null_mut()
             } else {
@@ -744,8 +722,8 @@ unsafe fn set_string_array_vartype(pointer: *mut core::ffi::c_void, vartype: u16
     // SAFETY: FADF_HAVEVARTYPE reserves the four bytes immediately before
     // the descriptor for its VARTYPE; FADF_BSTR continues to own the strings.
     unsafe {
-        let array = pointer.cast::<windows_sys::Win32::System::Com::SAFEARRAY>();
-        if (*array).fFeatures & calcvba_runtime::safe_array::FADF_HAVEVARTYPE_VALUE != 0 {
+        let features = pointer.cast::<u8>().add(2).cast::<u16>().read_unaligned();
+        if features & calcvba_runtime::safe_array::FADF_HAVEVARTYPE_VALUE != 0 {
             pointer
                 .cast::<u8>()
                 .sub(4)
@@ -760,12 +738,12 @@ fn raw_len(pointer: *mut core::ffi::c_void) -> usize {
     if pointer.is_null() {
         return 0;
     }
-    // SAFETY: a live descriptor: cDims at 0, rgsabound at 24 (x64), 8 bytes each.
+    // SAFETY: a live descriptor: cDims at 0, rgsabound (8 bytes each) at SA_BOUNDS.
     unsafe {
         let base = pointer.cast::<u8>();
         let dims = base.cast::<u16>().read_unaligned() as usize;
         (0..dims)
-            .map(|d| base.add(24 + d * 8).cast::<u32>().read_unaligned() as usize)
+            .map(|d| base.add(SA_BOUNDS + d * 8).cast::<u32>().read_unaligned() as usize)
             .product()
     }
 }
@@ -775,11 +753,11 @@ fn raw_len(pointer: *mut core::ffi::c_void) -> usize {
 /// # Safety
 /// `pointer` is a live descriptor and `index` is in bounds.
 unsafe fn raw_element(pointer: *mut core::ffi::c_void, index: usize) -> *mut u8 {
-    // SAFETY: cbElements at 4, pvData at 16 (x64).
+    // SAFETY: cbElements at 4, pvData at SA_PV_DATA.
     unsafe {
         let base = pointer.cast::<u8>();
         let size = base.add(4).cast::<u32>().read_unaligned() as usize;
-        let data = base.add(16).cast::<*mut u8>().read_unaligned();
+        let data = base.add(SA_PV_DATA).cast::<*mut u8>().read_unaligned();
         data.add(index * size)
     }
 }
@@ -847,12 +825,8 @@ pub(super) fn invoke(
             super::dynlink::unmarshal_ffi_to_variant(result[0] as i64, return_type.as_deref())
         }
         ResultShape::Variant => {
-            let mut bytes = [0u8; calcvba_runtime::WIRE_SIZE];
-            for (chunk, word) in bytes.chunks_mut(8).zip(&result) {
-                chunk.copy_from_slice(&word.to_le_bytes()[..chunk.len()]);
-            }
-            // SAFETY: the callee's VARIANT result is ours to take.
-            match unsafe { Variant::adopt_automation(bytes) } {
+            // SAFETY: the callee's VARIANT result, in `result`, is ours to take.
+            match unsafe { Variant::adopt_automation_cell(result.as_ptr().cast()) } {
                 Ok(value) => value,
                 Err(_) => return Err(vba_fault(host, 458, "unsupported Variant result type")),
             }
@@ -875,7 +849,7 @@ pub(super) fn invoke(
                 // SAFETY: the temporary (possibly replaced by the callee) is ours.
                 let unicode = unsafe { unicode_from_ansi(bstr) };
                 // SAFETY: as above; freed once.
-                unsafe { SysFreeString(bstr) };
+                unsafe { free_bstr(bstr) };
                 match target {
                     // A null temporary stays what it was.
                     Some(target) if !bstr.is_null() => write_back(host, target, unicode),

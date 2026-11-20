@@ -480,10 +480,10 @@ where
         let mut variant: VARIANT = std::mem::zeroed();
         match arg.value {
             Some(ref value) => {
-                let value = value.to_com_value();
+                let value = value.variant();
                 if let Err(detail) = set_variant_from_com_value(
                     &mut variant,
-                    &value,
+                    value,
                     resolve_object,
                     add_ref_dispatch,
                 ) {
@@ -607,10 +607,10 @@ where
         let mut variant: VARIANT = std::mem::zeroed();
         match arg.value {
             Some(ref value) => {
-                let value = value.to_com_value();
+                let value = value.variant();
                 if let Err(detail) = set_variant_from_com_value(
                     &mut variant,
-                    &value,
+                    value,
                     resolve_object,
                     add_ref_dispatch,
                 ) {
@@ -751,10 +751,10 @@ where
         } else {
             match arg.value {
                 Some(ref value) => {
-                    let value = value.to_com_value();
+                    let value = value.variant();
                     if let Err(detail) = set_variant_from_com_value(
                         &mut variant,
-                        &value,
+                        value,
                         resolve_object,
                         add_ref_dispatch,
                     ) {
@@ -883,13 +883,13 @@ where
         let mut variant: VARIANT = std::mem::zeroed();
         match arg.value {
             Some(ref value) => {
-                let value = value.to_com_value();
+                let value = value.variant();
                 let mut add_ref_dispatch = |dispatch: *mut core::ffi::c_void| {
                     crate::add_ref_dispatch(dispatch.cast::<crate::RawIDispatch>());
                 };
                 if let Err(detail) = set_variant_from_com_value(
                     &mut variant,
-                    &value,
+                    value,
                     resolve_object,
                     &mut add_ref_dispatch,
                 ) {
@@ -954,7 +954,7 @@ where
     }
 
     let token = match crate::variant_to_com_value(&result) {
-        Ok(value) => match value.to_runtime_token() {
+        Ok(value) => match crate::compat::variant_to_runtime_token(&value) {
             Ok(token) => token,
             Err(detail) => {
                 let _ = windows_sys::Win32::System::Variant::VariantClear(&mut result);
@@ -980,7 +980,7 @@ pub unsafe fn invoke_dispatch_legacy_i32_result_positional<FResolveObject>(
     dispatch: *mut core::ffi::c_void,
     dispid: i32,
     flags: u16,
-    args: &[crate::ComValue],
+    args: &[Variant],
     property_put_named_arg: bool,
     label: &'static str,
     resolve_object: &mut FResolveObject,
@@ -1048,7 +1048,7 @@ where
     }
 
     let token = match crate::variant_to_com_value(&result) {
-        Ok(value) => match value.to_runtime_token() {
+        Ok(value) => match crate::compat::variant_to_runtime_token(&value) {
             Ok(token) => token,
             Err(detail) => {
                 let _ = windows_sys::Win32::System::Variant::VariantClear(&mut result);
@@ -1163,12 +1163,12 @@ where
                     .iter()
                     .all(|arg| arg.name.is_none() && arg.value.is_some())
             {
-                let positional_args: Result<Vec<crate::ComValue>, String> = args
+                let positional_args: Result<Vec<Variant>, String> = args
                     .iter()
                     .filter_map(|arg| arg.value.clone())
                     .map(|value| {
                         value.to_legacy_dispatch_token()?;
-                        Ok(value.to_com_value())
+                        Ok(value.into_variant())
                     })
                     .collect();
                 if let Ok(positional_args) = positional_args {
@@ -1204,12 +1204,12 @@ where
                     .iter()
                     .all(|arg| arg.name.is_none() && arg.value.is_some())
             {
-                let positional_args: Result<Vec<crate::ComValue>, String> = args
+                let positional_args: Result<Vec<Variant>, String> = args
                     .iter()
                     .filter_map(|arg| arg.value.clone())
                     .map(|value| {
                         value.to_legacy_dispatch_token()?;
-                        Ok(value.to_com_value())
+                        Ok(value.into_variant())
                     })
                     .collect();
                 if let Ok(positional_args) = positional_args {

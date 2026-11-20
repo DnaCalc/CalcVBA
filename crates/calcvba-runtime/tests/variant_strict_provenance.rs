@@ -13,9 +13,14 @@ use calcvba_runtime::{
 /// The test's record type: four bytes, counted by a fake `IRecordInfo`.
 fn record_info() -> *mut c_void {
     use std::sync::OnceLock;
-    static INFO: OnceLock<usize> = OnceLock::new();
-    let address = *INFO.get_or_init(|| TestRecordInfo::create(4).expose_provenance());
-    core::ptr::with_exposed_provenance_mut(address)
+    /// The leaked test `IRecordInfo`, shared by the tests (it is never freed).
+    struct Shared(*mut c_void);
+    // SAFETY: the test record info is immutable after creation and counts atomically.
+    unsafe impl Send for Shared {}
+    // SAFETY: as above.
+    unsafe impl Sync for Shared {}
+    static INFO: OnceLock<Shared> = OnceLock::new();
+    INFO.get_or_init(|| Shared(TestRecordInfo::create(4))).0
 }
 
 fn live_com_records() -> isize {
@@ -71,8 +76,8 @@ fn variant_strict_provenance_pointer_carriers_roundtrip_mutate_and_balance() {
         assert_eq!(string.string_bytes(), Some(vec![0x41, 0x00, 0x42]));
         let string_clone = string.clone();
         // SAFETY: the bytes came from `string`, which remains live for this call.
-        let string_wire_clone = unsafe { Variant::from_trusted_wire_bytes(string.to_wire_bytes()) }
-            .expect("trusted BSTR wire clone");
+        let string_wire_clone =
+            unsafe { Variant::from_trusted_cell(&string.core()) }.expect("trusted BSTR wire clone");
         assert_eq!(string_clone.string_bytes(), Some(vec![0x41, 0x00, 0x42]));
         assert_eq!(
             string_wire_clone.string_bytes(),
@@ -89,9 +94,8 @@ fn variant_strict_provenance_pointer_carriers_roundtrip_mutate_and_balance() {
                 .is_null()
         );
         // SAFETY: this is the null pointer representation, which is always valid.
-        let null_string_clone =
-            unsafe { Variant::from_trusted_wire_bytes(null_string.to_wire_bytes()) }
-                .expect("trusted null BSTR wire clone");
+        let null_string_clone = unsafe { Variant::from_trusted_cell(&null_string.core()) }
+            .expect("trusted null BSTR wire clone");
         assert_eq!(null_string_clone.data_bytes(), [0; 8]);
 
         // Object/IUnknown: the x64 carrier bytes are the exposed address exactly;
@@ -112,9 +116,8 @@ fn variant_strict_provenance_pointer_carriers_roundtrip_mutate_and_balance() {
         let object_clone = object_value.clone();
         // SAFETY: the bytes came from `object_value`, which retains the object
         // reference and remains live for this call.
-        let object_wire_clone =
-            unsafe { Variant::from_trusted_wire_bytes(object_value.to_wire_bytes()) }
-                .expect("trusted object wire clone");
+        let object_wire_clone = unsafe { Variant::from_trusted_cell(&object_value.core()) }
+            .expect("trusted object wire clone");
         assert_eq!(
             object_clone.as_object_ref().map(|value| value.raw()),
             Some(73)
@@ -127,7 +130,7 @@ fn variant_strict_provenance_pointer_carriers_roundtrip_mutate_and_balance() {
 
         let nothing = Variant::nothing();
         // SAFETY: this is the null pointer representation, which is always valid.
-        let nothing_clone = unsafe { Variant::from_trusted_wire_bytes(nothing.to_wire_bytes()) }
+        let nothing_clone = unsafe { Variant::from_trusted_cell(&nothing.core()) }
             .expect("trusted Nothing wire clone");
         assert!(nothing_clone.as_object_ref().is_none());
 
@@ -171,9 +174,8 @@ fn variant_strict_provenance_pointer_carriers_roundtrip_mutate_and_balance() {
         );
         let array_clone = array_value.clone();
         // SAFETY: `array_value` owns the source descriptor for this whole call.
-        let array_wire_clone =
-            unsafe { Variant::from_trusted_wire_bytes(array_value.to_wire_bytes()) }
-                .expect("trusted SAFEARRAY wire clone");
+        let array_wire_clone = unsafe { Variant::from_trusted_cell(&array_value.core()) }
+            .expect("trusted SAFEARRAY wire clone");
         for cloned in [&array_clone, &array_wire_clone] {
             assert_eq!(
                 cloned
@@ -190,9 +192,8 @@ fn variant_strict_provenance_pointer_carriers_roundtrip_mutate_and_balance() {
         let null_array = Variant::unallocated_array(VT_VARIANT_VALUE);
         assert!(null_array.as_safearray().is_none());
         // SAFETY: this is the null SAFEARRAY pointer representation.
-        let null_array_clone =
-            unsafe { Variant::from_trusted_wire_bytes(null_array.to_wire_bytes()) }
-                .expect("trusted null SAFEARRAY wire clone");
+        let null_array_clone = unsafe { Variant::from_trusted_cell(&null_array.core()) }
+            .expect("trusted null SAFEARRAY wire clone");
         assert!(null_array_clone.as_safearray().is_none());
 
         // VBA RecordPayload: mutate the source after cloning and prove that both
@@ -215,9 +216,8 @@ fn variant_strict_provenance_pointer_carriers_roundtrip_mutate_and_balance() {
             .write_record_field_variant(0, &Variant::from_i32(99))
             .expect("mutate VBA record");
         // SAFETY: the source record payload remains owned by `vba_record_value`.
-        let vba_record_wire_clone =
-            unsafe { Variant::from_trusted_wire_bytes(vba_record_value.to_wire_bytes()) }
-                .expect("trusted VBA record wire clone");
+        let vba_record_wire_clone = unsafe { Variant::from_trusted_cell(&vba_record_value.core()) }
+            .expect("trusted VBA record wire clone");
         assert_eq!(
             vba_record_value
                 .read_record_field_variant(0)
@@ -244,9 +244,8 @@ fn variant_strict_provenance_pointer_carriers_roundtrip_mutate_and_balance() {
         let null_record = Variant::zeroed(VarType::Record);
         assert!(null_record.as_vba_record().is_none());
         // SAFETY: this is the null record-payload pointer representation.
-        let null_record_clone =
-            unsafe { Variant::from_trusted_wire_bytes(null_record.to_wire_bytes()) }
-                .expect("trusted null record wire clone");
+        let null_record_clone = unsafe { Variant::from_trusted_cell(&null_record.core()) }
+            .expect("trusted null record wire clone");
         assert!(null_record_clone.as_vba_record().is_none());
 
         // COM RecordPayload: callback-owned record data is independently cloned,
@@ -267,9 +266,8 @@ fn variant_strict_provenance_pointer_carriers_roundtrip_mutate_and_balance() {
             *source_record.record_data_ptr().cast::<i32>() = 88;
         }
         // SAFETY: the source RecordPayload remains live in `com_value`.
-        let com_record_wire_clone =
-            unsafe { Variant::from_trusted_wire_bytes(com_value.to_wire_bytes()) }
-                .expect("trusted COM record wire clone");
+        let com_record_wire_clone = unsafe { Variant::from_trusted_cell(&com_value.core()) }
+            .expect("trusted COM record wire clone");
         assert_eq!(com_record_value(&com_value), 88);
         assert_eq!(com_record_value(&com_record_clone), 51);
         assert_eq!(com_record_value(&com_record_wire_clone), 88);

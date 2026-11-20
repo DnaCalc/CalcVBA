@@ -144,3 +144,22 @@ cfg(windows)-only failure, pull again before each push.
     handler, now written in place, not copied back), typed_native_com, typed_incoming_byref
     (2 tests, VM3+JIT), and any Excel-event handler with a ByRef Variant parameter (it was
     refused before, it runs now).
+
+--- Lane vx3 (Linux), newest last ---
+
+15. dc-yqq0.6: class- and interface-typed arrays (`Dim a() As Collection`, `Dim a() As Class1`,
+    `Dim a() As HostLib.Range`, fixed `Dim a(0 To 1) As ...`, `ReDim Preserve` on Variants) now
+    carry the class/interface IID at `psa-16` / `SafeArrayGetIID` instead of `IID_IDispatch`,
+    threaded through `ArrayElementType::Interface([u8; 16])` in VM3, the JIT and rt-abi.
+    `calcvba_automation::oleaut::safe_array_get_iid` calls the real `oleaut32!SafeArrayGetIID`
+    on Windows. Run:
+      cargo test -p calcvba-automation --lib -- safe_array_get_iid
+      cargo test -p calcvba-engine --test array_descriptor_features --no-fail-fast
+      cargo test -p calcvba-host --test typed_aggregates --no-fail-fast
+    Excel comparison note (cannot compare Excel bytes for project classes on Linux):
+    - `Dim c() As Collection : ReDim c(0 To 1)` writes `VBA._Collection` IID
+      `{A4C46780-499F-101B-BB78-00AA00383CBB}` at `psa-16` (confirm against Excel `SafeArrayGetIID`).
+    - Project classes (`Dim w() As Widget`) get CalcVBA's deterministic `default_interface_iid`
+      (`Guid::deterministic(project_name, "IWidget")`, matching `calcvba-build`/`calcvba-comhost`);
+      Excel generates per-session GUIDs for project classes, so confirm only that `SafeArrayGetIID`
+      returns S_OK with a non-IDispatch IID distinct per class and preserved across `ReDim Preserve`.

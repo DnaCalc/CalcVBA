@@ -115,6 +115,7 @@ pub struct IdAllocator {
 
 struct ProcAllocInput<'a> {
     env: &'a ResolutionEnvironment,
+    manifest: &'a SymbolProjectManifest,
     type_ctx: types::TypeContext,
     module_scope: ScopeId,
     module_syntax: SyntaxNode<'a>,
@@ -188,7 +189,9 @@ impl IdAllocator {
                         // Standard-module module-level variable → a global.
                         let gid = GlobalId(alloc.globals.len());
                         let array_element = match &sym.imp {
-                            SymbolImpl::DeclaredType(t) => types::array_element_with(type_ctx, t),
+                            SymbolImpl::DeclaredType(t) => {
+                                crate::array_element_in_env(type_ctx, env, manifest, t)
+                            }
                             _ => None,
                         };
                         alloc.globals.push(CoreGlobal {
@@ -234,6 +237,7 @@ impl IdAllocator {
             for (decl, &proc_scope) in decls.iter().zip(proc_scopes.iter()) {
                 alloc.alloc_proc(ProcAllocInput {
                     env,
+                    manifest,
                     type_ctx,
                     module_scope: module.module_scope,
                     module_syntax: module.syntax,
@@ -272,8 +276,13 @@ impl IdAllocator {
             }
             let folded = fold_identifier(&display);
             let surface_facts = class_member_surface_facts(env, &display);
-            let mut fields =
-                class_fields(env, type_ctx, module.module_scope, &alloc.field_token_of)?;
+            let mut fields = class_fields(
+                env,
+                manifest,
+                type_ctx,
+                module.module_scope,
+                &alloc.field_token_of,
+            )?;
             if let Some(host) = manifest
                 .modules
                 .iter()
@@ -368,6 +377,7 @@ impl IdAllocator {
     fn alloc_proc(&mut self, input: ProcAllocInput<'_>) -> Result<(), BindError> {
         let ProcAllocInput {
             env,
+            manifest,
             module_scope,
             module_syntax,
             decl,
@@ -446,6 +456,7 @@ impl IdAllocator {
             me_local,
         } = build_frame(
             env,
+            manifest,
             signature.as_ref(),
             proc_scope,
             kind,
@@ -482,7 +493,9 @@ impl IdAllocator {
             }
             let gid = GlobalId(self.globals.len());
             let array_element = match &sym.imp {
-                SymbolImpl::DeclaredType(t) => types::array_element_with(type_ctx, t),
+                SymbolImpl::DeclaredType(t) => {
+                    crate::array_element_in_env(type_ctx, env, manifest, t)
+                }
                 _ => None,
             };
             self.globals.push(CoreGlobal {
@@ -569,6 +582,7 @@ fn declared_var_type(imp: &SymbolImpl) -> VarTypeRef {
 
 fn class_fields(
     env: &ResolutionEnvironment,
+    manifest: &SymbolProjectManifest,
     type_ctx: types::TypeContext,
     module_scope: ScopeId,
     field_token_of: &HashMap<SymbolId, i32>,
@@ -590,7 +604,7 @@ fn class_fields(
             ))
         })?;
         let array_element = match &sym.imp {
-            SymbolImpl::DeclaredType(t) => types::array_element_with(type_ctx, t),
+            SymbolImpl::DeclaredType(t) => crate::array_element_in_env(type_ctx, env, manifest, t),
             _ => None,
         };
         fields.push(CoreClassField {
@@ -617,8 +631,10 @@ struct Frame {
     me_local: Option<LocalId>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_frame(
     env: &ResolutionEnvironment,
+    manifest: &SymbolProjectManifest,
     signature: Option<&Signature>,
     proc_scope: ScopeId,
     kind: ProcedureKind,
@@ -708,7 +724,9 @@ fn build_frame(
             && sym.kind != SymbolKind::StaticLocal
         {
             let array_element = match &sym.imp {
-                SymbolImpl::DeclaredType(t) => types::array_element_with(type_ctx, t),
+                SymbolImpl::DeclaredType(t) => {
+                    crate::array_element_in_env(type_ctx, env, manifest, t)
+                }
                 _ => None,
             };
             locals.push(CoreLocal {

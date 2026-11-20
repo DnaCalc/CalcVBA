@@ -1638,6 +1638,20 @@ impl Variant {
         Some(self.core.raw_vt() & 0x0FFF)
     }
 
+    /// The 16-byte interface IID (`psa - 16` / `SafeArrayGetIID`) of an allocated
+    /// `FADF_HAVEIID` array this cell holds or refers to.
+    pub fn array_element_iid(&self) -> Option<[u8; 16]> {
+        let cell = match self.byref_target() {
+            // SAFETY: a `VT_BYREF | VT_VARIANT` reference targets a live engine cell.
+            Some((0x0C, target)) => unsafe { &*target.cast::<Variant>() },
+            _ => self,
+        };
+        let raw = cell.array_descriptor()?;
+        // SAFETY: an array cell's descriptor is null or live; the view only reads its
+        // `fFeatures` and hidden prefix.
+        unsafe { SafeArray::borrow_raw(raw, None) }.and_then(|array| array.iid())
+    }
+
     pub fn set_safearray_element(&mut self, index: usize, value: &Variant) -> Result<(), String> {
         let Some(raw) = self.array_descriptor() else {
             return Err(format!(

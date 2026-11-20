@@ -27,6 +27,62 @@ impl Guid {
         }
     }
 
+    /// Canonical 16-byte COM GUID memory representation (little-endian `data1`..`data3`,
+    /// followed by `data4`).
+    pub const fn to_le_bytes(self) -> [u8; 16] {
+        let d1 = self.data1.to_le_bytes();
+        let d2 = self.data2.to_le_bytes();
+        let d3 = self.data3.to_le_bytes();
+        let d4 = self.data4;
+        [
+            d1[0], d1[1], d1[2], d1[3], d2[0], d2[1], d3[0], d3[1], d4[0], d4[1], d4[2], d4[3],
+            d4[4], d4[5], d4[6], d4[7],
+        ]
+    }
+
+    /// Reconstruct a [`Guid`] from its 16-byte COM memory layout.
+    pub const fn from_le_bytes(bytes: [u8; 16]) -> Self {
+        Self {
+            data1: u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            data2: u16::from_le_bytes([bytes[4], bytes[5]]),
+            data3: u16::from_le_bytes([bytes[6], bytes[7]]),
+            data4: [
+                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
+                bytes[15],
+            ],
+        }
+    }
+
+    /// Deterministic UUID-shaped COM identity for a project-defined type (matches
+    /// `calcvba_build::deterministic_uuid`).
+    pub fn deterministic(namespace: &str, name: &str) -> Self {
+        const NAMESPACE_SEED: u128 = 0x4f58_5642_4100_0000_0000_0000_0000_0001;
+
+        let mut hash: u128 = NAMESPACE_SEED;
+        for byte in namespace
+            .bytes()
+            .chain(core::iter::once(0u8))
+            .chain(name.bytes())
+        {
+            hash ^= u128::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3_0000_0000_0000_0000_001d);
+        }
+
+        let mut bytes = hash.to_be_bytes();
+        bytes[6] = (bytes[6] & 0x0f) | 0x50;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+        Self {
+            data1: u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            data2: u16::from_be_bytes([bytes[4], bytes[5]]),
+            data3: u16::from_be_bytes([bytes[6], bytes[7]]),
+            data4: [
+                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
+                bytes[15],
+            ],
+        }
+    }
+
     /// Parse `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX`, with or without braces.
     pub fn parse(input: &str) -> Option<Self> {
         fn hex<T: TryFrom<u32>>(text: &str, len: usize) -> Option<T> {
@@ -86,6 +142,13 @@ pub const IID_IUNKNOWN: Guid = Guid::new(0, 0, 0, [0xC0, 0, 0, 0, 0, 0, 0, 0x46]
 pub const IID_IDISPATCH: Guid = Guid::new(0x0002_0400, 0, 0, [0xC0, 0, 0, 0, 0, 0, 0, 0x46]);
 /// `IID_IRecordInfo` {0000002F-0000-0000-C000-000000000046}.
 pub const IID_IRECORDINFO: Guid = Guid::new(0x0000_002F, 0, 0, [0xC0, 0, 0, 0, 0, 0, 0, 0x46]);
+/// `IID__Collection` (`VBA.Collection` default interface) {A4C46780-499F-101B-BB78-00AA00383CBB}.
+pub const IID_VBA_COLLECTION: Guid = Guid::new(
+    0xA4C4_6780,
+    0x499F,
+    0x101B,
+    [0xBB, 0x78, 0x00, 0xAA, 0x00, 0x38, 0x3C, 0xBB],
+);
 
 /// `IUnknown`'s vtable.
 #[repr(C)]
@@ -231,6 +294,22 @@ mod tests {
         let mut buf = Buf([0; 36], 0);
         core::fmt::write(&mut buf, format_args!("{IID_IDISPATCH}")).unwrap();
         assert_eq!(&buf.0, b"00020400-0000-0000-C000-000000000046");
+        assert_eq!(
+            Guid::from_le_bytes(IID_IDISPATCH.to_le_bytes()),
+            IID_IDISPATCH
+        );
+        assert_eq!(
+            Guid::from_le_bytes(IID_VBA_COLLECTION.to_le_bytes()),
+            IID_VBA_COLLECTION
+        );
+        assert_eq!(
+            Guid::parse("A4C46780-499F-101B-BB78-00AA00383CBB"),
+            Some(IID_VBA_COLLECTION)
+        );
+        let det = Guid::deterministic("Demo", "IWidget");
+        assert_eq!(det, Guid::deterministic("Demo", "IWidget"));
+        assert_ne!(det, Guid::deterministic("Demo", "IOther"));
+        assert_ne!(det, IID_IDISPATCH);
     }
 
     #[test]

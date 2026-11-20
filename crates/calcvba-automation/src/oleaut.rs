@@ -160,6 +160,31 @@ pub unsafe fn safe_array_copy(array: *mut c_void, out: *mut *mut c_void) -> i32 
     }
 }
 
+/// `SafeArrayGetIID`: reads the 16-byte IID from an `FADF_HAVEIID` descriptor.
+pub unsafe fn safe_array_get_iid(array: *const c_void, out: *mut crate::com::Guid) -> i32 {
+    if array.is_null() || out.is_null() {
+        return E_INVALIDARG;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // SAFETY: `array` is a live SAFEARRAY and `out` is a writable GUID.
+        unsafe { windows_sys::Win32::System::Ole::SafeArrayGetIID(array.cast(), out.cast()) }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // SAFETY: `array` is a live descriptor this crate laid out.
+        let Some(view) = (unsafe { SafeArray::borrow_raw(array.cast_mut(), None) }) else {
+            return E_INVALIDARG;
+        };
+        let Some(iid) = view.iid() else {
+            return E_INVALIDARG;
+        };
+        // SAFETY: `out` is a writable GUID.
+        unsafe { out.write(crate::com::Guid::from_le_bytes(iid)) };
+        S_OK
+    }
+}
+
 /// `SafeArrayDestroy` (null is allowed).
 pub unsafe fn safe_array_destroy(array: *mut c_void) -> i32 {
     if array.is_null() {
@@ -216,5 +241,30 @@ mod tests {
         // SAFETY: a live cell.
         assert_eq!(unsafe { variant_clear((&raw mut copy).cast()) }, S_OK);
         assert_eq!(copy, Variant::empty());
+    }
+
+    #[test]
+    fn safe_array_get_iid_reads_custom_iid_and_rejects_non_iid_arrays() {
+        let collection_iid = crate::com::IID_VBA_COLLECTION;
+        let arr = crate::safe_array::SafeArray::from_typed_variants(
+            crate::safe_array::VT_DISPATCH_VALUE,
+            vec![Variant::nothing()],
+        )
+        .unwrap()
+        .with_iid(collection_iid.to_le_bytes());
+        let mut out = crate::com::Guid::default();
+        // SAFETY: live descriptor and writable GUID.
+        let hr = unsafe { safe_array_get_iid(arr.raw_safearray_ptr().cast(), &raw mut out) };
+        assert_eq!(hr, S_OK);
+        assert_eq!(out, collection_iid);
+
+        let longs = crate::safe_array::SafeArray::from_typed_variants(
+            crate::safe_array::VT_I4_VALUE,
+            vec![Variant::from_i32(1)],
+        )
+        .unwrap();
+        // SAFETY: live descriptor and writable GUID; non-FADF_HAVEIID returns E_INVALIDARG.
+        let hr = unsafe { safe_array_get_iid(longs.raw_safearray_ptr().cast(), &raw mut out) };
+        assert_ne!(hr, S_OK);
     }
 }

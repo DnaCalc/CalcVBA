@@ -162,6 +162,12 @@ pub trait Provider {
         let _ = name;
         None
     }
+    /// If `name` is a class (creatable or not) published by a *referenced project* or the
+    /// built-in `VBA` library, return its canonical `(unit, class)` names (used to derive
+    /// its COM interface IID for class-typed arrays).
+    fn resolve_extern_class_identity(&self, name: &str) -> Option<(String, String)> {
+        self.resolve_extern_coclass(name)
+    }
     /// If `name` is a `VB_PredeclaredId` class published by a *referenced project*,
     /// return its `(unit, class)` names so a bare reference to the class name lowers
     /// to a cross-bundle `PredeclaredExtern` (the `ThisWorkbook` document-instance
@@ -399,6 +405,14 @@ impl ResolutionEnvironment {
         self.providers
             .iter()
             .find_map(|provider| provider.resolve_extern_coclass(name))
+    }
+
+    /// The canonical `(unit, class)` of any class published by a referenced project or
+    /// the built-in `VBA` library (creatable or not).
+    pub fn resolve_extern_class_identity(&self, name: &str) -> Option<(String, String)> {
+        self.providers
+            .iter()
+            .find_map(|provider| provider.resolve_extern_class_identity(name))
     }
 
     /// The `(unit, class)` of a `VB_PredeclaredId` class published by a referenced

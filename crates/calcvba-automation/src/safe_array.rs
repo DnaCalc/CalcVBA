@@ -1281,6 +1281,44 @@ impl SafeArray {
         self
     }
 
+    /// The 16-byte interface IID stored at `psa - 16` when `FADF_HAVEIID` is set
+    /// (`SafeArrayGetIID`).
+    pub fn iid(&self) -> Option<[u8; 16]> {
+        if self.feature_flags() & FADF_HAVEIID_VALUE == 0 {
+            return None;
+        }
+        let mut out = [0u8; HIDDEN_SIZE];
+        // SAFETY: `self.header` is a live descriptor with its 16 hidden prefix bytes.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                hidden_bytes(self.header.as_ptr()),
+                out.as_mut_ptr(),
+                HIDDEN_SIZE,
+            );
+        }
+        Some(out)
+    }
+
+    /// Write the 16-byte interface IID at `psa - 16` when `FADF_HAVEIID` is set
+    /// (`SafeArraySetIID`).
+    pub fn set_iid(&mut self, iid: [u8; 16]) {
+        if self.feature_flags() & FADF_HAVEIID_VALUE == 0 {
+            return;
+        }
+        // SAFETY: `&mut self` gives exclusive access to this live descriptor and its
+        // 16 hidden prefix bytes.
+        unsafe {
+            hidden_bytes(self.header.as_ptr()).copy_from_nonoverlapping(iid.as_ptr(), HIDDEN_SIZE);
+        }
+    }
+
+    /// Consume `self`, writing its `FADF_HAVEIID` interface IID.
+    #[must_use]
+    pub fn with_iid(mut self, iid: [u8; 16]) -> Self {
+        self.set_iid(iid);
+        self
+    }
+
     fn element_kind(&self) -> Option<SafeArrayElementKind> {
         if self.record.is_some() {
             return None;
@@ -1519,6 +1557,7 @@ impl SafeArray {
         if !same_record
             || self.dimensions() != other.dimensions()
             || self.element_vartype() != other.element_vartype()
+            || self.iid() != other.iid()
             || element_size_of(self) != element_size_of(other)
         {
             return false;
@@ -3365,6 +3404,35 @@ mod tests {
             unknown.feature_flags(),
             super::FADF_HAVEIID_VALUE | FADF_UNKNOWN_VALUE
         );
+        assert_eq!(
+            dispatch.iid(),
+            Some(crate::com::IID_IDISPATCH.to_le_bytes())
+        );
+        assert_eq!(unknown.iid(), Some(crate::com::IID_IUNKNOWN.to_le_bytes()));
+        assert_eq!(bstr.iid(), None);
+
+        let custom_iid = crate::com::IID_VBA_COLLECTION.to_le_bytes();
+        let mut classed =
+            SafeArray::from_typed_variants(VT_DISPATCH_VALUE, vec![Variant::nothing()])
+                .expect("typed dispatch array")
+                .with_iid(custom_iid);
+        assert_eq!(classed.iid(), Some(custom_iid));
+        assert_eq!(classed.clone().iid(), Some(custom_iid));
+
+        let mut other_same = SafeArray::from_typed_variants(
+            VT_DISPATCH_VALUE,
+            vec![Variant::nothing(), Variant::nothing()],
+        )
+        .expect("typed dispatch array")
+        .with_iid(custom_iid);
+        assert!(classed.swap_storage(&mut other_same));
+        assert_eq!(classed.iid(), Some(custom_iid));
+        assert_eq!(classed.len(), 2);
+
+        let mut other_diff =
+            SafeArray::from_typed_variants(VT_DISPATCH_VALUE, vec![Variant::nothing()])
+                .expect("typed dispatch array");
+        assert!(!classed.swap_storage(&mut other_diff));
     }
 
     #[test]

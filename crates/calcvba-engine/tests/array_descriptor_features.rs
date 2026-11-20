@@ -6,7 +6,13 @@
 //! `FADF_HAVEIID | FADF_DISPATCH` (`&H440`) with the IID at `psa-16`; UDT arrays name no element
 //! type (`0`, fixed `&H12`); and a copy of a fixed array into a Variant is dynamic (`&H80`).
 use calcvba_engine::{Engine, HostConfig};
-use calcvba_runtime::{Variant, safe_array::SafeArray};
+use calcvba_runtime::{
+    Variant,
+    com::{Guid, IID_VBA_COLLECTION},
+    oleaut,
+    safe_array::SafeArray,
+};
+use calcvba_symbol::manifest as sym;
 
 const SOURCE: &str = r#"
 Private Type TPair
@@ -125,5 +131,130 @@ fn vba_array_descriptors_carry_the_features_excel_writes_on_vm3_and_jit() {
             );
         }
         assert_eq!(values[12].core().raw_vt(), 0x2003, "{name} v = fl tag");
+    }
+}
+
+fn read_iid_via_oleaut(array: &SafeArray) -> [u8; 16] {
+    let mut guid = Guid::default();
+    // SAFETY: `array` is a live FADF_HAVEIID descriptor and `guid` is writable.
+    let hr = unsafe { oleaut::safe_array_get_iid(array.raw_safearray_ptr().cast(), &raw mut guid) };
+    assert_eq!(hr, 0, "SafeArrayGetIID failed with HRESULT {hr:#010X}");
+    guid.to_le_bytes()
+}
+
+#[test]
+fn class_typed_arrays_carry_class_iid_not_idispatch_on_vm3_and_jit() {
+    let pointer = core::mem::size_of::<usize>() as u32;
+    let project_name = "ClassIidProject";
+    let widget_iid = Guid::deterministic(project_name, "IWidget").to_le_bytes();
+    let gadget_iid = Guid::deterministic(project_name, "IGadget").to_le_bytes();
+    let collection_iid = IID_VBA_COLLECTION.to_le_bytes();
+    assert_ne!(widget_iid, IID_IDISPATCH);
+    assert_ne!(gadget_iid, IID_IDISPATCH);
+    assert_ne!(widget_iid, gadget_iid);
+    assert_ne!(collection_iid, IID_IDISPATCH);
+
+    let main_source = r#"
+Option Explicit
+Dim fo(0 To 1) As Object
+Dim dob() As Object
+Dim fc(0 To 1) As Collection
+Dim dc() As Collection
+Dim fw(0 To 1) As Widget
+Dim dw() As Widget
+Dim dg() As Gadget
+Dim vc As Variant
+Dim vw As Variant
+Dim mismatch_err As Long
+
+Sub Main()
+    ReDim dob(0 To 1)
+    ReDim dc(0 To 1)
+    ReDim dw(0 To 1) As widget
+    ReDim dg(0 To 1)
+    vc = fc
+    ReDim Preserve vc(0 To 2)
+    ReDim vw(0 To 1) As Widget
+    ReDim Preserve vw(0 To 2)
+    On Error Resume Next
+    ReDim Preserve vw(0 To 3) As Gadget
+    mismatch_err = Err.Number
+    On Error GoTo 0
+End Sub
+"#;
+    let manifest = sym::SymbolProjectManifest {
+        project_name: project_name.to_string(),
+        project_kind: sym::ProjectKind::Source,
+        modules: vec![
+            sym::ModuleUnit {
+                module_name: "Module1".to_string(),
+                module_kind: sym::ModuleKind::Procedural,
+                attributes: sym::ModuleAttributes::named("Module1"),
+                source: main_source.to_string(),
+            },
+            sym::ModuleUnit {
+                module_name: "Widget".to_string(),
+                module_kind: sym::ModuleKind::Class,
+                attributes: sym::ModuleAttributes::named("Widget"),
+                source: "Public Tag As Long\n".to_string(),
+            },
+            sym::ModuleUnit {
+                module_name: "Gadget".to_string(),
+                module_kind: sym::ModuleKind::Class,
+                attributes: sym::ModuleAttributes::named("Gadget"),
+                source: "Public Code As Long\n".to_string(),
+            },
+        ],
+        references: Vec::new(),
+        reference_projects: Vec::new(),
+        conditional_constants: Default::default(),
+        conditional_compilation_target: Default::default(),
+    };
+
+    for (name, config) in [("vm3", HostConfig::vm3()), ("jit", HostConfig::jit())] {
+        let engine = Engine::new(config);
+        let values = engine
+            .execute_project_closure_with_variant_snapshot(std::slice::from_ref(&manifest))
+            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        let expected: [(&str, usize, u16, [u8; 16]); 9] = [
+            ("fo (Object fixed)", 0, 0x452, IID_IDISPATCH),
+            ("dob (Object dynamic)", 1, 0x440, IID_IDISPATCH),
+            ("fc (Collection fixed)", 2, 0x452, collection_iid),
+            ("dc (Collection dynamic)", 3, 0x440, collection_iid),
+            ("fw (Widget fixed)", 4, 0x452, widget_iid),
+            ("dw (Widget dynamic)", 5, 0x440, widget_iid),
+            ("dg (Gadget dynamic)", 6, 0x440, gadget_iid),
+            (
+                "vc (Variant copy + Preserve Collection)",
+                7,
+                0x440,
+                collection_iid,
+            ),
+            ("vw (Variant ReDim + Preserve Widget)", 8, 0x440, widget_iid),
+        ];
+        for (label, index, features, expected_iid) in expected {
+            let arr = array(&values, index);
+            let d = descriptor(&arr);
+            assert_eq!(
+                (d.features, d.cb_elements, d.hidden),
+                (features, pointer, expected_iid),
+                "{name} {label} (psa-16)"
+            );
+            assert_eq!(
+                arr.iid(),
+                Some(expected_iid),
+                "{name} {label} (SafeArray::iid)"
+            );
+            assert_eq!(
+                read_iid_via_oleaut(&arr),
+                expected_iid,
+                "{name} {label} (SafeArrayGetIID)"
+            );
+        }
+        assert_eq!(
+            values[9].as_i32(),
+            Some(13),
+            "{name} ReDim Preserve across different classes must raise error 13"
+        );
     }
 }

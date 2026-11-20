@@ -1774,7 +1774,9 @@ impl<'a> ProcLower<'a> {
             // (e.g. a UDT fixed-array field `arr(1 To 3) As Long`, whose declared
             // type is `FixedArray { element, bounds }`, not `Array`). `array_element`
             // unwraps both array spellings; a non-array target stays Variant.
-            let element_type = types::array_element_with(self.g.type_ctx, &ty)
+            let element_type = self
+                .g
+                .array_element_for_var_type(&ty)
                 .unwrap_or(calcvba_bundle::ArrayElementType::Variant);
             out.push(CoreStmt::Erase {
                 array,
@@ -2589,6 +2591,7 @@ fn lset_record_field_is_byte_copyable(field: &ArrayElementType) -> bool {
         ArrayElementType::Variant
         | ArrayElementType::String
         | ArrayElementType::Object
+        | ArrayElementType::Interface(_)
         | ArrayElementType::DynamicArray(_) => false,
         ArrayElementType::Record(fields) => fields.iter().all(lset_record_field_is_byte_copyable),
         ArrayElementType::FixedArray { element, .. } => lset_record_field_is_byte_copyable(element),

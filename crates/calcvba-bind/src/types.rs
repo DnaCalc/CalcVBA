@@ -74,15 +74,6 @@ fn builtin_element(ctx: TypeContext, b: BuiltinType) -> ArrayElementType {
     }
 }
 
-/// `Some(element)` when the declared type is an array, for `CoreLocal`/`CoreGlobal`.
-pub(crate) fn array_element_with(ctx: TypeContext, ty: &VarTypeRef) -> Option<ArrayElementType> {
-    match ty {
-        VarTypeRef::Array(inner) => Some(array_element_of_with(ctx, inner)),
-        VarTypeRef::FixedArray { element, .. } => Some(array_element_of_with(ctx, element)),
-        _ => None,
-    }
-}
-
 /// The static assignment-target kind (drives Let/Set legality + `ValidateAssignment`).
 pub fn assignment_target_kind(ty: &VarTypeRef) -> AssignmentTargetKind {
     match ty {

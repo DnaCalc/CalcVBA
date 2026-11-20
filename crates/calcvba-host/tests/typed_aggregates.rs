@@ -294,3 +294,98 @@ fn cancelling_record_and_object_paramarray_frames_releases_all_carriers() {
         }
     }
 }
+
+#[test]
+fn class_and_interface_arrays_carry_iid_through_rt_abi_typed_entries() {
+    const RANGE_IID: api::InterfaceId = [
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF,
+        0x01,
+    ];
+    let collection_iid = calcvba_runtime::com::IID_VBA_COLLECTION.to_le_bytes();
+    let dispatch_iid = calcvba_runtime::com::IID_IDISPATCH.to_le_bytes();
+    let library = api::TypedObjectLibrary {
+        name: "HostIid".into(),
+        interfaces: vec![api::TypedObjectInterface {
+            name: "Range".into(),
+            iid: RANGE_IID,
+            members: vec![api::TypedObjectMember {
+                name: "Count".into(),
+                slot: 0,
+                kind: api::TypedMemberKind::PropertyGet,
+                parameters: vec![],
+                result: api::ValueType::Long,
+                is_default: false,
+            }],
+        }],
+    };
+    let source = r#"
+Public Function MakeRangeArray() As Variant
+    Dim a() As HostIid.Range
+    ReDim a(0 To 1)
+    MakeRangeArray = a
+End Function
+Public Function MakeFixedRangeArray() As Variant
+    Dim a(0 To 1) As HostIid.Range
+    MakeFixedRangeArray = a
+End Function
+Public Function MakeCollectionArray() As Variant
+    Dim c() As Collection
+    ReDim c(0 To 1)
+    MakeCollectionArray = c
+End Function
+Public Function MakeObjectArray() As Variant
+    Dim o() As Object
+    ReDim o(0 To 1)
+    MakeObjectArray = o
+End Function
+"#;
+    let project = api::Project::module("Api", source);
+    let provider = Provider::default();
+    for backend in backends() {
+        let session = provider
+            .load_with_object_libraries(
+                &project,
+                std::slice::from_ref(&library),
+                backend,
+                api::HOST_API_ABI,
+            )
+            .unwrap();
+        for (proc_name, expected_iid) in [
+            ("MakeRangeArray", RANGE_IID),
+            ("MakeFixedRangeArray", RANGE_IID),
+            ("MakeCollectionArray", collection_iid),
+            ("MakeObjectArray", dispatch_iid),
+        ] {
+            let api::Value::Variant(result) =
+                run(session.as_ref(), proc_name, &[], api::ValueType::Variant)
+            else {
+                panic!("{backend:?} {proc_name}: expected Variant");
+            };
+            let arr = result.as_safearray().unwrap_or_else(|| {
+                panic!("{backend:?} {proc_name}: expected array, got {result:?}")
+            });
+            assert_eq!(
+                arr.iid(),
+                Some(expected_iid),
+                "{backend:?} {proc_name}: SafeArray::iid"
+            );
+            let mut guid = calcvba_runtime::com::Guid::default();
+            // SAFETY: `arr` is a live FADF_HAVEIID descriptor and `guid` is writable.
+            let hr = unsafe {
+                calcvba_runtime::oleaut::safe_array_get_iid(
+                    arr.raw_safearray_ptr().cast(),
+                    &raw mut guid,
+                )
+            };
+            assert_eq!(
+                hr, 0,
+                "{backend:?} {proc_name}: SafeArrayGetIID hr={hr:#010X}"
+            );
+            assert_eq!(
+                guid.to_le_bytes(),
+                expected_iid,
+                "{backend:?} {proc_name}: SafeArrayGetIID"
+            );
+        }
+    }
+}

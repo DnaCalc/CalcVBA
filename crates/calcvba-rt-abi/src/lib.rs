@@ -703,7 +703,7 @@ fn runtime_array_element_type(element: &ArrayElementType) -> RuntimeValueType {
         ArrayElementType::FixedArray { .. } | ArrayElementType::DynamicArray(_) => {
             RuntimeValueType::Array
         }
-        ArrayElementType::Object => RuntimeValueType::Object,
+        ArrayElementType::Object | ArrayElementType::Interface(_) => RuntimeValueType::Object,
     }
 }
 

@@ -173,3 +173,25 @@ End Sub\n";
         );
     }
 }
+
+#[test]
+fn an_empty_array_literal_has_vt_zero_before_its_descriptor() {
+    // Excel (design doc step 6): `Array()` has vt 0 at psa-4; `Array(1)` has VT_VARIANT (12).
+    let source = "Private Declare PtrSafe Sub CopyPtr Lib \"libc.so.6\" Alias \"memcpy\" (ByVal dst As LongPtr, ByVal src As LongPtr, ByVal n As LongPtr)\n\
+Public result As String\n\
+Function Prefix(ByRef v As Variant) As String\n\
+    Dim psa As LongPtr, vt As Long, features As Integer\n\
+    CopyPtr VarPtr(psa), VarPtr(v) + 8, 8\n\
+    CopyPtr VarPtr(vt), psa - 4, 4\n\
+    CopyPtr VarPtr(features), psa + 2, 2\n\
+    Prefix = CStr(vt) & \":\" & Hex$(features) & \":\" & CStr(UBound(v) - LBound(v) + 1)\n\
+End Function\n\
+Sub Main()\n\
+    Dim a As Variant, b As Variant\n\
+    a = Array(): b = Array(1, 2)\n\
+    result = Prefix(a) & \"|\" & Prefix(b)\n\
+End Sub\n";
+    for (name, values) in run(source) {
+        assert_eq!(text(&values), "0:880:0|12:880:2", "{name}");
+    }
+}

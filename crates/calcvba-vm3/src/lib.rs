@@ -2056,15 +2056,8 @@ impl<'h> Vm3<'h> {
                     .collect::<Vec<_>>();
                 // `Array()` is based at the module's `Option Base` (0 or 1); a
                 // `ParamArray` always at 0. A non-zero base needs explicit bounds.
-                let array = if *lower_bound == 0 {
-                    SafeArray::from_variants(elems)
-                } else {
-                    let bounds = vec![SafeArrayBound {
-                        count: elems.len() as u32,
-                        lower: *lower_bound,
-                    }];
-                    SafeArray::from_variants_nd(bounds, elems)
-                };
+                let array = SafeArray::array_literal(*lower_bound, elems)
+                    .map_err(|error| Vm3Error::Fault(Fault::new(7, error)))?;
                 self.store(dst, Variant::from_safearray(array))?;
                 if alias_locs.iter().any(Option::is_some) {
                     let dst_loc = self.resolve(dst);

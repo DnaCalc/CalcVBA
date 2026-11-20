@@ -82,3 +82,14 @@ cfg(windows)-only failure, pull again before each push.
    is the element's own. Excel question: VT_INT (22) and VT_UINT (23) scalar results are
    still refused with 458 (no Excel data); add them to ox.ps1 if TestEventServer can return
    them.
+
+9. dc-yqq0.6: NativeValue::from_value (calcvba-runtime pointer_helpers.rs, Windows-only) now
+   copies a record's Variant field with VariantCopyInd instead of the runtime clone (whose BSTR
+   and SAFEARRAY were counted live and then freed by VariantClear uncounted). Also: an empty
+   Array() now has vt 0 at psa-4 (Excel), and a SAFEARRAY copy keeps the hidden vt/IID bytes.
+   Run:
+     cargo test -p calcvba-runtime --lib --no-fail-fast -- pointer_helpers
+       (new variant_fields_projected_for_a_declare_balance_the_live_counters: balance 0)
+     cargo test -p calcvba-runtime --no-fail-fast
+     cargo test -p calcvba-engine --test declare_cells --test real_addresses --test array_descriptor_features --no-fail-fast
+   Look at: the balance assertion; any Declare record test with Variant fields.

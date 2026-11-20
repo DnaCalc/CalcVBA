@@ -1173,6 +1173,29 @@ impl SafeArray {
         .expect("SAFEARRAY payload allocation should succeed for supported canonical variants")
     }
 
+    /// The array `Array(...)` (or a `ParamArray`) builds: a one-dimensional Variant array
+    /// based at `lower`. An empty one has vt 0 at `psa-4`, as Excel's has (the Variant
+    /// features stay, so its elements are still Variants).
+    pub fn array_literal(lower: i32, values: Vec<Variant>) -> Result<Self, String> {
+        let count = u32::try_from(values.len()).map_err(|_| "array literal too long")?;
+        let empty = values.is_empty();
+        let array = if lower == 0 {
+            Self::from_variants(values)
+        } else {
+            Self::from_variants_nd(vec![SafeArrayBound { count, lower }], values)
+        };
+        if empty {
+            // SAFETY: a live descriptor this handle owns; its last four hidden bytes are the vt.
+            unsafe {
+                hidden_bytes(array.header.as_ptr())
+                    .add(HIDDEN_SIZE - 4)
+                    .cast::<u32>()
+                    .write_unaligned(0);
+            }
+        }
+        Ok(array)
+    }
+
     pub fn from_variants_nd(bounds: Vec<SafeArrayBound>, values: Vec<Variant>) -> Self {
         Self::from_bounds_and_variants(bounds, VT_VARIANT_VALUE, Some(values)).expect(
             "SAFEARRAY nd payload allocation should succeed for supported canonical variants",
@@ -1376,11 +1399,13 @@ impl SafeArray {
         Ok(array)
     }
 
-    /// Give `self` the fixed-size bits and hidden IID of `source` (a copy keeps them).
+    /// Give `self` the fixed-size bits and hidden bytes (the IID, or the vt) of `source`: a
+    /// copy keeps them, as `SafeArrayCopy` does (an empty `Array()`'s vt 0 among them).
     fn copy_descriptor_traits_from(&mut self, source: &Self) {
         self.set_fixed_size(source.is_fixed_size());
-        if source.feature_flags() & FADF_HAVEIID_VALUE != 0
-            && self.feature_flags() & FADF_HAVEIID_VALUE != 0
+        let hidden = FADF_HAVEIID_VALUE | FADF_HAVEVARTYPE_VALUE;
+        if source.feature_flags() & hidden != 0
+            && source.feature_flags() & hidden == self.feature_flags() & hidden
         {
             // SAFETY: both descriptors are live and have their hidden bytes.
             unsafe {

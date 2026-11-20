@@ -587,38 +587,15 @@ unsafe fn safe_array_element_typed_nd(
         }};
     }
     match element_vt {
-        VT_I1 => Ok(Variant::from_i32(get_element!(i8, indices) as i32)),
-        VT_I2 => Ok(Variant::from_i32(get_element!(i16, indices) as i32)),
+        VT_I1 => Ok(Variant::from_i8(get_element!(i8, indices))),
+        VT_I2 => Ok(Variant::from_i16(get_element!(i16, indices))),
         VT_I4 => Ok(Variant::from_i32(get_element!(i32, indices))),
-        VT_I8 => {
-            let val = get_element!(i64, indices);
-            match i32::try_from(val) {
-                Ok(n) => Ok(Variant::from_i32(n)),
-                Err(_) => Ok(Variant::from_i64(val)),
-            }
-        }
+        VT_I8 => Ok(Variant::from_i64(get_element!(i64, indices))),
         VT_INT => Ok(Variant::from_i32(get_element!(i32, indices))),
-        VT_UI1 => Ok(Variant::from_i32(get_element!(u8, indices) as i32)),
-        VT_UI2 => Ok(Variant::from_i32(get_element!(u16, indices) as i32)),
-        VT_UI4 => {
-            let val = get_element!(u32, indices);
-            match i32::try_from(val) {
-                Ok(n) => Ok(Variant::from_i32(n)),
-                Err(_) => Ok(Variant::from_i64(val as i64)),
-            }
-        }
-        VT_UI8 => {
-            let val = get_element!(u64, indices);
-            match i32::try_from(val) {
-                Ok(n) => Ok(Variant::from_i32(n)),
-                Err(_) => match i64::try_from(val) {
-                    Ok(n) => Ok(Variant::from_i64(n)),
-                    Err(_) => Err(format!(
-                        "VT_UI8 SAFEARRAY element {val} exceeds i64 carrier range"
-                    )),
-                },
-            }
-        }
+        VT_UI1 => Ok(Variant::from_u8(get_element!(u8, indices))),
+        VT_UI2 => Ok(Variant::from_u16(get_element!(u16, indices))),
+        VT_UI4 => Ok(Variant::from_u32(get_element!(u32, indices))),
+        VT_UI8 => Ok(Variant::from_u64(get_element!(u64, indices))),
         VT_R4_VARENUM => Ok(Variant::from_f32(get_element!(f32, indices))),
         VT_R8_VARENUM => Ok(Variant::from_f64(get_element!(f64, indices))),
         VT_CY_VARENUM => {
@@ -630,13 +607,7 @@ unsafe fn safe_array_element_typed_nd(
             let dec: DECIMAL = get_element!(DECIMAL, indices);
             Ok(Variant::from_decimal96(decimal96_from_windows(dec)))
         }
-        VT_UINT => {
-            let val = get_element!(u32, indices);
-            match i32::try_from(val) {
-                Ok(n) => Ok(Variant::from_i32(n)),
-                Err(_) => Ok(Variant::from_i64(val as i64)),
-            }
-        }
+        VT_UINT => Ok(Variant::from_uint(get_element!(u32, indices))),
         VT_BOOL => {
             let val = get_element!(VARIANT_BOOL, indices);
             Ok(Variant::from_bool(val != 0))
@@ -692,7 +663,7 @@ unsafe fn safe_array_element_to_variant(
                     hr as u32, index
                 ));
             }
-            Ok(Variant::from_i32(element as i32))
+            Ok(Variant::from_i8(element))
         }
         VT_I2 => {
             let mut element = 0i16;
@@ -703,7 +674,7 @@ unsafe fn safe_array_element_to_variant(
                     hr as u32, index
                 ));
             }
-            Ok(Variant::from_i32(element as i32))
+            Ok(Variant::from_i16(element))
         }
         VT_I4 => {
             let mut element = 0i32;
@@ -725,10 +696,7 @@ unsafe fn safe_array_element_to_variant(
                     hr as u32, index
                 ));
             }
-            match i32::try_from(element) {
-                Ok(narrowed) => Ok(Variant::from_i32(narrowed)),
-                Err(_) => Ok(Variant::from_i64(element)),
-            }
+            Ok(Variant::from_i64(element))
         }
         VT_INT => {
             let mut element = 0i32;
@@ -750,7 +718,7 @@ unsafe fn safe_array_element_to_variant(
                     hr as u32, index
                 ));
             }
-            Ok(Variant::from_i32(element as i32))
+            Ok(Variant::from_u16(element))
         }
         VT_UI1 => {
             let mut element = 0u8;
@@ -761,7 +729,7 @@ unsafe fn safe_array_element_to_variant(
                     hr as u32, index
                 ));
             }
-            Ok(Variant::from_i32(element as i32))
+            Ok(Variant::from_u8(element))
         }
         VT_UI4 => {
             let mut element = 0u32;
@@ -772,10 +740,7 @@ unsafe fn safe_array_element_to_variant(
                     hr as u32, index
                 ));
             }
-            match i32::try_from(element) {
-                Ok(narrowed) => Ok(Variant::from_i32(narrowed)),
-                Err(_) => Ok(Variant::from_i64(element as i64)),
-            }
+            Ok(Variant::from_u32(element))
         }
         VT_UI8 => {
             let mut element = 0u64;
@@ -786,15 +751,7 @@ unsafe fn safe_array_element_to_variant(
                     hr as u32, index
                 ));
             }
-            match i32::try_from(element) {
-                Ok(narrowed) => Ok(Variant::from_i32(narrowed)),
-                Err(_) => match i64::try_from(element) {
-                    Ok(narrowed) => Ok(Variant::from_i64(narrowed)),
-                    Err(_) => Err(format!(
-                        "VT_UI8 SAFEARRAY element {element} exceeds i64 carrier range"
-                    )),
-                },
-            }
+            Ok(Variant::from_u64(element))
         }
         VT_R4_VARENUM => {
             let mut element = 0f32;
@@ -860,10 +817,7 @@ unsafe fn safe_array_element_to_variant(
                     hr as u32, index
                 ));
             }
-            match i32::try_from(element) {
-                Ok(narrowed) => Ok(Variant::from_i32(narrowed)),
-                Err(_) => Ok(Variant::from_i64(element as i64)),
-            }
+            Ok(Variant::from_uint(element))
         }
         VT_BOOL => {
             let mut element: VARIANT_BOOL = 0;

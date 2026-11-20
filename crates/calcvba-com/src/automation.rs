@@ -286,8 +286,8 @@ impl Dispatch {
     }
 }
 
-/// Moves a VARIANT a callee produced into the runtime (error 458 for a type VBA has no type
-/// for, after clearing it).
+/// Moves a VARIANT a callee produced into the runtime (after clearing it, error 13 for a record
+/// and 458 for a type VBA does not take).
 ///
 /// # Safety
 /// `value` is owned by the caller and not used afterwards.
@@ -295,10 +295,10 @@ unsafe fn adopt(mut value: VARIANT) -> Result<Variant, Fault> {
     // SAFETY: the caller owns `value`; the VARIANT layout is the runtime cell's, read in place.
     match unsafe { Variant::adopt_automation_cell((&raw const value).cast()) } {
         Ok(adopted) => Ok(adopted),
-        Err(_) => {
+        Err(vt) => {
             // SAFETY: still owned here; clearing releases what it holds.
             unsafe { VariantClear(&mut value) };
-            Err(Fault::number(458))
+            Err(Fault::number(i32::from(Variant::adoption_error_number(vt))))
         }
     }
 }

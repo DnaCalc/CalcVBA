@@ -196,6 +196,36 @@ fn t6_test_event_server_edge_vt_returns() {
     assert_differential("T6", late, early, Some(do_run), find_verdict, 31, Some(5));
 }
 
+// ── T6b: the COM datatype oracle's late-bound cases, as Excel answers them ───
+
+#[test]
+#[ignore = "live COM; run explicitly"]
+fn t6b_late_bound_edge_vt_returns_match_excel() {
+    // Excel (scripts/run-com-datatype-oracle.ps1, `v = obj.Member`): VT_I1/UI2/UI4/UI8 stay in
+    // the Variant (VarType 16/18/19/21, CStr the number); arrays of them raise 458; a VT_RECORD
+    // or an array of them raises 13 at the assignment. Expected = 127.
+    let body = "Dim verdict As Long, v As Variant\n\
+         verdict = 0\n\
+         v = s.ReturnSignedByteObject()\n\
+         If VarType(v) = 16 And CStr(v) = \"-5\" Then verdict = verdict + 1\n\
+         v = s.ReturnUnsignedWordObject()\n\
+         If VarType(v) = 18 And CStr(v) = \"65000\" Then verdict = verdict + 2\n\
+         v = s.ReturnUnsignedLongObject()\n\
+         If VarType(v) = 19 And CStr(v) = \"4000000000\" Then verdict = verdict + 4\n\
+         v = s.ReturnUnsignedHyperObject()\n\
+         If VarType(v) = 21 And CStr(v) = \"9000000000\" Then verdict = verdict + 8\n\
+         On Error Resume Next\n\
+         Err.Clear: v = s.ReturnRecordObject()\n\
+         If Err.Number = 13 Then verdict = verdict + 16\n\
+         Err.Clear: v = s.ReturnRecordArray()\n\
+         If Err.Number = 13 Then verdict = verdict + 32\n\
+         Err.Clear: v = s.ReturnSignedByteArray()\n\
+         If Err.Number = 458 Then verdict = verdict + 64\n\
+         On Error GoTo 0\n";
+    let snapshot = run_clean(&tes_late(body)).expect("T6b runs");
+    assert_eq!(find_verdict(&snapshot), Some(127), "T6b: {snapshot:?}");
+}
+
 // ── T7: DAO edge numbers (i32 boundary, f64 max, DBCS) ───────────────────────
 
 #[test]

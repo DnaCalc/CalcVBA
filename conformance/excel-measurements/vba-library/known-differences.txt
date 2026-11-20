@@ -167,7 +167,6 @@ P_InStr: InStr.12=Long:5
 P_InStr: InStr.21=ERR5
 P_InStr: InStr.22=Long:2
 P_InStr: InStr.23=ERR5
-P_InStr: InStr.41=Long:3
 P_InStr: InStr.44=ERR5
 P_InStrB: InStrB.11=Long:0
 P_InStrB: InStrB.7=Long:1

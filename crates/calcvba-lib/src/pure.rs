@@ -343,22 +343,22 @@ pub fn instr(args: &[Variant], rev: bool) -> LibResult<Variant> {
         return Err(LibError::invalid_call("InStr start must be >= 1"));
     }
     let text = text_compare(args, base + 2)?;
-    let hay = norm_compare(as_str(need(args, base)?)?, text);
-    let needle = norm_compare(as_str(need(args, base + 1)?)?, text);
+    let hay = compare_fold_units(&units_arg(need(args, base)?)?, text);
+    let needle = compare_fold_units(&units_arg(need(args, base + 1)?)?, text);
     // Nothing is found in an empty string, whatever the search text.
     if hay.is_empty() {
         return Ok(vi32(0));
     }
-
-    let byte_start = utf16_index_to_byte(&hay, start as usize - 1);
-    if byte_start > hay.len() {
+    let from = start as usize - 1;
+    if from > hay.len() {
         return Ok(vi32(0));
     }
-    let pos = hay[byte_start..].find(&needle).map(|b| byte_start + b);
-    Ok(vi32(match pos {
-        Some(byte) => hay[..byte].encode_utf16().count() as i32 + 1,
-        None => 0,
-    }))
+    if needle.is_empty() {
+        return Ok(vi32(start));
+    }
+    Ok(vi32(
+        find_units(&hay, &needle, from).map_or(0, |at| at as i32 + 1),
+    ))
 }
 
 /// `InStrRev(stringcheck, stringmatch, [start = -1], [compare])` — the position (1-based, from
@@ -368,9 +368,8 @@ pub fn instr(args: &[Variant], rev: bool) -> LibResult<Variant> {
 /// arg 2 as the compare mode).
 fn instr_rev(args: &[Variant]) -> LibResult<Variant> {
     let text = text_compare(args, 3)?;
-    let hay = norm_compare(as_str(need(args, 0)?)?, text);
-    let needle = norm_compare(as_str(need(args, 1)?)?, text);
-    let hay_units = hay.encode_utf16().count();
+    let hay = compare_fold_units(&units_arg(need(args, 0)?)?, text);
+    let needle = compare_fold_units(&units_arg(need(args, 1)?)?, text);
     let start = match arg_present(args, 2) {
         Some(v) => as_i32(v)?,
         None => -1,
@@ -378,33 +377,27 @@ fn instr_rev(args: &[Variant]) -> LibResult<Variant> {
     if start == 0 || start < -1 {
         return Err(LibError::invalid_call("InStrRev start must be -1 or >= 1"));
     }
-    if start != -1 && start as usize > hay_units {
+    if start != -1 && start as usize > hay.len() {
         return Ok(vi32(0));
     }
     // Search the first `start` code units (the match must end at or before `start`).
-    let region_units = if start == -1 {
-        hay_units
+    let region = if start == -1 {
+        hay.len()
     } else {
-        (start as usize).min(hay_units)
+        (start as usize).min(hay.len())
     };
-    let region_end = utf16_index_to_byte(&hay, region_units);
-    let region = &hay[..region_end];
-    Ok(vi32(match region.rfind(&needle) {
-        Some(byte) => hay[..byte].encode_utf16().count() as i32 + 1,
-        None => 0,
-    }))
-}
-
-/// Byte offset of the char at a given UTF-16 code-unit index (VBA string index).
-fn utf16_index_to_byte(s: &str, utf16_index: usize) -> usize {
-    let mut units = 0;
-    for (byte, ch) in s.char_indices() {
-        if units >= utf16_index {
-            return byte;
-        }
-        units += ch.len_utf16();
+    if needle.is_empty() {
+        return Ok(vi32(region as i32 + 1));
     }
-    s.len()
+    if needle.len() > region {
+        return Ok(vi32(0));
+    }
+    Ok(vi32(
+        (0..=region - needle.len())
+            .rev()
+            .find(|&i| hay[i..i + needle.len()] == *needle)
+            .map_or(0, |at| at as i32 + 1),
+    ))
 }
 
 /// A string argument as its UTF-16 code units, unpaired surrogates included (VBA strings are
@@ -942,9 +935,19 @@ pub fn string_repeat(args: &[Variant]) -> LibResult<Variant> {
 }
 
 pub fn str_reverse(args: &[Variant]) -> LibResult<Variant> {
-    Ok(vstr(
-        as_str(need(args, 0)?)?.chars().rev().collect::<String>(),
-    ))
+    // Reverse by character, keeping each surrogate pair (and any unpaired surrogate) whole.
+    let units = units_arg(need(args, 0)?)?;
+    let mut items: Vec<Vec<u16>> = char::decode_utf16(units.iter().copied())
+        .map(|item| match item {
+            Ok(c) => {
+                let mut buf = [0u16; 2];
+                c.encode_utf16(&mut buf).to_vec()
+            }
+            Err(unpaired) => vec![unpaired.unpaired_surrogate()],
+        })
+        .collect();
+    items.reverse();
+    Ok(vunits(&items.concat()))
 }
 
 /// FIDELITY: handles case modes plus the deterministic ANSI byte conversion modes
@@ -992,47 +995,70 @@ pub fn str_conv(args: &[Variant]) -> LibResult<Variant> {
         ));
     }
 
-    let mut s = if mode & VB_UNICODE != 0 {
+    let input = need(args, 0)?;
+    let units = if mode & VB_UNICODE != 0 {
         // The string's own bytes are read as ANSI text, one wide character per byte.
-        let input = need(args, 0)?;
         if let Some(array) = input.as_safearray() {
-            calcvba_runtime::ansi::ansi_decode(&array_bytes(&array)?)
+            calcvba_runtime::ansi::ansi_decode_units(&array_bytes(&array)?)
         } else {
-            calcvba_runtime::ansi::ansi_decode(&string_bytes(input)?)
+            calcvba_runtime::ansi::ansi_decode_units(&string_bytes(input)?)
         }
+    } else if let Some(array) = input.as_safearray() {
+        // A Byte() used as a String supplies UTF16LE bytes. vbUnicode above
+        // instead decodes each source byte using the ANSI code page.
+        units_arg(&Variant::from_bstr_bytes(&array_bytes(&array)?))?
     } else {
-        let input = need(args, 0)?;
-        if let Some(array) = input.as_safearray() {
-            // A Byte() used as a String supplies UTF16LE bytes. vbUnicode above
-            // instead decodes each source byte using the ANSI code page.
-            as_str(&Variant::from_bstr_bytes(&array_bytes(&array)?))?
-        } else {
-            as_str(input)?
-        }
+        units_arg(input)?
     };
 
-    s = match mode & VB_PROPER_CASE {
-        VB_UPPER_CASE => s
-            .chars()
-            .map(|c| simple_case(c, c.to_uppercase()))
-            .collect(),
-        VB_LOWER_CASE => s
-            .chars()
-            .map(|c| simple_case(c, c.to_lowercase()))
-            .collect(),
-        VB_PROPER_CASE => proper_case(&s),
-        _ => s,
+    let units = match mode & VB_PROPER_CASE {
+        VB_UPPER_CASE => case_units(&units, |c| simple_case(c, c.to_uppercase())),
+        VB_LOWER_CASE => case_units(&units, |c| simple_case(c, c.to_lowercase())),
+        VB_PROPER_CASE => proper_case_units(&units),
+        _ => units,
     };
 
     if mode & VB_FROM_UNICODE != 0 {
         // The ANSI bytes, packed into a String (so `LenB` counts bytes). Storing it in a
         // `Byte()` copies those bytes.
         return Ok(Variant::from_bstr_bytes(
-            &calcvba_runtime::ansi::ansi_encode(&s),
+            &calcvba_runtime::ansi::ansi_encode_units(&units),
         ));
     }
 
-    Ok(vstr(s))
+    Ok(vunits(&units))
+}
+
+/// Maps each character of `units` with `map`, keeping unpaired surrogates as they are.
+fn case_units(units: &[u16], mut map: impl FnMut(char) -> char) -> Vec<u16> {
+    let mut out = Vec::with_capacity(units.len());
+    for item in char::decode_utf16(units.iter().copied()) {
+        match item {
+            Ok(c) => {
+                let mut buf = [0u16; 2];
+                out.extend_from_slice(map(c).encode_utf16(&mut buf));
+            }
+            Err(unpaired) => out.push(unpaired.unpaired_surrogate()),
+        }
+    }
+    out
+}
+
+/// `vbProperCase`: the first character of each word upper case, the rest lower case; words
+/// are separated by NUL, tab, line feed, vertical tab, form feed, carriage return or space.
+fn proper_case_units(units: &[u16]) -> Vec<u16> {
+    let mut word_start = true;
+    case_units(units, |c| {
+        if matches!(c, '\0' | '\t' | '\n' | '\x0b' | '\x0c' | '\r' | ' ') {
+            word_start = true;
+            c
+        } else if word_start {
+            word_start = false;
+            simple_case(c, c.to_uppercase())
+        } else {
+            simple_case(c, c.to_lowercase())
+        }
+    })
 }
 
 // StrConv case mapping preserves a character rather than expanding it (captured sharp-s).
@@ -1043,23 +1069,6 @@ fn simple_case(original: char, mut mapped: impl Iterator<Item = char>) -> char {
     } else {
         first
     }
-}
-
-fn proper_case(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut word_start = true;
-    for c in s.chars() {
-        if matches!(c, '\0' | '\t' | '\n' | '\x0b' | '\x0c' | '\r' | ' ') {
-            out.push(c);
-            word_start = true;
-        } else if word_start {
-            out.push(simple_case(c, c.to_uppercase()));
-            word_start = false;
-        } else {
-            out.push(simple_case(c, c.to_lowercase()));
-        }
-    }
-    out
 }
 
 fn array_bytes(array: &SafeArray) -> LibResult<Vec<u8>> {
@@ -1089,7 +1098,7 @@ pub fn format(args: &[Variant]) -> LibResult<Variant> {
     if matches!(value.vtype(), VarType::ArrayVariant | VarType::Error) {
         return Err(LibError::type_mismatch("Format expects a scalar value"));
     }
-    Ok(vstr(crate::format::apply_with(
+    Ok(vunits(&crate::format::apply_units(
         value, &mask, first_day, first_week,
     )))
 }

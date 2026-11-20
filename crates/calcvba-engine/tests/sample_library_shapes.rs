@@ -198,3 +198,15 @@ fn string_functions_keep_unpaired_surrogates() {
         1127,
     );
 }
+
+#[test]
+fn more_string_functions_keep_unpaired_surrogates() {
+    // dc-yqq0.11: each bit is one function that must keep ChrW(&HD800) (AscW -10240), as VBA does.
+    both(
+        &[std_module(
+            "Main",
+            "Public verdict As Long\nSub Main()\n    Dim s As String, v As Variant, n As Long, f As Variant\n    s = ChrW(&HD800) & \"ab\"\n    v = s\n    If AscW(Format(s)) = -10240 Then n = n + 1\n    If AscW(Format(s, \">\")) = -10240 Then n = n + 2\n    If AscW(StrConv(s, vbUpperCase)) = -10240 Then n = n + 4\n    If AscW(StrConv(s, vbProperCase)) = -10240 Then n = n + 8\n    If AscW(Mid$(v, 1, 1)) = -10240 Then n = n + 16\n    If InStr(1, \"x\" & s, ChrW(&HD800) & \"A\", vbTextCompare) = 2 Then n = n + 32\n    If InStrRev(\"x\" & s, ChrW(&HD800), -1, vbTextCompare) = 2 Then n = n + 64\n    f = Filter(Array(s, \"b\"), ChrW(&HD800))\n    If UBound(f) = 0 Then If AscW(f(0)) = -10240 Then n = n + 128\n    If Len(Format(s)) = 3 Then n = n + 256\n    If InStr(\"x\" & s, ChrW(&HDC00)) = 0 Then n = n + 512\n    If AscW(StrReverse(s & \"c\")) = 99 And AscW(Right$(StrReverse(s), 1)) = -10240 Then n = n + 1024\n    verdict = 1000 + n\nEnd Sub\n",
+        )],
+        3047,
+    );
+}

@@ -323,8 +323,6 @@ P_InStr	vm3	value		InStr.22=Long:2	InStr.22=Long:0
 P_InStr	jit	value		InStr.22=Long:2	InStr.22=Long:0
 P_InStr	vm3	error		InStr.23=ERR5	InStr.23=Long:0
 P_InStr	jit	error		InStr.23=ERR5	InStr.23=Long:0
-P_InStr	vm3	value		InStr.41=Long:3	InStr.41=Long:0
-P_InStr	jit	value		InStr.41=Long:3	InStr.41=Long:0
 P_InStr	vm3	error		InStr.44=ERR5	InStr.44=Long:0
 P_InStr	jit	error		InStr.44=ERR5	InStr.44=Long:0
 P_InStrB	vm3	value		InStrB.7=Long:1	InStrB.7=Long:0

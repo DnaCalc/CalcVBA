@@ -105,6 +105,67 @@ pub fn apply_with(value: &Variant, mask: &str, first_day: i32, first_week: i32) 
     }
 }
 
+/// [`apply_with`] as UTF-16 code units: where `Format` returns or rearranges the value's own
+/// text (no mask, a string mask, text a number mask leaves alone) the text's units are kept,
+/// unpaired surrogates included, as VBA keeps them.
+pub fn apply_units(value: &Variant, mask: &str, first_day: i32, first_week: i32) -> Vec<u16> {
+    let trimmed = mask.trim();
+    let own_text = || variant_to_vba_string(value).map(|text| text.payload_units().to_vec());
+    if !matches!(value.vtype(), VarType::Empty | VarType::Null) {
+        if trimmed.is_empty() {
+            if let Ok(units) = own_text() {
+                return units;
+            }
+        } else if named(value, trimmed).is_none() && has_string_mask_chars(trimmed) {
+            if let Ok(units) = own_text() {
+                return format_string_units(&units, trimmed);
+            }
+        } else if value.vtype() == VarType::String
+            && named(value, trimmed).is_none()
+            && !is_date_or_number_text(value)
+            && let Ok(units) = own_text()
+        {
+            return units;
+        }
+    }
+    apply_with(value, mask, first_day, first_week)
+        .encode_utf16()
+        .collect()
+}
+
+/// [`format_string`] over code units: each character of the text (a surrogate pair, or one
+/// unpaired surrogate) fills one placeholder.
+fn format_string_units(units: &[u16], mask: &str) -> Vec<u16> {
+    // Text without unpaired surrogates takes the String path unchanged.
+    if let Ok(text) = String::from_utf16(units) {
+        return format_string(&text, mask).encode_utf16().collect();
+    }
+    // Otherwise each unpaired surrogate stands in as a private-use character that the mask
+    // cannot contain, and is put back afterwards.
+    const STAND_IN: u32 = 0xF_0000;
+    let mut text = String::new();
+    for item in char::decode_utf16(units.iter().copied()) {
+        match item {
+            Ok(c) => text.push(c),
+            Err(unpaired) => text.push(
+                char::from_u32(STAND_IN + u32::from(unpaired.unpaired_surrogate()))
+                    .expect("supplementary private-use character"),
+            ),
+        }
+    }
+    let mut out = Vec::new();
+    for c in format_string(&text, mask).chars() {
+        let code = u32::from(c);
+        if (STAND_IN + 0xD800..STAND_IN + 0xE000).contains(&code) {
+            out.push((code - STAND_IN) as u16);
+        } else {
+            let mut buf = [0u16; 2];
+            out.extend_from_slice(c.encode_utf16(&mut buf));
+        }
+    }
+    out
+}
+
 /// The week-numbering settings of a `Format` call.
 #[derive(Clone, Copy)]
 struct Weeks {

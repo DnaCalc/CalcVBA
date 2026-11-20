@@ -1083,6 +1083,12 @@ pub fn format_percent(args: &[Variant]) -> LibResult<Variant> {
 
 pub fn format_date_time(args: &[Variant]) -> LibResult<Variant> {
     let value = need(args, 0)?;
+    if value.vtype() == VarType::Null {
+        return Ok(vstr(String::new()));
+    }
+    if value.vtype() == VarType::String && !crate::format::is_date_or_number_text(value) {
+        return Err(LibError::type_mismatch("FormatDateTime needs a date"));
+    }
     let named_format = match opt(args, 1) {
         Some(value) if !matches!(value.vtype(), VarType::Empty) => as_i32(value)?,
         _ => 0,

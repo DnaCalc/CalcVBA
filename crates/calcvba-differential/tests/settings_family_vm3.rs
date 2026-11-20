@@ -55,7 +55,7 @@ fn get_all_settings_returns_two_column_bstr_array() {
                        CStr(settings(0, 0)) & \"=\" & CStr(settings(0, 1)) & \":\" & _\n\
                        CStr(settings(1, 0)) & \"=\" & CStr(settings(1, 1))",
     );
-    assert_contains_str(&snap, "0:1:0:1:Left=50:Top=75");
+    assert_contains_str(&snap, "0:1:0:1:Top=75:Left=50");
 }
 
 #[test]
@@ -82,4 +82,16 @@ fn delete_setting_missing_section_raises_error_five() {
              n = CStr(Err.Number)",
     );
     assert_contains_str(&snap, "5");
+}
+
+#[test]
+fn delete_setting_application_only_removes_every_section() {
+    let snap = snapshot(
+        "    Dim s As String\n\
+             SaveSetting \"OxVbaVm3App\", \"One\", \"K\", \"1\"\n\
+             SaveSetting \"OxVbaVm3App\", \"Two\", \"K\", \"2\"\n\
+             DeleteSetting \"OxVbaVm3App\"\n\
+             s = CStr(IsEmpty(GetAllSettings(\"OxVbaVm3App\", \"One\"))) & CStr(IsEmpty(GetAllSettings(\"OxVbaVm3App\", \"Two\")))",
+    );
+    assert_contains_str(&snap, "TrueTrue");
 }

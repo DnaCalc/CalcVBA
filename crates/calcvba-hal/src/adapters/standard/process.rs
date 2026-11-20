@@ -26,11 +26,15 @@ pub(super) struct DirSearchState {
 struct SettingEntry {
     key_name: String,
     value: String,
+    /// Creation order: the registry lists a section's values in the order they were first
+    /// written, and a rewrite keeps the original position (P_GetAllSettings.5).
+    seq: u64,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct SettingsState {
     values: BTreeMap<(String, String, String), SettingEntry>,
+    next_seq: u64,
 }
 
 /// The executable portion of a command line, without launching it.
@@ -218,12 +222,21 @@ impl ProcessEnvHal for StandardHostServices {
             normalize_setting_name(&appname),
             normalize_setting_name(&section),
         );
-        let entries: Vec<SettingEntry> = state
+        if section.is_empty() {
+            return Err(settings_missing_fault(
+                self.profile,
+                capability,
+                op,
+                "section name is empty",
+            ));
+        }
+        let mut entries: Vec<SettingEntry> = state
             .values
             .iter()
             .filter(|((app, sec, _), _)| app == &prefix.0 && sec == &prefix.1)
             .map(|(_, entry)| entry.clone())
             .collect();
+        entries.sort_by_key(|entry| entry.seq);
         if entries.is_empty() {
             return Ok(Variant::empty());
         }
@@ -273,9 +286,21 @@ impl ProcessEnvHal for StandardHostServices {
         let key_name = self.setting_text(&key, capability, op, "key")?;
         let value = self.setting_text(&setting, capability, op, "setting")?;
         let mut state = self.borrow_settings(capability, op)?;
+        let slot = settings_key(&appname, &section, &key_name);
+        let seq = match state.values.get(&slot) {
+            Some(existing) => existing.seq,
+            None => {
+                state.next_seq += 1;
+                state.next_seq
+            }
+        };
         state.values.insert(
-            settings_key(&appname, &section, &key_name),
-            SettingEntry { key_name, value },
+            slot,
+            SettingEntry {
+                key_name,
+                value,
+                seq,
+            },
         );
         Ok(Variant::empty())
     }
@@ -292,8 +317,22 @@ impl ProcessEnvHal for StandardHostServices {
             return Err(self.unsupported(capability, op));
         }
         let appname = self.setting_text(&appname, capability, op, "appname")?;
-        let section = self.setting_text(&section, capability, op, "section")?;
         let mut state = self.borrow_settings(capability, op)?;
+        if section.vtype() == VarType::Empty {
+            // `DeleteSetting App` removes the whole application; a key needs a section.
+            let missing = |message| settings_missing_fault(self.profile, capability, op, message);
+            if key.vtype() != VarType::Empty {
+                return Err(missing("a key needs a section"));
+            }
+            let app = normalize_setting_name(&appname);
+            let before = state.values.len();
+            state.values.retain(|(a, _, _), _| a != &app);
+            if state.values.len() == before {
+                return Err(missing("setting application does not exist"));
+            }
+            return Ok(Variant::empty());
+        }
+        let section = self.setting_text(&section, capability, op, "section")?;
         if key.vtype() == VarType::Empty {
             let prefix = (
                 normalize_setting_name(&appname),

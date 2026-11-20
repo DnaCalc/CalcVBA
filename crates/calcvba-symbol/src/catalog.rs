@@ -591,7 +591,7 @@ pub const fn intrinsic_entry(id: NativeImplId) -> IntrinsicEntry {
         DeleteSetting => e_params(
             DeleteSetting,
             &["DeleteSetting"],
-            sig(2, 3),
+            sig(1, 3),
             &["AppName", "Section", "Key"],
             FileStatement,
         ),

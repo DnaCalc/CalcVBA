@@ -3277,7 +3277,7 @@ mod tests {
             .iter()
             .map(|value| value.as_bstr().expect("BSTR setting").as_str().to_string())
             .collect();
-        assert_eq!(texts, ["Left", "Top", "50", "75"]);
+        assert_eq!(texts, ["Top", "Left", "75", "50"]);
 
         reader
             .delete_setting_variant(s("App"), s("Startup"), s("Left"))

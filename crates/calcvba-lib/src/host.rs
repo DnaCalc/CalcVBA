@@ -584,7 +584,7 @@ pub fn save_setting(args: &[Variant], host: &dyn HostServices) -> LibResult<Vari
 pub fn delete_setting(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
     Ok(host.process().delete_setting_variant(
         string_arg(args, 0)?,
-        string_arg(args, 1)?,
+        optional_string_arg(args, 1)?,
         optional_string_arg(args, 2)?,
     )?)
 }

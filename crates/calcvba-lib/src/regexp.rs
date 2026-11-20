@@ -191,7 +191,7 @@ pub fn dispatch(
                 "replace" => {
                     // replaceVar is a Variant; Null is a type mismatch, rather than
                     // the invalid-use-of-Null error of a BSTR parameter.
-                    if args[1].vtype() == VarType::Null {
+                    if matches!(args[1].vtype(), VarType::Null | VarType::Error) {
                         return Err(LibError::type_mismatch("Type mismatch"));
                     }
                     let replacement = units(&args[1])?;
@@ -337,6 +337,32 @@ fn match_object(source: &[u16], m: &Match) -> Variant {
 }
 
 fn compile(pattern: &[u16], flags: Flags) -> LibResult<Regex> {
+    // VBScript's own syntax checks, measured in Excel (P_RegExpEdges): an empty class `[]` is
+    // an unbalanced bracket (5019); a `)` with no open group is a syntax error (5017).
+    let mut depth = 0i32;
+    let mut in_class = false;
+    let mut j = 0;
+    while j < pattern.len() {
+        match pattern[j] {
+            92 => j += 1, // backslash escape
+            91 if !in_class => {
+                if pattern.get(j + 1) == Some(&93) {
+                    return Err(LibError::new(5019, "Unbalanced bracket"));
+                }
+                in_class = true;
+            }
+            93 if in_class => in_class = false,
+            40 if !in_class => depth += 1,
+            41 if !in_class => {
+                depth -= 1;
+                if depth < 0 {
+                    return Err(LibError::new(5017, "Syntax error in regular expression"));
+                }
+            }
+            _ => {}
+        }
+        j += 1;
+    }
     let mut translated = Vec::new();
     let mut class = false;
     let mut i = 0;
@@ -376,6 +402,8 @@ fn compile(pattern: &[u16], flags: Flags) -> LibResult<Regex> {
             "Unbalanced parenthesis" => 5020,
             "Unbalanced bracket" => 5019,
             "Quantifier not allowed here" | "Invalid atom character" => 5018,
+            "Invalid character range"
+            | "Range values reversed, start char code is greater than end char code." => 5021,
             _ => 5017,
         };
         LibError::new(code, e.text)
@@ -402,6 +430,21 @@ fn expand_replacement(out: &mut Vec<u16>, replacement: &[u16], source: &[u16], m
             out.extend_from_slice(slice);
             i += 2;
             continue;
+        }
+        // `$0d` (d 1-9) is group d when that group exists; `$0` and `$00` stay literal.
+        if next == b'0' as u16
+            && let Some(&d) = replacement.get(i + 2).filter(|&&c| (49..=57).contains(&c))
+        {
+            {
+                let group = (d - 48) as usize;
+                if group <= m.captures.len() {
+                    if let Some(range) = &m.captures[group - 1] {
+                        out.extend_from_slice(&source[range.clone()]);
+                    }
+                    i += 3;
+                    continue;
+                }
+            }
         }
         if (b'1' as u16..=b'9' as u16).contains(&next) {
             let mut group = (next - b'0' as u16) as usize;

@@ -89,12 +89,17 @@ pub fn apply_with(value: &Variant, mask: &str, first_day: i32, first_week: i32) 
             .as_bstr()
             .and_then(|b| parse_vba_numeric_string(&b.as_str()))
             .is_some();
-        if !numeric && !is_date_mask(trimmed) {
+        let date_text = is_date_mask(trimmed)
+            && value
+                .as_bstr()
+                .and_then(|b| parse_date_text_serial_bits(&b.as_str()))
+                .is_some();
+        if !numeric && !date_text {
             return general_string(value);
         }
     }
     if is_date_mask(trimmed) {
-        format_date(value, trimmed, weeks)
+        format_date(value, split_sections(trimmed)[0], weeks)
     } else {
         format_numeric(value, trimmed)
     }
@@ -234,6 +239,14 @@ fn num(value: &Variant) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// True when text parses as a number or a date.
+pub fn is_date_or_number_text(value: &Variant) -> bool {
+    value.as_bstr().is_some_and(|b| {
+        let t = b.as_str();
+        parse_vba_numeric_string(&t).is_some() || parse_date_text_serial_bits(&t).is_some()
+    })
+}
+
 fn serial_of(value: &Variant) -> f64 {
     if let Some(serial) = value.as_date_f64() {
         return serial;
@@ -258,7 +271,7 @@ fn named(value: &Variant, mask: &str) -> Option<String> {
         "fixed" => Some(format_numeric(value, "0.00")),
         "standard" => Some(format_numeric(value, "#,##0.00")),
         "percent" => Some(format_numeric(value, "0.00%")),
-        "scientific" => Some(scientific(num(value), 2)),
+        "scientific" => Some(format_numeric(value, "0.00E+00")),
         "yes/no" => Some(bool_word(value, "Yes", "No")),
         "true/false" => Some(bool_word(value, "True", "False")),
         "on/off" => Some(bool_word(value, "On", "Off")),
@@ -395,30 +408,268 @@ fn format_fixed_abs(
     }
 }
 
-/// VBA "General Number": full precision, no thousands separator, trailing zeros
-/// trimmed.
+/// VBA "General Number": up to 15 significant digits, no grouping, trailing zeros trimmed,
+/// `E+nn` form for very large or small magnitudes.
 fn general_number(n: f64) -> String {
-    if n == n.trunc() && n.abs() < 1e15 {
-        format!("{}", n as i64)
+    if n == 0.0 || !n.is_finite() {
+        return "0".to_string();
+    }
+    let dec = Dec::from_f64(n);
+    let mut digits = dec.digits.clone();
+    while digits.len() > 1 && digits.last() == Some(&0) {
+        digits.pop();
+    }
+    let e = dec.exp10;
+    let sign = if n < 0.0 { "-" } else { "" };
+    let text = |r: std::ops::Range<usize>| -> String {
+        digits[r].iter().map(|d| digit_char(*d)).collect()
+    };
+    if !(-6..15).contains(&e) {
+        let mut out = format!("{sign}{}", text(0..1));
+        if digits.len() > 1 {
+            out.push('.');
+            out.push_str(&text(1..digits.len()));
+        }
+        let esign = if e < 0 { '-' } else { '+' };
+        return format!("{out}E{esign}{:02}", e.abs());
+    }
+    if e >= 0 {
+        let int_len = e as usize + 1;
+        let mut all = digits.clone();
+        if all.len() < int_len {
+            all.resize(int_len, 0);
+        }
+        let int: String = all[..int_len].iter().map(|d| digit_char(*d)).collect();
+        if all.len() > int_len {
+            let frac: String = all[int_len..].iter().map(|d| digit_char(*d)).collect();
+            format!("{sign}{int}.{frac}")
+        } else {
+            format!("{sign}{int}")
+        }
     } else {
-        format!("{n}")
+        let zeros = "0".repeat((-e - 1) as usize);
+        format!("{sign}0.{zeros}{}", text(0..digits.len()))
     }
 }
 
 // ── Numeric masks ───────────────────────────────────────────────────────────
 
+/// True when the mask holds a date/time token outside quotes, escapes and `[...]`.
 fn is_date_mask(mask: &str) -> bool {
-    let lower = mask.to_ascii_lowercase();
-    // Date masks never use `0`/`#` digit placeholders; numeric masks never use
-    // the calendar tokens. This split is unambiguous for the common surface.
-    let has_placeholder = lower.contains('0') || lower.contains('#');
-    let has_calendar = lower.contains(['y', 'm', 'd', 'h', 'n', 's', 'w', 'q', ':']);
-    has_calendar && !has_placeholder
+    let chars: Vec<char> = mask.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '"' => {
+                i += 1;
+                while i < chars.len() && chars[i] != '"' {
+                    i += 1;
+                }
+            }
+            '\\' => i += 1,
+            '[' => {
+                while i < chars.len() && chars[i] != ']' {
+                    i += 1;
+                }
+            }
+            c if matches!(
+                c.to_ascii_lowercase(),
+                'y' | 'm' | 'd' | 'h' | 'n' | 's' | 'w' | 'q'
+            ) =>
+            {
+                return true;
+            }
+            _ => {
+                let rest = &chars[i..];
+                if starts_ci(rest, "a/p") || starts_ci(rest, "am/pm") || starts_ci(rest, "ampm") {
+                    return true;
+                }
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Splits a mask at `;` outside quotes and escapes.
+fn split_sections(mask: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut quoted = false;
+    let mut escaped = false;
+    for (i, c) in mask.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' if !quoted => escaped = true,
+            '"' => quoted = !quoted,
+            ';' if !quoted => {
+                out.push(&mask[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&mask[start..]);
+    out
+}
+
+/// A number as up to 15 significant decimal digits (what Excel works from), `d.ddd × 10^exp10`.
+struct Dec {
+    digits: Vec<u8>,
+    exp10: i32,
+}
+
+impl Dec {
+    fn from_f64(v: f64) -> Dec {
+        if v == 0.0 || !v.is_finite() {
+            return Dec {
+                digits: vec![0],
+                exp10: 0,
+            };
+        }
+        let s = format!("{:.14e}", v.abs());
+        let (mant, exp) = s.split_once('e').unwrap_or((&s, "0"));
+        Dec {
+            digits: mant
+                .bytes()
+                .filter(u8::is_ascii_digit)
+                .map(|b| b - b'0')
+                .collect(),
+            exp10: exp.parse().unwrap_or(0),
+        }
+    }
+
+    /// Integer digits (no leading zeros) and exactly `frac` fraction digits, rounded half up.
+    fn to_fixed(&self, frac: usize) -> (Vec<u8>, Vec<u8>) {
+        let mut all = self.digits.clone();
+        let mut ipos = self.exp10 + 1;
+        if ipos <= 0 {
+            let mut z = vec![0u8; (-ipos) as usize];
+            z.extend(all);
+            all = z;
+            ipos = 0;
+        } else if ipos as usize > all.len() {
+            all.resize(ipos as usize, 0);
+        }
+        let mut ipos = ipos as usize;
+        let keep = ipos + frac;
+        if all.len() > keep {
+            let up = all[keep] >= 5;
+            all.truncate(keep);
+            if up {
+                let mut i = keep;
+                loop {
+                    if i == 0 {
+                        all.insert(0, 1);
+                        ipos += 1;
+                        break;
+                    }
+                    i -= 1;
+                    if all[i] == 9 {
+                        all[i] = 0;
+                    } else {
+                        all[i] += 1;
+                        break;
+                    }
+                }
+            }
+        } else {
+            all.resize(keep, 0);
+        }
+        let frac_digits = all[ipos..].to_vec();
+        let int_digits: Vec<u8> = all[..ipos]
+            .iter()
+            .copied()
+            .skip_while(|d| *d == 0)
+            .collect();
+        (int_digits, frac_digits)
+    }
+}
+
+#[derive(Clone, Debug)]
+enum Tok {
+    Digit(char),
+    Dot,
+    Comma,
+    Percent,
+    Exp { ch: char, plus: bool, digits: usize },
+    Lit(String),
+}
+
+fn tokenize(section: &str) -> Vec<Tok> {
+    let chars: Vec<char> = section.chars().collect();
+    let mut toks = Vec::new();
+    let mut seen_digit = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '"' => {
+                let mut s = String::new();
+                i += 1;
+                while i < chars.len() && chars[i] != '"' {
+                    s.push(chars[i]);
+                    i += 1;
+                }
+                toks.push(Tok::Lit(s));
+            }
+            '\\' => {
+                i += 1;
+                if let Some(n) = chars.get(i) {
+                    toks.push(Tok::Lit(n.to_string()));
+                }
+            }
+            '0' | '#' => {
+                seen_digit = true;
+                toks.push(Tok::Digit(c));
+            }
+            '.' => toks.push(Tok::Dot),
+            ',' => toks.push(Tok::Comma),
+            '%' => toks.push(Tok::Percent),
+            'e' | 'E' if seen_digit && matches!(chars.get(i + 1), Some('+') | Some('-')) => {
+                let plus = chars[i + 1] == '+';
+                let mut digits = 0;
+                let mut j = i + 2;
+                while j < chars.len() && matches!(chars[j], '0' | '#') {
+                    digits += 1;
+                    j += 1;
+                }
+                toks.push(Tok::Exp {
+                    ch: c,
+                    plus,
+                    digits,
+                });
+                i = j - 1;
+            }
+            other => toks.push(Tok::Lit(other.to_string())),
+        }
+        i += 1;
+    }
+    toks
+}
+
+fn tok_text(tok: &Tok) -> String {
+    match tok {
+        Tok::Lit(s) => s.clone(),
+        Tok::Percent => "%".to_string(),
+        Tok::Dot => ".".to_string(),
+        Tok::Comma => ",".to_string(),
+        Tok::Digit(c) => c.to_string(),
+        Tok::Exp { .. } => String::new(),
+    }
+}
+
+struct Rendered {
+    text: String,
+    zero: bool,
 }
 
 fn format_numeric(value: &Variant, mask: &str) -> String {
     let n = num(value);
-    let sections: Vec<&str> = mask.split(';').collect();
+    let sections = split_sections(mask);
     let (section, force_minus) = if n < 0.0 {
         if sections.len() >= 2 && !sections[1].is_empty() {
             (sections[1], false) // the negative section carries its own sign
@@ -430,109 +681,216 @@ fn format_numeric(value: &Variant, mask: &str) -> String {
     } else {
         (sections[0], false)
     };
-    let body = render_section(section, n.abs());
-    if force_minus {
-        format!("-{body}")
+    let r = render_section(section, n.abs());
+    if force_minus && !r.zero {
+        format!("-{}", r.text)
     } else {
-        body
+        r.text
     }
 }
 
-fn render_section(section: &str, mut value: f64) -> String {
-    let chars: Vec<char> = section.chars().collect();
-    if let Some(out) = try_scientific(&chars, value) {
-        return out;
-    }
-    if section.contains('%') {
-        value *= 100.0;
-    }
-    let first = chars.iter().position(|c| matches!(c, '0' | '#'));
-    let last = chars.iter().rposition(|c| matches!(c, '0' | '#'));
-    let (first, last) = match (first, last) {
-        (Some(f), Some(l)) => (f, l),
-        _ => return literal_text(section), // no placeholders → pure literal
-    };
-
-    let prefix = literal_text(&chars[..first].iter().collect::<String>());
-    let core = &chars[first..=last];
-    let suffix = literal_text(&chars[last + 1..].iter().collect::<String>());
-
-    let dot = core.iter().position(|c| *c == '.');
-    let (int_pat, frac_pat): (&[char], &[char]) = match dot {
-        Some(i) => (&core[..i], &core[i + 1..]),
-        None => (core, &[]),
-    };
-    let grouping = int_pat.contains(&',');
-    let int_zeros = int_pat.iter().filter(|c| **c == '0').count();
-    let frac_total = frac_pat.iter().filter(|c| matches!(c, '0' | '#')).count();
-    let frac_forced = frac_pat.iter().filter(|c| **c == '0').count();
-
-    let rendered = format!("{value:.frac_total$}");
-    let (int_s, frac_s) = match rendered.split_once('.') {
-        Some((i, f)) => (i.to_string(), f.to_string()),
-        None => (rendered, String::new()),
-    };
-
-    let mut int_s = int_s;
-    while int_s.len() < int_zeros {
-        int_s.insert(0, '0');
-    }
-    if grouping {
-        int_s = group_thousands(&int_s);
-    }
-
-    let mut frac_s = frac_s;
-    while frac_s.len() > frac_forced && frac_s.ends_with('0') {
-        frac_s.pop();
-    }
-    let frac_out = if frac_s.is_empty() {
-        String::new()
-    } else {
-        format!(".{frac_s}")
-    };
-
-    format!("{prefix}{int_s}{frac_out}{suffix}")
+fn digit_char(d: u8) -> char {
+    (b'0' + d) as char
 }
+
+/// Lays the integer digits `d` over the placeholder tokens (right to left, the leftmost
+/// placeholder taking any surplus) and the fraction digits `f` over the fraction placeholders.
+fn layout_number(
+    before: &[Tok],
+    after: &[Tok],
+    d: &[u8],
+    f: &[u8],
+    has_dot: bool,
+    grouping: bool,
+) -> String {
+    let leftmost = before.iter().position(|t| matches!(t, Tok::Digit(_)));
+    let mut rev: Vec<String> = Vec::new();
+    let mut pos = 0usize;
+    let push_digit = |rev: &mut Vec<String>, ch: char, pos: usize| {
+        if grouping && pos > 0 && pos.is_multiple_of(3) {
+            rev.push(GROUP_SEP.to_string());
+        }
+        rev.push(ch.to_string());
+    };
+    for (idx, tok) in before.iter().enumerate().rev() {
+        match tok {
+            Tok::Digit(c) => {
+                if Some(idx) == leftmost {
+                    if pos < d.len() {
+                        while pos < d.len() {
+                            push_digit(&mut rev, digit_char(d[d.len() - 1 - pos]), pos);
+                            pos += 1;
+                        }
+                    } else {
+                        if *c == '0' {
+                            push_digit(&mut rev, '0', pos);
+                        }
+                        pos += 1;
+                    }
+                } else if pos < d.len() {
+                    push_digit(&mut rev, digit_char(d[d.len() - 1 - pos]), pos);
+                    pos += 1;
+                } else {
+                    if *c == '0' {
+                        push_digit(&mut rev, '0', pos);
+                    }
+                    pos += 1;
+                }
+            }
+            other => rev.push(tok_text(other)),
+        }
+    }
+    let mut out: String = rev.into_iter().rev().collect();
+    if leftmost.is_none() && !d.is_empty() {
+        out = d.iter().map(|x| digit_char(*x)).collect::<String>() + &out;
+    }
+    if has_dot {
+        out.push('.');
+    }
+    let slots: Vec<usize> = after
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| matches!(t, Tok::Digit(_)))
+        .map(|(i, _)| i)
+        .collect();
+    let mut keep = slots.len();
+    while keep > 0 {
+        let i = slots[keep - 1];
+        if matches!(after[i], Tok::Digit('#')) && f.get(keep - 1).copied().unwrap_or(0) == 0 {
+            keep -= 1;
+        } else {
+            break;
+        }
+    }
+    let mut k = 0;
+    for tok in after {
+        match tok {
+            Tok::Digit(_) => {
+                if k < keep {
+                    out.push(digit_char(f.get(k).copied().unwrap_or(0)));
+                }
+                k += 1;
+            }
+            other => out.push_str(&tok_text(other)),
+        }
+    }
+    out
+}
+
+fn main_bounds(toks: &[Tok]) -> (Option<usize>, usize, Option<usize>) {
+    let exp_at = toks.iter().position(|t| matches!(t, Tok::Exp { .. }));
+    let main_end = exp_at.unwrap_or(toks.len());
+    let dot_at = toks[..main_end].iter().position(|t| matches!(t, Tok::Dot));
+    (exp_at, main_end, dot_at)
+}
+
+fn render_section(section: &str, value: f64) -> Rendered {
+    let mut toks = tokenize(section);
+    let Some(first_digit) = toks.iter().position(|t| matches!(t, Tok::Digit(_))) else {
+        return Rendered {
+            text: literal_text(section),
+            zero: true,
+        };
+    };
+    let (_, main_end, dot_at) = main_bounds(&toks);
+    let before_end = dot_at.unwrap_or(main_end);
+
+    // Percent signs after the first placeholder scale by 100; commas become grouping (between
+    // placeholders), scaling by 1000 (trailing the integer part) or nothing (after the point).
+    let mut shift = 0i32;
+    let mut grouping = false;
+    for (i, t) in toks.iter().enumerate() {
+        if matches!(t, Tok::Percent) && i > first_digit {
+            shift += 2;
+        }
+        if matches!(t, Tok::Comma) && i < before_end && i > first_digit {
+            if toks[i + 1..before_end]
+                .iter()
+                .any(|x| matches!(x, Tok::Digit(_)))
+            {
+                grouping = true;
+            } else {
+                shift -= 3;
+            }
+        }
+    }
+    toks.retain(|t| !matches!(t, Tok::Comma));
+    let (exp_at, main_end, dot_at) = main_bounds(&toks);
+    let before = &toks[..dot_at.unwrap_or(main_end)];
+    let after: &[Tok] = match dot_at {
+        Some(d) => &toks[d + 1..main_end],
+        None => &[],
+    };
+    let frac_places = after.iter().filter(|t| matches!(t, Tok::Digit(_))).count();
+
+    let mut dec = Dec::from_f64(value);
+    let is_zero_value = dec.digits.iter().all(|d| *d == 0);
+    if !is_zero_value {
+        dec.exp10 += shift;
+    }
+
+    if let Some(e) = exp_at {
+        let Tok::Exp { ch, plus, digits } = toks[e].clone() else {
+            unreachable!()
+        };
+        let int_places = before
+            .iter()
+            .filter(|t| matches!(t, Tok::Digit(_)))
+            .count()
+            .max(1);
+        let m = Dec {
+            digits: dec.digits.clone(),
+            exp10: int_places as i32 - 1,
+        };
+        let mut exp = if is_zero_value {
+            0
+        } else {
+            dec.exp10 - (int_places as i32 - 1)
+        };
+        let (mut d, f) = m.to_fixed(frac_places);
+        if d.len() > int_places {
+            d.truncate(int_places);
+            exp += 1;
+        }
+        let mut text = layout_number(before, after, &d, &f, dot_at.is_some(), false);
+        text.push(ch);
+        if exp < 0 {
+            text.push('-');
+        } else if plus {
+            text.push('+');
+        }
+        text.push_str(&format!("{:0>w$}", exp.abs(), w = digits.max(1)));
+        for t in &toks[e + 1..] {
+            text.push_str(&tok_text(t));
+        }
+        return Rendered {
+            text,
+            zero: is_zero_value,
+        };
+    }
+
+    let (d, f) = dec.to_fixed(frac_places);
+    let zero = d.is_empty() && f.iter().all(|x| *x == 0);
+    let mut text = layout_number(before, after, &d, &f, dot_at.is_some(), grouping);
+    for t in &toks[main_end..] {
+        text.push_str(&tok_text(t));
+    }
+    Rendered { text, zero }
+}
+
+/// The separator between digit groups.
+const GROUP_SEP: char = ',';
 
 fn group_thousands(digits: &str) -> String {
     let n = digits.len();
     let mut out = String::with_capacity(n + n / 3);
     for (i, ch) in digits.chars().enumerate() {
         if i > 0 && (n - i).is_multiple_of(3) {
-            out.push(',');
+            out.push(GROUP_SEP);
         }
         out.push(ch);
     }
     out
-}
-
-fn try_scientific(chars: &[char], value: f64) -> Option<String> {
-    let e = chars.iter().position(|c| matches!(c, 'e' | 'E'))?;
-    if !matches!(chars.get(e + 1), Some('+') | Some('-')) {
-        return None;
-    }
-    let decimals = match chars.iter().position(|c| *c == '.') {
-        Some(d) if d < e => chars[d + 1..e]
-            .iter()
-            .filter(|c| matches!(c, '0' | '#'))
-            .count(),
-        _ => 0,
-    };
-    Some(scientific(value, decimals))
-}
-
-fn scientific(value: f64, decimals: usize) -> String {
-    let raw = format!("{value:.decimals$E}");
-    match raw.split_once('E') {
-        Some((mantissa, exp)) => {
-            let (sign, digits) = match exp.strip_prefix('-') {
-                Some(d) => ('-', d),
-                None => ('+', exp.trim_start_matches('+')),
-            };
-            format!("{mantissa}E{sign}{digits:0>2}")
-        }
-        None => raw,
-    }
 }
 
 // ── Date / time masks ─────────────────────────────────────────────────────────
@@ -593,6 +951,33 @@ fn format_date(value: &Variant, mask: &str, weeks: Weeks) -> String {
     let mut after_hour = false;
     while i < chars.len() {
         let rest = &chars[i..];
+        match chars[i] {
+            '"' => {
+                i += 1;
+                while i < chars.len() && chars[i] != '"' {
+                    out.push(chars[i]);
+                    i += 1;
+                }
+                i += 1;
+                continue;
+            }
+            '\\' => {
+                if let Some(c) = chars.get(i + 1) {
+                    out.push(*c);
+                }
+                i += 2;
+                continue;
+            }
+            '[' => {
+                while i < chars.len() && chars[i] != ']' {
+                    i += 1;
+                }
+                i += 1;
+                continue;
+            }
+            _ => {}
+        }
+        let lower_case = chars[i].is_lowercase();
         let (text, advance, hour_token, calendar_token) = if starts_ci(rest, "yyyy") {
             (format!("{:04}", p.year), 4, false, true)
         } else if starts_ci(rest, "yy") {
@@ -668,7 +1053,11 @@ fn format_date(value: &Variant, mask: &str, weeks: Weeks) -> String {
         } else {
             (chars[i].to_string(), 1, false, false)
         };
-        out.push_str(&text);
+        if lower_case && (text == "AM" || text == "PM" || text == "A" || text == "P") {
+            out.push_str(&text.to_lowercase());
+        } else {
+            out.push_str(&text);
+        }
         i += advance;
         if calendar_token {
             after_hour = hour_token;

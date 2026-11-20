@@ -1,5 +1,2 @@
 # Variant layout cases the engines still answer differently from Excel (dc-yqq0). Fix, then delete the line.
 # Run with the native Declare lane on (the probe reads cells with CopyMemory); refreshed 2026-11-15 after step 9 (vbNullString is a null BSTR).
-# BIND.TypedObjectVar: VBA passes a class-typed object through a temporary.
-Vm3	BIND.TypedObjectVar
-Jit	BIND.TypedObjectVar

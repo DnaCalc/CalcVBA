@@ -145,6 +145,11 @@ pub fn elaborate_with(program: &CoreProgram, options: &ElaborateOptions) -> Resu
         .iter()
         .map(|global| global.ty.clone())
         .collect::<Vec<_>>();
+    let class_typed_globals = program
+        .globals
+        .iter()
+        .map(|g| is_class_typed_object(&g.ty))
+        .collect::<Vec<_>>();
 
     // Declared interface identities and members are retained first. Early-bound
     // calls then reuse/intern descriptors in that same table and name each member
@@ -155,6 +160,26 @@ pub fn elaborate_with(program: &CoreProgram, options: &ElaborateOptions) -> Resu
         .iter()
         .map(|proc| proc_return_ty(proc, &resolver, program.long_ptr_width))
         .collect();
+    // Per proc, which parameters are `ByRef ... As Variant` (a typed object variable passed to
+    // one goes through a temporary, as VBA passes it).
+    let proc_byref_variant_params: Vec<Vec<bool>> = program
+        .procs
+        .iter()
+        .map(|proc| {
+            proc.params
+                .iter()
+                .map(|p| {
+                    p.by_ref
+                        && !p.variadic
+                        && lower_declared_var_type_with_longptr_width(
+                            &p.ty,
+                            &resolver,
+                            program.long_ptr_width,
+                        ) == OxTy::Variant
+                })
+                .collect()
+        })
+        .collect();
 
     let mut funcs = Vec::with_capacity(program.procs.len());
     for proc in &program.procs {
@@ -164,6 +189,8 @@ pub fn elaborate_with(program: &CoreProgram, options: &ElaborateOptions) -> Resu
             &global_tys,
             program.long_ptr_width,
             &proc_return_types,
+            &proc_byref_variant_params,
+            &class_typed_globals,
             &mut com,
             &program.external_calls,
         )?);
@@ -549,6 +576,13 @@ impl ProgramResolver {
     }
 }
 
+/// An object variable declared as a class or interface (`As Collection`, `As Class1`, a typelib
+/// interface): VBA holds that interface, not `IDispatch`, so a ByRef Variant parameter gets a
+/// temporary. `As Object` holds `IDispatch` itself.
+fn is_class_typed_object(ty: &VarTypeRef) -> bool {
+    matches!(ty, VarTypeRef::Object(name) if !name.eq_ignore_ascii_case("object"))
+}
+
 fn record_decl_type_name(ty: &VarTypeRef) -> Option<&str> {
     match ty {
         VarTypeRef::Udt(name) | VarTypeRef::Object(name) => Some(name.as_str()),
@@ -656,15 +690,24 @@ fn invoke_kind_from_member_kind(kind: Option<ProjectMemberKind>) -> TypeLibMembe
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn elaborate_proc(
     proc: &CoreProc,
     resolver: &ProgramResolver,
     global_tys: &[OxTy],
     long_ptr_width: CoreLongPtrWidth,
     proc_return_types: &[Option<OxTy>],
+    proc_byref_variant_params: &[Vec<bool>],
+    class_typed_globals: &[bool],
     com: &mut ComInterner,
     external_calls: &[calcvba_bundle::ExternalCallDescriptor],
 ) -> Result<OxFunc> {
+    let class_typed_locals = proc
+        .params
+        .iter()
+        .map(|p| is_class_typed_object(&p.ty))
+        .chain(proc.locals.iter().map(|l| is_class_typed_object(&l.ty)))
+        .collect::<Vec<_>>();
     // The unified local index space is params first, then locals (the binder's
     // `LocalId` convention), so OxFunc.locals mirrors it 1:1.
     let mut locals: Vec<OxLocal> = Vec::with_capacity(proc.params.len() + proc.locals.len());
@@ -703,6 +746,9 @@ fn elaborate_proc(
         label_lines: proc.label_lines.clone(),
         long_ptr_width,
         proc_return_types,
+        proc_byref_variant_params,
+        class_typed_locals,
+        class_typed_globals,
         com,
         global_tys,
         record_ids: &resolver.records,
@@ -778,6 +824,11 @@ struct Lowerer<'a> {
     external_calls: &'a [calcvba_bundle::ExternalCallDescriptor],
     long_ptr_width: CoreLongPtrWidth,
     proc_return_types: &'a [Option<OxTy>],
+    proc_byref_variant_params: &'a [Vec<bool>],
+    /// Per local (params first) and per global: declared as a class or interface (`As
+    /// Collection`, `As Class1`), not `As Object`.
+    class_typed_locals: Vec<bool>,
+    class_typed_globals: &'a [bool],
     object_field_types: &'a HashMap<(ClassId, i32), OxTy>,
 }
 
@@ -790,6 +841,9 @@ struct LowererInputs<'a> {
     label_lines: Vec<Option<i32>>,
     long_ptr_width: CoreLongPtrWidth,
     proc_return_types: &'a [Option<OxTy>],
+    proc_byref_variant_params: &'a [Vec<bool>],
+    class_typed_locals: Vec<bool>,
+    class_typed_globals: &'a [bool],
     com: &'a mut ComInterner,
     global_tys: &'a [OxTy],
     record_ids: &'a HashMap<String, RecordLayoutId>,
@@ -824,6 +878,9 @@ impl<'a> Lowerer<'a> {
             external_calls: inputs.external_calls,
             long_ptr_width: inputs.long_ptr_width,
             proc_return_types: inputs.proc_return_types,
+            proc_byref_variant_params: inputs.proc_byref_variant_params,
+            class_typed_locals: inputs.class_typed_locals,
+            class_typed_globals: inputs.class_typed_globals,
             object_field_types: inputs.object_field_types,
         }
     }
@@ -2831,7 +2888,7 @@ impl<'a> Lowerer<'a> {
     ) -> Result<()> {
         match callee {
             coreir::CoreCallee::VbaProc { proc } => {
-                let (args, writebacks) = self.lower_proc_args(args)?;
+                let (args, writebacks) = self.lower_proc_args_to(args, Some(proc.0))?;
                 self.emit(OxInst::CallProc {
                     dst,
                     proc: FuncId(proc.0),
@@ -3002,29 +3059,44 @@ impl<'a> Lowerer<'a> {
                 Some(ArgWriteback::Release(OxPlace::Temp(t))),
             ))
         } else {
-            // Copy the place's current value into a fresh temp (the aliased ByRef slot), and
-            // a SECOND `original` snapshot temp captured at copy-in, so the post-call
-            // write-back can be change-gated (vm2's `Op::Copy` of `tmp` into `original`).
-            let (value, value_ty) = self.lower_place_load(place)?;
-            let t = self.new_temp(value_ty.clone());
-            self.emit(OxInst::Assign {
-                dst: OxPlace::Temp(t),
-                value,
-            });
-            let orig = self.new_temp(value_ty);
-            self.emit(OxInst::Assign {
-                dst: OxPlace::Temp(orig),
-                value: OxOperand::Use(OxPlace::Temp(t)),
-            });
-            Ok((
-                OxPlace::Temp(t),
-                Some(ArgWriteback::Copy {
-                    place: place.clone(),
-                    temp: OxPlace::Temp(t),
-                    original: OxPlace::Temp(orig),
-                }),
-            ))
+            let (temp, writeback) = self.copy_in_place(place)?;
+            Ok((temp, Some(writeback)))
         }
+    }
+
+    /// Copy the place's current value into a fresh temp (the aliased ByRef slot), and a
+    /// SECOND `original` snapshot temp captured at copy-in, so the post-call write-back can be
+    /// change-gated (vm2's `Op::Copy` of `tmp` into `original`).
+    fn copy_in_place(&mut self, place: &coreir::CorePlace) -> Result<(OxPlace, ArgWriteback)> {
+        let (value, value_ty) = self.lower_place_load(place)?;
+        let t = self.new_temp(value_ty.clone());
+        self.emit(OxInst::Assign {
+            dst: OxPlace::Temp(t),
+            value,
+        });
+        let orig = self.new_temp(value_ty);
+        self.emit(OxInst::Assign {
+            dst: OxPlace::Temp(orig),
+            value: OxOperand::Use(OxPlace::Temp(t)),
+        });
+        Ok((
+            OxPlace::Temp(t),
+            ArgWriteback::Copy {
+                place: place.clone(),
+                temp: OxPlace::Temp(t),
+                original: OxPlace::Temp(orig),
+            },
+        ))
+    }
+
+    /// A local or global declared as a class or interface type (not `Object` or Variant).
+    fn is_class_typed_object_variable(&self, place: &coreir::CorePlace) -> bool {
+        match place {
+            coreir::CorePlace::Local(l) => self.class_typed_locals.get(l.0).copied(),
+            coreir::CorePlace::Global(g) => self.class_typed_globals.get(g.0).copied(),
+            _ => None,
+        }
+        .unwrap_or(false)
     }
 
     fn lower_byval_arg(&mut self, value: &CoreValue) -> Result<(OxOperand, Vec<ArgWriteback>)> {
@@ -3043,9 +3115,36 @@ impl<'a> Lowerer<'a> {
     /// Lower arguments for a compiled VBA / cross-bundle procedure call (`OxArg`), plus the
     /// copy-out write-backs for any compound `ByRef` argument (see [`Self::lower_byref_place`]).
     fn lower_proc_args(&mut self, args: &[CoreArg]) -> Result<(Vec<OxArg>, Vec<ArgWriteback>)> {
+        self.lower_proc_args_to(args, None)
+    }
+
+    /// [`Self::lower_proc_args`] for a call to project procedure `callee`: a class-typed object
+    /// variable passed to a `ByRef` Variant parameter goes through a temporary holding the
+    /// same object, copied back after the call, as VBA passes it (Excel: the parameter is
+    /// `VT_BYREF | VT_DISPATCH` pointing at a temporary that holds `ObjPtr(o)`).
+    fn lower_proc_args_to(
+        &mut self,
+        args: &[CoreArg],
+        callee: Option<usize>,
+    ) -> Result<(Vec<OxArg>, Vec<ArgWriteback>)> {
         let mut out = Vec::with_capacity(args.len());
         let mut writebacks = Vec::new();
-        for arg in args {
+        for (index, arg) in args.iter().enumerate() {
+            let variant_param = callee
+                .and_then(|proc| self.proc_byref_variant_params.get(proc))
+                .and_then(|params| params.get(index))
+                .copied()
+                .unwrap_or(false);
+            if variant_param
+                && self.resolver.byref_references
+                && let CoreArg::ByRef(place) = arg
+                && self.is_class_typed_object_variable(place)
+            {
+                let (p, wb) = self.copy_in_place(place)?;
+                writebacks.push(wb);
+                out.push(OxArg::ByRef(p));
+                continue;
+            }
             out.push(match arg {
                 CoreArg::ByVal(v) => {
                     let (value, wb) = self.lower_byval_arg(v)?;

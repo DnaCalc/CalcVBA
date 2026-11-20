@@ -473,8 +473,6 @@ P_IsNumeric	vm3	value		IsNumeric.33=Boolean:True	IsNumeric.33=Boolean:False
 P_IsNumeric	jit	value		IsNumeric.33=Boolean:True	IsNumeric.33=Boolean:False
 P_IsNumeric	vm3	error		IsNumeric.49=Boolean:False	IsNumeric.49=ERR450
 P_IsNumeric	jit	error		IsNumeric.49=Boolean:False	IsNumeric.49=ERR450
-P_LCase	vm3	value		LCase.8=String:[{304}]	LCase.8=String:[i{775}]
-P_LCase	jit	value		LCase.8=String:[{304}]	LCase.8=String:[i{775}]
 P_LCase	vm3	value		LCase.9=String:[{7838}]	LCase.9=String:[{223}]
 P_LCase	jit	value		LCase.9=String:[{7838}]	LCase.9=String:[{223}]
 P_LCase	vm3	value		LCase.12=String:[{8486}]	LCase.12=String:[{969}]
@@ -585,8 +583,6 @@ P_RTrim	vm3	value		RTrim.12=String:[abc]	RTrim.12=String:[abc{12288}]
 P_RTrim	jit	value		RTrim.12=String:[abc]	RTrim.12=String:[abc{12288}]
 P_Replace	vm3	value		Replace.13=String:[AXC]	Replace.13=String:[ABC]
 P_Replace	jit	value		Replace.13=String:[AXC]	Replace.13=String:[ABC]
-P_Replace	vm3	value		Replace.24=String:[aXb]	Replace.24=String:[a{196}b]
-P_Replace	jit	value		Replace.24=String:[aXb]	Replace.24=String:[a{196}b]
 P_Right	vm3	error		Right.14=ERR5	Right.14=String:[abc]
 P_Right	jit	error		Right.14=ERR5	Right.14=String:[abc]
 P_SLN	vm3	error		SLN.13=ERR6	SLN.13=ERR5
@@ -673,14 +669,10 @@ P_Trim	vm3	value		Trim.12=String:[abc]	Trim.12=String:[{12288}abc]
 P_Trim	jit	value		Trim.12=String:[abc]	Trim.12=String:[{12288}abc]
 P_TypeName	vm3	error		TypeName.49=ERR6	TypeName.49=String:[Integer]
 P_TypeName	jit	error		TypeName.49=ERR6	TypeName.49=String:[Integer]
-P_UCase	vm3	value	locale	UCase.7=String:[{223}]	UCase.7=String:[SS]
-P_UCase	jit	value	locale	UCase.7=String:[{223}]	UCase.7=String:[SS]
 P_UCase	vm3	value		UCase.10=String:[{305}]	UCase.10=String:[I]
 P_UCase	jit	value		UCase.10=String:[{305}]	UCase.10=String:[I]
 P_UCase	vm3	value		UCase.12=String:[{931}{962}]	UCase.12=String:[{931}{931}]
 P_UCase	jit	value		UCase.12=String:[{931}{962}]	UCase.12=String:[{931}{931}]
-P_UCase	vm3	value		UCase.18=String:[{64257}]	UCase.18=String:[FI]
-P_UCase	jit	value		UCase.18=String:[{64257}]	UCase.18=String:[FI]
 P_Val	vm3	value	locale	Val.88=Double:409F900000000000|2020	Val.88=Double:3FF0000000000000|1
 P_Val	jit	value	locale	Val.88=Double:409F900000000000|2020	Val.88=Double:3FF0000000000000|1
 P_WeekdayName	vm3	error		WeekdayName.15=ERR94	WeekdayName.15=String:[Sunday]

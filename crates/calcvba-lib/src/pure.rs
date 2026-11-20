@@ -13,6 +13,7 @@ use calcvba_runtime::{
     Decimal96, Variant, default_error_message,
     safe_array::{SafeArray, VT_BSTR_VALUE, VT_UI1_VALUE, VT_VARIANT_VALUE},
     variant::VarType,
+    variant_to_vba_string,
 };
 // The VBA serial ↔ civil calendar math is canonical in `calcvba_runtime::vba_date`; re-export it
 // at `crate::pure::*` so this module's date functions (and `format.rs`) keep their call sites.
@@ -405,18 +406,72 @@ fn utf16_index_to_byte(s: &str, utf16_index: usize) -> usize {
     s.len()
 }
 
+/// A string argument as its UTF-16 code units, unpaired surrogates included (VBA strings are
+/// code-unit sequences; a Rust `String` would replace a lone surrogate with U+FFFD).
+fn units_arg(value: &Variant) -> LibResult<Vec<u16>> {
+    if value.vtype() == VarType::Null {
+        return Err(LibError::invalid_use_of_null());
+    }
+    Ok(variant_to_vba_string(value)?.payload_units().to_vec())
+}
+
+fn vunits(units: &[u16]) -> Variant {
+    Variant::from_utf16_units(units)
+}
+
+/// Map each character's case on its own, keeping the string's length in code units as
+/// VBA's `UCase`/`LCase` do (`ß` stays `ß`); an unpaired surrogate is kept as it is.
+fn map_case_units(units: &[u16], upper: bool) -> Vec<u16> {
+    let mut out = Vec::with_capacity(units.len());
+    for decoded in char::decode_utf16(units.iter().copied()) {
+        match decoded {
+            Ok(c) => {
+                let mut mapped = if upper {
+                    c.to_uppercase().collect::<Vec<_>>()
+                } else {
+                    c.to_lowercase().collect::<Vec<_>>()
+                };
+                let one = match mapped.as_slice() {
+                    [m] if m.len_utf16() == c.len_utf16() => mapped.remove(0),
+                    _ => c,
+                };
+                let mut buf = [0u16; 2];
+                out.extend_from_slice(one.encode_utf16(&mut buf));
+            }
+            Err(unpaired) => out.push(unpaired.unpaired_surrogate()),
+        }
+    }
+    out
+}
+
+/// The units a text comparison matches on (`norm_compare` over code units).
+fn compare_fold_units(units: &[u16], text: bool) -> Vec<u16> {
+    if text {
+        map_case_units(units, false)
+    } else {
+        units.to_vec()
+    }
+}
+
+fn find_units(hay: &[u16], needle: &[u16], from: usize) -> Option<usize> {
+    if needle.is_empty() || from > hay.len() || needle.len() > hay.len() - from {
+        return None;
+    }
+    (from..=hay.len() - needle.len()).find(|&i| hay[i..i + needle.len()] == *needle)
+}
+
 pub fn lcase(args: &[Variant]) -> LibResult<Variant> {
-    Ok(vstr(as_str(need(args, 0)?)?.to_lowercase()))
+    Ok(vunits(&map_case_units(&units_arg(need(args, 0)?)?, false)))
 }
 pub fn ucase(args: &[Variant]) -> LibResult<Variant> {
-    Ok(vstr(as_str(need(args, 0)?)?.to_uppercase()))
+    Ok(vunits(&map_case_units(&units_arg(need(args, 0)?)?, true)))
 }
 
 pub fn split(args: &[Variant]) -> LibResult<Variant> {
-    let s = as_str(need(args, 0)?)?;
+    let s = units_arg(need(args, 0)?)?;
     let delim = match arg_present(args, 1) {
-        Some(v) => as_str(v)?,
-        None => " ".to_string(),
+        Some(v) => units_arg(v)?,
+        None => vec![u16::from(b' ')],
     };
     let limit = match arg_present(args, 2) {
         Some(v) => as_i32(v)?,
@@ -431,7 +486,7 @@ pub fn split(args: &[Variant]) -> LibResult<Variant> {
         Vec::new()
     } else if delim.is_empty() {
         // An empty delimiter never splits — the whole string is the single element.
-        vec![vstr(s)]
+        vec![vunits(&s)]
     } else {
         split_with_limit(&s, &delim, limit, text)
     };
@@ -446,14 +501,11 @@ fn string_array(parts: Vec<Variant>) -> LibResult<Variant> {
 }
 
 /// Split `s` on `delim` into at most `limit` parts (negative = unlimited), matching the
-/// delimiter case-insensitively when `text`. Substrings are taken from the ORIGINAL string
-/// (original case preserved); only the delimiter *positions* are found case-insensitively.
-fn split_with_limit(s: &str, delim: &str, limit: i32, text: bool) -> Vec<Variant> {
-    // For binary compare `hay`/`needle` equal the originals, so byte offsets are exact; for
-    // text compare they are the lowercased forms (byte-length-preserving for ASCII and most
-    // text — the same approximation `InStr`/`norm_compare` already make).
-    let hay = norm_compare(s.to_string(), text);
-    let needle = norm_compare(delim.to_string(), text);
+/// delimiter case-insensitively when `text`. Substrings are taken from the original code units;
+/// only the delimiter positions are found in the case-folded (length-preserving) units.
+fn split_with_limit(s: &[u16], delim: &[u16], limit: i32, text: bool) -> Vec<Variant> {
+    let hay = compare_fold_units(s, text);
+    let needle = compare_fold_units(delim, text);
     let mut parts: Vec<Variant> = Vec::new();
     let mut cursor = 0usize;
     loop {
@@ -461,16 +513,15 @@ fn split_with_limit(s: &str, delim: &str, limit: i32, text: bool) -> Vec<Variant
         if limit >= 0 && parts.len() as i32 == limit - 1 {
             break;
         }
-        match hay[cursor..].find(&needle) {
-            Some(rel) => {
-                let pos = cursor + rel;
-                parts.push(vstr(s[cursor..pos].to_string()));
+        match find_units(&hay, &needle, cursor) {
+            Some(pos) => {
+                parts.push(vunits(&s[cursor..pos]));
                 cursor = pos + needle.len();
             }
             None => break,
         }
     }
-    parts.push(vstr(s[cursor..].to_string()));
+    parts.push(vunits(&s[cursor..]));
     parts
 }
 
@@ -578,9 +629,9 @@ pub fn join(args: &[Variant]) -> LibResult<Variant> {
 /// `start` is dropped), with up to `count` replacements (default -1 = all) of
 /// `find` by `replace`, matched binary or text per `compare` (default binary).
 pub fn replace(args: &[Variant]) -> LibResult<Variant> {
-    let s = as_str(need(args, 0)?)?;
-    let find = as_str(need(args, 1)?)?;
-    let with = as_str(need(args, 2)?)?;
+    let s = units_arg(need(args, 0)?)?;
+    let find = units_arg(need(args, 1)?)?;
+    let with = units_arg(need(args, 2)?)?;
     let start = match numeric_arg(args, 3) {
         Some(v) => as_i32(v)?,
         None => 1,
@@ -595,43 +646,28 @@ pub fn replace(args: &[Variant]) -> LibResult<Variant> {
         return Err(LibError::invalid_call("Replace start/count out of range"));
     }
 
-    // The result begins at `start` (1-based); a start past the end yields "".
-    let chars: Vec<char> = s.chars().collect();
+    // The result begins at `start` (1-based, in code units); a start past the end yields "".
     let from = (start - 1) as usize;
-    if from >= chars.len() {
+    if from >= s.len() {
         return Ok(vstr(String::new()));
     }
-    let hay: Vec<char> = chars[from..].to_vec();
-
+    let hay = &s[from..];
     if find.is_empty() || count == 0 {
-        return Ok(vstr(hay.into_iter().collect::<String>()));
+        return Ok(vunits(hay));
     }
-
-    let needle: Vec<char> = find.chars().collect();
-    let needle_cmp: Vec<char> = norm_compare(find.clone(), text).chars().collect();
+    let hay_cmp = compare_fold_units(hay, text);
+    let needle = compare_fold_units(&find, text);
     let limit = if count < 0 {
         usize::MAX
     } else {
         count as usize
     };
-    let mut out = String::new();
+    let mut out = Vec::with_capacity(hay.len());
     let mut i = 0usize;
     let mut done = 0usize;
     while i < hay.len() {
-        let window_matches = done < limit
-            && i + needle.len() <= hay.len()
-            && hay[i..i + needle.len()]
-                .iter()
-                .zip(&needle_cmp)
-                .all(|(h, n)| {
-                    if text {
-                        h.to_ascii_lowercase() == *n
-                    } else {
-                        h == n
-                    }
-                });
-        if window_matches {
-            out.push_str(&with);
+        if done < limit && hay_cmp[i..].starts_with(&needle) {
+            out.extend_from_slice(&with);
             i += needle.len();
             done += 1;
         } else {
@@ -639,18 +675,25 @@ pub fn replace(args: &[Variant]) -> LibResult<Variant> {
             i += 1;
         }
     }
-    Ok(vstr(out))
+    Ok(vunits(&out))
 }
 
 pub fn trim(args: &[Variant], left: bool, right: bool) -> LibResult<Variant> {
-    let s = as_str(need(args, 0)?)?;
-    let t = match (left, right) {
-        (true, true) => s.trim_matches(' '),
-        (true, false) => s.trim_start_matches(' '),
-        (false, true) => s.trim_end_matches(' '),
-        (false, false) => &s,
-    };
-    Ok(vstr(t.to_string()))
+    let s = units_arg(need(args, 0)?)?;
+    let space = u16::from(b' ');
+    let mut from = 0;
+    let mut to = s.len();
+    if left {
+        while from < to && s[from] == space {
+            from += 1;
+        }
+    }
+    if right {
+        while to > from && s[to - 1] == space {
+            to -= 1;
+        }
+    }
+    Ok(vunits(&s[from..to]))
 }
 
 /// `StrComp(s1, s2, [compare])` — optional trailing compare mode (0=binary, 1=text).
@@ -2198,7 +2241,7 @@ pub fn oct(args: &[Variant]) -> LibResult<Variant> {
     Ok(vstr(integer_width_radix(need(args, 0)?, 8)?))
 }
 pub fn cstr(args: &[Variant]) -> LibResult<Variant> {
-    Ok(vstr(as_str(need(args, 0)?)?))
+    Ok(vunits(&units_arg(need(args, 0)?)?))
 }
 pub fn str_fn(args: &[Variant]) -> LibResult<Variant> {
     let value = need(args, 0)?;

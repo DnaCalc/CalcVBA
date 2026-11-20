@@ -186,3 +186,15 @@ fn collection_add_named_arguments_bind_by_name() {
         718923,
     );
 }
+
+/// dc-yqq0.11: string functions keep an unpaired surrogate (VBA strings are UTF-16 code units).
+#[test]
+fn string_functions_keep_unpaired_surrogates() {
+    both(
+        &[std_module(
+            "Main",
+            "Public verdict As Long\nSub Main()\n    Dim s As String, v As Variant, n As Long\n    s = ChrW(&HD800) & \"ab\"\n    v = s\n    If AscW(UCase(s)) = -10240 Then n = n + 1\n    If AscW(LCase(s)) = -10240 Then n = n + 2\n    If AscW(Trim(\" \" & s)) = -10240 Then n = n + 4\n    If AscW(Replace(s, \"a\", \"x\")) = -10240 Then n = n + 8\n    If AscW(Split(s, \"a\")(0)) = -10240 Then n = n + 16\n    If AscW(CStr(v)) = -10240 Then n = n + 32\n    If Len(Replace(s, \"b\", \"\", 2)) = 1 Then n = n + 64\n    verdict = 1000 + n\nEnd Sub\n",
+        )],
+        1127,
+    );
+}

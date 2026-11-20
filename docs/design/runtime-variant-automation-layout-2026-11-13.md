@@ -396,6 +396,9 @@ gone. Only the trusted wire decoders (`Variant::from_trusted_wire_bytes`,
 `Variant::adopt_automation`, for bytes from `to_wire_bytes` or a foreign callee) rebuild
 pointers with `with_exposed_provenance`, and `to_wire_bytes` exposes the pointers it writes.
 Checks: Linux, `x86_64-pc-windows-msvc`, `i686-pc-windows-msvc` and `wasm32-unknown-unknown`.
+Miri (`scripts/run-miri.sh`, 2026-11-20 at 796ab175): calcvba-automation and calcvba-runtime pass with no
+integer-to-pointer warnings. Tests take cells through `Variant::from_trusted_cell` (provenance kept); the one
+test of the address-only wire decoder is skipped under Miri.
 
 DnaCalc (`calc-vba`, `calc-host-vba`, pinned at `219403627`) needs, when it moves its pin:
 `VarType::ArrayVariant` checks (`calc-vba/src/runtime/mod.rs:644, 806`) replaced by an array

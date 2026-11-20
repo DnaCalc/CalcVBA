@@ -1937,10 +1937,45 @@ impl Values<'_> {
             return true;
         }
         if let OxInst::CompareObjectIs { dst, lhs, rhs } = inst {
-            let a = self.operand(module, b, lhs, ScalarType::HostObject);
-            let c = self.operand(module, b, rhs, ScalarType::HostObject);
+            // A Variant operand is the object it holds (VBA's Object coercion, which raises
+            // 424 for anything else), taken into a temporary released after the comparison;
+            // its cell is not itself a pointer.
+            let mut temporaries = Vec::new();
+            let mut object = |this: &Self, b: &mut FunctionBuilder<'_>, operand: &OxOperand| {
+                if layout.operand_type(operand).ok() != Some(ScalarType::Variant) {
+                    return this.operand(module, b, operand, ScalarType::HostObject);
+                }
+                let slot = b.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    8,
+                    3,
+                ));
+                let zero = b.ins().iconst(types::I64, 0);
+                b.ins().stack_store(zero, slot, 0);
+                let temporary = b.ins().stack_addr(types::I64, slot, 0);
+                let source = this.cell(module, b, operand);
+                this.copy(
+                    module,
+                    b,
+                    temporary,
+                    kind(ScalarType::HostObject),
+                    source,
+                    kind(ScalarType::Variant),
+                );
+                temporaries.push(temporary);
+                b.ins()
+                    .load(types::I64, ir::MemFlagsData::new(), temporary, 0)
+            };
+            let a = object(self, b, lhs);
+            let c = object(self, b, rhs);
             let out = self.address(b, layout.slot(*dst).unwrap());
             self.call(module, b, "cvb_object_is", &[a, c, out]);
+            for temporary in temporaries {
+                let object_kind = b
+                    .ins()
+                    .iconst(types::I32, i64::from(kind(ScalarType::HostObject)));
+                self.call(module, b, "cvb_value_clear", &[temporary, object_kind]);
+            }
             return true;
         }
         if let OxInst::ValidateAssignment {

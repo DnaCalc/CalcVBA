@@ -682,19 +682,13 @@ unsafe extern "system" fn compat_query_interface(
     }
     // SAFETY: a non-null REFIID points at the caller's GUID for the duration of the call.
     let iid = unsafe { riid.read() };
-    let owner = compat_owner_from_this(this);
-    // SAFETY: this vtable entry is only installed via `COMPAT_OBJECT_VTBL`, which is only
-    // attached to `CompatObjectBase` boxes minted by `from_compat_object` (`#[repr(C)]` with
-    // `unknown` as the first field), so `owner` is that live box; the caller's outstanding COM
-    // reference keeps it alive across the call.
-    let supports_iid = iid == RUNTIME_GUID_IUNKNOWN
-        || unsafe {
-            (*owner)
-                .class_descriptor
-                .interfaces
-                .iter()
-                .any(|interface| interface.identity.guid == iid)
-        };
+    // The object's binary interface is these three IUnknown slots and nothing else, so it
+    // serves IUnknown only: answering IDispatch or a class interface with this vtable would
+    // let foreign code call slots that are not there (dc-yqq0.15). A project object crosses to
+    // foreign code through a real IDispatch wrapper (`calcvba_com::automation::project_dispatch`),
+    // and its class interfaces are projections the runtime resolves itself
+    // (`ObjectRefExt::query_interface_descriptor`).
+    let supports_iid = iid == RUNTIME_GUID_IUNKNOWN;
     if !supports_iid {
         return RUNTIME_E_NOINTERFACE;
     }
@@ -2417,7 +2411,7 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_backed_object_supports_raw_query_interface_projection() {
+    fn descriptor_backed_object_serves_only_iunknown_through_its_vtable() {
         const CUSTOM_GUID: Guid = Guid::new(
             0x3333_3333,
             0x4444,
@@ -2482,9 +2476,16 @@ mod tests {
                 &mut dispatch_out,
             )
         };
-        assert_eq!(dispatch_hr, RUNTIME_S_OK);
-        assert_eq!(dispatch_out, object.raw_iunknown().cast());
-        assert_eq!(object.strong_count_for_test(), 2);
+        // dc-yqq0.15: the three-slot object is no IDispatch; the class's interfaces are
+        // descriptor projections, not binary interfaces of this vtable.
+        assert_eq!(dispatch_hr, RUNTIME_E_NOINTERFACE);
+        assert!(dispatch_out.is_null());
+        assert_eq!(object.strong_count_for_test(), 1);
+        assert!(
+            object
+                .query_interface_descriptor(RuntimeInterfaceId::IDispatch)
+                .is_some()
+        );
 
         let mut custom_out = core::ptr::null_mut();
         let custom_hr = unsafe {
@@ -2494,15 +2495,14 @@ mod tests {
                 &mut custom_out,
             )
         };
-        assert_eq!(custom_hr, RUNTIME_S_OK);
-        assert_eq!(custom_out, object.raw_iunknown().cast());
-        assert_eq!(object.strong_count_for_test(), 3);
-
-        unsafe {
-            ((*(*object.raw_iunknown()).vtbl).release)(dispatch_out);
-            ((*(*object.raw_iunknown()).vtbl).release)(custom_out);
-        }
+        assert_eq!(custom_hr, RUNTIME_E_NOINTERFACE);
+        assert!(custom_out.is_null());
         assert_eq!(object.strong_count_for_test(), 1);
+        assert!(
+            object
+                .query_interface_descriptor_by_guid(CUSTOM_GUID)
+                .is_some()
+        );
     }
 
     #[test]

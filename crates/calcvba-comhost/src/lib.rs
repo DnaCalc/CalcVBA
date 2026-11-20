@@ -3026,9 +3026,12 @@ fn descriptor() -> Result<&'static ComServerDescriptor, i32> {
 }
 
 fn comhost_host_config() -> Result<HostConfig, String> {
+    // The project's RuntimeFlavor (recorded in the descriptor) picks the executor;
+    // OXVBA_BACKEND overrides it.
     let backend = match env::var("OXVBA_BACKEND") {
         Ok(value) => ExecBackend::parse(&value)
             .ok_or_else(|| format!("invalid OXVBA_BACKEND value {value:?}; expected vm3 or jit"))?,
+        Err(env::VarError::NotPresent) if descriptor().is_ok_and(|d| d.jit) => ExecBackend::Jit,
         Err(env::VarError::NotPresent) => ExecBackend::Vm3,
         Err(err) => return Err(format!("could not read OXVBA_BACKEND: {err}")),
     };

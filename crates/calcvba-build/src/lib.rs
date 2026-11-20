@@ -78,8 +78,6 @@ pub enum BuildError {
     InvalidOutputType { found: calcvba_project::OutputType },
     #[error("WrappedComServer requires BuildTarget=WrappedComServer, found {found:?}")]
     InvalidBuildTarget { found: calcvba_project::BuildTarget },
-    #[error("ComServer supports RuntimeFlavor=Lite (VM3); RuntimeFlavor=Jit is not implemented")]
-    UnsupportedComJit,
     #[error("project closure was empty for {path}")]
     EmptyProjectClosure { path: String },
     #[error("ComServer project {project_name} has no exposed class surface")]
@@ -141,7 +139,8 @@ pub fn build_wrapped_com_server(
             .map_err(|err| BuildError::Elaborate(err.to_string()))?,
     )?;
 
-    let descriptor = build_com_descriptor(root_manifest)?;
+    let mut descriptor = build_com_descriptor(root_manifest)?;
+    descriptor.jit = loaded.runtime_flavor == calcvba_project::RuntimeFlavor::Jit;
     if descriptor.classes.is_empty() {
         return Err(BuildError::NoComClasses { project_name });
     }
@@ -224,9 +223,6 @@ fn validate_wrapped_com_server_project(
         return Err(BuildError::InvalidOutputType {
             found: loaded.output_type,
         });
-    }
-    if loaded.runtime_flavor == calcvba_project::RuntimeFlavor::Jit {
-        return Err(BuildError::UnsupportedComJit);
     }
     if loaded.build_target != calcvba_project::BuildTarget::WrappedComServer {
         return Err(BuildError::InvalidBuildTarget {
@@ -458,15 +454,18 @@ mod tests {
             "<RuntimeFlavor>Jit</RuntimeFlavor></PropertyGroup>",
         );
         write(&project_path, &source);
-        assert!(matches!(
-            build_wrapped_com_server(&WrappedComServerBuildOptions {
-                project_path,
-                out_dir: temp.path.join("jit"),
-                compile_dll: false,
-                comhost_dll_path: None,
-            }),
-            Err(BuildError::UnsupportedComJit)
-        ));
+        // RuntimeFlavor=Jit builds, and the descriptor tells the server to run the JIT.
+        let jit = build_wrapped_com_server(&WrappedComServerBuildOptions {
+            project_path,
+            out_dir: temp.path.join("jit"),
+            compile_dll: false,
+            comhost_dll_path: None,
+        })
+        .expect("RuntimeFlavor=Jit builds");
+        let jit: ComServerDescriptor =
+            serde_json::from_str(&fs::read_to_string(jit.descriptor_path).unwrap()).unwrap();
+        assert!(jit.jit);
+        assert!(!descriptor.jit);
     }
 
     #[test]

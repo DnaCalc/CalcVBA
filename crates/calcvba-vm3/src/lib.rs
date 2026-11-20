@@ -6421,7 +6421,7 @@ fn variant_to_object(value: &Variant) -> Result<ObjectRef, Vm3Error> {
 /// Missing for a Variant, else its type's zero (`Optional n As Long` is 0, as a declared local
 /// is). `None` for a parameter that is not optional (or a `ParamArray`), and for an optional
 /// object, record or array, which keep their slot's initial value.
-fn omitted_param_value(local: &calcvba_oxir::OxLocal) -> Option<Result<Variant, Vm3Error>> {
+pub fn omitted_param_value(local: &calcvba_oxir::OxLocal) -> Option<Result<Variant, Vm3Error>> {
     let info = local.param.as_ref()?;
     if !info.optional || info.variadic {
         return None;

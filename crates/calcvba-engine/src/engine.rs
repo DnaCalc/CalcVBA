@@ -158,14 +158,6 @@ impl std::fmt::Display for PhaseDiagnostic {
 
 impl std::error::Error for PhaseDiagnostic {}
 
-fn jit_not_implemented_diagnostic() -> PhaseDiagnostic {
-    PhaseDiagnostic::from_diagnostic(OxDiagnostic::error(
-        "RUN-E-JIT-NOT-IMPLEMENTED",
-        OxDiagnosticPhase::Runtime,
-        JIT_NOT_IMPLEMENTED_MESSAGE,
-    ))
-}
-
 fn jit_runtime_diagnostic(err: JitError) -> PhaseDiagnostic {
     let (code, message) = match err {
         JitError::BudgetExceeded => ("RUN-E-BUDGET", "execution budget exhausted".into()),
@@ -315,18 +307,139 @@ pub struct Engine {
     host_services: Arc<dyn HostServices>,
 }
 
-/// A vm3-backed project runtime session: the in-process COM server's create-class /
-/// invoke-member / event-sink surface, running on the vm3 interpreter over a linked
-/// [`calcvba_oxir::OxImage`]. Built by
-/// [`Engine::prepare_image_session`].
+/// A project runtime session: the in-process COM server's create-class / invoke-member /
+/// event-sink surface over a linked [`calcvba_oxir::OxImage`], on vm3 or the JIT (the
+/// engine's configured backend). Built by [`Engine::prepare_image_session`].
 pub struct ProjectRuntimeSession {
-    vm: calcvba_vm3::Vm3<'static>,
+    backend: SessionBackend,
     host_services: Arc<dyn HostServices>,
+}
+
+// One session per server process: the VM3 is kept inline rather than boxed.
+#[allow(clippy::large_enum_variant)]
+enum SessionBackend {
+    Vm3(calcvba_vm3::Vm3<'static>),
+    Jit(Box<JitImageSession>),
+    /// A JIT session lent to a host event callback while its run is suspended in RaiseEvent:
+    /// the run owns the session, so a nested call is refused instead of entering it twice.
+    JitBusy,
+}
+
+/// A compiled image and its session, retained for the process as vm3's linked programs are.
+struct JitImageSession {
+    programs: &'static [calcvba_oxir::OxProgram],
+    image: &'static calcvba_jit::CompiledImage<'static>,
+    session: calcvba_jit::JitSession<'static>,
 }
 
 #[path = "default_instances.rs"]
 mod default_instances;
 pub use default_instances::DefaultInstanceAccess;
+
+fn jit_busy_diagnostic() -> PhaseDiagnostic {
+    PhaseDiagnostic::from_diagnostic(OxDiagnostic::error(
+        "JIT-E-REENTRY",
+        OxDiagnosticPhase::Host,
+        "the JIT session is running the event that made this call; re-entry is not supported",
+    ))
+}
+
+/// A JIT member call's outcome as vm3 reports it: the value, or the VBA fault it raised.
+fn jit_value(outcome: Result<JitOutcome, JitError>) -> Result<Variant, PhaseDiagnostic> {
+    let outcome = outcome.map_err(jit_runtime_diagnostic)?;
+    if outcome.raised {
+        let mut fault = calcvba_rt_abi::Fault::new(outcome.err.number, outcome.err.description);
+        if !outcome.err.source.is_empty() {
+            fault.source = Some(outcome.err.source);
+        }
+        let message = format!("runtime error {}: {}", fault.code, fault.message);
+        return Err(PhaseDiagnostic::from_diagnostic(OxDiagnostic::error(
+            "JIT-E-FAULT",
+            OxDiagnosticPhase::Host,
+            message,
+        ))
+        .with_vba_fault(fault));
+    }
+    Ok(outcome
+        .values
+        .into_iter()
+        .next()
+        .unwrap_or_else(Variant::empty))
+}
+
+impl JitImageSession {
+    /// The procedure of member `name` of the object's class (a matching kind first), as vm3
+    /// resolves it.
+    fn member(
+        &self,
+        object: &ObjectRef,
+        name: &str,
+        kind: Option<calcvba_bundle::ProjectMemberKind>,
+    ) -> Result<(usize, calcvba_oxir::FuncId), PhaseDiagnostic> {
+        use calcvba_runtime::ObjectRefExt;
+        let not_supported = || {
+            PhaseDiagnostic::from_diagnostic(OxDiagnostic::error(
+                "JIT-E-FAULT",
+                OxDiagnosticPhase::Host,
+                calcvba_runtime::default_error_message(438),
+            ))
+            .with_vba_fault(calcvba_rt_abi::Fault::new(
+                438,
+                calcvba_runtime::default_error_message(438),
+            ))
+        };
+        let program_index = usize::try_from(object.bundle_id()).map_err(|_| not_supported())?;
+        let class = usize::try_from(object.route_key())
+            .ok()
+            .and_then(|class| self.programs.get(program_index)?.classes.get(class))
+            .ok_or_else(not_supported)?;
+        let member = class
+            .methods
+            .iter()
+            .find(|m| m.name.eq_ignore_ascii_case(name) && kind.is_none_or(|k| m.kind == k))
+            .or_else(|| {
+                class
+                    .methods
+                    .iter()
+                    .find(|m| m.name.eq_ignore_ascii_case(name))
+            })
+            .ok_or_else(not_supported)?;
+        Ok((program_index, member.proc))
+    }
+
+    fn invoke(
+        &mut self,
+        object: ObjectRef,
+        name: &str,
+        kind: Option<calcvba_bundle::ProjectMemberKind>,
+        args: &mut [Variant],
+        aliases: &[usize],
+    ) -> Result<Variant, PhaseDiagnostic> {
+        let (program, func) = self.member(&object, name, kind)?;
+        // A host passes an omitted argument as Missing; an Optional parameter then starts as a
+        // call that leaves it out starts it, exactly as vm3 binds it.
+        const MISSING: i32 = 0x8002_0004u32 as i32;
+        let locals = &self.programs[program].funcs[func.0].locals;
+        for (index, arg) in args.iter_mut().enumerate() {
+            if arg.vtype() == calcvba_runtime::VarType::Error
+                && arg.as_error_code() == Some(MISSING)
+                && let Some(omitted) = locals
+                    .get(index + 1)
+                    .and_then(calcvba_vm3::omitted_param_value)
+            {
+                *arg = omitted.map_err(vm3_runtime_diagnostic)?;
+            }
+        }
+        jit_value(self.image.invoke_member_in_session(
+            &mut self.session,
+            program,
+            func,
+            Variant::from_object_ref(object),
+            args,
+            aliases,
+        ))
+    }
+}
 
 impl ProjectRuntimeSession {
     /// Mint a project-class instance by name (running its `Class_Initialize`) in the entry
@@ -336,10 +449,31 @@ impl ProjectRuntimeSession {
         &mut self,
         class_name: &str,
     ) -> Result<ObjectRef, PhaseDiagnostic> {
-        let value = self
-            .vm
-            .create_project_instance(class_name)
-            .map_err(vm3_runtime_diagnostic)?;
+        let value = match &mut self.backend {
+            SessionBackend::Vm3(vm) => vm
+                .create_project_instance(class_name)
+                .map_err(vm3_runtime_diagnostic)?,
+            SessionBackend::Jit(jit) => {
+                let program = jit.programs.len() - 1;
+                let class = jit.programs[program]
+                    .classes
+                    .iter()
+                    .position(|class| class.name.eq_ignore_ascii_case(class_name))
+                    .ok_or_else(|| {
+                        PhaseDiagnostic::from_diagnostic(OxDiagnostic::error(
+                            "JIT-E-CREATE",
+                            OxDiagnosticPhase::Host,
+                            format!("ActiveX component can't create object: {class_name}"),
+                        ))
+                        .with_vba_code(429)
+                    })?;
+                jit_value(
+                    jit.image
+                        .new_instance_in_session(&mut jit.session, program, class),
+                )?
+            }
+            SessionBackend::JitBusy => return Err(jit_busy_diagnostic()),
+        };
         value.as_object_ref().ok_or_else(|| {
             PhaseDiagnostic::from_diagnostic(OxDiagnostic::error(
                 "VM3-E-CREATE",
@@ -355,11 +489,18 @@ impl ProjectRuntimeSession {
         object: ObjectRef,
         member_name: &str,
         kind_hint: Option<calcvba_bundle::ProjectMemberKind>,
-        args: Vec<Variant>,
+        mut args: Vec<Variant>,
     ) -> Result<Variant, PhaseDiagnostic> {
-        self.vm
-            .invoke_member_values(object, member_name, kind_hint, args)
-            .map_err(vm3_runtime_diagnostic)
+        match &mut self.backend {
+            SessionBackend::Vm3(vm) => vm
+                .invoke_member_values(object, member_name, kind_hint, args)
+                .map_err(vm3_runtime_diagnostic),
+            SessionBackend::Jit(jit) => {
+                let aliases: Vec<usize> = (0..args.len()).collect();
+                jit.invoke(object, member_name, kind_hint, &mut args, &aliases)
+            }
+            SessionBackend::JitBusy => Err(jit_busy_diagnostic()),
+        }
     }
 
     /// Invoke host arguments, preserving ByRef aliases and values on success or fault.
@@ -371,9 +512,13 @@ impl ProjectRuntimeSession {
         args: &mut [Variant],
         aliases: &[usize],
     ) -> Result<Variant, PhaseDiagnostic> {
-        self.vm
-            .invoke_member_values_with_writebacks(object, member_name, kind_hint, args, aliases)
-            .map_err(vm3_runtime_diagnostic)
+        match &mut self.backend {
+            SessionBackend::Vm3(vm) => vm
+                .invoke_member_values_with_writebacks(object, member_name, kind_hint, args, aliases)
+                .map_err(vm3_runtime_diagnostic),
+            SessionBackend::Jit(jit) => jit.invoke(object, member_name, kind_hint, args, aliases),
+            SessionBackend::JitBusy => Err(jit_busy_diagnostic()),
+        }
     }
 
     /// Register the host event sink (project `RaiseEvent` -> connection-point clients).
@@ -381,31 +526,57 @@ impl ProjectRuntimeSession {
     where
         F: FnMut(ObjectRef, i32, Vec<Variant>) -> Result<(), String> + 'static,
     {
-        self.vm.set_project_event_sink(sink);
+        match &mut self.backend {
+            SessionBackend::Vm3(vm) => vm.set_project_event_sink(sink),
+            SessionBackend::Jit(jit) => jit.session.set_project_event_sink(Box::new(sink)),
+            SessionBackend::JitBusy => {}
+        }
     }
 
     /// Yield exclusive session ownership while a synchronous COM event runs.
     /// Returning the same session resumes the suspended VBA activation with all
-    /// changes made by nested member calls retained.
+    /// changes made by nested member calls retained. On the JIT the run keeps the
+    /// session, so the callback gets a session that refuses nested calls.
     pub fn set_reentrant_project_event_sink<F>(&mut self, sink: F)
     where
         F: Fn(Self, ObjectRef, i32, Vec<Variant>) -> (Self, Result<(), String>) + 'static,
     {
         let host_services = self.host_services.clone();
-        self.vm
-            .set_reentrant_project_event_sink(move |vm, source, event, args| {
-                let session = Self {
-                    vm,
-                    host_services: host_services.clone(),
-                };
-                let (session, outcome) = sink(session, source, event, args);
-                (session.vm, outcome)
-            });
+        match &mut self.backend {
+            SessionBackend::Vm3(vm) => {
+                vm.set_reentrant_project_event_sink(move |vm, source, event, args| {
+                    let session = Self {
+                        backend: SessionBackend::Vm3(vm),
+                        host_services: host_services.clone(),
+                    };
+                    let (session, outcome) = sink(session, source, event, args);
+                    match session.backend {
+                        SessionBackend::Vm3(vm) => (vm, outcome),
+                        _ => unreachable!("an event callback returns the vm3 session it was lent"),
+                    }
+                });
+            }
+            SessionBackend::Jit(jit) => {
+                jit.session
+                    .set_project_event_sink(Box::new(move |source, event, args| {
+                        let lent = Self {
+                            backend: SessionBackend::JitBusy,
+                            host_services: host_services.clone(),
+                        };
+                        sink(lent, source, event, args).1
+                    }));
+            }
+            SessionBackend::JitBusy => {}
+        }
     }
 
     /// Remove the host event sink.
     pub fn clear_project_event_sink(&mut self) {
-        self.vm.clear_project_event_sink();
+        match &mut self.backend {
+            SessionBackend::Vm3(vm) => vm.clear_project_event_sink(),
+            SessionBackend::Jit(jit) => jit.session.clear_project_event_sink(),
+            SessionBackend::JitBusy => {}
+        }
     }
 
     /// Bind a retained native `IDispatch*` into the runtime COM object table (a host-boundary,
@@ -784,9 +955,6 @@ impl Engine {
         &self,
         image: calcvba_oxir::OxImage,
     ) -> Result<ProjectRuntimeSession, PhaseDiagnostic> {
-        if self.config.backend.is_jit() {
-            return Err(jit_not_implemented_diagnostic());
-        }
         image.validate().map_err(|err| {
             PhaseDiagnostic::from_diagnostic(OxDiagnostic::error(
                 "VM3-E-IMAGE",
@@ -800,10 +968,28 @@ impl Engine {
         let leaked_host_services: &'static mut Arc<dyn HostServices> =
             Box::leak(Box::new(self.host_services.clone()));
         let host_services: &'static dyn HostServices = &**leaked_host_services;
-        let vm =
-            calcvba_vm3::Vm3::link(&program_refs, host_services).map_err(vm3_runtime_diagnostic)?;
+        let backend = if self.config.backend.is_jit() {
+            let image: &'static calcvba_jit::CompiledImage<'static> = Box::leak(Box::new(
+                JitEngine
+                    .compile_image(&program_refs)
+                    .map_err(jit_runtime_diagnostic)?,
+            ));
+            let session = image
+                .start_session(host_services)
+                .map_err(jit_runtime_diagnostic)?;
+            SessionBackend::Jit(Box::new(JitImageSession {
+                programs: leaked_programs,
+                image,
+                session,
+            }))
+        } else {
+            SessionBackend::Vm3(
+                calcvba_vm3::Vm3::link(&program_refs, host_services)
+                    .map_err(vm3_runtime_diagnostic)?,
+            )
+        };
         Ok(ProjectRuntimeSession {
-            vm,
+            backend,
             host_services: self.host_services.clone(),
         })
     }

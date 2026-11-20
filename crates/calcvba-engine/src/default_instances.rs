@@ -1,5 +1,5 @@
 //! Non-creating default-instance access for same-thread host lifecycle callbacks.
-use super::{PhaseDiagnostic, ProjectRuntimeSession};
+use super::{PhaseDiagnostic, ProjectRuntimeSession, SessionBackend};
 use calcvba_rt_abi::DefaultInstanceContext;
 use calcvba_runtime::ObjectRef;
 use std::rc::Rc;
@@ -72,17 +72,36 @@ impl ProjectRuntimeSession {
     /// Obtain a non-creating view suitable for a host's unload callback. The view
     /// rejects access after this session is disposed and cannot move threads.
     pub fn default_instances(&mut self) -> DefaultInstanceAccess {
-        DefaultInstanceAccess(Rc::new(Access {
-            classes: self.vm.default_instance_context(),
-        }))
+        let classes = match &mut self.backend {
+            SessionBackend::Vm3(vm) => vm.default_instance_context(),
+            SessionBackend::Jit(jit) => jit.session.default_instance_context(),
+            SessionBackend::JitBusy => {
+                panic!("default instances of a JIT session lent to an event")
+            }
+        };
+        DefaultInstanceAccess(Rc::new(Access { classes }))
     }
     /// Release an owned host reference and run eligible finalizers now, on the
     /// owning VBA thread. Other VBA, host or control references keep it alive.
     pub fn release_class_instance(&mut self, object: ObjectRef) {
-        self.vm.release_project_instance(object);
+        match &mut self.backend {
+            SessionBackend::Vm3(vm) => vm.release_project_instance(object),
+            SessionBackend::Jit(_) => {
+                drop(object);
+                self.drain_object_terminations();
+            }
+            SessionBackend::JitBusy => drop(object),
+        }
     }
     /// Drain releases that occurred in host storage between VBA calls.
     pub fn drain_object_terminations(&mut self) {
-        self.vm.drain_object_terminations();
+        match &mut self.backend {
+            SessionBackend::Vm3(vm) => vm.drain_object_terminations(),
+            // A JIT run drains queued Class_Terminate work as it ends; an empty one drains now.
+            SessionBackend::Jit(jit) => {
+                let _ = jit.image.drain_in_session(&mut jit.session);
+            }
+            SessionBackend::JitBusy => {}
+        }
     }
 }

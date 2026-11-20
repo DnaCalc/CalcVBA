@@ -234,7 +234,7 @@ const PROJECT: &str = r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
   <PropertyGroup>
     <OutputType>ComServer</OutputType>
     <BuildTarget>WrappedComServer</BuildTarget>
-    <ProjectName>InprocServer</ProjectName>
+    <ProjectName>InprocServer</ProjectName>RUNTIME
   </PropertyGroup>
   <ItemGroup>
     <ClassModule Include="Mixer.cls">
@@ -246,11 +246,28 @@ const PROJECT: &str = r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
 
 #[test]
 fn comhost_takes_named_arguments_and_keeps_one_wrapper_per_object() {
-    let dir = std::env::temp_dir().join(format!("calcvba_comhost_inproc_{}", std::process::id()));
+    check_server("vm3", "");
+}
+
+/// The same server with RuntimeFlavor=Jit: comhost runs the image on the JIT (dc-yqq0.10).
+#[test]
+fn comhost_on_the_jit_takes_named_arguments_and_keeps_one_wrapper_per_object() {
+    check_server("jit", "\n    <RuntimeFlavor>Jit</RuntimeFlavor>");
+}
+
+fn check_server(name: &str, runtime: &str) {
+    let dir = std::env::temp_dir().join(format!(
+        "calcvba_comhost_inproc_{name}_{}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("Mixer.cls"), CLASS).unwrap();
-    std::fs::write(dir.join("Inproc.basproj"), PROJECT).unwrap();
+    std::fs::write(
+        dir.join("Inproc.basproj"),
+        PROJECT.replace("RUNTIME", runtime),
+    )
+    .unwrap();
     let output =
         calcvba_build::build_wrapped_com_server(&calcvba_build::WrappedComServerBuildOptions {
             project_path: dir.join("Inproc.basproj"),

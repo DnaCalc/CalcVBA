@@ -199,7 +199,7 @@ impl<'p> CompiledImage<'p> {
     where
         'p: 'h,
     {
-        self.execute_session_mode(session, invocation, steps, false)
+        self.execute_session_mode(session, invocation, steps, false, None)
     }
 
     /// Run project initialization without executing Main or any public procedure.
@@ -211,15 +211,147 @@ impl<'p> CompiledImage<'p> {
     where
         'p: 'h,
     {
-        self.execute_session_mode(session, None, Some(steps), true)
+        self.execute_session_mode(session, None, Some(steps), true, None)
     }
 
+    /// Create an instance of class `class_index` of program `program_index` in this session,
+    /// running its `Class_Initialize` (the in-process COM server's class factory). The outcome's
+    /// one value is the object.
+    pub fn new_instance_in_session<'h>(
+        &self,
+        session: &mut JitSession<'h>,
+        program_index: usize,
+        class_index: usize,
+    ) -> Result<JitOutcome, JitError>
+    where
+        'p: 'h,
+    {
+        let mut body = |_run: *mut JitRun, state: *mut RawExecState| {
+            let mut value = Variant::empty();
+            // SAFETY: the run execute_session_mode set up owns `state` for this call, with its
+            // procedure-invocation bridge installed for Class_Initialize.
+            let status =
+                unsafe { rt_project_new_object(state, program_index, class_index, &mut value) };
+            if status == ST_OK {
+                Ok(value)
+            } else {
+                Err(status)
+            }
+        };
+        self.execute_session_mode(session, None, None, false, Some(&mut body))
+    }
+
+    /// Run queued `Class_Terminate` work for objects a host released between calls.
+    pub fn drain_in_session<'h>(&self, session: &mut JitSession<'h>) -> Result<JitOutcome, JitError>
+    where
+        'p: 'h,
+    {
+        let mut body = |_run: *mut JitRun, _state: *mut RawExecState| Ok(Variant::empty());
+        self.execute_session_mode(session, None, None, false, Some(&mut body))
+    }
+
+    /// Call class member `func` of program `program_index` with `me` in this session (the
+    /// in-process COM server's member call). Each argument is passed as an alias of its own
+    /// cell, so ByRef writes come back in `args`, also when the member raises; arguments with
+    /// the same `aliases` entry share one cell, as one variable passed twice does. The
+    /// outcome's one value is the member's result.
+    pub fn invoke_member_in_session<'h>(
+        &self,
+        session: &mut JitSession<'h>,
+        program_index: usize,
+        func: FuncId,
+        me: Variant,
+        args: &mut [Variant],
+        aliases: &[usize],
+    ) -> Result<JitOutcome, JitError>
+    where
+        'p: 'h,
+    {
+        if aliases.len() != args.len()
+            || aliases
+                .iter()
+                .enumerate()
+                .any(|(index, &first)| first > index || aliases[first] != first)
+        {
+            return Err(JitError::Runtime(
+                "host alias must name its first argument".into(),
+            ));
+        }
+        let mut body = |run: *mut JitRun, state: *mut RawExecState| {
+            let descriptors: Vec<JitCallArgDesc> = aliases
+                .iter()
+                .map(|&first| JitCallArgDesc {
+                    kind: JIT_CALL_ARG_BYREF_ALIAS,
+                    aux: JIT_VARIANT_OPERAND_PLACE,
+                    value: 0,
+                    area: AREA_TEMP as i32,
+                    index: first as i32,
+                })
+                .collect();
+            let names = vec![
+                JitCallArgNameDesc {
+                    ptr: 0,
+                    len: -1,
+                    _pad: 0,
+                };
+                descriptors.len()
+            ];
+            let temps: Vec<Variant> = args.to_vec();
+            let frame = JitFrame {
+                program_index,
+                local_types: Vec::new(),
+                temp_types: vec![OxTy::Variant; temps.len()],
+                locals: Vec::new(),
+                temps,
+                pointer_strings: Vec::new(),
+                ref_locks: Vec::new(),
+                loop_locks: Vec::new(),
+                aliases: Vec::new(),
+                gosub_stack: Vec::new(),
+                saved_err: RtSavedErrState::default(),
+                current_line: 0,
+            };
+            // SAFETY: the run is live; this push borrow ends before the member is entered.
+            unsafe { &mut *run }.frames.push(frame);
+            // SAFETY: the temporary frame owns the argument cells for this synchronous call, and
+            // no run borrow spans the member.
+            let result = unsafe {
+                crate::helpers::invoke_project_member_with_me(
+                    run,
+                    state,
+                    program_index,
+                    func.0,
+                    me.clone(),
+                    &descriptors,
+                    &names,
+                )
+            };
+            // SAFETY: the member returned and the temporary frame is topmost again.
+            let run_ref = unsafe { &mut *run };
+            if let Some(mut frame) = run_ref.frames.pop() {
+                for (index, &first) in aliases.iter().enumerate() {
+                    if let Some(value) = frame.temps.get_mut(first) {
+                        args[index] = value.clone();
+                    }
+                }
+                // SAFETY: nothing still borrows the completed frame.
+                let _ = unsafe { crate::helpers::after_jit_frame_pop(run_ref, state, &frame) };
+            }
+            result
+        };
+        self.execute_session_mode(session, None, None, false, Some(&mut body))
+    }
+
+    /// `body`, when given, runs after initialization in place of the entry or `invocation`, on
+    /// this run (its bridge and event scope installed); its value is the outcome's one value.
+    #[allow(clippy::type_complexity)]
     fn execute_session_mode<'h>(
         &self,
         session: &mut JitSession<'h>,
         invocation: Option<(FuncId, &[Variant])>,
         steps: Option<u64>,
         initialize_only: bool,
+        mut body: Option<&mut dyn FnMut(*mut JitRun, *mut RawExecState) -> Result<Variant, i32>>,
     ) -> Result<JitOutcome, JitError>
     where
         'p: 'h,
@@ -346,6 +478,45 @@ impl<'p> CompiledImage<'p> {
 
             session.initialized = true;
             session.initialization_failed = false;
+            if let Some(body) = body.as_mut() {
+                let value = match body(run_root, state) {
+                    Ok(value) => value,
+                    Err(ST_FAULT) => {
+                        return Ok(JitOutcome {
+                            values: Vec::new(),
+                            err: err_from_exec(exec),
+                            raised: true,
+                        });
+                    }
+                    Err(ST_HALT) => {
+                        exec.events.pending_abort = None;
+                        Variant::empty()
+                    }
+                    Err(_) => {
+                        // An error a WithEvents handler left unhandled ends the call with it.
+                        if let Some(calcvba_rt_abi::RunAbort::Fault(fault)) =
+                            exec.events.pending_abort.take()
+                        {
+                            return Ok(JitOutcome {
+                                values: Vec::new(),
+                                err: JitFinalErr {
+                                    number: fault.code,
+                                    source: fault.source.unwrap_or_default(),
+                                    description: fault.message,
+                                    last_dll_error: exec.err_engine.last_dll_error,
+                                },
+                                raised: true,
+                            });
+                        }
+                        return Err(JitError::BudgetExceeded);
+                    }
+                };
+                return Ok(JitOutcome {
+                    values: vec![value],
+                    err: err_from_exec(exec),
+                    raised: false,
+                });
+            }
             if let Some(entry) = invocation
                 .map(|(func, _)| func)
                 .or(entry_program.entry)
@@ -429,7 +600,7 @@ impl<'p> CompiledImage<'p> {
                 raised: false,
             })
         })();
-        if invocation.is_some() {
+        if invocation.is_some() || body.is_some() {
             // Release call-local owners while the current runtime callback bridge is live.
             // Project/global owners stay in the retained ExecState.
             run.frames.clear();
@@ -530,7 +701,7 @@ pub struct JitSession<'p> {
     next_collection_instance_id: i32,
 }
 
-impl JitSession<'_> {
+impl<'p> JitSession<'p> {
     /// Canonical storage; callers retaining a pointer must lease this session
     /// and exclude reset/replacement until their activation drops.
     pub fn typed_globals_raw(&mut self) -> (*mut Variant, usize) {
@@ -558,6 +729,18 @@ impl JitSession<'_> {
     ) -> std::rc::Rc<std::cell::RefCell<calcvba_rt_abi::automatic_events::AutomaticEventState>>
     {
         self.exec.events.automatic.clone()
+    }
+    /// Deliver every project `RaiseEvent` to `sink` after the internal WithEvents fan-out (an
+    /// in-process COM server forwards it to its connection-point clients).
+    pub fn set_project_event_sink(&mut self, sink: calcvba_rt_abi::ProjectEventSink<'p>) {
+        self.exec.events.project_event_sink = Some(sink);
+    }
+    pub fn clear_project_event_sink(&mut self) {
+        self.exec.events.project_event_sink = None;
+    }
+    /// The session's predeclared class instances, for a host's non-creating view.
+    pub fn default_instance_context(&mut self) -> calcvba_rt_abi::DefaultInstanceContext {
+        self.exec.default_instance_context()
     }
     /// Seat an unhandled typed host-entry fault in the same Err used by thunks.
     pub fn record_typed_entry_error(&mut self, number: i32) {

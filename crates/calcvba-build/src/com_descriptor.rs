@@ -14,6 +14,9 @@ pub struct ComServerDescriptor {
     pub version_major: u16,
     pub version_minor: u16,
     pub classes: Vec<ComClassDescriptor>,
+    /// The project's RuntimeFlavor is Jit: the in-process server runs the image on the JIT.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub jit: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -215,6 +218,7 @@ impl ComServerDescriptor {
             version_major: 1,
             version_minor: 0,
             classes,
+            jit: false,
         }
     }
 

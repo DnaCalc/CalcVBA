@@ -129,6 +129,7 @@ fn dispatch_descriptor() -> ComServerDescriptor {
         libid: "11111111-2222-3333-4444-555555555555".to_string(),
         version_major: 1,
         version_minor: 0,
+        jit: false,
         classes: vec![ComClassDescriptor {
             class_name: "Calculator".to_string(),
             description: Some("Calculator class".to_string()),
@@ -191,6 +192,7 @@ fn dual_and_imported_interface_descriptor() -> ComServerDescriptor {
         libid: "21111111-2222-3333-4444-555555555555".to_string(),
         version_major: 1,
         version_minor: 0,
+        jit: false,
         classes: vec![
             ComClassDescriptor {
                 class_name: "Pinger".to_string(),

@@ -3786,6 +3786,33 @@ pub(crate) unsafe extern "C" fn rt_jit_raise_event(
                 return status;
             }
         }
+        // After the internal WithEvents fan-out, the host's event sink (an in-process COM
+        // server forwards the event to its connection-point clients), as VM3 delivers it. The
+        // sink is taken out across the call so the host never sees it aliased.
+        let sink = {
+            // SAFETY: as above; this borrow ends before the host call.
+            let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
+                return ST_FAULT;
+            };
+            exec.events.project_event_sink.take()
+        };
+        if let Some(mut sink) = sink {
+            // SAFETY: the handlers returned; this shared run borrow only reads argument cells.
+            let values = match collection_call_arg_values_for_jit(unsafe { &*run }, args) {
+                Ok(values) => values,
+                Err(status) => return status,
+            };
+            let outcome = sink(source_object, event, values);
+            // SAFETY: the host call returned; the state may be borrowed again.
+            let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
+                return ST_FAULT;
+            };
+            exec.events.project_event_sink = Some(sink);
+            if outcome.is_err() {
+                // SAFETY: the live run state, as above.
+                return unsafe { rt_raise_runtime_error_number(state, 5) };
+            }
+        }
         ST_OK
     })
 }

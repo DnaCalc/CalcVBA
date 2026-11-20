@@ -2942,27 +2942,72 @@ fn cashflows(v: &Variant) -> LibResult<Vec<f64>> {
     }
 }
 
+/// The shape of Excel's annuity formulas, fitted to every measured FV/PV/Pmt/IPmt/PPmt case
+/// (P_FV, P_PV, P_Pmt, P_IPmt, P_PPmt): `g = (1 + i)^n` is a Double `pow`; the begin/end factor
+/// `1 + i*t` is rounded to a Double; everything else is evaluated in x87 extended precision and
+/// rounded to Double once, at the end. `IPmt`/`PPmt` call the Double-valued payment and balance
+/// functions and combine them. An exact-zero extended result takes the plain Double evaluation,
+/// because [`X80`] has no signed zero (Excel's `FV` of nper 0 is +0, `PV`'s is -0).
+fn annuity_terms(i: f64, n: f64, t: f64) -> (f64, f64) {
+    ((1.0 + i).powf(n), 1.0 + i * t)
+}
+
+fn ext_result(value: X80) -> Option<f64> {
+    if value.mant == 0 {
+        None
+    } else {
+        value.to_f64()
+    }
+}
+
+impl X80 {
+    fn negated(self) -> X80 {
+        X80 {
+            neg: !self.neg && self.mant != 0,
+            ..self
+        }
+    }
+}
+
 /// Future value of `pv` plus `nper` payments `pmt` at periodic rate `i`
 /// (`t` = 0 ordinary / end-of-period, 1 annuity-due / begin-of-period). Shared by
 /// `FV` and the `IPmt`/`PPmt` balance computation.
-fn fv_value(i: f64, nper: f64, pmt: f64, pv: f64, t: f64) -> f64 {
+fn fv_value(i: f64, n: f64, pmt: f64, pv: f64, t: f64) -> f64 {
     if i == 0.0 {
-        -(pv + pmt * nper)
-    } else {
-        let g = (1.0 + i).powf(nper);
-        -(pv * g + pmt * (1.0 + i * t) * (g - 1.0) / i)
+        return -(pv + pmt * n);
     }
+    let (g, f) = annuity_terms(i, n, t);
+    if [i, n, pmt, pv, g, f].iter().all(|v| v.is_finite()) {
+        let x = X80::of;
+        let growth = x(g);
+        let balance = x(pv).mul(growth);
+        let payments = x(pmt).mul(x(f)).mul(growth.sub(x(1.0))).div(x(i));
+        if let Some(v) = ext_result(balance.negated().sub(payments)) {
+            return v;
+        }
+    }
+    -(pv * g) - pmt * f * (g - 1.0) / i
 }
 
 /// Periodic payment for present value `pv` reaching future value `fv` over `nper`
 /// periods at rate `i` (`t` as in [`fv_value`]). Shared by `Pmt` and `IPmt`/`PPmt`.
-fn pmt_value(i: f64, nper: f64, pv: f64, fv: f64, t: f64) -> f64 {
+fn pmt_value(i: f64, n: f64, pv: f64, fv: f64, t: f64) -> f64 {
     if i == 0.0 {
-        -(pv + fv) / nper
-    } else {
-        let g = (1.0 + i).powf(nper);
-        -(fv + pv * g) / ((1.0 + i * t) * (g - 1.0) / i)
+        return -(pv + fv) / n;
     }
+    let (g, f) = annuity_terms(i, n, t);
+    if [i, n, pv, fv, g, f].iter().all(|v| v.is_finite()) && g != 1.0 {
+        let x = X80::of;
+        let growth = x(g);
+        let numerator = x(fv).add(x(pv).mul(growth));
+        let divisor = x(f).mul(growth.sub(x(1.0))).div(x(i));
+        if divisor.mant != 0
+            && let Some(v) = ext_result(numerator.negated().div(divisor))
+        {
+            return v;
+        }
+    }
+    -(fv + pv * g) / ((1.0 + i * t) * (g - 1.0) / i)
 }
 
 /// The interest portion of the `per`-th payment (the basis for `IPmt`/`PPmt`). The
@@ -2972,13 +3017,23 @@ fn pmt_value(i: f64, nper: f64, pv: f64, fv: f64, t: f64) -> f64 {
 /// (`IPmt(0.1/12, 2, 36, 10000, 0, 1) = -80.6667`).
 fn ipmt_value(rate: f64, per: f64, nper: f64, pv: f64, fv: f64, t: f64) -> f64 {
     let pmt = pmt_value(rate, nper, pv, fv, t);
-    let mut interest = fv_value(rate, per - 1.0, pmt, pv, t) * rate;
-    if t == 1.0 {
-        if per == 1.0 {
-            interest = 0.0;
-        } else {
-            interest /= 1.0 + rate;
+    let balance = fv_value(rate, per - 1.0, pmt, pv, t);
+    let mut interest = balance * rate;
+    if t == 1.0 && per == 1.0 {
+        return 0.0;
+    }
+    if balance.is_finite() && rate.is_finite() {
+        let x = X80::of;
+        let mut ext = x(balance).mul(x(rate));
+        if t == 1.0 && (1.0 + rate) != 0.0 {
+            ext = ext.div(x(1.0).add(x(rate)));
         }
+        if let Some(v) = ext_result(ext) {
+            return v;
+        }
+    }
+    if t == 1.0 {
+        interest /= 1.0 + rate;
     }
     interest
 }
@@ -3002,12 +3057,22 @@ pub fn pv(args: &[Variant]) -> LibResult<Variant> {
     );
     let fv = opt_f64(args, 3, 0.0)?;
     let t = due_flag(args, 4)?;
-    finite_result(if i == 0.0 {
-        -(fv + pmt * n)
-    } else {
-        let g = (1.0 + i).powf(n);
-        -(fv + pmt * (1.0 + i * t) * (g - 1.0) / i) / g
-    })
+    if i == 0.0 {
+        return finite_result(-(fv + pmt * n));
+    }
+    let (g, f) = annuity_terms(i, n, t);
+    if g == 0.0 {
+        return Err(LibError::new(11, "Division by zero"));
+    }
+    if [i, n, pmt, fv, g, f].iter().all(|v| v.is_finite()) {
+        let x = X80::of;
+        let growth = x(g);
+        let payments = x(pmt).mul(x(f)).mul(growth.sub(x(1.0))).div(x(i));
+        if let Some(v) = ext_result(x(fv).add(payments).negated().div(growth)) {
+            return finite_result(v);
+        }
+    }
+    finite_result(-(fv + pmt * f * (g - 1.0) / i) / g)
 }
 
 pub fn pmt(args: &[Variant]) -> LibResult<Variant> {

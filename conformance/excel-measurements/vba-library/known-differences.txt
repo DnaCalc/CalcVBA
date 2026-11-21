@@ -14,7 +14,6 @@ P_CStr: CStr.59=String:[1899/12/31]
 P_CStr: CStr.60=String:[1899/12/29 12:00:00]
 P_CStr: CStr.61=String:[9999/12/31 23:59:59]
 P_CStr: CStr.62=String:[100/01/01]
-P_DateDiff: DateDiff.39=ERR94
 P_DateSerial: DateSerial.10=Date:40E72F8000000000
 P_DateValue: DateValue.11=Date:40E2070000000000
 P_DateValue: DateValue.12=Date:40E2072000000000

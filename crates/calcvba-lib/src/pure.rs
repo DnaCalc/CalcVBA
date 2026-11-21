@@ -1882,6 +1882,11 @@ pub fn date_diff(args: &[Variant]) -> LibResult<Variant> {
     let interval = interval_arg(need(args, 0)?)?;
     let a = date_arg(need(args, 1)?)?;
     let b = date_arg(need(args, 2)?)?;
+    // VBA coerces the optional Long enums even when the interval ignores them.
+    let first_day = arg_present(args, 3).map_or(Ok(1), as_i32)?;
+    if let Some(first_week) = arg_present(args, 4) {
+        as_i32(first_week)?;
+    }
     let (ra, rb) = (serial_to_real(a), serial_to_real(b));
     let (a_day, b_day) = (ra.floor() as i64, rb.floor() as i64);
     // Whole seconds on the continuous time line, so an hour or minute boundary is exact.
@@ -1898,7 +1903,7 @@ pub fn date_diff(args: &[Variant]) -> LibResult<Variant> {
         "d" | "y" => b_day - a_day,
         "w" => (b_day - a_day) / 7,
         "ww" => {
-            let first = first_day_of_week(args, 3)?;
+            let first = normalize_first_day_of_week(first_day)?;
             count_weekday_boundaries(a_day, b_day, first - 1)
         }
         "h" => b_sec.div_euclid(3600) - a_sec.div_euclid(3600),
@@ -1959,10 +1964,10 @@ pub fn date_part(args: &[Variant], part: DatePart) -> LibResult<Variant> {
 }
 
 fn first_day_of_week(args: &[Variant], index: usize) -> LibResult<i32> {
-    let first = match arg_present(args, index) {
-        Some(v) => as_i32(v)?,
-        None => 1,
-    };
+    normalize_first_day_of_week(arg_present(args, index).map_or(Ok(1), as_i32)?)
+}
+
+fn normalize_first_day_of_week(first: i32) -> LibResult<i32> {
     let first = if first == 0 { 1 } else { first };
     if !(1..=7).contains(&first) {
         return Err(LibError::invalid_call("firstdayofweek out of range"));

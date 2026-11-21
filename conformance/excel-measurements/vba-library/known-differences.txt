@@ -14,8 +14,6 @@ P_CStr: CStr.59=String:[1899/12/31]
 P_CStr: CStr.60=String:[1899/12/29 12:00:00]
 P_CStr: CStr.61=String:[9999/12/31 23:59:59]
 P_CStr: CStr.62=String:[100/01/01]
-P_ChrB: ChrB.4=ERR6
-P_ChrB: ChrB.5=ERR6
 P_Collection: Collection.44=String:[n=3 Integer:1;Integer:2;Integer:3;count=3|n=4 Integer:1;Integer:2;Integer:3;Integer:99;count=4|n=3 Integer:1;Integer:2;Integer:3;count=2]
 P_Cos: Cos.22=Double:3FE14A280FB5068B|0.54030230586814
 P_Cos: Cos.24=Double:3FE14A280FB5068B|0.54030230586814

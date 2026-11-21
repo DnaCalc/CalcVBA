@@ -126,7 +126,8 @@ pub fn asc_b(args: &[Variant]) -> LibResult<Variant> {
 /// `ChrB(code)` — a one-BYTE string (`LenB` 1, `Len` 0); `code` is `0..=255`.
 pub fn chr_b(args: &[Variant]) -> LibResult<Variant> {
     let code = as_i32(need(args, 0)?)?;
-    let byte = u8::try_from(code).map_err(|_| LibError::invalid_call("invalid character code"))?;
+    let byte = u8::try_from(code)
+        .map_err(|_| LibError::overflow("character code does not fit in Byte"))?;
     Ok(Variant::from_bstr_bytes(&[byte]))
 }
 

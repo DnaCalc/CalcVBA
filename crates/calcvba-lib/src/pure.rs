@@ -401,26 +401,22 @@ fn vunits(units: &[u16]) -> Variant {
 /// Map each character's case on its own, keeping the string's length in code units as
 /// VBA's `UCase`/`LCase` do (`ß` stays `ß`); an unpaired surrogate is kept as it is.
 fn map_case_units(units: &[u16], upper: bool) -> Vec<u16> {
-    let mut out = Vec::with_capacity(units.len());
-    for decoded in char::decode_utf16(units.iter().copied()) {
-        match decoded {
-            Ok(c) => {
-                let mut mapped = if upper {
-                    c.to_uppercase().collect::<Vec<_>>()
-                } else {
-                    c.to_lowercase().collect::<Vec<_>>()
-                };
-                let one = match mapped.as_slice() {
-                    [m] if m.len_utf16() == c.len_utf16() => mapped.remove(0),
-                    _ => c,
-                };
-                let mut buf = [0u16; 2];
-                out.extend_from_slice(one.encode_utf16(&mut buf));
+    case_units(units, |c| {
+        let mapped = if upper {
+            match c {
+                // Excel preserves dotless i and Greek final sigma (P_UCase.10/.12).
+                '\u{0131}' | '\u{03c2}' => c,
+                _ => simple_case(c, c.to_uppercase()),
             }
-            Err(unpaired) => out.push(unpaired.unpaired_surrogate()),
+        } else {
+            simple_case(c, c.to_lowercase())
+        };
+        if mapped.len_utf16() == c.len_utf16() {
+            mapped
+        } else {
+            c
         }
-    }
-    out
+    })
 }
 
 /// The units a text comparison matches on: each code unit case-folded on its own.

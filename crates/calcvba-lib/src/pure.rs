@@ -813,17 +813,6 @@ fn like_match(s: &[u16], p: &[LikeToken]) -> bool {
     }
 }
 
-/// Shared code-point decode for `Chr`/`ChrW`: the argument is a VBA `Long` whose
-/// low 16 bits are the (wide) character code; negatives wrap via `code as u16`.
-/// Rejects the UTF-16 surrogate range and otherwise returns the `char`.
-fn wide_char(code: i32) -> LibResult<char> {
-    if !(-32768..=65535).contains(&code) {
-        return Err(LibError::invalid_call("invalid character code"));
-    }
-    let value = code as u16;
-    char::from_u32(u32::from(value)).ok_or_else(|| LibError::invalid_call("invalid character code"))
-}
-
 /// `ChrW(code)` — genuine WIDE: the single UTF-16 CODE UNIT whose value is the
 /// argument's low 16 bits (negatives wrap). Any `0..=65535` is valid — INCLUDING a
 /// lone surrogate half `0xD800..=0xDFFF` — because a VBA string is a UTF-16 code-unit
@@ -837,27 +826,12 @@ pub fn chr_w(args: &[Variant]) -> LibResult<Variant> {
     Ok(Variant::from_utf16_units(&[code as u16]))
 }
 
-/// `Chr(code)` — genuine ANSI: codes 0..=255 decode through the live system ANSI
-/// code page (`CP_ACP` on Windows, the CP-1252 fallback off-Windows); codes
-/// 256..=65535 act WIDE (VBA7 `Chr` is wide above 255); negatives wrap.
+/// `Chr(code)` decodes an ANSI character code in the active code page.
 pub fn chr(args: &[Variant]) -> LibResult<Variant> {
     let code = as_i32(need(args, 0)?)?;
-    let value = if (-32768..=65535).contains(&code) {
-        code as u16
-    } else {
-        return Err(LibError::invalid_call("invalid character code"));
-    };
-    let ch = if value <= 0xFF {
-        // A single ANSI byte decodes to one Unicode char via the shared codec; fall
-        // back to the byte's own code point if the host ACP leaves it undefined.
-        calcvba_runtime::ansi::ansi_decode(&[value as u8])
-            .chars()
-            .next()
-            .unwrap_or(value as u8 as char)
-    } else {
-        wide_char(code)?
-    };
-    Ok(vstr(ch.to_string()))
+    let unit = calcvba_runtime::ansi::ansi_decode_character(code)
+        .ok_or_else(|| LibError::invalid_call("invalid character code"))?;
+    Ok(Variant::from_utf16_units(&[unit]))
 }
 
 /// `AscW(s)` — genuine WIDE: the first char's Unicode code point, returned as a VBA
@@ -4923,8 +4897,7 @@ mod tests {
         assert_eq!(asc_("\u{2013}", false), 150); // en-dash → ANSI byte 150
         assert_eq!(asc_("\u{2013}", true), 8211); // en-dash → U+2013
 
-        // The wide range (>255) agrees: Chr acts wide above 255.
-        assert_eq!(chr_(&[Variant::from_i32(8364)], false), "\u{20AC}"); // €
+        // ChrW accepts the Unicode code point directly.
         assert_eq!(chr_(&[Variant::from_i32(8364)], true), "\u{20AC}");
         // € round-trips: AscW is the code point, Asc is the CP-1252 byte 128.
         assert_eq!(asc_("\u{20AC}", true), 8364);

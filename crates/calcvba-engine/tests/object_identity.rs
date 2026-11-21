@@ -5,9 +5,12 @@
 //! `coll-is=True;coll-call=42;dict-is=True;dict-call=42;coll-term-held=0;coll-term-removed=1;
 //! foreign-call=42;term-held=0;term-dropped=1`
 //!
-//! Today CalcVBA matches every case except the foreign late-bound call, which raises error 5 until
-//! the object answers IDispatch itself (dc-yqq0.23). The early-bound foreign call (dc-yqq0.24) and
-//! the final release on a foreign thread (dc-yqq0.25) join here with those beads.
+//! The early-bound foreign call (dc-yqq0.24, `temp/objid4` probe) calls vtable slots directly:
+//! `early-get=21;early-call=42;after-put=5;early-call2=10`. The final release on a foreign thread
+//! (dc-yqq0.25) has no Excel answer (a raw Release of a VBA object off its thread is undefined
+//! there); CalcVBA runs `Class_Terminate` on the owner thread at the next statement.
+//!
+//! The live-COM cases need OxVba.TestEventServer (tools/OxVba.TestEventServer/register.ps1).
 
 use calcvba_engine::{Engine, ExecBackend, HostConfig};
 use calcvba_hal::model::HostPolicy;
@@ -143,5 +146,54 @@ fn foreign_late_bound_call_matches_excel() {
     If Err.Number <> 0 Then gOut = "foreign-call=ERR" & Err.Number"#;
     for backend in BACKENDS {
         assert_eq!(run(backend, body), "foreign-call=42", "{backend:?}");
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+#[ignore = "live COM: needs OxVba.TestEventServer (tools/OxVba.TestEventServer/register.ps1)"]
+fn foreign_early_bound_slot_calls_match_excel() {
+    // Widget's dual vtable, as in Excel: Value get = slot 7, Value let = 8, Twice = 9.
+    let body = r#"
+    Dim s As Object
+    Set s = CreateObject("OxVba.TestEventServer")
+    On Error Resume Next
+    gOut = "early-get=" & CStr(s.CallSlotGetLong(w, 7))
+    If Err.Number <> 0 Then gOut = gOut & "ERR" & Err.Number: Err.Clear
+    gOut = gOut & ";early-call=" & CStr(s.CallSlotGetLong(w, 9))
+    If Err.Number <> 0 Then gOut = gOut & "ERR" & Err.Number: Err.Clear
+    s.CallSlotPutLong w, 8, 5
+    If Err.Number <> 0 Then gOut = gOut & ";early-put=ERR" & Err.Number: Err.Clear
+    gOut = gOut & ";after-put=" & CStr(w.Value) & ";early-call2=" & CStr(s.CallSlotGetLong(w, 9))
+    If Err.Number <> 0 Then gOut = gOut & "ERR" & Err.Number: Err.Clear"#;
+    for backend in BACKENDS {
+        assert_eq!(
+            run(backend, body),
+            "early-get=21;early-call=42;after-put=5;early-call2=10",
+            "{backend:?}"
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+#[ignore = "live COM: needs OxVba.TestEventServer (tools/OxVba.TestEventServer/register.ps1)"]
+fn foreign_thread_final_release_terminates_on_the_owner_thread() {
+    let body = r#"
+    Dim s As Object, h As Widget
+    Set s = CreateObject("OxVba.TestEventServer")
+    Set h = New Widget
+    gTerm = 0
+    s.Hold h
+    Set h = Nothing
+    gOut = "term-held=" & CStr(gTerm)
+    s.DropOnOtherThread
+    gOut = gOut & ";term-dropped=" & CStr(gTerm)"#;
+    for backend in BACKENDS {
+        assert_eq!(
+            run(backend, body),
+            "term-held=0;term-dropped=1",
+            "{backend:?}"
+        );
     }
 }

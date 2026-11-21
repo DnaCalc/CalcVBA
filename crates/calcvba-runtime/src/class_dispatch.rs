@@ -30,6 +30,8 @@ use crate::object_ref::{
 };
 use crate::{VarType, Variant, VariantCore};
 
+mod slot_thunks;
+
 static NEXT_THREAD_ID: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {
@@ -146,7 +148,7 @@ fn class_dual_vtable_slice(
     let placeholder = compat_slot_not_implemented
         as unsafe extern "system" fn(*mut c_void) -> HResult as *const c_void;
     while slots.len() < member_end_slot {
-        slots.push(placeholder);
+        slots.push(slot_thunks::slot_entry(slots.len()).unwrap_or(placeholder));
     }
 
     let leaked: &'static [*const c_void] = Box::leak(slots.into_boxed_slice());
@@ -1016,6 +1018,32 @@ mod tests {
                     backing: RuntimeMemberBacking::Proc(3),
                 },
                 RuntimeMemberSpec {
+                    name: "Scale".into(),
+                    dispatch_id: None,
+                    vtable_slot: None,
+                    invoke_kind: RuntimeMemberInvokeKind::Method,
+                    params: ["Factor", "Weight", "Bias", "Offset"]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, name)| RuntimeParamSpec {
+                            name: name.into(),
+                            value_type: if i == 1 {
+                                RuntimeValueType::Single
+                            } else {
+                                RuntimeValueType::Double
+                            },
+                            by_ref: false,
+                            optional: false,
+                            param_array: false,
+                        })
+                        .collect(),
+                    return_type: Some(RuntimeValueType::Double),
+                    is_default_member: false,
+                    is_enumerator_member: false,
+                    externally_visible: true,
+                    backing: RuntimeMemberBacking::Proc(5),
+                },
+                RuntimeMemberSpec {
                     name: "Hidden".into(),
                     dispatch_id: None,
                     vtable_slot: None,
@@ -1071,6 +1099,13 @@ mod tests {
                     help_file: crate::Utf16String::new(),
                     help_context: 7,
                 }),
+                RuntimeMemberBacking::Proc(5) => {
+                    let f = |i: usize| args[i].as_f64().or(args[i].as_f32().map(f64::from));
+                    let (a, b, c, d) = (f(0), f(1), f(2), f(3));
+                    Ok(Variant::from_f64(
+                        a.unwrap_or(0.0) * b.unwrap_or(0.0) + c.unwrap_or(0.0) - d.unwrap_or(0.0),
+                    ))
+                }
                 _ => Err(MemberFault::from_number(438)),
             }
         }
@@ -1352,5 +1387,83 @@ mod tests {
         .join()
         .expect("worker thread");
         assert_eq!(wrong_hr, RPC_E_WRONG_THREAD);
+    }
+    /// dc-yqq0.24: an early-bound caller reaches each member through its vtable slot.
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn slot_thunks_call_members_through_the_vtable() {
+        let descriptor = sample_widget_descriptor();
+        let object = ObjectRef::from_project_instance(1, 0, 0, false, descriptor);
+        let raw = object.raw_iunknown().cast::<c_void>();
+        let members = descriptor.dispatch_interface().expect("dual").members;
+        let slot_of = |name: &str, kind: RuntimeMemberInvokeKind| {
+            let member = members
+                .iter()
+                .find(|m| m.name == name && m.invoke_kind == kind)
+                .expect("member");
+            usize::from(member.vtable_slot.expect("slot"))
+        };
+        let entry = |slot: usize| unsafe { *(*raw.cast::<*const *const c_void>()).add(slot) };
+        let placeholder = compat_slot_not_implemented
+            as unsafe extern "system" fn(*mut c_void) -> HResult
+            as *const c_void;
+
+        let mut invoker = MockInvoker;
+        let _scope = unsafe {
+            MemberInvokerScope::enter(NonNull::from(&mut invoker as &mut dyn MemberInvoker))
+        };
+
+        type PutLong = unsafe extern "system" fn(*mut c_void, i32) -> HResult;
+        type GetLong = unsafe extern "system" fn(*mut c_void, *mut i32) -> HResult;
+        type AddPair = unsafe extern "system" fn(*mut c_void, i32, *mut i32, *mut i32) -> HResult;
+        type NoArgs = unsafe extern "system" fn(*mut c_void) -> HResult;
+
+        let put = entry(slot_of("Value", RuntimeMemberInvokeKind::PropertyLet));
+        assert_ne!(put, placeholder);
+        let put: PutLong = unsafe { core::mem::transmute(put) };
+        assert_eq!(unsafe { put(raw, 21) }, S_OK);
+
+        let get: GetLong = unsafe {
+            core::mem::transmute(entry(slot_of(
+                "Value",
+                RuntimeMemberInvokeKind::PropertyGet,
+            )))
+        };
+        let mut value = 0;
+        assert_eq!(unsafe { get(raw, &raw mut value) }, S_OK);
+        assert_eq!(value, 21);
+
+        let twice: GetLong = unsafe {
+            core::mem::transmute(entry(slot_of("Twice", RuntimeMemberInvokeKind::Method)))
+        };
+        assert_eq!(unsafe { twice(raw, &raw mut value) }, S_OK);
+        assert_eq!(value, 42);
+
+        // ByVal 5 and ByRef 7: returns 12 and writes 8 back.
+        let add: AddPair = unsafe {
+            core::mem::transmute(entry(slot_of("AddPair", RuntimeMemberInvokeKind::Method)))
+        };
+        let mut right = 7;
+        assert_eq!(unsafe { add(raw, 5, &raw mut right, &raw mut value) }, S_OK);
+        assert_eq!((value, right), (12, 8));
+
+        // Floating-point arguments: positions 1..=3 arrive in xmm1..xmm3, position 4 on the stack.
+        type Scale =
+            unsafe extern "system" fn(*mut c_void, f64, f32, f64, f64, *mut f64) -> HResult;
+        let scale: Scale = unsafe {
+            core::mem::transmute(entry(slot_of("Scale", RuntimeMemberInvokeKind::Method)))
+        };
+        let mut scaled = 0.0;
+        assert_eq!(
+            unsafe { scale(raw, 1.5, 4.0, 0.25, 2.0, &raw mut scaled) },
+            S_OK
+        );
+        assert_eq!(scaled, 1.5 * 4.0 + 0.25 - 2.0);
+
+        // A VBA error comes back as its HRESULT (0x800A0000 | number).
+        let fail: NoArgs = unsafe {
+            core::mem::transmute(entry(slot_of("Fail", RuntimeMemberInvokeKind::Method)))
+        };
+        assert_eq!(unsafe { fail(raw) }, 0x800A_1388u32 as i32);
     }
 }

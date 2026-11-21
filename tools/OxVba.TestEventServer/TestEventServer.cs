@@ -89,6 +89,15 @@ namespace OxVba.TestEventServer
         [DispId(133)]
         string DescribeDispatch(object target);
 
+        [DispId(134)]
+        int CallSlotGetLong(object target, int slot);
+
+        [DispId(135)]
+        void CallSlotPutLong(object target, int slot, int value);
+
+        [DispId(136)]
+        void DropOnOtherThread();
+
 
         [DispId(115)]
         object ReturnSignedByteArray();
@@ -254,6 +263,59 @@ namespace OxVba.TestEventServer
         }
 
         private object held;
+
+        // A foreign early-bound caller (dc-yqq0.24): calls vtable slot `slot` of the object's
+        // IDispatch (the dual interface of a VBA class) directly, as compiled C++ would.
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+        private delegate int SlotGetLong(IntPtr self, out int result);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+        private delegate int SlotPutLong(IntPtr self, int value);
+
+        private static T SlotDelegate<T>(IntPtr dispatch, int slot) where T : class
+        {
+            IntPtr vtbl = Marshal.ReadIntPtr(dispatch);
+            IntPtr entry = Marshal.ReadIntPtr(vtbl, slot * IntPtr.Size);
+            return Marshal.GetDelegateForFunctionPointer<T>(entry);
+        }
+
+        public int CallSlotGetLong(object target, int slot)
+        {
+            IntPtr dispatch = Marshal.GetIDispatchForObject(target);
+            try
+            {
+                int result;
+                int hr = SlotDelegate<SlotGetLong>(dispatch, slot)(dispatch, out result);
+                if (hr < 0) Marshal.ThrowExceptionForHR(hr);
+                return result;
+            }
+            finally { Marshal.Release(dispatch); }
+        }
+
+        public void CallSlotPutLong(object target, int slot, int value)
+        {
+            IntPtr dispatch = Marshal.GetIDispatchForObject(target);
+            try
+            {
+                int hr = SlotDelegate<SlotPutLong>(dispatch, slot)(dispatch, value);
+                if (hr < 0) Marshal.ThrowExceptionForHR(hr);
+            }
+            finally { Marshal.Release(dispatch); }
+        }
+
+        // The final Release of the held object on another thread (dc-yqq0.25): a raw IUnknown
+        // pointer is released there, with no context switch back to the caller's apartment.
+        public void DropOnOtherThread()
+        {
+            if (held == null) return;
+            IntPtr unknown = Marshal.GetIUnknownForObject(held);
+            Marshal.FinalReleaseComObject(held);
+            held = null;
+            var thread = new System.Threading.Thread(() => Marshal.Release(unknown));
+            thread.SetApartmentState(System.Threading.ApartmentState.MTA);
+            thread.Start();
+            thread.Join();
+        }
 
         public void Hold(object target)
         {

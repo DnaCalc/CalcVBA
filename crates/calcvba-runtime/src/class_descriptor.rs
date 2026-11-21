@@ -7,8 +7,8 @@
 //!
 //! DISPID and vtable-slot layout matches Excel VBA (`docs/design/vba-class-dispids-excel-2026-11-21.md`):
 //! - default member (`VB_UserMemId = 0`): `0`; enumerator (`VB_UserMemId = -4`): `-4`
-//! - public fields: `0x4003_0000 + n` in source order (Object: Get/Let[restricted]/Set; Variant:
-//!   Get/Let/Set; others: Get/Let)
+//! - public fields: `0x4003_0000 + n` by declaration index among all fields (Object:
+//!   Get/Let[restricted]/Set; Variant: Get/Let/Set; others: Get/Let)
 //! - properties: `0x6803_0000 + n` numbered first in reverse source order
 //! - other procedures: `0x6003_0000 + n` continuing the counter in forward source order
 //! - dual vtable slots start at `7` (`IUnknown` 0..2, `IDispatch` 3..6): public fields first,
@@ -26,7 +26,7 @@ use crate::object_ref::{
     RuntimeClassFieldDescriptor, RuntimeClassLifecycleDescriptor, RuntimeEventDescriptor,
     RuntimeInterfaceDescriptor, RuntimeInterfaceId, RuntimeInterfaceIdentity, RuntimeInterfaceKind,
     RuntimeMemberBacking, RuntimeMemberDescriptor, RuntimeMemberInvokeKind, RuntimeParamDescriptor,
-    RuntimeProjectClassIdentity, RuntimeValueType,
+    RuntimeProjectClassIdentity, RuntimeRecordMemberLayout, RuntimeValueType,
 };
 
 const VBA_FIELD_DISPID_BASE: i32 = 0x4003_0000;
@@ -110,12 +110,21 @@ pub struct RuntimeClassSpec {
     pub source_interface_iid: Option<Guid>,
     pub predeclared: bool,
     pub lifecycle: RuntimeClassLifecycleDescriptor,
+    pub record_members: Vec<RuntimeRecordMemberSpec>,
     pub fields: Vec<RuntimeClassFieldSpec>,
     pub as_new_fields: Vec<RuntimeClassAsNewFieldSpec>,
     pub implements: Vec<String>,
     pub methods: Vec<RuntimeMemberSpec>,
     pub implemented_interfaces: Vec<RuntimeImplementedInterfaceSpec>,
     pub events: Vec<RuntimeEventSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RuntimeRecordMemberSpec {
+    pub procedure: usize,
+    pub parameter: Option<usize>,
+    /// The VBA record layout schema shared with native Declare.
+    pub schema: Vec<u32>,
 }
 
 /// Deterministic project-interface GUID for a class-defined `Implements` interface.
@@ -451,10 +460,13 @@ fn build_descriptor_uncached(spec: &RuntimeClassSpec) -> &'static RuntimeClassDe
     // - Object fields: PropertyGet + PropertyLet (FUNCFLAG_FRESTRICTED) + PropertySet (3 slots)
     // - Variant fields: PropertyGet + PropertyLet + PropertySet (3 slots)
     let mut dual_members: Vec<RuntimeMemberSpec> = Vec::new();
-    for field in &spec.fields {
+    for (index, field) in spec.fields.iter().enumerate() {
         if !field.externally_visible {
             continue;
         }
+        let dispatch_id = field
+            .dispatch_id
+            .or(Some(VBA_FIELD_DISPID_BASE + index as i32));
         let folded = field.name.to_ascii_lowercase();
         let has_kind = |kind: RuntimeMemberInvokeKind| {
             spec.methods
@@ -464,7 +476,7 @@ fn build_descriptor_uncached(spec: &RuntimeClassSpec) -> &'static RuntimeClassDe
         if !has_kind(RuntimeMemberInvokeKind::PropertyGet) {
             dual_members.push(RuntimeMemberSpec {
                 name: field.name.clone(),
-                dispatch_id: field.dispatch_id,
+                dispatch_id,
                 vtable_slot: field.get_vtable_slot,
                 invoke_kind: RuntimeMemberInvokeKind::PropertyGet,
                 params: Vec::new(),
@@ -481,7 +493,7 @@ fn build_descriptor_uncached(spec: &RuntimeClassSpec) -> &'static RuntimeClassDe
         if !has_kind(RuntimeMemberInvokeKind::PropertyLet) {
             dual_members.push(RuntimeMemberSpec {
                 name: field.name.clone(),
-                dispatch_id: field.dispatch_id,
+                dispatch_id,
                 vtable_slot: field.put_vtable_slot,
                 invoke_kind: RuntimeMemberInvokeKind::PropertyLet,
                 params: vec![RuntimeParamSpec {
@@ -502,7 +514,7 @@ fn build_descriptor_uncached(spec: &RuntimeClassSpec) -> &'static RuntimeClassDe
         if (is_object || is_variant) && !has_kind(RuntimeMemberInvokeKind::PropertySet) {
             dual_members.push(RuntimeMemberSpec {
                 name: field.name.clone(),
-                dispatch_id: field.dispatch_id,
+                dispatch_id,
                 vtable_slot: field.putref_vtable_slot,
                 invoke_kind: RuntimeMemberInvokeKind::PropertySet,
                 params: vec![RuntimeParamSpec {
@@ -583,6 +595,19 @@ fn build_descriptor_uncached(spec: &RuntimeClassSpec) -> &'static RuntimeClassDe
         source_interface_iid,
         predeclared: spec.predeclared,
         lifecycle: spec.lifecycle,
+        record_members: Box::leak(
+            spec.record_members
+                .iter()
+                .filter_map(|item| {
+                    Some(RuntimeRecordMemberLayout {
+                        procedure: item.procedure,
+                        parameter: item.parameter,
+                        layout: crate::VbaRecordLayout::from_boundary_schema(&item.schema).ok()?,
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        ),
         fields,
         as_new_fields,
         implements,
@@ -608,7 +633,9 @@ mod tests {
             lifecycle: RuntimeClassLifecycleDescriptor {
                 has_initialize: false,
                 has_terminate: true,
+                hidden_vtable_slots: 0,
             },
+            record_members: Vec::new(),
             fields: vec![RuntimeClassFieldSpec {
                 name: "Value".into(),
                 token: 0,
@@ -726,7 +753,9 @@ mod tests {
             lifecycle: RuntimeClassLifecycleDescriptor {
                 has_initialize: false,
                 has_terminate: false,
+                hidden_vtable_slots: 0,
             },
+            record_members: Vec::new(),
             fields: Vec::new(),
             as_new_fields: Vec::new(),
             implements: Vec::new(),

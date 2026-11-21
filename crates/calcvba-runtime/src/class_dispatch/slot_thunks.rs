@@ -93,13 +93,17 @@ use win64::slot_dispatch;
 mod win64 {
     use core::ffi::c_void;
     use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::Arc;
 
     use calcvba_automation::com::{
         DISP_E_TYPEMISMATCH, E_FAIL, E_NOTIMPL, E_POINTER, HResult, IID_IDISPATCH,
         RPC_E_WRONG_THREAD, S_OK,
     };
-    use calcvba_automation::oleaut;
-    use calcvba_automation::safe_array::SafeArray;
+    use calcvba_automation::safe_array::{SafeArray, VT_VARIANT_VALUE as VT_VARIANT};
+    use windows_sys::Win32::System::Com::{
+        FADF_AUTO, FADF_EMBEDDED, FADF_FIXEDSIZE, FADF_STATIC, SAFEARRAY,
+    };
+    use windows_sys::Win32::System::Ole::{SafeArrayCopyData, SafeArrayDestroy};
 
     use super::super::error_info::{clear_thread_error_info, publish_member_fault_error_info};
     use super::super::implements::{ImplementedInterfaceFace, is_impl_query_interface};
@@ -109,10 +113,24 @@ mod win64 {
     };
     use crate::object_ref::{
         COMPAT_OBJECT_VTBL, CompatObjectBase, ObjectRef, RawRuntimeIUnknown,
-        RuntimeInterfaceDescriptor, RuntimeMemberDescriptor, RuntimeMemberInvokeKind,
-        RuntimeValueType,
+        RuntimeClassDescriptor, RuntimeInterfaceDescriptor, RuntimeMemberBacking,
+        RuntimeMemberDescriptor, RuntimeMemberInvokeKind, RuntimeValueType,
     };
-    use crate::{VarType, Variant, coerce};
+    use crate::{VarType, Variant, VbaRecord, VbaRecordLayout, coerce};
+
+    const VT_DECIMAL: u16 = VarType::Decimal as u16;
+    const VT_RECORD: u16 = VarType::Record as u16;
+    const VT_ARRAY: u16 = 0x2000;
+    const FADF_FIXED_STORAGE: u16 = FADF_AUTO | FADF_STATIC | FADF_EMBEDDED | FADF_FIXEDSIZE;
+
+    #[repr(C, align(8))]
+    struct WireDecimal {
+        reserved: u16,
+        scale_sign: u16,
+        hi: u32,
+        lo: u32,
+        mid: u32,
+    }
 
     /// Called by the common stub. `args[0]` is `this`, `args[n]` the n-th argument's 8-byte
     /// slot; `xmm[n - 1]` holds a floating-point argument in position `n` (1..=3).
@@ -129,10 +147,9 @@ mod win64 {
         .unwrap_or(E_FAIL)
     }
 
-    /// The `VARTYPE` an argument or return value of `ty` has in the dual interface, or `None`
-    /// when slot calls do not carry that type yet.
-    fn slot_vt(ty: RuntimeValueType) -> Option<u16> {
-        Some(match ty {
+    /// Automation storage tag for a slot's declared type.
+    fn slot_vt(ty: RuntimeValueType) -> u16 {
+        match ty {
             RuntimeValueType::Integer => 0x02,
             RuntimeValueType::Long => 0x03,
             RuntimeValueType::Single => 0x04,
@@ -142,13 +159,33 @@ mod win64 {
             RuntimeValueType::String => 0x08,
             RuntimeValueType::Object => 0x09,
             RuntimeValueType::Boolean => 0x0B,
-            RuntimeValueType::Variant => 0x0C,
+            RuntimeValueType::Variant => VT_VARIANT,
+            RuntimeValueType::Decimal => VT_DECIMAL,
             RuntimeValueType::Byte => 0x11,
             RuntimeValueType::LongLong | RuntimeValueType::LongPtr => 0x14,
-            RuntimeValueType::Decimal | RuntimeValueType::Record | RuntimeValueType::Array => {
-                return None;
-            }
-        })
+            RuntimeValueType::Array => VT_ARRAY,
+            RuntimeValueType::Record => VT_RECORD,
+        }
+    }
+
+    fn slot_record_layout(
+        descriptor: &'static RuntimeClassDescriptor,
+        member: &RuntimeMemberDescriptor,
+        vt: u16,
+        parameter: Option<usize>,
+    ) -> Result<Option<&'static Arc<VbaRecordLayout>>, HResult> {
+        if vt != VT_RECORD {
+            return Ok(None);
+        }
+        let RuntimeMemberBacking::Proc(procedure) = member.backing else {
+            return Err(E_NOTIMPL);
+        };
+        descriptor
+            .record_members
+            .iter()
+            .find(|record| record.procedure == procedure && record.parameter == parameter)
+            .map(|record| Some(&record.layout))
+            .ok_or(E_NOTIMPL)
     }
 
     fn is_float(vt: u16) -> bool {
@@ -168,6 +205,120 @@ mod win64 {
         .map_err(|_| DISP_E_TYPEMISMATCH)
     }
 
+    unsafe fn read_slot(
+        target: *mut u8,
+        vt: u16,
+        record: Option<&Arc<VbaRecordLayout>>,
+    ) -> Result<Variant, HResult> {
+        if let Some(layout) = record {
+            // SAFETY: the supplied record layout describes the caller's live record payload.
+            let record = unsafe { VbaRecord::clone_from_raw(target, Arc::clone(layout)) }
+                .map_err(|_| DISP_E_TYPEMISMATCH)?;
+            return Ok(Variant::from_vba_record(record));
+        }
+        let vt = if vt == VT_ARRAY {
+            // SAFETY: a ByRef array or a ParamArray has one live SAFEARRAY* slot.
+            let array = unsafe { target.cast::<*mut SAFEARRAY>().read() };
+            if array.is_null() {
+                return Ok(Variant::unallocated_array(VT_VARIANT));
+            }
+            // SAFETY: the caller retains the array for the synchronous copy below.
+            let view = unsafe { SafeArray::borrow_raw(array.cast(), None) }.ok_or(E_POINTER)?;
+            let element = view.element_vartype();
+            if !SafeArray::supports_intrinsic_element_vartype(element) {
+                return Err(DISP_E_TYPEMISMATCH);
+            }
+            VT_ARRAY | element
+        } else {
+            vt
+        };
+        // SAFETY: target is the caller's live storage with the ABI shape described by vt.
+        let core = unsafe { Variant::by_ref(vt, target) }.core();
+        // SAFETY: core holds a reference to that same storage.
+        unsafe { copy_dispatch_arg(&raw const core) }
+    }
+
+    unsafe fn write_slot(
+        target: *mut u8,
+        vt: u16,
+        record: Option<&Arc<VbaRecordLayout>>,
+        value: &Variant,
+    ) -> Result<(), HResult> {
+        if let Some(layout) = record {
+            let new = value.as_vba_record().ok_or(DISP_E_TYPEMISMATCH)?;
+            if new.layout() != layout {
+                return Err(DISP_E_TYPEMISMATCH);
+            }
+            // SAFETY: the target has the declared layout. Dereferenced arguments are live and
+            // the retval storage was initialized to an empty record before entering VBA.
+            unsafe {
+                VbaRecord::drop_raw(target, layout);
+                new.move_into_raw(target);
+            }
+            return Ok(());
+        }
+        if vt == VT_ARRAY {
+            if value.vtype() != VarType::ArrayVariant
+                || value
+                    .array_element_vartype()
+                    .is_some_and(|element| !SafeArray::supports_intrinsic_element_vartype(element))
+            {
+                return Err(DISP_E_TYPEMISMATCH);
+            }
+            let array = value.try_as_safearray().map_err(|_| DISP_E_TYPEMISMATCH)?;
+            let slot = target.cast::<*mut SAFEARRAY>();
+            // SAFETY: the caller owns this initialized SAFEARRAY* slot.
+            let previous = unsafe { slot.read() };
+            // SAFETY: a non-null previous pointer is live until replaced.
+            let old = unsafe { SafeArray::borrow_raw(previous.cast(), None) };
+            if let (Some(old), Some(new)) = (old, array.as_ref())
+                && old.element_vartype() == new.element_vartype()
+                && old.bounds() == new.bounds()
+            {
+                // Update the original descriptor's data, including for a fixed VBA array.
+                // SAFETY: both descriptors are live, type and bounds match, and the caller
+                // lent the destination for writes for this call.
+                let status = unsafe { SafeArrayCopyData(new.raw_safearray_ptr().cast(), previous) };
+                return if status < 0 { Err(status) } else { Ok(()) };
+            }
+            if !previous.is_null() {
+                // SAFETY: a changed dynamic array transfers its old descriptor to OleAut.
+                // Fixed arrays cannot change shape and must keep the original descriptor.
+                if unsafe { (*previous).fFeatures } & FADF_FIXED_STORAGE != 0 {
+                    return Err(DISP_E_TYPEMISMATCH);
+                }
+                // SAFETY: the caller's slot owns the old descriptor. On failure it stays live.
+                let status = unsafe { SafeArrayDestroy(previous) };
+                if status < 0 {
+                    return Err(status);
+                }
+            }
+            let raw = array.map_or(core::ptr::null_mut(), SafeArray::into_raw_safearray_ptr);
+            // SAFETY: the slot is writable and takes ownership of the replacement.
+            unsafe { slot.write(raw.cast()) };
+            return Ok(());
+        }
+
+        let prepared = as_slot_type(value, vt)?;
+        if vt == VT_DECIMAL {
+            let decimal = prepared.as_decimal96().ok_or(DISP_E_TYPEMISMATCH)?;
+            // SAFETY: standalone DECIMAL storage is writable and has no owned payload.
+            unsafe {
+                target.cast::<WireDecimal>().write(WireDecimal {
+                    reserved: 0,
+                    scale_sign: decimal.scale_sign,
+                    hi: decimal.hi,
+                    lo: decimal.lo,
+                    mid: decimal.mid,
+                });
+            }
+            return Ok(());
+        }
+        // SAFETY: target is a writable initialized cell of the declared ABI type.
+        unsafe { Variant::by_ref(vt, target).write_through(prepared) }
+            .map_err(|_| DISP_E_TYPEMISMATCH)
+    }
+
     fn member_for_slot(
         interface: &'static RuntimeInterfaceDescriptor,
         slot: usize,
@@ -176,50 +327,6 @@ mod win64 {
             .members
             .iter()
             .find(|member| member.vtable_slot.map(usize::from) == Some(slot))
-    }
-
-    enum SlotParamCell {
-        VariantCell {
-            by_ref: bool,
-            vt: u16,
-            target: *mut u8,
-            cell: Variant,
-        },
-        SafeArrayRef {
-            by_ref: bool,
-            target: *mut *mut c_void,
-        },
-    }
-
-    enum SlotReturnTarget {
-        VariantCell { vt: u16, out: *mut u8 },
-        SafeArrayOut { out: *mut *mut c_void },
-    }
-
-    unsafe fn clone_raw_safearray_to_variant(psa: *mut c_void) -> Result<Variant, HResult> {
-        if psa.is_null() {
-            return Ok(Variant::empty());
-        }
-        let mut copy = core::ptr::null_mut();
-        // SAFETY: `psa` is a live caller-owned `SAFEARRAY*`; `safe_array_copy` deep-copies it.
-        let hr = unsafe { oleaut::safe_array_copy(psa, &mut copy) };
-        if hr < 0 {
-            return Err(hr);
-        }
-        if copy.is_null() {
-            return Ok(Variant::empty());
-        }
-        // SAFETY: `copy` is an owned `SAFEARRAY*` returned by `safe_array_copy`.
-        match unsafe { SafeArray::from_raw_safearray_owned(copy, None) } {
-            Some(arr) => Ok(Variant::from_safearray(arr)),
-            None => {
-                // SAFETY: destroy unadopted copy.
-                unsafe {
-                    let _ = oleaut::safe_array_destroy(copy);
-                }
-                Err(DISP_E_TYPEMISMATCH)
-            }
-        }
     }
 
     unsafe fn dispatch(slot: usize, args: *const u64, xmm: *const u64) -> HResult {
@@ -256,57 +363,26 @@ mod win64 {
         if current_thread_id() != unsafe { (*owner).owner_thread } {
             return RPC_E_WRONG_THREAD;
         }
+        // SAFETY: the primary owner remains live through this synchronous call.
+        let descriptor = unsafe { (*owner).class_descriptor };
         clear_thread_error_info();
         let Some(member) = interface.and_then(|iface| member_for_slot(iface, slot)) else {
             return E_NOTIMPL;
         };
 
-        // Each argument as a VT_BYREF cell (or SAFEARRAY* / SAFEARRAY**) over the caller's storage.
+        // Each argument as a VT_BYREF cell over the caller's storage.
         let mut cells = Vec::with_capacity(member.params.len());
         let mut values = Vec::with_capacity(member.params.len());
         for (index, param) in member.params.iter().enumerate() {
             let position = index + 1;
-            if param.param_array {
-                return E_NOTIMPL;
-            }
-            if param.value_type == RuntimeValueType::Array {
-                // SAFETY: caller passed at least `params.len()` arguments after `this`.
-                let raw_word = unsafe { *args.add(position) } as usize;
-                if param.by_ref {
-                    let pp = raw_word as *mut *mut c_void;
-                    let value = if pp.is_null() {
-                        Variant::empty()
-                    } else {
-                        // SAFETY: caller supplied a readable `SAFEARRAY**`.
-                        let psa = unsafe { *pp };
-                        // SAFETY: `psa` is null or a live `SAFEARRAY*`.
-                        match unsafe { clone_raw_safearray_to_variant(psa) } {
-                            Ok(val) => val,
-                            Err(hr) => return hr,
-                        }
-                    };
-                    values.push(value);
-                    cells.push(SlotParamCell::SafeArrayRef {
-                        by_ref: !pp.is_null(),
-                        target: pp,
-                    });
-                } else {
-                    let psa = raw_word as *mut c_void;
-                    // SAFETY: `psa` is null or a live `SAFEARRAY*`.
-                    let value = match unsafe { clone_raw_safearray_to_variant(psa) } {
-                        Ok(val) => val,
-                        Err(hr) => return hr,
-                    };
-                    values.push(value);
-                    cells.push(SlotParamCell::SafeArrayRef {
-                        by_ref: false,
-                        target: core::ptr::null_mut(),
-                    });
-                }
-                continue;
-            }
-            let Some(vt) = slot_vt(param.value_type) else {
-                return E_NOTIMPL;
+            let vt = if param.param_array {
+                VT_ARRAY
+            } else {
+                slot_vt(param.value_type)
+            };
+            let record = match slot_record_layout(descriptor, member, vt, Some(index)) {
+                Ok(record) => record,
+                Err(hr) => return hr,
             };
             let raw = if !param.by_ref && is_float(vt) && position <= 3 {
                 // SAFETY: the stub spilled xmm1..=xmm3.
@@ -315,7 +391,10 @@ mod win64 {
                 // SAFETY: the caller passed at least `params.len()` arguments after `this`.
                 unsafe { args.add(position) }
             };
-            let target = if param.by_ref || vt == 0x0C {
+            let indirect = matches!(vt, VT_VARIANT | VT_DECIMAL)
+                || param.param_array
+                || record.is_some_and(|layout| !matches!(layout.size(), 1 | 2 | 4 | 8));
+            let target = if param.by_ref || indirect {
                 // SAFETY: the slot holds the caller's pointer to the value.
                 unsafe { *raw as usize as *mut u8 }
             } else {
@@ -324,20 +403,12 @@ mod win64 {
             if target.is_null() {
                 return E_POINTER;
             }
-            // SAFETY: `target` is the caller's live storage of type `vt` for this call.
-            let cell = unsafe { Variant::by_ref(vt, target) };
-            let core = cell.core();
-            // SAFETY: `core` is a VT_BYREF cell over live storage.
-            match unsafe { copy_dispatch_arg(&raw const core) } {
+            // SAFETY: target is the caller's live storage of type vt for this call.
+            match unsafe { read_slot(target, vt, record) } {
                 Ok(value) => values.push(value),
                 Err(hr) => return hr,
             }
-            cells.push(SlotParamCell::VariantCell {
-                by_ref: param.by_ref,
-                vt,
-                target,
-                cell,
-            });
+            cells.push((param.by_ref, vt, target, record));
         }
 
         let returns = matches!(
@@ -345,69 +416,53 @@ mod win64 {
             RuntimeMemberInvokeKind::Method | RuntimeMemberInvokeKind::PropertyGet
         ) && member.return_type.is_some();
         let result = if returns {
-            if member.return_type == Some(RuntimeValueType::Array) {
-                // SAFETY: the retval pointer follows the declared arguments.
-                let out =
-                    unsafe { *args.add(member.params.len() + 1) } as usize as *mut *mut c_void;
-                if out.is_null() {
-                    return E_POINTER;
-                }
-                // SAFETY: `out` is the caller's writable `SAFEARRAY**` out-slot.
-                unsafe {
-                    *out = core::ptr::null_mut();
-                }
-                Some(SlotReturnTarget::SafeArrayOut { out })
-            } else {
-                let Some(vt) = member.return_type.and_then(slot_vt) else {
-                    return E_NOTIMPL;
-                };
-                // SAFETY: the retval pointer follows the declared arguments.
-                let out = unsafe { *args.add(member.params.len() + 1) } as usize as *mut u8;
-                if out.is_null() {
-                    return E_POINTER;
-                }
-                // An [out] slot holds nothing yet: give owned types an empty value to replace.
-                // SAFETY: `out` is the caller's writable storage of type `vt`.
-                unsafe {
-                    match vt {
-                        0x08 | 0x09 => out.cast::<*mut c_void>().write(core::ptr::null_mut()),
-                        0x0C => out.cast::<Variant>().write(Variant::empty()),
-                        _ => {}
-                    }
-                }
-                Some(SlotReturnTarget::VariantCell { vt, out })
+            let vt = slot_vt(member.return_type.expect("member has a return type"));
+            let record = match slot_record_layout(descriptor, member, vt, None) {
+                Ok(record) => record,
+                Err(hr) => return hr,
+            };
+            // SAFETY: the retval pointer follows the declared arguments.
+            let out = unsafe { *args.add(member.params.len() + 1) } as usize as *mut u8;
+            if out.is_null() {
+                return E_POINTER;
             }
+            // An [out] slot holds nothing yet: give owned types an empty value to replace.
+            // SAFETY: `out` is the caller's writable storage of type `vt`.
+            unsafe {
+                match vt {
+                    0x08 | 0x09 | VT_ARRAY => {
+                        out.cast::<*mut c_void>().write(core::ptr::null_mut())
+                    }
+                    VT_VARIANT => out.cast::<Variant>().write(Variant::empty()),
+                    VT_RECORD => out.write_bytes(0, record.expect("record has a layout").size()),
+                    _ => {}
+                }
+            }
+            Some((vt, out, record))
         } else {
             None
         };
 
         // ByRef arguments over the same storage are one variable.
         let aliases: Vec<usize> = (0..cells.len())
-            .map(|index| match &cells[index] {
-                SlotParamCell::VariantCell {
-                    by_ref: true,
-                    vt,
-                    target,
-                    ..
-                } => cells[..index]
+            .map(|index| {
+                let (by_ref, vt, target, record) = &cells[index];
+                if !*by_ref {
+                    return index;
+                }
+                cells[..index]
                     .iter()
-                    .position(|other| {
-                        matches!(
-                            other,
-                            SlotParamCell::VariantCell {
-                                by_ref: true,
-                                vt: other_vt,
-                                target: other_target,
-                                ..
-                            } if other_vt == vt && other_target == target
-                        )
+                    .position(|(other_ref, other_vt, other_target, other_record)| {
+                        *other_ref
+                            && other_vt == vt
+                            && other_target == target
+                            && other_record == record
                     })
-                    .unwrap_or(index),
-                _ => index,
+                    .unwrap_or(index)
             })
             .collect();
 
-        // SAFETY: `owner` is live; always take one primary reference (`Me = owner`) for the call.
+        // SAFETY: the owner is live. The method receives the canonical object as Me.
         let Some(object) = (unsafe { ObjectRef::from_raw_iunknown_addref(owner.cast()) }) else {
             return E_POINTER;
         };
@@ -420,68 +475,23 @@ mod win64 {
             &aliases,
         );
 
-        for (cell_entry, value) in cells.iter().zip(&values) {
-            match cell_entry {
-                SlotParamCell::VariantCell {
-                    by_ref: true,
-                    vt,
-                    cell,
-                    ..
-                } => {
-                    let prepared = match as_slot_type(value, *vt) {
-                        Ok(prepared) => prepared,
-                        Err(hr) => return hr,
-                    };
-                    // SAFETY: the caller's ByRef storage is live and writable for this call.
-                    if unsafe { cell.write_through(prepared) }.is_err() {
-                        return DISP_E_TYPEMISMATCH;
-                    }
-                }
-                SlotParamCell::SafeArrayRef {
-                    by_ref: true,
-                    target,
-                } => {
-                    if let Some(arr) = value.as_safearray() {
-                        let new_ptr = arr.clone().into_raw_safearray_ptr();
-                        // SAFETY: caller supplied a live writable `SAFEARRAY**`.
-                        unsafe {
-                            let old = *(*target);
-                            *(*target) = new_ptr;
-                            if !old.is_null() {
-                                let _ = oleaut::safe_array_destroy(old);
-                            }
-                        }
-                    }
-                }
-                _ => {}
+        for (index, (&(by_ref, vt, target, record), value)) in cells.iter().zip(&values).enumerate()
+        {
+            if !by_ref || aliases[index] != index {
+                continue;
+            }
+            // SAFETY: the caller's ByRef storage is live and writable for this call.
+            if let Err(hr) = unsafe { write_slot(target, vt, record, value) } {
+                return hr;
             }
         }
 
         match outcome {
             Ok(value) => {
-                if let Some(target) = result {
-                    match target {
-                        SlotReturnTarget::VariantCell { vt, out } => {
-                            let prepared = match as_slot_type(&value, vt) {
-                                Ok(prepared) => prepared,
-                                Err(hr) => return hr,
-                            };
-                            // SAFETY: `out` is writable storage of type `vt`, initialised above.
-                            let cell = unsafe { Variant::by_ref(vt, out) };
-                            // SAFETY: same storage.
-                            if unsafe { cell.write_through(prepared) }.is_err() {
-                                return DISP_E_TYPEMISMATCH;
-                            }
-                        }
-                        SlotReturnTarget::SafeArrayOut { out } => {
-                            let Some(arr) = value.as_safearray() else {
-                                return DISP_E_TYPEMISMATCH;
-                            };
-                            // SAFETY: `out` is a writable `SAFEARRAY**` out-slot.
-                            unsafe {
-                                *out = arr.clone().into_raw_safearray_ptr();
-                            }
-                        }
+                if let Some((vt, out, record)) = result {
+                    // SAFETY: `out` is writable storage of type `vt`, initialised above.
+                    if let Err(hr) = unsafe { write_slot(out, vt, record, &value) } {
+                        return hr;
                     }
                 }
                 S_OK
@@ -490,6 +500,20 @@ mod win64 {
                 publish_member_fault_error_info(interface_iid, &fault);
                 vba_error_to_hresult(fault.number)
             }
+        }
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn standalone_decimal_uses_the_decimal_header() {
+        let value = Variant::from_decimal96(crate::Decimal96::from_parts(1, 2, 3, 4, true));
+        let mut wire = core::mem::MaybeUninit::<WireDecimal>::uninit();
+        let target = wire.as_mut_ptr().cast();
+        // SAFETY: target points to writable DECIMAL storage and write_slot initializes it.
+        unsafe {
+            write_slot(target, VT_DECIMAL, None, &value).unwrap();
+            assert_eq!((*wire.as_ptr()).reserved, 0);
+            assert_eq!(read_slot(target, VT_DECIMAL, None).unwrap(), value);
         }
     }
 }

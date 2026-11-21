@@ -120,7 +120,8 @@ fn class_dual_vtable_slice(
                 .unwrap_or(7)
                 .max(7 + dispatch.members.len())
         })
-        .unwrap_or(7);
+        .unwrap_or(7)
+        + usize::from(descriptor.lifecycle.hidden_vtable_slots);
 
     let mut slots: Vec<*const c_void> = Vec::with_capacity(member_end_slot);
     slots.push(COMPAT_OBJECT_VTBL.query_interface as *const c_void);
@@ -1118,6 +1119,7 @@ mod tests {
             source_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
+            record_members: Vec::new(),
             fields: vec![RuntimeClassFieldSpec {
                 name: "Value".into(),
                 token: 10,
@@ -1810,6 +1812,7 @@ mod tests {
             source_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
+            record_members: Vec::new(),
             fields: vec![RuntimeClassFieldSpec {
                 name: "Side".into(),
                 token: 10,

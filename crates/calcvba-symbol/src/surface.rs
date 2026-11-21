@@ -443,8 +443,8 @@ pub fn synthesize_export_surface(
 ///
 /// Follows Excel VBA's measured class DISPID and vtable-slot layout
 /// (`docs/design/vba-class-dispids-excel-2026-11-21.md`, dc-yqq0.29):
-/// - public fields: `0x4003_0000 + n` in source order (Object: Get/Let[restricted]/Set; Variant:
-///   Get/Let/Set; others: Get/Let), occupying slots starting at 7 first;
+/// - public fields: `0x4003_0000 + n` using the declaration index among all fields (Object:
+///   Get/Let[restricted]/Set; Variant: Get/Let/Set; others: Get/Let), occupying slots from 7;
 /// - properties (all visibilities): `0x6803_0000 + n` numbered first in reverse source order;
 /// - other procedures (all visibilities, excluding `Class_Initialize`/`Class_Terminate`):
 ///   `0x6003_0000 + n` continuing the counter in forward source order;
@@ -581,23 +581,24 @@ fn synthesize_module_members(
     }
 
     // Excel VBA class DISPID assignment (docs/design/vba-class-dispids-excel-2026-11-21.md):
-    // 1. Public fields: 0x40030000 + n in source order.
+    // 1. Public fields: 0x40030000 + n, with private fields counted in n.
     // 2. Properties (all visibilities): 0x68030000 + n numbered FIRST in REVERSE source order.
     // 3. Other procedures (all visibilities, excluding Class_Initialize/Class_Terminate):
     //    0x60030000 + n continuing the counter in source order.
     let mut dispids: Vec<Option<i32>> = vec![None; scan.members.len()];
     let mut field_counter = 0i32;
     for (idx, member) in scan.members.iter().enumerate() {
-        if member.kind == SymbolKind::Field && member.visibility == Visibility::Public {
-            dispids[idx] = Some(if member.is_default {
-                0
-            } else if member.is_enumerator {
-                -4
-            } else {
-                let id = VBA_FIELD_DISPID_BASE + field_counter;
-                field_counter += 1;
-                id
-            });
+        if member.kind == SymbolKind::Field {
+            if member.visibility == Visibility::Public {
+                dispids[idx] = Some(if member.is_default {
+                    0
+                } else if member.is_enumerator {
+                    -4
+                } else {
+                    VBA_FIELD_DISPID_BASE + field_counter
+                });
+            }
+            field_counter += 1;
         }
     }
     let mut member_counter = 0i32;

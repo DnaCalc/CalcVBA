@@ -41,13 +41,6 @@ $enumAnchor='if (-not (Test-ExcelOracleWindowEnumerationAuthority -Enumeration $
 if (-not $definitions.Contains($enumAnchor)) { throw 'worker enumeration anchor moved' }
 $definitions=$definitions.Replace($enumAnchor,'if ($enumeration.ErrorCode -eq 0 -and -not $enumeration.Truncated -and @($enumeration.Windows).Count -eq 0) { Start-Sleep -Milliseconds 200; continue }'+"`n        "+$enumAnchor)
 . ([scriptblock]::Create($definitions))
-# A private desktop shows the OS 'UAC Input Indicator' helper windows for the Excel process; they are
-# not Excel startup dialogs.
-function Test-ExcelStartupBlockingWindow {
-    param([Parameter(Mandatory = $true)]$Window)
-    if (-not [bool]$Window.IsTopLevel -or -not [bool]$Window.Visible) { return $false }
-    return [string]$Window.ClassName -notin @('XLMAIN', 'MSOSPLASH', 'MsoSplash', 'UAC Input Indicator', 'UAC_InputIndicatorOverlayWnd')
-}
 $SafeMode=$true
 $OwnershipFile=Join-Path $Directory 'owned-excel.jsonl'
 $HelperOwnershipFile=Join-Path $Directory 'owned-helpers.jsonl'

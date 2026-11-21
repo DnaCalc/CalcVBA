@@ -45,8 +45,9 @@ pub use callback_thunks::{
 pub use class_descriptor::{
     RuntimeClassActivationSpec, RuntimeClassAsNewFieldSpec, RuntimeClassFieldSpec,
     RuntimeClassSpec, RuntimeEventSpec, RuntimeImplementedInterfaceSpec, RuntimeMemberSpec,
-    RuntimeParamSpec, build_runtime_class_descriptor, default_class_interface_iid,
-    default_class_source_interface_iid, runtime_project_interface_guid,
+    RuntimeParamSpec, RuntimeRecordMemberSpec, build_runtime_class_descriptor,
+    default_class_interface_iid, default_class_source_interface_iid,
+    runtime_project_interface_guid,
 };
 pub use class_dispatch::{
     class_dual_vtable_ptr, class_dual_vtable_slot_count, current_thread_id, invoke_early_bound_slot,
@@ -69,7 +70,8 @@ pub use object_ref::{
     RuntimeInterfaceDescriptor, RuntimeInterfaceId, RuntimeInterfaceIdentity, RuntimeInterfaceKind,
     RuntimeInterfaceProjection, RuntimeLifetimePolicy, RuntimeMemberBacking,
     RuntimeMemberDescriptor, RuntimeMemberInvokeKind, RuntimeObjectIdentity,
-    RuntimeParamDescriptor, RuntimeProjectClassIdentity, RuntimeValueType,
+    RuntimeParamDescriptor, RuntimeProjectClassIdentity, RuntimeRecordMemberLayout,
+    RuntimeValueType,
 };
 pub use object_ref::{
     finish_pending_termination, has_pending_terminations, reset_pending_terminations,

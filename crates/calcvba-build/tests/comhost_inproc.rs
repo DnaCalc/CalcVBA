@@ -255,13 +255,13 @@ const PROJECT: &str = r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
 "#;
 
 #[test]
-fn comhost_takes_named_arguments_and_keeps_one_wrapper_per_object() {
+fn comhost_takes_named_arguments_and_preserves_object_identity() {
     check_server("vm3", "");
 }
 
 /// The same server with RuntimeFlavor=Jit: comhost runs the image on the JIT (dc-yqq0.10).
 #[test]
-fn comhost_on_the_jit_takes_named_arguments_and_keeps_one_wrapper_per_object() {
+fn comhost_on_the_jit_takes_named_arguments_and_preserves_object_identity() {
     check_server("jit", "\n    <RuntimeFlavor>Jit</RuntimeFlavor>");
 }
 
@@ -332,6 +332,16 @@ fn check_server(name: &str, runtime: &str) {
         );
         (factory_vtbl.release)(factory);
         let mixer = Dispatch(instance);
+
+        // An early-bound client requests the default IID emitted in the type library.
+        let default_iid = parse_guid(&descriptor.classes[0].default_interface_iid);
+        let mut dual = std::ptr::null_mut();
+        assert_eq!(
+            (mixer.vtbl().query_interface)(instance, &default_iid, &mut dual),
+            0
+        );
+        assert_eq!(dual, instance);
+        (mixer.vtbl().release)(dual);
 
         // Parameter DISPIDs are their positions; an unknown name is DISPID_UNKNOWN.
         let (hr, ids) = mixer.ids(&["Mix", "c", "a"]);

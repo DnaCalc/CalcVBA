@@ -231,7 +231,10 @@ fn prepared_value(
     interfaces: &[calcvba_com::TypeLibInterfaceMetadata],
 ) -> Result<Variant, TypedFault> {
     if let Some(object) = value.as_object_ref() {
-        if object.is_project_instance() || object.native_collection_snapshot().is_some() {
+        if object.is_project_instance() {
+            return Ok(value);
+        }
+        if object.native_collection_snapshot().is_some() {
             return Err(fault(13));
         }
         if calcvba_host_api::HostObject::from_object_ref(&object).is_some() {

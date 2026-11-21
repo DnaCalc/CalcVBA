@@ -91,6 +91,7 @@ impl VbaRecordLayout {
                 6 => F::Currency,
                 7 => F::Date,
                 8 => F::String,
+                9 => F::Object,
                 11 => F::Boolean,
                 0x1008 => F::FixedString {
                     len: word(words, at)? as usize,
@@ -123,6 +124,9 @@ impl VbaRecordLayout {
                         bounds,
                     }
                 }
+                0x6000 => F::DynamicArray {
+                    element: Box::new(field(words, at, depth + 1)?),
+                },
                 _ => return Err("Unknown native record field type".into()),
             })
         }
@@ -1176,8 +1180,9 @@ impl VbaRecord {
     /// Move this complete payload into uninitialized raw storage without dropping fields.
     ///
     /// # Safety
-    /// `dst` must be distinct, writable, aligned storage of at least `layout.size()` bytes.
-    unsafe fn move_into_raw(self, dst: *mut u8) {
+    /// `dst` must be distinct, writable, aligned, uninitialized storage of at least
+    /// `layout.size()` bytes. The caller takes ownership of the record payload.
+    pub unsafe fn move_into_raw(self, dst: *mut u8) {
         let this = core::mem::ManuallyDrop::new(self);
         // SAFETY: caller guarantees the distinct destination extent. `this` is a
         // complete initialized owner, and copying the exact layout size transfers

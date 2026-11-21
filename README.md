@@ -60,10 +60,11 @@ cargo run -p calcvba-cli -- build project.basproj --target ComServer --out-dir o
 ```
 
 `.oxi` packages contain the compiled project closure. ComServer emits a
-runtime-backed Windows COM DLL and type library, currently using VM3. The
+runtime-backed Windows COM DLL and type library. It uses VM3 by default and
+uses the JIT when the project sets `<RuntimeFlavor>Jit</RuntimeFlavor>`. The
 [COM DLL example](examples/comserver) checks source Instancing, class factories
 and an early-bound client in an existing owned Excel, with temporary private
-per-user registration. Explicit JIT selection is refused for this COM host.
+per-user registration.
 NativeLibrary emits a Windows x64 DLL for admitted native exports. Exe emits a
 standalone compiled executable. ComExe emits a compiled local COM server with
 class factories, a dual Automation interface and an owning STA message loop.

@@ -203,8 +203,10 @@ fn foreign_thread_final_release_terminates_on_the_owner_thread() {
 #[ignore = "live COM: needs OxVba.TestEventServer (tools/OxVba.TestEventServer/register.ps1)"]
 fn foreign_get_type_info_describe_dispatch_matches_excel() {
     // dc-yqq0.29: OxVba.TestEventServer.DescribeDispatch inspects GetTypeInfo(0) and its dual
-    // TKIND_INTERFACE half via COM interop, matching docs/design/vba-class-dispids-excel-2026-11-21.md.
+    // TKIND_INTERFACE half via COM interop. This extends Excel's W7 fixture with the
+    // leading private field and nonempty lifecycle hook measured in the follow-up probes.
     let w7 = r#"
+Private Hidden As Long
 Public F1 As Long
 Public F2 As Variant
 Public Property Get Zed() As Long
@@ -213,11 +215,15 @@ Public Property Get Alpha() As Long
 End Property
 Public Sub M()
 End Sub
+Private Sub Class_Terminate()
+    Hidden = 1
+End Sub
 "#;
     let main = r#"
 Public gOut As String
 Sub Main()
-    Dim x As New W7, s As Object
+    Dim x As W7, s As Object
+    Set x = New W7
     Set s = CreateObject("OxVba.TestEventServer")
     gOut = s.DescribeDispatch(x)
 End Sub
@@ -249,17 +255,17 @@ End Sub
             desc.contains("type W7 kind=TKIND_DISPATCH flags=0x1C2"),
             "{desc}"
         );
-        assert!(desc.contains("funcs=8 vars=0 impl=1 vtbl=120"), "{desc}");
+        assert!(desc.contains("funcs=8 vars=0 impl=1 vtbl=128"), "{desc}");
         assert!(desc.contains("TYPE_E_ELEMENTNOTFOUND"), "{desc}");
         assert!(
             desc.contains(
-                "func memid=0x40030000 invkind=2 oVft=56 params=0 opt=0 flags=0x0 ret=3 F1"
+                "func memid=0x40030001 invkind=2 oVft=56 params=0 opt=0 flags=0x0 ret=3 F1"
             ),
             "{desc}"
         );
         assert!(
             desc.contains(
-                "func memid=0x40030001 invkind=8 oVft=88 params=1 opt=0 flags=0x0 ret=24 F2"
+                "func memid=0x40030002 invkind=8 oVft=88 params=1 opt=0 flags=0x0 ret=24 F2"
             ),
             "{desc}"
         );
@@ -291,5 +297,148 @@ End Sub
             ),
             "{desc}"
         );
+    }
+}
+
+#[cfg(all(windows, target_arch = "x86_64"))]
+#[test]
+fn foreign_aggregate_slot_calls_match_excel() {
+    use calcvba_oxir::OxImage;
+    use calcvba_runtime::bstr::BStr;
+    use calcvba_runtime::safe_array::{SafeArray, SafeArrayBound};
+    use calcvba_runtime::{Decimal96, Variant};
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    struct Pair {
+        number: i32,
+        tag: *mut u16,
+    }
+
+    let mut widget = module(
+        "SlotArrays",
+        ModuleKind::Class,
+        r#"
+Public Sub Change(ByRef values() As Long)
+    values(LBound(values)) = values(LBound(values)) + 7
+End Sub
+Public Function CopyOf(ByRef values() As Long) As Long()
+    CopyOf = values
+End Function
+Public Function Count(ParamArray values() As Variant) As Long
+    Count = UBound(values) + 1
+End Function
+Public Function DecimalValue(ByVal value As Variant) As Variant
+    DecimalValue = CDec(value)
+End Function
+Public Function ChangeRecord(ByRef value As SlotPair) As SlotPair
+    value.Number = value.Number + 7
+    value.Tag = value.Tag & "!"
+    ChangeRecord = value
+End Function
+"#,
+    );
+    widget.attributes.vb_exposed = true;
+    widget.attributes.vb_creatable = true;
+    let manifest = SymbolProjectManifest {
+        project_name: "SlotProbe".into(),
+        project_kind: ProjectKind::Library,
+        modules: vec![
+            module(
+                "Types",
+                ModuleKind::Procedural,
+                "Public Type SlotPair\n    Number As Long\n    Tag As String\nEnd Type",
+            ),
+            widget,
+        ],
+        references: Vec::new(),
+        reference_projects: Vec::new(),
+        conditional_constants: Default::default(),
+        conditional_compilation_target: Default::default(),
+    };
+    let bound =
+        calcvba_bind::bind_program(&manifest, &calcvba_symbol::CatalogTypeLibResolver).unwrap();
+    let program = calcvba_oxir::elaborate::elaborate(&bound).unwrap();
+    for backend in BACKENDS {
+        let engine = Engine::new(HostConfig { backend });
+        let mut session = engine
+            .prepare_image_session(OxImage::new(vec![program.clone()]))
+            .unwrap();
+        let object = session.create_class_instance("SlotArrays").unwrap();
+        let original = SafeArray::from_typed_variants_nd(
+            vec![SafeArrayBound { lower: 3, count: 2 }],
+            3,
+            vec![Variant::from_i32(10), Variant::from_i32(0)],
+        )
+        .unwrap();
+        let mut values = original.into_raw_safearray_ptr();
+        let before = values;
+        let mut copied = std::ptr::null_mut();
+        let mut params =
+            SafeArray::from_variants(vec![Variant::from_i32(7), Variant::from_string("x")])
+                .into_raw_safearray_ptr();
+        let mut count = -1;
+        let value = Variant::from_decimal96(Decimal96::from_parts(45125, 0, 0, 3, false));
+        let mut decimal = Variant::empty();
+        let mut record = Pair {
+            number: 10,
+            tag: BStr::from("x").into_raw_bstr(),
+        };
+        let mut record_result = Pair {
+            number: 0,
+            tag: std::ptr::null_mut(),
+        };
+        // SAFETY: the test owns this session, object and the ABI cells for the whole call.
+        // GetTypeInfo in Excel gives SAFEARRAY** for the typed array and ParamArray
+        // arguments, including the array retval. Win64 passes a ByVal VARIANT by address.
+        let (changed, copied) = unsafe {
+            let _invoker = session.enter_member_invoker_scope();
+            let this = object.raw_iunknown().cast::<c_void>();
+            let slots = *this.cast::<*const *const c_void>();
+            let change: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> i32 =
+                std::mem::transmute(*slots.add(7));
+            let copy: unsafe extern "system" fn(
+                *mut c_void,
+                *mut *mut c_void,
+                *mut *mut c_void,
+            ) -> i32 = std::mem::transmute(*slots.add(8));
+            let count_params: unsafe extern "system" fn(
+                *mut c_void,
+                *mut *mut c_void,
+                *mut i32,
+            ) -> i32 = std::mem::transmute(*slots.add(9));
+            let decimal_value: unsafe extern "system" fn(
+                *mut c_void,
+                *const Variant,
+                *mut Variant,
+            ) -> i32 = std::mem::transmute(*slots.add(10));
+            let change_record: unsafe extern "system" fn(*mut c_void, *mut Pair, *mut Pair) -> i32 =
+                std::mem::transmute(*slots.add(11));
+            let change_hr = change(this, &mut values);
+            let copy_hr = copy(this, &mut values, &mut copied);
+            let count_hr = count_params(this, &mut params, &mut count);
+            let decimal_hr = decimal_value(this, &value, &mut decimal);
+            let record_hr = change_record(this, &mut record, &mut record_result);
+            let changed = SafeArray::from_raw_safearray_owned(values, None);
+            let copied = SafeArray::from_raw_safearray_owned(copied, None);
+            drop(SafeArray::from_raw_safearray_owned(params, None));
+            let argument_tag = BStr::from_raw_bstr(record.tag);
+            let result_tag = BStr::from_raw_bstr(record_result.tag);
+            assert_eq!(
+                [change_hr, copy_hr, count_hr, decimal_hr, record_hr],
+                [0; 5],
+                "{backend:?}"
+            );
+            assert_eq!((record.number, record_result.number), (17, 17));
+            assert_eq!(argument_tag.as_str(), "x!");
+            assert_eq!(result_tag.as_str(), "x!");
+            (changed.unwrap(), copied.unwrap())
+        };
+        assert_eq!(changed.raw_safearray_ptr(), before);
+        assert_eq!(changed.i32_element(0).unwrap(), Some(17));
+        assert_eq!(copied.i32_element(0).unwrap(), Some(17));
+        assert_eq!(copied.bounds(), changed.bounds());
+        assert_eq!(count, 2);
+        assert_eq!(decimal, value);
     }
 }

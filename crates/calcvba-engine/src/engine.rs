@@ -1716,7 +1716,7 @@ mod tests {
 
     /// Build a vm3-backed [`super::ProjectRuntimeSession`] from a single-project manifest (bind →
     /// elaborate → `OxImage` → `prepare_image_session`), the in-process COM-server path.
-    fn vm3_session_for(
+    fn image_session_for(
         engine: &Engine,
         manifest: &SymbolProjectManifest,
     ) -> super::ProjectRuntimeSession {
@@ -1725,7 +1725,7 @@ mod tests {
         let oxp = calcvba_oxir::elaborate::elaborate(&program).expect("elaborate");
         engine
             .prepare_image_session(OxImage::new(vec![oxp]))
-            .expect("prepare vm3 session")
+            .expect("prepare image session")
     }
 
     #[test]
@@ -1801,7 +1801,7 @@ End Sub
             conditional_compilation_target: Default::default(),
         };
         let engine = Engine::new(HostConfig::vm3());
-        let mut session = vm3_session_for(&engine, &manifest);
+        let mut session = image_session_for(&engine, &manifest);
         let object = session.create_class_instance("Probe").unwrap();
         let mut args = [Variant::from_i32(2), Variant::from_i32(2)];
         session
@@ -1862,7 +1862,7 @@ End Function
             conditional_compilation_target: Default::default(),
         };
         let engine = Engine::new(HostConfig::default());
-        let mut session = vm3_session_for(&engine, &manifest);
+        let mut session = image_session_for(&engine, &manifest);
 
         let object = session
             .create_class_instance("Calculator")
@@ -1900,7 +1900,7 @@ End Function
             conditional_compilation_target: Default::default(),
         };
         let engine = Engine::new(HostConfig::default());
-        let mut session = vm3_session_for(&engine, &manifest);
+        let mut session = image_session_for(&engine, &manifest);
         let object = session
             .create_class_instance("Thrower")
             .expect("create instance");
@@ -1916,6 +1916,8 @@ End Function
 
     #[test]
     fn package_session_project_event_sink_receives_raise_event() {
+        use calcvba_runtime::com::{DISPATCH_METHOD, DispParams, IDispatchVtbl, IID_NULL, S_OK};
+
         let mut attrs = ModuleAttributes::named("Notifier");
         attrs.vb_exposed = true;
         attrs.vb_creatable = true;
@@ -1928,10 +1930,18 @@ End Function
                 attributes: attrs,
                 source: r#"
 Public Event Changed(ByVal value As Long)
+Private current As Long
 
-Public Sub Fire(ByVal value As Long)
+Public Function Fire(ByVal value As Long) As Long
+    current = value
     RaiseEvent Changed(value)
-End Sub
+    Fire = current
+End Function
+
+Public Function Bump() As Long
+    current = current + 1
+    Bump = current
+End Function
 "#
                 .to_string(),
             }],
@@ -1940,33 +1950,66 @@ End Sub
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
         };
-        let engine = Engine::new(HostConfig::default());
-        let mut session = vm3_session_for(&engine, &manifest);
-        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let seen_sink = seen.clone();
-        session.set_project_event_sink(move |source, event_id, args| {
-            seen_sink.lock().expect("seen lock").push((
-                source.raw(),
-                event_id,
-                args.first().and_then(Variant::as_i32),
-            ));
-            Ok(())
-        });
+        for config in [HostConfig::vm3(), HostConfig::jit()] {
+            let backend = config.backend;
+            let engine = Engine::new(config);
+            let mut session = image_session_for(&engine, &manifest);
+            let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let seen_sink = seen.clone();
+            session.set_project_event_sink(move |source, event_id, args| {
+                seen_sink.borrow_mut().push((
+                    source.raw(),
+                    event_id,
+                    args.first().and_then(Variant::as_i32),
+                ));
+                let name: Vec<u16> = "Bump".encode_utf16().chain([0]).collect();
+                let mut id = 0;
+                let mut params = DispParams::default();
+                let mut result = Variant::empty();
+                let this = source.raw_iunknown().cast::<std::ffi::c_void>();
+                // SAFETY: source owns this project IDispatch on its VBA thread. All arguments
+                // and output storage remain live through each synchronous COM call.
+                unsafe {
+                    let vtable = &**this.cast::<*const IDispatchVtbl>();
+                    assert_eq!(
+                        (vtable.get_ids_of_names)(this, &IID_NULL, &name.as_ptr(), 1, 0, &mut id),
+                        S_OK
+                    );
+                    assert_eq!(
+                        (vtable.invoke)(
+                            this,
+                            id,
+                            &IID_NULL,
+                            0,
+                            DISPATCH_METHOD,
+                            (&raw mut params).cast(),
+                            (&raw mut result).cast(),
+                            std::ptr::null_mut(),
+                            std::ptr::null_mut(),
+                        ),
+                        S_OK
+                    );
+                }
+                assert_eq!(result.as_i32(), Some(43));
+                Ok(())
+            });
 
-        let object = session
-            .create_class_instance("Notifier")
-            .expect("create class instance");
-        let raw = object.raw();
-        session
-            .invoke_member_values(
-                object,
-                "Fire",
-                Some(ProjectMemberKind::Method),
-                vec![Variant::from_i32(42)],
-            )
-            .expect("invoke Fire");
+            let object = session
+                .create_class_instance("Notifier")
+                .expect("create class instance");
+            let raw = object.raw();
+            let result = session
+                .invoke_member_values(
+                    object,
+                    "Fire",
+                    Some(ProjectMemberKind::Method),
+                    vec![Variant::from_i32(42)],
+                )
+                .expect("invoke Fire");
 
-        assert_eq!(*seen.lock().expect("seen lock"), vec![(raw, 0, Some(42))]);
+            assert_eq!(*seen.borrow(), vec![(raw, 0, Some(42))]);
+            assert_eq!(result.as_i32(), Some(43), "{backend:?}");
+        }
     }
 
     #[test]
@@ -2004,7 +2047,7 @@ End Sub
             conditional_compilation_target: Default::default(),
         };
         let engine = Engine::new(HostConfig::default());
-        let mut session = vm3_session_for(&engine, &manifest);
+        let mut session = image_session_for(&engine, &manifest);
         let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let events = seen.clone();
         session.set_reentrant_project_event_sink(move |mut session, source, _, args| {

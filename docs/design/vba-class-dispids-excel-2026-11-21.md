@@ -12,7 +12,7 @@ in the appendix.
    FOLEAUTOMATION | FCANCREATE`), named after the class, with a fresh GUID per class. Its interface
    half (`TKIND_INTERFACE`) has the same name, GUID and member list. `GetRefTypeOfImplType(0)` and
    `GetImplTypeFlags(0)` fail with `TYPE_E_ELEMENTNOTFOUND`, although `cImplTypes` is 1.
-2. **Public fields** get `0x40030000 + n`, with n counting the public fields in source order. A
+2. **Public fields** get `0x40030000 + n`, with n counting every field in source order. A
    `Long` or `String` field has get and let accessors (invkind 2, 4); an `Object` field has get, let
    and set, and its let is `FUNCFLAG_FRESTRICTED` (0x1); a `Variant` field has get, let and set.
 3. **Properties** get `0x68030000 + n`, one number per property name. Properties are numbered first,
@@ -20,20 +20,37 @@ in the appendix.
 4. **Other procedures** (Function and Sub) get `0x60030000 + n`. n continues after the properties, in
    source order. `Private` and `Friend` procedures take a number too, and don't appear in the type
    info (`W5`: `S` Private is 0, `F` Friend is 1, `A` is 2).
-5. **No number:** `Class_Initialize`, `Class_Terminate`, events and private fields don't affect any
-   numbering (`W3`, `W8`).
+5. **Special members.** `Class_Initialize`, `Class_Terminate` and events leave the procedure DISPID
+   counter unchanged. `VB_UserMemId = 0` gives the procedure or all accessors of the property
+   DISPID 0 and leaves the ordinary counter unchanged. The property keeps its declaration
+   position in the vtable.
 6. **Vtable order** (`oVft`, 8 bytes per slot, the first at 56 after IDispatch's seven): fields first
    (each accessor its own slot), then members in source order, a property's accessors in a row.
    `Private` and `Friend` procedures take hidden slots after the public ones (`cbSizeVft` 80 for `W5`,
-   one public member). `Widget` has three hidden slots but only two Private/Friend procedures; the
-   third is not explained yet, and its private fields `mX` and `mObj` are a candidate.
+   one public member). `Widget` has two such procedures and a third hidden slot for its nonempty
+   `Class_Terminate`. The empty `Class_Terminate` in `W3` adds no slot.
 7. **Signatures.** The dispatch half reports VBA's return type (`ret` = VT code); the interface half
    returns `HRESULT` (25) with an added retval parameter for functions and property gets. `Optional`
    parameters leave `cParamsOpt` at 0 (Optional is marked per parameter); a `ParamArray` sets
    `cParamsOpt` to -1.
 
-Open: whether private fields declared before public ones shift the field numbers, the third hidden
-slot in `Widget`, and the default member (`VB_UserMemId = 0`), which this probe didn't set.
+## Follow-up probes
+
+The field sequence `Private one`, `Private two`, `Public Value`, `Private three`, `Public Entry`
+gave `Value` DISPID `0x40030002` and `Entry` DISPID `0x40030004`. Their first vtable entries were at
+bytes 56 and 72, respectively.
+
+Removing `Class_Terminate` from `Widget` reduced `cbSizeVft` from 200 to 192 on both halves with
+all 15 public entries unchanged. Removing its event or private fields left the size at 200.
+Removing both the `Friend` and `Private` procedures while keeping `Class_Terminate` gave 184.
+With one public method, an empty `Class_Initialize` kept the vtable at 64 bytes, a nonempty
+`Class_Initialize` or a `Class_Terminate` containing only `Exit Sub` gave 72, and two nonempty
+lifecycle procedures gave 80.
+
+With a default property `Item` between `First` and `Last`, Excel reported `First = 0x68030001`,
+`Item Get/Let = 0`, `Last = 0x68030000` and `Other = 0x60030002`. For a default method `Item`,
+Excel reported `First = 0x60030000`, `Item = 0` and `Last = 0x60030001`. Late-bound default
+invocation returned 42 for both fixtures.
 
 ## Appendix: raw output
 

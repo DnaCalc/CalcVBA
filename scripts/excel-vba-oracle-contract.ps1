@@ -1202,7 +1202,10 @@ function Test-ExcelOracleWindowEnumerationAuthority {
 function Test-ExcelStartupBlockingWindow {
     param([Parameter(Mandatory = $true)]$Window)
     if (-not [bool]$Window.IsTopLevel -or -not [bool]$Window.Visible) { return $false }
-    return [string]$Window.ClassName -notin @("XLMAIN", "MSOSPLASH", "MsoSplash")
+    # Windows creates these input-indicator helper windows on private desktops.
+    return [string]$Window.ClassName -notin @(
+        "XLMAIN", "MSOSPLASH", "MsoSplash", "UAC Input Indicator", "UAC_InputIndicatorOverlayWnd"
+    )
 }
 
 function Resolve-ExcelOracleAttachmentCandidate {

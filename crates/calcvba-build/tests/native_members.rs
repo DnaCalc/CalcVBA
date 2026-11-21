@@ -81,6 +81,81 @@ impl Dll {
 }
 
 #[test]
+fn project_object_keeps_its_identity_through_a_native_export() {
+    let directory = Directory::new();
+    let project = directory.0.join("Identity.basproj");
+    std::fs::write(
+        &project,
+        r#"<Project>
+  <PropertyGroup>
+    <OutputType>NativeLibrary</OutputType>
+    <ProjectName>NativeIdentity</ProjectName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Module Include="Identity.bas"/>
+    <ClassModule Include="Widget.cls"/>
+    <NativeExport Include="DictionaryRoundTrip">
+      <Module>Identity</Module>
+      <Procedure>DictionaryRoundTrip</Procedure>
+    </NativeExport>
+  </ItemGroup>
+</Project>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        directory.0.join("Widget.cls"),
+        r#"Attribute VB_Name = "Widget"
+Option Explicit
+Public Value As Long
+
+Public Function Twice() As Long
+    Twice = Value * 2
+End Function
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        directory.0.join("Identity.bas"),
+        r#"Attribute VB_Name = "Identity"
+Option Explicit
+
+Public Function DictionaryRoundTrip() As String
+    Dim original As Widget, typedBack As Widget
+    Dim dictionary As Object, back As Object
+    Dim stage As String
+    On Error GoTo Failed
+    stage = "construction"
+    Set original = New Widget
+    original.Value = 21
+    stage = "creating Dictionary"
+    Set dictionary = CreateObject("Scripting.Dictionary")
+    stage = "Dictionary.Add"
+    dictionary.Add "k", original
+    stage = "Dictionary.Item"
+    Set back = dictionary.Item("k")
+    stage = "class conversion"
+    Set typedBack = back
+    stage = "identity and typed call"
+    DictionaryRoundTrip = "dict-is=" & CStr(back Is original) & ";dict-call=" & CStr(typedBack.Twice())
+    Exit Function
+Failed:
+    DictionaryRoundTrip = stage & ": " & CStr(Err.Number) & " " & Err.Description
+End Function
+"#,
+    )
+    .unwrap();
+
+    let output = build_native_library(&NativeLibraryBuildOptions {
+        project_path: project,
+        out_dir: directory.0.join("out"),
+        template_path: std::env::var_os("CALCVBA_NATIVE_TEMPLATE_TEST").map(PathBuf::from),
+    })
+    .unwrap();
+    let dll = Dll::load(&output.dll_path);
+    assert_eq!(dll.call("DictionaryRoundTrip"), "dict-is=True;dict-call=42");
+}
+
+#[test]
 fn variant_array_and_project_default_indexing_share_compiled_routes() {
     let directory = Directory::new();
     let support = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/support/native_members");

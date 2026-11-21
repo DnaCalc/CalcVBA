@@ -62,7 +62,7 @@ pub enum FfiParamType {
 
 fn param_ffi_type(param: FfiParamType) -> LibffiType {
     match param {
-        FfiParamType::Scalar(scalar) => x64_return_type(scalar),
+        FfiParamType::Scalar(scalar) => ffi_return_type(scalar),
         FfiParamType::Variant => {
             let words = calcvba_runtime::WIRE_SIZE / core::mem::size_of::<u64>();
             LibffiType::structure((0..words).map(|_| LibffiType::u64()))
@@ -71,7 +71,7 @@ fn param_ffi_type(param: FfiParamType) -> LibffiType {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum PreparedX64Arg {
+enum PreparedArg {
     Long(i32),
     Integer(i16),
     Byte(u8),
@@ -82,7 +82,7 @@ enum PreparedX64Arg {
     Pointer(*mut c_void),
 }
 
-impl PreparedX64Arg {
+impl PreparedArg {
     fn from_ffi_arg(arg: &FfiArg) -> Self {
         match arg {
             FfiArg::Long(v) => Self::Long(*v),
@@ -111,7 +111,7 @@ impl PreparedX64Arg {
         }
     }
 
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[cfg(target_os = "windows")]
     fn as_arg(&self) -> LibffiArg<'_> {
         match self {
             Self::Long(v) => LibffiArg::new(v),
@@ -126,7 +126,7 @@ impl PreparedX64Arg {
     }
 }
 
-fn x64_return_type(return_type: FfiReturnType) -> LibffiType {
+fn ffi_return_type(return_type: FfiReturnType) -> LibffiType {
     match return_type {
         FfiReturnType::Void => LibffiType::void(),
         FfiReturnType::Long => LibffiType::i32(),
@@ -140,9 +140,8 @@ fn x64_return_type(return_type: FfiReturnType) -> LibffiType {
     }
 }
 
-/// Shared libffi CIF-construction-and-call core, used by both the `Declare`
-/// stdcall path ([`invoke_stdcall_x64`]) and the COM vtable this-call path
-/// ([`crate::windows_vtable::vtable_invoke`]). Builds a Win64 CIF from each
+/// Call a Windows x64 COM vtable entry using the same libffi marshaller as
+/// [`invoke_stdcall`]. Builds a CIF from each
 /// argument's runtime type and calls `proc_addr` with a typed return, packing
 /// the result into the raw `i64` carrier the callers interpret per
 /// `return_type` (floats via `to_bits`, pointers via `as isize`).
@@ -162,19 +161,18 @@ pub(crate) unsafe fn call_via_libffi(
     unsafe { call_via_libffi_with_last_error(proc_addr, args, return_type) }.0
 }
 
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[cfg(target_os = "windows")]
 unsafe fn call_via_libffi_with_last_error(
     proc_addr: usize,
     args: &[FfiArg],
     return_type: FfiReturnType,
 ) -> (i64, u32) {
-    let prepared_args: Vec<PreparedX64Arg> =
-        args.iter().map(PreparedX64Arg::from_ffi_arg).collect();
-    let cif = LibffiCif::new(
-        prepared_args.iter().map(PreparedX64Arg::ffi_type),
-        x64_return_type(return_type),
+    let prepared_args: Vec<PreparedArg> = args.iter().map(PreparedArg::from_ffi_arg).collect();
+    let cif = declare_cif(
+        prepared_args.iter().map(PreparedArg::ffi_type),
+        ffi_return_type(return_type),
     );
-    let ffi_args: Vec<LibffiArg<'_>> = prepared_args.iter().map(PreparedX64Arg::as_arg).collect();
+    let ffi_args: Vec<LibffiArg<'_>> = prepared_args.iter().map(PreparedArg::as_arg).collect();
     let code_ptr = LibffiCodePtr::from_ptr(proc_addr as *const c_void);
 
     let result = match return_type {
@@ -195,15 +193,6 @@ unsafe fn call_via_libffi_with_last_error(
     // CIF/argument cleanup, whose allocator calls may change that state.
     let last_error = unsafe { GetLastError() };
     (result, last_error)
-}
-
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-unsafe fn invoke_stdcall_x64(proc_addr: usize, args: &[FfiArg], return_type: FfiReturnType) -> i64 {
-    // SAFETY: forwarded caller contract — invoke_stdcall_x64's own callers
-    // uphold the ABI/signature + argument-lifetime invariants call_via_libffi
-    // requires (documented on its `# Safety`); this is a pure extraction of the
-    // former inline body with identical behavior.
-    unsafe { call_via_libffi(proc_addr, args, return_type) }
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -480,18 +469,9 @@ pub fn invoke_stdcall_with_last_error(
             args.len()
         ));
     }
-    #[cfg(target_arch = "x86_64")]
-    {
-        // SAFETY: the same resolved-export, true signature and live argument
-        // storage contract as invoke_stdcall; cleanup follows the OS snapshot.
-        Ok(unsafe { call_via_libffi_with_last_error(proc_addr, args, return_type) })
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        let result = invoke_stdcall(proc_addr, args, return_type)?;
-        // SAFETY: reads only this thread's OS error state on the older raw path.
-        Ok((result, unsafe { GetLastError() }))
-    }
+    // SAFETY: the Declare binding resolves this export and retains its library and every
+    // argument through the call. The supplied signature must match the native declaration.
+    Ok(unsafe { call_via_libffi_with_last_error(proc_addr, args, return_type) })
 }
 
 /// Invoke while discarding the captured OS error, for callers without VBA Err.
@@ -501,61 +481,7 @@ pub fn invoke_stdcall(
     args: &[FfiArg],
     return_type: FfiReturnType,
 ) -> Result<i64, String> {
-    // For safety, we limit to a reasonable argument count
-    if args.len() > 32 {
-        return Err(format!(
-            "too many arguments for stdcall invocation: {}",
-            args.len()
-        ));
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    {
-        // SAFETY: `proc_addr` is an export resolved by get_proc_address from a module
-        // an OwnedLibrary or the process cache keeps loaded; libffi builds the Win64 CIF from each argument's
-        // actual type, and every pointer-bearing argument (AnsiString/String buffers
-        // borrowed from `args`) stays alive until this consuming native call returns;
-        // `VarPtr`/`StrPtr` addresses point at the guest's own live storage, whose
-        // lifetime is the guest's contract as in VBA
-        // (docs/spec/OXVBA_POINTER_HELPERS_CONTRACT_V1.md). That the Declare signature matches the
-        // export's true ABI is the guest's contract, exactly as in VBA 7.1
-        // (HAL_DECLARE_ABI_SPEC_V1).
-        let result = unsafe { invoke_stdcall_x64(proc_addr, args, return_type) };
-        Ok(result)
-    }
-
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        if let Some(message) = raw_invoke_shape_error(args, return_type) {
-            return Err(message);
-        }
-        // Marshal arguments to raw i64 values for the call on the integer-only path.
-        let mut raw_args: Vec<i64> = Vec::with_capacity(args.len());
-        for arg in args {
-            match arg {
-                FfiArg::Long(v) => raw_args.push(*v as i64),
-                FfiArg::Integer(v) => raw_args.push(*v as i64),
-                FfiArg::Byte(v) => raw_args.push(*v as i64),
-                FfiArg::Boolean(v) => raw_args.push(*v as i64),
-                FfiArg::Double(v) => raw_args.push(v.to_bits() as i64),
-                FfiArg::Single(v) => raw_args.push(v.to_bits() as i64),
-                FfiArg::LongLong(v) => raw_args.push(*v),
-                FfiArg::AnsiString(v) => raw_args.push(v.as_ptr() as i64),
-                FfiArg::String(v) => raw_args.push(v.as_ptr() as i64),
-                FfiArg::Pointer(v) => raw_args.push(*v as i64),
-            }
-        }
-        // SAFETY: raw_invoke_shape_error rejected (above) every shape the i64
-        // register dispatch cannot express (float lanes, arity > 6); `proc_addr` is
-        // an export resolved by get_proc_address from a module load_library keeps
-        // loaded, and all pointer-bearing arguments (string buffers in `args`) outlive
-        // the call; `VarPtr`/`StrPtr` addresses are the guest's own live storage
-        // (docs/spec/OXVBA_POINTER_HELPERS_CONTRACT_V1.md).
-        // The Declare signature matching the export's true ABI is the guest's
-        // contract, exactly as in VBA 7.1 (HAL_DECLARE_ABI_SPEC_V1).
-        let result = unsafe { invoke_stdcall_raw(proc_addr, &raw_args, return_type) };
-        Ok(result)
-    }
+    invoke_stdcall_with_last_error(proc_addr, args, return_type).map(|(value, _)| value)
 }
 
 /// Shape guard for the raw (non-libffi) invocation paths: floating-point
@@ -563,11 +489,8 @@ pub fn invoke_stdcall(
 /// slots cannot be expressed by the i64 transmute dispatch — on SysV
 /// x86_64/AArch64 floats travel in vector registers and extra arguments on
 /// the stack, so calling anyway computes garbage or worse. Fail
-/// deterministically instead (HAL_DECLARE_ABI_SPEC_V1: invalid shapes fail
-/// with no UB and no silent coercion). The libffi path (Windows x86_64) has
-/// none of these limits; extending libffi to all targets is the tracked
-/// follow-up in POST_CLEANUP.md.
-#[cfg_attr(all(target_os = "windows", target_arch = "x86_64"), allow(dead_code))]
+/// deterministically. The Windows libffi path supports these argument shapes.
+#[cfg(any(not(target_os = "windows"), test))]
 fn raw_invoke_shape_error(args: &[FfiArg], return_type: FfiReturnType) -> Option<String> {
     if args.len() > 6 {
         return Some(format!(
@@ -592,38 +515,6 @@ fn raw_invoke_shape_error(args: &[FfiArg], return_type: FfiReturnType) -> Option
         );
     }
     None
-}
-
-/// Raw stdcall invocation. This dispatches based on argument count
-/// for the register-passed arities; larger calls are rejected by
-/// [`raw_invoke_shape_error`] before reaching here.
-#[cfg(target_os = "windows")]
-#[cfg(not(target_arch = "x86_64"))]
-unsafe fn invoke_stdcall_raw(proc_addr: usize, args: &[i64], _return_type: FfiReturnType) -> i64 {
-    // On x86_64 Windows, the calling convention is actually __fastcall (first 4 args in registers).
-    // We handle common arities explicitly for safety.
-    type Fn0 = unsafe extern "system" fn() -> i64;
-    type Fn1 = unsafe extern "system" fn(i64) -> i64;
-    type Fn2 = unsafe extern "system" fn(i64, i64) -> i64;
-    type Fn3 = unsafe extern "system" fn(i64, i64, i64) -> i64;
-    type Fn4 = unsafe extern "system" fn(i64, i64, i64, i64) -> i64;
-    type Fn5 = unsafe extern "system" fn(i64, i64, i64, i64, i64) -> i64;
-    type Fn6 = unsafe extern "system" fn(i64, i64, i64, i64, i64, i64) -> i64;
-
-    let f = proc_addr;
-    match args.len() {
-        0 => std::mem::transmute::<usize, Fn0>(f)(),
-        1 => std::mem::transmute::<usize, Fn1>(f)(args[0]),
-        2 => std::mem::transmute::<usize, Fn2>(f)(args[0], args[1]),
-        3 => std::mem::transmute::<usize, Fn3>(f)(args[0], args[1], args[2]),
-        4 => std::mem::transmute::<usize, Fn4>(f)(args[0], args[1], args[2], args[3]),
-        5 => std::mem::transmute::<usize, Fn5>(f)(args[0], args[1], args[2], args[3], args[4]),
-        6 => std::mem::transmute::<usize, Fn6>(f)(
-            args[0], args[1], args[2], args[3], args[4], args[5],
-        ),
-        // INVARIANT: raw_invoke_shape_error rejected arity > 6 before this call.
-        _ => unreachable!("raw stdcall dispatch guarded to at most 6 arguments"),
-    }
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1015,7 +906,7 @@ impl PreparedNativeCall {
             cif: declare_cif(
                 arguments
                     .iter()
-                    .map(PreparedX64Arg::from_ffi_arg)
+                    .map(PreparedArg::from_ffi_arg)
                     .map(|arg| arg.ffi_type()),
                 LibffiType::structure((0..bytes).map(|_| LibffiType::u8())),
             ),
@@ -1026,19 +917,19 @@ impl PreparedNativeCall {
     /// # Safety
     /// The prepared signature exactly matches arguments and native result storage.
     pub unsafe fn invoke_arguments(&self, arguments: &[FfiArg], result: *mut c_void) -> u32 {
-        let prepared: Vec<_> = arguments.iter().map(PreparedX64Arg::from_ffi_arg).collect();
+        let prepared: Vec<_> = arguments.iter().map(PreparedArg::from_ffi_arg).collect();
         let mut cells: Vec<_> = prepared
             .iter()
             .map(|arg| match arg {
-                PreparedX64Arg::Long(v) => (v as *const i32).cast_mut().cast(),
-                PreparedX64Arg::Integer(v) | PreparedX64Arg::Boolean(v) => {
+                PreparedArg::Long(v) => (v as *const i32).cast_mut().cast(),
+                PreparedArg::Integer(v) | PreparedArg::Boolean(v) => {
                     (v as *const i16).cast_mut().cast()
                 }
-                PreparedX64Arg::Byte(v) => (v as *const u8).cast_mut().cast(),
-                PreparedX64Arg::Double(v) => (v as *const f64).cast_mut().cast(),
-                PreparedX64Arg::Single(v) => (v as *const f32).cast_mut().cast(),
-                PreparedX64Arg::LongLong(v) => (v as *const i64).cast_mut().cast(),
-                PreparedX64Arg::Pointer(v) => (v as *const *mut c_void).cast_mut().cast(),
+                PreparedArg::Byte(v) => (v as *const u8).cast_mut().cast(),
+                PreparedArg::Double(v) => (v as *const f64).cast_mut().cast(),
+                PreparedArg::Single(v) => (v as *const f32).cast_mut().cast(),
+                PreparedArg::LongLong(v) => (v as *const i64).cast_mut().cast(),
+                PreparedArg::Pointer(v) => (v as *const *mut c_void).cast_mut().cast(),
             })
             .collect();
         // SAFETY: the exact typed cells and their buffers remain live through this call.
@@ -1063,7 +954,7 @@ impl PreparedNativeCall {
         Self {
             cif: declare_cif(
                 arguments.iter().copied().map(param_ffi_type),
-                x64_return_type(result),
+                ffi_return_type(result),
             ),
             address,
             arguments: arguments.len(),
@@ -1116,6 +1007,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "x86"))]
     fn invoke_msvcrt_sqrt_round_trips_double_argument_and_return() {
         let module = load_library("msvcrt.dll").expect("msvcrt.dll should load");
         let addr = get_proc_address(module, "sqrt").expect("sqrt should resolve");
@@ -1150,6 +1042,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "x86"))]
     fn invoke_msvcrt_wcstod_round_trips_double_return_with_pointer_arguments() {
         let module = load_library("msvcrt.dll").expect("msvcrt.dll should load");
         let addr = get_proc_address(module, "wcstod").expect("wcstod should resolve");
@@ -1171,6 +1064,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "x86"))]
     fn invoke_msvcrt_memmove_writes_through_pointer_arguments() {
         let module = load_library("msvcrt.dll").expect("msvcrt.dll should load");
         let addr = get_proc_address(module, "memmove").expect("memmove should resolve");
@@ -1188,6 +1082,28 @@ mod tests {
         .expect("invoke should succeed");
         assert_eq!(result as usize, (&mut dst as *mut i32) as usize);
         assert_eq!(dst, 0x11223344);
+    }
+
+    #[test]
+    fn stdcall_uses_the_declared_argument_widths_and_returns_a_double() {
+        unsafe extern "system" fn mix(dest: *mut i32, number: i32, factor: f64) -> f64 {
+            // SAFETY: the test passed a live, writable Long.
+            unsafe { dest.write(number + 1) };
+            f64::from(number) * factor
+        }
+        let mut dest = 0;
+        let result = invoke_stdcall(
+            mix as *const () as usize,
+            &[
+                FfiArg::Pointer((&raw mut dest).cast()),
+                FfiArg::Long(6),
+                FfiArg::Double(2.5),
+            ],
+            FfiReturnType::Double,
+        )
+        .unwrap();
+        assert_eq!(dest, 7);
+        assert_eq!(f64::from_bits(result as u64), 15.0);
     }
 
     #[test]

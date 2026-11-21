@@ -253,12 +253,14 @@ pub(super) unsafe fn read(
             if data.parray.is_null() {
                 return Ok(Variant::unallocated_array(vt & 0x0fff));
             }
-            // An ANSI string array is translated element by element; any other array is
-            // one SafeArrayCopy whose cell the runtime adopts as it is.
-            if (*data.parray).fFeatures & 0x100 != 0 {
-                return read_array(context, data.parray);
+            // ANSI BSTRs need translation. Wide BSTR arrays also have FADF_BSTR and
+            // can be copied as a whole, preserving the original Automation cell.
+            if (*data.parray).fFeatures & calcvba_runtime::safe_array::FADF_BSTR_VALUE != 0 {
+                let view = ArrayView::new(data.parray)?;
+                if view.ansi {
+                    return read_ansi_array(context, view);
+                }
             }
-            ArrayView::new(data.parray)?;
             return adopt_copy(&value);
         }
         if matches!(vt, 9 | 13) {
@@ -318,8 +320,8 @@ unsafe fn adopt_copy(value: &VARIANT) -> Result<Variant, i32> {
             &mut copy.0,
             value,
         ))?;
-        let adopted =
-            Variant::adopt_automation_cell((&raw const copy.0).cast()).map_err(|_| 458)?;
+        let adopted = Variant::adopt_automation_cell((&raw const copy.0).cast())
+            .map_err(|vt| i32::from(Variant::adoption_error_number(vt)))?;
         // The runtime owns the copied payload now; the wrapper must not clear it.
         std::mem::forget(copy);
         Ok(adopted)
@@ -427,16 +429,9 @@ impl ArrayView {
         }
     }
 }
-unsafe fn read_array(
-    context: *mut Context,
-    array: *mut windows_sys::Win32::System::Com::SAFEARRAY,
-) -> Result<Variant, i32> {
+unsafe fn read_ansi_array(context: *mut Context, view: ArrayView) -> Result<Variant, i32> {
     // SAFETY: the incoming native Variant retains this array through all copies.
     unsafe {
-        if array.is_null() {
-            return Ok(Variant::unallocated_array(12));
-        }
-        let view = ArrayView::new(array)?;
         let mut values = Vec::with_capacity(view.count);
         for index in 0..view.count {
             values.push(view.element(context, index)?);
@@ -1134,6 +1129,31 @@ mod tests {
             assert_eq!(cvb_services_clear(&raw mut context), 0);
             assert_eq!(VariantClear(&raw mut output), 0);
         }
+    }
+
+    #[test]
+    fn variant_read_keeps_decimal_safearray_cells() {
+        use calcvba_runtime::Decimal96;
+        use calcvba_runtime::safe_array::{SafeArray, SafeArrayBound};
+
+        let value = Variant::from_decimal96(Decimal96::from_parts(12345, 0, 0, 2, true));
+        let array = SafeArray::from_typed_variants_nd(
+            vec![SafeArrayBound { lower: 3, count: 1 }],
+            0x0e,
+            vec![value.clone()],
+        )
+        .unwrap();
+        let input = Variant::from_safearray(array);
+        // SAFETY: input retains the initialized native Variant and its array. This
+        // read only uses the array, so it does not enter the native runtime context.
+        let copied = unsafe { read(ptr::null_mut(), (&raw const input).cast(), 12) }.unwrap();
+        let copied = copied.as_safearray().unwrap();
+        assert_eq!(copied.element_vartype(), 0x0e);
+        assert_eq!(
+            copied.bounds(),
+            Some(vec![SafeArrayBound { lower: 3, count: 1 }])
+        );
+        assert_eq!(copied.variant_element(0).unwrap(), value);
     }
 
     #[test]

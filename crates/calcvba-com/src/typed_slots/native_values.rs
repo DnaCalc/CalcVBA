@@ -50,8 +50,8 @@ impl NativeVariant {
     fn input(value: &Variant) -> Result<Self, TypedFault> {
         let crossed = map_objects(value.clone(), &mut |object| {
             let Some(portable) = HostObject::from_object_ref(&object) else {
-                if !object.is_compat_object() {
-                    // A foreign object already is its interface pointer.
+                if object.has_dual_dispatch_vtable() || !object.is_compat_object() {
+                    // Project and foreign objects already carry their own native interface.
                     return Ok(Variant::from_object_ref(object));
                 }
                 return Err(fault(13));
@@ -122,6 +122,9 @@ impl NativeVariant {
         map_objects(value, &mut |object| {
             if object.is_nothing_placeholder() {
                 return Ok(Variant::nothing());
+            }
+            if object.has_dual_dispatch_vtable() {
+                return Ok(Variant::from_object_ref(object));
             }
             // SAFETY: the ObjectRef retains a live same-apartment native object; the factory QIs
             // and retains its declared interface independently.

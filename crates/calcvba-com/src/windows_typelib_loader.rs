@@ -3086,7 +3086,6 @@ unsafe fn extract_members_from_typeinfo(
     // `{42C642C1-…}` has cbSizeVft=176 / 22 scrrun.dll-backed slots). Cross to that partner
     // and patch each member's slot/IID/bound/typekind/param-shape so the vtable gate admits
     // it — exactly as the live `::<invoke-result>` recovery path does for DAO sub-objects.
-    #[cfg(target_arch = "x86_64")]
     if is_dual && typekind == TKIND_DISPATCH {
         // SAFETY: `ptinfo` is the live dispinterface ITypeInfo for this whole function;
         // the enrichment only performs AV-free ITypeInfo reads (the single partner
@@ -3107,7 +3106,7 @@ unsafe fn extract_members_from_typeinfo(
 ///
 /// # Safety
 /// `disp_ti` must be a live dispinterface ITypeInfo pointer for the duration of the call.
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[cfg(target_os = "windows")]
 unsafe fn enrich_dual_dispinterface_members(
     disp_ti: *mut c_void,
     members: &mut [TypeLibMemberMetadata],
@@ -3223,7 +3222,7 @@ struct PartnerInterfaceFacts {
 
 /// The partner INTERFACE member's vtable-ABI parameter shape (parallel vectors,
 /// already LCID/retval-aware via `extract_members_from_typeinfo`).
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[cfg(target_os = "windows")]
 struct PartnerMemberParamShape {
     /// The partner FUNCDESC's parameter NAMES, parallel to `parameter_types`. A
     /// property-PUT's value argument is a real partner-interface param (e.g.
@@ -3250,7 +3249,7 @@ struct PartnerMemberParamShape {
 ///
 /// # Safety
 /// `disp_ti` must be a live ITypeInfo pointer for the duration of the call.
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[cfg(target_os = "windows")]
 unsafe fn cross_to_partner_interface(disp_ti: *mut c_void) -> Option<*mut c_void> {
     if disp_ti.is_null() {
         return None;
@@ -3279,7 +3278,7 @@ unsafe fn cross_to_partner_interface(disp_ti: *mut c_void) -> Option<*mut c_void
 ///
 /// # Safety
 /// `ptinfo` must be a live ITypeInfo pointer for the duration of the call.
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[cfg(target_os = "windows")]
 unsafe fn member_ovft_by_name(
     ptinfo: *mut c_void,
     name: &str,
@@ -3348,7 +3347,7 @@ unsafe fn member_ovft_by_name(
 ///
 /// # Safety
 /// `partner_ti` and `disp_ti` must be live ITypeInfo pointers for the call.
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[cfg(target_os = "windows")]
 unsafe fn member_ovft_with_source(
     partner_ti: *mut c_void,
     disp_ti: *mut c_void,
@@ -3408,7 +3407,7 @@ unsafe fn member_ovft_with_source(
 ///
 /// # Safety
 /// `partner_ti` must be a live ITypeInfo pointer for the duration of the call.
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[cfg(target_os = "windows")]
 unsafe fn partner_member_param_shape(
     partner_ti: *mut c_void,
     name: &str,

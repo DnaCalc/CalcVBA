@@ -278,12 +278,15 @@ pub struct RuntimeClassAsNewFieldDescriptor {
 pub struct RuntimeClassLifecycleDescriptor {
     pub has_initialize: bool,
     pub has_terminate: bool,
+    /// Hidden trailing vtable entries for lifecycle procedures with bodies.
+    pub hidden_vtable_slots: u8,
 }
 
 pub const RUNTIME_CLASS_LIFECYCLE_NONE: RuntimeClassLifecycleDescriptor =
     RuntimeClassLifecycleDescriptor {
         has_initialize: false,
         has_terminate: false,
+        hidden_vtable_slots: 0,
     };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -323,11 +326,20 @@ pub struct RuntimeClassDescriptor {
     pub source_interface_iid: Option<Guid>,
     pub predeclared: bool,
     pub lifecycle: RuntimeClassLifecycleDescriptor,
+    pub record_members: &'static [RuntimeRecordMemberLayout],
     pub fields: &'static [RuntimeClassFieldDescriptor],
     pub as_new_fields: &'static [RuntimeClassAsNewFieldDescriptor],
     pub implements: &'static [&'static str],
     pub interfaces: &'static [RuntimeInterfaceDescriptor],
     pub events: &'static [RuntimeEventDescriptor],
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct RuntimeRecordMemberLayout {
+    pub procedure: usize,
+    /// The parameter's zero-based index, or `None` for the result.
+    pub parameter: Option<usize>,
+    pub layout: std::sync::Arc<crate::VbaRecordLayout>,
 }
 
 /// Structural issue that makes a runtime descriptor unsafe or ambiguous for future COM export.
@@ -588,6 +600,7 @@ pub const COMPAT_OBJECT_CLASS_DESCRIPTOR: RuntimeClassDescriptor = RuntimeClassD
     source_interface_iid: None,
     predeclared: false,
     lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
+    record_members: &[],
     fields: &[],
     as_new_fields: &[],
     implements: &[],
@@ -2270,6 +2283,7 @@ mod tests {
             source_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
+            record_members: &[],
             fields: &[],
             as_new_fields: &[],
             implements: &[],
@@ -2304,6 +2318,7 @@ mod tests {
             source_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
+            record_members: &[],
             fields: &[],
             as_new_fields: &[],
             implements: &[],
@@ -2371,6 +2386,7 @@ mod tests {
             source_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
+            record_members: &[],
             fields: &[],
             as_new_fields: &[],
             implements: &[],
@@ -2442,6 +2458,7 @@ mod tests {
             source_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
+            record_members: &[],
             fields: &[],
             as_new_fields: &[],
             implements: &[],
@@ -2526,6 +2543,7 @@ mod tests {
             source_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
+            record_members: &[],
             fields: &[],
             as_new_fields: &[],
             implements: &[],
@@ -2735,6 +2753,7 @@ mod tests {
             source_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
+            record_members: &[],
             fields: &[],
             as_new_fields: &[],
             implements: &[],
@@ -3133,6 +3152,7 @@ mod tests {
             source_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
+            record_members: &[],
             fields: &[],
             as_new_fields: &[],
             implements: &[],
@@ -3213,6 +3233,7 @@ mod tests {
             source_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
+            record_members: &[],
             fields: &[],
             as_new_fields: &[],
             implements: &[],
@@ -3391,6 +3412,7 @@ mod tests {
             source_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
+            record_members: Vec::new(),
             fields: vec![
                 RuntimeClassFieldSpec {
                     name: "Value".into(),

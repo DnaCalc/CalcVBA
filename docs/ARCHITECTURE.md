@@ -131,7 +131,9 @@ no forms-runtime crate here yet.
 ## Outputs and portability
 
 `calcvba-build` emits OxImage and wrapper/COM-server artifacts.
-`calcvba-comhost` is the reusable Windows in-process COM host, currently VM3 based.
+`calcvba-comhost` is the reusable Windows in-process COM host. It loads the
+project image into a VM3 or JIT session and returns the project instance's own
+COM interface from its class factory.
 `calcvba-cli` exposes source/project/package execution and builds. A wrapped DLL
 runs the engine. NativeLibrary instead patches compiled code, named exports and
 Windows unwind information into the shipped template without a user linker.
@@ -180,8 +182,7 @@ Compiler/runtime code and the interpreter support non-Windows hosts. Browser
 builds use `calcvba-host` without its default JIT feature; native COM and direct
 filesystem access are supplied or refused by the host. Windows interop targets
 64-bit Office and x64 native calls. Wider Windows architectures, broader native
-signatures, nominal interface/record arrays, recursion limits and full JIT
-COM serving remain incomplete.
+signatures, nominal interface/record arrays and recursion limits remain incomplete.
 
 ## Tests
 

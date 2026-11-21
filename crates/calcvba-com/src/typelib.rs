@@ -802,6 +802,7 @@ pub fn runtime_class_descriptor_from_typelib_metadata(
         source_interface_iid: None,
         predeclared: false,
         lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
+        record_members: &[],
         fields: &[],
         as_new_fields: &[],
         implements: &[],

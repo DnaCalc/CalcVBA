@@ -82,6 +82,7 @@ static VBA_COLLECTION_DESCRIPTOR: RuntimeClassDescriptor = RuntimeClassDescripto
     source_interface_iid: None,
     predeclared: false,
     lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
+    record_members: &[],
     fields: &[],
     as_new_fields: &[],
     implements: &[],

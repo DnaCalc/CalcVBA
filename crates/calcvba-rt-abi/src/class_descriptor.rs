@@ -16,14 +16,15 @@ use calcvba_runtime::{
     RuntimeClassFieldSpec, RuntimeClassLifecycleDescriptor, RuntimeClassSpec,
     RuntimeDispatchPlanCache, RuntimeEventSpec, RuntimeImplementedInterfaceSpec,
     RuntimeMemberBacking, RuntimeMemberDescriptor, RuntimeMemberInvokeKind, RuntimeMemberSpec,
-    RuntimeParamSpec, RuntimeValueType, VarType, Variant, build_runtime_class_descriptor,
-    default_class_interface_iid, default_error_message,
+    RuntimeParamSpec, RuntimeRecordMemberSpec, RuntimeValueType, VarType, Variant,
+    build_runtime_class_descriptor, default_class_interface_iid, default_error_message,
 };
 
 const NATIVE_METADATA_MAGIC: [u8; 4] = *b"CVBD";
 const NATIVE_METADATA_VERSION_V1: u32 = 1;
 const NATIVE_METADATA_VERSION_V2: u32 = 2;
-const NATIVE_METADATA_VERSION: u32 = 3;
+const NATIVE_METADATA_VERSION_V3_EVENTS: u32 = 3;
+const NATIVE_METADATA_VERSION: u32 = 4;
 
 /// Convert a bundle [`ProjectMemberKind`] into [`RuntimeMemberInvokeKind`].
 pub fn runtime_invoke_kind(kind: ProjectMemberKind) -> RuntimeMemberInvokeKind {
@@ -275,6 +276,43 @@ pub fn runtime_class_spec_for_program(program: &OxProgram, class_index: usize) -
         })
         .collect();
 
+    let mut record_members = Vec::new();
+    for method in &class.methods {
+        let Some(func) = program.funcs.get(method.proc.0) else {
+            continue;
+        };
+        let parameters = func
+            .locals
+            .iter()
+            .take(func.param_count)
+            .skip(hidden_me_receiver_param_count(func))
+            .enumerate()
+            .map(|(index, local)| (Some(index), &local.ty));
+        let result = func
+            .return_local
+            .and_then(|local| func.locals.get(local.0))
+            .map(|local| (None, &local.ty));
+        for (parameter, ty) in parameters.chain(result) {
+            if let OxTy::Record(id) = ty
+                && let Some(fields) = program.record_layout(*id)
+                && let Ok(layout) = calcvba_bundle::vba_record_layout_for_fields(fields)
+            {
+                record_members.push(RuntimeRecordMemberSpec {
+                    procedure: method.proc.0,
+                    parameter,
+                    schema: layout.boundary_schema()[1..].to_vec(),
+                });
+            }
+        }
+    }
+
+    let hidden_vtable_slots = [class.initialize, class.terminate]
+        .into_iter()
+        .flatten()
+        .filter_map(|id| program.funcs.get(id.0))
+        // An empty procedure has only the entry jump and the return epilogue.
+        .filter(|func| func.blocks.len() > 2 || func.blocks.iter().any(|b| !b.instrs.is_empty()))
+        .count() as u8;
     RuntimeClassSpec {
         unit_name,
         class_index,
@@ -286,7 +324,9 @@ pub fn runtime_class_spec_for_program(program: &OxProgram, class_index: usize) -
         lifecycle: RuntimeClassLifecycleDescriptor {
             has_initialize: class.initialize.is_some(),
             has_terminate: class.terminate.is_some(),
+            hidden_vtable_slots,
         },
+        record_members,
         fields,
         as_new_fields,
         implements: class.implements.clone(),
@@ -862,7 +902,7 @@ pub fn encode_native_class_metadata(
         encode_u32(&mut bytes, kind);
     }
 
-    // Extended shared-descriptor trailer (`CVBD` v1):
+    // Extended shared-descriptor trailer:
     bytes.extend_from_slice(&NATIVE_METADATA_MAGIC);
     encode_u32(&mut bytes, NATIVE_METADATA_VERSION);
     encode_str(&mut bytes, &spec.unit_name);
@@ -933,6 +973,19 @@ pub fn encode_native_class_metadata(
         encode_u8(&mut bytes, event.callback_arity);
         encode_u8(&mut bytes, u8::from(event.externally_visible));
     }
+    encode_u32(&mut bytes, spec.record_members.len() as u32);
+    for record in &spec.record_members {
+        encode_u32(&mut bytes, record.procedure as u32);
+        encode_u32(
+            &mut bytes,
+            record.parameter.map_or(u32::MAX, |index| index as u32),
+        );
+        encode_u32(&mut bytes, record.schema.len() as u32);
+        for &word in &record.schema {
+            encode_u32(&mut bytes, word);
+        }
+    }
+    encode_u8(&mut bytes, spec.lifecycle.hidden_vtable_slots);
     bytes
 }
 
@@ -1091,10 +1144,7 @@ pub unsafe fn decode_native_class_metadata(
         } else {
             0
         };
-        if version != NATIVE_METADATA_VERSION_V1
-            && version != NATIVE_METADATA_VERSION_V2
-            && version != NATIVE_METADATA_VERSION
-        {
+        if !(NATIVE_METADATA_VERSION_V1..=NATIVE_METADATA_VERSION).contains(&version) {
             let (unit, display) = raw_name.rsplit_once('.').unwrap_or(("", &raw_name));
             return (
                 field_kinds,
@@ -1109,7 +1159,9 @@ pub unsafe fn decode_native_class_metadata(
                     lifecycle: RuntimeClassLifecycleDescriptor {
                         has_initialize,
                         has_terminate,
+                        hidden_vtable_slots: 0,
                     },
+                    record_members: Vec::new(),
                     fields: Vec::new(),
                     as_new_fields: Vec::new(),
                     implements,
@@ -1207,7 +1259,7 @@ pub unsafe fn decode_native_class_metadata(
             });
         }
 
-        let events = if version >= NATIVE_METADATA_VERSION {
+        let events = if version >= NATIVE_METADATA_VERSION_V3_EVENTS {
             let event_count = cursor.u32() as usize;
             let mut events = Vec::with_capacity(event_count);
             for _ in 0..event_count {
@@ -1228,6 +1280,25 @@ pub unsafe fn decode_native_class_metadata(
         } else {
             Vec::new()
         };
+        let mut record_members = Vec::new();
+        if version >= NATIVE_METADATA_VERSION {
+            let count = cursor.u32();
+            for _ in 0..count {
+                let procedure = cursor.u32() as usize;
+                let parameter = cursor.u32();
+                let words = cursor.u32();
+                record_members.push(RuntimeRecordMemberSpec {
+                    procedure,
+                    parameter: (parameter != u32::MAX).then_some(parameter as usize),
+                    schema: (0..words).map(|_| cursor.u32()).collect(),
+                });
+            }
+        }
+        let hidden_vtable_slots = if version >= NATIVE_METADATA_VERSION {
+            cursor.u8()
+        } else {
+            0
+        };
 
         (
             field_kinds,
@@ -1242,7 +1313,9 @@ pub unsafe fn decode_native_class_metadata(
                 lifecycle: RuntimeClassLifecycleDescriptor {
                     has_initialize,
                     has_terminate,
+                    hidden_vtable_slots,
                 },
+                record_members,
                 fields,
                 as_new_fields,
                 implements,

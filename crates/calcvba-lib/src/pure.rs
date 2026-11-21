@@ -401,26 +401,22 @@ fn vunits(units: &[u16]) -> Variant {
 /// Map each character's case on its own, keeping the string's length in code units as
 /// VBA's `UCase`/`LCase` do (`ß` stays `ß`); an unpaired surrogate is kept as it is.
 fn map_case_units(units: &[u16], upper: bool) -> Vec<u16> {
-    let mut out = Vec::with_capacity(units.len());
-    for decoded in char::decode_utf16(units.iter().copied()) {
-        match decoded {
-            Ok(c) => {
-                let mut mapped = if upper {
-                    c.to_uppercase().collect::<Vec<_>>()
-                } else {
-                    c.to_lowercase().collect::<Vec<_>>()
-                };
-                let one = match mapped.as_slice() {
-                    [m] if m.len_utf16() == c.len_utf16() => mapped.remove(0),
-                    _ => c,
-                };
-                let mut buf = [0u16; 2];
-                out.extend_from_slice(one.encode_utf16(&mut buf));
+    case_units(units, |c| {
+        let mapped = if upper {
+            match c {
+                // Excel preserves dotless i and Greek final sigma (P_UCase.10/.12).
+                '\u{0131}' | '\u{03c2}' => c,
+                _ => simple_case(c, c.to_uppercase()),
             }
-            Err(unpaired) => out.push(unpaired.unpaired_surrogate()),
+        } else {
+            simple_case(c, c.to_lowercase())
+        };
+        if mapped.len_utf16() == c.len_utf16() {
+            mapped
+        } else {
+            c
         }
-    }
-    out
+    })
 }
 
 /// The units a text comparison matches on: each code unit case-folded on its own.
@@ -2047,7 +2043,7 @@ pub fn month_name(args: &[Variant]) -> LibResult<Variant> {
         "December",
     ];
     let n = as_usize(need(args, 0)?)?;
-    let abbreviate = matches!(opt(args, 1), Some(v) if as_bool_lenient(v));
+    let abbreviate = abbreviate_name(args)?;
     NAMES
         .get(n.wrapping_sub(1))
         .map(|s| vstr(if abbreviate { &s[..3] } else { s }))
@@ -2067,7 +2063,7 @@ pub fn weekday_name(args: &[Variant]) -> LibResult<Variant> {
         "Saturday",
     ];
     let weekday = as_i32(need(args, 0)?)?;
-    let abbreviate = matches!(opt(args, 1), Some(v) if as_bool_lenient(v));
+    let abbreviate = abbreviate_name(args)?;
     // firstdayofweek: 0 = vbUseSystemDayOfWeek (treat as Sunday), default vbSunday.
     let first = match opt(args, 2) {
         Some(v) => as_i32(v)?,
@@ -2177,11 +2173,16 @@ pub fn error_text(args: &[Variant]) -> LibResult<Variant> {
     Ok(vstr(calcvba_runtime::default_error_message(code)))
 }
 
-/// Lenient truthiness for an optional Boolean-ish flag argument.
-fn as_bool_lenient(v: &Variant) -> bool {
-    v.as_bool()
-        .or_else(|| as_i32(v).ok().map(|n| n != 0))
-        .unwrap_or(false)
+fn abbreviate_name(args: &[Variant]) -> LibResult<bool> {
+    let Some(value) = opt(args, 1) else {
+        return Ok(false);
+    };
+    if value.vtype() == VarType::String {
+        return Ok(cbool(std::slice::from_ref(value))?
+            .as_bool()
+            .unwrap_or_default());
+    }
+    Ok(as_f64(value)? != 0.0)
 }
 
 // ── Conversion ─────────────────────────────────────────────────────────────────

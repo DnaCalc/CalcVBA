@@ -2549,8 +2549,7 @@ impl<'h> Vm3<'h> {
                 }
             }
             // `CallByName(obj, "Member", vbMethod|vbGet|vbLet|vbSet, args…)` — the genuinely
-            // dynamic by-name dispatch. The runtime `calltype` integer selects the accessor;
-            // an out-of-range value raises error 5 (matching vm2).
+            // dynamic by-name dispatch. The runtime `calltype` integer selects the accessor.
             OxInst::CallByName {
                 dst,
                 object,
@@ -2567,12 +2566,12 @@ impl<'h> Vm3<'h> {
                     4 => TypeLibMemberInvokeKind::PropertyPut,
                     8 => TypeLibMemberInvokeKind::PropertyPutRef,
                     _ => {
-                        return Err(Vm3Error::Fault(Fault::new(
-                            5,
-                            "CallByName: invalid CallType",
-                        )));
+                        return Err(Vm3Error::Fault(Fault::new(438, default_error_message(438))));
                     }
                 };
+                if recv_v.vtype() == VarType::Object && is_nothing(&recv_v) {
+                    return Err(Vm3Error::Fault(Fault::new(5, default_error_message(5))));
+                }
                 if invoke_kind != TypeLibMemberInvokeKind::Method
                     && recv_v.as_object_ref().is_some_and(|object| {
                         !calcvba_lib::objects::is_object(&object)
@@ -4809,6 +4808,7 @@ impl<'h> Vm3<'h> {
             CollectionError::BadArgument => Fault::new(5, "Invalid procedure call or argument"),
             CollectionError::TypeMismatch => Fault::new(13, "Type mismatch"),
             CollectionError::ArgNotOptional => Fault::new(449, "Argument not optional"),
+            CollectionError::WrongArgumentCount => Fault::new(450, default_error_message(450)),
         }
     }
 

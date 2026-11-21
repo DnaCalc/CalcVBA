@@ -531,25 +531,19 @@ fn jit_call_by_name_project_property_get_let_matches_vm3_without_fallback() {
 }
 
 #[test]
-fn jit_call_by_name_invalid_calltype_raises_error_5_without_fallback() {
-    let modules = [
-        (
-            "Main",
-            Procedural,
-            "Public r As Long\nSub Main()\n  On Error Resume Next\n  Dim c As Object\n  Set c = New Calc\n  r = CallByName(c, \"Add\", 99, 1, 2)\n  r = Err.Number\nEnd Sub\n",
-        ),
-        (
-            "Calc",
-            Class,
-            "Public Function Add(ByVal a As Long, ByVal b As Long) As Long\n  Add = a + b\nEnd Function\n",
-        ),
-    ];
+fn jit_call_by_name_invalid_calltype_raises_error_438_without_fallback() {
+    // P_CallByName.18 records error 438 for this call in Excel.
+    let modules = [(
+        "Main",
+        Procedural,
+        "Public r As Long\nSub Main()\n  On Error Resume Next\n  Dim c As Collection\n  Set c = New Collection\n  r = CallByName(c, \"Count\", 99)\n  r = Err.Number\nEnd Sub\n",
+    )];
 
     let vm3 = run_modules(Executor::Vm3, &modules, "VBAProject");
-    assert_completed_with_i32("VM3", vm3, 5);
+    assert_completed_with_i32("VM3", vm3, 438);
 
     let jit = run_modules(Executor::Jit, &modules, "VBAProject");
-    assert_completed_with_i32("JIT", jit, 5);
+    assert_completed_with_i32("JIT", jit, 438);
 }
 
 #[test]

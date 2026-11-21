@@ -27,9 +27,9 @@ Private Function T(ByVal k As Long) As String
         Case 17: Set c = New Collection: v = CallByName(c, "Count", 0)                     ' invalid call type 0
         Case 18: Set c = New Collection: v = CallByName(c, "Count", 99)                    ' invalid call type 99
         Case 19: Set c = New Collection: v = CallByName(c, "Add", VbMethod)                ' missing required argument
-        Case 20: Set c = New Collection: v = CallByName(c, "Item", VbGet, 5)               ' index out of range: error 9
+        Case 20: Set c = New Collection: v = CallByName(c, "Item", VbGet, 5)               ' unsupported property get: error 438
         Case 21: v = "compile-refused"
-        Case 22: v = CallByName(o, "Count", VbGet)                                         ' Nothing object: error 91
+        Case 22: v = CallByName(o, "Count", VbGet)                                         ' Nothing object: error 5
         Case 23: Set d = CreateObject("Scripting.Dictionary"): CallByName d, "Add", VbMethod, "k", 1: v = CallByName(d, "Count", VbGet)   ' Dictionary Add and Count
         Case 24: Set d = CreateObject("Scripting.Dictionary"): d.Add "k", 1: v = CallByName(d, "Item", VbGet, "k")      ' Dictionary Item get
         Case 25: Set d = CreateObject("Scripting.Dictionary"): d.Add "k", 1: v = CallByName(d, "Exists", VbMethod, "k")  ' Exists true

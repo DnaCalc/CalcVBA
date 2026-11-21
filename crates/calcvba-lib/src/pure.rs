@@ -2043,7 +2043,7 @@ pub fn month_name(args: &[Variant]) -> LibResult<Variant> {
         "December",
     ];
     let n = as_usize(need(args, 0)?)?;
-    let abbreviate = matches!(opt(args, 1), Some(v) if as_bool_lenient(v));
+    let abbreviate = abbreviate_name(args)?;
     NAMES
         .get(n.wrapping_sub(1))
         .map(|s| vstr(if abbreviate { &s[..3] } else { s }))
@@ -2063,7 +2063,7 @@ pub fn weekday_name(args: &[Variant]) -> LibResult<Variant> {
         "Saturday",
     ];
     let weekday = as_i32(need(args, 0)?)?;
-    let abbreviate = matches!(opt(args, 1), Some(v) if as_bool_lenient(v));
+    let abbreviate = abbreviate_name(args)?;
     // firstdayofweek: 0 = vbUseSystemDayOfWeek (treat as Sunday), default vbSunday.
     let first = match opt(args, 2) {
         Some(v) => as_i32(v)?,
@@ -2173,11 +2173,16 @@ pub fn error_text(args: &[Variant]) -> LibResult<Variant> {
     Ok(vstr(calcvba_runtime::default_error_message(code)))
 }
 
-/// Lenient truthiness for an optional Boolean-ish flag argument.
-fn as_bool_lenient(v: &Variant) -> bool {
-    v.as_bool()
-        .or_else(|| as_i32(v).ok().map(|n| n != 0))
-        .unwrap_or(false)
+fn abbreviate_name(args: &[Variant]) -> LibResult<bool> {
+    let Some(value) = opt(args, 1) else {
+        return Ok(false);
+    };
+    if value.vtype() == VarType::String {
+        return Ok(cbool(std::slice::from_ref(value))?
+            .as_bool()
+            .unwrap_or_default());
+    }
+    Ok(as_f64(value)? != 0.0)
 }
 
 // ── Conversion ─────────────────────────────────────────────────────────────────

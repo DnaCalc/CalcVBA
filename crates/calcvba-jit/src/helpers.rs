@@ -2,6 +2,7 @@
 
 use super::*;
 use calcvba_runtime::ObjectRefExt;
+use calcvba_runtime::collection::CollectionCursor;
 
 #[derive(Clone, Copy)]
 pub(crate) struct Imports {
@@ -7719,11 +7720,17 @@ pub(crate) unsafe extern "C" fn rt_jit_for_each_init_variant_array(
             };
             (array_source, iter_alias)
         };
-        let mut enumerator = None;
+        let mut enumerator: Option<Box<dyn calcvba_com::call::ComEnumerator>> = None;
         let elements = if let Some(array) = source_value.as_safearray() {
             array.enumeration_elements().unwrap_or_default()
         } else if let Some(object) = source_value.as_object_ref() {
-            if let Some(values) = object.native_collection_snapshot() {
+            if object.is_compat_object()
+                && object.route_key() == VBA_COLLECTION_ROUTE_KEY
+                && let Some(cursor) = CollectionCursor::new(&object)
+            {
+                enumerator = Some(Box::new(cursor));
+                Vec::new()
+            } else if let Some(values) = object.native_collection_snapshot() {
                 values
             } else if object.is_project_instance() && object.route_key() == VBA_COLLECTION_ROUTE_KEY
             {

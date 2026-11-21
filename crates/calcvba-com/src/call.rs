@@ -97,5 +97,13 @@ pub trait ComEnumerator {
     fn next_item(&mut self) -> Result<Option<Variant>, ComFault>;
 }
 
+impl ComEnumerator for calcvba_runtime::collection::CollectionCursor {
+    fn next_item(&mut self) -> Result<Option<Variant>, ComFault> {
+        Ok(calcvba_runtime::collection::CollectionCursor::next_item(
+            self,
+        ))
+    }
+}
+
 /// A sink advised on a COM object for a WithEvents subscription; dropping it unadvises the sink.
 pub trait ComEventConnection {}

@@ -15,7 +15,9 @@
 //! [`Selector`]s from the call arguments. Keys are case-insensitive (folded to Unicode
 //! lowercase by [`fold_key`]).
 
-use crate::Variant;
+use crate::{ObjectRef, ObjectRefExt, Variant};
+use std::cell::Cell;
+use std::rc::{Rc, Weak};
 
 /// Selects an existing element (for `Item`/`Remove`) or an insertion anchor (for
 /// `Add before`/`after`): a 1-based index, or a case-insensitive string key
@@ -49,9 +51,48 @@ pub fn fold_key(key: &str) -> String {
 }
 
 /// A VBA `Collection`'s ordered contents. Indices are 1-based at the VBA surface.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub struct CollectionData {
     entries: Vec<Entry>,
+    cursors: Vec<Weak<Cell<usize>>>,
+}
+
+impl Clone for CollectionData {
+    fn clone(&self) -> Self {
+        Self {
+            entries: self.entries.clone(),
+            cursors: Vec::new(),
+        }
+    }
+}
+
+/// An owning `For Each` cursor over a live Collection.
+pub struct CollectionCursor {
+    collection: ObjectRef,
+    next: Rc<Cell<usize>>,
+}
+
+impl CollectionCursor {
+    pub fn new(collection: &ObjectRef) -> Option<Self> {
+        let next = Rc::new(Cell::new(0));
+        collection.with_native_collection(|data| {
+            data.cursors.retain(|cursor| cursor.strong_count() != 0);
+            data.cursors.push(Rc::downgrade(&next));
+        })?;
+        Some(Self {
+            collection: collection.clone(),
+            next,
+        })
+    }
+
+    pub fn next_item(&self) -> Option<Variant> {
+        self.collection.with_native_collection(|data| {
+            let index = self.next.get();
+            let value = data.entries.get(index)?.value.clone();
+            self.next.set(index + 1);
+            Some(value)
+        })?
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -67,7 +108,7 @@ impl CollectionData {
         self.entries.len() as i32
     }
 
-    /// The values in insertion order — the `For Each` enumeration.
+    /// A snapshot of the values in collection order.
     pub fn values(&self) -> Vec<Variant> {
         self.entries.iter().map(|e| e.value.clone()).collect()
     }
@@ -95,6 +136,7 @@ impl CollectionData {
             _ => self.entries.len(),
         };
         self.entries.insert(at, Entry { key, value });
+        self.adjust_cursors(at, |next| next + 1);
         Ok(())
     }
 
@@ -107,8 +149,25 @@ impl CollectionData {
     /// `Collection.Remove indexOrKey`.
     pub fn remove(&mut self, sel: &Selector) -> Result<(), CollectionError> {
         let i = self.resolve_index(sel)?;
-        self.entries.remove(i);
+        let removed = self.entries.remove(i);
+        self.adjust_cursors(i, |next| next - 1);
+        drop(removed);
         Ok(())
+    }
+
+    fn adjust_cursors(&mut self, index: usize, adjust: impl Fn(usize) -> usize) {
+        self.cursors.retain(|cursor| {
+            let Some(cursor) = cursor.upgrade() else {
+                return false;
+            };
+            // A change before the next item shifts its position. A change at
+            // that position leaves the cursor ready for the item now there.
+            let next = cursor.get();
+            if index < next {
+                cursor.set(adjust(next));
+            }
+            true
+        });
     }
 
     /// Zero-based position of `sel`, or [`CollectionError::NotFound`].

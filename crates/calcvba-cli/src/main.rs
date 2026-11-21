@@ -28,8 +28,10 @@ use calcvba_runtime::{VarType, Variant};
 /// `--policy safe|full` wraps the host in the capability policy (and its audit log). Without
 /// the flag, behaviour is unchanged.
 static POLICY_MODE: std::sync::OnceLock<calcvba_hal::PolicyMode> = std::sync::OnceLock::new();
+static PORTABILITY_MODE: std::sync::OnceLock<calcvba_symbol::portability::Mode> =
+    std::sync::OnceLock::new();
 
-fn extract_policy_flag(args: Vec<String>) -> Vec<String> {
+fn extract_host_flags(args: Vec<String>) -> Vec<String> {
     let mut out = Vec::with_capacity(args.len());
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
@@ -44,6 +46,15 @@ fn extract_policy_flag(args: Vec<String>) -> Vec<String> {
                     std::process::exit(2);
                 }
             }
+        } else if arg == "--portability-mode" {
+            let value = iter.next().unwrap_or_default();
+            let Some(mode) = calcvba_symbol::portability::Mode::from_name(&value) else {
+                eprintln!(
+                    "calcvba-cli: --portability-mode takes windows-faithful, strict or native"
+                );
+                std::process::exit(2);
+            };
+            let _ = PORTABILITY_MODE.set(mode);
         } else {
             out.push(arg);
         }
@@ -53,6 +64,9 @@ fn extract_policy_flag(args: Vec<String>) -> Vec<String> {
 
 /// Install the policy wrapper last: later `set_*` calls rebuild the host.
 fn apply_policy(engine: &mut Engine) {
+    if let Some(mode) = PORTABILITY_MODE.get().copied() {
+        engine.set_portability_mode(mode);
+    }
     if let Some(mode) = POLICY_MODE.get().copied() {
         engine.wrap_host_services(|inner| {
             calcvba_hal::PolicyHost::with_mode(inner, mode).into_host()
@@ -168,7 +182,7 @@ fn check_portability(args: &[String]) -> Result<(), String> {
 }
 
 fn main() {
-    let cli_args: Vec<String> = extract_policy_flag(env::args().skip(1).collect());
+    let cli_args: Vec<String> = extract_host_flags(env::args().skip(1).collect());
     match cli_args.first().map(String::as_str) {
         Some("triage") => run_triage(cli_args),
         Some("check") => {
@@ -198,7 +212,7 @@ fn main() {
 fn print_usage() {
     eprintln!(
         "usage:\n  calcvba-cli run <source.bas> [--backend vm3|jit] [--dump-values]\n  calcvba-cli run-project [path] [--entry Module.Procedure] [--backend vm3|jit]\n  calcvba-cli build <project> --target OxImage|NativeLibrary|Exe|ComExe|ComServer --out-dir <dir>\n  calcvba-cli run-image <project.oxi> [--backend vm3|jit]\n  calcvba-cli triage <project|source.bas>   (predicted capabilities as JSON)
-  calcvba-cli check --portability [--host <host>] <project|source.bas|workbook>\n  calcvba-cli inspect-vba <workbook>\n  calcvba-cli export-vba <workbook> --out-dir <new-folder>\n  calcvba-cli write-vba <workbook> --project <project.basproj> --out <new-workbook>\n\n  --profile <id>  --policy safe|full  --dump-bootstrap  --diagnostic-format human|json"
+  calcvba-cli check --portability [--host <host>] <project|source.bas|workbook>\n  calcvba-cli inspect-vba <workbook>\n  calcvba-cli export-vba <workbook> --out-dir <new-folder>\n  calcvba-cli write-vba <workbook> --project <project.basproj> --out <new-workbook>\n\n  --profile <id>  --policy safe|full  --portability-mode windows-faithful|strict|native  --dump-bootstrap  --diagnostic-format human|json"
     );
 }
 

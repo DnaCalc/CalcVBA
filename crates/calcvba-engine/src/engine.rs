@@ -300,6 +300,7 @@ impl HostProfileProvider {
 pub struct Engine {
     config: HostConfig,
     runtime_profile: RuntimeProfileId,
+    portability_mode: Option<calcvba_symbol::portability::Mode>,
     host_callbacks: Option<Arc<dyn HostCallbacks>>,
     portable_com_projection: Option<Arc<PortableComProjection>>,
     typelib_resolver: Arc<dyn TypeLibResolver>,
@@ -846,6 +847,7 @@ impl Engine {
         Self {
             config,
             runtime_profile,
+            portability_mode: None,
             host_callbacks: None,
             portable_com_projection: None,
             typelib_resolver: Arc::new(CatalogTypeLibResolver),
@@ -1032,6 +1034,50 @@ impl Engine {
         self.runtime_profile
     }
 
+    pub fn set_portability_mode(&mut self, mode: calcvba_symbol::portability::Mode) {
+        self.portability_mode = Some(mode);
+    }
+
+    fn check_portability(
+        &self,
+        projects: &[calcvba_symbol::manifest::SymbolProjectManifest],
+    ) -> Result<(), PhaseDiagnostic> {
+        use calcvba_symbol::portability::{Host, Mode};
+        let Some(entry) = projects.last() else {
+            return Ok(());
+        };
+        let mode = self
+            .portability_mode
+            .unwrap_or_else(|| Mode::for_project(entry));
+        if mode == Mode::Native {
+            return Ok(());
+        }
+        let host = match self.runtime_profile {
+            RuntimeProfileId::WindowsGui
+            | RuntimeProfileId::WindowsStdio
+            | RuntimeProfileId::WindowsHeadless => Host::Windows,
+            RuntimeProfileId::LinuxStdio => Host::Linux,
+            RuntimeProfileId::MacOsHeadless => Host::MacOs,
+            RuntimeProfileId::WasmWasiLocal => Host::Wasi,
+            RuntimeProfileId::WasmBrowserSandbox => Host::Browser,
+            RuntimeProfileId::NullFloor => Host::current(),
+        };
+        let projects: Vec<_> = projects
+            .iter()
+            .map(|manifest| self.manifest_with_runtime_conditional_target(manifest))
+            .collect();
+        let warnings = mode
+            .check(&projects, host)
+            .map_err(|diagnostic| PhaseDiagnostic::from_diagnostic(*diagnostic))?;
+        for warning in warnings {
+            let _ = self
+                .host_services
+                .diag()
+                .debug_print_variant(Variant::from_string(warning.render_human()));
+        }
+        Ok(())
+    }
+
     fn conditional_compilation_target(
         &self,
     ) -> calcvba_symbol::cond_comp::ConditionalCompilationTarget {
@@ -1068,7 +1114,19 @@ impl Engine {
         manifest: &calcvba_symbol::manifest::SymbolProjectManifest,
     ) -> calcvba_symbol::manifest::SymbolProjectManifest {
         let mut manifest = manifest.clone();
-        manifest.conditional_compilation_target = self.conditional_compilation_target();
+        use calcvba_symbol::portability::Mode;
+        let mode = self
+            .portability_mode
+            .unwrap_or_else(|| Mode::for_project(&manifest));
+        manifest.conditional_compilation_target = if mode == Mode::WindowsFaithful {
+            if cfg!(all(windows, target_pointer_width = "32")) {
+                calcvba_symbol::cond_comp::ConditionalCompilationTarget::windows_32_vba7()
+            } else {
+                calcvba_symbol::cond_comp::ConditionalCompilationTarget::windows_64_vba7()
+            }
+        } else {
+            self.conditional_compilation_target()
+        };
         manifest
     }
 
@@ -1222,6 +1280,7 @@ impl Engine {
         &self,
         closure: &[calcvba_symbol::manifest::SymbolProjectManifest],
     ) -> Result<Vec<Variant>, PhaseDiagnostic> {
+        self.check_portability(closure)?;
         if self.config.backend.is_jit() {
             return self.execute_project_closure_with_variant_snapshot_jit(closure);
         }
@@ -1439,6 +1498,7 @@ impl Engine {
         &self,
         manifest: &calcvba_symbol::manifest::SymbolProjectManifest,
     ) -> Result<Vec<Variant>, PhaseDiagnostic> {
+        self.check_portability(std::slice::from_ref(manifest))?;
         if self.config.backend.is_jit() {
             return match self.execute_manifest_snapshot_with_err_jit(manifest) {
                 SnapshotOutcome::Completed { values, .. } => Ok(values),

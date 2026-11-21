@@ -126,6 +126,22 @@ impl Module {
         manifest: &sym::SymbolProjectManifest,
         resolver: &dyn TypeLibResolver,
     ) -> Result<Self, Error> {
+        Self::load_project_with_portability(
+            manifest,
+            resolver,
+            portability::Mode::for_project(manifest),
+        )
+    }
+
+    /// Load source with explicit portability requirements. Call `portability::check_project`
+    /// to inspect the findings and host-dependent uses independently of compilation.
+    pub fn load_project_with_portability(
+        manifest: &sym::SymbolProjectManifest,
+        resolver: &dyn TypeLibResolver,
+        mode: portability::Mode,
+    ) -> Result<Self, Error> {
+        mode.check(std::slice::from_ref(manifest), portability::Host::current())
+            .map_err(|diagnostic| Error::Compile(diagnostic.render_human()))?;
         let (core, catalogue) = calcvba_bind::bind_program_with_procedures(manifest, resolver)
             .map_err(|e| Error::Compile(e.to_string()))?;
         // The host's typed-stack interpreter has no `VT_BYREF` cells yet (step 10 of the

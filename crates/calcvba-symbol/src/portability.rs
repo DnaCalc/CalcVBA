@@ -32,6 +32,16 @@ impl Host {
         })
     }
 
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Windows => "windows",
+            Self::MacOs => "macos",
+            Self::Linux => "linux",
+            Self::Wasi => "wasi",
+            Self::Browser => "browser",
+        }
+    }
+
     pub const fn current() -> Self {
         if cfg!(windows) {
             Self::Windows
@@ -44,6 +54,101 @@ impl Host {
         } else {
             Self::Linux
         }
+    }
+}
+
+/// Select how much host-specific VBA a source project can use.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Mode {
+    WindowsFaithful,
+    Strict,
+    Native,
+}
+
+impl Mode {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "windows-faithful" => Self::WindowsFaithful,
+            "strict" => Self::Strict,
+            "native" => Self::Native,
+            _ => return None,
+        })
+    }
+
+    pub fn for_project(project: &SymbolProjectManifest) -> Self {
+        if project.project_kind == crate::manifest::ProjectKind::Host {
+            Self::WindowsFaithful
+        } else {
+            Self::Native
+        }
+    }
+
+    pub fn check(
+        self,
+        projects: &[SymbolProjectManifest],
+        host: Host,
+    ) -> Result<Vec<calcvba_diagnostics::Diagnostic>, Box<calcvba_diagnostics::Diagnostic>> {
+        use calcvba_diagnostics::{
+            Diagnostic, DiagnosticPhase, DiagnosticSeverity, DiagnosticSource,
+        };
+        if self == Self::Native {
+            return Ok(Vec::new());
+        }
+
+        let report = check_project(projects, host).map_err(|message| {
+            Box::new(Diagnostic::error(
+                "PORT-E-CHECK",
+                DiagnosticPhase::ProjectLoad,
+                message,
+            ))
+        })?;
+        let mut warnings = Vec::new();
+        for finding in report.findings {
+            let location = finding.module.unwrap_or(finding.project);
+            let mut source = DiagnosticSource::module(location);
+            source.line = finding.line.and_then(|line| u32::try_from(line).ok());
+            source.column = finding.line.map(|_| 1);
+
+            let is_shell = finding.feature == "Shell";
+            let feature = match finding.detail {
+                Some(detail) => format!("{} ({detail})", finding.feature),
+                None => finding.feature,
+            };
+            let reason = if finding.verdict == Support::Reject {
+                Some("the host has no supported implementation")
+            } else if self == Self::Strict && finding.class == FeatureClass::Windows {
+                Some("strict mode refuses Windows-specific constructs")
+            } else if self == Self::Strict
+                && matches!(finding.verdict, Support::Shim | Support::Replace)
+            {
+                Some("strict mode requires native or modelled behaviour")
+            } else if self == Self::WindowsFaithful && is_shell && host != Host::Windows {
+                Some("the host has no Windows command mapping")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                return Err(Box::new(
+                    Diagnostic::error(
+                        "PORT-E-UNSUPPORTED",
+                        DiagnosticPhase::ProjectLoad,
+                        format!("{feature} on {}: {reason}", host.as_str()),
+                    )
+                    .with_source(source),
+                ));
+            }
+            if self == Self::Strict && finding.verdict == Support::Host {
+                let mut warning = Diagnostic::error(
+                    "PORT-W-HOST-DEPENDENT",
+                    DiagnosticPhase::ProjectLoad,
+                    format!("{feature} on {} depends on host values", host.as_str()),
+                )
+                .with_source(source);
+                warning.severity = DiagnosticSeverity::Warning;
+                warnings.push(warning);
+            }
+        }
+        Ok(warnings)
     }
 }
 
@@ -543,20 +648,12 @@ impl<'a> Scanner<'a> {
                 _ => None,
             });
             let args = args.map(|args| args.arg_items()).unwrap_or_default();
-            let prog_id = args
-                .iter()
-                .find(|arg| {
-                    matches!(arg, calcvba_syntax::red::ArgItem::Named { name, .. }
-                    if name.text.eq_ignore_ascii_case("Class"))
-                })
-                .or_else(|| {
-                    args.get(usize::from(row.name == "GetObject"))
-                        .filter(|arg| matches!(arg, calcvba_syntax::red::ArgItem::Positional(..)))
-                })
-                .and_then(arg_string);
+            let prog_id = string_argument(&args, usize::from(row.name == "GetObject"), "Class");
+            let can_activate = row.name == "CreateObject"
+                || string_argument(&args, 0, "PathName").as_deref() == Some("");
             if support == Support::Replace
-                && (row.name != "CreateObject"
-                    || !prog_id
+                && !(can_activate
+                    && prog_id
                         .as_deref()
                         .is_some_and(|id| id.eq_ignore_ascii_case("Scripting.Dictionary")))
             {
@@ -658,6 +755,24 @@ fn string_literal(token: SyntaxToken<'_>) -> Option<String> {
 
 fn clause_string(node: SyntaxNode<'_>) -> Option<String> {
     node.child_tokens().into_iter().find_map(string_literal)
+}
+
+fn string_argument(
+    args: &[calcvba_syntax::red::ArgItem<'_>],
+    position: usize,
+    parameter: &str,
+) -> Option<String> {
+    use calcvba_syntax::red::ArgItem;
+    args.iter()
+        .find(|arg| {
+            matches!(arg, ArgItem::Named { name, .. }
+            if name.text.eq_ignore_ascii_case(parameter))
+        })
+        .or_else(|| {
+            args.get(position)
+                .filter(|arg| matches!(arg, ArgItem::Positional(..)))
+        })
+        .and_then(arg_string)
 }
 
 fn arg_string(arg: &calcvba_syntax::red::ArgItem<'_>) -> Option<String> {

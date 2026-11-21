@@ -3267,6 +3267,7 @@ impl ErrEngine {
 
     pub fn clear_err(&mut self) {
         self.err = ErrState::default();
+        self.erl_line = 0;
     }
 
     pub fn set_error_handler(&mut self, handler: &ErrorHandler) {

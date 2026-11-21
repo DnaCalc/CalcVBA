@@ -6,7 +6,6 @@ linux P_Asc: Asc.14=Integer:63
 P_CDate: CDate.22=Date:40E5686000000000
 P_CDate: CDate.39=Date:40E2070000000000
 P_CDate: CDate.40=Date:40E2072000000000
-P_CDec: CDec.4=Decimal:0.1
 P_CStr: CStr.54=String:[2020/01/02]
 P_CStr: CStr.55=String:[2020/01/02 15:04:05]
 P_CStr: CStr.56=String:[15:04:05]

@@ -2670,15 +2670,15 @@ fn parse_decimal96_text(text: &str) -> Option<Decimal96> {
     }
 }
 
-fn decimal96_from_f64(value: f64) -> LibResult<Decimal96> {
+fn decimal96_from_float(value: f64, significant_digits: usize) -> LibResult<Decimal96> {
     if !value.is_finite() {
         return Err(LibError::overflow("value does not fit in Decimal"));
     }
     if value == 0.0 {
         return Ok(decimal96_zero());
     }
-    // A Double carries 15 significant digits into a Decimal.
-    let scientific = format!("{:.14e}", value.abs());
+    let precision = significant_digits - 1;
+    let scientific = format!("{:.*e}", precision, value.abs());
     let (mantissa, exponent) = scientific.split_once('e').unwrap_or((&scientific, "0"));
     let exponent: i32 = exponent.parse().unwrap_or(0);
     let digits = mantissa.replace('.', "");
@@ -2724,7 +2724,9 @@ fn decimal96_from_variant(value: &Variant) -> LibResult<Decimal96> {
             value.as_currency_scaled_i64().unwrap_or(0),
         )),
         VarType::LongLong => Ok(decimal96_from_i64(value.as_i64().unwrap_or(0))),
-        _ => decimal96_from_f64(as_f64(value)?),
+        // CDec rounds according to the source subtype before building the Decimal.
+        VarType::Single => decimal96_from_float(as_f64(value)?, 7),
+        _ => decimal96_from_float(as_f64(value)?, 15),
     }
 }
 

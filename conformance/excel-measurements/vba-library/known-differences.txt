@@ -2,12 +2,10 @@
 # 'vm3 '/'jit ' prefix: only that executor differs. Rebuilt by make_known_differences.py.
 # A leading 'linux '/'windows '/'macos ' limits a line to that host (host libm or code page, dc-q6brh.112;
 # locale collation for vbTextCompare, dc-q6brh.6).
-P_ArrayBase1: ArrayBase1.13=String:[0,1,8]
 linux P_Asc: Asc.14=Integer:63
 P_CDate: CDate.22=Date:40E5686000000000
 P_CDate: CDate.39=Date:40E2070000000000
 P_CDate: CDate.40=Date:40E2072000000000
-P_CDec: CDec.4=Decimal:0.1
 P_CStr: CStr.54=String:[2020/01/02]
 P_CStr: CStr.55=String:[2020/01/02 15:04:05]
 P_CStr: CStr.56=String:[15:04:05]
@@ -17,11 +15,6 @@ P_CStr: CStr.59=String:[1899/12/31]
 P_CStr: CStr.60=String:[1899/12/29 12:00:00]
 P_CStr: CStr.61=String:[9999/12/31 23:59:59]
 P_CStr: CStr.62=String:[100/01/01]
-P_CVErr: CVErr.30=Error:5
-P_CallByName: CallByName.17=ERR438
-P_CallByName: CallByName.18=ERR438
-P_CallByName: CallByName.19=ERR450
-P_CallByName: CallByName.22=ERR5
 linux P_Chr: Chr.15=String:[{129}]
 linux P_Chr: Chr.16=String:[{141}]
 P_Chr: Chr.23=ERR5

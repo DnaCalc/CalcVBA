@@ -67,8 +67,8 @@ pub fn order_collection_args(
 /// The shared keyed-`Collection` dispatch: run `method` against `data` (the receiver's
 /// box-owned [`CollectionData`], reached via `ObjectRef::with_native_collection`) with the
 /// positional method `args` (omitted optionals arrive as the `MISSING_ARG` sentinel). Returns
-/// the method result, or a [`CollectionError`] the caller maps to a VBA run-time error number
-/// (9 / 457 / 5 / 449). This is the single implementation vm3 and the JIT both call.
+/// the method result, or a [`CollectionError`] the caller maps to a VBA run-time error number.
+/// This is the single implementation VM3 and the JIT both call.
 pub fn dispatch_collection(
     method: CollectionMethod,
     data: &mut CollectionData,
@@ -77,11 +77,14 @@ pub fn dispatch_collection(
     match method {
         CollectionMethod::Count => Ok(Variant::from_i32(data.count())),
         CollectionMethod::Add => {
-            let value = args.first().cloned().unwrap_or_else(Variant::empty);
+            let value = args
+                .first()
+                .filter(|value| !is_missing_arg(value))
+                .ok_or(CollectionError::WrongArgumentCount)?;
             let key = optional_key(args.get(1))?;
             let before = optional_selector(args.get(2));
             let after = optional_selector(args.get(3));
-            data.add(value, key, before, after)?;
+            data.add(value.clone(), key, before, after)?;
             Ok(Variant::empty())
         }
         CollectionMethod::Item => {

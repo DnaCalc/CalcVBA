@@ -68,5 +68,6 @@ pub fn invoke(
             E::BadArgument => 5,
             E::TypeMismatch => 13,
             E::ArgNotOptional => 449,
+            E::WrongArgumentCount => 450,
         })
 }

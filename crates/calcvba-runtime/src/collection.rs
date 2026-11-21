@@ -11,7 +11,7 @@
 //!
 //! This is the data model only; the shared dispatch site
 //! ([`crate::collection`] has none — see `calcvba_eval::collection::dispatch_collection`)
-//! maps [`CollectionError`] onto VBA run-time error numbers (9 / 457 / 5 / 449) and builds
+//! maps [`CollectionError`] onto VBA run-time error numbers and builds
 //! [`Selector`]s from the call arguments. Keys are case-insensitive (folded to Unicode
 //! lowercase by [`fold_key`]).
 
@@ -39,6 +39,8 @@ pub enum CollectionError {
     TypeMismatch,
     /// A required `Item`/`Remove` selector was omitted → error 449.
     ArgNotOptional,
+    /// `Add` was called without an item → error 450.
+    WrongArgumentCount,
 }
 
 /// The case-insensitive form of a collection key: Unicode lower case, so `Ä` and `ä` are one key.

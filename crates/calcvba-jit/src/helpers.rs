@@ -4716,6 +4716,8 @@ pub(crate) unsafe fn raise_collection_error_for_jit(
         CollectionError::TypeMismatch => unsafe { rt_raise_runtime_error_number(state, 13) },
         // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
         CollectionError::ArgNotOptional => unsafe { rt_raise_runtime_error_number(state, 449) },
+        // SAFETY: the active JIT entry owns the live same-thread error state.
+        CollectionError::WrongArgumentCount => unsafe { rt_raise_runtime_error_number(state, 450) },
     }
 }
 
@@ -5594,8 +5596,12 @@ pub(crate) unsafe extern "C" fn rt_jit_call_by_name_to_slot(
             4 => ProjectMemberKind::PropertyLet,
             8 => ProjectMemberKind::PropertySet,
             // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
-            _ => return unsafe { rt_raise_runtime_error_number(state, 5) },
+            _ => return unsafe { rt_raise_runtime_error_number(state, 438) },
         };
+        if object.vtype() == VarType::Object && jit_is_nothing(&object) {
+            // SAFETY: the active JIT entry owns the live same-thread error state.
+            return unsafe { rt_raise_runtime_error_number(state, 5) };
+        }
         if kind != ProjectMemberKind::Method
             && object.as_object_ref().is_some_and(|object| {
                 !calcvba_lib::objects::is_object(&object)

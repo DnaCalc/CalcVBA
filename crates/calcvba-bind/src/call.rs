@@ -353,7 +353,7 @@ impl<'a> ProcLower<'a> {
                         .unwrap_or(VarTypeRef::Variant),
                 ))
             }
-            DispatchRoute::SpecialForm(SpecialForm::Array) => {
+            DispatchRoute::SpecialForm(SpecialForm::Array { use_option_base }) => {
                 // `Array(t)`: each element is a Variant, so a project UDT is refused.
                 let mut items = Vec::new();
                 for item in arglist.map(|a| a.arg_items()).unwrap_or_default() {
@@ -368,7 +368,11 @@ impl<'a> ProcLower<'a> {
                 Ok(value_bound(
                     CoreValue::ArrayLiteral {
                         elems: items,
-                        lower_bound: self.info.option_base,
+                        lower_bound: if *use_option_base {
+                            self.info.option_base
+                        } else {
+                            0
+                        },
                         aliases: Vec::new(),
                     },
                     VarTypeRef::Variant,

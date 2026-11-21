@@ -20,6 +20,7 @@ pub use triage::{
     predicted_capabilities_lexical,
 };
 mod host;
+mod math;
 pub mod objects;
 mod pure;
 pub mod regexp;
@@ -368,7 +369,7 @@ pub fn invoke_context_free(
         Cos => pure::trig(args, trig::cos),
         Log => pure::log(args),
         Exp => pure::exp(args),
-        Atn => pure::math1(args, f64::atan),
+        Atn => pure::math1(args, math::atan),
         Tan => pure::trig(args, trig::tan),
 
         // ── DateTime ──
@@ -630,7 +631,7 @@ mod dispatch_policy_tests {
     use calcvba_hal::adapters::null::NullHostServices;
 
     #[test]
-    fn trigonometry_matches_recorded_excel_bits() {
+    fn transcendentals_match_recorded_excel_bits() {
         let host = NullHostServices::new(HostPolicy::default());
         for line in include_str!("../../../docs/research/math-shape/MathShape.excel.txt").lines() {
             let mut fields = line.split_whitespace();
@@ -638,6 +639,8 @@ mod dispatch_policy_tests {
                 Some("sin") => NativeImplId::Sin,
                 Some("cos") => NativeImplId::Cos,
                 Some("tan") => NativeImplId::Tan,
+                Some("atn") => NativeImplId::Atn,
+                Some("log") => NativeImplId::Log,
                 _ => continue,
             };
             let bits = u64::from_str_radix(fields.next().unwrap(), 16).unwrap();
@@ -648,6 +651,21 @@ mod dispatch_policy_tests {
                 Err(error) => panic!("{line}: {error:?}"),
             };
             assert_eq!(actual, fields.next().unwrap(), "{line}");
+        }
+    }
+
+    #[test]
+    fn odd_trigonometric_functions_preserve_negative_zero() {
+        let host = NullHostServices::new(HostPolicy::default());
+        let input = -0.0_f64;
+        let args = [Variant::from_f64(input)];
+        for id in [NativeImplId::Sin, NativeImplId::Tan] {
+            let result = invoke_context_free(id, &args, &host).unwrap();
+            assert_eq!(
+                result.as_f64().unwrap().to_bits(),
+                input.to_bits(),
+                "{id:?}"
+            );
         }
     }
 

@@ -5,6 +5,7 @@
 //! implemented (see `calcvba-runtime`/`calcvba-eval` `collection`); the remaining
 //! `FIDELITY:` marker is `StrConv`'s CJK/encoding modes.
 
+use crate::math::ln;
 use crate::{
     LibContext, LibError, LibResult, alloc_count, as_f64, as_i32, as_i64, as_str, as_usize, need,
     opt, vbool, vf64, vi32, vstr, vunit,
@@ -1223,7 +1224,7 @@ pub fn log(args: &[Variant]) -> LibResult<Variant> {
     if x <= 0.0 {
         return Err(LibError::invalid_call("Log argument must be positive"));
     }
-    Ok(vf64(x.ln()))
+    Ok(vf64(ln(x)))
 }
 
 pub fn exp(args: &[Variant]) -> LibResult<Variant> {
@@ -3248,7 +3249,7 @@ pub fn nper(args: &[Variant]) -> LibResult<Variant> {
     }
     // Separate logarithms preserve Excel's rounding, including its cancellation
     // at tiny rates (P_NPer.13). ln(future/present) gives a different answer.
-    finite_result((future.ln() - present.ln()) / (1.0 + i).ln())
+    finite_result((ln(future) - ln(present)) / ln(1.0 + i))
 }
 
 pub fn npv(args: &[Variant]) -> LibResult<Variant> {

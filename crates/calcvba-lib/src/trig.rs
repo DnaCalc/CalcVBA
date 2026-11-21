@@ -46,6 +46,9 @@ const COSINE: [f64; 6] = [
 ];
 
 pub fn sin(x: f64) -> f64 {
+    if x == 0.0 {
+        return x;
+    }
     if !x.is_finite() {
         return f64::from_bits(x.to_bits() | 0x0008_0000_0000_0000);
     }

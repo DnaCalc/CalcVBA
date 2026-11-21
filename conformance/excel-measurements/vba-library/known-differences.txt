@@ -15,7 +15,6 @@ P_CStr: CStr.59=String:[1899/12/31]
 P_CStr: CStr.60=String:[1899/12/29 12:00:00]
 P_CStr: CStr.61=String:[9999/12/31 23:59:59]
 P_CStr: CStr.62=String:[100/01/01]
-P_CVErr: CVErr.30=Error:5
 P_CallByName: CallByName.17=ERR438
 P_CallByName: CallByName.18=ERR438
 P_CallByName: CallByName.19=ERR450

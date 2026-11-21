@@ -2435,7 +2435,11 @@ fn date_time_text_serial(s: &str) -> LibResult<f64> {
     validate_vba_date_serial(ymd_to_serial(y, m, d))
 }
 pub fn cverr(args: &[Variant]) -> LibResult<Variant> {
-    let code = as_i32(need(args, 0)?)?;
+    let value = need(args, 0)?;
+    if value.vtype() == VarType::Error {
+        return Ok(value.clone());
+    }
+    let code = as_i32(value)?;
     if !(0..=0xFFFF).contains(&code) {
         return Err(LibError::invalid_call(default_error_message(5)));
     }

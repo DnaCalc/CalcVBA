@@ -659,16 +659,17 @@ pub fn replace(args: &[Variant]) -> LibResult<Variant> {
 
 pub fn trim(args: &[Variant], left: bool, right: bool) -> LibResult<Variant> {
     let s = units_arg(need(args, 0)?)?;
-    let space = u16::from(b' ');
+    // Excel trims ASCII and ideographic spaces (P_Trim.10–.13).
+    let is_space = |unit| matches!(unit, 0x0020 | 0x3000);
     let mut from = 0;
     let mut to = s.len();
     if left {
-        while from < to && s[from] == space {
+        while from < to && is_space(s[from]) {
             from += 1;
         }
     }
     if right {
-        while to > from && s[to - 1] == space {
+        while to > from && is_space(s[to - 1]) {
             to -= 1;
         }
     }
@@ -876,6 +877,9 @@ pub fn space(args: &[Variant]) -> LibResult<Variant> {
 pub fn string_repeat(args: &[Variant]) -> LibResult<Variant> {
     let count = alloc_count(need(args, 0)?)?;
     let arg = need(args, 1)?;
+    if arg.vtype() == VarType::Null {
+        return Ok(Variant::null());
+    }
     let ch = if arg.vtype() == VarType::String {
         // A string supplies its own first character.
         let units = string_units(arg)?;
@@ -883,8 +887,12 @@ pub fn string_repeat(args: &[Variant]) -> LibResult<Variant> {
             .first()
             .ok_or_else(|| LibError::invalid_call("String character is empty"))?
     } else {
-        // A number is a character code: the low byte, read through the ANSI code page.
-        let byte = as_i64(arg)?.rem_euclid(256) as u8;
+        // A numeric character code must fit a 16-bit code before taking its low byte.
+        let code = as_i64(arg)?;
+        if !(-32768..=65535).contains(&code) {
+            return Err(LibError::overflow("String character code out of range"));
+        }
+        let byte = code as u8;
         calcvba_runtime::ansi::ansi_decode(&[byte])
             .encode_utf16()
             .next()

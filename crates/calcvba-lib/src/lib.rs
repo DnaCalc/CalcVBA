@@ -269,8 +269,8 @@ pub(crate) fn vunit() -> Variant {
 
 /// Whether a `Null` argument makes the built-in's result `Null`. Only the argument that
 /// carries the text or date propagates: a `Null` in a numeric or option argument raises
-/// "Invalid use of Null" (94) from the coercion. `Chr`, `Space`, `String`, `Replace`,
-/// `InStrRev` and `StrReverse` do not propagate at all. The string-typed `$` aliases are
+/// "Invalid use of Null" (94) from the coercion. `String` handles a Null character
+/// after checking its count. The string-typed `$` aliases are
 /// distinguished by the VM's library import metadata and raise 94 before reaching this body.
 fn null_propagates(id: NativeImplId, args: &[Variant]) -> bool {
     use NativeImplId::*;

@@ -296,12 +296,21 @@ impl<'a> ProcLower<'a> {
                     )?,
                 };
                 self.inject_option_compare(member, &mut args);
+                // CByte expressions use checked Byte arithmetic (P_TypeName.49).
+                let ty = if unit.eq_ignore_ascii_case("VBA")
+                    && owner.eq_ignore_ascii_case("Conversion")
+                    && member.eq_ignore_ascii_case("CByte")
+                {
+                    builtin(BuiltinType::Byte)
+                } else {
+                    VarTypeRef::Variant
+                };
                 Ok(value_bound(
                     CoreValue::Call {
                         callee: CoreCallee::ExternProc { import },
                         args,
                     },
-                    VarTypeRef::Variant,
+                    ty,
                 ))
             }
             DispatchRoute::PredeclaredObject(PredeclaredObjectId::Err) => {
@@ -318,12 +327,17 @@ impl<'a> ProcLower<'a> {
             }
             DispatchRoute::Native(id) => {
                 let args = self.bind_native_args(*id, arglist)?;
+                let ty = if *id == NativeImplId::CByte {
+                    builtin(BuiltinType::Byte)
+                } else {
+                    VarTypeRef::Variant
+                };
                 Ok(value_bound(
                     CoreValue::Call {
                         callee: CoreCallee::Native(*id),
                         args,
                     },
-                    VarTypeRef::Variant,
+                    ty,
                 ))
             }
             DispatchRoute::Declare { descriptor_id } => {

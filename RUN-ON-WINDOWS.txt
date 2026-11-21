@@ -296,3 +296,41 @@ cfg(windows)-only failure, pull again before each push.
     - Note on ignored `wrapped_com_server_smoke`: `IConnectionPointContainer`, `Implements` faces,
       and `ISupportErrorInfo` move onto `CompatObjectBase` in bead 8 (design doc section 7 item 8),
       and early-bound dual vtable slot thunks are bead `dc-yqq0.24` (Windows-owned).
+
+--- Lane vx6 (Linux), newest last ---
+
+22. dc-yqq0.29 (portable `ITypeInfo` on `CompatObjectBase` + Excel class DISPIDs/slots):
+    - `calcvba-automation::com`: portable `TypeAttr`, `FuncDesc`, `ElemDesc`, `TypeDesc`,
+      `ParamDesc`, `ParamDescEx`, `IdlDesc`, `ITypeInfoVtbl`, `IID_ITYPEINFO`, and constants
+      matching Windows `oaidl.h` (`#[cfg(windows)]` layout assertions against `windows-sys`).
+    - `calcvba-symbol` / `calcvba-bind` / `calcvba-runtime` / `calcvba-rt-abi`: updated class
+      DISPIDs and field accessors from provisional `1..` to Excel's measured rule
+      (`docs/design/vba-class-dispids-excel-2026-11-21.md`): public fields `0x4003_0000+n`
+      (Object: Get/Let[`FUNCFLAG_FRESTRICTED`]/Set; Variant: Get/Let/Set; others: Get/Let),
+      properties `0x6803_0000+n` first in reverse source order, other procs `0x6003_0000+n`
+      continuing the counter in source order (Private/Friend take numbers and hidden trailing
+      vtable slots). `CVBD` native metadata bumped to v2 (still decodes v1 templates).
+    - `calcvba-runtime::class_dispatch::type_info`: `IDispatch::GetTypeInfoCount` now returns `1`
+      and `GetTypeInfo(0)` returns an interned portable `ITypeInfo` (`TKIND_DISPATCH`, flags
+      `0x1C2`, `cImplTypes = 1`, `cVars = 0`, `GetRefTypeOfImplType(0)` / `GetImplTypeFlags(0)`
+      -> `TYPE_E_ELEMENTNOTFOUND`, `GetRefTypeOfImplType(-1)` -> `TKIND_INTERFACE` dual half with
+      `VT_HRESULT` returns and `[out, retval]` parameters).
+    Windows runs needed (vw1):
+    - Layout & unit suites:
+      cargo test -p calcvba-automation -p calcvba-symbol -p calcvba-bind -p calcvba-oxir -p calcvba-runtime -p calcvba-rt-abi -p calcvba-vm3 -p calcvba-jit -p calcvba-build --no-fail-fast
+    - Object-identity portable + live COM (`OxVba.TestEventServer.DescribeDispatch` on CalcVBA W7):
+      cargo test -p calcvba-engine --test object_identity_portable --test object_identity --test member_dispatch_by_slot_dispid --no-fail-fast
+      cargo test -p calcvba-engine --test object_identity -- --ignored --test-threads=1 foreign_get_type_info_describe_dispatch_matches_excel
+    - COM server / oleaut typelib checks:
+      cargo test -p calcvba-build --test oleaut_typelib --test comhost_inproc --no-fail-fast
+    - Excel oracle probes to settle the 3 open questions in
+      `docs/design/vba-class-dispids-excel-2026-11-21.md` (using `OxVba.TestEventServer.DescribeDispatch`
+      on a private desktop):
+      (a) Private fields declared BEFORE Public fields (`Private p As Long` before `Public Value As Long`):
+          does `Value` stay `0x40030000` or shift to `0x40030001`?
+      (b) The 3rd hidden vtable slot in `objid2`'s `Widget` (`vtbl=200` = 25 slots for 15 public
+          members + 2 Friend/Private procs): isolate `Class_Terminate`, `Event Changed`, and
+          `Private mObj As Object` to see which one adds the extra hidden slot.
+      (c) `VB_UserMemId = 0` (default Property Get) and `VB_UserMemId = -4` (`_NewEnum`):
+          confirm exact `memid`, `wFuncFlags` (is `-4` restricted?), and whether either consumes
+          a counter number from the `0x68030000+n` / `0x60030000+n` sequence.

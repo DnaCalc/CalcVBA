@@ -1094,3 +1094,562 @@ End Sub
         drop(invoker);
     }
 }
+
+/// Portable equivalent of `OxVba.TestEventServer.DescribeDispatch` (dc-yqq0.29): calls
+/// `IDispatch::GetTypeInfo(0, 0, &ti)` and dumps both the `TKIND_DISPATCH` half and the
+/// `TKIND_INTERFACE` dual half (`GetRefTypeOfImplType(-1)` -> `GetRefTypeInfo`).
+fn describe_dispatch_portable(ptr: *mut RawRuntimeIUnknown) -> String {
+    use calcvba_runtime::com::{ITypeInfo, TKIND_DISPATCH, TKIND_INTERFACE, TYPEFLAG_FDUAL};
+    let mut count = 99u32;
+    // SAFETY: `ptr` carries `ClassDualVtbl` whose prefix is `IDispatchVtbl`.
+    let hr = unsafe {
+        let vtbl = &*((*ptr).vtbl.cast::<IDispatchVtbl>());
+        (vtbl.get_type_info_count)(ptr.cast(), &mut count)
+    };
+    assert_eq!(hr, 0, "GetTypeInfoCount must succeed");
+    assert_eq!(count, 1, "dual class must report 1 ITypeInfo");
+
+    let mut ti_ptr: *mut c_void = core::ptr::null_mut();
+    // SAFETY: `ptr` carries `ClassDualVtbl`.
+    let hr = unsafe {
+        let vtbl = &*((*ptr).vtbl.cast::<IDispatchVtbl>());
+        (vtbl.get_type_info)(ptr.cast(), 0, 0, &mut ti_ptr)
+    };
+    assert_eq!(hr, 0, "GetTypeInfo(0) must succeed");
+    assert!(!ti_ptr.is_null());
+
+    fn describe_half(ti_ptr: *mut c_void, out: &mut String) -> (i32, u16) {
+        use calcvba_runtime::com::{
+            ITypeInfo, MEMBERID_NIL, TKIND_DISPATCH, TKIND_INTERFACE, TYPE_E_ELEMENTNOTFOUND,
+        };
+        // SAFETY: `ti_ptr` is a live `ITypeInfo` pointer returned by `GetTypeInfo`/`GetRefTypeInfo`.
+        unsafe {
+            let vtbl = &*(*ti_ptr.cast::<ITypeInfo>()).vtbl;
+            let mut bstr_name: *mut u16 = core::ptr::null_mut();
+            let hr = (vtbl.get_documentation)(
+                ti_ptr,
+                MEMBERID_NIL,
+                &mut bstr_name,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            );
+            assert_eq!(hr, 0);
+            let type_name = BStr::from_raw_bstr(bstr_name).as_str().to_string();
+
+            let mut pattr = core::ptr::null_mut();
+            assert_eq!((vtbl.get_type_attr)(ti_ptr, &mut pattr), 0);
+            let attr = *pattr;
+            (vtbl.release_type_attr)(ti_ptr, pattr);
+
+            let kind_label = match attr.typekind {
+                TKIND_DISPATCH => "TKIND_DISPATCH",
+                TKIND_INTERFACE => "TKIND_INTERFACE",
+                other => panic!("unexpected typekind {other}"),
+            };
+            // Normalize vtbl bytes to 64-bit slot width (8 bytes/slot) so expectations match the
+            // 64-bit Excel appendix on every pointer width.
+            let ptr_size = core::mem::size_of::<*const c_void>() as u16;
+            let vtbl_64 = (attr.cb_size_vft / ptr_size) * 8;
+            out.push_str(&format!(
+                "type {type_name} kind={kind_label} flags=0x{:X} funcs={} vars={} impl={} vtbl={vtbl_64}\n",
+                attr.w_type_flags, attr.c_funcs, attr.c_vars, attr.c_impl_types
+            ));
+
+            for i in 0..u32::from(attr.c_impl_types) {
+                let mut href = 0u32;
+                let impl_hr = (vtbl.get_ref_type_of_impl_type)(ti_ptr, i, &mut href);
+                assert_eq!(impl_hr, TYPE_E_ELEMENTNOTFOUND);
+                let mut impl_flags = 0i32;
+                assert_eq!(
+                    (vtbl.get_impl_type_flags)(ti_ptr, i, &mut impl_flags),
+                    TYPE_E_ELEMENTNOTFOUND
+                );
+                out.push_str(&format!("  !impl {i} TYPE_E_ELEMENTNOTFOUND\n"));
+            }
+
+            for i in 0..u32::from(attr.c_funcs) {
+                let mut pfd = core::ptr::null_mut();
+                assert_eq!((vtbl.get_func_desc)(ti_ptr, i, &mut pfd), 0);
+                let fd = *pfd;
+                let max_names = (fd.c_params.max(0) as usize) + 1;
+                let mut raw_names = vec![core::ptr::null_mut::<u16>(); max_names];
+                let mut got_names = 0u32;
+                assert_eq!(
+                    (vtbl.get_names)(
+                        ti_ptr,
+                        fd.memid,
+                        raw_names.as_mut_ptr(),
+                        max_names as u32,
+                        &mut got_names,
+                    ),
+                    0
+                );
+                let names: Vec<String> = raw_names[..got_names as usize]
+                    .iter()
+                    .map(|&raw| BStr::from_raw_bstr(raw).as_str().to_string())
+                    .collect();
+                let ovft_64 = (fd.o_vft as usize / core::mem::size_of::<*const c_void>()) * 8;
+                out.push_str(&format!(
+                    "  func memid=0x{:08X} invkind={} oVft={ovft_64} params={} opt={} flags=0x{:X} ret={} {}\n",
+                    fd.memid as u32,
+                    fd.invkind,
+                    fd.c_params,
+                    fd.c_params_opt,
+                    fd.w_func_flags,
+                    fd.elemdesc_func.tdesc.vt,
+                    names.join(",")
+                ));
+                (vtbl.release_func_desc)(ti_ptr, pfd);
+            }
+            (attr.typekind, attr.w_type_flags)
+        }
+    }
+
+    let mut text = String::new();
+    let (kind, flags) = describe_half(ti_ptr, &mut text);
+    assert_eq!(kind, TKIND_DISPATCH);
+    assert_ne!(flags & TYPEFLAG_FDUAL, 0);
+
+    // SAFETY: `ti_ptr` is a live `ITypeInfo` for a dual class.
+    unsafe {
+        let vtbl = &*(*ti_ptr.cast::<ITypeInfo>()).vtbl;
+        let mut href = 0u32;
+        assert_eq!(
+            (vtbl.get_ref_type_of_impl_type)(ti_ptr, u32::MAX, &mut href),
+            0
+        );
+        let mut dual_ptr: *mut c_void = core::ptr::null_mut();
+        assert_eq!((vtbl.get_ref_type_info)(ti_ptr, href, &mut dual_ptr), 0);
+        assert!(!dual_ptr.is_null());
+        text.push_str("--dual\n");
+        let (dual_kind, _) = describe_half(dual_ptr, &mut text);
+        assert_eq!(dual_kind, TKIND_INTERFACE);
+
+        // Verify round-trip toggle back from TKIND_INTERFACE -> TKIND_DISPATCH and refcount 0.
+        let dual_vtbl = &*(*dual_ptr.cast::<ITypeInfo>()).vtbl;
+        let mut back_href = 0u32;
+        assert_eq!(
+            (dual_vtbl.get_ref_type_of_impl_type)(dual_ptr, u32::MAX, &mut back_href),
+            0
+        );
+        let mut back_ptr: *mut c_void = core::ptr::null_mut();
+        assert_eq!(
+            (dual_vtbl.get_ref_type_info)(dual_ptr, back_href, &mut back_ptr),
+            0
+        );
+        assert!(!back_ptr.is_null());
+        let back_vtbl = &*(*back_ptr.cast::<ITypeInfo>()).vtbl;
+        assert_eq!((back_vtbl.unknown.release)(back_ptr), 0);
+        assert_eq!((dual_vtbl.unknown.release)(dual_ptr), 0);
+        assert_eq!((vtbl.unknown.release)(ti_ptr), 0);
+    }
+    text
+}
+
+#[test]
+fn class_get_type_info_matches_excel_measured_classes_on_vm3_and_jit() {
+    // Exact classes measured in Excel 64-bit (`docs/design/vba-class-dispids-excel-2026-11-21.md`):
+    // Widget, W2..W8.
+    let classes: Vec<(&str, &str)> = vec![
+        (
+            "Widget",
+            r#"
+Public Value As Long
+Public Name As String
+Public Child As Object
+Public Event Changed(ByVal n As Long)
+Private mX As Double
+Private mObj As Object
+
+Public Function Twice() As Long
+    Twice = Value * 2
+End Function
+
+Public Sub Reset()
+    Value = 0
+End Sub
+
+Public Property Get X() As Double
+    X = mX
+End Property
+
+Public Property Let X(ByVal v As Double)
+    mX = v
+End Property
+
+Public Property Get Obj() As Object
+    Set Obj = mObj
+End Property
+
+Public Property Set Obj(ByVal v As Object)
+    Set mObj = v
+End Property
+
+Public Function WithArgs(ByVal a As Long, Optional ByVal b As Long, Optional ByVal c As Long = 3) As Long
+    WithArgs = a + b + c
+End Function
+
+Public Function Rest(ParamArray items() As Variant) As Long
+    Rest = UBound(items) - LBound(items) + 1
+End Function
+
+Friend Sub Hidden()
+End Sub
+
+Private Sub Secret()
+End Sub
+
+Private Sub Class_Terminate()
+End Sub
+"#,
+        ),
+        (
+            "W2",
+            r#"
+Public Function A() As Long
+End Function
+Public Function B() As Long
+End Function
+Public Function C() As Long
+End Function
+"#,
+        ),
+        (
+            "W3",
+            r#"
+Public Event Ping()
+Public Function A() As Long
+End Function
+Public Function B() As Long
+End Function
+Private Sub Class_Initialize()
+End Sub
+Private Sub Class_Terminate()
+End Sub
+"#,
+        ),
+        (
+            "W4",
+            r#"
+Public Property Get P1() As Long
+End Property
+Public Property Get P2() As Long
+End Property
+Public Property Get P3() As Long
+End Property
+"#,
+        ),
+        (
+            "W5",
+            r#"
+Private Sub S()
+End Sub
+Friend Function F() As Long
+End Function
+Public Function A() As Long
+End Function
+"#,
+        ),
+        (
+            "W6",
+            r#"
+Public Function Zed() As Long
+End Function
+Public Function Alpha() As Long
+End Function
+Public Function Mid() As Long
+End Function
+"#,
+        ),
+        (
+            "W7",
+            r#"
+Public F1 As Long
+Public F2 As Variant
+Public Property Get Zed() As Long
+End Property
+Public Property Get Alpha() As Long
+End Property
+Public Sub M()
+End Sub
+"#,
+        ),
+        (
+            "W8",
+            r#"
+Private mHidden1 As Long
+Private mHidden2 As String
+Public Function A() As Long
+End Function
+"#,
+        ),
+    ];
+
+    let modules: Vec<ModuleUnit> = classes
+        .iter()
+        .map(|(name, src)| ModuleUnit {
+            module_name: (*name).to_string(),
+            module_kind: ModuleKind::Class,
+            attributes: ModuleAttributes::named(*name),
+            source: (*src).to_string(),
+        })
+        .collect();
+    let manifest = SymbolProjectManifest {
+        project_name: "TypeInfoExcelProbe".to_string(),
+        project_kind: ProjectKind::Library,
+        modules,
+        references: Vec::new(),
+        reference_projects: Vec::new(),
+        conditional_constants: Default::default(),
+        conditional_compilation_target: Default::default(),
+    };
+    let typelibs = calcvba_symbol::CatalogTypeLibResolver;
+    let program = calcvba_bind::bind_program(&manifest, &typelibs).expect("bind");
+    let oxp = calcvba_oxir::elaborate::elaborate(&program).expect("elaborate");
+
+    let expected_w2 = "\
+type W2 kind=TKIND_DISPATCH flags=0x1C2 funcs=3 vars=0 impl=1 vtbl=80
+  !impl 0 TYPE_E_ELEMENTNOTFOUND
+  func memid=0x60030000 invkind=1 oVft=56 params=0 opt=0 flags=0x0 ret=3 A
+  func memid=0x60030001 invkind=1 oVft=64 params=0 opt=0 flags=0x0 ret=3 B
+  func memid=0x60030002 invkind=1 oVft=72 params=0 opt=0 flags=0x0 ret=3 C
+--dual
+type W2 kind=TKIND_INTERFACE flags=0x1C2 funcs=3 vars=0 impl=1 vtbl=80
+  !impl 0 TYPE_E_ELEMENTNOTFOUND
+  func memid=0x60030000 invkind=1 oVft=56 params=1 opt=0 flags=0x0 ret=25 A
+  func memid=0x60030001 invkind=1 oVft=64 params=1 opt=0 flags=0x0 ret=25 B
+  func memid=0x60030002 invkind=1 oVft=72 params=1 opt=0 flags=0x0 ret=25 C
+";
+
+    let expected_w3 = "\
+type W3 kind=TKIND_DISPATCH flags=0x1C2 funcs=2 vars=0 impl=1 vtbl=72
+  !impl 0 TYPE_E_ELEMENTNOTFOUND
+  func memid=0x60030000 invkind=1 oVft=56 params=0 opt=0 flags=0x0 ret=3 A
+  func memid=0x60030001 invkind=1 oVft=64 params=0 opt=0 flags=0x0 ret=3 B
+--dual
+type W3 kind=TKIND_INTERFACE flags=0x1C2 funcs=2 vars=0 impl=1 vtbl=72
+  !impl 0 TYPE_E_ELEMENTNOTFOUND
+  func memid=0x60030000 invkind=1 oVft=56 params=1 opt=0 flags=0x0 ret=25 A
+  func memid=0x60030001 invkind=1 oVft=64 params=1 opt=0 flags=0x0 ret=25 B
+";
+
+    let expected_w4 = "\
+type W4 kind=TKIND_DISPATCH flags=0x1C2 funcs=3 vars=0 impl=1 vtbl=80
+  !impl 0 TYPE_E_ELEMENTNOTFOUND
+  func memid=0x68030002 invkind=2 oVft=56 params=0 opt=0 flags=0x0 ret=3 P1
+  func memid=0x68030001 invkind=2 oVft=64 params=0 opt=0 flags=0x0 ret=3 P2
+  func memid=0x68030000 invkind=2 oVft=72 params=0 opt=0 flags=0x0 ret=3 P3
+--dual
+type W4 kind=TKIND_INTERFACE flags=0x1C2 funcs=3 vars=0 impl=1 vtbl=80
+  !impl 0 TYPE_E_ELEMENTNOTFOUND
+  func memid=0x68030002 invkind=2 oVft=56 params=1 opt=0 flags=0x0 ret=25 P1
+  func memid=0x68030001 invkind=2 oVft=64 params=1 opt=0 flags=0x0 ret=25 P2
+  func memid=0x68030000 invkind=2 oVft=72 params=1 opt=0 flags=0x0 ret=25 P3
+";
+
+    let expected_w5 = "\
+type W5 kind=TKIND_DISPATCH flags=0x1C2 funcs=1 vars=0 impl=1 vtbl=80
+  !impl 0 TYPE_E_ELEMENTNOTFOUND
+  func memid=0x60030002 invkind=1 oVft=56 params=0 opt=0 flags=0x0 ret=3 A
+--dual
+type W5 kind=TKIND_INTERFACE flags=0x1C2 funcs=1 vars=0 impl=1 vtbl=80
+  !impl 0 TYPE_E_ELEMENTNOTFOUND
+  func memid=0x60030002 invkind=1 oVft=56 params=1 opt=0 flags=0x0 ret=25 A
+";
+
+    let expected_w6 = "\
+type W6 kind=TKIND_DISPATCH flags=0x1C2 funcs=3 vars=0 impl=1 vtbl=80
+  !impl 0 TYPE_E_ELEMENTNOTFOUND
+  func memid=0x60030000 invkind=1 oVft=56 params=0 opt=0 flags=0x0 ret=3 Zed
+  func memid=0x60030001 invkind=1 oVft=64 params=0 opt=0 flags=0x0 ret=3 Alpha
+  func memid=0x60030002 invkind=1 oVft=72 params=0 opt=0 flags=0x0 ret=3 Mid
+--dual
+type W6 kind=TKIND_INTERFACE flags=0x1C2 funcs=3 vars=0 impl=1 vtbl=80
+  !impl 0 TYPE_E_ELEMENTNOTFOUND
+  func memid=0x60030000 invkind=1 oVft=56 params=1 opt=0 flags=0x0 ret=25 Zed
+  func memid=0x60030001 invkind=1 oVft=64 params=1 opt=0 flags=0x0 ret=25 Alpha
+  func memid=0x60030002 invkind=1 oVft=72 params=1 opt=0 flags=0x0 ret=25 Mid
+";
+
+    let expected_w7 = "\
+type W7 kind=TKIND_DISPATCH flags=0x1C2 funcs=8 vars=0 impl=1 vtbl=120
+  !impl 0 TYPE_E_ELEMENTNOTFOUND
+  func memid=0x40030000 invkind=2 oVft=56 params=0 opt=0 flags=0x0 ret=3 F1
+  func memid=0x40030000 invkind=4 oVft=64 params=1 opt=0 flags=0x0 ret=24 F1
+  func memid=0x40030001 invkind=2 oVft=72 params=0 opt=0 flags=0x0 ret=12 F2
+  func memid=0x40030001 invkind=4 oVft=80 params=1 opt=0 flags=0x0 ret=24 F2
+  func memid=0x40030001 invkind=8 oVft=88 params=1 opt=0 flags=0x0 ret=24 F2
+  func memid=0x68030001 invkind=2 oVft=96 params=0 opt=0 flags=0x0 ret=3 Zed
+  func memid=0x68030000 invkind=2 oVft=104 params=0 opt=0 flags=0x0 ret=3 Alpha
+  func memid=0x60030002 invkind=1 oVft=112 params=0 opt=0 flags=0x0 ret=24 M
+--dual
+type W7 kind=TKIND_INTERFACE flags=0x1C2 funcs=8 vars=0 impl=1 vtbl=120
+  !impl 0 TYPE_E_ELEMENTNOTFOUND
+  func memid=0x40030000 invkind=2 oVft=56 params=1 opt=0 flags=0x0 ret=25 F1
+  func memid=0x40030000 invkind=4 oVft=64 params=1 opt=0 flags=0x0 ret=25 F1
+  func memid=0x40030001 invkind=2 oVft=72 params=1 opt=0 flags=0x0 ret=25 F2
+  func memid=0x40030001 invkind=4 oVft=80 params=1 opt=0 flags=0x0 ret=25 F2
+  func memid=0x40030001 invkind=8 oVft=88 params=1 opt=0 flags=0x0 ret=25 F2
+  func memid=0x68030001 invkind=2 oVft=96 params=1 opt=0 flags=0x0 ret=25 Zed
+  func memid=0x68030000 invkind=2 oVft=104 params=1 opt=0 flags=0x0 ret=25 Alpha
+  func memid=0x60030002 invkind=1 oVft=112 params=0 opt=0 flags=0x0 ret=25 M
+";
+
+    let expected_w8 = "\
+type W8 kind=TKIND_DISPATCH flags=0x1C2 funcs=1 vars=0 impl=1 vtbl=64
+  !impl 0 TYPE_E_ELEMENTNOTFOUND
+  func memid=0x60030000 invkind=1 oVft=56 params=0 opt=0 flags=0x0 ret=3 A
+--dual
+type W8 kind=TKIND_INTERFACE flags=0x1C2 funcs=1 vars=0 impl=1 vtbl=64
+  !impl 0 TYPE_E_ELEMENTNOTFOUND
+  func memid=0x60030000 invkind=1 oVft=56 params=1 opt=0 flags=0x0 ret=25 A
+";
+
+    // Widget's 15 public functions match Excel line-for-line; vtbl has 24 slots (192 bytes)
+    // pending vw1's Excel measurement of the unexplained third hidden slot in objid2's Widget.
+    let expected_widget = "\
+type Widget kind=TKIND_DISPATCH flags=0x1C2 funcs=15 vars=0 impl=1 vtbl=192
+  !impl 0 TYPE_E_ELEMENTNOTFOUND
+  func memid=0x40030000 invkind=2 oVft=56 params=0 opt=0 flags=0x0 ret=3 Value
+  func memid=0x40030000 invkind=4 oVft=64 params=1 opt=0 flags=0x0 ret=24 Value
+  func memid=0x40030001 invkind=2 oVft=72 params=0 opt=0 flags=0x0 ret=8 Name
+  func memid=0x40030001 invkind=4 oVft=80 params=1 opt=0 flags=0x0 ret=24 Name
+  func memid=0x40030002 invkind=2 oVft=88 params=0 opt=0 flags=0x0 ret=9 Child
+  func memid=0x40030002 invkind=4 oVft=96 params=1 opt=0 flags=0x1 ret=24 Child
+  func memid=0x40030002 invkind=8 oVft=104 params=1 opt=0 flags=0x0 ret=24 Child
+  func memid=0x60030002 invkind=1 oVft=112 params=0 opt=0 flags=0x0 ret=3 Twice
+  func memid=0x60030003 invkind=1 oVft=120 params=0 opt=0 flags=0x0 ret=24 Reset
+  func memid=0x68030001 invkind=2 oVft=128 params=0 opt=0 flags=0x0 ret=5 X
+  func memid=0x68030001 invkind=4 oVft=136 params=1 opt=0 flags=0x0 ret=24 X
+  func memid=0x68030000 invkind=2 oVft=144 params=0 opt=0 flags=0x0 ret=9 Obj
+  func memid=0x68030000 invkind=8 oVft=152 params=1 opt=0 flags=0x0 ret=24 Obj
+  func memid=0x60030004 invkind=1 oVft=160 params=3 opt=0 flags=0x0 ret=3 WithArgs,a,b,c
+  func memid=0x60030005 invkind=1 oVft=168 params=1 opt=-1 flags=0x0 ret=3 Rest,items
+--dual
+type Widget kind=TKIND_INTERFACE flags=0x1C2 funcs=15 vars=0 impl=1 vtbl=192
+  !impl 0 TYPE_E_ELEMENTNOTFOUND
+  func memid=0x40030000 invkind=2 oVft=56 params=1 opt=0 flags=0x0 ret=25 Value
+  func memid=0x40030000 invkind=4 oVft=64 params=1 opt=0 flags=0x0 ret=25 Value
+  func memid=0x40030001 invkind=2 oVft=72 params=1 opt=0 flags=0x0 ret=25 Name
+  func memid=0x40030001 invkind=4 oVft=80 params=1 opt=0 flags=0x0 ret=25 Name
+  func memid=0x40030002 invkind=2 oVft=88 params=1 opt=0 flags=0x0 ret=25 Child
+  func memid=0x40030002 invkind=4 oVft=96 params=1 opt=0 flags=0x1 ret=25 Child
+  func memid=0x40030002 invkind=8 oVft=104 params=1 opt=0 flags=0x0 ret=25 Child
+  func memid=0x60030002 invkind=1 oVft=112 params=1 opt=0 flags=0x0 ret=25 Twice
+  func memid=0x60030003 invkind=1 oVft=120 params=0 opt=0 flags=0x0 ret=25 Reset
+  func memid=0x68030001 invkind=2 oVft=128 params=1 opt=0 flags=0x0 ret=25 X
+  func memid=0x68030001 invkind=4 oVft=136 params=1 opt=0 flags=0x0 ret=25 X
+  func memid=0x68030000 invkind=2 oVft=144 params=1 opt=0 flags=0x0 ret=25 Obj
+  func memid=0x68030000 invkind=8 oVft=152 params=1 opt=0 flags=0x0 ret=25 Obj
+  func memid=0x60030004 invkind=1 oVft=160 params=4 opt=0 flags=0x0 ret=25 WithArgs,a,b,c
+  func memid=0x60030005 invkind=1 oVft=168 params=2 opt=-1 flags=0x0 ret=25 Rest,items
+";
+
+    let expectations = [
+        ("Widget", expected_widget),
+        ("W2", expected_w2),
+        ("W3", expected_w3),
+        ("W4", expected_w4),
+        ("W5", expected_w5),
+        ("W6", expected_w6),
+        ("W7", expected_w7),
+        ("W8", expected_w8),
+    ];
+
+    for backend in BACKENDS {
+        let mut engine = Engine::new(HostConfig { backend });
+        engine.set_host_policy(HostPolicy::native());
+        let mut session = engine
+            .prepare_image_session(OxImage::new(vec![oxp.clone()]))
+            .unwrap_or_else(|err| panic!("{backend:?} prepare_image_session: {err}"));
+
+        for (class_name, expected) in &expectations {
+            let instance = session
+                .create_class_instance(class_name)
+                .unwrap_or_else(|err| panic!("{backend:?} create {class_name}: {err}"));
+            let actual = describe_dispatch_portable(instance.raw_iunknown());
+            assert_eq!(
+                actual, *expected,
+                "{backend:?} GetTypeInfo mismatch for {class_name}"
+            );
+        }
+
+        // Also verify ITypeInfo::GetIDsOfNames and ITypeInfo::Invoke on Widget.
+        let widget = session
+            .create_class_instance("Widget")
+            .expect("create Widget");
+        let raw = widget.raw_iunknown();
+        // SAFETY: `session` is exclusively borrowed by the invoker scope for these calls.
+        let _invoker = unsafe { session.enter_member_invoker_scope() };
+        // SAFETY: `raw` is a live project object `IDispatch` pointer and `ti_ptr` is
+        // released before `_invoker` and `widget` drop.
+        unsafe {
+            use calcvba_runtime::com::ITypeInfo;
+            let disp_vtbl = &*((*raw).vtbl.cast::<IDispatchVtbl>());
+            let mut ti_ptr: *mut c_void = core::ptr::null_mut();
+            assert_eq!((disp_vtbl.get_type_info)(raw.cast(), 0, 0, &mut ti_ptr), 0);
+            let ti_vtbl = &*(*ti_ptr.cast::<ITypeInfo>()).vtbl;
+
+            let n_value = utf16_nul("Value");
+            let n_twice = utf16_nul("Twice");
+            let mut value_id = DISPID_UNKNOWN;
+            let mut twice_id = DISPID_UNKNOWN;
+            assert_eq!(
+                (ti_vtbl.get_ids_of_names)(ti_ptr, [n_value.as_ptr()].as_ptr(), 1, &mut value_id),
+                0
+            );
+            assert_eq!(
+                (ti_vtbl.get_ids_of_names)(ti_ptr, [n_twice.as_ptr()].as_ptr(), 1, &mut twice_id),
+                0
+            );
+            assert_eq!(value_id, 0x4003_0000);
+            assert_eq!(twice_id, 0x6003_0002);
+
+            // Put Value = 21 via ITypeInfo::Invoke, then call Twice() -> 42.
+            let mut put_val = Variant::from_i32(21);
+            let mut put_named = [DISPID_PROPERTYPUT];
+            let mut put_params = DispParams {
+                rgvarg: (&raw mut put_val).cast::<VariantCore>(),
+                rgdispid_named_args: put_named.as_mut_ptr(),
+                c_args: 1,
+                c_named_args: 1,
+            };
+            assert_eq!(
+                (ti_vtbl.invoke)(
+                    ti_ptr,
+                    raw.cast(),
+                    value_id,
+                    DISPATCH_PROPERTYPUT,
+                    &raw mut put_params,
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                ),
+                0
+            );
+
+            let mut empty_params = DispParams::default();
+            let mut result = Variant::empty();
+            assert_eq!(
+                (ti_vtbl.invoke)(
+                    ti_ptr,
+                    raw.cast(),
+                    twice_id,
+                    DISPATCH_METHOD,
+                    &raw mut empty_params,
+                    (&raw mut result).cast(),
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                ),
+                0
+            );
+            assert_eq!(
+                result.as_i32(),
+                Some(42),
+                "{backend:?} ITypeInfo::Invoke Twice"
+            );
+            assert_eq!((ti_vtbl.unknown.release)(ti_ptr), 0);
+        }
+    }
+}

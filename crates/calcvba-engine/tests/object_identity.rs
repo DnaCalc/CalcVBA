@@ -197,3 +197,99 @@ fn foreign_thread_final_release_terminates_on_the_owner_thread() {
         );
     }
 }
+
+#[cfg(target_os = "windows")]
+#[test]
+#[ignore = "live COM: needs OxVba.TestEventServer (tools/OxVba.TestEventServer/register.ps1)"]
+fn foreign_get_type_info_describe_dispatch_matches_excel() {
+    // dc-yqq0.29: OxVba.TestEventServer.DescribeDispatch inspects GetTypeInfo(0) and its dual
+    // TKIND_INTERFACE half via COM interop, matching docs/design/vba-class-dispids-excel-2026-11-21.md.
+    let w7 = r#"
+Public F1 As Long
+Public F2 As Variant
+Public Property Get Zed() As Long
+End Property
+Public Property Get Alpha() As Long
+End Property
+Public Sub M()
+End Sub
+"#;
+    let main = r#"
+Public gOut As String
+Sub Main()
+    Dim x As New W7, s As Object
+    Set s = CreateObject("OxVba.TestEventServer")
+    gOut = s.DescribeDispatch(x)
+End Sub
+"#;
+    let manifest = SymbolProjectManifest {
+        project_name: "ObjIdTypeInfo".to_string(),
+        project_kind: ProjectKind::Source,
+        modules: vec![
+            module("Probe", ModuleKind::Procedural, main),
+            module("W7", ModuleKind::Class, w7),
+        ],
+        references: Vec::new(),
+        reference_projects: Vec::new(),
+        conditional_constants: Default::default(),
+        conditional_compilation_target: Default::default(),
+    };
+    for backend in BACKENDS {
+        let mut engine = Engine::new(HostConfig { backend });
+        engine.set_host_policy(HostPolicy::native());
+        let values = engine
+            .execute_manifest_with_variant_snapshot(&manifest)
+            .unwrap_or_else(|err| panic!("{backend:?}: {err}"));
+        let desc = values
+            .iter()
+            .filter_map(|v| v.as_bstr().map(|text| text.as_str().to_string()))
+            .find(|text| text.contains("TKIND_DISPATCH"))
+            .unwrap_or_else(|| panic!("{backend:?}: no DescribeDispatch output in {values:?}"));
+        assert!(
+            desc.contains("type W7 kind=TKIND_DISPATCH flags=0x1C2"),
+            "{desc}"
+        );
+        assert!(desc.contains("funcs=8 vars=0 impl=1 vtbl=120"), "{desc}");
+        assert!(desc.contains("TYPE_E_ELEMENTNOTFOUND"), "{desc}");
+        assert!(
+            desc.contains(
+                "func memid=0x40030000 invkind=2 oVft=56 params=0 opt=0 flags=0x0 ret=3 F1"
+            ),
+            "{desc}"
+        );
+        assert!(
+            desc.contains(
+                "func memid=0x40030001 invkind=8 oVft=88 params=1 opt=0 flags=0x0 ret=24 F2"
+            ),
+            "{desc}"
+        );
+        assert!(
+            desc.contains(
+                "func memid=0x68030001 invkind=2 oVft=96 params=0 opt=0 flags=0x0 ret=3 Zed"
+            ),
+            "{desc}"
+        );
+        assert!(
+            desc.contains(
+                "func memid=0x68030000 invkind=2 oVft=104 params=0 opt=0 flags=0x0 ret=3 Alpha"
+            ),
+            "{desc}"
+        );
+        assert!(
+            desc.contains(
+                "func memid=0x60030002 invkind=1 oVft=112 params=0 opt=0 flags=0x0 ret=24 M"
+            ),
+            "{desc}"
+        );
+        assert!(
+            desc.contains("--dual\ntype W7 kind=TKIND_INTERFACE flags=0x1C2"),
+            "{desc}"
+        );
+        assert!(
+            desc.contains(
+                "func memid=0x60030002 invkind=1 oVft=112 params=0 opt=0 flags=0x0 ret=25 M"
+            ),
+            "{desc}"
+        );
+    }
+}

@@ -3459,6 +3459,7 @@ fn unsupported_project_object_instruction_program(inst: OxInst) -> OxProgram {
                     dispid: None,
                     get_vtable_slot: None,
                     put_vtable_slot: None,
+                    putref_vtable_slot: None,
                 },
                 OxClassField {
                     externally_visible: true,
@@ -3469,6 +3470,7 @@ fn unsupported_project_object_instruction_program(inst: OxInst) -> OxProgram {
                     dispid: None,
                     get_vtable_slot: None,
                     put_vtable_slot: None,
+                    putref_vtable_slot: None,
                 },
             ],
             methods: Vec::new(),

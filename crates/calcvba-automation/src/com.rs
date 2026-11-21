@@ -155,16 +155,58 @@ pub const DISP_E_OVERFLOW: HResult = 0x8002_000Au32 as i32;
 pub const DISP_E_BADINDEX: HResult = 0x8002_000Bu32 as i32;
 pub const DISP_E_BADPARAMCOUNT: HResult = 0x8002_000Eu32 as i32;
 pub const DISP_E_PARAMNOTOPTIONAL: HResult = 0x8002_000Fu32 as i32;
+pub const TYPE_E_ELEMENTNOTFOUND: HResult = 0x8002_802Bu32 as i32;
+pub const TYPE_E_BADMODULEKIND: HResult = 0x8002_88BDu32 as i32;
 
 pub const DISPID_UNKNOWN: i32 = -1;
 pub const DISPID_VALUE: i32 = 0;
 pub const DISPID_PROPERTYPUT: i32 = -3;
 pub const DISPID_NEWENUM: i32 = -4;
+pub const MEMBERID_NIL: i32 = -1;
 
 pub const DISPATCH_METHOD: u16 = 0x1;
 pub const DISPATCH_PROPERTYGET: u16 = 0x2;
 pub const DISPATCH_PROPERTYPUT: u16 = 0x4;
 pub const DISPATCH_PROPERTYPUTREF: u16 = 0x8;
+
+pub const TKIND_INTERFACE: i32 = 3;
+pub const TKIND_DISPATCH: i32 = 4;
+
+pub const FUNC_PUREVIRTUAL: i32 = 1;
+pub const FUNC_DISPATCH: i32 = 4;
+
+pub const INVOKE_FUNC: i32 = 1;
+pub const INVOKE_PROPERTYGET: i32 = 2;
+pub const INVOKE_PROPERTYPUT: i32 = 4;
+pub const INVOKE_PROPERTYPUTREF: i32 = 8;
+
+pub const CC_STDCALL: i32 = 4;
+
+pub const TYPEFLAG_FCANCREATE: u16 = 0x0002;
+pub const TYPEFLAG_FDUAL: u16 = 0x0040;
+pub const TYPEFLAG_FNONEXTENSIBLE: u16 = 0x0080;
+pub const TYPEFLAG_FOLEAUTOMATION: u16 = 0x0100;
+/// Exact `TYPEATTR.wTypeFlags` Excel VBA reports for a class module's `ITypeInfo` (`0x1C2`).
+pub const VBA_CLASS_TYPEFLAGS: u16 =
+    TYPEFLAG_FCANCREATE | TYPEFLAG_FDUAL | TYPEFLAG_FNONEXTENSIBLE | TYPEFLAG_FOLEAUTOMATION;
+
+pub const FUNCFLAG_FRESTRICTED: u16 = 0x0001;
+
+pub const PARAMFLAG_NONE: u16 = 0x0000;
+pub const PARAMFLAG_FIN: u16 = 0x0001;
+pub const PARAMFLAG_FOUT: u16 = 0x0002;
+pub const PARAMFLAG_FRETVAL: u16 = 0x0008;
+pub const PARAMFLAG_FOPT: u16 = 0x0010;
+
+pub const IDLFLAG_NONE: u16 = 0x0000;
+pub const IDLFLAG_FIN: u16 = 0x0001;
+pub const IDLFLAG_FOUT: u16 = 0x0002;
+pub const IDLFLAG_FRETVAL: u16 = 0x0008;
+
+pub const VT_VOID: u16 = 24;
+pub const VT_HRESULT: u16 = 25;
+pub const VT_PTR: u16 = 26;
+pub const VT_SAFEARRAY: u16 = 27;
 
 /// `IID_NULL` {00000000-0000-0000-0000-000000000000}.
 pub const IID_NULL: Guid = Guid::new(0, 0, 0, [0; 8]);
@@ -172,6 +214,8 @@ pub const IID_NULL: Guid = Guid::new(0, 0, 0, [0; 8]);
 pub const IID_IUNKNOWN: Guid = Guid::new(0, 0, 0, [0xC0, 0, 0, 0, 0, 0, 0, 0x46]);
 /// `IID_IDispatch` {00020400-0000-0000-C000-000000000046}.
 pub const IID_IDISPATCH: Guid = Guid::new(0x0002_0400, 0, 0, [0xC0, 0, 0, 0, 0, 0, 0, 0x46]);
+/// `IID_ITypeInfo` {00020401-0000-0000-C000-000000000046}.
+pub const IID_ITYPEINFO: Guid = Guid::new(0x0002_0401, 0, 0, [0xC0, 0, 0, 0, 0, 0, 0, 0x46]);
 /// `IID_IRecordInfo` {0000002F-0000-0000-C000-000000000046}.
 pub const IID_IRECORDINFO: Guid = Guid::new(0x0000_002F, 0, 0, [0xC0, 0, 0, 0, 0, 0, 0, 0x46]);
 /// `IID__Collection` (`VBA.Collection` default interface) {A4C46780-499F-101B-BB78-00AA00383CBB}.
@@ -281,6 +325,236 @@ impl Default for ExcepInfo {
     }
 }
 
+/// Portable `TYPEDESC` payload union with the Windows Automation layout.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union TypeDescPayload {
+    pub lptdesc: *mut TypeDesc,
+    pub lpadesc: *mut c_void,
+    pub hreftype: u32,
+}
+
+/// Portable `TYPEDESC` with the Windows Automation layout.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TypeDesc {
+    pub payload: TypeDescPayload,
+    pub vt: u16,
+}
+
+impl Default for TypeDesc {
+    fn default() -> Self {
+        Self {
+            payload: TypeDescPayload {
+                lptdesc: core::ptr::null_mut(),
+            },
+            vt: 0,
+        }
+    }
+}
+
+/// Portable `IDLDESC` with the Windows Automation layout.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct IdlDesc {
+    pub dw_reserved: usize,
+    pub w_idl_flags: u16,
+}
+
+/// Portable `PARAMDESCEX` with the Windows Automation layout.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ParamDescEx {
+    pub c_bytes: u32,
+    pub var_default_value: crate::VariantCore,
+}
+
+/// Portable `PARAMDESC` with the Windows Automation layout.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ParamDesc {
+    pub pparamdescex: *mut ParamDescEx,
+    pub w_param_flags: u16,
+}
+
+impl Default for ParamDesc {
+    fn default() -> Self {
+        Self {
+            pparamdescex: core::ptr::null_mut(),
+            w_param_flags: 0,
+        }
+    }
+}
+
+/// Portable `ELEMDESC` payload union with the Windows Automation layout.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union ElemDescPayload {
+    pub idldesc: IdlDesc,
+    pub paramdesc: ParamDesc,
+}
+
+/// Portable `ELEMDESC` with the Windows Automation layout.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ElemDesc {
+    pub tdesc: TypeDesc,
+    pub payload: ElemDescPayload,
+}
+
+impl Default for ElemDesc {
+    fn default() -> Self {
+        Self {
+            tdesc: TypeDesc::default(),
+            payload: ElemDescPayload {
+                paramdesc: ParamDesc::default(),
+            },
+        }
+    }
+}
+
+/// Portable `TYPEATTR` with the Windows Automation layout.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TypeAttr {
+    pub guid: Guid,
+    pub lcid: u32,
+    pub dw_reserved: u32,
+    pub memid_constructor: i32,
+    pub memid_destructor: i32,
+    pub lpstr_schema: *mut u16,
+    pub cb_size_instance: u32,
+    pub typekind: i32,
+    pub c_funcs: u16,
+    pub c_vars: u16,
+    pub c_impl_types: u16,
+    pub cb_size_vft: u16,
+    pub cb_alignment: u16,
+    pub w_type_flags: u16,
+    pub w_major_ver_num: u16,
+    pub w_minor_ver_num: u16,
+    pub tdesc_alias: TypeDesc,
+    pub idldesc_type: IdlDesc,
+}
+
+/// Portable `FUNCDESC` with the Windows Automation layout.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FuncDesc {
+    pub memid: i32,
+    pub lprgscode: *mut i32,
+    pub lprgelemdesc_param: *mut ElemDesc,
+    pub funckind: i32,
+    pub invkind: i32,
+    pub callconv: i32,
+    pub c_params: i16,
+    pub c_params_opt: i16,
+    pub o_vft: i16,
+    pub c_scodes: i16,
+    pub elemdesc_func: ElemDesc,
+    pub w_func_flags: u16,
+}
+
+/// Portable `ITypeInfo` interface pointer.
+#[repr(C)]
+pub struct ITypeInfo {
+    pub vtbl: *const ITypeInfoVtbl,
+}
+
+/// `ITypeInfo`'s vtable in the Windows `oaidl.h` slot order (3 `IUnknown` + 19 `ITypeInfo` slots).
+#[repr(C)]
+pub struct ITypeInfoVtbl {
+    pub unknown: IUnknownVtbl,
+    pub get_type_attr:
+        unsafe extern "system" fn(this: *mut c_void, type_attr: *mut *mut TypeAttr) -> HResult,
+    pub get_type_comp:
+        unsafe extern "system" fn(this: *mut c_void, type_comp: *mut *mut c_void) -> HResult,
+    pub get_func_desc: unsafe extern "system" fn(
+        this: *mut c_void,
+        index: u32,
+        func_desc: *mut *mut FuncDesc,
+    ) -> HResult,
+    pub get_var_desc: unsafe extern "system" fn(
+        this: *mut c_void,
+        index: u32,
+        var_desc: *mut *mut c_void,
+    ) -> HResult,
+    pub get_names: unsafe extern "system" fn(
+        this: *mut c_void,
+        memid: i32,
+        names: *mut *mut u16,
+        max_names: u32,
+        count: *mut u32,
+    ) -> HResult,
+    pub get_ref_type_of_impl_type:
+        unsafe extern "system" fn(this: *mut c_void, index: u32, ref_type: *mut u32) -> HResult,
+    pub get_impl_type_flags: unsafe extern "system" fn(
+        this: *mut c_void,
+        index: u32,
+        impl_type_flags: *mut i32,
+    ) -> HResult,
+    pub get_ids_of_names: unsafe extern "system" fn(
+        this: *mut c_void,
+        names: *const *const u16,
+        count: u32,
+        memids: *mut i32,
+    ) -> HResult,
+    #[allow(clippy::type_complexity)]
+    pub invoke: unsafe extern "system" fn(
+        this: *mut c_void,
+        instance: *mut c_void,
+        memid: i32,
+        flags: u16,
+        params: *mut DispParams,
+        result: *mut c_void,
+        excep_info: *mut ExcepInfo,
+        arg_err: *mut u32,
+    ) -> HResult,
+    pub get_documentation: unsafe extern "system" fn(
+        this: *mut c_void,
+        memid: i32,
+        name: *mut *mut u16,
+        doc_string: *mut *mut u16,
+        help_context: *mut u32,
+        help_file: *mut *mut u16,
+    ) -> HResult,
+    pub get_dll_entry: unsafe extern "system" fn(
+        this: *mut c_void,
+        memid: i32,
+        invkind: i32,
+        dll_name: *mut *mut u16,
+        name: *mut *mut u16,
+        ordinal: *mut u16,
+    ) -> HResult,
+    pub get_ref_type_info: unsafe extern "system" fn(
+        this: *mut c_void,
+        ref_type: u32,
+        type_info: *mut *mut c_void,
+    ) -> HResult,
+    pub address_of_member: unsafe extern "system" fn(
+        this: *mut c_void,
+        memid: i32,
+        invkind: i32,
+        address: *mut *mut c_void,
+    ) -> HResult,
+    pub create_instance: unsafe extern "system" fn(
+        this: *mut c_void,
+        outer: *mut c_void,
+        riid: *const Guid,
+        object: *mut *mut c_void,
+    ) -> HResult,
+    pub get_mops:
+        unsafe extern "system" fn(this: *mut c_void, memid: i32, mops: *mut *mut u16) -> HResult,
+    pub get_containing_type_lib: unsafe extern "system" fn(
+        this: *mut c_void,
+        type_lib: *mut *mut c_void,
+        index: *mut u32,
+    ) -> HResult,
+    pub release_type_attr: unsafe extern "system" fn(this: *mut c_void, type_attr: *mut TypeAttr),
+    pub release_func_desc: unsafe extern "system" fn(this: *mut c_void, func_desc: *mut FuncDesc),
+    pub release_var_desc: unsafe extern "system" fn(this: *mut c_void, var_desc: *mut c_void),
+}
+
 /// `IRecordInfo`'s vtable, in the header's slot order. Record data pointers are untyped; field
 /// values are `VARIANT*` (`*mut c_void` here, typed by the value crate that owns `Variant`).
 #[repr(C)]
@@ -352,6 +626,8 @@ mod tests {
     fn vtable_slot_counts() {
         assert_eq!(size_of::<IUnknownVtbl>(), 3 * P);
         assert_eq!(size_of::<IDispatchVtbl>(), 7 * P);
+        // IUnknown (3) + GetTypeAttr .. ReleaseVarDesc (19).
+        assert_eq!(size_of::<ITypeInfoVtbl>(), 22 * P);
         // IUnknown (3) + RecordInit .. RecordDestroy (16).
         assert_eq!(size_of::<IRecordInfoVtbl>(), 19 * P);
     }
@@ -454,5 +730,114 @@ mod tests {
             offset_of!(EXCEPINFO, pfnDeferredFillIn)
         );
         assert_eq!(offset_of!(ExcepInfo, scode), offset_of!(EXCEPINFO, scode));
+
+        use windows_sys::Win32::System::Com::{ELEMDESC, FUNCDESC, IDLDESC, TYPEATTR, TYPEDESC};
+        use windows_sys::Win32::System::Ole::{PARAMDESC, PARAMDESCEX};
+
+        assert_eq!(size_of::<TypeDesc>(), size_of::<TYPEDESC>());
+        assert_eq!(align_of::<TypeDesc>(), align_of::<TYPEDESC>());
+        assert_eq!(offset_of!(TypeDesc, vt), offset_of!(TYPEDESC, vt));
+
+        assert_eq!(size_of::<IdlDesc>(), size_of::<IDLDESC>());
+        assert_eq!(align_of::<IdlDesc>(), align_of::<IDLDESC>());
+        assert_eq!(
+            offset_of!(IdlDesc, w_idl_flags),
+            offset_of!(IDLDESC, wIDLFlags)
+        );
+
+        assert_eq!(size_of::<ParamDesc>(), size_of::<PARAMDESC>());
+        assert_eq!(align_of::<ParamDesc>(), align_of::<PARAMDESC>());
+        assert_eq!(
+            offset_of!(ParamDesc, w_param_flags),
+            offset_of!(PARAMDESC, wParamFlags)
+        );
+
+        assert_eq!(size_of::<ParamDescEx>(), size_of::<PARAMDESCEX>());
+        assert_eq!(align_of::<ParamDescEx>(), align_of::<PARAMDESCEX>());
+        assert_eq!(
+            offset_of!(ParamDescEx, var_default_value),
+            offset_of!(PARAMDESCEX, varDefaultValue)
+        );
+
+        assert_eq!(size_of::<ElemDesc>(), size_of::<ELEMDESC>());
+        assert_eq!(align_of::<ElemDesc>(), align_of::<ELEMDESC>());
+        assert_eq!(
+            offset_of!(ElemDesc, payload),
+            offset_of!(ELEMDESC, Anonymous)
+        );
+
+        assert_eq!(size_of::<TypeAttr>(), size_of::<TYPEATTR>());
+        assert_eq!(align_of::<TypeAttr>(), align_of::<TYPEATTR>());
+        assert_eq!(offset_of!(TypeAttr, lcid), offset_of!(TYPEATTR, lcid));
+        assert_eq!(
+            offset_of!(TypeAttr, memid_constructor),
+            offset_of!(TYPEATTR, memidConstructor)
+        );
+        assert_eq!(
+            offset_of!(TypeAttr, lpstr_schema),
+            offset_of!(TYPEATTR, lpstrSchema)
+        );
+        assert_eq!(
+            offset_of!(TypeAttr, cb_size_instance),
+            offset_of!(TYPEATTR, cbSizeInstance)
+        );
+        assert_eq!(
+            offset_of!(TypeAttr, typekind),
+            offset_of!(TYPEATTR, typekind)
+        );
+        assert_eq!(offset_of!(TypeAttr, c_funcs), offset_of!(TYPEATTR, cFuncs));
+        assert_eq!(
+            offset_of!(TypeAttr, cb_size_vft),
+            offset_of!(TYPEATTR, cbSizeVft)
+        );
+        assert_eq!(
+            offset_of!(TypeAttr, w_type_flags),
+            offset_of!(TYPEATTR, wTypeFlags)
+        );
+        assert_eq!(
+            offset_of!(TypeAttr, tdesc_alias),
+            offset_of!(TYPEATTR, tdescAlias)
+        );
+        assert_eq!(
+            offset_of!(TypeAttr, idldesc_type),
+            offset_of!(TYPEATTR, idldescType)
+        );
+
+        assert_eq!(size_of::<FuncDesc>(), size_of::<FUNCDESC>());
+        assert_eq!(align_of::<FuncDesc>(), align_of::<FUNCDESC>());
+        assert_eq!(
+            offset_of!(FuncDesc, lprgscode),
+            offset_of!(FUNCDESC, lprgscode)
+        );
+        assert_eq!(
+            offset_of!(FuncDesc, lprgelemdesc_param),
+            offset_of!(FUNCDESC, lprgelemdescParam)
+        );
+        assert_eq!(
+            offset_of!(FuncDesc, funckind),
+            offset_of!(FUNCDESC, funckind)
+        );
+        assert_eq!(offset_of!(FuncDesc, invkind), offset_of!(FUNCDESC, invkind));
+        assert_eq!(
+            offset_of!(FuncDesc, callconv),
+            offset_of!(FUNCDESC, callconv)
+        );
+        assert_eq!(
+            offset_of!(FuncDesc, c_params),
+            offset_of!(FUNCDESC, cParams)
+        );
+        assert_eq!(
+            offset_of!(FuncDesc, c_params_opt),
+            offset_of!(FUNCDESC, cParamsOpt)
+        );
+        assert_eq!(offset_of!(FuncDesc, o_vft), offset_of!(FUNCDESC, oVft));
+        assert_eq!(
+            offset_of!(FuncDesc, elemdesc_func),
+            offset_of!(FUNCDESC, elemdescFunc)
+        );
+        assert_eq!(
+            offset_of!(FuncDesc, w_func_flags),
+            offset_of!(FUNCDESC, wFuncFlags)
+        );
     }
 }

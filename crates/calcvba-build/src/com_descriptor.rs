@@ -70,6 +70,8 @@ pub struct ComMemberDescriptor {
     pub parameter_types: Vec<ComParamType>,
     pub parameter_optional: Vec<bool>,
     pub return_type: Option<ComParamType>,
+    #[serde(default)]
+    pub func_flags: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -198,6 +200,7 @@ impl ComServerDescriptor {
                                 .collect(),
                             parameter_optional: member.parameter_optional.clone(),
                             return_type: member.return_type.map(map_param_type),
+                            func_flags: member.func_flags,
                         })
                         .collect(),
                     events: ty

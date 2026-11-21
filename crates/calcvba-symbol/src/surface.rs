@@ -109,6 +109,10 @@ pub struct SurfaceMember {
     /// (proc/property accessor) or a global place (field) for devirtualisation.
     pub symbol: SymbolId,
     pub origin: MemberOrigin,
+    /// `FUNCDESC.wFuncFlags` (`0x1` = `FUNCFLAG_FRESTRICTED` for an `Object` field's `PropertyLet`).
+    pub func_flags: u16,
+    /// True for `Public` members exposed in `ITypeInfo` and late-bound `IDispatch`.
+    pub externally_visible: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -316,6 +320,8 @@ fn surface_member_from_proc(
         return_type,
         symbol,
         origin: MemberOrigin::Proc,
+        func_flags: 0,
+        externally_visible: true,
     }
 }
 
@@ -394,8 +400,14 @@ pub fn synthesize_export_surface(
             SurfaceTypeKind::Coclass { .. } => global_attr || global_instancing(attrs.instancing),
         };
 
-        let (members, events) =
-            synthesize_module_members(scan, is_class, symbols, signatures, optional_defaults);
+        let (members, events) = synthesize_module_members(
+            scan,
+            is_class,
+            false,
+            symbols,
+            signatures,
+            optional_defaults,
+        );
 
         // A coclass publishes the interfaces it implements; a hidden module has none.
         let implements = if is_class {
@@ -429,10 +441,16 @@ pub fn synthesize_export_surface(
 /// Synthesize dual-interface dispatch members (DISPIDs and vtable slots) for every class and
 /// document module in a project, whether or not the class is COM-exposed (`VB_Exposed`).
 ///
-/// Uses the same provisional rule as [`synthesize_export_surface`] (`dc-yqq0.21`, pending Excel
-/// `ITypeInfo` DISPID measurement on Windows): `0` for `VB_UserMemId = 0`, `-4` for
-/// `VB_UserMemId = -4`, otherwise sequential `1, 2, ...` per unique public member name (shared
-/// across Property Get/Let/Set and public field Get/Let/Set), and dual vtable slots starting at 7.
+/// Follows Excel VBA's measured class DISPID and vtable-slot layout
+/// (`docs/design/vba-class-dispids-excel-2026-11-21.md`, dc-yqq0.29):
+/// - public fields: `0x4003_0000 + n` in source order (Object: Get/Let[restricted]/Set; Variant:
+///   Get/Let/Set; others: Get/Let), occupying slots starting at 7 first;
+/// - properties (all visibilities): `0x6803_0000 + n` numbered first in reverse source order;
+/// - other procedures (all visibilities, excluding `Class_Initialize`/`Class_Terminate`):
+///   `0x6003_0000 + n` continuing the counter in forward source order;
+/// - `VB_UserMemId = 0` keeps DISPID `0` and `VB_UserMemId = -4` keeps DISPID `-4`;
+/// - vtable slots after public fields list public members in source order (property accessors in a
+///   row), followed by hidden slots for `Friend`/`Private` procedures.
 pub fn synthesize_project_class_dispatch_members(
     modules: &[ModuleUnit],
     scans: &[ModuleScan],
@@ -446,30 +464,108 @@ pub fn synthesize_project_class_dispatch_members(
             continue;
         }
         let (members, _) =
-            synthesize_module_members(scan, true, symbols, signatures, optional_defaults);
+            synthesize_module_members(scan, true, true, symbols, signatures, optional_defaults);
         out.insert(crate::model::fold_identifier(&scan.module_name), members);
     }
     out
 }
 
+const VBA_FIELD_DISPID_BASE: i32 = 0x4003_0000;
+const VBA_PROC_DISPID_BASE: i32 = 0x6003_0000;
+const VBA_PROP_DISPID_BASE: i32 = 0x6803_0000;
+const FUNCFLAG_FRESTRICTED: u16 = 0x0001;
+
+fn is_class_lifecycle_proc(member: &ScannedMember) -> bool {
+    matches!(
+        member.name_folded.as_str(),
+        "class_initialize" | "class_terminate"
+    )
+}
+
 fn synthesize_module_members(
     scan: &ModuleScan,
     is_class: bool,
+    include_non_public: bool,
     symbols: &SymbolTable,
     signatures: &SignatureTable,
     optional_defaults: Option<&FoldedOptionalDefaults>,
 ) -> (Vec<SurfaceMember>, Vec<SurfaceEvent>) {
     let mut members = Vec::new();
     let mut events = Vec::new();
-    let mut next_dispid = 1i32;
-    let mut next_vtable = 7u16;
     let mut next_event_id = 0i32;
+
+    if !is_class {
+        let mut next_dispid = 1i32;
+        let mut next_vtable = 7u16;
+        for member in &scan.members {
+            if member.kind == SymbolKind::Event {
+                let event_id = next_event_id;
+                next_event_id += 1;
+                if member.visibility == Visibility::Public {
+                    events.push(SurfaceEvent {
+                        name: member_name(symbols, member),
+                        callback_arity: event_arity(symbols, signatures, member.symbol),
+                        symbol: member.symbol,
+                        event_id,
+                    });
+                }
+                continue;
+            }
+            if member.visibility != Visibility::Public {
+                continue;
+            }
+            match member.kind {
+                SymbolKind::Procedure | SymbolKind::Function => {
+                    let dispid = take_dispid(member, &mut next_dispid);
+                    members.push(method_member(
+                        member,
+                        dispid,
+                        false,
+                        true,
+                        &mut next_vtable,
+                        symbols,
+                        signatures,
+                        optional_defaults,
+                    ));
+                }
+                SymbolKind::Property => {
+                    let dispid = take_dispid(member, &mut next_dispid);
+                    let sources = PropertySurfaceSources {
+                        symbols,
+                        signatures,
+                        optional_defaults,
+                    };
+                    property_members(
+                        member,
+                        dispid,
+                        false,
+                        true,
+                        &mut next_vtable,
+                        &sources,
+                        &mut members,
+                    );
+                }
+                SymbolKind::Field => {
+                    let dispid = take_dispid(member, &mut next_dispid);
+                    field_members(
+                        member,
+                        dispid,
+                        false,
+                        &mut next_vtable,
+                        symbols,
+                        &mut members,
+                    );
+                }
+                _ => {}
+            }
+        }
+        return (members, events);
+    }
+
+    // Events are assigned sequential ids over the FULL event set in scan order — Public
+    // AND Private — because the runtime/binder index (`ids.event_index_of`) counts every
+    // `Event` regardless of visibility. Events take no member DISPIDs or vtable slots.
     for member in &scan.members {
-        // Events are assigned an id over the FULL event set in scan order — Public
-        // AND Private — because the runtime/binder index (`ids.event_index_of`)
-        // counts every `Event` regardless of visibility. The id must match for a
-        // cross-bundle `WithEvents` sink to route correctly; only Public events are
-        // then exposed in the surface.
         if member.kind == SymbolKind::Event {
             let event_id = next_event_id;
             next_event_id += 1;
@@ -481,63 +577,123 @@ fn synthesize_module_members(
                     event_id,
                 });
             }
-            continue;
         }
-        if member.visibility != Visibility::Public {
-            continue;
+    }
+
+    // Excel VBA class DISPID assignment (docs/design/vba-class-dispids-excel-2026-11-21.md):
+    // 1. Public fields: 0x40030000 + n in source order.
+    // 2. Properties (all visibilities): 0x68030000 + n numbered FIRST in REVERSE source order.
+    // 3. Other procedures (all visibilities, excluding Class_Initialize/Class_Terminate):
+    //    0x60030000 + n continuing the counter in source order.
+    let mut dispids: Vec<Option<i32>> = vec![None; scan.members.len()];
+    let mut field_counter = 0i32;
+    for (idx, member) in scan.members.iter().enumerate() {
+        if member.kind == SymbolKind::Field && member.visibility == Visibility::Public {
+            dispids[idx] = Some(if member.is_default {
+                0
+            } else if member.is_enumerator {
+                -4
+            } else {
+                let id = VBA_FIELD_DISPID_BASE + field_counter;
+                field_counter += 1;
+                id
+            });
         }
-        if is_class
-            && matches!(
-                member.name_folded.as_str(),
-                "class_initialize" | "class_terminate"
-            )
+    }
+    let mut member_counter = 0i32;
+    for (idx, member) in scan.members.iter().enumerate().rev() {
+        if member.kind == SymbolKind::Property {
+            dispids[idx] = Some(if member.is_default {
+                0
+            } else if member.is_enumerator {
+                -4
+            } else {
+                let id = VBA_PROP_DISPID_BASE + member_counter;
+                member_counter += 1;
+                id
+            });
+        }
+    }
+    for (idx, member) in scan.members.iter().enumerate() {
+        if matches!(member.kind, SymbolKind::Procedure | SymbolKind::Function)
+            && !is_class_lifecycle_proc(member)
         {
+            dispids[idx] = Some(if member.is_default {
+                0
+            } else if member.is_enumerator {
+                -4
+            } else {
+                let id = VBA_PROC_DISPID_BASE + member_counter;
+                member_counter += 1;
+                id
+            });
+        }
+    }
+
+    // Vtable order: slots 7.. start with Public fields in source order, then Public members
+    // in source order (a property's accessors in a row), then hidden slots for Private/Friend
+    // procedures (included when building the full class dispatch table).
+    let mut next_vtable = 7u16;
+    let sources = PropertySurfaceSources {
+        symbols,
+        signatures,
+        optional_defaults,
+    };
+    for (idx, member) in scan.members.iter().enumerate() {
+        if member.kind == SymbolKind::Field
+            && member.visibility == Visibility::Public
+            && let Some(dispid) = dispids[idx]
+        {
+            field_members(
+                member,
+                dispid,
+                true,
+                &mut next_vtable,
+                symbols,
+                &mut members,
+            );
+        }
+    }
+    for visibility_public in [true, false] {
+        if !visibility_public && !include_non_public {
             continue;
         }
-        match member.kind {
-            SymbolKind::Procedure | SymbolKind::Function => {
-                let dispid = take_dispid(member, &mut next_dispid);
-                members.push(method_member(
-                    member,
-                    dispid,
-                    is_class,
-                    &mut next_vtable,
-                    symbols,
-                    signatures,
-                    optional_defaults,
-                ));
+        for (idx, member) in scan.members.iter().enumerate() {
+            let is_public = member.visibility == Visibility::Public;
+            if is_public != visibility_public {
+                continue;
             }
-            SymbolKind::Property => {
-                let dispid = take_dispid(member, &mut next_dispid);
-                let sources = PropertySurfaceSources {
-                    symbols,
-                    signatures,
-                    optional_defaults,
-                };
-                property_members(
-                    member,
-                    dispid,
-                    is_class,
-                    &mut next_vtable,
-                    &sources,
-                    &mut members,
-                );
+            let Some(dispid) = dispids[idx] else {
+                continue;
+            };
+            match member.kind {
+                SymbolKind::Procedure | SymbolKind::Function
+                    if !is_class_lifecycle_proc(member) =>
+                {
+                    members.push(method_member(
+                        member,
+                        dispid,
+                        true,
+                        is_public,
+                        &mut next_vtable,
+                        symbols,
+                        signatures,
+                        optional_defaults,
+                    ));
+                }
+                SymbolKind::Property => {
+                    property_members(
+                        member,
+                        dispid,
+                        true,
+                        is_public,
+                        &mut next_vtable,
+                        &sources,
+                        &mut members,
+                    );
+                }
+                _ => {}
             }
-            // A public field surfaces as a read/write property pair. A
-            // `WithEventsField` is Private-only in VBA (no `Public WithEvents`)
-            // and is not an exportable accessor, so it never reaches the surface.
-            SymbolKind::Field => {
-                let dispid = take_dispid(member, &mut next_dispid);
-                field_members(
-                    member,
-                    dispid,
-                    is_class,
-                    &mut next_vtable,
-                    symbols,
-                    &mut members,
-                );
-            }
-            _ => {}
         }
     }
     (members, events)
@@ -594,10 +750,12 @@ fn next_vtable_slot(is_class: bool, next: &mut u16) -> Option<u16> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn method_member(
     member: &ScannedMember,
     dispid: i32,
     is_class: bool,
+    externally_visible: bool,
     next_vtable: &mut u16,
     symbols: &SymbolTable,
     signatures: &SignatureTable,
@@ -625,6 +783,8 @@ fn method_member(
         return_type,
         symbol: member.symbol,
         origin: MemberOrigin::Proc,
+        func_flags: 0,
+        externally_visible,
     }
 }
 
@@ -638,6 +798,7 @@ fn property_members(
     member: &ScannedMember,
     dispid: i32,
     is_class: bool,
+    externally_visible: bool,
     next_vtable: &mut u16,
     sources: &PropertySurfaceSources<'_>,
     out: &mut Vec<SurfaceMember>,
@@ -689,11 +850,16 @@ fn property_members(
             return_type,
             symbol: member.symbol,
             origin: MemberOrigin::PropertyAccessor,
+            func_flags: 0,
+            externally_visible,
         });
     }
 }
 
-/// A `Public` variable surfaces as a read/write property pair.
+/// A `Public` variable surfaces as property accessors:
+/// - scalars/strings: Get + Let (2 slots)
+/// - Object on a class: Get + Let (`FUNCFLAG_FRESTRICTED`) + Set (3 slots, as Excel VBA)
+/// - Variant on a class: Get + Let + Set (3 slots, as Excel VBA)
 fn field_members(
     member: &ScannedMember,
     dispid: i32,
@@ -708,6 +874,8 @@ fn field_members(
         _ => VarTypeRef::Variant,
     };
     let is_object = matches!(ty, VarTypeRef::Object(_));
+    let is_variant = matches!(ty, VarTypeRef::Variant);
+    let wire_ty = param_type(&ty, false);
     // Read accessor.
     out.push(SurfaceMember {
         name: name.clone(),
@@ -721,11 +889,53 @@ fn field_members(
         parameter_optional: Vec::new(),
         parameter_optional_defaults: Vec::new(),
         parameter_variadic: false,
-        return_type: Some(param_type(&ty, false)),
+        return_type: Some(wire_ty),
         symbol: member.symbol,
         origin: MemberOrigin::Field,
+        func_flags: 0,
+        externally_visible: true,
     });
-    // Write accessor — objects use Set (PutRef), scalars use Let (Put).
+    if is_class && (is_object || is_variant) {
+        // Excel emits Let (with FUNCFLAG_FRESTRICTED on Object fields) followed by Set.
+        out.push(SurfaceMember {
+            name: name.clone(),
+            dispid,
+            vtable_slot: next_vtable_slot(is_class, next_vtable),
+            invoke_kind: TypeLibMemberInvokeKind::PropertyPut,
+            member_kind: ProjectMemberKind::PropertyLet,
+            is_default: member.is_default,
+            parameter_names: vec!["Value".to_string()],
+            parameter_types: vec![wire_ty],
+            parameter_optional: vec![false],
+            parameter_optional_defaults: vec![None],
+            parameter_variadic: false,
+            return_type: None,
+            symbol: member.symbol,
+            origin: MemberOrigin::Field,
+            func_flags: if is_object { FUNCFLAG_FRESTRICTED } else { 0 },
+            externally_visible: true,
+        });
+        out.push(SurfaceMember {
+            name,
+            dispid,
+            vtable_slot: next_vtable_slot(is_class, next_vtable),
+            invoke_kind: TypeLibMemberInvokeKind::PropertyPutRef,
+            member_kind: ProjectMemberKind::PropertySet,
+            is_default: member.is_default,
+            parameter_names: vec!["Value".to_string()],
+            parameter_types: vec![wire_ty],
+            parameter_optional: vec![false],
+            parameter_optional_defaults: vec![None],
+            parameter_variadic: false,
+            return_type: None,
+            symbol: member.symbol,
+            origin: MemberOrigin::Field,
+            func_flags: 0,
+            externally_visible: true,
+        });
+        return;
+    }
+    // Non-class or non-Object/non-Variant field: single write accessor.
     let (invoke_kind, member_kind) = if is_object {
         (
             TypeLibMemberInvokeKind::PropertyPutRef,
@@ -745,13 +955,15 @@ fn field_members(
         member_kind,
         is_default: member.is_default,
         parameter_names: vec!["Value".to_string()],
-        parameter_types: vec![param_type(&ty, false)],
+        parameter_types: vec![wire_ty],
         parameter_optional: vec![false],
         parameter_optional_defaults: vec![None],
         parameter_variadic: false,
         return_type: None,
         symbol: member.symbol,
         origin: MemberOrigin::Field,
+        func_flags: 0,
+        externally_visible: true,
     });
 }
 

@@ -768,6 +768,7 @@ pub fn runtime_class_descriptor_from_typelib_metadata(
                 is_default_member: member.is_default_member,
                 is_enumerator_member: member.token == DISPID_NEWENUM,
                 externally_visible: true,
+                func_flags: 0,
                 backing: RuntimeMemberBacking::None,
             }
         })

@@ -484,6 +484,9 @@ fn member_attributes(member: &ComMemberDescriptor) -> String {
     if member.is_default {
         attrs.push("defaultbind".to_string());
     }
+    if member.func_flags & 0x1 != 0 {
+        attrs.push("restricted".to_string());
+    }
     format!("[{}]", attrs.join(", "))
 }
 

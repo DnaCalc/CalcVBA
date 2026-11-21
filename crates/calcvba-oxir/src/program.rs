@@ -144,9 +144,12 @@ pub struct OxClassField {
     /// Dual-interface vtable slot for the public field's PropertyGet accessor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub get_vtable_slot: Option<u16>,
-    /// Dual-interface vtable slot for the public field's PropertyLet/PropertySet accessor.
+    /// Dual-interface vtable slot for the public field's PropertyLet accessor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub put_vtable_slot: Option<u16>,
+    /// Dual-interface vtable slot for the public field's PropertySet accessor (Object/Variant fields).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub putref_vtable_slot: Option<u16>,
 }
 
 /// A project class: lifecycle hooks, late-bound member table, implemented interfaces.

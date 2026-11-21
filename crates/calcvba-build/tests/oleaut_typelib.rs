@@ -153,6 +153,7 @@ fn dispatch_descriptor() -> ComServerDescriptor {
                     parameter_types: vec![ComParamType::Long, ComParamType::Long],
                     parameter_optional: vec![false, false],
                     return_type: Some(ComParamType::Long),
+                    func_flags: 0,
                 },
                 ComMemberDescriptor {
                     name: "Fire".to_string(),
@@ -164,6 +165,7 @@ fn dispatch_descriptor() -> ComServerDescriptor {
                     parameter_types: vec![ComParamType::Long],
                     parameter_optional: vec![false],
                     return_type: None,
+                    func_flags: 0,
                 },
                 ComMemberDescriptor {
                     name: "Value".to_string(),
@@ -175,6 +177,7 @@ fn dispatch_descriptor() -> ComServerDescriptor {
                     parameter_types: Vec::new(),
                     parameter_optional: Vec::new(),
                     return_type: Some(ComParamType::Long),
+                    func_flags: 0,
                 },
             ],
             events: vec![ComEventDescriptor {
@@ -217,6 +220,7 @@ fn dual_and_imported_interface_descriptor() -> ComServerDescriptor {
                         parameter_types: Vec::new(),
                         parameter_optional: Vec::new(),
                         return_type: Some(ComParamType::Long),
+                        func_flags: 0,
                     },
                     ComMemberDescriptor {
                         name: "AddPair".to_string(),
@@ -228,6 +232,7 @@ fn dual_and_imported_interface_descriptor() -> ComServerDescriptor {
                         parameter_types: vec![ComParamType::Long, ComParamType::Long],
                         parameter_optional: vec![false, false],
                         return_type: Some(ComParamType::Long),
+                        func_flags: 0,
                     },
                 ],
                 events: Vec::new(),

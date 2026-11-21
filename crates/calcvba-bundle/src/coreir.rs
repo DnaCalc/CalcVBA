@@ -195,8 +195,10 @@ pub struct CoreClassField {
     pub dispid: Option<i32>,
     /// Dual-interface vtable slot for the public field's PropertyGet accessor.
     pub get_vtable_slot: Option<u16>,
-    /// Dual-interface vtable slot for the public field's PropertyLet/PropertySet accessor.
+    /// Dual-interface vtable slot for the public field's PropertyLet accessor.
     pub put_vtable_slot: Option<u16>,
+    /// Dual-interface vtable slot for the public field's PropertySet accessor (Object/Variant fields).
+    pub putref_vtable_slot: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

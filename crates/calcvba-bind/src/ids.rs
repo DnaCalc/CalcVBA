@@ -302,6 +302,7 @@ impl IdAllocator {
                     dispid: None,
                     get_vtable_slot: None,
                     put_vtable_slot: None,
+                    putref_vtable_slot: None,
                 });
             }
             let default_member = env
@@ -650,6 +651,7 @@ fn class_fields(
             dispid: facts.map(|facts| facts.dispid),
             get_vtable_slot: facts.and_then(|facts| facts.get_vtable_slot),
             put_vtable_slot: facts.and_then(|facts| facts.put_vtable_slot),
+            putref_vtable_slot: facts.and_then(|facts| facts.putref_vtable_slot),
         });
     }
     fields.sort_by_key(|field| field.token);
@@ -863,6 +865,7 @@ struct ClassFieldSurfaceFacts {
     dispid: i32,
     get_vtable_slot: Option<u16>,
     put_vtable_slot: Option<u16>,
+    putref_vtable_slot: Option<u16>,
 }
 
 struct ClassDispatchSurfaceFacts {
@@ -891,14 +894,14 @@ fn class_member_surface_facts(
     let mut facts = ClassDispatchSurfaceFacts {
         methods: HashMap::new(),
         fields: HashMap::new(),
-        next_dispid: 1,
+        next_dispid: 0x6003_0000,
         next_vtable: 7,
     };
     let Some(members) = members else {
         return facts;
     };
     for member in members {
-        if member.dispid > 0 {
+        if member.dispid >= 0x6003_0000 && member.dispid < 0x6803_0000 {
             facts.next_dispid = facts.next_dispid.max(member.dispid.saturating_add(1));
         }
         if let Some(slot) = member.vtable_slot {
@@ -913,13 +916,13 @@ fn class_member_surface_facts(
                     dispid: member.dispid,
                     get_vtable_slot: None,
                     put_vtable_slot: None,
+                    putref_vtable_slot: None,
                 });
             entry.dispid = member.dispid;
             match member.member_kind {
                 ProjectMemberKind::PropertyGet => entry.get_vtable_slot = member.vtable_slot,
-                ProjectMemberKind::PropertyLet | ProjectMemberKind::PropertySet => {
-                    entry.put_vtable_slot = member.vtable_slot
-                }
+                ProjectMemberKind::PropertyLet => entry.put_vtable_slot = member.vtable_slot,
+                ProjectMemberKind::PropertySet => entry.putref_vtable_slot = member.vtable_slot,
                 ProjectMemberKind::Method => {}
             }
         } else {
@@ -1466,9 +1469,10 @@ Private Sub Class_Terminate()\nEnd Sub\n";
 
         let value_field = &priv_class.fields[0];
         assert_eq!(value_field.name, "Value");
-        assert_eq!(value_field.dispid, Some(1));
+        assert_eq!(value_field.dispid, Some(0x4003_0000));
         assert_eq!(value_field.get_vtable_slot, Some(7));
         assert_eq!(value_field.put_vtable_slot, Some(8));
+        assert_eq!(value_field.putref_vtable_slot, None);
 
         let find_method = |name: &str, kind: ProjectMemberKind| {
             priv_class
@@ -1477,14 +1481,17 @@ Private Sub Class_Terminate()\nEnd Sub\n";
                 .find(|m| m.name.eq_ignore_ascii_case(name) && m.kind == kind)
                 .unwrap_or_else(|| panic!("missing method {name} ({kind:?})"))
         };
+        // Properties numbered first in reverse order (Tag -> 0x68030000; Item=0, NewEnum=-4);
+        // then procs continuing the counter in source order (Twice -> 1, InternalStep -> 2,
+        // HiddenHelper -> 3).
         let twice = find_method("Twice", ProjectMemberKind::Method);
-        assert_eq!(twice.dispid, Some(2));
+        assert_eq!(twice.dispid, Some(0x6003_0001));
         assert_eq!(twice.vtable_slot, Some(9));
 
         let tag_get = find_method("Tag", ProjectMemberKind::PropertyGet);
         let tag_let = find_method("Tag", ProjectMemberKind::PropertyLet);
-        assert_eq!(tag_get.dispid, Some(3));
-        assert_eq!(tag_let.dispid, Some(3));
+        assert_eq!(tag_get.dispid, Some(0x6803_0000));
+        assert_eq!(tag_let.dispid, Some(0x6803_0000));
         assert_eq!(tag_get.vtable_slot, Some(10));
         assert_eq!(tag_let.vtable_slot, Some(11));
 
@@ -1500,12 +1507,12 @@ Private Sub Class_Terminate()\nEnd Sub\n";
 
         let internal = find_method("InternalStep", ProjectMemberKind::Method);
         assert!(!internal.externally_visible);
-        assert_eq!(internal.dispid, Some(4));
+        assert_eq!(internal.dispid, Some(0x6003_0002));
         assert_eq!(internal.vtable_slot, Some(14));
 
         let hidden = find_method("HiddenHelper", ProjectMemberKind::Method);
         assert!(!hidden.externally_visible);
-        assert_eq!(hidden.dispid, Some(5));
+        assert_eq!(hidden.dispid, Some(0x6003_0003));
         assert_eq!(hidden.vtable_slot, Some(15));
     }
 }

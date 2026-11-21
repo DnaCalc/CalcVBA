@@ -7195,6 +7195,7 @@ mod tests {
                         dispid: None,
                         get_vtable_slot: None,
                         put_vtable_slot: None,
+                        putref_vtable_slot: None,
                     },
                     CoreClassField {
                         externally_visible: false,
@@ -7205,6 +7206,7 @@ mod tests {
                         dispid: None,
                         get_vtable_slot: None,
                         put_vtable_slot: None,
+                        putref_vtable_slot: None,
                     },
                     CoreClassField {
                         externally_visible: true,
@@ -7212,9 +7214,10 @@ mod tests {
                         token: 13,
                         ty: VarTypeRef::Object("Widget".into()),
                         array_element: None,
-                        dispid: Some(1),
+                        dispid: Some(0x4003_0000),
                         get_vtable_slot: Some(9),
                         put_vtable_slot: Some(10),
+                        putref_vtable_slot: Some(11),
                     },
                 ],
                 methods: vec![
@@ -7337,9 +7340,10 @@ mod tests {
             .expect("project instances should advertise IDispatch");
         assert_eq!(dispatch.name, "IDispatch");
         assert!(dispatch.dual_dispatch);
-        // Sorted by vtable slot: Value Get (7), Value Let (8), Child Get (9), Child Set (10),
-        // NewEnum (12), Reset (13 — filled by the shared descriptor builder).
-        assert_eq!(dispatch.members.len(), 6);
+        // Sorted by vtable slot: Value Get (7), Value Let (8), Child Get (9), Child Let
+        // [restricted] (10), Child Set (11), NewEnum (12), Reset (13 — filled by the shared
+        // descriptor builder).
+        assert_eq!(dispatch.members.len(), 7);
 
         let get = &dispatch.members[0];
         assert_eq!(get.name, "Value");
@@ -7367,19 +7371,31 @@ mod tests {
 
         let child_get = &dispatch.members[2];
         assert_eq!(child_get.name, "Child");
-        assert_eq!(child_get.dispatch_id, 1);
+        assert_eq!(child_get.dispatch_id, 0x4003_0000);
         assert_eq!(child_get.vtable_slot, Some(9));
         assert_eq!(child_get.invoke_kind, RuntimeMemberInvokeKind::PropertyGet);
         assert_eq!(child_get.backing, RuntimeMemberBacking::Field(13));
 
-        let child_set = &dispatch.members[3];
+        let child_let = &dispatch.members[3];
+        assert_eq!(child_let.name, "Child");
+        assert_eq!(child_let.dispatch_id, 0x4003_0000);
+        assert_eq!(child_let.vtable_slot, Some(10));
+        assert_eq!(child_let.invoke_kind, RuntimeMemberInvokeKind::PropertyLet);
+        assert_eq!(
+            child_let.func_flags,
+            calcvba_runtime::com::FUNCFLAG_FRESTRICTED
+        );
+        assert_eq!(child_let.backing, RuntimeMemberBacking::Field(13));
+
+        let child_set = &dispatch.members[4];
         assert_eq!(child_set.name, "Child");
-        assert_eq!(child_set.dispatch_id, 1);
-        assert_eq!(child_set.vtable_slot, Some(10));
+        assert_eq!(child_set.dispatch_id, 0x4003_0000);
+        assert_eq!(child_set.vtable_slot, Some(11));
         assert_eq!(child_set.invoke_kind, RuntimeMemberInvokeKind::PropertySet);
+        assert_eq!(child_set.func_flags, 0);
         assert_eq!(child_set.backing, RuntimeMemberBacking::Field(13));
 
-        let new_enum = &dispatch.members[4];
+        let new_enum = &dispatch.members[5];
         assert_eq!(new_enum.name, "NewEnum");
         assert_eq!(new_enum.dispatch_id, -4);
         assert_eq!(new_enum.vtable_slot, Some(12));
@@ -7389,9 +7405,9 @@ mod tests {
         assert_eq!(new_enum.arity, 0);
         assert_eq!(new_enum.return_type, Some(RuntimeValueType::Object));
 
-        let method = &dispatch.members[5];
+        let method = &dispatch.members[6];
         assert_eq!(method.name, "Reset");
-        assert_eq!(method.dispatch_id, 2);
+        assert_eq!(method.dispatch_id, 0x6003_0000);
         assert_eq!(method.vtable_slot, Some(13));
         assert_eq!(method.invoke_kind, RuntimeMemberInvokeKind::Method);
         assert!(!method.is_default_member);

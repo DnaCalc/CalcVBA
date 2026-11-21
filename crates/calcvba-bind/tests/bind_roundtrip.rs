@@ -2610,9 +2610,11 @@ fn exposed_class_methods_carry_surface_dispatch_metadata() {
     );
     assert!(
         class.methods.iter().any(|method| {
-            method.name == "Echo" && method.dispid == Some(1) && method.vtable_slot == Some(10)
+            method.name == "Echo"
+                && method.dispid == Some(0x6003_0000)
+                && method.vtable_slot == Some(10)
         }),
-        "ordinary class methods should carry the next synthesized DISPID and vtable slot: {:?}",
+        "ordinary class methods should carry Excel's synthesized procedure DISPID and vtable slot: {:?}",
         class.methods
     );
 }

@@ -13,11 +13,12 @@ use std::sync::{Mutex, OnceLock};
 
 use calcvba_automation::bstr::BStr;
 use calcvba_automation::com::{
-    DISP_E_BADPARAMCOUNT, DISP_E_EXCEPTION, DISP_E_MEMBERNOTFOUND, DISP_E_PARAMNOTFOUND,
-    DISP_E_PARAMNOTOPTIONAL, DISP_E_TYPEMISMATCH, DISP_E_UNKNOWNINTERFACE, DISP_E_UNKNOWNNAME,
-    DISPATCH_METHOD, DISPATCH_PROPERTYGET, DISPATCH_PROPERTYPUT, DISPATCH_PROPERTYPUTREF,
-    DISPID_PROPERTYPUT, DISPID_UNKNOWN, DispParams, E_FAIL, E_INVALIDARG, E_NOTIMPL, E_POINTER,
-    ExcepInfo, Guid, HResult, IDispatchVtbl, IID_NULL, IUnknownVtbl, RPC_E_WRONG_THREAD, S_OK,
+    DISP_E_BADINDEX, DISP_E_BADPARAMCOUNT, DISP_E_EXCEPTION, DISP_E_MEMBERNOTFOUND,
+    DISP_E_PARAMNOTFOUND, DISP_E_PARAMNOTOPTIONAL, DISP_E_TYPEMISMATCH, DISP_E_UNKNOWNINTERFACE,
+    DISP_E_UNKNOWNNAME, DISPATCH_METHOD, DISPATCH_PROPERTYGET, DISPATCH_PROPERTYPUT,
+    DISPATCH_PROPERTYPUTREF, DISPID_PROPERTYPUT, DISPID_UNKNOWN, DispParams, E_FAIL, E_INVALIDARG,
+    E_NOTIMPL, E_POINTER, ExcepInfo, Guid, HResult, IDispatchVtbl, IID_NULL, IUnknownVtbl,
+    RPC_E_WRONG_THREAD, S_OK,
 };
 use calcvba_automation::oleaut;
 use calcvba_automation::safe_array::SafeArray;
@@ -31,6 +32,7 @@ use crate::object_ref::{
 use crate::{VarType, Variant, VariantCore};
 
 mod slot_thunks;
+mod type_info;
 
 static NEXT_THREAD_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -169,25 +171,36 @@ unsafe extern "system" fn compat_get_type_info_count(
     }
     // SAFETY: per `IDispatch::GetTypeInfoCount`, `pctinfo` is a caller-owned writable out-slot.
     unsafe {
-        *pctinfo = 0;
+        *pctinfo = 1;
     }
     S_OK
 }
 
 unsafe extern "system" fn compat_get_type_info(
-    _this: *mut c_void,
-    _itinfo: u32,
+    this: *mut c_void,
+    itinfo: u32,
     _lcid: u32,
     pptinfo: *mut *mut c_void,
 ) -> HResult {
-    if pptinfo.is_null() {
+    if this.is_null() || pptinfo.is_null() {
         return E_POINTER;
     }
     // SAFETY: per `IDispatch::GetTypeInfo`, `pptinfo` is a caller-owned writable out-slot.
     unsafe {
         *pptinfo = core::ptr::null_mut();
     }
-    E_NOTIMPL
+    if itinfo != 0 {
+        return DISP_E_BADINDEX;
+    }
+    let owner = compat_owner_from_this(this);
+    // SAFETY: `this` is a live `CompatObjectBase` kept alive by the caller's COM reference.
+    let descriptor = unsafe { (*owner).class_descriptor };
+    let ti = type_info::create_class_type_info(descriptor);
+    // SAFETY: `pptinfo` was verified non-null above.
+    unsafe {
+        *pptinfo = ti;
+    }
+    S_OK
 }
 
 unsafe fn wide_ptr_to_string(ptr: *const u16) -> Option<String> {
@@ -205,23 +218,14 @@ unsafe fn wide_ptr_to_string(ptr: *const u16) -> Option<String> {
     }
 }
 
-unsafe extern "system" fn compat_get_ids_of_names(
-    this: *mut c_void,
-    riid: *const Guid,
+pub(super) unsafe fn resolve_ids_of_names_for_descriptor(
+    descriptor: &'static RuntimeClassDescriptor,
     names: *const *const u16,
     count: u32,
-    _lcid: u32,
     dispids: *mut i32,
 ) -> HResult {
-    if this.is_null() || names.is_null() || dispids.is_null() {
+    if names.is_null() || dispids.is_null() {
         return E_POINTER;
-    }
-    if !riid.is_null() {
-        // SAFETY: non-null `riid` points to a readable `Guid`.
-        let iid = unsafe { riid.read() };
-        if iid != IID_NULL {
-            return DISP_E_UNKNOWNINTERFACE;
-        }
     }
     if count == 0 {
         return E_INVALIDARG;
@@ -235,9 +239,6 @@ unsafe extern "system" fn compat_get_ids_of_names(
         }
     }
 
-    let owner = compat_owner_from_this(this);
-    // SAFETY: `this` is a live `CompatObjectBase` kept alive by the caller's COM reference.
-    let descriptor = unsafe { (*owner).class_descriptor };
     let Some(dispatch) = descriptor.dispatch_interface() else {
         return DISP_E_UNKNOWNNAME;
     };
@@ -286,6 +287,31 @@ unsafe extern "system" fn compat_get_ids_of_names(
         }
     }
     status
+}
+
+unsafe extern "system" fn compat_get_ids_of_names(
+    this: *mut c_void,
+    riid: *const Guid,
+    names: *const *const u16,
+    count: u32,
+    _lcid: u32,
+    dispids: *mut i32,
+) -> HResult {
+    if this.is_null() || names.is_null() || dispids.is_null() {
+        return E_POINTER;
+    }
+    if !riid.is_null() {
+        // SAFETY: non-null `riid` points to a readable `Guid`.
+        let iid = unsafe { riid.read() };
+        if iid != IID_NULL {
+            return DISP_E_UNKNOWNINTERFACE;
+        }
+    }
+    let owner = compat_owner_from_this(this);
+    // SAFETY: `this` is a live `CompatObjectBase` kept alive by the caller's COM reference.
+    let descriptor = unsafe { (*owner).class_descriptor };
+    // SAFETY: arguments forwarded from `IDispatch::GetIDsOfNames`.
+    unsafe { resolve_ids_of_names_for_descriptor(descriptor, names, count, dispids) }
 }
 
 fn resolve_param_dispid(members: &[&'static RuntimeMemberDescriptor], param_name: &str) -> i32 {
@@ -993,6 +1019,7 @@ mod tests {
                 dispatch_id: None,
                 get_vtable_slot: None,
                 put_vtable_slot: None,
+                putref_vtable_slot: None,
             }],
             as_new_fields: Vec::new(),
             implements: Vec::new(),
@@ -1007,6 +1034,7 @@ mod tests {
                     is_default_member: false,
                     is_enumerator_member: false,
                     externally_visible: true,
+                    func_flags: 0,
                     backing: RuntimeMemberBacking::Proc(1),
                 },
                 RuntimeMemberSpec {
@@ -1034,6 +1062,7 @@ mod tests {
                     is_default_member: false,
                     is_enumerator_member: false,
                     externally_visible: true,
+                    func_flags: 0,
                     backing: RuntimeMemberBacking::Proc(2),
                 },
                 RuntimeMemberSpec {
@@ -1046,6 +1075,7 @@ mod tests {
                     is_default_member: false,
                     is_enumerator_member: false,
                     externally_visible: true,
+                    func_flags: 0,
                     backing: RuntimeMemberBacking::Proc(3),
                 },
                 RuntimeMemberSpec {
@@ -1072,6 +1102,7 @@ mod tests {
                     is_default_member: false,
                     is_enumerator_member: false,
                     externally_visible: true,
+                    func_flags: 0,
                     backing: RuntimeMemberBacking::Proc(5),
                 },
                 RuntimeMemberSpec {
@@ -1084,6 +1115,7 @@ mod tests {
                     is_default_member: false,
                     is_enumerator_member: false,
                     externally_visible: false,
+                    func_flags: 0,
                     backing: RuntimeMemberBacking::Proc(4),
                 },
             ],
@@ -1182,13 +1214,126 @@ mod tests {
         assert_eq!(cloned.is_identity(), object.is_identity());
         drop(cloned);
 
-        // 2. GetTypeInfoCount / GetTypeInfo.
+        // 2. GetTypeInfoCount / GetTypeInfo (dc-yqq0.29).
         let mut tinfo_count = 99u32;
         assert_eq!(
             unsafe { (vtbl.get_type_info_count)(raw.cast(), &mut tinfo_count) },
             S_OK
         );
-        assert_eq!(tinfo_count, 0);
+        assert_eq!(tinfo_count, 1);
+
+        let mut bad_ti = core::ptr::null_mut();
+        assert_eq!(
+            unsafe { (vtbl.get_type_info)(raw.cast(), 1, 0, &mut bad_ti) },
+            DISP_E_BADINDEX
+        );
+        assert!(bad_ti.is_null());
+
+        let mut ti_ptr = core::ptr::null_mut();
+        assert_eq!(
+            unsafe { (vtbl.get_type_info)(raw.cast(), 0, 0, &mut ti_ptr) },
+            S_OK
+        );
+        assert!(!ti_ptr.is_null());
+        unsafe {
+            use calcvba_automation::com::{
+                IID_ITYPEINFO, ITypeInfo, TKIND_DISPATCH, TKIND_INTERFACE, TYPE_E_ELEMENTNOTFOUND,
+                VBA_CLASS_TYPEFLAGS, VT_HRESULT,
+            };
+            let ti = ti_ptr.cast::<ITypeInfo>();
+            let ti_vtbl = &*(*ti).vtbl;
+
+            // QI(ITypeInfo) and QI(IUnknown) succeed and balance refcount.
+            let mut ti_qi = core::ptr::null_mut();
+            assert_eq!(
+                (ti_vtbl.unknown.query_interface)(ti_ptr, &IID_ITYPEINFO, &mut ti_qi),
+                S_OK
+            );
+            assert_eq!(ti_qi, ti_ptr);
+            assert_eq!((ti_vtbl.unknown.release)(ti_qi), 1);
+
+            // TYPEATTR on dispatch half matches Excel: TKIND_DISPATCH, flags 0x1C2, impl=1, vars=0.
+            let mut pattr = core::ptr::null_mut();
+            assert_eq!((ti_vtbl.get_type_attr)(ti_ptr, &mut pattr), S_OK);
+            let attr = *pattr;
+            assert_eq!(attr.typekind, TKIND_DISPATCH);
+            assert_eq!(attr.w_type_flags, VBA_CLASS_TYPEFLAGS);
+            assert_eq!(attr.w_type_flags, 0x1C2);
+            assert_eq!(attr.guid, class_iid);
+            assert_eq!(attr.c_funcs, 6); // Value get/let + Twice + AddPair + Fail + Scale (Hidden excluded)
+            assert_eq!(attr.c_vars, 0);
+            assert_eq!(attr.c_impl_types, 1);
+            // 7 IDispatch + 6 public + 1 hidden slot = 14 slots.
+            assert_eq!(
+                attr.cb_size_vft as usize,
+                14 * core::mem::size_of::<*const c_void>()
+            );
+            (ti_vtbl.release_type_attr)(ti_ptr, pattr);
+
+            // GetDocumentation(-1) yields class name "Widget".
+            let mut type_name = core::ptr::null_mut();
+            assert_eq!(
+                (ti_vtbl.get_documentation)(
+                    ti_ptr,
+                    -1,
+                    &mut type_name,
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                ),
+                S_OK
+            );
+            assert_eq!(BStr::from_raw_bstr(type_name).as_str(), "Widget");
+
+            // GetRefTypeOfImplType(0) and GetImplTypeFlags(0) return TYPE_E_ELEMENTNOTFOUND.
+            let mut href = 0u32;
+            assert_eq!(
+                (ti_vtbl.get_ref_type_of_impl_type)(ti_ptr, 0, &mut href),
+                TYPE_E_ELEMENTNOTFOUND
+            );
+            let mut impl_flags = 0i32;
+            assert_eq!(
+                (ti_vtbl.get_impl_type_flags)(ti_ptr, 0, &mut impl_flags),
+                TYPE_E_ELEMENTNOTFOUND
+            );
+
+            // Dual interface half via GetRefTypeOfImplType(-1) -> GetRefTypeInfo.
+            assert_eq!(
+                (ti_vtbl.get_ref_type_of_impl_type)(ti_ptr, u32::MAX, &mut href),
+                S_OK
+            );
+            let mut iface_ptr = core::ptr::null_mut();
+            assert_eq!(
+                (ti_vtbl.get_ref_type_info)(ti_ptr, href, &mut iface_ptr),
+                S_OK
+            );
+            assert!(!iface_ptr.is_null());
+            let iface_vtbl = &*(*iface_ptr.cast::<ITypeInfo>()).vtbl;
+            let mut iface_pattr = core::ptr::null_mut();
+            assert_eq!(
+                (iface_vtbl.get_type_attr)(iface_ptr, &mut iface_pattr),
+                S_OK
+            );
+            let iface_attr = *iface_pattr;
+            assert_eq!(iface_attr.typekind, TKIND_INTERFACE);
+            assert_eq!(iface_attr.w_type_flags, 0x1C2);
+            assert_eq!(iface_attr.guid, class_iid);
+            assert_eq!(iface_attr.c_funcs, 6);
+            assert_eq!(iface_attr.cb_size_vft, attr.cb_size_vft);
+            (iface_vtbl.release_type_attr)(iface_ptr, iface_pattr);
+
+            // Check Value Get FUNCDESC in interface half: HRESULT return, 1 [out, retval] param.
+            let mut fd_ptr = core::ptr::null_mut();
+            assert_eq!((iface_vtbl.get_func_desc)(iface_ptr, 0, &mut fd_ptr), S_OK);
+            let fd = *fd_ptr;
+            assert_eq!(fd.memid, 0x4003_0000);
+            assert_eq!(fd.c_params, 1);
+            assert_eq!(fd.elemdesc_func.tdesc.vt, VT_HRESULT);
+            (iface_vtbl.release_func_desc)(iface_ptr, fd_ptr);
+
+            assert_eq!((iface_vtbl.unknown.release)(iface_ptr), 0);
+            assert_eq!((ti_vtbl.unknown.release)(ti_ptr), 0);
+        }
 
         // 3. GetIDsOfNames resolves public members & parameter names, rejects Hidden/unknown.
         let n_value = utf16_nul("value");

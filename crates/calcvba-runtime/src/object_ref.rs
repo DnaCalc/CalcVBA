@@ -248,6 +248,8 @@ pub struct RuntimeMemberDescriptor {
     pub is_default_member: bool,
     pub is_enumerator_member: bool,
     pub externally_visible: bool,
+    /// `FUNCDESC.wFuncFlags` (e.g. `FUNCFLAG_FRESTRICTED = 0x1` on an `Object` field's `PropertyLet`).
+    pub func_flags: u16,
     pub backing: RuntimeMemberBacking,
 }
 
@@ -391,10 +393,11 @@ impl RuntimeInterfaceDescriptor {
         args_empty: bool,
         public_only: bool,
     ) -> Option<&'static RuntimeMemberDescriptor> {
-        let exact = self
-            .members
-            .iter()
-            .find(|member| member.dispatch_id == dispid && member.invoke_kind == invoke_kind);
+        let exact = self.members.iter().find(|member| {
+            member.dispatch_id == dispid
+                && member.invoke_kind == invoke_kind
+                && !is_restricted_object_field_let(member)
+        });
         let member = exact.or_else(|| match invoke_kind {
             RuntimeMemberInvokeKind::PropertyGet if args_empty || dispid == 0 => {
                 self.members.iter().find(|member| {
@@ -655,6 +658,7 @@ impl RuntimeDispatchPlanCache {
         let exact = interface.members.iter().enumerate().find(|(_, candidate)| {
             candidate.name.eq_ignore_ascii_case(member_name.trim())
                 && candidate.invoke_kind == invoke_kind
+                && !is_restricted_object_field_let(candidate)
         });
         let matched = exact.or_else(|| match invoke_kind {
             RuntimeMemberInvokeKind::PropertyGet if args_empty => {
@@ -718,6 +722,7 @@ impl RuntimeDispatchPlanCache {
             .find(|(_, candidate)| {
                 candidate.name.eq_ignore_ascii_case(trimmed)
                     && kind_hint.is_none_or(|kind| candidate.invoke_kind == kind)
+                    && !is_restricted_object_field_let(candidate)
             })
             .or_else(|| {
                 if kind_hint == Some(RuntimeMemberInvokeKind::PropertySet) {
@@ -880,6 +885,12 @@ impl RuntimeDispatchPlanCache {
         self.entries.insert(key, plan);
         Some(plan)
     }
+}
+
+fn is_restricted_object_field_let(member: &RuntimeMemberDescriptor) -> bool {
+    matches!(member.backing, RuntimeMemberBacking::Field(_))
+        && member.invoke_kind == RuntimeMemberInvokeKind::PropertyLet
+        && member.func_flags & calcvba_automation::com::FUNCFLAG_FRESTRICTED != 0
 }
 
 fn is_variant_field_setter(member: &RuntimeMemberDescriptor) -> bool {
@@ -2260,6 +2271,7 @@ mod tests {
             is_default_member: true,
             is_enumerator_member: false,
             externally_visible: true,
+            func_flags: 0,
             backing: RuntimeMemberBacking::None,
         };
         static DISPATCH_INTERFACE: RuntimeInterfaceDescriptor = RuntimeInterfaceDescriptor {
@@ -2307,6 +2319,7 @@ mod tests {
             is_default_member: true,
             is_enumerator_member: false,
             externally_visible: true,
+            func_flags: 0,
             backing: RuntimeMemberBacking::None,
         };
         static LET_VALUE: RuntimeMemberDescriptor = RuntimeMemberDescriptor {
@@ -2326,6 +2339,7 @@ mod tests {
             is_default_member: true,
             is_enumerator_member: false,
             externally_visible: true,
+            func_flags: 0,
             backing: RuntimeMemberBacking::None,
         };
         static NEW_ENUM: RuntimeMemberDescriptor = RuntimeMemberDescriptor {
@@ -2339,6 +2353,7 @@ mod tests {
             is_default_member: false,
             is_enumerator_member: true,
             externally_visible: true,
+            func_flags: 0,
             backing: RuntimeMemberBacking::None,
         };
         static DISPATCH_INTERFACE: RuntimeInterfaceDescriptor = RuntimeInterfaceDescriptor {
@@ -2377,6 +2392,7 @@ mod tests {
             is_default_member: true,
             is_enumerator_member: false,
             externally_visible: true,
+            func_flags: 0,
             backing: RuntimeMemberBacking::None,
         };
         static BAD_SLOT: RuntimeMemberDescriptor = RuntimeMemberDescriptor {
@@ -2390,6 +2406,7 @@ mod tests {
             is_default_member: false,
             is_enumerator_member: false,
             externally_visible: true,
+            func_flags: 0,
             backing: RuntimeMemberBacking::None,
         };
         static BAD_SETTER: RuntimeMemberDescriptor = RuntimeMemberDescriptor {
@@ -2403,6 +2420,7 @@ mod tests {
             is_default_member: false,
             is_enumerator_member: false,
             externally_visible: true,
+            func_flags: 0,
             backing: RuntimeMemberBacking::None,
         };
         static BAD_ENUM: RuntimeMemberDescriptor = RuntimeMemberDescriptor {
@@ -2416,6 +2434,7 @@ mod tests {
             is_default_member: false,
             is_enumerator_member: true,
             externally_visible: true,
+            func_flags: 0,
             backing: RuntimeMemberBacking::None,
         };
         static BAD_ARITY: RuntimeMemberDescriptor = RuntimeMemberDescriptor {
@@ -2435,6 +2454,7 @@ mod tests {
             is_default_member: false,
             is_enumerator_member: false,
             externally_visible: true,
+            func_flags: 0,
             backing: RuntimeMemberBacking::None,
         };
         static BAD_DEFAULT_INTERFACE: RuntimeInterfaceDescriptor = RuntimeInterfaceDescriptor {
@@ -2586,6 +2606,7 @@ mod tests {
             is_default_member: true,
             is_enumerator_member: false,
             externally_visible: true,
+            func_flags: 0,
             backing: RuntimeMemberBacking::None,
         };
         static SET_VALUE_MEMBER: RuntimeMemberDescriptor = RuntimeMemberDescriptor {
@@ -2605,6 +2626,7 @@ mod tests {
             is_default_member: true,
             is_enumerator_member: false,
             externally_visible: true,
+            func_flags: 0,
             backing: RuntimeMemberBacking::None,
         };
         static INTERFACE: RuntimeInterfaceDescriptor = RuntimeInterfaceDescriptor {
@@ -2674,6 +2696,7 @@ mod tests {
             is_default_member: true,
             is_enumerator_member: false,
             externally_visible: true,
+            func_flags: 0,
             backing: RuntimeMemberBacking::None,
         };
         static SECOND_VALUE_MEMBER: RuntimeMemberDescriptor = RuntimeMemberDescriptor {
@@ -2687,6 +2710,7 @@ mod tests {
             is_default_member: true,
             is_enumerator_member: false,
             externally_visible: true,
+            func_flags: 0,
             backing: RuntimeMemberBacking::None,
         };
         static FIRST_INTERFACE: RuntimeInterfaceDescriptor = RuntimeInterfaceDescriptor {
@@ -2742,6 +2766,7 @@ mod tests {
             is_default_member: true,
             is_enumerator_member: false,
             externally_visible: true,
+            func_flags: 0,
             backing: RuntimeMemberBacking::None,
         };
         static PUT_VALUE_MEMBER: RuntimeMemberDescriptor = RuntimeMemberDescriptor {
@@ -2761,6 +2786,7 @@ mod tests {
             is_default_member: true,
             is_enumerator_member: false,
             externally_visible: true,
+            func_flags: 0,
             backing: RuntimeMemberBacking::None,
         };
         static INTERFACE: RuntimeInterfaceDescriptor = RuntimeInterfaceDescriptor {
@@ -2805,6 +2831,7 @@ mod tests {
             is_default_member: true,
             is_enumerator_member: false,
             externally_visible: true,
+            func_flags: 0,
             backing: RuntimeMemberBacking::None,
         };
         static METHOD_VALUE: RuntimeMemberDescriptor = RuntimeMemberDescriptor {
@@ -2818,6 +2845,7 @@ mod tests {
             is_default_member: false,
             is_enumerator_member: false,
             externally_visible: true,
+            func_flags: 0,
             backing: RuntimeMemberBacking::None,
         };
         static INTERFACE: RuntimeInterfaceDescriptor = RuntimeInterfaceDescriptor {
@@ -2859,6 +2887,7 @@ mod tests {
             is_default_member: true,
             is_enumerator_member: false,
             externally_visible: true,
+            func_flags: 0,
             backing: RuntimeMemberBacking::None,
         };
         static SECOND: RuntimeMemberDescriptor = RuntimeMemberDescriptor {
@@ -2872,6 +2901,7 @@ mod tests {
             is_default_member: true,
             is_enumerator_member: false,
             externally_visible: true,
+            func_flags: 0,
             backing: RuntimeMemberBacking::None,
         };
         static INTERFACE: RuntimeInterfaceDescriptor = RuntimeInterfaceDescriptor {
@@ -2919,6 +2949,7 @@ mod tests {
             is_default_member: true,
             is_enumerator_member: false,
             externally_visible: true,
+            func_flags: 0,
             backing: RuntimeMemberBacking::None,
         };
         static DISPATCH_INTERFACE: RuntimeInterfaceDescriptor = RuntimeInterfaceDescriptor {
@@ -3003,6 +3034,7 @@ mod tests {
             is_default_member: true,
             is_enumerator_member: false,
             externally_visible: true,
+            func_flags: 0,
             backing: RuntimeMemberBacking::None,
         };
         static DISPATCH_INTERFACE: RuntimeInterfaceDescriptor = RuntimeInterfaceDescriptor {
@@ -3205,6 +3237,7 @@ mod tests {
                     dispatch_id: None,
                     get_vtable_slot: None,
                     put_vtable_slot: None,
+                    putref_vtable_slot: None,
                 },
                 RuntimeClassFieldSpec {
                     name: "Tag".into(),
@@ -3215,6 +3248,7 @@ mod tests {
                     dispatch_id: None,
                     get_vtable_slot: None,
                     put_vtable_slot: None,
+                    putref_vtable_slot: None,
                 },
             ],
             as_new_fields: Vec::new(),
@@ -3230,6 +3264,7 @@ mod tests {
                     is_default_member: true,
                     is_enumerator_member: false,
                     externally_visible: true,
+                    func_flags: 0,
                     backing: RuntimeMemberBacking::Proc(1),
                 },
                 RuntimeMemberSpec {
@@ -3242,6 +3277,7 @@ mod tests {
                     is_default_member: false,
                     is_enumerator_member: true,
                     externally_visible: true,
+                    func_flags: 0,
                     backing: RuntimeMemberBacking::Proc(2),
                 },
                 RuntimeMemberSpec {
@@ -3254,6 +3290,7 @@ mod tests {
                     is_default_member: false,
                     is_enumerator_member: false,
                     externally_visible: true,
+                    func_flags: 0,
                     backing: RuntimeMemberBacking::Proc(3),
                 },
                 RuntimeMemberSpec {
@@ -3266,6 +3303,7 @@ mod tests {
                     is_default_member: false,
                     is_enumerator_member: false,
                     externally_visible: false,
+                    func_flags: 0,
                     backing: RuntimeMemberBacking::Proc(4),
                 },
             ],

@@ -1,21 +1,24 @@
-//! Shared runtime class descriptor builder (dc-yqq0.21).
+//! Shared runtime class descriptor builder (dc-yqq0.21 / dc-yqq0.29).
 //!
 //! VM3, rt-abi/JIT, and the native AOT template all construct `RuntimeClassDescriptor` through
 //! [`build_runtime_class_descriptor`] from one [`RuntimeClassSpec`]. Descriptors are interned
 //! once per unique class spec for the process lifetime so repeated activations and executors
 //! share the same `&'static RuntimeClassDescriptor` (and no allocations leak past global roots).
 //!
-//! Provisional DISPID rule (until Excel's own `ITypeInfo` DISPIDs are measured on Windows):
-//! - default member (`VB_UserMemId = 0`): `0`
-//! - enumerator (`VB_UserMemId = -4`): `-4`
-//! - other members: sequential `1, 2, ...` per unique member name (shared across Property
-//!   Get/Let/Set and public field Get/Let/Set), public members numbered first matching
-//!   `calcvba-symbol::surface`, followed by any non-public (`Friend`/`Private`) methods.
-//! - dual vtable slots start at `7` (`IUnknown` 0..2, `IDispatch` 3..6), one slot per accessor,
-//!   ordered by `vtable_slot`.
+//! DISPID and vtable-slot layout matches Excel VBA (`docs/design/vba-class-dispids-excel-2026-11-21.md`):
+//! - default member (`VB_UserMemId = 0`): `0`; enumerator (`VB_UserMemId = -4`): `-4`
+//! - public fields: `0x4003_0000 + n` in source order (Object: Get/Let[restricted]/Set; Variant:
+//!   Get/Let/Set; others: Get/Let)
+//! - properties: `0x6803_0000 + n` numbered first in reverse source order
+//! - other procedures: `0x6003_0000 + n` continuing the counter in forward source order
+//! - dual vtable slots start at `7` (`IUnknown` 0..2, `IDispatch` 3..6): public fields first,
+//!   then public members in source order, followed by hidden slots for non-public (`Friend`/
+//!   `Private`) procedures.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Mutex, OnceLock};
+
+use calcvba_automation::com::FUNCFLAG_FRESTRICTED;
 
 use crate::object_ref::{
     Guid, RUNTIME_IDISPATCH_INTERFACE_IDENTITY, RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR,
@@ -25,6 +28,10 @@ use crate::object_ref::{
     RuntimeMemberDescriptor, RuntimeMemberInvokeKind, RuntimeParamDescriptor,
     RuntimeProjectClassIdentity, RuntimeValueType,
 };
+
+const VBA_FIELD_DISPID_BASE: i32 = 0x4003_0000;
+const VBA_PROC_DISPID_BASE: i32 = 0x6003_0000;
+const VBA_PROP_DISPID_BASE: i32 = 0x6803_0000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RuntimeParamSpec {
@@ -46,6 +53,7 @@ pub struct RuntimeMemberSpec {
     pub is_default_member: bool,
     pub is_enumerator_member: bool,
     pub externally_visible: bool,
+    pub func_flags: u16,
     pub backing: RuntimeMemberBacking,
 }
 
@@ -59,6 +67,7 @@ pub struct RuntimeClassFieldSpec {
     pub dispatch_id: Option<i32>,
     pub get_vtable_slot: Option<u16>,
     pub put_vtable_slot: Option<u16>,
+    pub putref_vtable_slot: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -175,21 +184,106 @@ fn finalize_members(raw: Vec<RuntimeMemberSpec>) -> &'static [RuntimeMemberDescr
         }
     }
 
-    let mut next_dispid = used_dispids
+    // Assign missing DISPIDs using Excel's class numbering rule:
+    // 1. Public fields: 0x4003_0000 + n in source order.
+    // 2. Properties: 0x6803_0000 + n numbered FIRST in reverse source order.
+    // 3. Other procedures: 0x6003_0000 + n continuing the counter in forward source order.
+    let mut next_field_index = used_dispids
         .iter()
         .copied()
-        .filter(|&d| d > 0)
+        .filter(|&d| (VBA_FIELD_DISPID_BASE..VBA_PROC_DISPID_BASE).contains(&d))
+        .map(|d| d - VBA_FIELD_DISPID_BASE + 1)
         .max()
-        .unwrap_or(0)
-        .saturating_add(1);
-    let mut next_slot = used_slots
+        .unwrap_or(0);
+    let mut next_member_index = used_dispids
         .iter()
         .copied()
+        .filter_map(|d| {
+            if (VBA_PROP_DISPID_BASE..VBA_PROP_DISPID_BASE + 0x0010_0000).contains(&d) {
+                Some(d - VBA_PROP_DISPID_BASE + 1)
+            } else if (VBA_PROC_DISPID_BASE..VBA_PROP_DISPID_BASE).contains(&d) {
+                Some(d - VBA_PROC_DISPID_BASE + 1)
+            } else {
+                None
+            }
+        })
         .max()
-        .unwrap_or(6)
-        .saturating_add(1)
-        .max(7);
+        .unwrap_or(0);
 
+    // Pre-assign missing field DISPIDs in source order.
+    for member in &raw {
+        if !matches!(member.backing, RuntimeMemberBacking::Field(_)) {
+            continue;
+        }
+        if member.dispatch_id.is_some() || member.is_default_member || member.is_enumerator_member {
+            continue;
+        }
+        let folded = member.name.to_ascii_lowercase();
+        if name_to_dispid.contains_key(&folded) {
+            continue;
+        }
+        let mut candidate = VBA_FIELD_DISPID_BASE + next_field_index;
+        while used_dispids.contains(&candidate) {
+            next_field_index = next_field_index.saturating_add(1);
+            candidate = VBA_FIELD_DISPID_BASE + next_field_index;
+        }
+        next_field_index = next_field_index.saturating_add(1);
+        used_dispids.insert(candidate);
+        name_to_dispid.insert(folded, candidate);
+    }
+
+    // Collect distinct non-field property names in source order, then number in reverse.
+    let mut property_names: Vec<String> = Vec::new();
+    for member in &raw {
+        if matches!(member.backing, RuntimeMemberBacking::Field(_))
+            || member.invoke_kind == RuntimeMemberInvokeKind::Method
+            || member.dispatch_id.is_some()
+            || member.is_default_member
+            || member.is_enumerator_member
+        {
+            continue;
+        }
+        let folded = member.name.to_ascii_lowercase();
+        if !name_to_dispid.contains_key(&folded) && !property_names.contains(&folded) {
+            property_names.push(folded);
+        }
+    }
+    for folded in property_names.into_iter().rev() {
+        let mut candidate = VBA_PROP_DISPID_BASE + next_member_index;
+        while used_dispids.contains(&candidate) {
+            next_member_index = next_member_index.saturating_add(1);
+            candidate = VBA_PROP_DISPID_BASE + next_member_index;
+        }
+        next_member_index = next_member_index.saturating_add(1);
+        used_dispids.insert(candidate);
+        name_to_dispid.insert(folded, candidate);
+    }
+
+    // Number non-property procedures continuing the counter in forward source order.
+    for member in &raw {
+        if matches!(member.backing, RuntimeMemberBacking::Field(_))
+            || member.invoke_kind != RuntimeMemberInvokeKind::Method
+            || member.dispatch_id.is_some()
+            || member.is_default_member
+            || member.is_enumerator_member
+        {
+            continue;
+        }
+        let folded = member.name.to_ascii_lowercase();
+        if name_to_dispid.contains_key(&folded) {
+            continue;
+        }
+        let mut candidate = VBA_PROC_DISPID_BASE + next_member_index;
+        while used_dispids.contains(&candidate) {
+            next_member_index = next_member_index.saturating_add(1);
+            candidate = VBA_PROC_DISPID_BASE + next_member_index;
+        }
+        next_member_index = next_member_index.saturating_add(1);
+        used_dispids.insert(candidate);
+        name_to_dispid.insert(folded, candidate);
+    }
+
+    let mut next_slot = 7u16;
     let mut resolved_dispids = vec![0i32; raw.len()];
     let mut resolved_slots = vec![0u16; raw.len()];
 
@@ -207,17 +301,8 @@ fn finalize_members(raw: Vec<RuntimeMemberSpec>) -> &'static [RuntimeMemberDescr
                 0
             } else if member.is_enumerator_member {
                 -4
-            } else if let Some(&existing) = name_to_dispid.get(&folded) {
-                existing
             } else {
-                while used_dispids.contains(&next_dispid) {
-                    next_dispid = next_dispid.saturating_add(1);
-                }
-                let assigned = next_dispid;
-                next_dispid = next_dispid.saturating_add(1);
-                used_dispids.insert(assigned);
-                name_to_dispid.insert(folded, assigned);
-                assigned
+                name_to_dispid.get(&folded).copied().unwrap_or(0)
             };
             resolved_dispids[index] = dispid;
 
@@ -278,6 +363,7 @@ fn finalize_members(raw: Vec<RuntimeMemberSpec>) -> &'static [RuntimeMemberDescr
                 is_default_member: member.is_default_member,
                 is_enumerator_member: member.is_enumerator_member,
                 externally_visible: member.externally_visible,
+                func_flags: member.func_flags,
                 backing: member.backing,
             }
         })
@@ -343,20 +429,22 @@ fn build_descriptor_uncached(spec: &RuntimeClassSpec) -> &'static RuntimeClassDe
             .into_boxed_slice(),
     );
 
-    // Combine explicit methods with property accessors for Public fields (matching
-    // `calcvba-symbol::surface`: each public field surfaces as PropertyGet + PropertyLet/Set
-    // sharing one DISPID and occupying two consecutive vtable slots).
-    let mut dual_members = spec.methods.clone();
+    // Public field accessors come FIRST in the dual vtable (matching Excel VBA):
+    // - scalar/string fields: PropertyGet + PropertyLet (2 slots)
+    // - Object fields: PropertyGet + PropertyLet (FUNCFLAG_FRESTRICTED) + PropertySet (3 slots)
+    // - Variant fields: PropertyGet + PropertyLet + PropertySet (3 slots)
+    let mut dual_members: Vec<RuntimeMemberSpec> = Vec::new();
     for field in &spec.fields {
         if !field.externally_visible {
             continue;
         }
         let folded = field.name.to_ascii_lowercase();
-        let has_get = dual_members.iter().any(|m| {
-            m.invoke_kind == RuntimeMemberInvokeKind::PropertyGet
-                && m.name.to_ascii_lowercase() == folded
-        });
-        if !has_get {
+        let has_kind = |kind: RuntimeMemberInvokeKind| {
+            spec.methods
+                .iter()
+                .any(|m| m.invoke_kind == kind && m.name.to_ascii_lowercase() == folded)
+        };
+        if !has_kind(RuntimeMemberInvokeKind::PropertyGet) {
             dual_members.push(RuntimeMemberSpec {
                 name: field.name.clone(),
                 dispatch_id: field.dispatch_id,
@@ -367,23 +455,18 @@ fn build_descriptor_uncached(spec: &RuntimeClassSpec) -> &'static RuntimeClassDe
                 is_default_member: false,
                 is_enumerator_member: false,
                 externally_visible: true,
+                func_flags: 0,
                 backing: RuntimeMemberBacking::Field(field.token),
             });
         }
-        let put_kind = if field.value_type == RuntimeValueType::Object {
-            RuntimeMemberInvokeKind::PropertySet
-        } else {
-            RuntimeMemberInvokeKind::PropertyLet
-        };
-        let has_put = dual_members
-            .iter()
-            .any(|m| m.invoke_kind == put_kind && m.name.to_ascii_lowercase() == folded);
-        if !has_put {
+        let is_object = field.value_type == RuntimeValueType::Object;
+        let is_variant = field.value_type == RuntimeValueType::Variant;
+        if !has_kind(RuntimeMemberInvokeKind::PropertyLet) {
             dual_members.push(RuntimeMemberSpec {
                 name: field.name.clone(),
                 dispatch_id: field.dispatch_id,
                 vtable_slot: field.put_vtable_slot,
-                invoke_kind: put_kind,
+                invoke_kind: RuntimeMemberInvokeKind::PropertyLet,
                 params: vec![RuntimeParamSpec {
                     name: "Value".to_string(),
                     value_type: field.value_type,
@@ -395,10 +478,33 @@ fn build_descriptor_uncached(spec: &RuntimeClassSpec) -> &'static RuntimeClassDe
                 is_default_member: false,
                 is_enumerator_member: false,
                 externally_visible: true,
+                func_flags: if is_object { FUNCFLAG_FRESTRICTED } else { 0 },
+                backing: RuntimeMemberBacking::Field(field.token),
+            });
+        }
+        if (is_object || is_variant) && !has_kind(RuntimeMemberInvokeKind::PropertySet) {
+            dual_members.push(RuntimeMemberSpec {
+                name: field.name.clone(),
+                dispatch_id: field.dispatch_id,
+                vtable_slot: field.putref_vtable_slot,
+                invoke_kind: RuntimeMemberInvokeKind::PropertySet,
+                params: vec![RuntimeParamSpec {
+                    name: "Value".to_string(),
+                    value_type: field.value_type,
+                    by_ref: false,
+                    optional: false,
+                    param_array: false,
+                }],
+                return_type: None,
+                is_default_member: false,
+                is_enumerator_member: false,
+                externally_visible: true,
+                func_flags: 0,
                 backing: RuntimeMemberBacking::Field(field.token),
             });
         }
     }
+    dual_members.extend(spec.methods.iter().cloned());
 
     let members = finalize_members(dual_members);
     let dispatch = RuntimeInterfaceDescriptor {
@@ -470,16 +576,17 @@ mod tests {
                 value_type: RuntimeValueType::Long,
                 array_element_type: None,
                 externally_visible: true,
-                dispatch_id: Some(1),
+                dispatch_id: Some(0x4003_0000),
                 get_vtable_slot: Some(7),
                 put_vtable_slot: Some(8),
+                putref_vtable_slot: None,
             }],
             as_new_fields: Vec::new(),
             implements: Vec::new(),
             methods: vec![
                 RuntimeMemberSpec {
                     name: "Twice".into(),
-                    dispatch_id: Some(2),
+                    dispatch_id: Some(0x6003_0000),
                     vtable_slot: Some(9),
                     invoke_kind: RuntimeMemberInvokeKind::Method,
                     params: Vec::new(),
@@ -487,6 +594,7 @@ mod tests {
                     is_default_member: false,
                     is_enumerator_member: false,
                     externally_visible: true,
+                    func_flags: 0,
                     backing: RuntimeMemberBacking::Proc(1),
                 },
                 RuntimeMemberSpec {
@@ -499,6 +607,7 @@ mod tests {
                     is_default_member: false,
                     is_enumerator_member: false,
                     externally_visible: false,
+                    func_flags: 0,
                     backing: RuntimeMemberBacking::Proc(2),
                 },
             ],
@@ -527,7 +636,7 @@ mod tests {
 
         // Ordered by vtable slot: Value Get (7), Value Let (8), Twice (9), InternalHelper (10).
         assert_eq!(dispatch.members[0].name, "Value");
-        assert_eq!(dispatch.members[0].dispatch_id, 1);
+        assert_eq!(dispatch.members[0].dispatch_id, 0x4003_0000);
         assert_eq!(dispatch.members[0].vtable_slot, Some(7));
         assert_eq!(
             dispatch.members[0].invoke_kind,
@@ -537,7 +646,7 @@ mod tests {
         assert_eq!(dispatch.members[0].backing, RuntimeMemberBacking::Field(0));
 
         assert_eq!(dispatch.members[1].name, "Value");
-        assert_eq!(dispatch.members[1].dispatch_id, 1);
+        assert_eq!(dispatch.members[1].dispatch_id, 0x4003_0000);
         assert_eq!(dispatch.members[1].vtable_slot, Some(8));
         assert_eq!(
             dispatch.members[1].invoke_kind,
@@ -546,12 +655,12 @@ mod tests {
         assert_eq!(dispatch.members[1].backing, RuntimeMemberBacking::Field(0));
 
         assert_eq!(dispatch.members[2].name, "Twice");
-        assert_eq!(dispatch.members[2].dispatch_id, 2);
+        assert_eq!(dispatch.members[2].dispatch_id, 0x6003_0000);
         assert_eq!(dispatch.members[2].vtable_slot, Some(9));
         assert_eq!(dispatch.members[2].backing, RuntimeMemberBacking::Proc(1));
 
         assert_eq!(dispatch.members[3].name, "InternalHelper");
-        assert_eq!(dispatch.members[3].dispatch_id, 3);
+        assert_eq!(dispatch.members[3].dispatch_id, 0x6003_0001);
         assert_eq!(dispatch.members[3].vtable_slot, Some(10));
         assert!(!dispatch.members[3].externally_visible);
         assert_eq!(dispatch.members[3].backing, RuntimeMemberBacking::Proc(2));
@@ -565,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn provisional_dispid_rule_shares_property_dispids_and_honors_default_and_newenum() {
+    fn excel_dispid_rule_shares_property_dispids_and_honors_default_and_newenum() {
         let spec = RuntimeClassSpec {
             unit_name: "Demo".into(),
             class_index: 1,
@@ -591,6 +700,7 @@ mod tests {
                     is_default_member: true,
                     is_enumerator_member: false,
                     externally_visible: true,
+                    func_flags: 0,
                     backing: RuntimeMemberBacking::Proc(0),
                 },
                 RuntimeMemberSpec {
@@ -609,6 +719,7 @@ mod tests {
                     is_default_member: true,
                     is_enumerator_member: false,
                     externally_visible: true,
+                    func_flags: 0,
                     backing: RuntimeMemberBacking::Proc(1),
                 },
                 RuntimeMemberSpec {
@@ -621,6 +732,7 @@ mod tests {
                     is_default_member: false,
                     is_enumerator_member: true,
                     externally_visible: true,
+                    func_flags: 0,
                     backing: RuntimeMemberBacking::Proc(2),
                 },
                 RuntimeMemberSpec {
@@ -633,6 +745,7 @@ mod tests {
                     is_default_member: false,
                     is_enumerator_member: false,
                     externally_visible: true,
+                    func_flags: 0,
                     backing: RuntimeMemberBacking::Proc(3),
                 },
                 RuntimeMemberSpec {
@@ -651,6 +764,7 @@ mod tests {
                     is_default_member: false,
                     is_enumerator_member: false,
                     externally_visible: true,
+                    func_flags: 0,
                     backing: RuntimeMemberBacking::Proc(4),
                 },
             ],
@@ -665,9 +779,9 @@ mod tests {
         assert_eq!(members[1].vtable_slot, Some(8));
         assert_eq!(members[2].dispatch_id, -4);
         assert_eq!(members[2].vtable_slot, Some(9));
-        assert_eq!(members[3].dispatch_id, 1);
+        assert_eq!(members[3].dispatch_id, 0x6803_0000);
         assert_eq!(members[3].vtable_slot, Some(10));
-        assert_eq!(members[4].dispatch_id, 1);
+        assert_eq!(members[4].dispatch_id, 0x6803_0000);
         assert_eq!(members[4].vtable_slot, Some(11));
     }
 }

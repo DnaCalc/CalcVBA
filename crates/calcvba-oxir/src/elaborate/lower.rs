@@ -355,6 +355,7 @@ fn lower_class(
                 dispid: field.dispid,
                 get_vtable_slot: field.get_vtable_slot,
                 put_vtable_slot: field.put_vtable_slot,
+                putref_vtable_slot: field.putref_vtable_slot,
             })
             .collect(),
         methods: c

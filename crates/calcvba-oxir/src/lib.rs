@@ -345,6 +345,7 @@ mod tests {
                     dispid: None,
                     get_vtable_slot: None,
                     put_vtable_slot: None,
+                    putref_vtable_slot: None,
                 }],
                 methods: Vec::new(),
                 as_new_fields: vec![crate::program::OxClassAsNewField {
@@ -529,6 +530,7 @@ mod tests {
             dispid: None,
             get_vtable_slot: None,
             put_vtable_slot: None,
+            putref_vtable_slot: None,
         });
         let errs = verify_program(&p).expect_err("duplicate class field token must be rejected");
         assert!(

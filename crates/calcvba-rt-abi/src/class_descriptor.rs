@@ -19,7 +19,8 @@ use calcvba_runtime::{
 };
 
 const NATIVE_METADATA_MAGIC: [u8; 4] = *b"CVBD";
-const NATIVE_METADATA_VERSION: u32 = 1;
+const NATIVE_METADATA_VERSION_V1: u32 = 1;
+const NATIVE_METADATA_VERSION: u32 = 2;
 
 /// Convert a bundle [`ProjectMemberKind`] into [`RuntimeMemberInvokeKind`].
 pub fn runtime_invoke_kind(kind: ProjectMemberKind) -> RuntimeMemberInvokeKind {
@@ -213,6 +214,7 @@ pub fn runtime_class_spec_for_program(program: &OxProgram, class_index: usize) -
             dispatch_id: field.dispid,
             get_vtable_slot: field.get_vtable_slot,
             put_vtable_slot: field.put_vtable_slot,
+            putref_vtable_slot: field.putref_vtable_slot,
         })
         .collect();
 
@@ -299,6 +301,7 @@ fn member_spec(
         is_default_member,
         is_enumerator_member,
         externally_visible,
+        func_flags: 0,
         backing: RuntimeMemberBacking::Proc(method.proc.0),
     }
 }
@@ -558,6 +561,7 @@ fn encode_member_spec(out: &mut Vec<u8>, member: &RuntimeMemberSpec) {
         | (u8::from(member.is_enumerator_member) << 1)
         | (u8::from(member.externally_visible) << 2);
     encode_u8(out, flags);
+    encode_u16(out, member.func_flags);
     match member.return_type {
         Some(ty) => {
             encode_u8(out, 1);
@@ -637,6 +641,7 @@ pub fn encode_native_class_metadata(
         encode_opt_i32(&mut bytes, field.dispatch_id);
         encode_opt_u16(&mut bytes, field.get_vtable_slot);
         encode_opt_u16(&mut bytes, field.put_vtable_slot);
+        encode_opt_u16(&mut bytes, field.putref_vtable_slot);
     }
     encode_u32(&mut bytes, spec.as_new_fields.len() as u32);
     for field in &spec.as_new_fields {
@@ -749,7 +754,7 @@ impl Cursor {
         unsafe { (self.u8() != 0).then(|| self.u16()) }
     }
 
-    unsafe fn member_spec(&mut self) -> RuntimeMemberSpec {
+    unsafe fn member_spec(&mut self, version: u32) -> RuntimeMemberSpec {
         // SAFETY: forwarded from caller.
         unsafe {
             let name = self.str();
@@ -757,6 +762,11 @@ impl Cursor {
             let vtable_slot = self.opt_u16();
             let invoke_kind = decode_invoke_kind(self.u8());
             let flags = self.u8();
+            let func_flags = if version >= NATIVE_METADATA_VERSION {
+                self.u16()
+            } else {
+                0
+            };
             let return_type = (self.u8() != 0).then(|| decode_value_type(self.u8()));
             let backing = match self.u8() {
                 1 => RuntimeMemberBacking::Proc(self.u32() as usize),
@@ -787,6 +797,7 @@ impl Cursor {
                 is_default_member: flags & 1 != 0,
                 is_enumerator_member: flags & 2 != 0,
                 externally_visible: flags & 4 != 0,
+                func_flags,
                 backing,
             }
         }
@@ -828,7 +839,7 @@ pub unsafe fn decode_native_class_metadata(
         } else {
             0
         };
-        if version != NATIVE_METADATA_VERSION {
+        if version != NATIVE_METADATA_VERSION_V1 && version != NATIVE_METADATA_VERSION {
             let (unit, display) = raw_name.rsplit_once('.').unwrap_or(("", &raw_name));
             return (
                 field_kinds,
@@ -868,6 +879,11 @@ pub unsafe fn decode_native_class_metadata(
             let dispatch_id = cursor.opt_i32();
             let get_vtable_slot = cursor.opt_u16();
             let put_vtable_slot = cursor.opt_u16();
+            let putref_vtable_slot = if version >= NATIVE_METADATA_VERSION {
+                cursor.opt_u16()
+            } else {
+                None
+            };
             fields.push(RuntimeClassFieldSpec {
                 name: fname,
                 token,
@@ -877,6 +893,7 @@ pub unsafe fn decode_native_class_metadata(
                 dispatch_id,
                 get_vtable_slot,
                 put_vtable_slot,
+                putref_vtable_slot,
             });
         }
 
@@ -904,7 +921,7 @@ pub unsafe fn decode_native_class_metadata(
         let method_count = cursor.u32() as usize;
         let mut methods = Vec::with_capacity(method_count);
         for _ in 0..method_count {
-            methods.push(cursor.member_spec());
+            methods.push(cursor.member_spec(version));
         }
 
         let iface_count = cursor.u32() as usize;
@@ -923,7 +940,7 @@ pub unsafe fn decode_native_class_metadata(
             let imember_count = cursor.u32() as usize;
             let mut imembers = Vec::with_capacity(imember_count);
             for _ in 0..imember_count {
-                imembers.push(cursor.member_spec());
+                imembers.push(cursor.member_spec(version));
             }
             implemented_interfaces.push(RuntimeImplementedInterfaceSpec {
                 name: iname,
@@ -1033,16 +1050,17 @@ mod tests {
                     token: 0,
                     ty: OxTy::Long,
                     array_element: None,
-                    dispid: Some(1),
+                    dispid: Some(0x4003_0000),
                     get_vtable_slot: Some(7),
                     put_vtable_slot: Some(8),
+                    putref_vtable_slot: None,
                 }],
                 methods: vec![OxClassMethod {
                     externally_visible: true,
                     name: "Twice".into(),
                     kind: ProjectMemberKind::Method,
                     proc: FuncId(0),
-                    dispid: Some(2),
+                    dispid: Some(0x6003_0000),
                     vtable_slot: Some(9),
                     is_default_member: false,
                     is_enumerator_member: false,
@@ -1076,13 +1094,13 @@ mod tests {
         let dispatch = native.dispatch_interface().unwrap();
         assert_eq!(dispatch.members.len(), 3);
         assert_eq!(dispatch.members[0].name, "Value");
-        assert_eq!(dispatch.members[0].dispatch_id, 1);
+        assert_eq!(dispatch.members[0].dispatch_id, 0x4003_0000);
         assert_eq!(dispatch.members[0].vtable_slot, Some(7));
         assert_eq!(dispatch.members[1].name, "Value");
-        assert_eq!(dispatch.members[1].dispatch_id, 1);
+        assert_eq!(dispatch.members[1].dispatch_id, 0x4003_0000);
         assert_eq!(dispatch.members[1].vtable_slot, Some(8));
         assert_eq!(dispatch.members[2].name, "Twice");
-        assert_eq!(dispatch.members[2].dispatch_id, 2);
+        assert_eq!(dispatch.members[2].dispatch_id, 0x6003_0000);
         assert_eq!(dispatch.members[2].vtable_slot, Some(9));
     }
 }

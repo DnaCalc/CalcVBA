@@ -606,7 +606,7 @@ impl FuncDescBuilder {
         if has_retval {
             names.push("result".to_string());
         }
-        Self::new(
+        let mut builder = Self::new(
             member.dispid,
             FUNC_PUREVIRTUAL,
             invkind(member.invoke_kind),
@@ -614,7 +614,9 @@ impl FuncDescBuilder {
             params,
             names,
             member.vtable_slot.unwrap_or(7),
-        )
+        );
+        builder.funcdesc.wFuncFlags = member.func_flags;
+        builder
     }
 
     fn implemented_vtable(method: &ComImplementedInterfaceMethodDescriptor) -> Self {

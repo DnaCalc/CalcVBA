@@ -37,8 +37,8 @@ fn string_value(value: &Variant) -> LibResult<Variant> {
 }
 
 fn optional_string_arg(args: &[Variant], index: usize) -> LibResult<Variant> {
+    // The host uses Empty for omission. An explicit Empty is a supplied empty string.
     match opt(args, index) {
-        Some(value) if matches!(value.vtype(), VarType::Empty) => Ok(Variant::empty()),
         Some(value) => string_value(value),
         None => Ok(Variant::empty()),
     }
@@ -539,7 +539,9 @@ pub fn beep(_host: &dyn HostServices) -> LibResult<Variant> {
     Ok(vunit())
 }
 pub fn do_events(host: &dyn HostServices) -> LibResult<Variant> {
-    Ok(host.events().do_events_variant()?)
+    host.events().do_events_variant()?;
+    // Excel returns Integer zero after pumping host events.
+    Ok(Variant::from_i16(0))
 }
 pub fn send_keys(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
     Ok(host

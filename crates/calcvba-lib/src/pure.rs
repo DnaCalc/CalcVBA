@@ -876,6 +876,9 @@ pub fn space(args: &[Variant]) -> LibResult<Variant> {
 pub fn string_repeat(args: &[Variant]) -> LibResult<Variant> {
     let count = alloc_count(need(args, 0)?)?;
     let arg = need(args, 1)?;
+    if arg.vtype() == VarType::Null {
+        return Ok(Variant::null());
+    }
     let ch = if arg.vtype() == VarType::String {
         // A string supplies its own first character.
         let units = string_units(arg)?;
@@ -883,8 +886,12 @@ pub fn string_repeat(args: &[Variant]) -> LibResult<Variant> {
             .first()
             .ok_or_else(|| LibError::invalid_call("String character is empty"))?
     } else {
-        // A number is a character code: the low byte, read through the ANSI code page.
-        let byte = as_i64(arg)?.rem_euclid(256) as u8;
+        // A numeric character code must fit a 16-bit code before taking its low byte.
+        let code = as_i64(arg)?;
+        if !(-32768..=65535).contains(&code) {
+            return Err(LibError::overflow("String character code out of range"));
+        }
+        let byte = code as u8;
         calcvba_runtime::ansi::ansi_decode(&[byte])
             .encode_utf16()
             .next()

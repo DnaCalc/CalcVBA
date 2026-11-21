@@ -535,11 +535,20 @@ impl ProcessEnvHal for StandardHostServices {
             // Explicit Dir("") starts a fresh search in the current directory;
             // only the omitted pathname continues the previous search.
             let target = if path.as_bstr().is_some_and(|text| text.is_empty()) {
-                std::env::current_dir()
-                    .map(|dir| dir.join("*"))
-                    .map_err(|err| {
-                        HalError::adapter_fault(self.profile, capability, "dir", err.to_string())
-                    })?
+                if self.uses_windows_paths() {
+                    self.map_path("*", capability, "dir")?
+                } else {
+                    std::env::current_dir()
+                        .map(|dir| dir.join("*"))
+                        .map_err(|err| {
+                            HalError::adapter_fault(
+                                self.profile,
+                                capability,
+                                "dir",
+                                err.to_string(),
+                            )
+                        })?
+                }
             } else {
                 self.variant_to_path(&path, capability, "dir", "path")?
             };
@@ -547,15 +556,20 @@ impl ProcessEnvHal for StandardHostServices {
                 .variant_to_i32(&attrs, capability, "dir", "attributes")
                 .unwrap_or(0);
             let raw = path.as_bstr().map(|text| text.as_str().to_string());
-            let mut names =
-                dir_listing(raw.as_deref().unwrap_or(""), &target, attrs).map_err(|err| {
-                    HalError::adapter_fault(
-                        self.profile,
-                        capability,
-                        "dir",
-                        format!("failed to enumerate dir path {}: {err}", target.display()),
-                    )
-                })?;
+            let mut names = dir_listing(
+                raw.as_deref().unwrap_or(""),
+                &target,
+                attrs,
+                self.uses_windows_paths(),
+            )
+            .map_err(|err| {
+                HalError::adapter_fault(
+                    self.profile,
+                    capability,
+                    "dir",
+                    format!("failed to enumerate dir path {}: {err}", target.display()),
+                )
+            })?;
             let first = names.first().cloned().unwrap_or_default();
             let mut state = self.borrow_dir(capability, "dir")?;
             state.active = !names.is_empty();

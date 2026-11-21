@@ -30,6 +30,7 @@ mod filesystem;
 mod process;
 mod time;
 mod ui;
+mod windows_paths;
 
 use console::ConsoleState;
 pub(crate) use descriptor::descriptor_for_profile;
@@ -127,6 +128,7 @@ pub(crate) struct StandardHostServices {
     #[cfg(target_os = "windows")]
     env_cache: StandardEnvCache,
     fs_state: Rc<RefCell<FileSystemState>>,
+    windows_paths: Rc<RefCell<windows_paths::WindowsPaths>>,
     dir_state: Rc<RefCell<DirSearchState>>,
     settings_state: Rc<RefCell<SettingsState>>,
     console_state: Rc<RefCell<ConsoleState>>,
@@ -261,6 +263,7 @@ impl StandardHostServices {
             #[cfg(target_os = "windows")]
             env_cache,
             fs_state: Rc::new(RefCell::new(FileSystemState::default())),
+            windows_paths: Rc::new(RefCell::new(windows_paths::WindowsPaths::default())),
             dir_state: Rc::new(RefCell::new(DirSearchState::default())),
             settings_state: Rc::new(RefCell::new(SettingsState::default())),
             console_state: Rc::new(RefCell::new(ConsoleState::default())),
@@ -942,7 +945,6 @@ impl StandardHostServices {
         match value.vtype() {
             VarType::String => value
                 .as_bstr()
-                .map(|path| PathBuf::from(path.as_str()))
                 .ok_or_else(|| {
                     HalError::adapter_fault(
                         self.profile,
@@ -950,7 +952,8 @@ impl StandardHostServices {
                         op,
                         format!("{field} has an invalid BSTR payload"),
                     )
-                }),
+                })
+                .and_then(|path| self.map_path(&path.as_str(), capability, op)),
             _ => self
                 .variant_to_i32(value, capability, op, field)
                 .map(|token| self.host_path_from_token(token)),

@@ -46,9 +46,10 @@ fn file_attribute_bits(meta: &fs::Metadata) -> i32 {
 }
 
 /// `GetAttr` preserves flags absent from Rust's handle-based metadata result.
-fn path_attribute_bits(path: &Path) -> std::io::Result<i32> {
+fn path_attribute_bits(path: &Path, mapped: bool) -> std::io::Result<i32> {
     #[cfg(windows)]
     {
+        let _ = mapped;
         use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::Storage::FileSystem::{
             GetFileAttributesW, INVALID_FILE_ATTRIBUTES,
@@ -64,16 +65,26 @@ fn path_attribute_bits(path: &Path) -> std::io::Result<i32> {
     }
     #[cfg(not(windows))]
     {
-        fs::metadata(path).map(|meta| file_attribute_bits(&meta))
+        let meta = fs::metadata(path)?;
+        let bits = file_attribute_bits(&meta);
+        if mapped && let Some(windows_bits) = read_mapped_attributes(path)? {
+            return Ok(bits | windows_bits);
+        }
+        Ok(if mapped && meta.is_file() {
+            bits | VB_ARCHIVE
+        } else {
+            bits
+        })
     }
 }
 
 /// Apply the settable attribute bits to `path`, preserving the bits `SetAttr`
 /// does not manage (e.g. `vbDirectory`). `settable` is pre-validated to contain
 /// only [`VB_SETTABLE_ATTRS`].
-fn apply_file_attributes(path: &Path, settable: i32) -> std::io::Result<()> {
+fn apply_file_attributes(path: &Path, settable: i32, mapped: bool) -> std::io::Result<()> {
     #[cfg(target_os = "windows")]
     {
+        let _ = mapped;
         use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::Storage::FileSystem::{
             FILE_ATTRIBUTE_NORMAL, GetFileAttributesW, INVALID_FILE_ATTRIBUTES, SetFileAttributesW,
@@ -106,12 +117,117 @@ fn apply_file_attributes(path: &Path, settable: i32) -> std::io::Result<()> {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        // Portable std can only toggle the read-only bit; hidden/system/archive
-        // have no cross-platform equivalent.
-        let mut perms = fs::metadata(path)?.permissions();
+        let meta = fs::metadata(path)?;
+        let mut perms = meta.permissions();
+        if mapped {
+            let requested = settable & (VB_HIDDEN | VB_SYSTEM | VB_ARCHIVE);
+            let default = if meta.is_file() { VB_ARCHIVE } else { 0 };
+            if let Err(error) = write_mapped_attributes(path, requested)
+                && (error.kind() != std::io::ErrorKind::Unsupported || requested != default)
+            {
+                return Err(error);
+            }
+        }
         perms.set_readonly(settable & VB_READONLY != 0);
         fs::set_permissions(path, perms)
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn read_mapped_attributes(path: &Path) -> std::io::Result<Option<i32>> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+    let path = CString::new(path.as_os_str().as_bytes())?;
+    let mut bitset = 0u8;
+    // SAFETY: path/name are terminated strings and bitset is a live one-byte buffer.
+    #[cfg(target_os = "linux")]
+    let read = unsafe {
+        libc::getxattr(
+            path.as_ptr(),
+            c"user.calcvba.attributes".as_ptr(),
+            (&raw mut bitset).cast(),
+            1,
+        )
+    };
+    // SAFETY: path/name are terminated strings and bitset is a live one-byte buffer.
+    #[cfg(target_os = "macos")]
+    let read = unsafe {
+        libc::getxattr(
+            path.as_ptr(),
+            c"org.dnacalc.calcvba.attributes".as_ptr(),
+            (&raw mut bitset).cast(),
+            1,
+            0,
+            0,
+        )
+    };
+    #[cfg(target_os = "linux")]
+    let missing_attribute = libc::ENODATA;
+    #[cfg(target_os = "macos")]
+    let missing_attribute = libc::ENOATTR;
+    match read {
+        1 => Ok(Some(
+            i32::from(bitset) & (VB_HIDDEN | VB_SYSTEM | VB_ARCHIVE),
+        )),
+        -1 => {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(missing_attribute)
+                || error.kind() == std::io::ErrorKind::Unsupported
+            {
+                Ok(None)
+            } else {
+                Err(error)
+            }
+        }
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid mapped file attributes",
+        )),
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+fn read_mapped_attributes(_path: &Path) -> std::io::Result<Option<i32>> {
+    Ok(None)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn write_mapped_attributes(path: &Path, bitset: i32) -> std::io::Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+    let path = CString::new(path.as_os_str().as_bytes())?;
+    let bitset = bitset as u8;
+    // SAFETY: path/name are terminated strings and bitset is a live one-byte buffer.
+    #[cfg(target_os = "linux")]
+    let written = unsafe {
+        libc::setxattr(
+            path.as_ptr(),
+            c"user.calcvba.attributes".as_ptr(),
+            (&raw const bitset).cast(),
+            1,
+            0,
+        )
+    };
+    // SAFETY: path/name are terminated strings and bitset is a live one-byte buffer.
+    #[cfg(target_os = "macos")]
+    let written = unsafe {
+        libc::setxattr(
+            path.as_ptr(),
+            c"org.dnacalc.calcvba.attributes".as_ptr(),
+            (&raw const bitset).cast(),
+            1,
+            0,
+            0,
+        )
+    };
+    if written == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+fn write_mapped_attributes(_path: &Path, _bitset: i32) -> std::io::Result<()> {
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
 }
 
 /// Change the current drive (VBA `ChDrive`). On Windows this selects the drive's
@@ -609,7 +725,7 @@ impl StandardHostServices {
             HalError::adapter_fault(self.profile, capability, "kill", path.display().to_string())
                 .with_host_error_code(code)
         };
-        let attrs = path_attribute_bits(path).map_err(|_| fault(53))?;
+        let attrs = path_attribute_bits(path, self.uses_windows_paths()).map_err(|_| fault(53))?;
         if attrs & (VB_HIDDEN | VB_SYSTEM | VB_DIRECTORY) != 0 {
             return Err(fault(53));
         }
@@ -706,7 +822,7 @@ impl FileSystemHal for StandardHostServices {
                 })?
             };
             let host_path = if self.native_fs_enabled() {
-                let host_path = PathBuf::from(path_text.as_str());
+                let host_path = self.map_path(&path_text.as_str(), capability, "open")?;
                 if let Some(parent) = host_path.parent() {
                     fs::create_dir_all(parent).map_err(|err| {
                         HalError::adapter_fault(
@@ -1090,23 +1206,24 @@ impl FileSystemHal for StandardHostServices {
         };
         if path_text.as_str().contains('*') || path_text.as_str().contains('?') {
             if self.native_fs_enabled() {
-                let wildcard_path = path_text.as_str();
-                let matched_paths = expand_host_wildcard_paths(Path::new(&wildcard_path))
-                    .map_err(|err| {
-                        HalError::adapter_fault(
-                            self.profile,
-                            capability,
-                            "kill",
-                            format!("failed to expand wildcard Kill path {path_text}: {err}"),
-                        )
-                    })?
-                    .into_iter()
-                    .filter(|path| path.is_file())
-                    .filter(|path| {
-                        path_attribute_bits(path)
-                            .is_ok_and(|attrs| attrs & (VB_HIDDEN | VB_SYSTEM) == 0)
-                    })
-                    .collect::<Vec<_>>();
+                let wildcard_path = self.map_path(&path_text.as_str(), capability, "kill")?;
+                let matched_paths =
+                    expand_host_wildcard_paths(&wildcard_path, self.uses_windows_paths())
+                        .map_err(|err| {
+                            HalError::adapter_fault(
+                                self.profile,
+                                capability,
+                                "kill",
+                                format!("failed to expand wildcard Kill path {path_text}: {err}"),
+                            )
+                        })?
+                        .into_iter()
+                        .filter(|path| path.is_file())
+                        .filter(|path| {
+                            path_attribute_bits(path, self.uses_windows_paths())
+                                .is_ok_and(|attrs| attrs & (VB_HIDDEN | VB_SYSTEM) == 0)
+                        })
+                        .collect::<Vec<_>>();
                 if matched_paths.is_empty() {
                     return Err(HalError::adapter_fault(
                         self.profile,
@@ -1123,7 +1240,7 @@ impl FileSystemHal for StandardHostServices {
             return Ok(Variant::from_i32(0));
         }
         if self.native_fs_enabled() {
-            let host_path = PathBuf::from(path_text.as_str());
+            let host_path = self.map_path(&path_text.as_str(), capability, "kill")?;
             self.kill_host_file(&host_path)?;
         }
         Ok(Variant::from_i32(0))
@@ -1148,15 +1265,17 @@ impl FileSystemHal for StandardHostServices {
         if self.native_fs_enabled() {
             // VBA `MkDir` creates a single directory (error 75 if it already
             // exists / the parent is missing); mirror with a non-recursive create.
-            fs::create_dir(Path::new(&path_text.as_str())).map_err(|err| {
-                HalError::adapter_fault(
-                    self.profile,
-                    capability,
-                    "mkdir",
-                    format!("failed to create directory {path_text}: {err}"),
-                )
-                .with_host_error_code(directory_error_code(&err))
-            })?;
+            fs::create_dir(self.map_path(&path_text.as_str(), capability, "mkdir")?).map_err(
+                |err| {
+                    HalError::adapter_fault(
+                        self.profile,
+                        capability,
+                        "mkdir",
+                        format!("failed to create directory {path_text}: {err}"),
+                    )
+                    .with_host_error_code(directory_error_code(&err))
+                },
+            )?;
         }
         Ok(Variant::from_i32(0))
     }
@@ -1180,15 +1299,17 @@ impl FileSystemHal for StandardHostServices {
         if self.native_fs_enabled() {
             // VBA `RmDir` removes an empty directory; `remove_dir` (non-recursive)
             // matches (it errors if the directory is non-empty or missing).
-            fs::remove_dir(Path::new(&path_text.as_str())).map_err(|err| {
-                HalError::adapter_fault(
-                    self.profile,
-                    capability,
-                    "rmdir",
-                    format!("failed to remove directory {path_text}: {err}"),
-                )
-                .with_host_error_code(directory_error_code(&err))
-            })?;
+            fs::remove_dir(self.map_path(&path_text.as_str(), capability, "rmdir")?).map_err(
+                |err| {
+                    HalError::adapter_fault(
+                        self.profile,
+                        capability,
+                        "rmdir",
+                        format!("failed to remove directory {path_text}: {err}"),
+                    )
+                    .with_host_error_code(directory_error_code(&err))
+                },
+            )?;
         }
         Ok(Variant::from_i32(0))
     }
@@ -1846,6 +1967,9 @@ impl FileSystemHal for StandardHostServices {
                     "invalid drive letter",
                 ));
             }
+            if self.uses_windows_paths() {
+                return self.mapped_cur_dir(letter).map(Variant::from_string);
+            }
             #[cfg(windows)]
             let dir = match letter {
                 Some(letter) => std::path::absolute(format!("{letter}:")),
@@ -1873,6 +1997,12 @@ impl FileSystemHal for StandardHostServices {
             return Err(self.denied(capability, "chdir"));
         }
         if self.native_fs_enabled() {
+            if self.uses_windows_paths()
+                && let Some(text) = path.as_bstr()
+            {
+                self.mapped_ch_dir(&text.as_str())?;
+                return Ok(Variant::from_i32(0));
+            }
             let dir = self.variant_to_path(&path, capability, "chdir", "path")?;
             std::env::set_current_dir(&dir).map_err(|err| {
                 HalError::adapter_fault(
@@ -1970,7 +2100,8 @@ impl FileSystemHal for StandardHostServices {
             })?;
             // VBA creates ordinary destination attributes rather than copying
             // the source's read-only/hidden/system flags.
-            apply_file_attributes(&dst, VB_ARCHIVE).map_err(|_| fault(75))?;
+            apply_file_attributes(&dst, VB_ARCHIVE, self.uses_windows_paths())
+                .map_err(|_| fault(75))?;
         }
         Ok(Variant::from_i32(0))
     }
@@ -1982,7 +2113,7 @@ impl FileSystemHal for StandardHostServices {
         }
         if self.native_fs_enabled() {
             let p = self.variant_to_path(&path, capability, "getattr", "path")?;
-            let bits = path_attribute_bits(&p).map_err(|err| {
+            let bits = path_attribute_bits(&p, self.uses_windows_paths()).map_err(|err| {
                 HalError::adapter_fault(
                     self.profile,
                     capability,
@@ -2023,7 +2154,7 @@ impl FileSystemHal for StandardHostServices {
         }
         if self.native_fs_enabled() {
             let p = self.variant_to_path(&path, capability, "setattr", "path")?;
-            apply_file_attributes(&p, requested).map_err(|err| {
+            apply_file_attributes(&p, requested, self.uses_windows_paths()).map_err(|err| {
                 HalError::adapter_fault(
                     self.profile,
                     capability,
@@ -2062,6 +2193,10 @@ impl FileSystemHal for StandardHostServices {
         if let Some(letter) = text.as_str().chars().next()
             && self.native_fs_enabled()
         {
+            if self.uses_windows_paths() {
+                self.mapped_ch_drive(letter)?;
+                return Ok(Variant::from_i32(0));
+            }
             change_drive(letter).map_err(|err| {
                 HalError::adapter_fault(
                     self.profile,
@@ -2305,7 +2440,12 @@ impl StandardHostServices {
 /// `vbDirectory` is requested. An entry is listed when its hidden/system/directory bits
 /// are all among the requested `attributes` (so `vbNormal` lists plain files only), and
 /// `.` and `..` join a wildcard listing that asks for directories.
-pub(super) fn dir_listing(raw: &str, target: &Path, attrs: i32) -> std::io::Result<Vec<String>> {
+pub(super) fn dir_listing(
+    raw: &str,
+    target: &Path,
+    attrs: i32,
+    case_insensitive: bool,
+) -> std::io::Result<Vec<String>> {
     let pattern = if raw.ends_with(['\\', '/']) {
         target.join("*")
     } else {
@@ -2313,7 +2453,7 @@ pub(super) fn dir_listing(raw: &str, target: &Path, attrs: i32) -> std::io::Resu
     };
     let wildcard = path_contains_wildcards(&pattern);
     let candidates = if wildcard {
-        match expand_host_wildcard_paths(&pattern) {
+        match expand_host_wildcard_paths(&pattern, case_insensitive) {
             Ok(paths) => paths,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(err) => return Err(err),
@@ -2351,8 +2491,13 @@ pub(super) fn dir_listing(raw: &str, target: &Path, attrs: i32) -> std::io::Resu
     let mut names: Vec<String> = candidates
         .iter()
         .filter(|path| {
-            fs::metadata(path)
-                .map(|meta| file_attribute_bits(&meta) & filtered & !wanted == 0)
+            let attributes = if case_insensitive {
+                path_attribute_bits(path, true)
+            } else {
+                fs::metadata(path).map(|meta| file_attribute_bits(&meta))
+            };
+            attributes
+                .map(|bits| bits & filtered & !wanted == 0)
                 .unwrap_or(false)
         })
         .map(|path| name_of(path))
@@ -2363,7 +2508,7 @@ pub(super) fn dir_listing(raw: &str, target: &Path, attrs: i32) -> std::io::Resu
     {
         let last = last.to_string_lossy();
         for dots in [".", ".."] {
-            if wildcard_match(&last, dots) {
+            if wildcard_match(&last, dots, case_insensitive) {
                 names.push(dots.to_string());
             }
         }
@@ -2382,7 +2527,10 @@ pub(super) fn path_contains_wildcards(path: &Path) -> bool {
     })
 }
 
-pub(super) fn expand_host_wildcard_paths(path: &Path) -> std::io::Result<Vec<PathBuf>> {
+pub(super) fn expand_host_wildcard_paths(
+    path: &Path,
+    case_insensitive: bool,
+) -> std::io::Result<Vec<PathBuf>> {
     let components = path.components().collect::<Vec<_>>();
     let mut roots = vec![PathBuf::new()];
     let mut index = 0;
@@ -2415,7 +2563,7 @@ pub(super) fn expand_host_wildcard_paths(path: &Path) -> std::io::Result<Vec<Pat
     }
 
     let mut matches = Vec::new();
-    expand_host_wildcard_components(&roots, &components[index..], &mut matches)?;
+    expand_host_wildcard_components(&roots, &components[index..], &mut matches, case_insensitive)?;
     matches.sort_by_key(|path| wildcard_casefold(&path.to_string_lossy()));
     matches.dedup();
     Ok(matches)
@@ -2425,6 +2573,7 @@ fn expand_host_wildcard_components(
     bases: &[PathBuf],
     components: &[Component<'_>],
     matches: &mut Vec<PathBuf>,
+    case_insensitive: bool,
 ) -> std::io::Result<()> {
     if components.is_empty() {
         matches.extend(bases.iter().cloned());
@@ -2433,7 +2582,9 @@ fn expand_host_wildcard_components(
 
     let component = components[0];
     match component {
-        Component::CurDir => expand_host_wildcard_components(bases, &components[1..], matches),
+        Component::CurDir => {
+            expand_host_wildcard_components(bases, &components[1..], matches, case_insensitive)
+        }
         Component::ParentDir => {
             let next = bases
                 .iter()
@@ -2443,7 +2594,7 @@ fn expand_host_wildcard_components(
                     path
                 })
                 .collect::<Vec<_>>();
-            expand_host_wildcard_components(&next, &components[1..], matches)
+            expand_host_wildcard_components(&next, &components[1..], matches, case_insensitive)
         }
         Component::Normal(part) => {
             let text = part.to_string_lossy();
@@ -2457,7 +2608,12 @@ fn expand_host_wildcard_components(
                         path
                     })
                     .collect::<Vec<_>>();
-                return expand_host_wildcard_components(&next, &components[1..], matches);
+                return expand_host_wildcard_components(
+                    &next,
+                    &components[1..],
+                    matches,
+                    case_insensitive,
+                );
             }
 
             let mut next = Vec::new();
@@ -2471,7 +2627,7 @@ fn expand_host_wildcard_components(
                     let entry = entry?;
                     let entry_path = entry.path();
                     let entry_name = entry.file_name();
-                    if !wildcard_match(&text, &entry_name.to_string_lossy()) {
+                    if !wildcard_match(&text, &entry_name.to_string_lossy(), case_insensitive) {
                         continue;
                     }
                     if components.len() > 1 && !entry.file_type()?.is_dir() {
@@ -2480,7 +2636,7 @@ fn expand_host_wildcard_components(
                     next.push(entry_path);
                 }
             }
-            expand_host_wildcard_components(&next, &components[1..], matches)
+            expand_host_wildcard_components(&next, &components[1..], matches, case_insensitive)
         }
         Component::Prefix(_) | Component::RootDir => {
             unreachable!("prefix/root handled before recursion")
@@ -2488,9 +2644,16 @@ fn expand_host_wildcard_components(
     }
 }
 
-fn wildcard_match(pattern: &str, candidate: &str) -> bool {
-    let pattern: Vec<char> = wildcard_casefold(pattern).chars().collect();
-    let candidate: Vec<char> = wildcard_casefold(candidate).chars().collect();
+fn wildcard_match(pattern: &str, candidate: &str, case_insensitive: bool) -> bool {
+    let fold = |value: &str| {
+        if case_insensitive {
+            value.to_lowercase()
+        } else {
+            wildcard_casefold(value)
+        }
+    };
+    let pattern: Vec<char> = fold(pattern).chars().collect();
+    let candidate: Vec<char> = fold(candidate).chars().collect();
     let mut dp = vec![vec![false; candidate.len() + 1]; pattern.len() + 1];
     dp[0][0] = true;
 

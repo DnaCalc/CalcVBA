@@ -23,6 +23,7 @@ mod host;
 pub mod objects;
 mod pure;
 pub mod regexp;
+mod trig;
 /// Unboxed numeric kernels shared by Variant callers and native exports.
 pub use pure::{abs_f64, sqr_f64};
 /// Host-independent value operations shared with owning typed execution.
@@ -363,12 +364,12 @@ pub fn invoke_context_free(
         Sgn => pure::sgn(args),
         Round => pure::round(args),
         Sqr => pure::sqr(args),
-        Sin => pure::trig(args, f64::sin),
-        Cos => pure::trig(args, f64::cos),
+        Sin => pure::trig(args, trig::sin),
+        Cos => pure::trig(args, trig::cos),
         Log => pure::log(args),
         Exp => pure::exp(args),
         Atn => pure::math1(args, f64::atan),
-        Tan => pure::trig(args, f64::tan),
+        Tan => pure::trig(args, trig::tan),
 
         // ── DateTime ──
         Calendar | CalendarLet | UserForms | ErrObjectValue => {
@@ -627,6 +628,28 @@ mod dispatch_policy_tests {
     use super::*;
     use calcvba_hal::HostPolicy;
     use calcvba_hal::adapters::null::NullHostServices;
+
+    #[test]
+    fn trigonometry_matches_recorded_excel_bits() {
+        let host = NullHostServices::new(HostPolicy::default());
+        for line in include_str!("../../../docs/research/math-shape/MathShape.excel.txt").lines() {
+            let mut fields = line.split_whitespace();
+            let id = match fields.next() {
+                Some("sin") => NativeImplId::Sin,
+                Some("cos") => NativeImplId::Cos,
+                Some("tan") => NativeImplId::Tan,
+                _ => continue,
+            };
+            let bits = u64::from_str_radix(fields.next().unwrap(), 16).unwrap();
+            let args = [Variant::from_f64(f64::from_bits(bits))];
+            let actual = match invoke_context_free(id, &args, &host) {
+                Ok(value) => format!("{:016X}", value.as_f64().unwrap().to_bits()),
+                Err(ContextFreeInvokeError::Library(error)) => format!("ERR{}", error.code),
+                Err(error) => panic!("{line}: {error:?}"),
+            };
+            assert_eq!(actual, fields.next().unwrap(), "{line}");
+        }
+    }
 
     #[test]
     fn context_free_dispatch_rejects_stateful_entries() {

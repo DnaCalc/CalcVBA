@@ -43,7 +43,3 @@ Jit	InStrRev.2.0
 Jit	InStrRev.3.0
 Jit	InStrRev.7.0
 Jit	InStrRev.9.0
-windows Vm3	Sin.6
-windows Vm3	Sin.8
-windows Jit	Sin.6
-windows Jit	Sin.8

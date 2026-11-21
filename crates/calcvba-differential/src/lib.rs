@@ -15525,7 +15525,8 @@ End Sub
         );
         assert_jit_matches_vm3_contains(
             JIT_STDLIB_NUMERIC_EXPANSION,
-            Variant::from_f64(-225.95084645419513),
+            // MathShape.excel.txt records these bits for Tan(11).
+            Variant::from_f64(f64::from_bits(0xc06c_3e6d_558b_0925)),
         );
     }
 

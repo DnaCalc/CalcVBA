@@ -24,6 +24,7 @@ pub use calcvba_bundle::ProcedureKind;
 pub use calcvba_host_api::ScalarType;
 pub use calcvba_rt_abi::host_entry::{Arguments, Scalar, TYPED_ENTRY_ABI, TypedContext};
 pub use calcvba_symbol::model::Visibility;
+pub use calcvba_symbol::portability;
 mod project_graph;
 pub mod provider;
 

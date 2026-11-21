@@ -313,6 +313,7 @@ pub struct Engine {
 pub struct ProjectRuntimeSession {
     backend: SessionBackend,
     host_services: Arc<dyn HostServices>,
+    object_owner: calcvba_runtime::object_owner::RuntimeObjectOwner,
 }
 
 // One session per server process: the VM3 is kept inline rather than boxed.
@@ -571,6 +572,15 @@ impl calcvba_runtime::events::MemberInvoker for ProjectRuntimeSession {
 }
 
 impl ProjectRuntimeSession {
+    /// Install a weak between-runs [`calcvba_runtime::events::MemberInvoker`] inherited by every
+    /// project class instance created in this session (including `New` inside VBA methods).
+    pub fn set_member_invoker(
+        &mut self,
+        invoker: std::rc::Weak<std::cell::RefCell<dyn calcvba_runtime::events::MemberInvoker>>,
+    ) {
+        self.object_owner.set_member_invoker(invoker);
+    }
+
     /// Mint a project-class instance by name (running its `Class_Initialize`) in the entry
     /// program. A class the image doesn't declare is "can't create object" (429, surfaced as a
     /// diagnostic).
@@ -578,6 +588,7 @@ impl ProjectRuntimeSession {
         &mut self,
         class_name: &str,
     ) -> Result<ObjectRef, PhaseDiagnostic> {
+        let _owner = self.object_owner.enter();
         let value = match &mut self.backend {
             SessionBackend::Vm3(vm) => vm
                 .create_project_instance(class_name)
@@ -620,6 +631,7 @@ impl ProjectRuntimeSession {
         kind_hint: Option<calcvba_bundle::ProjectMemberKind>,
         mut args: Vec<Variant>,
     ) -> Result<Variant, PhaseDiagnostic> {
+        let _owner = self.object_owner.enter();
         match &mut self.backend {
             SessionBackend::Vm3(vm) => vm
                 .invoke_member_values(object, member_name, kind_hint, args)
@@ -641,6 +653,7 @@ impl ProjectRuntimeSession {
         args: &mut [Variant],
         aliases: &[usize],
     ) -> Result<Variant, PhaseDiagnostic> {
+        let _owner = self.object_owner.enter();
         match &mut self.backend {
             SessionBackend::Vm3(vm) => vm
                 .invoke_member_values_with_writebacks(object, member_name, kind_hint, args, aliases)
@@ -661,6 +674,7 @@ impl ProjectRuntimeSession {
         aliases: &[usize],
     ) -> Result<Variant, PhaseDiagnostic> {
         use calcvba_runtime::ObjectRefExt;
+        let _owner = self.object_owner.enter();
         match &mut self.backend {
             SessionBackend::Vm3(vm) => vm
                 .invoke_member_descriptor_captured(object, member, invoke_kind, args, aliases)
@@ -720,12 +734,14 @@ impl ProjectRuntimeSession {
         F: Fn(Self, ObjectRef, i32, Vec<Variant>) -> (Self, Result<(), String>) + 'static,
     {
         let host_services = self.host_services.clone();
+        let object_owner = self.object_owner.clone();
         match &mut self.backend {
             SessionBackend::Vm3(vm) => {
                 vm.set_reentrant_project_event_sink(move |vm, source, event, args| {
                     let session = Self {
                         backend: SessionBackend::Vm3(vm),
                         host_services: host_services.clone(),
+                        object_owner: object_owner.clone(),
                     };
                     let (session, outcome) = sink(session, source, event, args);
                     match session.backend {
@@ -740,6 +756,7 @@ impl ProjectRuntimeSession {
                         let lent = Self {
                             backend: SessionBackend::JitBusy,
                             host_services: host_services.clone(),
+                            object_owner: object_owner.clone(),
                         };
                         sink(lent, source, event, args).1
                     }));
@@ -1140,6 +1157,9 @@ impl Engine {
                 err.to_string(),
             ))
         })?;
+        let object_owner = calcvba_runtime::object_owner::RuntimeObjectOwner::fresh()
+            .unwrap_or_else(calcvba_runtime::object_owner::RuntimeObjectOwner::current);
+        let _owner_scope = object_owner.enter();
         let leaked_programs: &'static [calcvba_oxir::OxProgram] =
             Box::leak(image.programs.into_boxed_slice());
         let program_refs: Vec<&'static calcvba_oxir::OxProgram> = leaked_programs.iter().collect();
@@ -1169,6 +1189,7 @@ impl Engine {
         Ok(ProjectRuntimeSession {
             backend,
             host_services: self.host_services.clone(),
+            object_owner,
         })
     }
 

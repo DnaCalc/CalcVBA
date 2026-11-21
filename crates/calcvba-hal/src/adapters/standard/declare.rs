@@ -514,7 +514,7 @@ fn marshal<'a>(
                 after.push(After::Keep(cell));
                 Ok(MarshalledSlot::ByValVariant(ptr))
             }
-            "Any" | "Array" => byval_any(host, value, after).map(MarshalledSlot::Word),
+            "Any" | "Array" => Ok(MarshalledSlot::Word(byval_any(value))),
             _ => {
                 let vt = param_vt(param_type).unwrap_or(VT_I4);
                 Ok(MarshalledSlot::Word(payload_word(&coerce(
@@ -647,35 +647,21 @@ fn marshal<'a>(
 
 /// A ByVal `As Any` (or ByVal array) argument: a pointer value, an object's interface pointer,
 /// or a scalar's payload.
-#[cfg_attr(not(target_os = "windows"), allow(unused_variables, clippy::ptr_arg))]
-fn byval_any<'a>(
-    host: &StandardHostServices,
-    value: Variant,
-    after: &mut Vec<After<'a>>,
-) -> HalResult<u64> {
+fn byval_any(value: Variant) -> u64 {
     match value.vtype() {
         VarType::Object => {
             let Some(object) = value.as_object_ref() else {
-                return Ok(0);
+                return 0;
             };
             if object.is_nothing_placeholder() {
-                return Ok(0);
+                return 0;
             }
-            #[cfg(target_os = "windows")]
-            if object.is_compat_object() {
-                // A project object crosses as its IDispatch, kept alive for the call.
-                let dispatch = calcvba_com::automation::project_dispatch(&object)
-                    .map_err(|fault| vba_fault(host, fault.number, "project object"))?;
-                let word = payload_word(&dispatch);
-                after.push(After::Keep(Box::new(dispatch)));
-                return Ok(word);
-            }
-            // Elsewhere a project object is its own COM-shaped IUnknown (the portable
-            // stand-in), which the cell already holds.
-            Ok(payload_word(&value))
+            // Project objects carry their own ClassDualVtbl (`&primary`), so every object
+            // crosses as its own COM interface pointer with no wrapper.
+            payload_word(&value)
         }
-        VarType::ArrayVariant => Ok(value.raw_safearray_ptr().expose_provenance() as u64),
-        _ => Ok(payload_word(&value)),
+        VarType::ArrayVariant => value.raw_safearray_ptr().expose_provenance() as u64,
+        _ => payload_word(&value),
     }
 }
 

@@ -737,3 +737,360 @@ End Sub
         );
     }
 }
+
+#[test]
+fn between_runs_session_invoker_matches_comhost_named_byref_identity_and_terminate_on_vm3_and_jit()
+{
+    use calcvba_runtime::com::{DISP_E_PARAMNOTFOUND, DISP_E_UNKNOWNNAME};
+    use calcvba_runtime::events::{MemberFault, MemberInvoker};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let globals_src = r#"
+Public gTerm As Long
+Public Function ReadTerm() As Long
+    ReadTerm = gTerm
+End Function
+"#;
+    let child_src = r#"
+Public Tag As Long
+Public Function Label() As Long
+    Label = Tag + 100
+End Function
+Private Sub Class_Terminate()
+    gTerm = gTerm + 1
+End Sub
+"#;
+    let mixer_src = r#"
+Public Function Mix(ByVal a As Long, Optional ByVal b As Long = 10, Optional ByVal c As Long = 100) As Long
+    Mix = a * 10000 + b * 100 + c
+End Function
+
+Public Sub Bump(ByRef target As Long, ByVal by As Long)
+    target = target + by
+End Sub
+
+Public Sub AliasPair(ByRef first As Long, ByRef second As Long)
+    first = first + 1
+    second = second + 10
+End Sub
+
+Public Function SelfObj() As Object
+    Set SelfObj = Me
+End Function
+
+Public Function IsSame(ByVal other As Object) As Boolean
+    IsSame = (other Is Me)
+End Function
+
+Public Function MakeChild(ByVal tag As Long) As Object
+    Dim c As New Child
+    c.Tag = tag
+    Set MakeChild = c
+End Function
+
+Public Function TermCount() As Long
+    TermCount = gTerm
+End Function
+
+Private Sub Class_Terminate()
+    gTerm = gTerm + 1
+End Sub
+"#;
+
+    let mut mixer_attrs = ModuleAttributes::named("Mixer");
+    mixer_attrs.vb_exposed = true;
+    mixer_attrs.vb_creatable = true;
+    let mut child_attrs = ModuleAttributes::named("Child");
+    child_attrs.vb_exposed = true;
+    let manifest = SymbolProjectManifest {
+        project_name: "DirectComHostPortable".to_string(),
+        project_kind: ProjectKind::Library,
+        modules: vec![
+            ModuleUnit {
+                module_name: "State".to_string(),
+                module_kind: ModuleKind::Procedural,
+                attributes: ModuleAttributes::named("State"),
+                source: globals_src.to_string(),
+            },
+            ModuleUnit {
+                module_name: "Child".to_string(),
+                module_kind: ModuleKind::Class,
+                attributes: child_attrs,
+                source: child_src.to_string(),
+            },
+            ModuleUnit {
+                module_name: "Mixer".to_string(),
+                module_kind: ModuleKind::Class,
+                attributes: mixer_attrs,
+                source: mixer_src.to_string(),
+            },
+        ],
+        references: Vec::new(),
+        reference_projects: Vec::new(),
+        conditional_constants: Default::default(),
+        conditional_compilation_target: Default::default(),
+    };
+    let typelibs = calcvba_symbol::CatalogTypeLibResolver;
+    let program = calcvba_bind::bind_program(&manifest, &typelibs).expect("bind");
+    let oxp = calcvba_oxir::elaborate::elaborate(&program).expect("elaborate");
+
+    // Mirrors `calcvba-comhost`: a session holder installs a weak between-runs `MemberInvoker`
+    // on the session's `RuntimeObjectOwner` so every project object (created via factory OR via
+    // `New` inside VBA) crosses as itself and handles raw `IDispatch::Invoke` with no wrapper.
+    struct SessionHolderInvoker {
+        session: Rc<RefCell<Option<calcvba_engine::ProjectRuntimeSession>>>,
+    }
+    impl MemberInvoker for SessionHolderInvoker {
+        fn invoke_member(
+            &mut self,
+            object: ObjectRef,
+            member: &'static calcvba_runtime::RuntimeMemberDescriptor,
+            invoke_kind: calcvba_runtime::RuntimeMemberInvokeKind,
+            args: &mut [Variant],
+            aliases: &[usize],
+        ) -> Result<Variant, MemberFault> {
+            let mut session = self
+                .session
+                .borrow_mut()
+                .take()
+                .ok_or_else(|| MemberFault::from_number(5))?;
+            let result = MemberInvoker::invoke_member(
+                &mut session,
+                object,
+                member,
+                invoke_kind,
+                args,
+                aliases,
+            );
+            *self.session.borrow_mut() = Some(session);
+            result
+        }
+    }
+
+    let raw_get_ids = |ptr: *mut RawRuntimeIUnknown, names: &[&str]| -> (i32, Vec<i32>) {
+        let wide: Vec<Vec<u16>> = names.iter().map(|n| utf16_nul(n)).collect();
+        let ptrs: Vec<*const u16> = wide.iter().map(|w| w.as_ptr()).collect();
+        let mut ids = vec![0i32; names.len()];
+        // SAFETY: `ptr` carries `ClassDualVtbl` whose prefix is `IDispatchVtbl`.
+        let hr = unsafe {
+            let vtbl = &*((*ptr).vtbl.cast::<IDispatchVtbl>());
+            (vtbl.get_ids_of_names)(
+                ptr.cast(),
+                &IID_NULL,
+                ptrs.as_ptr(),
+                names.len() as u32,
+                0,
+                ids.as_mut_ptr(),
+            )
+        };
+        (hr, ids)
+    };
+
+    let raw_call_named = |ptr: *mut RawRuntimeIUnknown,
+                          member: &str,
+                          rgvarg: &mut [VariantCore],
+                          named: &[i32]|
+     -> (i32, Variant) {
+        let (hr, ids) = raw_get_ids(ptr, &[member]);
+        assert_eq!(hr, 0, "GetIDsOfNames({member})");
+        let mut named = named.to_vec();
+        let mut params = DispParams {
+            rgvarg: if rgvarg.is_empty() {
+                core::ptr::null_mut()
+            } else {
+                rgvarg.as_mut_ptr()
+            },
+            rgdispid_named_args: if named.is_empty() {
+                core::ptr::null_mut()
+            } else {
+                named.as_mut_ptr()
+            },
+            c_args: rgvarg.len() as u32,
+            c_named_args: named.len() as u32,
+        };
+        let mut result = Variant::empty();
+        // SAFETY: `ptr` carries `ClassDualVtbl`; `params` and `result` are initialized.
+        let hr = unsafe {
+            let vtbl = &*((*ptr).vtbl.cast::<IDispatchVtbl>());
+            (vtbl.invoke)(
+                ptr.cast(),
+                ids[0],
+                &IID_NULL,
+                0,
+                DISPATCH_METHOD,
+                (&raw mut params).cast(),
+                (&raw mut result).cast(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+        (hr, result)
+    };
+
+    for backend in BACKENDS {
+        let mut engine = Engine::new(HostConfig { backend });
+        engine.set_host_policy(HostPolicy::native());
+        let mut session = engine
+            .prepare_image_session(OxImage::new(vec![oxp.clone()]))
+            .unwrap_or_else(|err| panic!("{backend:?} prepare_image_session: {err}"));
+
+        let session_cell = Rc::new(RefCell::new(None));
+        let invoker: Rc<RefCell<dyn MemberInvoker>> = Rc::new(RefCell::new(SessionHolderInvoker {
+            session: Rc::clone(&session_cell),
+        }));
+        session.set_member_invoker(Rc::downgrade(&invoker));
+
+        // Factory creates `Mixer` and hands out only its raw COM `IDispatch*` (`&primary`).
+        let mixer_raw = {
+            let mixer_obj = session
+                .create_class_instance("Mixer")
+                .unwrap_or_else(|err| panic!("{backend:?} create Mixer: {err}"));
+            let raw = RawComPtr::from_qi(&mixer_obj, &IID_IDISPATCH).expect("QI(IDispatch)");
+            // Verify QI(IUnknown) returns the exact same pointer.
+            let unk = RawComPtr::from_qi(&mixer_obj, &IID_IUNKNOWN).expect("QI(IUnknown)");
+            assert_eq!(raw.as_ptr(), unk.as_ptr());
+            raw
+        };
+        *session_cell.borrow_mut() = Some(session);
+
+        // 1. Named-argument DISPIDs and unknown-parameter handling.
+        assert_eq!(
+            raw_get_ids(mixer_raw.as_ptr(), &["Mix", "c", "a"]).1[1..],
+            [2, 0]
+        );
+        let (hr, ids) = raw_get_ids(mixer_raw.as_ptr(), &["Mix", "a", "nope"]);
+        assert_eq!((hr, &ids[1..]), (DISP_E_UNKNOWNNAME, &[0, -1][..]));
+
+        // 2. Named + Optional default calls with NO `MemberInvokerScope` active on the stack.
+        let mut args_named = [Variant::from_i32(3).core(), Variant::from_i32(1).core()];
+        let (hr, val) = raw_call_named(mixer_raw.as_ptr(), "Mix", &mut args_named, &[2, 0]);
+        assert_eq!(
+            (hr, val.as_i32()),
+            (0, Some(11003)),
+            "{backend:?} Mix(c:=3, a:=1)"
+        );
+
+        let mut args_mixed = [Variant::from_i32(5).core(), Variant::from_i32(1).core()];
+        let (hr, val) = raw_call_named(mixer_raw.as_ptr(), "Mix", &mut args_mixed, &[2]);
+        assert_eq!(
+            (hr, val.as_i32()),
+            (0, Some(11005)),
+            "{backend:?} Mix(1, c:=5)"
+        );
+
+        let mut args_pos = [
+            Variant::from_i32(3).core(),
+            Variant::from_i32(2).core(),
+            Variant::from_i32(1).core(),
+        ];
+        let (hr, val) = raw_call_named(mixer_raw.as_ptr(), "Mix", &mut args_pos, &[]);
+        assert_eq!(
+            (hr, val.as_i32()),
+            (0, Some(10203)),
+            "{backend:?} Mix(1, 2, 3)"
+        );
+
+        // Duplicate / out-of-range named argument -> DISP_E_PARAMNOTFOUND.
+        let mut dup = [Variant::from_i32(1).core(), Variant::from_i32(1).core()];
+        assert_eq!(
+            raw_call_named(mixer_raw.as_ptr(), "Mix", &mut dup, &[0, 0]).0,
+            DISP_E_PARAMNOTFOUND
+        );
+        let mut bad = [Variant::from_i32(1).core()];
+        assert_eq!(
+            raw_call_named(mixer_raw.as_ptr(), "Mix", &mut bad, &[7]).0,
+            DISP_E_PARAMNOTFOUND
+        );
+
+        // 3. Named ByRef + forwarding `VT_BYREF | VT_VARIANT -> VT_BYREF | VT_I4` + ByRef aliasing.
+        let mut x = 2i32;
+        // SAFETY: `x` stays live across the synchronous `Invoke` call.
+        let inner_ref = unsafe { Variant::by_ref(0x0003, (&raw mut x).cast()) };
+        let mut inner_cell = inner_ref.core();
+        // SAFETY: `inner_cell` stays live across the synchronous `Invoke` call.
+        let fwd_ref = unsafe { Variant::by_ref(0x000C, (&raw mut inner_cell).cast()) };
+        let mut bump_args = [Variant::from_i32(5).core(), fwd_ref.core()];
+        let (hr, _) = raw_call_named(mixer_raw.as_ptr(), "Bump", &mut bump_args, &[1, 0]);
+        assert_eq!((hr, x), (0, 7), "{backend:?} forwarding ByRef Bump");
+
+        let mut aliased = 0i32;
+        // SAFETY: `aliased` stays live across the synchronous `Invoke` call.
+        let r1 = unsafe { Variant::by_ref(0x0003, (&raw mut aliased).cast()) };
+        // SAFETY: same live cell passed twice to exercise ByRef aliasing.
+        let r2 = unsafe { Variant::by_ref(0x0003, (&raw mut aliased).cast()) };
+        let mut pair = [r2.core(), r1.core()];
+        let (hr, _) = raw_call_named(mixer_raw.as_ptr(), "AliasPair", &mut pair, &[]);
+        assert_eq!((hr, aliased), (0, 11), "{backend:?} ByRef AliasPair(x, x)");
+
+        // 4. Identity after crossing: `SelfObj()` returns `&primary` itself, and passing it back
+        //    into `IsSame(other)` evaluates `other Is Me == True` with zero unwrapping.
+        let (hr, first) = raw_call_named(mixer_raw.as_ptr(), "SelfObj", &mut [], &[]);
+        assert_eq!(hr, 0);
+        let (hr, second) = raw_call_named(mixer_raw.as_ptr(), "SelfObj", &mut [], &[]);
+        assert_eq!(hr, 0);
+        let first_obj = first.as_object_ref().expect("SelfObj returns object");
+        let second_obj = second.as_object_ref().expect("SelfObj returns object");
+        assert_eq!(first_obj.raw_iunknown(), mixer_raw.as_ptr());
+        assert_eq!(second_obj.raw_iunknown(), mixer_raw.as_ptr());
+        let (hr, same) = raw_call_named(mixer_raw.as_ptr(), "IsSame", &mut [first.core()], &[]);
+        assert_eq!(
+            (hr, same.as_bool()),
+            (0, Some(true)),
+            "{backend:?} IsSame(Self)"
+        );
+        drop(first_obj);
+        drop(second_obj);
+        drop(first);
+        drop(second);
+
+        // 5. Child object created by VBA `New Child` inherits the session invoker automatically
+        //    and runs `Class_Terminate` only after its final COM Release.
+        let (hr, child_var) = raw_call_named(
+            mixer_raw.as_ptr(),
+            "MakeChild",
+            &mut [Variant::from_i32(23).core()],
+            &[],
+        );
+        assert_eq!(hr, 0);
+        let child_ptr = {
+            let child_obj = child_var.as_object_ref().expect("Child object");
+            RawComPtr::from_qi(&child_obj, &IID_IDISPATCH).expect("Child QI(IDispatch)")
+        };
+        drop(child_var);
+
+        let (hr, label) = raw_call_named(child_ptr.as_ptr(), "Label", &mut [], &[]);
+        assert_eq!(
+            (hr, label.as_i32()),
+            (0, Some(123)),
+            "{backend:?} Child.Label"
+        );
+
+        let (hr, before_drop) = raw_call_named(mixer_raw.as_ptr(), "TermCount", &mut [], &[]);
+        assert_eq!(
+            (hr, before_drop.as_i32()),
+            (0, Some(0)),
+            "{backend:?} child still held"
+        );
+
+        // Final Release of `child_ptr` queues Child.Class_Terminate; next call / drain runs it once.
+        drop(child_ptr);
+        session_cell
+            .borrow_mut()
+            .as_mut()
+            .expect("session")
+            .drain_object_terminations();
+        let (hr, after_drop) = raw_call_named(mixer_raw.as_ptr(), "TermCount", &mut [], &[]);
+        assert_eq!(
+            (hr, after_drop.as_i32()),
+            (0, Some(1)),
+            "{backend:?} child terminated once"
+        );
+
+        // Final Release of `mixer_raw` terminates Mixer too (verified via drain).
+        drop(mixer_raw);
+        let mut session = session_cell.borrow_mut().take().expect("session");
+        session.drain_object_terminations();
+        drop(invoker);
+    }
+}

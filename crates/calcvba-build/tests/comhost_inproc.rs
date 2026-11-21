@@ -156,6 +156,16 @@ impl Dispatch {
         result.Anonymous.Anonymous.Anonymous.lVal
     }
 
+    unsafe fn self_identity(&self) -> *mut c_void {
+        let mut unknown = std::ptr::null_mut();
+        assert_eq!(
+            (self.vtbl().query_interface)(self.0, &IID_IUNKNOWN, &mut unknown),
+            0
+        );
+        (self.vtbl().release)(unknown);
+        unknown
+    }
+
     unsafe fn identity(&self, value: &VARIANT) -> *mut c_void {
         let object = value.Anonymous.Anonymous.Anonymous.pdispVal;
         assert!(!object.is_null(), "an object result");
@@ -353,11 +363,13 @@ fn check_server(name: &str, runtime: &str) {
         assert_eq!(hr, 0);
         assert_eq!(x, 7);
 
-        // The same project object comes back as the same COM object, so Is holds.
+        // The project object crosses as itself (no wrapper), so `Self()` returns the exact same
+        // COM identity as both `mixer` itself and repeated calls.
         let (hr, mut first) = mixer.call("Self", &mut [], &[]);
         assert_eq!(hr, 0);
         let (hr, mut second) = mixer.call("Self", &mut [], &[]);
         assert_eq!(hr, 0);
+        assert_eq!(mixer.identity(&first), mixer.self_identity());
         assert_eq!(mixer.identity(&first), mixer.identity(&second));
         VariantClear(&mut first);
         VariantClear(&mut second);

@@ -68,10 +68,6 @@ fn fault_from_hresult(
     }
 }
 
-/// The `IDispatch` a project object crosses into COM as, supplied by the caller until project
-/// objects carry their own `IDispatch` (step 10): a `VT_DISPATCH` cell owning one reference.
-pub type ProjectDispatch<'a> = &'a dyn Fn(&ObjectRef) -> Result<Variant, Fault>;
-
 /// A retained `IDispatch` of an object.
 pub struct Dispatch(OwnedComInterface);
 
@@ -142,7 +138,6 @@ impl Dispatch {
         member: Member<'_>,
         kind: CallKind,
         args: &[Arg<'_>],
-        project: ProjectDispatch<'_>,
     ) -> Result<Variant, Fault> {
         let put = matches!(kind, CallKind::Let | CallKind::Set);
         if put && args.is_empty() {
@@ -197,9 +192,8 @@ impl Dispatch {
                 order.push(i);
             }
         }
-        // Project objects cross as the caller's IDispatch for them; the cells holding those
-        // stay alive until the call returns.
-        let mut kept: Vec<Variant> = Vec::new();
+        // Project objects carry their own ClassDualVtbl (`&primary`), so every object crosses
+        // directly as its own interface pointer with no wrapper.
         let mut rgvarg: Vec<VARIANT> = Vec::with_capacity(args.len());
         for &i in &order {
             let cell = match args[i].value {
@@ -209,15 +203,7 @@ impl Dispatch {
                     missing[8..12].copy_from_slice(&DISP_E_PARAMNOTFOUND.to_le_bytes());
                     missing
                 }
-                ArgValue::Value(value) => match value.as_object_ref() {
-                    Some(object) if object.is_compat_object() => {
-                        let substitute = project(&object)?;
-                        let bytes = substitute.to_wire_bytes();
-                        kept.push(substitute);
-                        bytes
-                    }
-                    _ => value.to_wire_bytes(),
-                },
+                ArgValue::Value(value) => value.to_wire_bytes(),
                 ArgValue::Reference(reference) => reference.to_wire_bytes(),
             };
             // SAFETY: the runtime cell has the Automation VARIANT layout (`WIRE_SIZE` bytes).
@@ -268,7 +254,6 @@ impl Dispatch {
                 &mut argument_error,
             )
         };
-        drop(kept);
         if hr < 0 {
             if let Some(fill) = exception.pfnDeferredFillIn {
                 // SAFETY: COM supplies the deferred fill for its own EXCEPINFO; called once,
@@ -309,11 +294,10 @@ pub struct Enumerator(OwnedComInterface);
 impl Enumerator {
     /// The object's enumerator: `_NewEnum` (`DISPID_NEWENUM`) and `QueryInterface` for
     /// `IEnumVARIANT`. An object without one: VBA error 438.
-    pub fn of(object: &ObjectRef, project: ProjectDispatch<'_>) -> Result<Self, Fault> {
+    pub fn of(object: &ObjectRef) -> Result<Self, Fault> {
         let dispatch = Dispatch::of(object)?;
         // SAFETY: no reference arguments.
-        let source =
-            unsafe { dispatch.invoke(Member::Id(DISPID_NEWENUM), CallKind::Get, &[], project) }?;
+        let source = unsafe { dispatch.invoke(Member::Id(DISPID_NEWENUM), CallKind::Get, &[]) }?;
         let unknown = source.as_object_ref().ok_or_else(|| Fault::number(438))?;
         // SAFETY: the ObjectRef retains a live IUnknown for the call.
         let enumerator = unsafe {
@@ -382,18 +366,4 @@ impl crate::call::ComEnumerator for Enumerator {
     fn next_item(&mut self) -> Result<Option<Variant>, Fault> {
         Enumerator::next_item(self)
     }
-}
-
-/// The `IDispatch` the bridge hands COM for a project object: when the object carries its own
-/// `ClassDualVtbl` (dc-yqq0.23), pass the object itself (one COM identity, no wrapper); fall back
-/// to the legacy wrapper only for non-dual compat objects until bead 7 deletes wrappers.
-pub fn project_dispatch(object: &ObjectRef) -> Result<Variant, Fault> {
-    if object.has_dual_dispatch_vtable() {
-        return Ok(Variant::from_object_ref(object.clone()));
-    }
-    let dispatch = crate::windows_runtime_object::create_runtime_object_dispatch(object.clone());
-    // SAFETY: the wrapper comes back with one reference, which the cell takes over.
-    unsafe { ObjectRef::from_raw_iunknown_owned(dispatch.cast()) }
-        .map(Variant::from_object_ref)
-        .ok_or_else(|| Fault::number(91))
 }

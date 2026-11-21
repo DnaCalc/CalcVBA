@@ -69,13 +69,17 @@ pub struct RuntimeObjectOwner {
     channel: Arc<OwnerTerminationChannel>,
 }
 
+type WeakMemberInvoker = std::rc::Weak<RefCell<dyn crate::events::MemberInvoker>>;
+
 struct OwnerLease {
     channel: Arc<OwnerTerminationChannel>,
+    member_invoker: RefCell<Option<WeakMemberInvoker>>,
 }
 
 impl Drop for OwnerLease {
     fn drop(&mut self) {
         self.channel.alive.store(false, Ordering::Release);
+        self.member_invoker.borrow_mut().take();
         crate::object_ref::discard_pending_channel(&self.channel);
     }
 }
@@ -93,6 +97,7 @@ static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {
     static AMBIENT_CHANNEL: Arc<OwnerTerminationChannel> = OwnerTerminationChannel::new();
+    static AMBIENT_INVOKER: RefCell<Option<WeakMemberInvoker>> = const { RefCell::new(None) };
     static CURRENT_OWNER: RefCell<Option<RuntimeObjectOwner>> = const { RefCell::new(None) };
 }
 
@@ -115,8 +120,29 @@ impl RuntimeObjectOwner {
         let channel = OwnerTerminationChannel::new();
         let lease = Some(Rc::new(OwnerLease {
             channel: Arc::clone(&channel),
+            member_invoker: RefCell::new(None),
         }));
         Some(Self { id, lease, channel })
+    }
+
+    /// Install a weak between-runs [`crate::events::MemberInvoker`] inherited by every project
+    /// instance created under this owner (used by COM session holders such as `calcvba-comhost`).
+    pub fn set_member_invoker(&self, invoker: WeakMemberInvoker) {
+        if let Some(lease) = &self.lease {
+            *lease.member_invoker.borrow_mut() = Some(invoker);
+        } else {
+            AMBIENT_INVOKER.with(|slot| {
+                *slot.borrow_mut() = Some(invoker);
+            });
+        }
+    }
+
+    pub(crate) fn member_invoker(&self) -> Option<WeakMemberInvoker> {
+        if let Some(lease) = &self.lease {
+            lease.member_invoker.borrow().clone()
+        } else {
+            AMBIENT_INVOKER.with(|slot| slot.borrow().clone())
+        }
     }
 
     pub fn current() -> Self {

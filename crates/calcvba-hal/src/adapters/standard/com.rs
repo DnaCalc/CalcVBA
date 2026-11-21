@@ -363,15 +363,8 @@ impl ComHal for StandardHostServices {
                 .map_err(|fault| self.com_call_fault("invoke_object", fault))?;
             // SAFETY: the VM builds each reference for this call over live storage it does not
             // borrow across the call.
-            let value = unsafe {
-                dispatch.invoke(
-                    member,
-                    kind,
-                    args,
-                    &calcvba_com::automation::project_dispatch,
-                )
-            }
-            .map_err(|fault| self.com_call_fault("invoke_object", fault))?;
+            let value = unsafe { dispatch.invoke(member, kind, args) }
+                .map_err(|fault| self.com_call_fault("invoke_object", fault))?;
             // Counted like every successful IDispatch call (the transport counters).
             self.com_bridge.record_typed_dispatch_call();
             return Ok(value);
@@ -402,13 +395,7 @@ impl ComHal for StandardHostServices {
             // SAFETY: the VM builds each reference for this call over live storage it does not
             // borrow across the call.
             let (value, transport) = unsafe {
-                calcvba_com::automation::early::invoke(
-                    object,
-                    member,
-                    args,
-                    &calcvba_com::automation::project_dispatch,
-                    &argument_coercion,
-                )
+                calcvba_com::automation::early::invoke(object, member, args, &argument_coercion)
             }
             .map_err(|fault| self.com_call_fault("invoke_object", fault))?;
             match transport {
@@ -446,11 +433,8 @@ impl ComHal for StandardHostServices {
     ) -> HalResult<Box<dyn calcvba_com::call::ComEnumerator>> {
         #[cfg(target_os = "windows")]
         if !object.is_compat_object() {
-            let enumerator = calcvba_com::automation::Enumerator::of(
-                object,
-                &calcvba_com::automation::project_dispatch,
-            )
-            .map_err(|fault| self.com_call_fault("object_enumerator", fault))?;
+            let enumerator = calcvba_com::automation::Enumerator::of(object)
+                .map_err(|fault| self.com_call_fault("object_enumerator", fault))?;
             return Ok(Box::new(enumerator));
         }
         Ok(Box::new(SnapshotItems(

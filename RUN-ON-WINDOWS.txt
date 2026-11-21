@@ -263,3 +263,36 @@ cfg(windows)-only failure, pull again before each push.
     - cargo test -p calcvba-runtime -p calcvba-rt-abi -p calcvba-vm3 -p calcvba-jit --no-fail-fast
     - cargo test -p calcvba-engine --test object_identity_portable --test object_identity --test default_instances --no-fail-fast
     - Also ready to add/enable the Windows live-COM foreign-thread Release case in `object_identity.rs`.
+
+--- Lane vx5 (Linux), newest last ---
+
+21. dc-yqq0.26 (delete the wrappers; project objects cross as themselves):
+    - Deleted `calcvba-com/src/windows_runtime_object.rs` (`RuntimeObjectDispatch`,
+      `create_runtime_object_dispatch`, `runtime_object_from_dispatch`) and `project_dispatch` /
+      `ProjectDispatch` from `calcvba-com/src/automation.rs` and `automation/early.rs`.
+    - Deleted the bridge wrapper cache (`runtime_object_dispatch_wrappers`) and wrapper unwrap in
+      `bind_native_dispatch_result` from `calcvba-com/src/windows_runtime_state.rs`.
+    - Deleted the Declare wrapper in `calcvba-hal/src/adapters/standard/declare.rs` (`byval_any`).
+    - Deleted `WRAPPERS`, `DispatchObject`, and the vtbl-compare unwraps
+      (`object_ref_from_generated_interface` / `generated_bounded_dual_vtbl`) from
+      `calcvba-comhost`: `IClassFactory::CreateInstance` now returns the project object itself via
+      `QueryInterface` on its `ClassDualVtbl`, with `ComhostSessionInvoker` installed on the
+      session's `RuntimeObjectOwner` so every project object (factory-created or `New`-created)
+      handles between-runs `IDispatch::Invoke` directly.
+    - Forwarding `VT_BYREF | VT_VARIANT -> VT_BYREF | ...` chains are unwrapped in
+      `calcvba-runtime::class_dispatch` for both ByRef aliasing and write-back.
+    Windows checks to run:
+    - Workspace check:
+      ./scripts/check.ps1
+    - COM bridge, HAL, and in-process comhost (VM3 + JIT, now asserting `Self()` identity ==
+      receiver identity with zero wrappers):
+      cargo test -p calcvba-com -p calcvba-hal -p calcvba-runtime -p calcvba-engine --no-fail-fast
+      cargo test -p calcvba-build --test comhost_inproc --test native_exports --no-fail-fast
+    - Object-identity suite (bead dc-yqq0.20, Windows-owned):
+      cargo test -p calcvba-engine --test object_identity --test object_identity_portable --no-fail-fast
+      cargo test -p calcvba-engine --test object_identity -- --ignored --nocapture
+    - COM matrix & Declare suites:
+      cargo test -p calcvba-engine --test com_matrix_objects --test com_matrix_types --test com_matrix_methods --test com_matrix_properties --test com_matrix_collections --test com_matrix_errors --test com_matrix_events --test declare_cells --test real_addresses --no-fail-fast
+    - Note on ignored `wrapped_com_server_smoke`: `IConnectionPointContainer`, `Implements` faces,
+      and `ISupportErrorInfo` move onto `CompatObjectBase` in bead 8 (design doc section 7 item 8),
+      and early-bound dual vtable slot thunks are bead `dc-yqq0.24` (Windows-owned).

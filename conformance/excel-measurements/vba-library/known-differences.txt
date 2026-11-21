@@ -18,7 +18,6 @@ P_DateSerial: DateSerial.10=Date:40E72F8000000000
 P_DateValue: DateValue.11=Date:40E2070000000000
 P_DateValue: DateValue.12=Date:40E2072000000000
 P_DateValue: DateValue.7=Date:40E56AA000000000
-P_DeleteSetting: DeleteSetting.20=ERR5
 P_DoEvents: DoEvents.1=Integer:0
 P_DoEvents: DoEvents.2=String:[Integer]
 P_DoEvents: DoEvents.3=Long:2

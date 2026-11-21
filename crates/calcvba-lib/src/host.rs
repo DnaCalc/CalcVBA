@@ -37,8 +37,8 @@ fn string_value(value: &Variant) -> LibResult<Variant> {
 }
 
 fn optional_string_arg(args: &[Variant], index: usize) -> LibResult<Variant> {
+    // The host uses Empty for omission. An explicit Empty is a supplied empty string.
     match opt(args, index) {
-        Some(value) if matches!(value.vtype(), VarType::Empty) => Ok(Variant::empty()),
         Some(value) => string_value(value),
         None => Ok(Variant::empty()),
     }

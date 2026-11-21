@@ -47,6 +47,7 @@ use calcvba_rt_abi::{
     ox_const_variant, runtime_class_descriptors_for_program, take_termination_batch,
     variant_changed,
 };
+use calcvba_runtime::collection::CollectionCursor;
 use calcvba_runtime::object_ref::{
     ObjectRef, RUNTIME_CLASS_LIFECYCLE_NONE, RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR,
     RuntimeClassDescriptor,
@@ -167,19 +168,17 @@ fn is_cleared_temp(loc: Loc, frame_index: usize, first_temp: usize) -> bool {
     matches!(loc, Loc::Temp(frame, temp) if frame == frame_index && temp >= first_temp)
 }
 
-/// `For Each` retains an array storage location so element writes stay visible;
-/// object enumerators retain their materialized elements and current position. Keyed in [`Vm3::for_each`] by the loop
-/// variable's resolved [`Loc`], so concurrent/reentrant loops never alias.
+/// `For Each` retains an array storage location so element writes stay visible.
+/// The iterator is keyed in [`Vm3::for_each`] by its resolved [`Loc`].
 struct ForEachState {
     array_source: Option<Loc>,
     elements: Vec<Variant>,
     position: usize,
-    /// A COM object's enumerator, asked for one item at a time (`IEnumVARIANT::Next`), as VBA
-    /// does; `elements` is then unused.
+    /// A live Collection or COM enumerator, asked for one item at a time.
     enumerator: Option<Box<dyn calcvba_com::call::ComEnumerator>>,
 }
 
-/// What a `For Each` walks: a snapshot of items, or a COM object's enumerator.
+/// A materialized sequence or live object enumerator for `For Each`.
 enum ForEachItems {
     Snapshot(Vec<Variant>),
     Enumerator(Box<dyn calcvba_com::call::ComEnumerator>),
@@ -4734,6 +4733,13 @@ impl<'h> Vm3<'h> {
         let Some(obj) = src.as_object_ref() else {
             return Err(Vm3Error::Fault(Fault::new(13, "Type mismatch")));
         };
+        if depth == 0
+            && obj.is_compat_object()
+            && obj.route_key() == VBA_COLLECTION_ROUTE_KEY
+            && let Some(cursor) = CollectionCursor::new(&obj)
+        {
+            return Ok(ForEachItems::Enumerator(Box::new(cursor)));
+        }
         if let Some(values) = obj.native_collection_snapshot() {
             return Ok(ForEachItems::Snapshot(values));
         }

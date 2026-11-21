@@ -2,7 +2,6 @@
 # 'vm3 '/'jit ' prefix: only that executor differs. Rebuilt by make_known_differences.py.
 # A leading 'linux '/'windows '/'macos ' limits a line to that host (host libm or code page, dc-q6brh.112;
 # locale collation for vbTextCompare, dc-q6brh.6).
-linux P_Asc: Asc.14=Integer:63
 P_CDate: CDate.22=Date:40E5686000000000
 P_CDate: CDate.39=Date:40E2070000000000
 P_CDate: CDate.40=Date:40E2072000000000
@@ -15,26 +14,6 @@ P_CStr: CStr.59=String:[1899/12/31]
 P_CStr: CStr.60=String:[1899/12/29 12:00:00]
 P_CStr: CStr.61=String:[9999/12/31 23:59:59]
 P_CStr: CStr.62=String:[100/01/01]
-linux P_Chr: Chr.15=String:[{129}]
-linux P_Chr: Chr.16=String:[{141}]
-P_Chr: Chr.23=ERR5
-P_Chr: Chr.5=ERR5
-P_Chr: Chr.6=ERR5
-P_ChrB: ChrB.4=ERR6
-P_ChrB: ChrB.5=ERR6
-P_Collection: Collection.44=String:[n=3 Integer:1;Integer:2;Integer:3;count=3|n=4 Integer:1;Integer:2;Integer:3;Integer:99;count=4|n=3 Integer:1;Integer:2;Integer:3;count=2]
-P_Cos: Cos.22=Double:3FE14A280FB5068B|0.54030230586814
-P_Cos: Cos.24=Double:3FE14A280FB5068B|0.54030230586814
-P_Cos: Cos.2=Double:3FE14A280FB5068B|0.54030230586814
-P_Cos: Cos.3=Double:3FE14A280FB5068B|0.54030230586814
-P_DateAdd: DateAdd.21=Date:BFF4555555555556
-P_DateAdd: DateAdd.22=Date:BFF7555555555556
-P_DateAdd: DateAdd.33=ERR5
-P_DateDiff: DateDiff.23=Long:1
-P_DateDiff: DateDiff.24=Long:24
-P_DateDiff: DateDiff.39=ERR94
-P_DatePart: DatePart.25=Integer:6
-P_DatePart: DatePart.26=Integer:29
 P_DateSerial: DateSerial.10=Date:40E72F8000000000
 P_DateValue: DateValue.11=Date:40E2070000000000
 P_DateValue: DateValue.12=Date:40E2072000000000
@@ -203,12 +182,6 @@ P_StrConv: StrConv.44=ERR5
 P_StrReverse: StrReverse.7=String:[{56832}{55357}a]
 P_String: String.5=ERR6
 P_String: String.9=Null
-P_Tan: Tan.15=Double:4181CBBADD13289F|37320539.6343548
-P_Tan: Tan.20=Double:BFF8EB245CBEE3A7|-1.5574077246549
-P_Tan: Tan.22=Double:3FF8EB245CBEE3A7|1.5574077246549
-P_Tan: Tan.2=Double:3FF8EB245CBEE3A7|1.5574077246549
-P_Tan: Tan.3=Double:BFF8EB245CBEE3A7|-1.5574077246549
-P_Tan: Tan.7=Double:BFFAC23600A95BE5|-1.67241478212758
 P_Trim: Trim.12=String:[abc]
 P_TypeName: TypeName.49=ERR6
 P_UCase: UCase.10=String:[{305}]
@@ -218,4 +191,3 @@ P_WeekdayName: WeekdayName.15=ERR94
 P_Year: Year.12=Integer:2001
 P_Year: Year.13=Integer:2001
 linux P_NPer: NPer.17=Double:402C69D476524167|14.2066990828905
-linux P_Cos: Cos.7=Double:BFE06C154609D33E|-0.51319373778697

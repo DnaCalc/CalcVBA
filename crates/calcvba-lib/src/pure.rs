@@ -126,7 +126,8 @@ pub fn asc_b(args: &[Variant]) -> LibResult<Variant> {
 /// `ChrB(code)` — a one-BYTE string (`LenB` 1, `Len` 0); `code` is `0..=255`.
 pub fn chr_b(args: &[Variant]) -> LibResult<Variant> {
     let code = as_i32(need(args, 0)?)?;
-    let byte = u8::try_from(code).map_err(|_| LibError::invalid_call("invalid character code"))?;
+    let byte = u8::try_from(code)
+        .map_err(|_| LibError::overflow("character code does not fit in Byte"))?;
     Ok(Variant::from_bstr_bytes(&[byte]))
 }
 
@@ -813,17 +814,6 @@ fn like_match(s: &[u16], p: &[LikeToken]) -> bool {
     }
 }
 
-/// Shared code-point decode for `Chr`/`ChrW`: the argument is a VBA `Long` whose
-/// low 16 bits are the (wide) character code; negatives wrap via `code as u16`.
-/// Rejects the UTF-16 surrogate range and otherwise returns the `char`.
-fn wide_char(code: i32) -> LibResult<char> {
-    if !(-32768..=65535).contains(&code) {
-        return Err(LibError::invalid_call("invalid character code"));
-    }
-    let value = code as u16;
-    char::from_u32(u32::from(value)).ok_or_else(|| LibError::invalid_call("invalid character code"))
-}
-
 /// `ChrW(code)` — genuine WIDE: the single UTF-16 CODE UNIT whose value is the
 /// argument's low 16 bits (negatives wrap). Any `0..=65535` is valid — INCLUDING a
 /// lone surrogate half `0xD800..=0xDFFF` — because a VBA string is a UTF-16 code-unit
@@ -837,27 +827,12 @@ pub fn chr_w(args: &[Variant]) -> LibResult<Variant> {
     Ok(Variant::from_utf16_units(&[code as u16]))
 }
 
-/// `Chr(code)` — genuine ANSI: codes 0..=255 decode through the live system ANSI
-/// code page (`CP_ACP` on Windows, the CP-1252 fallback off-Windows); codes
-/// 256..=65535 act WIDE (VBA7 `Chr` is wide above 255); negatives wrap.
+/// `Chr(code)` decodes an ANSI character code in the active code page.
 pub fn chr(args: &[Variant]) -> LibResult<Variant> {
     let code = as_i32(need(args, 0)?)?;
-    let value = if (-32768..=65535).contains(&code) {
-        code as u16
-    } else {
-        return Err(LibError::invalid_call("invalid character code"));
-    };
-    let ch = if value <= 0xFF {
-        // A single ANSI byte decodes to one Unicode char via the shared codec; fall
-        // back to the byte's own code point if the host ACP leaves it undefined.
-        calcvba_runtime::ansi::ansi_decode(&[value as u8])
-            .chars()
-            .next()
-            .unwrap_or(value as u8 as char)
-    } else {
-        wide_char(code)?
-    };
-    Ok(vstr(ch.to_string()))
+    let unit = calcvba_runtime::ansi::ansi_decode_character(code)
+        .ok_or_else(|| LibError::invalid_call("invalid character code"))?;
+    Ok(Variant::from_utf16_units(&[unit]))
 }
 
 /// `AscW(s)` — genuine WIDE: the first char's Unicode code point, returned as a VBA
@@ -1832,7 +1807,7 @@ fn month_from_name(tok: &str) -> Option<i64> {
 }
 
 pub fn date_add(args: &[Variant]) -> LibResult<Variant> {
-    let interval = interval_arg(need(args, 0)?)?;
+    let interval = as_str(need(args, 0)?)?.to_ascii_lowercase();
     // The count is a `Long`; Excel drops its fraction (`DateAdd("d", 1.5, ...)` adds one day).
     let number = as_f64(need(args, 1)?)?.trunc();
     if !number.is_finite() || number.abs() > f64::from(i32::MAX) {
@@ -1907,6 +1882,11 @@ pub fn date_diff(args: &[Variant]) -> LibResult<Variant> {
     let interval = interval_arg(need(args, 0)?)?;
     let a = date_arg(need(args, 1)?)?;
     let b = date_arg(need(args, 2)?)?;
+    // VBA coerces the optional Long enums even when the interval ignores them.
+    let first_day = arg_present(args, 3).map_or(Ok(1), as_i32)?;
+    if let Some(first_week) = arg_present(args, 4) {
+        as_i32(first_week)?;
+    }
     let (ra, rb) = (serial_to_real(a), serial_to_real(b));
     let (a_day, b_day) = (ra.floor() as i64, rb.floor() as i64);
     // Whole seconds on the continuous time line, so an hour or minute boundary is exact.
@@ -1923,7 +1903,7 @@ pub fn date_diff(args: &[Variant]) -> LibResult<Variant> {
         "d" | "y" => b_day - a_day,
         "w" => (b_day - a_day) / 7,
         "ww" => {
-            let first = first_day_of_week(args, 3)?;
+            let first = normalize_first_day_of_week(first_day)?;
             count_weekday_boundaries(a_day, b_day, first - 1)
         }
         "h" => b_sec.div_euclid(3600) - a_sec.div_euclid(3600),
@@ -1984,10 +1964,10 @@ pub fn date_part(args: &[Variant], part: DatePart) -> LibResult<Variant> {
 }
 
 fn first_day_of_week(args: &[Variant], index: usize) -> LibResult<i32> {
-    let first = match arg_present(args, index) {
-        Some(v) => as_i32(v)?,
-        None => 1,
-    };
+    normalize_first_day_of_week(arg_present(args, index).map_or(Ok(1), as_i32)?)
+}
+
+fn normalize_first_day_of_week(first: i32) -> LibResult<i32> {
     let first = if first == 0 { 1 } else { first };
     if !(1..=7).contains(&first) {
         return Err(LibError::invalid_call("firstdayofweek out of range"));
@@ -4923,8 +4903,7 @@ mod tests {
         assert_eq!(asc_("\u{2013}", false), 150); // en-dash → ANSI byte 150
         assert_eq!(asc_("\u{2013}", true), 8211); // en-dash → U+2013
 
-        // The wide range (>255) agrees: Chr acts wide above 255.
-        assert_eq!(chr_(&[Variant::from_i32(8364)], false), "\u{20AC}"); // €
+        // ChrW accepts the Unicode code point directly.
         assert_eq!(chr_(&[Variant::from_i32(8364)], true), "\u{20AC}");
         // € round-trips: AscW is the code point, Asc is the CP-1252 byte 128.
         assert_eq!(asc_("\u{20AC}", true), 8364);

@@ -18,14 +18,15 @@
 use std::collections::{HashMap, HashSet};
 
 use calcvba_bundle::coreir::{
-    ClassId, CoreClass, CoreClassField, CoreClassMethod, CoreGlobal, CoreLocal, CoreParam,
-    GlobalId, LocalId, ProcId,
+    ClassId, CoreClass, CoreClassEvent, CoreClassField, CoreClassMethod, CoreGlobal, CoreLocal,
+    CoreParam, GlobalId, LocalId, ProcId,
 };
 use calcvba_bundle::{ProcedureKind, ProjectMemberKind, StringCompareMode};
 use calcvba_symbol::binding::DispatchRoute;
 use calcvba_symbol::manifest::{ModuleKind, SymbolProjectManifest};
 use calcvba_symbol::model::{
-    ScopeId, ScopeKind, SymbolId, SymbolImpl, SymbolKind, SymbolNamespace, fold_identifier,
+    ScopeId, ScopeKind, SymbolId, SymbolImpl, SymbolKind, SymbolNamespace, Visibility,
+    fold_identifier,
 };
 use calcvba_symbol::provider::ResolutionEnvironment;
 use calcvba_symbol::signature::{BuiltinType, PassingMode, Signature, VarTypeRef};
@@ -370,6 +371,32 @@ impl IdAllocator {
                     }
                 }
             }
+            let mut events = Vec::new();
+            for sym_id in symbols.symbols_in_scope(module.module_scope)? {
+                let Some(sym) = symbols.symbol(sym_id) else {
+                    continue;
+                };
+                if sym.kind != SymbolKind::Event {
+                    continue;
+                }
+                let Some(&event_id) = alloc.event_index_of.get(&sym_id) else {
+                    continue;
+                };
+                let callback_arity = match sym.imp {
+                    SymbolImpl::Signature(sig_id) => env
+                        .signatures
+                        .get(sig_id)
+                        .map(|sig| sig.params.len().min(u8::MAX as usize) as u8)
+                        .unwrap_or(0),
+                    _ => 0,
+                };
+                events.push(CoreClassEvent {
+                    name: alloc_name(env, sym.name),
+                    event_id,
+                    callback_arity,
+                    externally_visible: sym.visibility == Some(Visibility::Public),
+                });
+            }
             // `Implements I` clauses: record the interface names, mark them as
             // project interfaces, and verify every interface member has a matching
             // `Interface_Member` implementation in this class.
@@ -392,6 +419,7 @@ impl IdAllocator {
                 terminate,
                 fields,
                 methods,
+                events,
                 as_new_fields: Vec::new(),
                 implements,
             });

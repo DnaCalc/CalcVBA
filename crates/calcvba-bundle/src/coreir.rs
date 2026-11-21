@@ -202,6 +202,14 @@ pub struct CoreClassField {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreClassEvent {
+    pub name: String,
+    pub event_id: i32,
+    pub callback_arity: u8,
+    pub externally_visible: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreClass {
     pub name: String,
     /// Public type name of an engine-supplied class whose source identity is private.
@@ -214,6 +222,8 @@ pub struct CoreClass {
     /// Instance field descriptors keyed by their stable per-class field token.
     pub fields: Vec<CoreClassField>,
     pub methods: Vec<CoreClassMethod>,
+    /// Declared `Event` members of this class in declaration order.
+    pub events: Vec<CoreClassEvent>,
     /// Per-instance `Dim field As New T` field metadata. The field itself remains
     /// sparse/default until read; this records which field tokens auto-instantiate.
     pub as_new_fields: Vec<CoreClassAsNewField>,

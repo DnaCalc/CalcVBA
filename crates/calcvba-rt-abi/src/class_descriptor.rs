@@ -6,21 +6,24 @@
 //! three executors (dc-yqq0.21).
 
 use calcvba_bundle::{ArrayElementType, NumericCoerceTarget, ProjectMemberKind};
-use calcvba_com::{TypeLibMemberInvokeKind, TypeLibMemberMetadata};
+use calcvba_com::{
+    TypeLibMemberInvokeKind, TypeLibMemberMetadata, TypeLibParamType, TypeLibWireType,
+};
 use calcvba_eval::arith;
-use calcvba_oxir::{OxProgram, OxTy, inst::OxAsNew, program::OxClassMethod};
+use calcvba_oxir::{ComInterface, OxProgram, OxTy, inst::OxAsNew, program::OxClassMethod};
 use calcvba_runtime::{
     Guid, RuntimeClassActivationSpec, RuntimeClassAsNewFieldSpec, RuntimeClassDescriptor,
     RuntimeClassFieldSpec, RuntimeClassLifecycleDescriptor, RuntimeClassSpec,
-    RuntimeDispatchPlanCache, RuntimeImplementedInterfaceSpec, RuntimeMemberBacking,
-    RuntimeMemberDescriptor, RuntimeMemberInvokeKind, RuntimeMemberSpec, RuntimeParamSpec,
-    RuntimeValueType, VarType, Variant, build_runtime_class_descriptor, default_error_message,
-    runtime_project_interface_guid,
+    RuntimeDispatchPlanCache, RuntimeEventSpec, RuntimeImplementedInterfaceSpec,
+    RuntimeMemberBacking, RuntimeMemberDescriptor, RuntimeMemberInvokeKind, RuntimeMemberSpec,
+    RuntimeParamSpec, RuntimeValueType, VarType, Variant, build_runtime_class_descriptor,
+    default_class_interface_iid, default_error_message,
 };
 
 const NATIVE_METADATA_MAGIC: [u8; 4] = *b"CVBD";
 const NATIVE_METADATA_VERSION_V1: u32 = 1;
-const NATIVE_METADATA_VERSION: u32 = 2;
+const NATIVE_METADATA_VERSION_V2: u32 = 2;
+const NATIVE_METADATA_VERSION: u32 = 3;
 
 /// Convert a bundle [`ProjectMemberKind`] into [`RuntimeMemberInvokeKind`].
 pub fn runtime_invoke_kind(kind: ProjectMemberKind) -> RuntimeMemberInvokeKind {
@@ -260,12 +263,25 @@ pub fn runtime_class_spec_for_program(program: &OxProgram, class_index: usize) -
         .filter_map(|interface| implemented_interface_spec(program, &unit_name, class, interface))
         .collect();
 
+    let events = class
+        .events
+        .iter()
+        .map(|event| RuntimeEventSpec {
+            name: event.name.clone(),
+            event_id: event.event_id,
+            dispid: event.event_id,
+            callback_arity: event.callback_arity,
+            externally_visible: event.externally_visible,
+        })
+        .collect();
+
     RuntimeClassSpec {
         unit_name,
         class_index,
         name: display_name,
         runtime_type_name: class.runtime_type_name.clone(),
         default_interface_iid: None,
+        source_interface_iid: None,
         predeclared: class.predeclared,
         lifecycle: RuntimeClassLifecycleDescriptor {
             has_initialize: class.initialize.is_some(),
@@ -276,6 +292,7 @@ pub fn runtime_class_spec_for_program(program: &OxProgram, class_index: usize) -
         implements: class.implements.clone(),
         methods,
         implemented_interfaces,
+        events,
     }
 }
 
@@ -313,42 +330,269 @@ fn implemented_interface_spec(
     interface_name: &str,
 ) -> Option<RuntimeImplementedInterfaceSpec> {
     let bare_interface = interface_name.rsplit('.').next().unwrap_or(interface_name);
-    let interface_class = program.classes.iter().find(|candidate| {
+    if let Some(interface_class) = program.classes.iter().find(|candidate| {
         let candidate_bare = candidate.name.rsplit('.').next().unwrap_or(&candidate.name);
         candidate_bare.eq_ignore_ascii_case(bare_interface)
+    }) {
+        let (iface_unit, iface_display) = match interface_class.name.rsplit_once('.') {
+            Some((u, d)) if !u.is_empty() => (u, d),
+            _ => (unit_name, interface_class.name.as_str()),
+        };
+        let mut members = Vec::new();
+        for interface_field in interface_class
+            .fields
+            .iter()
+            .filter(|f| f.externally_visible)
+        {
+            let mangled = format!("{bare_interface}_{}", interface_field.name);
+            for (kind, slot) in [
+                (
+                    ProjectMemberKind::PropertyGet,
+                    interface_field.get_vtable_slot,
+                ),
+                (
+                    ProjectMemberKind::PropertyLet,
+                    interface_field.put_vtable_slot,
+                ),
+                (
+                    ProjectMemberKind::PropertySet,
+                    interface_field.putref_vtable_slot,
+                ),
+            ] {
+                if let Some(implementation_method) = class.methods.iter().find(|method| {
+                    method.kind == kind && method.name.eq_ignore_ascii_case(&mangled)
+                }) {
+                    members.push(member_spec(
+                        program,
+                        implementation_method,
+                        &interface_field.name,
+                        interface_field.dispid.or(implementation_method.dispid),
+                        slot.or(implementation_method.vtable_slot),
+                        false,
+                        false,
+                        true,
+                    ));
+                }
+            }
+        }
+        for interface_method in &interface_class.methods {
+            let mangled = format!("{bare_interface}_{}", interface_method.name);
+            let Some(implementation_method) = class.methods.iter().find(|method| {
+                method.kind == interface_method.kind && method.name.eq_ignore_ascii_case(&mangled)
+            }) else {
+                continue;
+            };
+            members.push(member_spec(
+                program,
+                implementation_method,
+                &interface_method.name,
+                interface_method.dispid.or(implementation_method.dispid),
+                interface_method
+                    .vtable_slot
+                    .or(implementation_method.vtable_slot),
+                interface_method.is_default_member || implementation_method.is_default_member,
+                interface_method.is_enumerator_member || implementation_method.is_enumerator_member,
+                true,
+            ));
+        }
+        let qualified_name = if iface_unit.is_empty() {
+            iface_display.to_string()
+        } else {
+            format!("{iface_unit}.{iface_display}")
+        };
+        return Some(RuntimeImplementedInterfaceSpec {
+            name: bare_interface.to_string(),
+            qualified_name,
+            guid: Some(default_class_interface_iid(iface_unit, iface_display)),
+            members,
+        });
+    }
+
+    // Imported COM/typelib interface (e.g. `Implements AddInDesignerObjects.IDTExtensibility2` or
+    // `Implements Excel.IRtdServer`): resolve from `program.com_interfaces` so QI and vtable
+    // slots carry the exact canonical typelib IID, DISPIDs, slots, and wire signatures.
+    let com_meta = program.com_interfaces.iter().find_map(|iface| {
+        let ComInterface::Com(meta) = iface else {
+            return None;
+        };
+        let meta_bare = meta.name.rsplit('.').next().unwrap_or(&meta.name);
+        let stripped = meta_bare.strip_prefix('_').unwrap_or(meta_bare);
+        (meta.name.eq_ignore_ascii_case(interface_name)
+            || meta_bare.eq_ignore_ascii_case(bare_interface)
+            || stripped.eq_ignore_ascii_case(bare_interface))
+        .then_some(meta)
     })?;
+    let iid = com_meta.iid?;
+    let guid = Guid::new(iid.data1, iid.data2, iid.data3, iid.data4);
     let mut members = Vec::new();
-    for interface_method in &interface_class.methods {
-        let mangled = format!("{bare_interface}_{}", interface_method.name);
-        let Some(implementation_method) = class.methods.iter().find(|method| {
-            method.kind == interface_method.kind && method.name.eq_ignore_ascii_case(&mangled)
-        }) else {
+    for com_member in &com_meta.members {
+        if !typelib_member_is_user_contract(com_member) {
+            continue;
+        }
+        let mangled = format!("{bare_interface}_{}", com_member.name);
+        let expected_kind = project_member_kind_from_typelib(com_member.invoke_kind);
+        let Some(implementation_method) = class
+            .methods
+            .iter()
+            .find(|method| {
+                method.kind == expected_kind && method.name.eq_ignore_ascii_case(&mangled)
+            })
+            .or_else(|| {
+                class
+                    .methods
+                    .iter()
+                    .find(|method| method.name.eq_ignore_ascii_case(&mangled))
+            })
+        else {
             continue;
         };
-        members.push(member_spec(
-            program,
-            implementation_method,
-            &interface_method.name,
-            interface_method.dispid.or(implementation_method.dispid),
-            interface_method
-                .vtable_slot
-                .or(implementation_method.vtable_slot),
-            interface_method.is_default_member || implementation_method.is_default_member,
-            interface_method.is_enumerator_member || implementation_method.is_enumerator_member,
-            true,
+        members.push(imported_interface_member_spec(
+            com_member,
+            implementation_method.proc.0,
         ));
     }
-    let qualified_name = if unit_name.is_empty() {
-        bare_interface.to_string()
-    } else {
-        format!("{unit_name}.{bare_interface}")
-    };
     Some(RuntimeImplementedInterfaceSpec {
         name: bare_interface.to_string(),
-        qualified_name,
-        guid: Some(runtime_project_interface_guid(unit_name, bare_interface)),
+        qualified_name: interface_name.to_string(),
+        guid: Some(guid),
         members,
     })
+}
+
+fn typelib_member_is_user_contract(member: &TypeLibMemberMetadata) -> bool {
+    if let Some(slot) = member.vtable_slot {
+        return slot >= 7;
+    }
+    !matches!(
+        member.name.as_str(),
+        "QueryInterface"
+            | "AddRef"
+            | "Release"
+            | "GetTypeInfoCount"
+            | "GetTypeInfo"
+            | "GetIDsOfNames"
+            | "Invoke"
+    )
+}
+
+fn project_member_kind_from_typelib(kind: TypeLibMemberInvokeKind) -> ProjectMemberKind {
+    match kind {
+        TypeLibMemberInvokeKind::Method => ProjectMemberKind::Method,
+        TypeLibMemberInvokeKind::PropertyGet => ProjectMemberKind::PropertyGet,
+        TypeLibMemberInvokeKind::PropertyPut => ProjectMemberKind::PropertyLet,
+        TypeLibMemberInvokeKind::PropertyPutRef => ProjectMemberKind::PropertySet,
+    }
+}
+
+fn runtime_value_type_from_typelib_param(param: TypeLibParamType) -> (RuntimeValueType, bool) {
+    match param {
+        TypeLibParamType::Variant => (RuntimeValueType::Variant, false),
+        TypeLibParamType::Long => (RuntimeValueType::Long, false),
+        TypeLibParamType::Integer => (RuntimeValueType::Integer, false),
+        TypeLibParamType::String => (RuntimeValueType::String, false),
+        TypeLibParamType::Boolean => (RuntimeValueType::Boolean, false),
+        TypeLibParamType::Double => (RuntimeValueType::Double, false),
+        TypeLibParamType::Single => (RuntimeValueType::Single, false),
+        TypeLibParamType::Currency => (RuntimeValueType::Currency, false),
+        TypeLibParamType::Date => (RuntimeValueType::Date, false),
+        TypeLibParamType::Decimal => (RuntimeValueType::Decimal, false),
+        TypeLibParamType::Object => (RuntimeValueType::Object, false),
+        TypeLibParamType::Byte => (RuntimeValueType::Byte, false),
+        TypeLibParamType::LongLong => (RuntimeValueType::LongLong, false),
+        TypeLibParamType::LongPtr => (RuntimeValueType::LongPtr, false),
+        TypeLibParamType::Record => (RuntimeValueType::Record, false),
+        TypeLibParamType::ByRefVariant => (RuntimeValueType::Variant, true),
+        TypeLibParamType::ByRefLong => (RuntimeValueType::Long, true),
+        TypeLibParamType::ByRefInteger => (RuntimeValueType::Integer, true),
+        TypeLibParamType::ByRefString => (RuntimeValueType::String, true),
+        TypeLibParamType::ByRefDouble => (RuntimeValueType::Double, true),
+        TypeLibParamType::ByRefSingle => (RuntimeValueType::Single, true),
+        TypeLibParamType::ByRefCurrency => (RuntimeValueType::Currency, true),
+        TypeLibParamType::ByRefDate => (RuntimeValueType::Date, true),
+        TypeLibParamType::ByRefDecimal => (RuntimeValueType::Decimal, true),
+        TypeLibParamType::ByRefObject => (RuntimeValueType::Object, true),
+        TypeLibParamType::ByRefByte => (RuntimeValueType::Byte, true),
+        TypeLibParamType::ByRefBoolean => (RuntimeValueType::Boolean, true),
+        TypeLibParamType::ByRefLongLong => (RuntimeValueType::LongLong, true),
+        TypeLibParamType::ByRefLongPtr => (RuntimeValueType::LongPtr, true),
+        TypeLibParamType::ByRefRecord => (RuntimeValueType::Record, true),
+    }
+}
+
+fn runtime_value_type_from_wire(wire: &TypeLibWireType) -> (RuntimeValueType, bool) {
+    match wire {
+        TypeLibWireType::Automation(param) => runtime_value_type_from_typelib_param(*param),
+        TypeLibWireType::InterfacePointer { .. } => (RuntimeValueType::Object, false),
+        TypeLibWireType::SafeArray { .. } | TypeLibWireType::SafeArrayVariant => {
+            (RuntimeValueType::Array, false)
+        }
+        TypeLibWireType::ByRefSafeArray { .. } | TypeLibWireType::ByRefSafeArrayVariant => {
+            (RuntimeValueType::Array, true)
+        }
+        TypeLibWireType::Record { .. } => (RuntimeValueType::Record, false),
+        TypeLibWireType::ByRefRecord { .. } => (RuntimeValueType::Record, true),
+    }
+}
+
+fn imported_interface_member_spec(
+    member: &TypeLibMemberMetadata,
+    proc_index: usize,
+) -> RuntimeMemberSpec {
+    let param_count = member
+        .parameter_wire_types
+        .len()
+        .max(member.parameter_types.len());
+    let params = (0..param_count)
+        .map(|index| {
+            let (value_type, by_ref) = if let Some(wire) = member.parameter_wire_types.get(index) {
+                runtime_value_type_from_wire(wire)
+            } else if let Some(param) = member.parameter_types.get(index) {
+                runtime_value_type_from_typelib_param(*param)
+            } else {
+                (RuntimeValueType::Variant, false)
+            };
+            let name = member
+                .parameter_names
+                .get(index)
+                .cloned()
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| format!("arg{index}"));
+            let optional = member
+                .parameter_optional
+                .get(index)
+                .copied()
+                .unwrap_or(false);
+            RuntimeParamSpec {
+                name,
+                value_type,
+                by_ref,
+                optional,
+                param_array: false,
+            }
+        })
+        .collect();
+    let return_type = member
+        .return_wire_type
+        .as_ref()
+        .map(|wire| runtime_value_type_from_wire(wire).0)
+        .or_else(|| {
+            member
+                .return_type
+                .map(|ty| runtime_value_type_from_typelib_param(ty).0)
+        });
+    RuntimeMemberSpec {
+        name: member.name.clone(),
+        dispatch_id: Some(member.token),
+        vtable_slot: member.vtable_slot,
+        invoke_kind: runtime_invoke_kind_from_typelib(member.invoke_kind),
+        params,
+        return_type,
+        is_default_member: member.is_default_member,
+        is_enumerator_member: member.token == -4,
+        externally_visible: true,
+        func_flags: 0,
+        backing: RuntimeMemberBacking::Proc(proc_index),
+    }
 }
 
 fn runtime_member_invoke_kind(kind: ProjectMemberKind) -> RuntimeMemberInvokeKind {
@@ -681,6 +925,14 @@ pub fn encode_native_class_metadata(
             encode_member_spec(&mut bytes, member);
         }
     }
+    encode_u32(&mut bytes, spec.events.len() as u32);
+    for event in &spec.events {
+        encode_str(&mut bytes, &event.name);
+        encode_i32(&mut bytes, event.event_id);
+        encode_i32(&mut bytes, event.dispid);
+        encode_u8(&mut bytes, event.callback_arity);
+        encode_u8(&mut bytes, u8::from(event.externally_visible));
+    }
     bytes
 }
 
@@ -762,7 +1014,7 @@ impl Cursor {
             let vtable_slot = self.opt_u16();
             let invoke_kind = decode_invoke_kind(self.u8());
             let flags = self.u8();
-            let func_flags = if version >= NATIVE_METADATA_VERSION {
+            let func_flags = if version >= NATIVE_METADATA_VERSION_V2 {
                 self.u16()
             } else {
                 0
@@ -839,7 +1091,10 @@ pub unsafe fn decode_native_class_metadata(
         } else {
             0
         };
-        if version != NATIVE_METADATA_VERSION_V1 && version != NATIVE_METADATA_VERSION {
+        if version != NATIVE_METADATA_VERSION_V1
+            && version != NATIVE_METADATA_VERSION_V2
+            && version != NATIVE_METADATA_VERSION
+        {
             let (unit, display) = raw_name.rsplit_once('.').unwrap_or(("", &raw_name));
             return (
                 field_kinds,
@@ -849,6 +1104,7 @@ pub unsafe fn decode_native_class_metadata(
                     name: display.to_string(),
                     runtime_type_name: None,
                     default_interface_iid: None,
+                    source_interface_iid: None,
                     predeclared: false,
                     lifecycle: RuntimeClassLifecycleDescriptor {
                         has_initialize,
@@ -859,6 +1115,7 @@ pub unsafe fn decode_native_class_metadata(
                     implements,
                     methods: Vec::new(),
                     implemented_interfaces: Vec::new(),
+                    events: Vec::new(),
                 },
             );
         }
@@ -879,7 +1136,7 @@ pub unsafe fn decode_native_class_metadata(
             let dispatch_id = cursor.opt_i32();
             let get_vtable_slot = cursor.opt_u16();
             let put_vtable_slot = cursor.opt_u16();
-            let putref_vtable_slot = if version >= NATIVE_METADATA_VERSION {
+            let putref_vtable_slot = if version >= NATIVE_METADATA_VERSION_V2 {
                 cursor.opt_u16()
             } else {
                 None
@@ -950,6 +1207,28 @@ pub unsafe fn decode_native_class_metadata(
             });
         }
 
+        let events = if version >= NATIVE_METADATA_VERSION {
+            let event_count = cursor.u32() as usize;
+            let mut events = Vec::with_capacity(event_count);
+            for _ in 0..event_count {
+                let ename = cursor.str();
+                let event_id = cursor.i32();
+                let dispid = cursor.i32();
+                let callback_arity = cursor.u8();
+                let externally_visible = cursor.u8() != 0;
+                events.push(RuntimeEventSpec {
+                    name: ename,
+                    event_id,
+                    dispid,
+                    callback_arity,
+                    externally_visible,
+                });
+            }
+            events
+        } else {
+            Vec::new()
+        };
+
         (
             field_kinds,
             RuntimeClassSpec {
@@ -958,6 +1237,7 @@ pub unsafe fn decode_native_class_metadata(
                 name,
                 runtime_type_name,
                 default_interface_iid: None,
+                source_interface_iid: None,
                 predeclared,
                 lifecycle: RuntimeClassLifecycleDescriptor {
                     has_initialize,
@@ -968,6 +1248,7 @@ pub unsafe fn decode_native_class_metadata(
                 implements,
                 methods,
                 implemented_interfaces,
+                events,
             },
         )
     }
@@ -1065,6 +1346,7 @@ mod tests {
                     is_default_member: false,
                     is_enumerator_member: false,
                 }],
+                events: Vec::new(),
                 as_new_fields: Vec::new(),
                 implements: Vec::new(),
             }],

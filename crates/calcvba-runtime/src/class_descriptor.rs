@@ -23,9 +23,9 @@ use calcvba_automation::com::FUNCFLAG_FRESTRICTED;
 use crate::object_ref::{
     Guid, RUNTIME_IDISPATCH_INTERFACE_IDENTITY, RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR,
     RuntimeClassActivationDescriptor, RuntimeClassAsNewFieldDescriptor, RuntimeClassDescriptor,
-    RuntimeClassFieldDescriptor, RuntimeClassLifecycleDescriptor, RuntimeInterfaceDescriptor,
-    RuntimeInterfaceId, RuntimeInterfaceIdentity, RuntimeInterfaceKind, RuntimeMemberBacking,
-    RuntimeMemberDescriptor, RuntimeMemberInvokeKind, RuntimeParamDescriptor,
+    RuntimeClassFieldDescriptor, RuntimeClassLifecycleDescriptor, RuntimeEventDescriptor,
+    RuntimeInterfaceDescriptor, RuntimeInterfaceId, RuntimeInterfaceIdentity, RuntimeInterfaceKind,
+    RuntimeMemberBacking, RuntimeMemberDescriptor, RuntimeMemberInvokeKind, RuntimeParamDescriptor,
     RuntimeProjectClassIdentity, RuntimeValueType,
 };
 
@@ -92,12 +92,22 @@ pub struct RuntimeImplementedInterfaceSpec {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RuntimeEventSpec {
+    pub name: String,
+    pub event_id: i32,
+    pub dispid: i32,
+    pub callback_arity: u8,
+    pub externally_visible: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RuntimeClassSpec {
     pub unit_name: String,
     pub class_index: usize,
     pub name: String,
     pub runtime_type_name: Option<String>,
     pub default_interface_iid: Option<Guid>,
+    pub source_interface_iid: Option<Guid>,
     pub predeclared: bool,
     pub lifecycle: RuntimeClassLifecycleDescriptor,
     pub fields: Vec<RuntimeClassFieldSpec>,
@@ -105,6 +115,7 @@ pub struct RuntimeClassSpec {
     pub implements: Vec<String>,
     pub methods: Vec<RuntimeMemberSpec>,
     pub implemented_interfaces: Vec<RuntimeImplementedInterfaceSpec>,
+    pub events: Vec<RuntimeEventSpec>,
 }
 
 /// Deterministic project-interface GUID for a class-defined `Implements` interface.
@@ -138,6 +149,12 @@ pub fn runtime_project_interface_guid(unit_name: &str, interface_name: &str) -> 
 /// `deterministic_uuid(unit_name, &format!("I{class_name}"))` and class-typed SAFEARRAY IIDs).
 pub fn default_class_interface_iid(unit_name: &str, class_name: &str) -> Guid {
     Guid::deterministic(unit_name, &format!("I{class_name}"))
+}
+
+/// Deterministic default source dispinterface IID for a project class declaring `Event`s
+/// (matches `calcvba-build`'s `deterministic_uuid(unit_name, &format!("_{class_name}Events"))`).
+pub fn default_class_source_interface_iid(unit_name: &str, class_name: &str) -> Guid {
+    Guid::deterministic(unit_name, &format!("_{class_name}Events"))
 }
 
 fn descriptor_cache() -> &'static Mutex<HashMap<RuntimeClassSpec, &'static RuntimeClassDescriptor>>
@@ -538,18 +555,39 @@ fn build_descriptor_uncached(spec: &RuntimeClassSpec) -> &'static RuntimeClassDe
     }
     let interfaces: &'static [RuntimeInterfaceDescriptor] =
         Box::leak(interface_descriptors.into_boxed_slice());
+    let events: &'static [RuntimeEventDescriptor] = Box::leak(
+        spec.events
+            .iter()
+            .map(|event| RuntimeEventDescriptor {
+                name: leak_str(&event.name),
+                event_id: event.event_id,
+                dispid: event.dispid,
+                callback_arity: event.callback_arity,
+                externally_visible: event.externally_visible,
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
+    let source_interface_iid = spec.source_interface_iid.or_else(|| {
+        events
+            .iter()
+            .any(|event| event.externally_visible)
+            .then(|| default_class_source_interface_iid(&spec.unit_name, &spec.name))
+    });
 
     Box::leak(Box::new(RuntimeClassDescriptor {
         name,
         runtime_type_name,
         project_identity,
         default_interface_iid,
+        source_interface_iid,
         predeclared: spec.predeclared,
         lifecycle: spec.lifecycle,
         fields,
         as_new_fields,
         implements,
         interfaces,
+        events,
     }))
 }
 
@@ -565,6 +603,7 @@ mod tests {
             name: "Widget".into(),
             runtime_type_name: None,
             default_interface_iid: None,
+            source_interface_iid: None,
             predeclared: false,
             lifecycle: RuntimeClassLifecycleDescriptor {
                 has_initialize: false,
@@ -612,6 +651,7 @@ mod tests {
                 },
             ],
             implemented_interfaces: Vec::new(),
+            events: Vec::new(),
         }
     }
 
@@ -681,6 +721,7 @@ mod tests {
             name: "Bag".into(),
             runtime_type_name: None,
             default_interface_iid: None,
+            source_interface_iid: None,
             predeclared: false,
             lifecycle: RuntimeClassLifecycleDescriptor {
                 has_initialize: false,
@@ -769,6 +810,7 @@ mod tests {
                 },
             ],
             implemented_interfaces: Vec::new(),
+            events: Vec::new(),
         };
         let desc = build_runtime_class_descriptor(&spec);
         assert_eq!(desc.validate_com_export_shape(), Ok(()));

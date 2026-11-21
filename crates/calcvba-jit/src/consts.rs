@@ -43,12 +43,14 @@ pub(crate) static VBA_COLLECTION_DESCRIPTOR: RuntimeClassDescriptor = RuntimeCla
     runtime_type_name: None,
     project_identity: None,
     default_interface_iid: Some(calcvba_runtime::com::IID_VBA_COLLECTION),
+    source_interface_iid: None,
     predeclared: false,
     lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
     fields: &[],
     as_new_fields: &[],
     implements: &[],
     interfaces: &[RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR],
+    events: &[],
 };
 pub(crate) const JIT_PROC_REF_RET_EXACT_BOOL: i32 = 107;
 pub(crate) const JIT_VARIANT_OPERAND_PLACE: i32 = 0;

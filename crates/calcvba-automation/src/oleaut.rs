@@ -8,6 +8,10 @@ use crate::{Variant, safe_array::SafeArray};
 use core::ffi::c_void;
 
 const S_OK: i32 = 0;
+#[cfg(not(target_os = "windows"))]
+const S_FALSE: i32 = 1;
+#[cfg(not(target_os = "windows"))]
+const E_POINTER: i32 = 0x8000_4003_u32 as i32;
 const E_INVALIDARG: i32 = 0x8007_0057_u32 as i32;
 #[cfg(not(target_os = "windows"))]
 const E_OUTOFMEMORY: i32 = 0x8007_000E_u32 as i32;
@@ -394,6 +398,105 @@ pub unsafe fn safe_array_destroy(array: *mut c_void) -> i32 {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
+struct ThreadErrorInfoSlot {
+    ptr: *mut c_void,
+}
+
+#[cfg(not(target_os = "windows"))]
+impl ThreadErrorInfoSlot {
+    const fn empty() -> Self {
+        Self {
+            ptr: core::ptr::null_mut(),
+        }
+    }
+
+    unsafe fn replace(&mut self, next: *mut c_void) {
+        let prev = core::mem::replace(&mut self.ptr, next);
+        if !prev.is_null() {
+            // SAFETY: `prev` is a COM `IErrorInfo*` retained by `set_error_info`.
+            unsafe {
+                let vtbl = (*prev.cast::<crate::com::IUnknown>()).vtbl;
+                ((*vtbl).release)(prev);
+            }
+        }
+    }
+
+    fn take(&mut self) -> *mut c_void {
+        core::mem::replace(&mut self.ptr, core::ptr::null_mut())
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+impl Drop for ThreadErrorInfoSlot {
+    fn drop(&mut self) {
+        // SAFETY: release any remaining `IErrorInfo*` when the thread exits.
+        unsafe {
+            self.replace(core::ptr::null_mut());
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+thread_local! {
+    static THREAD_ERROR_INFO: std::cell::RefCell<ThreadErrorInfoSlot> =
+        const { std::cell::RefCell::new(ThreadErrorInfoSlot::empty()) };
+}
+
+/// `SetErrorInfo`: stores (or clears, when `err_info` is null) the current thread's `IErrorInfo*`.
+pub unsafe fn set_error_info(reserved: u32, err_info: *mut c_void) -> i32 {
+    #[cfg(target_os = "windows")]
+    {
+        // SAFETY: forwarded to COM `SetErrorInfo`.
+        unsafe { windows_sys::Win32::System::Com::SetErrorInfo(reserved, err_info) }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        if reserved != 0 {
+            return E_INVALIDARG;
+        }
+        if !err_info.is_null() {
+            // SAFETY: `err_info` is a live COM `IErrorInfo*`; retain one reference for the slot.
+            unsafe {
+                let vtbl = (*err_info.cast::<crate::com::IUnknown>()).vtbl;
+                ((*vtbl).add_ref)(err_info);
+            }
+        }
+        THREAD_ERROR_INFO.with(|slot| {
+            // SAFETY: replaces and releases any previous retained `IErrorInfo*`.
+            unsafe {
+                slot.borrow_mut().replace(err_info);
+            }
+        });
+        S_OK
+    }
+}
+
+/// `GetErrorInfo`: retrieves and clears the current thread's `IErrorInfo*`.
+/// Returns `S_OK` when an error object was present, or `S_FALSE` when none was set.
+pub unsafe fn get_error_info(reserved: u32, out: *mut *mut c_void) -> i32 {
+    #[cfg(target_os = "windows")]
+    {
+        // SAFETY: forwarded to COM `GetErrorInfo`.
+        unsafe { windows_sys::Win32::System::Com::GetErrorInfo(reserved, out) }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        if reserved != 0 {
+            return E_INVALIDARG;
+        }
+        if out.is_null() {
+            return E_POINTER;
+        }
+        let info = THREAD_ERROR_INFO.with(|slot| slot.borrow_mut().take());
+        // SAFETY: `out` is non-null writable out-slot.
+        unsafe {
+            out.write(info);
+        }
+        if info.is_null() { S_FALSE } else { S_OK }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -536,5 +639,108 @@ mod tests {
             before.balance_to(crate::current_thread_live_handle_counts()),
             Default::default()
         );
+    }
+
+    #[test]
+    fn set_and_get_error_info_round_trips_and_clears() {
+        use crate::com::{
+            Guid, HResult, IErrorInfoVtbl, IID_IERRORINFO, IID_IUNKNOWN, IUnknownVtbl,
+        };
+        use core::sync::atomic::{AtomicU32, Ordering};
+
+        #[repr(C)]
+        struct DummyErr {
+            vtbl: *const IErrorInfoVtbl,
+            refs: AtomicU32,
+        }
+
+        unsafe extern "system" fn qi(
+            this: *mut c_void,
+            riid: *const Guid,
+            out: *mut *mut c_void,
+        ) -> HResult {
+            if out.is_null() || riid.is_null() {
+                return 0x8000_4003u32 as i32;
+            }
+            // SAFETY: non-null `out` and `riid` from caller.
+            unsafe {
+                *out = core::ptr::null_mut();
+                let iid = *riid;
+                if iid == IID_IUNKNOWN || iid == IID_IERRORINFO {
+                    add_ref(this);
+                    *out = this;
+                    S_OK
+                } else {
+                    0x8000_4002u32 as i32
+                }
+            }
+        }
+        unsafe extern "system" fn add_ref(this: *mut c_void) -> u32 {
+            // SAFETY: live `DummyErr`.
+            unsafe {
+                (*this.cast::<DummyErr>())
+                    .refs
+                    .fetch_add(1, Ordering::AcqRel)
+                    + 1
+            }
+        }
+        unsafe extern "system" fn release(this: *mut c_void) -> u32 {
+            // SAFETY: live `DummyErr`.
+            unsafe {
+                let prev = (*this.cast::<DummyErr>())
+                    .refs
+                    .fetch_sub(1, Ordering::AcqRel);
+                let rem = prev - 1;
+                if rem == 0 {
+                    drop(Box::from_raw(this.cast::<DummyErr>()));
+                }
+                rem
+            }
+        }
+        unsafe extern "system" fn stub_guid(_: *mut c_void, _: *mut Guid) -> HResult {
+            S_OK
+        }
+        unsafe extern "system" fn stub_bstr(_: *mut c_void, _: *mut *mut u16) -> HResult {
+            S_OK
+        }
+        unsafe extern "system" fn stub_ctx(_: *mut c_void, _: *mut u32) -> HResult {
+            S_OK
+        }
+        static VTBL: IErrorInfoVtbl = IErrorInfoVtbl {
+            unknown: IUnknownVtbl {
+                query_interface: qi,
+                add_ref,
+                release,
+            },
+            get_guid: stub_guid,
+            get_source: stub_bstr,
+            get_description: stub_bstr,
+            get_help_file: stub_bstr,
+            get_help_context: stub_ctx,
+        };
+
+        // SAFETY: exercises portable `set_error_info` / `get_error_info` contract.
+        unsafe {
+            assert_eq!(set_error_info(0, core::ptr::null_mut()), S_OK);
+            let mut out = core::ptr::null_mut();
+            assert_eq!(get_error_info(0, &mut out), 1);
+            assert!(out.is_null());
+
+            let err = Box::into_raw(Box::new(DummyErr {
+                vtbl: &VTBL,
+                refs: AtomicU32::new(1),
+            }))
+            .cast::<c_void>();
+            assert_eq!(set_error_info(0, err), S_OK);
+            assert_eq!(release(err), 1);
+
+            assert_eq!(get_error_info(0, &mut out), S_OK);
+            assert_eq!(out, err);
+            assert_eq!(release(out), 0);
+
+            let mut after = core::ptr::null_mut();
+            assert_eq!(get_error_info(0, &mut after), 1);
+            assert!(after.is_null());
+        }
     }
 }

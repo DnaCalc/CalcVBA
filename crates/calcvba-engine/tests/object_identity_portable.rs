@@ -1653,3 +1653,550 @@ type Widget kind=TKIND_INTERFACE flags=0x1C2 funcs=15 vars=0 impl=1 vtbl=192
         }
     }
 }
+
+/// dc-yqq0.27: End-to-end VM3 + JIT portable proof of:
+/// 1. `Implements IShape` as an extra COM vtable on `CompatObjectBase` sharing one COM identity
+///    (`QI(IUnknown) == &primary`, `Is` holds when the secondary interface pointer crosses back
+///    into VBA, and `Invoke` on the secondary face dispatches `IShape_*` with `Me = &primary`).
+/// 2. Connection points (`IConnectionPointContainer` / `IConnectionPoint` / `Advise` / `Unadvise`)
+///    receiving `RaiseEvent` from both VM3 and JIT, including a re-entrant callback into
+///    `IShape.Area()` during the event and filtering out `Private Event`.
+/// 3. `ISupportErrorInfo` and `IErrorInfo` populated on VBA `Err.Raise` for both late-bound and
+///    early-bound calls on both the primary default interface and the implemented interface.
+#[test]
+fn implements_connection_points_and_error_info_end_to_end_on_vm3_and_jit() {
+    use calcvba_runtime::com::{
+        DISP_E_EXCEPTION, DISPATCH_METHOD, DispParams, E_NOINTERFACE, E_NOTIMPL, ExcepInfo, Guid,
+        HResult, IConnectionPoint, IConnectionPointContainer, IDispatchVtbl, IErrorInfo,
+        IID_ICONNECTIONPOINTCONTAINER, IID_IDISPATCH, IID_ISUPPORTERRORINFO, IID_IUNKNOWN,
+        IID_NULL, ISupportErrorInfo, IUnknownVtbl, S_FALSE, S_OK,
+    };
+    use calcvba_runtime::{
+        ObjectRefExt, default_class_interface_iid, default_class_source_interface_iid,
+        invoke_early_bound_slot, oleaut,
+    };
+    use core::sync::atomic::{AtomicU32, Ordering};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let ishape_src = "\
+Public Function Area() As Long
+End Function
+Public Sub Boom()
+End Sub
+";
+    let square_src = "\
+Implements IShape
+Public Side As Long
+Public Event Resized(ByVal OldSide As Long, ByVal NewSide As Long)
+Private Event InternalPing()
+Public Sub Resize(ByVal NextSide As Long)
+    Dim prev As Long
+    prev = Side
+    Side = NextSide
+    RaiseEvent Resized(prev, NextSide)
+    RaiseEvent InternalPing
+End Sub
+Public Sub PrimaryBoom()
+    Err.Raise 1051, \"Square.Primary\", \"primary boom\"
+End Sub
+Public Function IsSameAs(ByVal other As Object) As Boolean
+    IsSameAs = (Me Is other)
+End Function
+Private Function IShape_Area() As Long
+    IShape_Area = Side * Side
+End Function
+Private Sub IShape_Boom()
+    Err.Raise 1050, \"Square.IShape\", \"shape boom\"
+End Sub
+";
+
+    let mut manifest = SymbolProjectManifest {
+        project_name: "Dc27Proj".to_string(),
+        project_kind: ProjectKind::Library,
+        modules: vec![
+            ModuleUnit {
+                module_name: "IShape".to_string(),
+                module_kind: ModuleKind::Class,
+                attributes: ModuleAttributes::named("IShape"),
+                source: ishape_src.to_string(),
+            },
+            ModuleUnit {
+                module_name: "Square".to_string(),
+                module_kind: ModuleKind::Class,
+                attributes: ModuleAttributes::named("Square"),
+                source: square_src.to_string(),
+            },
+        ],
+        references: Vec::new(),
+        reference_projects: Vec::new(),
+        conditional_constants: Default::default(),
+        conditional_compilation_target: Default::default(),
+    };
+    manifest.modules[0].attributes.vb_exposed = true;
+    manifest.modules[1].attributes.vb_exposed = true;
+
+    let typelibs = calcvba_symbol::CatalogTypeLibResolver;
+    let core = calcvba_bind::bind_program(&manifest, &typelibs).expect("bind");
+    let oxp = calcvba_oxir::elaborate::elaborate(&core).expect("elaborate");
+
+    let shape_iid = default_class_interface_iid("Dc27Proj", "IShape");
+    let square_iid = default_class_interface_iid("Dc27Proj", "Square");
+    let source_iid = default_class_source_interface_iid("Dc27Proj", "Square");
+
+    type ReentrantLog = Rc<RefCell<Vec<(i32, Vec<i32>, i32)>>>;
+
+    #[repr(C)]
+    struct ReentrantSink {
+        vtbl: *const IDispatchVtbl,
+        ref_count: AtomicU32,
+        shape_face: *mut c_void,
+        area_dispid: i32,
+        log: ReentrantLog,
+    }
+    unsafe extern "system" fn sink_qi(
+        this: *mut c_void,
+        riid: *const Guid,
+        ppv: *mut *mut c_void,
+    ) -> HResult {
+        // SAFETY: caller supplies writable `ppv` and readable `riid`.
+        unsafe {
+            *ppv = core::ptr::null_mut();
+            let iid = *riid;
+            if iid == IID_IUNKNOWN || iid == IID_IDISPATCH {
+                sink_add_ref(this);
+                *ppv = this;
+                S_OK
+            } else {
+                E_NOINTERFACE
+            }
+        }
+    }
+    unsafe extern "system" fn sink_add_ref(this: *mut c_void) -> u32 {
+        // SAFETY: live `ReentrantSink`.
+        unsafe {
+            (*this.cast::<ReentrantSink>())
+                .ref_count
+                .fetch_add(1, Ordering::AcqRel)
+                + 1
+        }
+    }
+    unsafe extern "system" fn sink_release(this: *mut c_void) -> u32 {
+        // SAFETY: live `ReentrantSink`.
+        unsafe {
+            let prev = (*this.cast::<ReentrantSink>())
+                .ref_count
+                .fetch_sub(1, Ordering::AcqRel);
+            let rem = prev - 1;
+            if rem == 0 {
+                drop(Box::from_raw(this.cast::<ReentrantSink>()));
+            }
+            rem
+        }
+    }
+    unsafe extern "system" fn sink_tic(_: *mut c_void, c: *mut u32) -> HResult {
+        // SAFETY: writable out-slot.
+        unsafe {
+            *c = 0;
+        }
+        S_OK
+    }
+    unsafe extern "system" fn sink_ti(
+        _: *mut c_void,
+        _: u32,
+        _: u32,
+        out: *mut *mut c_void,
+    ) -> HResult {
+        // SAFETY: writable out-slot.
+        unsafe {
+            *out = core::ptr::null_mut();
+        }
+        E_NOTIMPL
+    }
+    unsafe extern "system" fn sink_ids(
+        _: *mut c_void,
+        _: *const Guid,
+        _: *const *const u16,
+        _: u32,
+        _: u32,
+        _: *mut i32,
+    ) -> HResult {
+        E_NOTIMPL
+    }
+    unsafe extern "system" fn sink_invoke(
+        this: *mut c_void,
+        dispid: i32,
+        _: *const Guid,
+        _: u32,
+        _: u16,
+        params: *mut c_void,
+        _: *mut c_void,
+        _: *mut c_void,
+        _: *mut u32,
+    ) -> HResult {
+        // SAFETY: `this` is a live `ReentrantSink` and `shape_face` is a live `IShape` face.
+        unsafe {
+            let sink = &*this.cast::<ReentrantSink>();
+            let mut logical = Vec::new();
+            if !params.is_null() {
+                let dp = &*params.cast::<DispParams>();
+                for i in (0..dp.c_args as usize).rev() {
+                    let cell = &*dp.rgvarg.add(i).cast::<Variant>();
+                    logical.push(cell.as_i32().unwrap_or(-1));
+                }
+            }
+            // Re-entrantly invoke `IShape.Area()` back into the active VM3/JIT run!
+            let shape_vtbl = &*(*sink
+                .shape_face
+                .cast::<calcvba_runtime::RawRuntimeIUnknown>())
+            .vtbl
+            .cast::<IDispatchVtbl>();
+            let mut dp_empty = DispParams::default();
+            let mut area_val = Variant::empty();
+            let hr = (shape_vtbl.invoke)(
+                sink.shape_face,
+                sink.area_dispid,
+                &IID_NULL,
+                0,
+                DISPATCH_METHOD,
+                (&raw mut dp_empty).cast(),
+                (&raw mut area_val).cast(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            );
+            assert_eq!(hr, S_OK, "re-entrant IShape.Area during RaiseEvent");
+            sink.log
+                .borrow_mut()
+                .push((dispid, logical, area_val.as_i32().unwrap_or(-1)));
+        }
+        S_OK
+    }
+    static REENTRANT_SINK_VTBL: IDispatchVtbl = IDispatchVtbl {
+        unknown: IUnknownVtbl {
+            query_interface: sink_qi,
+            add_ref: sink_add_ref,
+            release: sink_release,
+        },
+        get_type_info_count: sink_tic,
+        get_type_info: sink_ti,
+        get_ids_of_names: sink_ids,
+        invoke: sink_invoke,
+    };
+
+    let read_thread_error_info = || -> (Guid, String, String) {
+        let mut err_ptr: *mut c_void = core::ptr::null_mut();
+        // SAFETY: `oleaut::get_error_info` retrieves and clears the thread error object.
+        unsafe {
+            assert_eq!(oleaut::get_error_info(0, &mut err_ptr), S_OK);
+            assert!(!err_ptr.is_null());
+            let vtbl = &*(*err_ptr.cast::<IErrorInfo>()).vtbl;
+            let mut g = Guid::default();
+            let mut s = core::ptr::null_mut();
+            let mut d = core::ptr::null_mut();
+            assert_eq!((vtbl.get_guid)(err_ptr, &mut g), S_OK);
+            assert_eq!((vtbl.get_source)(err_ptr, &mut s), S_OK);
+            assert_eq!((vtbl.get_description)(err_ptr, &mut d), S_OK);
+            let src = calcvba_runtime::bstr::BStr::from_raw_bstr(s)
+                .as_str()
+                .to_string();
+            let desc = calcvba_runtime::bstr::BStr::from_raw_bstr(d)
+                .as_str()
+                .to_string();
+            (vtbl.unknown.release)(err_ptr);
+            (g, src, desc)
+        }
+    };
+
+    for backend in BACKENDS {
+        let mut engine = Engine::new(HostConfig { backend });
+        engine.set_host_policy(HostPolicy::native());
+        let mut session = engine
+            .prepare_image_session(OxImage::new(vec![oxp.clone()]))
+            .unwrap_or_else(|err| panic!("{backend:?} prepare_image_session: {err}"));
+
+        let square = session
+            .create_class_instance("Square")
+            .unwrap_or_else(|err| panic!("{backend:?} create Square: {err}"));
+        let primary = square.raw_iunknown();
+
+        // SAFETY: `primary` is a live project object; secondary pointers are released before drop.
+        let shape_ptr = unsafe {
+            let vtbl = &*(*primary).vtbl;
+            let mut out = core::ptr::null_mut();
+            assert_eq!(
+                (vtbl.query_interface)(primary.cast(), &shape_iid, &mut out),
+                S_OK,
+                "{backend:?} QI(IShape)"
+            );
+            assert!(!out.is_null());
+            assert_ne!(out, primary.cast());
+            out
+        };
+
+        // Pass `shape_ptr` back into VBA and check `Me Is other`!
+        // SAFETY: `shape_ptr` is a live `IShape` face on `square`.
+        let shape_obj = unsafe { ObjectRef::from_raw_iunknown_addref(shape_ptr.cast()) }
+            .expect("adopt IShape face");
+        let same = session
+            .invoke_member_values(
+                square.clone(),
+                "IsSameAs",
+                None,
+                vec![Variant::from_object_ref(shape_obj)],
+            )
+            .unwrap_or_else(|err| panic!("{backend:?} IsSameAs: {err}"));
+        assert_eq!(
+            same.as_bool(),
+            Some(true),
+            "{backend:?} `Is` must treat Implements face as same COM identity"
+        );
+
+        // Set Side = 3, then test Implements call, connection point + re-entry, and error info.
+        square.project_field_set(0, Variant::from_i32(3));
+        // SAFETY: `session` is exclusively borrowed by `_invoker` for the COM calls below.
+        let _invoker = unsafe { session.enter_member_invoker_scope() };
+        // SAFETY: all COM interface pointers belong to live `square` and are released before scope end.
+        unsafe {
+            let primary_vtbl = &*((*primary).vtbl.cast::<IDispatchVtbl>());
+            let shape_vtbl = &*(*shape_ptr.cast::<calcvba_runtime::RawRuntimeIUnknown>())
+                .vtbl
+                .cast::<IDispatchVtbl>();
+
+            // 1. IShape.Area() -> 9 via IDispatch on secondary face.
+            let area_name = utf16_nul("Area");
+            let mut area_id = DISPID_UNKNOWN;
+            assert_eq!(
+                (shape_vtbl.get_ids_of_names)(
+                    shape_ptr,
+                    &IID_NULL,
+                    [area_name.as_ptr()].as_ptr(),
+                    1,
+                    0,
+                    &mut area_id
+                ),
+                S_OK
+            );
+            let mut empty_dp = DispParams::default();
+            let mut area_res = Variant::empty();
+            assert_eq!(
+                (shape_vtbl.invoke)(
+                    shape_ptr,
+                    area_id,
+                    &IID_NULL,
+                    0,
+                    DISPATCH_METHOD,
+                    (&raw mut empty_dp).cast(),
+                    (&raw mut area_res).cast(),
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                ),
+                S_OK
+            );
+            assert_eq!(area_res.as_i32(), Some(9), "{backend:?} IShape.Area");
+
+            // 2. Connection point Advise + RaiseEvent("Resized") with re-entrant IShape.Area() -> 49.
+            let mut cpc_ptr = core::ptr::null_mut();
+            assert_eq!(
+                (primary_vtbl.unknown.query_interface)(
+                    primary.cast(),
+                    &IID_ICONNECTIONPOINTCONTAINER,
+                    &mut cpc_ptr
+                ),
+                S_OK,
+                "{backend:?} QI(IConnectionPointContainer)"
+            );
+            let cpc_vtbl = &*(*cpc_ptr.cast::<IConnectionPointContainer>()).vtbl;
+            let mut cp_ptr = core::ptr::null_mut();
+            assert_eq!(
+                (cpc_vtbl.find_connection_point)(cpc_ptr, &source_iid, &mut cp_ptr),
+                S_OK,
+                "{backend:?} FindConnectionPoint"
+            );
+            let cp_vtbl = &*(*cp_ptr.cast::<IConnectionPoint>()).vtbl;
+
+            let log = Rc::new(RefCell::new(Vec::new()));
+            let sink = Box::into_raw(Box::new(ReentrantSink {
+                vtbl: &REENTRANT_SINK_VTBL,
+                ref_count: AtomicU32::new(1),
+                shape_face: shape_ptr,
+                area_dispid: area_id,
+                log: log.clone(),
+            }))
+            .cast::<c_void>();
+            let mut cookie = 0u32;
+            assert_eq!((cp_vtbl.advise)(cp_ptr, sink, &mut cookie), S_OK);
+            assert_ne!(cookie, 0);
+
+            let resize_name = utf16_nul("Resize");
+            let mut resize_id = DISPID_UNKNOWN;
+            assert_eq!(
+                (primary_vtbl.get_ids_of_names)(
+                    primary.cast(),
+                    &IID_NULL,
+                    [resize_name.as_ptr()].as_ptr(),
+                    1,
+                    0,
+                    &mut resize_id,
+                ),
+                S_OK
+            );
+            let mut next_side = Variant::from_i32(7);
+            let mut resize_dp = DispParams {
+                rgvarg: (&raw mut next_side).cast::<VariantCore>(),
+                rgdispid_named_args: core::ptr::null_mut(),
+                c_args: 1,
+                c_named_args: 0,
+            };
+            assert_eq!(
+                (primary_vtbl.invoke)(
+                    primary.cast(),
+                    resize_id,
+                    &IID_NULL,
+                    0,
+                    DISPATCH_METHOD,
+                    (&raw mut resize_dp).cast(),
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                ),
+                S_OK,
+                "{backend:?} Resize(7) with advised connection-point sink"
+            );
+            // Public event Resized(3, 7) fired with re-entrant Area() == 49; Private InternalPing did not fire.
+            assert_eq!(
+                *log.borrow(),
+                vec![(0, vec![3, 7], 49)],
+                "{backend:?} connection-point event payload + re-entrant IShape.Area"
+            );
+            assert_eq!((cp_vtbl.unadvise)(cp_ptr, cookie), S_OK);
+            sink_release(sink);
+            (cp_vtbl.unknown.release)(cp_ptr);
+            (cpc_vtbl.unknown.release)(cpc_ptr);
+
+            // 3. ISupportErrorInfo + IErrorInfo on both PrimaryBoom and IShape.Boom (late & early).
+            let mut sei_ptr = core::ptr::null_mut();
+            assert_eq!(
+                (primary_vtbl.unknown.query_interface)(
+                    primary.cast(),
+                    &IID_ISUPPORTERRORINFO,
+                    &mut sei_ptr
+                ),
+                S_OK
+            );
+            let sei_vtbl = &*(*sei_ptr.cast::<ISupportErrorInfo>()).vtbl;
+            assert_eq!(
+                (sei_vtbl.interface_supports_error_info)(sei_ptr, &square_iid),
+                S_OK
+            );
+            assert_eq!(
+                (sei_vtbl.interface_supports_error_info)(sei_ptr, &shape_iid),
+                S_OK
+            );
+            assert_eq!(
+                (sei_vtbl.interface_supports_error_info)(sei_ptr, &source_iid),
+                S_FALSE
+            );
+            (sei_vtbl.unknown.release)(sei_ptr);
+
+            // Late-bound IShape.Boom -> DISP_E_EXCEPTION + IErrorInfo(shape_iid).
+            let boom_name = utf16_nul("Boom");
+            let mut boom_id = DISPID_UNKNOWN;
+            assert_eq!(
+                (shape_vtbl.get_ids_of_names)(
+                    shape_ptr,
+                    &IID_NULL,
+                    [boom_name.as_ptr()].as_ptr(),
+                    1,
+                    0,
+                    &mut boom_id,
+                ),
+                S_OK
+            );
+            let mut excep = ExcepInfo::default();
+            assert_eq!(
+                (shape_vtbl.invoke)(
+                    shape_ptr,
+                    boom_id,
+                    &IID_NULL,
+                    0,
+                    DISPATCH_METHOD,
+                    (&raw mut empty_dp).cast(),
+                    core::ptr::null_mut(),
+                    (&raw mut excep).cast(),
+                    core::ptr::null_mut(),
+                ),
+                DISP_E_EXCEPTION,
+                "{backend:?} late-bound IShape.Boom"
+            );
+            assert_eq!(excep.scode, (0x800A_0000u32 | 1050u32) as i32);
+            oleaut::sys_free_string(excep.bstr_source);
+            oleaut::sys_free_string(excep.bstr_description);
+            oleaut::sys_free_string(excep.bstr_help_file);
+            assert_eq!(
+                read_thread_error_info(),
+                (
+                    shape_iid,
+                    "Square.IShape".to_string(),
+                    "shape boom".to_string()
+                ),
+                "{backend:?} late-bound IShape.Boom IErrorInfo"
+            );
+
+            // Early-bound PrimaryBoom -> 0x800A041B + IErrorInfo(square_iid).
+            let primary_boom_slot = square
+                .class_descriptor()
+                .dispatch_interface()
+                .unwrap()
+                .members
+                .iter()
+                .find(|m| m.name == "PrimaryBoom")
+                .unwrap()
+                .vtable_slot
+                .unwrap();
+            assert_eq!(
+                invoke_early_bound_slot(&square, None, primary_boom_slot, &mut []),
+                Err((0x800A_0000u32 | 1051u32) as i32),
+                "{backend:?} early-bound PrimaryBoom HRESULT"
+            );
+            assert_eq!(
+                read_thread_error_info(),
+                (
+                    square_iid,
+                    "Square.Primary".to_string(),
+                    "primary boom".to_string()
+                ),
+                "{backend:?} early-bound PrimaryBoom IErrorInfo"
+            );
+
+            // Early-bound IShape.Boom -> 0x800A041A + IErrorInfo(shape_iid).
+            let shape_boom_slot = square
+                .class_descriptor()
+                .interfaces
+                .iter()
+                .find(|i| i.identity.guid == shape_iid)
+                .unwrap()
+                .members
+                .iter()
+                .find(|m| m.name == "Boom")
+                .unwrap()
+                .vtable_slot
+                .unwrap();
+            assert_eq!(
+                invoke_early_bound_slot(&square, Some(shape_iid), shape_boom_slot, &mut []),
+                Err((0x800A_0000u32 | 1050u32) as i32),
+                "{backend:?} early-bound IShape.Boom HRESULT"
+            );
+            assert_eq!(
+                read_thread_error_info(),
+                (
+                    shape_iid,
+                    "Square.IShape".to_string(),
+                    "shape boom".to_string()
+                ),
+                "{backend:?} early-bound IShape.Boom IErrorInfo"
+            );
+
+            (shape_vtbl.unknown.release)(shape_ptr);
+        }
+    }
+}

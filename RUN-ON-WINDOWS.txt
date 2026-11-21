@@ -334,3 +334,35 @@ cfg(windows)-only failure, pull again before each push.
       (c) `VB_UserMemId = 0` (default Property Get) and `VB_UserMemId = -4` (`_NewEnum`):
           confirm exact `memid`, `wFuncFlags` (is `-4` restricted?), and whether either consumes
           a counter number from the `0x68030000+n` / `0x60030000+n` sequence.
+
+23. dc-yqq0.27 (`Implements` extra vtables, connection points, and `ISupportErrorInfo`/`IErrorInfo` on `CompatObjectBase`):
+    - `calcvba-automation::com` / `oleaut`: added portable `IErrorInfoVtbl`, `ISupportErrorInfoVtbl`,
+      `IConnectionPointContainerVtbl`, `IConnectionPointVtbl`, `IEnumConnectionPointsVtbl`,
+      `IEnumConnectionsVtbl`, `ConnectData` (with `#[cfg(windows)]` layout assertion vs
+      `windows_sys::Win32::System::Com::CONNECTDATA`), standard IIDs/HRESULTs, and portable
+      `oleaut::set_error_info` / `get_error_info` (real `SetErrorInfo`/`GetErrorInfo` on Windows).
+    - `calcvba-bundle` / `calcvba-bind` / `calcvba-oxir` / `calcvba-rt-abi` / `calcvba-runtime`:
+      threaded class `events` + `source_interface_iid` (`Guid::deterministic(unit, "_{Class}Events")`)
+      and both project (`default_class_interface_iid`) and imported COM typelib (`program.com_interfaces`)
+      `Implements` interface metadata into the shared `RuntimeClassDescriptor` (`CVBD` bumped to v3,
+      decoding v1/v2 cleanly).
+    - `calcvba-runtime::class_dispatch::{implements, connection_point, error_info, slot_thunks}`:
+      - `CompatObjectBase` exposes `ISupportErrorInfo`, `IConnectionPointContainer` (when the class
+        declares public `Event`s), and one dedicated vtable face per implemented interface via
+        `QueryInterface` — all sharing one COM identity (`QI(IUnknown) == &primary`, `Is` matches
+        when secondary pointers cross back into VBA) and one atomic refcount.
+      - Both late-bound (`IDispatch::Invoke` on primary and `Implements` faces) and early-bound
+        (Win64 vtable `slot_thunks` on primary and `Implements` faces, including `SAFEARRAY` params/
+        returns) clear thread `IErrorInfo` on entry and publish rich `IErrorInfo` tagged with the
+        invoked interface's IID on VBA fault.
+      - `OxInst::RaiseEvent` on both VM3 and JIT delivers public events synchronously to advised
+        `IConnectionPoint` sinks (with active `ExecutorScope` / `event_scope()` for re-entrant
+        callbacks back into the object).
+    Windows runs needed (vw1):
+    - Layout & Win64 vtable slot thunk + real `SetErrorInfo`/`GetErrorInfo` suites:
+      cargo test -p calcvba-automation -p calcvba-runtime -p calcvba-rt-abi --no-fail-fast
+    - End-to-end VM3 + JIT portable tests:
+      cargo test -p calcvba-engine --test object_identity_portable --test object_identity --no-fail-fast
+    - Full COM server smoke (verifies real `comhost` `IConnectionPointContainer`, `IDTExtensibility2`,
+      `IRtdServer`, and `ISupportErrorInfo`/`IErrorInfo` on Windows):
+      cargo test -p calcvba-build --test wrapped_com_server_smoke -- --ignored --test-threads=1 --nocapture

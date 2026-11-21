@@ -372,6 +372,16 @@ fn lower_class(
                 is_enumerator_member: m.is_enumerator_member,
             })
             .collect(),
+        events: c
+            .events
+            .iter()
+            .map(|e| crate::program::OxClassEvent {
+                name: e.name.clone(),
+                event_id: e.event_id,
+                callback_arity: e.callback_arity,
+                externally_visible: e.externally_visible,
+            })
+            .collect(),
         as_new_fields: c
             .as_new_fields
             .iter()
@@ -4463,6 +4473,7 @@ mod tests {
                     is_default_member: false,
                     is_enumerator_member: false,
                 }],
+                events: Vec::new(),
                 as_new_fields: Vec::new(),
                 implements: Vec::new(),
             }],

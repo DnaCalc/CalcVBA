@@ -17,8 +17,8 @@ use calcvba_automation::com::{
     DISP_E_PARAMNOTFOUND, DISP_E_PARAMNOTOPTIONAL, DISP_E_TYPEMISMATCH, DISP_E_UNKNOWNINTERFACE,
     DISP_E_UNKNOWNNAME, DISPATCH_METHOD, DISPATCH_PROPERTYGET, DISPATCH_PROPERTYPUT,
     DISPATCH_PROPERTYPUTREF, DISPID_PROPERTYPUT, DISPID_UNKNOWN, DispParams, E_FAIL, E_INVALIDARG,
-    E_NOTIMPL, E_POINTER, ExcepInfo, Guid, HResult, IDispatchVtbl, IID_NULL, IUnknownVtbl,
-    RPC_E_WRONG_THREAD, S_OK,
+    E_NOTIMPL, E_POINTER, ExcepInfo, Guid, HResult, IDispatchVtbl, IID_IDISPATCH, IID_NULL,
+    IUnknownVtbl, RPC_E_WRONG_THREAD, S_OK,
 };
 use calcvba_automation::oleaut;
 use calcvba_automation::safe_array::SafeArray;
@@ -26,13 +26,26 @@ use calcvba_automation::safe_array::SafeArray;
 use crate::events::{self, MemberFault};
 use crate::object_ref::{
     COMPAT_OBJECT_VTBL, CompatObjectBase, ObjectRef, ObjectRefExt, RuntimeClassDescriptor,
-    RuntimeMemberBacking, RuntimeMemberDescriptor, RuntimeMemberInvokeKind, RuntimeValueType,
-    compat_owner_from_this,
+    RuntimeInterfaceDescriptor, RuntimeMemberBacking, RuntimeMemberDescriptor,
+    RuntimeMemberInvokeKind, RuntimeValueType, compat_owner_from_this,
 };
 use crate::{VarType, Variant, VariantCore};
 
+mod connection_point;
+mod error_info;
+mod implements;
 mod slot_thunks;
 mod type_info;
+
+pub(crate) use connection_point::{
+    ConnectionPointContainerFace, ConnectionPointFace, ConnectionPointSink,
+    fire_connection_point_event_for_owner, has_connection_point_sinks, is_cpc_query_interface,
+    release_all_event_sinks,
+};
+pub(crate) use error_info::{SupportErrorInfoFace, is_support_error_info_query_interface};
+pub(crate) use implements::{
+    ImplementedInterfaceFace, build_implements_faces, is_impl_query_interface,
+};
 
 static NEXT_THREAD_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -218,8 +231,8 @@ unsafe fn wide_ptr_to_string(ptr: *const u16) -> Option<String> {
     }
 }
 
-pub(super) unsafe fn resolve_ids_of_names_for_descriptor(
-    descriptor: &'static RuntimeClassDescriptor,
+pub(super) unsafe fn resolve_ids_of_names_for_interface(
+    interface: &'static RuntimeInterfaceDescriptor,
     names: *const *const u16,
     count: u32,
     dispids: *mut i32,
@@ -239,16 +252,12 @@ pub(super) unsafe fn resolve_ids_of_names_for_descriptor(
         }
     }
 
-    let Some(dispatch) = descriptor.dispatch_interface() else {
-        return DISP_E_UNKNOWNNAME;
-    };
-
     // SAFETY: `count >= 1` and `names` is non-null.
     let Some(member_name) = (unsafe { wide_ptr_to_string(*names) }) else {
         return DISP_E_UNKNOWNNAME;
     };
     let member_name = member_name.trim();
-    let Some(primary_member) = dispatch
+    let Some(primary_member) = interface
         .members
         .iter()
         .find(|member| member.externally_visible && member.name.eq_ignore_ascii_case(member_name))
@@ -266,7 +275,7 @@ pub(super) unsafe fn resolve_ids_of_names_for_descriptor(
         return S_OK;
     }
 
-    let matching_members: Vec<&'static RuntimeMemberDescriptor> = dispatch
+    let matching_members: Vec<&'static RuntimeMemberDescriptor> = interface
         .members
         .iter()
         .filter(|member| member.externally_visible && member.dispatch_id == dispid)
@@ -310,8 +319,11 @@ unsafe extern "system" fn compat_get_ids_of_names(
     let owner = compat_owner_from_this(this);
     // SAFETY: `this` is a live `CompatObjectBase` kept alive by the caller's COM reference.
     let descriptor = unsafe { (*owner).class_descriptor };
+    let Some(dispatch) = descriptor.dispatch_interface() else {
+        return DISP_E_UNKNOWNNAME;
+    };
     // SAFETY: arguments forwarded from `IDispatch::GetIDsOfNames`.
-    unsafe { resolve_ids_of_names_for_descriptor(descriptor, names, count, dispids) }
+    unsafe { resolve_ids_of_names_for_interface(dispatch, names, count, dispids) }
 }
 
 fn resolve_param_dispid(members: &[&'static RuntimeMemberDescriptor], param_name: &str) -> i32 {
@@ -350,19 +362,18 @@ fn resolve_param_dispid(members: &[&'static RuntimeMemberDescriptor], param_name
 }
 
 fn select_member_for_invoke(
-    descriptor: &'static RuntimeClassDescriptor,
+    interface: &'static RuntimeInterfaceDescriptor,
     dispid: i32,
     flags: u16,
     c_args: usize,
 ) -> Option<(&'static RuntimeMemberDescriptor, RuntimeMemberInvokeKind)> {
-    let dispatch = descriptor.dispatch_interface()?;
     let want_put_ref = flags & DISPATCH_PROPERTYPUTREF != 0;
     let want_put = flags & DISPATCH_PROPERTYPUT != 0;
     let want_get = flags & DISPATCH_PROPERTYGET != 0;
     let want_method = flags & DISPATCH_METHOD != 0;
 
     if want_put_ref
-        && let Some(member) = dispatch.resolve_member_by_dispid(
+        && let Some(member) = interface.resolve_member_by_dispid(
             dispid,
             RuntimeMemberInvokeKind::PropertySet,
             c_args == 0,
@@ -372,7 +383,7 @@ fn select_member_for_invoke(
         return Some((member, RuntimeMemberInvokeKind::PropertySet));
     }
     if want_put
-        && let Some(member) = dispatch.resolve_member_by_dispid(
+        && let Some(member) = interface.resolve_member_by_dispid(
             dispid,
             RuntimeMemberInvokeKind::PropertyLet,
             c_args == 0,
@@ -382,20 +393,24 @@ fn select_member_for_invoke(
         return Some((member, RuntimeMemberInvokeKind::PropertyLet));
     }
     if want_get && want_method {
-        if let Some(member) =
-            descriptor.member_by_dispid(dispid, RuntimeMemberInvokeKind::PropertyGet, true)
-        {
+        if let Some(member) = interface.members.iter().find(|member| {
+            member.dispatch_id == dispid
+                && member.invoke_kind == RuntimeMemberInvokeKind::PropertyGet
+                && member.externally_visible
+        }) {
             return Some((member, RuntimeMemberInvokeKind::PropertyGet));
         }
-        if let Some(member) =
-            descriptor.member_by_dispid(dispid, RuntimeMemberInvokeKind::Method, true)
-        {
+        if let Some(member) = interface.members.iter().find(|member| {
+            member.dispatch_id == dispid
+                && member.invoke_kind == RuntimeMemberInvokeKind::Method
+                && member.externally_visible
+        }) {
             return Some((member, RuntimeMemberInvokeKind::Method));
         }
         return None;
     }
     if want_get {
-        return dispatch
+        return interface
             .resolve_member_by_dispid(
                 dispid,
                 RuntimeMemberInvokeKind::PropertyGet,
@@ -405,7 +420,7 @@ fn select_member_for_invoke(
             .map(|member| (member, RuntimeMemberInvokeKind::PropertyGet));
     }
     if want_method {
-        return dispatch
+        return interface
             .resolve_member_by_dispid(dispid, RuntimeMemberInvokeKind::Method, c_args == 0, true)
             .map(|member| (member, RuntimeMemberInvokeKind::Method));
     }
@@ -863,6 +878,43 @@ unsafe extern "system" fn compat_invoke(
     if this.is_null() {
         return E_POINTER;
     }
+    let owner = compat_owner_from_this(this);
+    // SAFETY: `this` is a live `CompatObjectBase` kept alive by the caller's COM reference.
+    let descriptor = unsafe { (*owner).class_descriptor };
+    let Some(dispatch) = descriptor.dispatch_interface() else {
+        return DISP_E_MEMBERNOTFOUND;
+    };
+    let interface_iid = descriptor.default_interface_iid.unwrap_or(IID_IDISPATCH);
+    // SAFETY: `owner` is a live `CompatObjectBase` and arguments match `IDispatch::Invoke`.
+    unsafe {
+        invoke_on_interface(
+            owner,
+            dispatch,
+            interface_iid,
+            dispid,
+            riid,
+            flags,
+            params,
+            result,
+            excep_info,
+            arg_err,
+        )
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) unsafe fn invoke_on_interface(
+    owner: *mut CompatObjectBase,
+    interface: &'static RuntimeInterfaceDescriptor,
+    interface_iid: Guid,
+    dispid: i32,
+    riid: *const Guid,
+    flags: u16,
+    params: *mut c_void,
+    result: *mut c_void,
+    excep_info: *mut c_void,
+    arg_err: *mut u32,
+) -> HResult {
     if !riid.is_null() {
         // SAFETY: non-null `riid` points to a readable `Guid`.
         let iid = unsafe { riid.read() };
@@ -877,15 +929,13 @@ unsafe extern "system" fn compat_invoke(
         }
     }
 
-    let owner = compat_owner_from_this(this);
-    // SAFETY: `this` is a live `CompatObjectBase` kept alive by the caller's COM reference.
+    // SAFETY: `owner` is a live `CompatObjectBase` kept alive by the caller's COM reference.
     let owner_thread = unsafe { (*owner).owner_thread };
     if current_thread_id() != owner_thread {
         return RPC_E_WRONG_THREAD;
     }
+    error_info::clear_thread_error_info();
 
-    // SAFETY: same live `CompatObjectBase` on its owning thread.
-    let descriptor = unsafe { (*owner).class_descriptor };
     let params_ptr = params.cast::<DispParams>();
     let c_args = if params_ptr.is_null() {
         0
@@ -893,8 +943,7 @@ unsafe extern "system" fn compat_invoke(
         // SAFETY: caller supplied a readable `DispParams`.
         unsafe { (*params_ptr).c_args as usize }
     };
-    let Some((member, requested_kind)) =
-        select_member_for_invoke(descriptor, dispid, flags, c_args)
+    let Some((member, requested_kind)) = select_member_for_invoke(interface, dispid, flags, c_args)
     else {
         return DISP_E_MEMBERNOTFOUND;
     };
@@ -953,8 +1002,8 @@ unsafe extern "system" fn compat_invoke(
     // SAFETY: `params_ptr` was validated above.
     let aliases = unsafe { compute_byref_aliases(member, params_ptr, &mapped.slots, args.len()) };
 
-    // SAFETY: `this` is a live `CompatObjectBase`; retain one reference for the invocation.
-    let Some(object) = (unsafe { ObjectRef::from_raw_iunknown_addref(this.cast()) }) else {
+    // SAFETY: `owner` is a live `CompatObjectBase`; always pass `&primary` as `Me`.
+    let Some(object) = (unsafe { ObjectRef::from_raw_iunknown_addref(owner.cast()) }) else {
         return E_POINTER;
     };
 
@@ -980,11 +1029,69 @@ unsafe extern "system" fn compat_invoke(
         }
         Err(fault) => {
             let _ = writeback;
+            error_info::publish_member_fault_error_info(interface_iid, &fault);
             // SAFETY: `excep_info` is null or a caller-owned writable `ExcepInfo`.
             unsafe {
                 write_excep_info(excep_info.cast::<ExcepInfo>(), &fault);
             }
             DISP_E_EXCEPTION
+        }
+    }
+}
+
+/// Early-bound member invocation helper matching the Win64 slot-thunk contract (clears thread
+/// `IErrorInfo` on entry, publishes rich `IErrorInfo` tagged with `interface_iid` on VBA fault,
+/// and returns `S_OK` or `0x800A0000 | Err.Number`).
+pub fn invoke_early_bound_slot(
+    object: &ObjectRef,
+    interface_iid: Option<Guid>,
+    slot: u16,
+    args: &mut [Variant],
+) -> Result<Variant, HResult> {
+    if !object.is_compat_object() {
+        return Err(E_POINTER);
+    }
+    let owner = crate::object_ref::compat_owner_from_unknown(object.raw_iunknown());
+    // SAFETY: `object` retains `owner` for the duration of this call.
+    let (owner_thread, descriptor) = unsafe { ((*owner).owner_thread, (*owner).class_descriptor) };
+    if current_thread_id() != owner_thread {
+        return Err(RPC_E_WRONG_THREAD);
+    }
+    error_info::clear_thread_error_info();
+    let (interface, resolved_iid) = match interface_iid {
+        Some(iid) if descriptor.default_interface_iid != Some(iid) && iid != IID_IDISPATCH => {
+            let Some(iface) = descriptor
+                .interfaces
+                .iter()
+                .find(|iface| iface.identity.guid == iid)
+            else {
+                return Err(E_NOTIMPL);
+            };
+            (iface, iid)
+        }
+        other => {
+            let Some(dispatch) = descriptor.dispatch_interface() else {
+                return Err(E_NOTIMPL);
+            };
+            (
+                dispatch,
+                other.unwrap_or_else(|| descriptor.default_interface_iid.unwrap_or(IID_IDISPATCH)),
+            )
+        }
+    };
+    let Some(member) = interface.member_by_vtable_slot(slot) else {
+        return Err(E_NOTIMPL);
+    };
+    let aliases: Vec<usize> = (0..args.len()).collect();
+    // SAFETY: `owner` is live; retain `&primary` as `Me`.
+    let Some(me) = (unsafe { ObjectRef::from_raw_iunknown_addref(owner.cast()) }) else {
+        return Err(E_POINTER);
+    };
+    match invoke_object_member(owner, me, member, member.invoke_kind, args, &aliases) {
+        Ok(value) => Ok(value),
+        Err(fault) => {
+            error_info::publish_member_fault_error_info(resolved_iid, &fault);
+            Err(vba_error_to_hresult(fault.number))
         }
     }
 }
@@ -1008,6 +1115,7 @@ mod tests {
             name: "Widget".into(),
             runtime_type_name: None,
             default_interface_iid: None,
+            source_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             fields: vec![RuntimeClassFieldSpec {
@@ -1120,6 +1228,7 @@ mod tests {
                 },
             ],
             implemented_interfaces: Vec::new(),
+            events: Vec::new(),
         };
         build_runtime_class_descriptor(&spec)
     }
@@ -1636,10 +1745,884 @@ mod tests {
         );
         assert_eq!(scaled, 1.5 * 4.0 + 0.25 - 2.0);
 
-        // A VBA error comes back as its HRESULT (0x800A0000 | number).
+        // A VBA error comes back as its HRESULT (0x800A0000 | number) and publishes rich
+        // `IErrorInfo` on the current thread (dc-yqq0.27).
         let fail: NoArgs = unsafe {
             core::mem::transmute(entry(slot_of("Fail", RuntimeMemberInvokeKind::Method)))
         };
         assert_eq!(unsafe { fail(raw) }, 0x800A_1388u32 as i32);
+        let mut err_ptr: *mut c_void = core::ptr::null_mut();
+        assert_eq!(unsafe { oleaut::get_error_info(0, &mut err_ptr) }, S_OK);
+        assert!(!err_ptr.is_null());
+        let err_vtbl = unsafe { &*(*err_ptr.cast::<calcvba_automation::com::IErrorInfo>()).vtbl };
+        let mut err_guid = Guid::default();
+        assert_eq!(unsafe { (err_vtbl.get_guid)(err_ptr, &mut err_guid) }, S_OK);
+        assert_eq!(
+            err_guid,
+            descriptor.default_interface_iid.expect("default IID")
+        );
+        let mut bstr_desc: *mut u16 = core::ptr::null_mut();
+        assert_eq!(
+            unsafe { (err_vtbl.get_description)(err_ptr, &mut bstr_desc) },
+            S_OK
+        );
+        let desc = unsafe { BStr::from_raw_bstr(bstr_desc) };
+        assert_eq!(desc.as_str(), "boom");
+        unsafe {
+            (err_vtbl.unknown.release)(err_ptr);
+        }
+
+        // Subsequent succeeding early-bound slot call clears thread error info.
+        assert_eq!(unsafe { twice(raw, &raw mut value) }, S_OK);
+        let mut cleared: *mut c_void = core::ptr::null_mut();
+        assert_eq!(
+            unsafe { oleaut::get_error_info(0, &mut cleared) },
+            calcvba_automation::com::S_FALSE
+        );
+        assert!(cleared.is_null());
+    }
+
+    #[test]
+    fn implements_faces_connection_points_and_error_info_share_one_identity() {
+        use crate::class_descriptor::{
+            RuntimeEventSpec, RuntimeImplementedInterfaceSpec, default_class_interface_iid,
+            default_class_source_interface_iid,
+        };
+        use calcvba_automation::com::{
+            CONNECT_E_CANNOTCONNECT, CONNECT_E_NOCONNECTION, ConnectData, E_NOINTERFACE,
+            IConnectionPoint, IConnectionPointContainer, IEnumConnectionPoints, IEnumConnections,
+            IErrorInfo, IID_ICONNECTIONPOINT, IID_ICONNECTIONPOINTCONTAINER, IID_IDISPATCH,
+            IID_IENUMCONNECTIONPOINTS, IID_IENUMCONNECTIONS, IID_ISUPPORTERRORINFO, IID_IUNKNOWN,
+            ISupportErrorInfo, ITypeInfo, S_FALSE,
+        };
+        use core::sync::atomic::AtomicU32;
+
+        let shape_iid = default_class_interface_iid("Dispatch27Unit", "IShape");
+        let square_iid = default_class_interface_iid("Dispatch27Unit", "Square");
+        let source_iid = default_class_source_interface_iid("Dispatch27Unit", "Square");
+
+        let spec = RuntimeClassSpec {
+            unit_name: "Dispatch27Unit".into(),
+            class_index: 0,
+            name: "Square".into(),
+            runtime_type_name: None,
+            default_interface_iid: None,
+            source_interface_iid: None,
+            predeclared: false,
+            lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
+            fields: vec![RuntimeClassFieldSpec {
+                name: "Side".into(),
+                token: 10,
+                value_type: RuntimeValueType::Long,
+                array_element_type: None,
+                externally_visible: true,
+                dispatch_id: None,
+                get_vtable_slot: None,
+                put_vtable_slot: None,
+                putref_vtable_slot: None,
+            }],
+            as_new_fields: Vec::new(),
+            implements: vec!["IShape".into()],
+            methods: vec![RuntimeMemberSpec {
+                name: "PrimaryFail".into(),
+                dispatch_id: None,
+                vtable_slot: None,
+                invoke_kind: RuntimeMemberInvokeKind::Method,
+                params: Vec::new(),
+                return_type: None,
+                is_default_member: false,
+                is_enumerator_member: false,
+                externally_visible: true,
+                func_flags: 0,
+                backing: RuntimeMemberBacking::Proc(100),
+            }],
+            implemented_interfaces: vec![RuntimeImplementedInterfaceSpec {
+                name: "IShape".into(),
+                qualified_name: "Dispatch27Unit.IShape".into(),
+                guid: Some(shape_iid),
+                members: vec![
+                    RuntimeMemberSpec {
+                        name: "Area".into(),
+                        dispatch_id: Some(0x6003_0000),
+                        vtable_slot: Some(7),
+                        invoke_kind: RuntimeMemberInvokeKind::Method,
+                        params: Vec::new(),
+                        return_type: Some(RuntimeValueType::Long),
+                        is_default_member: false,
+                        is_enumerator_member: false,
+                        externally_visible: true,
+                        func_flags: 0,
+                        backing: RuntimeMemberBacking::Proc(200),
+                    },
+                    RuntimeMemberSpec {
+                        name: "Broken".into(),
+                        dispatch_id: Some(0x6003_0001),
+                        vtable_slot: Some(8),
+                        invoke_kind: RuntimeMemberInvokeKind::Method,
+                        params: Vec::new(),
+                        return_type: None,
+                        is_default_member: false,
+                        is_enumerator_member: false,
+                        externally_visible: true,
+                        func_flags: 0,
+                        backing: RuntimeMemberBacking::Proc(201),
+                    },
+                ],
+            }],
+            events: vec![
+                RuntimeEventSpec {
+                    name: "Changed".into(),
+                    event_id: 0,
+                    dispid: 0,
+                    callback_arity: 2,
+                    externally_visible: true,
+                },
+                RuntimeEventSpec {
+                    name: "Secret".into(),
+                    event_id: 1,
+                    dispid: 1,
+                    callback_arity: 0,
+                    externally_visible: false,
+                },
+            ],
+        };
+        let descriptor = build_runtime_class_descriptor(&spec);
+        assert_eq!(descriptor.default_interface_iid, Some(square_iid));
+        assert_eq!(descriptor.source_interface_iid, Some(source_iid));
+
+        struct SquareInvoker;
+        impl MemberInvoker for SquareInvoker {
+            fn invoke_member(
+                &mut self,
+                object: ObjectRef,
+                member: &'static RuntimeMemberDescriptor,
+                invoke_kind: RuntimeMemberInvokeKind,
+                args: &mut [Variant],
+                _aliases: &[usize],
+            ) -> Result<Variant, MemberFault> {
+                match member.backing {
+                    RuntimeMemberBacking::Field(token) => {
+                        invoke_field_directly(&object, member, token, invoke_kind, args)
+                    }
+                    RuntimeMemberBacking::Proc(100) => Err(MemberFault {
+                        number: 513,
+                        description: "primary fail".into(),
+                        source: "Square".into(),
+                        help_file: "sq.chm".into(),
+                        help_context: 11,
+                    }),
+                    RuntimeMemberBacking::Proc(200) => {
+                        let s = object
+                            .project_field_get(10)
+                            .and_then(|v| v.as_i32())
+                            .unwrap_or(0);
+                        Ok(Variant::from_i32(s * s))
+                    }
+                    RuntimeMemberBacking::Proc(201) => Err(MemberFault {
+                        number: 514,
+                        description: "shape broken".into(),
+                        source: "IShape".into(),
+                        help_file: "shape.chm".into(),
+                        help_context: 22,
+                    }),
+                    _ => Err(MemberFault::from_number(438)),
+                }
+            }
+        }
+
+        type EventLog = std::rc::Rc<std::cell::RefCell<Vec<(i32, Vec<i32>)>>>;
+
+        // Minimal COM event sink recording `(dispid, logical_args)`.
+        #[repr(C)]
+        struct TestSink {
+            vtbl: *const IDispatchVtbl,
+            ref_count: AtomicU32,
+            events: EventLog,
+        }
+        unsafe extern "system" fn sink_qi(
+            this: *mut c_void,
+            riid: *const Guid,
+            ppv: *mut *mut c_void,
+        ) -> HResult {
+            unsafe {
+                *ppv = core::ptr::null_mut();
+                let iid = *riid;
+                if iid == IID_IUNKNOWN || iid == IID_IDISPATCH {
+                    sink_add_ref(this);
+                    *ppv = this;
+                    S_OK
+                } else {
+                    E_NOINTERFACE
+                }
+            }
+        }
+        unsafe extern "system" fn sink_add_ref(this: *mut c_void) -> u32 {
+            unsafe {
+                (*this.cast::<TestSink>())
+                    .ref_count
+                    .fetch_add(1, Ordering::AcqRel)
+                    + 1
+            }
+        }
+        unsafe extern "system" fn sink_release(this: *mut c_void) -> u32 {
+            unsafe {
+                let prev = (*this.cast::<TestSink>())
+                    .ref_count
+                    .fetch_sub(1, Ordering::AcqRel);
+                let rem = prev - 1;
+                if rem == 0 {
+                    drop(Box::from_raw(this.cast::<TestSink>()));
+                }
+                rem
+            }
+        }
+        unsafe extern "system" fn sink_tic(_: *mut c_void, c: *mut u32) -> HResult {
+            unsafe {
+                *c = 0;
+            }
+            S_OK
+        }
+        unsafe extern "system" fn sink_ti(
+            _: *mut c_void,
+            _: u32,
+            _: u32,
+            out: *mut *mut c_void,
+        ) -> HResult {
+            unsafe {
+                *out = core::ptr::null_mut();
+            }
+            E_NOTIMPL
+        }
+        unsafe extern "system" fn sink_ids(
+            _: *mut c_void,
+            _: *const Guid,
+            _: *const *const u16,
+            _: u32,
+            _: u32,
+            _: *mut i32,
+        ) -> HResult {
+            E_NOTIMPL
+        }
+        unsafe extern "system" fn sink_invoke(
+            this: *mut c_void,
+            dispid: i32,
+            _: *const Guid,
+            _: u32,
+            _: u16,
+            params: *mut c_void,
+            _: *mut c_void,
+            _: *mut c_void,
+            _: *mut u32,
+        ) -> HResult {
+            unsafe {
+                let sink = &*this.cast::<TestSink>();
+                let mut logical = Vec::new();
+                if !params.is_null() {
+                    let dp = &*params.cast::<DispParams>();
+                    for i in (0..dp.c_args as usize).rev() {
+                        let cell = &*dp.rgvarg.add(i).cast::<Variant>();
+                        logical.push(cell.as_i32().unwrap_or(-1));
+                    }
+                }
+                sink.events.borrow_mut().push((dispid, logical));
+            }
+            S_OK
+        }
+        static SINK_VTBL: IDispatchVtbl = IDispatchVtbl {
+            unknown: IUnknownVtbl {
+                query_interface: sink_qi,
+                add_ref: sink_add_ref,
+                release: sink_release,
+            },
+            get_type_info_count: sink_tic,
+            get_type_info: sink_ti,
+            get_ids_of_names: sink_ids,
+            invoke: sink_invoke,
+        };
+
+        // Non-dispatch IUnknown-only sink (must be rejected by Advise with CONNECT_E_CANNOTCONNECT).
+        #[repr(C)]
+        struct BadSink {
+            vtbl: *const IUnknownVtbl,
+            ref_count: AtomicU32,
+        }
+        unsafe extern "system" fn bad_qi(
+            this: *mut c_void,
+            riid: *const Guid,
+            ppv: *mut *mut c_void,
+        ) -> HResult {
+            unsafe {
+                *ppv = core::ptr::null_mut();
+                if *riid == IID_IUNKNOWN {
+                    bad_add_ref(this);
+                    *ppv = this;
+                    S_OK
+                } else {
+                    E_NOINTERFACE
+                }
+            }
+        }
+        unsafe extern "system" fn bad_add_ref(this: *mut c_void) -> u32 {
+            unsafe {
+                (*this.cast::<BadSink>())
+                    .ref_count
+                    .fetch_add(1, Ordering::AcqRel)
+                    + 1
+            }
+        }
+        unsafe extern "system" fn bad_release(this: *mut c_void) -> u32 {
+            unsafe {
+                let prev = (*this.cast::<BadSink>())
+                    .ref_count
+                    .fetch_sub(1, Ordering::AcqRel);
+                let rem = prev - 1;
+                if rem == 0 {
+                    drop(Box::from_raw(this.cast::<BadSink>()));
+                }
+                rem
+            }
+        }
+        static BAD_VTBL: IUnknownVtbl = IUnknownVtbl {
+            query_interface: bad_qi,
+            add_ref: bad_add_ref,
+            release: bad_release,
+        };
+
+        let before = crate::current_thread_live_handle_counts();
+        {
+            // A class without events does not expose IConnectionPointContainer.
+            let plain_desc = sample_widget_descriptor();
+            let plain = ObjectRef::from_project_instance(99, 0, 0, false, plain_desc);
+            let plain_raw = plain.raw_iunknown();
+            let plain_vtbl = unsafe { &*(*plain_raw).vtbl };
+            let mut no_cpc = core::ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    (plain_vtbl.query_interface)(
+                        plain_raw.cast(),
+                        &IID_ICONNECTIONPOINTCONTAINER,
+                        &mut no_cpc,
+                    )
+                },
+                E_NOINTERFACE
+            );
+            assert!(no_cpc.is_null());
+
+            let object = ObjectRef::from_project_instance(1, 0, 0, false, descriptor);
+            object.project_field_set(10, Variant::from_i32(6));
+            let primary = object.raw_iunknown();
+            let primary_vtbl = unsafe { &*((*primary).vtbl.cast::<IDispatchVtbl>()) };
+
+            let mut invoker = SquareInvoker;
+            let _scope = unsafe {
+                MemberInvokerScope::enter(NonNull::from(&mut invoker as &mut dyn MemberInvoker))
+            };
+
+            // 1. Implements face: distinct pointer, single COM identity, shared refcount.
+            let mut shape_ptr: *mut c_void = core::ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    (primary_vtbl.unknown.query_interface)(
+                        primary.cast(),
+                        &shape_iid,
+                        &mut shape_ptr,
+                    )
+                },
+                S_OK
+            );
+            assert!(!shape_ptr.is_null());
+            assert_ne!(shape_ptr, primary.cast());
+            assert_eq!(object.strong_count(), 2);
+
+            let shape_vtbl = unsafe {
+                &*((*shape_ptr.cast::<crate::RawRuntimeIUnknown>())
+                    .vtbl
+                    .cast::<IDispatchVtbl>())
+            };
+            let mut back_unk: *mut c_void = core::ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    (shape_vtbl.unknown.query_interface)(shape_ptr, &IID_IUNKNOWN, &mut back_unk)
+                },
+                S_OK
+            );
+            assert_eq!(back_unk, primary.cast());
+            unsafe { (primary_vtbl.unknown.release)(back_unk) };
+
+            let mut back_disp: *mut c_void = core::ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    (shape_vtbl.unknown.query_interface)(shape_ptr, &IID_IDISPATCH, &mut back_disp)
+                },
+                S_OK
+            );
+            assert_eq!(back_disp, primary.cast());
+            unsafe { (primary_vtbl.unknown.release)(back_disp) };
+
+            let mut same_shape: *mut c_void = core::ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    (shape_vtbl.unknown.query_interface)(shape_ptr, &shape_iid, &mut same_shape)
+                },
+                S_OK
+            );
+            assert_eq!(same_shape, shape_ptr);
+            unsafe { (shape_vtbl.unknown.release)(same_shape) };
+
+            // ObjectRef adopted from secondary face preserves project identity (`Is`).
+            let via_face =
+                unsafe { ObjectRef::from_raw_iunknown_addref(shape_ptr.cast()) }.expect("adopted");
+            assert!(via_face.is_compat_object());
+            assert!(via_face.is_project_instance());
+            assert_eq!(via_face.is_identity(), object.is_identity());
+            assert_eq!(via_face.strong_count(), 3);
+            drop(via_face);
+            assert_eq!(object.strong_count(), 2);
+
+            // IShape IDispatch: GetTypeInfo + GetIDsOfNames + Invoke("Area") -> 36.
+            let mut tic = 0u32;
+            assert_eq!(
+                unsafe { (shape_vtbl.get_type_info_count)(shape_ptr, &mut tic) },
+                S_OK
+            );
+            assert_eq!(tic, 1);
+            let mut shape_ti: *mut c_void = core::ptr::null_mut();
+            assert_eq!(
+                unsafe { (shape_vtbl.get_type_info)(shape_ptr, 0, 0, &mut shape_ti) },
+                S_OK
+            );
+            let ti_vtbl = unsafe { &*(*shape_ti.cast::<ITypeInfo>()).vtbl };
+            let mut attr = core::ptr::null_mut();
+            assert_eq!(
+                unsafe { (ti_vtbl.get_type_attr)(shape_ti, &mut attr) },
+                S_OK
+            );
+            assert_eq!(unsafe { (*attr).guid }, shape_iid);
+            assert_eq!(unsafe { (*attr).c_funcs }, 2);
+            unsafe {
+                (ti_vtbl.release_type_attr)(shape_ti, attr);
+                (ti_vtbl.unknown.release)(shape_ti);
+            }
+
+            let area_w: Vec<u16> = "Area\0".encode_utf16().collect();
+            let area_names = [area_w.as_ptr()];
+            let mut area_id = DISPID_UNKNOWN;
+            assert_eq!(
+                unsafe {
+                    (shape_vtbl.get_ids_of_names)(
+                        shape_ptr,
+                        &IID_NULL,
+                        area_names.as_ptr(),
+                        1,
+                        0,
+                        &mut area_id,
+                    )
+                },
+                S_OK
+            );
+            assert_eq!(area_id, 0x6003_0000);
+            let mut empty_params = DispParams::default();
+            let mut area_res = Variant::empty();
+            assert_eq!(
+                unsafe {
+                    (shape_vtbl.invoke)(
+                        shape_ptr,
+                        area_id,
+                        &IID_NULL,
+                        0,
+                        DISPATCH_METHOD,
+                        (&raw mut empty_params).cast(),
+                        (&raw mut area_res).cast(),
+                        core::ptr::null_mut(),
+                        core::ptr::null_mut(),
+                    )
+                },
+                S_OK
+            );
+            assert_eq!(area_res.as_i32(), Some(36));
+
+            // 2. ISupportErrorInfo + IErrorInfo (late-bound AND early-bound on both faces).
+            let mut sei_ptr: *mut c_void = core::ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    (shape_vtbl.unknown.query_interface)(
+                        shape_ptr,
+                        &IID_ISUPPORTERRORINFO,
+                        &mut sei_ptr,
+                    )
+                },
+                S_OK
+            );
+            let sei_vtbl = unsafe { &*(*sei_ptr.cast::<ISupportErrorInfo>()).vtbl };
+            let mut sei_unk = core::ptr::null_mut();
+            assert_eq!(
+                unsafe { (sei_vtbl.unknown.query_interface)(sei_ptr, &IID_IUNKNOWN, &mut sei_unk) },
+                S_OK
+            );
+            assert_eq!(sei_unk, primary.cast());
+            unsafe { (primary_vtbl.unknown.release)(sei_unk) };
+            assert_eq!(
+                unsafe { (sei_vtbl.interface_supports_error_info)(sei_ptr, &IID_IDISPATCH) },
+                S_OK
+            );
+            assert_eq!(
+                unsafe { (sei_vtbl.interface_supports_error_info)(sei_ptr, &square_iid) },
+                S_OK
+            );
+            assert_eq!(
+                unsafe { (sei_vtbl.interface_supports_error_info)(sei_ptr, &shape_iid) },
+                S_OK
+            );
+            assert_eq!(
+                unsafe { (sei_vtbl.interface_supports_error_info)(sei_ptr, &source_iid) },
+                S_FALSE
+            );
+            unsafe { (sei_vtbl.unknown.release)(sei_ptr) };
+
+            let read_error_info = || -> (Guid, String, String, String, u32) {
+                let mut err_ptr: *mut c_void = core::ptr::null_mut();
+                assert_eq!(unsafe { oleaut::get_error_info(0, &mut err_ptr) }, S_OK);
+                assert!(!err_ptr.is_null());
+                let vtbl = unsafe { &*(*err_ptr.cast::<IErrorInfo>()).vtbl };
+                let mut g = Guid::default();
+                let mut s = core::ptr::null_mut();
+                let mut d = core::ptr::null_mut();
+                let mut h = core::ptr::null_mut();
+                let mut ctx = 0u32;
+                assert_eq!(unsafe { (vtbl.get_guid)(err_ptr, &mut g) }, S_OK);
+                assert_eq!(unsafe { (vtbl.get_source)(err_ptr, &mut s) }, S_OK);
+                assert_eq!(unsafe { (vtbl.get_description)(err_ptr, &mut d) }, S_OK);
+                assert_eq!(unsafe { (vtbl.get_help_file)(err_ptr, &mut h) }, S_OK);
+                assert_eq!(unsafe { (vtbl.get_help_context)(err_ptr, &mut ctx) }, S_OK);
+                let out = (
+                    g,
+                    unsafe { BStr::from_raw_bstr(s) }.as_str().to_string(),
+                    unsafe { BStr::from_raw_bstr(d) }.as_str().to_string(),
+                    unsafe { BStr::from_raw_bstr(h) }.as_str().to_string(),
+                    ctx,
+                );
+                unsafe { (vtbl.unknown.release)(err_ptr) };
+                out
+            };
+
+            // Late-bound Invoke fault on IShape publishes IErrorInfo with shape_iid.
+            let mut excep = ExcepInfo::default();
+            assert_eq!(
+                unsafe {
+                    (shape_vtbl.invoke)(
+                        shape_ptr,
+                        0x6003_0001,
+                        &IID_NULL,
+                        0,
+                        DISPATCH_METHOD,
+                        (&raw mut empty_params).cast(),
+                        core::ptr::null_mut(),
+                        (&raw mut excep).cast(),
+                        core::ptr::null_mut(),
+                    )
+                },
+                DISP_E_EXCEPTION
+            );
+            unsafe {
+                oleaut::sys_free_string(excep.bstr_source);
+                oleaut::sys_free_string(excep.bstr_description);
+                oleaut::sys_free_string(excep.bstr_help_file);
+            }
+            assert_eq!(
+                read_error_info(),
+                (
+                    shape_iid,
+                    "IShape".to_string(),
+                    "shape broken".to_string(),
+                    "shape.chm".to_string(),
+                    22
+                )
+            );
+
+            // Early-bound call on primary interface (`PrimaryFail`) publishes IErrorInfo with square_iid.
+            let primary_fail_slot = descriptor
+                .dispatch_interface()
+                .unwrap()
+                .members
+                .iter()
+                .find(|m| m.name == "PrimaryFail")
+                .unwrap()
+                .vtable_slot
+                .unwrap();
+            assert_eq!(
+                invoke_early_bound_slot(&object, None, primary_fail_slot, &mut []),
+                Err((0x800A_0000u32 | 513u32) as i32)
+            );
+            assert_eq!(
+                read_error_info(),
+                (
+                    square_iid,
+                    "Square".to_string(),
+                    "primary fail".to_string(),
+                    "sq.chm".to_string(),
+                    11
+                )
+            );
+
+            // Early-bound call on implemented interface (`IShape.Broken`, slot 8) publishes IErrorInfo with shape_iid.
+            assert_eq!(
+                invoke_early_bound_slot(&object, Some(shape_iid), 8, &mut []),
+                Err((0x800A_0000u32 | 514u32) as i32)
+            );
+            assert_eq!(
+                read_error_info(),
+                (
+                    shape_iid,
+                    "IShape".to_string(),
+                    "shape broken".to_string(),
+                    "shape.chm".to_string(),
+                    22
+                )
+            );
+
+            // Early-bound succeeding call (`IShape.Area`, slot 7) returns 36 and clears IErrorInfo.
+            assert_eq!(
+                invoke_early_bound_slot(&object, Some(shape_iid), 7, &mut []),
+                Ok(Variant::from_i32(36))
+            );
+            let mut none_err = core::ptr::null_mut();
+            assert_eq!(unsafe { oleaut::get_error_info(0, &mut none_err) }, S_FALSE);
+            assert!(none_err.is_null());
+
+            // Real Win64 early-bound vtable slot calls on `shape_ptr` (slot 7 Area & slot 8 Broken).
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            {
+                type GetLong = unsafe extern "system" fn(*mut c_void, *mut i32) -> HResult;
+                type NoArgs = unsafe extern "system" fn(*mut c_void) -> HResult;
+                let area_fn: GetLong = unsafe {
+                    core::mem::transmute(*(*shape_ptr.cast::<*const *const c_void>()).add(7))
+                };
+                let mut area_out = 0i32;
+                assert_eq!(unsafe { area_fn(shape_ptr, &raw mut area_out) }, S_OK);
+                assert_eq!(area_out, 36);
+
+                let broken_fn: NoArgs = unsafe {
+                    core::mem::transmute(*(*shape_ptr.cast::<*const *const c_void>()).add(8))
+                };
+                assert_eq!(
+                    unsafe { broken_fn(shape_ptr) },
+                    (0x800A_0000u32 | 514u32) as i32
+                );
+                assert_eq!(
+                    read_error_info(),
+                    (
+                        shape_iid,
+                        "IShape".to_string(),
+                        "shape broken".to_string(),
+                        "shape.chm".to_string(),
+                        22
+                    )
+                );
+            }
+
+            // 3. Connection points: IConnectionPointContainer, IConnectionPoint, enumerators, RaiseEvent.
+            let mut cpc_ptr: *mut c_void = core::ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    (shape_vtbl.unknown.query_interface)(
+                        shape_ptr,
+                        &IID_ICONNECTIONPOINTCONTAINER,
+                        &mut cpc_ptr,
+                    )
+                },
+                S_OK
+            );
+            let cpc_vtbl = unsafe { &*(*cpc_ptr.cast::<IConnectionPointContainer>()).vtbl };
+            let mut cpc_unk = core::ptr::null_mut();
+            assert_eq!(
+                unsafe { (cpc_vtbl.unknown.query_interface)(cpc_ptr, &IID_IUNKNOWN, &mut cpc_unk) },
+                S_OK
+            );
+            assert_eq!(cpc_unk, primary.cast());
+            unsafe { (primary_vtbl.unknown.release)(cpc_unk) };
+
+            let mut missing_cp = core::ptr::null_mut();
+            assert_eq!(
+                unsafe { (cpc_vtbl.find_connection_point)(cpc_ptr, &shape_iid, &mut missing_cp) },
+                CONNECT_E_NOCONNECTION
+            );
+            assert!(missing_cp.is_null());
+
+            let mut cp_ptr: *mut c_void = core::ptr::null_mut();
+            assert_eq!(
+                unsafe { (cpc_vtbl.find_connection_point)(cpc_ptr, &source_iid, &mut cp_ptr) },
+                S_OK
+            );
+            assert!(!cp_ptr.is_null());
+            let cp_vtbl = unsafe { &*(*cp_ptr.cast::<IConnectionPoint>()).vtbl };
+
+            let mut got_iid = Guid::default();
+            assert_eq!(
+                unsafe { (cp_vtbl.get_connection_interface)(cp_ptr, &mut got_iid) },
+                S_OK
+            );
+            assert_eq!(got_iid, source_iid);
+
+            let mut got_cpc = core::ptr::null_mut();
+            assert_eq!(
+                unsafe { (cp_vtbl.get_connection_point_container)(cp_ptr, &mut got_cpc) },
+                S_OK
+            );
+            assert_eq!(got_cpc, cpc_ptr);
+            unsafe { (cpc_vtbl.unknown.release)(got_cpc) };
+
+            // EnumConnectionPoints: Next -> S_OK, Next -> S_FALSE, Reset, Clone, Skip.
+            let mut ecp_ptr = core::ptr::null_mut();
+            assert_eq!(
+                unsafe { (cpc_vtbl.enum_connection_points)(cpc_ptr, &mut ecp_ptr) },
+                S_OK
+            );
+            let ecp_vtbl = unsafe { &*(*ecp_ptr.cast::<IEnumConnectionPoints>()).vtbl };
+            let mut qi_ecp = core::ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    (ecp_vtbl.unknown.query_interface)(
+                        ecp_ptr,
+                        &IID_IENUMCONNECTIONPOINTS,
+                        &mut qi_ecp,
+                    )
+                },
+                S_OK
+            );
+            unsafe { (ecp_vtbl.unknown.release)(qi_ecp) };
+            let mut yielded_cp = core::ptr::null_mut();
+            let mut fetched = 0u32;
+            assert_eq!(
+                unsafe { (ecp_vtbl.next)(ecp_ptr, 1, &mut yielded_cp, &mut fetched) },
+                S_OK
+            );
+            assert_eq!(fetched, 1);
+            assert_eq!(yielded_cp, cp_ptr);
+            unsafe { (cp_vtbl.unknown.release)(yielded_cp) };
+            assert_eq!(
+                unsafe { (ecp_vtbl.next)(ecp_ptr, 1, &mut yielded_cp, &mut fetched) },
+                S_FALSE
+            );
+            assert_eq!(fetched, 0);
+            assert_eq!(unsafe { (ecp_vtbl.reset)(ecp_ptr) }, S_OK);
+            let mut cloned_ecp = core::ptr::null_mut();
+            assert_eq!(unsafe { (ecp_vtbl.clone)(ecp_ptr, &mut cloned_ecp) }, S_OK);
+            assert_eq!(unsafe { (ecp_vtbl.skip)(cloned_ecp, 1) }, S_OK);
+            assert_eq!(unsafe { (ecp_vtbl.skip)(cloned_ecp, 1) }, S_FALSE);
+            unsafe {
+                (ecp_vtbl.unknown.release)(cloned_ecp);
+                (ecp_vtbl.unknown.release)(ecp_ptr);
+            }
+
+            // Advise rejects non-dispatch sink.
+            let bad_sink = Box::into_raw(Box::new(BadSink {
+                vtbl: &BAD_VTBL,
+                ref_count: AtomicU32::new(1),
+            }))
+            .cast::<c_void>();
+            let mut bad_cookie = 99u32;
+            assert_eq!(
+                unsafe { (cp_vtbl.advise)(cp_ptr, bad_sink, &mut bad_cookie) },
+                CONNECT_E_CANNOTCONNECT
+            );
+            assert_eq!(bad_cookie, 0);
+            unsafe { bad_release(bad_sink) };
+
+            // Advise accepts IDispatch sink; EnumConnections enumerates it; RaiseEvent delivers.
+            let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let sink = Box::into_raw(Box::new(TestSink {
+                vtbl: &SINK_VTBL,
+                ref_count: AtomicU32::new(1),
+                events: seen.clone(),
+            }))
+            .cast::<c_void>();
+            let mut cookie = 0u32;
+            assert_eq!(unsafe { (cp_vtbl.advise)(cp_ptr, sink, &mut cookie) }, S_OK);
+            assert_ne!(cookie, 0);
+            assert!(object.has_connection_point_sinks());
+
+            // EnumConnections.
+            let mut ec_ptr = core::ptr::null_mut();
+            assert_eq!(
+                unsafe { (cp_vtbl.enum_connections)(cp_ptr, &mut ec_ptr) },
+                S_OK
+            );
+            let ec_vtbl = unsafe { &*(*ec_ptr.cast::<IEnumConnections>()).vtbl };
+            let mut qi_ec = core::ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    (ec_vtbl.unknown.query_interface)(ec_ptr, &IID_IENUMCONNECTIONS, &mut qi_ec)
+                },
+                S_OK
+            );
+            unsafe { (ec_vtbl.unknown.release)(qi_ec) };
+            let mut cd = ConnectData::default();
+            let mut ec_fetched = 0u32;
+            assert_eq!(
+                unsafe { (ec_vtbl.next)(ec_ptr, 1, &mut cd, &mut ec_fetched) },
+                S_OK
+            );
+            assert_eq!(ec_fetched, 1);
+            assert_eq!(cd.dw_cookie, cookie);
+            assert_eq!(cd.punk, sink);
+            unsafe { sink_release(cd.punk) };
+            assert_eq!(
+                unsafe { (ec_vtbl.next)(ec_ptr, 1, &mut cd, &mut ec_fetched) },
+                S_FALSE
+            );
+            assert_eq!(unsafe { (ec_vtbl.reset)(ec_ptr) }, S_OK);
+            let mut cloned_ec = core::ptr::null_mut();
+            assert_eq!(unsafe { (ec_vtbl.clone)(ec_ptr, &mut cloned_ec) }, S_OK);
+            assert_eq!(unsafe { (ec_vtbl.skip)(cloned_ec, 1) }, S_OK);
+            assert_eq!(unsafe { (ec_vtbl.skip)(cloned_ec, 1) }, S_FALSE);
+            unsafe {
+                (ec_vtbl.unknown.release)(cloned_ec);
+                (ec_vtbl.unknown.release)(ec_ptr);
+            }
+
+            // Fire public event 0 with two arguments (must arrive in logical order) and private event 1 (must be ignored).
+            object
+                .fire_connection_point_event(0, &[Variant::from_i32(10), Variant::from_i32(20)])
+                .expect("fire public event");
+            object
+                .fire_connection_point_event(1, &[])
+                .expect("private event ignored");
+            assert_eq!(*seen.borrow(), vec![(0, vec![10, 20])]);
+
+            // Unadvise stops further delivery and rejects double-unadvise.
+            assert_eq!(unsafe { (cp_vtbl.unadvise)(cp_ptr, cookie) }, S_OK);
+            assert_eq!(
+                unsafe { (cp_vtbl.unadvise)(cp_ptr, cookie) },
+                CONNECT_E_NOCONNECTION
+            );
+            assert!(!object.has_connection_point_sinks());
+            object
+                .fire_connection_point_event(0, &[Variant::from_i32(30), Variant::from_i32(40)])
+                .expect("no sinks");
+            assert_eq!(*seen.borrow(), vec![(0, vec![10, 20])]);
+
+            // Also verify IConnectionPoint QI identity.
+            let mut cp_self = core::ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    (cp_vtbl.unknown.query_interface)(cp_ptr, &IID_ICONNECTIONPOINT, &mut cp_self)
+                },
+                S_OK
+            );
+            assert_eq!(cp_self, cp_ptr);
+            unsafe { (cp_vtbl.unknown.release)(cp_self) };
+
+            unsafe {
+                sink_release(sink);
+                (cp_vtbl.unknown.release)(cp_ptr);
+                (cpc_vtbl.unknown.release)(cpc_ptr);
+                (shape_vtbl.unknown.release)(shape_ptr);
+            }
+            assert_eq!(object.strong_count(), 1);
+        }
+        assert_eq!(
+            before.balance_to(crate::current_thread_live_handle_counts()),
+            Default::default()
+        );
     }
 }

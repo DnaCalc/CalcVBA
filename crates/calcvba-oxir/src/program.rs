@@ -152,6 +152,15 @@ pub struct OxClassField {
     pub putref_vtable_slot: Option<u16>,
 }
 
+/// A declared `Event` member on a project class.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OxClassEvent {
+    pub name: String,
+    pub event_id: i32,
+    pub callback_arity: u8,
+    pub externally_visible: bool,
+}
+
 /// A project class: lifecycle hooks, late-bound member table, implemented interfaces.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OxClass {
@@ -168,6 +177,8 @@ pub struct OxClass {
     #[serde(default)]
     pub fields: Vec<OxClassField>,
     pub methods: Vec<OxClassMethod>,
+    #[serde(default)]
+    pub events: Vec<OxClassEvent>,
     #[serde(default)]
     pub as_new_fields: Vec<OxClassAsNewField>,
     /// Display names of `Implements`ed interfaces (for `TypeOf`/`Set` and typed

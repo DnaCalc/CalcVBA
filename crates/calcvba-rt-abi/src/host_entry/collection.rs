@@ -5,12 +5,14 @@ static DESCRIPTOR: RuntimeClassDescriptor = RuntimeClassDescriptor {
     runtime_type_name: None,
     project_identity: None,
     default_interface_iid: Some(calcvba_runtime::com::IID_VBA_COLLECTION),
+    source_interface_iid: None,
     predeclared: false,
     lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
     fields: &[],
     as_new_fields: &[],
     implements: &[],
     interfaces: &[RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR],
+    events: &[],
 };
 pub fn new_collection() -> ObjectRef {
     let object = ObjectRef::from_compat_identity_with_descriptor(i32::MIN, &DESCRIPTOR);

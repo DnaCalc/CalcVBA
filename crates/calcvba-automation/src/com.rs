@@ -137,12 +137,17 @@ pub struct IUnknown {
 pub type HResult = i32;
 
 pub const S_OK: HResult = 0;
+pub const S_FALSE: HResult = 1;
 pub const E_NOTIMPL: HResult = 0x8000_4001u32 as i32;
 pub const E_NOINTERFACE: HResult = 0x8000_4002u32 as i32;
 pub const E_POINTER: HResult = 0x8000_4003u32 as i32;
 pub const E_FAIL: HResult = 0x8000_4005u32 as i32;
 pub const E_INVALIDARG: HResult = 0x8007_0057u32 as i32;
 pub const RPC_E_WRONG_THREAD: HResult = 0x8001_010Eu32 as i32;
+
+pub const CONNECT_E_NOCONNECTION: HResult = 0x8004_0200u32 as i32;
+pub const CONNECT_E_ADVISELIMIT: HResult = 0x8004_0201u32 as i32;
+pub const CONNECT_E_CANNOTCONNECT: HResult = 0x8004_0202u32 as i32;
 
 pub const DISP_E_UNKNOWNINTERFACE: HResult = 0x8002_0001u32 as i32;
 pub const DISP_E_MEMBERNOTFOUND: HResult = 0x8002_0003u32 as i32;
@@ -218,6 +223,48 @@ pub const IID_IDISPATCH: Guid = Guid::new(0x0002_0400, 0, 0, [0xC0, 0, 0, 0, 0, 
 pub const IID_ITYPEINFO: Guid = Guid::new(0x0002_0401, 0, 0, [0xC0, 0, 0, 0, 0, 0, 0, 0x46]);
 /// `IID_IRecordInfo` {0000002F-0000-0000-C000-000000000046}.
 pub const IID_IRECORDINFO: Guid = Guid::new(0x0000_002F, 0, 0, [0xC0, 0, 0, 0, 0, 0, 0, 0x46]);
+/// `IID_IErrorInfo` {1CF2B120-547D-101B-8E65-08002B2BD119}.
+pub const IID_IERRORINFO: Guid = Guid::new(
+    0x1CF2_B120,
+    0x547D,
+    0x101B,
+    [0x8E, 0x65, 0x08, 0x00, 0x2B, 0x2B, 0xD1, 0x19],
+);
+/// `IID_ISupportErrorInfo` {DF0B3D60-548F-101B-8E65-08002B2BD119}.
+pub const IID_ISUPPORTERRORINFO: Guid = Guid::new(
+    0xDF0B_3D60,
+    0x548F,
+    0x101B,
+    [0x8E, 0x65, 0x08, 0x00, 0x2B, 0x2B, 0xD1, 0x19],
+);
+/// `IID_IConnectionPointContainer` {B196B284-BAB4-101A-B69C-00AA00341D07}.
+pub const IID_ICONNECTIONPOINTCONTAINER: Guid = Guid::new(
+    0xB196_B284,
+    0xBAB4,
+    0x101A,
+    [0xB6, 0x9C, 0x00, 0xAA, 0x00, 0x34, 0x1D, 0x07],
+);
+/// `IID_IEnumConnectionPoints` {B196B285-BAB4-101A-B69C-00AA00341D07}.
+pub const IID_IENUMCONNECTIONPOINTS: Guid = Guid::new(
+    0xB196_B285,
+    0xBAB4,
+    0x101A,
+    [0xB6, 0x9C, 0x00, 0xAA, 0x00, 0x34, 0x1D, 0x07],
+);
+/// `IID_IConnectionPoint` {B196B286-BAB4-101A-B69C-00AA00341D07}.
+pub const IID_ICONNECTIONPOINT: Guid = Guid::new(
+    0xB196_B286,
+    0xBAB4,
+    0x101A,
+    [0xB6, 0x9C, 0x00, 0xAA, 0x00, 0x34, 0x1D, 0x07],
+);
+/// `IID_IEnumConnections` {B196B287-BAB4-101A-B69C-00AA00341D07}.
+pub const IID_IENUMCONNECTIONS: Guid = Guid::new(
+    0xB196_B287,
+    0xBAB4,
+    0x101A,
+    [0xB6, 0x9C, 0x00, 0xAA, 0x00, 0x34, 0x1D, 0x07],
+);
 /// `IID__Collection` (`VBA.Collection` default interface) {A4C46780-499F-101B-BB78-00AA00383CBB}.
 pub const IID_VBA_COLLECTION: Guid = Guid::new(
     0xA4C4_6780,
@@ -615,6 +662,142 @@ pub struct IRecordInfoVtbl {
         unsafe extern "system" fn(this: *mut c_void, record: *mut c_void) -> HResult,
 }
 
+/// Portable `IErrorInfo` interface pointer.
+#[repr(C)]
+pub struct IErrorInfo {
+    pub vtbl: *const IErrorInfoVtbl,
+}
+
+/// `IErrorInfo`'s vtable in Windows `oaidl.h` slot order (3 `IUnknown` + 5 slots).
+#[repr(C)]
+pub struct IErrorInfoVtbl {
+    pub unknown: IUnknownVtbl,
+    pub get_guid: unsafe extern "system" fn(this: *mut c_void, guid: *mut Guid) -> HResult,
+    pub get_source: unsafe extern "system" fn(this: *mut c_void, source: *mut *mut u16) -> HResult,
+    pub get_description:
+        unsafe extern "system" fn(this: *mut c_void, description: *mut *mut u16) -> HResult,
+    pub get_help_file:
+        unsafe extern "system" fn(this: *mut c_void, help_file: *mut *mut u16) -> HResult,
+    pub get_help_context:
+        unsafe extern "system" fn(this: *mut c_void, help_context: *mut u32) -> HResult,
+}
+
+/// Portable `ISupportErrorInfo` interface pointer.
+#[repr(C)]
+pub struct ISupportErrorInfo {
+    pub vtbl: *const ISupportErrorInfoVtbl,
+}
+
+/// `ISupportErrorInfo`'s vtable in Windows `oaidl.h` slot order (3 `IUnknown` + 1 slot).
+#[repr(C)]
+pub struct ISupportErrorInfoVtbl {
+    pub unknown: IUnknownVtbl,
+    pub interface_supports_error_info:
+        unsafe extern "system" fn(this: *mut c_void, riid: *const Guid) -> HResult,
+}
+
+/// Portable `IConnectionPointContainer` interface pointer.
+#[repr(C)]
+pub struct IConnectionPointContainer {
+    pub vtbl: *const IConnectionPointContainerVtbl,
+}
+
+/// `IConnectionPointContainer`'s vtable in Windows `ocidl.h` slot order (3 `IUnknown` + 2 slots).
+#[repr(C)]
+pub struct IConnectionPointContainerVtbl {
+    pub unknown: IUnknownVtbl,
+    pub enum_connection_points:
+        unsafe extern "system" fn(this: *mut c_void, pp_enum: *mut *mut c_void) -> HResult,
+    pub find_connection_point: unsafe extern "system" fn(
+        this: *mut c_void,
+        riid: *const Guid,
+        pp_cp: *mut *mut c_void,
+    ) -> HResult,
+}
+
+/// Portable `IConnectionPoint` interface pointer.
+#[repr(C)]
+pub struct IConnectionPoint {
+    pub vtbl: *const IConnectionPointVtbl,
+}
+
+/// `IConnectionPoint`'s vtable in Windows `ocidl.h` slot order (3 `IUnknown` + 5 slots).
+#[repr(C)]
+pub struct IConnectionPointVtbl {
+    pub unknown: IUnknownVtbl,
+    pub get_connection_interface:
+        unsafe extern "system" fn(this: *mut c_void, p_iid: *mut Guid) -> HResult,
+    pub get_connection_point_container:
+        unsafe extern "system" fn(this: *mut c_void, pp_cpc: *mut *mut c_void) -> HResult,
+    pub advise: unsafe extern "system" fn(
+        this: *mut c_void,
+        punk_sink: *mut c_void,
+        pdw_cookie: *mut u32,
+    ) -> HResult,
+    pub unadvise: unsafe extern "system" fn(this: *mut c_void, dw_cookie: u32) -> HResult,
+    pub enum_connections:
+        unsafe extern "system" fn(this: *mut c_void, pp_enum: *mut *mut c_void) -> HResult,
+}
+
+/// Portable `IEnumConnectionPoints` interface pointer.
+#[repr(C)]
+pub struct IEnumConnectionPoints {
+    pub vtbl: *const IEnumConnectionPointsVtbl,
+}
+
+/// `IEnumConnectionPoints`'s vtable in Windows `ocidl.h` slot order (3 `IUnknown` + 4 slots).
+#[repr(C)]
+pub struct IEnumConnectionPointsVtbl {
+    pub unknown: IUnknownVtbl,
+    pub next: unsafe extern "system" fn(
+        this: *mut c_void,
+        c_connections: u32,
+        pp_cp: *mut *mut c_void,
+        pc_fetched: *mut u32,
+    ) -> HResult,
+    pub skip: unsafe extern "system" fn(this: *mut c_void, c_connections: u32) -> HResult,
+    pub reset: unsafe extern "system" fn(this: *mut c_void) -> HResult,
+    pub clone: unsafe extern "system" fn(this: *mut c_void, pp_enum: *mut *mut c_void) -> HResult,
+}
+
+/// Portable `CONNECTDATA` with the Windows `ocidl.h` layout.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ConnectData {
+    pub punk: *mut c_void,
+    pub dw_cookie: u32,
+}
+
+impl Default for ConnectData {
+    fn default() -> Self {
+        Self {
+            punk: core::ptr::null_mut(),
+            dw_cookie: 0,
+        }
+    }
+}
+
+/// Portable `IEnumConnections` interface pointer.
+#[repr(C)]
+pub struct IEnumConnections {
+    pub vtbl: *const IEnumConnectionsVtbl,
+}
+
+/// `IEnumConnections`'s vtable in Windows `ocidl.h` slot order (3 `IUnknown` + 4 slots).
+#[repr(C)]
+pub struct IEnumConnectionsVtbl {
+    pub unknown: IUnknownVtbl,
+    pub next: unsafe extern "system" fn(
+        this: *mut c_void,
+        c_connections: u32,
+        rgcd: *mut ConnectData,
+        pc_fetched: *mut u32,
+    ) -> HResult,
+    pub skip: unsafe extern "system" fn(this: *mut c_void, c_connections: u32) -> HResult,
+    pub reset: unsafe extern "system" fn(this: *mut c_void) -> HResult,
+    pub clone: unsafe extern "system" fn(this: *mut c_void, pp_enum: *mut *mut c_void) -> HResult,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -630,6 +813,17 @@ mod tests {
         assert_eq!(size_of::<ITypeInfoVtbl>(), 22 * P);
         // IUnknown (3) + RecordInit .. RecordDestroy (16).
         assert_eq!(size_of::<IRecordInfoVtbl>(), 19 * P);
+        // IUnknown (3) + GetGUID .. GetHelpContext (5).
+        assert_eq!(size_of::<IErrorInfoVtbl>(), 8 * P);
+        // IUnknown (3) + InterfaceSupportsErrorInfo (1).
+        assert_eq!(size_of::<ISupportErrorInfoVtbl>(), 4 * P);
+        // IUnknown (3) + EnumConnectionPoints, FindConnectionPoint (2).
+        assert_eq!(size_of::<IConnectionPointContainerVtbl>(), 5 * P);
+        // IUnknown (3) + GetConnectionInterface .. EnumConnections (5).
+        assert_eq!(size_of::<IConnectionPointVtbl>(), 8 * P);
+        // IUnknown (3) + Next, Skip, Reset, Clone (4).
+        assert_eq!(size_of::<IEnumConnectionPointsVtbl>(), 7 * P);
+        assert_eq!(size_of::<IEnumConnectionsVtbl>(), 7 * P);
     }
 
     #[test]
@@ -838,6 +1032,15 @@ mod tests {
         assert_eq!(
             offset_of!(FuncDesc, w_func_flags),
             offset_of!(FUNCDESC, wFuncFlags)
+        );
+
+        use windows_sys::Win32::System::Com::CONNECTDATA;
+        assert_eq!(size_of::<ConnectData>(), size_of::<CONNECTDATA>());
+        assert_eq!(align_of::<ConnectData>(), align_of::<CONNECTDATA>());
+        assert_eq!(offset_of!(ConnectData, punk), offset_of!(CONNECTDATA, pUnk));
+        assert_eq!(
+            offset_of!(ConnectData, dw_cookie),
+            offset_of!(CONNECTDATA, dwCookie)
         );
     }
 }

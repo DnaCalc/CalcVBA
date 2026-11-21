@@ -348,6 +348,7 @@ mod tests {
                     putref_vtable_slot: None,
                 }],
                 methods: Vec::new(),
+                events: Vec::new(),
                 as_new_fields: vec![crate::program::OxClassAsNewField {
                     field: 0,
                     binding: crate::inst::OxAsNew::ProjectClass { class: ClassId(0) },

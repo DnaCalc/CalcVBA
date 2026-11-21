@@ -32,17 +32,18 @@ use calcvba_automation::com::{
 };
 
 use crate::object_ref::{
-    RawRuntimeIUnknown, RuntimeClassDescriptor, RuntimeMemberDescriptor, RuntimeMemberInvokeKind,
-    RuntimeValueType,
+    RawRuntimeIUnknown, RuntimeClassDescriptor, RuntimeInterfaceDescriptor,
+    RuntimeMemberDescriptor, RuntimeMemberInvokeKind, RuntimeValueType,
 };
 
-use super::{class_dual_vtable_slot_count, resolve_ids_of_names_for_descriptor};
+use super::{class_dual_vtable_slot_count, resolve_ids_of_names_for_interface};
 
 const HREF_INTERFACE_HALF: u32 = 1;
 const HREF_DISPATCH_HALF: u32 = 2;
 
 struct ClassTypeInfoHalf {
-    descriptor: &'static RuntimeClassDescriptor,
+    name: &'static str,
+    interface: Option<&'static RuntimeInterfaceDescriptor>,
     type_attr: TypeAttr,
     funcs: &'static [FuncDesc],
     func_members: &'static [&'static RuntimeMemberDescriptor],
@@ -66,16 +67,44 @@ unsafe impl Send for SyncTypeInfoPair {}
 // SAFETY: same immutable `'static` COM descriptor tables.
 unsafe impl Sync for SyncTypeInfoPair {}
 
-static CLASS_TYPE_INFOS: OnceLock<Mutex<HashMap<usize, SyncTypeInfoPair>>> = OnceLock::new();
+static CLASS_TYPE_INFOS: OnceLock<Mutex<HashMap<(usize, usize), SyncTypeInfoPair>>> =
+    OnceLock::new();
 
-fn type_info_cache() -> &'static Mutex<HashMap<usize, SyncTypeInfoPair>> {
+fn type_info_cache() -> &'static Mutex<HashMap<(usize, usize), SyncTypeInfoPair>> {
     CLASS_TYPE_INFOS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn type_info_pair_for_descriptor(
     descriptor: &'static RuntimeClassDescriptor,
 ) -> &'static ClassTypeInfoPair {
-    let key = descriptor as *const RuntimeClassDescriptor as usize;
+    let key = (0usize, descriptor as *const RuntimeClassDescriptor as usize);
+    let mut cache = type_info_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(existing) = cache.get(&key).copied() {
+        return existing.0;
+    }
+    let interface = descriptor.dispatch_interface();
+    let guid = descriptor.default_interface_iid.unwrap_or(IID_NULL);
+    let total_vtable_slots = class_dual_vtable_slot_count(descriptor);
+    let pair: &'static ClassTypeInfoPair = Box::leak(Box::new(ClassTypeInfoPair {
+        dispatch: build_half(descriptor.name, guid, interface, total_vtable_slots, false),
+        interface: build_half(descriptor.name, guid, interface, total_vtable_slots, true),
+    }));
+    cache.insert(key, SyncTypeInfoPair(pair));
+    pair
+}
+
+fn type_info_pair_for_interface(
+    name: &'static str,
+    guid: Guid,
+    interface: &'static RuntimeInterfaceDescriptor,
+    total_vtable_slots: usize,
+) -> &'static ClassTypeInfoPair {
+    let key = (
+        1usize,
+        interface as *const RuntimeInterfaceDescriptor as usize,
+    );
     let mut cache = type_info_cache()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -83,8 +112,8 @@ fn type_info_pair_for_descriptor(
         return existing.0;
     }
     let pair: &'static ClassTypeInfoPair = Box::leak(Box::new(ClassTypeInfoPair {
-        dispatch: build_half(descriptor, false),
-        interface: build_half(descriptor, true),
+        dispatch: build_half(name, guid, Some(interface), total_vtable_slots, false),
+        interface: build_half(name, guid, Some(interface), total_vtable_slots, true),
     }));
     cache.insert(key, SyncTypeInfoPair(pair));
     pair
@@ -183,11 +212,13 @@ fn invkind_for_member(kind: RuntimeMemberInvokeKind) -> i32 {
 }
 
 fn build_half(
-    descriptor: &'static RuntimeClassDescriptor,
+    name: &'static str,
+    guid: Guid,
+    interface: Option<&'static RuntimeInterfaceDescriptor>,
+    total_vtable_slots: usize,
     is_interface_half: bool,
 ) -> ClassTypeInfoHalf {
-    let public_members: Vec<&'static RuntimeMemberDescriptor> = descriptor
-        .dispatch_interface()
+    let public_members: Vec<&'static RuntimeMemberDescriptor> = interface
         .map(|dispatch| {
             dispatch
                 .members
@@ -292,10 +323,9 @@ fn build_half(
         });
     }
 
-    let total_vtable_slots = class_dual_vtable_slot_count(descriptor);
     let cb_size_vft = (total_vtable_slots * size_of::<*const c_void>()) as u16;
     let type_attr = TypeAttr {
-        guid: descriptor.default_interface_iid.unwrap_or(IID_NULL),
+        guid,
         lcid: 0,
         dw_reserved: 0,
         memid_constructor: MEMBERID_NIL,
@@ -320,7 +350,8 @@ fn build_half(
     };
 
     ClassTypeInfoHalf {
-        descriptor,
+        name,
+        interface,
         type_attr,
         funcs: Box::leak(funcs.into_boxed_slice()),
         func_members: Box::leak(public_members.into_boxed_slice()),
@@ -387,6 +418,17 @@ fn allocate_type_info(pair: &'static ClassTypeInfoPair, is_interface_half: bool)
 /// Create a retained `ITypeInfo*` (dispatch half, `TKIND_DISPATCH`, flags `0x1C2`) for `descriptor`.
 pub(super) fn create_class_type_info(descriptor: &'static RuntimeClassDescriptor) -> *mut c_void {
     let pair = type_info_pair_for_descriptor(descriptor);
+    allocate_type_info(pair, false)
+}
+
+/// Create a retained `ITypeInfo*` for an implemented interface face on a project class.
+pub(super) fn create_interface_type_info(
+    name: &'static str,
+    guid: Guid,
+    interface: &'static RuntimeInterfaceDescriptor,
+    total_vtable_slots: usize,
+) -> *mut c_void {
+    let pair = type_info_pair_for_interface(name, guid, interface, total_vtable_slots);
     allocate_type_info(pair, false)
 }
 
@@ -627,7 +669,10 @@ unsafe extern "system" fn type_info_get_ids_of_names(
     // SAFETY: `this` is a live `ClassTypeInfoObject`; arguments follow `ITypeInfo::GetIDsOfNames`.
     unsafe {
         let half = (*this.cast::<ClassTypeInfoObject>()).half();
-        resolve_ids_of_names_for_descriptor(half.descriptor, rgsz_names, c_names, p_mem_id)
+        let Some(interface) = half.interface else {
+            return calcvba_automation::com::DISP_E_UNKNOWNNAME;
+        };
+        resolve_ids_of_names_for_interface(interface, rgsz_names, c_names, p_mem_id)
     }
 }
 
@@ -695,7 +740,7 @@ unsafe extern "system" fn type_info_get_documentation(
     // SAFETY: `this` is a live `ClassTypeInfoObject`.
     let half = unsafe { (*this.cast::<ClassTypeInfoObject>()).half() };
     let name = if memid == MEMBERID_NIL {
-        Some(half.descriptor.name)
+        Some(half.name)
     } else {
         half.func_members
             .iter()

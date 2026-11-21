@@ -3792,6 +3792,31 @@ pub(crate) unsafe extern "C" fn rt_jit_raise_event(
                 return status;
             }
         }
+        // After internal WithEvents fan-out, deliver to advised COM connection-point sinks
+        // directly on the source object (dc-yqq0.27). The JIT run's root `ExecutorScope` is
+        // active and no mutable borrow of `run` or `state` spans the call, so sinks can call back
+        // into the object re-entrantly on this JIT run.
+        if source_object.has_connection_point_sinks() {
+            // SAFETY: the handlers returned; this shared run borrow only reads argument cells.
+            let values = match collection_call_arg_values_for_jit(unsafe { &*run }, args) {
+                Ok(values) => values,
+                Err(status) => return status,
+            };
+            let outcome = source_object.fire_connection_point_event(event, &values);
+            // SAFETY: the sink call returned; inspect any pending abort recorded during callbacks.
+            if let Some(exec) = unsafe { jit_exec_state_mut(state) }
+                && let Some(abort) = exec.events.pending_abort.as_ref()
+            {
+                return match abort {
+                    calcvba_rt_abi::RunAbort::End => ST_HALT,
+                    calcvba_rt_abi::RunAbort::Fault(_) => calcvba_rt_abi::ST_ABORT,
+                };
+            }
+            if outcome.is_err() {
+                // SAFETY: the live run state, as above.
+                return unsafe { rt_raise_runtime_error_number(state, 5) };
+            }
+        }
         // After the internal WithEvents fan-out, the host's event sink (an in-process COM
         // server forwards the event to its connection-point clients), as VM3 delivers it. The
         // sink is taken out across the call so the host never sees it aliased.

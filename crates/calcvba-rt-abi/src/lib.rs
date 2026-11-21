@@ -4558,6 +4558,7 @@ mod tests {
                 terminate,
                 fields: Vec::new(),
                 methods: Vec::new(),
+                events: Vec::new(),
                 as_new_fields: Vec::new(),
                 implements: Vec::new(),
             }],

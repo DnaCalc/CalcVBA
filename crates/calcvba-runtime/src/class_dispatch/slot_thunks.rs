@@ -95,16 +95,22 @@ mod win64 {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     use calcvba_automation::com::{
-        DISP_E_TYPEMISMATCH, E_FAIL, E_NOTIMPL, E_POINTER, HResult, RPC_E_WRONG_THREAD, S_OK,
+        DISP_E_TYPEMISMATCH, E_FAIL, E_NOTIMPL, E_POINTER, HResult, IID_IDISPATCH,
+        RPC_E_WRONG_THREAD, S_OK,
     };
+    use calcvba_automation::oleaut;
+    use calcvba_automation::safe_array::SafeArray;
 
+    use super::super::error_info::{clear_thread_error_info, publish_member_fault_error_info};
+    use super::super::implements::{ImplementedInterfaceFace, is_impl_query_interface};
     use super::super::{
         coerce_for_byref_writeback, copy_dispatch_arg, current_thread_id, invoke_object_member,
         vba_error_to_hresult,
     };
     use crate::object_ref::{
-        ObjectRef, RuntimeMemberDescriptor, RuntimeMemberInvokeKind, RuntimeValueType,
-        compat_owner_from_this,
+        COMPAT_OBJECT_VTBL, CompatObjectBase, ObjectRef, RawRuntimeIUnknown,
+        RuntimeInterfaceDescriptor, RuntimeMemberDescriptor, RuntimeMemberInvokeKind,
+        RuntimeValueType,
     };
     use crate::{VarType, Variant, coerce};
 
@@ -163,15 +169,57 @@ mod win64 {
     }
 
     fn member_for_slot(
-        descriptor: &'static crate::object_ref::RuntimeClassDescriptor,
+        interface: &'static RuntimeInterfaceDescriptor,
         slot: usize,
     ) -> Option<&'static RuntimeMemberDescriptor> {
-        descriptor.dispatch_interface().and_then(|dispatch| {
-            dispatch
-                .members
-                .iter()
-                .find(|member| member.vtable_slot.map(usize::from) == Some(slot))
-        })
+        interface
+            .members
+            .iter()
+            .find(|member| member.vtable_slot.map(usize::from) == Some(slot))
+    }
+
+    enum SlotParamCell {
+        VariantCell {
+            by_ref: bool,
+            vt: u16,
+            target: *mut u8,
+            cell: Variant,
+        },
+        SafeArrayRef {
+            by_ref: bool,
+            target: *mut *mut c_void,
+        },
+    }
+
+    enum SlotReturnTarget {
+        VariantCell { vt: u16, out: *mut u8 },
+        SafeArrayOut { out: *mut *mut c_void },
+    }
+
+    unsafe fn clone_raw_safearray_to_variant(psa: *mut c_void) -> Result<Variant, HResult> {
+        if psa.is_null() {
+            return Ok(Variant::empty());
+        }
+        let mut copy = core::ptr::null_mut();
+        // SAFETY: `psa` is a live caller-owned `SAFEARRAY*`; `safe_array_copy` deep-copies it.
+        let hr = unsafe { oleaut::safe_array_copy(psa, &mut copy) };
+        if hr < 0 {
+            return Err(hr);
+        }
+        if copy.is_null() {
+            return Ok(Variant::empty());
+        }
+        // SAFETY: `copy` is an owned `SAFEARRAY*` returned by `safe_array_copy`.
+        match unsafe { SafeArray::from_raw_safearray_owned(copy, None) } {
+            Some(arr) => Ok(Variant::from_safearray(arr)),
+            None => {
+                // SAFETY: destroy unadopted copy.
+                unsafe {
+                    let _ = oleaut::safe_array_destroy(copy);
+                }
+                Err(DISP_E_TYPEMISMATCH)
+            }
+        }
     }
 
     unsafe fn dispatch(slot: usize, args: *const u64, xmm: *const u64) -> HResult {
@@ -180,23 +228,84 @@ mod win64 {
         if this.is_null() {
             return E_POINTER;
         }
-        let owner = compat_owner_from_this(this);
-        // SAFETY: `this` is a live `CompatObjectBase`, kept alive by the caller's reference.
+        // Resolve primary `CompatObjectBase` or secondary `ImplementedInterfaceFace`.
+        // SAFETY: `this` is a live COM interface pointer kept alive by the caller's reference.
+        let (owner, interface, interface_iid) = unsafe {
+            let vtbl = (*this.cast::<RawRuntimeIUnknown>()).vtbl;
+            let qi = (*vtbl).query_interface;
+            if core::ptr::fn_addr_eq(qi, COMPAT_OBJECT_VTBL.query_interface) {
+                let owner = this.cast::<CompatObjectBase>();
+                let desc = (*owner).class_descriptor;
+                (
+                    owner,
+                    desc.dispatch_interface(),
+                    desc.default_interface_iid.unwrap_or(IID_IDISPATCH),
+                )
+            } else if is_impl_query_interface(qi) {
+                let face = &*this.cast::<ImplementedInterfaceFace>();
+                (
+                    face.owner,
+                    Some(face.interface),
+                    face.interface.identity.guid,
+                )
+            } else {
+                return E_POINTER;
+            }
+        };
+        // SAFETY: `owner` is a live `CompatObjectBase`, kept alive by the caller's reference.
         if current_thread_id() != unsafe { (*owner).owner_thread } {
             return RPC_E_WRONG_THREAD;
         }
-        // SAFETY: same live object, on its owner thread.
-        let descriptor = unsafe { (*owner).class_descriptor };
-        let Some(member) = member_for_slot(descriptor, slot) else {
+        clear_thread_error_info();
+        let Some(member) = interface.and_then(|iface| member_for_slot(iface, slot)) else {
             return E_NOTIMPL;
         };
 
-        // Each argument as a VT_BYREF cell over the caller's storage.
+        // Each argument as a VT_BYREF cell (or SAFEARRAY* / SAFEARRAY**) over the caller's storage.
         let mut cells = Vec::with_capacity(member.params.len());
         let mut values = Vec::with_capacity(member.params.len());
         for (index, param) in member.params.iter().enumerate() {
             let position = index + 1;
-            let Some(vt) = slot_vt(param.value_type).filter(|_| !param.param_array) else {
+            if param.param_array {
+                return E_NOTIMPL;
+            }
+            if param.value_type == RuntimeValueType::Array {
+                // SAFETY: caller passed at least `params.len()` arguments after `this`.
+                let raw_word = unsafe { *args.add(position) } as usize;
+                if param.by_ref {
+                    let pp = raw_word as *mut *mut c_void;
+                    let value = if pp.is_null() {
+                        Variant::empty()
+                    } else {
+                        // SAFETY: caller supplied a readable `SAFEARRAY**`.
+                        let psa = unsafe { *pp };
+                        // SAFETY: `psa` is null or a live `SAFEARRAY*`.
+                        match unsafe { clone_raw_safearray_to_variant(psa) } {
+                            Ok(val) => val,
+                            Err(hr) => return hr,
+                        }
+                    };
+                    values.push(value);
+                    cells.push(SlotParamCell::SafeArrayRef {
+                        by_ref: !pp.is_null(),
+                        target: pp,
+                    });
+                } else {
+                    let psa = raw_word as *mut c_void;
+                    // SAFETY: `psa` is null or a live `SAFEARRAY*`.
+                    let value = match unsafe { clone_raw_safearray_to_variant(psa) } {
+                        Ok(val) => val,
+                        Err(hr) => return hr,
+                    };
+                    values.push(value);
+                    cells.push(SlotParamCell::SafeArrayRef {
+                        by_ref: false,
+                        target: core::ptr::null_mut(),
+                    });
+                }
+                continue;
+            }
+            let Some(vt) = slot_vt(param.value_type) else {
                 return E_NOTIMPL;
             };
             let raw = if !param.by_ref && is_float(vt) && position <= 3 {
@@ -223,7 +332,12 @@ mod win64 {
                 Ok(value) => values.push(value),
                 Err(hr) => return hr,
             }
-            cells.push((param.by_ref, vt, target, cell));
+            cells.push(SlotParamCell::VariantCell {
+                by_ref: param.by_ref,
+                vt,
+                target,
+                cell,
+            });
         }
 
         let returns = matches!(
@@ -231,46 +345,70 @@ mod win64 {
             RuntimeMemberInvokeKind::Method | RuntimeMemberInvokeKind::PropertyGet
         ) && member.return_type.is_some();
         let result = if returns {
-            let Some(vt) = member.return_type.and_then(slot_vt) else {
-                return E_NOTIMPL;
-            };
-            // SAFETY: the retval pointer follows the declared arguments.
-            let out = unsafe { *args.add(member.params.len() + 1) } as usize as *mut u8;
-            if out.is_null() {
-                return E_POINTER;
-            }
-            // An [out] slot holds nothing yet: give owned types an empty value to replace.
-            // SAFETY: `out` is the caller's writable storage of type `vt`.
-            unsafe {
-                match vt {
-                    0x08 | 0x09 => out.cast::<*mut c_void>().write(core::ptr::null_mut()),
-                    0x0C => out.cast::<Variant>().write(Variant::empty()),
-                    _ => {}
+            if member.return_type == Some(RuntimeValueType::Array) {
+                // SAFETY: the retval pointer follows the declared arguments.
+                let out =
+                    unsafe { *args.add(member.params.len() + 1) } as usize as *mut *mut c_void;
+                if out.is_null() {
+                    return E_POINTER;
                 }
+                // SAFETY: `out` is the caller's writable `SAFEARRAY**` out-slot.
+                unsafe {
+                    *out = core::ptr::null_mut();
+                }
+                Some(SlotReturnTarget::SafeArrayOut { out })
+            } else {
+                let Some(vt) = member.return_type.and_then(slot_vt) else {
+                    return E_NOTIMPL;
+                };
+                // SAFETY: the retval pointer follows the declared arguments.
+                let out = unsafe { *args.add(member.params.len() + 1) } as usize as *mut u8;
+                if out.is_null() {
+                    return E_POINTER;
+                }
+                // An [out] slot holds nothing yet: give owned types an empty value to replace.
+                // SAFETY: `out` is the caller's writable storage of type `vt`.
+                unsafe {
+                    match vt {
+                        0x08 | 0x09 => out.cast::<*mut c_void>().write(core::ptr::null_mut()),
+                        0x0C => out.cast::<Variant>().write(Variant::empty()),
+                        _ => {}
+                    }
+                }
+                Some(SlotReturnTarget::VariantCell { vt, out })
             }
-            Some((vt, out))
         } else {
             None
         };
 
         // ByRef arguments over the same storage are one variable.
         let aliases: Vec<usize> = (0..cells.len())
-            .map(|index| {
-                let (by_ref, vt, target, _) = &cells[index];
-                if !*by_ref {
-                    return index;
-                }
-                cells[..index]
+            .map(|index| match &cells[index] {
+                SlotParamCell::VariantCell {
+                    by_ref: true,
+                    vt,
+                    target,
+                    ..
+                } => cells[..index]
                     .iter()
-                    .position(|(other_ref, other_vt, other_target, _)| {
-                        *other_ref && other_vt == vt && other_target == target
+                    .position(|other| {
+                        matches!(
+                            other,
+                            SlotParamCell::VariantCell {
+                                by_ref: true,
+                                vt: other_vt,
+                                target: other_target,
+                                ..
+                            } if other_vt == vt && other_target == target
+                        )
                     })
-                    .unwrap_or(index)
+                    .unwrap_or(index),
+                _ => index,
             })
             .collect();
 
-        // SAFETY: `this` is live; take one reference for the call.
-        let Some(object) = (unsafe { ObjectRef::from_raw_iunknown_addref(this.cast()) }) else {
+        // SAFETY: `owner` is live; always take one primary reference (`Me = owner`) for the call.
+        let Some(object) = (unsafe { ObjectRef::from_raw_iunknown_addref(owner.cast()) }) else {
             return E_POINTER;
         };
         let outcome = invoke_object_member(
@@ -282,37 +420,76 @@ mod win64 {
             &aliases,
         );
 
-        for ((by_ref, vt, _, cell), value) in cells.iter().zip(&values) {
-            if !*by_ref {
-                continue;
-            }
-            let prepared = match as_slot_type(value, *vt) {
-                Ok(prepared) => prepared,
-                Err(hr) => return hr,
-            };
-            // SAFETY: the caller's ByRef storage is live and writable for this call.
-            if unsafe { cell.write_through(prepared) }.is_err() {
-                return DISP_E_TYPEMISMATCH;
+        for (cell_entry, value) in cells.iter().zip(&values) {
+            match cell_entry {
+                SlotParamCell::VariantCell {
+                    by_ref: true,
+                    vt,
+                    cell,
+                    ..
+                } => {
+                    let prepared = match as_slot_type(value, *vt) {
+                        Ok(prepared) => prepared,
+                        Err(hr) => return hr,
+                    };
+                    // SAFETY: the caller's ByRef storage is live and writable for this call.
+                    if unsafe { cell.write_through(prepared) }.is_err() {
+                        return DISP_E_TYPEMISMATCH;
+                    }
+                }
+                SlotParamCell::SafeArrayRef {
+                    by_ref: true,
+                    target,
+                } => {
+                    if let Some(arr) = value.as_safearray() {
+                        let new_ptr = arr.clone().into_raw_safearray_ptr();
+                        // SAFETY: caller supplied a live writable `SAFEARRAY**`.
+                        unsafe {
+                            let old = *(*target);
+                            *(*target) = new_ptr;
+                            if !old.is_null() {
+                                let _ = oleaut::safe_array_destroy(old);
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 
         match outcome {
             Ok(value) => {
-                if let Some((vt, out)) = result {
-                    let prepared = match as_slot_type(&value, vt) {
-                        Ok(prepared) => prepared,
-                        Err(hr) => return hr,
-                    };
-                    // SAFETY: `out` is writable storage of type `vt`, initialised above.
-                    let cell = unsafe { Variant::by_ref(vt, out) };
-                    // SAFETY: same storage.
-                    if unsafe { cell.write_through(prepared) }.is_err() {
-                        return DISP_E_TYPEMISMATCH;
+                if let Some(target) = result {
+                    match target {
+                        SlotReturnTarget::VariantCell { vt, out } => {
+                            let prepared = match as_slot_type(&value, vt) {
+                                Ok(prepared) => prepared,
+                                Err(hr) => return hr,
+                            };
+                            // SAFETY: `out` is writable storage of type `vt`, initialised above.
+                            let cell = unsafe { Variant::by_ref(vt, out) };
+                            // SAFETY: same storage.
+                            if unsafe { cell.write_through(prepared) }.is_err() {
+                                return DISP_E_TYPEMISMATCH;
+                            }
+                        }
+                        SlotReturnTarget::SafeArrayOut { out } => {
+                            let Some(arr) = value.as_safearray() else {
+                                return DISP_E_TYPEMISMATCH;
+                            };
+                            // SAFETY: `out` is a writable `SAFEARRAY**` out-slot.
+                            unsafe {
+                                *out = arr.clone().into_raw_safearray_ptr();
+                            }
+                        }
                     }
                 }
                 S_OK
             }
-            Err(fault) => vba_error_to_hresult(fault.number),
+            Err(fault) => {
+                publish_member_fault_error_info(interface_iid, &fault);
+                vba_error_to_hresult(fault.number)
+            }
         }
     }
 }

@@ -1337,6 +1337,7 @@ mod tests {
             name: name.into(),
             runtime_type_name: None,
             default_interface_iid: None,
+            source_interface_iid: None,
             predeclared: false,
             lifecycle: calcvba_runtime::RUNTIME_CLASS_LIFECYCLE_NONE,
             fields: Vec::new(),
@@ -1344,6 +1345,7 @@ mod tests {
             implements: Vec::new(),
             methods: Vec::new(),
             implemented_interfaces: Vec::new(),
+            events: Vec::new(),
         })
     }
 

@@ -360,14 +360,35 @@ fn bind_one(
         for field in &class.fields {
             collect_object_names(&field.ty, &mut object_names);
         }
+        for iface in &class.implements {
+            object_names.insert(iface.clone());
+        }
     }
-    let object_interfaces = object_names
+    let mut object_interfaces: Vec<calcvba_com::TypeLibInterfaceMetadata> = object_names
         .iter()
         .map(|name| name.to_ascii_lowercase())
         .collect::<std::collections::BTreeSet<_>>()
         .iter()
         .filter_map(|name| env.object_interface(name))
         .collect();
+    for class in &classes {
+        for iface in &class.implements {
+            let already_present = object_interfaces.iter().any(|existing| {
+                existing.name.eq_ignore_ascii_case(iface)
+                    || existing
+                        .name
+                        .rsplit('.')
+                        .next()
+                        .is_some_and(|bare| bare.eq_ignore_ascii_case(iface))
+            });
+            if !already_present
+                && let Some(meta) =
+                    resolve_implemented_typelib_interface(iface, &manifest.references)
+            {
+                object_interfaces.push(meta);
+            }
+        }
+    }
 
     let external_calls = build_external_calls(env, &record_types);
     Ok(CoreProgram {
@@ -386,6 +407,57 @@ fn bind_one(
         exports,
         imports,
     })
+}
+
+fn resolve_implemented_typelib_interface(
+    raw_name: &str,
+    references: &[calcvba_symbol::manifest::ProjectReference],
+) -> Option<calcvba_com::TypeLibInterfaceMetadata> {
+    let trimmed = raw_name.trim();
+    let (qualifier, bare) = match trimmed.rsplit_once('.') {
+        Some((q, n)) if !q.trim().is_empty() && !n.trim().is_empty() => (Some(q.trim()), n.trim()),
+        _ => (None, trimmed),
+    };
+    let mut candidates = vec![bare.to_string()];
+    if !bare.starts_with('_') {
+        candidates.push(format!("_{bare}"));
+    }
+    for reference in references {
+        let calcvba_symbol::manifest::ProjectReference::TypeLibrary {
+            name,
+            guid,
+            version_major,
+            version_minor,
+            lcid,
+            import_lib,
+        } = reference
+        else {
+            continue;
+        };
+        if let Some(q) = qualifier
+            && !name.eq_ignore_ascii_case(q)
+        {
+            continue;
+        }
+        let request = calcvba_com::TypeLibResolveRequest {
+            reference_name: name.clone(),
+            requested_coclass: None,
+            importlib_hint: import_lib.clone(),
+            libid_hint: guid.clone(),
+            major_version_hint: *version_major,
+            minor_version_hint: *version_minor,
+            lcid_hint: *lcid,
+        };
+        for candidate in &candidates {
+            if let Some(mut meta) =
+                calcvba_com::resolve_typelib_interface_metadata(&request, candidate)
+            {
+                meta.name = trimmed.to_string();
+                return Some(meta);
+            }
+        }
+    }
+    None
 }
 
 fn core_long_ptr_width(

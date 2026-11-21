@@ -79,12 +79,14 @@ static VBA_COLLECTION_DESCRIPTOR: RuntimeClassDescriptor = RuntimeClassDescripto
     runtime_type_name: None,
     project_identity: None,
     default_interface_iid: Some(calcvba_runtime::com::IID_VBA_COLLECTION),
+    source_interface_iid: None,
     predeclared: false,
     lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
     fields: &[],
     as_new_fields: &[],
     implements: &[],
     interfaces: &[RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR],
+    events: &[],
 };
 
 fn hidden_me_receiver_param_count(func: &calcvba_oxir::OxFunc) -> usize {
@@ -2401,6 +2403,18 @@ impl<'h> Vm3<'h> {
                 targets.sort_by_key(|(order, ..)| *order);
                 for (_, sink, handler, owner_bundle) in targets {
                     self.run_proc_with_me(owner_bundle, FuncId(handler), sink, args, false)?;
+                }
+                // After internal WithEvents fan-out, deliver to advised COM connection-point
+                // sinks directly on the source object (dc-yqq0.27), keeping `self.event_scope()`
+                // active so sinks can call back into the object re-entrantly on this VM3 run.
+                if source_object.has_connection_point_sinks() {
+                    let values = self.extern_args(args)?;
+                    let outcome = {
+                        let _events = self.event_scope();
+                        source_object.fire_connection_point_event(event_id, &values)
+                    };
+                    self.take_event_abort()?;
+                    outcome.map_err(|msg| Vm3Error::Fault(Fault::new(5, msg)))?;
                 }
                 // After the internal WithEvents fan-out, deliver to the host event sink (W7):
                 // the COM server forwards the event to its connection-point clients. Take the
@@ -6663,6 +6677,7 @@ mod tests {
                     is_default_member: false,
                     is_enumerator_member: false,
                 }],
+                events: Vec::new(),
                 as_new_fields: Vec::new(),
                 implements: Vec::new(),
             }],
@@ -7081,6 +7096,7 @@ mod tests {
                     is_default_member: false,
                     is_enumerator_member: false,
                 }],
+                events: Vec::new(),
                 as_new_fields: Vec::new(),
                 implements: Vec::new(),
             }],
@@ -7262,6 +7278,7 @@ mod tests {
                         is_enumerator_member: true,
                     },
                 ],
+                events: Vec::new(),
                 as_new_fields: vec![CoreClassAsNewField {
                     field: 13,
                     binding: CoreAsNew::ProjectClass {
@@ -7508,6 +7525,7 @@ mod tests {
                             is_enumerator_member: false,
                         },
                     ],
+                    events: Vec::new(),
                     as_new_fields: Vec::new(),
                     implements: vec!["IShape".into()],
                 },
@@ -7540,6 +7558,7 @@ mod tests {
                             is_enumerator_member: false,
                         },
                     ],
+                    events: Vec::new(),
                     as_new_fields: Vec::new(),
                     implements: Vec::new(),
                 },

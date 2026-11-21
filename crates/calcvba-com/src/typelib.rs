@@ -799,12 +799,14 @@ pub fn runtime_class_descriptor_from_typelib_metadata(
         runtime_type_name: None,
         project_identity: None,
         default_interface_iid: None,
+        source_interface_iid: None,
         predeclared: false,
         lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
         fields: &[],
         as_new_fields: &[],
         implements: &[],
         interfaces,
+        events: &[],
     }))
 }
 

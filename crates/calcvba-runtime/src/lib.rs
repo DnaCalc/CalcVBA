@@ -44,10 +44,13 @@ pub use callback_thunks::{
 };
 pub use class_descriptor::{
     RuntimeClassActivationSpec, RuntimeClassAsNewFieldSpec, RuntimeClassFieldSpec,
-    RuntimeClassSpec, RuntimeImplementedInterfaceSpec, RuntimeMemberSpec, RuntimeParamSpec,
-    build_runtime_class_descriptor, default_class_interface_iid, runtime_project_interface_guid,
+    RuntimeClassSpec, RuntimeEventSpec, RuntimeImplementedInterfaceSpec, RuntimeMemberSpec,
+    RuntimeParamSpec, build_runtime_class_descriptor, default_class_interface_iid,
+    default_class_source_interface_iid, runtime_project_interface_guid,
 };
-pub use class_dispatch::{class_dual_vtable_ptr, class_dual_vtable_slot_count, current_thread_id};
+pub use class_dispatch::{
+    class_dual_vtable_ptr, class_dual_vtable_slot_count, current_thread_id, invoke_early_bound_slot,
+};
 pub use coerce::{print_display_text, variant_to_vba_string, write_display_text};
 pub use com_record::{ComRecord, ComRecordRef};
 pub use decimal::Decimal96;
@@ -62,7 +65,7 @@ pub use object_ref::{
     RUNTIME_IUNKNOWN_INTERFACE_IDENTITY, RawRuntimeIUnknown, RuntimeApartmentModel,
     RuntimeClassActivationDescriptor, RuntimeClassAsNewFieldDescriptor, RuntimeClassDescriptor,
     RuntimeClassFieldDescriptor, RuntimeClassLifecycleDescriptor, RuntimeDescriptorIssue,
-    RuntimeDispatchCacheKey, RuntimeDispatchPlan, RuntimeDispatchPlanCache,
+    RuntimeDispatchCacheKey, RuntimeDispatchPlan, RuntimeDispatchPlanCache, RuntimeEventDescriptor,
     RuntimeInterfaceDescriptor, RuntimeInterfaceId, RuntimeInterfaceIdentity, RuntimeInterfaceKind,
     RuntimeInterfaceProjection, RuntimeLifetimePolicy, RuntimeMemberBacking,
     RuntimeMemberDescriptor, RuntimeMemberInvokeKind, RuntimeObjectIdentity,

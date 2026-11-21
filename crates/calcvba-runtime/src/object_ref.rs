@@ -302,6 +302,15 @@ pub struct RuntimeProjectClassIdentity {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeEventDescriptor {
+    pub name: &'static str,
+    pub event_id: i32,
+    pub dispid: i32,
+    pub callback_arity: u8,
+    pub externally_visible: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeClassDescriptor {
     pub name: &'static str,
     /// Public type name of an engine-supplied class, separate from its nominal identity.
@@ -309,12 +318,16 @@ pub struct RuntimeClassDescriptor {
     pub project_identity: Option<RuntimeProjectClassIdentity>,
     /// Default dual-interface IID for this class (`Guid::deterministic(unit, "I{Class}")`).
     pub default_interface_iid: Option<Guid>,
+    /// Default source dispinterface IID for `IConnectionPointContainer` when the class declares
+    /// externally visible `Event`s (`Guid::deterministic(unit, "_{Class}Events")`).
+    pub source_interface_iid: Option<Guid>,
     pub predeclared: bool,
     pub lifecycle: RuntimeClassLifecycleDescriptor,
     pub fields: &'static [RuntimeClassFieldDescriptor],
     pub as_new_fields: &'static [RuntimeClassAsNewFieldDescriptor],
     pub implements: &'static [&'static str],
     pub interfaces: &'static [RuntimeInterfaceDescriptor],
+    pub events: &'static [RuntimeEventDescriptor],
 }
 
 /// Structural issue that makes a runtime descriptor unsafe or ambiguous for future COM export.
@@ -572,12 +585,14 @@ pub const COMPAT_OBJECT_CLASS_DESCRIPTOR: RuntimeClassDescriptor = RuntimeClassD
     runtime_type_name: None,
     project_identity: None,
     default_interface_iid: None,
+    source_interface_iid: None,
     predeclared: false,
     lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
     fields: &[],
     as_new_fields: &[],
     implements: &[],
     interfaces: &[RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR],
+    events: &[],
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -930,6 +945,18 @@ pub(crate) struct CompatObjectBase {
     /// with the box, so there is no VM-side store and no leak. `None` for ordinary project
     /// instances that hold no native collection.
     pub(crate) native_state: RefCell<Option<crate::collection::CollectionData>>,
+    /// Embedded `ISupportErrorInfo` COM face on this object's single COM identity.
+    pub(crate) error_info: crate::class_dispatch::SupportErrorInfoFace,
+    /// Embedded `IConnectionPointContainer` COM face on this object's single COM identity.
+    pub(crate) cpc: crate::class_dispatch::ConnectionPointContainerFace,
+    /// Embedded `IConnectionPoint` sub-object for `RaiseEvent` sources.
+    pub(crate) cp: crate::class_dispatch::ConnectionPointFace,
+    /// Owned stable slice of `Implements` interface COM faces (reclaimed in teardown).
+    pub(crate) implements_faces: *mut [crate::class_dispatch::ImplementedInterfaceFace],
+    /// Advised COM connection-point event sinks retained on this object's owning thread.
+    pub(crate) event_sinks: RefCell<Vec<crate::class_dispatch::ConnectionPointSink>>,
+    /// Monotonic cookie allocator for `IConnectionPoint::Advise` (starts at 1; 0 is skipped).
+    pub(crate) next_event_cookie: AtomicU32,
     pub(crate) parked_for_termination: AtomicBool,
     pub(crate) running_termination: AtomicBool,
     pub(crate) terminated: AtomicBool,
@@ -961,28 +988,58 @@ pub(crate) unsafe extern "system" fn compat_query_interface(
     let iid = unsafe { riid.read() };
     let owner = compat_owner_from_this(this);
     // SAFETY: `this` is a live `CompatObjectBase` kept alive by the caller's COM reference.
-    let (has_dual, default_iid) = unsafe {
+    let (has_dual, default_iid, source_iid) = unsafe {
         (
             (*owner).has_dual_vtable,
             (*owner).class_descriptor.default_interface_iid,
+            (*owner).class_descriptor.source_interface_iid,
         )
     };
     // A plain three-slot compat object answers `IUnknown` only (dc-yqq0.15). A project instance
     // built with a `ClassDualVtbl` answers `IUnknown`, `IDispatch`, and its class's default dual
-    // interface IID with the same `&primary` pointer (one COM identity, dc-yqq0.23).
-    let supports_iid = iid == RUNTIME_GUID_IUNKNOWN
-        || (has_dual && (iid == RUNTIME_GUID_IDISPATCH || default_iid == Some(iid)));
-    if !supports_iid {
+    // interface IID with `&primary`, `ISupportErrorInfo` with `&owner.error_info`,
+    // `IConnectionPointContainer` with `&owner.cpc` (when the class has a source interface), and
+    // any implemented interface IID with its dedicated face on `owner.implements_faces`
+    // (dc-yqq0.23 / dc-yqq0.27). All faces share one COM identity (`QI(IUnknown) == &primary`)
+    // and one atomic refcount.
+    let target: *mut c_void = if iid == RUNTIME_GUID_IUNKNOWN
+        || (has_dual && (iid == RUNTIME_GUID_IDISPATCH || default_iid == Some(iid)))
+    {
+        owner.cast()
+    } else if has_dual && iid == calcvba_automation::com::IID_ISUPPORTERRORINFO {
+        // SAFETY: `error_info` is an embedded field of live `CompatObjectBase`.
+        unsafe { (&raw mut (*owner).error_info).cast() }
+    } else if has_dual && source_iid.is_some() && iid == RUNTIME_GUID_ICONNECTIONPOINTCONTAINER {
+        // SAFETY: `cpc` is an embedded field of live `CompatObjectBase`.
+        unsafe { (&raw mut (*owner).cpc).cast() }
+    } else if has_dual {
+        // SAFETY: `implements_faces` is a live fixed-size slice owned by `owner` for its lifetime.
+        let faces = unsafe { (*owner).implements_faces };
+        let len = faces.len();
+        let base = faces.cast::<crate::class_dispatch::ImplementedInterfaceFace>();
+        let mut found: *mut c_void = core::ptr::null_mut();
+        for index in 0..len {
+            // SAFETY: `index < len`.
+            let face_ptr = unsafe { base.add(index) };
+            // SAFETY: `face_ptr` points to a live `ImplementedInterfaceFace`.
+            if unsafe { (*face_ptr).interface.identity.guid } == iid {
+                found = face_ptr.cast();
+                break;
+            }
+        }
+        if found.is_null() {
+            return RUNTIME_E_NOINTERFACE;
+        }
+        found
+    } else {
         return RUNTIME_E_NOINTERFACE;
-    }
+    };
     // SAFETY: same caller-owned writable out-slot as above (QueryInterface ABI, non-null checked).
     unsafe {
-        *ppv = this;
+        *ppv = target;
     }
-    // SAFETY: `this` was validated above as a live `CompatObjectBase`, which is exactly
-    // `compat_add_ref`'s requirement; the reference taken here is owned by the `*ppv` we
-    // just handed to the caller.
-    unsafe { compat_add_ref(this) };
+    // SAFETY: `owner` is a live `CompatObjectBase`; take one reference for the `*ppv` handed out.
+    unsafe { compat_add_ref(owner.cast()) };
     RUNTIME_S_OK
 }
 
@@ -1031,12 +1088,15 @@ fn drain_pending_drops(channel: &crate::object_owner::OwnerTerminationChannel) {
 /// The caller owns the sole final reference to `owner` (from `Box::into_raw` in
 /// `from_compat_object`) and runs on the owning thread (or after owner expiry).
 unsafe fn free_compat_box_on_owner_thread(owner: *mut CompatObjectBase) {
-    // SAFETY: forwarded caller contract; clearing `invoker`/`fields`/`native_state` before
-    // freeing the box ensures child drops never observe a freed parent.
+    // SAFETY: forwarded caller contract; releasing sinks and clearing `invoker`/`fields`/
+    // `native_state` before freeing the box ensures child drops never observe a freed parent.
     unsafe {
+        crate::class_dispatch::release_all_event_sinks(owner);
         (*owner).invoker.borrow_mut().take();
         (*owner).fields.borrow_mut().clear();
         (*owner).native_state.borrow_mut().take();
+        let faces = (*owner).implements_faces;
+        drop(Box::from_raw(faces));
         crate::live_counters::object_box_freed();
         drop(Box::from_raw(owner));
     }
@@ -1323,8 +1383,52 @@ unsafe fn compat_field_default(owner: *mut CompatObjectBase, token: i32) -> Opti
     }
 }
 
+/// Recognize a primary `CompatObjectBase` pointer or any of its secondary identity faces
+/// (`Implements`, `ISupportErrorInfo`, `IConnectionPointContainer`) and return `&primary`.
+///
+/// # Safety
+/// `unknown` must point to a live COM interface object whose first pointer-sized field is its
+/// `IUnknownVtbl`.
+pub(crate) unsafe fn try_compat_owner_from_iunknown(
+    unknown: *mut RawRuntimeIUnknown,
+) -> Option<*mut CompatObjectBase> {
+    if unknown.is_null() {
+        return None;
+    }
+    // SAFETY: every COM interface object's first word is its `IUnknownVtbl*`.
+    let vtbl = unsafe { (*unknown).vtbl };
+    if std::ptr::eq(vtbl, &COMPAT_OBJECT_VTBL) {
+        return Some(unknown.cast::<CompatObjectBase>());
+    }
+    // SAFETY: every live COM vtable has `query_interface` at slot 0.
+    let qi = unsafe { (*vtbl).query_interface };
+    if core::ptr::fn_addr_eq(qi, COMPAT_OBJECT_VTBL.query_interface) {
+        return Some(unknown.cast::<CompatObjectBase>());
+    }
+    if crate::class_dispatch::is_impl_query_interface(qi) {
+        // SAFETY: `impl_query_interface` only lives on `ImplementedInterfaceFace` vtables.
+        return Some(unsafe {
+            (*unknown.cast::<crate::class_dispatch::ImplementedInterfaceFace>()).owner
+        });
+    }
+    if crate::class_dispatch::is_support_error_info_query_interface(qi) {
+        // SAFETY: `support_error_info_query_interface` only lives on `SupportErrorInfoFace`.
+        return Some(unsafe {
+            (*unknown.cast::<crate::class_dispatch::SupportErrorInfoFace>()).owner
+        });
+    }
+    if crate::class_dispatch::is_cpc_query_interface(qi) {
+        // SAFETY: `cpc_query_interface` only lives on `ConnectionPointContainerFace`.
+        return Some(unsafe {
+            (*unknown.cast::<crate::class_dispatch::ConnectionPointContainerFace>()).owner
+        });
+    }
+    None
+}
+
 pub(crate) fn compat_owner_from_unknown(unknown: *mut RawRuntimeIUnknown) -> *mut CompatObjectBase {
-    unknown.cast::<CompatObjectBase>()
+    // SAFETY: callers have already validated via `is_compat_object()` or primary vtable entry.
+    unsafe { try_compat_owner_from_iunknown(unknown) }.unwrap_or_else(|| unknown.cast())
 }
 
 pub(crate) fn compat_owner_from_this(this: *mut c_void) -> *mut CompatObjectBase {
@@ -1411,6 +1515,14 @@ pub trait ObjectRefExt: Sized {
         &self,
         invoker: std::rc::Weak<RefCell<dyn crate::events::MemberInvoker>>,
     ) -> bool;
+
+    /// True when this project instance currently has at least one advised COM connection-point
+    /// event sink (dc-yqq0.27).
+    fn has_connection_point_sinks(&self) -> bool;
+
+    /// Deliver a VBA `RaiseEvent` (by binder `event_id`) to all advised COM connection-point
+    /// sinks on this project instance (dc-yqq0.27).
+    fn fire_connection_point_event(&self, event_id: i32, args: &[Variant]) -> Result<(), String>;
 
     /// True when releasing this instance's last reference should run a `Class_Terminate`. Safe for
     /// any `ObjectRef`: foreign COM objects (which carry no such flag) report `false`.
@@ -1571,7 +1683,7 @@ impl ObjectRefExt for ObjectRef {
     fn is_identity(&self) -> usize {
         if self.is_compat_object() {
             if self.is_project_instance() {
-                return self.raw_iunknown() as usize;
+                return compat_owner_from_unknown(self.raw_iunknown()) as usize;
             }
             return self.compat_identity() as u32 as usize;
         }
@@ -1636,20 +1748,9 @@ impl ObjectRefExt for ObjectRef {
     }
 
     fn is_compat_object(&self) -> bool {
-        // SAFETY: every COM-shaped object's first pointer-sized field is its vtbl (see doc
-        // above), so this read is valid for compat boxes and foreign IUnknowns alike; `self.0`
-        // is non-null and the object is alive because this `ObjectRef` holds a retained
-        // reference to it.
-        let vtbl = unsafe { (*self.raw_iunknown()).vtbl };
-        if std::ptr::eq(vtbl, &COMPAT_OBJECT_VTBL) {
-            return true;
-        }
-        // SAFETY: any live COM interface's vtbl has `query_interface` at slot 0. Every
-        // `ClassDualVtbl` copies `COMPAT_OBJECT_VTBL.query_interface` verbatim into slot 0, so
-        // comparing against that exact function pointer recognizes every dual vtable in O(1)
-        // cleanly under both native codegen and Miri.
-        let qi = unsafe { (*vtbl).query_interface };
-        core::ptr::fn_addr_eq(qi, COMPAT_OBJECT_VTBL.query_interface)
+        // SAFETY: `self.raw_iunknown()` is non-null and kept alive by this `ObjectRef`'s
+        // retained reference; `try_compat_owner_from_iunknown` only inspects slot 0 of its vtable.
+        unsafe { try_compat_owner_from_iunknown(self.raw_iunknown()) }.is_some()
     }
 
     fn has_dual_dispatch_vtable(&self) -> bool {
@@ -1683,6 +1784,26 @@ impl ObjectRefExt for ObjectRef {
             *(*owner).invoker.borrow_mut() = Some(invoker);
         }
         true
+    }
+
+    fn has_connection_point_sinks(&self) -> bool {
+        if !self.is_compat_object() {
+            return false;
+        }
+        let owner = compat_owner_from_unknown(self.raw_iunknown());
+        // SAFETY: guarded by `is_compat_object()` above; `owner` is live on its owning thread.
+        unsafe { crate::class_dispatch::has_connection_point_sinks(owner) }
+    }
+
+    fn fire_connection_point_event(&self, event_id: i32, args: &[Variant]) -> Result<(), String> {
+        if !self.is_compat_object() {
+            return Ok(());
+        }
+        let owner = compat_owner_from_unknown(self.raw_iunknown());
+        // SAFETY: guarded by `is_compat_object()` above; `owner` is live on its owning thread.
+        unsafe {
+            crate::class_dispatch::fire_connection_point_event_for_owner(owner, event_id, args)
+        }
     }
 
     fn terminates_on_release(&self) -> bool {
@@ -1931,6 +2052,13 @@ fn from_compat_object(
     } else {
         None
     };
+    let implements_faces = if has_dual_vtable {
+        crate::class_dispatch::build_implements_faces(class_descriptor)
+    } else {
+        Box::new([])
+    };
+    let faces_len = implements_faces.len();
+    let faces_raw = Box::into_raw(implements_faces);
     let boxed = Box::new(CompatObjectBase {
         unknown: RawRuntimeIUnknown { vtbl },
         ref_count: AtomicU32::new(1),
@@ -1956,11 +2084,30 @@ fn from_compat_object(
         invoker: RefCell::new(default_invoker),
         fields: RefCell::new(BTreeMap::new()),
         native_state: RefCell::new(None),
+        error_info: crate::class_dispatch::SupportErrorInfoFace::new_unlinked(),
+        cpc: crate::class_dispatch::ConnectionPointContainerFace::new_unlinked(),
+        cp: crate::class_dispatch::ConnectionPointFace::new_unlinked(),
+        implements_faces: faces_raw,
+        event_sinks: RefCell::new(Vec::new()),
+        next_event_cookie: AtomicU32::new(1),
         parked_for_termination: AtomicBool::new(false),
         running_termination: AtomicBool::new(false),
         terminated: AtomicBool::new(false),
     });
     let raw = Box::into_raw(boxed);
+    // Link every embedded and implemented COM face back to `raw` using raw-pointer projection so
+    // no `&mut CompatObjectBase` is created and every face retains full provenance over `raw`.
+    // SAFETY: `raw` is the unique freshly allocated `CompatObjectBase`; `faces_raw` has `faces_len`
+    // initialized `ImplementedInterfaceFace` entries.
+    unsafe {
+        (&raw mut (*raw).error_info.owner).write(raw);
+        (&raw mut (*raw).cpc.owner).write(raw);
+        (&raw mut (*raw).cp.owner).write(raw);
+        let faces_base = faces_raw.cast::<crate::class_dispatch::ImplementedInterfaceFace>();
+        for index in 0..faces_len {
+            (&raw mut (*faces_base.add(index)).owner).write(raw);
+        }
+    }
     crate::live_counters::object_box_allocated();
     // `raw` came from `Box::into_raw` of the freshly allocated `CompatObjectBase` above.
     // `repr(C)` puts `unknown` first, so this cast has the field's exact address while
@@ -2120,12 +2267,14 @@ mod tests {
             runtime_type_name: None,
             project_identity: None,
             default_interface_iid: None,
+            source_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             fields: &[],
             as_new_fields: &[],
             implements: &[],
             interfaces: &[RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR, CUSTOM_INTERFACE],
+            events: &[],
         };
 
         let object = ObjectRef::from_compat_identity_with_descriptor(202, &TEST_CLASS);
@@ -2152,12 +2301,14 @@ mod tests {
             runtime_type_name: None,
             project_identity: None,
             default_interface_iid: None,
+            source_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             fields: &[],
             as_new_fields: &[],
             implements: &[],
             interfaces: &[RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR],
+            events: &[],
         };
         let c1 = ObjectRef::from_compat_identity_with_descriptor(404, &TEST_CLASS);
         c1.with_native_collection(|d| {
@@ -2217,6 +2368,7 @@ mod tests {
             runtime_type_name: None,
             project_identity: None,
             default_interface_iid: None,
+            source_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             fields: &[],
@@ -2227,6 +2379,7 @@ mod tests {
                 DISPATCH_INTERFACE,
                 CUSTOM_INTERFACE,
             ],
+            events: &[],
         };
 
         let object = ObjectRef::from_compat_identity_with_descriptor(303, &TEST_CLASS);
@@ -2286,12 +2439,14 @@ mod tests {
             runtime_type_name: None,
             project_identity: None,
             default_interface_iid: None,
+            source_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             fields: &[],
             as_new_fields: &[],
             implements: &[],
             interfaces: &[RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR, DISPATCH_INTERFACE],
+            events: &[],
         };
 
         let object = ObjectRef::from_compat_identity_with_descriptor(101, &TEST_CLASS);
@@ -2368,12 +2523,14 @@ mod tests {
             runtime_type_name: None,
             project_identity: None,
             default_interface_iid: None,
+            source_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             fields: &[],
             as_new_fields: &[],
             implements: &[],
             interfaces: &[RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR, DISPATCH_INTERFACE],
+            events: &[],
         };
 
         assert_eq!(TEST_CLASS.validate_com_export_shape(), Ok(()));
@@ -2575,12 +2732,14 @@ mod tests {
             runtime_type_name: None,
             project_identity: None,
             default_interface_iid: None,
+            source_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             fields: &[],
             as_new_fields: &[],
             implements: &[],
             interfaces: &[FIRST_INTERFACE, SECOND_INTERFACE],
+            events: &[],
         };
 
         assert_eq!(
@@ -2971,6 +3130,7 @@ mod tests {
             runtime_type_name: None,
             project_identity: None,
             default_interface_iid: None,
+            source_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             fields: &[],
@@ -2981,6 +3141,7 @@ mod tests {
                 DISPATCH_INTERFACE,
                 CUSTOM_INTERFACE,
             ],
+            events: &[],
         };
 
         let object = ObjectRef::from_compat_identity_with_descriptor(12, &TEST_CLASS);
@@ -3049,12 +3210,14 @@ mod tests {
             runtime_type_name: None,
             project_identity: None,
             default_interface_iid: None,
+            source_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             fields: &[],
             as_new_fields: &[],
             implements: &[],
             interfaces: &[DISPATCH_INTERFACE],
+            events: &[],
         };
 
         let object = ObjectRef::from_compat_identity_with_descriptor(23, &TEST_CLASS);
@@ -3225,6 +3388,7 @@ mod tests {
             name: "Widget".into(),
             runtime_type_name: None,
             default_interface_iid: None,
+            source_interface_iid: None,
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             fields: vec![
@@ -3308,6 +3472,7 @@ mod tests {
                 },
             ],
             implemented_interfaces: Vec::new(),
+            events: Vec::new(),
         };
         let descriptor = build_runtime_class_descriptor(&spec);
         let dispatch = descriptor.dispatch_interface().expect("dual interface");

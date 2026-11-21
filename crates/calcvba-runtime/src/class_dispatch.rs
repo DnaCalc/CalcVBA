@@ -502,6 +502,38 @@ unsafe fn copy_dispatch_arg(cell: *const VariantCore) -> Result<Variant, HResult
     Ok(copied)
 }
 
+/// Resolve a `VT_BYREF` argument cell to its ultimate `(target_vt, target_ptr)`, unwrapping
+/// Automation forwarding `VT_BYREF | VT_VARIANT` chains (up to 32 hops) whose inner `VARIANT` is
+/// itself a `VT_BYREF`.
+unsafe fn resolve_byref_target(mut raw: VariantCore) -> Result<Option<(u16, *mut u8)>, HResult> {
+    const VT_BYREF: u16 = 0x4000;
+    const VT_VARIANT: u16 = 0x000C;
+    if raw.raw_vt() & VT_BYREF == 0 {
+        return Ok(None);
+    }
+    for _ in 0..32 {
+        let vt = raw.raw_vt();
+        if vt & VT_BYREF == 0 {
+            return Ok(None);
+        }
+        let target_vt = vt & !VT_BYREF;
+        let target_ptr = raw.pointer().cast::<u8>();
+        if target_ptr.is_null() {
+            return Err(E_POINTER);
+        }
+        if target_vt == VT_VARIANT {
+            // SAFETY: caller's `VT_BYREF | VT_VARIANT` points to a live `VARIANT` cell.
+            let inner = unsafe { *target_ptr.cast::<VariantCore>() };
+            if inner.raw_vt() & VT_BYREF != 0 {
+                raw = inner;
+                continue;
+            }
+        }
+        return Ok(Some((target_vt, target_ptr)));
+    }
+    Err(DISP_E_TYPEMISMATCH)
+}
+
 unsafe fn compute_byref_aliases(
     member: &'static RuntimeMemberDescriptor,
     params: *const DispParams,
@@ -523,12 +555,11 @@ unsafe fn compute_byref_aliases(
         let target = if by_ref && let Some(rg_idx) = *slot {
             // SAFETY: `rg_idx < c_args`.
             let raw = unsafe { *rgvarg.add(rg_idx) };
-            let vt = raw.raw_vt();
-            if vt & 0x4000 != 0 {
-                Some((vt & !0x4000, raw.pointer() as usize))
-            } else {
-                None
-            }
+            // SAFETY: caller owns the argument `VARIANT` cell and any `VT_BYREF` target.
+            unsafe { resolve_byref_target(raw) }
+                .ok()
+                .flatten()
+                .map(|(vt, ptr)| (vt, ptr as usize))
         } else {
             None
         };
@@ -574,13 +605,11 @@ unsafe fn write_back_byref_args(
         };
         // SAFETY: `rg_idx < c_args`; caller owns the `VARIANT` cell and its `VT_BYREF` target.
         let raw = unsafe { *rgvarg.add(rg_idx) };
-        let vt = raw.raw_vt();
-        if vt & 0x4000 == 0 {
-            continue;
-        }
-        let target_vt = vt & !0x4000;
-        let target_ptr = raw.pointer().cast::<u8>();
         // SAFETY: caller's `VT_BYREF` cell points to live writable storage for this `Invoke` call.
+        let Some((target_vt, target_ptr)) = (unsafe { resolve_byref_target(raw) })? else {
+            continue;
+        };
+        // SAFETY: caller's `VT_BYREF` target is live writable storage for this `Invoke` call.
         let cell = unsafe { Variant::by_ref(target_vt, target_ptr) };
         let prepared = coerce_for_byref_writeback(updated, target_vt)?;
         // SAFETY: caller's `VT_BYREF` target is live writable storage for this `Invoke` call.
@@ -780,7 +809,9 @@ fn invoke_object_member(
     // SAFETY: `owner` is a live `CompatObjectBase` on its owning thread (checked before call).
     let per_object = unsafe { (*owner).invoker.borrow().as_ref().and_then(|w| w.upgrade()) };
     if let Some(invoker) = per_object {
-        let mut guard = invoker.borrow_mut();
+        let Ok(mut guard) = invoker.try_borrow_mut() else {
+            return Err(MemberFault::from_number(438));
+        };
         return guard.invoke_member(object, member, invoke_kind, args, aliases);
     }
     // Direct fallback for field-backed members when no runtime executor is active (e.g. AOT

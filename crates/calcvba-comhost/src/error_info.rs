@@ -1,6 +1,6 @@
 use super::*;
 
-/// Preserve a VBA fault across factory and vtable HRESULT boundaries.
+/// Preserve a VBA fault across class-factory HRESULT boundaries (`Class_Initialize` errors).
 pub(super) fn with_project_session<R>(
     f: impl FnOnce(&mut ProjectRuntimeSession) -> Result<R, calcvba_engine::PhaseDiagnostic>,
 ) -> Result<R, i32> {
@@ -28,15 +28,15 @@ fn publish_project_error(error: &calcvba_engine::PhaseDiagnostic) -> i32 {
     } else {
         fault.code
     };
-    let default_source = calcvba_runtime::Utf16String::from(
+    let default_source = Utf16String::from(
         descriptor()
             .map(|d| d.project_name.as_str())
             .unwrap_or("CalcVBA"),
     );
     let source = fault.source.as_ref().unwrap_or(&default_source);
-    let empty_help = calcvba_runtime::Utf16String::new();
+    let empty_help = Utf16String::new();
     let help_file = fault.help_file.as_ref().unwrap_or(&empty_help);
-    let wide = |text: &calcvba_runtime::Utf16String| {
+    let wide = |text: &Utf16String| {
         text.as_units()
             .iter()
             .copied()
@@ -64,35 +64,4 @@ fn publish_project_error(error: &calcvba_engine::PhaseDiagnostic) -> i32 {
         }
     }
     hr
-}
-
-pub(super) unsafe extern "system" fn interface_supports_error_info(
-    this: *mut c_void,
-    iid: *const GUID,
-) -> i32 {
-    if iid.is_null() {
-        return E_POINTER;
-    }
-    // SAFETY: this is the ISupportErrorInfo face with the shared owner prefix.
-    let owner = match unsafe { dual_owner(this) } {
-        Ok(owner) => owner,
-        Err(hr) => return hr,
-    };
-    // SAFETY: dual_owner validated the owner; iid is caller-provided and nonnull.
-    let Some(class) = descriptor()
-        .ok()
-        .and_then(|d| d.classes.get(unsafe { (*owner).class_index }))
-    else {
-        return E_FAIL;
-    };
-    // SAFETY: iid is nonnull and readable for this COM call.
-    if unsafe {
-        guid_eq(&*iid, &IID_IDISPATCH)
-            || guid_matches_text(&*iid, &class.default_interface_iid)
-            || composed_interface_index(class, &*iid).is_some()
-    } {
-        S_OK
-    } else {
-        S_FALSE
-    }
 }

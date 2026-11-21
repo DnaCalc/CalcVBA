@@ -19,7 +19,7 @@
 //! convention (x64 and x86). A member the vtable cannot carry (a pure dispinterface, a proxy whose
 //! vtable is not the type library's, metadata without the optional rules) is called through
 //! `IDispatch::Invoke` with its DISPID, as VBA calls dispinterface members.
-use super::{Dispatch, LOCALE_USER_DEFAULT, ProjectDispatch, adopt, fault_from_hresult};
+use super::{Dispatch, LOCALE_USER_DEFAULT, adopt, fault_from_hresult};
 use crate::call::{
     ComArg as Arg, ComArgValue as ArgValue, ComCallKind as CallKind, ComFault as Fault,
     ComMember as Member,
@@ -103,12 +103,11 @@ pub unsafe fn invoke(
     object: &ObjectRef,
     member: &TypeLibMemberMetadata,
     args: &[Arg<'_>],
-    project: ProjectDispatch<'_>,
     coerce: Coerce<'_>,
 ) -> Result<(Variant, EarlyTransport), Fault> {
     let positional = arrange(member, args)?;
     if let Some(interface) = vtable_interface(object, member)? {
-        let context = Context { project, coerce };
+        let context = Context { coerce };
         // SAFETY: forwarded from the caller; `interface` is the declared interface, retained.
         let value = unsafe { call_vtable(&interface, member, &positional, &context) }?;
         return Ok((value, EarlyTransport::Vtable));
@@ -149,7 +148,6 @@ pub unsafe fn invoke(
             Member::Id(member.token),
             call_kind(member.invoke_kind),
             &dispatch_args,
-            project,
         )
     }?;
     Ok((value, EarlyTransport::Dispatch))
@@ -453,13 +451,12 @@ fn coerce_argument(value: &Variant, vt: u16, coerce: Coerce<'_>) -> Result<Varia
     coerce(value, vt)
 }
 
-/// An object argument as the parameter's interface: a project object crosses as its `IDispatch`,
-/// a specific interface is `QueryInterface`d (VBA error 13 when the object lacks it), and Nothing
-/// is a null pointer.
+/// An object argument as the parameter's interface: every object (including project objects, which
+/// carry their own `ClassDualVtbl`) crosses as itself; a specific interface is `QueryInterface`d
+/// (VBA error 13 when the object lacks it), and Nothing is a null pointer.
 fn object_argument(
     value: &Variant,
     iid: Option<&crate::ComInterfaceIid>,
-    project: ProjectDispatch<'_>,
 ) -> Result<Variant, Fault> {
     if value.vtype() != VarType::Object {
         return Err(Fault::number(13));
@@ -470,22 +467,14 @@ fn object_argument(
     if object.is_nothing_placeholder() {
         return Ok(Variant::nothing());
     }
-    let crossed = if object.is_compat_object() {
-        project(&object)?
-    } else {
-        value.clone()
-    };
     let iid = match iid.filter(|iid| !iid.is_null()) {
         Some(iid) => iid.to_guid(),
         // An `IDispatch*` parameter: a `VT_UNKNOWN` object crosses as its IDispatch.
-        None if raw_vt(&crossed) == VT_DISPATCH => return Ok(crossed),
+        None if raw_vt(value) == VT_DISPATCH => return Ok(value.clone()),
         None => IID_IDISPATCH,
     };
-    let Some(crossed_object) = crossed.as_object_ref() else {
-        return Ok(Variant::nothing());
-    };
     // SAFETY: the ObjectRef retains a live IUnknown for the call.
-    let pointer = unsafe { query_interface_pointer(crossed_object.raw_iunknown().cast(), &iid) }
+    let pointer = unsafe { query_interface_pointer(object.raw_iunknown().cast(), &iid) }
         .map_err(|_| Fault::number(13))?;
     // SAFETY: one owned reference from QueryInterface, which the ObjectRef takes over.
     unsafe { ObjectRef::from_raw_iunknown_owned(pointer.cast()) }
@@ -523,7 +512,6 @@ fn omitted_argument(
 
 /// What argument shaping needs from the caller.
 struct Context<'a> {
-    project: ProjectDispatch<'a>,
     coerce: Coerce<'a>,
 }
 
@@ -545,7 +533,6 @@ unsafe fn call_vtable(
     positional: &[Option<Arg<'_>>],
     context: &Context<'_>,
 ) -> Result<Variant, Fault> {
-    let project = context.project;
     let count = member.parameter_types.len();
     // Temporaries live in a vector whose storage never moves during the call.
     let mut temps: Vec<Variant> = Vec::with_capacity(count + 1);
@@ -641,14 +628,7 @@ unsafe fn call_vtable(
             ArgValue::Missing => unreachable!("missing arguments were handled above"),
         };
         if vt == VT_VARIANT {
-            let crossed = match value.as_object_ref() {
-                Some(object) if object.is_compat_object() => {
-                    kept.push(project(&object)?);
-                    kept[kept.len() - 1].to_wire_bytes()
-                }
-                _ => value.to_wire_bytes(),
-            };
-            slots.push(Slot::Cell(VT_VARIANT, crossed));
+            slots.push(Slot::Cell(VT_VARIANT, value.to_wire_bytes()));
             continue;
         }
         if raw_vt(value) == vt && vt != VT_DISPATCH {
@@ -796,7 +776,7 @@ fn typed_temp(
     context: &Context<'_>,
 ) -> Result<Variant, Fault> {
     if vt == VT_DISPATCH || vt == VT_UNKNOWN {
-        return object_argument(value, iid, context.project);
+        return object_argument(value, iid);
     }
     coerce_argument(value, vt, context.coerce)
 }

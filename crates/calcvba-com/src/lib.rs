@@ -45,8 +45,6 @@ pub mod windows_ffi_bridge;
 #[cfg(target_os = "windows")]
 pub mod windows_invoke;
 #[cfg(target_os = "windows")]
-pub mod windows_runtime_object;
-#[cfg(target_os = "windows")]
 pub mod windows_runtime_state;
 #[cfg(all(target_os = "windows", any(test, feature = "fixture-typelibs")))]
 #[path = "fixtures/windows_test_dispatch.rs"]

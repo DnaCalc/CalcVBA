@@ -84,6 +84,7 @@ impl ProjectRuntimeSession {
     /// Release an owned host reference and run eligible finalizers now, on the
     /// owning VBA thread. Other VBA, host or control references keep it alive.
     pub fn release_class_instance(&mut self, object: ObjectRef) {
+        let _owner = self.object_owner.enter();
         match &mut self.backend {
             SessionBackend::Vm3(vm) => vm.release_project_instance(object),
             SessionBackend::Jit(_) => {
@@ -95,6 +96,7 @@ impl ProjectRuntimeSession {
     }
     /// Drain releases that occurred in host storage between VBA calls.
     pub fn drain_object_terminations(&mut self) {
+        let _owner = self.object_owner.enter();
         match &mut self.backend {
             SessionBackend::Vm3(vm) => vm.drain_object_terminations(),
             // A JIT run drains queued Class_Terminate work as it ends; an empty one drains now.

@@ -1914,12 +1914,18 @@ fn from_compat_object(
     } else {
         &COMPAT_OBJECT_VTBL
     };
+    let current_owner = crate::object_owner::RuntimeObjectOwner::current();
+    let default_invoker = if project_instance {
+        current_owner.member_invoker()
+    } else {
+        None
+    };
     let boxed = Box::new(CompatObjectBase {
         unknown: RawRuntimeIUnknown { vtbl },
         ref_count: AtomicU32::new(1),
         owner_thread: crate::class_dispatch::current_thread_id(),
         has_dual_vtable,
-        object_owner: crate::object_owner::RuntimeObjectOwner::current().downgrade(),
+        object_owner: current_owner.downgrade(),
         project_instance,
         identity: RuntimeObjectIdentity {
             stable_object_id,
@@ -1936,7 +1942,7 @@ fn from_compat_object(
             },
         },
         class_descriptor,
-        invoker: RefCell::new(None),
+        invoker: RefCell::new(default_invoker),
         fields: RefCell::new(BTreeMap::new()),
         native_state: RefCell::new(None),
         parked_for_termination: AtomicBool::new(false),

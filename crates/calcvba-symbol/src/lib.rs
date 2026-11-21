@@ -15,6 +15,7 @@ pub mod cond_comp;
 pub mod const_eval;
 pub mod manifest;
 pub mod model;
+pub mod portability;
 pub mod predeclared;
 pub mod provider;
 pub mod providers;

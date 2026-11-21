@@ -110,10 +110,73 @@ fn run_triage(args: Vec<String>) {
     println!("{}", serde_json::to_string_pretty(&json).expect("json"));
 }
 
+fn check_portability(args: &[String]) -> Result<(), String> {
+    use calcvba_symbol::portability::{Host, check_project, check_source};
+
+    let mut args = args.iter().map(String::as_str);
+    let mut host = Host::current();
+    let mut portability = false;
+    let mut input = None;
+    while let Some(arg) = args.next() {
+        match arg {
+            "--portability" => portability = true,
+            "--host" => {
+                host = args
+                    .next()
+                    .and_then(Host::from_name)
+                    .ok_or("--host takes windows, macos, linux, wasi or browser")?;
+            }
+            arg if !arg.starts_with('-') && input.is_none() => input = Some(Path::new(arg)),
+            arg => return Err(format!("unexpected argument {arg}")),
+        }
+    }
+    let input = input.filter(|_| portability).ok_or(
+        "usage: calcvba-cli check --portability [--host <host>] <project|source.bas|workbook>",
+    )?;
+    let extension = input
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default();
+    let report = match extension.to_ascii_lowercase().as_str() {
+        "bas" | "cls" | "frm" => {
+            let source = fs::read_to_string(input)
+                .map_err(|error| format!("{}: {error}", input.display()))?;
+            check_source(&input.display().to_string(), &source, host)?
+        }
+        "xls" | "xlsm" | "xlsb" | "xlam" | "xla" | "bin" | "xltm" | "xlt" | "xlsx" => {
+            let workbook = calcvba_office::OfficeFile::open(input)
+                .map_err(|error| format!("{}: {error}", input.display()))?;
+            let project = workbook
+                .project
+                .to_manifest()
+                .map_err(|error| error.to_string())?;
+            check_project(&[project], host)?
+        }
+        _ => {
+            let project = resolve_project_file(Some(&input.to_owned()))
+                .map_err(|_| format!("no .basproj or .vbp project at {}", input.display()))?;
+            let closure = calcvba_project::load_project_closure_with_entry(&project, None)
+                .map_err(|error| error.to_diagnostic().message)?;
+            check_project(&closure, host)?
+        }
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?
+    );
+    Ok(())
+}
+
 fn main() {
     let cli_args: Vec<String> = extract_policy_flag(env::args().skip(1).collect());
     match cli_args.first().map(String::as_str) {
         Some("triage") => run_triage(cli_args),
+        Some("check") => {
+            if let Err(error) = check_portability(&cli_args[1..]) {
+                eprintln!("calcvba-cli check: {error}");
+                std::process::exit(1);
+            }
+        }
         Some(command @ ("inspect-vba" | "export-vba" | "write-vba")) => {
             if let Err(error) = office::run(command, &cli_args[1..]) {
                 eprintln!("calcvba-cli: {error}");
@@ -135,7 +198,7 @@ fn main() {
 fn print_usage() {
     eprintln!(
         "usage:\n  calcvba-cli run <source.bas> [--backend vm3|jit] [--dump-values]\n  calcvba-cli run-project [path] [--entry Module.Procedure] [--backend vm3|jit]\n  calcvba-cli build <project> --target OxImage|NativeLibrary|Exe|ComExe|ComServer --out-dir <dir>\n  calcvba-cli run-image <project.oxi> [--backend vm3|jit]\n  calcvba-cli triage <project|source.bas>   (predicted capabilities as JSON)
-  calcvba-cli inspect-vba <workbook>\n  calcvba-cli export-vba <workbook> --out-dir <new-folder>\n  calcvba-cli write-vba <workbook> --project <project.basproj> --out <new-workbook>\n\n  --profile <id>  --policy safe|full  --dump-bootstrap  --diagnostic-format human|json"
+  calcvba-cli check --portability [--host <host>] <project|source.bas|workbook>\n  calcvba-cli inspect-vba <workbook>\n  calcvba-cli export-vba <workbook> --out-dir <new-folder>\n  calcvba-cli write-vba <workbook> --project <project.basproj> --out <new-workbook>\n\n  --profile <id>  --policy safe|full  --dump-bootstrap  --diagnostic-format human|json"
     );
 }
 

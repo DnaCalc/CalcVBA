@@ -659,16 +659,17 @@ pub fn replace(args: &[Variant]) -> LibResult<Variant> {
 
 pub fn trim(args: &[Variant], left: bool, right: bool) -> LibResult<Variant> {
     let s = units_arg(need(args, 0)?)?;
-    let space = u16::from(b' ');
+    // Excel trims ASCII and ideographic spaces (P_Trim.10–.13).
+    let is_space = |unit| matches!(unit, 0x0020 | 0x3000);
     let mut from = 0;
     let mut to = s.len();
     if left {
-        while from < to && s[from] == space {
+        while from < to && is_space(s[from]) {
             from += 1;
         }
     }
     if right {
-        while to > from && s[to - 1] == space {
+        while to > from && is_space(s[to - 1]) {
             to -= 1;
         }
     }

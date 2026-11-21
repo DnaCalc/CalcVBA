@@ -170,7 +170,7 @@ pub enum ErrMember {
 /// dedicated rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpecialForm {
-    Array,
+    Array { use_option_base: bool },
     IIf,
     Choose,
     Switch,

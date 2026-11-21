@@ -135,6 +135,14 @@ impl Provider for VbaLibraryProvider {
 
     fn resolve_qualified(&self, parts: &[&str]) -> Option<Binding> {
         if parts.len() == 2 && fold_identifier(parts[0]) == "vba" {
+            if parts[1].eq_ignore_ascii_case("Array") {
+                return Some(Binding::new(
+                    None,
+                    DispatchRoute::SpecialForm(SpecialForm::Array {
+                        use_option_base: false,
+                    }),
+                ));
+            }
             return self.resolve(parts[1]);
         }
         // `Math.Abs(x)`, `Strings.Left(s, 2)`: a VBA library module named without the `VBA.` prefix. A
@@ -387,7 +395,9 @@ fn user_structural_intrinsic(name: &str) -> Option<StructuralIntrinsic> {
 
 fn special_form(name: &str) -> Option<SpecialForm> {
     Some(match name.to_ascii_lowercase().as_str() {
-        "array" => SpecialForm::Array,
+        "array" => SpecialForm::Array {
+            use_option_base: true,
+        },
         "iif" => SpecialForm::IIf,
         "choose" => SpecialForm::Choose,
         "switch" => SpecialForm::Switch,

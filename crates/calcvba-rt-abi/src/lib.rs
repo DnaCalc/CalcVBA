@@ -8,8 +8,10 @@ mod class_descriptor;
 mod library_object;
 pub(crate) use class_descriptor::hidden_me_receiver_param_count;
 pub use class_descriptor::{
-    decode_native_class_metadata, encode_native_class_metadata,
-    runtime_class_descriptors_for_program, runtime_class_spec_for_program, runtime_member_params,
+    coerce_value_for_runtime_type, decode_native_class_metadata, encode_native_class_metadata,
+    resolve_project_member_for_call, runtime_class_descriptors_for_program,
+    runtime_class_spec_for_program, runtime_invoke_kind, runtime_invoke_kind_from_typelib,
+    runtime_member_params,
 };
 pub use library_object::invoke_library_object;
 
@@ -828,6 +830,8 @@ pub struct ExecState<'h> {
     proc_invoker: Option<ProcInvokeBridge>,
     pub next_instance_id: i32,
     pub draining: bool,
+    /// Per-execution cache for late-bound project member dispatch plans (dc-yqq0.22).
+    pub dispatch_plan_cache: calcvba_runtime::RuntimeDispatchPlanCache,
     _not_send: PhantomData<Rc<()>>,
     pub object_owner: calcvba_runtime::object_owner::RuntimeObjectOwner,
 }
@@ -883,6 +887,7 @@ impl<'h> ExecState<'h> {
             proc_invoker: None,
             next_instance_id: INSTANCE_ID_BASE,
             draining: false,
+            dispatch_plan_cache: calcvba_runtime::RuntimeDispatchPlanCache::new(),
             _not_send: PhantomData,
         }
     }

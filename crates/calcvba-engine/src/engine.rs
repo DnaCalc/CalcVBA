@@ -368,14 +368,13 @@ fn jit_value(outcome: Result<JitOutcome, JitError>) -> Result<Variant, PhaseDiag
 }
 
 impl JitImageSession {
-    /// The procedure of member `name` of the object's class (a matching kind first), as vm3
-    /// resolves it.
+    /// Resolve `name` on the object's class descriptor through the session's dispatch plan cache.
     fn member(
-        &self,
+        &mut self,
         object: &ObjectRef,
         name: &str,
         kind: Option<calcvba_bundle::ProjectMemberKind>,
-    ) -> Result<(usize, calcvba_oxir::FuncId), PhaseDiagnostic> {
+    ) -> Result<(usize, &'static calcvba_runtime::RuntimeMemberDescriptor), PhaseDiagnostic> {
         use calcvba_runtime::ObjectRefExt;
         let not_supported = || {
             PhaseDiagnostic::from_diagnostic(OxDiagnostic::error(
@@ -389,22 +388,20 @@ impl JitImageSession {
             ))
         };
         let program_index = usize::try_from(object.bundle_id()).map_err(|_| not_supported())?;
-        let class = usize::try_from(object.route_key())
-            .ok()
-            .and_then(|class| self.programs.get(program_index)?.classes.get(class))
+        let dispatch = object
+            .class_descriptor()
+            .dispatch_interface()
             .ok_or_else(not_supported)?;
-        let member = class
-            .methods
-            .iter()
-            .find(|m| m.name.eq_ignore_ascii_case(name) && kind.is_none_or(|k| m.kind == k))
-            .or_else(|| {
-                class
-                    .methods
-                    .iter()
-                    .find(|m| m.name.eq_ignore_ascii_case(name))
-            })
+        let requested_kind = kind.map(calcvba_rt_abi::runtime_invoke_kind);
+        let plan = self
+            .session
+            .dispatch_plan_cache_mut()
+            .resolve_project_member_for_host(dispatch, name, requested_kind)
             .ok_or_else(not_supported)?;
-        Ok((program_index, member.proc))
+        let member = dispatch
+            .member_at(plan.member_index)
+            .ok_or_else(not_supported)?;
+        Ok((program_index, member))
     }
 
     fn invoke(
@@ -415,29 +412,104 @@ impl JitImageSession {
         args: &mut [Variant],
         aliases: &[usize],
     ) -> Result<Variant, PhaseDiagnostic> {
-        let (program, func) = self.member(&object, name, kind)?;
-        // A host passes an omitted argument as Missing; an Optional parameter then starts as a
-        // call that leaves it out starts it, exactly as vm3 binds it.
-        const MISSING: i32 = 0x8002_0004u32 as i32;
-        let locals = &self.programs[program].funcs[func.0].locals;
-        for (index, arg) in args.iter_mut().enumerate() {
-            if arg.vtype() == calcvba_runtime::VarType::Error
-                && arg.as_error_code() == Some(MISSING)
-                && let Some(omitted) = locals
-                    .get(index + 1)
-                    .and_then(calcvba_vm3::omitted_param_value)
-            {
-                *arg = omitted.map_err(vm3_runtime_diagnostic)?;
+        use calcvba_runtime::{
+            ObjectRefExt, RuntimeMemberBacking, RuntimeMemberInvokeKind, RuntimeValueType,
+        };
+        let (program, member) = self.member(&object, name, kind)?;
+        let fault_diag = |fault: calcvba_rt_abi::Fault| {
+            let message = format!("runtime error {}: {}", fault.code, fault.message);
+            PhaseDiagnostic::from_diagnostic(OxDiagnostic::error(
+                "JIT-E-FAULT",
+                OxDiagnosticPhase::Host,
+                message,
+            ))
+            .with_vba_fault(fault)
+        };
+        match member.backing {
+            RuntimeMemberBacking::Proc(proc) => {
+                let func = calcvba_oxir::FuncId(proc);
+                // A host passes an omitted argument as Missing; an Optional parameter then starts
+                // as a call that leaves it out starts it, exactly as vm3 binds it.
+                const MISSING: i32 = 0x8002_0004u32 as i32;
+                let locals = &self.programs[program].funcs[func.0].locals;
+                for (index, arg) in args.iter_mut().enumerate() {
+                    if arg.vtype() == calcvba_runtime::VarType::Error
+                        && arg.as_error_code() == Some(MISSING)
+                        && let Some(omitted) = locals
+                            .get(index + 1)
+                            .and_then(calcvba_vm3::omitted_param_value)
+                    {
+                        *arg = omitted.map_err(vm3_runtime_diagnostic)?;
+                    }
+                }
+                jit_value(self.image.invoke_member_in_session(
+                    &mut self.session,
+                    program,
+                    func,
+                    Variant::from_object_ref(object),
+                    args,
+                    aliases,
+                ))
             }
+            RuntimeMemberBacking::Field(field_token) => {
+                let effective_kind = kind
+                    .map(calcvba_rt_abi::runtime_invoke_kind)
+                    .unwrap_or(member.invoke_kind);
+                match effective_kind {
+                    RuntimeMemberInvokeKind::PropertyGet | RuntimeMemberInvokeKind::Method => {
+                        if !args.is_empty() {
+                            return Err(fault_diag(calcvba_rt_abi::Fault::new(
+                                450,
+                                calcvba_runtime::default_error_message(450),
+                            )));
+                        }
+                        let raw = object
+                            .project_field_get(field_token)
+                            .unwrap_or_else(Variant::empty);
+                        let target_ty = member.return_type.unwrap_or(RuntimeValueType::Variant);
+                        calcvba_rt_abi::coerce_value_for_runtime_type(&raw, target_ty)
+                            .map_err(fault_diag)
+                    }
+                    RuntimeMemberInvokeKind::PropertyLet => {
+                        let [value] = args else {
+                            return Err(fault_diag(calcvba_rt_abi::Fault::new(
+                                450,
+                                calcvba_runtime::default_error_message(450),
+                            )));
+                        };
+                        let target_ty = member
+                            .params
+                            .last()
+                            .map_or(RuntimeValueType::Variant, |param| param.value_type);
+                        let coerced =
+                            calcvba_rt_abi::coerce_value_for_runtime_type(value, target_ty)
+                                .map_err(fault_diag)?;
+                        object.project_field_set(field_token, coerced);
+                        Ok(Variant::empty())
+                    }
+                    RuntimeMemberInvokeKind::PropertySet => {
+                        let [value] = args else {
+                            return Err(fault_diag(calcvba_rt_abi::Fault::new(
+                                450,
+                                calcvba_runtime::default_error_message(450),
+                            )));
+                        };
+                        if value.vtype() != calcvba_runtime::VarType::Object {
+                            return Err(fault_diag(calcvba_rt_abi::Fault::new(
+                                424,
+                                calcvba_runtime::default_error_message(424),
+                            )));
+                        }
+                        object.project_field_set(field_token, value.clone());
+                        Ok(Variant::empty())
+                    }
+                }
+            }
+            RuntimeMemberBacking::None => Err(fault_diag(calcvba_rt_abi::Fault::new(
+                438,
+                calcvba_runtime::default_error_message(438),
+            ))),
         }
-        jit_value(self.image.invoke_member_in_session(
-            &mut self.session,
-            program,
-            func,
-            Variant::from_object_ref(object),
-            args,
-            aliases,
-        ))
     }
 }
 

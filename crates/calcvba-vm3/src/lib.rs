@@ -626,43 +626,48 @@ impl<'h> Vm3<'h> {
         if object.route_key() == VBA_COLLECTION_ROUTE_KEY {
             return self.dispatch_collection_values(&object, name, args);
         }
-        let class_idx = object.route_key() as usize;
-        // Resolve + run in the object's OWN program (bundle_id), not the executing cur.
+        // Resolve via the object's shared class descriptor + dispatch plan cache (dc-yqq0.22),
+        // running in the object's OWN program (bundle_id), not the executing cur.
         let obj_bundle = object.bundle_id() as usize;
-        let program = self
-            .exec
-            .programs
-            .get(obj_bundle)
-            .map(|lp| lp.program)
-            .ok_or_else(|| {
-                Vm3Error::Fault(Fault::new(438, "Object doesn't support this member"))
-            })?;
-        let class = program.classes.get(class_idx).ok_or_else(|| {
-            Vm3Error::Fault(Fault::new(438, "Object doesn't support this member"))
-        })?;
-        let member = class
-            .methods
-            .iter()
-            .find(|m| m.name.eq_ignore_ascii_case(name) && kind_hint.is_none_or(|k| m.kind == k))
-            .or_else(|| {
-                class
-                    .methods
-                    .iter()
-                    .find(|m| m.name.eq_ignore_ascii_case(name))
-            });
-        let proc = member
-            .map(|m| m.proc)
+        let requested_kind = kind_hint.map(calcvba_rt_abi::runtime_invoke_kind);
+        let member = object
+            .class_descriptor()
+            .dispatch_interface()
+            .and_then(|dispatch| {
+                let plan = self
+                    .exec
+                    .dispatch_plan_cache
+                    .resolve_project_member_for_host(dispatch, name, requested_kind)?;
+                dispatch.member_at(plan.member_index)
+            })
             .ok_or_else(|| Vm3Error::Fault(Fault::new(438, default_error_message(438))))?;
-        // Host args are already by-value (resolution-order is moot), but run in the object's
-        // program (target_prog = obj_bundle).
-        self.run_proc_with_values_captured(
-            obj_bundle,
-            proc,
-            Variant::from_object_ref(object),
-            args,
-            false,
-            capture,
-        )
+        match member.backing {
+            calcvba_runtime::RuntimeMemberBacking::Proc(proc) => {
+                // Host args are already by-value (resolution-order is moot), but run in the
+                // object's program (target_prog = obj_bundle).
+                self.run_proc_with_values_captured(
+                    obj_bundle,
+                    FuncId(proc),
+                    Variant::from_object_ref(object),
+                    args,
+                    false,
+                    capture,
+                )
+            }
+            calcvba_runtime::RuntimeMemberBacking::Field(field_token) => {
+                let effective_kind = requested_kind.unwrap_or(member.invoke_kind);
+                self.dispatch_project_field_member_values(
+                    &object,
+                    member,
+                    field_token,
+                    effective_kind,
+                    args,
+                )
+            }
+            calcvba_runtime::RuntimeMemberBacking::None => {
+                Err(Vm3Error::Fault(Fault::new(438, default_error_message(438))))
+            }
+        }
     }
 
     /// A built-in `Collection` member call with already-marshaled by-value args (the
@@ -2405,9 +2410,10 @@ impl<'h> Vm3<'h> {
                 let descriptor = descriptor.clone();
                 let member_name = descriptor.name.clone();
                 let ret = if object.is_project_instance() {
-                    self.dispatch_project_method(
+                    self.dispatch_project_method_resolved(
                         object,
                         recv_v,
+                        Some(&descriptor),
                         &member_name,
                         *invoke_kind,
                         args,
@@ -4070,45 +4076,17 @@ impl<'h> Vm3<'h> {
             .collect())
     }
 
-    fn project_default_member_proc(
+    fn project_default_member(
         &self,
-        obj_bundle: usize,
-        class_idx: usize,
-        kind: ProjectMemberKind,
-    ) -> Result<FuncId, Vm3Error> {
-        let program = self
-            .exec
-            .programs
-            .get(obj_bundle)
-            .map(|lp| lp.program)
-            .ok_or_else(|| {
-                Vm3Error::Fault(Fault::new(438, "Object doesn't support this member"))
-            })?;
-        let class = program.classes.get(class_idx).ok_or_else(|| {
-            Vm3Error::Fault(Fault::new(438, "Object doesn't support this member"))
-        })?;
-        let exact = class
-            .methods
-            .iter()
-            .find(|m| m.is_default_member && m.kind == kind);
-        let member = exact.or_else(|| {
-            if kind == ProjectMemberKind::PropertyGet {
-                class
-                    .methods
-                    .iter()
-                    .find(|m| m.is_default_member && m.kind == ProjectMemberKind::Method)
-            } else if kind == ProjectMemberKind::Method {
-                class
-                    .methods
-                    .iter()
-                    .find(|m| m.is_default_member && m.kind == ProjectMemberKind::PropertyGet)
-            } else {
-                None
-            }
-        });
-        member
-            .filter(|member| obj_bundle == self.cur || member.externally_visible)
-            .map(|m| m.proc)
+        object: &ObjectRef,
+        kind: calcvba_runtime::RuntimeMemberInvokeKind,
+        args_empty: bool,
+    ) -> Result<&'static calcvba_runtime::RuntimeMemberDescriptor, Vm3Error> {
+        let obj_bundle = object.bundle_id() as usize;
+        let public_only = obj_bundle != self.cur;
+        object
+            .class_descriptor()
+            .resolve_member_by_dispid(0, kind, args_empty, public_only)
             .ok_or_else(|| Vm3Error::Fault(Fault::new(438, default_error_message(438))))
     }
 
@@ -4119,12 +4097,10 @@ impl<'h> Vm3<'h> {
         invoke_kind: TypeLibMemberInvokeKind,
         args: &[OxCallArg],
     ) -> Result<Variant, Vm3Error> {
-        let kind = project_member_kind(invoke_kind);
-        let class_idx = object.route_key() as usize;
+        let runtime_kind = calcvba_rt_abi::runtime_invoke_kind_from_typelib(invoke_kind);
         let obj_bundle = object.bundle_id() as usize;
-        let proc = self.project_default_member_proc(obj_bundle, class_idx, kind)?;
-        let proc_args = self.project_call_args(obj_bundle, proc, args)?;
-        self.run_proc_with_me(obj_bundle, proc, me, &proc_args, false)
+        let member = self.project_default_member(&object, runtime_kind, args.is_empty())?;
+        self.dispatch_resolved_project_member(object, me, obj_bundle, member, runtime_kind, args)
     }
 
     fn dispatch_project_default_member_values(
@@ -4134,18 +4110,29 @@ impl<'h> Vm3<'h> {
         invoke_kind: TypeLibMemberInvokeKind,
         args: Vec<Variant>,
     ) -> Result<Variant, Vm3Error> {
-        let kind = project_member_kind(invoke_kind);
-        let class_idx = object.route_key() as usize;
+        let runtime_kind = calcvba_rt_abi::runtime_invoke_kind_from_typelib(invoke_kind);
         let obj_bundle = object.bundle_id() as usize;
-        let proc = self.project_default_member_proc(obj_bundle, class_idx, kind)?;
-        self.run_proc_with_values(obj_bundle, proc, me, args, false)
+        let member = self.project_default_member(&object, runtime_kind, args.is_empty())?;
+        match member.backing {
+            calcvba_runtime::RuntimeMemberBacking::Proc(proc) => {
+                self.run_proc_with_values(obj_bundle, FuncId(proc), me, args, false)
+            }
+            calcvba_runtime::RuntimeMemberBacking::Field(field_token) => self
+                .dispatch_project_field_member_values(
+                    &object,
+                    member,
+                    field_token,
+                    runtime_kind,
+                    args,
+                ),
+            calcvba_runtime::RuntimeMemberBacking::None => {
+                Err(Vm3Error::Fault(Fault::new(438, default_error_message(438))))
+            }
+        }
     }
 
-    /// Late-bound dispatch on a project instance: resolve the class member by name + accessor
-    /// kind (with vm2's get↔method fallback) to its proc, then run it with `me` + the args and
-    /// return the function result. Mirrors vm2's `dispatch_project_method` Name path
-    /// (`ComCallLate` always names a member; the default-member/`obj(i)` path is M3-2/M3-8). A
-    /// missing member is "Object doesn't support this member" (438).
+    /// Late-bound dispatch on a project instance: resolve through `RuntimeDispatchPlanCache`
+    /// and dispatch by descriptor backing (slot/DISPID), never scanning `OxClass::methods`.
     fn dispatch_project_method(
         &mut self,
         object: ObjectRef,
@@ -4155,9 +4142,31 @@ impl<'h> Vm3<'h> {
         args: &[OxCallArg],
         public_only: bool,
     ) -> Result<Variant, Vm3Error> {
+        self.dispatch_project_method_resolved(
+            object,
+            me,
+            None,
+            name,
+            invoke_kind,
+            args,
+            public_only,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_project_method_resolved(
+        &mut self,
+        object: ObjectRef,
+        me: Variant,
+        early_member: Option<&calcvba_com::TypeLibMemberMetadata>,
+        name: &str,
+        invoke_kind: TypeLibMemberInvokeKind,
+        args: &[OxCallArg],
+        public_only: bool,
+    ) -> Result<Variant, Vm3Error> {
         // A built-in `Collection` carries the reserved sentinel route key; its members dispatch
         // to the shared keyed-Collection logic over the box-owned `CollectionData`, not a
-        // program class (W3). Checked BEFORE the `program.classes` lookup the sentinel can't index.
+        // program class (W3).
         if calcvba_lib::objects::is_object(&object) {
             return self.dispatch_library_object(
                 &object,
@@ -4169,54 +4178,168 @@ impl<'h> Vm3<'h> {
         if object.route_key() == VBA_COLLECTION_ROUTE_KEY {
             return self.dispatch_collection_method(&object, name, args);
         }
-        let kind = project_member_kind(invoke_kind);
-        let class_idx = object.route_key() as usize;
-        // The object's class lives in ITS OWN program (stamped into bundle_id when minted), which
-        // may differ from the executing `cur` when a cross-project call passed it across a
-        // program boundary. Resolve the member there, and run the body in that program.
+        let runtime_kind = calcvba_rt_abi::runtime_invoke_kind_from_typelib(invoke_kind);
         let obj_bundle = object.bundle_id() as usize;
-        let program = self
-            .exec
-            .programs
-            .get(obj_bundle)
-            .map(|lp| lp.program)
-            .ok_or_else(|| {
-                Vm3Error::Fault(Fault::new(438, "Object doesn't support this member"))
-            })?;
-        let class = program.classes.get(class_idx).ok_or_else(|| {
-            Vm3Error::Fault(Fault::new(438, "Object doesn't support this member"))
-        })?;
-        let exact = class
-            .methods
-            .iter()
-            .find(|m| m.name.eq_ignore_ascii_case(name) && m.kind == kind);
-        // A `PropertyGet` call with no args also resolves a same-named `Method`, and a
-        // `Method` call resolves a same-named `PropertyGet` (vm2's accessor fallback).
-        let member = exact.or_else(|| {
-            if kind == ProjectMemberKind::PropertyGet && args.is_empty() {
-                class.methods.iter().find(|m| {
-                    m.name.eq_ignore_ascii_case(name) && m.kind == ProjectMemberKind::Method
-                })
-            } else if kind == ProjectMemberKind::Method {
-                class.methods.iter().find(|m| {
-                    m.name.eq_ignore_ascii_case(name) && m.kind == ProjectMemberKind::PropertyGet
-                })
-            } else {
-                None
+        let effective_public_only =
+            (public_only && early_member.is_none()) || obj_bundle != self.cur;
+        let member = calcvba_rt_abi::resolve_project_member_for_call(
+            &mut self.exec.dispatch_plan_cache,
+            object.class_descriptor(),
+            early_member,
+            name,
+            runtime_kind,
+            args.is_empty(),
+            effective_public_only,
+        )
+        .ok_or_else(|| Vm3Error::Fault(Fault::new(438, default_error_message(438))))?;
+        self.dispatch_resolved_project_member(object, me, obj_bundle, member, runtime_kind, args)
+    }
+
+    fn dispatch_resolved_project_member(
+        &mut self,
+        object: ObjectRef,
+        me: Variant,
+        obj_bundle: usize,
+        member: &'static calcvba_runtime::RuntimeMemberDescriptor,
+        requested_kind: calcvba_runtime::RuntimeMemberInvokeKind,
+        args: &[OxCallArg],
+    ) -> Result<Variant, Vm3Error> {
+        match member.backing {
+            calcvba_runtime::RuntimeMemberBacking::Proc(proc) => {
+                let proc = FuncId(proc);
+                // ByRef args alias the caller's place (write-back); named arguments reorder by
+                // the callee parameter names before the frame is seeded.
+                let proc_args = self.project_call_args(obj_bundle, proc, args)?;
+                // Run the method body in the object's program (target_prog = obj_bundle).
+                self.run_proc_with_me(obj_bundle, proc, me, &proc_args, false)
             }
-        });
-        let proc = member
-            .filter(|member| (!public_only && obj_bundle == self.cur) || member.externally_visible)
-            .map(|m| m.proc)
-            .ok_or_else(|| Vm3Error::Fault(Fault::new(438, default_error_message(438))))?;
-        // ByRef args alias the caller's place (write-back); named arguments reorder by
-        // the callee parameter names before the frame is seeded.
-        let proc_args = self.project_call_args(obj_bundle, proc, args)?;
-        // Run the method body in the object's program (target_prog = obj_bundle). The args +
-        // result dst are resolved by run_proc_with_me in THIS caller's program (cur unchanged),
-        // so a method argument naming a caller global reads/writes the CALLER's global (vm2's
-        // resolve-args-then-switch order), not the object program's.
-        self.run_proc_with_me(obj_bundle, proc, me, &proc_args, false)
+            calcvba_runtime::RuntimeMemberBacking::Field(field_token) => self
+                .dispatch_project_field_member(&object, member, field_token, requested_kind, args),
+            calcvba_runtime::RuntimeMemberBacking::None => {
+                Err(Vm3Error::Fault(Fault::new(438, default_error_message(438))))
+            }
+        }
+    }
+
+    fn dispatch_project_field_member(
+        &mut self,
+        object: &ObjectRef,
+        member: &'static calcvba_runtime::RuntimeMemberDescriptor,
+        field_token: i32,
+        requested_kind: calcvba_runtime::RuntimeMemberInvokeKind,
+        args: &[OxCallArg],
+    ) -> Result<Variant, Vm3Error> {
+        use calcvba_runtime::{RuntimeMemberInvokeKind, RuntimeValueType};
+        match requested_kind {
+            RuntimeMemberInvokeKind::PropertyGet | RuntimeMemberInvokeKind::Method => {
+                let raw = self.read_project_field_as_new(object, field_token)?;
+                if args.is_empty() {
+                    let target_ty = member.return_type.unwrap_or(RuntimeValueType::Variant);
+                    calcvba_rt_abi::coerce_value_for_runtime_type(&raw, target_ty)
+                        .map_err(Vm3Error::Fault)
+                } else if raw.vtype() == VarType::Object {
+                    self.dispatch_default_member(raw, TypeLibMemberInvokeKind::PropertyGet, args)
+                } else {
+                    Err(Vm3Error::Fault(Fault::new(450, default_error_message(450))))
+                }
+            }
+            RuntimeMemberInvokeKind::PropertyLet => {
+                let [arg] = args else {
+                    return Err(Vm3Error::Fault(Fault::new(450, default_error_message(450))));
+                };
+                let value = self.eval_call_arg_value(arg)?;
+                let value = if value.vtype() == VarType::Object {
+                    self.arithmetic_value(value)?
+                } else {
+                    value
+                };
+                let target_ty = member
+                    .params
+                    .last()
+                    .map_or(RuntimeValueType::Variant, |param| param.value_type);
+                let coerced = calcvba_rt_abi::coerce_value_for_runtime_type(&value, target_ty)
+                    .map_err(Vm3Error::Fault)?;
+                object.project_field_set(field_token, coerced);
+                Ok(Variant::empty())
+            }
+            RuntimeMemberInvokeKind::PropertySet => {
+                let [arg] = args else {
+                    return Err(Vm3Error::Fault(Fault::new(450, default_error_message(450))));
+                };
+                let value = self.eval_call_arg_value(arg)?;
+                if value.vtype() != VarType::Object {
+                    return Err(Vm3Error::Fault(Fault::new(424, default_error_message(424))));
+                }
+                object.project_field_set(field_token, value);
+                Ok(Variant::empty())
+            }
+        }
+    }
+
+    fn dispatch_project_field_member_values(
+        &mut self,
+        object: &ObjectRef,
+        member: &'static calcvba_runtime::RuntimeMemberDescriptor,
+        field_token: i32,
+        requested_kind: calcvba_runtime::RuntimeMemberInvokeKind,
+        args: Vec<Variant>,
+    ) -> Result<Variant, Vm3Error> {
+        use calcvba_runtime::{RuntimeMemberInvokeKind, RuntimeValueType};
+        match requested_kind {
+            RuntimeMemberInvokeKind::PropertyGet | RuntimeMemberInvokeKind::Method => {
+                let raw = self.read_project_field_as_new(object, field_token)?;
+                if args.is_empty() {
+                    let target_ty = member.return_type.unwrap_or(RuntimeValueType::Variant);
+                    calcvba_rt_abi::coerce_value_for_runtime_type(&raw, target_ty)
+                        .map_err(Vm3Error::Fault)
+                } else if raw.vtype() == VarType::Object {
+                    self.dispatch_default_member_values(
+                        raw,
+                        TypeLibMemberInvokeKind::PropertyGet,
+                        args,
+                    )
+                } else {
+                    Err(Vm3Error::Fault(Fault::new(450, default_error_message(450))))
+                }
+            }
+            RuntimeMemberInvokeKind::PropertyLet => {
+                let [value] = args.as_slice() else {
+                    return Err(Vm3Error::Fault(Fault::new(450, default_error_message(450))));
+                };
+                let value = if value.vtype() == VarType::Object {
+                    self.arithmetic_value(value.clone())?
+                } else {
+                    value.clone()
+                };
+                let target_ty = member
+                    .params
+                    .last()
+                    .map_or(RuntimeValueType::Variant, |param| param.value_type);
+                let coerced = calcvba_rt_abi::coerce_value_for_runtime_type(&value, target_ty)
+                    .map_err(Vm3Error::Fault)?;
+                object.project_field_set(field_token, coerced);
+                Ok(Variant::empty())
+            }
+            RuntimeMemberInvokeKind::PropertySet => {
+                let [value] = args.as_slice() else {
+                    return Err(Vm3Error::Fault(Fault::new(450, default_error_message(450))));
+                };
+                if value.vtype() != VarType::Object {
+                    return Err(Vm3Error::Fault(Fault::new(424, default_error_message(424))));
+                }
+                object.project_field_set(field_token, value.clone());
+                Ok(Variant::empty())
+            }
+        }
+    }
+
+    fn eval_call_arg_value(&mut self, arg: &OxCallArg) -> Result<Variant, Vm3Error> {
+        match arg {
+            OxCallArg::Operand(op) | OxCallArg::Named { value: op, .. } => self.operand(op),
+            OxCallArg::ByRef(place) => self.read(place),
+            OxCallArg::Const(n) => Ok(Variant::from_i32(*n)),
+            OxCallArg::Omitted => Err(Vm3Error::Fault(Fault::new(449, default_error_message(449)))),
+        }
     }
 
     /// Mint a built-in library-class instance for `New <LibClass>` (`OxInst::NewExtern`). Only
@@ -4511,42 +4634,39 @@ impl<'h> Vm3<'h> {
         object: ObjectRef,
         depth: usize,
     ) -> Result<ForEachItems, Vm3Error> {
-        let class_idx = object.route_key() as usize;
         let obj_bundle = object.bundle_id() as usize;
-        let program = self
-            .exec
-            .programs
-            .get(obj_bundle)
-            .map(|lp| lp.program)
-            .ok_or_else(|| {
-                Vm3Error::Fault(Fault::new(438, "Object doesn't support this member"))
-            })?;
-        let class = program.classes.get(class_idx).ok_or_else(|| {
-            Vm3Error::Fault(Fault::new(438, "Object doesn't support this member"))
-        })?;
-        let member = class
-            .methods
-            .iter()
-            .find(|m| m.is_enumerator_member && m.kind == ProjectMemberKind::PropertyGet)
-            .or_else(|| {
-                class
-                    .methods
-                    .iter()
-                    .find(|m| m.is_enumerator_member && m.kind == ProjectMemberKind::Method)
-            })
+        let member = object
+            .class_descriptor()
+            .resolve_enumerator_member()
             .ok_or_else(|| {
                 Vm3Error::Fault(Fault::new(
                     438,
                     "Object doesn't support this property or method",
                 ))
             })?;
-        let result = self.run_proc_with_me(
-            obj_bundle,
-            member.proc,
-            Variant::from_object_ref(object),
-            &[],
-            false,
-        )?;
+        let result = match member.backing {
+            calcvba_runtime::RuntimeMemberBacking::Proc(proc) => self.run_proc_with_me(
+                obj_bundle,
+                FuncId(proc),
+                Variant::from_object_ref(object),
+                &[],
+                false,
+            )?,
+            calcvba_runtime::RuntimeMemberBacking::Field(field_token) => self
+                .dispatch_project_field_member_values(
+                    &object,
+                    member,
+                    field_token,
+                    calcvba_runtime::RuntimeMemberInvokeKind::PropertyGet,
+                    Vec::new(),
+                )?,
+            calcvba_runtime::RuntimeMemberBacking::None => {
+                return Err(Vm3Error::Fault(Fault::new(
+                    438,
+                    "Object doesn't support this property or method",
+                )));
+            }
+        };
         self.foreach_elements(result, depth)
     }
 
@@ -4975,15 +5095,9 @@ impl<'h> Vm3<'h> {
         let Some(object) = value.as_object_ref().filter(|o| o.is_project_instance()) else {
             return false;
         };
-        self.exec
-            .programs
-            .get(object.bundle_id() as usize)
-            .is_some_and(|loaded| {
-                calcvba_rt_abi::object_types::has_parameterless_default_get(
-                    loaded.program,
-                    object.route_key() as usize,
-                )
-            })
+        calcvba_rt_abi::object_types::has_parameterless_default_get_descriptor(
+            object.class_descriptor(),
+        )
     }
 
     fn native_args(&mut self, args: &[OxCallArg]) -> Result<Vec<Variant>, Vm3Error> {

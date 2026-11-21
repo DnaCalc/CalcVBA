@@ -751,6 +751,10 @@ impl<'p> JitSession<'p> {
     pub fn default_instance_context(&mut self) -> calcvba_rt_abi::DefaultInstanceContext {
         self.exec.default_instance_context()
     }
+    /// The session's late-bound project dispatch plan cache.
+    pub fn dispatch_plan_cache_mut(&mut self) -> &mut calcvba_runtime::RuntimeDispatchPlanCache {
+        &mut self.exec.dispatch_plan_cache
+    }
     /// Seat an unhandled typed host-entry fault in the same Err used by thunks.
     pub fn record_typed_entry_error(&mut self, number: i32) {
         self.exec.err_engine.raise(

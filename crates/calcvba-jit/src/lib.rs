@@ -23,8 +23,8 @@ use calcvba_oxir::inst::OxAsNew;
 use calcvba_oxir::ty::ClassId;
 use calcvba_oxir::{
     ArithOp, ArrayShape, BlockId, BoundWhich, CmpOp, ErrField, ErrorHandler, FuncId, LogicalOp,
-    ObjClass, OxArg, OxCallArg, OxClass, OxClassMethod, OxCoerceTarget, OxConst, OxFunc, OxInst,
-    OxLocal, OxNativeCallee, OxOperand, OxPlace, OxProgram, OxTerminator, OxTy,
+    ObjClass, OxArg, OxCallArg, OxCoerceTarget, OxConst, OxFunc, OxInst, OxLocal, OxNativeCallee,
+    OxOperand, OxPlace, OxProgram, OxTerminator, OxTy,
 };
 use calcvba_rt_abi::{
     EventBinding, ExecState, Fault, LoadedProgram, RT_ARITH_ADD, RT_ARITH_DIV, RT_ARITH_INT_DIV,

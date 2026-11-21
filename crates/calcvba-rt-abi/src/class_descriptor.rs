@@ -5,18 +5,178 @@
 //! DISPIDs, vtable slots, default interface IIDs, fields, and implemented interfaces across all
 //! three executors (dc-yqq0.21).
 
-use calcvba_bundle::{ArrayElementType, ProjectMemberKind};
+use calcvba_bundle::{ArrayElementType, NumericCoerceTarget, ProjectMemberKind};
+use calcvba_com::{TypeLibMemberInvokeKind, TypeLibMemberMetadata};
+use calcvba_eval::arith;
 use calcvba_oxir::{OxProgram, OxTy, inst::OxAsNew, program::OxClassMethod};
 use calcvba_runtime::{
     Guid, RuntimeClassActivationSpec, RuntimeClassAsNewFieldSpec, RuntimeClassDescriptor,
     RuntimeClassFieldSpec, RuntimeClassLifecycleDescriptor, RuntimeClassSpec,
-    RuntimeImplementedInterfaceSpec, RuntimeMemberBacking, RuntimeMemberInvokeKind,
-    RuntimeMemberSpec, RuntimeParamSpec, RuntimeValueType, build_runtime_class_descriptor,
+    RuntimeDispatchPlanCache, RuntimeImplementedInterfaceSpec, RuntimeMemberBacking,
+    RuntimeMemberDescriptor, RuntimeMemberInvokeKind, RuntimeMemberSpec, RuntimeParamSpec,
+    RuntimeValueType, VarType, Variant, build_runtime_class_descriptor, default_error_message,
     runtime_project_interface_guid,
 };
 
 const NATIVE_METADATA_MAGIC: [u8; 4] = *b"CVBD";
 const NATIVE_METADATA_VERSION: u32 = 1;
+
+/// Convert a bundle [`ProjectMemberKind`] into [`RuntimeMemberInvokeKind`].
+pub fn runtime_invoke_kind(kind: ProjectMemberKind) -> RuntimeMemberInvokeKind {
+    match kind {
+        ProjectMemberKind::Method => RuntimeMemberInvokeKind::Method,
+        ProjectMemberKind::PropertyGet => RuntimeMemberInvokeKind::PropertyGet,
+        ProjectMemberKind::PropertyLet => RuntimeMemberInvokeKind::PropertyLet,
+        ProjectMemberKind::PropertySet => RuntimeMemberInvokeKind::PropertySet,
+    }
+}
+
+/// Convert a typelib [`TypeLibMemberInvokeKind`] into [`RuntimeMemberInvokeKind`].
+pub fn runtime_invoke_kind_from_typelib(kind: TypeLibMemberInvokeKind) -> RuntimeMemberInvokeKind {
+    match kind {
+        TypeLibMemberInvokeKind::Method => RuntimeMemberInvokeKind::Method,
+        TypeLibMemberInvokeKind::PropertyGet => RuntimeMemberInvokeKind::PropertyGet,
+        TypeLibMemberInvokeKind::PropertyPut => RuntimeMemberInvokeKind::PropertyLet,
+        TypeLibMemberInvokeKind::PropertyPutRef => RuntimeMemberInvokeKind::PropertySet,
+    }
+}
+
+/// Resolve a project-instance member call without scanning `OxClass::methods`:
+///
+/// - Early-bound calls (`early_member.is_some()`) dispatch by vtable slot or DISPID on the
+///   matching class/implemented interface descriptor when its IID matches, falling back to
+///   `RuntimeDispatchPlanCache` for imported COM interfaces implemented by a VBA class.
+/// - Default-member calls (`name.is_empty()`) dispatch directly by DISPID `0`.
+/// - Late-bound named calls resolve exclusively through `RuntimeDispatchPlanCache` and index
+///   directly into the class descriptor's dual interface member table.
+pub fn resolve_project_member_for_call(
+    cache: &mut RuntimeDispatchPlanCache,
+    descriptor: &'static RuntimeClassDescriptor,
+    early_member: Option<&TypeLibMemberMetadata>,
+    name: &str,
+    invoke_kind: RuntimeMemberInvokeKind,
+    args_empty: bool,
+    public_only: bool,
+) -> Option<&'static RuntimeMemberDescriptor> {
+    if let Some(meta) = early_member {
+        if let Some(iid) = meta.interface_iid {
+            let guid = Guid::new(iid.data1, iid.data2, iid.data3, iid.data4);
+            if descriptor.default_interface_iid == Some(guid) {
+                if let Some(slot) = meta.vtable_slot
+                    && let Some(member) = descriptor.member_by_vtable_slot(slot)
+                    && (!public_only || member.externally_visible)
+                {
+                    return Some(member);
+                }
+                if let Some(member) = descriptor.resolve_member_by_dispid(
+                    meta.token,
+                    invoke_kind,
+                    args_empty,
+                    public_only,
+                ) {
+                    return Some(member);
+                }
+            }
+            if let Some(iface) = descriptor
+                .interfaces
+                .iter()
+                .find(|iface| iface.identity.guid == guid)
+            {
+                if let Some(slot) = meta.vtable_slot
+                    && let Some(member) = iface.member_by_vtable_slot(slot)
+                    && (!public_only || member.externally_visible)
+                {
+                    return Some(member);
+                }
+                if let Some(member) =
+                    iface.resolve_member_by_dispid(meta.token, invoke_kind, args_empty, public_only)
+                {
+                    return Some(member);
+                }
+            }
+        }
+        let dispatch = descriptor.dispatch_interface()?;
+        let lookup_name = if name.is_empty() {
+            meta.name.as_str()
+        } else {
+            name
+        };
+        let plan = cache.resolve_project_member(
+            dispatch,
+            lookup_name,
+            invoke_kind,
+            args_empty,
+            public_only,
+        )?;
+        return dispatch.member_at(plan.member_index);
+    }
+
+    if name.is_empty() {
+        return descriptor.resolve_member_by_dispid(0, invoke_kind, args_empty, public_only);
+    }
+
+    let dispatch = descriptor.dispatch_interface()?;
+    let plan =
+        cache.resolve_project_member(dispatch, name, invoke_kind, args_empty, public_only)?;
+    dispatch.member_at(plan.member_index)
+}
+
+/// Coerce `value` to a class field's runtime value type (used for late-bound / COM access to
+/// `Public` class fields backed by `RuntimeMemberBacking::Field`).
+pub fn coerce_value_for_runtime_type(
+    value: &Variant,
+    ty: RuntimeValueType,
+) -> Result<Variant, crate::Fault> {
+    let numeric = match ty {
+        RuntimeValueType::Byte => Some(NumericCoerceTarget::Byte),
+        RuntimeValueType::Integer => Some(NumericCoerceTarget::Integer),
+        RuntimeValueType::Long => Some(NumericCoerceTarget::Long),
+        RuntimeValueType::LongLong => Some(NumericCoerceTarget::LongLong),
+        RuntimeValueType::LongPtr => {
+            #[cfg(target_pointer_width = "64")]
+            {
+                Some(NumericCoerceTarget::LongLong)
+            }
+            #[cfg(not(target_pointer_width = "64"))]
+            {
+                Some(NumericCoerceTarget::Long)
+            }
+        }
+        RuntimeValueType::Single => Some(NumericCoerceTarget::Single),
+        RuntimeValueType::Double => Some(NumericCoerceTarget::Double),
+        RuntimeValueType::Currency => Some(NumericCoerceTarget::Currency),
+        RuntimeValueType::Date => Some(NumericCoerceTarget::Date),
+        RuntimeValueType::Boolean => Some(NumericCoerceTarget::Boolean),
+        _ => None,
+    };
+    if let Some(target) = numeric {
+        return arith::coerce_numeric(value, target).map_err(crate::Fault::from_arith);
+    }
+    match ty {
+        RuntimeValueType::String => arith::coerce_string(value).map_err(crate::Fault::from_arith),
+        RuntimeValueType::Object => {
+            if value.vtype() == VarType::Object {
+                Ok(value.clone())
+            } else {
+                Err(crate::Fault::new(424, default_error_message(424)))
+            }
+        }
+        RuntimeValueType::Variant
+        | RuntimeValueType::Decimal
+        | RuntimeValueType::Record
+        | RuntimeValueType::Array => Ok(value.clone()),
+        RuntimeValueType::Byte
+        | RuntimeValueType::Integer
+        | RuntimeValueType::Long
+        | RuntimeValueType::LongLong
+        | RuntimeValueType::LongPtr
+        | RuntimeValueType::Single
+        | RuntimeValueType::Double
+        | RuntimeValueType::Currency
+        | RuntimeValueType::Date
+        | RuntimeValueType::Boolean => unreachable!("handled above"),
+    }
+}
 
 /// Build (or return cached) `'static RuntimeClassDescriptor`s for every class in `program`.
 pub fn runtime_class_descriptors_for_program(

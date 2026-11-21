@@ -188,6 +188,26 @@ pub fn builtin_dictionary_class(
         .position(|class| class.runtime_type_name.as_deref() == Some("Dictionary"))
 }
 
+/// A zero-argument value read may use only a default getter (`DISPID_VALUE = 0`) whose
+/// parameters are all optional or ParamArray. In particular `Dictionary.Item(Key)` is not a
+/// parameterless default value for `VarType`.
+pub fn has_parameterless_default_get_descriptor(
+    descriptor: &calcvba_runtime::RuntimeClassDescriptor,
+) -> bool {
+    let Some(member) = descriptor.resolve_member_by_dispid(
+        0,
+        calcvba_runtime::RuntimeMemberInvokeKind::PropertyGet,
+        true,
+        false,
+    ) else {
+        return false;
+    };
+    member
+        .params
+        .iter()
+        .all(|param| param.optional || param.param_array)
+}
+
 /// A zero-argument value read may use only a default getter whose parameters are optional.
 /// In particular Dictionary.Item(Key) is not a default value for VarType.
 pub fn has_parameterless_default_get(program: &calcvba_oxir::OxProgram, class: usize) -> bool {

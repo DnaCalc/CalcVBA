@@ -360,8 +360,63 @@ pub enum RuntimeDescriptorIssue {
 }
 
 impl RuntimeInterfaceDescriptor {
+    /// Return the member at `index`, if in bounds.
+    pub fn member_at(&self, index: usize) -> Option<&'static RuntimeMemberDescriptor> {
+        self.members.get(index)
+    }
+
+    /// Look up a member by vtable slot (`>= 7` on a dual interface).
+    ///
+    /// On canonical descriptors built by [`crate::build_runtime_class_descriptor`], dual members
+    /// occupy consecutive slots starting at `7`, so the lookup resolves in O(1) without scanning.
+    pub fn member_by_vtable_slot(&self, slot: u16) -> Option<&'static RuntimeMemberDescriptor> {
+        if self.dual_dispatch
+            && slot >= 7
+            && let Some(member) = self.members.get((slot - 7) as usize)
+            && member.vtable_slot == Some(slot)
+        {
+            return Some(member);
+        }
+        self.members
+            .iter()
+            .find(|member| member.vtable_slot == Some(slot))
+    }
+
+    /// Resolve a member on this interface by DISPID and invoke kind using VBA accessor fallback
+    /// rules (`PropertyGet <-> Method`, and `PropertySet` onto a Variant public field).
+    pub fn resolve_member_by_dispid(
+        &self,
+        dispid: i32,
+        invoke_kind: RuntimeMemberInvokeKind,
+        args_empty: bool,
+        public_only: bool,
+    ) -> Option<&'static RuntimeMemberDescriptor> {
+        let exact = self
+            .members
+            .iter()
+            .find(|member| member.dispatch_id == dispid && member.invoke_kind == invoke_kind);
+        let member = exact.or_else(|| match invoke_kind {
+            RuntimeMemberInvokeKind::PropertyGet if args_empty || dispid == 0 => {
+                self.members.iter().find(|member| {
+                    member.dispatch_id == dispid
+                        && member.invoke_kind == RuntimeMemberInvokeKind::Method
+                })
+            }
+            RuntimeMemberInvokeKind::Method => self.members.iter().find(|member| {
+                member.dispatch_id == dispid
+                    && member.invoke_kind == RuntimeMemberInvokeKind::PropertyGet
+            }),
+            RuntimeMemberInvokeKind::PropertySet => self
+                .members
+                .iter()
+                .find(|member| member.dispatch_id == dispid && is_variant_field_setter(member)),
+            _ => None,
+        });
+        member.filter(|member| !public_only || member.externally_visible)
+    }
+
     /// Validate only the COM-publication shape of this descriptor. Internal dispatch-cache test
-    /// descriptors may use narrower synthetic slots and should not call this export gate.
+    /// descriptors may use narrower synthetic slots and should not call this export check.
     pub fn validate_com_export_shape(&self) -> Result<(), RuntimeDescriptorIssue> {
         if self.id != self.identity.id {
             return Err(RuntimeDescriptorIssue::InterfaceIdentityMismatch {
@@ -452,13 +507,30 @@ impl RuntimeClassDescriptor {
         })
     }
 
+    /// Resolve a dual-interface member by DISPID using VBA accessor fallback rules.
+    pub fn resolve_member_by_dispid(
+        &self,
+        dispid: i32,
+        invoke_kind: RuntimeMemberInvokeKind,
+        args_empty: bool,
+        public_only: bool,
+    ) -> Option<&'static RuntimeMemberDescriptor> {
+        self.dispatch_interface()?.resolve_member_by_dispid(
+            dispid,
+            invoke_kind,
+            args_empty,
+            public_only,
+        )
+    }
+
+    /// Resolve the class's `For Each` enumerator member (`DISPID_NEWENUM = -4`).
+    pub fn resolve_enumerator_member(&self) -> Option<&'static RuntimeMemberDescriptor> {
+        self.resolve_member_by_dispid(-4, RuntimeMemberInvokeKind::PropertyGet, true, false)
+    }
+
     /// Look up a dual-interface member by vtable slot (`>= 7`).
     pub fn member_by_vtable_slot(&self, slot: u16) -> Option<&'static RuntimeMemberDescriptor> {
-        let dispatch = self.dispatch_interface()?;
-        dispatch
-            .members
-            .iter()
-            .find(|member| member.vtable_slot == Some(slot))
+        self.dispatch_interface()?.member_by_vtable_slot(slot)
     }
 
     /// Validate Linux-testable descriptor facts that future COM export code must be able to trust.
@@ -524,9 +596,20 @@ pub struct RuntimeDispatchPlan {
     pub is_default_member: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct RuntimeProjectDispatchKey {
+    interface_descriptor: usize,
+    normalized_member_name: String,
+    invoke_kind: Option<RuntimeMemberInvokeKind>,
+    args_empty: bool,
+    public_only: bool,
+    host_fallback: bool,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RuntimeDispatchPlanCache {
     entries: BTreeMap<RuntimeDispatchCacheKey, RuntimeDispatchPlan>,
+    project_entries: BTreeMap<RuntimeProjectDispatchKey, RuntimeDispatchPlan>,
 }
 
 impl RuntimeDispatchPlanCache {
@@ -535,11 +618,135 @@ impl RuntimeDispatchPlanCache {
     }
 
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.entries.len() + self.project_entries.len()
+    }
+
+    pub fn project_plan_count(&self) -> usize {
+        self.project_entries.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.is_empty() && self.project_entries.is_empty()
+    }
+
+    /// Resolve a VBA late-bound member on a project interface through the plan cache, using VBA's
+    /// accessor fallback rules (`PropertyGet(args_empty) <-> Method`, and `PropertySet` onto a
+    /// Variant public field). Subsequent calls with the same `(interface, name, kind, args_empty,
+    /// public_only)` return the cached plan without scanning members.
+    pub fn resolve_project_member(
+        &mut self,
+        interface: &RuntimeInterfaceDescriptor,
+        member_name: &str,
+        invoke_kind: RuntimeMemberInvokeKind,
+        args_empty: bool,
+        public_only: bool,
+    ) -> Option<RuntimeDispatchPlan> {
+        let key = RuntimeProjectDispatchKey {
+            interface_descriptor: runtime_interface_descriptor_key(interface),
+            normalized_member_name: normalize_runtime_member_name(member_name),
+            invoke_kind: Some(invoke_kind),
+            args_empty,
+            public_only,
+            host_fallback: false,
+        };
+        if let Some(plan) = self.project_entries.get(&key).copied() {
+            return Some(plan);
+        }
+        let exact = interface.members.iter().enumerate().find(|(_, candidate)| {
+            candidate.name.eq_ignore_ascii_case(member_name.trim())
+                && candidate.invoke_kind == invoke_kind
+        });
+        let matched = exact.or_else(|| match invoke_kind {
+            RuntimeMemberInvokeKind::PropertyGet if args_empty => {
+                interface.members.iter().enumerate().find(|(_, candidate)| {
+                    candidate.name.eq_ignore_ascii_case(member_name.trim())
+                        && candidate.invoke_kind == RuntimeMemberInvokeKind::Method
+                })
+            }
+            RuntimeMemberInvokeKind::Method => {
+                interface.members.iter().enumerate().find(|(_, candidate)| {
+                    candidate.name.eq_ignore_ascii_case(member_name.trim())
+                        && candidate.invoke_kind == RuntimeMemberInvokeKind::PropertyGet
+                })
+            }
+            RuntimeMemberInvokeKind::PropertySet => {
+                interface.members.iter().enumerate().find(|(_, candidate)| {
+                    candidate.name.eq_ignore_ascii_case(member_name.trim())
+                        && is_variant_field_setter(candidate)
+                })
+            }
+            _ => None,
+        });
+        let (member_index, member) =
+            matched.filter(|(_, candidate)| !public_only || candidate.externally_visible)?;
+        let plan = RuntimeDispatchPlan {
+            interface_id: interface.id,
+            member_index,
+            dispatch_id: member.dispatch_id,
+            vtable_slot: member.vtable_slot,
+            invoke_kind: member.invoke_kind,
+            is_default_member: member.is_default_member,
+        };
+        self.project_entries.insert(key, plan);
+        Some(plan)
+    }
+
+    /// Resolve a host-initiated project member call (`kind_hint` preferred, falling back to any
+    /// accessor with the same name) through the plan cache.
+    pub fn resolve_project_member_for_host(
+        &mut self,
+        interface: &RuntimeInterfaceDescriptor,
+        member_name: &str,
+        kind_hint: Option<RuntimeMemberInvokeKind>,
+    ) -> Option<RuntimeDispatchPlan> {
+        let key = RuntimeProjectDispatchKey {
+            interface_descriptor: runtime_interface_descriptor_key(interface),
+            normalized_member_name: normalize_runtime_member_name(member_name),
+            invoke_kind: kind_hint,
+            args_empty: false,
+            public_only: false,
+            host_fallback: true,
+        };
+        if let Some(plan) = self.project_entries.get(&key).copied() {
+            return Some(plan);
+        }
+        let trimmed = member_name.trim();
+        let matched = interface
+            .members
+            .iter()
+            .enumerate()
+            .find(|(_, candidate)| {
+                candidate.name.eq_ignore_ascii_case(trimmed)
+                    && kind_hint.is_none_or(|kind| candidate.invoke_kind == kind)
+            })
+            .or_else(|| {
+                if kind_hint == Some(RuntimeMemberInvokeKind::PropertySet) {
+                    interface.members.iter().enumerate().find(|(_, candidate)| {
+                        candidate.name.eq_ignore_ascii_case(trimmed)
+                            && is_variant_field_setter(candidate)
+                    })
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                interface
+                    .members
+                    .iter()
+                    .enumerate()
+                    .find(|(_, candidate)| candidate.name.eq_ignore_ascii_case(trimmed))
+            });
+        let (member_index, member) = matched?;
+        let plan = RuntimeDispatchPlan {
+            interface_id: interface.id,
+            member_index,
+            dispatch_id: member.dispatch_id,
+            vtable_slot: member.vtable_slot,
+            invoke_kind: member.invoke_kind,
+            is_default_member: member.is_default_member,
+        };
+        self.project_entries.insert(key, plan);
+        Some(plan)
     }
 
     pub fn resolve_member(
@@ -673,6 +880,15 @@ impl RuntimeDispatchPlanCache {
         self.entries.insert(key, plan);
         Some(plan)
     }
+}
+
+fn is_variant_field_setter(member: &RuntimeMemberDescriptor) -> bool {
+    matches!(member.backing, RuntimeMemberBacking::Field(_))
+        && member.invoke_kind == RuntimeMemberInvokeKind::PropertyLet
+        && member
+            .params
+            .last()
+            .is_some_and(|param| param.value_type == RuntimeValueType::Variant)
 }
 
 fn normalize_runtime_member_name(member_name: &str) -> String {
@@ -2792,6 +3008,186 @@ mod tests {
             object
                 .query_interface_projection_by_guid(RUNTIME_GUID_IUNKNOWN)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn dispatch_plan_cache_and_dispid_slot_lookup_resolve_project_members_and_fields() {
+        use crate::class_descriptor::{
+            RuntimeClassFieldSpec, RuntimeClassSpec, RuntimeMemberSpec,
+            build_runtime_class_descriptor,
+        };
+        let spec = RuntimeClassSpec {
+            unit_name: "DispatchCacheUnit".into(),
+            class_index: 0,
+            name: "Widget".into(),
+            runtime_type_name: None,
+            default_interface_iid: None,
+            predeclared: false,
+            lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
+            fields: vec![
+                RuntimeClassFieldSpec {
+                    name: "Value".into(),
+                    token: 10,
+                    value_type: RuntimeValueType::Long,
+                    array_element_type: None,
+                    externally_visible: true,
+                    dispatch_id: None,
+                    get_vtable_slot: None,
+                    put_vtable_slot: None,
+                },
+                RuntimeClassFieldSpec {
+                    name: "Tag".into(),
+                    token: 11,
+                    value_type: RuntimeValueType::Variant,
+                    array_element_type: None,
+                    externally_visible: true,
+                    dispatch_id: None,
+                    get_vtable_slot: None,
+                    put_vtable_slot: None,
+                },
+            ],
+            as_new_fields: Vec::new(),
+            implements: Vec::new(),
+            methods: vec![
+                RuntimeMemberSpec {
+                    name: "DefaultVal".into(),
+                    dispatch_id: Some(0),
+                    vtable_slot: None,
+                    invoke_kind: RuntimeMemberInvokeKind::PropertyGet,
+                    params: Vec::new(),
+                    return_type: Some(RuntimeValueType::Long),
+                    is_default_member: true,
+                    is_enumerator_member: false,
+                    externally_visible: true,
+                    backing: RuntimeMemberBacking::Proc(1),
+                },
+                RuntimeMemberSpec {
+                    name: "NewEnum".into(),
+                    dispatch_id: Some(-4),
+                    vtable_slot: None,
+                    invoke_kind: RuntimeMemberInvokeKind::PropertyGet,
+                    params: Vec::new(),
+                    return_type: Some(RuntimeValueType::Object),
+                    is_default_member: false,
+                    is_enumerator_member: true,
+                    externally_visible: true,
+                    backing: RuntimeMemberBacking::Proc(2),
+                },
+                RuntimeMemberSpec {
+                    name: "Twice".into(),
+                    dispatch_id: None,
+                    vtable_slot: None,
+                    invoke_kind: RuntimeMemberInvokeKind::Method,
+                    params: Vec::new(),
+                    return_type: Some(RuntimeValueType::Long),
+                    is_default_member: false,
+                    is_enumerator_member: false,
+                    externally_visible: true,
+                    backing: RuntimeMemberBacking::Proc(3),
+                },
+                RuntimeMemberSpec {
+                    name: "FriendStep".into(),
+                    dispatch_id: None,
+                    vtable_slot: None,
+                    invoke_kind: RuntimeMemberInvokeKind::Method,
+                    params: Vec::new(),
+                    return_type: None,
+                    is_default_member: false,
+                    is_enumerator_member: false,
+                    externally_visible: false,
+                    backing: RuntimeMemberBacking::Proc(4),
+                },
+            ],
+            implemented_interfaces: Vec::new(),
+        };
+        let descriptor = build_runtime_class_descriptor(&spec);
+        let dispatch = descriptor.dispatch_interface().expect("dual interface");
+
+        // DISPID 0 default member and DISPID -4 enumerator resolve directly without name scan.
+        let default_m = descriptor
+            .resolve_member_by_dispid(0, RuntimeMemberInvokeKind::PropertyGet, true, true)
+            .expect("default member");
+        assert_eq!(default_m.backing, RuntimeMemberBacking::Proc(1));
+        let enum_m = descriptor
+            .resolve_enumerator_member()
+            .expect("enumerator member");
+        assert_eq!(enum_m.backing, RuntimeMemberBacking::Proc(2));
+
+        // O(1) vtable slot lookup round-trips every dual member.
+        for member in dispatch.members {
+            let slot = member.vtable_slot.expect("dual slot");
+            assert_eq!(descriptor.member_by_vtable_slot(slot), Some(member));
+        }
+
+        // Plan cache resolves public method (with PropertyGet fallback), public Variant field Set,
+        // filters non-public members when public_only = true, and reuses cached entries.
+        let mut cache = RuntimeDispatchPlanCache::new();
+        let twice1 = cache
+            .resolve_project_member(
+                dispatch,
+                "Twice",
+                RuntimeMemberInvokeKind::PropertyGet,
+                true,
+                true,
+            )
+            .expect("PropertyGet(0) falls back to Method");
+        let twice2 = cache
+            .resolve_project_member(
+                dispatch,
+                "TWICE",
+                RuntimeMemberInvokeKind::PropertyGet,
+                true,
+                true,
+            )
+            .expect("cached hit");
+        assert_eq!(twice1, twice2);
+        assert_eq!(cache.project_plan_count(), 1);
+        assert_eq!(
+            dispatch.member_at(twice1.member_index).map(|m| m.backing),
+            Some(RuntimeMemberBacking::Proc(3))
+        );
+
+        let tag_set = cache
+            .resolve_project_member(
+                dispatch,
+                "Tag",
+                RuntimeMemberInvokeKind::PropertySet,
+                false,
+                true,
+            )
+            .expect("Variant public field accepts PropertySet");
+        assert_eq!(
+            dispatch.member_at(tag_set.member_index).map(|m| m.backing),
+            Some(RuntimeMemberBacking::Field(11))
+        );
+
+        assert!(
+            cache
+                .resolve_project_member(
+                    dispatch,
+                    "FriendStep",
+                    RuntimeMemberInvokeKind::Method,
+                    true,
+                    true,
+                )
+                .is_none(),
+            "public_only must reject Friend members"
+        );
+        let friend_plan = cache
+            .resolve_project_member(
+                dispatch,
+                "FriendStep",
+                RuntimeMemberInvokeKind::Method,
+                true,
+                false,
+            )
+            .expect("same-project internal receiver resolves Friend member");
+        assert_eq!(
+            dispatch
+                .member_at(friend_plan.member_index)
+                .map(|m| m.backing),
+            Some(RuntimeMemberBacking::Proc(4))
         );
     }
 }

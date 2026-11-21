@@ -3930,31 +3930,6 @@ pub(crate) struct ProjectMemberInvocation<'a> {
     pub(crate) dst: Option<(u32, u32)>,
 }
 
-pub(crate) fn project_default_member_for_jit(
-    class: &OxClass,
-    kind: ProjectMemberKind,
-    args_empty: bool,
-) -> Option<&OxClassMethod> {
-    let exact = class
-        .methods
-        .iter()
-        .find(|method| method.is_default_member && method.kind == kind);
-    exact.or_else(|| {
-        if kind == ProjectMemberKind::PropertyGet && args_empty {
-            class
-                .methods
-                .iter()
-                .find(|method| method.is_default_member && method.kind == ProjectMemberKind::Method)
-        } else if kind == ProjectMemberKind::Method {
-            class.methods.iter().find(|method| {
-                method.is_default_member && method.kind == ProjectMemberKind::PropertyGet
-            })
-        } else {
-            None
-        }
-    })
-}
-
 // SAFETY CONTRACT: `state` must be null or the exact live, uniquely borrowed,
 // same-thread handle produced by `exec_state_as_raw`; any additional raw pointer
 // and length arguments must identify the initialized, nonaliasing storage described
@@ -4102,19 +4077,12 @@ pub(crate) unsafe fn invoke_project_member_with_me(
 // by their typed parameters for the complete synchronous call.
 /// Whether a project instance's class has a default member a value read can call (`VarType`
 /// of such an object is its default's type; of one without, `vbObject`).
-fn project_has_default_get(run: *mut JitRun, value: &Variant) -> bool {
+fn project_has_default_get(_run: *mut JitRun, value: &Variant) -> bool {
     let Some(object) = value.as_object_ref().filter(|o| o.is_project_instance()) else {
         return false;
     };
-    // SAFETY: the active compiled entry owns this run; only metadata is read.
-    let Some(image) = program_image(unsafe { &*run }, object.bundle_id() as usize) else {
-        return false;
-    };
-    // SAFETY: the image's program is live for the run.
-    let program = unsafe { &*image.program };
-    calcvba_rt_abi::object_types::has_parameterless_default_get(
-        program,
-        object.route_key() as usize,
+    calcvba_rt_abi::object_types::has_parameterless_default_get_descriptor(
+        object.class_descriptor(),
     )
 }
 
@@ -4438,45 +4406,7 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
         return ST_OK;
     }
     let program_index = object.bundle_id() as usize;
-    let class_idx = object.route_key() as usize;
-    let Some(image) = ({
-        // SAFETY: this shared metadata borrow is bounded before member entry.
-        program_image(unsafe { &*run }, program_index)
-    }) else {
-        return ST_FAULT;
-    };
-    if image.program.is_null() {
-        return ST_FAULT;
-    }
-    // SAFETY: installed from the owning CompiledImage for this run.
-    let program = unsafe { &*image.program };
-    let Some(class) = program.classes.get(class_idx) else {
-        // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
-        return unsafe { rt_raise_runtime_error_number(state, 438) };
-    };
-    let member = if name.is_empty() {
-        project_default_member_for_jit(class, kind, args.is_empty())
-    } else {
-        let exact = class
-            .methods
-            .iter()
-            .find(|method| method.name.eq_ignore_ascii_case(name) && method.kind == kind);
-        exact.or_else(|| {
-            if kind == ProjectMemberKind::PropertyGet && args.is_empty() {
-                class.methods.iter().find(|method| {
-                    method.name.eq_ignore_ascii_case(name)
-                        && method.kind == ProjectMemberKind::Method
-                })
-            } else if kind == ProjectMemberKind::Method {
-                class.methods.iter().find(|method| {
-                    method.name.eq_ignore_ascii_case(name)
-                        && method.kind == ProjectMemberKind::PropertyGet
-                })
-            } else {
-                None
-            }
-        })
-    };
+    let runtime_kind = calcvba_rt_abi::runtime_invoke_kind(kind);
     // A typed same-project call may use Friend/private implementation members.
     // Dynamic names and callers in another project see only the public surface.
     // SAFETY: this immutable frame lookup ends before entering the selected body.
@@ -4486,26 +4416,67 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
             .last()
             .is_some_and(|frame| frame.program_index == program_index)
     };
-    let member = member.filter(|member| member.externally_visible || !public_only && same_project);
+    let effective_public_only = (public_only && early_member.is_none()) || !same_project;
+    let member = {
+        // SAFETY: bounded mutable borrow of ExecState for plan cache lookup; ends before entry.
+        let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
+            return ST_FAULT;
+        };
+        calcvba_rt_abi::resolve_project_member_for_call(
+            &mut exec.dispatch_plan_cache,
+            object.class_descriptor(),
+            early_member,
+            name,
+            runtime_kind,
+            args.is_empty(),
+            effective_public_only,
+        )
+    };
     let Some(member) = member else {
         // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
         return unsafe { rt_raise_runtime_error_number(state, 438) };
     };
-    // SAFETY: this helper inherits the live unique state handle; `run`, argument
-    // descriptors, names, and the owned receiver remain live and nonaliasing.
-    let value = match unsafe {
-        invoke_project_member_with_me(
-            run,
-            state,
-            program_index,
-            member.proc.0,
-            recv_value,
-            args,
-            names,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
+    let value = match member.backing {
+        calcvba_runtime::RuntimeMemberBacking::Proc(proc) => {
+            // SAFETY: this helper inherits the live unique state handle; `run`, argument
+            // descriptors, names, and the owned receiver remain live and nonaliasing.
+            match unsafe {
+                invoke_project_member_with_me(
+                    run,
+                    state,
+                    program_index,
+                    proc,
+                    recv_value,
+                    args,
+                    names,
+                )
+            } {
+                Ok(value) => value,
+                Err(status) => return status,
+            }
+        }
+        calcvba_runtime::RuntimeMemberBacking::Field(field_token) => {
+            // SAFETY: inherits live unique `state` and `run` contracts; no borrow spans callbacks.
+            match unsafe {
+                invoke_project_field_member_for_jit(
+                    run,
+                    state,
+                    &object,
+                    member,
+                    field_token,
+                    runtime_kind,
+                    args,
+                    names,
+                )
+            } {
+                Ok(value) => value,
+                Err(status) => return status,
+            }
+        }
+        calcvba_runtime::RuntimeMemberBacking::None => {
+            // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
+            return unsafe { rt_raise_runtime_error_number(state, 438) };
+        }
     };
     if let Some((area, index)) = dst {
         // SAFETY: member entry returned and no typed run borrow is live.
@@ -4519,6 +4490,118 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
         }
     }
     ST_OK
+}
+
+// SAFETY CONTRACT: `state` and `run` are the matching live execution roots; no borrow of either is held.
+#[allow(clippy::too_many_arguments)]
+unsafe fn invoke_project_field_member_for_jit(
+    run: *mut JitRun,
+    state: *mut RawExecState,
+    object: &ObjectRef,
+    member: &'static calcvba_runtime::RuntimeMemberDescriptor,
+    field_token: i32,
+    requested_kind: calcvba_runtime::RuntimeMemberInvokeKind,
+    args: &[JitCallArgDesc],
+    names: &[JitCallArgNameDesc],
+) -> Result<Variant, i32> {
+    use calcvba_runtime::{RuntimeMemberInvokeKind, RuntimeValueType};
+    match requested_kind {
+        RuntimeMemberInvokeKind::PropertyGet | RuntimeMemberInvokeKind::Method => {
+            // SAFETY: inherited live roots contract.
+            let raw =
+                unsafe { project_field_get_with_as_new_for_jit(run, state, object, field_token) }?;
+            if args.is_empty() {
+                let target_ty = member.return_type.unwrap_or(RuntimeValueType::Variant);
+                calcvba_rt_abi::coerce_value_for_runtime_type(&raw, target_ty).map_err(|fault| {
+                    // SAFETY: inherited live state contract.
+                    if let Some(exec) = unsafe { jit_exec_state_mut(state) } {
+                        exec.err_engine.raise(fault, current_unit_source(run));
+                    }
+                    ST_FAULT
+                })
+            } else if raw.vtype() == VarType::Object {
+                // SAFETY: inherited live roots contract.
+                let argv = collection_call_arg_values_for_jit(unsafe { &*run }, args)?;
+                let _ = names;
+                // SAFETY: inherited live roots contract.
+                unsafe {
+                    invoke_project_default_member_values(
+                        run,
+                        state,
+                        raw,
+                        ProjectMemberKind::PropertyGet,
+                        &argv,
+                    )
+                }
+            } else {
+                // SAFETY: inherited live state contract.
+                Err(unsafe { rt_raise_runtime_error_number(state, 450) })
+            }
+        }
+        RuntimeMemberInvokeKind::PropertyLet => {
+            let [arg] = args else {
+                // SAFETY: inherited live state contract.
+                return Err(unsafe { rt_raise_runtime_error_number(state, 450) });
+            };
+            if arg.kind == JIT_CALL_ARG_OMITTED {
+                // SAFETY: inherited live state contract.
+                return Err(unsafe { rt_raise_runtime_error_number(state, 449) });
+            }
+            // SAFETY: short immutable borrow ends before any default-member callback.
+            let mut value = call_arg_variant_value(unsafe { &*run }, *arg).ok_or(ST_FAULT)?;
+            for _ in 0..64 {
+                if value.vtype() != VarType::Object {
+                    break;
+                }
+                if jit_is_nothing(&value) {
+                    // SAFETY: inherited live state contract.
+                    return Err(unsafe { rt_raise_runtime_error_number(state, 91) });
+                }
+                // SAFETY: inherited live roots contract.
+                value = unsafe {
+                    invoke_project_default_member_values(
+                        run,
+                        state,
+                        value,
+                        ProjectMemberKind::PropertyGet,
+                        &[],
+                    )
+                }?;
+            }
+            let target_ty = member
+                .params
+                .last()
+                .map_or(RuntimeValueType::Variant, |param| param.value_type);
+            let coerced = calcvba_rt_abi::coerce_value_for_runtime_type(&value, target_ty)
+                .map_err(|fault| {
+                    // SAFETY: inherited live state contract.
+                    if let Some(exec) = unsafe { jit_exec_state_mut(state) } {
+                        exec.err_engine.raise(fault, current_unit_source(run));
+                    }
+                    ST_FAULT
+                })?;
+            object.project_field_set(field_token, coerced);
+            Ok(Variant::empty())
+        }
+        RuntimeMemberInvokeKind::PropertySet => {
+            let [arg] = args else {
+                // SAFETY: inherited live state contract.
+                return Err(unsafe { rt_raise_runtime_error_number(state, 450) });
+            };
+            if arg.kind == JIT_CALL_ARG_OMITTED {
+                // SAFETY: inherited live state contract.
+                return Err(unsafe { rt_raise_runtime_error_number(state, 449) });
+            }
+            // SAFETY: short immutable borrow of run.
+            let value = call_arg_variant_value(unsafe { &*run }, *arg).ok_or(ST_FAULT)?;
+            if value.vtype() != VarType::Object {
+                // SAFETY: inherited live state contract.
+                return Err(unsafe { rt_raise_runtime_error_number(state, 424) });
+            }
+            object.project_field_set(field_token, value);
+            Ok(Variant::empty())
+        }
+    }
 }
 
 // SAFETY CONTRACT: `state` must be null or the exact live, uniquely borrowed,
@@ -7412,48 +7495,45 @@ unsafe fn project_enumerator_elements(
         return Err(unsafe { rt_raise_runtime_error_number(state, 438) });
     }
     let program_index = object.bundle_id() as usize;
-    let class_idx = object.route_key() as usize;
-    let proc = {
-        // SAFETY: this shared metadata borrow ends before the member is entered.
-        let run_ref = unsafe { &*run };
-        let Some(image) = program_image(run_ref, program_index) else {
-            return Err(ST_FAULT);
-        };
-        if image.program.is_null() {
-            return Err(ST_FAULT);
+    let Some(member) = object.class_descriptor().resolve_enumerator_member() else {
+        // SAFETY: inherited live state contract.
+        return Err(unsafe { rt_raise_runtime_error_number(state, 438) });
+    };
+    let result = match member.backing {
+        calcvba_runtime::RuntimeMemberBacking::Proc(proc) => {
+            // SAFETY: inherited live roots; the owned receiver outlives the call.
+            unsafe {
+                invoke_project_member_with_me(
+                    run,
+                    state,
+                    program_index,
+                    proc,
+                    Variant::from_object_ref(object),
+                    &[],
+                    &[],
+                )
+            }?
         }
-        // SAFETY: installed from the owning CompiledImage for this run.
-        let program = unsafe { &*image.program };
-        let member = program.classes.get(class_idx).and_then(|class| {
-            class
-                .methods
-                .iter()
-                .find(|m| m.is_enumerator_member && m.kind == ProjectMemberKind::PropertyGet)
-                .or_else(|| {
-                    class
-                        .methods
-                        .iter()
-                        .find(|m| m.is_enumerator_member && m.kind == ProjectMemberKind::Method)
-                })
-        });
-        match member {
-            Some(member) => member.proc.0,
+        calcvba_runtime::RuntimeMemberBacking::Field(field_token) => {
+            // SAFETY: inherited live roots; the owned receiver outlives the call.
+            unsafe {
+                invoke_project_field_member_for_jit(
+                    run,
+                    state,
+                    &object,
+                    member,
+                    field_token,
+                    calcvba_runtime::RuntimeMemberInvokeKind::PropertyGet,
+                    &[],
+                    &[],
+                )
+            }?
+        }
+        calcvba_runtime::RuntimeMemberBacking::None => {
             // SAFETY: inherited live state contract.
-            None => return Err(unsafe { rt_raise_runtime_error_number(state, 438) }),
+            return Err(unsafe { rt_raise_runtime_error_number(state, 438) });
         }
     };
-    // SAFETY: inherited live roots; the owned receiver outlives the call.
-    let result = unsafe {
-        invoke_project_member_with_me(
-            run,
-            state,
-            program_index,
-            proc,
-            Variant::from_object_ref(object),
-            &[],
-            &[],
-        )
-    }?;
     if let Some(array) = result.as_safearray() {
         return Ok(array.enumeration_elements().unwrap_or_default());
     }

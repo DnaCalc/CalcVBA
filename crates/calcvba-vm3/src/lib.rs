@@ -83,6 +83,7 @@ static VBA_COLLECTION_DESCRIPTOR: RuntimeClassDescriptor = RuntimeClassDescripto
     predeclared: false,
     lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
     record_members: &[],
+    project_records: &[],
     fields: &[],
     as_new_fields: &[],
     implements: &[],
@@ -359,6 +360,12 @@ impl<'h> Vm3<'h> {
     ) -> Result<Variant, Vm3Error> {
         match ty {
             OxTy::Array(element, _) => {
+                if let OxTy::Record(id) = element.as_ref()
+                    && let Ok(layout) =
+                        calcvba_rt_abi::vba_record_layout_for_program_record(program, *id)
+                {
+                    return Ok(Variant::unallocated_record_array(layout));
+                }
                 let element = (match element.as_ref() {
                     OxTy::Record(id) => program
                         .record_layout(*id)
@@ -1969,6 +1976,18 @@ impl<'h> Vm3<'h> {
                     // type). Only then is the array's OWN runtime vartype the truth.
                     let bounds = arr.bounds().unwrap_or_default();
                     let count = arr.len();
+                    if let Some(rec_layout) = cur.record_array_layout() {
+                        let elems: Vec<Variant> = (0..count)
+                            .map(|_| {
+                                calcvba_bundle::array_runtime::default_record_array_element(
+                                    &rec_layout,
+                                )
+                            })
+                            .collect::<Result<Vec<_>, String>>()?;
+                        return calcvba_bundle::array_runtime::redim_record_safearray_from_elements(
+                            bounds, rec_layout, elems, true,
+                        );
+                    }
                     let et = match element {
                         ArrayElementType::Variant => {
                             array_element_type_for_vartype(arr.element_vartype())
@@ -2145,8 +2164,25 @@ impl<'h> Vm3<'h> {
 
             // ── Records / UDT (M3-3) — value aggregates with native VBA layout ────────
             OxInst::NewRecord { dst, fields } => {
-                let layout = vba_record_layout_for_fields(fields)
+                let anon = vba_record_layout_for_fields(fields)
                     .map_err(|e| Vm3Error::Fault(Fault::new(13, e)))?;
+                let frame = self.frames.last().expect("NewRecord frame");
+                let program = self.exec.programs[frame.prog].program;
+                let function = &program.funcs[frame.func.0];
+                let dst_ty = match dst {
+                    OxPlace::Local(id) => &function.locals[id.0].ty,
+                    OxPlace::Temp(id) => &function.temps[id.0],
+                    OxPlace::Global(id) => &program.globals[id.0].ty,
+                };
+                let layout = if let OxTy::Record(id) = dst_ty
+                    && let Ok(named) =
+                        calcvba_rt_abi::vba_record_layout_for_program_record(program, *id)
+                    && named.matches_structural(&anon)
+                {
+                    named
+                } else {
+                    anon
+                };
                 let record = VbaRecord::new_default(layout)
                     .map_err(|e| Vm3Error::Fault(Fault::new(13, e)))?;
                 self.store(dst, Variant::from_vba_record(record))?;
@@ -3290,14 +3326,48 @@ impl<'h> Vm3<'h> {
         // A plain `ReDim` of a Variant gets a new descriptor; an array variable, or `Preserve`,
         // keeps it (Excel, probe redim7c).
         let keep_descriptor = preserve || !matches!(ty, OxTy::Variant);
+        let cur_value = self.read(dst)?;
         let selected = calcvba_bundle::array_runtime::resolve_redim_element(
-            &self.read(dst)?,
+            &cur_value,
             element,
             inherit_current,
             preserve,
         )
         .map_err(|code| Vm3Error::Fault(Fault::new(code, "ReDim element type mismatch")))?;
         let element = &selected;
+        let nominal_record_layout = if let ArrayElementType::Record(fields) = element {
+            let anon = vba_record_layout_for_fields(fields).ok();
+            let from_decl = match ty {
+                OxTy::Array(elem, _) => match elem.as_ref() {
+                    OxTy::Record(id) => {
+                        calcvba_rt_abi::vba_record_layout_for_program_record(program, *id).ok()
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+            from_decl
+                .or_else(|| cur_value.record_array_layout())
+                .filter(|layout| anon.as_ref().is_none_or(|a| layout.matches_structural(a)))
+        } else {
+            None
+        };
+        let build_defaults = |count: usize| -> Result<Vec<Variant>, Vm3Error> {
+            if let Some(ref rec_layout) = nominal_record_layout {
+                let mut out = Vec::new();
+                out.try_reserve_exact(count)
+                    .map_err(|_| Vm3Error::Fault(Fault::new(7, "Out of memory")))?;
+                for _ in 0..count {
+                    out.push(
+                        calcvba_bundle::array_runtime::default_record_array_element(rec_layout)
+                            .map_err(|e| Vm3Error::Fault(Fault::new(13, e)))?,
+                    );
+                }
+                Ok(out)
+            } else {
+                try_build_default_elements(element, count)
+            }
+        };
         // A user `ReDim` (lowered with `fixed = false`) of an already-fixed-size array is
         // illegal in VBA — `Dim a(1 To 3) : ReDim a(...)` is the compile error "Array already
         // dimensioned". vm3 carries fixed-ness only on the runtime value (the symbol model
@@ -3305,12 +3375,7 @@ impl<'h> Vm3<'h> {
         // the runtime analog, error 10 "This array is fixed or temporarily locked". The
         // fixed-`Dim`/UDT-field allocation itself is `fixed = true` against an uninitialized
         // slot, so it is never caught here.
-        if !fixed
-            && self
-                .read(dst)?
-                .as_safearray()
-                .is_some_and(|a| a.is_fixed_size())
-        {
+        if !fixed && cur_value.as_safearray().is_some_and(|a| a.is_fixed_size()) {
             return Err(Vm3Error::Fault(Fault::new(
                 10,
                 "This array is fixed or temporarily locked",
@@ -3336,8 +3401,7 @@ impl<'h> Vm3<'h> {
             return self.store_redimmed(dst, array, keep_descriptor);
         }
         let elems: Vec<Variant> = if preserve {
-            let cur = self.read(dst)?;
-            match cur.as_safearray().and_then(|a| {
+            match cur_value.as_safearray().and_then(|a| {
                 a.bounds()
                     .map(|b| (b, a.variant_elements().unwrap_or_default()))
             }) {
@@ -3357,7 +3421,7 @@ impl<'h> Vm3<'h> {
                     if illegal {
                         return Err(Vm3Error::Fault(Fault::new(9, "subscript out of range")));
                     }
-                    let mut out = try_build_default_elements(element, count)?;
+                    let mut out = build_defaults(count)?;
                     for (old_flat, value) in old_elems.into_iter().enumerate() {
                         if let Some(new_flat) = calcvba_runtime::safe_array::preserved_element_index(
                             old_flat,
@@ -3370,13 +3434,19 @@ impl<'h> Vm3<'h> {
                     out
                 }
                 // `ReDim Preserve` of a not-yet-allocated dynamic array just allocates it.
-                None => try_build_default_elements(element, count)?,
+                None => build_defaults(count)?,
             }
         } else {
-            try_build_default_elements(element, count)?
+            build_defaults(count)?
         };
-        let array = redim_safearray_from_elements(bounds, element, elems, fixed)
-            .map_err(|e| Vm3Error::Fault(Fault::new(13, e)))?;
+        let array = if let Some(rec_layout) = nominal_record_layout {
+            calcvba_bundle::array_runtime::redim_record_safearray_from_elements(
+                bounds, rec_layout, elems, fixed,
+            )
+        } else {
+            redim_safearray_from_elements(bounds, element, elems, fixed)
+        }
+        .map_err(|e| Vm3Error::Fault(Fault::new(13, e)))?;
         self.store_redimmed(dst, array, keep_descriptor)
     }
 

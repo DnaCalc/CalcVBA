@@ -5714,11 +5714,18 @@ pub(crate) unsafe extern "C" fn rt_jit_new_record_to_slot(
             // the live OxProgram instruction's immutable field-layout vector.
             unsafe { std::slice::from_raw_parts(fields, fields_len as usize) }
         };
-        let layout = match vba_record_layout_for_fields(fields) {
+        let anon_layout = match vba_record_layout_for_fields(fields) {
             Ok(layout) => layout,
             // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
             Err(_) => return unsafe { rt_raise_type_mismatch(state) },
         };
+        // SAFETY: `run` is live; preserve the slot's nominal `VbaRecordIdentity` if already seeded.
+        let layout = slot_ref(unsafe { &*run }, dst_area, dst_index)
+            .and_then(|existing| existing.vba_record_layout().cloned())
+            .filter(|existing| {
+                existing.identity().is_some() && existing.matches_structural(&anon_layout)
+            })
+            .unwrap_or(anon_layout);
         let record = match VbaRecord::new_default(layout) {
             Ok(record) => record,
             // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
@@ -6806,16 +6813,53 @@ pub(crate) unsafe extern "C" fn rt_jit_array_redim_to_slot(
             // SAFETY: state is the live execution state validated above.
             Err(_) => return unsafe { rt_raise_type_mismatch(state) },
         };
+        let nominal_record_layout = if let ArrayElementType::Record(fields) = &element {
+            current.record_array_layout().filter(|existing| {
+                vba_record_layout_for_fields(fields)
+                    .is_ok_and(|anon| existing.matches_structural(&anon))
+            })
+        } else {
+            None
+        };
         let array = if preserve == 0 {
-            match jit_redim_default_safearray(bounds, &element, count, fixed != 0) {
-                Ok(array) => array,
-                Err(JitRedimDefaultArrayError::OutOfMemory) => {
+            if let Some(rec_layout) = nominal_record_layout {
+                let mut values = Vec::new();
+                if values.try_reserve_exact(count).is_err() {
                     // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
                     return unsafe { rt_raise_out_of_memory(state) };
                 }
-                Err(JitRedimDefaultArrayError::TypeMismatch) => {
-                    // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
-                    return unsafe { rt_raise_type_mismatch(state) };
+                for _ in 0..count {
+                    match calcvba_bundle::array_runtime::default_record_array_element(&rec_layout) {
+                        Ok(item) => values.push(item),
+                        Err(_) => {
+                            // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
+                            return unsafe { rt_raise_type_mismatch(state) };
+                        }
+                    }
+                }
+                match calcvba_bundle::array_runtime::redim_record_safearray_from_elements(
+                    bounds,
+                    rec_layout,
+                    values,
+                    fixed != 0,
+                ) {
+                    Ok(array) => array,
+                    Err(_) => {
+                        // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
+                        return unsafe { rt_raise_type_mismatch(state) };
+                    }
+                }
+            } else {
+                match jit_redim_default_safearray(bounds, &element, count, fixed != 0) {
+                    Ok(array) => array,
+                    Err(JitRedimDefaultArrayError::OutOfMemory) => {
+                        // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
+                        return unsafe { rt_raise_out_of_memory(state) };
+                    }
+                    Err(JitRedimDefaultArrayError::TypeMismatch) => {
+                        // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
+                        return unsafe { rt_raise_type_mismatch(state) };
+                    }
                 }
             }
         } else {
@@ -6824,7 +6868,17 @@ pub(crate) unsafe extern "C" fn rt_jit_array_redim_to_slot(
                 // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
                 return unsafe { rt_raise_out_of_memory(state) };
             }
-            if jit_fill_default_array_elements(&mut values, &element, count).is_err() {
+            if let Some(ref rec_layout) = nominal_record_layout {
+                for _ in 0..count {
+                    match calcvba_bundle::array_runtime::default_record_array_element(rec_layout) {
+                        Ok(item) => values.push(item),
+                        Err(_) => {
+                            // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
+                            return unsafe { rt_raise_type_mismatch(state) };
+                        }
+                    }
+                }
+            } else if jit_fill_default_array_elements(&mut values, &element, count).is_err() {
                 // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
                 return unsafe { rt_raise_type_mismatch(state) };
             }
@@ -6868,7 +6922,17 @@ pub(crate) unsafe extern "C" fn rt_jit_array_redim_to_slot(
                     values[new_index] = value;
                 }
             }
-            match redim_safearray_from_elements(bounds, &element, values, fixed != 0) {
+            let built = if let Some(rec_layout) = nominal_record_layout {
+                calcvba_bundle::array_runtime::redim_record_safearray_from_elements(
+                    bounds,
+                    rec_layout,
+                    values,
+                    fixed != 0,
+                )
+            } else {
+                redim_safearray_from_elements(bounds, &element, values, fixed != 0)
+            };
+            match built {
                 Ok(array) => array,
                 // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
                 Err(_) => return unsafe { rt_raise_type_mismatch(state) },
@@ -6939,33 +7003,60 @@ pub(crate) unsafe extern "C" fn rt_jit_array_erase_variant_slot(
             Some(array) => {
                 let bounds = array.bounds().unwrap_or_default();
                 let count = array.len();
-                let element = match bind_element {
-                    ArrayElementType::Variant => {
-                        array_element_type_for_vartype(array.element_vartype())
-                    }
-                    other => other,
-                };
-                if jit_redim_element_supports_zeroed(&element) {
-                    match SafeArray::from_zeroed_typed_scalars_nd(
-                        bounds,
-                        safearray_vartype_for_element(&element),
-                    ) {
-                        Ok(array) => Variant::from_safearray(array.with_fixed_size(true)),
-                        Err(_) => return ST_FAULT,
-                    }
-                } else {
+                if let Some(rec_layout) = current.record_array_layout() {
                     let mut values = Vec::new();
                     if values.try_reserve_exact(count).is_err() {
                         return ST_FAULT;
                     }
-                    if jit_fill_default_array_elements(&mut values, &element, count).is_err() {
-                        // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
-                        return unsafe { rt_raise_type_mismatch(state) };
+                    for _ in 0..count {
+                        match calcvba_bundle::array_runtime::default_record_array_element(
+                            &rec_layout,
+                        ) {
+                            Ok(item) => values.push(item),
+                            Err(_) => {
+                                // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
+                                return unsafe { rt_raise_type_mismatch(state) };
+                            }
+                        }
                     }
-                    match redim_safearray_from_elements(bounds, &element, values, true) {
+                    match calcvba_bundle::array_runtime::redim_record_safearray_from_elements(
+                        bounds, rec_layout, values, true,
+                    ) {
                         Ok(array) => Variant::from_safearray(array),
-                        // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
-                        Err(_) => return unsafe { rt_raise_type_mismatch(state) },
+                        Err(_) => {
+                            // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
+                            return unsafe { rt_raise_type_mismatch(state) };
+                        }
+                    }
+                } else {
+                    let element = match bind_element {
+                        ArrayElementType::Variant => {
+                            array_element_type_for_vartype(array.element_vartype())
+                        }
+                        other => other,
+                    };
+                    if jit_redim_element_supports_zeroed(&element) {
+                        match SafeArray::from_zeroed_typed_scalars_nd(
+                            bounds,
+                            safearray_vartype_for_element(&element),
+                        ) {
+                            Ok(array) => Variant::from_safearray(array.with_fixed_size(true)),
+                            Err(_) => return ST_FAULT,
+                        }
+                    } else {
+                        let mut values = Vec::new();
+                        if values.try_reserve_exact(count).is_err() {
+                            return ST_FAULT;
+                        }
+                        if jit_fill_default_array_elements(&mut values, &element, count).is_err() {
+                            // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
+                            return unsafe { rt_raise_type_mismatch(state) };
+                        }
+                        match redim_safearray_from_elements(bounds, &element, values, true) {
+                            Ok(array) => Variant::from_safearray(array),
+                            // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
+                            Err(_) => return unsafe { rt_raise_type_mismatch(state) },
+                        }
                     }
                 }
             }

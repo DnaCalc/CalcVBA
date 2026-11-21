@@ -19,21 +19,38 @@ const E_OUTOFMEMORY: i32 = 0x8007_000E_u32 as i32;
 /// `SysAllocStringByteLen`: a BSTR holding `len` bytes copied from `source` (zeroed when
 /// `source` is null).
 pub unsafe fn sys_alloc_string_byte_len(source: *const u8, len: u32) -> *mut u16 {
-    let bytes = if source.is_null() {
-        vec![0u8; len as usize]
-    } else {
-        // SAFETY: the caller supplies `len` readable bytes at `source`.
-        unsafe { core::slice::from_raw_parts(source, len as usize) }.to_vec()
-    };
-    crate::bstr::BStr::from_bytes(&bytes)
-        .map(crate::bstr::BStr::into_raw_bstr)
-        .unwrap_or(core::ptr::null_mut())
+    #[cfg(all(target_os = "windows", not(miri)))]
+    {
+        // SAFETY: caller supplies `len` readable bytes at `source` (or null for zeroed storage).
+        // Calling Win32 directly keeps foreign COM callers' `SysFreeString` out of `live_counters`.
+        unsafe { windows_sys::Win32::Foundation::SysAllocStringByteLen(source, len).cast_mut() }
+    }
+    #[cfg(any(not(target_os = "windows"), miri))]
+    {
+        let bytes = if source.is_null() {
+            vec![0u8; len as usize]
+        } else {
+            // SAFETY: the caller supplies `len` readable bytes at `source`.
+            unsafe { core::slice::from_raw_parts(source, len as usize) }.to_vec()
+        };
+        crate::bstr::BStr::from_bytes(&bytes)
+            .map(crate::bstr::BStr::into_raw_bstr)
+            .unwrap_or(core::ptr::null_mut())
+    }
 }
 
 /// `SysFreeString` (null is allowed).
 pub unsafe fn sys_free_string(bstr: *mut u16) {
-    // SAFETY: the caller transfers a BSTR from this allocator; the owner frees it.
-    drop(unsafe { crate::bstr::BStr::from_raw_bstr(bstr) });
+    #[cfg(all(target_os = "windows", not(miri)))]
+    {
+        // SAFETY: caller transfers a Win32 BSTR (or null).
+        unsafe { windows_sys::Win32::Foundation::SysFreeString(bstr) };
+    }
+    #[cfg(any(not(target_os = "windows"), miri))]
+    {
+        // SAFETY: the caller transfers a BSTR from this allocator; the owner frees it.
+        drop(unsafe { crate::bstr::BStr::from_raw_bstr(bstr) });
+    }
 }
 
 /// `SysStringByteLen` (0 for null).
@@ -41,8 +58,16 @@ pub unsafe fn sys_string_byte_len(bstr: *const u16) -> u32 {
     if bstr.is_null() {
         return 0;
     }
-    // SAFETY: a live BSTR's byte length is the u32 just before its payload.
-    unsafe { bstr.cast::<u8>().sub(4).cast::<u32>().read_unaligned() }
+    #[cfg(all(target_os = "windows", not(miri)))]
+    {
+        // SAFETY: caller passes a live BSTR.
+        unsafe { windows_sys::Win32::Foundation::SysStringByteLen(bstr) }
+    }
+    #[cfg(any(not(target_os = "windows"), miri))]
+    {
+        // SAFETY: a live BSTR's byte length is the u32 just before its payload.
+        unsafe { bstr.cast::<u8>().sub(4).cast::<u32>().read_unaligned() }
+    }
 }
 
 /// Header of a task-memory block off Windows: its size, so `co_task_mem_free` needs none.
@@ -108,21 +133,30 @@ pub unsafe fn variant_clear(cell: *mut c_void) -> i32 {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        // SAFETY: a live cell; handle `VT_ARRAY | VT_RECORD` (Automation `FADF_RECORD`
-        // arrays created via `safe_array_create_ex`) through `safe_array_destroy`.
+        // SAFETY: a live cell; handle Automation `VT_ARRAY | VT_RECORD` (`tail == null`, i.e.
+        // `FADF_RECORD` arrays created via `safe_array_create_ex`) through `safe_array_destroy`.
+        // Internal runtime UDT array cells carry a non-null `Arc<VbaRecordLayout>` in the tail
+        // slot and drop through `Variant::drop`.
         unsafe {
             let vt = cell.cast::<u16>().read();
             if vt == (crate::abi::VT_ARRAY | crate::safe_array::VT_RECORD_VALUE) {
-                let parray = cell
+                let tail = cell
                     .cast::<u8>()
-                    .add(crate::abi::PAYLOAD_OFFSET)
+                    .add(crate::abi::PAYLOAD_OFFSET + core::mem::size_of::<*mut c_void>())
                     .cast::<*mut c_void>()
                     .read();
-                let hr = safe_array_destroy(parray);
-                if hr >= 0 {
-                    core::ptr::write_bytes(cell.cast::<u8>(), 0, crate::abi::VARIANT_SIZE);
+                if tail.is_null() {
+                    let parray = cell
+                        .cast::<u8>()
+                        .add(crate::abi::PAYLOAD_OFFSET)
+                        .cast::<*mut c_void>()
+                        .read();
+                    let hr = safe_array_destroy(parray);
+                    if hr >= 0 {
+                        core::ptr::write_bytes(cell.cast::<u8>(), 0, crate::abi::VARIANT_SIZE);
+                    }
+                    return hr;
                 }
-                return hr;
             }
             cell.cast::<Variant>().replace(Variant::empty());
         }
@@ -130,7 +164,7 @@ pub unsafe fn variant_clear(cell: *mut c_void) -> i32 {
     }
 }
 
-/// `VariantCopyInd`: a copy of `source` (references read through) into the empty cell `dst`.
+/// `VariantCopyInd`: a copy of `source` (references read through) into `dst`.
 pub unsafe fn variant_copy_ind(dst: *mut c_void, source: *const c_void) -> i32 {
     if dst.is_null() || source.is_null() {
         return E_INVALIDARG;
@@ -142,37 +176,99 @@ pub unsafe fn variant_copy_ind(dst: *mut c_void, source: *const c_void) -> i32 {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        // SAFETY: `source` is a live cell; handle `VT_ARRAY | VT_RECORD` via `safe_array_copy`.
+        const VT_BYREF: u16 = 0x4000;
+        const VT_VARIANT: u16 = 0x000C;
+        const VT_ARRAY_RECORD: u16 = crate::abi::VT_ARRAY | crate::safe_array::VT_RECORD_VALUE;
+
+        // SAFETY: follow `VT_BYREF | VT_VARIANT` forwarding chains, then handle Automation
+        // `VT_ARRAY | VT_RECORD` (both direct and `VT_BYREF`) via `safe_array_copy`.
         unsafe {
-            let vt = source.cast::<u16>().read();
-            if vt == (crate::abi::VT_ARRAY | crate::safe_array::VT_RECORD_VALUE) {
-                let parray = source
-                    .cast::<u8>()
-                    .add(crate::abi::PAYLOAD_OFFSET)
-                    .cast::<*mut c_void>()
-                    .read();
-                let mut copy = core::ptr::null_mut();
-                let hr = safe_array_copy(parray, &mut copy);
-                if hr < 0 {
-                    return hr;
+            let mut cur = source;
+            for _ in 0..32 {
+                let vt = cur.cast::<u16>().read();
+                if vt == (VT_BYREF | VT_VARIANT) {
+                    let next = cur
+                        .cast::<u8>()
+                        .add(crate::abi::PAYLOAD_OFFSET)
+                        .cast::<*const c_void>()
+                        .read();
+                    if next.is_null() {
+                        return E_INVALIDARG;
+                    }
+                    cur = next;
+                    continue;
                 }
-                core::ptr::write_bytes(dst.cast::<u8>(), 0, crate::abi::VARIANT_SIZE);
-                dst.cast::<u16>().write(vt);
-                dst.cast::<u8>()
-                    .add(crate::abi::PAYLOAD_OFFSET)
-                    .cast::<*mut c_void>()
-                    .write(copy);
-                return S_OK;
+                if vt == VT_ARRAY_RECORD {
+                    let tail = cur
+                        .cast::<u8>()
+                        .add(crate::abi::PAYLOAD_OFFSET + core::mem::size_of::<*mut c_void>())
+                        .cast::<*mut c_void>()
+                        .read();
+                    if tail.is_null() {
+                        let parray = cur
+                            .cast::<u8>()
+                            .add(crate::abi::PAYLOAD_OFFSET)
+                            .cast::<*mut c_void>()
+                            .read();
+                        let mut copy = core::ptr::null_mut();
+                        let hr = safe_array_copy(parray, &mut copy);
+                        if hr < 0 {
+                            return hr;
+                        }
+                        let clear_hr = variant_clear(dst);
+                        if clear_hr < 0 {
+                            let _ = safe_array_destroy(copy);
+                            return clear_hr;
+                        }
+                        core::ptr::write_bytes(dst.cast::<u8>(), 0, crate::abi::VARIANT_SIZE);
+                        dst.cast::<u16>().write(VT_ARRAY_RECORD);
+                        dst.cast::<u8>()
+                            .add(crate::abi::PAYLOAD_OFFSET)
+                            .cast::<*mut c_void>()
+                            .write(copy);
+                        return S_OK;
+                    }
+                } else if vt == (VT_BYREF | VT_ARRAY_RECORD) {
+                    let pparray = cur
+                        .cast::<u8>()
+                        .add(crate::abi::PAYLOAD_OFFSET)
+                        .cast::<*const *mut c_void>()
+                        .read();
+                    if pparray.is_null() {
+                        return E_INVALIDARG;
+                    }
+                    let parray = *pparray;
+                    let mut copy = core::ptr::null_mut();
+                    let hr = safe_array_copy(parray, &mut copy);
+                    if hr < 0 {
+                        return hr;
+                    }
+                    let clear_hr = variant_clear(dst);
+                    if clear_hr < 0 {
+                        let _ = safe_array_destroy(copy);
+                        return clear_hr;
+                    }
+                    core::ptr::write_bytes(dst.cast::<u8>(), 0, crate::abi::VARIANT_SIZE);
+                    dst.cast::<u16>().write(VT_ARRAY_RECORD);
+                    dst.cast::<u8>()
+                        .add(crate::abi::PAYLOAD_OFFSET)
+                        .cast::<*mut c_void>()
+                        .write(copy);
+                    return S_OK;
+                }
+                return match (&*cur.cast::<Variant>()).try_clone() {
+                    Ok(copy) => {
+                        let clear_hr = variant_clear(dst);
+                        if clear_hr < 0 {
+                            return clear_hr;
+                        }
+                        dst.cast::<Variant>().write(copy);
+                        S_OK
+                    }
+                    Err(_) => E_OUTOFMEMORY,
+                };
             }
-        }
-        // SAFETY: `source` is a live cell; cloning reads a reference's target.
-        match unsafe { &*source.cast::<Variant>() }.try_clone() {
-            Ok(copy) => {
-                // SAFETY: `dst` is an empty (owning nothing) writable cell.
-                unsafe { dst.cast::<Variant>().write(copy) };
-                S_OK
-            }
-            Err(_) => E_OUTOFMEMORY,
+            E_INVALIDARG
         }
     }
 }
@@ -396,6 +492,68 @@ pub unsafe fn safe_array_destroy(array: *mut c_void) -> i32 {
             None => E_INVALIDARG,
         }
     }
+}
+
+/// `SafeArrayCopyData`: copies elements from `source` into `target` in place (same dimensions,
+/// element counts, and element type; works on fixed-size arrays).
+pub unsafe fn safe_array_copy_data(source: *mut c_void, target: *mut c_void) -> i32 {
+    if source.is_null() || target.is_null() {
+        return E_INVALIDARG;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // SAFETY: forwarded to oleaut32.
+        unsafe { windows_sys::Win32::System::Ole::SafeArrayCopyData(source.cast(), target.cast()) }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // SAFETY: both descriptors are live.
+        let any_record = unsafe {
+            crate::safe_array::record_oleaut::is_record_array(source)
+                || crate::safe_array::record_oleaut::is_record_array(target)
+        };
+        if any_record {
+            // SAFETY: forwarded to portable `FADF_RECORD` copier.
+            return unsafe { crate::safe_array::record_oleaut::copy_data(source, target) };
+        }
+        // SAFETY: forwarded to portable intrinsic copier.
+        unsafe { crate::safe_array::raw_copy_data_intrinsic(source, target) }
+    }
+}
+
+/// `SafeArrayGetVartype`: retrieves the element `VARTYPE` of a `SAFEARRAY`.
+pub unsafe fn safe_array_get_vartype(array: *const c_void, out: *mut u16) -> i32 {
+    if array.is_null() || out.is_null() {
+        return E_INVALIDARG;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // SAFETY: forwarded to oleaut32.
+        unsafe { windows_sys::Win32::System::Ole::SafeArrayGetVartype(array.cast(), out) }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // SAFETY: live descriptor and writable `out`.
+        unsafe { crate::safe_array::raw_get_vartype(array, out) }
+    }
+}
+
+/// True when `array` is a non-null `SAFEARRAY` with `FADF_RECORD` set, on every platform.
+pub unsafe fn safe_array_is_record_array(array: *const c_void) -> bool {
+    // SAFETY: forwarded from caller.
+    unsafe { crate::safe_array::raw_is_record_array(array) }
+}
+
+/// Returns `SAFEARRAY.fFeatures` (0 for null), on every platform.
+pub unsafe fn safe_array_features(array: *const c_void) -> u16 {
+    // SAFETY: forwarded from caller.
+    unsafe { crate::safe_array::raw_features(array) }
+}
+
+/// Sets or clears `FADF_FIXEDSIZE` on a live raw `SAFEARRAY`.
+pub unsafe fn safe_array_set_fixed_size(array: *mut c_void, fixed: bool) {
+    // SAFETY: forwarded from caller.
+    unsafe { crate::safe_array::raw_set_fixed_size(array, fixed) }
 }
 
 #[cfg(not(target_os = "windows"))]

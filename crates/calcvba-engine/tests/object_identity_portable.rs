@@ -2200,3 +2200,836 @@ End Sub
         }
     }
 }
+
+#[test]
+fn udt_arrays_cross_com_early_and_late_bound_both_directions_with_nominal_record_info() {
+    use calcvba_com::platform::portable::PortableTypedCallResult;
+    use calcvba_runtime::automation_record::{
+        AutomationRecordArraySlot, AutomationVariant, automation_safearray_to_vba_record_array,
+        record_info_get_guid, record_info_get_name, record_info_get_size,
+        record_info_is_matching_type, release_record_info,
+        vba_record_array_to_automation_safearray,
+    };
+    use calcvba_runtime::com::{DISP_E_TYPEMISMATCH, ITypeInfo, S_OK, VT_PTR, VT_SAFEARRAY};
+    use calcvba_runtime::safe_array::{SafeArray, SafeArrayBound};
+    use calcvba_runtime::{
+        RuntimeByRefWriteback, RuntimeCallResult, VbaRecord, VbaRecordFieldKind,
+        VbaRecordFieldSpec, VbaRecordLayout, default_record_type_guid, invoke_early_bound_slot_raw,
+        oleaut,
+    };
+
+    let types_source = r#"
+Public Type SlotPair
+    Number As Long
+    Tag As String
+End Type
+
+Public Type OtherPair
+    Number As Long
+    Tag As String
+End Type
+"#;
+    let host_class_source = r#"
+Public Sub MutateInPlace(ByRef items() As SlotPair)
+    Dim i As Long
+    For i = LBound(items) To UBound(items)
+        items(i).Number = items(i).Number + 10
+        items(i).Tag = items(i).Tag & "!"
+    Next i
+End Sub
+
+Public Sub GrowPreserve(ByRef items() As SlotPair)
+    Dim lb As Long
+    Dim ub As Long
+    lb = LBound(items)
+    ub = UBound(items) + 1
+    ReDim Preserve items(lb To ub)
+    items(ub).Number = 99
+    items(ub).Tag = "grown"
+End Sub
+
+Public Sub AllocateFromNull(ByRef items() As SlotPair)
+    ReDim items(1 To 2)
+    items(1).Number = 1
+    items(1).Tag = "one"
+    items(2).Number = 2
+    items(2).Tag = "two"
+End Sub
+
+Public Sub ClearAll(ByRef items() As SlotPair)
+    Erase items
+End Sub
+
+Public Function CopyPairs(ByRef items() As SlotPair) As SlotPair()
+    CopyPairs = items
+End Function
+
+Public Function RoundTripVariant(ByRef v As Variant) As Variant
+    Dim lb As Long
+    Dim ub As Long
+    Dim arr() As SlotPair
+    lb = LBound(v)
+    ub = UBound(v)
+    ReDim Preserve v(lb To ub + 1)
+    arr = v
+    arr(lb).Number = arr(lb).Number + 1
+    arr(lb).Tag = arr(lb).Tag & "*"
+    arr(ub + 1).Number = 55
+    arr(ub + 1).Tag = "var-added"
+    v = arr
+    RoundTripVariant = v
+End Function
+
+Public Function MakeVariantArray() As Variant
+    Dim a(1 To 2) As SlotPair
+    a(1).Number = 7
+    a(1).Tag = "seven"
+    a(2).Number = 8
+    a(2).Tag = "eight"
+    MakeVariantArray = a
+End Function
+
+Public Sub DriveOutbound(ByRef outSum As Long, ByRef outTags As String, ByRef outVarCount As Long, ByRef outVarLastTag As String)
+    Dim server As Object
+    Set server = CreateObject("CalcVBA.RecordBridge")
+    Dim items() As SlotPair
+    ReDim items(1 To 2)
+    items(1).Number = 3
+    items(1).Tag = "a"
+    items(2).Number = 4
+    items(2).Tag = "b"
+    server.CallbackMutateAndGrow Me, items
+    outSum = items(1).Number + items(2).Number + items(3).Number
+    outTags = items(1).Tag & "," & items(2).Tag & "," & items(3).Tag
+
+    Dim v As Variant
+    Dim vArr() As SlotPair
+    v = MakeVariantArray()
+    server.CallbackVariant Me, v
+    vArr = v
+    outVarCount = UBound(vArr) - LBound(vArr) + 1
+    outVarLastTag = vArr(UBound(vArr)).Tag
+End Sub
+"#;
+
+    let mut host_class = ModuleUnit {
+        module_name: "PairHost".into(),
+        module_kind: ModuleKind::Class,
+        attributes: ModuleAttributes::named("PairHost"),
+        source: host_class_source.into(),
+    };
+    host_class.attributes.vb_exposed = true;
+    host_class.attributes.vb_creatable = true;
+
+    let manifest = SymbolProjectManifest {
+        project_name: "UdtArrayProbe".into(),
+        project_kind: ProjectKind::Library,
+        modules: vec![
+            ModuleUnit {
+                module_name: "Types".into(),
+                module_kind: ModuleKind::Procedural,
+                attributes: ModuleAttributes::named("Types"),
+                source: types_source.into(),
+            },
+            host_class,
+        ],
+        references: Vec::new(),
+        reference_projects: Vec::new(),
+        conditional_constants: Default::default(),
+        conditional_compilation_target: Default::default(),
+    };
+    let bound =
+        calcvba_bind::bind_program(&manifest, &calcvba_symbol::CatalogTypeLibResolver).unwrap();
+    let program = calcvba_oxir::elaborate::elaborate(&bound).unwrap();
+
+    let pair_guid = default_record_type_guid("UdtArrayProbe", "SlotPair");
+    let other_guid = default_record_type_guid("UdtArrayProbe", "OtherPair");
+    assert_ne!(
+        pair_guid, other_guid,
+        "distinct UDTs with identical fields must carry distinct nominal GUIDs"
+    );
+
+    let base_layout = VbaRecordLayout::new(vec![
+        VbaRecordFieldSpec::named("Number", VbaRecordFieldKind::Long),
+        VbaRecordFieldSpec::named("Tag", VbaRecordFieldKind::String),
+    ])
+    .unwrap();
+    let pair_layout = Arc::new(base_layout.clone().with_identity("SlotPair", pair_guid));
+    let other_layout = Arc::new(base_layout.with_identity("OtherPair", other_guid));
+
+    let make_pair = |layout: &Arc<VbaRecordLayout>, number: i32, tag: &str| {
+        let mut rec = VbaRecord::new_default(Arc::clone(layout)).unwrap();
+        rec.write_field_variant(0, &Variant::from_i32(number))
+            .unwrap();
+        rec.write_field_variant(1, &Variant::from_string(tag))
+            .unwrap();
+        rec
+    };
+
+    /// Portable COM server exercising the outbound direction (VBA -> foreign COM -> callback into
+    /// VBA dual vtable / IDispatch -> ByRef copy-back to VBA) strictly over Automation
+    /// `SAFEARRAY(VT_RECORD)` + `IRecordInfo` wire storage.
+    struct OutboundRecordBridge {
+        pair_layout: Arc<VbaRecordLayout>,
+        pair_guid: Guid,
+    }
+    impl PortableDispatch for OutboundRecordBridge {
+        fn invoke_dynamic(
+            &self,
+            member: &str,
+            _kind: Option<calcvba_com::DynamicCallKind>,
+            args: &[calcvba_com::DynamicCallArg],
+        ) -> Result<PortableTypedCallResult, String> {
+            let target = args[0]
+                .value
+                .as_ref()
+                .and_then(|v| v.variant().as_object_ref())
+                .ok_or_else(|| "expected Me object".to_string())?;
+            let raw_this = target.raw_iunknown().cast::<c_void>();
+            // SAFETY: `target` is a live `CompatObjectBase` carrying a `ClassDualVtbl`.
+            let disp_vtbl = unsafe { &*(*raw_this.cast::<*const IDispatchVtbl>()) };
+            let xmm = [0u64; 3];
+
+            if member.eq_ignore_ascii_case("CallbackMutateAndGrow") {
+                let incoming = args[1]
+                    .value
+                    .as_ref()
+                    .map(|v| v.variant().clone())
+                    .ok_or_else(|| "expected items()".to_string())?;
+                // Stage outgoing VBA UDT array as Automation SAFEARRAY(VT_RECORD) with IRecordInfo.
+                // SAFETY: null `record_info` lets CalcVBA synthesize our nominal `IRecordInfo`.
+                let mut staged = unsafe {
+                    AutomationRecordArraySlot::from_runtime(
+                        &incoming,
+                        Some(&self.pair_layout),
+                        core::ptr::null_mut(),
+                    )
+                }
+                .map_err(|hr| format!("stage items failed: {hr:#010X}"))?;
+                // Verify IRecordInfo metadata on the outbound Automation SAFEARRAY(VT_RECORD).
+                // SAFETY: `staged.raw_psa()` is a live `FADF_RECORD` descriptor; `info` is released below.
+                unsafe {
+                    let mut info = core::ptr::null_mut();
+                    assert_eq!(
+                        oleaut::safe_array_get_record_info(staged.raw_psa(), &mut info),
+                        S_OK
+                    );
+                    assert_eq!(record_info_get_guid(info), Ok(self.pair_guid));
+                    assert_eq!(record_info_get_name(info).as_deref(), Ok("SlotPair"));
+                    assert_eq!(
+                        record_info_get_size(info),
+                        Ok(self.pair_layout.size() as u32)
+                    );
+                    release_record_info(info);
+                }
+
+                // 1) Mutate in place via early-bound slot (slot 7 = MutateInPlace).
+                let slot_mut = target
+                    .class_descriptor()
+                    .dispatch_interface()
+                    .unwrap()
+                    .members
+                    .iter()
+                    .find(|m| m.name == "MutateInPlace")
+                    .unwrap()
+                    .vtable_slot
+                    .unwrap() as usize;
+                let call_args = [
+                    raw_this.expose_provenance() as u64,
+                    staged.slot_ptr().expose_provenance() as u64,
+                ];
+                // SAFETY: `call_args` matches `MutateInPlace(ByRef items() As SlotPair)` ABI.
+                let hr = unsafe {
+                    invoke_early_bound_slot_raw(slot_mut, call_args.as_ptr(), xmm.as_ptr())
+                };
+                if hr < 0 {
+                    return Err(format!("early MutateInPlace failed: {hr:#010X}"));
+                }
+
+                // 2) Grow via late-bound IDispatch::Invoke (GrowPreserve with VT_BYREF|VT_ARRAY|VT_RECORD).
+                let dispid = raw_get_dispid(target.raw_iunknown(), "GrowPreserve")
+                    .map_err(|hr| format!("GetIDsOfNames failed: {hr:#010X}"))?;
+                let mut arg_cell =
+                    VariantCore::from_pointer(0x4000 | 0x2000 | 0x0024, staged.slot_ptr());
+                let mut dp = DispParams {
+                    rgvarg: &raw mut arg_cell,
+                    rgdispid_named_args: core::ptr::null_mut(),
+                    c_args: 1,
+                    c_named_args: 0,
+                };
+                let mut excep = ExcepInfo::default();
+                let mut arg_err = 0u32;
+                // SAFETY: `raw_this`, `dp`, and `excep` are valid for this synchronous `Invoke`.
+                let hr = unsafe {
+                    (disp_vtbl.invoke)(
+                        raw_this,
+                        dispid,
+                        &IID_NULL,
+                        0,
+                        DISPATCH_METHOD,
+                        (&raw mut dp).cast(),
+                        core::ptr::null_mut(),
+                        (&raw mut excep).cast(),
+                        &mut arg_err,
+                    )
+                };
+                if hr < 0 {
+                    return Err(format!("late GrowPreserve failed: {hr:#010X}"));
+                }
+
+                let updated = staged
+                    .to_runtime(&self.pair_layout, &|_, _| None)
+                    .map_err(|hr| format!("recover items failed: {hr:#010X}"))?;
+                let mut result = RuntimeCallResult::empty();
+                if let Some(slot) = args[1].by_ref {
+                    result.add_writeback(RuntimeByRefWriteback::new(slot, updated));
+                }
+                return Ok(PortableTypedCallResult::Value(result));
+            }
+            if member.eq_ignore_ascii_case("CallbackVariant") {
+                let incoming = args[1]
+                    .value
+                    .as_ref()
+                    .map(|v| v.variant().clone())
+                    .ok_or_else(|| "expected Variant".to_string())?;
+                let mut staged = AutomationVariant::from_runtime(&incoming)
+                    .map_err(|hr| format!("stage variant failed: {hr:#010X}"))?;
+                assert_eq!(staged.raw_vt(), 0x2024);
+                let dispid = raw_get_dispid(target.raw_iunknown(), "RoundTripVariant")
+                    .map_err(|hr| format!("GetIDsOfNames failed: {hr:#010X}"))?;
+                let mut byref_var = VariantCore::from_pointer(0x4000 | 0x000C, staged.as_mut_ptr());
+                let mut dp = DispParams {
+                    rgvarg: &raw mut byref_var,
+                    rgdispid_named_args: core::ptr::null_mut(),
+                    c_args: 1,
+                    c_named_args: 0,
+                };
+                let mut ret_var = AutomationVariant::empty();
+                let mut excep = ExcepInfo::default();
+                let mut arg_err = 0u32;
+                // SAFETY: `raw_this`, `dp`, `ret_var`, and `excep` are valid for this synchronous `Invoke`.
+                let hr = unsafe {
+                    (disp_vtbl.invoke)(
+                        raw_this,
+                        dispid,
+                        &IID_NULL,
+                        0,
+                        DISPATCH_METHOD,
+                        (&raw mut dp).cast(),
+                        ret_var.as_mut_ptr(),
+                        (&raw mut excep).cast(),
+                        &mut arg_err,
+                    )
+                };
+                if hr < 0 {
+                    return Err(format!("late RoundTripVariant failed: {hr:#010X}"));
+                }
+                assert_eq!(ret_var.raw_vt(), 0x2024);
+                let updated = staged
+                    .to_runtime(None, &|_, _| None)
+                    .map_err(|hr| format!("recover variant failed: {hr:#010X}"))?;
+                let mut result = RuntimeCallResult::empty();
+                if let Some(slot) = args[1].by_ref {
+                    result.add_writeback(RuntimeByRefWriteback::new(slot, updated));
+                }
+                return Ok(PortableTypedCallResult::Value(result));
+            }
+            Err(format!("unexpected member `{member}`"))
+        }
+
+        fn invoke(&self, member: &str, _args: &[Variant]) -> Result<Variant, String> {
+            Err(format!("unused invoke `{member}`"))
+        }
+        fn get(&self, member: &str) -> Result<Variant, String> {
+            Err(format!("unused get `{member}`"))
+        }
+        fn put(&self, member: &str, _value: Variant) -> Result<(), String> {
+            Err(format!("unused put `{member}`"))
+        }
+        fn member_names(&self) -> Vec<String> {
+            vec!["CallbackMutateAndGrow".into(), "CallbackVariant".into()]
+        }
+    }
+
+    struct OutboundFactory {
+        pair_layout: Arc<VbaRecordLayout>,
+        pair_guid: Guid,
+    }
+    impl PortableObjectFactory for OutboundFactory {
+        fn create(&self) -> Box<dyn PortableDispatch> {
+            Box::new(OutboundRecordBridge {
+                pair_layout: Arc::clone(&self.pair_layout),
+                pair_guid: self.pair_guid,
+            })
+        }
+    }
+
+    for backend in BACKENDS {
+        {
+            let projection = Arc::new(PortableComProjection::new());
+            projection.register_object(
+                "CalcVBA.RecordBridge",
+                Arc::new(OutboundFactory {
+                    pair_layout: Arc::clone(&pair_layout),
+                    pair_guid,
+                }),
+            );
+            let mut engine = Engine::new(HostConfig { backend });
+            engine.set_host_policy(HostPolicy::native());
+            engine.set_portable_com_projection(Some(projection));
+            let mut session = engine
+                .prepare_image_session(OxImage::new(vec![program.clone()]))
+                .unwrap();
+            let host = session.create_class_instance("PairHost").unwrap();
+            let descriptor = host.class_descriptor();
+            let dispatch_members = descriptor.dispatch_interface().unwrap().members;
+            let slot_of = |name: &str| {
+                dispatch_members
+                    .iter()
+                    .find(|m| m.name.eq_ignore_ascii_case(name))
+                    .unwrap_or_else(|| panic!("missing member `{name}`"))
+                    .vtable_slot
+                    .unwrap() as usize
+            };
+            let raw_this = host.raw_iunknown().cast::<c_void>();
+            // SAFETY: `host` is a live `CompatObjectBase` carrying a `ClassDualVtbl`.
+            let disp_vtbl = unsafe { &*(*raw_this.cast::<*const IDispatchVtbl>()) };
+            let xmm = [0u64; 3];
+
+            // Verify ITypeInfo emits VT_SAFEARRAY -> VT_RECORD (0x0024) for UDT array members.
+            // SAFETY: `raw_this` is live and `GetTypeInfo` / `GetFuncDesc` resources are released below.
+            unsafe {
+                let mut ti_ptr = core::ptr::null_mut();
+                assert_eq!((disp_vtbl.get_type_info)(raw_this, 0, 0, &mut ti_ptr), S_OK);
+                let ti_vtbl = &*(*ti_ptr.cast::<ITypeInfo>()).vtbl;
+                let mut fd = core::ptr::null_mut();
+                assert_eq!((ti_vtbl.get_func_desc)(ti_ptr, 0, &mut fd), S_OK);
+                let p0 = (*(*fd).lprgelemdesc_param).tdesc;
+                assert_eq!(p0.vt, VT_PTR, "{backend:?} ByRef UDT array param is VT_PTR");
+                let sa_td = *p0.payload.lptdesc;
+                assert_eq!(sa_td.vt, VT_SAFEARRAY);
+                assert_eq!(
+                    (*sa_td.payload.lptdesc).vt,
+                    0x0024,
+                    "{backend:?} ITypeInfo advertises VT_SAFEARRAY -> VT_RECORD"
+                );
+                (ti_vtbl.release_func_desc)(ti_ptr, fd);
+                (ti_vtbl.unknown.release)(ti_ptr);
+            }
+
+            let initial_items = Variant::from_safearray(
+                SafeArray::from_vba_records_nd(
+                    vec![SafeArrayBound { count: 2, lower: 1 }],
+                    Arc::clone(&pair_layout),
+                    vec![
+                        make_pair(&pair_layout, 10, "x"),
+                        make_pair(&pair_layout, 20, "y"),
+                    ],
+                )
+                .unwrap(),
+            );
+            let wrong_items = Variant::from_safearray(
+                SafeArray::from_vba_records_nd(
+                    vec![SafeArrayBound { count: 1, lower: 1 }],
+                    Arc::clone(&other_layout),
+                    vec![make_pair(&other_layout, 10, "wrong")],
+                )
+                .unwrap(),
+            );
+
+            // SAFETY: live session, object, and COM storage cells for all synchronous calls below.
+            unsafe {
+                let _invoker = session.enter_member_invoker_scope();
+
+                // ── A. Nominal mismatch rejection BEFORE copying data (early + late) ──
+                let mut wrong_psa =
+                    vba_record_array_to_automation_safearray(&wrong_items, Some(&other_layout))
+                        .unwrap();
+                let args_wrong = [
+                    raw_this.expose_provenance() as u64,
+                    (&raw mut wrong_psa).expose_provenance() as u64,
+                ];
+                assert_eq!(
+                    invoke_early_bound_slot_raw(
+                        slot_of("MutateInPlace"),
+                        args_wrong.as_ptr(),
+                        xmm.as_ptr()
+                    ),
+                    DISP_E_TYPEMISMATCH,
+                    "{backend:?} early-bound must reject OtherPair with identical fields"
+                );
+                let mut wrong_byref =
+                    VariantCore::from_pointer(0x4000 | 0x2000 | 0x0024, &raw mut wrong_psa);
+                let mut dp_wrong = DispParams {
+                    rgvarg: &raw mut wrong_byref,
+                    rgdispid_named_args: core::ptr::null_mut(),
+                    c_args: 1,
+                    c_named_args: 0,
+                };
+                let mut excep = ExcepInfo::default();
+                let mut arg_err = 0u32;
+                let mut_dispid = raw_get_dispid(host.raw_iunknown(), "MutateInPlace").unwrap();
+                assert_eq!(
+                    (disp_vtbl.invoke)(
+                        raw_this,
+                        mut_dispid,
+                        &IID_NULL,
+                        0,
+                        DISPATCH_METHOD,
+                        (&raw mut dp_wrong).cast(),
+                        core::ptr::null_mut(),
+                        (&raw mut excep).cast(),
+                        &mut arg_err,
+                    ),
+                    DISP_E_TYPEMISMATCH,
+                    "{backend:?} late-bound must reject OtherPair with identical fields"
+                );
+                assert_eq!(oleaut::safe_array_destroy(wrong_psa), S_OK);
+
+                // ── B. Early-bound: in-place mutation, ReDim Preserve resize, CopyPairs retval,
+                //       fixed-array in-place + resize refusal, null->allocated, Erase->null ──
+                let mut psa =
+                    vba_record_array_to_automation_safearray(&initial_items, Some(&pair_layout))
+                        .unwrap();
+                let orig_psa = psa;
+                let args_mut = [
+                    raw_this.expose_provenance() as u64,
+                    (&raw mut psa).expose_provenance() as u64,
+                ];
+                assert_eq!(
+                    invoke_early_bound_slot_raw(
+                        slot_of("MutateInPlace"),
+                        args_mut.as_ptr(),
+                        xmm.as_ptr()
+                    ),
+                    S_OK,
+                    "{backend:?} early MutateInPlace"
+                );
+                assert_eq!(
+                    psa, orig_psa,
+                    "{backend:?} in-place copy-back keeps SAFEARRAY*"
+                );
+
+                // Fixed-size array: in-place mutation succeeds, GrowPreserve fails (error 10).
+                oleaut::safe_array_set_fixed_size(psa, true);
+                assert_eq!(
+                    invoke_early_bound_slot_raw(
+                        slot_of("MutateInPlace"),
+                        args_mut.as_ptr(),
+                        xmm.as_ptr()
+                    ),
+                    S_OK,
+                    "{backend:?} fixed-size in-place MutateInPlace"
+                );
+                assert_eq!(psa, orig_psa);
+                let fixed_grow_hr = invoke_early_bound_slot_raw(
+                    slot_of("GrowPreserve"),
+                    args_mut.as_ptr(),
+                    xmm.as_ptr(),
+                );
+                assert_ne!(
+                    fixed_grow_hr, S_OK,
+                    "{backend:?} fixed-size GrowPreserve must fail"
+                );
+                assert_eq!(psa, orig_psa, "{backend:?} fixed descriptor stayed intact");
+                oleaut::safe_array_set_fixed_size(psa, false);
+
+                // Dynamic GrowPreserve replaces descriptor with 3 elements.
+                assert_eq!(
+                    invoke_early_bound_slot_raw(
+                        slot_of("GrowPreserve"),
+                        args_mut.as_ptr(),
+                        xmm.as_ptr()
+                    ),
+                    S_OK,
+                    "{backend:?} early GrowPreserve"
+                );
+
+                // CopyPairs retval returns FADF_RECORD SAFEARRAY with nominal SlotPair IRecordInfo.
+                let mut copied_psa: *mut c_void = core::ptr::null_mut();
+                let args_copy = [
+                    raw_this.expose_provenance() as u64,
+                    (&raw mut psa).expose_provenance() as u64,
+                    (&raw mut copied_psa).expose_provenance() as u64,
+                ];
+                assert_eq!(
+                    invoke_early_bound_slot_raw(
+                        slot_of("CopyPairs"),
+                        args_copy.as_ptr(),
+                        xmm.as_ptr()
+                    ),
+                    S_OK,
+                    "{backend:?} early CopyPairs"
+                );
+                assert!(oleaut::safe_array_is_record_array(copied_psa));
+                let mut ret_info = core::ptr::null_mut();
+                assert_eq!(
+                    oleaut::safe_array_get_record_info(copied_psa, &mut ret_info),
+                    S_OK
+                );
+                assert_eq!(record_info_get_guid(ret_info), Ok(pair_guid));
+                assert_eq!(record_info_get_name(ret_info).as_deref(), Ok("SlotPair"));
+                assert_eq!(
+                    record_info_get_size(ret_info),
+                    Ok(pair_layout.size() as u32)
+                );
+                let other_info = calcvba_runtime::automation_record::create_record_info_for_layout(
+                    &other_layout,
+                    "OtherPair",
+                    other_guid,
+                )
+                .unwrap();
+                assert!(!record_info_is_matching_type(ret_info, other_info));
+                release_record_info(other_info);
+                release_record_info(ret_info);
+
+                let recovered = automation_safearray_to_vba_record_array(
+                    copied_psa,
+                    &pair_layout,
+                    false,
+                    &|_, _| None,
+                )
+                .unwrap();
+                assert_eq!(recovered.safearray_bounds_len().unwrap().1, 3);
+                let r0 = recovered.safearray_element(0).unwrap().unwrap();
+                let r1 = recovered.safearray_element(1).unwrap().unwrap();
+                let r2 = recovered.safearray_element(2).unwrap().unwrap();
+                assert_eq!(r0.read_record_field_variant(0).unwrap().as_i32(), Some(30));
+                assert_eq!(
+                    r0.read_record_field_variant(1)
+                        .unwrap()
+                        .as_bstr()
+                        .unwrap()
+                        .as_str(),
+                    "x!!"
+                );
+                assert_eq!(r1.read_record_field_variant(0).unwrap().as_i32(), Some(40));
+                assert_eq!(r2.read_record_field_variant(0).unwrap().as_i32(), Some(99));
+                assert_eq!(
+                    r2.read_record_field_variant(1)
+                        .unwrap()
+                        .as_bstr()
+                        .unwrap()
+                        .as_str(),
+                    "grown"
+                );
+                assert_eq!(oleaut::safe_array_destroy(copied_psa), S_OK);
+
+                // ClearAll (Erase -> null) and AllocateFromNull (null -> allocated).
+                assert_eq!(
+                    invoke_early_bound_slot_raw(
+                        slot_of("ClearAll"),
+                        args_mut.as_ptr(),
+                        xmm.as_ptr()
+                    ),
+                    S_OK,
+                    "{backend:?} early ClearAll"
+                );
+                assert!(psa.is_null(), "{backend:?} Erase writes null back");
+                assert_eq!(
+                    invoke_early_bound_slot_raw(
+                        slot_of("AllocateFromNull"),
+                        args_mut.as_ptr(),
+                        xmm.as_ptr()
+                    ),
+                    S_OK,
+                    "{backend:?} early AllocateFromNull"
+                );
+                assert!(!psa.is_null());
+                let alloc_back =
+                    automation_safearray_to_vba_record_array(psa, &pair_layout, false, &|_, _| {
+                        None
+                    })
+                    .unwrap();
+                assert_eq!(alloc_back.safearray_bounds_len().unwrap().1, 2);
+                assert_eq!(
+                    alloc_back
+                        .safearray_element(1)
+                        .unwrap()
+                        .unwrap()
+                        .read_record_field_variant(1)
+                        .unwrap()
+                        .as_bstr()
+                        .unwrap()
+                        .as_str(),
+                    "two"
+                );
+
+                // ── C. Late-bound IDispatch::Invoke (VT_BYREF|VT_ARRAY|VT_RECORD + Variant) ──
+                let mut late_byref =
+                    VariantCore::from_pointer(0x4000 | 0x2000 | 0x0024, &raw mut psa);
+                let mut dp = DispParams {
+                    rgvarg: &raw mut late_byref,
+                    rgdispid_named_args: core::ptr::null_mut(),
+                    c_args: 1,
+                    c_named_args: 0,
+                };
+                assert_eq!(
+                    (disp_vtbl.invoke)(
+                        raw_this,
+                        mut_dispid,
+                        &IID_NULL,
+                        0,
+                        DISPATCH_METHOD,
+                        (&raw mut dp).cast(),
+                        core::ptr::null_mut(),
+                        (&raw mut excep).cast(),
+                        &mut arg_err,
+                    ),
+                    S_OK,
+                    "{backend:?} late MutateInPlace"
+                );
+                let after_late =
+                    automation_safearray_to_vba_record_array(psa, &pair_layout, false, &|_, _| {
+                        None
+                    })
+                    .unwrap();
+                assert_eq!(
+                    after_late
+                        .safearray_element(0)
+                        .unwrap()
+                        .unwrap()
+                        .read_record_field_variant(0)
+                        .unwrap()
+                        .as_i32(),
+                    Some(11)
+                );
+                assert_eq!(oleaut::safe_array_destroy(psa), S_OK);
+
+                // Variant holding UDT array via MakeVariantArray + RoundTripVariant (early & late).
+                let mut make_ret = AutomationVariant::empty();
+                let args_make = [
+                    raw_this.expose_provenance() as u64,
+                    make_ret.as_mut_ptr().expose_provenance() as u64,
+                ];
+                assert_eq!(
+                    invoke_early_bound_slot_raw(
+                        slot_of("MakeVariantArray"),
+                        args_make.as_ptr(),
+                        xmm.as_ptr()
+                    ),
+                    S_OK,
+                    "{backend:?} early MakeVariantArray"
+                );
+                assert_eq!(make_ret.raw_vt(), 0x2024);
+
+                let mut rt_ret = AutomationVariant::empty();
+                let args_rt = [
+                    raw_this.expose_provenance() as u64,
+                    make_ret.as_mut_ptr().expose_provenance() as u64,
+                    rt_ret.as_mut_ptr().expose_provenance() as u64,
+                ];
+                assert_eq!(
+                    invoke_early_bound_slot_raw(
+                        slot_of("RoundTripVariant"),
+                        args_rt.as_ptr(),
+                        xmm.as_ptr()
+                    ),
+                    S_OK,
+                    "{backend:?} early RoundTripVariant"
+                );
+                assert_eq!(make_ret.raw_vt(), 0x2024);
+                assert_eq!(rt_ret.raw_vt(), 0x2024);
+                let rt_val = rt_ret.to_runtime(None, &|_, _| None).unwrap();
+                assert_eq!(rt_val.safearray_bounds_len().unwrap().1, 3);
+                assert_eq!(
+                    rt_val
+                        .safearray_element(0)
+                        .unwrap()
+                        .unwrap()
+                        .read_record_field_variant(0)
+                        .unwrap()
+                        .as_i32(),
+                    Some(8)
+                );
+                assert_eq!(
+                    rt_val
+                        .safearray_element(2)
+                        .unwrap()
+                        .unwrap()
+                        .read_record_field_variant(1)
+                        .unwrap()
+                        .as_bstr()
+                        .unwrap()
+                        .as_str(),
+                    "var-added"
+                );
+
+                // Late-bound RoundTripVariant with VT_BYREF | VT_VARIANT holding 0x2024.
+                let rt_dispid = raw_get_dispid(host.raw_iunknown(), "RoundTripVariant").unwrap();
+                let mut var_byref =
+                    VariantCore::from_pointer(0x4000 | 0x000C, make_ret.as_mut_ptr());
+                let mut dp_var = DispParams {
+                    rgvarg: &raw mut var_byref,
+                    rgdispid_named_args: core::ptr::null_mut(),
+                    c_args: 1,
+                    c_named_args: 0,
+                };
+                let mut late_rt_ret = AutomationVariant::empty();
+                assert_eq!(
+                    (disp_vtbl.invoke)(
+                        raw_this,
+                        rt_dispid,
+                        &IID_NULL,
+                        0,
+                        DISPATCH_METHOD,
+                        (&raw mut dp_var).cast(),
+                        late_rt_ret.as_mut_ptr(),
+                        (&raw mut excep).cast(),
+                        &mut arg_err,
+                    ),
+                    S_OK,
+                    "{backend:?} late RoundTripVariant"
+                );
+                assert_eq!(late_rt_ret.raw_vt(), 0x2024);
+                let late_rt_val = late_rt_ret.to_runtime(None, &|_, _| None).unwrap();
+                assert_eq!(late_rt_val.safearray_bounds_len().unwrap().1, 4);
+                assert_eq!(
+                    late_rt_val
+                        .safearray_element(0)
+                        .unwrap()
+                        .unwrap()
+                        .read_record_field_variant(0)
+                        .unwrap()
+                        .as_i32(),
+                    Some(9)
+                );
+
+                // ── D. Outbound VBA -> foreign COM -> callback into VBA -> copy-back ──
+                let mut out_sum = 0i32;
+                let mut out_tags: *mut u16 = core::ptr::null_mut();
+                let mut out_var_count = 0i32;
+                let mut out_var_last: *mut u16 = core::ptr::null_mut();
+                let args_drive = [
+                    raw_this.expose_provenance() as u64,
+                    (&raw mut out_sum).expose_provenance() as u64,
+                    (&raw mut out_tags).expose_provenance() as u64,
+                    (&raw mut out_var_count).expose_provenance() as u64,
+                    (&raw mut out_var_last).expose_provenance() as u64,
+                ];
+                assert_eq!(
+                    invoke_early_bound_slot_raw(
+                        slot_of("DriveOutbound"),
+                        args_drive.as_ptr(),
+                        xmm.as_ptr()
+                    ),
+                    S_OK,
+                    "{backend:?} DriveOutbound"
+                );
+                let tags_str = BStr::from_raw_bstr(out_tags).as_str().to_string();
+                let last_str = BStr::from_raw_bstr(out_var_last).as_str().to_string();
+                assert_eq!(
+                    out_sum,
+                    (3 + 10) + (4 + 10) + 99,
+                    "{backend:?} outbound sum"
+                );
+                assert_eq!(tags_str, "a!,b!,grown", "{backend:?} outbound tags");
+                assert_eq!(out_var_count, 3, "{backend:?} outbound Variant count");
+                assert_eq!(
+                    last_str, "var-added",
+                    "{backend:?} outbound Variant last tag"
+                );
+            }
+        }
+    }
+}

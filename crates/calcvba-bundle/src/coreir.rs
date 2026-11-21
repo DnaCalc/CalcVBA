@@ -53,6 +53,9 @@ pub struct CoreProgram {
     /// Declared UDT layouts, retained even when the project only passes a UDT
     /// through parameters and never constructs a local of that type.
     pub record_types: std::collections::BTreeMap<String, Vec<crate::ArrayElementType>>,
+    /// Source-case display names for declared UDTs, keyed by the same folded name as
+    /// [`Self::record_types`] (e.g. `"project1.module1.slotpair"` → `"SlotPair"`).
+    pub record_display_names: std::collections::BTreeMap<String, String>,
     /// VBA target pointer width for `LongPtr` lowering. Defaults to Win64/VBA7
     /// width for hand-built test IR; real binder output sets this from the
     /// manifest's conditional-compilation target.

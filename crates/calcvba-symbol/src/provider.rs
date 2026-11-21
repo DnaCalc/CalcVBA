@@ -311,6 +311,8 @@ pub struct ResolutionEnvironment {
     udt_fields: HashMap<String, Vec<(String, crate::signature::VarTypeRef)>>,
     /// Folded UDT alias → canonical folded `project.module.type` name.
     canonical_udts: HashMap<String, String>,
+    /// Folded UDT alias/canonical name → declared source-case UDT type name (e.g. `SlotPair`).
+    udt_display_names: HashMap<String, String>,
     /// Folded declared enum type names, including module/project-qualified aliases.
     enum_types: HashSet<String>,
     /// Folded unqualified type names that have multiple public type-space owners,
@@ -606,6 +608,13 @@ impl ResolutionEnvironment {
     /// The canonical folded name of UDT `name` (`project.module.type`), if it is one.
     pub fn canonical_udt_name(&self, name: &str) -> Option<&str> {
         self.canonical_udts
+            .get(&crate::model::fold_identifier(name))
+            .map(String::as_str)
+    }
+
+    /// The declared source-case name of UDT `name` (e.g. `SlotPair`), if it is one.
+    pub fn udt_display_name(&self, name: &str) -> Option<&str> {
+        self.udt_display_names
             .get(&crate::model::fold_identifier(name))
             .map(String::as_str)
     }
@@ -964,6 +973,8 @@ struct TypeNameIndex {
     /// Folded UDT alias (`ty`, `module.ty`, `project.module.ty`) → its declaration's
     /// canonical `project.module.ty`, so every spelling of one type is one type.
     canonical_udts: HashMap<String, String>,
+    /// Folded UDT alias/canonical name → declared source-case type name.
+    udt_display_names: HashMap<String, String>,
     public_bare_udts: HashSet<String>,
     enum_types: HashSet<String>,
     public_candidates: BTreeMap<String, BTreeMap<String, Vec<TypeNameCandidate>>>,
@@ -977,6 +988,7 @@ struct TypeNameCandidate {
 impl TypeNameIndex {
     fn add_module(
         &mut self,
+        symbols: &SymbolTable,
         project_name: &str,
         module_name: &str,
         scan: &ModuleScan,
@@ -992,6 +1004,11 @@ impl TypeNameIndex {
                 continue;
             }
             let name = member.name_folded.clone();
+            let display_name = symbols
+                .symbol(member.symbol)
+                .and_then(|sym| symbols.name(sym.name))
+                .map(|interned| interned.first_spelling.clone())
+                .unwrap_or_else(|| name.clone());
             let aliases = [
                 name.clone(),
                 format!("{module_folded}.{name}"),
@@ -1008,15 +1025,19 @@ impl TypeNameIndex {
                         for (index, alias) in aliases.into_iter().enumerate() {
                             if index == 0 && replace_bare {
                                 self.udt_fields.insert(alias.clone(), fields.clone());
-                                self.canonical_udts.insert(alias, canonical.clone());
+                                self.canonical_udts.insert(alias.clone(), canonical.clone());
+                                self.udt_display_names.insert(alias, display_name.clone());
                                 continue;
                             }
                             self.udt_fields
                                 .entry(alias.clone())
                                 .or_insert_with(|| fields.clone());
                             self.canonical_udts
-                                .entry(alias)
+                                .entry(alias.clone())
                                 .or_insert_with(|| canonical.clone());
+                            self.udt_display_names
+                                .entry(alias)
+                                .or_insert_with(|| display_name.clone());
                         }
                     }
                 }
@@ -1579,6 +1600,7 @@ pub fn build_resolution_environment_with_project_surfaces(
             active_target,
         )?;
         type_index.add_module(
+            &symbols,
             &manifest.project_name,
             &scan.module_name,
             &scan,
@@ -1637,6 +1659,7 @@ pub fn build_resolution_environment_with_project_surfaces(
                 active_target,
             )?;
             type_index.add_module(
+                &symbols,
                 &referenced.project_name,
                 &scan.module_name,
                 &scan,
@@ -1853,6 +1876,7 @@ pub fn build_resolution_environment_with_project_surfaces(
         optional_defaults,
         udt_fields: type_index.udt_fields,
         canonical_udts: type_index.canonical_udts,
+        udt_display_names: type_index.udt_display_names,
         enum_types: type_index.enum_types,
         ambiguous_type_names,
         external_project_names,

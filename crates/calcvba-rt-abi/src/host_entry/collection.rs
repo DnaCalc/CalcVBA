@@ -9,6 +9,7 @@ static DESCRIPTOR: RuntimeClassDescriptor = RuntimeClassDescriptor {
     predeclared: false,
     lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
     record_members: &[],
+    project_records: &[],
     fields: &[],
     as_new_fields: &[],
     implements: &[],

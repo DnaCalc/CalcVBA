@@ -88,8 +88,22 @@ fn type_info_pair_for_descriptor(
     let guid = descriptor.default_interface_iid.unwrap_or(IID_NULL);
     let total_vtable_slots = class_dual_vtable_slot_count(descriptor);
     let pair: &'static ClassTypeInfoPair = Box::leak(Box::new(ClassTypeInfoPair {
-        dispatch: build_half(descriptor.name, guid, interface, total_vtable_slots, false),
-        interface: build_half(descriptor.name, guid, interface, total_vtable_slots, true),
+        dispatch: build_half(
+            descriptor.name,
+            guid,
+            interface,
+            descriptor.record_members,
+            total_vtable_slots,
+            false,
+        ),
+        interface: build_half(
+            descriptor.name,
+            guid,
+            interface,
+            descriptor.record_members,
+            total_vtable_slots,
+            true,
+        ),
     }));
     cache.insert(key, SyncTypeInfoPair(pair));
     pair
@@ -112,8 +126,8 @@ fn type_info_pair_for_interface(
         return existing.0;
     }
     let pair: &'static ClassTypeInfoPair = Box::leak(Box::new(ClassTypeInfoPair {
-        dispatch: build_half(name, guid, Some(interface), total_vtable_slots, false),
-        interface: build_half(name, guid, Some(interface), total_vtable_slots, true),
+        dispatch: build_half(name, guid, Some(interface), &[], total_vtable_slots, false),
+        interface: build_half(name, guid, Some(interface), &[], total_vtable_slots, true),
     }));
     cache.insert(key, SyncTypeInfoPair(pair));
     pair
@@ -182,9 +196,23 @@ fn safearray_tdesc(elem_vt: u16, owned_type_descs: &mut Vec<&'static TypeDesc>) 
     }
 }
 
-fn value_tdesc(ty: RuntimeValueType, owned_type_descs: &mut Vec<&'static TypeDesc>) -> TypeDesc {
+fn member_value_tdesc(
+    ty: RuntimeValueType,
+    member: &RuntimeMemberDescriptor,
+    parameter: Option<usize>,
+    record_members: &'static [crate::object_ref::RuntimeRecordMemberLayout],
+    owned_type_descs: &mut Vec<&'static TypeDesc>,
+) -> TypeDesc {
     if ty == RuntimeValueType::Array {
-        safearray_tdesc(0x000C, owned_type_descs)
+        let is_record_array = matches!(
+            member.backing,
+            crate::object_ref::RuntimeMemberBacking::Proc(proc_id)
+                if record_members.iter().any(|r| {
+                    r.procedure == proc_id && r.parameter == parameter && r.is_array
+                })
+        );
+        let elem_vt = if is_record_array { 0x0024 } else { 0x000C };
+        safearray_tdesc(elem_vt, owned_type_descs)
     } else {
         plain_tdesc(runtime_value_type_to_vt(ty))
     }
@@ -215,6 +243,7 @@ fn build_half(
     name: &'static str,
     guid: Guid,
     interface: Option<&'static RuntimeInterfaceDescriptor>,
+    record_members: &'static [crate::object_ref::RuntimeRecordMemberLayout],
     total_vtable_slots: usize,
     is_interface_half: bool,
 ) -> ClassTypeInfoHalf {
@@ -242,7 +271,7 @@ fn build_half(
         let mut params = Vec::with_capacity(
             member.params.len() + usize::from(is_interface_half && returns_value),
         );
-        for param in member.params {
+        for (param_index, param) in member.params.iter().enumerate() {
             let (tdesc, mut flags) = if param.param_array {
                 let sa = safearray_tdesc(0x000C, &mut owned_type_descs);
                 (
@@ -250,14 +279,26 @@ fn build_half(
                     PARAMFLAG_FIN | PARAMFLAG_FOUT,
                 )
             } else if param.by_ref {
-                let inner = value_tdesc(param.value_type, &mut owned_type_descs);
+                let inner = member_value_tdesc(
+                    param.value_type,
+                    member,
+                    Some(param_index),
+                    record_members,
+                    &mut owned_type_descs,
+                );
                 (
                     ptr_tdesc(inner, &mut owned_type_descs),
                     PARAMFLAG_FIN | PARAMFLAG_FOUT,
                 )
             } else {
                 (
-                    value_tdesc(param.value_type, &mut owned_type_descs),
+                    member_value_tdesc(
+                        param.value_type,
+                        member,
+                        Some(param_index),
+                        record_members,
+                        &mut owned_type_descs,
+                    ),
                     PARAMFLAG_FIN,
                 )
             };
@@ -269,7 +310,8 @@ fn build_half(
 
         if is_interface_half && returns_value {
             let ret_ty = member.return_type.unwrap_or(RuntimeValueType::Variant);
-            let inner = value_tdesc(ret_ty, &mut owned_type_descs);
+            let inner =
+                member_value_tdesc(ret_ty, member, None, record_members, &mut owned_type_descs);
             let tdesc = ptr_tdesc(inner, &mut owned_type_descs);
             params.push(param_elem(tdesc, PARAMFLAG_FOUT | PARAMFLAG_FRETVAL));
         }
@@ -286,8 +328,11 @@ fn build_half(
         let ret_tdesc = if is_interface_half {
             plain_tdesc(VT_HRESULT)
         } else if returns_value {
-            value_tdesc(
+            member_value_tdesc(
                 member.return_type.unwrap_or(RuntimeValueType::Variant),
+                member,
+                None,
+                record_members,
                 &mut owned_type_descs,
             )
         } else {

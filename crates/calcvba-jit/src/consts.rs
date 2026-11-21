@@ -47,6 +47,7 @@ pub(crate) static VBA_COLLECTION_DESCRIPTOR: RuntimeClassDescriptor = RuntimeCla
     predeclared: false,
     lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
     record_members: &[],
+    project_records: &[],
     fields: &[],
     as_new_fields: &[],
     implements: &[],

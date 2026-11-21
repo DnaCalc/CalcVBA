@@ -419,6 +419,135 @@ mod sys {
     }
 }
 
+/// Read `SAFEARRAY.fFeatures` from a live raw descriptor (0 for null), on every platform.
+///
+/// # Safety
+/// `raw` must be null or point to a live `SAFEARRAY`.
+pub(crate) unsafe fn raw_features(raw: *const core::ffi::c_void) -> u16 {
+    if raw.is_null() {
+        return 0;
+    }
+    // SAFETY: `SAFEARRAY` begins with `cDims: u16, fFeatures: u16` on every platform.
+    unsafe { (*raw.cast::<RawSafeArray>()).f_features }
+}
+
+/// True when `raw` is a non-null `SAFEARRAY` with `FADF_RECORD` set, on every platform.
+///
+/// # Safety
+/// `raw` must be null or point to a live `SAFEARRAY`.
+pub(crate) unsafe fn raw_is_record_array(raw: *const core::ffi::c_void) -> bool {
+    // SAFETY: forwarded from caller.
+    (unsafe { raw_features(raw) } & FADF_RECORD_VALUE) != 0
+}
+
+/// Set or clear `FADF_FIXEDSIZE` on a live raw descriptor (no-op for null).
+///
+/// # Safety
+/// `raw` must be null or point to an exclusively writable live `SAFEARRAY`.
+pub(crate) unsafe fn raw_set_fixed_size(raw: *mut core::ffi::c_void, fixed: bool) {
+    if raw.is_null() {
+        return;
+    }
+    // SAFETY: caller grants exclusive access to the live `SAFEARRAY`.
+    unsafe {
+        let header = raw.cast::<RawSafeArray>();
+        if fixed {
+            (*header).f_features |= FADF_FIXEDSIZE_VALUE;
+        } else {
+            (*header).f_features &= !FADF_FIXEDSIZE_VALUE;
+        }
+    }
+}
+
+/// Portable `SafeArrayGetVartype` off Windows.
+///
+/// # Safety
+/// `raw` must be null or a live `SAFEARRAY` and `out` a writable `u16`.
+#[cfg(not(windows))]
+pub(crate) unsafe fn raw_get_vartype(raw: *const core::ffi::c_void, out: *mut u16) -> i32 {
+    const S_OK: i32 = 0;
+    const E_INVALIDARG: i32 = 0x8007_0057_u32 as i32;
+    if raw.is_null() || out.is_null() {
+        return E_INVALIDARG;
+    }
+    // SAFETY: `raw` is a live descriptor.
+    let Some(vt) = (unsafe { descriptor_vartype(raw.cast::<RawSafeArray>()) }) else {
+        return E_INVALIDARG;
+    };
+    // SAFETY: `out` is a writable `u16`.
+    unsafe { out.write(vt) };
+    S_OK
+}
+
+/// Portable `SafeArrayCopyData` for intrinsic (non-record) arrays off Windows.
+///
+/// # Safety
+/// `source` and `target` must be live non-record `SAFEARRAY` descriptors.
+#[cfg(not(windows))]
+pub(crate) unsafe fn raw_copy_data_intrinsic(
+    source: *mut core::ffi::c_void,
+    target: *mut core::ffi::c_void,
+) -> i32 {
+    const S_OK: i32 = 0;
+    const E_INVALIDARG: i32 = 0x8007_0057_u32 as i32;
+    const E_OUTOFMEMORY: i32 = 0x8007_000E_u32 as i32;
+    if source.is_null() || target.is_null() {
+        return E_INVALIDARG;
+    }
+    if core::ptr::eq(source, target) {
+        return S_OK;
+    }
+    // SAFETY: both descriptors are live for this call.
+    let (Some(src), Some(mut dst)) = (unsafe { SafeArray::borrow_raw(source, None) }, unsafe {
+        SafeArray::borrow_raw(target, None)
+    }) else {
+        return E_INVALIDARG;
+    };
+    let Ok(src_kind) = src.intrinsic_kind() else {
+        return E_INVALIDARG;
+    };
+    let Ok(dst_kind) = dst.intrinsic_kind() else {
+        return E_INVALIDARG;
+    };
+    if src_kind != dst_kind
+        || src.dimensions() != dst.dimensions()
+        || src.raw_bounds().len() != dst.raw_bounds().len()
+        || src
+            .raw_bounds()
+            .iter()
+            .zip(dst.raw_bounds().iter())
+            .any(|(a, b)| a.count != b.count)
+    {
+        return E_INVALIDARG;
+    }
+    let len = src.len();
+    if len == 0 {
+        return S_OK;
+    }
+    let src_data = src.data();
+    let dst_data = dst.data();
+    if src_data.is_null() || dst_data.is_null() {
+        return E_INVALIDARG;
+    }
+    // Decode all source values first so a failure cannot partially overwrite `target`.
+    let mut values = Vec::with_capacity(len);
+    for index in 0..len {
+        // SAFETY: `index < len` and `src_data` holds `len` elements of `src_kind`.
+        match unsafe { decode_element_variant(src_kind, src_data, index) } {
+            Ok(v) => values.push(v),
+            Err(_) => return E_OUTOFMEMORY,
+        }
+    }
+    for (index, value) in values.iter().enumerate() {
+        // SAFETY: `index < len` and `dst_data` holds `len` live elements of `dst_kind`.
+        if unsafe { replace_element_variant(dst_kind, dst_data, index, value) }.is_err() {
+            return E_OUTOFMEMORY;
+        }
+    }
+    let _ = &mut dst;
+    S_OK
+}
+
 /// Portable `FADF_RECORD` `SAFEARRAY` primitives backing [`crate::oleaut`] off Windows.
 ///
 /// Mirrors oleaut32's exact descriptor layout (`IRecordInfo*` in the last pointer-sized slot
@@ -430,8 +559,9 @@ mod sys {
 #[cfg(not(windows))]
 pub(crate) mod record_oleaut {
     use super::{
-        FADF_RECORD_VALUE, HIDDEN_SIZE, MAX_SAFEARRAY_RANK, RawSafeArray, SafeArrayBound,
-        VT_RECORD_VALUE, bounds_total_len, element_index, hidden_bytes, raw_bounds_slice, sys,
+        FADF_FIXEDSIZE_VALUE, FADF_RECORD_VALUE, HIDDEN_SIZE, MAX_SAFEARRAY_RANK, RawSafeArray,
+        SafeArrayBound, VT_RECORD_VALUE, bounds_total_len, element_index, hidden_bytes,
+        raw_bounds_slice, sys,
     };
     use core::ffi::c_void;
 
@@ -441,7 +571,7 @@ pub(crate) mod record_oleaut {
     const DISP_E_BADINDEX: i32 = 0x8002_000B_u32 as i32;
     const DISP_E_ARRAYISLOCKED: i32 = 0x8002_000D_u32 as i32;
 
-    /// Prefix of the COM `IRecordInfo` vtable (slots 0..=8).
+    /// Prefix of the COM `IRecordInfo` vtable (slots 0..=15).
     #[repr(C)]
     struct RecordInfoVtbl {
         query_interface: *const c_void,
@@ -458,6 +588,13 @@ pub(crate) mod record_oleaut {
         get_guid: *const c_void,
         get_name: *const c_void,
         get_size: unsafe extern "system" fn(this: *mut c_void, pcbsize: *mut u32) -> i32,
+        get_type_info: *const c_void,
+        get_field: *const c_void,
+        get_field_no_copy: *const c_void,
+        put_field: *const c_void,
+        put_field_no_copy: *const c_void,
+        get_field_names: *const c_void,
+        is_matching_type: unsafe extern "system" fn(this: *mut c_void, other: *mut c_void) -> i32,
     }
 
     unsafe fn vtbl(info: *mut c_void) -> &'static RecordInfoVtbl {
@@ -711,6 +848,9 @@ pub(crate) mod record_oleaut {
             if (*header).c_locks > 0 {
                 return DISP_E_ARRAYISLOCKED;
             }
+            if ((*header).f_features & FADF_FIXEDSIZE_VALUE) != 0 {
+                return E_INVALIDARG;
+            }
             let info = record_info_slot(header).read();
             let data = (*header).pv_data.cast::<u8>();
             let len = bounds_total_len(raw_bounds_slice(header)).unwrap_or(0);
@@ -724,6 +864,69 @@ pub(crate) mod record_oleaut {
                 (vtbl(info).release)(info);
             }
             sys::destroy(header);
+        }
+        S_OK
+    }
+
+    pub(crate) unsafe fn copy_data(source: *mut c_void, target: *mut c_void) -> i32 {
+        if source.is_null() || target.is_null() {
+            return E_INVALIDARG;
+        }
+        // SAFETY: live descriptors.
+        if !unsafe { is_record_array(source) } || !unsafe { is_record_array(target) } {
+            return E_INVALIDARG;
+        }
+        if core::ptr::eq(source, target) {
+            return S_OK;
+        }
+        let src_header = source.cast::<RawSafeArray>();
+        let dst_header = target.cast::<RawSafeArray>();
+        // SAFETY: live `FADF_RECORD` descriptors.
+        unsafe {
+            if (*src_header).c_dims != (*dst_header).c_dims
+                || (*src_header).cb_elements != (*dst_header).cb_elements
+            {
+                return E_INVALIDARG;
+            }
+            let src_bounds = raw_bounds_slice(src_header);
+            let dst_bounds = raw_bounds_slice(dst_header);
+            if src_bounds
+                .iter()
+                .zip(dst_bounds.iter())
+                .any(|(a, b)| a.count != b.count)
+            {
+                return E_INVALIDARG;
+            }
+            let src_info = record_info_slot(src_header).read();
+            let dst_info = record_info_slot(dst_header).read();
+            if src_info.is_null() || dst_info.is_null() {
+                return E_INVALIDARG;
+            }
+            if !core::ptr::eq(src_info, dst_info)
+                && (vtbl(dst_info).is_matching_type)(dst_info, src_info) == 0
+            {
+                return E_INVALIDARG;
+            }
+            let len = bounds_total_len(src_bounds).unwrap_or(0);
+            if len == 0 {
+                return S_OK;
+            }
+            let src_data = (*src_header).pv_data.cast::<u8>();
+            let dst_data = (*dst_header).pv_data.cast::<u8>();
+            if src_data.is_null() || dst_data.is_null() {
+                return E_INVALIDARG;
+            }
+            let stride = (*dst_header).cb_elements as usize;
+            for index in 0..len {
+                let hr = (vtbl(dst_info).record_copy)(
+                    dst_info,
+                    src_data.add(index * stride).cast(),
+                    dst_data.add(index * stride).cast(),
+                );
+                if hr < 0 {
+                    return hr;
+                }
+            }
         }
         S_OK
     }
@@ -1492,7 +1695,7 @@ impl SafeArray {
         let array = Self::allocate(&bounds, ElementType::Record(Arc::clone(&layout)), true)?;
         let data = array.data();
         for (index, value) in values.iter().enumerate() {
-            if value.layout().as_ref() != layout.as_ref() {
+            if !value.layout().matches_nominal(layout.as_ref()) {
                 return Err("SAFEARRAY record element layout mismatch".to_string());
             }
             crate::vba_record::owning_boundary("safearray-record-element-clone")?;
@@ -1711,7 +1914,7 @@ impl SafeArray {
     }
 
     /// Bounds in declared order (dimension 1 first); `rgsabound` stores them reversed.
-    fn raw_bounds(&self) -> Vec<SafeArrayBound> {
+    pub(crate) fn raw_bounds(&self) -> Vec<SafeArrayBound> {
         // SAFETY: `self.header` is this value's live descriptor.
         let mut bounds = unsafe { raw_bounds_slice(self.header.as_ptr()) }.to_vec();
         bounds.reverse();
@@ -1851,7 +2054,7 @@ impl SafeArray {
                     value.vtype()
                 ));
             };
-            if source.layout().as_ref() != layout.as_ref() {
+            if !source.layout().matches_nominal(layout.as_ref()) {
                 return Err("VBA record SAFEARRAY element layout mismatch".to_string());
             }
             let mut replacement = source.try_clone()?;
@@ -1920,7 +2123,7 @@ impl SafeArray {
     pub fn swap_storage(&mut self, other: &mut SafeArray) -> bool {
         let same_record = match (&self.record, &other.record) {
             (None, None) => true,
-            (Some(a), Some(b)) => Arc::ptr_eq(a, b) || **a == **b,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a.matches_nominal(b),
             _ => false,
         };
         if !same_record

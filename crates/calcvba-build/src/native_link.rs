@@ -617,7 +617,11 @@ pub(super) fn link(programs: &[OxProgram]) -> Result<OxProgram, String> {
         out.funcs.extend(p.funcs);
         out.globals.extend(p.globals);
         out.classes.extend(p.classes);
+        let layout_count = p.record_layouts.len();
         out.record_layouts.extend(p.record_layouts);
+        let mut names = p.record_names;
+        names.resize(layout_count, String::new());
+        out.record_names.extend(names);
         out.com_interfaces.extend(p.com_interfaces);
         out.external_calls.extend(p.external_calls);
         out.imports.extend(p.imports);

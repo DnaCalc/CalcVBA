@@ -80,6 +80,14 @@ pub fn resolve_redim_element(
                     Some(iid) if iid != dispatch_iid => ArrayElementType::Interface(iid),
                     _ => ArrayElementType::Object,
                 }
+            } else if vt == VT_RECORD_VALUE {
+                if matches!(declared, ArrayElementType::Record(_)) {
+                    declared.clone()
+                } else if let Some(layout) = current.record_array_layout() {
+                    array_element_type_from_record_layout(&layout)
+                } else {
+                    return Err(13);
+                }
             } else {
                 array_element_type_for_vartype(vt)
             };
@@ -110,6 +118,73 @@ pub fn resolve_redim_element(
         }
     }
     Ok(element)
+}
+
+/// Build a [`SafeArray`] of UDT `elems` shaped by `bounds` using an explicit nominal
+/// [`VbaRecordLayout`] (preserving its [`calcvba_runtime::VbaRecordIdentity`]).
+pub fn redim_record_safearray_from_elements(
+    bounds: Vec<SafeArrayBound>,
+    layout: Arc<VbaRecordLayout>,
+    elems: Vec<Variant>,
+    fixed: bool,
+) -> Result<SafeArray, String> {
+    let records = elems
+        .into_iter()
+        .map(|value| {
+            value
+                .as_vba_record()
+                .ok_or_else(|| "UDT array element default was not a VBA record".to_string())
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(SafeArray::from_vba_records_nd(bounds, layout, records)?.with_fixed_size(fixed))
+}
+
+/// Build a default UDT array element using an explicit nominal [`VbaRecordLayout`].
+pub fn default_record_array_element(layout: &Arc<VbaRecordLayout>) -> Result<Variant, String> {
+    let record = VbaRecord::new_default(Arc::clone(layout))?;
+    Ok(Variant::from_vba_record(record))
+}
+
+/// Reconstruct an [`ArrayElementType::Record`] description from a sealed [`VbaRecordLayout`].
+pub fn array_element_type_from_record_layout(layout: &VbaRecordLayout) -> ArrayElementType {
+    fn from_kind(kind: &VbaRecordFieldKind) -> ArrayElementType {
+        match kind {
+            VbaRecordFieldKind::Variant => ArrayElementType::Variant,
+            VbaRecordFieldKind::Integer => ArrayElementType::Integer,
+            VbaRecordFieldKind::Long => ArrayElementType::Long,
+            VbaRecordFieldKind::LongLong => ArrayElementType::LongLong,
+            VbaRecordFieldKind::Byte => ArrayElementType::Byte,
+            VbaRecordFieldKind::Single => ArrayElementType::Single,
+            VbaRecordFieldKind::Double => ArrayElementType::Double,
+            VbaRecordFieldKind::Currency => ArrayElementType::Currency,
+            VbaRecordFieldKind::Date => ArrayElementType::Date,
+            VbaRecordFieldKind::String => ArrayElementType::String,
+            VbaRecordFieldKind::FixedString { len } => ArrayElementType::FixedString(*len),
+            VbaRecordFieldKind::Boolean => ArrayElementType::Boolean,
+            VbaRecordFieldKind::Object => ArrayElementType::Object,
+            VbaRecordFieldKind::Record(nested) => array_element_type_from_record_layout(nested),
+            VbaRecordFieldKind::FixedArray { element, bounds } => ArrayElementType::FixedArray {
+                element: Box::new(from_kind(element)),
+                bounds: bounds
+                    .iter()
+                    .map(|b| crate::FixedArrayBound {
+                        lower: b.lower,
+                        len: b.count as usize,
+                    })
+                    .collect(),
+            },
+            VbaRecordFieldKind::DynamicArray { element } => {
+                ArrayElementType::DynamicArray(Box::new(from_kind(element)))
+            }
+        }
+    }
+    ArrayElementType::Record(
+        layout
+            .fields()
+            .iter()
+            .map(|f| from_kind(f.kind()))
+            .collect(),
+    )
 }
 
 /// Build a [`SafeArray`] of `elems` shaped by `bounds`, using the SAFEARRAY storage that

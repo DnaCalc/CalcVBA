@@ -206,6 +206,10 @@ pub struct OxProgram {
     /// field layout used by the runtime `VbaRecord` carrier.
     #[serde(default)]
     pub record_layouts: Vec<Vec<ArrayElementType>>,
+    /// Parallel source-case UDT names, indexed by [`RecordLayoutId`] (empty string for
+    /// anonymous nested record entries). Preserves nominal UDT identity for COM `IRecordInfo`.
+    #[serde(default)]
+    pub record_names: Vec<String>,
     /// Entry procedure (`None` ⇒ `Main` or the first proc).
     pub entry: Option<FuncId>,
     /// Hidden once-per-run global/static initializer.
@@ -291,5 +295,13 @@ impl OxProgram {
     /// The recursive field layout for a UDT record type.
     pub fn record_layout(&self, id: RecordLayoutId) -> Option<&[ArrayElementType]> {
         self.record_layouts.get(id.0).map(Vec::as_slice)
+    }
+
+    /// The declared source-case name for a UDT record type, when recorded.
+    pub fn record_name(&self, id: RecordLayoutId) -> Option<&str> {
+        self.record_names
+            .get(id.0)
+            .map(String::as_str)
+            .filter(|name| !name.is_empty())
     }
 }

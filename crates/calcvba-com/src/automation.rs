@@ -19,7 +19,11 @@ use crate::call::{
 use crate::windows_client::{
     IID_IDISPATCH, IID_NULL, OwnedComInterface, RawIDispatch, query_interface_pointer,
 };
-use calcvba_runtime::{ObjectRef, Variant};
+use calcvba_runtime::automation_record::{
+    AutomationVariant, automation_variant_to_runtime_variant,
+};
+use calcvba_runtime::{ObjectRef, Variant, VbaRecordLayout};
+use std::sync::Arc;
 use windows_sys::Win32::System::{Com::*, Variant::*};
 
 /// The locale VBA passes to `GetIDsOfNames` and `Invoke` (`LOCALE_USER_DEFAULT`).
@@ -29,6 +33,79 @@ const DISPID_NEWENUM: i32 = -4;
 const DISP_E_PARAMNOTFOUND: i32 = 0x8002_0004u32 as i32;
 const DISP_E_UNKNOWNNAME: i32 = 0x8002_0006u32 as i32;
 const VT_ERROR_TAG: u16 = 0x000A;
+const VT_VARIANT_TAG: u16 = 0x000C;
+const VT_ARRAY_RECORD_TAG: u16 = 0x2000 | 0x0024;
+const VT_ARRAY_VARIANT_TAG: u16 = 0x2000 | 0x000C;
+const VT_BYREF_TAG: u16 = 0x4000;
+
+/// True when `value` holds a runtime UDT array (`0x2024`) — directly or inside a `Variant()`
+/// array — that must be projected to an Automation `SAFEARRAY(VT_RECORD)` (`FADF_RECORD` +
+/// nominal `IRecordInfo`, zero Variant tail) before crossing into COM.
+pub(super) fn needs_automation_staging(value: &Variant) -> bool {
+    fn check(value: &Variant, depth: usize) -> bool {
+        if depth > 16 {
+            return false;
+        }
+        let vt = value.core().raw_vt();
+        if vt == VT_ARRAY_RECORD_TAG {
+            return true;
+        }
+        if vt == VT_ARRAY_VARIANT_TAG
+            && let Some((_, len)) = value.safearray_bounds_len()
+        {
+            for index in 0..len {
+                if let Some(Ok(elem)) = value.safearray_element(index)
+                    && check(&elem, depth + 1)
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    check(value, 0)
+}
+
+/// Inspect a `VT_BYREF | VT_VARIANT` caller cell after a COM call: if the callee wrote an
+/// Automation `SAFEARRAY(VT_RECORD)` (`vt == 0x2024`, zero tail) into it, convert it into an
+/// internal runtime UDT array `Variant` (or clear it and return VBA error 13 for an unknown
+/// foreign record type).
+pub(super) unsafe fn recover_written_byref_variant(reference: &Variant) -> Result<(), Fault> {
+    let Some((VT_VARIANT_TAG, ptr)) = reference.byref_target() else {
+        return Ok(());
+    };
+    // SAFETY: `ptr` points to the live `Variant` cell the COM callee just wrote to.
+    let vt = unsafe { ptr.cast::<u16>().read_unaligned() };
+    if vt != VT_ARRAY_RECORD_TAG {
+        return Ok(());
+    }
+    // SAFETY: read the tail pointer at `PAYLOAD_OFFSET + size_of::<*mut c_void>()`.
+    let tail = unsafe {
+        ptr.add(8 + core::mem::size_of::<*mut core::ffi::c_void>())
+            .cast::<*mut core::ffi::c_void>()
+            .read_unaligned()
+    };
+    if !tail.is_null() {
+        return Ok(());
+    }
+    // SAFETY: `ptr` holds an Automation `0x2024` cell owned by this caller variable.
+    let recovered =
+        unsafe { automation_variant_to_runtime_variant(ptr.cast(), None, &|_, _| None) };
+    // SAFETY: clear the Automation `SAFEARRAY(VT_RECORD)` before replacing the runtime cell.
+    unsafe {
+        VariantClear(ptr.cast::<VARIANT>());
+    }
+    match recovered {
+        Ok(value) => {
+            // SAFETY: `ptr` is now `VT_EMPTY`; move `value` into the caller cell.
+            unsafe {
+                ptr.cast::<Variant>().write(value);
+            }
+            Ok(())
+        }
+        Err(_) => Err(Fault::number(13)),
+    }
+}
 
 /// The fault for a failed `HRESULT`, with the thread's `IErrorInfo` and an `EXCEPINFO`.
 fn fault_from_hresult(
@@ -193,7 +270,13 @@ impl Dispatch {
             }
         }
         // Project objects carry their own ClassDualVtbl (`&primary`), so every object crosses
-        // directly as its own interface pointer with no wrapper.
+        // directly as its own interface pointer with no wrapper. UDT arrays (and Variants holding
+        // them) are staged in heap-stable `AutomationVariant` boxes so they cross as nominal
+        // `SAFEARRAY(VT_RECORD)` with `FADF_RECORD` and `IRecordInfo`, and copy back after Invoke.
+        let mut staged_variants: Vec<Box<AutomationVariant>> = Vec::new();
+        let mut byref_variant_writebacks: Vec<(usize, &Variant, Option<Arc<VbaRecordLayout>>)> =
+            Vec::new();
+        let mut direct_byref_variants: Vec<&Variant> = Vec::new();
         let mut rgvarg: Vec<VARIANT> = Vec::with_capacity(args.len());
         for &i in &order {
             let cell = match args[i].value {
@@ -203,8 +286,55 @@ impl Dispatch {
                     missing[8..12].copy_from_slice(&DISP_E_PARAMNOTFOUND.to_le_bytes());
                     missing
                 }
-                ArgValue::Value(value) => value.to_wire_bytes(),
-                ArgValue::Reference(reference) => reference.to_wire_bytes(),
+                ArgValue::Value(value) => {
+                    if needs_automation_staging(value) {
+                        let staged = Box::new(
+                            AutomationVariant::from_runtime(value)
+                                .map_err(|_| Fault::number(13))?,
+                        );
+                        // SAFETY: `staged` lives until after `Invoke`; borrowed bit copy in `rgvarg`.
+                        let raw = unsafe {
+                            core::ptr::read(
+                                staged.as_ptr().cast::<[u8; calcvba_runtime::WIRE_SIZE]>(),
+                            )
+                        };
+                        staged_variants.push(staged);
+                        raw
+                    } else {
+                        value.to_wire_bytes()
+                    }
+                }
+                ArgValue::Reference(reference) => {
+                    if let Some((VT_VARIANT_TAG, ptr)) = reference.byref_target() {
+                        // SAFETY: `ptr` is the live runtime `Variant` cell the caller passed ByRef.
+                        let inner = unsafe { &*ptr.cast::<Variant>() };
+                        if needs_automation_staging(inner) {
+                            let orig_layout = inner.record_array_layout();
+                            let mut staged = Box::new(
+                                AutomationVariant::from_runtime(inner)
+                                    .map_err(|_| Fault::number(13))?,
+                            );
+                            let mut raw = [0u8; calcvba_runtime::WIRE_SIZE];
+                            raw[..2]
+                                .copy_from_slice(&(VT_BYREF_TAG | VT_VARIANT_TAG).to_le_bytes());
+                            raw[8..8 + core::mem::size_of::<usize>()].copy_from_slice(
+                                &staged.as_mut_ptr().expose_provenance().to_le_bytes(),
+                            );
+                            byref_variant_writebacks.push((
+                                staged_variants.len(),
+                                reference,
+                                orig_layout,
+                            ));
+                            staged_variants.push(staged);
+                            raw
+                        } else {
+                            direct_byref_variants.push(reference);
+                            reference.to_wire_bytes()
+                        }
+                    } else {
+                        reference.to_wire_bytes()
+                    }
+                }
             };
             // SAFETY: the runtime cell has the Automation VARIANT layout (`WIRE_SIZE` bytes).
             rgvarg.push(unsafe {
@@ -254,6 +384,30 @@ impl Dispatch {
                 &mut argument_error,
             )
         };
+        let mut writeback_fault = None;
+        for (idx, reference, orig_layout) in byref_variant_writebacks {
+            let expected = (staged_variants[idx].raw_vt() == VT_ARRAY_RECORD_TAG)
+                .then_some(orig_layout.as_ref())
+                .flatten();
+            match staged_variants[idx].to_runtime(expected, &|_, _| None) {
+                Ok(updated) => {
+                    // SAFETY: `reference` targets live caller storage for this call.
+                    if unsafe { reference.write_through(updated) }.is_err() {
+                        writeback_fault.get_or_insert_with(|| Fault::number(13));
+                    }
+                }
+                Err(_) => {
+                    writeback_fault.get_or_insert_with(|| Fault::number(13));
+                }
+            }
+        }
+        for reference in direct_byref_variants {
+            // SAFETY: `reference` targets live caller storage for this call.
+            if let Err(fault) = unsafe { recover_written_byref_variant(reference) } {
+                writeback_fault.get_or_insert(fault);
+            }
+        }
+        drop(staged_variants);
         if hr < 0 {
             if let Some(fill) = exception.pfnDeferredFillIn {
                 // SAFETY: COM supplies the deferred fill for its own EXCEPINFO; called once,
@@ -265,6 +419,11 @@ impl Dispatch {
             // SAFETY: a failed Invoke may still have written the result; it is ours to clear.
             unsafe { VariantClear(&mut result) };
             return Err(fault_from_hresult(hr, excepinfo));
+        }
+        if let Some(fault) = writeback_fault {
+            // SAFETY: result is ours to clear when copy-back failed.
+            unsafe { VariantClear(&mut result) };
+            return Err(fault);
         }
         // SAFETY: a successful Invoke hands the result over; adopt moves it.
         unsafe { adopt(result) }
@@ -281,6 +440,20 @@ unsafe fn adopt(mut value: VARIANT) -> Result<Variant, Fault> {
     match unsafe { Variant::adopt_automation_cell((&raw const value).cast()) } {
         Ok(adopted) => Ok(adopted),
         Err(vt) => {
+            if vt == VT_ARRAY_RECORD_TAG {
+                // SAFETY: `value` is an Automation `VT_ARRAY | VT_RECORD`; recognize CalcVBA's own
+                // `IRecordInfo`, while still refusing unknown foreign records with VBA error 13.
+                let recovered = unsafe {
+                    automation_variant_to_runtime_variant(
+                        (&raw const value).cast(),
+                        None,
+                        &|_, _| None,
+                    )
+                };
+                // SAFETY: still owned here; clearing releases the Automation `SAFEARRAY`.
+                unsafe { VariantClear(&mut value) };
+                return recovered.map_err(|_| Fault::number(13));
+            }
             // SAFETY: still owned here; clearing releases what it holds.
             unsafe { VariantClear(&mut value) };
             Err(Fault::number(i32::from(Variant::adoption_error_number(vt))))

@@ -327,6 +327,9 @@ pub struct RuntimeClassDescriptor {
     pub predeclared: bool,
     pub lifecycle: RuntimeClassLifecycleDescriptor,
     pub record_members: &'static [RuntimeRecordMemberLayout],
+    /// All named project UDTs visible to this compilation unit (for resolving UDT arrays carried
+    /// inside untyped `Variant` parameters or return values across COM boundaries).
+    pub project_records: &'static [std::sync::Arc<crate::VbaRecordLayout>],
     pub fields: &'static [RuntimeClassFieldDescriptor],
     pub as_new_fields: &'static [RuntimeClassAsNewFieldDescriptor],
     pub implements: &'static [&'static str],
@@ -339,7 +342,43 @@ pub struct RuntimeRecordMemberLayout {
     pub procedure: usize,
     /// The parameter's zero-based index, or `None` for the result.
     pub parameter: Option<usize>,
+    /// `true` for a UDT array (`items() As MyType` / `As MyType()`), `false` for a scalar UDT.
+    pub is_array: bool,
     pub layout: std::sync::Arc<crate::VbaRecordLayout>,
+}
+
+impl RuntimeClassDescriptor {
+    /// Look up the record layout registered for a procedure parameter (or return value when
+    /// `parameter` is `None`), matching scalar vs array (`is_array`).
+    pub fn record_member_layout(
+        &self,
+        procedure: usize,
+        parameter: Option<usize>,
+        is_array: bool,
+    ) -> Option<&'static std::sync::Arc<crate::VbaRecordLayout>> {
+        self.record_members
+            .iter()
+            .find(|record| {
+                record.procedure == procedure
+                    && record.parameter == parameter
+                    && record.is_array == is_array
+            })
+            .map(|record| &record.layout)
+    }
+
+    /// Resolve a project UDT layout by nominal COM GUID and byte size (used when a foreign
+    /// `SAFEARRAY(VT_RECORD)` crosses into an untyped `Variant`).
+    pub fn resolve_project_record(
+        &self,
+        guid: &Guid,
+        size: u32,
+    ) -> Option<std::sync::Arc<crate::VbaRecordLayout>> {
+        self.project_records
+            .iter()
+            .chain(self.record_members.iter().map(|m| &m.layout))
+            .find(|layout| layout.type_guid() == Some(*guid) && layout.size() as u32 == size)
+            .cloned()
+    }
 }
 
 /// Structural issue that makes a runtime descriptor unsafe or ambiguous for future COM export.
@@ -601,6 +640,7 @@ pub const COMPAT_OBJECT_CLASS_DESCRIPTOR: RuntimeClassDescriptor = RuntimeClassD
     predeclared: false,
     lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
     record_members: &[],
+    project_records: &[],
     fields: &[],
     as_new_fields: &[],
     implements: &[],
@@ -2284,6 +2324,7 @@ mod tests {
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             record_members: &[],
+            project_records: &[],
             fields: &[],
             as_new_fields: &[],
             implements: &[],
@@ -2319,6 +2360,7 @@ mod tests {
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             record_members: &[],
+            project_records: &[],
             fields: &[],
             as_new_fields: &[],
             implements: &[],
@@ -2387,6 +2429,7 @@ mod tests {
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             record_members: &[],
+            project_records: &[],
             fields: &[],
             as_new_fields: &[],
             implements: &[],
@@ -2459,6 +2502,7 @@ mod tests {
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             record_members: &[],
+            project_records: &[],
             fields: &[],
             as_new_fields: &[],
             implements: &[],
@@ -2544,6 +2588,7 @@ mod tests {
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             record_members: &[],
+            project_records: &[],
             fields: &[],
             as_new_fields: &[],
             implements: &[],
@@ -2754,6 +2799,7 @@ mod tests {
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             record_members: &[],
+            project_records: &[],
             fields: &[],
             as_new_fields: &[],
             implements: &[],
@@ -3153,6 +3199,7 @@ mod tests {
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             record_members: &[],
+            project_records: &[],
             fields: &[],
             as_new_fields: &[],
             implements: &[],
@@ -3234,6 +3281,7 @@ mod tests {
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             record_members: &[],
+            project_records: &[],
             fields: &[],
             as_new_fields: &[],
             implements: &[],
@@ -3413,6 +3461,7 @@ mod tests {
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             record_members: Vec::new(),
+            project_records: Vec::new(),
             fields: vec![
                 RuntimeClassFieldSpec {
                     name: "Value".into(),

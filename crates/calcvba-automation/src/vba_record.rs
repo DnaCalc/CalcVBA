@@ -311,13 +311,35 @@ pub struct VbaRecordFieldLayout {
     align: usize,
 }
 
+/// Nominal COM/VBA identity of a project-defined UDT (`Type Name ... End Type`).
+///
+/// Two distinct project UDTs with identical field shapes have distinct identities (and distinct
+/// GUIDs), matching COM `IRecordInfo::GetGuid`/`GetName` and VBA nominal UDT typing.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VbaRecordIdentity {
+    pub name: String,
+    pub guid: crate::com::Guid,
+}
+
+#[derive(Debug, Clone)]
 pub struct VbaRecordLayout {
     fields: Vec<VbaRecordFieldLayout>,
     size: usize,
     align: usize,
     graph_depth: usize,
+    identity: Option<VbaRecordIdentity>,
 }
+
+impl PartialEq for VbaRecordLayout {
+    fn eq(&self, other: &Self) -> bool {
+        self.fields == other.fields
+            && self.size == other.size
+            && self.align == other.align
+            && self.graph_depth == other.graph_depth
+    }
+}
+
+impl Eq for VbaRecordLayout {}
 
 pub struct VbaRecord {
     layout: Arc<VbaRecordLayout>,
@@ -438,7 +460,167 @@ impl VbaRecordLayout {
             size,
             align,
             graph_depth,
+            identity: None,
         })
+    }
+
+    /// Attach nominal project UDT identity (`name` and deterministic or type-library `guid`).
+    pub fn with_identity(mut self, name: impl Into<String>, guid: crate::com::Guid) -> Self {
+        self.identity = Some(VbaRecordIdentity {
+            name: name.into(),
+            guid,
+        });
+        self
+    }
+
+    /// Attach optional nominal project UDT identity.
+    pub fn with_identity_opt(mut self, identity: Option<VbaRecordIdentity>) -> Self {
+        self.identity = identity;
+        self
+    }
+
+    pub fn identity(&self) -> Option<&VbaRecordIdentity> {
+        self.identity.as_ref()
+    }
+
+    pub fn type_name(&self) -> Option<&str> {
+        self.identity.as_ref().map(|id| id.name.as_str())
+    }
+
+    pub fn type_guid(&self) -> Option<crate::com::Guid> {
+        self.identity.as_ref().map(|id| id.guid)
+    }
+
+    /// True when `self` and `other` have identical byte layout and field kinds (ignoring optional
+    /// debug field names, which are not preserved by compact boundary schemas).
+    pub fn matches_structural(&self, other: &Self) -> bool {
+        fn kind_eq(left: &VbaRecordFieldKind, right: &VbaRecordFieldKind) -> bool {
+            match (left, right) {
+                (VbaRecordFieldKind::Record(a), VbaRecordFieldKind::Record(b)) => {
+                    a.matches_structural(b)
+                }
+                (
+                    VbaRecordFieldKind::FixedArray {
+                        element: a,
+                        bounds: ab,
+                    },
+                    VbaRecordFieldKind::FixedArray {
+                        element: b,
+                        bounds: bb,
+                    },
+                ) => ab == bb && kind_eq(a, b),
+                (
+                    VbaRecordFieldKind::DynamicArray { element: a },
+                    VbaRecordFieldKind::DynamicArray { element: b },
+                ) => kind_eq(a, b),
+                _ => left == right,
+            }
+        }
+        self.size == other.size
+            && self.align == other.align
+            && self.fields.len() == other.fields.len()
+            && self.fields.iter().zip(other.fields.iter()).all(|(a, b)| {
+                a.offset == b.offset
+                    && a.size == b.size
+                    && a.align == b.align
+                    && kind_eq(&a.kind, &b.kind)
+            })
+    }
+
+    /// True when `self` and `other` have identical structural layout AND compatible nominal
+    /// identities (distinct GUIDs fail even when all field types and offsets match).
+    pub fn matches_nominal(&self, other: &Self) -> bool {
+        if !self.matches_structural(other) {
+            return false;
+        }
+        match (&self.identity, &other.identity) {
+            (Some(left), Some(right)) => left.guid == right.guid,
+            _ => true,
+        }
+    }
+
+    /// Flattened `(byte_offset, owner_vt)` table of every Automation-owned slot inside this
+    /// record (`VT_BSTR`, `VT_VARIANT`, `VT_DISPATCH`, or `VT_ARRAY | elem_vt`), walking nested
+    /// `Record` and `FixedArray` fields recursively.
+    pub fn automation_owners(&self) -> Result<Vec<(u32, u32)>, String> {
+        fn collect(
+            kind: &VbaRecordFieldKind,
+            base: usize,
+            out: &mut Vec<(u32, u32)>,
+        ) -> Result<(), String> {
+            use crate::safe_array::{VT_BSTR_VALUE, VT_DISPATCH_VALUE, VT_VARIANT_VALUE};
+            match kind {
+                VbaRecordFieldKind::String => out.push((
+                    u32::try_from(base).map_err(|_| "record owner offset overflow")?,
+                    u32::from(VT_BSTR_VALUE),
+                )),
+                VbaRecordFieldKind::Variant => out.push((
+                    u32::try_from(base).map_err(|_| "record owner offset overflow")?,
+                    u32::from(VT_VARIANT_VALUE),
+                )),
+                VbaRecordFieldKind::Object => out.push((
+                    u32::try_from(base).map_err(|_| "record owner offset overflow")?,
+                    u32::from(VT_DISPATCH_VALUE),
+                )),
+                VbaRecordFieldKind::DynamicArray { element } => {
+                    let elem_vt = element.array_element_vartype()?;
+                    out.push((
+                        u32::try_from(base).map_err(|_| "record owner offset overflow")?,
+                        u32::from(0x2000 | elem_vt),
+                    ));
+                }
+                VbaRecordFieldKind::Record(nested) => {
+                    for field in nested.fields() {
+                        collect(field.kind(), base + field.offset(), out)?;
+                    }
+                }
+                VbaRecordFieldKind::FixedArray { element, bounds } => {
+                    let len = fixed_array_total_len(bounds)?;
+                    let (el_size, el_align) = element.storage_shape()?;
+                    let stride = checked_align_to(el_size, el_align)?;
+                    for index in 0..len {
+                        collect(element, base + index * stride, out)?;
+                    }
+                }
+                VbaRecordFieldKind::Integer
+                | VbaRecordFieldKind::Long
+                | VbaRecordFieldKind::LongLong
+                | VbaRecordFieldKind::Byte
+                | VbaRecordFieldKind::Single
+                | VbaRecordFieldKind::Double
+                | VbaRecordFieldKind::Currency
+                | VbaRecordFieldKind::Date
+                | VbaRecordFieldKind::FixedString { .. }
+                | VbaRecordFieldKind::Boolean => {}
+            }
+            Ok(())
+        }
+        let mut out = Vec::new();
+        for field in &self.fields {
+            collect(field.kind(), field.offset(), &mut out)?;
+        }
+        Ok(out)
+    }
+
+    /// True when any field (recursively) is a `Variant` or a `DynamicArray` whose element is a
+    /// `Variant` or `Record` — those fields require field-wise Automation projection so nested
+    /// UDT arrays cross with `FADF_RECORD` + `IRecordInfo`.
+    pub fn contains_variant_or_record_dynamic_array(&self) -> bool {
+        fn needs(kind: &VbaRecordFieldKind) -> bool {
+            match kind {
+                VbaRecordFieldKind::Variant => true,
+                VbaRecordFieldKind::DynamicArray { element } => matches!(
+                    element.as_ref(),
+                    VbaRecordFieldKind::Variant | VbaRecordFieldKind::Record(_)
+                ),
+                VbaRecordFieldKind::Record(nested) => {
+                    nested.contains_variant_or_record_dynamic_array()
+                }
+                VbaRecordFieldKind::FixedArray { element, .. } => needs(element),
+                _ => false,
+            }
+        }
+        self.fields.iter().any(|field| needs(&field.kind))
     }
 
     pub fn fields(&self) -> &[VbaRecordFieldLayout] {
@@ -519,6 +701,19 @@ impl VbaRecordLayout {
 }
 
 impl VbaRecordFieldKind {
+    /// For `FixedArray`, returns `(element_kind, total_len, element_stride)`.
+    pub fn fixed_array_layout(
+        &self,
+    ) -> Result<Option<(&VbaRecordFieldKind, usize, usize)>, String> {
+        let Self::FixedArray { element, bounds } = self else {
+            return Ok(None);
+        };
+        let len = fixed_array_total_len(bounds)?;
+        let (el_size, el_align) = element.storage_shape()?;
+        let stride = checked_align_to(el_size, el_align)?;
+        Ok(Some((element.as_ref(), len, stride)))
+    }
+
     /// The SAFEARRAY element `VARTYPE` for an array of this kind (`VT_I4` for Long, `VT_RECORD`
     /// for a UDT, `VT_DISPATCH` for an object type, as VBA allocates them).
     pub fn array_element_vartype(&self) -> Result<u16, String> {
@@ -1093,6 +1288,19 @@ impl VbaRecord {
         // bytes touches `dst` only after every fallible clone has succeeded.
         unsafe { replacement.move_into_raw(dst) };
         Ok(())
+    }
+
+    /// Copy a single initialized field from `src` into initialized `dst` of the same `kind`.
+    ///
+    /// # Safety
+    /// Both pointers must reference distinct live fields initialized for `kind`.
+    pub unsafe fn copy_field_from_raw(
+        src: *const u8,
+        dst: *mut u8,
+        kind: &VbaRecordFieldKind,
+    ) -> Result<(), String> {
+        // SAFETY: forwarded from caller.
+        unsafe { clone_field_into_live(src, dst, kind) }
     }
 
     /// Drop a raw record payload initialized according to `layout`.

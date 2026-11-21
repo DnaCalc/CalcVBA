@@ -16,15 +16,37 @@ use calcvba_runtime::{
     RuntimeClassFieldSpec, RuntimeClassLifecycleDescriptor, RuntimeClassSpec,
     RuntimeDispatchPlanCache, RuntimeEventSpec, RuntimeImplementedInterfaceSpec,
     RuntimeMemberBacking, RuntimeMemberDescriptor, RuntimeMemberInvokeKind, RuntimeMemberSpec,
-    RuntimeParamSpec, RuntimeRecordMemberSpec, RuntimeValueType, VarType, Variant,
-    build_runtime_class_descriptor, default_class_interface_iid, default_error_message,
+    RuntimeParamSpec, RuntimeProjectRecordSpec, RuntimeRecordMemberSpec, RuntimeValueType, VarType,
+    Variant, build_runtime_class_descriptor, default_class_interface_iid, default_error_message,
+    default_record_type_guid,
 };
 
 const NATIVE_METADATA_MAGIC: [u8; 4] = *b"CVBD";
 const NATIVE_METADATA_VERSION_V1: u32 = 1;
 const NATIVE_METADATA_VERSION_V2: u32 = 2;
 const NATIVE_METADATA_VERSION_V3_EVENTS: u32 = 3;
-const NATIVE_METADATA_VERSION: u32 = 4;
+const NATIVE_METADATA_VERSION_V4: u32 = 4;
+const NATIVE_METADATA_VERSION: u32 = 5;
+
+/// Build a [`calcvba_runtime::VbaRecordLayout`] for `program.record_layouts[id.0]`, stamped with
+/// its nominal `(name, Guid)` identity when `program.record_name(id)` is recorded.
+pub fn vba_record_layout_for_program_record(
+    program: &OxProgram,
+    id: calcvba_oxir::RecordLayoutId,
+) -> Result<std::sync::Arc<calcvba_runtime::VbaRecordLayout>, String> {
+    let fields = program
+        .record_layout(id)
+        .ok_or_else(|| format!("missing record layout {:?}", id))?;
+    let base = calcvba_bundle::vba_record_layout_for_fields(fields)?;
+    if let Some(name) = program.record_name(id) {
+        let guid = default_record_type_guid(&program.unit_name, name);
+        Ok(std::sync::Arc::new(
+            (*base).clone().with_identity(name, guid),
+        ))
+    } else {
+        Ok(base)
+    }
+}
 
 /// Convert a bundle [`ProjectMemberKind`] into [`RuntimeMemberInvokeKind`].
 pub fn runtime_invoke_kind(kind: ProjectMemberKind) -> RuntimeMemberInvokeKind {
@@ -293,16 +315,43 @@ pub fn runtime_class_spec_for_program(program: &OxProgram, class_index: usize) -
             .and_then(|local| func.locals.get(local.0))
             .map(|local| (None, &local.ty));
         for (parameter, ty) in parameters.chain(result) {
-            if let OxTy::Record(id) = ty
-                && let Some(fields) = program.record_layout(*id)
+            let (record_id, is_array) = match ty {
+                OxTy::Record(id) => (Some(*id), false),
+                OxTy::Array(element, _) => match element.as_ref() {
+                    OxTy::Record(id) => (Some(*id), true),
+                    _ => (None, false),
+                },
+                _ => (None, false),
+            };
+            if let Some(id) = record_id
+                && let Some(fields) = program.record_layout(id)
                 && let Ok(layout) = calcvba_bundle::vba_record_layout_for_fields(fields)
             {
+                let name = program.record_name(id).unwrap_or("").to_string();
+                let guid = (!name.is_empty()).then(|| default_record_type_guid(&unit_name, &name));
                 record_members.push(RuntimeRecordMemberSpec {
                     procedure: method.proc.0,
                     parameter,
+                    is_array,
+                    name,
+                    guid,
                     schema: layout.boundary_schema()[1..].to_vec(),
                 });
             }
+        }
+    }
+
+    let mut project_records = Vec::new();
+    for (index, fields) in program.record_layouts.iter().enumerate() {
+        let id = calcvba_oxir::RecordLayoutId(index);
+        if let Some(name) = program.record_name(id)
+            && let Ok(layout) = calcvba_bundle::vba_record_layout_for_fields(fields)
+        {
+            project_records.push(RuntimeProjectRecordSpec {
+                name: name.to_string(),
+                guid: Some(default_record_type_guid(&unit_name, name)),
+                schema: layout.boundary_schema()[1..].to_vec(),
+            });
         }
     }
 
@@ -327,6 +376,7 @@ pub fn runtime_class_spec_for_program(program: &OxProgram, class_index: usize) -
             hidden_vtable_slots,
         },
         record_members,
+        project_records,
         fields,
         as_new_fields,
         implements: class.implements.clone(),
@@ -902,9 +952,16 @@ pub fn encode_native_class_metadata(
         encode_u32(&mut bytes, kind);
     }
 
-    // Extended shared-descriptor trailer:
+    // Extended shared-descriptor trailer: keep v4 wire format when no record metadata is present
+    // so prebuilt v4 native templates stay directly usable for non-UDT projects, and emit v5 when
+    // nominal UDT member/project metadata is present.
+    let version = if spec.record_members.is_empty() && spec.project_records.is_empty() {
+        NATIVE_METADATA_VERSION_V4
+    } else {
+        NATIVE_METADATA_VERSION
+    };
     bytes.extend_from_slice(&NATIVE_METADATA_MAGIC);
-    encode_u32(&mut bytes, NATIVE_METADATA_VERSION);
+    encode_u32(&mut bytes, version);
     encode_str(&mut bytes, &spec.unit_name);
     encode_str(&mut bytes, &spec.name);
     encode_opt_str(&mut bytes, spec.runtime_type_name.as_deref());
@@ -980,9 +1037,37 @@ pub fn encode_native_class_metadata(
             &mut bytes,
             record.parameter.map_or(u32::MAX, |index| index as u32),
         );
+        if version >= NATIVE_METADATA_VERSION {
+            encode_u8(&mut bytes, u8::from(record.is_array));
+            encode_str(&mut bytes, &record.name);
+            match record.guid {
+                Some(guid) => {
+                    encode_u8(&mut bytes, 1);
+                    bytes.extend_from_slice(&guid.to_le_bytes());
+                }
+                None => encode_u8(&mut bytes, 0),
+            }
+        }
         encode_u32(&mut bytes, record.schema.len() as u32);
         for &word in &record.schema {
             encode_u32(&mut bytes, word);
+        }
+    }
+    if version >= NATIVE_METADATA_VERSION {
+        encode_u32(&mut bytes, spec.project_records.len() as u32);
+        for record in &spec.project_records {
+            encode_str(&mut bytes, &record.name);
+            match record.guid {
+                Some(guid) => {
+                    encode_u8(&mut bytes, 1);
+                    bytes.extend_from_slice(&guid.to_le_bytes());
+                }
+                None => encode_u8(&mut bytes, 0),
+            }
+            encode_u32(&mut bytes, record.schema.len() as u32);
+            for &word in &record.schema {
+                encode_u32(&mut bytes, word);
+            }
         }
     }
     encode_u8(&mut bytes, spec.lifecycle.hidden_vtable_slots);
@@ -1162,6 +1247,7 @@ pub unsafe fn decode_native_class_metadata(
                         hidden_vtable_slots: 0,
                     },
                     record_members: Vec::new(),
+                    project_records: Vec::new(),
                     fields: Vec::new(),
                     as_new_fields: Vec::new(),
                     implements,
@@ -1281,20 +1367,59 @@ pub unsafe fn decode_native_class_metadata(
             Vec::new()
         };
         let mut record_members = Vec::new();
-        if version >= NATIVE_METADATA_VERSION {
+        let mut project_records = Vec::new();
+        if version >= NATIVE_METADATA_VERSION_V4 {
             let count = cursor.u32();
             for _ in 0..count {
                 let procedure = cursor.u32() as usize;
                 let parameter = cursor.u32();
+                let (is_array, name, guid) = if version >= NATIVE_METADATA_VERSION {
+                    let is_array = cursor.u8() != 0;
+                    let name = cursor.str();
+                    let guid = if cursor.u8() != 0 {
+                        let raw = cursor.bytes(16);
+                        let mut arr = [0u8; 16];
+                        arr.copy_from_slice(&raw);
+                        Some(Guid::from_le_bytes(arr))
+                    } else {
+                        None
+                    };
+                    (is_array, name, guid)
+                } else {
+                    (false, String::new(), None)
+                };
                 let words = cursor.u32();
                 record_members.push(RuntimeRecordMemberSpec {
                     procedure,
                     parameter: (parameter != u32::MAX).then_some(parameter as usize),
+                    is_array,
+                    name,
+                    guid,
                     schema: (0..words).map(|_| cursor.u32()).collect(),
                 });
             }
         }
-        let hidden_vtable_slots = if version >= NATIVE_METADATA_VERSION {
+        if version >= NATIVE_METADATA_VERSION {
+            let count = cursor.u32();
+            for _ in 0..count {
+                let name = cursor.str();
+                let guid = if cursor.u8() != 0 {
+                    let raw = cursor.bytes(16);
+                    let mut arr = [0u8; 16];
+                    arr.copy_from_slice(&raw);
+                    Some(Guid::from_le_bytes(arr))
+                } else {
+                    None
+                };
+                let words = cursor.u32();
+                project_records.push(RuntimeProjectRecordSpec {
+                    name,
+                    guid,
+                    schema: (0..words).map(|_| cursor.u32()).collect(),
+                });
+            }
+        }
+        let hidden_vtable_slots = if version >= NATIVE_METADATA_VERSION_V4 {
             cursor.u8()
         } else {
             0
@@ -1316,6 +1441,7 @@ pub unsafe fn decode_native_class_metadata(
                     hidden_vtable_slots,
                 },
                 record_members,
+                project_records,
                 fields,
                 as_new_fields,
                 implements,
@@ -1457,5 +1583,125 @@ mod tests {
         assert_eq!(dispatch.members[2].name, "Twice");
         assert_eq!(dispatch.members[2].dispatch_id, 0x6003_0000);
         assert_eq!(dispatch.members[2].vtable_slot, Some(9));
+        // Non-UDT classes continue to emit CVBD v4 so checked-in v4 native templates stay valid.
+        assert_eq!(
+            encoded
+                .windows(8)
+                .find(|w| &w[..4] == b"CVBD")
+                .map(|w| u32::from_le_bytes([w[4], w[5], w[6], w[7]])),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn native_class_metadata_v5_preserves_nominal_udt_array_members_and_project_records() {
+        use calcvba_bundle::ArrayElementType;
+        use calcvba_oxir::{ArrayShape, RecordLayoutId};
+
+        let mut_proc = OxFunc {
+            name: "PairHost::Mutate".into(),
+            kind: ProcedureKind::Sub,
+            locals: vec![
+                OxLocal {
+                    name: "Me".into(),
+                    ty: OxTy::Variant,
+                    array_element: None,
+                    param: Some(OxParamInfo {
+                        optional: false,
+                        by_ref: false,
+                        variadic: false,
+                        default: None,
+                    }),
+                    escaped: false,
+                },
+                OxLocal {
+                    name: "items".into(),
+                    ty: OxTy::Array(
+                        Box::new(OxTy::Record(RecordLayoutId(0))),
+                        ArrayShape::Dynamic,
+                    ),
+                    array_element: None,
+                    param: Some(OxParamInfo {
+                        optional: false,
+                        by_ref: true,
+                        variadic: false,
+                        default: None,
+                    }),
+                    escaped: false,
+                },
+            ],
+            temps: Vec::new(),
+            param_count: 2,
+            return_local: None,
+            blocks: vec![OxBlock::new(BlockId(0), OxTerminator::Return)],
+            entry: BlockId(0),
+        };
+        let program = OxProgram {
+            unit_name: "UdtMetaProj".into(),
+            funcs: vec![mut_proc],
+            classes: vec![OxClass {
+                name: "PairHost".into(),
+                runtime_type_name: None,
+                predeclared: false,
+                initialize: None,
+                terminate: None,
+                fields: Vec::new(),
+                methods: vec![OxClassMethod {
+                    externally_visible: true,
+                    name: "Mutate".into(),
+                    kind: ProjectMemberKind::Method,
+                    proc: FuncId(0),
+                    dispid: Some(0x6003_0000),
+                    vtable_slot: Some(7),
+                    is_default_member: false,
+                    is_enumerator_member: false,
+                }],
+                events: Vec::new(),
+                as_new_fields: Vec::new(),
+                implements: Vec::new(),
+            }],
+            record_layouts: vec![
+                vec![ArrayElementType::Long, ArrayElementType::String],
+                vec![ArrayElementType::Long, ArrayElementType::String],
+            ],
+            record_names: vec!["SlotPair".into(), "OtherPair".into()],
+            ..OxProgram::empty()
+        };
+
+        let vm_jit = runtime_class_descriptors_for_program(&program)[0];
+        let encoded = encode_native_class_metadata(&program, 0, &[]);
+        assert_eq!(
+            encoded
+                .windows(8)
+                .find(|w| &w[..4] == b"CVBD")
+                .map(|w| u32::from_le_bytes([w[4], w[5], w[6], w[7]])),
+            Some(5)
+        );
+        // SAFETY: `encoded` was just produced by `encode_native_class_metadata`.
+        let (_, decoded_spec) =
+            unsafe { decode_native_class_metadata(encoded.as_ptr(), false, false) };
+        let native = build_runtime_class_descriptor(&decoded_spec);
+
+        assert!(
+            core::ptr::eq(vm_jit, native),
+            "UDT array metadata must decode to the exact same interned descriptor"
+        );
+        let member_layout = native
+            .record_member_layout(0, Some(0), true)
+            .expect("ByRef SlotPair() parameter must carry nominal record metadata");
+        assert_eq!(member_layout.type_name(), Some("SlotPair"));
+        assert_eq!(
+            member_layout.type_guid(),
+            Some(calcvba_runtime::default_record_type_guid(
+                "UdtMetaProj",
+                "SlotPair"
+            ))
+        );
+        assert_eq!(native.project_records.len(), 2);
+        let other_guid = calcvba_runtime::default_record_type_guid("UdtMetaProj", "OtherPair");
+        let resolved_other = native
+            .resolve_project_record(&other_guid, member_layout.size() as u32)
+            .expect("project_records must resolve OtherPair by nominal GUID");
+        assert_eq!(resolved_other.type_name(), Some("OtherPair"));
     }
 }

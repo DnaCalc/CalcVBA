@@ -442,3 +442,268 @@ End Function
         assert_eq!(decimal, value);
     }
 }
+
+/// dc-yqq0.28: real Win64 vtable slots + real `IDispatch::Invoke` + real `oleaut32`
+/// `SAFEARRAY(VT_RECORD)` with nominal `IRecordInfo` on VM3 and the JIT.
+#[cfg(all(windows, target_arch = "x86_64"))]
+#[test]
+fn vtable_slots_and_idispatch_marshal_nominal_record_safearrays_on_windows() {
+    use calcvba_oxir::OxImage;
+    use calcvba_runtime::automation_record::{
+        AutomationVariant, automation_safearray_to_vba_record_array, create_record_info_for_layout,
+        record_info_get_guid, record_info_get_name, record_info_get_size,
+        record_info_is_matching_type, release_record_info,
+        vba_record_array_to_automation_safearray,
+    };
+    use calcvba_runtime::com::{
+        DISP_E_TYPEMISMATCH, DISPATCH_METHOD, DispParams, ExcepInfo, IDispatchVtbl, IID_NULL, S_OK,
+    };
+    use calcvba_runtime::safe_array::{SafeArray, SafeArrayBound};
+    use calcvba_runtime::{
+        Variant, VariantCore, VbaRecord, VbaRecordFieldKind, VbaRecordFieldSpec, VbaRecordLayout,
+        default_record_type_guid, oleaut,
+    };
+    use std::ffi::c_void;
+    use std::sync::Arc;
+
+    let mut host_class = module(
+        "PairHost",
+        ModuleKind::Class,
+        r#"
+Public Sub MutateInPlace(ByRef items() As SlotPair)
+    Dim i As Long
+    For i = LBound(items) To UBound(items)
+        items(i).Number = items(i).Number + 10
+        items(i).Tag = items(i).Tag & "!"
+    Next i
+End Sub
+Public Sub GrowPreserve(ByRef items() As SlotPair)
+    Dim lb As Long
+    Dim ub As Long
+    lb = LBound(items)
+    ub = UBound(items) + 1
+    ReDim Preserve items(lb To ub)
+    items(ub).Number = 99
+    items(ub).Tag = "grown"
+End Sub
+Public Function CopyPairs(ByRef items() As SlotPair) As SlotPair()
+    CopyPairs = items
+End Function
+Public Function RoundTripVariant(ByRef v As Variant) As Variant
+    Dim lb As Long
+    Dim ub As Long
+    Dim arr() As SlotPair
+    lb = LBound(v)
+    ub = UBound(v)
+    ReDim Preserve v(lb To ub + 1)
+    arr = v
+    arr(lb).Number = arr(lb).Number + 1
+    arr(lb).Tag = arr(lb).Tag & "*"
+    arr(ub + 1).Number = 55
+    arr(ub + 1).Tag = "var-added"
+    v = arr
+    RoundTripVariant = v
+End Function
+"#,
+    );
+    host_class.attributes.vb_exposed = true;
+    host_class.attributes.vb_creatable = true;
+    let manifest = SymbolProjectManifest {
+        project_name: "WinRecordArrayProbe".into(),
+        project_kind: ProjectKind::Library,
+        modules: vec![
+            module(
+                "Types",
+                ModuleKind::Procedural,
+                "Public Type SlotPair\n    Number As Long\n    Tag As String\nEnd Type\nPublic Type OtherPair\n    Number As Long\n    Tag As String\nEnd Type",
+            ),
+            host_class,
+        ],
+        references: Vec::new(),
+        reference_projects: Vec::new(),
+        conditional_constants: Default::default(),
+        conditional_compilation_target: Default::default(),
+    };
+    let bound =
+        calcvba_bind::bind_program(&manifest, &calcvba_symbol::CatalogTypeLibResolver).unwrap();
+    let program = calcvba_oxir::elaborate::elaborate(&bound).unwrap();
+
+    let pair_guid = default_record_type_guid("WinRecordArrayProbe", "SlotPair");
+    let other_guid = default_record_type_guid("WinRecordArrayProbe", "OtherPair");
+    let base_layout = VbaRecordLayout::new(vec![
+        VbaRecordFieldSpec::named("Number", VbaRecordFieldKind::Long),
+        VbaRecordFieldSpec::named("Tag", VbaRecordFieldKind::String),
+    ])
+    .unwrap();
+    let pair_layout = Arc::new(base_layout.clone().with_identity("SlotPair", pair_guid));
+    let other_layout = Arc::new(base_layout.with_identity("OtherPair", other_guid));
+
+    let make_pair = |layout: &Arc<VbaRecordLayout>, number: i32, tag: &str| {
+        let mut rec = VbaRecord::new_default(Arc::clone(layout)).unwrap();
+        rec.write_field_variant(0, &Variant::from_i32(number))
+            .unwrap();
+        rec.write_field_variant(1, &Variant::from_string(tag))
+            .unwrap();
+        rec
+    };
+
+    for backend in BACKENDS {
+        let engine = Engine::new(HostConfig { backend });
+        let mut session = engine
+            .prepare_image_session(OxImage::new(vec![program.clone()]))
+            .unwrap();
+        let object = session.create_class_instance("PairHost").unwrap();
+        let initial = Variant::from_safearray(
+            SafeArray::from_vba_records_nd(
+                vec![SafeArrayBound { count: 2, lower: 1 }],
+                Arc::clone(&pair_layout),
+                vec![
+                    make_pair(&pair_layout, 10, "x"),
+                    make_pair(&pair_layout, 20, "y"),
+                ],
+            )
+            .unwrap(),
+        );
+        let wrong = Variant::from_safearray(
+            SafeArray::from_vba_records_nd(
+                vec![SafeArrayBound { count: 1, lower: 1 }],
+                Arc::clone(&other_layout),
+                vec![make_pair(&other_layout, 10, "bad")],
+            )
+            .unwrap(),
+        );
+        // SAFETY: real Win64 vtable stubs and oleaut32 SAFEARRAY(VT_RECORD) storage.
+        unsafe {
+            let _invoker = session.enter_member_invoker_scope();
+            let this = object.raw_iunknown().cast::<c_void>();
+            let slots = *this.cast::<*const *const c_void>();
+            let disp_vtbl = &*(*this.cast::<*const IDispatchVtbl>());
+
+            let mutate_in_place: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> i32 =
+                std::mem::transmute(*slots.add(7));
+            let grow_preserve: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> i32 =
+                std::mem::transmute(*slots.add(8));
+            let copy_pairs: unsafe extern "system" fn(
+                *mut c_void,
+                *mut *mut c_void,
+                *mut *mut c_void,
+            ) -> i32 = std::mem::transmute(*slots.add(9));
+            let round_trip_variant: unsafe extern "system" fn(
+                *mut c_void,
+                *mut c_void,
+                *mut c_void,
+            ) -> i32 = std::mem::transmute(*slots.add(10));
+
+            // Nominal mismatch rejected BEFORE copying data.
+            let mut wrong_psa =
+                vba_record_array_to_automation_safearray(&wrong, Some(&other_layout)).unwrap();
+            assert_eq!(
+                mutate_in_place(this, &mut wrong_psa),
+                DISP_E_TYPEMISMATCH,
+                "{backend:?} Win64 slot must reject OtherPair"
+            );
+            assert_eq!(oleaut::safe_array_destroy(wrong_psa), S_OK);
+
+            // Real Win64 vtable slot calls with oleaut32 SAFEARRAY(VT_RECORD).
+            let mut psa =
+                vba_record_array_to_automation_safearray(&initial, Some(&pair_layout)).unwrap();
+            let before_psa = psa;
+            assert_eq!(mutate_in_place(this, &mut psa), S_OK, "{backend:?}");
+            assert_eq!(psa, before_psa, "{backend:?} in-place preserves descriptor");
+            assert_eq!(grow_preserve(this, &mut psa), S_OK, "{backend:?}");
+
+            let mut copied = std::ptr::null_mut();
+            assert_eq!(copy_pairs(this, &mut psa, &mut copied), S_OK, "{backend:?}");
+            assert!(oleaut::safe_array_is_record_array(copied));
+            let mut info = std::ptr::null_mut();
+            assert_eq!(oleaut::safe_array_get_record_info(copied, &mut info), S_OK);
+            assert_eq!(record_info_get_guid(info), Ok(pair_guid));
+            assert_eq!(record_info_get_name(info).as_deref(), Ok("SlotPair"));
+            assert_eq!(record_info_get_size(info), Ok(pair_layout.size() as u32));
+            let other_info =
+                create_record_info_for_layout(&other_layout, "OtherPair", other_guid).unwrap();
+            assert!(!record_info_is_matching_type(info, other_info));
+            release_record_info(other_info);
+            release_record_info(info);
+
+            let back =
+                automation_safearray_to_vba_record_array(copied, &pair_layout, false, &|_, _| None)
+                    .unwrap();
+            assert_eq!(back.safearray_bounds_len().unwrap().1, 3);
+            assert_eq!(
+                back.safearray_element(0)
+                    .unwrap()
+                    .unwrap()
+                    .read_record_field_variant(0)
+                    .unwrap()
+                    .as_i32(),
+                Some(20)
+            );
+            assert_eq!(
+                back.safearray_element(2)
+                    .unwrap()
+                    .unwrap()
+                    .read_record_field_variant(1)
+                    .unwrap()
+                    .as_bstr()
+                    .unwrap()
+                    .as_str(),
+                "grown"
+            );
+            assert_eq!(oleaut::safe_array_destroy(copied), S_OK);
+
+            // Real Win64 early-bound Variant holding UDT array + copy-back.
+            let mut var_in = AutomationVariant::from_runtime(&initial).unwrap();
+            let mut var_out = AutomationVariant::empty();
+            assert_eq!(
+                round_trip_variant(this, var_in.as_mut_ptr(), var_out.as_mut_ptr()),
+                S_OK,
+                "{backend:?}"
+            );
+            assert_eq!(var_in.raw_vt(), 0x2024);
+            assert_eq!(var_out.raw_vt(), 0x2024);
+            let var_back = var_out.to_runtime(None, &|_, _| None).unwrap();
+            assert_eq!(var_back.safearray_bounds_len().unwrap().1, 3);
+
+            // Real Win64 late-bound IDispatch::Invoke with VT_BYREF | VT_ARRAY | VT_RECORD.
+            let mut_name: Vec<u16> = "MutateInPlace\0".encode_utf16().collect();
+            let mut dispid = -1i32;
+            assert_eq!(
+                (disp_vtbl.get_ids_of_names)(
+                    this,
+                    &IID_NULL,
+                    [mut_name.as_ptr()].as_ptr(),
+                    1,
+                    0,
+                    &mut dispid
+                ),
+                S_OK
+            );
+            let mut byref_arg = VariantCore::from_pointer(0x4000 | 0x2000 | 0x0024, &raw mut psa);
+            let mut dp = DispParams {
+                rgvarg: &raw mut byref_arg,
+                rgdispid_named_args: std::ptr::null_mut(),
+                c_args: 1,
+                c_named_args: 0,
+            };
+            let mut excep = ExcepInfo::default();
+            let mut arg_err = 0u32;
+            assert_eq!(
+                (disp_vtbl.invoke)(
+                    this,
+                    dispid,
+                    &IID_NULL,
+                    0,
+                    DISPATCH_METHOD,
+                    (&raw mut dp).cast(),
+                    std::ptr::null_mut(),
+                    (&raw mut excep).cast(),
+                    &mut arg_err
+                ),
+                S_OK,
+                "{backend:?} late-bound MutateInPlace"
+            );
+            assert_eq!(oleaut::safe_array_destroy(psa), S_OK);
+        }
+    }
+}

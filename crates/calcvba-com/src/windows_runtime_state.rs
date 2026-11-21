@@ -1341,6 +1341,7 @@ mod tests {
             predeclared: false,
             lifecycle: calcvba_runtime::RUNTIME_CLASS_LIFECYCLE_NONE,
             record_members: Vec::new(),
+            project_records: Vec::new(),
             fields: Vec::new(),
             as_new_fields: Vec::new(),
             implements: Vec::new(),

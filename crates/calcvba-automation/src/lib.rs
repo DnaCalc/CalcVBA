@@ -37,5 +37,5 @@ pub use variant::{VarType, Variant, VariantCore, VariantData, WIRE_SIZE};
 pub use vba_record::{
     MAX_VBA_RECORD_FIXED_ARRAY_RANK, MAX_VBA_RECORD_LAYOUT_GRAPH_DEPTH,
     MAX_VBA_RECORD_LAYOUT_GRAPH_VISITS, MAX_VBA_RECORD_SIZE, VbaRecord, VbaRecordFieldHandle,
-    VbaRecordFieldKind, VbaRecordFieldSpec, VbaRecordLayout,
+    VbaRecordFieldKind, VbaRecordFieldSpec, VbaRecordIdentity, VbaRecordLayout,
 };

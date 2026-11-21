@@ -37,6 +37,8 @@ mod implements;
 mod slot_thunks;
 mod type_info;
 
+pub use slot_thunks::invoke_early_bound_slot_raw;
+
 pub(crate) use connection_point::{
     ConnectionPointContainerFace, ConnectionPointFace, ConnectionPointSink,
     fire_connection_point_event_for_owner, has_connection_point_sinks, is_cpc_query_interface,
@@ -531,6 +533,33 @@ fn validate_required_slots(
     Ok(())
 }
 
+unsafe fn copy_dispatch_arg_for_param(
+    descriptor: &'static RuntimeClassDescriptor,
+    member: &'static RuntimeMemberDescriptor,
+    formal: Option<usize>,
+    cell: *const VariantCore,
+) -> Result<Variant, HResult> {
+    let expected_record_array = formal.and_then(|param_index| {
+        let param = member.params.get(param_index)?;
+        if param.value_type != RuntimeValueType::Array {
+            return None;
+        }
+        let RuntimeMemberBacking::Proc(proc_id) = member.backing else {
+            return None;
+        };
+        descriptor.record_member_layout(proc_id, Some(param_index), true)
+    });
+    let resolve = |guid: &Guid, size: u32| descriptor.resolve_project_record(guid, size);
+    // SAFETY: `cell` points to a valid caller-owned `VARIANT` cell.
+    unsafe {
+        calcvba_automation::automation_record::automation_variant_to_runtime_variant(
+            cell.cast::<c_void>(),
+            expected_record_array,
+            &resolve,
+        )
+    }
+}
+
 unsafe fn copy_dispatch_arg(cell: *const VariantCore) -> Result<Variant, HResult> {
     let mut copied = Variant::empty();
     // SAFETY: `cell` points to a valid caller-owned `VARIANT` cell; `copied` is an empty writable
@@ -622,11 +651,13 @@ unsafe fn compute_byref_aliases(
 }
 
 unsafe fn write_back_byref_args(
+    descriptor: &'static RuntimeClassDescriptor,
     member: &'static RuntimeMemberDescriptor,
     params: *const DispParams,
     slots: &[Option<usize>],
     args: &[Variant],
 ) -> Result<(), HResult> {
+    const VT_ARRAY_RECORD: u16 = 0x2000 | 0x0024;
     if params.is_null() {
         return Ok(());
     }
@@ -651,6 +682,35 @@ unsafe fn write_back_byref_args(
         let Some((target_vt, target_ptr)) = (unsafe { resolve_byref_target(raw) })? else {
             continue;
         };
+        if target_vt == VT_ARRAY_RECORD {
+            let expected = match member.backing {
+                RuntimeMemberBacking::Proc(proc_id) => descriptor
+                    .record_member_layout(proc_id, Some(formal), true)
+                    .cloned(),
+                _ => None,
+            }
+            .or_else(|| updated.record_array_layout())
+            .ok_or(DISP_E_TYPEMISMATCH)?;
+            // SAFETY: `target_ptr` is caller's live `SAFEARRAY*` slot (`VT_BYREF | VT_ARRAY | VT_RECORD`).
+            unsafe {
+                calcvba_automation::automation_record::write_vba_record_array_to_automation_slot(
+                    target_ptr.cast::<*mut c_void>(),
+                    updated,
+                    &expected,
+                )?;
+            }
+            continue;
+        }
+        if target_vt == 0x0C {
+            // SAFETY: `target_ptr` is caller's live `VARIANT` cell (`VT_BYREF | VT_VARIANT`).
+            unsafe {
+                calcvba_automation::automation_record::write_runtime_variant_to_automation_cell(
+                    target_ptr.cast::<c_void>(),
+                    updated,
+                )?;
+            }
+            continue;
+        }
         // SAFETY: caller's `VT_BYREF` target is live writable storage for this `Invoke` call.
         let cell = unsafe { Variant::by_ref(target_vt, target_ptr) };
         let prepared = coerce_for_byref_writeback(updated, target_vt)?;
@@ -931,7 +991,7 @@ pub(super) unsafe fn invoke_on_interface(
     }
 
     // SAFETY: `owner` is a live `CompatObjectBase` kept alive by the caller's COM reference.
-    let owner_thread = unsafe { (*owner).owner_thread };
+    let (owner_thread, descriptor) = unsafe { ((*owner).owner_thread, (*owner).class_descriptor) };
     if current_thread_id() != owner_thread {
         return RPC_E_WRONG_THREAD;
     }
@@ -970,7 +1030,8 @@ pub(super) unsafe fn invoke_on_interface(
                 // SAFETY: `rg_idx < c_args` and `rgvarg` was verified non-null.
                 let cell = unsafe { (*params_ptr).rgvarg.add(*rg_idx) };
                 // SAFETY: caller owns the argument `VARIANT` cell.
-                match unsafe { copy_dispatch_arg(cell) } {
+                match unsafe { copy_dispatch_arg_for_param(descriptor, member, Some(formal), cell) }
+                {
                     Ok(value) => args.push(value),
                     Err(hr) => {
                         if !arg_err.is_null() {
@@ -992,7 +1053,7 @@ pub(super) unsafe fn invoke_on_interface(
             // SAFETY: `rg_idx < c_args` and `rgvarg` was verified non-null.
             let cell = unsafe { (*params_ptr).rgvarg.add(*rg_idx) };
             // SAFETY: caller owns the argument `VARIANT` cell.
-            match unsafe { copy_dispatch_arg(cell) } {
+            match unsafe { copy_dispatch_arg_for_param(descriptor, member, None, cell) } {
                 Ok(value) => tail.push(value),
                 Err(hr) => return hr,
             }
@@ -1011,7 +1072,8 @@ pub(super) unsafe fn invoke_on_interface(
     let outcome = invoke_object_member(owner, object, member, requested_kind, &mut args, &aliases);
 
     // SAFETY: `params_ptr` and `mapped.slots` are valid for the duration of `Invoke`.
-    let writeback = unsafe { write_back_byref_args(member, params_ptr, &mapped.slots, &args) };
+    let writeback =
+        unsafe { write_back_byref_args(descriptor, member, params_ptr, &mapped.slots, &args) };
 
     match outcome {
         Ok(ret_val) => {
@@ -1019,11 +1081,14 @@ pub(super) unsafe fn invoke_on_interface(
                 return hr;
             }
             if !result.is_null() {
-                // Transfer ownership of `ret_val` directly into caller's `pVarResult`.
-                // SAFETY: `result` points to an initialized empty `VariantCore`; `Variant` is
-                // `#[repr(transparent)]` over `VariantCore`, so writing moves ownership once.
-                unsafe {
-                    result.cast::<Variant>().write(ret_val);
+                // SAFETY: `result` was initialized to `Variant::empty()` above; project any UDT
+                // array to an Automation `SAFEARRAY(VT_RECORD)` (`FADF_RECORD`, zero tail).
+                if let Err(hr) = unsafe {
+                    calcvba_automation::automation_record::write_runtime_variant_to_automation_cell(
+                        result, &ret_val,
+                    )
+                } {
+                    return hr;
                 }
             }
             S_OK
@@ -1120,6 +1185,7 @@ mod tests {
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             record_members: Vec::new(),
+            project_records: Vec::new(),
             fields: vec![RuntimeClassFieldSpec {
                 name: "Value".into(),
                 token: 10,
@@ -1813,6 +1879,7 @@ mod tests {
             predeclared: false,
             lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
             record_members: Vec::new(),
+            project_records: Vec::new(),
             fields: vec![RuntimeClassFieldSpec {
                 name: "Side".into(),
                 token: 10,
@@ -2622,6 +2689,434 @@ mod tests {
                 (shape_vtbl.unknown.release)(shape_ptr);
             }
             assert_eq!(object.strong_count(), 1);
+        }
+        assert_eq!(
+            before.balance_to(crate::current_thread_live_handle_counts()),
+            Default::default()
+        );
+    }
+
+    #[test]
+    fn record_array_early_bound_slots_and_late_bound_idispatch_round_trip() {
+        use crate::automation_record::{
+            AutomationVariant, layout_from_record_info, record_info_get_guid, record_info_get_name,
+            record_info_get_size, release_record_info, vba_record_array_to_automation_safearray,
+        };
+        use crate::class_descriptor::{
+            RuntimeProjectRecordSpec, RuntimeRecordMemberSpec, default_record_type_guid,
+        };
+        use crate::safe_array::SafeArrayBound;
+        use crate::{VbaRecord, VbaRecordFieldKind, VbaRecordFieldSpec, VbaRecordLayout};
+        use std::sync::Arc;
+
+        let pair_guid = default_record_type_guid("RecUnit", "SlotPair");
+        let other_guid = default_record_type_guid("RecUnit", "OtherPair");
+        let base_layout = VbaRecordLayout::new(vec![
+            VbaRecordFieldSpec::named("Id", VbaRecordFieldKind::Long),
+            VbaRecordFieldSpec::named("Label", VbaRecordFieldKind::String),
+        ])
+        .unwrap();
+        let schema = base_layout.boundary_schema()[1..].to_vec();
+        let pair_layout = Arc::new(base_layout.clone().with_identity("SlotPair", pair_guid));
+        let other_layout = Arc::new(base_layout.with_identity("OtherPair", other_guid));
+
+        let spec = RuntimeClassSpec {
+            unit_name: "RecUnit".into(),
+            class_index: 0,
+            name: "PairBox".into(),
+            runtime_type_name: None,
+            default_interface_iid: None,
+            source_interface_iid: None,
+            predeclared: false,
+            lifecycle: RUNTIME_CLASS_LIFECYCLE_NONE,
+            record_members: vec![
+                // Proc 0: Sub MutatePairs(ByRef items() As SlotPair) -> mutates & resizes
+                RuntimeRecordMemberSpec {
+                    procedure: 0,
+                    parameter: Some(0),
+                    is_array: true,
+                    name: "SlotPair".into(),
+                    guid: Some(pair_guid),
+                    schema: schema.clone(),
+                },
+                // Proc 1: Function EchoPairs(ByRef items() As SlotPair) As SlotPair()
+                RuntimeRecordMemberSpec {
+                    procedure: 1,
+                    parameter: Some(0),
+                    is_array: true,
+                    name: "SlotPair".into(),
+                    guid: Some(pair_guid),
+                    schema: schema.clone(),
+                },
+                RuntimeRecordMemberSpec {
+                    procedure: 1,
+                    parameter: None,
+                    is_array: true,
+                    name: "SlotPair".into(),
+                    guid: Some(pair_guid),
+                    schema: schema.clone(),
+                },
+            ],
+            project_records: vec![RuntimeProjectRecordSpec {
+                name: "SlotPair".into(),
+                guid: Some(pair_guid),
+                schema: schema.clone(),
+            }],
+            fields: Vec::new(),
+            as_new_fields: Vec::new(),
+            implements: Vec::new(),
+            methods: vec![
+                RuntimeMemberSpec {
+                    name: "MutatePairs".into(),
+                    dispatch_id: Some(10),
+                    vtable_slot: Some(7),
+                    invoke_kind: RuntimeMemberInvokeKind::Method,
+                    params: vec![RuntimeParamSpec {
+                        name: "items".into(),
+                        value_type: RuntimeValueType::Array,
+                        by_ref: true,
+                        optional: false,
+                        param_array: false,
+                    }],
+                    return_type: None,
+                    is_default_member: false,
+                    is_enumerator_member: false,
+                    externally_visible: true,
+                    func_flags: 0,
+                    backing: RuntimeMemberBacking::Proc(0),
+                },
+                RuntimeMemberSpec {
+                    name: "EchoPairs".into(),
+                    dispatch_id: Some(11),
+                    vtable_slot: Some(8),
+                    invoke_kind: RuntimeMemberInvokeKind::Method,
+                    params: vec![RuntimeParamSpec {
+                        name: "items".into(),
+                        value_type: RuntimeValueType::Array,
+                        by_ref: true,
+                        optional: false,
+                        param_array: false,
+                    }],
+                    return_type: Some(RuntimeValueType::Array),
+                    is_default_member: false,
+                    is_enumerator_member: false,
+                    externally_visible: true,
+                    func_flags: 0,
+                    backing: RuntimeMemberBacking::Proc(1),
+                },
+                RuntimeMemberSpec {
+                    name: "RoundTripVariant".into(),
+                    dispatch_id: Some(12),
+                    vtable_slot: Some(9),
+                    invoke_kind: RuntimeMemberInvokeKind::Method,
+                    params: vec![RuntimeParamSpec {
+                        name: "v".into(),
+                        value_type: RuntimeValueType::Variant,
+                        by_ref: true,
+                        optional: false,
+                        param_array: false,
+                    }],
+                    return_type: Some(RuntimeValueType::Variant),
+                    is_default_member: false,
+                    is_enumerator_member: false,
+                    externally_visible: true,
+                    func_flags: 0,
+                    backing: RuntimeMemberBacking::Proc(2),
+                },
+            ],
+            implemented_interfaces: Vec::new(),
+            events: Vec::new(),
+        };
+        let descriptor = build_runtime_class_descriptor(&spec);
+
+        let make_pair = |layout: &Arc<VbaRecordLayout>, id: i32, text: &str| {
+            let mut rec = VbaRecord::new_default(Arc::clone(layout)).unwrap();
+            rec.write_field_variant(0, &Variant::from_i32(id)).unwrap();
+            rec.write_field_variant(1, &Variant::from_string(text))
+                .unwrap();
+            rec
+        };
+
+        struct Handler {
+            pair_layout: Arc<VbaRecordLayout>,
+            invocations: std::cell::Cell<usize>,
+        }
+        impl MemberInvoker for Handler {
+            fn invoke_member(
+                &mut self,
+                _object: ObjectRef,
+                member: &'static RuntimeMemberDescriptor,
+                _kind: RuntimeMemberInvokeKind,
+                args: &mut [Variant],
+                _aliases: &[usize],
+            ) -> Result<Variant, MemberFault> {
+                self.invocations.set(self.invocations.get() + 1);
+                match member.dispatch_id {
+                    10 => {
+                        // Mutate element 0 in place (`Id += 100`, `Label &= "!"`).
+                        let mut elem = args[0].safearray_element(0).unwrap().unwrap();
+                        let id = elem.read_record_field_variant(0).unwrap().as_i32().unwrap();
+                        let label = elem
+                            .read_record_field_variant(1)
+                            .unwrap()
+                            .as_bstr()
+                            .unwrap()
+                            .as_str();
+                        elem.write_record_field_variant(0, &Variant::from_i32(id + 100))
+                            .unwrap();
+                        elem.write_record_field_variant(
+                            1,
+                            &Variant::from_string(format!("{label}!")),
+                        )
+                        .unwrap();
+                        args[0].set_safearray_element(0, &elem).unwrap();
+                        Ok(Variant::empty())
+                    }
+                    11 => Ok(args[0].clone()),
+                    12 => {
+                        // Mutate Variant holding UDT array by appending a second element and returning it.
+                        let elem0 = args[0].safearray_element(0).unwrap().unwrap();
+                        let mut elem1 =
+                            VbaRecord::new_default(Arc::clone(&self.pair_layout)).unwrap();
+                        elem1
+                            .write_field_variant(0, &Variant::from_i32(77))
+                            .unwrap();
+                        elem1
+                            .write_field_variant(1, &Variant::from_string("added"))
+                            .unwrap();
+                        let expanded = Variant::from_safearray(
+                            SafeArray::from_vba_records_nd(
+                                vec![SafeArrayBound { count: 2, lower: 1 }],
+                                Arc::clone(&self.pair_layout),
+                                vec![elem0.as_vba_record().unwrap(), elem1],
+                            )
+                            .unwrap(),
+                        );
+                        args[0] = expanded.clone();
+                        Ok(expanded)
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+
+        let before = crate::current_thread_live_handle_counts();
+        {
+            let mut handler = Handler {
+                pair_layout: Arc::clone(&pair_layout),
+                invocations: std::cell::Cell::new(0),
+            };
+            let _scope = unsafe { MemberInvokerScope::enter(NonNull::from(&mut handler)) };
+            let object = ObjectRef::from_project_instance(1, 0, 0, false, descriptor);
+            let raw_this = object.raw_iunknown().cast::<c_void>();
+            let disp_vtbl = unsafe { &*(*raw_this.cast::<*const IDispatchVtbl>()) };
+
+            let arr_variant = Variant::from_safearray(
+                SafeArray::from_vba_records_nd(
+                    vec![SafeArrayBound { count: 1, lower: 1 }],
+                    Arc::clone(&pair_layout),
+                    vec![make_pair(&pair_layout, 5, "hi")],
+                )
+                .unwrap(),
+            );
+            let wrong_variant = Variant::from_safearray(
+                SafeArray::from_vba_records_nd(
+                    vec![SafeArrayBound { count: 1, lower: 1 }],
+                    Arc::clone(&other_layout),
+                    vec![make_pair(&other_layout, 5, "wrong")],
+                )
+                .unwrap(),
+            );
+
+            // 1. Early-bound slot rejects wrong nominal UDT BEFORE invoking member.
+            let mut wrong_psa =
+                vba_record_array_to_automation_safearray(&wrong_variant, Some(&other_layout))
+                    .unwrap();
+            let args_wrong = [
+                raw_this.expose_provenance() as u64,
+                (&raw mut wrong_psa).expose_provenance() as u64,
+            ];
+            let xmm = [0u64; 3];
+            assert_eq!(
+                unsafe { invoke_early_bound_slot_raw(7, args_wrong.as_ptr(), xmm.as_ptr()) },
+                DISP_E_TYPEMISMATCH
+            );
+            assert_eq!(
+                handler.invocations.get(),
+                0,
+                "mismatch must reject before invoking"
+            );
+            assert_eq!(unsafe { oleaut::safe_array_destroy(wrong_psa) }, S_OK);
+
+            // 2. Early-bound slot MutatePairs (ByRef SAFEARRAY(VT_RECORD)) + EchoPairs (retval).
+            let mut psa =
+                vba_record_array_to_automation_safearray(&arr_variant, Some(&pair_layout)).unwrap();
+            let orig_psa = psa;
+            let args_mut = [
+                raw_this.expose_provenance() as u64,
+                (&raw mut psa).expose_provenance() as u64,
+            ];
+            assert_eq!(
+                unsafe { invoke_early_bound_slot_raw(7, args_mut.as_ptr(), xmm.as_ptr()) },
+                S_OK
+            );
+            assert_eq!(psa, orig_psa, "same-shape copy-back preserves descriptor");
+
+            let mut out_psa: *mut c_void = core::ptr::null_mut();
+            let args_echo = [
+                raw_this.expose_provenance() as u64,
+                (&raw mut psa).expose_provenance() as u64,
+                (&raw mut out_psa).expose_provenance() as u64,
+            ];
+            assert_eq!(
+                unsafe { invoke_early_bound_slot_raw(8, args_echo.as_ptr(), xmm.as_ptr()) },
+                S_OK
+            );
+            assert!(!out_psa.is_null());
+            let mut info = core::ptr::null_mut();
+            assert_eq!(
+                unsafe { oleaut::safe_array_get_record_info(out_psa, &mut info) },
+                S_OK
+            );
+            assert_eq!(unsafe { record_info_get_guid(info) }, Ok(pair_guid));
+            assert_eq!(
+                unsafe { record_info_get_name(info) }.as_deref(),
+                Ok("SlotPair")
+            );
+            assert_eq!(
+                unsafe { record_info_get_size(info) },
+                Ok(pair_layout.size() as u32)
+            );
+            assert!(unsafe { layout_from_record_info(info) }.is_some());
+            unsafe { release_record_info(info) };
+
+            let recovered = unsafe {
+                crate::automation_record::automation_safearray_to_vba_record_array(
+                    out_psa,
+                    &pair_layout,
+                    false,
+                    &|_, _| None,
+                )
+            }
+            .unwrap();
+            let elem = recovered.safearray_element(0).unwrap().unwrap();
+            assert_eq!(
+                elem.read_record_field_variant(0).unwrap().as_i32(),
+                Some(105)
+            );
+            assert_eq!(
+                elem.read_record_field_variant(1)
+                    .unwrap()
+                    .as_bstr()
+                    .unwrap()
+                    .as_str(),
+                "hi!"
+            );
+            assert_eq!(unsafe { oleaut::safe_array_destroy(out_psa) }, S_OK);
+
+            // 3. Late-bound IDispatch::Invoke with VT_BYREF | VT_ARRAY | VT_RECORD (`0x6024`).
+            let mut byref_arg = VariantCore::from_pointer(0x4000 | 0x2000 | 0x0024, &raw mut psa);
+            let mut dp = DispParams {
+                rgvarg: &raw mut byref_arg,
+                rgdispid_named_args: core::ptr::null_mut(),
+                c_args: 1,
+                c_named_args: 0,
+            };
+            let mut excep = ExcepInfo::default();
+            let mut arg_err = 0u32;
+            assert_eq!(
+                unsafe {
+                    (disp_vtbl.invoke)(
+                        raw_this,
+                        10,
+                        &IID_NULL,
+                        0,
+                        DISPATCH_METHOD,
+                        (&raw mut dp).cast(),
+                        core::ptr::null_mut(),
+                        (&raw mut excep).cast(),
+                        &mut arg_err,
+                    )
+                },
+                S_OK
+            );
+            let after_late = unsafe {
+                crate::automation_record::automation_safearray_to_vba_record_array(
+                    psa,
+                    &pair_layout,
+                    false,
+                    &|_, _| None,
+                )
+            }
+            .unwrap();
+            assert_eq!(
+                after_late
+                    .safearray_element(0)
+                    .unwrap()
+                    .unwrap()
+                    .read_record_field_variant(0)
+                    .unwrap()
+                    .as_i32(),
+                Some(205)
+            );
+            assert_eq!(unsafe { oleaut::safe_array_destroy(psa) }, S_OK);
+
+            // 4. Variant holding UDT array across BOTH early-bound slot (9) and late-bound Invoke (12).
+            let mut var_cell = AutomationVariant::from_runtime(&arr_variant).unwrap();
+            let mut var_ret = AutomationVariant::empty();
+            let args_var = [
+                raw_this.expose_provenance() as u64,
+                var_cell.as_mut_ptr().expose_provenance() as u64,
+                var_ret.as_mut_ptr().expose_provenance() as u64,
+            ];
+            assert_eq!(
+                unsafe { invoke_early_bound_slot_raw(9, args_var.as_ptr(), xmm.as_ptr()) },
+                S_OK
+            );
+            assert_eq!(var_cell.raw_vt(), 0x2024);
+            assert_eq!(var_ret.raw_vt(), 0x2024);
+            let back_var = var_ret.to_runtime(None, &|_, _| None).unwrap();
+            assert_eq!(back_var.safearray_bounds_len().unwrap().1, 2);
+            assert_eq!(
+                back_var
+                    .safearray_element(1)
+                    .unwrap()
+                    .unwrap()
+                    .read_record_field_variant(0)
+                    .unwrap()
+                    .as_i32(),
+                Some(77)
+            );
+
+            // Late-bound Invoke with VT_BYREF | VT_VARIANT (`0x400C`) holding `0x2024`.
+            let mut var_arg_byref =
+                VariantCore::from_pointer(0x4000 | 0x000C, var_cell.as_mut_ptr());
+            let mut late_ret = AutomationVariant::empty();
+            let mut dp2 = DispParams {
+                rgvarg: &raw mut var_arg_byref,
+                rgdispid_named_args: core::ptr::null_mut(),
+                c_args: 1,
+                c_named_args: 0,
+            };
+            assert_eq!(
+                unsafe {
+                    (disp_vtbl.invoke)(
+                        raw_this,
+                        12,
+                        &IID_NULL,
+                        0,
+                        DISPATCH_METHOD,
+                        (&raw mut dp2).cast(),
+                        late_ret.as_mut_ptr(),
+                        (&raw mut excep).cast(),
+                        &mut arg_err,
+                    )
+                },
+                S_OK
+            );
+            assert_eq!(late_ret.raw_vt(), 0x2024);
+            let back_late_var = late_ret.to_runtime(None, &|_, _| None).unwrap();
+            assert_eq!(back_late_var.safearray_bounds_len().unwrap().1, 2);
         }
         assert_eq!(
             before.balance_to(crate::current_thread_live_handle_counts()),

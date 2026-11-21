@@ -207,6 +207,7 @@ pub fn elaborate_with(program: &CoreProgram, options: &ElaborateOptions) -> Resu
         globals,
         classes,
         record_layouts: resolver.record_layouts.clone(),
+        record_names: resolver.record_names.clone(),
         com_interfaces: com.interfaces,
         // Resolve the entry the same way `linearize`'s `select_entry` does, so vm3/JIT
         // run the same proc vm2 runs (and expose the same entry frame): the recorded
@@ -289,10 +290,21 @@ fn retype_compound_byref_temps(program: &mut OxProgram) {
                     continue;
                 }
                 for (arg, ty) in args.iter().zip(params) {
-                    if let OxArg::ByRef(OxPlace::Temp(t)) = arg
-                        && scalar(ty)
-                        && func.temps.get(t.0) == Some(&OxTy::Variant)
-                    {
+                    let OxArg::ByRef(OxPlace::Temp(t)) = arg else {
+                        continue;
+                    };
+                    let temp_ty = func.temps.get(t.0);
+                    let retype_scalar = scalar(ty) && temp_ty == Some(&OxTy::Variant);
+                    let retype_record = match (ty, temp_ty) {
+                        (OxTy::Record(param_id), Some(OxTy::Record(temp_id)))
+                            if param_id != temp_id =>
+                        {
+                            program.record_layouts.get(param_id.0)
+                                == program.record_layouts.get(temp_id.0)
+                        }
+                        _ => false,
+                    };
+                    if retype_scalar || retype_record {
                         retype.push((t.0, ty.clone()));
                     }
                 }
@@ -420,6 +432,7 @@ struct ProgramResolver {
     classes: HashMap<String, ClassId>,
     records: HashMap<String, RecordLayoutId>,
     record_layouts: Vec<Vec<ArrayElementType>>,
+    record_names: Vec<String>,
     com_interfaces: HashMap<String, IfaceId>,
     object_field_types: HashMap<(ClassId, i32), OxTy>,
     /// See [`ElaborateOptions::byref_references`].
@@ -440,6 +453,7 @@ impl ProgramResolver {
             classes,
             records: HashMap::new(),
             record_layouts: Vec::new(),
+            record_names: Vec::new(),
             com_interfaces: program
                 .object_interfaces
                 .iter()
@@ -447,11 +461,12 @@ impl ProgramResolver {
                 .map(|(i, interface)| (interface.name.to_ascii_lowercase(), IfaceId(i)))
                 .collect(),
         };
+        for (name, fields) in &program.record_types {
+            let display = program.record_display_names.get(name).map(String::as_str);
+            this.intern_record_layout(name, display, fields.clone());
+        }
         for global in &program.globals {
             this.harvest_record_layout_from_decl(&global.ty, global.array_element.as_ref());
-        }
-        for (name, fields) in &program.record_types {
-            this.intern_record_layout(name, fields.clone());
         }
         for class in &program.classes {
             for field in &class.fields {
@@ -463,6 +478,14 @@ impl ProgramResolver {
                 this.harvest_record_layout_from_decl(&local.ty, local.array_element.as_ref());
             }
             this.harvest_record_layouts(&proc.body);
+        }
+        // Intern any remaining anonymous nested record layouts only AFTER all named UDTs have
+        // claimed their slots, so shape lookups match a named UDT rather than an anonymous copy.
+        let existing_layouts = this.record_layouts.clone();
+        for fields in &existing_layouts {
+            for field in fields {
+                this.intern_nested_record_layout(field);
+            }
         }
         this.object_field_types = program
             .classes
@@ -494,7 +517,7 @@ impl ProgramResolver {
                 target_type_name,
                 ..
             } => {
-                self.intern_record_layout(target_type_name, fields.clone());
+                self.intern_record_layout(target_type_name, None, fields.clone());
             }
             CoreStmt::If { arms, else_body } => {
                 for arm in arms {
@@ -543,11 +566,16 @@ impl ProgramResolver {
             return;
         };
         if let Some(name) = record_decl_type_name(ty) {
-            self.intern_record_layout(name, fields.clone());
+            self.intern_record_layout(name, None, fields.clone());
         }
     }
 
-    fn intern_record_layout(&mut self, name: &str, fields: Vec<ArrayElementType>) {
+    fn intern_record_layout(
+        &mut self,
+        name: &str,
+        display_name: Option<&str>,
+        fields: Vec<ArrayElementType>,
+    ) {
         if name.is_empty() {
             return;
         }
@@ -555,21 +583,16 @@ impl ProgramResolver {
         if self.records.contains_key(&folded) {
             return;
         }
-        let id = if let Some(index) = self
-            .record_layouts
-            .iter()
-            .position(|layout| *layout == fields)
-        {
-            RecordLayoutId(index)
-        } else {
-            let id = RecordLayoutId(self.record_layouts.len());
-            self.record_layouts.push(fields.clone());
-            id
-        };
+        // Keep distinct named UDTs in distinct `RecordLayoutId` slots even when their field
+        // shapes match, so nominal COM `IRecordInfo` GUIDs and names stay distinct.
+        let id = RecordLayoutId(self.record_layouts.len());
+        self.record_layouts.push(fields.clone());
+        let label = display_name
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| name.rsplit('.').next().unwrap_or(name))
+            .to_string();
+        self.record_names.push(label);
         self.records.insert(folded, id);
-        for field in &fields {
-            self.intern_nested_record_layout(field);
-        }
     }
 
     fn intern_nested_record_layout(&mut self, field: &ArrayElementType) {
@@ -577,6 +600,7 @@ impl ProgramResolver {
             ArrayElementType::Record(fields) => {
                 if !self.record_layouts.contains(fields) {
                     self.record_layouts.push(fields.clone());
+                    self.record_names.push(String::new());
                 }
                 for field in fields {
                     self.intern_nested_record_layout(field);

@@ -251,10 +251,24 @@ pub(super) unsafe fn evaluate(raw: *mut RawActivation, inst: &OxInst) -> Result<
                     count: length,
                 });
             }
+            let nominal_record_layout =
+                if let calcvba_bundle::ArrayElementType::Record(fields) = element {
+                    previous.record_array_layout().filter(|existing| {
+                        calcvba_bundle::vba_record_layout_for_fields(fields)
+                            .is_ok_and(|anon| existing.matches_structural(&anon))
+                    })
+                } else {
+                    None
+                };
             let mut values = Vec::new();
             values.try_reserve_exact(count).map_err(|_| 7)?;
             for _ in 0..count {
-                values.push(calcvba_bundle::default_array_element(element).map_err(|_| 7)?);
+                let item = if let Some(ref rec_layout) = nominal_record_layout {
+                    calcvba_bundle::array_runtime::default_record_array_element(rec_layout)
+                } else {
+                    calcvba_bundle::default_array_element(element)
+                };
+                values.push(item.map_err(|_| 7)?);
             }
             if *preserve && let Some(old) = old {
                 let old_bounds = old.bounds().ok_or(9)?;
@@ -275,9 +289,14 @@ pub(super) unsafe fn evaluate(raw: *mut RawActivation, inst: &OxInst) -> Result<
                     }
                 }
             }
-            let array =
+            let array = if let Some(rec_layout) = nominal_record_layout {
+                calcvba_bundle::array_runtime::redim_record_safearray_from_elements(
+                    bounds, rec_layout, values, *fixed,
+                )
+            } else {
                 calcvba_bundle::redim_safearray_from_elements(bounds, element, values, *fixed)
-                    .map_err(|_| 13)?;
+            }
+            .map_err(|_| 13)?;
             store(*dst, Variant::from_safearray(array))
         }
         OxInst::NewRecord { dst, .. } => {

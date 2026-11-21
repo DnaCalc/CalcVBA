@@ -315,16 +315,27 @@ fn bind_one(
             names.insert(env.canonical_udt_name(name).unwrap_or(name).to_string());
         }
     }
-    let record_types = names
-        .into_iter()
-        .filter_map(|name| {
-            if let calcvba_bundle::ArrayElementType::Record(fields) =
-                lower.array_element_layout(&calcvba_bundle::VarTypeRef::Udt(name.clone()))
-            {
-                Some((name, fields))
-            } else {
-                None
-            }
+    let record_types: std::collections::BTreeMap<String, Vec<calcvba_bundle::ArrayElementType>> =
+        names
+            .into_iter()
+            .filter_map(|name| {
+                if let calcvba_bundle::ArrayElementType::Record(fields) =
+                    lower.array_element_layout(&calcvba_bundle::VarTypeRef::Udt(name.clone()))
+                {
+                    Some((name, fields))
+                } else {
+                    None
+                }
+            })
+            .collect();
+    let record_display_names = record_types
+        .keys()
+        .map(|name| {
+            let display = env
+                .udt_display_name(name)
+                .unwrap_or_else(|| name.rsplit('.').next().unwrap_or(name))
+                .to_string();
+            (name.clone(), display)
         })
         .collect();
     let imports = lower.imports.into_inner().imports;
@@ -393,6 +404,7 @@ fn bind_one(
     let external_calls = build_external_calls(env, &record_types);
     Ok(CoreProgram {
         record_types,
+        record_display_names,
         long_ptr_width: core_long_ptr_width(manifest.conditional_compilation_target),
         globals: ids.globals.clone(),
         procs,

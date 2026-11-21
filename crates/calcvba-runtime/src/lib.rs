@@ -45,12 +45,13 @@ pub use callback_thunks::{
 pub use class_descriptor::{
     RuntimeClassActivationSpec, RuntimeClassAsNewFieldSpec, RuntimeClassFieldSpec,
     RuntimeClassSpec, RuntimeEventSpec, RuntimeImplementedInterfaceSpec, RuntimeMemberSpec,
-    RuntimeParamSpec, RuntimeRecordMemberSpec, build_runtime_class_descriptor,
-    default_class_interface_iid, default_class_source_interface_iid,
-    runtime_project_interface_guid,
+    RuntimeParamSpec, RuntimeProjectRecordSpec, RuntimeRecordMemberSpec,
+    build_runtime_class_descriptor, default_class_interface_iid,
+    default_class_source_interface_iid, default_record_type_guid, runtime_project_interface_guid,
 };
 pub use class_dispatch::{
-    class_dual_vtable_ptr, class_dual_vtable_slot_count, current_thread_id, invoke_early_bound_slot,
+    class_dual_vtable_ptr, class_dual_vtable_slot_count, current_thread_id,
+    invoke_early_bound_slot, invoke_early_bound_slot_raw,
 };
 pub use coerce::{print_display_text, variant_to_vba_string, write_display_text};
 pub use com_record::{ComRecord, ComRecordRef};
@@ -91,7 +92,8 @@ pub use vba_radix::{
 pub use vba_record::{
     MAX_VBA_RECORD_FIXED_ARRAY_RANK, MAX_VBA_RECORD_LAYOUT_GRAPH_DEPTH,
     MAX_VBA_RECORD_LAYOUT_GRAPH_VISITS, MAX_VBA_RECORD_SIZE, VbaRecord, VbaRecordFieldHandle,
-    VbaRecordFieldKind, VbaRecordFieldLayout, VbaRecordFieldSpec, VbaRecordLayout,
+    VbaRecordFieldKind, VbaRecordFieldLayout, VbaRecordFieldSpec, VbaRecordIdentity,
+    VbaRecordLayout,
 };
 
 pub use calcvba_automation::automation_record;

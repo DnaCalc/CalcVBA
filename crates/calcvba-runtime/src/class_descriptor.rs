@@ -111,6 +111,7 @@ pub struct RuntimeClassSpec {
     pub predeclared: bool,
     pub lifecycle: RuntimeClassLifecycleDescriptor,
     pub record_members: Vec<RuntimeRecordMemberSpec>,
+    pub project_records: Vec<RuntimeProjectRecordSpec>,
     pub fields: Vec<RuntimeClassFieldSpec>,
     pub as_new_fields: Vec<RuntimeClassAsNewFieldSpec>,
     pub implements: Vec<String>,
@@ -123,7 +124,21 @@ pub struct RuntimeClassSpec {
 pub struct RuntimeRecordMemberSpec {
     pub procedure: usize,
     pub parameter: Option<usize>,
+    /// `true` for a UDT array (`items() As MyType` / `As MyType()`), `false` for a scalar UDT.
+    pub is_array: bool,
+    /// Declared nominal UDT display name (`IRecordInfo::GetName`).
+    pub name: String,
+    /// Nominal UDT COM GUID (`IRecordInfo::GetGuid`), or `None` to derive deterministically from
+    /// `(unit_name, name)`.
+    pub guid: Option<Guid>,
     /// The VBA record layout schema shared with native Declare.
+    pub schema: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RuntimeProjectRecordSpec {
+    pub name: String,
+    pub guid: Option<Guid>,
     pub schema: Vec<u32>,
 }
 
@@ -164,6 +179,13 @@ pub fn default_class_interface_iid(unit_name: &str, class_name: &str) -> Guid {
 /// (matches `calcvba-build`'s `deterministic_uuid(unit_name, &format!("_{class_name}Events"))`).
 pub fn default_class_source_interface_iid(unit_name: &str, class_name: &str) -> Guid {
     Guid::deterministic(unit_name, &format!("_{class_name}Events"))
+}
+
+/// Deterministic nominal COM record GUID for a project-defined UDT (`Type Name ... End Type`),
+/// matching VBA's case-insensitive nominal UDT identity and avoiding collisions with class IIDs.
+pub fn default_record_type_guid(unit_name: &str, record_name: &str) -> Guid {
+    let bare = record_name.rsplit('.').next().unwrap_or(record_name);
+    Guid::deterministic(unit_name, &format!("Record:{}", bare.to_ascii_lowercase()))
 }
 
 fn descriptor_cache() -> &'static Mutex<HashMap<RuntimeClassSpec, &'static RuntimeClassDescriptor>>
@@ -587,6 +609,51 @@ fn build_descriptor_uncached(spec: &RuntimeClassSpec) -> &'static RuntimeClassDe
             .then(|| default_class_source_interface_iid(&spec.unit_name, &spec.name))
     });
 
+    let build_named_layout = |unit_name: &str,
+                              record_name: &str,
+                              explicit_guid: Option<Guid>,
+                              schema: &[u32]|
+     -> Option<std::sync::Arc<crate::VbaRecordLayout>> {
+        let base = crate::VbaRecordLayout::from_boundary_schema(schema).ok()?;
+        let stamped = if !record_name.is_empty() || explicit_guid.is_some() {
+            let guid =
+                explicit_guid.unwrap_or_else(|| default_record_type_guid(unit_name, record_name));
+            std::sync::Arc::new((*base).clone().with_identity(record_name, guid))
+        } else {
+            base
+        };
+        Some(stamped)
+    };
+
+    let record_members: &'static [RuntimeRecordMemberLayout] = Box::leak(
+        spec.record_members
+            .iter()
+            .filter_map(|item| {
+                Some(RuntimeRecordMemberLayout {
+                    procedure: item.procedure,
+                    parameter: item.parameter,
+                    is_array: item.is_array,
+                    layout: build_named_layout(
+                        &spec.unit_name,
+                        &item.name,
+                        item.guid,
+                        &item.schema,
+                    )?,
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
+    let project_records: &'static [std::sync::Arc<crate::VbaRecordLayout>] = Box::leak(
+        spec.project_records
+            .iter()
+            .filter_map(|item| {
+                build_named_layout(&spec.unit_name, &item.name, item.guid, &item.schema)
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
+
     Box::leak(Box::new(RuntimeClassDescriptor {
         name,
         runtime_type_name,
@@ -595,19 +662,8 @@ fn build_descriptor_uncached(spec: &RuntimeClassSpec) -> &'static RuntimeClassDe
         source_interface_iid,
         predeclared: spec.predeclared,
         lifecycle: spec.lifecycle,
-        record_members: Box::leak(
-            spec.record_members
-                .iter()
-                .filter_map(|item| {
-                    Some(RuntimeRecordMemberLayout {
-                        procedure: item.procedure,
-                        parameter: item.parameter,
-                        layout: crate::VbaRecordLayout::from_boundary_schema(&item.schema).ok()?,
-                    })
-                })
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        ),
+        record_members,
+        project_records,
         fields,
         as_new_fields,
         implements,
@@ -636,6 +692,7 @@ mod tests {
                 hidden_vtable_slots: 0,
             },
             record_members: Vec::new(),
+            project_records: Vec::new(),
             fields: vec![RuntimeClassFieldSpec {
                 name: "Value".into(),
                 token: 0,
@@ -756,6 +813,7 @@ mod tests {
                 hidden_vtable_slots: 0,
             },
             record_members: Vec::new(),
+            project_records: Vec::new(),
             fields: Vec::new(),
             as_new_fields: Vec::new(),
             implements: Vec::new(),

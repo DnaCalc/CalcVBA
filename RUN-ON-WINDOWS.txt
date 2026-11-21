@@ -366,3 +366,54 @@ cfg(windows)-only failure, pull again before each push.
     - Full COM server smoke (verifies real `comhost` `IConnectionPointContainer`, `IDTExtensibility2`,
       `IRtdServer`, and `ISupportErrorInfo`/`IErrorInfo` on Windows):
       cargo test -p calcvba-build --test wrapped_com_server_smoke -- --ignored --test-threads=1 --nocapture
+
+--- Lane vx7 (Linux), newest last ---
+
+24. dc-yqq0.28 (nominal `SAFEARRAY(VT_RECORD)` with `IRecordInfo` across COM in both directions, VM3 + JIT):
+    - `calcvba-automation`: added nominal `VbaRecordIdentity { name, guid }` on `VbaRecordLayout`
+      (`matches_nominal` vs `matches_structural`); upgraded `RecordInfo` with nominal `GetName`
+      (project UDT source name), `GetGuid` (deterministic project+UDT GUID), `GetSize`,
+      `RecordCopy`, `RecordClear`, and `IsMatchingType` (`GetGuid` + `GetSize`); fixed off-Windows
+      `oleaut::{variant_clear, variant_copy_ind, safe_array_copy_data, safe_array_features,
+      safe_array_set_fixed_size}` and routed Windows `oleaut::sys_*` directly to Win32 so foreign
+      COM frees stay out of `live_counters`; added portable `AutomationVariant`,
+      `AutomationRecordArraySlot`, `vba_record_array_to_automation_safearray{,_with_info}`,
+      `automation_safearray_to_vba_record_array{,_any}`, `write_vba_record_array_to_automation_slot`,
+      `write_runtime_variant_to_automation_cell`, and `automation_variant_to_runtime_variant`.
+    - `calcvba-symbol` / `calcvba-bundle` / `calcvba-bind` / `calcvba-oxir` / `calcvba-build`:
+      threaded source-case UDT names (`CoreProgram::record_display_names`, `OxProgram::record_names`,
+      preserved in `native_link`), kept distinct named UDTs with identical fields in distinct
+      `RecordLayoutId` slots, and fixed `ReDim Preserve` on a `Variant` holding a UDT array.
+    - `calcvba-runtime` / `calcvba-rt-abi` / `calcvba-vm3` / `calcvba-jit`:
+      stamped nominal `VbaRecordIdentity` on every UDT/UDT-array allocation, `ReDim`, and `Erase`
+      in VM3 and the JIT; added `is_array` on `RuntimeRecordMemberLayout` and `project_records` on
+      `RuntimeClassDescriptor` (`CVBD` emits v4 when empty so checked-in v4 native templates stay
+      compatible, and v5 when UDT metadata is present); made `class_dispatch::slot_thunks`
+      marshalling portable (Win64 asm stub table remains Windows-x64 only) and wired nominal
+      `SAFEARRAY(VT_RECORD)` + `Variant` holding UDT arrays + copy-back + pre-copy nominal mismatch
+      rejection (`DISP_E_TYPEMISMATCH`) across early-bound vtable slots, late-bound
+      `IDispatch::Invoke`, and `ITypeInfo` (`VT_SAFEARRAY -> VT_RECORD`).
+    - `calcvba-com`: admitted `VT_RECORD` `SafeArray` / `ByRefSafeArray` in `automation/early.rs`
+      (`DispCallFunc`) and staged outgoing ByVal/ByRef UDT arrays and `Variant`s holding UDT arrays
+      across `IDispatch::Invoke` and `DispCallFunc` with post-call copy-back while keeping T6b
+      rejection (VBA error 13) for unknown foreign `SAFEARRAY(VT_RECORD)`.
+    Windows runs needed (vw1):
+    - Core automation, runtime, rt-abi, and live COM bridge suites:
+      cargo test -p calcvba-automation -p calcvba-runtime -p calcvba-rt-abi -p calcvba-com --no-fail-fast
+    - Real Win64 vtable stubs + real `oleaut32` `SAFEARRAY(VT_RECORD)` + `IDispatch::Invoke`
+      (VM3 + JIT, including nominal mismatch rejection before copying data, in-place mutation,
+      `ReDim Preserve` growth, `[out, retval]`, and `Variant` holding UDT array copy-back):
+      cargo test -p calcvba-engine --test object_identity_portable --test object_identity --no-fail-fast
+      Specifically verify `vtable_slots_and_idispatch_marshal_nominal_record_safearrays_on_windows`
+      and `udt_arrays_cross_com_early_and_late_bound_both_directions_with_nominal_record_info`.
+    - Live COM matrix T6b check (confirms unknown foreign `ReturnRecordArray()` still raises error 13
+      while CalcVBA's own nominal `SAFEARRAY(VT_RECORD)` round-trips):
+      cargo test -p calcvba-engine --test com_matrix_types -- --ignored --test-threads=1
+    - Optional cheap VBA-in-Excel comparison (if `OxVba.TestEventServer` or a small COM probe is
+      handy): confirm real `oleaut32!SafeArrayGetRecordInfo` on a UDT array crossing COM returns
+      `GetName`/`GetGuid`/`GetSize` matching the project UDT, rejects an identically shaped distinct
+      UDT with `DISP_E_TYPEMISMATCH` before mutating, and copies back after `ReDim Preserve` and
+      `Variant` round-trips.
+    - Native AOT template note: non-UDT projects remain CVBD v4-compatible with checked-in native
+      templates; run `./scripts/build-native-template.ps1` before testing AOT native templates that
+      export UDT array members (CVBD v5).

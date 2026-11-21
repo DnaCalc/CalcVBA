@@ -11,7 +11,7 @@ pub use class_descriptor::{
     coerce_value_for_runtime_type, decode_native_class_metadata, encode_native_class_metadata,
     resolve_project_member_for_call, runtime_class_descriptors_for_program,
     runtime_class_spec_for_program, runtime_invoke_kind, runtime_invoke_kind_from_typelib,
-    runtime_member_params,
+    runtime_member_params, vba_record_layout_for_program_record,
 };
 pub use library_object::invoke_library_object;
 

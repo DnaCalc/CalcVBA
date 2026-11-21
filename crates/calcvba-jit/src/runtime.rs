@@ -1089,15 +1089,10 @@ pub(crate) fn default_slot_value_with_array_element(
         OxTy::FixedStr(len) => Ok(Variant::from_string("\0".repeat(*len as usize))),
         OxTy::Object(_) => Ok(Variant::nothing()),
         OxTy::Record(id) => {
-            let fields = program.record_layout(*id).ok_or_else(|| {
-                JitError::unsupported(format!(
-                    "JIT record slot {:?} has no record layout metadata",
-                    id
-                ))
-            })?;
-            let layout = vba_record_layout_for_fields(fields).map_err(|err| {
-                JitError::unsupported(format!("JIT record slot layout is invalid: {err}"))
-            })?;
+            let layout = calcvba_rt_abi::vba_record_layout_for_program_record(program, *id)
+                .map_err(|err| {
+                    JitError::unsupported(format!("JIT record slot layout is invalid: {err}"))
+                })?;
             let record = VbaRecord::new_default(layout).map_err(|err| {
                 JitError::Runtime(format!("default record allocation failed: {err}"))
             })?;
@@ -1105,6 +1100,11 @@ pub(crate) fn default_slot_value_with_array_element(
         }
         OxTy::Array(element, _) => {
             if let OxTy::Record(id) = element.as_ref() {
+                if let Ok(layout) =
+                    calcvba_rt_abi::vba_record_layout_for_program_record(program, *id)
+                {
+                    return Ok(Variant::unallocated_record_array(layout));
+                }
                 let fields = program
                     .record_layout(*id)
                     .ok_or_else(|| JitError::unsupported("missing array record layout"))?;

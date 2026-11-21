@@ -30,9 +30,13 @@ use crate::typelib::{
 };
 use crate::windows_client::{IID_IDISPATCH, OwnedComInterface, query_interface_pointer};
 use calcvba_runtime::ObjectRefExt;
-use calcvba_runtime::{ObjectRef, VarType, Variant, WIRE_SIZE};
+use calcvba_runtime::automation_record::{
+    AutomationRecordArraySlot, AutomationVariant, release_record_info,
+};
+use calcvba_runtime::{ObjectRef, VarType, Variant, VbaRecordLayout, WIRE_SIZE};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 use windows_sys::Win32::System::Variant::VARIANT;
 
 const VT_I2: u16 = 0x0002;
@@ -349,8 +353,7 @@ fn wire_type(member: &TypeLibMemberMetadata, index: usize) -> TypeLibWireType {
 fn wire_is_supported(wire: &TypeLibWireType) -> bool {
     match wire {
         TypeLibWireType::Automation(_) | TypeLibWireType::InterfacePointer { .. } => true,
-        TypeLibWireType::SafeArray { element_vt, .. }
-        | TypeLibWireType::ByRefSafeArray { element_vt, .. } => *element_vt != VT_RECORD,
+        TypeLibWireType::SafeArray { .. } | TypeLibWireType::ByRefSafeArray { .. } => true,
         TypeLibWireType::SafeArrayVariant | TypeLibWireType::ByRefSafeArrayVariant => true,
         TypeLibWireType::ByRefRecord { .. } => true,
         TypeLibWireType::Record { .. } => false,
@@ -360,10 +363,33 @@ fn wire_is_supported(wire: &TypeLibWireType) -> bool {
 fn return_is_supported(wire: &TypeLibWireType, return_type: Option<TypeLibParamType>) -> bool {
     match wire {
         TypeLibWireType::Automation(_) | TypeLibWireType::InterfacePointer { .. } => true,
-        TypeLibWireType::SafeArray { element_vt, .. } => *element_vt != VT_RECORD,
+        TypeLibWireType::SafeArray { .. } => true,
         TypeLibWireType::SafeArrayVariant => true,
         _ => return_type.is_none(),
     }
+}
+
+struct OwnedRecordInfo(*mut core::ffi::c_void);
+
+impl Drop for OwnedRecordInfo {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: owns one COM `IRecordInfo` reference from `record_info_from_descriptor`.
+            unsafe { release_record_info(self.0) };
+        }
+    }
+}
+
+fn typelib_record_info_for_wire(wire: &TypeLibWireType) -> OwnedRecordInfo {
+    let descriptor = match wire {
+        TypeLibWireType::SafeArray { record_info, .. }
+        | TypeLibWireType::ByRefSafeArray { record_info, .. } => record_info.as_ref(),
+        _ => None,
+    };
+    let raw = descriptor
+        .and_then(|info| crate::windows_variant::record_info_from_descriptor(info).ok())
+        .unwrap_or(core::ptr::null_mut());
+    OwnedRecordInfo(raw)
 }
 
 /// The `VARTYPE` of a parameter and whether it is passed by reference.
@@ -521,6 +547,14 @@ enum Slot {
     Cell(u16, [u8; WIRE_SIZE]),
     /// A `VT_BYREF | vt` argument pointing at `temps[index]`'s storage.
     Temp(u16, usize),
+    /// A ByVal `VT_ARRAY | VT_RECORD` staged in `staged_record_arrays[index]`.
+    StagedRecordArrayVal(usize),
+    /// A `VT_BYREF | VT_ARRAY | VT_RECORD` pointing at `staged_record_arrays[index]`.
+    StagedRecordArrayByRef(usize),
+    /// A ByVal `VT_VARIANT` staged in `staged_variants[index]`.
+    StagedVariantVal(usize),
+    /// A `VT_BYREF | VT_VARIANT` pointing at `staged_variants[index]`.
+    StagedVariantByRef(usize),
 }
 
 /// One vtable call through `DispCallFunc`.
@@ -538,6 +572,12 @@ unsafe fn call_vtable(
     let mut temps: Vec<Variant> = Vec::with_capacity(count + 1);
     // (temps index, reference) pairs written back after the call.
     let mut writebacks: Vec<(usize, &Variant)> = Vec::new();
+    // Heap-stable Automation staging cells for nominal `SAFEARRAY(VT_RECORD)` arguments.
+    let mut staged_record_arrays: Vec<Box<AutomationRecordArraySlot>> = Vec::new();
+    let mut record_array_writebacks: Vec<(usize, &Variant, Arc<VbaRecordLayout>)> = Vec::new();
+    let mut staged_variants: Vec<Box<AutomationVariant>> = Vec::new();
+    let mut variant_writebacks: Vec<(usize, &Variant, Option<Arc<VbaRecordLayout>>)> = Vec::new();
+    let mut direct_byref_variants: Vec<&Variant> = Vec::new();
     // Cells borrowed for the call (project objects' IDispatch, coerced values).
     let mut kept: Vec<Variant> = Vec::new();
     let mut slots: Vec<Slot> = Vec::with_capacity(count + 1);
@@ -547,7 +587,8 @@ unsafe fn call_vtable(
     );
     let rules: Vec<Option<&OptionalParamDefault>> = rules(member).collect();
     for index in 0..count {
-        let (vt, by_ref) = param_vt(member.parameter_types[index], &wire_type(member, index));
+        let wire = wire_type(member, index);
+        let (vt, by_ref) = param_vt(member.parameter_types[index], &wire);
         let iid = member.parameter_iids.get(index).and_then(Option::as_ref);
         let arg = positional[index];
         if param_array && index + 1 == count {
@@ -587,10 +628,60 @@ unsafe fn call_vtable(
             });
             continue;
         };
+        if vt == (VT_ARRAY | VT_RECORD) {
+            let typelib_ri = typelib_record_info_for_wire(&wire);
+            let current = match value {
+                ArgValue::Value(v) => v.clone(),
+                ArgValue::Reference(r) => r.clone(),
+                ArgValue::Missing => unreachable!("missing arguments were handled above"),
+            };
+            let layout = current
+                .record_array_layout()
+                .ok_or_else(|| Fault::number(13))?;
+            // SAFETY: `typelib_ri.0` is null or a live `IRecordInfo*` retained by `typelib_ri`.
+            let staged = Box::new(
+                unsafe {
+                    AutomationRecordArraySlot::from_runtime(&current, Some(&layout), typelib_ri.0)
+                }
+                .map_err(|_| Fault::number(13))?,
+            );
+            let slot_index = staged_record_arrays.len();
+            staged_record_arrays.push(staged);
+            if by_ref {
+                if let ArgValue::Reference(reference) = value {
+                    record_array_writebacks.push((slot_index, reference, layout));
+                }
+                slots.push(Slot::StagedRecordArrayByRef(slot_index));
+            } else {
+                slots.push(Slot::StagedRecordArrayVal(slot_index));
+            }
+            continue;
+        }
         if by_ref {
             if let ArgValue::Reference(reference) = value {
                 let target = reference.byref_target().map(|(target, _)| target);
                 let object_target = matches!(target, Some(VT_DISPATCH | VT_UNKNOWN));
+                if vt == VT_VARIANT && target == Some(VT_VARIANT) {
+                    if let Some((_, ptr)) = reference.byref_target() {
+                        // SAFETY: `ptr` targets the caller's live `Variant` cell.
+                        let inner = unsafe { &*ptr.cast::<Variant>() };
+                        if super::needs_automation_staging(inner) {
+                            let orig_layout = inner.record_array_layout();
+                            let staged = Box::new(
+                                AutomationVariant::from_runtime(inner)
+                                    .map_err(|_| Fault::number(13))?,
+                            );
+                            let idx = staged_variants.len();
+                            staged_variants.push(staged);
+                            variant_writebacks.push((idx, reference, orig_layout));
+                            slots.push(Slot::StagedVariantByRef(idx));
+                            continue;
+                        }
+                    }
+                    direct_byref_variants.push(reference);
+                    slots.push(Slot::Cell(VT_BYREF | vt, reference.to_wire_bytes()));
+                    continue;
+                }
                 if target == Some(vt) || (vt == VT_DISPATCH && object_target && iid.is_none()) {
                     // The caller's storage itself.
                     slots.push(Slot::Cell(VT_BYREF | vt, reference.to_wire_bytes()));
@@ -612,6 +703,15 @@ unsafe fn call_vtable(
             let ArgValue::Value(value) = value else {
                 unreachable!("missing arguments were handled above")
             };
+            if vt == VT_VARIANT && super::needs_automation_staging(value) {
+                let staged = Box::new(
+                    AutomationVariant::from_runtime(value).map_err(|_| Fault::number(13))?,
+                );
+                let idx = staged_variants.len();
+                staged_variants.push(staged);
+                slots.push(Slot::StagedVariantByRef(idx));
+                continue;
+            }
             // An expression passed ByRef: a temporary nothing reads back.
             temps.push(typed_temp(value, vt, iid, context)?);
             slots.push(Slot::Temp(vt, temps.len() - 1));
@@ -628,7 +728,16 @@ unsafe fn call_vtable(
             ArgValue::Missing => unreachable!("missing arguments were handled above"),
         };
         if vt == VT_VARIANT {
-            slots.push(Slot::Cell(VT_VARIANT, value.to_wire_bytes()));
+            if super::needs_automation_staging(value) {
+                let staged = Box::new(
+                    AutomationVariant::from_runtime(value).map_err(|_| Fault::number(13))?,
+                );
+                let idx = staged_variants.len();
+                staged_variants.push(staged);
+                slots.push(Slot::StagedVariantVal(idx));
+            } else {
+                slots.push(Slot::Cell(VT_VARIANT, value.to_wire_bytes()));
+            }
             continue;
         }
         if raw_vt(value) == vt && vt != VT_DISPATCH {
@@ -682,6 +791,38 @@ unsafe fn call_vtable(
                 types.push(VT_BYREF | vt);
                 cells.push(by_ref_cell(VT_BYREF | vt, target));
             }
+            Slot::StagedRecordArrayVal(index) => {
+                let mut bytes = [0u8; WIRE_SIZE];
+                bytes[..2].copy_from_slice(&(VT_ARRAY | VT_RECORD).to_le_bytes());
+                bytes[8..8 + core::mem::size_of::<usize>()].copy_from_slice(
+                    &staged_record_arrays[index]
+                        .raw_psa()
+                        .expose_provenance()
+                        .to_le_bytes(),
+                );
+                types.push(VT_ARRAY | VT_RECORD);
+                cells.push(bytes);
+            }
+            Slot::StagedRecordArrayByRef(index) => {
+                let vt = VT_BYREF | VT_ARRAY | VT_RECORD;
+                let target = staged_record_arrays[index].slot_ptr().cast::<u8>();
+                types.push(vt);
+                cells.push(by_ref_cell(vt, target));
+            }
+            Slot::StagedVariantVal(index) => {
+                // SAFETY: `staged_variants[index]` lives until after `DispCallFunc`.
+                let bytes = unsafe {
+                    core::ptr::read(staged_variants[index].as_ptr().cast::<[u8; WIRE_SIZE]>())
+                };
+                types.push(VT_VARIANT);
+                cells.push(bytes);
+            }
+            Slot::StagedVariantByRef(index) => {
+                let vt = VT_BYREF | VT_VARIANT;
+                let target = staged_variants[index].as_mut_ptr().cast::<u8>();
+                types.push(vt);
+                cells.push(by_ref_cell(vt, target));
+            }
         }
     }
     if let Some(vt) = result_vt {
@@ -734,6 +875,43 @@ unsafe fn call_vtable(
             writeback_fault.get_or_insert(fault);
         }
     }
+    for (index, reference, layout) in record_array_writebacks {
+        match staged_record_arrays[index].to_runtime(&layout, &|_, _| None) {
+            Ok(updated) => {
+                // SAFETY: `reference` targets caller's live storage for this call.
+                if unsafe { reference.write_through(updated) }.is_err() {
+                    writeback_fault.get_or_insert_with(|| Fault::number(13));
+                }
+            }
+            Err(_) => {
+                writeback_fault.get_or_insert_with(|| Fault::number(13));
+            }
+        }
+    }
+    for (index, reference, orig_layout) in variant_writebacks {
+        let expected = (staged_variants[index].raw_vt() == (VT_ARRAY | VT_RECORD))
+            .then_some(orig_layout.as_ref())
+            .flatten();
+        match staged_variants[index].to_runtime(expected, &|_, _| None) {
+            Ok(updated) => {
+                // SAFETY: `reference` targets caller's live storage for this call.
+                if unsafe { reference.write_through(updated) }.is_err() {
+                    writeback_fault.get_or_insert_with(|| Fault::number(13));
+                }
+            }
+            Err(_) => {
+                writeback_fault.get_or_insert_with(|| Fault::number(13));
+            }
+        }
+    }
+    for reference in direct_byref_variants {
+        // SAFETY: `reference` targets caller's live storage for this call.
+        if let Err(fault) = unsafe { super::recover_written_byref_variant(reference) } {
+            writeback_fault.get_or_insert(fault);
+        }
+    }
+    drop(staged_record_arrays);
+    drop(staged_variants);
     drop(temps);
     let value = result_vt.map(|vt| {
         if vt != VT_VARIANT {

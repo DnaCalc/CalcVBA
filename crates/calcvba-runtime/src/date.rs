@@ -104,7 +104,8 @@ pub fn parse_date_literal_serial_bits(text: &str) -> Option<u64> {
     } else {
         literal_date_serial(&toks)?
     };
-    Some((date_serial + time.unwrap_or(0.0)).to_bits())
+    // OLE Date stores the time fraction away from zero for pre-epoch days.
+    Some((date_serial + time.unwrap_or(0.0).copysign(date_serial)).to_bits())
 }
 
 /// Hour with optional PM flag: an hour above 12 ignores the marker, `0 PM` is noon.

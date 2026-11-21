@@ -1807,7 +1807,7 @@ fn month_from_name(tok: &str) -> Option<i64> {
 }
 
 pub fn date_add(args: &[Variant]) -> LibResult<Variant> {
-    let interval = interval_arg(need(args, 0)?)?;
+    let interval = as_str(need(args, 0)?)?.to_ascii_lowercase();
     // The count is a `Long`; Excel drops its fraction (`DateAdd("d", 1.5, ...)` adds one day).
     let number = as_f64(need(args, 1)?)?.trunc();
     if !number.is_finite() || number.abs() > f64::from(i32::MAX) {

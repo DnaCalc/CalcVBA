@@ -180,4 +180,3 @@ P_StrReverse: StrReverse.7=String:[{56832}{55357}a]
 P_Val: Val.88=Double:409F900000000000|2020
 P_Year: Year.12=Integer:2001
 P_Year: Year.13=Integer:2001
-linux P_NPer: NPer.17=Double:402C69D476524167|14.2066990828905

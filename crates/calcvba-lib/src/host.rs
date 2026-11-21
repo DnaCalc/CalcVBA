@@ -539,7 +539,9 @@ pub fn beep(_host: &dyn HostServices) -> LibResult<Variant> {
     Ok(vunit())
 }
 pub fn do_events(host: &dyn HostServices) -> LibResult<Variant> {
-    Ok(host.events().do_events_variant()?)
+    host.events().do_events_variant()?;
+    // Excel returns Integer zero after pumping host events.
+    Ok(Variant::from_i16(0))
 }
 pub fn send_keys(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
     Ok(host

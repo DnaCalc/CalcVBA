@@ -3941,6 +3941,7 @@ pub fn is_numeric(args: &[Variant]) -> LibResult<Variant> {
         | VarType::UnsignedInteger
         | VarType::UnsignedLong
         | VarType::UnsignedLongLong
+        | VarType::Int
         | VarType::UnsignedInt => true,
         VarType::Date
         | VarType::Null

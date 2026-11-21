@@ -788,7 +788,7 @@ impl StandardHostServices {
                     format!("{field} has an invalid Integer payload"),
                 )
             })?),
-            VarType::Long => value.as_i32().ok_or_else(|| {
+            VarType::Long | VarType::Int => value.as_i32().ok_or_else(|| {
                 HalError::adapter_fault(
                     self.profile,
                     capability,

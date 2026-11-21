@@ -419,7 +419,7 @@ fn exact_currency_operand(v: &Variant) -> Option<Result<i128, ArithError>> {
                 v.as_u16().unwrap_or(0),
             )));
         }
-        VarType::Long => {
+        VarType::Long | VarType::Int => {
             return Some(scale_integer_to_currency(i128::from(
                 v.as_i32().unwrap_or(0),
             )));
@@ -784,6 +784,7 @@ fn cmp_is_numeric(v: &Variant) -> bool {
             | VarType::Integer
             | VarType::UnsignedInteger
             | VarType::Long
+            | VarType::Int
             | VarType::UnsignedLong
             | VarType::UnsignedInt
             | VarType::LongLong
@@ -915,7 +916,7 @@ fn exact_integer_i128(v: &Variant) -> Option<i128> {
         VarType::SignedByte => i128::from(v.as_i8()?),
         VarType::Integer => i128::from(v.as_i16()?),
         VarType::UnsignedInteger => i128::from(v.as_u16()?),
-        VarType::Long => i128::from(v.as_i32()?),
+        VarType::Long | VarType::Int => i128::from(v.as_i32()?),
         VarType::UnsignedLong | VarType::UnsignedInt => i128::from(v.as_u32()?),
         VarType::LongLong => i128::from(v.as_i64()?),
         VarType::UnsignedLongLong => i128::from(v.as_u64()?),

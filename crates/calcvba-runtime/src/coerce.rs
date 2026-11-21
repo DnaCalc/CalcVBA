@@ -218,6 +218,10 @@ pub fn coerce_to(value: &Variant, target: VarType) -> Result<Variant, String> {
     if value.vtype() == target {
         return Ok(value.clone());
     }
+    // `VT_INT` converts exactly as a Long does.
+    if value.vtype() == VarType::Int {
+        return coerce_to(&Variant::from_i32(value.as_i32().unwrap_or(0)), target);
+    }
 
     match (value.vtype(), target) {
         // ── Widening integer paths ──
@@ -597,7 +601,7 @@ pub fn variant_to_vba_string(value: &Variant) -> Result<BStr, String> {
         VarType::ByRef => return variant_to_vba_string(&value.try_clone()?),
         VarType::Empty => BStr::empty(),
         VarType::Integer => BStr::from(format!("{}", value.as_i16().unwrap_or(0))),
-        VarType::Long => BStr::from(format!("{}", value.as_i32().unwrap_or(0))),
+        VarType::Long | VarType::Int => BStr::from(format!("{}", value.as_i32().unwrap_or(0))),
         VarType::LongLong => BStr::from(format!("{}", value.as_i64().unwrap_or(0))),
         VarType::SignedByte => BStr::from(format!("{}", value.as_i8().unwrap_or(0))),
         VarType::Byte => BStr::from(format!("{}", value.as_u8().unwrap_or(0))),
@@ -793,7 +797,7 @@ pub fn print_display_text(value: &Variant) -> String {
         VarType::Null => "Null".to_string(),
         VarType::Error => format!("Error {}", value.as_error_code().unwrap_or(0)),
         VarType::Integer => value.as_i16().unwrap_or(0).to_string(),
-        VarType::Long => value.as_i32().unwrap_or(0).to_string(),
+        VarType::Long | VarType::Int => value.as_i32().unwrap_or(0).to_string(),
         VarType::LongLong => value.as_i64().unwrap_or(0).to_string(),
         VarType::SignedByte => value.as_i8().unwrap_or(0).to_string(),
         VarType::Byte => value.as_u8().unwrap_or(0).to_string(),

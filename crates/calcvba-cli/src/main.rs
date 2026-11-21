@@ -743,6 +743,7 @@ fn format_variant_value(value: &Variant) -> String {
         VarType::Byte => format!("u8:{}", value.as_u8().unwrap_or(0)),
         VarType::UnsignedInteger => format!("u16:{}", value.as_u16().unwrap_or(0)),
         VarType::UnsignedLong => format!("u32:{}", value.as_u32().unwrap_or(0)),
+        VarType::Int => format!("int:{}", value.as_i32().unwrap_or(0)),
         VarType::UnsignedInt => format!("uint:{}", value.as_u32().unwrap_or(0)),
         VarType::LongLong => format!("i64:{}", value.as_i64().unwrap_or(0)),
         VarType::UnsignedLongLong => format!("u64:{}", value.as_u64().unwrap_or(0)),

@@ -30,6 +30,8 @@ pub enum VarType {
     UnsignedLong = 0x0013,
     LongLong = 0x0014,
     UnsignedLongLong = 0x0015,
+    /// `VT_INT`: a machine int (32 bits), as COM servers such as .NET return a boxed `IntPtr`.
+    Int = 0x0016,
     UnsignedInt = 0x0017,
     Record = 0x0024,
     ArrayVariant = 0x200C,
@@ -61,6 +63,7 @@ impl VarType {
             0x0013 => Some(Self::UnsignedLong),
             0x0014 => Some(Self::LongLong),
             0x0015 => Some(Self::UnsignedLongLong),
+            0x0016 => Some(Self::Int),
             0x0017 => Some(Self::UnsignedInt),
             0x0024 => Some(Self::Record),
             raw if raw & 0xF000 == 0x2000 && is_array_element_vartype(raw & 0x0FFF) => {
@@ -435,6 +438,7 @@ impl VariantCore {
             | VarType::Single
             | VarType::Error
             | VarType::UnsignedLong
+            | VarType::Int
             | VarType::UnsignedInt => 4,
             VarType::String | VarType::Object | VarType::ArrayVariant | VarType::ByRef => {
                 core::mem::size_of::<*const ()>()
@@ -647,7 +651,7 @@ fn adoptable_vt(vt: u16) -> bool {
     match vt & 0xF000 {
         0 => matches!(
             element,
-            0x00..=0x0B | 0x0D | 0x0E | 0x10..=0x15
+            0x00..=0x0B | 0x0D | 0x0E | 0x10..=0x17
         ),
         0x2000 => array_element,
         _ => false,
@@ -972,8 +976,15 @@ impl Variant {
         Self::from_core(VariantCore::from_bytes(VarType::Long, bytes))
     }
 
+    /// A `VT_INT` value (VarType 22), as a COM server returns a machine int.
+    pub fn from_int(value: i32) -> Self {
+        let mut bytes = [0u8; 8];
+        bytes[0..4].copy_from_slice(&value.to_le_bytes());
+        Self::from_core(VariantCore::from_bytes(VarType::Int, bytes))
+    }
+
     pub fn as_i32(&self) -> Option<i32> {
-        if self.vtype() != VarType::Long {
+        if self.vtype() != VarType::Long && self.vtype() != VarType::Int {
             return None;
         }
         let bytes = self.data_bytes();
@@ -2083,12 +2094,15 @@ mod tests {
 
     #[test]
     fn adoption_keeps_the_integer_subtypes_vba_does_not_declare() {
-        // Excel (COM datatype oracle): `v = obj.Member` keeps VT_I1, VT_UI2, VT_UI4 and VT_UI8.
+        // Excel (COM datatype oracle): `v = obj.Member` keeps VT_I1, VT_UI2, VT_UI4, VT_UI8, VT_INT
+        // (VarType 22) and VT_UINT (VarType 23).
         let cases = [
             (0x0010, 0xFB, VarType::SignedByte),
             (0x0012, 65000, VarType::UnsignedInteger),
             (0x0013, 4_000_000_000, VarType::UnsignedLong),
             (0x0015, 9_000_000_000, VarType::UnsignedLongLong),
+            (0x0016, 0xFFFF_FFF9, VarType::Int),
+            (0x0017, 4_000_000_000, VarType::UnsignedInt),
         ];
         for (vt, payload, expected) in cases {
             // SAFETY: a scalar VARIANT owns nothing.
@@ -2103,6 +2117,9 @@ mod tests {
         // SAFETY: as above.
         let wide = unsafe { Variant::adopt_automation(automation_bytes(0x0015, 9_000_000_000)) };
         assert_eq!(wide.unwrap().as_u64(), Some(9_000_000_000));
+        // SAFETY: as above.
+        let int = unsafe { Variant::adopt_automation(automation_bytes(0x0016, 0xFFFF_FFF9)) };
+        assert_eq!(int.unwrap().as_i32(), Some(-7));
     }
 
     #[test]
@@ -2113,7 +2130,6 @@ mod tests {
             (0x2012, 458),
             (0x2013, 458),
             (0x2015, 458),
-            (0x0016, 458),
             (0x0024, 13),
             (0x2024, 13),
         ] {

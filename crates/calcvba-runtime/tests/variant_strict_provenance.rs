@@ -23,6 +23,12 @@ fn record_info() -> *mut c_void {
     INFO.get_or_init(|| Shared(TestRecordInfo::create(4))).0
 }
 
+/// The live-handle counters are process-wide, so the tests that balance them run one at a time.
+fn counter_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn live_com_records() -> isize {
     // SAFETY: the shared test IRecordInfo is leaked and stays readable.
     unsafe { TestRecordInfo::live_records(record_info()) }
@@ -59,6 +65,7 @@ fn assert_safe_wire_rejects_pointer_carrier(value: &Variant) {
 
 #[test]
 fn variant_strict_provenance_pointer_carriers_roundtrip_mutate_and_balance() {
+    let _counters = counter_lock();
     assert_eq!(
         core::mem::size_of::<VariantCore>(),
         calcvba_automation::abi::VARIANT_SIZE
@@ -296,6 +303,7 @@ fn variant_strict_provenance_pointer_carriers_roundtrip_mutate_and_balance() {
 /// what it tests.
 #[test]
 fn exposed_wire_decoder_rebuilds_each_pointer_carrier() {
+    let _counters = counter_lock();
     let before = live_handle_counts();
     {
         let layout = Arc::new(

@@ -14,7 +14,7 @@ pub fn variant_to_runtime_token(value: &Variant) -> Result<i32, String> {
         VarType::Error => value.as_error_code().ok_or_else(invalid),
         VarType::Boolean => Ok(i32::from(value.as_bool().ok_or_else(invalid)?)),
         VarType::Integer => Ok(i32::from(value.as_i16().ok_or_else(invalid)?)),
-        VarType::Long => value.as_i32().ok_or_else(invalid),
+        VarType::Long | VarType::Int => value.as_i32().ok_or_else(invalid),
         VarType::Byte => Ok(i32::from(value.as_u8().ok_or_else(invalid)?)),
         VarType::SignedByte => Ok(i32::from(value.as_i8().ok_or_else(invalid)?)),
         VarType::UnsignedInteger => Ok(i32::from(value.as_u16().ok_or_else(invalid)?)),

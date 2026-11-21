@@ -3,6 +3,14 @@ using System.Runtime.InteropServices;
 
 namespace OxVba.TestEventServer
 {
+    // IDispatch's first two methods, enough to read an object's type information (dc-yqq0.21).
+    [ComImport, Guid("00020400-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IDispatchInfo
+    {
+        [PreserveSig] int GetTypeInfoCount(out uint count);
+        [PreserveSig] int GetTypeInfo(uint index, int lcid, [MarshalAs(UnmanagedType.Interface)] out System.Runtime.InteropServices.ComTypes.ITypeInfo info);
+    }
+
     [ComVisible(true)]
     [Guid("E2A30001-0001-0001-0001-000000000002")]
     [InterfaceType(ComInterfaceType.InterfaceIsIDispatch)]
@@ -77,6 +85,9 @@ namespace OxVba.TestEventServer
 
         [DispId(132)]
         void Drop();
+
+        [DispId(133)]
+        string DescribeDispatch(object target);
 
 
         [DispId(115)]
@@ -247,6 +258,94 @@ namespace OxVba.TestEventServer
         public void Hold(object target)
         {
             held = target;
+        }
+
+        // A VBA object's own ITypeInfo as a foreign client sees it (dc-yqq0.21): the type kind and
+        // flags, then one line per function (memid, invkind, vtable offset, params, name) and per
+        // variable. A dual interface is described through its interface half as well.
+        public string DescribeDispatch(object target)
+        {
+            var dispatch = (IDispatchInfo)target;
+            System.Runtime.InteropServices.ComTypes.ITypeInfo info;
+            int hr = dispatch.GetTypeInfo(0, 0, out info);
+            if (hr != 0 || info == null) return "GetTypeInfo hr=" + hr.ToString("X8");
+            var text = new System.Text.StringBuilder();
+            try { DescribeTypeInfo(info, text); } catch (Exception e) { text.Append("!describe " + e.Message + "\n"); }
+            var attr = TypeAttr(info);
+            if (attr.typekind == System.Runtime.InteropServices.ComTypes.TYPEKIND.TKIND_DISPATCH
+                && (attr.wTypeFlags & System.Runtime.InteropServices.ComTypes.TYPEFLAGS.TYPEFLAG_FDUAL) != 0)
+            {
+                try
+                {
+                    int href;
+                    info.GetRefTypeOfImplType(-1, out href);
+                    System.Runtime.InteropServices.ComTypes.ITypeInfo vtbl;
+                    info.GetRefTypeInfo(href, out vtbl);
+                    text.Append("--dual\n");
+                    DescribeTypeInfo(vtbl, text);
+                }
+                catch (Exception e) { text.Append("!dual " + e.Message + "\n"); }
+            }
+            return text.ToString();
+        }
+
+        private static System.Runtime.InteropServices.ComTypes.TYPEATTR TypeAttr(System.Runtime.InteropServices.ComTypes.ITypeInfo info)
+        {
+            IntPtr p;
+            info.GetTypeAttr(out p);
+            var attr = (System.Runtime.InteropServices.ComTypes.TYPEATTR)Marshal.PtrToStructure(p, typeof(System.Runtime.InteropServices.ComTypes.TYPEATTR));
+            info.ReleaseTypeAttr(p);
+            return attr;
+        }
+
+        private static void DescribeTypeInfo(System.Runtime.InteropServices.ComTypes.ITypeInfo info, System.Text.StringBuilder text)
+        {
+            string typeName = "?", doc, help;
+            int ctx;
+            try { info.GetDocumentation(-1, out typeName, out doc, out ctx, out help); } catch (Exception e) { typeName = "!doc " + e.Message; }
+            var attr = TypeAttr(info);
+            text.Append("type " + typeName + " kind=" + attr.typekind + " flags=0x" + ((int)attr.wTypeFlags).ToString("X")
+                + " guid=" + attr.guid + " funcs=" + attr.cFuncs + " vars=" + attr.cVars + " impl=" + attr.cImplTypes
+                + " vtbl=" + attr.cbSizeVft + "\n");
+            for (int i = 0; i < attr.cImplTypes; i++)
+            {
+                try {
+                int href;
+                info.GetRefTypeOfImplType(i, out href);
+                System.Runtime.InteropServices.ComTypes.ITypeInfo baseInfo;
+                info.GetRefTypeInfo(href, out baseInfo);
+                string baseName, d2, h2;
+                int c2;
+                baseInfo.GetDocumentation(-1, out baseName, out d2, out c2, out h2);
+                System.Runtime.InteropServices.ComTypes.IMPLTYPEFLAGS implFlags;
+                info.GetImplTypeFlags(i, out implFlags);
+                text.Append("  impl " + baseName + " flags=" + (int)implFlags + "\n");
+                } catch (Exception e) { text.Append("  !impl " + i + " " + e.Message + "\n"); }
+            }
+            for (int i = 0; i < attr.cFuncs; i++)
+            {
+                IntPtr p;
+                info.GetFuncDesc(i, out p);
+                var fd = (System.Runtime.InteropServices.ComTypes.FUNCDESC)Marshal.PtrToStructure(p, typeof(System.Runtime.InteropServices.ComTypes.FUNCDESC));
+                var names = new string[fd.cParams + 1];
+                int count = 0;
+                try { info.GetNames(fd.memid, names, names.Length, out count); } catch (Exception e) { names[0] = "!names " + e.Message; count = 1; }
+                text.Append("  func memid=0x" + fd.memid.ToString("X8") + " invkind=" + (int)fd.invkind + " oVft=" + fd.oVft
+                    + " params=" + fd.cParams + " opt=" + fd.cParamsOpt + " flags=0x" + ((int)fd.wFuncFlags).ToString("X")
+                    + " ret=" + fd.elemdescFunc.tdesc.vt + " " + string.Join(",", names, 0, Math.Max(count, 1)) + "\n");
+                info.ReleaseFuncDesc(p);
+            }
+            for (int i = 0; i < attr.cVars; i++)
+            {
+                IntPtr p;
+                info.GetVarDesc(i, out p);
+                var vd = (System.Runtime.InteropServices.ComTypes.VARDESC)Marshal.PtrToStructure(p, typeof(System.Runtime.InteropServices.ComTypes.VARDESC));
+                string name = null, d3, h3;
+                int c3;
+                try { info.GetDocumentation(vd.memid, out name, out d3, out c3, out h3); } catch (Exception e) { name = "!doc " + e.Message; }
+                text.Append("  var memid=0x" + vd.memid.ToString("X8") + " kind=" + vd.varkind + " " + name + "\n");
+                info.ReleaseVarDesc(p);
+            }
         }
 
         public void Drop()

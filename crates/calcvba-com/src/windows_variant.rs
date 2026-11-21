@@ -1921,7 +1921,7 @@ pub unsafe fn variant_to_com_value(variant: &VARIANT) -> Result<Variant, String>
         VT_UI2 => Variant::from_u16(data.uiVal),
         VT_I4 => Variant::from_i32(data.lVal),
         VT_UI4 => Variant::from_u32(data.ulVal),
-        VT_INT => Variant::from_i32(data.intVal),
+        VT_INT => Variant::from_int(data.intVal),
         VT_UINT => Variant::from_uint(data.uintVal),
         VT_I8 => Variant::from_i64(data.llVal),
         VT_UI8 => Variant::from_u64(data.ullVal),
@@ -2156,6 +2156,10 @@ where
         VarType::UnsignedLong => {
             cell.vt = VT_UI4;
             cell.Anonymous.ulVal = value.as_u32().ok_or_else(invalid)?;
+        }
+        VarType::Int => {
+            cell.vt = VT_INT;
+            cell.Anonymous.intVal = value.as_i32().ok_or_else(invalid)?;
         }
         VarType::UnsignedInt => {
             cell.vt = VT_UINT;

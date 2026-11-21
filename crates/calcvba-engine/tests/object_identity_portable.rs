@@ -306,6 +306,21 @@ impl PortableDispatch for PortableForeignServer {
             *self.held.lock().expect("held") = None;
             return Ok(Variant::empty());
         }
+        if member.eq_ignore_ascii_case("DropOnForeignThread") && args.is_empty() {
+            let held = self.held.lock().expect("held").take();
+            std::thread::spawn(move || {
+                // Final COM Release happens strictly on this foreign OS thread.
+                drop(held);
+            })
+            .join()
+            .expect("foreign drop thread");
+            return Ok(Variant::empty());
+        }
+        if member.eq_ignore_ascii_case("CurrentThreadId") && args.is_empty() {
+            return Ok(Variant::from_i64(
+                calcvba_runtime::current_thread_id() as i64
+            ));
+        }
         if member.eq_ignore_ascii_case("WrongThreadCheck") && args.len() == 1 {
             let object = args[0]
                 .as_object_ref()
@@ -354,6 +369,8 @@ impl PortableDispatch for PortableForeignServer {
             "CallByRef".into(),
             "Hold".into(),
             "Drop".into(),
+            "DropOnForeignThread".into(),
+            "CurrentThreadId".into(),
             "WrongThreadCheck".into(),
         ]
     }
@@ -616,6 +633,107 @@ End Function
             *callback_seen.lock().expect("seen"),
             vec![42],
             "{backend:?} re-entrant Twice during RaiseEvent"
+        );
+    }
+}
+
+#[test]
+fn foreign_thread_final_release_runs_class_terminate_once_on_owner_thread_on_vm3_and_jit() {
+    let widget_src = r#"
+Public Value As Long
+Private Sub Class_Terminate()
+    gTermCount = gTermCount + 1
+    gTermThread = gServer.CurrentThreadId()
+End Sub
+"#;
+    let wrapper_src = r#"
+Public Child As Object
+"#;
+    let main_src = r#"
+Public gServer As Object
+Public gOwnerThread As LongLong
+Public gTermThread As LongLong
+Public gTermCount As Long
+Public gOut As String
+
+Sub Main()
+    Set gServer = CreateObject("Portable.ForeignServer")
+    gOwnerThread = gServer.CurrentThreadId()
+
+    ' 1. Direct Widget held by foreign holder, released on a foreign OS thread.
+    Dim w As Widget
+    Set w = New Widget
+    w.Value = 21
+    gTermCount = 0
+    gTermThread = 0
+    gServer.Hold w
+    Set w = Nothing
+    gOut = "held=" & CStr(gTermCount)
+    gServer.DropOnForeignThread
+    gOut = gOut & ";after-foreign-drop=" & CStr(gTermCount) & ";same-thread=" & CStr(gTermThread = gOwnerThread)
+
+    ' 2. Non-terminating Wrapper holding a Widget, released on a foreign OS thread:
+    '    Wrapper's fields must drop on the owner thread, running Widget.Class_Terminate once there.
+    Dim wrap As Wrapper
+    Set wrap = New Wrapper
+    Set wrap.Child = New Widget
+    gTermCount = 0
+    gTermThread = 0
+    gServer.Hold wrap
+    Set wrap = Nothing
+    gOut = gOut & ";wrap-held=" & CStr(gTermCount)
+    gServer.DropOnForeignThread
+    gOut = gOut & ";wrap-after=" & CStr(gTermCount) & ";wrap-same-thread=" & CStr(gTermThread = gOwnerThread)
+End Sub
+"#;
+
+    let manifest = SymbolProjectManifest {
+        project_name: "ForeignRelease".to_string(),
+        project_kind: ProjectKind::Source,
+        modules: vec![
+            ModuleUnit {
+                module_name: "Probe".to_string(),
+                module_kind: ModuleKind::Procedural,
+                attributes: ModuleAttributes::named("Probe"),
+                source: main_src.to_string(),
+            },
+            ModuleUnit {
+                module_name: "Widget".to_string(),
+                module_kind: ModuleKind::Class,
+                attributes: ModuleAttributes::named("Widget"),
+                source: widget_src.to_string(),
+            },
+            ModuleUnit {
+                module_name: "Wrapper".to_string(),
+                module_kind: ModuleKind::Class,
+                attributes: ModuleAttributes::named("Wrapper"),
+                source: wrapper_src.to_string(),
+            },
+        ],
+        references: Vec::new(),
+        reference_projects: Vec::new(),
+        conditional_constants: Default::default(),
+        conditional_compilation_target: Default::default(),
+    };
+
+    for backend in BACKENDS {
+        let projection = Arc::new(PortableComProjection::new());
+        projection.register_object("Portable.ForeignServer", Arc::new(PortableServerFactory));
+        let engine = Engine::new(HostConfig { backend })
+            .with_runtime_profile(RuntimeProfileId::WindowsHeadless)
+            .with_portable_com_projection(projection);
+        let values = engine
+            .execute_project_closure_with_variant_snapshot(std::slice::from_ref(&manifest))
+            .unwrap_or_else(|err| panic!("{backend:?}: {err:?}"));
+        let output = values
+            .iter()
+            .filter_map(|v| v.as_bstr().map(|s| s.as_str().to_string()))
+            .find(|s| s.contains('='))
+            .unwrap_or_else(|| panic!("{backend:?}: missing gOut in {values:?}"));
+        assert_eq!(
+            output,
+            "held=0;after-foreign-drop=1;same-thread=True;wrap-held=0;wrap-after=1;wrap-same-thread=True",
+            "{backend:?}"
         );
     }
 }

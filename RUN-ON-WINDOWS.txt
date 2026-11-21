@@ -249,3 +249,17 @@ cfg(windows)-only failure, pull again before each push.
       cargo test -p calcvba-build --test comhost_inproc --no-fail-fast
     Note: `foreign_late_bound_call_matches_excel` (`s.CallMember(w, "Twice")`) should now return
     `foreign-call=42` on BOTH VM3 and JIT, matching Excel.
+
+20. dc-yqq0.25 (final Release on a foreign thread -> owner-thread multi-producer termination queue):
+    `RuntimeObjectOwner` now holds a shared `Arc<OwnerTerminationChannel>` with an atomic
+    `has_pending` fast-path flag (checked without locking at statement boundaries) and a
+    mutex-guarded multi-producer queue (`pending`, `parked`, `pending_drops`); `CompatObjectBase`
+    lifecycle flags are `AtomicBool`. A final `Release` on a foreign thread never runs
+    `Class_Terminate` and never drops fields/`native_state` on the foreign thread: terminating
+    objects park on the owner's queue and non-terminating objects defer to `pending_drops` on the
+    owner's queue, draining on the owner thread at the next statement boundary (cascading child
+    `Class_Terminate` on the owner thread too).
+    Windows checks to run:
+    - cargo test -p calcvba-runtime -p calcvba-rt-abi -p calcvba-vm3 -p calcvba-jit --no-fail-fast
+    - cargo test -p calcvba-engine --test object_identity_portable --test object_identity --test default_instances --no-fail-fast
+    - Also ready to add/enable the Windows live-COM foreign-thread Release case in `object_identity.rs`.

@@ -1,6 +1,6 @@
 use core::ffi::c_void;
-use core::sync::atomic::{AtomicU32, Ordering};
-use std::cell::{Cell, RefCell};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hash;
 
@@ -919,9 +919,9 @@ pub(crate) struct CompatObjectBase {
     /// with the box, so there is no VM-side store and no leak. `None` for ordinary project
     /// instances that hold no native collection.
     pub(crate) native_state: RefCell<Option<crate::collection::CollectionData>>,
-    pub(crate) parked_for_termination: Cell<bool>,
-    pub(crate) running_termination: Cell<bool>,
-    pub(crate) terminated: Cell<bool>,
+    pub(crate) parked_for_termination: AtomicBool,
+    pub(crate) running_termination: AtomicBool,
+    pub(crate) terminated: AtomicBool,
 }
 
 pub(crate) static COMPAT_OBJECT_VTBL: IUnknownVtbl = IUnknownVtbl {
@@ -975,68 +975,105 @@ pub(crate) unsafe extern "system" fn compat_query_interface(
     RUNTIME_S_OK
 }
 
-/// Pending `Class_Terminate` work, fed by `compat_release` and drained by the VM at statement
-/// boundaries. A pending project object is parked: its refcount reached zero, but the
-/// `CompatObjectBase` is still owned by this queue so `Class_Terminate` can run against the
-/// original box and its fields can be released afterwards.
-#[derive(Default)]
-struct TerminationQueue {
-    /// `(instance_id, bundle_id, route_key)` â€” the bundle + class needed to find
-    /// the parked instance's `Class_Terminate` at drain time.
-    pending: Vec<(u64, i32, i32, i32)>,
-    parked: BTreeMap<(u64, i32), *mut CompatObjectBase>,
-}
-
-thread_local! {
-    static TERMINATIONS: RefCell<TerminationQueue> = RefCell::new(TerminationQueue::default());
-}
-
-/// True when at least one project instance has reached refcount 0 and awaits `Class_Terminate`.
-/// Cheap gate the interpreter checks at statement boundaries.
+/// True when at least one project instance has reached refcount 0 and awaits `Class_Terminate`
+/// or owner-thread deferred drop from a foreign-thread final release (dc-yqq0.25).
+/// Lock-free atomic check at statement boundaries.
 pub fn has_pending_terminations() -> bool {
-    let owner = crate::object_owner::RuntimeObjectOwner::current().id();
-    TERMINATIONS.with(|q| q.borrow().pending.iter().any(|entry| entry.0 == owner))
+    let owner = crate::object_owner::RuntimeObjectOwner::current();
+    owner.channel().has_pending.load(Ordering::Acquire)
 }
 
-/// Drains and returns the queued `(instance_id, bundle_id, route_key)` terminations. The parked
-/// object boxes remain owned by the termination queue until `finish_pending_termination` is called.
-pub fn take_pending_terminations() -> Vec<(i32, i32, i32)> {
-    let owner = crate::object_owner::RuntimeObjectOwner::current().id();
-    TERMINATIONS.with(|q| {
-        let mut q = q.borrow_mut();
-        let mut selected = Vec::new();
-        q.pending.retain(|&(id, instance, bundle, route)| {
-            if id == owner {
-                selected.push((instance, bundle, route));
-                false
-            } else {
-                true
+/// Free deferred non-terminating boxes whose final `Release` arrived on a foreign thread, running
+/// their field drops strictly on the owning VBA thread (which may enqueue cascaded `Class_Terminate`
+/// entries on the same channel).
+fn drain_pending_drops(channel: &crate::object_owner::OwnerTerminationChannel) {
+    loop {
+        let drops = {
+            let mut q = channel
+                .queue
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let drops = std::mem::take(&mut q.pending_drops);
+            channel.has_pending.store(
+                !q.pending.is_empty() || !q.pending_drops.is_empty(),
+                Ordering::Release,
+            );
+            drops
+        };
+        if drops.is_empty() {
+            break;
+        }
+        for crate::object_owner::SendCompatPtr(owner) in drops {
+            // SAFETY: sole ownership of this refcount-0 box was transferred into `pending_drops`
+            // on final foreign-thread release; dropping fields outside the lock on the owner thread
+            // safely cascades any child terminations onto this channel.
+            unsafe {
+                free_compat_box_on_owner_thread(owner);
             }
-        });
-        selected
-    })
+        }
+    }
+}
+
+/// Reclaim a refcount-0 `CompatObjectBase` on the owning thread.
+///
+/// # Safety
+/// The caller owns the sole final reference to `owner` (from `Box::into_raw` in
+/// `from_compat_object`) and runs on the owning thread (or after owner expiry).
+unsafe fn free_compat_box_on_owner_thread(owner: *mut CompatObjectBase) {
+    // SAFETY: forwarded caller contract; clearing `invoker`/`fields`/`native_state` before
+    // freeing the box ensures child drops never observe a freed parent.
+    unsafe {
+        (*owner).invoker.borrow_mut().take();
+        (*owner).fields.borrow_mut().clear();
+        (*owner).native_state.borrow_mut().take();
+        crate::live_counters::object_box_freed();
+        drop(Box::from_raw(owner));
+    }
+}
+
+/// Drains and returns the queued `(instance_id, bundle_id, route_key)` terminations (first
+/// draining any foreign-thread deferred drops on the owning thread so cascaded child
+/// `Class_Terminate` runs in the same drain). The parked object boxes remain owned by the
+/// termination queue until `finish_pending_termination` is called.
+pub fn take_pending_terminations() -> Vec<(i32, i32, i32)> {
+    let owner = crate::object_owner::RuntimeObjectOwner::current();
+    let channel = owner.channel();
+    drain_pending_drops(channel);
+    let mut q = channel
+        .queue
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let selected = std::mem::take(&mut q.pending);
+    channel.has_pending.store(
+        !q.pending.is_empty() || !q.pending_drops.is_empty(),
+        Ordering::Release,
+    );
+    selected
 }
 
 /// Returns a retained reference to the original parked object whose `Class_Terminate` is about to
 /// run. The returned `ObjectRef` is the same boxed object, not a rematerialized identity clone.
 pub fn retained_parked_termination_object(instance_id: i32) -> Option<ObjectRef> {
-    TERMINATIONS.with(|q| {
-        let q = q.borrow();
-        let id = crate::object_owner::RuntimeObjectOwner::current().id();
-        let owner = *q.parked.get(&(id, instance_id))?;
-        // SAFETY: `owner` came from the `parked` map, which owns the box that `compat_release`
-        // parked instead of freeing â€” it stays allocated until `finish_pending_termination` or
-        // `reset_pending_terminations` removes it â€” so this is a live `CompatObjectBase`.
-        // `compat_add_ref` retains it for the returned `ObjectRef`. `CompatObjectBase` is
-        // `repr(C)` with `unknown` first, so casting the allocation pointer yields that same
-        // address while retaining provenance for the complete box (needed by AddRef/Release).
-        unsafe {
-            (*owner).running_termination.set(true);
-            let unknown = owner.cast::<RawRuntimeIUnknown>();
-            compat_add_ref(unknown.cast());
-            ObjectRef::from_raw_iunknown_owned(unknown)
-        }
-    })
+    let owner = crate::object_owner::RuntimeObjectOwner::current();
+    let boxed_ptr = {
+        let q = owner
+            .channel()
+            .queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        q.parked.get(&instance_id).map(|entry| entry.0)?
+    };
+    // SAFETY: `boxed_ptr` came from `parked`, which owns the box until `finish_pending_termination`
+    // or `discard_pending_channel` removes it on this owning thread. `compat_add_ref` retains it
+    // for the returned `ObjectRef`. `CompatObjectBase` is `#[repr(C)]` with `unknown` first.
+    unsafe {
+        (*boxed_ptr)
+            .running_termination
+            .store(true, Ordering::Release);
+        let unknown = boxed_ptr.cast::<RawRuntimeIUnknown>();
+        compat_add_ref(unknown.cast());
+        ObjectRef::from_raw_iunknown_owned(unknown)
+    }
 }
 
 /// Finishes teardown for a parked project object after `Class_Terminate` has returned.
@@ -1045,69 +1082,84 @@ pub fn retained_parked_termination_object(instance_id: i32) -> Option<ObjectRef>
 /// stay intact. Otherwise the field store is dropped before the box is freed; releasing those
 /// field Variants may enqueue cascaded child terminations.
 pub fn finish_pending_termination(instance_id: i32) -> bool {
-    let id = crate::object_owner::RuntimeObjectOwner::current().id();
-    let owner = TERMINATIONS.with(|q| q.borrow_mut().parked.remove(&(id, instance_id)));
-    let Some(owner) = owner else {
+    let owner = crate::object_owner::RuntimeObjectOwner::current();
+    let boxed_ptr = {
+        let mut q = owner
+            .channel()
+            .queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        q.parked.remove(&instance_id).map(|entry| entry.0)
+    };
+    let Some(boxed_ptr) = boxed_ptr else {
         return false;
     };
-    // SAFETY: `owner` was just removed from the `parked` map, transferring the queue's sole
-    // ownership of the box `compat_release` parked (the pointer originally came from
-    // `Box::into_raw` in `from_compat_object`). If `Class_Terminate` resurrected the object
-    // (refcount > 0) we un-park it and leave it to the outstanding references; otherwise nothing
-    // else can reach it, and removal from the map guarantees `Box::from_raw` frees it exactly once.
+    // SAFETY: removing from `parked` transfers sole queue ownership of this box. If
+    // `Class_Terminate` resurrected the object (`ref_count > 0`) we un-park it; otherwise nothing
+    // else can reach it and `free_compat_box_on_owner_thread` frees it once.
     unsafe {
-        (*owner).running_termination.set(false);
-        (*owner).terminated.set(true);
-        if (*owner).ref_count.load(Ordering::Acquire) > 0 {
-            (*owner).parked_for_termination.set(false);
+        (*boxed_ptr)
+            .running_termination
+            .store(false, Ordering::Release);
+        (*boxed_ptr).terminated.store(true, Ordering::Release);
+        if (*boxed_ptr).ref_count.load(Ordering::Acquire) > 0 {
+            (*boxed_ptr)
+                .parked_for_termination
+                .store(false, Ordering::Release);
             return false;
         }
-        (*owner).fields.borrow_mut().clear();
-        (*owner).native_state.borrow_mut().take();
-        crate::live_counters::object_box_freed();
-        drop(Box::from_raw(owner));
+        free_compat_box_on_owner_thread(boxed_ptr);
         true
     }
 }
 
-/// Resets all pending termination state (used when a VM run starts/ends).
+/// Resets all pending termination state for the current owner (used when a VM run starts/ends).
 pub fn reset_pending_terminations() {
-    let id = crate::object_owner::RuntimeObjectOwner::current().id();
-    discard_pending_owner(id);
+    let owner = crate::object_owner::RuntimeObjectOwner::current();
+    discard_pending_channel(owner.channel());
 }
-pub(crate) fn discard_pending_owner(id: u64) {
+
+pub(crate) fn discard_pending_channel(channel: &crate::object_owner::OwnerTerminationChannel) {
     loop {
-        let owners = TERMINATIONS.with(|q| {
-            let mut q = q.borrow_mut();
-            q.pending.retain(|entry| entry.0 != id);
-            let keys = q
-                .parked
-                .keys()
-                .filter(|key| key.0 == id)
-                .copied()
+        let (parked_owners, pending_drops) = {
+            let mut q = channel
+                .queue
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            q.pending.clear();
+            let parked = std::mem::take(&mut q.parked)
+                .into_values()
+                .map(|entry| entry.0)
                 .collect::<Vec<_>>();
-            keys.into_iter()
-                .filter_map(|key| q.parked.remove(&key))
-                .collect::<Vec<_>>()
-        });
-        if owners.is_empty() {
+            let drops = std::mem::take(&mut q.pending_drops)
+                .into_iter()
+                .map(|entry| entry.0)
+                .collect::<Vec<_>>();
+            channel.has_pending.store(false, Ordering::Release);
+            (parked, drops)
+        };
+        if parked_owners.is_empty() && pending_drops.is_empty() {
             break;
         }
-        for owner in owners {
-            // SAFETY: removing the scoped parked entries transfers sole queue
-            // authority. Release fields outside the queue borrow: child drops
-            // may enqueue more finalizers for this same owner.
+        for owner in pending_drops {
+            // SAFETY: sole ownership transferred out of `pending_drops` outside the lock.
             unsafe {
-                (*owner).running_termination.set(false);
-                (*owner).terminated.set(true);
+                free_compat_box_on_owner_thread(owner);
+            }
+        }
+        for owner in parked_owners {
+            // SAFETY: removing from `parked` transfers sole queue authority; releasing fields
+            // outside the lock safely handles cascaded child releases.
+            unsafe {
+                (*owner).running_termination.store(false, Ordering::Release);
+                (*owner).terminated.store(true, Ordering::Release);
                 if (*owner).ref_count.load(Ordering::Acquire) > 0 {
-                    (*owner).parked_for_termination.set(false);
+                    (*owner)
+                        .parked_for_termination
+                        .store(false, Ordering::Release);
                     continue;
                 }
-                (*owner).fields.borrow_mut().clear();
-                (*owner).native_state.borrow_mut().take();
-                crate::live_counters::object_box_freed();
-                drop(Box::from_raw(owner));
+                free_compat_box_on_owner_thread(owner);
             }
         }
     }
@@ -1115,66 +1167,99 @@ pub(crate) fn discard_pending_owner(id: u64) {
 
 pub(crate) unsafe extern "system" fn compat_add_ref(this: *mut c_void) -> u32 {
     let owner = compat_owner_from_this(this);
-    // SAFETY: this vtable entry only exists on `CompatObjectBase` boxes (`COMPAT_OBJECT_VTBL` is
-    // installed solely by `from_compat_object`; `#[repr(C)]` puts `unknown` first), and the
-    // caller holds a reference that keeps the box alive across the call; `ref_count` is atomic.
+    // SAFETY: this vtable entry only exists on `CompatObjectBase` boxes (`#[repr(C)]` puts
+    // `unknown` first), and the caller holds a reference keeping the box alive; `ref_count` is
+    // atomic and safe across threads.
     unsafe { (*owner).ref_count.fetch_add(1, Ordering::AcqRel) + 1 }
 }
 
 pub(crate) unsafe extern "system" fn compat_release(this: *mut c_void) -> u32 {
     let owner = compat_owner_from_this(this);
     // SAFETY: as in `compat_add_ref`, `this` is a live `CompatObjectBase` kept alive by the
-    // reference the caller is releasing right now.
+    // reference the caller is releasing right now. `AcqRel` synchronizes with all prior releases
+    // on any thread before inspecting fields below when `remaining == 0`.
     let previous = unsafe { (*owner).ref_count.fetch_sub(1, Ordering::AcqRel) };
     let remaining = previous.saturating_sub(1);
     if remaining == 0 {
-        // For a class with a `Class_Terminate`, the last release schedules per-instance
-        // teardown for the VM to run at the next statement boundary (VBA timing). The box is
-        // parked, not freed, so teardown runs against the original field-owning object.
-        // SAFETY: even at refcount 0 the box is still allocated â€” this call alone decides below
-        // whether to park or free it â€” so `owner` stays valid throughout this function.
-        let identity = unsafe { (*owner).identity };
-        let should_park = identity.terminates_on_release
-            // SAFETY: same still-allocated box as above; the `Cell` accesses are single-threaded
-            // (`ObjectRef` is neither `Send` nor `Sync`, so these vtable fns only run on the
-            // owning VM thread, matching the thread-local termination queue).
-            && unsafe { !(*owner).terminated.get() && !(*owner).running_termination.get() && (*owner).object_owner.is_alive() };
-        if should_park {
-            TERMINATIONS.with(|q| {
-                let mut q = q.borrow_mut();
-                // SAFETY: the box is still allocated (nothing frees it before this point in the
-                // function) and the `Cell` flip is single-threaded as noted above; setting the
-                // flag before inserting hands the queue ownership of the box exactly once.
-                if !unsafe { (*owner).parked_for_termination.replace(true) } {
-                    // SAFETY: this still-live box retains its immutable owner ID.
-                    let id = unsafe { (*owner).object_owner.id };
+        // SAFETY: even at refcount 0 the box is still allocated — this call alone decides whether
+        // to park, defer to the owner thread, or free it. `identity`, `owner_thread`, and
+        // `object_owner` are immutable for the lifetime of the box.
+        let (identity, owner_thread, channel) = unsafe {
+            (
+                (*owner).identity,
+                (*owner).owner_thread,
+                (*owner).object_owner.channel.upgrade(),
+            )
+        };
+        let on_owner_thread = crate::class_dispatch::current_thread_id() == owner_thread;
+        let owner_alive = channel
+            .as_ref()
+            .is_some_and(|ch| ch.alive.load(Ordering::Acquire));
+        // SAFETY: atomic loads on the still-allocated box; `AcqRel` on `ref_count` above
+        // synchronized all prior writes.
+        let (is_terminated, is_running) = unsafe {
+            (
+                (*owner).terminated.load(Ordering::Acquire),
+                (*owner).running_termination.load(Ordering::Acquire),
+            )
+        };
+        let should_park =
+            identity.terminates_on_release && owner_alive && !is_terminated && !is_running;
+        if should_park && let Some(ch) = channel.as_ref() {
+            // SAFETY: atomic claim ensures the box is parked at most once across any thread.
+            if !unsafe { (*owner).parked_for_termination.swap(true, Ordering::AcqRel) } {
+                let mut q = ch
+                    .queue
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                // Re-check `alive` under the lock so a concurrent `OwnerLease::drop` cannot miss
+                // this entry or leave it orphaned in a dead queue.
+                if ch.alive.load(Ordering::Acquire) {
                     q.pending.push((
-                        id,
                         identity.compat_identity,
                         identity.bundle_id,
                         identity.route_key,
                     ));
-                    q.parked.insert((id, identity.compat_identity), owner);
+                    q.parked.insert(
+                        identity.compat_identity,
+                        crate::object_owner::SendCompatPtr(owner),
+                    );
+                    ch.has_pending.store(true, Ordering::Release);
+                    return remaining;
                 }
-            });
+                // SAFETY: owner expired before we locked; undo parking on the still-allocated box
+                // so teardown proceeds below.
+                unsafe {
+                    (*owner)
+                        .parked_for_termination
+                        .store(false, Ordering::Release);
+                }
+            } else {
+                return remaining;
+            }
+        }
+        // SAFETY: if parked, the owner's termination queue owns the box and will free it.
+        if unsafe { (*owner).parked_for_termination.load(Ordering::Acquire) } {
             return remaining;
         }
-        // SAFETY: same still-allocated box; if the flag is set, the termination queue owns the
-        // box and will free it (`finish_pending_termination`/`reset_pending_terminations`), so
-        // this path must only read the flag and return without freeing.
-        if unsafe { (*owner).parked_for_termination.get() } {
-            return remaining;
+        // Foreign-thread final release of an object without `Class_Terminate` (or already
+        // terminated): never drop fields, `native_state`, or `invoker` on the foreign thread.
+        // Transfer the box onto the owner's multi-producer queue so teardown runs on the owner.
+        if !on_owner_thread && let Some(ch) = channel.as_ref() {
+            let mut q = ch
+                .queue
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if ch.alive.load(Ordering::Acquire) {
+                q.pending_drops
+                    .push(crate::object_owner::SendCompatPtr(owner));
+                ch.has_pending.store(true, Ordering::Release);
+                return remaining;
+            }
         }
-        // SAFETY: refcount reached 0 and the box is neither park-eligible nor parked, so this
-        // call released the final reference to the allocation minted by `Box::into_raw` in
-        // `from_compat_object` and nothing else can reach it. Clearing `fields` first releases
-        // child Variants (which may enqueue cascaded terminations, never touching this box),
-        // then `Box::from_raw` reclaims the allocation exactly once.
+        // SAFETY: on the owning thread (or after owner expiry), sole final ownership of `owner`.
         unsafe {
-            (*owner).fields.borrow_mut().clear();
-            (*owner).native_state.borrow_mut().take();
-            crate::live_counters::object_box_freed();
-            drop(Box::from_raw(owner));
+            free_compat_box_on_owner_thread(owner);
         }
     }
     remaining
@@ -1602,10 +1687,9 @@ impl ObjectRefExt for ObjectRef {
     fn mark_initialization_failed(&self) {
         if self.is_project_instance() {
             let owner = compat_owner_from_unknown(self.raw_iunknown());
-            // SAFETY: the private vtable proves this retained project box, and
-            // its lifecycle cells are used only on the owning VBA thread.
+            // SAFETY: the private vtable proves this retained project box.
             unsafe {
-                (*owner).terminated.set(true);
+                (*owner).terminated.store(true, Ordering::Release);
             }
         }
     }
@@ -1855,9 +1939,9 @@ fn from_compat_object(
         invoker: RefCell::new(None),
         fields: RefCell::new(BTreeMap::new()),
         native_state: RefCell::new(None),
-        parked_for_termination: Cell::new(false),
-        running_termination: Cell::new(false),
-        terminated: Cell::new(false),
+        parked_for_termination: AtomicBool::new(false),
+        running_termination: AtomicBool::new(false),
+        terminated: AtomicBool::new(false),
     });
     let raw = Box::into_raw(boxed);
     crate::live_counters::object_box_allocated();

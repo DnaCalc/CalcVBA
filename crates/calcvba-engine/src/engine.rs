@@ -412,10 +412,25 @@ impl JitImageSession {
         args: &mut [Variant],
         aliases: &[usize],
     ) -> Result<Variant, PhaseDiagnostic> {
+        let (program, member) = self.member(&object, name, kind)?;
+        let effective_kind = kind
+            .map(calcvba_rt_abi::runtime_invoke_kind)
+            .unwrap_or(member.invoke_kind);
+        self.invoke_descriptor(object, program, member, effective_kind, args, aliases)
+    }
+
+    fn invoke_descriptor(
+        &mut self,
+        object: ObjectRef,
+        program: usize,
+        member: &'static calcvba_runtime::RuntimeMemberDescriptor,
+        invoke_kind: calcvba_runtime::RuntimeMemberInvokeKind,
+        args: &mut [Variant],
+        aliases: &[usize],
+    ) -> Result<Variant, PhaseDiagnostic> {
         use calcvba_runtime::{
             ObjectRefExt, RuntimeMemberBacking, RuntimeMemberInvokeKind, RuntimeValueType,
         };
-        let (program, member) = self.member(&object, name, kind)?;
         let fault_diag = |fault: calcvba_rt_abi::Fault| {
             let message = format!("runtime error {}: {}", fault.code, fault.message);
             PhaseDiagnostic::from_diagnostic(OxDiagnostic::error(
@@ -451,65 +466,107 @@ impl JitImageSession {
                     aliases,
                 ))
             }
-            RuntimeMemberBacking::Field(field_token) => {
-                let effective_kind = kind
-                    .map(calcvba_rt_abi::runtime_invoke_kind)
-                    .unwrap_or(member.invoke_kind);
-                match effective_kind {
-                    RuntimeMemberInvokeKind::PropertyGet | RuntimeMemberInvokeKind::Method => {
-                        if !args.is_empty() {
-                            return Err(fault_diag(calcvba_rt_abi::Fault::new(
-                                450,
-                                calcvba_runtime::default_error_message(450),
-                            )));
-                        }
-                        let raw = object
-                            .project_field_get(field_token)
-                            .unwrap_or_else(Variant::empty);
-                        let target_ty = member.return_type.unwrap_or(RuntimeValueType::Variant);
-                        calcvba_rt_abi::coerce_value_for_runtime_type(&raw, target_ty)
-                            .map_err(fault_diag)
+            RuntimeMemberBacking::Field(field_token) => match invoke_kind {
+                RuntimeMemberInvokeKind::PropertyGet | RuntimeMemberInvokeKind::Method => {
+                    if !args.is_empty() {
+                        return Err(fault_diag(calcvba_rt_abi::Fault::new(
+                            450,
+                            calcvba_runtime::default_error_message(450),
+                        )));
                     }
-                    RuntimeMemberInvokeKind::PropertyLet => {
-                        let [value] = args else {
-                            return Err(fault_diag(calcvba_rt_abi::Fault::new(
-                                450,
-                                calcvba_runtime::default_error_message(450),
-                            )));
-                        };
-                        let target_ty = member
-                            .params
-                            .last()
-                            .map_or(RuntimeValueType::Variant, |param| param.value_type);
-                        let coerced =
-                            calcvba_rt_abi::coerce_value_for_runtime_type(value, target_ty)
-                                .map_err(fault_diag)?;
-                        object.project_field_set(field_token, coerced);
-                        Ok(Variant::empty())
-                    }
-                    RuntimeMemberInvokeKind::PropertySet => {
-                        let [value] = args else {
-                            return Err(fault_diag(calcvba_rt_abi::Fault::new(
-                                450,
-                                calcvba_runtime::default_error_message(450),
-                            )));
-                        };
-                        if value.vtype() != calcvba_runtime::VarType::Object {
-                            return Err(fault_diag(calcvba_rt_abi::Fault::new(
-                                424,
-                                calcvba_runtime::default_error_message(424),
-                            )));
-                        }
-                        object.project_field_set(field_token, value.clone());
-                        Ok(Variant::empty())
-                    }
+                    let raw = object
+                        .project_field_get(field_token)
+                        .unwrap_or_else(Variant::empty);
+                    let target_ty = member.return_type.unwrap_or(RuntimeValueType::Variant);
+                    calcvba_rt_abi::coerce_value_for_runtime_type(&raw, target_ty)
+                        .map_err(fault_diag)
                 }
-            }
+                RuntimeMemberInvokeKind::PropertyLet => {
+                    let [value] = args else {
+                        return Err(fault_diag(calcvba_rt_abi::Fault::new(
+                            450,
+                            calcvba_runtime::default_error_message(450),
+                        )));
+                    };
+                    let target_ty = member
+                        .params
+                        .last()
+                        .map_or(RuntimeValueType::Variant, |param| param.value_type);
+                    let coerced = calcvba_rt_abi::coerce_value_for_runtime_type(value, target_ty)
+                        .map_err(fault_diag)?;
+                    object.project_field_set(field_token, coerced);
+                    Ok(Variant::empty())
+                }
+                RuntimeMemberInvokeKind::PropertySet => {
+                    let [value] = args else {
+                        return Err(fault_diag(calcvba_rt_abi::Fault::new(
+                            450,
+                            calcvba_runtime::default_error_message(450),
+                        )));
+                    };
+                    if value.vtype() != calcvba_runtime::VarType::Object {
+                        return Err(fault_diag(calcvba_rt_abi::Fault::new(
+                            424,
+                            calcvba_runtime::default_error_message(424),
+                        )));
+                    }
+                    object.project_field_set(field_token, value.clone());
+                    Ok(Variant::empty())
+                }
+            },
             RuntimeMemberBacking::None => Err(fault_diag(calcvba_rt_abi::Fault::new(
                 438,
                 calcvba_runtime::default_error_message(438),
             ))),
         }
+    }
+}
+
+impl calcvba_runtime::events::MemberInvoker for ProjectRuntimeSession {
+    fn invoke_member(
+        &mut self,
+        object: ObjectRef,
+        member: &'static calcvba_runtime::RuntimeMemberDescriptor,
+        invoke_kind: calcvba_runtime::RuntimeMemberInvokeKind,
+        args: &mut [Variant],
+        aliases: &[usize],
+    ) -> Result<Variant, calcvba_runtime::events::MemberFault> {
+        self.invoke_member_descriptor_with_writebacks(object, member, invoke_kind, args, aliases)
+            .map_err(|diag| {
+                let number = diag
+                    .vba_fault
+                    .as_ref()
+                    .map(|fault| fault.code)
+                    .or(diag.vba_code)
+                    .unwrap_or(5);
+                let description = diag
+                    .vba_fault
+                    .as_ref()
+                    .map(|fault| fault.message.clone())
+                    .unwrap_or_else(|| diag.diagnostic.message.clone().into());
+                let source = diag
+                    .vba_fault
+                    .as_ref()
+                    .and_then(|fault| fault.source.clone())
+                    .unwrap_or_default();
+                let help_file = diag
+                    .vba_fault
+                    .as_ref()
+                    .and_then(|fault| fault.help_file.clone())
+                    .unwrap_or_default();
+                let help_context = diag
+                    .vba_fault
+                    .as_ref()
+                    .and_then(|fault| fault.help_context)
+                    .unwrap_or(0);
+                calcvba_runtime::events::MemberFault {
+                    number,
+                    description,
+                    source,
+                    help_file,
+                    help_context,
+                }
+            })
     }
 }
 
@@ -590,6 +647,55 @@ impl ProjectRuntimeSession {
                 .map_err(vm3_runtime_diagnostic),
             SessionBackend::Jit(jit) => jit.invoke(object, member_name, kind_hint, args, aliases),
             SessionBackend::JitBusy => Err(jit_busy_diagnostic()),
+        }
+    }
+
+    /// Invoke a member already resolved to its [`calcvba_runtime::RuntimeMemberDescriptor`]
+    /// (by DISPID or vtable slot), preserving ByRef aliases and write-backs.
+    pub fn invoke_member_descriptor_with_writebacks(
+        &mut self,
+        object: ObjectRef,
+        member: &'static calcvba_runtime::RuntimeMemberDescriptor,
+        invoke_kind: calcvba_runtime::RuntimeMemberInvokeKind,
+        args: &mut [Variant],
+        aliases: &[usize],
+    ) -> Result<Variant, PhaseDiagnostic> {
+        use calcvba_runtime::ObjectRefExt;
+        match &mut self.backend {
+            SessionBackend::Vm3(vm) => vm
+                .invoke_member_descriptor_captured(object, member, invoke_kind, args, aliases)
+                .map_err(vm3_runtime_diagnostic),
+            SessionBackend::Jit(jit) => {
+                let program = usize::try_from(object.bundle_id()).map_err(|_| {
+                    PhaseDiagnostic::from_diagnostic(OxDiagnostic::error(
+                        "JIT-E-FAULT",
+                        OxDiagnosticPhase::Host,
+                        calcvba_runtime::default_error_message(438),
+                    ))
+                    .with_vba_fault(calcvba_rt_abi::Fault::new(
+                        438,
+                        calcvba_runtime::default_error_message(438),
+                    ))
+                })?;
+                jit.invoke_descriptor(object, program, member, invoke_kind, args, aliases)
+            }
+            SessionBackend::JitBusy => Err(jit_busy_diagnostic()),
+        }
+    }
+
+    /// Register this session as the thread's between-runs [`calcvba_runtime::events::MemberInvoker`]
+    /// for incoming `IDispatch::Invoke` calls on project instances held by a host.
+    ///
+    /// # Safety
+    /// No other Rust reference to this session may exist while the returned scope is active;
+    /// drop the scope before using `self` directly again.
+    pub unsafe fn enter_member_invoker_scope(
+        &mut self,
+    ) -> calcvba_runtime::events::MemberInvokerScope {
+        let invoker: &mut dyn calcvba_runtime::events::MemberInvoker = self;
+        // SAFETY: forwarded caller contract; scope pops before `self` is borrowed again.
+        unsafe {
+            calcvba_runtime::events::MemberInvokerScope::enter(std::ptr::NonNull::from(invoker))
         }
     }
 

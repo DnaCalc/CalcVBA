@@ -395,6 +395,9 @@ pub fn resolve_dispatch_for_com_value(
         ));
     }
     if object.is_project_instance() {
+        if object.has_dual_dispatch_vtable() {
+            return Ok(object.raw_iunknown().cast::<RawIDispatch>());
+        }
         if let Some(dispatch) = state
             .runtime_object_dispatch_wrappers
             .get(&object.raw())

@@ -11,6 +11,7 @@ pub mod builtins;
 pub mod call_frame;
 pub mod callback_thunks;
 pub mod class_descriptor;
+pub mod class_dispatch;
 pub mod coerce;
 pub mod collection;
 pub use calcvba_automation::com;
@@ -46,6 +47,7 @@ pub use class_descriptor::{
     RuntimeClassSpec, RuntimeImplementedInterfaceSpec, RuntimeMemberSpec, RuntimeParamSpec,
     build_runtime_class_descriptor, default_class_interface_iid, runtime_project_interface_guid,
 };
+pub use class_dispatch::{class_dual_vtable_ptr, class_dual_vtable_slot_count, current_thread_id};
 pub use coerce::{print_display_text, variant_to_vba_string, write_display_text};
 pub use com_record::{ComRecord, ComRecordRef};
 pub use decimal::Decimal96;

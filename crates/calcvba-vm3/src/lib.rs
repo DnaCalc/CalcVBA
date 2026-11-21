@@ -604,6 +604,44 @@ impl<'h> Vm3<'h> {
         )
     }
 
+    /// Invoke a member already resolved to its [`calcvba_runtime::RuntimeMemberDescriptor`]
+    /// (by DISPID or vtable slot, e.g. from `IDispatch::Invoke`), preserving ByRef aliases and
+    /// write-backs on success or fault.
+    pub fn invoke_member_descriptor_captured(
+        &mut self,
+        object: ObjectRef,
+        member: &'static calcvba_runtime::RuntimeMemberDescriptor,
+        invoke_kind: calcvba_runtime::RuntimeMemberInvokeKind,
+        args: &mut [Variant],
+        aliases: &[usize],
+    ) -> Result<Variant, Vm3Error> {
+        let obj_bundle = object.bundle_id() as usize;
+        match member.backing {
+            calcvba_runtime::RuntimeMemberBacking::Proc(proc) => {
+                let values = args.to_vec();
+                self.run_proc_with_values_captured(
+                    obj_bundle,
+                    FuncId(proc),
+                    Variant::from_object_ref(object),
+                    values,
+                    false,
+                    Some((args, aliases)),
+                )
+            }
+            calcvba_runtime::RuntimeMemberBacking::Field(field_token) => self
+                .dispatch_project_field_member_values(
+                    &object,
+                    member,
+                    field_token,
+                    invoke_kind,
+                    args.to_vec(),
+                ),
+            calcvba_runtime::RuntimeMemberBacking::None => {
+                Err(Vm3Error::Fault(Fault::new(438, default_error_message(438))))
+            }
+        }
+    }
+
     fn invoke_member_values_captured(
         &mut self,
         object: ObjectRef,
@@ -2384,8 +2422,12 @@ impl<'h> Vm3<'h> {
                         .project_event_sink
                         .take()
                         .expect("sink present");
-                    let outcome = sink(source_object.clone(), event_id, values);
+                    let outcome = {
+                        let _events = self.event_scope();
+                        sink(source_object.clone(), event_id, values)
+                    };
                     self.exec.events.project_event_sink = Some(sink);
+                    self.take_event_abort()?;
                     outcome.map_err(|msg| Vm3Error::Fault(Fault::new(5, msg)))?;
                 }
             }
@@ -5957,6 +5999,40 @@ impl calcvba_runtime::events::EventExecutor for Vm3<'_> {
                     .pending_abort
                     .get_or_insert(calcvba_rt_abi::RunAbort::Fault(fault));
                 Err(reported)
+            }
+        }
+    }
+
+    fn invoke_member(
+        &mut self,
+        object: ObjectRef,
+        member: &'static calcvba_runtime::RuntimeMemberDescriptor,
+        invoke_kind: calcvba_runtime::RuntimeMemberInvokeKind,
+        args: &mut [Variant],
+        aliases: &[usize],
+    ) -> Result<Variant, calcvba_runtime::events::MemberFault> {
+        match self.invoke_member_descriptor_captured(object, member, invoke_kind, args, aliases) {
+            Ok(value) => Ok(value),
+            Err(Vm3Error::Halted) => {
+                self.exec
+                    .events
+                    .pending_abort
+                    .get_or_insert(calcvba_rt_abi::RunAbort::End);
+                Ok(Variant::empty())
+            }
+            Err(error) => {
+                let fault = match error {
+                    Vm3Error::Fault(fault) | Vm3Error::EventAbort(fault) => fault,
+                    other => Fault::new(51, other.to_string()),
+                };
+                self.exec.err_engine.pending_fault = None;
+                Err(calcvba_runtime::events::MemberFault {
+                    number: fault.code,
+                    description: fault.message,
+                    source: fault.source.unwrap_or_default(),
+                    help_file: fault.help_file.unwrap_or_default(),
+                    help_context: fault.help_context.unwrap_or(0),
+                })
             }
         }
     }

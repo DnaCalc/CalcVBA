@@ -230,3 +230,22 @@ cfg(windows)-only failure, pull again before each push.
     - Native template metadata stays backward-compatible with prebuilt v1 `assets/native/*.dll`
       (same prefix + `CVBD` v1 trailer); rebuild native templates (`./scripts/build-native-template.ps1`)
       when ready so the shipped templates use the shared builder too.
+
+19. dc-yqq0.23 (`ClassDualVtbl` and `MemberInvoker` on `CompatObjectBase`; portable table-driven `IDispatch`):
+    Every project class instance with a dual interface descriptor now carries an interned
+    `ClassDualVtbl` (`IUnknown` + `IDispatch` + member slots >= 7) directly on `CompatObjectBase`.
+    `QueryInterface` answers `IUnknown`, `IDispatch`, and `default_interface_iid` with `&primary`
+    (one COM identity), `GetIDsOfNames` and `Invoke` are table-driven from the shared descriptor,
+    `EventExecutor`/`ExecutorScope` is widened to `MemberInvoker` on VM3, JIT, and
+    `ProjectRuntimeSession`, and `calcvba_com::automation::project_dispatch` /
+    `resolve_dispatch_for_com_value` pass dual project objects as themselves (no wrapper).
+    Windows checks to run:
+    - Layout assertions & runtime/COM unit suites:
+      cargo test -p calcvba-automation -p calcvba-runtime -p calcvba-com --no-fail-fast
+    - Object-identity suites (including live COM `OxVba.TestEventServer` late-bound call -> 42):
+      cargo test -p calcvba-engine --test object_identity --test object_identity_portable --test member_dispatch_by_slot_dispid --no-fail-fast
+      cargo test -p calcvba-engine --test object_identity -- --ignored --nocapture
+    - COM server / comhost regression check:
+      cargo test -p calcvba-build --test comhost_inproc --no-fail-fast
+    Note: `foreign_late_bound_call_matches_excel` (`s.CallMember(w, "Twice")`) should now return
+    `foreign-call=42` on BOTH VM3 and JIT, matching Excel.

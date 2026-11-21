@@ -136,6 +136,38 @@ pub struct IUnknown {
 /// `HRESULT`.
 pub type HResult = i32;
 
+pub const S_OK: HResult = 0;
+pub const E_NOTIMPL: HResult = 0x8000_4001u32 as i32;
+pub const E_NOINTERFACE: HResult = 0x8000_4002u32 as i32;
+pub const E_POINTER: HResult = 0x8000_4003u32 as i32;
+pub const E_FAIL: HResult = 0x8000_4005u32 as i32;
+pub const E_INVALIDARG: HResult = 0x8007_0057u32 as i32;
+pub const RPC_E_WRONG_THREAD: HResult = 0x8001_010Eu32 as i32;
+
+pub const DISP_E_UNKNOWNINTERFACE: HResult = 0x8002_0001u32 as i32;
+pub const DISP_E_MEMBERNOTFOUND: HResult = 0x8002_0003u32 as i32;
+pub const DISP_E_PARAMNOTFOUND: HResult = 0x8002_0004u32 as i32;
+pub const DISP_E_TYPEMISMATCH: HResult = 0x8002_0005u32 as i32;
+pub const DISP_E_UNKNOWNNAME: HResult = 0x8002_0006u32 as i32;
+pub const DISP_E_BADVARTYPE: HResult = 0x8002_0008u32 as i32;
+pub const DISP_E_EXCEPTION: HResult = 0x8002_0009u32 as i32;
+pub const DISP_E_OVERFLOW: HResult = 0x8002_000Au32 as i32;
+pub const DISP_E_BADINDEX: HResult = 0x8002_000Bu32 as i32;
+pub const DISP_E_BADPARAMCOUNT: HResult = 0x8002_000Eu32 as i32;
+pub const DISP_E_PARAMNOTOPTIONAL: HResult = 0x8002_000Fu32 as i32;
+
+pub const DISPID_UNKNOWN: i32 = -1;
+pub const DISPID_VALUE: i32 = 0;
+pub const DISPID_PROPERTYPUT: i32 = -3;
+pub const DISPID_NEWENUM: i32 = -4;
+
+pub const DISPATCH_METHOD: u16 = 0x1;
+pub const DISPATCH_PROPERTYGET: u16 = 0x2;
+pub const DISPATCH_PROPERTYPUT: u16 = 0x4;
+pub const DISPATCH_PROPERTYPUTREF: u16 = 0x8;
+
+/// `IID_NULL` {00000000-0000-0000-0000-000000000000}.
+pub const IID_NULL: Guid = Guid::new(0, 0, 0, [0; 8]);
 /// `IID_IUnknown` {00000000-0000-0000-C000-000000000046}.
 pub const IID_IUNKNOWN: Guid = Guid::new(0, 0, 0, [0xC0, 0, 0, 0, 0, 0, 0, 0x46]);
 /// `IID_IDispatch` {00020400-0000-0000-C000-000000000046}.
@@ -195,6 +227,58 @@ pub struct IDispatchVtbl {
         exception: *mut c_void,
         arg_error: *mut u32,
     ) -> HResult,
+}
+
+/// Portable `DISPPARAMS` with the Windows Automation layout.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DispParams {
+    pub rgvarg: *mut crate::VariantCore,
+    pub rgdispid_named_args: *mut i32,
+    pub c_args: u32,
+    pub c_named_args: u32,
+}
+
+impl Default for DispParams {
+    fn default() -> Self {
+        Self {
+            rgvarg: core::ptr::null_mut(),
+            rgdispid_named_args: core::ptr::null_mut(),
+            c_args: 0,
+            c_named_args: 0,
+        }
+    }
+}
+
+/// Portable `EXCEPINFO` with the Windows Automation layout.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ExcepInfo {
+    pub w_code: u16,
+    pub w_reserved: u16,
+    pub bstr_source: *mut u16,
+    pub bstr_description: *mut u16,
+    pub bstr_help_file: *mut u16,
+    pub dw_help_context: u32,
+    pub pv_reserved: *mut c_void,
+    pub pfn_deferred_fill_in: Option<unsafe extern "system" fn(*mut ExcepInfo) -> HResult>,
+    pub scode: HResult,
+}
+
+impl Default for ExcepInfo {
+    fn default() -> Self {
+        Self {
+            w_code: 0,
+            w_reserved: 0,
+            bstr_source: core::ptr::null_mut(),
+            bstr_description: core::ptr::null_mut(),
+            bstr_help_file: core::ptr::null_mut(),
+            dw_help_context: 0,
+            pv_reserved: core::ptr::null_mut(),
+            pfn_deferred_fill_in: None,
+            scode: 0,
+        }
+    }
 }
 
 /// `IRecordInfo`'s vtable, in the header's slot order. Record data pointers are untyped; field
@@ -316,10 +400,59 @@ mod tests {
     #[cfg(windows)]
     fn guid_matches_windows() {
         use core::mem::{align_of, offset_of};
+        use windows_sys::Win32::System::Com::{DISPPARAMS, EXCEPINFO};
         use windows_sys::core::GUID;
         assert_eq!(size_of::<Guid>(), size_of::<GUID>());
         assert_eq!(align_of::<Guid>(), align_of::<GUID>());
         assert_eq!(offset_of!(Guid, data2), offset_of!(GUID, data2));
         assert_eq!(offset_of!(Guid, data4), offset_of!(GUID, data4));
+
+        assert_eq!(size_of::<DispParams>(), size_of::<DISPPARAMS>());
+        assert_eq!(align_of::<DispParams>(), align_of::<DISPPARAMS>());
+        assert_eq!(
+            offset_of!(DispParams, rgvarg),
+            offset_of!(DISPPARAMS, rgvarg)
+        );
+        assert_eq!(
+            offset_of!(DispParams, rgdispid_named_args),
+            offset_of!(DISPPARAMS, rgdispidNamedArgs)
+        );
+        assert_eq!(
+            offset_of!(DispParams, c_args),
+            offset_of!(DISPPARAMS, cArgs)
+        );
+        assert_eq!(
+            offset_of!(DispParams, c_named_args),
+            offset_of!(DISPPARAMS, cNamedArgs)
+        );
+
+        assert_eq!(size_of::<ExcepInfo>(), size_of::<EXCEPINFO>());
+        assert_eq!(align_of::<ExcepInfo>(), align_of::<EXCEPINFO>());
+        assert_eq!(offset_of!(ExcepInfo, w_code), offset_of!(EXCEPINFO, wCode));
+        assert_eq!(
+            offset_of!(ExcepInfo, bstr_source),
+            offset_of!(EXCEPINFO, bstrSource)
+        );
+        assert_eq!(
+            offset_of!(ExcepInfo, bstr_description),
+            offset_of!(EXCEPINFO, bstrDescription)
+        );
+        assert_eq!(
+            offset_of!(ExcepInfo, bstr_help_file),
+            offset_of!(EXCEPINFO, bstrHelpFile)
+        );
+        assert_eq!(
+            offset_of!(ExcepInfo, dw_help_context),
+            offset_of!(EXCEPINFO, dwHelpContext)
+        );
+        assert_eq!(
+            offset_of!(ExcepInfo, pv_reserved),
+            offset_of!(EXCEPINFO, pvReserved)
+        );
+        assert_eq!(
+            offset_of!(ExcepInfo, pfn_deferred_fill_in),
+            offset_of!(EXCEPINFO, pfnDeferredFillIn)
+        );
+        assert_eq!(offset_of!(ExcepInfo, scode), offset_of!(EXCEPINFO, scode));
     }
 }

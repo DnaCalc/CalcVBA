@@ -900,33 +900,37 @@ fn runtime_interface_descriptor_key(interface: &RuntimeInterfaceDescriptor) -> u
 }
 
 #[repr(C)]
-struct CompatObjectBase {
-    unknown: RawRuntimeIUnknown,
-    ref_count: AtomicU32,
-    identity: RuntimeObjectIdentity,
-    object_owner: crate::object_owner::WeakObjectOwner,
-    project_instance: bool,
-    class_descriptor: &'static RuntimeClassDescriptor,
+pub(crate) struct CompatObjectBase {
+    pub(crate) unknown: RawRuntimeIUnknown,
+    pub(crate) ref_count: AtomicU32,
+    pub(crate) owner_thread: u64,
+    pub(crate) has_dual_vtable: bool,
+    pub(crate) identity: RuntimeObjectIdentity,
+    pub(crate) object_owner: crate::object_owner::WeakObjectOwner,
+    pub(crate) project_instance: bool,
+    pub(crate) class_descriptor: &'static RuntimeClassDescriptor,
+    /// Optional between-runs member invoker (weak so the object never keeps a session alive).
+    pub(crate) invoker: RefCell<Option<std::rc::Weak<RefCell<dyn crate::events::MemberInvoker>>>>,
     // Each field is boxed and kept once created, so its cell has a stable address for
     // `VarPtr` (as a VBA instance's fields live in its memory until it is freed).
-    fields: RefCell<BTreeMap<i32, Box<Variant>>>,
+    pub(crate) fields: RefCell<BTreeMap<i32, Box<Variant>>>,
     /// Built-in native-object state carried on the box itself (currently a `VBA.Collection`'s
     /// contents). Lazily created on first use via [`ObjectRef::with_native_collection`]; freed
     /// with the box, so there is no VM-side store and no leak. `None` for ordinary project
     /// instances that hold no native collection.
-    native_state: RefCell<Option<crate::collection::CollectionData>>,
-    parked_for_termination: Cell<bool>,
-    running_termination: Cell<bool>,
-    terminated: Cell<bool>,
+    pub(crate) native_state: RefCell<Option<crate::collection::CollectionData>>,
+    pub(crate) parked_for_termination: Cell<bool>,
+    pub(crate) running_termination: Cell<bool>,
+    pub(crate) terminated: Cell<bool>,
 }
 
-static COMPAT_OBJECT_VTBL: IUnknownVtbl = IUnknownVtbl {
+pub(crate) static COMPAT_OBJECT_VTBL: IUnknownVtbl = IUnknownVtbl {
     query_interface: compat_query_interface,
     add_ref: compat_add_ref,
     release: compat_release,
 };
 
-unsafe extern "system" fn compat_query_interface(
+pub(crate) unsafe extern "system" fn compat_query_interface(
     this: *mut c_void,
     riid: *const Guid,
     ppv: *mut *mut c_void,
@@ -944,13 +948,19 @@ unsafe extern "system" fn compat_query_interface(
     }
     // SAFETY: a non-null REFIID points at the caller's GUID for the duration of the call.
     let iid = unsafe { riid.read() };
-    // The object's binary interface is these three IUnknown slots and nothing else, so it
-    // serves IUnknown only: answering IDispatch or a class interface with this vtable would
-    // let foreign code call slots that are not there (dc-yqq0.15). A project object crosses to
-    // foreign code through a real IDispatch wrapper (`calcvba_com::automation::project_dispatch`),
-    // and its class interfaces are projections the runtime resolves itself
-    // (`ObjectRefExt::query_interface_descriptor`).
-    let supports_iid = iid == RUNTIME_GUID_IUNKNOWN;
+    let owner = compat_owner_from_this(this);
+    // SAFETY: `this` is a live `CompatObjectBase` kept alive by the caller's COM reference.
+    let (has_dual, default_iid) = unsafe {
+        (
+            (*owner).has_dual_vtable,
+            (*owner).class_descriptor.default_interface_iid,
+        )
+    };
+    // A plain three-slot compat object answers `IUnknown` only (dc-yqq0.15). A project instance
+    // built with a `ClassDualVtbl` answers `IUnknown`, `IDispatch`, and its class's default dual
+    // interface IID with the same `&primary` pointer (one COM identity, dc-yqq0.23).
+    let supports_iid = iid == RUNTIME_GUID_IUNKNOWN
+        || (has_dual && (iid == RUNTIME_GUID_IDISPATCH || default_iid == Some(iid)));
     if !supports_iid {
         return RUNTIME_E_NOINTERFACE;
     }
@@ -1103,7 +1113,7 @@ pub(crate) fn discard_pending_owner(id: u64) {
     }
 }
 
-unsafe extern "system" fn compat_add_ref(this: *mut c_void) -> u32 {
+pub(crate) unsafe extern "system" fn compat_add_ref(this: *mut c_void) -> u32 {
     let owner = compat_owner_from_this(this);
     // SAFETY: this vtable entry only exists on `CompatObjectBase` boxes (`COMPAT_OBJECT_VTBL` is
     // installed solely by `from_compat_object`; `#[repr(C)]` puts `unknown` first), and the
@@ -1111,7 +1121,7 @@ unsafe extern "system" fn compat_add_ref(this: *mut c_void) -> u32 {
     unsafe { (*owner).ref_count.fetch_add(1, Ordering::AcqRel) + 1 }
 }
 
-unsafe extern "system" fn compat_release(this: *mut c_void) -> u32 {
+pub(crate) unsafe extern "system" fn compat_release(this: *mut c_void) -> u32 {
     let owner = compat_owner_from_this(this);
     // SAFETY: as in `compat_add_ref`, `this` is a live `CompatObjectBase` kept alive by the
     // reference the caller is releasing right now.
@@ -1217,11 +1227,11 @@ unsafe fn compat_field_default(owner: *mut CompatObjectBase, token: i32) -> Opti
     }
 }
 
-fn compat_owner_from_unknown(unknown: *mut RawRuntimeIUnknown) -> *mut CompatObjectBase {
+pub(crate) fn compat_owner_from_unknown(unknown: *mut RawRuntimeIUnknown) -> *mut CompatObjectBase {
     unknown.cast::<CompatObjectBase>()
 }
 
-fn compat_owner_from_this(this: *mut c_void) -> *mut CompatObjectBase {
+pub(crate) fn compat_owner_from_this(this: *mut c_void) -> *mut CompatObjectBase {
     compat_owner_from_unknown(this.cast::<RawRuntimeIUnknown>())
 }
 
@@ -1290,6 +1300,21 @@ pub trait ObjectRefExt: Sized {
     /// `compat_identity`/`route_key`/`class_descriptor`/`terminates_on_release` are only valid
     /// when this returns true.
     fn is_compat_object(&self) -> bool;
+
+    /// True when this `ObjectRef` carries a dual `ClassDualVtbl` answering `IUnknown`,
+    /// `IDispatch`, and its class default interface IID directly on `&primary`.
+    fn has_dual_dispatch_vtable(&self) -> bool;
+
+    /// The owning thread ID recorded when this compat object was allocated, or `None` for foreign
+    /// COM objects.
+    fn owner_thread_id(&self) -> Option<u64>;
+
+    /// Attach a between-runs weak [`crate::events::MemberInvoker`] to a compat object so
+    /// `IDispatch::Invoke` can reach its owning session holder when no active run is on the stack.
+    fn set_member_invoker(
+        &self,
+        invoker: std::rc::Weak<RefCell<dyn crate::events::MemberInvoker>>,
+    ) -> bool;
 
     /// True when releasing this instance's last reference should run a `Class_Terminate`. Safe for
     /// any `ObjectRef`: foreign COM objects (which carry no such flag) report `false`.
@@ -1449,6 +1474,9 @@ impl ObjectRefExt for ObjectRef {
 
     fn is_identity(&self) -> usize {
         if self.is_compat_object() {
+            if self.is_project_instance() {
+                return self.raw_iunknown() as usize;
+            }
             return self.compat_identity() as u32 as usize;
         }
         let this = self.raw_iunknown();
@@ -1517,7 +1545,48 @@ impl ObjectRefExt for ObjectRef {
         // is non-null and the object is alive because this `ObjectRef` holds a retained
         // reference to it.
         let vtbl = unsafe { (*self.raw_iunknown()).vtbl };
-        std::ptr::eq(vtbl, &COMPAT_OBJECT_VTBL)
+        if std::ptr::eq(vtbl, &COMPAT_OBJECT_VTBL) {
+            return true;
+        }
+        // SAFETY: any live COM interface's vtbl has `query_interface` at slot 0. Every
+        // `ClassDualVtbl` copies `COMPAT_OBJECT_VTBL.query_interface` verbatim into slot 0, so
+        // comparing against that exact function pointer recognizes every dual vtable in O(1)
+        // cleanly under both native codegen and Miri.
+        let qi = unsafe { (*vtbl).query_interface };
+        core::ptr::fn_addr_eq(qi, COMPAT_OBJECT_VTBL.query_interface)
+    }
+
+    fn has_dual_dispatch_vtable(&self) -> bool {
+        if !self.is_compat_object() {
+            return false;
+        }
+        let owner = compat_owner_from_unknown(self.raw_iunknown());
+        // SAFETY: guarded by `is_compat_object()` above; `owner` is a live `CompatObjectBase`.
+        unsafe { (*owner).has_dual_vtable }
+    }
+
+    fn owner_thread_id(&self) -> Option<u64> {
+        if !self.is_compat_object() {
+            return None;
+        }
+        let owner = compat_owner_from_unknown(self.raw_iunknown());
+        // SAFETY: guarded by `is_compat_object()` above; `owner` is a live `CompatObjectBase`.
+        Some(unsafe { (*owner).owner_thread })
+    }
+
+    fn set_member_invoker(
+        &self,
+        invoker: std::rc::Weak<RefCell<dyn crate::events::MemberInvoker>>,
+    ) -> bool {
+        if !self.is_compat_object() {
+            return false;
+        }
+        let owner = compat_owner_from_unknown(self.raw_iunknown());
+        // SAFETY: guarded by `is_compat_object()` above; `owner` is a live `CompatObjectBase`.
+        unsafe {
+            *(*owner).invoker.borrow_mut() = Some(invoker);
+        }
+        true
     }
 
     fn terminates_on_release(&self) -> bool {
@@ -1755,11 +1824,17 @@ fn from_compat_object(
     project_instance: bool,
 ) -> ObjectRef {
     let stable_object_id = compat_identity as u32 as u64;
+    let has_dual_vtable = project_instance && class_descriptor.dispatch_interface().is_some();
+    let vtbl = if has_dual_vtable {
+        crate::class_dispatch::class_dual_vtbl_for_descriptor(class_descriptor)
+    } else {
+        &COMPAT_OBJECT_VTBL
+    };
     let boxed = Box::new(CompatObjectBase {
-        unknown: RawRuntimeIUnknown {
-            vtbl: &COMPAT_OBJECT_VTBL,
-        },
+        unknown: RawRuntimeIUnknown { vtbl },
         ref_count: AtomicU32::new(1),
+        owner_thread: crate::class_dispatch::current_thread_id(),
+        has_dual_vtable,
         object_owner: crate::object_owner::RuntimeObjectOwner::current().downgrade(),
         project_instance,
         identity: RuntimeObjectIdentity {
@@ -1770,9 +1845,14 @@ fn from_compat_object(
             terminates_on_release,
             class_descriptor,
             lifetime_policy: RuntimeLifetimePolicy::RefCounted,
-            apartment_model: RuntimeApartmentModel::Unknown,
+            apartment_model: if project_instance {
+                RuntimeApartmentModel::SingleThreaded
+            } else {
+                RuntimeApartmentModel::Unknown
+            },
         },
         class_descriptor,
+        invoker: RefCell::new(None),
         fields: RefCell::new(BTreeMap::new()),
         native_state: RefCell::new(None),
         parked_for_termination: Cell::new(false),

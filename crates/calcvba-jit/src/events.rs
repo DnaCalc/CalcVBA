@@ -6,8 +6,12 @@
 //! so does `End` in a handler (`ST_HALT`).
 use super::*;
 use crate::helpers::{after_jit_frame_pop, invoke_project_member_with_me};
-use calcvba_runtime::default_error_message;
-use calcvba_runtime::events::{EventExecutor, EventFault, ExecutorScope};
+use calcvba_runtime::com::DISP_E_PARAMNOTFOUND;
+use calcvba_runtime::events::{EventExecutor, EventFault, ExecutorScope, MemberFault};
+use calcvba_runtime::{
+    ObjectRef, ObjectRefExt, RuntimeMemberBacking, RuntimeMemberDescriptor,
+    RuntimeMemberInvokeKind, RuntimeValueType, VarType, default_error_message,
+};
 use std::ptr::NonNull;
 
 /// Runs WithEvents handlers on a JIT run.
@@ -132,6 +136,241 @@ impl EventExecutor for JitEventExecutor {
                     .get_or_insert(calcvba_rt_abi::RunAbort::Fault(fault));
                 Err(reported)
             }
+        }
+    }
+
+    fn invoke_member(
+        &mut self,
+        object: ObjectRef,
+        member: &'static RuntimeMemberDescriptor,
+        invoke_kind: RuntimeMemberInvokeKind,
+        args: &mut [Variant],
+        aliases: &[usize],
+    ) -> Result<Variant, MemberFault> {
+        let (state, run) = (self.state, self.run);
+        if aliases.len() != args.len()
+            || aliases
+                .iter()
+                .enumerate()
+                .any(|(index, &first)| first > index || aliases[first] != first)
+        {
+            return Err(MemberFault::from_number(5));
+        }
+
+        let program_index = object.bundle_id() as usize;
+        // Preserve the caller's ErrEngine across an incoming COM member callback so an exception
+        // returned via `EXCEPINFO` does not corrupt the outer active run's `On Error` state.
+        let saved_err = {
+            // SAFETY: the active run is suspended inside a host call with no live `ExecState` borrow.
+            let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
+                return Err(MemberFault::from_number(51));
+            };
+            exec.err_engine.clone()
+        };
+
+        let read_and_restore_fault =
+            |state: *mut RawExecState, saved_err: Box<calcvba_rt_abi::ErrEngine>| -> MemberFault {
+                // SAFETY: member invocation returned; `ExecState` is unborrowed.
+                let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
+                    return MemberFault::from_number(51);
+                };
+                let err = &exec.err_engine.err;
+                let fault = MemberFault {
+                    number: if err.number != 0 { err.number } else { 51 },
+                    description: if err.description.is_empty() {
+                        default_error_message(if err.number != 0 { err.number } else { 51 }).into()
+                    } else {
+                        err.description.clone()
+                    },
+                    source: err.source.clone(),
+                    help_file: err.help_file.clone(),
+                    help_context: err.help_context,
+                };
+                *exec.err_engine = *saved_err;
+                fault
+            };
+
+        match member.backing {
+            RuntimeMemberBacking::Proc(proc) => {
+                let descriptors: Vec<JitCallArgDesc> = args
+                    .iter()
+                    .enumerate()
+                    .map(|(index, arg)| {
+                        let is_param_array =
+                            member.params.get(index).is_some_and(|p| p.param_array);
+                        let is_optional_missing =
+                            member.params.get(index).is_some_and(|p| p.optional)
+                                && arg.vtype() == VarType::Error
+                                && arg.as_error_code() == Some(DISP_E_PARAMNOTFOUND);
+                        if is_optional_missing {
+                            JitCallArgDesc {
+                                kind: JIT_CALL_ARG_OMITTED,
+                                aux: 0,
+                                value: 0,
+                                area: 0,
+                                index: 0,
+                            }
+                        } else if is_param_array {
+                            JitCallArgDesc {
+                                kind: JIT_CALL_ARG_BYVAL_VARIANT,
+                                aux: JIT_VARIANT_OPERAND_PLACE,
+                                value: 0,
+                                area: AREA_TEMP as i32,
+                                index: aliases[index] as i32,
+                            }
+                        } else {
+                            JitCallArgDesc {
+                                kind: JIT_CALL_ARG_BYREF_ALIAS,
+                                aux: JIT_VARIANT_OPERAND_PLACE,
+                                value: 0,
+                                area: AREA_TEMP as i32,
+                                index: aliases[index] as i32,
+                            }
+                        }
+                    })
+                    .collect();
+                let names = vec![
+                    JitCallArgNameDesc {
+                        ptr: 0,
+                        len: -1,
+                        _pad: 0,
+                    };
+                    descriptors.len()
+                ];
+                let temps = args.to_vec();
+                let frame = JitFrame {
+                    program_index,
+                    local_types: Vec::new(),
+                    temp_types: vec![OxTy::Variant; temps.len()],
+                    locals: Vec::new(),
+                    temps,
+                    pointer_strings: Vec::new(),
+                    ref_locks: Vec::new(),
+                    loop_locks: Vec::new(),
+                    aliases: Vec::new(),
+                    gosub_stack: Vec::new(),
+                    saved_err: RtSavedErrState::default(),
+                    current_line: 0,
+                };
+                // SAFETY: bounded push borrow ends before compiled entry.
+                unsafe { &mut *run }.frames.push(frame);
+                // SAFETY: temporary frame owns the argument cells for this synchronous call; no
+                // run borrow spans the member body.
+                let result = unsafe {
+                    invoke_project_member_with_me(
+                        run,
+                        state,
+                        program_index,
+                        proc,
+                        Variant::from_object_ref(object),
+                        &descriptors,
+                        &names,
+                    )
+                };
+                // SAFETY: member returned; temporary frame is topmost again.
+                let run_ref = unsafe { &mut *run };
+                if let Some(frame) = run_ref.frames.pop() {
+                    for (index, slot) in args.iter_mut().enumerate() {
+                        if let Some(updated) = frame.temps.get(aliases[index]) {
+                            *slot = updated.clone();
+                        }
+                    }
+                    // SAFETY: nothing still borrows the completed frame.
+                    let _ = unsafe { after_jit_frame_pop(run_ref, state, &frame) };
+                }
+                match result {
+                    Ok(value) => {
+                        // SAFETY: member completed cleanly; restore caller's ErrEngine.
+                        if let Some(exec) = unsafe { jit_exec_state_mut(state) } {
+                            *exec.err_engine = *saved_err;
+                        }
+                        Ok(value)
+                    }
+                    Err(ST_HALT) => {
+                        // SAFETY: member halted via `End`; record pending abort for outer run.
+                        if let Some(exec) = unsafe { jit_exec_state_mut(state) } {
+                            *exec.err_engine = *saved_err;
+                            exec.events
+                                .pending_abort
+                                .get_or_insert(calcvba_rt_abi::RunAbort::End);
+                        }
+                        Ok(Variant::empty())
+                    }
+                    Err(_) => Err(read_and_restore_fault(state, saved_err)),
+                }
+            }
+            RuntimeMemberBacking::Field(field_token) => {
+                let outcome = match invoke_kind {
+                    RuntimeMemberInvokeKind::PropertyGet | RuntimeMemberInvokeKind::Method => {
+                        if !args.is_empty() {
+                            Err(MemberFault::from_number(450))
+                        } else {
+                            // SAFETY: live run/state roots; no borrow held across As New init.
+                            match unsafe {
+                                project_field_get_with_as_new_for_jit(
+                                    run,
+                                    state,
+                                    &object,
+                                    field_token,
+                                )
+                            } {
+                                Ok(raw) => {
+                                    let target_ty =
+                                        member.return_type.unwrap_or(RuntimeValueType::Variant);
+                                    calcvba_rt_abi::coerce_value_for_runtime_type(&raw, target_ty)
+                                        .map_err(|fault| MemberFault {
+                                            number: fault.code,
+                                            description: fault.message,
+                                            source: fault.source.unwrap_or_default(),
+                                            help_file: fault.help_file.unwrap_or_default(),
+                                            help_context: fault.help_context.unwrap_or(0),
+                                        })
+                                }
+                                Err(_) => Err(read_and_restore_fault(state, saved_err.clone())),
+                            }
+                        }
+                    }
+                    RuntimeMemberInvokeKind::PropertyLet => {
+                        let [value] = args else {
+                            return Err(MemberFault::from_number(450));
+                        };
+                        let target_ty = member
+                            .params
+                            .last()
+                            .map_or(RuntimeValueType::Variant, |param| param.value_type);
+                        match calcvba_rt_abi::coerce_value_for_runtime_type(value, target_ty) {
+                            Ok(coerced) => {
+                                object.project_field_set(field_token, coerced);
+                                Ok(Variant::empty())
+                            }
+                            Err(fault) => Err(MemberFault {
+                                number: fault.code,
+                                description: fault.message,
+                                source: fault.source.unwrap_or_default(),
+                                help_file: fault.help_file.unwrap_or_default(),
+                                help_context: fault.help_context.unwrap_or(0),
+                            }),
+                        }
+                    }
+                    RuntimeMemberInvokeKind::PropertySet => {
+                        let [value] = args else {
+                            return Err(MemberFault::from_number(450));
+                        };
+                        if value.vtype() != VarType::Object {
+                            Err(MemberFault::from_number(424))
+                        } else {
+                            object.project_field_set(field_token, value.clone());
+                            Ok(Variant::empty())
+                        }
+                    }
+                };
+                // SAFETY: restore outer run's ErrEngine.
+                if let Some(exec) = unsafe { jit_exec_state_mut(state) } {
+                    *exec.err_engine = *saved_err;
+                }
+                outcome
+            }
+            RuntimeMemberBacking::None => Err(MemberFault::from_number(438)),
         }
     }
 }

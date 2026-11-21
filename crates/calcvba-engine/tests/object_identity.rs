@@ -99,7 +99,11 @@ fn dictionary_round_trip_matches_excel() {
     Set back = d("k")
     gOut = "dict-is=" & CStr(back Is w) & ";dict-call=" & CStr(back.Twice())"#;
     for backend in BACKENDS {
-        assert_eq!(run(backend, body), "dict-is=True;dict-call=42", "{backend:?}");
+        assert_eq!(
+            run(backend, body),
+            "dict-is=True;dict-call=42",
+            "{backend:?}"
+        );
     }
 }
 
@@ -118,13 +122,17 @@ fn foreign_holder_keeps_the_object_alive_as_excel_does() {
     s.Drop
     gOut = gOut & ";term-dropped=" & CStr(gTerm)"#;
     for backend in BACKENDS {
-        assert_eq!(run(backend, body), "term-held=0;term-dropped=1", "{backend:?}");
+        assert_eq!(
+            run(backend, body),
+            "term-held=0;term-dropped=1",
+            "{backend:?}"
+        );
     }
 }
 
 #[cfg(target_os = "windows")]
 #[test]
-#[ignore = "live COM; fails until dc-yqq0.23 (today error 5 on VM3 and the JIT)"]
+#[ignore = "live COM: needs OxVba.TestEventServer (tools/OxVba.TestEventServer/register.ps1)"]
 fn foreign_late_bound_call_matches_excel() {
     // .NET `InvokeMember` calls the object through its own IDispatch.
     let body = r#"

@@ -277,15 +277,27 @@ impl<'p> CompiledImage<'p> {
                 "host alias must name its first argument".into(),
             ));
         }
+        let func_locals = &self.programs[program_index].funcs[func.0].locals;
         let mut body = |run: *mut JitRun, state: *mut RawExecState| {
             let descriptors: Vec<JitCallArgDesc> = aliases
                 .iter()
-                .map(|&first| JitCallArgDesc {
-                    kind: JIT_CALL_ARG_BYREF_ALIAS,
-                    aux: JIT_VARIANT_OPERAND_PLACE,
-                    value: 0,
-                    area: AREA_TEMP as i32,
-                    index: first as i32,
+                .enumerate()
+                .map(|(index, &first)| {
+                    let is_variadic = func_locals
+                        .get(index + 1)
+                        .and_then(|local| local.param.as_ref())
+                        .is_some_and(|param| param.variadic);
+                    JitCallArgDesc {
+                        kind: if is_variadic {
+                            JIT_CALL_ARG_BYVAL_VARIANT
+                        } else {
+                            JIT_CALL_ARG_BYREF_ALIAS
+                        },
+                        aux: JIT_VARIANT_OPERAND_PLACE,
+                        value: 0,
+                        area: AREA_TEMP as i32,
+                        index: first as i32,
+                    }
                 })
                 .collect();
             let names = vec![

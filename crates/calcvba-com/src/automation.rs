@@ -384,9 +384,13 @@ impl crate::call::ComEnumerator for Enumerator {
     }
 }
 
-/// The `IDispatch` the bridge hands COM for a project object (step 10 gives project objects
-/// their own): a `VT_DISPATCH` cell owning one reference to the wrapper.
+/// The `IDispatch` the bridge hands COM for a project object: when the object carries its own
+/// `ClassDualVtbl` (dc-yqq0.23), pass the object itself (one COM identity, no wrapper); fall back
+/// to the legacy wrapper only for non-dual compat objects until bead 7 deletes wrappers.
 pub fn project_dispatch(object: &ObjectRef) -> Result<Variant, Fault> {
+    if object.has_dual_dispatch_vtable() {
+        return Ok(Variant::from_object_ref(object.clone()));
+    }
     let dispatch = crate::windows_runtime_object::create_runtime_object_dispatch(object.clone());
     // SAFETY: the wrapper comes back with one reference, which the cell takes over.
     unsafe { ObjectRef::from_raw_iunknown_owned(dispatch.cast()) }

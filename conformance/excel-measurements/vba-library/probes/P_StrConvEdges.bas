@@ -1,7 +1,7 @@
 Attribute VB_Name = "P_StrConvEdges"
 Option Explicit
 ' Combinations, Byte() source coercion, LCID validation and casing captured on ACP 1252.
-Private Const N As Long = 18
+Private Const N As Long = 20
 Private Function T(ByVal k As Long) As String
     Dim v As Variant, b(0 To 3) As Byte
     On Error GoTo fail
@@ -25,6 +25,8 @@ Private Function T(ByVal k As Long) As String
         Case 16: v = StrConv(ChrW(&HD800), 1)
         Case 17: v = StrConv(Null, Null)
         Case 18: v = StrConv("abc", 256)
+        Case 19: v = StrConv("abc", vbUpperCase, 1041)
+        Case 20: v = StrConv("ABC", vbWide, 1041)
     End Select
     T = "StrConvEdges." & k & "=" & Sh(v)
     Exit Function

@@ -251,6 +251,120 @@ pub fn locale_id_supported(id: i32) -> bool {
     }
 }
 
+/// Resolve an explicit or default (`0`, `0x0400`, `0x0800`) VBA locale ID to an effective LCID.
+pub fn effective_lcid(id: i32) -> Option<u32> {
+    if !locale_id_supported(id) {
+        return None;
+    }
+    let id = id as u32;
+    #[cfg(windows)]
+    {
+        Some(windows::effective_lcid(id))
+    }
+    #[cfg(not(windows))]
+    {
+        Some(match id {
+            0 | 0x0400 | 0x0800 => 0x0409,
+            other => other,
+        })
+    }
+}
+
+/// True when the LCID's primary language is Chinese, Japanese, or Korean.
+pub fn is_east_asian_lcid(lcid: u32) -> bool {
+    matches!(lcid & 0x03FF, 0x04 | 0x11 | 0x12)
+}
+
+/// True when the LCID's primary language is Japanese.
+pub fn is_japanese_lcid(lcid: u32) -> bool {
+    (lcid & 0x03FF) == 0x11
+}
+
+/// Apply `StrConv` East Asian width (`vbWide`/`vbNarrow`) and kana (`vbKatakana`/`vbHiragana`)
+/// transformations for a validated East Asian `lcid`.
+pub fn map_east_asian_units(
+    units: &[u16],
+    lcid: u32,
+    wide: bool,
+    narrow: bool,
+    katakana: bool,
+    hiragana: bool,
+) -> Vec<u16> {
+    if units.is_empty() || !(wide || narrow || katakana || hiragana) {
+        return units.to_vec();
+    }
+    #[cfg(windows)]
+    {
+        windows::map_east_asian_units(units, lcid, wide, narrow, katakana, hiragana)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = lcid;
+        portable_east_asian::map_units(units, wide, narrow, katakana, hiragana)
+    }
+}
+
+#[cfg(not(windows))]
+mod portable_east_asian {
+    pub(super) fn map_units(
+        units: &[u16],
+        wide: bool,
+        narrow: bool,
+        katakana: bool,
+        hiragana: bool,
+    ) -> Vec<u16> {
+        let mut out: Vec<u16> = if katakana || hiragana {
+            units
+                .iter()
+                .copied()
+                .map(|u| {
+                    if katakana && (0x3041..=0x3096).contains(&u) {
+                        u + 0x60
+                    } else if hiragana && (0x30A1..=0x30F6).contains(&u) {
+                        u - 0x60
+                    } else {
+                        u
+                    }
+                })
+                .collect()
+        } else {
+            units.to_vec()
+        };
+        if wide {
+            out = to_fullwidth(&out);
+        } else if narrow {
+            out = to_halfwidth(&out);
+        }
+        out
+    }
+
+    fn to_fullwidth(units: &[u16]) -> Vec<u16> {
+        let mut out = Vec::with_capacity(units.len());
+        for &u in units {
+            let mapped = match u {
+                0x0020 => 0x3000,
+                0x0021..=0x007E => u - 0x0021 + 0xFF01,
+                other => other,
+            };
+            out.push(mapped);
+        }
+        out
+    }
+
+    fn to_halfwidth(units: &[u16]) -> Vec<u16> {
+        let mut out = Vec::with_capacity(units.len());
+        for &u in units {
+            let mapped = match u {
+                0x3000 => 0x0020,
+                0xFF01..=0xFF5E => u - 0xFF01 + 0x0021,
+                other => other,
+            };
+            out.push(mapped);
+        }
+        out
+    }
+}
+
 // MS-LCID §2.2 defines the permanent language IDs and alternate sorts.
 // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-lcid/63d3d639-7fd2-4afb-abbe-0d5b5551eef8
 // The Windows path asks the host about identifiers specific to that installation.
@@ -324,6 +438,77 @@ mod windows {
         // SAFETY: a null output and length zero request only the required buffer size.
         let length = unsafe { GetLocaleInfoW(id, LOCALE_SNAME, std::ptr::null_mut(), 0) };
         length > 0
+    }
+
+    pub(super) fn effective_lcid(id: u32) -> u32 {
+        match id {
+            0 | 0x0400 => {
+                // SAFETY: returns the calling user's default locale identifier.
+                unsafe { GetUserDefaultLCID() }
+            }
+            0x0800 => {
+                // SAFETY: returns the system's default locale identifier.
+                unsafe { GetSystemDefaultLCID() }
+            }
+            other => other,
+        }
+    }
+
+    pub(super) fn map_east_asian_units(
+        units: &[u16],
+        lcid: u32,
+        wide: bool,
+        narrow: bool,
+        katakana: bool,
+        hiragana: bool,
+    ) -> Vec<u16> {
+        let mut flags = 0u32;
+        if wide {
+            flags |= LCMAP_FULLWIDTH;
+        }
+        if narrow {
+            flags |= LCMAP_HALFWIDTH;
+        }
+        if katakana {
+            flags |= LCMAP_KATAKANA;
+        }
+        if hiragana {
+            flags |= LCMAP_HIRAGANA;
+        }
+        let Ok(src_len) = i32::try_from(units.len()) else {
+            return units.to_vec();
+        };
+        // SAFETY: `units` is valid for `src_len` UTF-16 code units; null output requests length.
+        let needed = unsafe {
+            LCMapStringW(
+                lcid,
+                flags,
+                units.as_ptr(),
+                src_len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if needed <= 0 {
+            return units.to_vec();
+        }
+        let mut out = vec![0u16; needed as usize];
+        // SAFETY: `units` and `out` are valid for `src_len` and `needed` UTF-16 code units.
+        let written = unsafe {
+            LCMapStringW(
+                lcid,
+                flags,
+                units.as_ptr(),
+                src_len,
+                out.as_mut_ptr(),
+                needed,
+            )
+        };
+        if written <= 0 {
+            return units.to_vec();
+        }
+        out.truncate(written as usize);
+        out
     }
 
     fn read(kind: u32) -> Option<String> {

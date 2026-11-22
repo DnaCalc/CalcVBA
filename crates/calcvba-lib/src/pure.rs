@@ -920,8 +920,8 @@ pub fn str_reverse(args: &[Variant]) -> LibResult<Variant> {
     Ok(vunits(&units))
 }
 
-/// FIDELITY: handles case modes plus the deterministic ANSI byte conversion modes
-/// through the shared runtime ANSI codec. East Asian width and kana conversion remains unsupported.
+/// FIDELITY: handles case modes, deterministic ANSI byte conversions, and East Asian
+/// width/kana modes when an East Asian locale is active or supplied via `LocaleID`.
 pub fn str_conv(args: &[Variant]) -> LibResult<Variant> {
     let mode = as_i32(need(args, 1)?)?;
     let input = need(args, 0)?;
@@ -931,10 +931,13 @@ pub fn str_conv(args: &[Variant]) -> LibResult<Variant> {
     const VB_UPPER_CASE: i32 = 1;
     const VB_LOWER_CASE: i32 = 2;
     const VB_PROPER_CASE: i32 = 3;
+    const VB_WIDE: i32 = 4;
+    const VB_NARROW: i32 = 8;
+    const VB_KATAKANA: i32 = 16;
+    const VB_HIRAGANA: i32 = 32;
     const VB_UNICODE: i32 = 64;
     const VB_FROM_UNICODE: i32 = 128;
-    // Wide, narrow, katakana and hiragana need an East Asian locale.
-    const VB_EAST_ASIAN: i32 = 4 | 8 | 16 | 32;
+    const VB_EAST_ASIAN: i32 = VB_WIDE | VB_NARROW | VB_KATAKANA | VB_HIRAGANA;
 
     // Internal mode of the binder's `Byte() = String` store: the UTF-16LE bytes of the text.
     if mode == calcvba_bundle::STRCONV_UTF16_BYTES
@@ -956,20 +959,33 @@ pub fn str_conv(args: &[Variant]) -> LibResult<Variant> {
     if !(0..=255).contains(&mode)
         || (mode & (VB_UNICODE | VB_FROM_UNICODE) != 0
             && !matches!(mode, VB_UNICODE | VB_FROM_UNICODE))
+        || (mode & VB_WIDE != 0 && mode & VB_NARROW != 0)
+        || (mode & VB_KATAKANA != 0 && mode & VB_HIRAGANA != 0)
     {
         return Err(LibError::invalid_call("invalid StrConv conversion flags"));
     }
 
-    if mode & VB_EAST_ASIAN != 0 {
+    let raw_lcid = match opt(args, 2) {
+        Some(locale) => as_i32(locale)?,
+        None => 0,
+    };
+    let Some(effective_lcid) = calcvba_runtime::regional::effective_lcid(raw_lcid) else {
+        return Err(LibError::invalid_call("invalid StrConv locale ID"));
+    };
+
+    if mode & (VB_WIDE | VB_NARROW) != 0
+        && !calcvba_runtime::regional::is_east_asian_lcid(effective_lcid)
+    {
         return Err(LibError::invalid_call(
-            "StrConv wide/narrow/kana modes need an East Asian locale",
+            "StrConv wide/narrow modes need an East Asian locale",
         ));
     }
-
-    if let Some(locale) = opt(args, 2)
-        && !calcvba_runtime::regional::locale_id_supported(as_i32(locale)?)
+    if mode & (VB_KATAKANA | VB_HIRAGANA) != 0
+        && !calcvba_runtime::regional::is_japanese_lcid(effective_lcid)
     {
-        return Err(LibError::invalid_call("invalid StrConv locale ID"));
+        return Err(LibError::invalid_call(
+            "StrConv kana modes need a Japanese locale",
+        ));
     }
 
     let units = if mode & VB_UNICODE != 0 {
@@ -989,7 +1005,7 @@ pub fn str_conv(args: &[Variant]) -> LibResult<Variant> {
 
     let casing = mode & VB_PROPER_CASE;
     // In Excel on ACP 1252, best-fit conversion precedes casing and word breaks.
-    let units = if casing == 0 {
+    let units = if casing == 0 || calcvba_runtime::regional::is_east_asian_lcid(effective_lcid) {
         units
     } else {
         use calcvba_runtime::ansi::{ansi_decode_units, ansi_encode_units};
@@ -1000,6 +1016,18 @@ pub fn str_conv(args: &[Variant]) -> LibResult<Variant> {
         VB_LOWER_CASE => case_units(&units, |c| simple_case(c, c.to_lowercase())),
         VB_PROPER_CASE => proper_case_units(&units),
         _ => units,
+    };
+    let units = if mode & VB_EAST_ASIAN != 0 {
+        calcvba_runtime::regional::map_east_asian_units(
+            &units,
+            effective_lcid,
+            mode & VB_WIDE != 0,
+            mode & VB_NARROW != 0,
+            mode & VB_KATAKANA != 0,
+            mode & VB_HIRAGANA != 0,
+        )
+    } else {
+        units
     };
 
     if mode & VB_FROM_UNICODE != 0 {

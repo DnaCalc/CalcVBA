@@ -9,3 +9,5 @@ StrConvEdges.14=String:[A B]
 StrConvEdges.15=String:[i]
 StrConvEdges.16=String:[?]
 StrConvEdges.17=ERR94
+StrConvEdges.19=String:[ABC]
+StrConvEdges.20=String:[{65313}{65314}{65315}]

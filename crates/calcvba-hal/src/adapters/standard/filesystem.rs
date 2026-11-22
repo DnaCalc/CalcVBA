@@ -3,6 +3,7 @@ use crate::{
     model::CapabilityId,
     traits::FileSystemHal,
 };
+use calcvba_runtime::ansi::{ansi_decode, ansi_encode};
 use calcvba_runtime::vba_record::VbaRecordFieldKind;
 use calcvba_runtime::{VarType, Variant, bstr::BStr, vba_date::ymd_to_serial};
 use std::collections::{BTreeMap, BTreeSet};
@@ -538,7 +539,7 @@ fn print_column_after_text(start_column: i32, text: &str) -> i32 {
 fn line_column_at(data: &[u8], cursor: usize) -> i32 {
     let upto = cursor.min(data.len());
     let mut col = 0usize;
-    for ch in String::from_utf8_lossy(&data[..upto]).chars() {
+    for ch in ansi_decode(&data[..upto]).chars() {
         match ch {
             '\r' | '\n' => col = 0,
             _ => col = col.saturating_add(1),
@@ -578,13 +579,13 @@ fn parse_input_field(data: &[u8], mut cursor: usize) -> (String, usize) {
         return (String::new(), cursor);
     }
 
-    let mut out = String::new();
     if data[cursor] == b'"' {
+        let mut bytes = Vec::new();
         cursor += 1;
         while cursor < len {
             match data[cursor] {
                 b'"' if cursor + 1 < len && data[cursor + 1] == b'"' => {
-                    out.push('"');
+                    bytes.push(b'"');
                     cursor += 2;
                 }
                 b'"' => {
@@ -592,22 +593,19 @@ fn parse_input_field(data: &[u8], mut cursor: usize) -> (String, usize) {
                     break;
                 }
                 byte => {
-                    out.push(byte as char);
+                    bytes.push(byte);
                     cursor += 1;
                 }
             }
         }
+        (ansi_decode(&bytes), cursor)
     } else {
         let start = cursor;
         while cursor < len && !matches!(data[cursor], b',' | b'\r' | b'\n') {
             cursor += 1;
         }
-        out = String::from_utf8_lossy(&data[start..cursor])
-            .trim()
-            .to_string();
+        (ansi_decode(&data[start..cursor]).trim().to_owned(), cursor)
     }
-
-    (out, cursor)
 }
 
 fn variant_from_input_field(field: &str) -> Variant {
@@ -1529,7 +1527,7 @@ impl FileSystemHal for StandardHostServices {
             }
         }
         entry.position = i32::try_from(cursor).map_err(|_| error(6))?;
-        let text = calcvba_runtime::ansi::ansi_decode(&bytes);
+        let text = ansi_decode(&bytes);
         if entry.mode == 0 && text.encode_utf16().count() < count as usize {
             return Err(error(62));
         }
@@ -1566,7 +1564,7 @@ impl FileSystemHal for StandardHostServices {
         }
         let handle_id = self.variant_to_i32(&handle, capability, "write_bytes", "handle")?;
         let text = format!("{}\r\n", calcvba_runtime::write_display_text(&data));
-        let bytes = text.as_bytes();
+        let bytes = ansi_encode(&text);
         let mut state = self.borrow_fs(capability, "write_bytes")?;
         let entry = self.fs_entry_mut(&mut state, handle_id, "write_bytes")?;
         let pos = seq_write_offset(entry);
@@ -1574,7 +1572,7 @@ impl FileSystemHal for StandardHostServices {
         if end > entry.data.len() {
             entry.data.resize(end, 0);
         }
-        entry.data[pos..end].copy_from_slice(bytes);
+        entry.data[pos..end].copy_from_slice(&bytes);
         entry.position = if entry.mode == MODE_APPEND {
             entry.position.saturating_add(bytes.len() as i32)
         } else {
@@ -1602,7 +1600,7 @@ impl FileSystemHal for StandardHostServices {
             .as_bstr()
             .map(|t| t.as_str().to_string())
             .unwrap_or_default();
-        let bytes = text.as_bytes();
+        let bytes = ansi_encode(&text);
         let mut state = self.borrow_fs(capability, "print_line")?;
         let entry = self.fs_entry_mut(&mut state, handle_id, "print_line")?;
         let pos = seq_write_offset(entry);
@@ -1610,7 +1608,7 @@ impl FileSystemHal for StandardHostServices {
         if end > entry.data.len() {
             entry.data.resize(end, 0);
         }
-        entry.data[pos..end].copy_from_slice(bytes);
+        entry.data[pos..end].copy_from_slice(&bytes);
         entry.position = if entry.mode == MODE_APPEND {
             entry.position.saturating_add(bytes.len() as i32)
         } else {
@@ -1700,7 +1698,7 @@ impl FileSystemHal for StandardHostServices {
                 }
             })
             .unwrap_or((remaining.len(), remaining.len()));
-        let line = calcvba_runtime::ansi::ansi_decode(&remaining[..line_end.0]);
+        let line = ansi_decode(&remaining[..line_end.0]);
         entry.position += line_end.1 as i32;
         if dos_eof == Some(line_end.1) {
             entry.input_text_eof = true;

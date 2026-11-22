@@ -1821,6 +1821,7 @@ fn verify_inst_places(
         }
         OxInst::SetErrorHandler(_)
         | OxInst::ClearErr
+        | OxInst::ClearErrOnExit
         | OxInst::SetLineNumber { .. }
         | OxInst::DrainTerminations => {}
     }

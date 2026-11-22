@@ -848,6 +848,7 @@ struct Lowerer<'a> {
     /// Pre-assigned block per source label, so forward `GoTo` / `On Error GoTo` /
     /// `Resume <label>` / `GoSub` references resolve.
     labels: HashMap<CoreLabelId, BlockId>,
+    has_error_handler: bool,
     /// Numeric line metadata parallel to Core label ids.
     label_lines: Vec<Option<i32>>,
     /// The temp holding each in-scope `With` receiver (by the binder's `With` id), so
@@ -907,6 +908,7 @@ impl<'a> Lowerer<'a> {
             next_temp: 0,
             loops: Vec::new(),
             labels: HashMap::new(),
+            has_error_handler: false,
             label_lines: inputs.label_lines,
             with_temps: HashMap::new(),
             com: inputs.com,
@@ -1107,6 +1109,7 @@ impl<'a> Lowerer<'a> {
     fn assign_labels(&mut self, body: &[CoreStmt]) -> Result<()> {
         for stmt in body {
             match stmt {
+                CoreStmt::Error(ErrorOp::OnErrorGotoLabel(_)) => self.has_error_handler = true,
                 CoreStmt::Label(id) => {
                     if self.labels.contains_key(id) {
                         return Err(ElaborateError::Malformed(format!(
@@ -1369,6 +1372,9 @@ impl<'a> Lowerer<'a> {
             } => self.lower_select(selector, cases, case_else, *compare_mode, s_next),
             CoreStmt::Exit(kind) => {
                 let target = self.exit_target(*kind)?;
+                if self.has_error_handler && matches!(kind, coreir::ExitKind::Proc) {
+                    self.emit(OxInst::ClearErrOnExit);
+                }
                 self.finish_to(OxTerminator::Jump(target), s_next);
                 Ok(())
             }

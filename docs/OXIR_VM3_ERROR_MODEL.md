@@ -87,11 +87,14 @@ Each rule cites its MS-VBAL basis. "R*" ids are referenced from the code.
 - **R9 — `On Error GoTo <label>` is single-shot.** When the handler **fires**, the
   activation policy is demoted to Default *before* control reaches the handler label. A
   re-raise inside the handler therefore **propagates to the caller**, not back into the
-  same handler. The handler is re-armed only by an explicit `On Error` inside it, or by
-  `Resume*`/`On Error GoTo -1` clearing the active error. *(§5.4.4 l. 2803.)*
+  same handler. A second fault propagates while the original error remains active,
+  even if the handler executes another `On Error GoTo <label>` (Excel probe
+  `ErrObject.54`). `Resume*` and `On Error GoTo -1` clear the active error.
 
-- **R10 — `Exit Sub/Function/Property` resets `Err`** (and clears `active_error`). A
-  *normal* `End Sub` / fall-off-the-end does **not**. *(§6.1.3.2.1.1 ll. 9049–9051.)*
+- **R10 — `Exit Sub/Function/Property` resets `Err` while a GoTo handler is active**
+  (and clears `active_error`). A normal end of a procedure preserves `Err`.
+  `Exit Function` after an error skipped by `On Error Resume Next` preserves it too
+  (Excel probes `ErrObject.51` and `ErrObject.53`).
 
 - **R11 — `Err.Raise(Number[, Source][, Description][, HelpFile][, HelpContext])`.** All
   supplied args honoured; omitted args inherit the current inheritable `Err` fields; omitted

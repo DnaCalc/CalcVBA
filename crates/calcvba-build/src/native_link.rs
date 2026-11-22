@@ -488,6 +488,7 @@ fn relocate_places(inst: &mut OxInst, base: usize) {
         AddRef { object } | Release { object, .. } => operand(object, base),
         SetErrorHandler(_)
         | ClearErr
+        | ClearErrOnExit
         | StmtBoundary { .. }
         | SetLineNumber { .. }
         | DrainTerminations => {}

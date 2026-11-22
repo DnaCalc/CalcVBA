@@ -1,7 +1,7 @@
 //! Calls on the owning runtime's ErrObject, shared by VM3 and compiled code.
-use crate::{ExecState, Fault, RaiseFields, arith};
-use calcvba_bundle::{NumericCoerceTarget, ProjectMemberKind};
-use calcvba_runtime::{ObjectRef, Utf16String, Variant, variant::VarType};
+use crate::{ExecState, Fault};
+use calcvba_bundle::ProjectMemberKind;
+use calcvba_runtime::{ObjectRef, Variant, variant::VarType};
 
 /// Built-in object dispatch. This uses the active runtime's error state directly;
 /// aliases of Err never hold a stale copy of Number or Description.
@@ -96,27 +96,7 @@ pub fn invoke_library_object(
                     ordered[index] = Some(arg);
                 }
             }
-            let number = ordered[0].ok_or_else(|| error(449))?;
-            let number = arith::coerce_numeric(number, NumericCoerceTarget::Long)
-                .map_err(Fault::from_arith)?
-                .as_i32()
-                .unwrap_or(0);
-            let string = |index: usize| -> Result<Option<Utf16String>, Fault> {
-                ordered[index].map(crate::coerced_string_utf16).transpose()
-            };
-            let fields = RaiseFields {
-                source: string(1)?,
-                description: string(2)?,
-                help_file: string(3)?,
-                help_context: ordered[4]
-                    .map(|value| {
-                        arith::coerce_numeric(value, NumericCoerceTarget::Long)
-                            .map(|v| v.as_i32().unwrap_or(0))
-                            .map_err(Fault::from_arith)
-                    })
-                    .transpose()?,
-            };
-            Err(exec.err_engine.explicit_fault(number, fields, true))
+            Err(exec.err_engine.fault_from_raise_args(ordered, true))
         }
         _ => Err(error(438)),
     }

@@ -1188,50 +1188,22 @@ impl<'h> Vm3<'h> {
                     help_context,
                     inherit,
                 } => {
-                    let num_v = self.operand(number)?;
-                    match arith::coerce_numeric(&num_v, calcvba_bundle::NumericCoerceTarget::Long) {
-                        Ok(code_v) => {
-                            let code = code_v.as_i32().unwrap_or(0);
-                            let description = description
-                                .as_ref()
-                                .map(|operand| self.operand_string(operand))
-                                .transpose()?;
-                            let source = source
-                                .as_ref()
-                                .map(|operand| self.operand_string(operand))
-                                .transpose()?;
-                            let help_file = help_file
-                                .as_ref()
-                                .map(|operand| self.operand_string(operand))
-                                .transpose()?;
-                            let help_context = match help_context {
-                                Some(op) => {
-                                    let v = self.operand(op)?;
-                                    let coerced = arith::coerce_numeric(
-                                        &v,
-                                        calcvba_bundle::NumericCoerceTarget::Long,
-                                    )
-                                    .map_err(Fault::from_arith)
-                                    .map_err(Vm3Error::Fault)?;
-                                    Some(coerced.as_i32().unwrap_or(0))
-                                }
-                                None => None,
-                            };
-                            let fault = self.exec.err_engine.explicit_fault(
-                                code,
-                                calcvba_rt_abi::RaiseFields {
-                                    source,
-                                    description,
-                                    help_file,
-                                    help_context,
-                                },
-                                *inherit,
-                            );
-                            self.route_fault(fault)?;
-                        }
-                        // A non-numeric raise code is itself a coercion fault (e.g. 13).
-                        Err(e) => self.route_fault(Fault::from_arith(e))?,
-                    }
+                    let number = self.operand(number)?;
+                    let mut value = |operand: &Option<OxOperand>| {
+                        operand.as_ref().map(|op| self.operand(op)).transpose()
+                    };
+                    let args = [
+                        Some(number),
+                        value(source)?,
+                        value(description)?,
+                        value(help_file)?,
+                        value(help_context)?,
+                    ];
+                    let fault = self
+                        .exec
+                        .err_engine
+                        .fault_from_raise_args(args.each_ref().map(Option::as_ref), *inherit);
+                    self.route_fault(fault)?;
                 }
                 // GoSub / Return: a per-activation LIFO resumption list (R12).
                 OxTerminator::GoSub { target, ret } => {
@@ -1329,15 +1301,6 @@ impl<'h> Vm3<'h> {
         self.exec
             .err_engine
             .raise(fault, self.cur_program().unit_name.clone());
-    }
-
-    /// Evaluate an operand and coerce it to its lossless VBA UTF-16 string form —
-    /// used for explicit `Err.Raise` Source/Description/HelpFile arguments.
-    fn operand_string(&mut self, op: &OxOperand) -> Result<calcvba_runtime::Utf16String, Vm3Error> {
-        let v = self.operand(op)?;
-        Ok(calcvba_runtime::variant_to_vba_string(&v)
-            .map(|b| calcvba_runtime::Utf16String::from_bstr(&b))
-            .unwrap_or_default())
     }
 
     /// Raise a vm3-internal run-time error (a code with its default message) by routing
@@ -1645,6 +1608,7 @@ impl<'h> Vm3<'h> {
             }
             // `Err.Clear` → reset the `Err` object.
             OxInst::ClearErr => self.exec.err_engine.clear_err(),
+            OxInst::ClearErrOnExit => self.exec.err_engine.clear_err_on_exit(),
 
             // ── Pointer helpers ──────────────────────────────────────────────────────
             // `VarPtr`/`StrPtr`/`ObjPtr` give the real address of the storage (or the BSTR /

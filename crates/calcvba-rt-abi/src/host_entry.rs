@@ -178,6 +178,7 @@ pub fn stack_instruction(inst: &OxInst, layout: &ScalarLayout) -> bool {
             | OxInst::CallExtern { .. }
             | OxInst::SetErrorHandler(_)
             | OxInst::ClearErr
+            | OxInst::ClearErrOnExit
             | OxInst::ErrFieldGet { .. }
             | OxInst::ErlGet { .. }
             | OxInst::SetLineNumber { .. }
@@ -2368,7 +2369,10 @@ impl ScalarLayout {
                     _ => Err("IsMissing requires a retained Variant".into()),
                 }
             }
-            OxInst::SetErrorHandler(_) | OxInst::ClearErr | OxInst::SetLineNumber { .. }
+            OxInst::SetErrorHandler(_)
+            | OxInst::ClearErr
+            | OxInst::ClearErrOnExit
+            | OxInst::SetLineNumber { .. }
                 if self.owning =>
             {
                 Ok(())

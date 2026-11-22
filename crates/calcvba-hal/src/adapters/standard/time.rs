@@ -1,5 +1,6 @@
 use crate::{error::HalResult, model::CapabilityId, traits::TimeLocaleHal};
 use calcvba_runtime::Variant;
+#[cfg(any(windows, unix))]
 use calcvba_runtime::ymd_to_serial;
 
 use super::StandardHostServices;
@@ -134,7 +135,17 @@ pub(super) fn system_time_to_local_vba_serial(time: std::time::SystemTime) -> f6
         / 86_400.0
 }
 
-#[cfg(not(any(target_os = "windows", unix)))]
+#[cfg(target_os = "wasi")]
+pub(super) fn system_time_to_local_vba_serial(time: std::time::SystemTime) -> f64 {
+    let minutes = std::env::var("CALCVBA_WASI_UTC_OFFSET_MINUTES")
+        .ok()
+        .and_then(|value| value.parse::<i32>().ok())
+        .filter(|minutes| (-1439..=1439).contains(minutes))
+        .unwrap_or_default();
+    utc_system_time_to_vba_serial(time) + f64::from(minutes) / 1_440.0
+}
+
+#[cfg(not(any(windows, unix, target_os = "wasi")))]
 pub(super) fn system_time_to_local_vba_serial(time: std::time::SystemTime) -> f64 {
     utc_system_time_to_vba_serial(time)
 }

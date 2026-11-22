@@ -3,6 +3,7 @@ use crate::{
     model::{CapabilityId, HalProfileId},
     traits::{DynLinkDescriptorView, DynamicLinkHal},
 };
+#[cfg(not(target_arch = "wasm32"))]
 use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::{BindingHandle, DynLinkSymbol, RuntimeCallArgument, Variant};
 use std::collections::BTreeMap;
@@ -50,6 +51,7 @@ pub(super) fn external_symbol_token(library: &str, alias: &str, name: &str) -> i
     (hash & 0x7fff_ffff).max(1) as i32
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn variant_i32(value: &Variant) -> i32 {
     value
         .as_i32()
@@ -69,6 +71,7 @@ fn variant_i32(value: &Variant) -> i32 {
         .unwrap_or(0)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn variant_f64(value: &Variant) -> f64 {
     value
         .as_f64()
@@ -78,6 +81,7 @@ fn variant_f64(value: &Variant) -> f64 {
         .unwrap_or_else(|| f64::from(variant_i32(value)))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn variant_i64(value: &Variant) -> i64 {
     value
         .as_i64()
@@ -1286,6 +1290,7 @@ fn marshal_variant_to_ffi(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn unmarshal_ffi_to_variant(raw: i64, return_type: Option<&str>) -> Variant {
     match return_type {
         None => Variant::empty(),

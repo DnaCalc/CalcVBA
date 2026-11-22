@@ -11,7 +11,12 @@ pub(crate) fn descriptor_for_profile(
     HalDescriptor {
         profile,
         runtime_class: runtime_class.as_str(),
-        capabilities: capability_matrix(profile, runtime_class, policy.wasm_runtime_class),
+        capabilities: capability_matrix(
+            profile,
+            runtime_class,
+            policy.wasm_runtime_class,
+            policy.deterministic_mode,
+        ),
     }
 }
 
@@ -19,6 +24,7 @@ fn capability_matrix(
     profile: HalProfileId,
     runtime_class: HalRuntimeClass,
     wasm_runtime_class: WasmRuntimeClass,
+    deterministic_mode: bool,
 ) -> Vec<CapabilityDescriptor> {
     use CapabilityId as C;
     let supports_console = matches!(
@@ -75,11 +81,12 @@ fn capability_matrix(
         }
         HalProfileId::Wasm => match runtime_class {
             HalRuntimeClass::WasmWasiLocal => {
-                push(C::ConsoleIo, false);
-                push(C::UiInteraction, true);
+                let wasi_io = cfg!(target_os = "wasi") && !deterministic_mode;
+                push(C::ConsoleIo, wasi_io);
+                push(C::UiInteraction, !cfg!(target_os = "wasi"));
                 push(C::EventPump, true);
-                push(C::FileSystemIo, false);
-                push(C::ProcessEnv, false);
+                push(C::FileSystemIo, wasi_io);
+                push(C::ProcessEnv, wasi_io);
                 push(C::ComActivationDispatch, false);
                 push(C::TimeLocale, true);
                 push(C::DynamicLinking, false);

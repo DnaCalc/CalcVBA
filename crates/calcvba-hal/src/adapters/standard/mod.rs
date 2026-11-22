@@ -28,7 +28,7 @@ mod dynlink;
 mod events;
 mod filesystem;
 mod process;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "wasi"))]
 mod settings_file;
 #[cfg(windows)]
 mod settings_registry;
@@ -479,8 +479,15 @@ impl StandardHostServices {
         host_backed_mode_active(self.profile, &self.policy)
     }
 
+    fn wasi_native(&self) -> bool {
+        cfg!(target_os = "wasi")
+            && self.profile == HalProfileId::Wasm
+            && self.runtime_class == HalRuntimeClass::WasmWasiLocal
+            && !self.policy.deterministic_mode
+    }
+
     fn native_fs_enabled(&self) -> bool {
-        self.native_mode_enabled()
+        self.native_mode_enabled() || self.wasi_native()
     }
 
     fn is_stdio_runtime(&self) -> bool {
@@ -491,7 +498,7 @@ impl StandardHostServices {
     }
 
     fn native_console_enabled(&self) -> bool {
-        self.native_mode_enabled() && self.is_stdio_runtime()
+        (self.native_mode_enabled() && self.is_stdio_runtime()) || self.wasi_native()
     }
 
     fn native_process_enabled(&self) -> bool {
@@ -499,7 +506,7 @@ impl StandardHostServices {
     }
 
     fn native_time_enabled(&self) -> bool {
-        self.native_mode_enabled()
+        self.native_mode_enabled() || self.wasi_native()
     }
 
     fn native_diagnostics_enabled(&self) -> bool {

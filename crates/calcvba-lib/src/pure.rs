@@ -104,7 +104,13 @@ fn string_bytes(value: &Variant) -> LibResult<Vec<u8>> {
 
 pub fn left(args: &[Variant]) -> LibResult<Variant> {
     let units = string_units(need(args, 0)?)?;
-    let n = as_usize(need(args, 1)?)?;
+    let n = as_i32(need(args, 1)?)?;
+    // VBA rejects the maximum Long length even when the string is shorter (P_Left.17).
+    if n == i32::MAX {
+        return Err(LibError::invalid_call(default_error_message(5)));
+    }
+    let n =
+        usize::try_from(n).map_err(|_| LibError::invalid_call("expected a non-negative count"))?;
     Ok(Variant::from_utf16_units(&units[..n.min(units.len())]))
 }
 

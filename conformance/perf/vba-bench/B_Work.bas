@@ -2,7 +2,7 @@ Attribute VB_Name = "B_Work"
 Option Explicit
 ' VBA performance benchmark workloads (dc-tey4.7). Each function does n units of work and returns
 ' a Double checksum, so Excel VBA and CalcVBA can be compared for correctness as well as time.
-' Excel times them with BenchExcel.bas; CalcVBA with crates/calcvba-differential/tests/vba_bench.rs.
+' Both runners read the workload sizes from cases.tsv.
 
 Private Type Rec
     Id As Long
@@ -155,4 +155,63 @@ Public Function UdtArray(ByVal n As Long) As Double
         acc = acc + r(i).Amount + Len(r(i).Name)
     Next i
     UdtArray = acc
+End Function
+
+Public Function ArrayScan(ByVal n As Long) As Double
+    Dim a() As Long, i As Long, acc As Double
+    ReDim a(1 To n)
+    For i = 1 To n
+        a(i) = i Mod 101
+    Next i
+    For i = n To 1 Step -1
+        acc = acc + a(i) * (i Mod 13)
+    Next i
+    ArrayScan = acc
+End Function
+
+Public Function LateClassCalls(ByVal n As Long) As Double
+    Dim a As Object, i As Long
+    Set a = New B_Acc
+    For i = 1 To n
+        a.AddValue CDbl(i Mod 7)
+    Next i
+    LateClassCalls = a.Total + a.Calls
+End Function
+
+Public Function WorksheetSum(ByVal n As Long, ByVal functions As Object) As Double
+    Dim i As Long, acc As Double
+    For i = 1 To n
+        acc = acc + functions.Sum(i, 1 + i Mod 7)
+    Next i
+    WorksheetSum = acc
+End Function
+
+Public Function FileLines(ByVal n As Long, ByVal path As String) As Double
+    Dim f As Integer, i As Long, line As String, acc As Double
+    f = FreeFile
+    Open path For Output As #f
+    For i = 1 To n
+        Print #f, "invoice-" & CStr(i)
+    Next i
+    Close #f
+    Open path For Input As #f
+    For i = 1 To n
+        Line Input #f, line
+        acc = acc + Len(line)
+    Next i
+    Close #f
+    Kill path
+    FileLines = acc
+End Function
+
+Private Function Fib(ByVal n As Long) As Long
+    If n < 2 Then
+        Fib = n
+    Else
+        Fib = Fib(n - 1) + Fib(n - 2)
+    End If
+End Function
+
+Public Function Recursion(ByVal n As Long) As Double
+    Recursion = Fib(n)
 End Function

@@ -23,6 +23,7 @@ criterion = "0.5"
 calcvba-bind.workspace = true
 calcvba-bundle.workspace = true
 calcvba-com = { workspace = true, features = ["fixture-typelibs"] }
+calcvba-host.workspace = true
 calcvba-office.workspace = true
 calcvba-project.workspace = true
 

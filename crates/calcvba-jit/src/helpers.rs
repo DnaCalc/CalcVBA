@@ -7175,7 +7175,7 @@ pub(crate) unsafe extern "C" fn rt_jit_array_get_variant_to_slot(
             let Some(array) = slot_ref(run_ref, array_area, array_index) else {
                 return ST_FAULT;
             };
-            array.clone()
+            array
         };
         if !array.holds_array() {
             if array.as_object_ref().is_some() {
@@ -7220,9 +7220,8 @@ pub(crate) unsafe extern "C" fn rt_jit_array_get_variant_to_slot(
             };
             indices.push(index);
         }
-        // SAFETY: the retained array and converted subscript vector outlive this read.
-        // SAFETY: the retained array and converted subscripts outlive this read.
-        let flat = match unsafe { jit_flat_index(state, &array, &indices) } {
+        // SAFETY: the borrowed array and converted subscripts outlive this read.
+        let flat = match unsafe { jit_flat_index(state, array, &indices) } {
             Ok(flat) => flat,
             Err(status) => return status,
         };
@@ -7382,7 +7381,7 @@ pub(crate) unsafe extern "C" fn rt_jit_array_set_variant_slot(
             let Some(array) = slot_ref(run_ref, array_area, array_index) else {
                 return ST_FAULT;
             };
-            (value, array.clone())
+            (value, array)
         };
         if !array.holds_array() {
             if array.as_object_ref().is_some() {
@@ -7420,8 +7419,8 @@ pub(crate) unsafe extern "C" fn rt_jit_array_set_variant_slot(
             };
             indices.push(index);
         }
-        // SAFETY: the retained array and converted subscripts outlive this read.
-        let flat = match unsafe { jit_flat_index(state, &array, &indices) } {
+        // SAFETY: the borrowed array and converted subscripts outlive this read.
+        let flat = match unsafe { jit_flat_index(state, array, &indices) } {
             Ok(flat) => flat,
             Err(status) => return status,
         };

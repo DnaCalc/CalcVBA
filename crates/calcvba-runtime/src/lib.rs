@@ -32,6 +32,7 @@ pub use calcvba_automation::variant;
 pub mod vba_date;
 pub mod vba_error;
 pub mod vba_radix;
+pub mod win32_declare;
 pub use calcvba_automation::vba_record;
 
 pub use bstr::Utf16String;

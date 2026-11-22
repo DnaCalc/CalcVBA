@@ -28,7 +28,7 @@ fn check_reports_host_shims_and_windows_dependencies_at_source_lines() {
     assert_eq!(report["verdict"], "needs Windows");
     let uses = report["findings"].as_array().unwrap();
     for (feature, line, verdict) in [
-        ("Declare", 1, "reject"),
+        ("Declare", 1, "replace"),
         ("Left", 3, "native"),
         ("Now", 3, "host"),
         ("Dir", 3, "shim"),

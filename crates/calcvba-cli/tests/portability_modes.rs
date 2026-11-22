@@ -11,6 +11,7 @@ fn strict_and_faithful_refuse_at_load_on_both_backends() {
     fs::write(
         &path,
         "Private Declare PtrSafe Sub Sleep Lib \"kernel32\" (ByVal ms As Long)\n\
+         Private Declare PtrSafe Sub Absent Lib \"kernel32\" ()\n\
          Sub Main()\n\
          Debug.Print \"entered Main\"\n\
          End Sub\n",
@@ -36,7 +37,7 @@ fn strict_and_faithful_refuse_at_load_on_both_backends() {
         })
     });
     fs::remove_file(path).unwrap();
-    for output in results.into_iter().flatten() {
+    for (index, output) in results.into_iter().flatten().enumerate() {
         assert!(!output.status.success());
         assert!(!String::from_utf8_lossy(&output.stdout).contains("entered Main"));
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -45,7 +46,11 @@ fn strict_and_faithful_refuse_at_load_on_both_backends() {
             "PORT-E-UNSUPPORTED",
             "Declare",
             "kernel32",
-            "\"line\": 1",
+            if index % 2 == 0 {
+                "\"line\": 1"
+            } else {
+                "\"line\": 2"
+            },
             "linux",
         ] {
             assert!(
@@ -54,6 +59,69 @@ fn strict_and_faithful_refuse_at_load_on_both_backends() {
             );
         }
     }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn faithful_mode_executes_supported_kernel32_declares() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/portable-declare.bas"
+    );
+    for backend in ["vm3", "jit"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_calcvba-cli"))
+            .args([
+                "run",
+                "--backend",
+                backend,
+                "--profile",
+                "linux-stdio",
+                "--portability-mode",
+                "windows-faithful",
+                path,
+            ])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{backend}: {stderr}");
+        assert_eq!(
+            stderr.trim(),
+            "True|True|True|True|3|0|41|41|42",
+            "{backend}"
+        );
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn faithful_mode_refuses_known_entry_with_wrong_signature() {
+    let path = std::env::temp_dir().join(format!(
+        "calcvba-portability-abi-{}.bas",
+        std::process::id()
+    ));
+    fs::write(
+        &path,
+        "Private Declare PtrSafe Function Sleep Lib \"kernel32\" (ByVal ms As Double) As Long\nSub Main()\nEnd Sub\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_calcvba-cli"))
+        .args([
+            "run",
+            "--profile",
+            "linux-stdio",
+            "--portability-mode",
+            "windows-faithful",
+        ])
+        .arg(&path)
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("PORT-E-UNSUPPORTED") && stderr.contains("kernel32!Sleep"),
+        "{stderr}"
+    );
 }
 
 #[test]

@@ -179,9 +179,9 @@ End Sub
             "unsupported/native_declare",
             "\
 Public r As Long
-Declare PtrSafe Function NativeGetTickCount Lib \"kernel32\" Alias \"GetTickCount\" () As Long
+Declare PtrSafe Function NativeAbsent Lib \"kernel32\" Alias \"CalcVbaNoSuchEntry\" () As Long
 Sub Main()
-  r = NativeGetTickCount()
+  r = NativeAbsent()
 End Sub
 ",
         ),
@@ -192,7 +192,7 @@ End Sub
         let outcome = run(Executor::Jit, source);
         // The scope matrix records the primary decline. Check the newer
         // instruction context separately, without changing that matrix's data.
-        // A Declare compiles on every platform now; off Windows the call raises at run time.
+        // A Declare without a native library or portable replacement raises at run time.
         let unsupported = outcome.unsupported.as_deref();
         rows.push(status(
             label,

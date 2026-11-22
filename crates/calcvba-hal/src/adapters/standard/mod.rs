@@ -28,6 +28,10 @@ mod dynlink;
 mod events;
 mod filesystem;
 mod process;
+#[cfg(target_os = "linux")]
+mod settings_file;
+#[cfg(windows)]
+mod settings_registry;
 mod time;
 mod ui;
 mod windows_paths;

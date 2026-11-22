@@ -23,18 +23,19 @@ pub(super) struct DirSearchState {
 }
 
 #[derive(Debug, Clone)]
-struct SettingEntry {
+#[cfg_attr(target_os = "linux", derive(serde::Serialize, serde::Deserialize))]
+pub(super) struct SettingEntry {
     key_name: String,
     value: String,
     /// Creation order: the registry lists a section's values in the order they were first
     /// written, and a rewrite keeps the original position (P_GetAllSettings.5).
-    seq: u64,
+    pub(super) seq: u64,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct SettingsState {
-    values: BTreeMap<(String, String, String), SettingEntry>,
-    next_seq: u64,
+    pub(super) values: BTreeMap<(String, String, String), SettingEntry>,
+    pub(super) next_seq: u64,
 }
 
 /// The executable portion of a command line, without launching it.
@@ -200,12 +201,18 @@ impl ProcessEnvHal for StandardHostServices {
         let section = self.setting_text(&section, capability, op, "section")?;
         let key = self.setting_text(&key, capability, op, "key")?;
         let default = self.setting_text(&default, capability, op, "default")?;
-        let state = self.borrow_settings(capability, op)?;
-        let value = state
-            .values
-            .get(&settings_key(&appname, &section, &key))
-            .map(|entry| entry.value.clone())
-            .unwrap_or(default);
+        #[cfg(windows)]
+        if self.native_process_enabled() {
+            let value = super::settings_registry::get(&appname, &section, &key)
+                .map_err(|error| self.registry_fault(op, error))?;
+            return Ok(Variant::from_string(value.unwrap_or(default)));
+        }
+        let value = self.with_settings(op, false, |state| {
+            Ok(state
+                .values
+                .get(&settings_key(&appname, &section, &key))
+                .map_or(default, |entry| entry.value.clone()))
+        })?;
         Ok(Variant::from_string(value))
     }
 
@@ -217,7 +224,6 @@ impl ProcessEnvHal for StandardHostServices {
         }
         let appname = self.setting_text(&appname, capability, op, "appname")?;
         let section = self.setting_text(&section, capability, op, "section")?;
-        let state = self.borrow_settings(capability, op)?;
         let prefix = (
             normalize_setting_name(&appname),
             normalize_setting_name(&section),
@@ -230,43 +236,22 @@ impl ProcessEnvHal for StandardHostServices {
                 "section name is empty",
             ));
         }
-        let mut entries: Vec<SettingEntry> = state
-            .values
-            .iter()
-            .filter(|((app, sec, _), _)| app == &prefix.0 && sec == &prefix.1)
-            .map(|(_, entry)| entry.clone())
-            .collect();
+        #[cfg(windows)]
+        if self.native_process_enabled() {
+            let entries = super::settings_registry::all(&appname, &section)
+                .map_err(|error| self.registry_fault(op, error))?;
+            return self.settings_array(entries);
+        }
+        let mut entries: Vec<SettingEntry> = self.with_settings(op, false, |state| {
+            Ok(state
+                .values
+                .iter()
+                .filter(|((app, sec, _), _)| app == &prefix.0 && sec == &prefix.1)
+                .map(|(_, entry)| entry.clone())
+                .collect())
+        })?;
         entries.sort_by_key(|entry| entry.seq);
-        if entries.is_empty() {
-            return Ok(Variant::empty());
-        }
-
-        // `a(i, 0)` is a key and `a(i, 1)` its value; storage is first dimension fastest,
-        // so every key comes before every value.
-        let mut values = Vec::with_capacity(entries.len() * 2);
-        let mut settings = Vec::with_capacity(entries.len());
-        for entry in entries {
-            values.push(Variant::from_string(entry.key_name));
-            settings.push(Variant::from_string(entry.value));
-        }
-        values.append(&mut settings);
-        let bounds = vec![
-            SafeArrayBound {
-                lower: 0,
-                count: u32::try_from(values.len() / 2).map_err(|_| {
-                    HalError::adapter_fault(
-                        self.profile,
-                        capability,
-                        op,
-                        "settings array row count exceeds SAFEARRAY bounds",
-                    )
-                })?,
-            },
-            SafeArrayBound { lower: 0, count: 2 },
-        ];
-        let array = SafeArray::from_typed_variants_nd(bounds, VT_BSTR_VALUE, values)
-            .map_err(|message| HalError::adapter_fault(self.profile, capability, op, message))?;
-        Ok(Variant::from_safearray(array))
+        self.settings_array(entries.into_iter().map(|e| (e.key_name, e.value)).collect())
     }
 
     fn save_setting_variant(
@@ -285,24 +270,31 @@ impl ProcessEnvHal for StandardHostServices {
         let section = self.setting_text(&section, capability, op, "section")?;
         let key_name = self.setting_text(&key, capability, op, "key")?;
         let value = self.setting_text(&setting, capability, op, "setting")?;
-        let mut state = self.borrow_settings(capability, op)?;
-        let slot = settings_key(&appname, &section, &key_name);
-        let seq = match state.values.get(&slot) {
-            Some(existing) => existing.seq,
-            None => {
-                state.next_seq += 1;
-                state.next_seq
-            }
-        };
-        state.values.insert(
-            slot,
-            SettingEntry {
-                key_name,
-                value,
-                seq,
-            },
-        );
-        Ok(Variant::empty())
+        #[cfg(windows)]
+        if self.native_process_enabled() {
+            super::settings_registry::save(&appname, &section, &key_name, &value)
+                .map_err(|error| self.registry_fault(op, error))?;
+            return Ok(Variant::empty());
+        }
+        self.with_settings(op, true, |state| {
+            let slot = settings_key(&appname, &section, &key_name);
+            let seq = match state.values.get(&slot) {
+                Some(existing) => existing.seq,
+                None => {
+                    state.next_seq += 1;
+                    state.next_seq
+                }
+            };
+            state.values.insert(
+                slot,
+                SettingEntry {
+                    key_name,
+                    value,
+                    seq,
+                },
+            );
+            Ok(Variant::empty())
+        })
     }
 
     fn delete_setting_variant(
@@ -317,56 +309,71 @@ impl ProcessEnvHal for StandardHostServices {
             return Err(self.unsupported(capability, op));
         }
         let appname = self.setting_text(&appname, capability, op, "appname")?;
-        let mut state = self.borrow_settings(capability, op)?;
-        if section.vtype() == VarType::Empty {
-            // `DeleteSetting App` removes the whole application; a key needs a section.
-            let missing = |message| settings_missing_fault(self.profile, capability, op, message);
-            if key.vtype() != VarType::Empty {
-                return Err(missing("a key needs a section"));
-            }
-            let app = normalize_setting_name(&appname);
-            let before = state.values.len();
-            state.values.retain(|(a, _, _), _| a != &app);
-            if state.values.len() == before {
-                return Err(missing("setting application does not exist"));
-            }
+        #[cfg(windows)]
+        if self.native_process_enabled() {
+            let optional_text = |value: &Variant, field| {
+                (value.vtype() != VarType::Empty)
+                    .then(|| self.setting_text(value, capability, op, field))
+                    .transpose()
+            };
+            let section = optional_text(&section, "section")?;
+            let key = optional_text(&key, "key")?;
+            super::settings_registry::delete(&appname, section.as_deref(), key.as_deref())
+                .map_err(|error| self.registry_fault(op, error))?;
             return Ok(Variant::empty());
         }
-        let section = self.setting_text(&section, capability, op, "section")?;
-        if key.vtype() == VarType::Empty {
-            let prefix = (
-                normalize_setting_name(&appname),
-                normalize_setting_name(&section),
-            );
-            let before = state.values.len();
-            state
+        self.with_settings(op, true, |state| {
+            if section.vtype() == VarType::Empty {
+                // `DeleteSetting App` removes the whole application; a key needs a section.
+                let missing =
+                    |message| settings_missing_fault(self.profile, capability, op, message);
+                if key.vtype() != VarType::Empty {
+                    return Err(missing("a key needs a section"));
+                }
+                let app = normalize_setting_name(&appname);
+                let before = state.values.len();
+                state.values.retain(|(a, _, _), _| a != &app);
+                if state.values.len() == before {
+                    return Err(missing("setting application does not exist"));
+                }
+                return Ok(Variant::empty());
+            }
+            let section = self.setting_text(&section, capability, op, "section")?;
+            if key.vtype() == VarType::Empty {
+                let prefix = (
+                    normalize_setting_name(&appname),
+                    normalize_setting_name(&section),
+                );
+                let before = state.values.len();
+                state
+                    .values
+                    .retain(|(app, sec, _), _| !(app == &prefix.0 && sec == &prefix.1));
+                if state.values.len() == before {
+                    return Err(settings_missing_fault(
+                        self.profile,
+                        capability,
+                        op,
+                        "setting section does not exist",
+                    ));
+                }
+                return Ok(Variant::empty());
+            }
+
+            let key = self.setting_text(&key, capability, op, "key")?;
+            if state
                 .values
-                .retain(|(app, sec, _), _| !(app == &prefix.0 && sec == &prefix.1));
-            if state.values.len() == before {
+                .remove(&settings_key(&appname, &section, &key))
+                .is_none()
+            {
                 return Err(settings_missing_fault(
                     self.profile,
                     capability,
                     op,
-                    "setting section does not exist",
+                    "setting key does not exist",
                 ));
             }
-            return Ok(Variant::empty());
-        }
-
-        let key = self.setting_text(&key, capability, op, "key")?;
-        if state
-            .values
-            .remove(&settings_key(&appname, &section, &key))
-            .is_none()
-        {
-            return Err(settings_missing_fault(
-                self.profile,
-                capability,
-                op,
-                "setting key does not exist",
-            ));
-        }
-        Ok(Variant::empty())
+            Ok(Variant::empty())
+        })
     }
 
     fn shell_variant(&self, command: Variant, _window_style: Variant) -> HalResult<Variant> {
@@ -596,6 +603,80 @@ impl ProcessEnvHal for StandardHostServices {
 }
 
 impl StandardHostServices {
+    fn settings_array(&self, entries: Vec<(String, String)>) -> HalResult<Variant> {
+        let capability = CapabilityId::ProcessEnv;
+        let op = "get_all_settings";
+        if entries.is_empty() {
+            return Ok(Variant::empty());
+        }
+
+        // `a(i, 0)` is a key and `a(i, 1)` its value; storage is first dimension fastest,
+        // so every key comes before every value.
+        let mut values = Vec::with_capacity(entries.len() * 2);
+        let mut settings = Vec::with_capacity(entries.len());
+        for (name, value) in entries {
+            values.push(Variant::from_string(name));
+            settings.push(Variant::from_string(value));
+        }
+        values.append(&mut settings);
+        let bounds = vec![
+            SafeArrayBound {
+                lower: 0,
+                count: u32::try_from(values.len() / 2).map_err(|_| {
+                    HalError::adapter_fault(
+                        self.profile,
+                        capability,
+                        op,
+                        "settings array row count exceeds SAFEARRAY bounds",
+                    )
+                })?,
+            },
+            SafeArrayBound { lower: 0, count: 2 },
+        ];
+        let array = SafeArray::from_typed_variants_nd(bounds, VT_BSTR_VALUE, values)
+            .map_err(|message| HalError::adapter_fault(self.profile, capability, op, message))?;
+        Ok(Variant::from_safearray(array))
+    }
+
+    #[cfg(windows)]
+    fn registry_fault(&self, op: &'static str, error: std::io::Error) -> HalError {
+        HalError::adapter_fault(
+            self.profile,
+            CapabilityId::ProcessEnv,
+            op,
+            error.to_string(),
+        )
+        .with_host_error_code(5)
+    }
+
+    fn with_settings<T>(
+        &self,
+        operation: &'static str,
+        write: bool,
+        operation_body: impl FnOnce(&mut SettingsState) -> HalResult<T>,
+    ) -> HalResult<T> {
+        let _ = write;
+        let capability = CapabilityId::ProcessEnv;
+        #[cfg(target_os = "linux")]
+        if self.native_process_enabled() {
+            use super::settings_file;
+            let fault = |error: std::io::Error| {
+                HalError::adapter_fault(self.profile, capability, operation, error.to_string())
+                    .with_host_error_code(5)
+            };
+            let location = settings_file::settings_path().map_err(fault)?;
+            let _lock = settings_file::lock(&location, write).map_err(fault)?;
+            let mut state = settings_file::read(&location).map_err(fault)?;
+            let answer = operation_body(&mut state)?;
+            if write {
+                settings_file::write(&location, &state).map_err(fault)?;
+            }
+            return Ok(answer);
+        }
+        let mut state = self.borrow_settings(capability, operation)?;
+        operation_body(&mut state)
+    }
+
     fn setting_text(
         &self,
         value: &Variant,

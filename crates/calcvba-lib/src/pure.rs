@@ -319,39 +319,44 @@ pub fn instr(args: &[Variant], rev: bool) -> LibResult<Variant> {
     } else {
         1
     };
-    let text = instr_text_compare(args, base + 2, false)?;
-    let hay = compare_fold_units(&units_arg(need(args, base)?)?, text);
-    let needle = compare_fold_units(&units_arg(need(args, base + 1)?)?, text);
-    // An empty needle in a nonempty string preserves even a nonpositive start.
-    if needle.is_empty() && !hay.is_empty() {
+    let mode = instr_compare_mode(args, base + 2)?;
+    let hay = units_arg(need(args, base)?)?;
+    let needle = units_arg(need(args, base + 1)?)?;
+    // Excel handles empty strings before validating the start and compare values.
+    if hay.is_empty() {
+        return Ok(vi32(0));
+    }
+    if needle.is_empty() {
         return Ok(vi32(start));
     }
+    let text = instr_text_compare(mode, false)?;
     // A nonempty search uses a signed byte offset into the UTF-16 string.
     if !(1..=i32::MAX / 2 + 1).contains(&start) {
         return Err(LibError::invalid_call("invalid InStr start position"));
     }
-    if hay.is_empty() {
-        return Ok(vi32(0));
-    }
+    let hay = compare_fold_units(&hay, text);
+    let needle = compare_fold_units(&needle, text);
     let from = start as usize - 1;
     Ok(vi32(
         find_units(&hay, &needle, from).map_or(0, |at| at as i32 + 1),
     ))
 }
 
-fn instr_text_compare(args: &[Variant], index: usize, rev: bool) -> LibResult<bool> {
-    let mode = arg_present(args, index)
+fn instr_compare_mode(args: &[Variant], index: usize) -> LibResult<i32> {
+    Ok(arg_present(args, index)
         .map(as_i32)
         .transpose()?
-        .unwrap_or_default();
+        .unwrap_or_default())
+}
+
+fn instr_text_compare(mode: i32, rev: bool) -> LibResult<bool> {
     match mode {
         // Excel accepts compare 2 for InStrRev.
-        n if n < 0 || (n == 2 && !rev) => {
-            Err(LibError::invalid_call("invalid string search comparison"))
-        }
         0 => Ok(false),
+        2 if !rev => Err(LibError::invalid_call("invalid string search comparison")),
         1..=4 => Ok(true),
-        locale => Ok(calcvba_runtime::regional::locale_id_supported(locale)),
+        locale if calcvba_runtime::regional::locale_id_supported(locale) => Ok(true),
+        _ => Err(LibError::invalid_call("invalid string search comparison")),
     }
 }
 
@@ -361,7 +366,7 @@ fn instr_text_compare(args: &[Variant], index: usize, rev: bool) -> LibResult<bo
 /// `start` is the 3rd arg and `compare` the 4th (the old code ignored `start` and misread
 /// arg 2 as the compare mode).
 fn instr_rev(args: &[Variant]) -> LibResult<Variant> {
-    let text = instr_text_compare(args, 3, true)?;
+    let text = instr_text_compare(instr_compare_mode(args, 3)?, true)?;
     let hay = compare_fold_units(&units_arg(need(args, 0)?)?, text);
     let needle = compare_fold_units(&units_arg(need(args, 1)?)?, text);
     let start = match arg_present(args, 2) {

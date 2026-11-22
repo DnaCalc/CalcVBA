@@ -145,6 +145,10 @@ pub struct HostPolicy {
     pub allow_interaction: bool,
     pub allow_process_spawn: bool,
     pub allow_filesystem_mutation: bool,
+    /// Host roots for Windows-dialect drive letters. Empty uses host paths.
+    pub windows_drive_roots: std::collections::BTreeMap<char, std::path::PathBuf>,
+    /// Host roots for named UNC server/share pairs.
+    pub windows_unc_roots: std::collections::BTreeMap<(String, String), std::path::PathBuf>,
     pub allow_dynamic_link: bool,
     pub allow_com_activation: bool,
     pub deterministic_mode: bool,
@@ -162,6 +166,8 @@ impl HostPolicy {
             allow_interaction: true,
             allow_process_spawn: true,
             allow_filesystem_mutation: true,
+            windows_drive_roots: Default::default(),
+            windows_unc_roots: Default::default(),
             allow_dynamic_link: true,
             allow_com_activation: true,
             deterministic_mode: false,
@@ -175,6 +181,27 @@ impl HostPolicy {
             com_invocation_strategy: ComInvocationStrategy::PreferVtable,
             wasm_runtime_class: WasmRuntimeClass::Wasi,
         }
+    }
+
+    pub fn with_windows_drive_root(
+        mut self,
+        drive: char,
+        root: impl Into<std::path::PathBuf>,
+    ) -> Self {
+        self.windows_drive_roots
+            .insert(drive.to_ascii_uppercase(), root.into());
+        self
+    }
+
+    pub fn with_windows_unc_root(
+        mut self,
+        server: &str,
+        share: &str,
+        root: impl Into<std::path::PathBuf>,
+    ) -> Self {
+        self.windows_unc_roots
+            .insert((server.to_lowercase(), share.to_lowercase()), root.into());
+        self
     }
 
     pub fn with_wasm_runtime_class(mut self, runtime_class: WasmRuntimeClass) -> Self {
@@ -200,6 +227,8 @@ impl Default for HostPolicy {
             allow_interaction: false,
             allow_process_spawn: true,
             allow_filesystem_mutation: false,
+            windows_drive_roots: Default::default(),
+            windows_unc_roots: Default::default(),
             allow_dynamic_link: false,
             allow_com_activation: true,
             deterministic_mode: true,

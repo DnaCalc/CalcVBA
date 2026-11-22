@@ -63,9 +63,31 @@ fn extract_host_flags(args: Vec<String>) -> Vec<String> {
 }
 
 /// Install the policy wrapper last: later `set_*` calls rebuild the host.
-fn apply_policy(engine: &mut Engine) {
-    if let Some(mode) = PORTABILITY_MODE.get().copied() {
-        engine.set_portability_mode(mode);
+fn apply_policy(engine: &mut Engine, project_root: Option<&Path>, workbook_project: bool) {
+    use calcvba_symbol::portability::Mode;
+    let mode = PORTABILITY_MODE
+        .get()
+        .copied()
+        .unwrap_or(if workbook_project {
+            Mode::WindowsFaithful
+        } else {
+            Mode::Native
+        });
+    engine.set_portability_mode(mode);
+    if mode == Mode::WindowsFaithful
+        && let Some(root) = project_root
+    {
+        let root = if root.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            root
+        };
+        engine.set_host_policy(
+            engine
+                .host_policy()
+                .clone()
+                .with_windows_drive_root('C', root),
+        );
     }
     if let Some(mode) = POLICY_MODE.get().copied() {
         engine.wrap_host_services(|inner| {
@@ -258,7 +280,11 @@ fn run_execute(mut cli_args: Vec<String>) {
             println!("BOOTSTRAP:{}", resolved.fingerprint());
         }
     }
-    apply_policy(&mut engine);
+    apply_policy(
+        &mut engine,
+        args.as_ref().and_then(|args| args.source_path.parent()),
+        false,
+    );
     let source = args
         .as_ref()
         .map(|a| a.source.clone())
@@ -364,7 +390,11 @@ fn run_project(args: Vec<String>) {
             });
     engine.set_runtime_profile(resolved.runtime_profile);
     engine.set_host_policy(resolved.policy.clone());
-    apply_policy(&mut engine);
+    apply_policy(
+        &mut engine,
+        project_file.parent(),
+        loaded.manifest.project_kind == calcvba_project::manifest::ProjectKind::Host,
+    );
     if parsed.dump_bootstrap {
         println!("BOOTSTRAP:{}", resolved.fingerprint());
     }
@@ -592,6 +622,7 @@ enum DiagnosticFormat {
 
 #[derive(Debug, Clone)]
 struct RunArgs {
+    source_path: PathBuf,
     source: String,
     dump_values: bool,
     dump_bootstrap: bool,
@@ -660,8 +691,10 @@ fn parse_run_args_from(args: Vec<String>) -> Option<RunArgs> {
         i += 1;
     }
 
-    let source = fs::read_to_string(path?).ok()?;
+    let source_path = PathBuf::from(path?);
+    let source = fs::read_to_string(&source_path).ok()?;
     Some(RunArgs {
+        source_path,
         source,
         dump_values,
         dump_bootstrap,

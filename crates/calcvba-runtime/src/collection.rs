@@ -149,7 +149,8 @@ impl CollectionData {
             _ => self.entries.len(),
         };
         self.entries.insert(at, Entry { key, value });
-        self.adjust_cursors(at, |next| next + 1);
+        // Keep each cursor on the same next item when insertion precedes it.
+        self.adjust_cursors(|next| next + usize::from(at <= next));
         Ok(())
     }
 
@@ -163,22 +164,17 @@ impl CollectionData {
     pub fn remove(&mut self, sel: &Selector) -> Result<(), CollectionError> {
         let i = self.resolve_index(sel)?;
         let removed = self.entries.remove(i);
-        self.adjust_cursors(i, |next| next - 1);
+        self.adjust_cursors(|next| next - usize::from(i < next));
         drop(removed);
         Ok(())
     }
 
-    fn adjust_cursors(&mut self, index: usize, adjust: impl Fn(usize) -> usize) {
+    fn adjust_cursors(&mut self, adjust: impl Fn(usize) -> usize) {
         self.cursors.retain(|cursor| {
             let Some(cursor) = cursor.upgrade() else {
                 return false;
             };
-            // A change before the next item shifts its position. A change at
-            // that position leaves the cursor ready for the item now there.
-            let next = cursor.get();
-            if index < next {
-                cursor.set(adjust(next));
-            }
+            cursor.set(adjust(cursor.get()));
             true
         });
     }

@@ -618,25 +618,13 @@ fn parse_input_field(data: &[u8], mut cursor: usize) -> (String, usize) {
     }
 
     if data[cursor] == b'"' {
-        let mut bytes = Vec::new();
-        cursor += 1;
-        while cursor < len {
-            match data[cursor] {
-                b'"' if cursor + 1 < len && data[cursor + 1] == b'"' => {
-                    bytes.push(b'"');
-                    cursor += 2;
-                }
-                b'"' => {
-                    cursor += 1;
-                    break;
-                }
-                byte => {
-                    bytes.push(byte);
-                    cursor += 1;
-                }
-            }
-        }
-        (ansi_decode(&bytes), cursor)
+        // Input # ends the field at the next quote. A second quote starts another field.
+        let start = cursor + 1;
+        let end = data[start..]
+            .iter()
+            .position(|&byte| byte == b'"')
+            .map_or(len, |offset| start + offset);
+        (ansi_decode(&data[start..end]), (end + 1).min(len))
     } else {
         let start = cursor;
         while cursor < len && !matches!(data[cursor], b',' | b'\r' | b'\n') {
@@ -2263,12 +2251,17 @@ impl FileSystemHal for StandardHostServices {
                 return Ok(Variant::from_i32(0));
             }
             change_drive(letter).map_err(|err| {
-                HalError::adapter_fault(
+                let fault = HalError::adapter_fault(
                     self.profile,
                     capability,
                     "chdrive",
                     format!("failed to change drive to {letter:?}: {err}"),
-                )
+                );
+                if letter.is_ascii_alphabetic() && matches!(err.raw_os_error(), Some(3 | 15 | 21)) {
+                    fault.with_host_error_code(68)
+                } else {
+                    fault
+                }
             })?;
         }
         Ok(Variant::from_i32(0))
@@ -2337,10 +2330,8 @@ impl FileSystemHal for StandardHostServices {
         if self.native_fs_enabled() {
             let old = self.variant_to_path(&old_path, capability, "name", "old")?;
             let new = self.variant_to_path(&new_path, capability, "name", "new")?;
-            self.require_file_parent(&old, "name")?;
-            self.require_file_parent(&new, "name")?;
             fs::rename(&old, &new).map_err(|err| {
-                HalError::adapter_fault(
+                let fault = HalError::adapter_fault(
                     self.profile,
                     capability,
                     "name",
@@ -2349,7 +2340,16 @@ impl FileSystemHal for StandardHostServices {
                         old.display(),
                         new.display()
                     ),
-                )
+                );
+                // Excel VBA's Name reports File not found for a missing file or parent.
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) {
+                    fault.with_host_error_code(53)
+                } else {
+                    fault
+                }
             })?;
         }
         Ok(Variant::empty())

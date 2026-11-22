@@ -9,7 +9,7 @@
 
 pub use calcvba_runtime::collection::{CollectionData, CollectionError, Selector, fold_key};
 
-use calcvba_runtime::Variant;
+use calcvba_runtime::{VarType, Variant};
 
 /// The omitted-argument sentinel (`DISP_E_PARAMNOTFOUND`) the VMs marshal an omitted optional
 /// into; the shared dispatcher recognises it to tell "omitted" from a real value. (The VMs
@@ -88,11 +88,11 @@ pub fn dispatch_collection(
             Ok(Variant::empty())
         }
         CollectionMethod::Item => {
-            let sel = required_selector(args.first())?;
+            let sel = required_selector(data, args.first())?;
             data.item(&sel)
         }
         CollectionMethod::Remove => {
-            let sel = required_selector(args.first())?;
+            let sel = required_selector(data, args.first())?;
             data.remove(&sel)?;
             Ok(Variant::empty())
         }
@@ -140,14 +140,23 @@ fn optional_selector(arg: Option<&Variant>) -> Option<Selector> {
 }
 
 /// A required `Item`/`Remove` selector. Omitted → [`CollectionError::ArgNotOptional`] (449).
-fn required_selector(arg: Option<&Variant>) -> Result<Selector, CollectionError> {
-    match arg {
-        Some(v) if v.vtype() == calcvba_runtime::VarType::Null => {
-            Err(CollectionError::TypeMismatch)
-        }
-        Some(v) if !is_missing_arg(v) => Ok(variant_selector(v)),
-        _ => Err(CollectionError::ArgNotOptional),
+fn required_selector(
+    data: &CollectionData,
+    arg: Option<&Variant>,
+) -> Result<Selector, CollectionError> {
+    let value = arg
+        .filter(|value| !is_missing_arg(value))
+        .ok_or(CollectionError::ArgNotOptional)?;
+    if data.count() == 0 {
+        return Err(CollectionError::BadArgument);
     }
+    if matches!(
+        value.vtype(),
+        VarType::Null | VarType::Error | VarType::ArrayVariant | VarType::Object
+    ) {
+        return Err(CollectionError::TypeMismatch);
+    }
+    Ok(variant_selector(value))
 }
 
 #[cfg(test)]

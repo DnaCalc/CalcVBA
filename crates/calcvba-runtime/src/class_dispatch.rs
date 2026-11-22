@@ -2393,11 +2393,18 @@ mod tests {
                 },
                 DISP_E_EXCEPTION
             );
-            unsafe {
-                oleaut::sys_free_string(excep.bstr_source);
-                oleaut::sys_free_string(excep.bstr_description);
-                oleaut::sys_free_string(excep.bstr_help_file);
-            }
+            // SAFETY: Invoke returned three owned BSTRs to this caller.
+            let [source, description, help_file] = unsafe {
+                [
+                    excep.bstr_source,
+                    excep.bstr_description,
+                    excep.bstr_help_file,
+                ]
+                .map(|raw| BStr::from_raw_bstr(raw))
+            };
+            assert_eq!(source.as_str(), "IShape");
+            assert_eq!(description.as_str(), "shape broken");
+            assert_eq!(help_file.as_str(), "shape.chm");
             assert_eq!(
                 read_error_info(),
                 (

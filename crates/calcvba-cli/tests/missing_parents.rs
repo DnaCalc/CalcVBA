@@ -12,6 +12,7 @@ fn open_and_name_never_create_missing_parent_directories() {
         r#"
 Sub Main()
 Dim outputError As Long, nameError As Long, inputError As Long, nestedError As Long
+Dim nameBlockedTarget As Long, nameMissingSource As Long, nameMissingFile As Long, nameBlockedSource As Long
 On Error Resume Next
 Open "new-output/out.txt" For Output As #1
 outputError = Err.Number
@@ -25,7 +26,20 @@ inputError = Err.Number
 Err.Clear
 Open "blocking-file/child/out.txt" For Output As #3
 nestedError = Err.Number
+Err.Clear
+Name "original.txt" As "blocking-file/moved.txt"
+nameBlockedTarget = Err.Number
+Err.Clear
+Name "new-name/original.txt" As "moved.txt"
+nameMissingSource = Err.Number
+Err.Clear
+Name "missing.txt" As "moved.txt"
+nameMissingFile = Err.Number
+Err.Clear
+Name "blocking-file/original.txt" As "moved.txt"
+nameBlockedSource = Err.Number
 Debug.Print outputError, nameError, inputError, nestedError
+Debug.Print nameBlockedTarget, nameMissingSource, nameMissingFile, nameBlockedSource
 End Sub
 "#,
     )
@@ -61,7 +75,7 @@ End Sub
         assert!(output.status.success(), "{text}");
         assert_eq!(
             text.split_whitespace().collect::<Vec<_>>(),
-            ["76", "76", "76", "76"]
+            ["76", "53", "76", "76", "53", "53", "53", "53"]
         );
         assert_eq!(parents, [false; 3]);
         assert_eq!(original.as_deref(), Some(b"keep".as_slice()));

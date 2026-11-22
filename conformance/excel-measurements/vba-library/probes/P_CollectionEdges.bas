@@ -1,6 +1,6 @@
 Attribute VB_Name = "P_CollectionEdges"
 Option Explicit
-' UNMEASURED selector coercion and mutation order for a future live enumerator.
+' Selector coercion and mutation during enumeration.
 Private Const N As Long = 12
 Private Function E(ByVal mode As Long) As String
     Dim c As New Collection, x As Variant, n As Long, s As String

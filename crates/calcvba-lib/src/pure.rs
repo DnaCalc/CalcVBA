@@ -628,7 +628,11 @@ pub fn replace(args: &[Variant]) -> LibResult<Variant> {
         Some(v) => as_i32(v)?,
         None => -1,
     };
-    let text = text_compare(args, 5)?;
+    // Replace also uses text matching for vbDatabaseCompare (P_Replace.13).
+    let text = match arg_present(args, 5) {
+        Some(value) => matches!(as_i32(value)?, 1 | 2),
+        None => false,
+    };
     if start < 1 || count < -1 {
         // VBA "Invalid procedure call or argument" (error 5).
         return Err(LibError::invalid_call("Replace start/count out of range"));

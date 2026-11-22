@@ -129,6 +129,39 @@ fn executable_links_the_source_project_diamond_and_preserves_class_identity() {
 }
 
 #[test]
+fn native_executable_clears_err_on_explicit_exit_from_handler() {
+    let directory = Directory::new();
+    let project = directory.project(
+        r#"Public Sub Main()
+    Recover
+    If Err.Number <> 0 Then Err.Raise 11
+    Debug.Print "Err cleared on exit"
+End Sub
+
+Private Sub Recover()
+    On Error GoTo caught
+    Err.Raise 5
+    Exit Sub
+caught:
+    Exit Sub
+End Sub
+"#,
+    );
+    let output = build_native_executable(&NativeExecutableBuildOptions {
+        project_path: project,
+        out_dir: directory.0.join("out"),
+        template_path: None,
+    })
+    .unwrap();
+    let result = Command::new(output.exe_path).output().unwrap();
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&result.stderr).trim(),
+        "Err cleared on exit"
+    );
+}
+
+#[test]
 fn main_errors_report_details_and_wrong_template_kind_is_refused() {
     let directory = Directory::new();
     let project = directory

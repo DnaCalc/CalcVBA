@@ -175,6 +175,27 @@ fn linux_executable_runs_main_and_reports_unhandled_errors() {
 }
 
 #[test]
+fn linux_executable_rejects_an_invalid_strconv_locale() {
+    let directory = Directory::new("strconv-locale");
+    // P_StrConv.44 records error 5 for this explicit LCID.
+    let options = directory.project(
+        "Exe",
+        "",
+        r#"Public Sub Main()
+    Dim v As Variant
+    On Error Resume Next
+    v = StrConv("abc", vbUpperCase, 99999)
+    Debug.Print Err.Number
+End Sub
+"#,
+    );
+    let output = build_native_executable(&options).unwrap();
+    let result = Command::new(output.exe_path).output().unwrap();
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(String::from_utf8_lossy(&result.stderr).trim(), "5");
+}
+
+#[test]
 fn linux_scalar_exports_match_win64_fixture_through_both_declare_backends() {
     let directory = Directory::new("parity");
     let output = build_native_library(&NativeLibraryBuildOptions {

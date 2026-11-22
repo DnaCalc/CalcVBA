@@ -586,12 +586,21 @@ pub fn get_all_settings(args: &[Variant], host: &dyn HostServices) -> LibResult<
         .get_all_settings_variant(string_arg(args, 0)?, string_arg(args, 1)?)?)
 }
 pub fn save_setting(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
-    Ok(host.process().save_setting_variant(
-        string_arg(args, 0)?,
-        string_arg(args, 1)?,
-        string_arg(args, 2)?,
-        string_arg(args, 3)?,
-    )?)
+    let appname = string_arg(args, 0)?;
+    let section = string_arg(args, 1)?;
+    let key = string_arg(args, 2)?;
+    let setting = string_arg(args, 3)?;
+    if [&section, &key].into_iter().any(|name| {
+        name.as_bstr()
+            .is_some_and(|text| text.payload_units().is_empty())
+    }) {
+        return Err(LibError::invalid_call(
+            "SaveSetting requires a section and key",
+        ));
+    }
+    Ok(host
+        .process()
+        .save_setting_variant(appname, section, key, setting)?)
 }
 pub fn delete_setting(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
     Ok(host.process().delete_setting_variant(

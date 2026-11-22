@@ -454,8 +454,14 @@ fn run_build(args: Vec<String>) {
             calcvba_build::build_native_executable(&options)
                 .map(|out| ("EXE", out.exe_path, out.map_path))
         } else {
-            calcvba_build::build_native_library(&options)
-                .map(|out| ("DLL", out.dll_path, out.map_path))
+            calcvba_build::build_native_library(&options).map(|out| {
+                let kind = if out.dll_path.extension().is_some_and(|ext| ext == "so") {
+                    "SO"
+                } else {
+                    "DLL"
+                };
+                (kind, out.dll_path, out.map_path)
+            })
         };
         match output {
             Ok((kind, path, map)) => {

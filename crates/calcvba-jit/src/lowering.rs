@@ -1836,7 +1836,10 @@ impl<'a> LowerFunc<'a> {
             OxInst::SetErrorHandler(handler) => {
                 self.emit_set_error_handler(builder, module, handler)
             }
-            OxInst::ClearErr => self.emit_err_clear(builder, module),
+            OxInst::ClearErr => self.emit_err_clear(builder, module, self.imports.err_clear),
+            OxInst::ClearErrOnExit => {
+                self.emit_err_clear(builder, module, self.imports.err_clear_on_exit)
+            }
             OxInst::ErrFieldGet { dst, field } => {
                 self.emit_err_field_get(builder, module, *dst, *field)
             }
@@ -1909,8 +1912,9 @@ impl<'a> LowerFunc<'a> {
         &self,
         builder: &mut FunctionBuilder<'_>,
         module: &mut impl Module,
+        helper: ClifFuncId,
     ) -> Result<(), JitError> {
-        let callee = self.import(builder, module, self.imports.err_clear);
+        let callee = self.import(builder, module, helper);
         let call = builder.ins().call(callee, &[self.state]);
         let status = builder.inst_results(call)[0];
         self.return_if_not_ok(builder, status);

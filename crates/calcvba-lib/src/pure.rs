@@ -104,7 +104,13 @@ fn string_bytes(value: &Variant) -> LibResult<Vec<u8>> {
 
 pub fn left(args: &[Variant]) -> LibResult<Variant> {
     let units = string_units(need(args, 0)?)?;
-    let n = as_usize(need(args, 1)?)?;
+    let n = as_i32(need(args, 1)?)?;
+    // VBA rejects the maximum Long length even when the string is shorter (P_Left.17).
+    if n == i32::MAX {
+        return Err(LibError::invalid_call(default_error_message(5)));
+    }
+    let n =
+        usize::try_from(n).map_err(|_| LibError::invalid_call("expected a non-negative count"))?;
     Ok(Variant::from_utf16_units(&units[..n.min(units.len())]))
 }
 
@@ -198,6 +204,10 @@ pub fn right_b(args: &[Variant]) -> LibResult<Variant> {
 pub fn mid(args: &[Variant]) -> LibResult<Variant> {
     let units = string_units(need(args, 0)?)?;
     let start = one_based_mid_start(need(args, 1)?)?;
+    // VBA rejects the maximum Long start before checking the string length (P_Mid.23).
+    if start == i32::MAX as usize {
+        return Err(LibError::invalid_call(default_error_message(5)));
+    }
     let from = (start - 1).min(units.len());
     let take = match opt(args, 2) {
         Some(v) => as_usize(v)?,
@@ -401,17 +411,9 @@ fn vunits(units: &[u16]) -> Variant {
 
 /// Map each character's case on its own, keeping the string's length in code units as
 /// VBA's `UCase`/`LCase` do (`ß` stays `ß`); an unpaired surrogate is kept as it is.
-fn map_case_units(units: &[u16], upper: bool) -> Vec<u16> {
+fn map_case_units(units: &[u16], map: impl Fn(char) -> char) -> Vec<u16> {
     case_units(units, |c| {
-        let mapped = if upper {
-            match c {
-                // Excel preserves dotless i and Greek final sigma (P_UCase.10/.12).
-                '\u{0131}' | '\u{03c2}' => c,
-                _ => simple_case(c, c.to_uppercase()),
-            }
-        } else {
-            simple_case(c, c.to_lowercase())
-        };
+        let mapped = map(c);
         if mapped.len_utf16() == c.len_utf16() {
             mapped
         } else {
@@ -423,7 +425,7 @@ fn map_case_units(units: &[u16], upper: bool) -> Vec<u16> {
 /// The units a text comparison matches on: each code unit case-folded on its own.
 fn compare_fold_units(units: &[u16], text: bool) -> Vec<u16> {
     if text {
-        map_case_units(units, false)
+        map_case_units(units, |c| simple_case(c, c.to_lowercase()))
     } else {
         units.to_vec()
     }
@@ -437,10 +439,20 @@ fn find_units(hay: &[u16], needle: &[u16], from: usize) -> Option<usize> {
 }
 
 pub fn lcase(args: &[Variant]) -> LibResult<Variant> {
-    Ok(vunits(&map_case_units(&units_arg(need(args, 0)?)?, false)))
+    let units = units_arg(need(args, 0)?)?;
+    Ok(vunits(&map_case_units(&units, |c| match c {
+        // Excel preserves capital sharp s and the ohm sign (P_LCase.9/.12).
+        '\u{1e9e}' | '\u{2126}' => c,
+        _ => simple_case(c, c.to_lowercase()),
+    })))
 }
 pub fn ucase(args: &[Variant]) -> LibResult<Variant> {
-    Ok(vunits(&map_case_units(&units_arg(need(args, 0)?)?, true)))
+    let units = units_arg(need(args, 0)?)?;
+    Ok(vunits(&map_case_units(&units, |c| match c {
+        // Excel preserves dotless i and Greek final sigma (P_UCase.10/.12).
+        '\u{0131}' | '\u{03c2}' => c,
+        _ => simple_case(c, c.to_uppercase()),
+    })))
 }
 
 pub fn split(args: &[Variant]) -> LibResult<Variant> {

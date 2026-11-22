@@ -65,9 +65,10 @@ uses the JIT when the project sets `<RuntimeFlavor>Jit</RuntimeFlavor>`. The
 [COM DLL example](examples/comserver) checks source Instancing, class factories
 and an early-bound client in an existing owned Excel, with temporary private
 per-user registration.
-NativeLibrary emits a Windows x64 DLL for admitted native exports. Exe emits a
-standalone compiled executable. ComExe emits a compiled local COM server with
-class factories, a dual Automation interface and an owning STA message loop.
+NativeLibrary emits a Windows x64 DLL or a GNU/Linux x86-64 shared object. Exe
+emits a standalone compiled executable for the same platform. ComExe emits a
+compiled local COM server with class factories, a dual Automation interface and
+an owning STA message loop.
 Its public boundaries support scalar numeric/Boolean values, BSTRs and Variants
 (ByVal, ByRef, results and properties, including arrays), including ByRef
 parameters, Optional Variant parameters (an omitted one arrives as Missing and the
@@ -90,6 +91,15 @@ checks the private Counter server with early-bound C#, VM3, JIT and AOT clients,
 then unregisters its HKCU entries. Add `-OracleSession <owned-session>` to check
 the same server with Office in an existing owned Excel session.
 
+On GNU/Linux x86-64, NativeLibrary writes `<Project>.so` and Exe writes
+`<Project>`. The shipped ELF templates require glibc 2.39 or later. Shared-library
+calls use the System V AMD64 ABI and resolve exports by name. The map retains
+descriptor ordinals. Numeric widths, BSTR and UTF-16 boundaries, and
+`ErrorPolicy=HResult` use the same project descriptors. Free Linux BSTR results
+and error strings with `CalcVbaFreeBstr` from the same shared object. The
+[template design](docs/spec/NATIVE_EXPORT_PE_TEMPLATE_V1.md#linux-x86-64-elf)
+lists the current ELF limits.
+
 The installed CLI patches its embedded template without invoking Rust or a
 linker. Each named export calls a compiled procedure directly. The initial
 boundary supports ByVal/ByRef Byte, Integer, Long, LongLong/LongPtr, Single,
@@ -98,8 +108,9 @@ and typed Abs/Sqr library helpers. CLng/CDbl/CBool specialize numeric operands.
 Long integer division/modulo and Boolean/Long bitwise operators are compiled.
 Calls may cross standard modules, with up to 32 arguments and 128 active native
 frames. Referenced source projects link into the same image, retaining separate
-globals, class identities and error sources. BSTR strings, terminated UTF-16/ANSI inputs, native UDTs, typed SAFEARRAYs,
-Automation Variants and COM object references have owning boundary operations.
+globals, class identities and error sources. The Windows template has owning
+boundary operations for BSTR strings, terminated UTF-16/ANSI inputs, native UDTs,
+typed SAFEARRAYs, Automation Variants and COM object references.
 Module and Static state initialize on the first call, outside the loader lock.
 The DLL binds to that calling thread; calls from other threads leave caller
 storage alone and report error 1444. Unhandled errors return zero, or an HRESULT
@@ -122,7 +133,7 @@ cargo run -p calcvba-build --example native_execution_census -- conformance temp
 ```
 
 Projects with `OutputType=Exe` and a parameterless `Sub Main` build to a standalone
-Windows executable with `--target Exe`. For example:
+executable with `--target Exe`. This Windows example uses an early-bound COM reference.
 
 ```powershell
 cargo run -p calcvba-cli -- build examples/native/exe/Hello.basproj --target Exe --out-dir out

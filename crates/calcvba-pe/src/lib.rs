@@ -1,6 +1,7 @@
 //! Checked PE32+ template finishing and program patching. No compiler or linker
 //! process is used here. Existing linked code/data RVAs are never moved.
 
+pub mod elf;
 mod image;
 mod manifest;
 
@@ -9,7 +10,7 @@ pub use manifest::{HELPER_ABI, Helper, HelperSpec, Manifest, shipped_helper_spec
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, thiserror::Error)]
-#[error("native PE: {0}")]
+#[error("native image: {0}")]
 pub struct Error(pub String);
 pub type Result<T> = std::result::Result<T, Error>;
 fn refuse(message: impl Into<String>) -> Error {
@@ -38,6 +39,8 @@ pub struct Program {
     pub image: Vec<u8>,
     pub exports: Vec<Export>,
     pub unwind: Vec<Unwind>,
+    /// ELF CIE/FDEs with PC-relative addresses based at virtual address zero.
+    pub elf_unwind: Vec<u8>,
     /// Offsets into data holding preferred-base absolute pointers (DIR64).
     pub data_relocations: Vec<u32>,
 }
@@ -144,6 +147,9 @@ impl<'a> Template<'a> {
     }
     pub fn patch(&self, dll_name: &str, program: &Program) -> Result<Patched> {
         valid_name(dll_name)?;
+        if !program.elf_unwind.is_empty() {
+            return Err(refuse("unexpected ELF unwind records"));
+        }
         if program.text.is_empty() || program.exports.is_empty() {
             return Err(refuse("program needs code and named exports"));
         }
@@ -283,12 +289,7 @@ fn valid_name(name: &str) -> Result<()> {
     }
     Ok(())
 }
-fn export_directory(
-    dll: &str,
-    text: u32,
-    program: &Program,
-    rva: u32,
-) -> Result<(Vec<u8>, ExportMap)> {
+fn export_map(program: &Program, text: u32, extra: Option<(&str, u32)>) -> Result<ExportMap> {
     let mut names = BTreeMap::new();
     let mut used = BTreeSet::new();
     for export in &program.exports {
@@ -298,7 +299,7 @@ fn export_directory(
         }
         if names
             .insert(
-                &export.name,
+                export.name.as_str(),
                 (export.ordinal, add(text, export.offset as usize)?),
             )
             .is_some()
@@ -310,6 +311,11 @@ fn export_directory(
         {
             return Err(refuse("duplicate/zero export ordinal"));
         }
+    }
+    if let Some((name, address)) = extra
+        && names.insert(name, (None, address)).is_some()
+    {
+        return Err(refuse("duplicate runtime export name"));
     }
     let mut next = 1u16;
     let mut map = Vec::new();
@@ -325,10 +331,29 @@ fn export_directory(
             used.insert(next);
             next
         };
-        map.push((name.clone(), ordinal, address));
+        map.push((name.to_owned(), ordinal, address));
     }
-    let base = *used.first().expect("nonempty exports");
-    let count = usize::from(*used.last().expect("nonempty exports") - base) + 1;
+    Ok(map)
+}
+
+fn export_directory(
+    dll: &str,
+    text: u32,
+    program: &Program,
+    rva: u32,
+) -> Result<(Vec<u8>, ExportMap)> {
+    let map = export_map(program, text, None)?;
+    let base = map
+        .iter()
+        .map(|entry| entry.1)
+        .min()
+        .expect("nonempty exports");
+    let highest = map
+        .iter()
+        .map(|entry| entry.1)
+        .max()
+        .expect("nonempty exports");
+    let count = usize::from(highest - base) + 1;
     let n = map.len();
     let mut bytes = vec![0; 40 + count * 4 + n * 6];
     let dll_offset = bytes.len();

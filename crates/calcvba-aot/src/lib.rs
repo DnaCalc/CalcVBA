@@ -1,5 +1,5 @@
-//! A Cranelift Module that lays code/data into an ordinary PE image. Compilation
-//! and relocation finish at build time; no executable allocator or COFF linker.
+//! A Cranelift Module that lays code/data into a native executable image.
+//! Compilation and relocation finish at build time.
 
 use calcvba_pe::{Export, Program, Template, Unwind};
 use cranelift_codegen::{
@@ -13,6 +13,10 @@ use cranelift_control::ControlPlane;
 use cranelift_module::{
     DataDescription, DataId, FuncId, Init, Linkage, Module, ModuleDeclarations, ModuleError,
     ModuleReloc, ModuleRelocTarget, ModuleResult,
+};
+use gimli::{
+    DW_EH_PE_pcrel, DW_EH_PE_sdata4, LittleEndian,
+    write::{Address, EhFrame, EndianVec, FrameTable},
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -29,6 +33,7 @@ struct Function {
     alignment: usize,
     relocs: Vec<ModuleReloc>,
     unwind: Option<Vec<u8>>,
+    elf_unwind: Option<isa::unwind::systemv::UnwindInfo>,
 }
 struct Data {
     bytes: Vec<u8>,
@@ -41,12 +46,26 @@ pub struct PeModule {
     functions: BTreeMap<FuncId, Function>,
     data: BTreeMap<DataId, Data>,
     helpers: BTreeMap<FuncId, u16>,
+    elf: bool,
 }
 impl PeModule {
     pub fn new() -> Result<Self> {
         if !cfg!(all(target_os = "windows", target_arch = "x86_64")) {
             return Err(Error("only Windows x64 is implemented".into()));
         }
+        Self::with_format(false)
+    }
+    pub fn new_elf() -> Result<Self> {
+        if !cfg!(all(
+            target_os = "linux",
+            target_arch = "x86_64",
+            target_env = "gnu"
+        )) {
+            return Err(Error("ELF templates require Linux x86-64 GNU".into()));
+        }
+        Self::with_format(true)
+    }
+    fn with_format(elf: bool) -> Result<Self> {
         let mut flags = settings::builder();
         for (name, value) in [
             ("opt_level", "speed"),
@@ -56,6 +75,10 @@ impl PeModule {
             // so the emitted image still relocates without code fixups.
             ("is_pic", "false"),
             ("unwind_info", "true"),
+            (
+                "preserve_frame_pointers",
+                if elf { "true" } else { "false" },
+            ),
             ("use_colocated_libcalls", "true"),
             ("enable_verifier", "true"),
         ] {
@@ -73,6 +96,7 @@ impl PeModule {
             functions: BTreeMap::new(),
             data: BTreeMap::new(),
             helpers: BTreeMap::new(),
+            elf,
         })
     }
     pub fn declare_helper(
@@ -99,6 +123,37 @@ impl PeModule {
         self,
         template: &Template<'_>,
         exports: &[(String, Option<u16>, FuncId)],
+    ) -> Result<Program> {
+        if self.elf {
+            return Err(Error(
+                "ELF code cannot be written into a PE template".into(),
+            ));
+        }
+        self.finish_layout(&template.manifest, exports, |text, data| {
+            template.layout_with_data(text, data)
+        })
+    }
+
+    pub fn finish_elf(
+        self,
+        template: &calcvba_pe::elf::Template<'_>,
+        exports: &[(String, Option<u16>, FuncId)],
+    ) -> Result<Program> {
+        if !self.elf {
+            return Err(Error(
+                "PE code cannot be written into an ELF template".into(),
+            ));
+        }
+        self.finish_layout(&template.manifest, exports, |text, data| {
+            template.layout_with_data(text, data)
+        })
+    }
+
+    fn finish_layout(
+        self,
+        manifest: &calcvba_pe::Manifest,
+        exports: &[(String, Option<u16>, FuncId)],
+        place: impl FnOnce(usize, usize) -> calcvba_pe::Result<calcvba_pe::Layout>,
     ) -> Result<Program> {
         let mut text = Vec::new();
         let mut offsets = BTreeMap::new();
@@ -139,9 +194,31 @@ impl PeModule {
             );
             destination.extend_from_slice(&value.bytes);
         }
-        let layout = template
-            .layout_with_data(text.len(), writable.len())
-            .map_err(|e| Error(e.to_string()))?;
+        let layout = place(text.len(), writable.len()).map_err(|e| Error(e.to_string()))?;
+        let mut elf_unwind = Vec::new();
+        if self.elf {
+            let mut frames = FrameTable::default();
+            let mut cie = self
+                .isa
+                .create_systemv_cie()
+                .ok_or_else(|| Error("missing System V CIE".into()))?;
+            cie.fde_address_encoding = DW_EH_PE_pcrel | DW_EH_PE_sdata4;
+            let cie = frames.add_cie(cie);
+            for (id, function) in &self.functions {
+                if let Some(info) = &function.elf_unwind {
+                    let address = layout
+                        .text_rva
+                        .checked_add(offsets[id])
+                        .ok_or_else(|| Error("unwind address overflow".into()))?;
+                    frames.add_fde(cie, info.to_fde(Address::Constant(address.into())));
+                }
+            }
+            let mut buffer = EhFrame::from(EndianVec::new(LittleEndian));
+            frames
+                .write_eh_frame(&mut buffer)
+                .map_err(|e| Error(e.to_string()))?;
+            elf_unwind = buffer.0.into_vec();
+        }
         let resolve = |name: &ModuleRelocTarget| -> Result<u32> {
             match name {
                 ModuleRelocTarget::User {
@@ -170,8 +247,7 @@ impl PeModule {
                         .helpers
                         .get(&id)
                         .ok_or_else(|| Error(format!("unresolved helper {name}")))?;
-                    template
-                        .manifest
+                    manifest
                         .resolve(name, *version)
                         .map_err(|e| Error(e.to_string()))
                 }
@@ -231,7 +307,14 @@ impl PeModule {
                 {
                     return Err(Error("relocation outside function".into()));
                 }
-                let target = i64::from(resolve(&relocation.name)?);
+                let target = i64::from(resolve(&relocation.name).map_err(|error| {
+                    let function = self.declarations.get_function_decl(*id);
+                    Error(format!(
+                        "{}: {}",
+                        function.name.as_deref().unwrap_or("native procedure"),
+                        error.0
+                    ))
+                })?);
                 let source = i64::from(layout.text_rva) + at as i64;
                 let relative = target
                     .checked_add(relocation.addend)
@@ -261,6 +344,7 @@ impl PeModule {
             data: writable,
             exports,
             unwind,
+            elf_unwind,
             ..Program::default()
         })
     }
@@ -346,14 +430,15 @@ impl Module for PeModule {
         }
         context.compile(&*self.isa, plane)?;
         let compiled = context.compiled_code().expect("successful compilation");
-        let unwind = match compiled.create_unwind_info(&*self.isa)? {
-            Some(UnwindInfo::WindowsX64(info)) => {
+        let (unwind, elf_unwind) = match compiled.create_unwind_info(&*self.isa)? {
+            Some(UnwindInfo::WindowsX64(info)) if !self.elf => {
                 let mut bytes = vec![0; info.emit_size()];
                 info.emit(&mut bytes);
-                Some(bytes)
+                (Some(bytes), None)
             }
-            None => None,
-            _ => return Err(error("expected Windows x64 unwind information")),
+            Some(UnwindInfo::SystemV(info)) if self.elf => (None, Some(info)),
+            None => (None, None),
+            _ => return Err(error("unwind information does not match the image format")),
         };
         let relocs = compiled
             .buffer
@@ -368,6 +453,7 @@ impl Module for PeModule {
                 alignment: (compiled.buffer.alignment as usize).max(16),
                 relocs,
                 unwind,
+                elf_unwind,
             },
         );
         Ok(())

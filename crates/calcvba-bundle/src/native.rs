@@ -703,6 +703,7 @@ impl NativeImplId {
             ChrW => &["ChrW$"],
             Space => &["Space$"],
             StringRepeat => &["String$"],
+            Oct => &["Oct$"],
             Format => &["Format$"],
             ErrorText => &["Error$"],
             Command => &["Command$"],

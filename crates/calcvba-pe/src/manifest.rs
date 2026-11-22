@@ -3,7 +3,7 @@ use crate::{Result, refuse};
 /// Identifies the initial helper signatures, not a PE build timestamp. Change
 /// this when any helper signature/semantics changes incompatibly.
 pub const HELPER_ABI: u64 = abi_hash(include_bytes!("../../../assets/native/helpers-v1.txt"));
-const fn abi_hash(bytes: &[u8]) -> u64 {
+pub(crate) const fn abi_hash(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     let mut at = 0;
     while at < bytes.len() {
@@ -21,8 +21,10 @@ pub struct HelperSpec<'a> {
     pub version: u16,
 }
 pub fn shipped_helper_specs() -> Vec<HelperSpec<'static>> {
-    include_str!("../../../assets/native/helpers-v1.txt")
-        .lines()
+    helper_specs(include_str!("../../../assets/native/helpers-v1.txt"))
+}
+pub(crate) fn helper_specs(text: &str) -> Vec<HelperSpec<'_>> {
+    text.lines()
         .skip(1)
         .map(|line| {
             let mut fields = line.split('|');

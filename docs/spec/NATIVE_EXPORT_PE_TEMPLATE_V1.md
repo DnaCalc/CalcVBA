@@ -340,6 +340,31 @@ module identity, parameter modes and exact types. Do not trust optional cached
 signature fields in NativeExportDescriptor. Apply the bound StringEncoding and
 ErrorPolicy to the generated boundary; reject unknown metadata values.
 
+## Linux x86-64 ELF
+
+On a GNU/Linux x86-64 build host, NativeLibrary creates a shared object and Exe
+creates a position-independent executable. They use the SysV AMD64 calling
+convention for either descriptor calling-convention spelling. Both use the
+bound signature, per-export error policy, project image and diagnostic map.
+ELF resolves exported names through its dynamic symbol table. The map keeps
+ordinals for metadata consumers.
+
+The developer finisher reads the linked helper symbols, verifies the
+platform helper ABI hash, records addresses in `.cvbhlp` and removes private
+dynamic definitions. The user build preserves linked virtual addresses and
+appends separately mapped executable, writable and read-only sections with
+generated code, state and metadata. It updates the shared object's dynamic
+symbol tables or the PIE's Main/error/shutdown record. The ELF unwind index
+covers linked and generated frames. The templates link against glibc 2.39.
+
+The portable boundary covers numeric scalars, ByVal BSTR or terminated UTF-16
+inputs and BSTR string results. Free results and error strings by calling
+`void CalcVbaFreeBstr(uint16_t *)` from the same shared object. The initial ELF
+helper set refuses reachable native Declare operations and Windows early-bound
+COM calls. ANSI inputs and implicit by-value aggregate export returns are
+refused. The build reports unavailable helpers for remaining owning
+operations, including SAFEARRAYs and UDTs.
+
 ## 10. Primary references and corrected historical claims
 
 - [Microsoft PE format](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format).

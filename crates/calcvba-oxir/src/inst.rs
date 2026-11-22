@@ -533,6 +533,8 @@ pub enum OxInst {
     /// Run parked `Class_Terminate`s to a fixpoint (pinned to statement boundaries
     /// / proc epilogue / the post-fault path).
     DrainTerminations,
+    /// Exit Sub, Function, or Property clears Err while a GoTo handler is active.
+    ClearErrOnExit,
 }
 
 impl OxInst {
@@ -556,6 +558,7 @@ impl OxInst {
             | OxInst::ErlGet { .. }
             | OxInst::SetErrorHandler(_)
             | OxInst::ClearErr
+            | OxInst::ClearErrOnExit
             | OxInst::StmtBoundary { .. }
             | OxInst::SetLineNumber { .. }
             // `Release` only enqueues; the user code in `Class_Terminate` runs at

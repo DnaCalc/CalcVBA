@@ -18,10 +18,6 @@ P_DateSerial: DateSerial.10=Date:40E72F8000000000
 P_DateValue: DateValue.11=Date:40E2070000000000
 P_DateValue: DateValue.12=Date:40E2072000000000
 P_DateValue: DateValue.7=Date:40E56AA000000000
-P_ErrObject: ErrObject.36=N=94;S=VBAProject;D=Invalid use of Null;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000094
-P_ErrObject: ErrObject.38=N=94;S=VBAProject;D=Invalid use of Null;HF=C:\Program Files\Common Files\Microsoft Shared\VBA\VBA7.1\1033\VbLR6.chm;HC=1000094
-P_ErrObject: ErrObject.53=inh=5;cleared=0;after=N=0;S=;D=;HF=;HC=0|after exit sub in handler: N=0;S=;D=;HF=;HC=0
-P_ErrObject: ErrObject.54=
 P_Format2: Format2.14=String:[2024/03/05]
 P_Format2: Format2.15=String:[5 March 2024]
 P_Format2: Format2.1=String:[2024/03/05 14:07:09]
@@ -133,14 +129,8 @@ P_InStrRev: InStrRev.27=Long:2
 P_InStrRev: InStrRev.7=Long:3
 P_InStrRev: InStrRev.9=Long:0
 P_IsNumeric: IsNumeric.21=Boolean:True
-P_LCase: LCase.12=String:[{8486}]
-P_LCase: LCase.9=String:[{7838}]
-P_Left: Left.17=ERR5
-P_Left: Left.18=ERR6
-P_Mid: Mid.23=ERR5
 P_Month: Month.13=Integer:12
 P_MonthName: MonthName.4=String:[Sept]
-P_Oct: Oct.56=ERR94
 P_QBColor: QBColor.17=ERR6
 P_RGB: RGB.12=ERR6
 P_Replace: Replace.13=String:[AXC]

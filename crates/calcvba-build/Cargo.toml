@@ -29,7 +29,7 @@ thiserror.workspace = true
 calcvba-syntax.workspace = true
 calcvba-engine.workspace = true
 calcvba-hal.workspace = true
-object = { version = "0.38", default-features = false, features = ["read", "pe", "std"] }
+object = { version = "0.38", default-features = false, features = ["read", "elf", "pe", "std"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = [

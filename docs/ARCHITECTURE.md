@@ -51,10 +51,10 @@ Validation is ordinary executable code, not a formal proof.
 - `calcvba-rt-abi`: shared VM/JIT helpers, physical typed slots and owning calls.
 - `calcvba-vm3`: typed-CFG interpreter, frames, aliases, errors and class lifecycle.
 - `calcvba-jit`: Cranelift lowering, compiled entries and runtime helper calls.
-- `calcvba-aot`: Cranelift Module backend laying out direct native code for PE.
-- `calcvba-pe`: template finishing, helper manifest and checked PE patching.
-- `calcvba-native-template`: developer-built runtime DLL and EXE templates, with
-  no compiler or VM. EXE startup calls a patched native Main entry and shutdown.
+- `calcvba-aot`: Cranelift Module backend laying out direct native code for PE and ELF.
+- `calcvba-pe`: template finishing, helper manifest and checked native image patching.
+- `calcvba-native-template`: developer-built Windows and Linux runtime templates.
+  Executable startup calls a patched native Main entry and shutdown.
 
 BSTR/VARIANT/SAFEARRAY/IUnknown-shaped carriers preserve VBA/Automation layout
 where implemented. Runtime ownership must survive calls, errors and teardown.
@@ -78,8 +78,8 @@ The JIT's typed entries and AOT both use `ScalarLayout` and `ScalarLower` to
 lower the scalar instruction subset. The general JIT path uses `lowering.rs`
 and its runtime slot helpers. AOT's `native.rs` and `native_values.rs` add
 separate admission, frame setup, calls, error transfer and owning value
-lowering for native exports. The `calcvba-aot` crate supplies the PE module
-backend used by that compiler.
+lowering for native exports. The `calcvba-aot` crate supplies the PE and ELF
+module backends used by that compiler.
 
 The typed host entries use unboxed physical storage when admitted. An owning
 frame supports objects, strings, Variants, tested aggregate/class families,
@@ -154,8 +154,8 @@ no forms-runtime crate here yet.
 project image into a VM3 or JIT session and returns the project instance's own
 COM interface from its class factory.
 `calcvba-cli` exposes source/project/package execution and builds. A wrapped DLL
-runs the engine. NativeLibrary instead patches compiled code, named exports and
-Windows unwind information into the shipped template without a user linker.
+runs the engine. NativeLibrary patches compiled code, named exports and unwind
+information into the shipped Windows PE or GNU/Linux ELF template without a user linker.
 It currently admits all VBA native numeric/Boolean boundary widths, Functions and Subs, direct local procedure
 calls, numeric CLng/CDbl/CBool conversions and typed Abs/Sqr helpers.
 Long integer division/modulo and Boolean/Long bitwise lowering is shared with VM3/JIT.

@@ -36,6 +36,67 @@ fn native_error(message: impl ToString) -> BuildError {
     BuildError::NativeExport(message.to_string())
 }
 
+const LINUX_ELF: bool = cfg!(all(
+    target_os = "linux",
+    target_arch = "x86_64",
+    target_env = "gnu"
+));
+
+fn native_module() -> Result<calcvba_aot::PeModule, BuildError> {
+    if LINUX_ELF {
+        calcvba_aot::PeModule::new_elf()
+    } else {
+        calcvba_aot::PeModule::new()
+    }
+    .map_err(native_error)
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+fn linux_template(executable: bool) -> &'static [u8] {
+    if executable {
+        include_bytes!("../../../assets/native/calcvba-linux-x64")
+    } else {
+        include_bytes!("../../../assets/native/calcvba-linux-x64.so")
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")))]
+fn linux_template(_: bool) -> &'static [u8] {
+    unreachable!("Linux templates are bundled for Linux x86-64 GNU")
+}
+
+enum NativeTemplate<'a> {
+    Pe(calcvba_pe::Template<'a>),
+    Elf(Box<calcvba_pe::elf::Template<'a>>),
+}
+
+impl<'a> NativeTemplate<'a> {
+    fn parse(bytes: &'a [u8], executable: bool) -> Result<Self, BuildError> {
+        if LINUX_ELF {
+            let template = calcvba_pe::elf::Template::parse(bytes).map_err(native_error)?;
+            if template.is_library() == executable {
+                return Err(native_error(if executable {
+                    "Exe requires a PIE native template"
+                } else {
+                    "NativeLibrary requires an ELF shared-object template"
+                }));
+            }
+            Ok(Self::Elf(Box::new(template)))
+        } else {
+            let template =
+                calcvba_pe::Template::parse(bytes, calcvba_pe::HELPER_ABI).map_err(native_error)?;
+            if template.is_dll() == executable {
+                return Err(native_error(if executable {
+                    "Exe requires an EXE native template"
+                } else {
+                    "NativeLibrary requires a DLL native template"
+                }));
+            }
+            Ok(Self::Pe(template))
+        }
+    }
+}
+
 struct NativeBodyImports {
     library_helpers:
         std::collections::HashMap<calcvba_bundle::NativeImplId, cranelift_module::FuncId>,
@@ -126,7 +187,7 @@ pub fn check_native_program(
     program: &calcvba_oxir::OxProgram,
     roots: &[calcvba_oxir::FuncId],
 ) -> Result<(), BuildError> {
-    let mut module = calcvba_aot::PeModule::new().map_err(native_error)?;
+    let mut module = native_module()?;
     let imports = native_body_imports(&mut module, program)?;
     calcvba_jit::native::compile_native_scalars(
         &mut module,
@@ -138,6 +199,11 @@ pub fn check_native_program(
         &imports.foreign_states,
     )
     .map_err(native_error)?;
+    if LINUX_ELF {
+        let template =
+            calcvba_pe::elf::Template::parse(linux_template(false)).map_err(native_error)?;
+        module.finish_elf(&template, &[]).map_err(native_error)?;
+    }
     Ok(())
 }
 
@@ -191,6 +257,9 @@ fn build_native_artifact(
     let mut loaded = load_single_project(&options.project_path)?;
     let executable = required != OutputType::NativeLibrary;
     let com_executable = required == OutputType::ComExe;
+    if LINUX_ELF && com_executable {
+        return Err(native_error("ComExe requires Windows"));
+    }
     if loaded.output_type != required {
         return Err(native_error(format!(
             "{required:?} requires OutputType={required:?}"
@@ -263,6 +332,13 @@ fn build_native_artifact(
     }
     if required != OutputType::Exe {
         for selected in &loaded.native_exports {
+            if LINUX_ELF
+                && selected
+                    .exported_name
+                    .eq_ignore_ascii_case(calcvba_pe::elf::FREE_BSTR)
+            {
+                return Err(native_error("CalcVbaFreeBstr is a reserved runtime export"));
+            }
             if [
                 "CalcVbaGetLastError",
                 "CalcVbaGetLastErrorHelp",
@@ -351,6 +427,8 @@ fn build_native_artifact(
             path: path.display().to_string(),
             source,
         })?
+    } else if LINUX_ELF {
+        linux_template(executable).to_vec()
     } else if com_executable {
         include_bytes!("../../../assets/native/calcvba-native-com-x64.exe").to_vec()
     } else if executable {
@@ -358,16 +436,8 @@ fn build_native_artifact(
     } else {
         include_bytes!("../../../assets/native/calcvba-native-x64.dll").to_vec()
     };
-    let template = calcvba_pe::Template::parse(&template_bytes, calcvba_pe::HELPER_ABI)
-        .map_err(native_error)?;
-    if template.is_dll() == executable {
-        return Err(native_error(if executable {
-            "Exe requires an EXE native template"
-        } else {
-            "NativeLibrary requires a DLL native template"
-        }));
-    }
-    let mut module = calcvba_aot::PeModule::new().map_err(native_error)?;
+    let template = NativeTemplate::parse(&template_bytes, executable)?;
+    let mut module = native_module()?;
     let mut enter_signature = module.make_signature();
     enter_signature.returns.push(AbiParam::new(types::I32));
     let enter = module
@@ -456,8 +526,15 @@ fn build_native_artifact(
     let get_last_error = module
         .declare_helper("cvb_get_last_error", 1, &error_signature)
         .map_err(native_error)?;
+    let reached: std::collections::BTreeSet<_> =
+        plans.iter().map(|plan| plan.procedure.0).collect();
+    let mut foreign_slots: Vec<_> = foreign_states
+        .into_iter()
+        .filter_map(|((procedure, _, _), slot)| reached.contains(&procedure).then_some(slot))
+        .collect();
+    foreign_slots.sort_unstable();
     let runtime = calcvba_jit::native::NativeRuntime {
-        foreign_states: foreign_states.values().copied().collect(),
+        foreign_states: foreign_slots,
         values: value_helpers,
         context: state,
         enter,
@@ -503,17 +580,41 @@ fn build_native_artifact(
     let shutdown = calcvba_jit::native::compile_shutdown_wrapper(&mut module, program, &runtime)
         .map_err(native_error)?;
     exports.push(("CalcVbaShutdown".into(), None, shutdown));
-    let mut native = module.finish(&template, &exports).map_err(native_error)?;
-    native.image = image.to_bytes().map_err(native_error)?;
     let name = artifact_stem(&loaded.manifest.project_name);
-    let extension = if executable { "exe" } else { "dll" };
-    let mut patched = template
-        .patch(&format!("{name}.{extension}"), &native)
-        .map_err(native_error)?;
-    if required == OutputType::Exe {
-        calcvba_pe::patch_executable_entries(&mut patched.bytes, &patched.map, "CalcVbaExeMain")
-            .map_err(native_error)?;
-    }
+    let image_bytes = image.to_bytes().map_err(native_error)?;
+    let (filename, patched) = match template {
+        NativeTemplate::Elf(template) => {
+            let mut native = module
+                .finish_elf(&template, &exports)
+                .map_err(native_error)?;
+            native.image = image_bytes;
+            let filename = if executable {
+                name.clone()
+            } else {
+                format!("{name}.so")
+            };
+            let patched = template
+                .patch(&native, "CalcVbaExeMain")
+                .map_err(native_error)?;
+            (filename, patched)
+        }
+        NativeTemplate::Pe(template) => {
+            let mut native = module.finish(&template, &exports).map_err(native_error)?;
+            native.image = image_bytes;
+            let extension = if executable { "exe" } else { "dll" };
+            let filename = format!("{name}.{extension}");
+            let mut patched = template.patch(&filename, &native).map_err(native_error)?;
+            if required == OutputType::Exe {
+                calcvba_pe::patch_executable_entries(
+                    &mut patched.bytes,
+                    &patched.map,
+                    "CalcVbaExeMain",
+                )
+                .map_err(native_error)?;
+            }
+            (filename, patched)
+        }
+    };
     let mut map = String::from("Export\tOrdinal\tProcedure\tWrapperRva\n");
     for (name, ordinal, rva) in &patched.map {
         let source = loaded
@@ -522,17 +623,23 @@ fn build_native_artifact(
             .find(|e| e.exported_name == *name);
         let procedure = source
             .map(|e| format!("{}.{}", e.module_name, e.procedure_name))
-            .unwrap_or_else(|| "runtime error accessor".into());
+            .unwrap_or_else(|| {
+                if name == calcvba_pe::elf::FREE_BSTR {
+                    "runtime BSTR release".into()
+                } else {
+                    "runtime error accessor".into()
+                }
+            });
         map.push_str(&format!("{name}\t{ordinal}\t{procedure}\t{rva:#010x}\n"));
     }
-    // All compilation, relocation and PE checks succeeded before publishing.
+    // All compilation, relocation and image checks succeeded before publishing.
     fs::create_dir_all(&options.out_dir).map_err(|source| BuildError::Io {
         path: options.out_dir.display().to_string(),
         source,
     })?;
-    let image_path = options.out_dir.join(format!("{name}.{extension}"));
+    let image_path = options.out_dir.join(filename);
     let map_path = options.out_dir.join(format!("{name}.map"));
-    write_bytes(&image_path, &patched.bytes)?;
+    write_native_image(&image_path, &patched.bytes, executable)?;
     write_bytes(&map_path, map.as_bytes())?;
     if let Some(com) = com {
         crate::native_com::write(&options.out_dir, &name, &com)?;
@@ -543,10 +650,48 @@ fn build_native_artifact(
     })
 }
 
+fn write_native_image(path: &Path, bytes: &[u8], executable: bool) -> Result<(), BuildError> {
+    #[cfg(unix)]
+    if LINUX_ELF && executable {
+        use std::{
+            io::Write,
+            os::unix::fs::{OpenOptionsExt, PermissionsExt},
+        };
+        let write = || -> std::io::Result<()> {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o777)
+                .open(path)?;
+            let mode = file.metadata()?.permissions().mode();
+            file.write_all(bytes)?;
+            // Replacing an existing artifact preserves its access bits and
+            // makes it executable for the users who can already read it.
+            let executable = mode | ((mode & 0o444) >> 2);
+            if executable != mode {
+                file.set_permissions(fs::Permissions::from_mode(executable))?;
+            }
+            Ok(())
+        };
+        return write().map_err(|source| BuildError::Io {
+            path: path.display().to_string(),
+            source,
+        });
+    }
+    #[cfg(not(unix))]
+    let _ = executable;
+    write_bytes(path, bytes)
+}
+
 /// The compiled-in template is also available to packaging tools.
 pub fn write_native_template(path: &Path) -> Result<(), BuildError> {
     write_bytes(
         path,
-        include_bytes!("../../../assets/native/calcvba-native-x64.dll"),
+        if LINUX_ELF {
+            linux_template(false)
+        } else {
+            include_bytes!("../../../assets/native/calcvba-native-x64.dll")
+        },
     )
 }

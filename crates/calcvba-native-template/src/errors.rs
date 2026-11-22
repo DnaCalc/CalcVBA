@@ -37,7 +37,7 @@ pub unsafe extern "C" fn cvb_raise_dynamic(
     flags: u32,
 ) -> i32 {
     // SAFETY: this reads only calling-thread Win32 state.
-    let saved = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+    let saved = super::thread::last_error();
     let result = std::panic::catch_unwind(|| {
         // SAFETY: forwarded live BSTR and unique context contract above.
         unsafe {
@@ -49,9 +49,7 @@ pub unsafe extern "C" fn cvb_raise_dynamic(
                 // SAFETY: convert into a private empty BSTR before retaining the error.
                 unsafe {
                     super::values::copy((&mut value as *mut *mut u16).cast(), cell, 8, kind)?;
-                    let result = BStr::clone_from_raw_bstr(value).map_err(|_| 7);
-                    windows_sys::Win32::Foundation::SysFreeString(value);
-                    result
+                    Ok(BStr::from_raw_bstr(value))
                 }
             }
             let mut number_context = 0i32;
@@ -69,13 +67,13 @@ pub unsafe extern "C" fn cvb_raise_dynamic(
                 help_file: text(help_file, help_file_kind, flags & 4 != 0)?,
                 help_context: number_context,
             };
-            Ok::<_, i32>(super::services::raise_explicit(
+            Ok::<_, i32>(super::execution::raise_explicit(
                 context, number, &text, flags,
             ))
         }
     });
     // SAFETY: all temporary conversions are gone before restoring LastDllError.
-    unsafe { windows_sys::Win32::Foundation::SetLastError(saved) };
+    super::thread::set_last_error(saved);
     match result {
         Ok(Ok(number)) => number,
         Ok(Err(number)) => number,

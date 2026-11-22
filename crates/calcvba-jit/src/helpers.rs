@@ -59,6 +59,7 @@ pub(crate) struct Imports {
     pub(crate) field_array_set_slot: ClifFuncId,
     pub(crate) validate_assignment: ClifFuncId,
     pub(crate) err_clear: ClifFuncId,
+    pub(crate) err_clear_on_exit: ClifFuncId,
     pub(crate) err_i32_field: ClifFuncId,
     pub(crate) err_string_field_utf16: ClifFuncId,
     pub(crate) erl_get: ClifFuncId,
@@ -291,6 +292,7 @@ pub(crate) fn register_symbols(builder: &mut JITBuilder) {
         rt_jit_validate_assignment as *const u8,
     );
     builder.symbol("rt_err_clear", rt_err_clear as *const u8);
+    builder.symbol("rt_err_clear_on_exit", rt_err_clear_on_exit as *const u8);
     builder.symbol("rt_err_i32_field", rt_err_i32_field as *const u8);
     builder.symbol(
         "rt_err_string_field_utf16",
@@ -1207,6 +1209,9 @@ pub(crate) fn declare_imports(module: &mut impl Module) -> Result<Imports, JitEr
     err_clear_sig.returns.push(AbiParam::new(types::I32));
     let err_clear = module
         .declare_function("rt_err_clear", Linkage::Import, &err_clear_sig)
+        .map_err(module_err)?;
+    let err_clear_on_exit = module
+        .declare_function("rt_err_clear_on_exit", Linkage::Import, &err_clear_sig)
         .map_err(module_err)?;
 
     let mut err_i32_field_sig = module.make_signature();
@@ -2292,6 +2297,7 @@ pub(crate) fn declare_imports(module: &mut impl Module) -> Result<Imports, JitEr
         field_array_set_slot,
         validate_assignment,
         err_clear,
+        err_clear_on_exit,
         err_i32_field,
         err_string_field_utf16,
         erl_get,
@@ -4764,68 +4770,23 @@ pub(crate) unsafe extern "C" fn raise_values(
         }
         // SAFETY: generated caller supplies exactly five initialized descriptors.
         let operands = unsafe { std::slice::from_raw_parts(operands, 5) };
-        let mut values = Vec::with_capacity(5);
-        for (i, operand) in operands.iter().enumerate() {
-            if mask & (1 << i) == 0 {
-                values.push(None);
-                continue;
-            }
-            // SAFETY: caller retains the compiled operand metadata and state.
-            match unsafe { variant_operand_value_with_as_new(run, state, *operand) } {
-                Ok(value) => values.push(Some(value)),
-                Err(status) => return status,
+        let mut values: [Option<Variant>; 5] = std::array::from_fn(|_| None);
+        for (i, (value, operand)) in values.iter_mut().zip(operands).enumerate() {
+            if mask & (1 << i) != 0 {
+                // SAFETY: caller retains the compiled operand metadata and state.
+                *value = match unsafe { variant_operand_value_with_as_new(run, state, *operand) } {
+                    Ok(value) => Some(value),
+                    Err(status) => return status,
+                };
             }
         }
         // SAFETY: all operand evaluation has finished; no state borrow overlaps it.
         let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
             return ST_FAULT;
         };
-        let Some(number) = values[0].as_ref() else {
-            return ST_FAULT;
-        };
-        let code = match calcvba_eval::arith::coerce_numeric(
-            number,
-            calcvba_bundle::NumericCoerceTarget::Long,
-        ) {
-            Ok(value) => value.as_i32().unwrap_or(0),
-            Err(error) => {
-                exec.err_engine
-                    .raise(Fault::from_arith(error), current_unit_source(run));
-                return ST_FAULT;
-            }
-        };
-        let inherit = inherit != 0 && exec.err_engine.err.inherit_fields;
-        let text = |index: usize| {
-            values[index].as_ref().map(|value| {
-                calcvba_runtime::variant_to_vba_string(value)
-                    .map(|s| calcvba_runtime::Utf16String::from_bstr(&s))
-                    .unwrap_or_default()
-            })
-        };
-        let help_context = match values[4].as_ref() {
-            Some(value) => match calcvba_eval::arith::coerce_numeric(
-                value,
-                calcvba_bundle::NumericCoerceTarget::Long,
-            ) {
-                Ok(value) => Some(value.as_i32().unwrap_or(0)),
-                Err(error) => {
-                    exec.err_engine
-                        .raise(Fault::from_arith(error), current_unit_source(run));
-                    return ST_FAULT;
-                }
-            },
-            None => inherit.then_some(exec.err_engine.err.help_context),
-        };
-        let fault = exec.err_engine.explicit_fault(
-            code,
-            calcvba_rt_abi::RaiseFields {
-                description: text(2),
-                source: text(1),
-                help_file: text(3),
-                help_context,
-            },
-            inherit,
-        );
+        let fault = exec
+            .err_engine
+            .fault_from_raise_args(values.each_ref().map(Option::as_ref), inherit != 0);
         exec.err_engine.raise(fault, current_unit_source(run));
         ST_FAULT
     })

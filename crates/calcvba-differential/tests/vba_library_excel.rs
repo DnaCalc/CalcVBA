@@ -2,7 +2,8 @@
 //! `conformance/excel-measurements/vba-library/probes` (one per library function, listed in
 //! `functions.tsv`, from VBE7.DLL's type library and MS-VBAL section 6) runs on VM3 and the JIT
 //! together with `ProbeFmt.bas`, and each `Function.k=value` line is compared with Excel's
-//! answer in `<Module>.excel.txt`. Bit-exact is the only passing state.
+//! answer in `<Module>.excel.txt`. Partial captures are compared by case number.
+//! Bit-exact is the only passing state.
 //!
 //! Lines that still differ are listed in `known-differences.txt` as `vm3 |jit ` + `Module: line`
 //! (unprefixed when both differ), or `Module: run fails` when the module does not run at all.
@@ -17,7 +18,7 @@
 
 use calcvba_differential::{Canon, Executor, run_modules};
 use calcvba_symbol::manifest::ModuleKind::Procedural;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 /// Modules that touch the file system through Windows paths; checked on Windows only.
@@ -375,7 +376,19 @@ fn compare(executor: Executor) -> (Vec<String>, Vec<String>, Vec<String>) {
         // failure counts against the cases that cause it.
         let whole = run_text(executor, &fmt, &module, &source);
         let lines: Vec<String> = match whole {
-            Ok(text) => text.lines().map(str::to_string).collect(),
+            Ok(text) if numbers.iter().copied().eq(1..=numbers.len() as u32) => {
+                text.lines().map(str::to_string).collect()
+            }
+            Ok(text) => {
+                let by_case: BTreeMap<_, _> = text
+                    .lines()
+                    .filter_map(|line| case_number(line).map(|k| (k, line)))
+                    .collect();
+                numbers
+                    .iter()
+                    .map(|k| by_case.get(k).copied().unwrap_or("<missing>").to_string())
+                    .collect()
+            }
             Err(_) => answer
                 .lines()
                 .enumerate()

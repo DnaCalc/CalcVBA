@@ -148,8 +148,11 @@ impl CollectionData {
             (_, Some(sel)) => self.resolve_index(&sel)? + 1,
             _ => self.entries.len(),
         };
+        if at < self.entries.len() {
+            // An insertion before the pending item does not replace it.
+            self.adjust_cursors(at, |next| next + 1);
+        }
         self.entries.insert(at, Entry { key, value });
-        self.adjust_cursors(at, |next| next + 1);
         Ok(())
     }
 
@@ -163,20 +166,19 @@ impl CollectionData {
     pub fn remove(&mut self, sel: &Selector) -> Result<(), CollectionError> {
         let i = self.resolve_index(sel)?;
         let removed = self.entries.remove(i);
-        self.adjust_cursors(i, |next| next - 1);
+        // The item after the removed one now occupies its position.
+        self.adjust_cursors(i + 1, |next| next - 1);
         drop(removed);
         Ok(())
     }
 
-    fn adjust_cursors(&mut self, index: usize, adjust: impl Fn(usize) -> usize) {
+    fn adjust_cursors(&mut self, first: usize, adjust: impl Fn(usize) -> usize) {
         self.cursors.retain(|cursor| {
             let Some(cursor) = cursor.upgrade() else {
                 return false;
             };
-            // A change before the next item shifts its position. A change at
-            // that position leaves the cursor ready for the item now there.
             let next = cursor.get();
-            if index < next {
+            if next >= first {
                 cursor.set(adjust(next));
             }
             true

@@ -1151,11 +1151,10 @@ struct FixedFormatOptions {
     group_digits: bool,
 }
 
-/// `FormatNumber`/`FormatCurrency`/`FormatPercent` of `Null` is the empty string; text that is
-/// not a number is a type mismatch.
+/// The fixed formats return an empty string for Null and Empty. Nonnumeric text is a type mismatch.
 fn fixed_format_guard(value: &Variant) -> LibResult<Option<Variant>> {
     match value.vtype() {
-        VarType::Null => Ok(Some(vstr(""))),
+        VarType::Null | VarType::Empty => Ok(Some(vstr(""))),
         VarType::String
             if calcvba_runtime::coerce::parse_vba_numeric_string(&as_str(value)?).is_none() =>
         {
@@ -1181,9 +1180,9 @@ fn fixed_decimals(args: &[Variant]) -> LibResult<usize> {
     };
     match value {
         -1 => Ok(2),
-        0..=99 => Ok(value as usize),
+        0..=100 => Ok(value as usize),
         _ => Err(LibError::invalid_call(
-            "NumDigitsAfterDecimal must be -1 or 0 to 99",
+            "NumDigitsAfterDecimal must be -1 or 0 to 100",
         )),
     }
 }
@@ -4430,6 +4429,16 @@ mod tests {
         assert_eq!(
             bstr(format_date_time(&[date, Variant::from_i32(4)])),
             "13:30"
+        );
+    }
+
+    #[test]
+    fn format_currency_accepts_one_hundred_fractional_digits() {
+        let args = [Variant::from_i16(5), Variant::from_i16(100)];
+        // FormatCurrency.29 uses the same precision with the en-ZA currency symbol.
+        assert_eq!(
+            bstr(format_currency(&args)),
+            format!("$5.{}", "0".repeat(100))
         );
     }
 

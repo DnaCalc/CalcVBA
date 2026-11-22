@@ -367,7 +367,7 @@ fn instr_text_compare(args: &[Variant], index: usize) -> LibResult<bool> {
 /// `start` is the 3rd arg and `compare` the 4th (the old code ignored `start` and misread
 /// arg 2 as the compare mode).
 fn instr_rev(args: &[Variant]) -> LibResult<Variant> {
-    let text = text_compare(args, 3)?;
+    let text = instr_text_compare(args, 3)?;
     let hay = compare_fold_units(&units_arg(need(args, 0)?)?, text);
     let needle = compare_fold_units(&units_arg(need(args, 1)?)?, text);
     let start = match arg_present(args, 2) {
@@ -387,7 +387,7 @@ fn instr_rev(args: &[Variant]) -> LibResult<Variant> {
         (start as usize).min(hay.len())
     };
     if needle.is_empty() {
-        return Ok(vi32(region as i32 + 1));
+        return Ok(vi32(region as i32));
     }
     if needle.len() > region {
         return Ok(vi32(0));

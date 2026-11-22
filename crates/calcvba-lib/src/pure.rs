@@ -166,27 +166,16 @@ pub fn instr_b(args: &[Variant]) -> LibResult<Variant> {
     if start < 1 {
         return Err(LibError::invalid_call("InStrB start must be >= 1"));
     }
-    let text = text_compare(args, base + 2)?;
-    let bytes = |index: usize| -> LibResult<Vec<u8>> {
-        let value = need(args, index)?;
-        if text {
-            // Folded per code unit, as InStr folds: a lone surrogate half stays itself.
-            Ok(compare_fold_units(&units_arg(value)?, true)
-                .into_iter()
-                .flat_map(u16::to_le_bytes)
-                .collect())
-        } else {
-            string_bytes(value)
-        }
-    };
-    let hay = bytes(base)?;
-    let needle = bytes(base + 1)?;
+    // InStrB validates the Compare argument and searches the original bytes.
+    let _ = arg_present(args, base + 2).map(as_i32).transpose()?;
+    let hay = string_bytes(need(args, base)?)?;
+    let needle = string_bytes(need(args, base + 1)?)?;
     let from = start as usize - 1;
-    if from > hay.len() || needle.len() > hay.len() - from {
+    if from >= hay.len() || needle.len() > hay.len() - from {
         return Ok(vi32(0));
     }
     if needle.is_empty() {
-        return Ok(vi32(0));
+        return Ok(vi32(start));
     }
     let found = hay[from..].windows(needle.len()).position(|w| w == needle);
     Ok(vi32(found.map_or(0, |at| (from + at + 1) as i32)))

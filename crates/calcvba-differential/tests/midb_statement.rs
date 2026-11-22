@@ -1,7 +1,6 @@
 //! `MidB(s, start[, length]) = x` replaces bytes of the string's UTF-16LE storage (MS-VBAL
 //! 5.4.3.x). The MidB expectations are Excel VBA's answers (probe 2026-11-17: the six cases
-//! below, UTF-16 units as hex). Also `InStrB` under `Option Compare Text` (byte position, text
-//! compare; from the spec).
+//! below, UTF-16 units as hex). The `InStrB` text-compare regression uses Excel's `P_InStrB.11`.
 
 use calcvba_differential::{Canon, Executor, run};
 
@@ -90,7 +89,7 @@ fn midb_at_an_odd_start_splits_characters() {
 }
 
 #[test]
-fn instrb_honours_option_compare_text() {
-    let source = "Option Compare Text\nPublic r As Variant\nSub Main()\nr = CStr(InStrB(\"ABC\", \"b\"))\nEnd Sub\n";
-    assert_eq!(both(source), Canon::Str("3".into()));
+fn instrb_searches_bytes_with_text_compare() {
+    let source = "Public r As Variant\nSub Main()\nr = CStr(InStrB(1, \"ABC\", \"b\", vbTextCompare))\nEnd Sub\n";
+    assert_eq!(both(source), Canon::Str("0".into()));
 }

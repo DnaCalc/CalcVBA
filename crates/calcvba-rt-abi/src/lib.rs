@@ -3130,7 +3130,7 @@ pub unsafe extern "C" fn rt_raise_fixed_or_temporarily_locked_array(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rt_raise_subscript_out_of_range(state: *mut RawExecState) -> i32 {
     // SAFETY: the exported helper contract guarantees that non-null `state` is the live, uniquely borrowed execution state.
-    with_status(|| unsafe { seat_fault(state, Fault::new(9, "subscript out of range")) })
+    with_status(|| unsafe { seat_fault(state, Fault::new(9, default_error_message(9))) })
 }
 
 /// Runtime-helper raw-pointer entry point.
@@ -3402,6 +3402,7 @@ pub fn default_error_help_file() -> String {
 }
 
 pub fn default_error_help_context(code: i32) -> i32 {
+    let code = if code < 0 { 440 } else { code };
     let message = calcvba_runtime::default_error_message(code);
     if message == "Application-defined or object-defined error" {
         1_000_095

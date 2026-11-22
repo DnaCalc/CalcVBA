@@ -1857,7 +1857,7 @@ impl<'h> Vm3<'h> {
                             if flat >= len {
                                 return Err(Vm3Error::Fault(Fault::new(
                                     9,
-                                    "subscript out of range",
+                                    default_error_message(9),
                                 )));
                             }
                             if let Some(result) = arr.safearray_i32_element(flat) {
@@ -1907,7 +1907,7 @@ impl<'h> Vm3<'h> {
                             if flat >= len {
                                 return Err(Vm3Error::Fault(Fault::new(
                                     9,
-                                    "subscript out of range",
+                                    default_error_message(9),
                                 )));
                             }
                             if let Some(value_i32) = v.as_i32()
@@ -2879,7 +2879,7 @@ impl<'h> Vm3<'h> {
             let upper_v = self.operand(upper_op)?;
             let upper = subscript_to_long(arith::int(&upper_v).map_err(arith_fault)?)?;
             if upper < lower {
-                return Err(Vm3Error::Fault(Fault::new(9, "subscript out of range")));
+                return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
             }
             let span = i64::from(upper) - i64::from(lower) + 1;
             if span > i64::from(u32::MAX) {
@@ -2915,7 +2915,7 @@ impl<'h> Vm3<'h> {
             let raw = subscript_to_long(arith::int(&index_v).map_err(arith_fault)?)?;
             let offset = i64::from(raw) - i64::from(bound.lower);
             if offset < 0 || offset >= i64::from(bound.count) {
-                return Err(Vm3Error::Fault(Fault::new(9, "subscript out of range")));
+                return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
             }
             return Ok(offset as usize);
         }
@@ -2926,7 +2926,7 @@ impl<'h> Vm3<'h> {
             let raw = subscript_to_long(arith::int(&index_v).map_err(arith_fault)?)?;
             let offset = i64::from(raw) - i64::from(bound.lower);
             if offset < 0 || offset >= i64::from(bound.count) {
-                return Err(Vm3Error::Fault(Fault::new(9, "subscript out of range")));
+                return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
             }
             flat += offset as usize * stride;
             stride *= bound.count as usize;
@@ -2958,7 +2958,7 @@ impl<'h> Vm3<'h> {
         };
         let flat = self.flat_index(indices, &bounds)?;
         if flat >= len {
-            return Err(Vm3Error::Fault(Fault::new(9, "subscript out of range")));
+            return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
         }
         let Some(arr) = self.read_loc_ref(loc)? else {
             return Ok(None);
@@ -3000,7 +3000,7 @@ impl<'h> Vm3<'h> {
         };
         let flat = self.flat_index(indices, &bounds)?;
         if flat >= len {
-            return Err(Vm3Error::Fault(Fault::new(9, "subscript out of range")));
+            return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
         }
         if self.mirror_param_array_element_write(loc, flat, value)? {
             return Ok(true);
@@ -3111,7 +3111,7 @@ impl<'h> Vm3<'h> {
         };
         let flat = self.flat_index(indices, &bounds)?;
         if flat >= len {
-            return Err(Vm3Error::Fault(Fault::new(9, "subscript out of range")));
+            return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
         }
         let Some(record) = self.read_loc_ref(loc)? else {
             return Err(Vm3Error::Fault(Fault::new(13, "expected Record Variant")));
@@ -3141,7 +3141,7 @@ impl<'h> Vm3<'h> {
         };
         let flat = self.flat_index(indices, &bounds)?;
         if flat >= len {
-            return Err(Vm3Error::Fault(Fault::new(9, "subscript out of range")));
+            return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
         }
         let record = self
             .read_loc_mut(loc)?
@@ -3203,7 +3203,7 @@ impl<'h> Vm3<'h> {
             .ok_or_else(|| Vm3Error::Fault(Fault::new(9, "array has no bounds")))?;
         let flat = self.flat_index(indices, &bounds)?;
         if flat >= arr.len() {
-            return Err(Vm3Error::Fault(Fault::new(9, "subscript out of range")));
+            return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
         }
         if let Some(result) = recv.safearray_i32_element(flat) {
             match result {
@@ -3257,7 +3257,7 @@ impl<'h> Vm3<'h> {
             .ok_or_else(|| Vm3Error::Fault(Fault::new(9, "array has no bounds")))?;
         let flat = self.flat_index(indices, &bounds)?;
         if flat >= arr.len() {
-            return Err(Vm3Error::Fault(Fault::new(9, "subscript out of range")));
+            return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
         }
         if let Some(value_i32) = value.as_i32()
             && let Some(result) = recv.set_safearray_i32_element(flat, value_i32)
@@ -3288,11 +3288,11 @@ impl<'h> Vm3<'h> {
             None => 1,
         };
         if dim < 1 {
-            return Err(Vm3Error::Fault(Fault::new(9, "subscript out of range")));
+            return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
         }
         let index = (dim - 1) as usize;
         if index >= bounds.len() {
-            return Err(Vm3Error::Fault(Fault::new(9, "subscript out of range")));
+            return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
         }
         Ok(index)
     }
@@ -3417,7 +3417,7 @@ impl<'h> Vm3<'h> {
                             _ => false,
                         };
                     if illegal {
-                        return Err(Vm3Error::Fault(Fault::new(9, "subscript out of range")));
+                        return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
                     }
                     let mut out = build_defaults(count)?;
                     for (old_flat, value) in old_elems.into_iter().enumerate() {

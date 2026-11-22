@@ -4,7 +4,12 @@
 /// `Error n`, and the `Error(n)` function when no explicit description is
 /// supplied. Host-defined and unmapped custom codes keep VBA's generic fallback.
 pub fn default_error_message(code: i32) -> &'static str {
+    const E_FAIL: i32 = 0x8000_4005_u32 as i32;
+    const OLE_E_OLEVERB: i32 = 0x8004_0000_u32 as i32;
     match code {
+        E_FAIL => "Automation error\nUnspecified error ",
+        OLE_E_OLEVERB => "Automation error\nInvalid OLEVERB structure ",
+        code if code < 0 => "Automation error",
         3 => "Return without GoSub",
         5 => "Invalid procedure call or argument",
         6 => "Overflow",

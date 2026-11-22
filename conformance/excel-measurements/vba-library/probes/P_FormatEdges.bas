@@ -1,6 +1,6 @@
 Attribute VB_Name = "P_FormatEdges"
 Option Explicit
-' UNMEASURED Empty/Null precedence, mask alignment and UTF16 source characters.
+' Captured Empty/Null precedence, mask alignment and UTF-16 source units.
 Private Const N As Long = 16
 Private Function T(ByVal k As Long) As String
     Dim v As Variant

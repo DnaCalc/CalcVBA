@@ -1,0 +1,5 @@
+FormatEdges.1=String:[empty]
+FormatEdges.2=String:[null]
+FormatEdges.11=String:[ x ]
+FormatEdges.13=String:[abc]
+FormatEdges.14=String:[ {55357}{56832}]

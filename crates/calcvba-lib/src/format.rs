@@ -41,26 +41,33 @@ pub fn apply_with(
         first_day,
         first_week,
     };
-    if value.vtype() == VarType::Empty {
-        return String::new();
-    }
     let trimmed = mask.trim();
+    if value.vtype() == VarType::Empty {
+        let sections = split_sections(mask);
+        if has_string_mask_chars(sections[0]) {
+            return if sections.len() > 1 {
+                format_string("", mask)
+            } else {
+                String::new()
+            };
+        }
+        return sections.get(3).map(|s| literal_text(s)).unwrap_or_default();
+    }
     if trimmed.is_empty() {
         return general_string(value);
     }
     // A Null formats as nothing, or as the mask's fourth section.
     if value.vtype() == VarType::Null {
-        return trimmed
-            .split(';')
-            .nth(3)
-            .map(literal_text)
+        return split_sections(trimmed)
+            .get(3)
+            .map(|section| literal_text(section))
             .unwrap_or_default();
     }
     if let Some(out) = named(value, trimmed, calendar) {
         return out;
     }
     if has_string_mask_chars(trimmed) {
-        return format_string(&general_string(value), trimmed);
+        return format_string(&general_string(value), mask);
     }
     if value.vtype() == VarType::String {
         // A number mask formats numeric text and returns other text unchanged.
@@ -105,7 +112,7 @@ pub fn apply_units(
             }
         } else if named(value, trimmed, calendar).is_none() && has_string_mask_chars(trimmed) {
             if let Ok(units) = own_text() {
-                return format_string_units(&units, trimmed);
+                return format_string_units(&units, mask);
             }
         } else if value.vtype() == VarType::String
             && named(value, trimmed, calendar).is_none()
@@ -118,15 +125,6 @@ pub fn apply_units(
     apply_with(value, mask, first_day, first_week, calendar)
         .encode_utf16()
         .collect()
-}
-
-/// [`format_string`] over code units: each character of the text (a surrogate pair, or one
-/// unpaired surrogate) fills one placeholder.
-fn format_string_units(units: &[u16], mask: &str) -> Vec<u16> {
-    let text: Vec<u16> = format_string(&with_stand_ins(units), mask)
-        .encode_utf16()
-        .collect();
-    restore_unpaired(&text)
 }
 
 /// Each unpaired surrogate stands in as a supplementary private-use character, so text that
@@ -176,12 +174,16 @@ impl Weeks {
     };
 }
 
-/// True when the mask has a string-format character outside quotes.
+/// True when the mask has an unquoted, unescaped string-format character.
 fn has_string_mask_chars(mask: &str) -> bool {
     let mut quoted = false;
-    for c in mask.chars() {
+    let mut chars = mask.chars();
+    while let Some(c) = chars.next() {
         match c {
             '"' => quoted = !quoted,
+            '\\' if !quoted => {
+                chars.next();
+            }
             '@' | '&' | '<' | '>' if !quoted => return true,
             _ => {}
         }
@@ -204,13 +206,17 @@ fn literal_text(section: &str) -> String {
     out
 }
 
-/// `Format` of text with a string mask: `@` is a character or a space, `&` a character or
-/// nothing. Padding goes before the source unless `!` requests left alignment; `>`
-/// upper-cases and `<` lower-cases. Surplus source characters follow the mask.
-/// The second section is for empty text.
 fn format_string(text: &str, mask: &str) -> String {
-    let sections: Vec<&str> = mask.split(';').collect();
-    let section = if text.is_empty() && sections.len() >= 2 {
+    let units: Vec<u16> = text.encode_utf16().collect();
+    String::from_utf16_lossy(&format_string_units(&units, mask))
+}
+
+/// Each placeholder consumes one UTF-16 unit. `@` adds a space for a missing unit
+/// and `&` emits nothing. `!` aligns the input to the left. The second mask section
+/// applies to empty text.
+fn format_string_units(units: &[u16], mask: &str) -> Vec<u16> {
+    let sections = split_sections(mask);
+    let section = if units.is_empty() && sections.len() >= 2 {
         sections[1]
     } else {
         sections[0]
@@ -239,36 +245,37 @@ fn format_string(text: &str, mask: &str) -> String {
             other => items.push((None, other)),
         }
     }
-    let mut source = text.chars();
+    let mut source = units.iter().copied();
     let placeholders = items.iter().filter(|(kind, _)| kind.is_some()).count();
     let mut padding = if left {
         0
     } else {
-        placeholders.saturating_sub(text.chars().count())
+        placeholders.saturating_sub(units.len())
     };
-    let mut out = String::new();
+    let mut out = Vec::new();
     for (kind, literal) in items {
         match kind {
-            None => out.push(literal),
+            None => out.extend_from_slice(literal.encode_utf16(&mut [0; 2])),
             Some(pad_space) => {
                 if padding > 0 {
                     padding -= 1;
                     if pad_space {
-                        out.push(' ');
+                        out.push(u16::from(b' '));
                     }
-                } else if let Some(c) = source.next() {
-                    out.push(c);
+                } else if let Some(unit) = source.next() {
+                    out.push(unit);
                 } else if pad_space {
-                    out.push(' ');
+                    out.push(u16::from(b' '));
                 }
             }
         }
     }
     out.extend(source);
     if upper {
-        out = out.to_uppercase();
-    } else if lower {
-        out = out.to_lowercase();
+        return with_stand_ins(&out).to_uppercase().encode_utf16().collect();
+    }
+    if lower {
+        return with_stand_ins(&out).to_lowercase().encode_utf16().collect();
     }
     out
 }

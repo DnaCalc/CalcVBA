@@ -532,7 +532,7 @@ pub fn msg_box(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> 
 pub fn input_box(args: &[Variant], host: &dyn HostServices) -> LibResult<Variant> {
     Ok(host
         .ui()
-        .input_box_variant(req(args, 0)?, arg_or_empty(args, 1))?)
+        .input_box_variant(req(args, 0)?, arg_or_empty(args, 2))?)
 }
 pub fn beep(_host: &dyn HostServices) -> LibResult<Variant> {
     // FIDELITY: no HAL beep facet yet; a no-op until one is added.

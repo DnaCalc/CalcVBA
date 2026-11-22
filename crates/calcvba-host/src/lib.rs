@@ -14,6 +14,12 @@ use std::{
     sync::Arc,
 };
 mod automatic_session;
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    feature = "browser-worker"
+))]
+mod browser_worker;
 mod cache;
 mod events;
 mod invocation;

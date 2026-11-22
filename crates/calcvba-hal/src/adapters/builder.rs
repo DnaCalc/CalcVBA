@@ -70,7 +70,9 @@ impl HostBuilder {
             HalProfileId::Null => null::NullHostServices::boxed(self.policy),
             HalProfileId::Wasm
                 if !(cfg!(target_os = "wasi")
-                    && runtime_class == HalRuntimeClass::WasmWasiLocal) =>
+                    && runtime_class == HalRuntimeClass::WasmWasiLocal
+                    || runtime_class == HalRuntimeClass::WasmBrowserSandbox
+                        && self.callbacks.is_some()) =>
             {
                 wasm::WasmHostServices::boxed(self.policy)
             }

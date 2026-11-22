@@ -300,6 +300,14 @@ impl StandardHostServices {
         mut self,
         callbacks: Arc<dyn crate::callbacks::HostCallbacks>,
     ) -> Self {
+        if self.runtime_class == HalRuntimeClass::WasmBrowserSandbox {
+            self.set_capability_supported(
+                CapabilityId::UiInteraction,
+                self.policy.allow_interaction
+                    && self.policy.ui_virtualization
+                        == crate::model::UiVirtualizationMode::HostCallback,
+            );
+        }
         self.set_capability_supported(
             CapabilityId::ProjectCatalog,
             callbacks.supports_project_catalog(),

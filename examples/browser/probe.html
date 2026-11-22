@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>CalcVBA browser probe</title>
+<pre id="result">Running</pre>
+<script type="module">
+import { runVba } from "./runner.mjs";
+
+const result = document.querySelector("#result");
+const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+};
+async function refuses(source, feature, options) {
+    try {
+        await runVba(source, options);
+    } catch (error) {
+        assert(String(error).includes(feature), String(error));
+        return;
+    }
+    throw new Error(`Expected ${feature} to be refused`);
+}
+
+try {
+    const calc = await runVba("Public Function Main() As Long\nMain = 6 * 7\nEnd Function");
+    assert(calc === "42", `Arithmetic returned ${calc}`);
+
+    const serial = await runVba("Public Function Main() As Double\nMain = CDbl(Date)\nEnd Function",
+        { timeZone: "UTC" });
+    assert(Number(serial) === Math.floor(Date.now() / 86400000) + 25569,
+        `UTC clock returned ${serial}`);
+
+    const modal = `Public Function Main() As String
+        Dim response As Long, value As String
+        Debug.Print "before"
+        response = MsgBox("Continue?", vbYesNo)
+        value = InputBox("Value?", , "preset")
+        Main = CStr(response) & "|" & value
+    End Function`;
+    let prints = [];
+    await refuses(modal, "MsgBox", { onPrint: text => prints.push(text) });
+    assert(prints.length === 0, "The refused project reached Main");
+
+    if (crossOriginIsolated) {
+        const asked = [];
+        const answer = await runVba(modal, {
+            onPrint: text => prints.push(text),
+            onDialog: async dialog => {
+                asked.push(dialog);
+                return dialog.kind === "message" ? 7 : "café";
+            },
+        });
+        assert(answer === "7|café", `Dialog answers returned ${answer}`);
+        assert(asked.length === 2 && asked[0].prompt === "Continue?"
+            && asked[0].style === 4 && asked[1].defaultValue === "preset", `Dialog arguments changed: ${JSON.stringify(asked)}`);
+        assert(prints.join() === "before", "The worker did not deliver Debug.Print");
+    } else {
+        await refuses(modal, "MsgBox", {
+            onDialog: () => { throw new Error("The non-isolated page received a modal request"); },
+        });
+    }
+
+    await refuses('Public Sub Main()\nOpen "C:\\probe.txt" For Input As #1\nEnd Sub', "Open");
+    await refuses('Public Sub Main()\nSaveSetting "A", "B", "C", "value"\nEnd Sub', "SaveSetting");
+    await refuses('Public Sub Main()\nShell "cmd"\nEnd Sub', "Shell");
+    await refuses('Public Sub Main()\nSet app = CreateObject("Excel.Application")\nEnd Sub', "CreateObject");
+    await refuses('Public Sub Main()\nSendKeys "x"\nEnd Sub', "SendKeys");
+    await refuses('Public Sub Main()\nAppActivate "Excel"\nEnd Sub', "AppActivate");
+    result.textContent = crossOriginIsolated ? "PASS isolated" : "PASS without isolation";
+} catch (error) {
+    result.textContent = `FAIL ${error.stack ?? error}`;
+}
+</script>
+</html>

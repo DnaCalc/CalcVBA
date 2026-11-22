@@ -89,6 +89,16 @@ impl Mode {
         projects: &[SymbolProjectManifest],
         host: Host,
     ) -> Result<Vec<calcvba_diagnostics::Diagnostic>, Box<calcvba_diagnostics::Diagnostic>> {
+        self.check_with_browser_dialogs(projects, host, false)
+    }
+
+    /// A browser worker may admit modal dialogs when it has a synchronous reply channel.
+    pub fn check_with_browser_dialogs(
+        self,
+        projects: &[SymbolProjectManifest],
+        host: Host,
+        browser_dialogs: bool,
+    ) -> Result<Vec<calcvba_diagnostics::Diagnostic>, Box<calcvba_diagnostics::Diagnostic>> {
         use calcvba_diagnostics::{
             Diagnostic, DiagnosticPhase, DiagnosticSeverity, DiagnosticSource,
         };
@@ -96,7 +106,7 @@ impl Mode {
             return Ok(Vec::new());
         }
 
-        let report = check_project(projects, host).map_err(|message| {
+        let report = check_project_inner(projects, host, browser_dialogs).map_err(|message| {
             Box::new(Diagnostic::error(
                 "PORT-E-CHECK",
                 DiagnosticPhase::ProjectLoad,
@@ -223,6 +233,14 @@ pub struct ParseIssue {
 }
 
 pub fn check_project(projects: &[SymbolProjectManifest], host: Host) -> Result<Report, String> {
+    check_project_inner(projects, host, false)
+}
+
+fn check_project_inner(
+    projects: &[SymbolProjectManifest],
+    host: Host,
+    browser_dialogs: bool,
+) -> Result<Report, String> {
     let mut report = Report {
         host,
         verdict: Verdict::Portable,
@@ -260,7 +278,7 @@ pub fn check_project(projects: &[SymbolProjectManifest], host: Host) -> Result<R
         }
 
         for (module, tree) in &prepared {
-            let mut scanner = Scanner::new(&mut report, project, Some(module));
+            let mut scanner = Scanner::new(&mut report, project, Some(module), browser_dialogs);
             for error in tree.errors() {
                 let line = scanner.line(error.offset);
                 scanner.report.parse_errors.push(ParseIssue {
@@ -281,7 +299,7 @@ pub fn check_project(projects: &[SymbolProjectManifest], host: Host) -> Result<R
             scanner.walk(tree.syntax(), None, &names);
         }
 
-        let mut scanner = Scanner::new(&mut report, project, None);
+        let mut scanner = Scanner::new(&mut report, project, None, browser_dialogs);
         for reference in &project.references {
             match reference {
                 ProjectReference::TypeLibrary { name, guid, .. } => {
@@ -364,6 +382,7 @@ struct Scanner<'a> {
     project: &'a str,
     module: Option<&'a str>,
     line_starts: Vec<usize>,
+    browser_dialogs: bool,
 }
 
 impl<'a> Scanner<'a> {
@@ -371,6 +390,7 @@ impl<'a> Scanner<'a> {
         report: &'a mut Report,
         project: &'a SymbolProjectManifest,
         module: Option<&'a ModuleUnit>,
+        browser_dialogs: bool,
     ) -> Self {
         let mut line_starts = vec![0];
         if let Some(module) = module {
@@ -387,6 +407,7 @@ impl<'a> Scanner<'a> {
             project: &project.project_name,
             module: module.map(|m| m.module_name.as_str()),
             line_starts,
+            browser_dialogs,
         }
     }
 
@@ -432,10 +453,35 @@ impl<'a> Scanner<'a> {
                 label.unwrap_or(row.name),
                 offset,
                 row.class,
-                row.support[self.report.host as usize],
+                self.support(row),
                 None,
                 Some(row.mac_dialect),
             );
+        }
+    }
+
+    fn support(&self, row: &Feature) -> Support {
+        if self.report.host == Host::Browser
+            && (row.area == "FileSystem"
+                || matches!(
+                    row.name,
+                    "Open / Close / Get / Put"
+                        | "Print # / Write # / Line Input #"
+                        | "Name ... As"
+                        | "Input/$"
+                        | "InputB/$"
+                        | "Width"
+                        | "Environ/$"
+                        | "DeleteSetting"
+                        | "GetAllSettings"
+                        | "GetSetting"
+                        | "SaveSetting"
+                )
+                || (!self.browser_dialogs && matches!(row.name, "MsgBox" | "InputBox")))
+        {
+            Support::Reject
+        } else {
+            row.support[self.report.host as usize]
         }
     }
 
@@ -662,7 +708,7 @@ impl<'a> Scanner<'a> {
             return;
         };
 
-        let mut support = row.support[self.report.host as usize];
+        let mut support = self.support(row);
         let mut detail = None;
         if matches!(row.name, "CreateObject" | "GetObject") {
             let args = parent.and_then(|parent| match parent.kind() {

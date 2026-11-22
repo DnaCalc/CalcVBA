@@ -25,6 +25,7 @@ struct Frame {
 pub(crate) struct TypedStack {
     frames: Vec<Frame>,
     error: *mut ErrEngine,
+    library: *mut calcvba_lib::LibContext,
     stores: Vec<(*mut calcvba_runtime::Variant, usize)>,
     classes: Option<calcvba_rt_abi::TypedClassContext>,
     terminations: std::collections::VecDeque<(i32, i32, i32)>,
@@ -192,6 +193,16 @@ impl TypedStack {
                 )?;
             }
         }
+        if calcvba_lib::is_contextual(native) {
+            let args = calcvba_host_api::with_native_call(context, || {
+                calcvba_lib::prepare_contextual_args(native, &values, host)
+            })
+            .map_err(|error| error.code)?;
+            // SAFETY: the session lease protects the boxed state and the
+            // contextual call neither calls the host nor reenters the session.
+            return calcvba_lib::invoke_contextual(native, &args, unsafe { &mut *self.library })
+                .map_err(|error| error.code);
+        }
         let result = calcvba_host_api::with_native_call(context, || {
             calcvba_lib::invoke_context_free(native, &values, host)
         })
@@ -228,7 +239,7 @@ impl TypedStack {
         }
     }
     /// # Safety
-    /// error and the activation's canonical globals stay live under the same
+    /// Err, library state and the activation's canonical globals stay live under the same
     /// session lease, on this thread, until the stack drops. No other execution
     /// may use that state except synchronous guarded callback reentry.
     pub(crate) unsafe fn new(
@@ -236,10 +247,11 @@ impl TypedStack {
         program: usize,
         procedure: FuncId,
         stores: Vec<(*mut calcvba_runtime::Variant, usize)>,
-        error: *mut ErrEngine,
+        state: (*mut ErrEngine, *mut calcvba_lib::LibContext),
         classes: Option<calcvba_rt_abi::TypedClassContext>,
         automatic: std::rc::Rc<crate::events::AutomaticEvents>,
     ) -> Self {
+        let (error, library) = state;
         // SAFETY: caller retains unique session execution authority.
         let saved_error = unsafe { (&mut *error).enter_activation() };
         Self {
@@ -255,6 +267,7 @@ impl TypedStack {
                 termination: None,
             }],
             error,
+            library,
             stores,
             classes,
             terminations: Default::default(),

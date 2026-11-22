@@ -835,7 +835,7 @@ pub struct ExecState<'h> {
     /// authority across short borrows of the enclosing session during reentry.
     pub err_engine: Box<ErrEngine>,
     pub events: EventFabric<'h>,
-    pub lib: LibContext,
+    pub lib: Box<LibContext>,
     pub host: &'h dyn HostServices,
     proc_invoker: Option<ProcInvokeBridge>,
     pub next_instance_id: i32,
@@ -892,7 +892,7 @@ impl<'h> ExecState<'h> {
             default_error_source: "VBAProject".to_string(),
             err_engine: Box::default(),
             events: EventFabric::default(),
-            lib: LibContext::default(),
+            lib: Box::default(),
             host,
             proc_invoker: None,
             next_instance_id: INSTANCE_ID_BASE,

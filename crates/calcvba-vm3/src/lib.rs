@@ -840,6 +840,10 @@ impl<'h> Vm3<'h> {
     pub fn typed_error_raw(&mut self) -> *mut calcvba_rt_abi::ErrEngine {
         &raw mut *self.exec.err_engine
     }
+    /// Stable library state under the typed activation's same-thread session lease.
+    pub fn typed_library_raw(&mut self) -> *mut calcvba_lib::LibContext {
+        &raw mut *self.exec.lib
+    }
     pub fn typed_class_context(&mut self) -> Option<calcvba_rt_abi::TypedClassContext> {
         self.exec.typed_class_context()
     }

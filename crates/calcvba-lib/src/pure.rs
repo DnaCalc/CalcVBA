@@ -5,6 +5,7 @@
 //! implemented (see `calcvba-runtime`/`calcvba-eval` `collection`); the remaining
 //! `FIDELITY:` marker is `StrConv`'s CJK/encoding modes.
 
+use crate::calendar::Calendar;
 use crate::math::ln;
 use crate::{
     LibContext, LibError, LibResult, alloc_count, as_f64, as_i16, as_i32, as_i64, as_str, as_usize,
@@ -19,9 +20,7 @@ use calcvba_runtime::{
 };
 // The VBA serial ↔ civil calendar math is canonical in `calcvba_runtime::vba_date`; re-export it
 // at `crate::pure::*` so this module's date functions (and `format.rs`) keep their call sites.
-pub(crate) use calcvba_runtime::{
-    civil_from_days, days_from_civil, days_in_month, serial_to_hms, serial_to_ymd, ymd_to_serial,
-};
+pub(crate) use calcvba_runtime::{serial_to_hms, serial_to_ymd, ymd_to_serial};
 
 const VBA_DATE_MIN_SERIAL: f64 = -657_434.0; // 0100-01-01
 const VBA_DATE_MAX_EXCLUSIVE_SERIAL: f64 = 2_958_466.0; // 10000-01-01
@@ -1064,7 +1063,7 @@ fn array_bytes(array: &SafeArray) -> LibResult<Vec<u8>> {
 /// `Format(expr, [mask])` — delegates to the [`crate::format`] engine (named
 /// formats, custom numeric masks, custom date/time masks). With no mask, use
 /// general text; Null and Empty format as empty text.
-pub fn format(args: &[Variant]) -> LibResult<Variant> {
+pub fn format(args: &[Variant], calendar: Calendar) -> LibResult<Variant> {
     let value = need(args, 0)?;
     // An unpaired surrogate in the mask is literal text: it goes through as a stand-in and
     // comes back as itself.
@@ -1079,7 +1078,7 @@ pub fn format(args: &[Variant]) -> LibResult<Variant> {
     if matches!(value.vtype(), VarType::ArrayVariant | VarType::Error) {
         return Err(LibError::type_mismatch("Format expects a scalar value"));
     }
-    let units = crate::format::apply_units(value, &mask, first_day, first_week);
+    let units = crate::format::apply_units(value, &mask, first_day, first_week, calendar);
     Ok(vunits(&crate::format::restore_unpaired(&units)))
 }
 
@@ -1133,7 +1132,9 @@ pub fn format_date_time(args: &[Variant]) -> LibResult<Variant> {
     if value.vtype() == VarType::Null {
         return Ok(vstr(String::new()));
     }
-    if value.vtype() == VarType::String && !crate::format::is_date_or_number_text(value) {
+    if value.vtype() == VarType::String
+        && !crate::format::is_date_or_number_text(value, Calendar::Gregorian)
+    {
         return Err(LibError::type_mismatch("FormatDateTime needs a date"));
     }
     let named_format = match opt(args, 1) {
@@ -1575,20 +1576,22 @@ fn count_weekday_boundaries(start_day: i64, end_day: i64, target_dow: i32) -> i6
     }
 }
 
-pub fn date_serial(args: &[Variant]) -> LibResult<Variant> {
+pub fn date_serial(args: &[Variant], calendar: Calendar) -> LibResult<Variant> {
     let y = validate_dateserial_arg(as_i64(need(args, 0)?)?)?;
     let m = validate_dateserial_arg(as_i64(need(args, 1)?)?)?;
     let d = validate_dateserial_arg(as_i64(need(args, 2)?)?)?;
     // Negative years are relative to 2000 (Excel: -1 -> 1999, -100 -> 1900).
     // Positive two-digit years use the current default window; host cutoff remains separate.
-    let y = match y {
-        ..=-1 => y + 2000,
-        0..=99 => calcvba_runtime::regional::current().expand_year(y),
-        100..=9999 => y,
+    let y = match (calendar, y) {
+        (Calendar::Hijri, 0..=99) => y + 1400,
+        (Calendar::Hijri, 100..=9666) => y,
+        (Calendar::Gregorian, ..=-1) => y + 2000,
+        (Calendar::Gregorian, 0..=99) => calcvba_runtime::regional::current().expand_year(y),
+        (Calendar::Gregorian, 100..=9999) => y,
         _ => return Err(LibError::invalid_call("DateSerial year out of range")),
     };
     Ok(Variant::from_date_f64(validate_vba_date_serial(
-        ymd_to_serial(y, m, d),
+        calendar.serial(y, m, d),
     )?))
 }
 
@@ -1601,7 +1604,7 @@ pub fn time_serial(args: &[Variant]) -> LibResult<Variant> {
     ))
 }
 
-pub fn date_value(args: &[Variant]) -> LibResult<Variant> {
+pub fn date_value(args: &[Variant], calendar: Calendar) -> LibResult<Variant> {
     let value = need(args, 0)?;
     let serial = if let Some(date) = value
         .as_date_f64()
@@ -1613,17 +1616,21 @@ pub fn date_value(args: &[Variant]) -> LibResult<Variant> {
             .map_err(|_| LibError::type_mismatch("date out of range"))?
     } else {
         let text = as_str(value)?;
-        date_time_text_serial(&text)
+        date_time_text_serial_in(&text, calendar)
             .map_err(|_| LibError::type_mismatch(format!("cannot parse date `{text}`")))?
     };
     Ok(Variant::from_date_f64(serial.trunc()))
 }
 
 /// A date argument: a `Date` or numeric serial, or a string read as `CDate` reads it.
-fn date_arg(v: &Variant) -> LibResult<f64> {
+fn date_arg(v: &Variant, calendar: Calendar) -> LibResult<f64> {
     let serial = match v.vtype() {
         VarType::Date => Ok(v.as_date_f64().unwrap_or(0.0)),
         // Date text parses as `CDate` parses it; a numeric string is its serial.
+        VarType::String if calendar == Calendar::Hijri => {
+            date_time_text_serial_in(&as_str(v)?, calendar)
+                .or_else(|error| as_f64(v).map_err(|_| error))
+        }
         VarType::String => match cdate_from_string(&as_str(v)?) {
             Ok(date) => Ok(date.as_date_f64().unwrap_or(0.0)),
             Err(error) => as_f64(v).map_err(|_| error),
@@ -1643,18 +1650,15 @@ pub fn time_value(args: &[Variant]) -> LibResult<Variant> {
     Ok(Variant::from_date_f64(parse_time_value_string(&text)?))
 }
 
-/// Whether `(y, m, d)` is a real calendar date. The month/day are normalized by
-/// `days_from_civil` (Feb 30 rolls into March), so a round-trip through the serial that does
-/// NOT return the same `(y, m, d)` means the input was an invalid date — matching VBA, where
-/// `CDate("February 30, 2000")` raises error 13 and `IsDate(...)` of it is False.
-fn ymd_is_valid(y: i64, m: i64, d: i64) -> bool {
-    (1..=12).contains(&m) && d >= 1 && civil_from_days(days_from_civil(y, m, d)) == (y, m, d)
+/// Validate a parsed date without applying DateSerial's month and day rollover.
+fn ymd_is_valid(y: i64, m: i64, d: i64, calendar: Calendar) -> bool {
+    (1..=12).contains(&m) && (1..=calendar.month_days(y, m)).contains(&d)
 }
 
-fn parse_date(s: &str) -> LibResult<(i64, i64, i64)> {
+fn parse_date(s: &str, calendar: Calendar) -> LibResult<(i64, i64, i64)> {
     let err = || LibError::type_mismatch(format!("cannot parse date `{s}`"));
-    let (y, m, d) = parse_date_raw(s).ok_or_else(err)?;
-    if !ymd_is_valid(y, m, d) {
+    let (y, m, d) = parse_date_raw(s, calendar).ok_or_else(err)?;
+    if !ymd_is_valid(y, m, d, calendar) {
         return Err(err());
     }
     Ok((y, m, d))
@@ -1667,14 +1671,14 @@ fn parse_time_value_string(s: &str) -> LibResult<f64> {
         return Err(err());
     }
     if let Some((date_part, time_part)) = split_trailing_time(s) {
-        parse_date(date_part.trim())?;
+        parse_date(date_part.trim(), Calendar::Gregorian)?;
         return parse_time_only(&time_part).ok_or_else(err);
     }
     if let Some(time) = parse_time_only(s) {
         return Ok(time);
     }
     // A date with no time of day has the time 0.
-    parse_date(s).map(|_| 0.0)
+    parse_date(s, Calendar::Gregorian).map(|_| 0.0)
 }
 
 fn split_trailing_time(s: &str) -> Option<(&str, String)> {
@@ -1746,10 +1750,14 @@ fn parse_time_only(s: &str) -> Option<f64> {
     Some((h as f64 * 3600.0 + m as f64 * 60.0 + sec as f64) / 86400.0)
 }
 
-fn parse_date_raw(s: &str) -> Option<(i64, i64, i64)> {
+fn parse_date_raw(s: &str, calendar: Calendar) -> Option<(i64, i64, i64)> {
     use calcvba_runtime::regional::DateOrder;
     let region = calcvba_runtime::regional::current();
-    let window = |year| region.expand_year(year);
+    let window = |year| match (calendar, year) {
+        (Calendar::Hijri, 0..=99) => year + 1400,
+        (Calendar::Hijri, _) => year,
+        (Calendar::Gregorian, _) => region.expand_year(year),
+    };
     let s = s.trim();
     let mut month = None;
     let mut nums: Vec<i64> = Vec::new();
@@ -1759,7 +1767,9 @@ fn parse_date_raw(s: &str) -> Option<(i64, i64, i64)> {
         .split([' ', ',', '\t', '/', '-'])
         .filter(|t| !t.is_empty())
     {
-        if let Some(m) = month_from_name(tok) {
+        if calendar == Calendar::Gregorian
+            && let Some(m) = month_from_name(tok)
+        {
             if month.replace(m).is_some() {
                 return None;
             }
@@ -1781,7 +1791,7 @@ fn parse_date_raw(s: &str) -> Option<(i64, i64, i64)> {
         }
         // Month name and one number: a day of this year (`Dec 30`) or a year (`Jan 2000`).
         (Some(m), [n]) if *n > 31 => Some((window(*n), m, 1)),
-        (Some(m), [n]) => Some((current_year(), m, *n)),
+        (Some(m), [n]) => Some((current_year(calendar), m, *n)),
         // A full year at the front establishes the ISO order independently of locale.
         (None, [a, b, c]) => {
             if first_token_len >= 3 || (*a > 31 && region.date_order != DateOrder::YearMonthDay) {
@@ -1789,7 +1799,7 @@ fn parse_date_raw(s: &str) -> Option<(i64, i64, i64)> {
             }
             if region.date_order == DateOrder::YearMonthDay && last_token_len <= 2 {
                 let year = window(*a);
-                if ymd_is_valid(year, *b, *c) {
+                if ymd_is_valid(year, *b, *c, calendar) {
                     return Some((year, *b, *c));
                 }
             }
@@ -1798,7 +1808,9 @@ fn parse_date_raw(s: &str) -> Option<(i64, i64, i64)> {
                 DateOrder::DayMonthYear => (*b, *a),
                 _ => (*a, *b),
             };
-            if ymd_is_valid(year, month, day) || region.date_order == DateOrder::MonthDayYear {
+            if ymd_is_valid(year, month, day, calendar)
+                || region.date_order == DateOrder::MonthDayYear
+            {
                 Some((year, month, day))
             } else {
                 Some((year, day, month))
@@ -1806,19 +1818,21 @@ fn parse_date_raw(s: &str) -> Option<(i64, i64, i64)> {
         }
         // A numeric month and day without a year use this calendar year.
         (None, [a, b]) => match region.date_order {
-            DateOrder::DayMonthYear => Some((current_year(), *b, *a)),
-            _ => Some((current_year(), *a, *b)),
+            DateOrder::DayMonthYear => Some((current_year(calendar), *b, *a)),
+            _ => Some((current_year(calendar), *a, *b)),
         },
         _ => None,
     }
 }
 
 /// The current calendar year (UTC).
-fn current_year() -> i64 {
+fn current_year(calendar: Calendar) -> i64 {
     let seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
-    civil_from_days(seconds.div_euclid(86_400)).0
+    calendar
+        .parts(ymd_to_serial(1970, 1, 1) + seconds.div_euclid(86_400) as f64)
+        .0
 }
 
 /// The 1-based month number for a month name or its 3-letter prefix (`Jan`,
@@ -1836,17 +1850,17 @@ fn month_from_name(tok: &str) -> Option<i64> {
         .map(|i| i as i64 + 1)
 }
 
-pub fn date_add(args: &[Variant]) -> LibResult<Variant> {
+pub fn date_add(args: &[Variant], calendar: Calendar) -> LibResult<Variant> {
     let interval = as_str(need(args, 0)?)?.to_ascii_lowercase();
     // The count is a `Long`; Excel drops its fraction (`DateAdd("d", 1.5, ...)` adds one day).
     let number = as_f64(need(args, 1)?)?.trunc();
     if !number.is_finite() || number.abs() > f64::from(i32::MAX) {
         return Err(LibError::overflow("DateAdd number out of range"));
     }
-    let serial = date_arg(need(args, 2)?)?;
+    let serial = date_arg(need(args, 2)?, calendar)?;
     let result = match interval.as_str() {
         "yyyy" | "m" | "q" => {
-            let (y, m, d) = serial_to_ymd(serial);
+            let (y, m, d) = calendar.parts(serial);
             let months = m - 1
                 + match interval.as_str() {
                     "yyyy" => number as i64 * 12,
@@ -1859,10 +1873,10 @@ pub fn date_add(args: &[Variant]) -> LibResult<Variant> {
             // not a roll into March), and re-attach the source time of day. A VBA
             // serial carries the time as the fraction |serial - trunc|, applied away
             // from zero, so negative-date serials subtract it.
-            let clamped_day = d.min(days_in_month(ny, nm));
+            let clamped_day = d.min(calendar.month_days(ny, nm));
             let (h, mi, s) = serial_to_hms(serial);
             let time_frac = (h * 3600 + mi * 60 + s) as f64 / 86_400.0;
-            let date_serial = ymd_to_serial(ny, nm, clamped_day);
+            let date_serial = calendar.serial(ny, nm, clamped_day);
             if date_serial < 0.0 {
                 date_serial - time_frac
             } else {
@@ -1908,10 +1922,10 @@ fn real_to_serial(real: f64) -> f64 {
     }
 }
 
-pub fn date_diff(args: &[Variant]) -> LibResult<Variant> {
+pub fn date_diff(args: &[Variant], calendar: Calendar) -> LibResult<Variant> {
     let interval = interval_arg(need(args, 0)?)?;
-    let a = date_arg(need(args, 1)?)?;
-    let b = date_arg(need(args, 2)?)?;
+    let a = date_arg(need(args, 1)?, calendar)?;
+    let b = date_arg(need(args, 2)?, calendar)?;
     // VBA coerces the optional Long enums even when the interval ignores them.
     let first_day = arg_present(args, 3).map_or(Ok(1), as_i32)?;
     if let Some(first_week) = arg_present(args, 4) {
@@ -1924,8 +1938,8 @@ pub fn date_diff(args: &[Variant]) -> LibResult<Variant> {
         (ra * 86_400.0).round() as i64,
         (rb * 86_400.0).round() as i64,
     );
-    let (ya, ma, _) = serial_to_ymd(a);
-    let (yb, mb, _) = serial_to_ymd(b);
+    let (ya, ma, _) = calendar.parts(a);
+    let (yb, mb, _) = calendar.parts(b);
     let result = match interval.as_str() {
         "yyyy" => yb - ya,
         "q" => (yb * 4 + (mb - 1) / 3) - (ya * 4 + (ma - 1) / 3),
@@ -1964,11 +1978,11 @@ pub enum DatePart {
     Second,
 }
 
-pub fn date_part(args: &[Variant], part: DatePart) -> LibResult<Variant> {
-    let serial = date_arg(need(args, 0)?)?;
+pub fn date_part(args: &[Variant], part: DatePart, calendar: Calendar) -> LibResult<Variant> {
+    let serial = date_arg(need(args, 0)?, calendar)?;
     let value = match part {
         DatePart::Year | DatePart::Month | DatePart::Day | DatePart::Weekday => {
-            let (y, m, d) = serial_to_ymd(serial);
+            let (y, m, d) = calendar.parts(serial);
             match part {
                 DatePart::Year => y as i32,
                 DatePart::Month => m as i32,
@@ -2022,10 +2036,17 @@ fn first_week_of_year(args: &[Variant], index: usize) -> LibResult<i32> {
 /// is the first week with four days in the year) or `vbFirstFullWeek` (3). A date before week 1
 /// belongs to the last week of the previous year, and (except under `vbFirstJan1`) one on or
 /// after week 1 of the next year is week 1.
-pub(crate) fn week_of_year(y: i64, m: i64, d: i64, first_day: i32, first_week: i32) -> i64 {
-    let day = i128::from(days_from_civil(y, m, d));
+pub(crate) fn week_of_year(
+    y: i64,
+    m: i64,
+    d: i64,
+    first_day: i32,
+    first_week: i32,
+    calendar: Calendar,
+) -> i64 {
+    let day = i128::from(calendar.days(y, m, d));
     let week_one_start = |year: i64| -> i128 {
-        let jan1 = i128::from(days_from_civil(year, 1, 1));
+        let jan1 = i128::from(calendar.days(year, 1, 1));
         // Days from the start of the week to Jan 1 (1970-01-01 was a Thursday).
         let before = (jan1 + 4 - (i128::from(first_day) - 1)).rem_euclid(7);
         let week_start = jan1 - before;
@@ -2129,10 +2150,10 @@ fn integer_or_long(size: usize) -> Variant {
     }
 }
 
-pub fn vba_datepart(args: &[Variant]) -> LibResult<Variant> {
+pub fn vba_datepart(args: &[Variant], calendar: Calendar) -> LibResult<Variant> {
     let interval = interval_arg(need(args, 0)?)?;
-    let serial = date_arg(need(args, 1)?)?;
-    let (y, m, d) = serial_to_ymd(serial);
+    let serial = date_arg(need(args, 1)?, calendar)?;
+    let (y, m, d) = calendar.parts(serial);
     let (h, mi, s) = serial_to_hms(serial);
     let value = match interval.as_str() {
         "yyyy" => y as i32,
@@ -2141,16 +2162,17 @@ pub fn vba_datepart(args: &[Variant]) -> LibResult<Variant> {
         "d" => d as i32,
         "w" => {
             let first = first_day_of_week(args, 2)?;
-            weekday_number(y as i32, m as u32, d as u32, first)
+            let (year, month, day) = serial_to_ymd(serial);
+            weekday_number(year as i32, month as u32, day as u32, first)
         }
         "y" => {
             // Day of the year: this date's ordinal minus Jan 1's.
-            (days_from_civil(y, m, d) - days_from_civil(y, 1, 1) + 1) as i32
+            (calendar.days(y, m, d) - calendar.days(y, 1, 1) + 1) as i32
         }
         "ww" => {
             let first_day = first_day_of_week(args, 2)?;
             let first_week = first_week_of_year(args, 3)?;
-            week_of_year(y, m, d, first_day, first_week) as i32
+            week_of_year(y, m, d, first_day, first_week, calendar) as i32
         }
         "h" => h as i32,
         "n" => mi as i32,
@@ -2431,18 +2453,22 @@ fn cdate_from_string(s: &str) -> LibResult<Variant> {
 
 /// Date/time recognition does not include CDate's numeric-string fallback (IsDate).
 pub(crate) fn date_time_text_serial(s: &str) -> LibResult<f64> {
+    date_time_text_serial_in(s, Calendar::Gregorian)
+}
+
+pub(crate) fn date_time_text_serial_in(s: &str, calendar: Calendar) -> LibResult<f64> {
     let s = s.trim();
     if let Some(time) = parse_time_only(s) {
         return Ok(time);
     }
     if let Some((date_part, time_part)) = split_trailing_time(s) {
-        let (y, m, d) = parse_date(date_part.trim())?;
+        let (y, m, d) = parse_date(date_part.trim(), calendar)?;
         let time = parse_time_value_string(&time_part)?;
-        let day = ymd_to_serial(y, m, d);
+        let day = calendar.serial(y, m, d);
         return validate_vba_date_serial(if day < 0.0 { day - time } else { day + time });
     }
-    let (y, m, d) = parse_date(s)?;
-    validate_vba_date_serial(ymd_to_serial(y, m, d))
+    let (y, m, d) = parse_date(s, calendar)?;
+    validate_vba_date_serial(calendar.serial(y, m, d))
 }
 pub fn cverr(args: &[Variant]) -> LibResult<Variant> {
     let value = need(args, 0)?;
@@ -4151,10 +4177,11 @@ pub fn switch(args: &[Variant]) -> LibResult<Variant> {
 pub fn mac_id(args: &[Variant]) -> LibResult<Variant> {
     let value = as_str(need(args, 0)?)?;
     let mut bytes = [b' '; 4];
-    for (slot, byte) in bytes
-        .iter_mut()
-        .zip(calcvba_runtime::ansi::ansi_encode(&value))
-    {
+    for (slot, byte) in bytes.iter_mut().zip(
+        calcvba_runtime::ansi::ansi_encode(&value)
+            .into_iter()
+            .take_while(|&b| b != 0),
+    ) {
         *slot = byte;
     }
     Ok(vi32(i32::from_be_bytes(bytes)))
@@ -4191,14 +4218,20 @@ mod tests {
                 DatePart::Second,
             ] {
                 assert_eq!(
-                    date_part(&[Variant::from_f64(serial)], part)
+                    date_part(&[Variant::from_f64(serial)], part, Calendar::Gregorian)
                         .unwrap_err()
                         .code,
                     13
                 );
             }
             // Format uses the same calendar helpers through a separate path.
-            let _ = crate::format::apply_with(&Variant::from_f64(serial), "ww y dddd", 1, 1);
+            let _ = crate::format::apply_with(
+                &Variant::from_f64(serial),
+                "ww y dddd",
+                1,
+                1,
+                Calendar::Gregorian,
+            );
         }
     }
 
@@ -4521,11 +4554,11 @@ mod tests {
     #[test]
     fn week_of_year_follows_first_day_and_first_week() {
         // 1/1/2005 is a Saturday.
-        assert_eq!(week_of_year(2005, 1, 1, 1, 1), 1);
-        assert_eq!(week_of_year(2005, 1, 1, 1, 3), 52);
-        assert_eq!(week_of_year(2005, 1, 1, 2, 2), 53);
+        assert_eq!(week_of_year(2005, 1, 1, 1, 1, Calendar::Gregorian), 1);
+        assert_eq!(week_of_year(2005, 1, 1, 1, 3, Calendar::Gregorian), 52);
+        assert_eq!(week_of_year(2005, 1, 1, 2, 2, Calendar::Gregorian), 53);
         // 12/29/2003 (Monday) belongs to week 1 of 2004 under Monday / four-day weeks.
-        assert_eq!(week_of_year(2003, 12, 29, 2, 2), 1);
+        assert_eq!(week_of_year(2003, 12, 29, 2, 2, Calendar::Gregorian), 1);
     }
 
     #[test]

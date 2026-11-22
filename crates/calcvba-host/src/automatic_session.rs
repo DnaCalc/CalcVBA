@@ -213,14 +213,14 @@ impl Session<'_> {
             .as_ref()
             .map_err(|e| Error::UnsupportedSignature(e.clone()))?;
         let root = self.module.reference_programs.len();
-        let (stores, error, classes) = match &self.executable {
+        let (stores, state_pointers, classes) = match &self.executable {
             Executable::Interpreter(state) => {
                 let mut state = state.try_borrow_mut().map_err(|_| Error::Reentry)?;
                 (
                     (0..=root)
                         .map(|unit| state.typed_globals_raw_at(unit))
                         .collect::<Vec<_>>(),
-                    state.typed_error_raw(),
+                    (state.typed_error_raw(), state.typed_library_raw()),
                     state.typed_class_context(),
                 )
             }
@@ -231,7 +231,7 @@ impl Session<'_> {
                     (0..=root)
                         .map(|unit| state.typed_globals_raw_at(unit))
                         .collect::<Vec<_>>(),
-                    state.typed_error_raw(),
+                    (state.typed_error_raw(), state.typed_library_raw()),
                     state.typed_class_context(),
                 )
             }
@@ -255,7 +255,7 @@ impl Session<'_> {
                 unit,
                 procedure,
                 stores,
-                error,
+                state_pointers,
                 classes,
                 self.automatic.clone(),
             )

@@ -20,16 +20,23 @@ use calcvba_runtime::regional;
 use calcvba_runtime::variant::VarType;
 use calcvba_runtime::{Decimal96, Variant, variant_to_vba_string};
 
-use crate::pure::{day_of_week, days_from_civil, serial_to_ymd, week_of_year};
+use crate::calendar::Calendar;
+use crate::pure::{day_of_week, serial_to_ymd, week_of_year};
 
 #[cfg(test)]
 fn apply(value: &Variant, mask: &str) -> String {
-    apply_with(value, mask, 1, 1)
+    apply_with(value, mask, 1, 1, Calendar::Gregorian)
 }
 
 /// `Format(value, mask, firstdayofweek, firstweekofyear)`: the two week arguments steer the `w`
 /// and `ww` date tokens (`vbSunday`/`vbFirstJan1` by default).
-pub fn apply_with(value: &Variant, mask: &str, first_day: i32, first_week: i32) -> String {
+pub fn apply_with(
+    value: &Variant,
+    mask: &str,
+    first_day: i32,
+    first_week: i32,
+    calendar: Calendar,
+) -> String {
     let weeks = Weeks {
         first_day,
         first_week,
@@ -49,7 +56,7 @@ pub fn apply_with(value: &Variant, mask: &str, first_day: i32, first_week: i32) 
             .map(literal_text)
             .unwrap_or_default();
     }
-    if let Some(out) = named(value, trimmed) {
+    if let Some(out) = named(value, trimmed, calendar) {
         return out;
     }
     if has_string_mask_chars(trimmed) {
@@ -62,16 +69,18 @@ pub fn apply_with(value: &Variant, mask: &str, first_day: i32, first_week: i32) 
             .and_then(|b| parse_vba_numeric_string(&b.as_str()))
             .is_some();
         let date_text = is_date_mask(trimmed)
-            && value
-                .as_bstr()
-                .and_then(|b| parse_date_text_serial_bits(&b.as_str()))
-                .is_some();
+            && value.as_bstr().is_some_and(|b| match calendar {
+                Calendar::Gregorian => parse_date_text_serial_bits(&b.as_str()).is_some(),
+                Calendar::Hijri => {
+                    crate::pure::date_time_text_serial_in(&b.as_str(), calendar).is_ok()
+                }
+            });
         if !numeric && !date_text {
             return general_string(value);
         }
     }
     if is_date_mask(trimmed) {
-        format_date(value, split_sections(trimmed)[0], weeks)
+        format_date(value, split_sections(trimmed)[0], weeks, calendar)
     } else {
         format_numeric(value, trimmed)
     }
@@ -80,7 +89,13 @@ pub fn apply_with(value: &Variant, mask: &str, first_day: i32, first_week: i32) 
 /// [`apply_with`] as UTF-16 code units: where `Format` returns or rearranges the value's own
 /// text (no mask, a string mask, text a number mask leaves alone) the text's units are kept,
 /// unpaired surrogates included, as VBA keeps them.
-pub fn apply_units(value: &Variant, mask: &str, first_day: i32, first_week: i32) -> Vec<u16> {
+pub fn apply_units(
+    value: &Variant,
+    mask: &str,
+    first_day: i32,
+    first_week: i32,
+    calendar: Calendar,
+) -> Vec<u16> {
     let trimmed = mask.trim();
     let own_text = || variant_to_vba_string(value).map(|text| text.payload_units().to_vec());
     if !matches!(value.vtype(), VarType::Empty | VarType::Null) {
@@ -88,19 +103,19 @@ pub fn apply_units(value: &Variant, mask: &str, first_day: i32, first_week: i32)
             if let Ok(units) = own_text() {
                 return units;
             }
-        } else if named(value, trimmed).is_none() && has_string_mask_chars(trimmed) {
+        } else if named(value, trimmed, calendar).is_none() && has_string_mask_chars(trimmed) {
             if let Ok(units) = own_text() {
                 return format_string_units(&units, trimmed);
             }
         } else if value.vtype() == VarType::String
-            && named(value, trimmed).is_none()
-            && !is_date_or_number_text(value)
+            && named(value, trimmed, calendar).is_none()
+            && !is_date_or_number_text(value, calendar)
             && let Ok(units) = own_text()
         {
             return units;
         }
     }
-    apply_with(value, mask, first_day, first_week)
+    apply_with(value, mask, first_day, first_week, calendar)
         .encode_utf16()
         .collect()
 }
@@ -282,21 +297,22 @@ fn num(value: &Variant) -> f64 {
 }
 
 /// True when text parses as a number or a date.
-pub fn is_date_or_number_text(value: &Variant) -> bool {
+pub fn is_date_or_number_text(value: &Variant, calendar: Calendar) -> bool {
     value.as_bstr().is_some_and(|b| {
         let t = b.as_str();
-        parse_vba_numeric_string(&t).is_some() || crate::pure::date_time_text_serial(&t).is_ok()
+        parse_vba_numeric_string(&t).is_some()
+            || crate::pure::date_time_text_serial_in(&t, calendar).is_ok()
     })
 }
 
-fn serial_of(value: &Variant) -> f64 {
+fn serial_of(value: &Variant, calendar: Calendar) -> f64 {
     if let Some(serial) = value.as_date_f64() {
         return serial;
     }
     // A date-like String under a date mask (Format("2020-05-01", "yyyy")) parses
     // to a serial; a numeric string falls through to `num`.
     if let Some(text) = value.as_bstr()
-        && let Ok(serial) = crate::pure::date_time_text_serial(&text.as_str())
+        && let Ok(serial) = crate::pure::date_time_text_serial_in(&text.as_str(), calendar)
     {
         return serial;
     }
@@ -305,7 +321,7 @@ fn serial_of(value: &Variant) -> f64 {
 
 // ── Named formats ─────────────────────────────────────────────────────────────
 
-fn named(value: &Variant, mask: &str) -> Option<String> {
+fn named(value: &Variant, mask: &str, calendar: Calendar) -> Option<String> {
     match mask.to_ascii_lowercase().as_str() {
         "general number" => Some(general_number(num(value))),
         "currency" => {
@@ -326,12 +342,12 @@ fn named(value: &Variant, mask: &str) -> Option<String> {
         "on/off" => Some(bool_word(value, "On", "Off")),
         "general date" => format_date_time(value, 0),
         "long date" => format_date_time(value, 1),
-        "medium date" => Some(format_date(value, "dd-mmm-yy", Weeks::DEFAULT)),
+        "medium date" => Some(format_date(value, "dd-mmm-yy", Weeks::DEFAULT, calendar)),
         "short date" => format_date_time(value, 2),
         "long time" => format_date_time(value, 3),
         "medium time" => {
             let region = regional::current();
-            Some(region.format_date_pattern(serial_of(value), &region.medium_time, true))
+            Some(region.format_date_pattern(serial_of(value, calendar), &region.medium_time, true))
         }
         "short time" => format_date_time(value, 4),
         _ => None,
@@ -405,7 +421,7 @@ pub fn format_percent(
 /// constants; regional settings are bounded to this module's existing masks.
 pub fn format_date_time(value: &Variant, named_format: i32) -> Option<String> {
     let region = regional::current();
-    let serial = serial_of(value);
+    let serial = serial_of(value, Calendar::Gregorian);
     let pattern = |mask| region.format_date_pattern(serial, mask, true);
     Some(match named_format {
         0 => region.format_general_date(serial),
@@ -990,11 +1006,16 @@ struct DateParts {
     dow: usize, // 0 = Sunday … 6 = Saturday
 }
 
-fn decompose(serial: f64) -> DateParts {
+fn decompose(serial: f64, calendar: Calendar) -> DateParts {
     let (year, month, day) = serial_to_ymd(serial);
     let frac = serial - serial.floor();
     let total = ((frac * 86_400.0).round() as i64).rem_euclid(86_400);
     let dow = day_of_week(year as i32, month as u32, day as u32).rem_euclid(7) as usize;
+    let (year, month, day) = if calendar == Calendar::Hijri {
+        calendar.parts(serial)
+    } else {
+        (year, month, day)
+    };
     DateParts {
         year,
         month,
@@ -1006,9 +1027,9 @@ fn decompose(serial: f64) -> DateParts {
     }
 }
 
-fn format_date(value: &Variant, mask: &str, weeks: Weeks) -> String {
-    let serial = serial_of(value);
-    let p = decompose(serial);
+fn format_date(value: &Variant, mask: &str, weeks: Weeks, calendar: Calendar) -> String {
+    let serial = serial_of(value, calendar);
+    let p = decompose(serial, calendar);
     let region = regional::current();
     let month = (p.month.clamp(1, 12) - 1) as usize;
     let lower = mask.to_ascii_lowercase();
@@ -1054,10 +1075,17 @@ fn format_date(value: &Variant, mask: &str, weeks: Weeks) -> String {
             (format!("{:02}", p.year.rem_euclid(100)), 2, false, true)
         } else if starts_ci(rest, "y") {
             let day_of_year =
-                days_from_civil(p.year, p.month, p.day) - days_from_civil(p.year, 1, 1) + 1;
+                calendar.days(p.year, p.month, p.day) - calendar.days(p.year, 1, 1) + 1;
             (day_of_year.to_string(), 1, false, true)
         } else if starts_ci(rest, "ww") {
-            let week = week_of_year(p.year, p.month, p.day, weeks.first_day, weeks.first_week);
+            let week = week_of_year(
+                p.year,
+                p.month,
+                p.day,
+                weeks.first_day,
+                weeks.first_week,
+                calendar,
+            );
             (week.to_string(), 2, false, true)
         } else if starts_ci(rest, "w") {
             let weekday = (p.dow as i32 - (weeks.first_day - 1)).rem_euclid(7) + 1;

@@ -1,0 +1,11 @@
+LibraryNamesEdges.1=Double:40E608A000000000|45125
+LibraryNamesEdges.2=Integer:1445
+LibraryNamesEdges.3=Integer:1
+LibraryNamesEdges.4=Integer:2
+LibraryNamesEdges.5=Double:40E60C8000000000|45156
+LibraryNamesEdges.7=Integer:2
+LibraryNamesEdges.8=String:[1445-01-02]
+LibraryNamesEdges.9=Double:40E608A000000000|45125
+LibraryNamesEdges.13=Long:1633820704
+LibraryNamesEdges.17=ERR361
+LibraryNamesEdges.18=ERR361

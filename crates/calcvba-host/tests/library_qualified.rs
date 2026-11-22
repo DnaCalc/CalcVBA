@@ -55,6 +55,11 @@ fn library_qualified_join_and_cdate_link() {
 const MORE: &str = "Public Function Repeated() As Double
     Repeated = Len(VBA.String(3, \"x\")) + Len(VBA.Space(2)) + VBA.Asc(\"A\") + VBA.Year(DateSerial(2024, 5, 6))
 End Function
+Public Function HijriDay() As Double
+    Calendar = 1
+    HijriDay = VBA.Day(45126#) ' July 19, 2023 as a VBA date serial
+    Calendar = 0
+End Function
 ";
 
 #[test]
@@ -72,6 +77,7 @@ fn library_qualified_string_math_and_date_functions_link() {
             3.0 + 2.0 + 65.0 + 2024.0,
             "{backend:?}"
         );
+        assert_eq!(call(&*session, "HijriDay"), 2.0, "{backend:?}");
     }
 }
 

@@ -1,6 +1,6 @@
 Attribute VB_Name = "P_LibraryNamesEdges"
 Option Explicit
-' Additional, UNMEASURED Calendar, MacID and Load/Unload cases. No forms host needed.
+' Calendar, MacID and Load/Unload cases captured in Excel 16.0.20527.
 Private Const N As Long = 23
 Private Function T(ByVal k As Long) As String
     Dim v As Variant, x As Variant, o As Object

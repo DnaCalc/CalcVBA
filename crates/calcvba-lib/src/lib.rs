@@ -13,6 +13,7 @@
 //! host/locale and Excel evidence is governed by system clause `LIB-VBA-001`.
 
 use calcvba_runtime::ObjectRefExt;
+mod calendar;
 mod format;
 pub mod triage;
 pub use triage::{
@@ -30,6 +31,7 @@ pub use pure::{abs_f64, sqr_f64};
 /// Host-independent value operations shared with owning typed execution.
 pub use pure::{cstr as convert_to_string, var_type as variant_type_code};
 
+use crate::calendar::Calendar as CalendarMode;
 use calcvba_bundle::NativeImplId;
 use calcvba_hal::{HalError, HostServices};
 use calcvba_runtime::variant::VarType as Vt;
@@ -136,15 +138,21 @@ pub enum ContextFreeInvokeError {
 
 /// Whether a built-in requires mutable per-execution library context.
 ///
-/// This classification is intentionally tiny: only the VBA random-number
-/// functions own contextual state. All other built-ins are context-free, even
-/// when they call the host. Consumers use this function to choose one of the two
-/// disjoint dispatch APIs rather than holding host access and [`LibContext`] at
-/// the same call boundary.
+/// Calendar-sensitive operations read the calling session's Calendar setting.
+/// Host calls use the separate context-free dispatcher.
 pub const fn is_contextual(id: NativeImplId) -> bool {
     matches!(
         id,
-        NativeImplId::Rnd
+        NativeImplId::Format
+            | NativeImplId::DateSerial
+            | NativeImplId::DateValue
+            | NativeImplId::DateAdd
+            | NativeImplId::DateDiff
+            | NativeImplId::Year
+            | NativeImplId::Month
+            | NativeImplId::Day
+            | NativeImplId::DatePart
+            | NativeImplId::Rnd
             | NativeImplId::Randomize
             | NativeImplId::Calendar
             | NativeImplId::CalendarLet
@@ -353,7 +361,7 @@ pub fn invoke_context_free(
         StringRepeat => pure::string_repeat(args),
         StrReverse => pure::str_reverse(args),
         StrConv => pure::str_conv(args),
-        Format => pure::format(args),
+        Format => return Err(ContextFreeInvokeError::ContextRequired),
         FormatNumber => pure::format_number(args),
         FormatCurrency => pure::format_currency(args),
         FormatPercent => pure::format_percent(args),
@@ -378,7 +386,8 @@ pub fn invoke_context_free(
         Tan => pure::trig(args, trig::tan),
 
         // ── DateTime ──
-        Calendar | CalendarLet | UserForms | ErrObjectValue => {
+        Calendar | CalendarLet | UserForms | ErrObjectValue | DateSerial | DateValue | DateAdd
+        | DateDiff | Year | Month | Day | DatePart => {
             return Err(ContextFreeInvokeError::ContextRequired);
         }
         Load | Unload => objects::load_unload(args),
@@ -388,22 +397,14 @@ pub fn invoke_context_free(
         MacID => pure::mac_id(args),
         MacScript => pure::mac_script(args),
         IMEStatus => Ok(vi32(0)),
-        DateSerial => pure::date_serial(args),
         TimeSerial => pure::time_serial(args),
-        DateValue => pure::date_value(args),
         TimeValue => pure::time_value(args),
-        DateAdd => pure::date_add(args),
-        DateDiff => pure::date_diff(args),
-        Year => pure::date_part(args, pure::DatePart::Year),
-        Month => pure::date_part(args, pure::DatePart::Month),
-        Day => pure::date_part(args, pure::DatePart::Day),
-        Weekday => pure::date_part(args, pure::DatePart::Weekday),
-        Hour => pure::date_part(args, pure::DatePart::Hour),
-        Minute => pure::date_part(args, pure::DatePart::Minute),
-        Second => pure::date_part(args, pure::DatePart::Second),
+        Weekday => pure::date_part(args, pure::DatePart::Weekday, CalendarMode::Gregorian),
+        Hour => pure::date_part(args, pure::DatePart::Hour, CalendarMode::Gregorian),
+        Minute => pure::date_part(args, pure::DatePart::Minute, CalendarMode::Gregorian),
+        Second => pure::date_part(args, pure::DatePart::Second, CalendarMode::Gregorian),
         MonthName => pure::month_name(args),
         WeekdayName => pure::weekday_name(args),
-        DatePart => pure::vba_datepart(args),
         DateNow => host::date_now(host),
         TimeNow => host::time_now(host),
         DateNowText => host::date_now_text(host),
@@ -599,7 +600,24 @@ pub fn invoke_contextual(
     args: &[Variant],
     ctx: &mut LibContext,
 ) -> LibResult<Variant> {
+    if is_contextual(id) && null_propagates(id, args) {
+        return Ok(Variant::null());
+    }
+    let calendar = if ctx.calendar == 1 {
+        CalendarMode::Hijri
+    } else {
+        CalendarMode::Gregorian
+    };
     match id {
+        NativeImplId::Format => pure::format(args, calendar),
+        NativeImplId::DateSerial => pure::date_serial(args, calendar),
+        NativeImplId::DateValue => pure::date_value(args, calendar),
+        NativeImplId::DateAdd => pure::date_add(args, calendar),
+        NativeImplId::DateDiff => pure::date_diff(args, calendar),
+        NativeImplId::Year => pure::date_part(args, pure::DatePart::Year, calendar),
+        NativeImplId::Month => pure::date_part(args, pure::DatePart::Month, calendar),
+        NativeImplId::Day => pure::date_part(args, pure::DatePart::Day, calendar),
+        NativeImplId::DatePart => pure::vba_datepart(args, calendar),
         NativeImplId::ErrObjectValue => {
             Ok(ctx.err_object.get_or_insert_with(objects::new_err).clone())
         }
@@ -726,8 +744,17 @@ mod dispatch_policy_tests {
         assert_eq!(
             contextual,
             vec![
+                NativeImplId::Format,
                 NativeImplId::Calendar,
                 NativeImplId::CalendarLet,
+                NativeImplId::DateSerial,
+                NativeImplId::DateValue,
+                NativeImplId::DateAdd,
+                NativeImplId::DateDiff,
+                NativeImplId::Year,
+                NativeImplId::Month,
+                NativeImplId::Day,
+                NativeImplId::DatePart,
                 NativeImplId::ErrObjectValue,
                 NativeImplId::UserForms,
                 NativeImplId::Rnd,

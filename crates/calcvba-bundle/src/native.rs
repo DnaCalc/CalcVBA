@@ -323,6 +323,8 @@ impl NativeImplId {
                 | EvaluateForeign
                 | FilePut
                 | FileGetInto
+                | Load
+                | Unload
         )
     }
 

@@ -119,6 +119,8 @@ pub fn owning_builtin(id: calcvba_bundle::NativeImplId) -> bool {
             | Exp
             | Atn
             | Tan
+            | Calendar
+            | CalendarLet
             | DateSerial
             | TimeSerial
             | DateValue

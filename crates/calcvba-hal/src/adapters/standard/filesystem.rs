@@ -119,19 +119,48 @@ fn apply_file_attributes(path: &Path, settable: i32, mapped: bool) -> std::io::R
     #[cfg(not(target_os = "windows"))]
     {
         let meta = fs::metadata(path)?;
-        let mut perms = meta.permissions();
+        let original = meta.permissions();
+        let mut perms = original.clone();
+        let readonly = settable & VB_READONLY != 0;
         if mapped {
+            let temporary_write =
+                original.readonly() && cfg!(any(target_os = "linux", target_os = "macos"));
+            if temporary_write {
+                // On Unix the inode must be writable to change a user xattr.
+                make_owner_writable(&mut perms);
+                fs::set_permissions(path, perms.clone())?;
+            }
             let requested = settable & (VB_HIDDEN | VB_SYSTEM | VB_ARCHIVE);
             let default = if meta.is_file() { VB_ARCHIVE } else { 0 };
             if let Err(error) = write_mapped_attributes(path, requested)
                 && (error.kind() != std::io::ErrorKind::Unsupported || requested != default)
             {
+                if temporary_write {
+                    fs::set_permissions(path, original)?;
+                }
                 return Err(error);
             }
+            if !readonly && perms.readonly() {
+                make_owner_writable(&mut perms);
+            } else if readonly {
+                perms.set_readonly(true);
+            }
+        } else {
+            perms.set_readonly(readonly);
         }
-        perms.set_readonly(settable & VB_READONLY != 0);
         fs::set_permissions(path, perms)
     }
+}
+
+#[cfg(not(windows))]
+fn make_owner_writable(permissions: &mut fs::Permissions) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(permissions.mode() | 0o200);
+    }
+    #[cfg(not(unix))]
+    permissions.set_readonly(false);
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -262,7 +291,7 @@ fn io_error_code(err: &std::io::Error, not_found: i32, other: i32) -> i32 {
 }
 
 /// The path-reading functions distinguish a missing file from a missing parent.
-fn metadata_error_code(err: &std::io::Error, path: &Path) -> i32 {
+fn metadata_error_code(err: &std::io::Error, path: &Path, mapped: bool) -> i32 {
     if path.as_os_str().is_empty() {
         return 53;
     }
@@ -271,6 +300,15 @@ fn metadata_error_code(err: &std::io::Error, path: &Path) -> i32 {
         Some(3) => return 76,   // ERROR_PATH_NOT_FOUND
         Some(123) => return 52, // ERROR_INVALID_NAME (including wildcards)
         _ => {}
+    }
+    if mapped
+        && matches!(
+            err.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+        )
+        && path.parent().is_some_and(|parent| !parent.is_dir())
+    {
+        return 76;
     }
     io_error_code(err, 53, 53)
 }
@@ -2044,10 +2082,18 @@ impl FileSystemHal for StandardHostServices {
                     "filelen",
                     format!("failed to stat {}: {err}", p.display()),
                 )
-                .with_host_error_code(metadata_error_code(&err, &p))
+                .with_host_error_code(metadata_error_code(
+                    &err,
+                    &p,
+                    self.uses_windows_paths(),
+                ))
             })?;
-            // VBA `FileLen` returns a `Long`.
-            Ok(Variant::from_i32(len.len().min(i32::MAX as u64) as i32))
+            let bytes = if self.uses_windows_paths() && len.is_dir() {
+                0
+            } else {
+                len.len()
+            };
+            Ok(Variant::from_i32(bytes.min(i32::MAX as u64) as i32))
         } else {
             Ok(Variant::from_i32(0))
         }
@@ -2107,7 +2153,9 @@ impl FileSystemHal for StandardHostServices {
                     ) {
                         75
                     } else {
-                        metadata_error_code(&err, &src)
+                        let mapped = self.uses_windows_paths();
+                        let missing = if mapped && src.exists() { &dst } else { &src };
+                        metadata_error_code(&err, missing, mapped)
                     },
                 )
             })?;
@@ -2133,7 +2181,11 @@ impl FileSystemHal for StandardHostServices {
                     "getattr",
                     format!("failed to stat {}: {err}", p.display()),
                 )
-                .with_host_error_code(metadata_error_code(&err, &p))
+                .with_host_error_code(metadata_error_code(
+                    &err,
+                    &p,
+                    self.uses_windows_paths(),
+                ))
             })?;
             // Excel returns a Long, including filesystem-specific high bits.
             Ok(Variant::from_i32(bits))
@@ -2247,7 +2299,11 @@ impl FileSystemHal for StandardHostServices {
                     "filedatetime",
                     format!("failed to stat {}: {err}", p.display()),
                 )
-                .with_host_error_code(metadata_error_code(&err, &p))
+                .with_host_error_code(metadata_error_code(
+                    &err,
+                    &p,
+                    self.uses_windows_paths(),
+                ))
             })?;
             let modified = meta.modified().map_err(|err| {
                 HalError::adapter_fault(

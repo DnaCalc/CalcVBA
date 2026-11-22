@@ -33,6 +33,27 @@ fn both(src: &str, check: impl Fn(&[calcvba_runtime::Variant]) -> bool) {
 }
 
 #[test]
+fn double_not_probes_a_typed_dynamic_array() {
+    both(
+        "Public Verdict As String
+Sub Main()
+    Dim Bytes() As Byte
+    Verdict = CStr((Not Not Bytes) = 0)
+    ReDim Bytes(0 To 2)
+    Verdict = Verdict & \"|\" & CStr((Not Not Bytes) <> 0)
+    Erase Bytes
+    Verdict = Verdict & \"|\" & CStr((Not Not Bytes) = 0)
+End Sub
+",
+        |values| {
+            values[0]
+                .as_bstr()
+                .is_some_and(|s| s.to_string() == "True|True|True")
+        },
+    );
+}
+
+#[test]
 fn call_statement_with_a_with_member_argument() {
     both(
         "Private Type Rec\n    pass As String\nEnd Type\nPublic verdict As Long\nPrivate Sub Zero(ByRef s As String)\n    If Len(s) > 0 Then s = vbNullString\nEnd Sub\nSub Main()\n    Dim r As Rec\n    r.pass = \"abc\"\n    With r\n        Zero .pass\n    End With\n    verdict = Len(r.pass) + 10\nEnd Sub\n",

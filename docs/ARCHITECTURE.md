@@ -92,6 +92,37 @@ there is currently no language-service/LSP or debugger crate in the workspace.
 and native export declarations. It uses the existing native builder; Excel's
 registration and value conversion remain VBA source outside the compiler.
 
+### JIT refusals
+
+The JIT compiles every procedure in the linked image. It reports the first
+refused shape with its procedure when available. Typed host entries and native
+exports have additional admission rules for their own physical calling
+conventions.
+
+| Shape | Reason for a JIT refusal |
+| --- | --- |
+| Frame, global, parameter and result carriers | A declared array with an array or procedure-reference element type has no JIT SAFEARRAY carrier. Variant elements can hold arrays. Record operations need a retained layout. The destination of a compiled procedure call must have the return type or be a Variant. |
+| Arrays, UDTs and compound places | Array get/set and ReDim require a supported element carrier or a Variant and a shape consistent with the instruction. Typed element operations use an exact destination carrier or a Variant. The helper ABI bounds dimensions, index counts and field indices. |
+| Numeric, logical, comparison and string instructions | The scalar paths admit specific operand and result lanes. Variant paths require operands that can be represented by the runtime helper descriptors. The lowering reports refused coercion, boxing, unboxing and operator shapes at the instruction. |
+| Direct and linked procedure calls | Static calls need argument metadata, the formal argument count and exact ByRef aliases. A raw omitted operand is accepted for Optional Variant. The binder normally supplies declared defaults for typed optionals. A ParamArray must be last and use a ByVal Variant or dynamic Variant-array pack. Linked calls need the referenced unit and matching procedure export. |
+| Indirect procedure calls | The target must be a procedure-reference place. A statically known signature uses the supported direct-call carriers. The unknown-signature lowering has narrower Long and String call paths and limited result carriers. It needs an admitted signature candidate for other shapes. |
+| Classes, object tests and dispatch | Project class imports need a linked class export. The VBA-library `NewExtern` path has a Collection case. Other classes need a supported constructor instruction. A single-project `TypeOf` on an untyped receiver can be refused if the class or interface identity is unavailable. Project and COM calls have to fit the argument descriptors, which currently refuse an OxIR `Const` call argument on that path. |
+| VBA library imports | Legacy VBA `CallExtern` accepts the explicit library argument and result shapes in the lowering. `CallNative` built-ins use the shared runtime library. |
+| Native host calls and target support | Native COM and Declare calls depend on the available host, platform and call descriptor. Linux x64 supports the tested native Declare and export signatures. Host failures can surface as VBA runtime errors after compilation. WebAssembly hosts use VM3. |
+| Internal representation | Unsupported instructions and terminators, metadata that exceeds the helper ABI and malformed internal places are diagnosed during compilation. A compiler defect and a VBA runtime error have distinct outcomes. |
+
+The source parity runner's `inspect` mode checks admission after shared binding
+and elaboration. Its results describe the compiler boundary. Runtime comparisons
+with VM3 require a runnable project entry and the host services the case uses.
+See [procedure admission](../crates/calcvba-jit/src/admission.rs) and
+[general JIT lowering](../crates/calcvba-jit/src/lowering.rs).
+
+A verified OxIR call using `Omitted` for a typed optional Long demonstrates
+the difference at the package boundary. VM3 returned the declared default
+Long 7 and the JIT refused the operand. Ordinary source calls get a
+materialized default from the binder.
+
+
 ## Embedding and project state
 
 `calcvba-host-api` defines source projects, ordered references, signatures,

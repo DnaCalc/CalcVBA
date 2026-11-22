@@ -121,6 +121,23 @@ Counts for Windows-dialect code (rows: 214):
 
 ## 5. Modes
 
+### Execution engine
+
+With `BackendPolicy::Automatic`, the host API selects JIT on Windows, Linux
+and macOS desktop builds with the `jit` feature. Browser and WASI hosts use VM3,
+as do builds of `calcvba-host` with default features disabled. A desktop host
+that cannot allocate executable memory, including a hardened macOS deployment
+without the JIT entitlement, supplies `BackendPolicy::NoCodeGeneration`.
+The host supplies `BackendPolicy::Debugging` for VBA debugger sessions. Both
+policies select VM3 before the project is loaded. With JIT selected, a refusal
+or compilation failure is reported to the caller.
+
+Guarded mode uses the same default engine. The host's capability policy limits
+effects on either engine. An embedder can also apply `NoCodeGeneration` to
+Guarded deployments that prohibit code generation.
+
+### VBA policy and dialect
+
 Three settings decide how a project runs:
 
 1. **Policy** (exists): what the code may touch. Safe or Full capabilities; the deterministic or native host policy.

@@ -130,6 +130,20 @@ bound handles, values, host objects and provider interfaces without linking a
 compiler or JIT. `calcvba-host::provider::Provider` composes the implementation.
 `calcvba-engine` supplies source/project execution and VM3 package sessions.
 
+At the host API boundary, `RuntimeProvider::select_backend(BackendPolicy::Automatic)`
+selects JIT on Windows, Linux and macOS when the provider was built with JIT.
+WebAssembly (browser and WASI) and interpreter-only builds select VM3.
+Hosts select `Debugging` for a session with VBA debugging or `NoCodeGeneration`
+when their deployment prohibits executable memory. Pass the selected `Backend`
+to `load`, `load_graph` or `load_with_object_libraries`. Explicit `Interpreter`
+and `Jit` requests remain available. The selection happens before compilation.
+JIT refusals and failures are returned to the host, and reload keeps the
+session's selected engine.
+
+Guarded mode uses the same engine selection as ordinary execution. Host
+capability checks apply to both engines. A Guarded deployment that also
+prohibits native code generation selects `NoCodeGeneration`.
+
 Sessions initialise without calling Main, retain VBA globals/Static/Err/object
 state and release it on disposal. The code cache shares code, never mutable
 VBA state. Handles check session ownership and generation before invocation.

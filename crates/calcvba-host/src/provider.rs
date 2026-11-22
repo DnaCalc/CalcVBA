@@ -7,8 +7,9 @@ use calcvba_host_api as api;
 use calcvba_symbol::{TypeLibResolver, manifest as sym};
 use std::{rc::Rc, sync::Arc};
 
-/// Linked runtime facade. Native applications select VM3 or JIT; interpreter-only
-/// builds do not link JIT. The host supplies its services and owns native objects.
+/// Linked runtime facade. Hosts can use
+/// [`api::RuntimeProvider::select_backend`] or request VM3 or JIT explicitly.
+/// The host supplies its services and owns native objects.
 pub struct Provider {
     host: Arc<dyn calcvba_hal::HostServices>,
     resolver: Rc<dyn TypeLibResolver>,

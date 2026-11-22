@@ -1,6 +1,6 @@
 //! The functions below use only the host API. Runtime choice is supplied at the
 //! application composition edge, so the library never links a concrete backend.
-use calcvba_host_api::{self as api, SessionExt};
+use calcvba_host_api::{self as api, RuntimeProvider, SessionExt};
 
 fn client(provider: &dyn api::RuntimeProvider, backend: api::Backend) {
     let info = provider.info();
@@ -101,5 +101,67 @@ fn runtime_composition_supplies_the_existing_host_contract_to_an_api_only_client
     client(&provider, api::Backend::Interpreter);
     if cfg!(feature = "jit") {
         client(&provider, api::Backend::Jit);
+    }
+}
+
+#[test]
+fn automatic_backend_respects_platform_and_build_capability() {
+    let provider = calcvba_host::provider::Provider::default();
+    let expected = if cfg!(all(
+        feature = "jit",
+        any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos"
+        )
+    )) {
+        api::Backend::Jit
+    } else {
+        api::Backend::Interpreter
+    };
+    let selected = provider.select_backend(api::BackendPolicy::default());
+    assert_eq!(selected, expected);
+    client(&provider, selected);
+}
+
+#[test]
+fn debugger_and_codegen_restrictions_select_vm3_before_compilation() {
+    let provider = calcvba_host::provider::Provider::default();
+    let project = api::Project::module(
+        "Api",
+        "Public Function JitDeclineMarker() As Long\nJitDeclineMarker = 42\nEnd Function\n",
+    );
+
+    for policy in [
+        api::BackendPolicy::Debugging,
+        api::BackendPolicy::NoCodeGeneration,
+    ] {
+        let selected = provider.select_backend(policy);
+        assert_eq!(selected, api::Backend::Interpreter);
+        let session = provider
+            .load(&project, selected, api::HOST_API_ABI)
+            .unwrap();
+        let entry = session
+            .bind_typed::<(), i32>("Api", "JitDeclineMarker")
+            .unwrap();
+        assert_eq!(session.call_typed(&entry, (), 100).unwrap(), 42);
+    }
+
+    let explicit_jit = provider.load(&project, api::Backend::Jit, api::HOST_API_ABI);
+    if cfg!(feature = "jit") {
+        assert!(matches!(
+            explicit_jit,
+            Err(api::Error::UnsupportedBackend(_))
+        ));
+    } else {
+        assert!(matches!(explicit_jit, Err(api::Error::BackendUnavailable)));
+    }
+
+    let automatic = provider.select_backend(api::BackendPolicy::default());
+    if automatic == api::Backend::Jit {
+        assert!(matches!(
+            provider.load(&project, automatic, api::HOST_API_ABI),
+            Err(api::Error::UnsupportedBackend(_))
+        ));
     }
 }

@@ -3189,6 +3189,9 @@ pub fn syd(args: &[Variant]) -> LibResult<Variant> {
     let salvage = as_f64(need(args, 1)?)?;
     let life = as_f64(need(args, 2)?)?;
     let period = as_f64(need(args, 3)?)?;
+    if salvage < 0.0 {
+        return Err(LibError::invalid_call("SYD salvage must be non-negative"));
+    }
     if life <= 0.0 || period <= 0.0 || period > life {
         return Err(LibError::invalid_call("SYD period out of range"));
     }

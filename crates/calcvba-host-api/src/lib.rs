@@ -27,6 +27,19 @@ pub enum Backend {
     Interpreter,
     Jit,
 }
+
+/// Host conditions for automatic engine selection before loading a session.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum BackendPolicy {
+    /// Prefer JIT on desktop targets when the provider includes it.
+    #[default]
+    Automatic,
+    /// Use VM3 for a session under a VBA debugger.
+    Debugging,
+    /// Use VM3 when the embedding environment prohibits native code generation.
+    NoCodeGeneration,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcedureKind {
     Sub,
@@ -280,6 +293,22 @@ pub trait RuntimeProvider {
         }
     }
     fn info(&self) -> ProviderInfo;
+    /// Select the backend to pass to any of the load methods. A load compiles
+    /// for that backend and returns any errors from it to the host.
+    fn select_backend(&self, policy: BackendPolicy) -> Backend {
+        if policy == BackendPolicy::Automatic
+            && cfg!(any(
+                target_os = "windows",
+                target_os = "linux",
+                target_os = "macos"
+            ))
+            && self.info().jit_available
+        {
+            Backend::Jit
+        } else {
+            Backend::Interpreter
+        }
+    }
     fn load(
         &self,
         project: &Project,

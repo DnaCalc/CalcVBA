@@ -429,9 +429,9 @@ End Property
 #[cfg(not(target_os = "windows"))]
 fn native_declare_compiles_and_raises_like_vm3_on_linux() {
     let source = "Public r As Long
-Declare PtrSafe Function NativeGetTickCount Lib \"kernel32\" Alias \"GetTickCount\" () As Long
+Declare PtrSafe Function NativeAbsent Lib \"kernel32\" Alias \"CalcVbaNoSuchEntry\" () As Long
 Sub Main()
-  r = NativeGetTickCount()
+  r = NativeAbsent()
 End Sub
 ";
     let jit = run(Executor::Jit, source);

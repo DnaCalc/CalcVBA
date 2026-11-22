@@ -309,7 +309,7 @@ pub fn check_project(projects: &[SymbolProjectManifest], host: Host) -> Result<R
                 }
                 ProjectReference::Native { name, path } => {
                     let library = path.as_deref().unwrap_or(name);
-                    scanner.declare(None, library, None, "Native reference");
+                    scanner.declare(None, library, None, None);
                 }
                 ProjectReference::HostInjected {
                     referenced_project_name,
@@ -446,7 +446,13 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    fn declare(&mut self, offset: Option<u32>, library: &str, entry: Option<&str>, label: &str) {
+    fn declare(
+        &mut self,
+        offset: Option<u32>,
+        library: &str,
+        entry: Option<&str>,
+        node: Option<SyntaxNode<'_>>,
+    ) {
         let lib = library.to_ascii_lowercase();
         let (class, support) = if lib.ends_with(".dylib") {
             (
@@ -467,11 +473,27 @@ impl<'a> Scanner<'a> {
                 },
             )
         } else {
-            (FeatureClass::Windows, self.windows_native())
+            (
+                FeatureClass::Windows,
+                if matches!(self.report.host, Host::Linux | Host::MacOs)
+                    && entry
+                        .zip(node)
+                        .is_some_and(|(entry, node)| has_win32_shim(library, entry, node))
+                {
+                    Support::Replace
+                } else {
+                    self.windows_native()
+                },
+            )
         };
         let detail = match entry {
             Some(entry) => format!("{library}!{entry}"),
             None => library.to_owned(),
+        };
+        let label = if node.is_some() {
+            "Declare"
+        } else {
+            "Native reference"
         };
         self.record(label, offset, class, support, Some(detail), None);
     }
@@ -533,7 +555,7 @@ impl<'a> Scanner<'a> {
                     offset,
                     library.as_deref().unwrap_or("<unknown>"),
                     alias.as_deref().or(name.map(|t| t.text)),
-                    "Declare",
+                    Some(node),
                 );
             }
             K::AddressOfExpr => self.matrix(
@@ -670,6 +692,40 @@ impl<'a> Scanner<'a> {
             Some(row.mac_dialect),
         );
     }
+}
+
+fn has_win32_shim(library: &str, entry: &str, node: SyntaxNode<'_>) -> bool {
+    use crate::scanner::parameter_has_modifier;
+    use calcvba_runtime::win32_declare::Win32Declare;
+
+    fn abi_type(node: SyntaxNode<'_>) -> &'static str {
+        let text = node.text();
+        [
+            "Any", "Byte", "Boolean", "Integer", "Long", "LongLong", "LongPtr", "Single", "Double",
+            "Currency", "Date",
+        ]
+        .into_iter()
+        .find(|name| name.eq_ignore_ascii_case(text.trim()))
+        .unwrap_or("")
+    }
+
+    let mut params = Vec::new();
+    for param in node.param_list().into_iter().flat_map(|list| list.params()) {
+        if param.array_bounds().is_some()
+            || parameter_has_modifier(param, K::KwOptional)
+            || parameter_has_modifier(param, K::KwParamArray)
+        {
+            return false;
+        }
+        let ty = param.child_node(K::TypeRef).map_or("", abi_type);
+        params.push((ty, !parameter_has_modifier(param, K::KwByVal)));
+    }
+    let result = node
+        .child_tokens()
+        .iter()
+        .any(|token| token.kind == K::KwFunction)
+        .then(|| node.return_type().map_or("", abi_type));
+    Win32Declare::resolve(library, entry, &params, result).is_some()
 }
 
 fn global_area(area: &str) -> bool {

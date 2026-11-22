@@ -76,7 +76,9 @@ const VT_ARRAY: u16 = 0x2000;
 /// A `Declare` prepared once: its library (kept loaded), entry point and CIF.
 pub(crate) struct DeclarePlan {
     /// The loaded DLL, kept for the plan; `None` for one of the runtime's own exports.
-    library: Option<Arc<OwnedLibrary>>,
+    _library: Option<Arc<OwnedLibrary>>,
+    runtime_storage: bool,
+    capture_os_error: bool,
     call: PreparedNativeCall,
     result: ResultShape,
 }
@@ -187,7 +189,17 @@ pub(super) fn plan(
     }
     // The VBA runtime's own exports are CalcVBA's (it is the runtime); the rest load the DLL.
     if let Some(address) = runtime_export(descriptor.library, descriptor.alias) {
-        let plan = Rc::new(prepare(host, descriptor, None, address)?);
+        let mut plan = prepare(host, descriptor, None, address)?;
+        plan.runtime_storage = true;
+        let plan = Rc::new(plan);
+        state.declare_plans.insert(key, Rc::clone(&plan));
+        return Ok(plan);
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if let Some(address) = win32_shim(descriptor) {
+        let mut plan = prepare(host, descriptor, None, address)?;
+        plan.capture_os_error = false;
+        let plan = Rc::new(plan);
         state.declare_plans.insert(key, Rc::clone(&plan));
         return Ok(plan);
     }
@@ -234,6 +246,30 @@ pub(super) fn plan(
     let plan = Rc::new(prepare(host, descriptor, Some(library), address)?);
     state.declare_plans.insert(key, Rc::clone(&plan));
     Ok(plan)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn win32_shim(descriptor: &DynLinkDescriptorView<'_>) -> Option<usize> {
+    if descriptor.ordinal_alias
+        || descriptor.return_record_layout.is_some()
+        || descriptor.param_types.len() != descriptor.param_count
+        || descriptor.param_by_ref.len() != descriptor.param_count
+    {
+        return None;
+    }
+    let params: Vec<_> = descriptor
+        .param_types
+        .iter()
+        .map(String::as_str)
+        .zip(descriptor.param_by_ref.iter().copied())
+        .collect();
+    calcvba_runtime::win32_declare::Win32Declare::resolve(
+        descriptor.library,
+        descriptor.alias,
+        &params,
+        descriptor.return_type.as_deref(),
+    )
+    .map(super::win32_declare::address)
 }
 
 /// The VBA runtime's own exports a `Declare` may name, which CalcVBA, being the runtime,
@@ -322,7 +358,9 @@ fn prepare(
         )
     };
     Ok(DeclarePlan {
-        library,
+        _library: library,
+        runtime_storage: false,
+        capture_os_error: true,
         call,
         result,
     })
@@ -794,7 +832,7 @@ pub(super) fn invoke(
             .get(index)
             .map_or("Long", String::as_str);
         let by_ref = descriptor.param_by_ref.get(index).copied().unwrap_or(false);
-        if plan.library.is_none()
+        if plan.runtime_storage
             && by_ref
             && let Some(word) = runtime_own_storage(arg.value)
         {
@@ -835,7 +873,9 @@ pub(super) fn invoke(
     // native type or the address of live storage (the caller's, or a temporary in `after`),
     // all of which outlive the call; the result storage fits the declared result.
     let last_error = unsafe { plan.call.invoke_cells(&mut cells, result_pointer) };
-    host.last_dll_error.set(last_error as i32);
+    if plan.capture_os_error {
+        host.last_dll_error.set(last_error as i32);
+    }
 
     let value = match &plan.result {
         ResultShape::Scalar(return_type) => {

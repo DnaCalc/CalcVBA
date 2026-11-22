@@ -1,8 +1,12 @@
 // Run one source module with a parameterless Main on a dedicated Web Worker.
-export function runVba(source, { onDialog, onPrint, locale, timeZone, signal } = {}) {
+export function runVba(source, { onDialog, onPrint, locale, timeZone, settingsKey, signal } = {}) {
     return new Promise((resolve, reject) => {
         if (signal?.aborted) {
             reject(signal.reason);
+            return;
+        }
+        if (settingsKey !== undefined && (typeof settingsKey !== "string" || !settingsKey)) {
+            reject(new TypeError("settingsKey must be a nonempty string"));
             return;
         }
         const worker = new Worker(new URL("./worker.mjs", import.meta.url), { type: "module" });
@@ -54,6 +58,6 @@ export function runVba(source, { onDialog, onPrint, locale, timeZone, signal } =
                 finish(reject, error);
             }
         };
-        worker.postMessage({ source, dialogs, locale, timeZone });
+        worker.postMessage({ source, dialogs, locale, timeZone, settingsKey });
     });
 }

@@ -1,8 +1,8 @@
 use crate::{Visibility, portability, sym};
 use calcvba_hal::{
-    adapters::builder::HostBuilder,
+    adapters::BrowserWorkerHost,
     callbacks::HostCallbacks,
-    model::{HalProfileId, HalRuntimeClass, HostPolicy, UiVirtualizationMode},
+    model::{HostPolicy, UiVirtualizationMode},
 };
 use calcvba_runtime::{print_display_text, regional};
 use std::sync::Arc;
@@ -66,35 +66,77 @@ impl HostCallbacks for BrowserCallbacks {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn calcvba_source_alloc(len: usize) -> *mut u8 {
-    Box::into_raw(vec![0; len].into_boxed_slice()).cast()
+    Box::into_raw(vec![0_u8; len].into_boxed_slice()).cast()
 }
 
-/// Consumes a source buffer allocated by `calcvba_source_alloc` in this Wasm instance.
+/// Consumes the source and optional settings buffers allocated by `calcvba_source_alloc`.
+/// A null settings pointer disables settings. An empty settings buffer starts a new store.
 ///
 /// # Safety
-/// The pointer and length must identify a live allocation from that export. This
-/// call takes it once, after the worker has written the source as UTF-8.
+/// Each non-null pointer and length must come from a separate call to that
+/// export, taken once after the worker has written UTF-8 into the buffer.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn calcvba_run_source(ptr: *mut u8, len: usize, dialogs: bool, en_za: bool) {
-    // SAFETY: the JS worker hands back the matching, initialized boxed slice exactly once.
+pub unsafe extern "C" fn calcvba_run_source(
+    ptr: *mut u8,
+    len: usize,
+    dialogs: bool,
+    en_za: bool,
+    settings_ptr: *mut u8,
+    settings_len: usize,
+) {
+    // SAFETY: the worker hands back each matching, initialized boxed slice exactly once.
     let bytes = unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) };
-    let result = std::str::from_utf8(&bytes)
-        .map_err(|e| e.to_string())
-        .and_then(|source| {
-            let settings = if en_za {
-                regional::RegionalSettings::en_za()
-            } else {
-                regional::RegionalSettings::en_us()
-            };
-            regional::with_settings(settings, || execute(source, dialogs))
-        });
+    let settings = (!settings_ptr.is_null()).then(|| {
+        // SAFETY: the optional slice follows the same allocation contract.
+        unsafe {
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+                settings_ptr,
+                settings_len,
+            ))
+        }
+    });
+    let result = (|| {
+        let source = std::str::from_utf8(&bytes).map_err(|error| error.to_string())?;
+        let settings = settings
+            .as_deref()
+            .map(std::str::from_utf8)
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let regional = if en_za {
+            regional::RegionalSettings::en_za()
+        } else {
+            regional::RegionalSettings::en_us()
+        };
+        let mut policy = HostPolicy::native();
+        policy.allow_interaction = dialogs;
+        policy.ui_virtualization = UiVirtualizationMode::HostCallback;
+        let host = BrowserWorkerHost::new(policy, Arc::new(BrowserCallbacks), settings)
+            .map_err(|error| error.to_string())?;
+        let services = portability::BrowserServices {
+            dialogs,
+            settings: settings.is_some(),
+        };
+        let result = regional::with_settings(regional, || execute(source, services, &host));
+        // A normal VBA error can follow a successful SaveSetting or DeleteSetting.
+        if let Some(snapshot) = host
+            .settings_snapshot()
+            .map_err(|error| error.to_string())?
+        {
+            emit(3, &snapshot);
+        }
+        result
+    })();
     match result {
         Ok(text) => emit(1, &text),
         Err(error) => emit(2, &error),
     }
 }
 
-fn execute(source: &str, dialogs: bool) -> Result<String, String> {
+fn execute(
+    source: &str,
+    services: portability::BrowserServices,
+    host: &BrowserWorkerHost,
+) -> Result<String, String> {
     let manifest = sym::SymbolProjectManifest {
         project_name: "VBAProject".into(),
         project_kind: sym::ProjectKind::Source,
@@ -110,21 +152,12 @@ fn execute(source: &str, dialogs: bool) -> Result<String, String> {
         conditional_compilation_target: Default::default(),
     };
     portability::Mode::WindowsFaithful
-        .check_with_browser_dialogs(
+        .check_with_browser_services(
             std::slice::from_ref(&manifest),
             portability::Host::Browser,
-            dialogs,
+            services,
         )
         .map_err(|error| error.render_human())?;
-    let mut policy = HostPolicy::native();
-    policy.allow_interaction = dialogs;
-    policy.ui_virtualization = UiVirtualizationMode::HostCallback;
-    let host = HostBuilder::new()
-        .profile(HalProfileId::Wasm)
-        .runtime_class(HalRuntimeClass::WasmBrowserSandbox)
-        .policy(policy)
-        .callbacks(Arc::new(BrowserCallbacks))
-        .build();
     let (core, procedures) = calcvba_bind::bind_program_with_procedures(
         &manifest,
         &calcvba_symbol::CatalogTypeLibResolver,
@@ -139,7 +172,8 @@ fn execute(source: &str, dialogs: bool) -> Result<String, String> {
                 && program.funcs[proc.index].param_count == 0
         })
         .ok_or_else(|| "A parameterless public Main is required".to_string())?;
-    let mut vm = calcvba_vm3::Vm3::activate(&program, &*host).map_err(|error| error.to_string())?;
+    let mut vm =
+        calcvba_vm3::Vm3::activate(&program, host.services()).map_err(|error| error.to_string())?;
     let result = vm
         .invoke_function_values(calcvba_oxir::FuncId(entry.index), Vec::new())
         .map_err(|error| error.to_string())?;

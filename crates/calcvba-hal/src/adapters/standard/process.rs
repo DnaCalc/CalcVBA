@@ -24,7 +24,7 @@ pub(super) struct DirSearchState {
 
 #[derive(Debug, Clone)]
 #[cfg_attr(
-    any(target_os = "linux", target_os = "wasi"),
+    any(target_os = "linux", target_family = "wasm"),
     derive(serde::Serialize, serde::Deserialize)
 )]
 pub(super) struct SettingEntry {
@@ -39,7 +39,7 @@ type SectionValues = BTreeMap<String, SettingEntry>;
 
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(
-    any(target_os = "linux", target_os = "wasi"),
+    any(target_os = "linux", target_family = "wasm"),
     derive(serde::Serialize, serde::Deserialize)
 )]
 pub(super) struct SettingsState {
@@ -220,7 +220,7 @@ impl ProcessEnvHal for StandardHostServices {
     ) -> HalResult<Variant> {
         let capability = CapabilityId::ProcessEnv;
         let op = "get_setting";
-        if !self.supports(capability) {
+        if !self.supports_settings() {
             return Err(self.unsupported(capability, op));
         }
         let appname = self.setting_text(&appname, capability, op, "appname")?;
@@ -245,7 +245,7 @@ impl ProcessEnvHal for StandardHostServices {
     fn get_all_settings_variant(&self, appname: Variant, section: Variant) -> HalResult<Variant> {
         let capability = CapabilityId::ProcessEnv;
         let op = "get_all_settings";
-        if !self.supports(capability) {
+        if !self.supports_settings() {
             return Err(self.unsupported(capability, op));
         }
         let appname = self.setting_text(&appname, capability, op, "appname")?;
@@ -283,7 +283,7 @@ impl ProcessEnvHal for StandardHostServices {
     ) -> HalResult<Variant> {
         let capability = CapabilityId::ProcessEnv;
         let op = "save_setting";
-        if !self.supports(capability) {
+        if !self.supports_settings() {
             return Err(self.unsupported(capability, op));
         }
         let appname = self.setting_text(&appname, capability, op, "appname")?;
@@ -329,7 +329,7 @@ impl ProcessEnvHal for StandardHostServices {
     ) -> HalResult<Variant> {
         let capability = CapabilityId::ProcessEnv;
         let op = "delete_setting";
-        if !self.supports(capability) {
+        if !self.supports_settings() {
             return Err(self.unsupported(capability, op));
         }
         let appname = self.setting_text(&appname, capability, op, "appname")?;
@@ -702,6 +702,10 @@ impl StandardHostServices {
             error.to_string(),
         )
         .with_host_error_code(5)
+    }
+
+    fn supports_settings(&self) -> bool {
+        self.browser_settings || self.supports(CapabilityId::ProcessEnv)
     }
 
     fn with_settings<T>(

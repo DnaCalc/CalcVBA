@@ -32,7 +32,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
-[target.'cfg(any(target_os = "linux", target_os = "wasi"))'.dependencies]
+[target.'cfg(any(target_os = "linux", target_family = "wasm"))'.dependencies]
 serde.workspace = true
 serde_json.workspace = true
 

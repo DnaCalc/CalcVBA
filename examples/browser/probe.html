@@ -43,6 +43,7 @@ try {
     if (crossOriginIsolated) {
         const asked = [];
         const answer = await runVba(modal, {
+            settingsKey: "dialog-probe",
             onPrint: text => prints.push(text),
             onDialog: async dialog => {
                 asked.push(dialog);
@@ -61,13 +62,42 @@ try {
 
     await refuses('Public Sub Main()\nOpen "C:\\probe.txt" For Input As #1\nEnd Sub', "Open");
     await refuses('Public Sub Main()\nSaveSetting "A", "B", "C", "value"\nEnd Sub', "SaveSetting");
+    const settings = { settingsKey: "probe" };
+    const save = (key, value) => runVba(`Public Sub Main()
+        SaveSetting "Probe", "General", "${key}", "${value}"
+    End Sub`, settings);
+    await Promise.all([save("First", "café"), save("Second", "two")]);
+    const stored = await runVba(`Public Function Main() As String
+        Dim all As Variant
+        all = GetAllSettings("probe", "general")
+        Main = CStr(UBound(all, 1) - LBound(all, 1) + 1) & "|" _
+            & GetSetting("PROBE", "GENERAL", "FIRST") & "|" _
+            & GetSetting("Probe", "General", "Second")
+        DeleteSetting "probe", "general", "first"
+    End Function`, settings);
+    assert(stored === "2|café|two", `IndexedDB settings returned ${stored}`);
+    const getFirst = `Public Function Main() As String
+        Main = GetSetting("Probe", "General", "First", "missing")
+    End Function`;
+    assert(await runVba(getFirst, settings) === "missing", "Settings deletion did not persist");
+    assert(await runVba(`Public Function Main() As String
+        Main = GetSetting("Probe", "General", "Second", "missing")
+    End Function`, { settingsKey: "other-probe" }) === "missing",
+        "The other settings store was not empty");
+    await refuses(`Public Sub Main()
+        SaveSetting "Probe", "General", "First", "before error"
+        Err.Raise 5, , "probe runtime fault"
+    End Sub`, "probe runtime fault", settings);
+    assert(await runVba(getFirst, settings) === "before error",
+        "A completed SaveSetting was lost after a VBA error");
+
     await refuses('Public Sub Main()\nShell "cmd"\nEnd Sub', "Shell");
     await refuses('Public Sub Main()\nSet app = CreateObject("Excel.Application")\nEnd Sub', "CreateObject");
     await refuses('Public Sub Main()\nSendKeys "x"\nEnd Sub', "SendKeys");
     await refuses('Public Sub Main()\nAppActivate "Excel"\nEnd Sub', "AppActivate");
     result.textContent = crossOriginIsolated ? "PASS isolated" : "PASS without isolation";
 } catch (error) {
-    result.textContent = `FAIL ${error.stack ?? error}`;
+    result.textContent = `FAIL ${error.message ?? error}\n${error.stack ?? ""}`;
 }
 </script>
 </html>

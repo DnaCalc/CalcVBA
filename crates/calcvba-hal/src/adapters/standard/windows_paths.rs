@@ -54,11 +54,7 @@ impl WindowsPaths {
                         format!("UNC share {server}/{share} is unmapped"),
                     )
                 })?;
-            (
-                None,
-                fs::canonicalize(root)?,
-                parts.next().unwrap_or_default(),
-            )
+            (None, mapped_root(root)?, parts.next().unwrap_or_default())
         } else {
             let (drive, path) = match normalized.as_bytes() {
                 [letter, b':', ..] if letter.is_ascii_alphabetic() => {
@@ -112,6 +108,11 @@ impl WindowsPaths {
             let name = matching_entry(&absolute, &name)?;
             absolute.push(&name);
             relative.push(name);
+            // WASI resolves files through its preopened capabilities. Rust's
+            // canonicalize is unavailable there.
+            if cfg!(target_os = "wasi") {
+                continue;
+            }
             match fs::canonicalize(&absolute) {
                 Ok(path) if !path.starts_with(&root) => {
                     return Err(io::Error::new(
@@ -132,6 +133,17 @@ impl WindowsPaths {
     }
 }
 
+fn mapped_root(path: &Path) -> io::Result<PathBuf> {
+    if cfg!(target_os = "wasi") {
+        let metadata = fs::metadata(path)?;
+        if metadata.is_dir() {
+            return Ok(path.to_owned());
+        }
+        return Err(io::Error::from(io::ErrorKind::NotADirectory));
+    }
+    fs::canonicalize(path)
+}
+
 fn resolve_root(roots: &BTreeMap<char, PathBuf>, drive: char) -> io::Result<PathBuf> {
     let root = roots.get(&drive).ok_or_else(|| {
         io::Error::new(
@@ -139,7 +151,7 @@ fn resolve_root(roots: &BTreeMap<char, PathBuf>, drive: char) -> io::Result<Path
             format!("drive {drive}: is unmapped"),
         )
     })?;
-    fs::canonicalize(root)
+    mapped_root(root)
 }
 
 fn matching_entry(directory: &Path, name: &str) -> io::Result<std::ffi::OsString> {
@@ -255,14 +267,14 @@ impl StandardHostServices {
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "wasi"))]
     pub(super) fn windows_path_for_host(&self, path: &Path) -> Option<String> {
         let absolute = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         self.policy
             .windows_drive_roots
             .iter()
             .filter_map(|(&drive, path)| {
-                let root = fs::canonicalize(path).ok()?;
+                let root = mapped_root(path).ok()?;
                 let suffix = absolute.strip_prefix(&root).ok()?;
                 Some((root.components().count(), drive, suffix))
             })

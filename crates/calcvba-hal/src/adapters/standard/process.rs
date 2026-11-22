@@ -23,7 +23,10 @@ pub(super) struct DirSearchState {
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(target_os = "linux", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    any(target_os = "linux", target_os = "wasi"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub(super) struct SettingEntry {
     key_name: String,
     value: String,
@@ -378,6 +381,9 @@ impl ProcessEnvHal for StandardHostServices {
 
     fn shell_variant(&self, command: Variant, _window_style: Variant) -> HalResult<Variant> {
         let capability = CapabilityId::ProcessEnv;
+        if self.wasi_native() {
+            return Err(self.unsupported(capability, "shell"));
+        }
         if !self.supports(capability) {
             return Err(self.unsupported(capability, "shell"));
         }
@@ -457,8 +463,8 @@ impl ProcessEnvHal for StandardHostServices {
                 )
                 .with_host_error_code(5));
             }
-            if self.native_process_enabled() {
-                #[cfg(target_os = "linux")]
+            if self.native_process_enabled() || self.wasi_native() {
+                #[cfg(any(target_os = "linux", target_os = "wasi"))]
                 if self.uses_windows_paths() {
                     let value = self
                         .windows_environment()
@@ -499,14 +505,14 @@ impl ProcessEnvHal for StandardHostServices {
             )
             .with_host_error_code(5));
         }
-        if self.native_process_enabled() {
-            #[cfg(target_os = "linux")]
+        if self.native_process_enabled() || self.wasi_native() {
+            #[cfg(any(target_os = "linux", target_os = "wasi"))]
             let variables: Vec<_> = if self.uses_windows_paths() {
                 self.windows_environment()
             } else {
                 std::env::vars_os().collect()
             };
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(any(target_os = "linux", target_os = "wasi")))]
             let variables: Vec<_> = std::env::vars_os().collect();
             let Some((name, value)) = variables.get((index - 1) as usize) else {
                 return Ok(Variant::from_string(""));
@@ -528,7 +534,7 @@ impl ProcessEnvHal for StandardHostServices {
         if !self.supports(capability) {
             return Err(self.unsupported(capability, "dir"));
         }
-        if self.native_process_enabled() {
+        if self.native_process_enabled() || self.wasi_native() {
             let is_continuation = match path.vtype() {
                 VarType::Empty | VarType::Null => true,
                 VarType::String => false,
@@ -676,14 +682,15 @@ impl StandardHostServices {
     ) -> HalResult<T> {
         let _ = write;
         let capability = CapabilityId::ProcessEnv;
-        #[cfg(target_os = "linux")]
-        if self.native_process_enabled() {
+        #[cfg(any(target_os = "linux", target_os = "wasi"))]
+        if self.native_process_enabled() || self.wasi_native() {
             use super::settings_file;
             let fault = |error: std::io::Error| {
                 HalError::adapter_fault(self.profile, capability, operation, error.to_string())
                     .with_host_error_code(5)
             };
             let location = settings_file::settings_path().map_err(fault)?;
+            #[cfg(target_os = "linux")]
             let _lock = settings_file::lock(&location, write).map_err(fault)?;
             let mut state = settings_file::read(&location).map_err(fault)?;
             let answer = operation_body(&mut state)?;
@@ -696,17 +703,25 @@ impl StandardHostServices {
         operation_body(&mut state)
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "wasi"))]
     fn windows_environment(&self) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
         use std::{env, path::PathBuf};
         let mut vars: Vec<_> = env::vars_os().collect();
-        let temp = self.windows_path_for_host(&env::temp_dir());
+        let temp = if cfg!(target_os = "wasi") {
+            env::var_os("TMPDIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from)
+        } else {
+            env::temp_dir()
+        };
+        let temp = self.windows_path_for_host(&temp);
         let home = env::var_os("HOME").map(PathBuf::from);
         let config = env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .or_else(|| home.as_ref().map(|path| path.join(".config")));
         let hostname = env::var_os("HOSTNAME").or_else(|| {
+            if cfg!(target_os = "wasi") {
+                return None;
+            }
             std::fs::read_to_string("/proc/sys/kernel/hostname")
                 .ok()
                 .map(|name| name.trim_end().into())

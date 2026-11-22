@@ -5271,30 +5271,19 @@ impl<'a> LowerFunc<'a> {
         match arg {
             OxArg::ByVal(arg) => {
                 if param.param.as_ref().is_some_and(|info| info.by_ref) {
-                    if is_jit_variant_carrier_ty(param_ty) {
-                        let operand = self.lower_variant_operand(builder, arg)?;
-                        let kind = builder
-                            .ins()
-                            .iconst(types::I32, i64::from(JIT_CALL_ARG_BYREF_COPY));
-                        return Ok(LoweredCallArg {
-                            kind,
-                            aux: operand.kind,
-                            value: operand.value,
-                            area: operand.area,
-                            index: operand.index,
-                        });
-                    }
+                    // A computed argument gets a private ByRef cell. Preserve its
+                    // runtime type so the callee can coerce property results and
+                    // other Variant operands to the parameter type.
+                    let operand = self.lower_variant_operand(builder, arg)?;
                     let kind = builder
                         .ins()
                         .iconst(types::I32, i64::from(JIT_CALL_ARG_BYREF_COPY));
-                    let value =
-                        self.lower_static_scalar_call_arg_value(builder, module, param_ty, arg)?;
                     return Ok(LoweredCallArg {
                         kind,
-                        aux: zero_i32,
-                        value,
-                        area: zero_i32,
-                        index: zero_i32,
+                        aux: operand.kind,
+                        value: operand.value,
+                        area: operand.area,
+                        index: operand.index,
                     });
                 }
                 if param.param.as_ref().is_some_and(|info| info.variadic) {

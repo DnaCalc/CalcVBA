@@ -7,6 +7,7 @@ use calcvba_symbol::manifest::ModuleKind::{Class, Procedural};
 
 const K: &str = "Option Explicit\n\
 Public Sub Bump(n As Long)\n    n = n + 1\nEnd Sub\n\
+Public Property Get Number() As Variant\n    Number = 41\nEnd Property\n\
 Public Sub Bump2(a As Long, b As Variant)\n    a = a + 10\n    b = b & \"!\"\nEnd Sub\n";
 
 fn result(executor: Executor, body: &str) -> String {
@@ -93,5 +94,15 @@ fn late_bound_value_to_byref_long_parameter_is_a_private_copy() {
         "Sub Main()\n    Dim o As Object, lk As Long\n    Set o = New K\n    lk = 1\n    \
          o.Bump (lk)\n    o.Bump n:=5\n    result = CStr(lk)\nEnd Sub\n",
         "1",
+    );
+}
+
+#[test]
+fn property_value_to_static_byref_long_parameter_is_a_private_copy() {
+    both(
+        "Private Function AddOne(n As Long) As Long\n    n = n + 1\n    AddOne = n\nEnd Function\n\
+         Sub Main()\n    Dim o As Object\n    Set o = New K\n    \
+         result = AddOne(o.Number) & \"|\" & o.Number\nEnd Sub\n",
+        "42|41",
     );
 }

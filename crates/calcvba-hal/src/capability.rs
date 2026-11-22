@@ -572,9 +572,9 @@ impl HostServices for PolicyHost {
         .with_parent(parent)
     }
     fn authorize_com_activation(&self, op: &'static str, target: &str) -> HalResult<()> {
-        // Only CreateObject of a class the inner host resolves internally is exempt.
+        // The inner host resolves these classes internally for both activation routes.
         // GetObject may bind an arbitrary moniker regardless of its class argument.
-        if op == "create_object" && self.inner.is_host_class(target) {
+        if matches!(op, "create_object" | "app_object") && self.inner.is_host_class(target) {
             return self.inner.authorize_com_activation(op, target);
         }
         self.check(Capability::ComActivate, op, target.to_string())?;
@@ -1670,13 +1670,16 @@ mod tests {
     #[test]
     fn embedder_classes_pass_unlogged() {
         let host = PolicyHost::safe(recorder());
-        host.authorize_com_activation("create_object", "DnaCalc.Application")
-            .expect("host class");
-        assert_eq!(host.audit().drain().total, 0);
-        assert!(
-            host.authorize_com_activation("create_object", "Scripting.Dictionary")
-                .is_err()
-        );
+        for operation in ["create_object", "app_object"] {
+            host.authorize_com_activation(operation, "DnaCalc.Application")
+                .expect("host class");
+            assert_eq!(host.audit().drain().total, 0);
+            assert!(
+                host.authorize_com_activation(operation, "Scripting.Dictionary")
+                    .is_err()
+            );
+            assert_eq!(host.audit().drain().denied, 1);
+        }
     }
 
     #[test]
@@ -1685,6 +1688,7 @@ mod tests {
         for (op, target) in [
             ("get_object", "DnaCalc.Application"),
             ("create_object", "DnaCalc.Attacker"),
+            ("app_object", "DnaCalc.Attacker"),
         ] {
             assert!(
                 host.authorize_com_activation(op, target).is_err(),

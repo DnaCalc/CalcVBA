@@ -150,6 +150,7 @@ pub fn owning_builtin(id: calcvba_bundle::NativeImplId) -> bool {
             | TypeName
             | Rgb
             | CreateObject
+            | AppObject
     )
 }
 
@@ -1330,7 +1331,8 @@ impl ScalarLayout {
                             dst: Some(OxPlace::Temp(id)),
                             callee:
                                 calcvba_oxir::OxNativeCallee::Builtin(
-                                    calcvba_bundle::NativeImplId::CreateObject,
+                                    calcvba_bundle::NativeImplId::CreateObject
+                                    | calcvba_bundle::NativeImplId::AppObject,
                                 ),
                             ..
                         } if owning => Some((*id, Some(ScalarType::HostObject))),
@@ -2806,12 +2808,11 @@ mod tests {
     use super::*;
     #[test]
     fn owning_object_roots_keep_object_temporaries_and_declared_variant_locals() {
+        use calcvba_bundle::NativeImplId::{AppObject, CreateObject};
         use calcvba_oxir::{BlockId, LocalId, OxBlock, OxLocal, OxProgram, TempId};
-        let call = |dst| OxInst::CallNative {
+        let call = |dst, callee| OxInst::CallNative {
             dst: Some(dst),
-            callee: calcvba_oxir::OxNativeCallee::Builtin(
-                calcvba_bundle::NativeImplId::CreateObject,
-            ),
+            callee: calcvba_oxir::OxNativeCallee::Builtin(callee),
             args: vec![calcvba_oxir::OxCallArg::Operand(OxOperand::Const(
                 OxConst::Str("Host.Widget".into()),
             ))],
@@ -2827,7 +2828,7 @@ mod tests {
                     param: None,
                     escaped: false,
                 }],
-                temps: vec![OxTy::Variant],
+                temps: vec![OxTy::Variant, OxTy::Variant],
                 param_count: 0,
                 return_local: None,
                 entry: BlockId(0),
@@ -2835,8 +2836,9 @@ mod tests {
                     id: BlockId(0),
                     fault_target: None,
                     instrs: vec![
-                        call(OxPlace::Temp(TempId(0))),
-                        call(OxPlace::Local(LocalId(0))),
+                        call(OxPlace::Temp(TempId(0)), CreateObject),
+                        call(OxPlace::Temp(TempId(1)), AppObject),
+                        call(OxPlace::Local(LocalId(0)), AppObject),
                     ],
                     terminator: OxTerminator::Return,
                 }],
@@ -2844,10 +2846,12 @@ mod tests {
             ..Default::default()
         };
         let layout = ScalarLayout::with_program(&program.funcs[0], &program).unwrap();
-        assert_eq!(
-            layout.operand_type(&OxOperand::temp(TempId(0))).unwrap(),
-            ScalarType::HostObject
-        );
+        for temp in [TempId(0), TempId(1)] {
+            assert_eq!(
+                layout.operand_type(&OxOperand::temp(temp)).unwrap(),
+                ScalarType::HostObject
+            );
+        }
         assert_eq!(
             layout.operand_type(&OxOperand::local(LocalId(0))).unwrap(),
             ScalarType::Variant

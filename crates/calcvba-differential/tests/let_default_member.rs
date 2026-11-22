@@ -14,6 +14,10 @@ Attribute Value.VB_UserMemId = 0\n\
     Set Value = New Dflt\n\
 End Property\n";
 const NO_DFLT: &str = "Public Function Foo() As Long\n    Foo = 1\nEnd Function\n";
+const INDEXED: &str = "Public Property Get Item(ByVal key As Variant) As Variant\n\
+Attribute Item.VB_UserMemId = 0\n\
+    If key = \"object\" Then Set Item = New Indexed Else Item = 42\n\
+End Property\n";
 
 /// `(case, statement, Excel VBA's line)`.
 const CASES: &[(&str, &str, &str)] = &[
@@ -40,6 +44,16 @@ const CASES: &[(&str, &str, &str)] = &[
         "raised 91 Object variable or With block variable not set",
     ),
     ("empty", "w = Empty: v = w", "Empty:"),
+    (
+        "indexed_object",
+        "Set o = New Indexed: v = o(\"object\")",
+        "raised 449 Argument not optional",
+    ),
+    (
+        "indexed_number",
+        "Set o = New Indexed: v = o(\"number\")",
+        "Integer:42",
+    ),
     ("return", "v = RetLet()", "Integer:42"),
     (
         "array_elem",
@@ -99,6 +113,7 @@ fn check(executor: Executor) {
         ("Dflt", Class, DFLT),
         ("Chain", Class, CHAIN),
         ("NoDflt", Class, NO_DFLT),
+        ("Indexed", Class, INDEXED),
     ];
     let outcome = run_modules(executor, &modules, "VBAProject");
     assert!(

@@ -4109,10 +4109,20 @@ impl<'h> Vm3<'h> {
     ) -> Result<&'static calcvba_runtime::RuntimeMemberDescriptor, Vm3Error> {
         let obj_bundle = object.bundle_id() as usize;
         let public_only = obj_bundle != self.cur;
-        object
+        let member = object
             .class_descriptor()
             .resolve_member_by_dispid(0, kind, args_empty, public_only)
-            .ok_or_else(|| Vm3Error::Fault(Fault::new(438, default_error_message(438))))
+            .ok_or_else(|| Vm3Error::Fault(Fault::new(438, default_error_message(438))))?;
+        if args_empty
+            && kind == calcvba_runtime::RuntimeMemberInvokeKind::PropertyGet
+            && member
+                .params
+                .iter()
+                .any(|param| !param.optional && !param.param_array)
+        {
+            return Err(Vm3Error::Fault(Fault::new(449, default_error_message(449))));
+        }
+        Ok(member)
     }
 
     fn dispatch_project_default_member(

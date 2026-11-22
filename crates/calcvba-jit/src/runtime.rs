@@ -2161,23 +2161,16 @@ pub(crate) unsafe fn seed_jit_member_frame_args(
                     };
             }
             JIT_CALL_ARG_BYREF_COPY if param_info.by_ref => {
-                if is_jit_variant_carrier_ty(&param.ty) {
-                    let Some(value) = call_arg_variant_value(run, arg) else {
-                        return ST_FAULT;
+                let Some(value) = call_arg_variant_value(run, arg) else {
+                    return ST_FAULT;
+                };
+                frame.locals[param_index] =
+                    // SAFETY: the current compiled-run boundary owns the live unique state handle;
+                    // typed references and owned values remain live and nonaliasing for this call.
+                    match unsafe { coerce_call_arg_for_param(state, &param.ty, &value) } {
+                        Ok(value) => value,
+                        Err(status) => return status,
                     };
-                    frame.locals[param_index] =
-                        // SAFETY: the current compiled-run boundary owns the live unique state handle;
-                        // typed references and owned values remain live and nonaliasing for this call.
-                        match unsafe { coerce_call_arg_for_param(state, &param.ty, &value) } {
-                            Ok(value) => value,
-                            Err(status) => return status,
-                        };
-                } else {
-                    let Some(value) = scalar_arg_variant(&param.ty, arg.value) else {
-                        return ST_FAULT;
-                    };
-                    frame.locals[param_index] = value;
-                }
             }
             JIT_CALL_ARG_BYREF_ALIAS if param_info.by_ref => {
                 if arg.area < 0 || arg.index < 0 {

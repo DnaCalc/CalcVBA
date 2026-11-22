@@ -4468,6 +4468,18 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
         // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
         return unsafe { rt_raise_runtime_error_number(state, 438) };
     };
+    if name.is_empty()
+        && early_member.is_none()
+        && args.is_empty()
+        && kind == ProjectMemberKind::PropertyGet
+        && member
+            .params
+            .iter()
+            .any(|param| !param.optional && !param.param_array)
+    {
+        // SAFETY: the active JIT entry owns this same-thread error state.
+        return unsafe { rt_raise_runtime_error_number(state, 449) };
+    }
     let value = match member.backing {
         calcvba_runtime::RuntimeMemberBacking::Proc(proc) => {
             // SAFETY: this helper inherits the live unique state handle; `run`, argument
@@ -9299,23 +9311,16 @@ pub(crate) unsafe extern "C" fn rt_jit_direct_enter_proc_i32(
                     frame.locals[index] = value;
                 }
                 JIT_CALL_ARG_BYREF_COPY if param_info.by_ref => {
-                    if is_jit_variant_carrier_ty(&param.ty) {
-                        let Some(value) = call_arg_variant_value(run, arg) else {
-                            return ST_FAULT;
+                    let Some(value) = call_arg_variant_value(run, arg) else {
+                        return ST_FAULT;
+                    };
+                    frame.locals[index] =
+                        // SAFETY: the current compiled-run boundary owns the live unique state handle;
+                        // typed references and owned values remain live and nonaliasing for this call.
+                        match unsafe { coerce_call_arg_for_param(state, &param.ty, &value) } {
+                            Ok(value) => value,
+                            Err(status) => return status,
                         };
-                        frame.locals[index] =
-                            // SAFETY: the current compiled-run boundary owns the live unique state handle;
-                            // typed references and owned values remain live and nonaliasing for this call.
-                            match unsafe { coerce_call_arg_for_param(state, &param.ty, &value) } {
-                                Ok(value) => value,
-                                Err(status) => return status,
-                            };
-                    } else {
-                        let Some(value) = scalar_arg_variant(&param.ty, arg.value) else {
-                            return ST_FAULT;
-                        };
-                        frame.locals[index] = value;
-                    }
                 }
                 JIT_CALL_ARG_BYREF_ALIAS if param_info.by_ref => {
                     if arg.area < 0 || arg.index < 0 {
@@ -9513,23 +9518,16 @@ pub(crate) unsafe extern "C" fn rt_jit_call_extern_proc_i32(
                         frame.locals[index] = value;
                     }
                     JIT_CALL_ARG_BYREF_COPY if param_info.by_ref => {
-                        if is_jit_variant_carrier_ty(&param.ty) {
-                            let Some(value) = call_arg_variant_value(run, arg) else {
-                                return ST_FAULT;
-                            };
-                            frame.locals[index] =
-                            // SAFETY: the current compiled-run boundary owns the live unique state handle;
-                            // typed references and owned values remain live and nonaliasing for this call.
-                            match unsafe { coerce_call_arg_for_param(state, &param.ty, &value) } {
-                                Ok(value) => value,
-                                Err(status) => return status,
-                            };
-                        } else {
-                            let Some(value) = scalar_arg_variant(&param.ty, arg.value) else {
-                                return ST_FAULT;
-                            };
-                            frame.locals[index] = value;
-                        }
+                        let Some(value) = call_arg_variant_value(run, arg) else {
+                            return ST_FAULT;
+                        };
+                        frame.locals[index] =
+                        // SAFETY: the current compiled-run boundary owns the live unique state handle;
+                        // typed references and owned values remain live and nonaliasing for this call.
+                        match unsafe { coerce_call_arg_for_param(state, &param.ty, &value) } {
+                            Ok(value) => value,
+                            Err(status) => return status,
+                        };
                     }
                     JIT_CALL_ARG_BYREF_ALIAS if param_info.by_ref => {
                         if arg.area < 0 || arg.index < 0 {
@@ -9792,23 +9790,16 @@ pub(crate) unsafe extern "C" fn rt_jit_call_proc_i32(
                         frame.locals[index] = value;
                     }
                     JIT_CALL_ARG_BYREF_COPY if param_info.by_ref => {
-                        if is_jit_variant_carrier_ty(&param.ty) {
-                            let Some(value) = call_arg_variant_value(run, arg) else {
-                                return ST_FAULT;
-                            };
-                            frame.locals[index] =
-                            // SAFETY: the current compiled-run boundary owns the live unique state handle;
-                            // typed references and owned values remain live and nonaliasing for this call.
-                            match unsafe { coerce_call_arg_for_param(state, &param.ty, &value) } {
-                                Ok(value) => value,
-                                Err(status) => return status,
-                            };
-                        } else {
-                            let Some(value) = scalar_arg_variant(&param.ty, arg.value) else {
-                                return ST_FAULT;
-                            };
-                            frame.locals[index] = value;
-                        }
+                        let Some(value) = call_arg_variant_value(run, arg) else {
+                            return ST_FAULT;
+                        };
+                        frame.locals[index] =
+                        // SAFETY: the current compiled-run boundary owns the live unique state handle;
+                        // typed references and owned values remain live and nonaliasing for this call.
+                        match unsafe { coerce_call_arg_for_param(state, &param.ty, &value) } {
+                            Ok(value) => value,
+                            Err(status) => return status,
+                        };
                     }
                     JIT_CALL_ARG_BYREF_ALIAS if param_info.by_ref => {
                         if arg.area < 0 || arg.index < 0 {

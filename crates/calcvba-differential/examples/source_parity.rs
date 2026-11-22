@@ -130,10 +130,10 @@ fn row(path: &Path, compare: bool) -> Value {
             Err(err) => error("jit-compile", err.to_string()),
         };
     }
-    if !programs
+    if programs
         .last()
         .and_then(|program| program.entry.and_then(|id| program.funcs.get(id.0)))
-        .is_some_and(|entry| entry.param_count == 0)
+        .is_none_or(|entry| entry.param_count != 0)
     {
         return error("no-entry", "a parameterless entry point is required".into());
     }

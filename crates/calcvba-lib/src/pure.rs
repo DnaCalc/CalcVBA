@@ -7,8 +7,8 @@
 
 use crate::math::ln;
 use crate::{
-    LibContext, LibError, LibResult, alloc_count, as_f64, as_i32, as_i64, as_str, as_usize, need,
-    opt, vbool, vf64, vi32, vstr, vunit,
+    LibContext, LibError, LibResult, alloc_count, as_f64, as_i16, as_i32, as_i64, as_str, as_usize,
+    need, opt, vbool, vf64, vi32, vstr, vunit,
 };
 use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::{
@@ -3741,11 +3741,11 @@ pub fn rate(args: &[Variant]) -> LibResult<Variant> {
 pub fn rgb(args: &[Variant]) -> LibResult<Variant> {
     // A component above 255 clamps to 255; a negative one is invalid.
     let component = |index: usize| -> LibResult<i32> {
-        let value = as_i32(need(args, index)?)?;
+        let value = as_i16(need(args, index)?)?;
         if value < 0 {
             return Err(LibError::invalid_call("RGB component must not be negative"));
         }
-        Ok(value.min(255))
+        Ok(i32::from(value.min(255)))
     };
     let (red, green, blue) = (component(0)?, component(1)?, component(2)?);
     Ok(vi32(red + green * 256 + blue * 65_536))
@@ -3761,8 +3761,7 @@ pub fn qb_color(args: &[Variant]) -> LibResult<Variant> {
         0, 8_388_608, 32_768, 8_421_376, 128, 8_388_736, 32_896, 12_632_256, 8_421_504, 16_711_680,
         65_280, 16_776_960, 255, 16_711_935, 65_535, 16_777_215,
     ];
-    let index = i16::try_from(as_i64(need(args, 0)?)?)
-        .map_err(|_| LibError::overflow("QBColor index exceeds Integer range"))?;
+    let index = as_i16(need(args, 0)?)?;
     if !(0..=15).contains(&index) {
         return Err(LibError::invalid_call("QBColor index must be 0 to 15"));
     }

@@ -1634,9 +1634,10 @@ pub fn build_resolution_environment_with_project_surfaces(
             symbols.global_scope(),
             Some(&referenced.project_name),
         )?;
-        // A referenced project's manifest does not carry its own `DefineConstants`,
-        // so its `#If`s evaluate against the same target's predefined constants only.
-        let referenced_cc = cond_comp::predefined_cc_constants_for_target(active_target);
+        let referenced_target = referenced
+            .conditional_compilation_target
+            .unwrap_or(active_target);
+        let referenced_cc = cond_comp::predefined_cc_constants_for_target(referenced_target);
         let mut scans: Vec<ModuleScan> = Vec::new();
         for module in &referenced.modules {
             let source = cond_comp::preprocess(&module.source, &referenced_cc)
@@ -1656,7 +1657,7 @@ pub fn build_resolution_environment_with_project_surfaces(
                 module,
                 parse.syntax(),
                 scope,
-                active_target,
+                referenced_target,
             )?;
             type_index.add_module(
                 &symbols,

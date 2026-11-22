@@ -160,6 +160,7 @@ fn source_closure(executor: Executor) {
         lib_reference(),
         vec![ReferencedProjectManifest {
             project_name: "Lib".to_string(),
+            conditional_compilation_target: None,
             project_kind: ProjectKind::Source,
             modules: lib_modules(),
         }],

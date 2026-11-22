@@ -118,6 +118,7 @@ fn referenced_project_uses_runtime_target_predefines_without_active_project_cons
         }],
         reference_projects: vec![sym::ReferencedProjectManifest {
             project_name: "LibProj".to_string(),
+            conditional_compilation_target: None,
             project_kind: sym::ProjectKind::Library,
             modules: vec![lib_module()],
         }],

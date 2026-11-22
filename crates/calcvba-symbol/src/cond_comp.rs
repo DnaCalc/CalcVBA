@@ -31,6 +31,8 @@ pub type CcConstants = HashMap<String, CoreConst>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConditionalCompilationHost {
+    /// Use Windows constants unless a runtime profile supplies the target.
+    Unspecified,
     Windows,
     Mac,
 }
@@ -76,7 +78,10 @@ impl ConditionalCompilationTarget {
 
 impl Default for ConditionalCompilationTarget {
     fn default() -> Self {
-        Self::windows_64_vba7()
+        Self {
+            host: ConditionalCompilationHost::Unspecified,
+            ..Self::windows_64_vba7()
+        }
     }
 }
 
@@ -84,8 +89,8 @@ impl Default for ConditionalCompilationTarget {
 /// `Win32` is true on both 32- and 64-bit Windows (it marks the Win32 API base),
 /// while `Win64` is true only on 64-bit Windows. `Mac` is true only for Mac Office.
 pub fn predefined_cc_constants_for_target(target: ConditionalCompilationTarget) -> CcConstants {
-    let is_windows = target.host == ConditionalCompilationHost::Windows;
     let is_mac = target.host == ConditionalCompilationHost::Mac;
+    let is_windows = !is_mac;
     let is_64 = target.pointer_width == ConditionalCompilationPointerWidth::Bits64;
     [
         ("vba7", target.vba7),

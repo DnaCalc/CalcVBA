@@ -63,6 +63,7 @@ pub fn load_project_closure_with_entry(
                 project_name: dep.project_name.clone(),
                 project_kind: sym::ProjectKind::Library,
                 modules: public_modules(&dep.modules),
+                conditional_compilation_target: Some(dep.conditional_compilation_target),
             })
             .collect();
         manifests.push(sym::SymbolProjectManifest {
@@ -72,7 +73,7 @@ pub fn load_project_closure_with_entry(
             references: node.references.clone(),
             reference_projects,
             conditional_constants: node.conditional_constants.clone(),
-            conditional_compilation_target: Default::default(),
+            conditional_compilation_target: node.conditional_compilation_target,
         });
     }
     Ok(manifests)
@@ -86,6 +87,7 @@ struct ProjectNode {
     modules: Vec<sym::ModuleUnit>,
     references: Vec<sym::ProjectReference>,
     conditional_constants: BTreeMap<String, i32>,
+    conditional_compilation_target: calcvba_symbol::cond_comp::ConditionalCompilationTarget,
     direct_refs: Vec<PathBuf>,
 }
 
@@ -193,6 +195,7 @@ fn build_node(
         modules,
         references,
         conditional_constants: loaded.manifest.conditional_constants,
+        conditional_compilation_target: loaded.conditional_compilation_target,
         direct_refs,
     })
 }

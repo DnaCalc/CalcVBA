@@ -35,6 +35,13 @@ pub struct BasProjProperties {
     pub default_runtime_profile: Option<String>,
     pub default_root_object: Option<String>,
     pub define_constants: Option<String>,
+    pub dialect: Option<Dialect>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dialect {
+    Windows,
+    Mac,
 }
 
 /// Output type for the project.

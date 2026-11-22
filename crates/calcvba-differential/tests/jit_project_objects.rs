@@ -51,6 +51,7 @@ fn project(modules: Vec<ModuleUnit>) -> SymbolProjectManifest {
 fn referenced(project_name: &str, modules: Vec<ModuleUnit>) -> ReferencedProjectManifest {
     ReferencedProjectManifest {
         project_name: project_name.to_string(),
+        conditional_compilation_target: None,
         project_kind: ProjectKind::Library,
         modules,
     }

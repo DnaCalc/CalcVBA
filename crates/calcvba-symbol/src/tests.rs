@@ -318,6 +318,7 @@ fn referenced_project_resolves_through_its_export_surface() {
     };
     let lib = ReferencedProjectManifest {
         project_name: "Lib".into(),
+        conditional_compilation_target: None,
         project_kind: ProjectKind::Library,
         modules: vec![lib_mod, widget],
     };
@@ -582,6 +583,7 @@ fn referenced_project_enum_member_consts_fold_through_export_surface() {
     );
     let lib = ReferencedProjectManifest {
         project_name: "Lib".into(),
+        conditional_compilation_target: None,
         project_kind: ProjectKind::Library,
         modules: vec![lib_mod],
     };
@@ -637,6 +639,7 @@ fn referenced_option_private_enum_member_consts_do_not_leak() {
 
     let lib = ReferencedProjectManifest {
         project_name: "Lib".into(),
+        conditional_compilation_target: None,
         project_kind: ProjectKind::Library,
         modules: vec![
             module(
@@ -2668,6 +2671,7 @@ fn optional_defaults_fold_referenced_project_consts() {
 
     let lib = ReferencedProjectManifest {
         project_name: "Lib".into(),
+        conditional_compilation_target: None,
         project_kind: ProjectKind::Library,
         modules: vec![module("LibMod", "Public Const DefaultMode As Long = 4\n")],
     };
@@ -3829,6 +3833,7 @@ fn enum_initializers_fold_referenced_project_constants() {
 
     let lib = ReferencedProjectManifest {
         project_name: "Lib".into(),
+        conditional_compilation_target: None,
         project_kind: ProjectKind::Library,
         modules: vec![module("LibMod", "Public Const Seed As Long = 7\n")],
     };

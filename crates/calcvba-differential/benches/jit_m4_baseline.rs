@@ -259,6 +259,7 @@ fn manifest_for_modules(
 fn referenced_manifest(project: &FixtureProject) -> sym::ReferencedProjectManifest {
     sym::ReferencedProjectManifest {
         project_name: project.name.to_string(),
+        conditional_compilation_target: None,
         project_kind: sym::ProjectKind::Library,
         modules: manifest_for_modules(
             project.name.to_string(),

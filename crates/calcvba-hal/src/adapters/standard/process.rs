@@ -458,6 +458,19 @@ impl ProcessEnvHal for StandardHostServices {
                 .with_host_error_code(5));
             }
             if self.native_process_enabled() {
+                #[cfg(target_os = "linux")]
+                if self.uses_windows_paths() {
+                    let value = self
+                        .windows_environment()
+                        .into_iter()
+                        .find(|(key, _)| {
+                            key.to_str()
+                                .is_some_and(|key| key.eq_ignore_ascii_case(name))
+                        })
+                        .map(|(_, value)| value)
+                        .unwrap_or_default();
+                    return Ok(environment_value(&value));
+                }
                 let value = std::env::var_os(name).unwrap_or_default();
                 return Ok(environment_value(&value));
             }
@@ -487,8 +500,14 @@ impl ProcessEnvHal for StandardHostServices {
             .with_host_error_code(5));
         }
         if self.native_process_enabled() {
-            let mut variables: Vec<_> = std::env::vars_os().collect();
-            variables.sort_by(|a, b| a.0.cmp(&b.0));
+            #[cfg(target_os = "linux")]
+            let variables: Vec<_> = if self.uses_windows_paths() {
+                self.windows_environment()
+            } else {
+                std::env::vars_os().collect()
+            };
+            #[cfg(not(target_os = "linux"))]
+            let variables: Vec<_> = std::env::vars_os().collect();
             let Some((name, value)) = variables.get((index - 1) as usize) else {
                 return Ok(Variant::from_string(""));
             };
@@ -675,6 +694,56 @@ impl StandardHostServices {
         }
         let mut state = self.borrow_settings(capability, operation)?;
         operation_body(&mut state)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn windows_environment(&self) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+        use std::{env, path::PathBuf};
+        let mut vars: Vec<_> = env::vars_os().collect();
+        let temp = self.windows_path_for_host(&env::temp_dir());
+        let home = env::var_os("HOME").map(PathBuf::from);
+        let config = env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .or_else(|| home.as_ref().map(|path| path.join(".config")));
+        let hostname = env::var_os("HOSTNAME").or_else(|| {
+            std::fs::read_to_string("/proc/sys/kernel/hostname")
+                .ok()
+                .map(|name| name.trim_end().into())
+        });
+        let aliases = [
+            ("TEMP", temp.clone().map(Into::into)),
+            ("TMP", temp.map(Into::into)),
+            (
+                "USERPROFILE",
+                home.as_deref()
+                    .and_then(|path| self.windows_path_for_host(path))
+                    .map(Into::into),
+            ),
+            (
+                "APPDATA",
+                config
+                    .as_deref()
+                    .and_then(|path| self.windows_path_for_host(path))
+                    .map(Into::into),
+            ),
+            ("COMPUTERNAME", hostname),
+            (
+                "USERNAME",
+                env::var_os("USER").or_else(|| env::var_os("LOGNAME")),
+            ),
+        ];
+        for (key, value) in aliases {
+            if let Some(value) = value
+                && !vars.iter().any(|(old, _)| {
+                    old.to_str()
+                        .is_some_and(|old| old.eq_ignore_ascii_case(key))
+                })
+            {
+                vars.push((key.into(), value));
+            }
+        }
+        vars
     }
 
     fn setting_text(

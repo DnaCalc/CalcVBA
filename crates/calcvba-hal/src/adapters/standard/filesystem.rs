@@ -717,6 +717,30 @@ fn same_host_path(left: &Path, right: &Path) -> bool {
 }
 
 impl StandardHostServices {
+    fn require_file_parent(&self, path: &Path, operation: &'static str) -> HalResult<()> {
+        let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        else {
+            return Ok(());
+        };
+        let (number, message) = match fs::metadata(parent) {
+            Ok(meta) if meta.is_dir() => return Ok(()),
+            Ok(_) => (76, "parent is not a directory".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotADirectory => {
+                (76, error.to_string())
+            }
+            Err(error) => (directory_error_code(&error), error.to_string()),
+        };
+        Err(HalError::adapter_fault(
+            self.profile,
+            CapabilityId::FileSystemIo,
+            operation,
+            format!("{}: {message}", parent.display()),
+        )
+        .with_host_error_code(number))
+    }
+
     fn kill_host_file(&self, path: &PathBuf) -> HalResult<()> {
         let capability = CapabilityId::FileSystemIo;
         let fault = |code| {
@@ -821,16 +845,7 @@ impl FileSystemHal for StandardHostServices {
             };
             let host_path = if self.native_fs_enabled() {
                 let host_path = self.map_path(&path_text.as_str(), capability, "open")?;
-                if let Some(parent) = host_path.parent() {
-                    fs::create_dir_all(parent).map_err(|err| {
-                        HalError::adapter_fault(
-                            self.profile,
-                            capability,
-                            "open",
-                            format!("failed to create host fs directory: {err}"),
-                        )
-                    })?;
-                }
+                self.require_file_parent(&host_path, "open")?;
                 Some(host_path)
             } else {
                 None
@@ -2266,9 +2281,8 @@ impl FileSystemHal for StandardHostServices {
         if self.native_fs_enabled() {
             let old = self.variant_to_path(&old_path, capability, "name", "old")?;
             let new = self.variant_to_path(&new_path, capability, "name", "new")?;
-            if let Some(parent) = new.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
+            self.require_file_parent(&old, "name")?;
+            self.require_file_parent(&new, "name")?;
             fs::rename(&old, &new).map_err(|err| {
                 HalError::adapter_fault(
                     self.profile,

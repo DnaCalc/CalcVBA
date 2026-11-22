@@ -14,6 +14,9 @@ calcvba-runtime.workspace = true
 calcvba-eval.workspace = true
 thiserror.workspace = true
 
+[target.'cfg(not(windows))'.dependencies]
+roxmltree = "0.21"
+
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",

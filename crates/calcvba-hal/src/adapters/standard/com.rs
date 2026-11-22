@@ -93,8 +93,7 @@ fn allocate_projection_object_ref_inner(
     if reuse_by_prog_id && let Some(handle) = state.handles_by_prog_id.get(prog_id_name).copied() {
         return Ok(ObjectRef::from_compat_identity(handle));
     }
-    state.next_handle = state.next_handle.saturating_add(1).max(1);
-    let object = ObjectRef::from_compat_identity(state.next_handle);
+    let object = ObjectRef::from_compat_identity(state.allocate_handle());
     if reuse_by_prog_id {
         state
             .handles_by_prog_id
@@ -172,6 +171,10 @@ fn invoke_portable_dispatch(
     host: &StandardHostServices,
     request: &DynamicCallRequest,
 ) -> HalResult<Option<calcvba_runtime::RuntimeCallResult>> {
+    #[cfg(not(windows))]
+    if let Some(value) = super::builtin_com::BuiltinObject::invoke(host, request)? {
+        return Ok(Some(value));
+    }
     let Some(dispatch) = portable_dispatch_for_object(host, &request.object)? else {
         return Ok(None);
     };
@@ -471,6 +474,10 @@ impl ComHal for StandardHostServices {
             try_bind_projection_object_metadata(self, object.clone(), prog_id_name)?;
             return Ok(Variant::from_object_ref(object));
         }
+        #[cfg(not(windows))]
+        if let Some(value) = super::builtin_com::BuiltinObject::create(self, prog_id_name)? {
+            return Ok(value);
+        }
         if !self.supports(capability) {
             return Err(self.unsupported(capability, "create_object"));
         }
@@ -636,9 +643,6 @@ impl ComHal for StandardHostServices {
 
     fn get_object_variant(&self, pathname: Variant, class: Variant) -> HalResult<Variant> {
         let capability = CapabilityId::ComActivationDispatch;
-        if !self.supports(capability) {
-            return Err(self.unsupported(capability, "get_object"));
-        }
         if !self.policy.allow_com_activation {
             return Err(self.denied(capability, "get_object"));
         }
@@ -683,6 +687,10 @@ impl ComHal for StandardHostServices {
             && path.is_empty()
         {
             return self.create_object_variant(Variant::from_string(class.to_string()));
+        }
+
+        if !self.supports(capability) {
+            return Err(self.unsupported(capability, "get_object"));
         }
 
         #[cfg(target_os = "windows")]
@@ -1138,6 +1146,12 @@ impl ComHal for StandardHostServices {
 
     fn object_type_name(&self, object: ObjectRef) -> HalResult<Option<String>> {
         let capability = CapabilityId::ComActivationDispatch;
+        #[cfg(not(windows))]
+        if self.policy.allow_com_activation
+            && let Some(name) = super::builtin_com::BuiltinObject::type_name(&object)
+        {
+            return Ok(Some(name.into()));
+        }
         if !self.supports(capability) || !self.policy.allow_com_activation {
             // No COM access: caller keeps the generic "Object".
             return Ok(None);

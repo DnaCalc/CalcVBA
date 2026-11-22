@@ -18,6 +18,8 @@ macro_rules! hal_contract_assert {
     };
 }
 
+#[cfg(not(windows))]
+mod builtin_com;
 mod com;
 mod console;
 #[cfg(not(target_arch = "wasm32"))]
@@ -158,6 +160,13 @@ struct ProjectionObjectState {
     /// The session's application objects the portable projection supplied, by class (upper
     /// case): one instance each, as `AppObject(class)` returns.
     portable_app_objects: BTreeMap<String, Variant>,
+}
+
+impl ProjectionObjectState {
+    fn allocate_handle(&mut self) -> i32 {
+        self.next_handle = self.next_handle.saturating_add(1).max(1);
+        self.next_handle
+    }
 }
 
 impl std::fmt::Debug for StandardHostServices {

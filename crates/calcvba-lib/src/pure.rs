@@ -102,15 +102,18 @@ fn string_bytes(value: &Variant) -> LibResult<Vec<u8>> {
     }
 }
 
-pub fn left(args: &[Variant]) -> LibResult<Variant> {
-    let units = string_units(need(args, 0)?)?;
-    let n = as_i32(need(args, 1)?)?;
-    // VBA rejects the maximum Long length even when the string is shorter (P_Left.17).
+fn string_slice_length(value: &Variant) -> LibResult<usize> {
+    let n = as_i32(value)?;
+    // VBA rejects the maximum Long length in Left and Right (P_Left.17 and P_Right.14).
     if n == i32::MAX {
         return Err(LibError::invalid_call(default_error_message(5)));
     }
-    let n =
-        usize::try_from(n).map_err(|_| LibError::invalid_call("expected a non-negative count"))?;
+    usize::try_from(n).map_err(|_| LibError::invalid_call("expected a non-negative count"))
+}
+
+pub fn left(args: &[Variant]) -> LibResult<Variant> {
+    let units = string_units(need(args, 0)?)?;
+    let n = string_slice_length(need(args, 1)?)?;
     Ok(Variant::from_utf16_units(&units[..n.min(units.len())]))
 }
 
@@ -191,7 +194,7 @@ pub fn instr_b(args: &[Variant]) -> LibResult<Variant> {
 
 pub fn right(args: &[Variant]) -> LibResult<Variant> {
     let units = string_units(need(args, 0)?)?;
-    let n = as_usize(need(args, 1)?)?.min(units.len());
+    let n = string_slice_length(need(args, 1)?)?.min(units.len());
     Ok(Variant::from_utf16_units(&units[units.len() - n..]))
 }
 

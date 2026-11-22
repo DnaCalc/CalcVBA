@@ -5381,7 +5381,7 @@ impl<'a> LowerFunc<'a> {
                     index,
                 })
             }
-            OxArg::Omitted if matches!(param_ty, OxTy::Variant) => {
+            OxArg::Omitted => {
                 let kind = builder
                     .ins()
                     .iconst(types::I32, i64::from(JIT_CALL_ARG_OMITTED));
@@ -5393,9 +5393,6 @@ impl<'a> LowerFunc<'a> {
                     index: zero_i32,
                 })
             }
-            other => Err(JitError::unsupported(format!(
-                "M4-4 static call subset lowers only ByVal/ByRef args, got {other:?}"
-            ))),
         }
     }
 

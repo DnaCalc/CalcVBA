@@ -9302,13 +9302,12 @@ pub(crate) unsafe extern "C" fn rt_jit_direct_enter_proc_i32(
                         pending_param_array_aliases.push((index, aliases));
                     }
                 }
-                JIT_CALL_ARG_OMITTED
-                    if param_info.optional && matches!(param.ty, OxTy::Variant) =>
-                {
-                    let Some(value) = call_arg_variant_value(run, arg) else {
-                        return ST_FAULT;
-                    };
-                    frame.locals[index] = value;
+                JIT_CALL_ARG_OMITTED => {
+                    // SAFETY: the compiled call owns the live error state.
+                    let status = unsafe { seed_omitted_argument(state, &mut frame, index, param) };
+                    if status != ST_OK {
+                        return status;
+                    }
                 }
                 JIT_CALL_ARG_BYREF_COPY if param_info.by_ref => {
                     let Some(value) = call_arg_variant_value(run, arg) else {
@@ -9509,13 +9508,13 @@ pub(crate) unsafe extern "C" fn rt_jit_call_extern_proc_i32(
                             pending_param_array_aliases.push((index, aliases));
                         }
                     }
-                    JIT_CALL_ARG_OMITTED
-                        if param_info.optional && matches!(param.ty, OxTy::Variant) =>
-                    {
-                        let Some(value) = call_arg_variant_value(run, arg) else {
-                            return ST_FAULT;
-                        };
-                        frame.locals[index] = value;
+                    JIT_CALL_ARG_OMITTED => {
+                        // SAFETY: the compiled call owns the live error state.
+                        let status =
+                            unsafe { seed_omitted_argument(state, &mut frame, index, param) };
+                        if status != ST_OK {
+                            return status;
+                        }
                     }
                     JIT_CALL_ARG_BYREF_COPY if param_info.by_ref => {
                         let Some(value) = call_arg_variant_value(run, arg) else {
@@ -9781,13 +9780,13 @@ pub(crate) unsafe extern "C" fn rt_jit_call_proc_i32(
                             pending_param_array_aliases.push((index, aliases));
                         }
                     }
-                    JIT_CALL_ARG_OMITTED
-                        if param_info.optional && matches!(param.ty, OxTy::Variant) =>
-                    {
-                        let Some(value) = call_arg_variant_value(run, arg) else {
-                            return ST_FAULT;
-                        };
-                        frame.locals[index] = value;
+                    JIT_CALL_ARG_OMITTED => {
+                        // SAFETY: the compiled call owns the live error state.
+                        let status =
+                            unsafe { seed_omitted_argument(state, &mut frame, index, param) };
+                        if status != ST_OK {
+                            return status;
+                        }
                     }
                     JIT_CALL_ARG_BYREF_COPY if param_info.by_ref => {
                         let Some(value) = call_arg_variant_value(run, arg) else {

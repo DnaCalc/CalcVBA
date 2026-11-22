@@ -2125,20 +2125,12 @@ pub(crate) unsafe fn seed_jit_member_frame_args(
                     pending_param_array_aliases.push((param_index, aliases));
                 }
             }
-            JIT_CALL_ARG_OMITTED if param_info.optional && param_info.default.is_some() => {
+            JIT_CALL_ARG_OMITTED => {
                 // SAFETY: the current compiled-run boundary owns the live unique state handle.
-                match unsafe { seed_omitted_param_default(state, frame, param_index, param) } {
-                    ST_OK => {}
-                    status => return status,
+                let status = unsafe { seed_omitted_argument(state, frame, param_index, param) };
+                if status != ST_OK {
+                    return status;
                 }
-            }
-            JIT_CALL_ARG_OMITTED if param_info.optional && matches!(param.ty, OxTy::Variant) => {
-                let Some(value) = call_arg_variant_value(run, arg) else {
-                    return ST_FAULT;
-                };
-                // An omitted ByRef optional gets a private Missing cell, with
-                // no caller alias or copy-out destination.
-                frame.locals[param_index] = value;
             }
             // A Null variable passed to a ByVal scalar parameter of a late-bound call.
             JIT_CALL_ARG_BYREF_ALIAS | JIT_CALL_ARG_BYREF_COPY
@@ -2238,6 +2230,32 @@ pub(crate) unsafe fn seed_jit_member_frame_args(
             frame.locals[param_index] = Variant::from_error_code(MISSING_ARG);
         }
     }
+    ST_OK
+}
+
+/// Seed a positional omission into the callee's private argument cell.
+/// SAFETY: `state` must be the live, uniquely borrowed, same-thread execution state handle.
+pub(crate) unsafe fn seed_omitted_argument(
+    state: *mut RawExecState,
+    frame: &mut JitFrame,
+    index: usize,
+    param: &calcvba_oxir::OxLocal,
+) -> i32 {
+    let Some(info) = param
+        .param
+        .as_ref()
+        .filter(|info| info.optional && !info.variadic)
+    else {
+        return ST_FAULT;
+    };
+    if info.has_default() {
+        // SAFETY: forwarded from this function's contract.
+        return unsafe { seed_omitted_param_default(state, frame, index, param) };
+    }
+    if param.ty != OxTy::Variant {
+        return ST_FAULT;
+    }
+    frame.locals[index] = Variant::from_error_code(MISSING_ARG);
     ST_OK
 }
 

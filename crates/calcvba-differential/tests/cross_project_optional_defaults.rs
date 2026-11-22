@@ -214,3 +214,57 @@ fn compiled_reference_defaults_on_vm3() {
 fn compiled_reference_defaults_on_the_jit() {
     bundle_only(Executor::Jit);
 }
+
+#[test]
+fn packaged_raw_typed_omission_uses_its_default() {
+    use calcvba_oxir::{OxArg, OxInst};
+
+    for passing_mode in ["ByVal", "ByRef"] {
+        let source = format!(
+            "Public Result As Long\n\
+             Sub Main()\n\
+                 Result = UseDefault()\n\
+             End Sub\n\
+             Private Function UseDefault(Optional {passing_mode} n As Long = 7) As Long\n\
+                 UseDefault = n\n\
+                 n = 99\n\
+             End Function\n"
+        );
+        let manifest = manifest(
+            "RawOmission",
+            vec![module("Entry", ModuleKind::Procedural, &source)],
+            vec![],
+            vec![],
+        );
+        let core = calcvba_bind::bind_program(&manifest, &CatalogTypeLibResolver).unwrap();
+        let mut program = calcvba_oxir::elaborate::elaborate(&core).unwrap();
+        let entry = program.entry.unwrap();
+        let args = program.funcs[entry.0]
+            .blocks
+            .iter_mut()
+            .flat_map(|block| block.instrs.iter_mut())
+            .find_map(|inst| match inst {
+                OxInst::CallProc { args, .. } => Some(args),
+                _ => None,
+            })
+            .expect("compiled call");
+        assert_eq!(args.len(), 1);
+        args[0] = OxArg::Omitted;
+
+        let bytes = OxImage::new(vec![program]).to_bytes().unwrap();
+        let image = OxImage::from_bytes(&bytes).unwrap();
+        let expected = calcvba_differential::canon(&calcvba_runtime::Variant::from_i32(7));
+        for executor in [Executor::Vm3, Executor::Jit] {
+            let run = run_ox_programs(executor, &image.programs);
+            assert!(
+                run.unsupported.is_none(),
+                "{passing_mode} {executor:?}: {run:?}"
+            );
+            assert_eq!(
+                run.result.as_deref().expect("completed call"),
+                std::slice::from_ref(&expected)
+            );
+            assert_eq!(run.err.number, 0);
+        }
+    }
+}

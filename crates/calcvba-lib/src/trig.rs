@@ -45,6 +45,8 @@ const COSINE: [f64; 6] = [
     f64::from_bits(0xbda9_07db_4725_8aa7),
 ];
 
+const TWO_TO_NEG_13: f64 = f64::from_bits(0x3f20_0000_0000_0000);
+
 pub fn sin(x: f64) -> f64 {
     if x == 0.0 {
         return x;
@@ -106,6 +108,11 @@ fn sine_correction(x: f64) -> f64 {
 }
 
 fn reduced_sine(x: f64, tail: f64) -> f64 {
+    // Near a multiple of pi/2, VBA uses the leading remainder with a cubic
+    // correction. Adding the low remainder changes the last bit in some cases.
+    if x.abs() < TWO_TO_NEG_13 {
+        return x - (x * (x * x)) * (1.0 / 6.0);
+    }
     let half_square = 0.5 * (x * x);
     (tail + (sine_correction(x) - half_square * tail)) + x
 }
@@ -124,7 +131,6 @@ fn reduced_cosine(x: f64, tail: f64) -> f64 {
 }
 
 fn small_cosine(x: f64) -> f64 {
-    const TWO_TO_NEG_13: f64 = f64::from_bits(0x3f20_0000_0000_0000);
     const TWO_TO_NEG_27: f64 = f64::from_bits(0x3e40_0000_0000_0000);
     if x < TWO_TO_NEG_27 {
         return 1.0;

@@ -88,7 +88,8 @@ pub fn exp(x: f64) -> f64 {
     const TINY_ARG: f64 = f64::from_bits(0x3e50_0000_0000_0000);
     const INV_LN2_TIMES_64: f64 = f64::from_bits(0x4057_1547_652b_82fe);
     const LN2_OVER_64_HEAD: f64 = f64::from_bits(0x3f86_2e42_fefa_0000);
-    const LN2_OVER_64_TAIL: f64 = f64::from_bits(0x3d1c_f79a_bc9e_3b39);
+    // The 27-bit low part reproduces VBA rounding at large arguments.
+    const LN2_OVER_64_TAIL: f64 = f64::from_bits(0x3d1c_f79a_bc00_0000);
 
     if x.is_nan() {
         return x;

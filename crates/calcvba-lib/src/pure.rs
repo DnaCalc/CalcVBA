@@ -204,6 +204,10 @@ pub fn right_b(args: &[Variant]) -> LibResult<Variant> {
 pub fn mid(args: &[Variant]) -> LibResult<Variant> {
     let units = string_units(need(args, 0)?)?;
     let start = one_based_mid_start(need(args, 1)?)?;
+    // VBA rejects the maximum Long start before checking the string length (P_Mid.23).
+    if start == i32::MAX as usize {
+        return Err(LibError::invalid_call(default_error_message(5)));
+    }
     let from = (start - 1).min(units.len());
     let take = match opt(args, 2) {
         Some(v) => as_usize(v)?,

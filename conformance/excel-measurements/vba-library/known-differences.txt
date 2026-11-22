@@ -131,7 +131,6 @@ P_InStrRev: InStrRev.9=Long:0
 P_IsNumeric: IsNumeric.21=Boolean:True
 P_Month: Month.13=Integer:12
 P_MonthName: MonthName.4=String:[Sept]
-P_Oct: Oct.56=ERR94
 P_QBColor: QBColor.17=ERR6
 P_RGB: RGB.12=ERR6
 P_Replace: Replace.13=String:[AXC]

@@ -21,6 +21,12 @@ MSBuild engine. Source paths are relative to the project file. For example:
 `ProjectName` names the VBA project and `EntryPoint` can select Module.Procedure.
 `DefineConstants` supplies conditional compilation values. `RuntimeFlavor`
 and the existing host configuration properties are parsed into the manifest.
+`Dialect` selects the predefined conditional compilation constants for each
+project, including referenced projects. Use `mac` for `Mac=True`,
+`Win32=False` and `Win64=False`, or `windows` for Windows VBA constants.
+The default is `windows`. Existing projects with
+`DefaultRuntimeProfile=macos-headless` still select Mac constants when
+`Dialect` is omitted.
 
 `ItemGroup` accepts Module, ClassModule, DocumentModule and FormModule source
 items, ProjectReference, COMReference and NativeReference. VB_* attributes,

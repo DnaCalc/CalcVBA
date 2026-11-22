@@ -88,6 +88,7 @@ fn exposed_class_module(name: &str, source: &str) -> ModuleUnit {
 fn benchmark_reference_project() -> ReferencedProjectManifest {
     ReferencedProjectManifest {
         project_name: "Lib".to_string(),
+        conditional_compilation_target: None,
         project_kind: ProjectKind::Library,
         modules: vec![exposed_class_module(
             "Box",

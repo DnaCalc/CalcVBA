@@ -103,6 +103,7 @@ fn allocate_projection_object_ref_inner(
         .prog_ids_by_handle
         .insert(object.raw(), prog_id_name.to_string());
     if let Some(portable_object) = portable_object {
+        portable_object.on_registered(object.raw());
         state
             .portable_objects_by_handle
             .insert(object.raw(), Arc::from(portable_object));

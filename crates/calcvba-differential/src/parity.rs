@@ -208,6 +208,7 @@ enum HostMode<'a> {
     Default,
     Files(&'a Scratch),
     Cells,
+    Excel,
 }
 
 struct RecordedOutput;
@@ -255,11 +256,17 @@ fn observe(
             let files = CapabilitySet::of(&[Capability::FsRead, Capability::FsWrite]);
             PolicyHost::with_denied(inner, CapabilitySet::ALL.difference(files))
         }
-        HostMode::Default | HostMode::Cells => {
+        HostMode::Default | HostMode::Cells | HostMode::Excel => {
             let mut allowed = CapabilitySet::EMPTY;
             if matches!(mode, HostMode::Cells) {
                 let projection = Arc::new(PortableComProjection::new());
                 projection.register_object("CalcVBA.ParitySheet", Arc::new(cells.clone()));
+                engine.set_portable_com_projection(Some(projection));
+                policy.allow_com_activation = true;
+                allowed.insert(Capability::ComActivate);
+            } else if matches!(mode, HostMode::Excel) {
+                let projection = Arc::new(PortableComProjection::new());
+                crate::excel_stub::install_excel_stub(&projection);
                 engine.set_portable_com_projection(Some(projection));
                 policy.allow_com_activation = true;
                 allowed.insert(Capability::ComActivate);
@@ -365,6 +372,14 @@ pub fn compare_entry_with_cells(programs: &[OxProgram]) -> Comparison {
     Comparison {
         vm3: observe(Executor::Vm3, programs, HostMode::Cells).expect("in-memory observation"),
         jit: observe(Executor::Jit, programs, HostMode::Cells).expect("in-memory observation"),
+    }
+}
+
+/// Compare a reviewed fixture against the portable in-memory Excel host stub.
+pub fn compare_entry_with_excel(programs: &[OxProgram]) -> Comparison {
+    Comparison {
+        vm3: observe(Executor::Vm3, programs, HostMode::Excel).expect("in-memory observation"),
+        jit: observe(Executor::Jit, programs, HostMode::Excel).expect("in-memory observation"),
     }
 }
 

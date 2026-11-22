@@ -6,8 +6,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use calcvba_differential::parity::{
-    Observation, compare_entry, compare_entry_with_cells, compare_entry_with_files,
+use calcvba_differential::{
+    excel_stub::{ExcelStubTypeLibs, excel_project_reference},
+    parity::{
+        Observation, compare_entry, compare_entry_with_cells, compare_entry_with_excel,
+        compare_entry_with_files,
+    },
 };
 use calcvba_oxir::{FuncId, OxProgram};
 use calcvba_symbol::manifest::{
@@ -78,10 +82,38 @@ fn load(path: &Path) -> Result<Vec<SymbolProjectManifest>, String> {
     }
 }
 
-fn compile(closure: &[SymbolProjectManifest]) -> Result<Vec<OxProgram>, String> {
+fn compile(closure: &[SymbolProjectManifest], excel: bool) -> Result<Vec<OxProgram>, String> {
     let _scope =
         calcvba_com::ComPolicyScope::enter(|_, _| Err("native COM disabled for inspection".into()));
-    calcvba_bind::bind_projects(closure, &calcvba_symbol::CatalogTypeLibResolver)
+    let owned: Vec<SymbolProjectManifest>;
+    let closure = if excel {
+        owned = closure
+            .iter()
+            .cloned()
+            .map(|mut manifest| {
+                let has_excel = manifest.references.iter().any(|reference| {
+                    matches!(
+                        reference,
+                        calcvba_symbol::manifest::ProjectReference::TypeLibrary { name, .. }
+                            if name.eq_ignore_ascii_case("Excel")
+                    )
+                });
+                if !has_excel {
+                    manifest.references.push(excel_project_reference());
+                }
+                manifest
+            })
+            .collect();
+        &owned
+    } else {
+        closure
+    };
+    let resolver: &dyn calcvba_symbol::TypeLibResolver = if excel {
+        &ExcelStubTypeLibs
+    } else {
+        &calcvba_symbol::CatalogTypeLibResolver
+    };
+    calcvba_bind::bind_projects(closure, resolver)
         .map_err(|err| format!("bind: {err}"))?
         .iter()
         .map(|program| {
@@ -126,6 +158,7 @@ enum Mode {
     Procedures,
     Files,
     Cells,
+    Excel,
 }
 
 fn rows(path: &Path, mode: Mode, report: &mut impl FnMut(Value)) {
@@ -136,7 +169,7 @@ fn rows(path: &Path, mode: Mode, report: &mut impl FnMut(Value)) {
         Ok(closure) => closure,
         Err(reason) => return report(error("input", reason)),
     };
-    let mut programs = match compile(&closure) {
+    let mut programs = match compile(&closure, mode == Mode::Excel) {
         Ok(programs) => programs,
         Err(reason) => return report(error("compile", reason)),
     };
@@ -192,6 +225,7 @@ fn compare(programs: &[OxProgram], entry: FuncId, path: &Path, mode: Mode) -> Va
             }
         },
         Mode::Cells => compare_entry_with_cells(programs),
+        Mode::Excel => compare_entry_with_excel(programs),
         _ => compare_entry(programs),
     };
     let vm3 = &comparison.vm3.outcome;
@@ -222,7 +256,7 @@ fn compare(programs: &[OxProgram], entry: FuncId, path: &Path, mode: Mode) -> Va
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let usage = "usage: source_parity inspect <files or directories...> | \
-                 {compare|procedures|files|cells} <reviewed files...>";
+                 {compare|procedures|files|cells|excel} <reviewed files...>";
     let mut args = env::args_os().skip(1);
     let mode = match args.next().as_deref().and_then(|arg| arg.to_str()) {
         Some("inspect") => Mode::Inspect,
@@ -230,6 +264,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("procedures") => Mode::Procedures,
         Some("files") => Mode::Files,
         Some("cells") => Mode::Cells,
+        Some("excel") => Mode::Excel,
         _ => return Err(usage.into()),
     };
     let mut inputs = BTreeSet::new();

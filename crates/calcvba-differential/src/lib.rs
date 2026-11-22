@@ -3,6 +3,7 @@
 //! ownership. Aggregate structure is tested through explicit result probes;
 //! Canon::Opaque alone compares only a tag and cannot establish value parity.
 
+pub mod excel_stub;
 pub mod oracle;
 pub mod parity;
 

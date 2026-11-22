@@ -133,6 +133,9 @@ pub trait PortableDispatch: Send + Sync {
     fn get_object(&self, _member: &str) -> Option<Result<PortableObjectResult, String>> {
         None
     }
+
+    /// Notifies the portable object of the host-assigned handle once registered.
+    fn on_registered(&self, _handle: i32) {}
 }
 
 /// Registry of host-provided COM-like objects, keyed by ProgID.

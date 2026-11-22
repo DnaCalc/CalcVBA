@@ -341,7 +341,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::KwMod => Some((20, 21)),
             SyntaxKind::Backslash => Some((22, 23)),
             SyntaxKind::Star | SyntaxKind::Slash => Some((24, 25)),
-            SyntaxKind::Caret => Some((28, 27)),
+            SyntaxKind::Caret => Some((27, 28)),
             _ => None,
         }
     }
@@ -4192,8 +4192,8 @@ End Property
     }
 
     #[test]
-    fn expr_right_assoc_power() {
-        // 2 ^ 3 ^ 4 → BinaryExpr(2, ^, BinaryExpr(3, ^, 4))
+    fn expr_left_assoc_power() {
+        // Excel VBA: 2 ^ 3 ^ 4 → BinaryExpr(BinaryExpr(2, ^, 3), ^, 4)
         let src = "Sub T()\n    x = 2 ^ 3 ^ 4\nEnd Sub\n";
         let p = parse(src);
         assert_eq!(p.syntax().text(), src);
@@ -4205,8 +4205,8 @@ End Property
             binaries
         );
         assert!(
-            binaries.iter().any(|s| s == "3 ^ 4"),
-            "expected right-associative power RHS, got {:?}",
+            binaries.iter().any(|s| s.trim() == "2 ^ 3"),
+            "expected left-associative power LHS, got {:?}",
             binaries
         );
     }

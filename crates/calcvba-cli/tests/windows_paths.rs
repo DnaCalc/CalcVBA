@@ -26,22 +26,7 @@ End Sub
 "#,
     )
     .unwrap();
-    let outputs = ["vm3", "jit"].map(|backend| {
-        Command::new(env!("CARGO_BIN_EXE_calcvba-cli"))
-            .args([
-                "run",
-                "--backend",
-                backend,
-                "--profile",
-                "linux-stdio",
-                "--portability-mode",
-                "windows-faithful",
-            ])
-            .arg(&source)
-            .current_dir(&root)
-            .output()
-            .unwrap()
-    });
+    let outputs = ["vm3", "jit"].map(|backend| run_mapped_path_probe(&source, backend));
     fs::remove_dir_all(root).unwrap();
     for output in outputs {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -51,4 +36,83 @@ End Sub
             ["5", "C:\\Data", "Notes.txt", "76"]
         );
     }
+}
+
+#[test]
+fn mapped_read_only_file_can_change_attributes_and_clear_read_only() {
+    let root = std::env::temp_dir().join(format!("calcvba-attr-{}", std::process::id()));
+    fs::create_dir(&root).unwrap();
+    let entry = root.join("entry.bas");
+    fs::write(
+        &entry,
+        r#"
+Sub Main()
+    Open "C:\Notes.txt" For Output As #1
+    Close #1
+    SetAttr "C:\notes.txt", vbReadOnly
+    SetAttr "C:\NOTES.txt", vbReadOnly + vbHidden
+    Debug.Print GetAttr("C:\Notes.txt")
+    SetAttr "C:\Notes.txt", vbNormal
+    Debug.Print GetAttr("C:\Notes.txt")
+    Kill "C:\Notes.txt"
+End Sub
+"#,
+    )
+    .unwrap();
+    let runs = ["vm3", "jit"].map(|backend| run_mapped_path_probe(&entry, backend));
+    fs::remove_dir_all(root).unwrap();
+    for output in runs {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        assert_eq!(stderr.split_whitespace().collect::<Vec<_>>(), ["3", "0"]);
+    }
+}
+
+#[test]
+fn mapped_filelen_uses_windows_directory_size_and_missing_parent_errors() {
+    let root = std::env::temp_dir().join(format!("calcvba-dirlen-{}", std::process::id()));
+    fs::create_dir(&root).unwrap();
+    fs::create_dir(root.join("Data")).unwrap();
+    let entry = root.join("entry.bas");
+    fs::write(
+        &entry,
+        r#"
+Sub Main()
+    Debug.Print FileLen("C:\DATA")
+    On Error Resume Next
+    Debug.Print FileLen("C:\missing\Notes.txt")
+    Debug.Print Err.Number
+    Err.Clear
+    Debug.Print GetAttr("C:\missing\Notes.txt")
+    Debug.Print Err.Number
+End Sub
+"#,
+    )
+    .unwrap();
+    let runs = ["vm3", "jit"].map(|backend| run_mapped_path_probe(&entry, backend));
+    fs::remove_dir_all(root).unwrap();
+    for output in runs {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        assert_eq!(
+            stderr.split_whitespace().collect::<Vec<_>>(),
+            ["0", "76", "76"]
+        );
+    }
+}
+
+fn run_mapped_path_probe(path: &std::path::Path, backend: &str) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_calcvba-cli"))
+        .args([
+            "run",
+            "--backend",
+            backend,
+            "--profile",
+            "linux-stdio",
+            "--portability-mode",
+            "windows-faithful",
+        ])
+        .arg(path)
+        .output()
+        .unwrap()
 }

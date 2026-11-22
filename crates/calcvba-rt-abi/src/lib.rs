@@ -2639,6 +2639,23 @@ pub unsafe extern "C" fn rt_err_clear(state: *mut RawExecState) -> i32 {
     })
 }
 
+/// Clear the active error on explicit procedure exit.
+///
+/// # Safety
+/// A non-null `state` must come from [exec_state_as_raw] and remain live,
+/// uniquely borrowed and on the owning thread for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rt_err_clear_on_exit(state: *mut RawExecState) -> i32 {
+    with_status(|| {
+        // SAFETY: the caller supplies live, uniquely borrowed execution state.
+        let Some(exec) = (unsafe { state_from_raw(state) }) else {
+            return ST_FAULT;
+        };
+        exec.err_engine.clear_err_on_exit();
+        ST_OK
+    })
+}
+
 /// Runtime-helper raw-pointer entry point.
 ///
 /// # Safety
@@ -3270,6 +3287,12 @@ impl ErrEngine {
         self.erl_line = 0;
     }
 
+    pub fn clear_err_on_exit(&mut self) {
+        if self.active_error.take().is_some() {
+            self.clear_err();
+        }
+    }
+
     pub fn set_error_handler(&mut self, handler: &ErrorHandler) {
         self.clear_err();
         match handler {
@@ -3278,6 +3301,32 @@ impl ErrEngine {
             ErrorHandler::Goto0 => self.error_mode = ErrorMode::None,
             ErrorHandler::GotoLabel(block) => self.error_mode = ErrorMode::Goto(*block),
         }
+    }
+
+    /// Construct the fault produced by a Variant-valued Err.Raise.
+    pub fn fault_from_raise_args(
+        &self,
+        [number, source, description, help_file, help_context]: [Option<&Variant>; 5],
+        inherit: bool,
+    ) -> Fault {
+        let long = |value: &Variant| {
+            arith::coerce_numeric(value, NumericCoerceTarget::Long)
+                .map(|v| v.as_i32().unwrap_or(0))
+                .map_err(Fault::from_arith)
+        };
+        let text = |value: Option<&Variant>| value.map(coerced_string_utf16).transpose();
+        let coerce_args = || {
+            let number = number.ok_or_else(|| Fault::new(449, default_error_message(449)))?;
+            let number = long(number)?;
+            let fields = RaiseFields {
+                source: text(source)?,
+                description: text(description)?,
+                help_file: text(help_file)?,
+                help_context: help_context.map(long).transpose()?,
+            };
+            Ok(self.explicit_fault(number, fields, inherit))
+        };
+        coerce_args().unwrap_or_else(|fault| fault)
     }
 
     /// Apply Err.Raise argument validation and omission rules before seating a fault.
@@ -3347,13 +3396,14 @@ impl ErrEngine {
             resume_next,
             handler: self.error_mode,
         };
-        match self.error_mode {
-            ErrorMode::None => self
+        match (self.error_mode, self.active_error.is_some()) {
+            // A second fault escapes the active handler, even after a new On Error.
+            (ErrorMode::None, _) | (_, true) => self
                 .pending_fault
                 .take()
                 .map(FaultAction::Propagate)
                 .ok_or("FaultDispatch reached with no pending fault"),
-            ErrorMode::ResumeNext => {
+            (ErrorMode::ResumeNext, false) => {
                 self.pending_fault = None;
                 self.erl_line = current_line;
                 // DISCREPANCY (see docs/OXIR_VM3_ERROR_MODEL.md R4, bd-ivaha.31):
@@ -3368,7 +3418,7 @@ impl ErrEngine {
                 self.active_error = None;
                 Ok(FaultAction::ResumeNext(resume_next))
             }
-            ErrorMode::Goto(handler) => {
+            (ErrorMode::Goto(handler), false) => {
                 self.pending_fault = None;
                 self.error_mode = ErrorMode::None;
                 self.erl_line = current_line;

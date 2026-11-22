@@ -1143,6 +1143,7 @@ impl TypedStack {
                 }
                 OxInst::SetErrorHandler(handler) => self.err().set_error_handler(handler),
                 OxInst::ClearErr => self.err().clear_err(),
+                OxInst::ClearErrOnExit => self.err().clear_err_on_exit(),
                 OxInst::SetLineNumber { line } => self.frames.last_mut().ok_or(5)?.line = *line,
                 OxInst::ErrFieldGet { dst, field } => {
                     let err = self.err();

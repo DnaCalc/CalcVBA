@@ -431,6 +431,7 @@ pub fn compile_native_scalars(
                     | OxInst::ErlGet { .. }
                     | OxInst::SetErrorHandler(_)
                     | OxInst::ClearErr
+                    | OxInst::ClearErrOnExit
                     | OxInst::SetLineNumber { .. }
                     | OxInst::NewRecord { .. }
                     | OxInst::CallNative {

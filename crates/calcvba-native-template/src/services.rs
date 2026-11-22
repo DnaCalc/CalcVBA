@@ -891,6 +891,7 @@ pub unsafe extern "C" fn cvb_error_control(
                     }
                     let _ = finish(context, calcvba_rt_abi::ST_FAULT);
                 }
+                7 => runtime.exec.err_engine.clear_err_on_exit(),
                 _ => return Err(5),
             }
         }

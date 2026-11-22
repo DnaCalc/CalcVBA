@@ -1431,7 +1431,10 @@ impl Values<'_> {
                 );
                 return true;
             }
-            OxInst::SetErrorHandler(_) | OxInst::ClearErr | OxInst::SetLineNumber { .. } => {
+            OxInst::SetErrorHandler(_)
+            | OxInst::ClearErr
+            | OxInst::ClearErrOnExit
+            | OxInst::SetLineNumber { .. } => {
                 let (action, argument) = match inst {
                     OxInst::SetErrorHandler(handler) => match handler {
                         calcvba_oxir::ErrorHandler::Goto0 => (0, 0),
@@ -1440,6 +1443,7 @@ impl Values<'_> {
                         calcvba_oxir::ErrorHandler::GotoMinus1 => (3, 0),
                     },
                     OxInst::ClearErr => (4, 0),
+                    OxInst::ClearErrOnExit => (7, 0),
                     OxInst::SetLineNumber { line } => (5, i64::from(*line)),
                     _ => unreachable!(),
                 };

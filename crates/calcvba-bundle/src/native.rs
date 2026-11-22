@@ -302,6 +302,7 @@ impl NativeImplId {
                 | VarType
                 | TypeName
                 | IsObject
+                | IsDate
                 | IsNull
                 | IsEmpty
                 | IsMissing

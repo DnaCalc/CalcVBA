@@ -1,15 +1,16 @@
 //! One descriptor-planned native member operation, using the JIT's COM cells.
 use calcvba_host_api::{
-    TypedContext, TypedFault, Value,
-    object::{
-        DynamicArgument, DynamicMemberCall, DynamicMemberKind,
-        planned_slots::{CallerSyncPhase, MemberArguments},
-    },
+    TypedContext, TypedFault,
+    object::{DynamicArgument, DynamicMemberCall, DynamicMemberKind},
 };
-use calcvba_rt_abi::{
-    host_entry::value::{from_variant, to_variant},
-    native_export::{Context, NativeMemberBinding, NativeMemberCall},
+#[cfg(windows)]
+use calcvba_host_api::{
+    Value,
+    object::planned_slots::{CallerSyncPhase, MemberArguments},
 };
+#[cfg(windows)]
+use calcvba_rt_abi::host_entry::value::{from_variant, to_variant};
+use calcvba_rt_abi::native_export::{Context, NativeMemberBinding, NativeMemberCall};
 use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::{ObjectRef, Variant};
 use std::{collections::HashMap, rc::Rc};
@@ -29,6 +30,7 @@ fn fault(number: i32) -> TypedFault {
 /// # Safety
 /// Array owns an initialized Variant; kinds/indices span rank native cells. Value is an
 /// initialized native cell of kind, writable for a get and borrowed for a store.
+#[cfg(windows)]
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)] // Explicit native cell/vector ABI.
 pub unsafe extern "C" fn cvb_variant_index(
@@ -152,7 +154,7 @@ pub unsafe extern "C" fn cvb_variant_index(
         Ok(()) => 0,
         // SAFETY: only the active owning frame's error state is updated.
         Err(error) => unsafe {
-            super::services::typed_fault(context, error)
+            super::execution::typed_fault(context, error)
                 .err()
                 .unwrap_or(5)
         },
@@ -186,6 +188,7 @@ pub unsafe extern "C" fn cvb_member_route(
     })
 }
 
+#[cfg(windows)]
 fn snapshot(value: &Value) -> Result<Variant, TypedFault> {
     let Some(slot) = value.borrow_slot() else {
         return Ok(Variant::empty());
@@ -196,6 +199,7 @@ fn snapshot(value: &Value) -> Result<Variant, TypedFault> {
         .map_err(fault)
 }
 
+#[cfg(windows)]
 unsafe fn object(cell: *const u8, kind: u32) -> Result<ObjectRef, TypedFault> {
     // SAFETY: the generated caller retains an exact native cell. QI/retention
     // needs only IUnknown, including for interfaces that have no IDispatch.
@@ -210,6 +214,7 @@ unsafe fn object(cell: *const u8, kind: u32) -> Result<ObjectRef, TypedFault> {
     }
 }
 
+#[cfg(windows)]
 unsafe fn value(context: *mut Context, cell: *const u8, kind: u32) -> Result<Variant, TypedFault> {
     // SAFETY: only object cells bypass Automation decoding, to preserve a raw
     // IUnknown-only interface until its imported IID has selected the view.
@@ -222,6 +227,22 @@ unsafe fn value(context: *mut Context, cell: *const u8, kind: u32) -> Result<Var
         }
         super::services::read(context, cell, kind).map_err(fault)
     }
+}
+
+#[cfg(not(windows))]
+unsafe fn object(cell: *const u8, kind: u32) -> Result<ObjectRef, TypedFault> {
+    // SAFETY: the generated caller retains the receiver through this read.
+    let value = unsafe { value(std::ptr::null_mut(), cell, kind)? };
+    if value.vtype() != calcvba_runtime::VarType::Object {
+        return Err(fault(424));
+    }
+    value.as_object_ref().ok_or_else(|| fault(91))
+}
+
+#[cfg(not(windows))]
+unsafe fn value(context: *mut Context, cell: *const u8, kind: u32) -> Result<Variant, TypedFault> {
+    // SAFETY: the generated caller retains an exact native cell.
+    unsafe { super::services::read(context, cell, kind).map_err(fault) }
 }
 
 fn prepared_value(
@@ -345,6 +366,9 @@ unsafe fn invoke(
         }
         let typed_context = &mut *context.cast::<TypedContext>();
         let result = match &call.binding {
+            #[cfg(not(windows))]
+            NativeMemberBinding::Early { .. } => return Err(fault(430)),
+            #[cfg(windows)]
             NativeMemberBinding::Early { member, interfaces } => {
                 let (parameters, _) =
                     calcvba_com::typed_slots::plan::visible_signature(member, values.len())
@@ -578,7 +602,7 @@ pub unsafe extern "C" fn cvb_member(
         // only after all temporary member argument owners have been released.
         unsafe {
             invoke(context, descriptor, receiver, arguments, out)
-                .or_else(|fault| super::services::typed_fault(context, fault))
+                .or_else(|fault| super::execution::typed_fault(context, fault))
         }
     })
 }

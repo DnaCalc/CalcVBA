@@ -6,11 +6,12 @@ use std::{error::Error, fs, path::Path};
 fn run() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.len() != 3 {
-        return Err("usage: calcvba-pe <finish|stub> <input-template.dll> <output.dll>".into());
+        return Err("usage: calcvba-pe <finish|finish-elf|stub> <input-template> <output>".into());
     }
     let input = fs::read(&args[1])?;
     let result = match args[0].to_str() {
         Some("finish") => finish_template(&input, &shipped_helper_specs())?,
+        Some("finish-elf") => calcvba_pe::elf::finish_template(&input)?,
         Some("stub") => {
             let template = Template::parse(&input, HELPER_ABI)?;
             let program = Program {
@@ -49,7 +50,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             }
             patched.bytes
         }
-        _ => return Err("expected finish or stub".into()),
+        _ => return Err("expected finish, finish-elf or stub".into()),
     };
     fs::write(&args[2], result)?;
     Ok(())

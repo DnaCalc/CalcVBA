@@ -1,21 +1,44 @@
 //! Linked once by CalcVBA developers, then finished and shipped. These exports
 //! retain helpers through linking; the finisher hides them in the final image.
 //! The runtime has no loader, dispatcher, interpreter or JIT dependency.
-#[cfg(windows)]
+#[cfg(any(
+    windows,
+    all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+))]
 mod classes;
-#[cfg(windows)]
+#[cfg(any(
+    windows,
+    all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+))]
 mod errors;
+#[cfg(any(
+    windows,
+    all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+))]
+mod execution;
 #[cfg(windows)]
 mod foreign;
-#[cfg(windows)]
+#[cfg(any(
+    windows,
+    all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+))]
 mod members;
 #[cfg(windows)]
 mod parameters;
-#[cfg(windows)]
+#[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+#[path = "linux/services.rs"]
 mod services;
 #[cfg(windows)]
+mod services;
+#[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+#[path = "linux/values.rs"]
 mod values;
 #[cfg(windows)]
+mod values;
+#[cfg(any(
+    windows,
+    all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+))]
 include!(concat!(env!("OUT_DIR"), "/native_keepalive.rs"));
 
 #[unsafe(no_mangle)]
@@ -88,14 +111,22 @@ const fn abi_hash(bytes: &[u8]) -> u64 {
     }
     hash
 }
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")))]
 #[unsafe(export_name = "cvb_template_abi")]
 pub static CVB_TEMPLATE_ABI: u64 =
     abi_hash(include_bytes!("../../../assets/native/helpers-v1.txt"));
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+#[unsafe(export_name = "cvb_template_abi")]
+pub static CVB_TEMPLATE_ABI: u64 = abi_hash(include_bytes!(
+    "../../../assets/native/helpers-linux-x64-v1.txt"
+));
+
 #[cfg(windows)]
-mod thread {
-    use calcvba_rt_abi::native_export::{Context, WRONG_THREAD};
-    use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
+mod owner {
+    use super::thread::LAST_ERROR;
+    use calcvba_rt_abi::native_export::WRONG_THREAD;
+    use std::sync::atomic::{AtomicPtr, Ordering};
     use windows_sys::Win32::{
         Foundation::{
             CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, GetLastError, SetLastError,
@@ -111,8 +142,6 @@ mod thread {
         },
     };
     static OWNER: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
-    static LAST_ERROR: AtomicI32 = AtomicI32::new(0);
-
     #[unsafe(no_mangle)]
     pub extern "C" fn cvb_enter_scalar() -> i32 {
         // SAFETY: OS pseudo handles are valid in this process. The retained
@@ -163,6 +192,68 @@ mod thread {
         }
     }
 
+    #[unsafe(no_mangle)]
+    unsafe extern "system" fn DllMain(
+        module: windows_sys::Win32::Foundation::HMODULE,
+        reason: u32,
+        _reserved: *mut std::ffi::c_void,
+    ) -> i32 {
+        // SAFETY: the loader serializes attach/detach. No VBA code, allocation,
+        // image loading or callbacks execute here; only kernel handle cleanup.
+        unsafe {
+            if reason == DLL_PROCESS_ATTACH {
+                DisableThreadLibraryCalls(module);
+            }
+            if reason == DLL_PROCESS_DETACH {
+                let owner = OWNER.swap(std::ptr::null_mut(), Ordering::AcqRel);
+                if !owner.is_null() {
+                    CloseHandle(owner);
+                }
+            }
+        }
+        1
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+#[path = "linux/owner.rs"]
+mod owner;
+
+#[cfg(any(
+    windows,
+    all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+))]
+mod thread {
+    use super::owner::cvb_enter_scalar;
+    use calcvba_rt_abi::native_export::{Context, WRONG_THREAD};
+    use std::sync::atomic::{AtomicI32, Ordering};
+
+    pub(super) static LAST_ERROR: AtomicI32 = AtomicI32::new(0);
+
+    #[cfg(windows)]
+    pub(super) fn last_error() -> u32 {
+        // SAFETY: only calling-thread state is read.
+        unsafe { windows_sys::Win32::Foundation::GetLastError() }
+    }
+
+    #[cfg(windows)]
+    pub(super) fn set_last_error(code: u32) {
+        // SAFETY: only calling-thread state is written.
+        unsafe { windows_sys::Win32::Foundation::SetLastError(code) }
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+    pub(super) fn last_error() -> u32 {
+        // SAFETY: libc provides a live pointer to this thread's errno.
+        unsafe { *libc::__errno_location() as u32 }
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+    pub(super) fn set_last_error(code: u32) {
+        // SAFETY: libc provides a live pointer to this thread's errno.
+        unsafe { *libc::__errno_location() = code as i32 }
+    }
+
     /// # Safety
     /// context belongs to this DLL and the accepted owning thread; source is
     /// immutable UTF-8 image data that remains live until the DLL is unloaded.
@@ -174,7 +265,7 @@ mod thread {
         len: usize,
     ) -> i32 {
         // SAFETY: error-owner destruction must not change Err.LastDllError.
-        let saved = unsafe { GetLastError() };
+        let saved = last_error();
         // SAFETY: emitted wrappers call only after the thread check succeeds.
         unsafe {
             let explicit = (*context).error_number == code && code != 0;
@@ -192,7 +283,7 @@ mod thread {
         }
         LAST_ERROR.store(code, Ordering::Release);
         // SAFETY: all owner cleanup has completed on this calling thread.
-        unsafe { SetLastError(saved) };
+        set_last_error(saved);
         calcvba_rt_abi::native_export::hresult(code)
     }
 
@@ -226,7 +317,7 @@ mod thread {
     #[unsafe(no_mangle)]
     pub extern "C" fn cvb_last_dll_error() -> i32 {
         // SAFETY: GetLastError reads only calling-thread state.
-        unsafe { GetLastError() as i32 }
+        last_error() as i32
     }
 
     /// # Safety
@@ -239,7 +330,7 @@ mod thread {
         description: *mut *mut u16,
     ) -> i32 {
         // SAFETY: GetLastError reads only the current thread state.
-        let saved_error = unsafe { GetLastError() };
+        let saved_error = last_error();
         let wrong = cvb_enter_scalar() != 0;
         if wrong {
             return WRONG_THREAD;
@@ -298,7 +389,7 @@ mod thread {
                 };
                 description.write(value.into_raw_bstr());
             }
-            SetLastError(if wrong {
+            set_last_error(if wrong {
                 WRONG_THREAD as u32
             } else {
                 saved_error
@@ -316,7 +407,7 @@ mod thread {
         help_context: *mut i32,
     ) -> i32 {
         // SAFETY: read only the current thread's Win32 error state.
-        let saved = unsafe { GetLastError() };
+        let saved = last_error();
         if cvb_enter_scalar() != 0 {
             return WRONG_THREAD;
         }
@@ -341,7 +432,7 @@ mod thread {
             if !help_context.is_null() {
                 help_context.write(text.map_or(0, |t| t.help_context));
             }
-            SetLastError(saved);
+            set_last_error(saved);
         }
         code
     }
@@ -352,26 +443,5 @@ mod thread {
         }
         // SAFETY: caller supplies a retained immutable UTF-8 span of len bytes.
         unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(pointer, len)) }
-    }
-    #[unsafe(no_mangle)]
-    unsafe extern "system" fn DllMain(
-        module: windows_sys::Win32::Foundation::HMODULE,
-        reason: u32,
-        _reserved: *mut std::ffi::c_void,
-    ) -> i32 {
-        // SAFETY: the loader serializes attach/detach. No VBA code, allocation,
-        // image loading or callbacks execute here; only kernel handle cleanup.
-        unsafe {
-            if reason == DLL_PROCESS_ATTACH {
-                DisableThreadLibraryCalls(module);
-            }
-            if reason == DLL_PROCESS_DETACH {
-                let owner = OWNER.swap(std::ptr::null_mut(), Ordering::AcqRel);
-                if !owner.is_null() {
-                    CloseHandle(owner);
-                }
-            }
-        }
-        1
     }
 }

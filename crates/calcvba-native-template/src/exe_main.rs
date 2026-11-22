@@ -1,6 +1,9 @@
 //! Developer-built executable startup. User builds fill three RVA slots and
 //! append compiled VBA; this startup cannot compile or interpret a procedure.
-#[cfg(windows)]
+#[cfg(any(
+    windows,
+    all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+))]
 #[repr(C)]
 struct Entries {
     marker: [u8; 16],
@@ -8,8 +11,12 @@ struct Entries {
     shutdown: u32,
     error: u32,
 }
-#[cfg(windows)]
+#[cfg(any(
+    windows,
+    all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+))]
 #[used]
+#[cfg_attr(target_os = "linux", unsafe(link_section = ".cvbentry"))]
 static ENTRIES: Entries = Entries {
     marker: *b"CVBEXE_ENTRY_V1!",
     main: 0,
@@ -17,14 +24,13 @@ static ENTRIES: Entries = Entries {
     error: 0,
 };
 
-#[cfg(windows)]
+#[cfg(any(
+    windows,
+    all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+))]
 fn main() -> std::process::ExitCode {
-    use windows_sys::Win32::{
-        Foundation::{SysFreeString, SysStringLen},
-        System::LibraryLoader::GetModuleHandleW,
-    };
     calcvba_native_template::retain_native_helpers();
-    // SAFETY: these immutable image cells are filled by the checked PE patcher
+    // SAFETY: these immutable image cells are filled by the checked template patcher
     // before loading. Volatile reads prevent folding the template's zero slots.
     let entries = unsafe { std::ptr::addr_of!(ENTRIES).read_volatile() };
     if entries.main == 0 || entries.shutdown == 0 || entries.error == 0 {
@@ -34,30 +40,29 @@ fn main() -> std::process::ExitCode {
     // SAFETY: the process image is loaded throughout startup and shutdown; all
     // three patched entries have the fixed native ABI emitted by the compiler.
     let (status, shutdown) = unsafe {
-        let base = GetModuleHandleW(std::ptr::null()).cast::<u8>();
-        let run: unsafe extern "C" fn() -> i32 =
-            std::mem::transmute(base.add(entries.main as usize));
-        let stop: unsafe extern "C" fn() -> i32 =
-            std::mem::transmute(base.add(entries.shutdown as usize));
+        #[cfg(windows)]
+        let entry = |rva: u32| {
+            windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null())
+                .cast::<u8>()
+                .wrapping_add(rva as usize)
+                .cast_const()
+        };
+        #[cfg(target_os = "linux")]
+        let entry = |delta: u32| {
+            std::ptr::addr_of!(ENTRIES)
+                .cast::<u8>()
+                .wrapping_offset(delta as i32 as isize)
+        };
+        let run: unsafe extern "C" fn() -> i32 = std::mem::transmute(entry(entries.main));
+        let stop: unsafe extern "C" fn() -> i32 = std::mem::transmute(entry(entries.shutdown));
         let error: unsafe extern "C" fn(*mut *mut u16, *mut *mut u16) -> i32 =
-            std::mem::transmute(base.add(entries.error as usize));
+            std::mem::transmute(entry(entries.error));
         let status = run();
         if status < 0 {
             let mut source = std::ptr::null_mut();
             let mut description = std::ptr::null_mut();
             let number = error(&mut source, &mut description);
-            let take = |pointer: *mut u16| {
-                let text = if pointer.is_null() {
-                    String::new()
-                } else {
-                    String::from_utf16_lossy(std::slice::from_raw_parts(
-                        pointer,
-                        SysStringLen(pointer) as usize,
-                    ))
-                };
-                SysFreeString(pointer);
-                text
-            };
+            let take = |pointer| calcvba_automation::bstr::BStr::from_raw_bstr(pointer).to_string();
             eprintln!(
                 "VBA error {number} ({}): {}",
                 take(source),
@@ -73,8 +78,11 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(
+    windows,
+    all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+)))]
 fn main() {
-    eprintln!("CalcVBA native executable templates require Windows");
+    eprintln!("CalcVBA native executable templates require Windows x64 or Linux x86-64");
     std::process::exit(1);
 }

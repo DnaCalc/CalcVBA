@@ -252,6 +252,12 @@ pub fn compile_native_scalars(
                         binding: calcvba_oxir::inst::OxAsNew::ComClass { .. },
                         ..
                     } => {}
+                    OxInst::ComCallEarly { .. }
+                        if module.target_config().default_call_conv
+                            == cranelift_codegen::isa::CallConv::SystemV =>
+                    {
+                        return Err(problem(func, "early-bound COM requires Windows"));
+                    }
                     OxInst::ComCallEarly { method, .. }
                         if program
                             .com_method(*method)
@@ -1778,6 +1784,32 @@ pub fn compile_native_wrapper(
     } = options;
     let aggregate = body.layout.has_result
         && matches!(body.layout.result, ScalarType::Variant | ScalarType::Record);
+    if module.target_config().default_call_conv == cranelift_codegen::isa::CallConv::SystemV {
+        if !hresult && aggregate
+            || body
+                .layout
+                .parameters
+                .iter()
+                .zip(&body.layout.by_ref_parameters)
+                .any(|(ty, by_ref)| *ty == ScalarType::Variant && !by_ref)
+        {
+            return Err(JitError::unsupported(
+                "native System V by-value aggregate boundary",
+            ));
+        }
+        if string_encoding == 2
+            && body
+                .layout
+                .parameters
+                .iter()
+                .zip(&body.layout.by_ref_parameters)
+                .any(|(ty, by_ref)| *ty == ScalarType::String && !by_ref)
+        {
+            return Err(JitError::unsupported(
+                "native System V exports require BSTR or UTF-16 strings",
+            ));
+        }
+    }
     let register_record = body.register_record_result();
     let result_abi = register_record.unwrap_or_else(|| abi_type(body.layout.result));
     let hidden = aggregate && register_record.is_none() && !hresult;

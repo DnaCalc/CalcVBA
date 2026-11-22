@@ -63,7 +63,9 @@ compiler or linker. Native EXE output remains unfinished.
 
 `Include` is the exported name. Module and Procedure are required, matched with
 VBA name rules. CallingConvention accepts Stdcall (default) or Cdecl; Windows
-x64 uses the same convention for both. Ordinal is optional, nonzero, and unique.
+x64 uses Microsoft x64 and GNU/Linux x86-64 uses System V AMD64 for both.
+Ordinal is optional, nonzero, and unique. ELF records ordinals in the map and
+resolves exports by name.
 Export names are case-sensitive and unique. The procedure must be Public in a
 standard module. Its actual signature comes from binding, including ByVal/ByRef
 and exact types; cached declaration strings do not supply the ABI.

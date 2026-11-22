@@ -99,6 +99,22 @@ impl Mode {
         host: Host,
         browser_dialogs: bool,
     ) -> Result<Vec<calcvba_diagnostics::Diagnostic>, Box<calcvba_diagnostics::Diagnostic>> {
+        self.check_with_browser_services(
+            projects,
+            host,
+            BrowserServices {
+                dialogs: browser_dialogs,
+                ..BrowserServices::default()
+            },
+        )
+    }
+
+    pub fn check_with_browser_services(
+        self,
+        projects: &[SymbolProjectManifest],
+        host: Host,
+        browser: BrowserServices,
+    ) -> Result<Vec<calcvba_diagnostics::Diagnostic>, Box<calcvba_diagnostics::Diagnostic>> {
         use calcvba_diagnostics::{
             Diagnostic, DiagnosticPhase, DiagnosticSeverity, DiagnosticSource,
         };
@@ -106,7 +122,7 @@ impl Mode {
             return Ok(Vec::new());
         }
 
-        let report = check_project_inner(projects, host, browser_dialogs).map_err(|message| {
+        let report = check_project_inner(projects, host, browser).map_err(|message| {
             Box::new(Diagnostic::error(
                 "PORT-E-CHECK",
                 DiagnosticPhase::ProjectLoad,
@@ -161,6 +177,13 @@ impl Mode {
         }
         Ok(warnings)
     }
+}
+
+/// Services supplied by a browser embedding.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BrowserServices {
+    pub dialogs: bool,
+    pub settings: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -233,13 +256,13 @@ pub struct ParseIssue {
 }
 
 pub fn check_project(projects: &[SymbolProjectManifest], host: Host) -> Result<Report, String> {
-    check_project_inner(projects, host, false)
+    check_project_inner(projects, host, BrowserServices::default())
 }
 
 fn check_project_inner(
     projects: &[SymbolProjectManifest],
     host: Host,
-    browser_dialogs: bool,
+    browser: BrowserServices,
 ) -> Result<Report, String> {
     let mut report = Report {
         host,
@@ -278,7 +301,7 @@ fn check_project_inner(
         }
 
         for (module, tree) in &prepared {
-            let mut scanner = Scanner::new(&mut report, project, Some(module), browser_dialogs);
+            let mut scanner = Scanner::new(&mut report, project, Some(module), browser);
             for error in tree.errors() {
                 let line = scanner.line(error.offset);
                 scanner.report.parse_errors.push(ParseIssue {
@@ -299,7 +322,7 @@ fn check_project_inner(
             scanner.walk(tree.syntax(), None, &names);
         }
 
-        let mut scanner = Scanner::new(&mut report, project, None, browser_dialogs);
+        let mut scanner = Scanner::new(&mut report, project, None, browser);
         for reference in &project.references {
             match reference {
                 ProjectReference::TypeLibrary { name, guid, .. } => {
@@ -382,7 +405,7 @@ struct Scanner<'a> {
     project: &'a str,
     module: Option<&'a str>,
     line_starts: Vec<usize>,
-    browser_dialogs: bool,
+    browser: BrowserServices,
 }
 
 impl<'a> Scanner<'a> {
@@ -390,7 +413,7 @@ impl<'a> Scanner<'a> {
         report: &'a mut Report,
         project: &'a SymbolProjectManifest,
         module: Option<&'a ModuleUnit>,
-        browser_dialogs: bool,
+        browser: BrowserServices,
     ) -> Self {
         let mut line_starts = vec![0];
         if let Some(module) = module {
@@ -407,7 +430,7 @@ impl<'a> Scanner<'a> {
             project: &project.project_name,
             module: module.map(|m| m.module_name.as_str()),
             line_starts,
-            browser_dialogs,
+            browser,
         }
     }
 
@@ -472,12 +495,13 @@ impl<'a> Scanner<'a> {
                         | "InputB/$"
                         | "Width"
                         | "Environ/$"
-                        | "DeleteSetting"
-                        | "GetAllSettings"
-                        | "GetSetting"
-                        | "SaveSetting"
                 )
-                || (!self.browser_dialogs && matches!(row.name, "MsgBox" | "InputBox")))
+                || (!self.browser.settings
+                    && matches!(
+                        row.name,
+                        "DeleteSetting" | "GetAllSettings" | "GetSetting" | "SaveSetting"
+                    ))
+                || (!self.browser.dialogs && matches!(row.name, "MsgBox" | "InputBox")))
         {
             Support::Reject
         } else {

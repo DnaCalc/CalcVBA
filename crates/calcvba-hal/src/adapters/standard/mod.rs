@@ -139,6 +139,7 @@ pub(crate) struct StandardHostServices {
     windows_paths: Rc<RefCell<windows_paths::WindowsPaths>>,
     dir_state: Rc<RefCell<DirSearchState>>,
     settings_state: Rc<RefCell<SettingsState>>,
+    browser_settings: bool,
     console_state: Rc<RefCell<ConsoleState>>,
     projection_state: Rc<RefCell<ProjectionObjectState>>,
     #[cfg(target_os = "windows")]
@@ -149,6 +150,45 @@ pub(crate) struct StandardHostServices {
     last_dll_error: Rc<Cell<i32>>,
     portable_objects: Option<Arc<PortableComProjection>>,
     callbacks: Option<Arc<dyn crate::callbacks::HostCallbacks>>,
+}
+
+/// Services and settings state for one invocation on a browser worker.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub struct BrowserWorkerHost(StandardHostServices);
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl BrowserWorkerHost {
+    /// A present snapshot enables VBA settings. An empty snapshot starts a new store.
+    pub fn new(
+        policy: HostPolicy,
+        callbacks: Arc<dyn crate::callbacks::HostCallbacks>,
+        snapshot: Option<&str>,
+    ) -> Result<Self, serde_json::Error> {
+        let mut host = StandardHostServices::new_with_runtime_class(
+            HalProfileId::Wasm,
+            HalRuntimeClass::WasmBrowserSandbox,
+            policy,
+        )
+        .with_callbacks(callbacks);
+        if let Some(snapshot) = snapshot {
+            if !snapshot.is_empty() {
+                *host.settings_state.borrow_mut() = serde_json::from_str(snapshot)?;
+            }
+            host.browser_settings = true;
+        }
+        Ok(Self(host))
+    }
+
+    pub fn services(&self) -> &dyn HostServices {
+        &self.0
+    }
+
+    pub fn settings_snapshot(&self) -> Result<Option<String>, serde_json::Error> {
+        self.0
+            .browser_settings
+            .then(|| serde_json::to_string(&*self.0.settings_state.borrow()))
+            .transpose()
+    }
 }
 
 #[derive(Default)]
@@ -281,6 +321,7 @@ impl StandardHostServices {
             windows_paths: Rc::new(RefCell::new(windows_paths::WindowsPaths::default())),
             dir_state: Rc::new(RefCell::new(DirSearchState::default())),
             settings_state: Rc::new(RefCell::new(SettingsState::default())),
+            browser_settings: false,
             console_state: Rc::new(RefCell::new(ConsoleState::default())),
             projection_state: Rc::new(RefCell::new(ProjectionObjectState {
                 next_handle: 5_003,

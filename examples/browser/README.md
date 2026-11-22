@@ -22,6 +22,7 @@ const text = await runVba(source, {
     onDialog: async dialog => replyFromPage(dialog),
     locale: "en-ZA",
     timeZone: "Africa/Johannesburg",
+    settingsKey: "my-project",
 });
 ```
 
@@ -36,3 +37,8 @@ message and the entered text for input. An optional time zone takes an IANA
 name. Without a time zone the clock follows the browser's local zone. Locale
 formatting uses the en-ZA model when requested explicitly or through the
 browser's language, otherwise en-US.
+
+Supply a nonempty `settingsKey` to enable VBA settings. Workers with the same
+key on the same origin share an IndexedDB store. Runs with that key execute
+serially and report their result after the settings transaction completes.
+A dialog handler must reply before starting another run with the same key.

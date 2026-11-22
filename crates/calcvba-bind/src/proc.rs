@@ -283,6 +283,7 @@ impl LowerContext {
             proc_scope: module_scope,
             local_of: HashMap::new(),
             param_count,
+            param_array: None,
             return_local: None,
             return_type: VarTypeRef::Variant,
             class_name: Some(class_name.to_string()),

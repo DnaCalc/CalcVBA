@@ -3761,7 +3761,8 @@ pub fn qb_color(args: &[Variant]) -> LibResult<Variant> {
         0, 8_388_608, 32_768, 8_421_376, 128, 8_388_736, 32_896, 12_632_256, 8_421_504, 16_711_680,
         65_280, 16_776_960, 255, 16_711_935, 65_535, 16_777_215,
     ];
-    let index = as_i32(need(args, 0)?)?;
+    let index = i16::try_from(as_i64(need(args, 0)?)?)
+        .map_err(|_| LibError::overflow("QBColor index exceeds Integer range"))?;
     if !(0..=15).contains(&index) {
         return Err(LibError::invalid_call("QBColor index must be 0 to 15"));
     }

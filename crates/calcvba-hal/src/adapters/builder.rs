@@ -67,7 +67,17 @@ impl HostBuilder {
         });
 
         match self.profile {
-            HalProfileId::Windows | HalProfileId::Linux | HalProfileId::MacOs => {
+            HalProfileId::Null => null::NullHostServices::boxed(self.policy),
+            HalProfileId::Wasm
+                if !(cfg!(target_os = "wasi")
+                    && runtime_class == HalRuntimeClass::WasmWasiLocal) =>
+            {
+                wasm::WasmHostServices::boxed(self.policy)
+            }
+            HalProfileId::Windows
+            | HalProfileId::Linux
+            | HalProfileId::MacOs
+            | HalProfileId::Wasm => {
                 let mut host = standard::StandardHostServices::new_with_runtime_class(
                     self.profile,
                     runtime_class,
@@ -81,8 +91,6 @@ impl HostBuilder {
                 }
                 Arc::new(host)
             }
-            HalProfileId::Wasm => wasm::WasmHostServices::boxed(self.policy),
-            HalProfileId::Null => null::NullHostServices::boxed(self.policy),
         }
     }
 }
@@ -106,6 +114,29 @@ mod tests {
         },
     };
     use std::sync::Mutex;
+
+    #[test]
+    fn wasi_local_exposes_preopened_io_under_native_policy() {
+        use crate::model::CapabilityId;
+
+        for (policy, direct_io) in [
+            (HostPolicy::default(), false),
+            (HostPolicy::native(), cfg!(target_os = "wasi")),
+        ] {
+            let host = HostBuilder::new()
+                .profile(HalProfileId::Wasm)
+                .runtime_class(HalRuntimeClass::WasmWasiLocal)
+                .policy(policy)
+                .build();
+            let descriptor = host.descriptor();
+            assert_eq!(descriptor.supports(CapabilityId::FileSystemIo), direct_io);
+            assert_eq!(descriptor.supports(CapabilityId::ProcessEnv), direct_io);
+            assert!(!descriptor.supports(CapabilityId::DynamicLinking));
+            assert!(!descriptor.supports(CapabilityId::ComActivationDispatch));
+        }
+        #[cfg(target_os = "wasi")]
+        assert_eq!(crate::model::native_host_profile(), HalProfileId::Wasm);
+    }
 
     struct ProjectAwareCallbacks {
         mutations: Mutex<Vec<String>>,

@@ -255,6 +255,8 @@ pub fn native_host_profile() -> HalProfileId {
         HalProfileId::Linux
     } else if cfg!(target_os = "macos") {
         HalProfileId::MacOs
+    } else if cfg!(target_os = "wasi") {
+        HalProfileId::Wasm
     } else {
         HalProfileId::Null
     }

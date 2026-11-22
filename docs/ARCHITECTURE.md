@@ -180,7 +180,11 @@ support for the VB6 project system or forms.
 
 Compiler/runtime code and the interpreter support non-Windows hosts. Browser
 builds use `calcvba-host` without its default JIT feature; native COM and direct
-filesystem access are supplied or refused by the host. Windows interop targets
+filesystem access are supplied or refused by the host. WASI builds also use
+VM3. The embedder maps Windows drives to preopened guest paths and supplies
+`XDG_CONFIG_HOME` inside a writable preopen for VBA settings. It can set
+`CALCVBA_WASI_UTC_OFFSET_MINUTES` to a fixed UTC offset for local dates and times.
+Windows interop targets
 64-bit Office and x64 native calls. Wider Windows architectures, broader native
 signatures, nominal interface/record arrays and recursion limits remain incomplete.
 

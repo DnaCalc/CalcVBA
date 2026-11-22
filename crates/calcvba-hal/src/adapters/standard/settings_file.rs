@@ -1,9 +1,10 @@
-//! Linux storage for native VBA settings.
+//! File storage for native VBA settings.
 use super::process::{SettingEntry, SettingsState};
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::OpenOptionsExt;
 use std::{
     fs::{self, File, OpenOptions},
     io,
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -28,6 +29,7 @@ pub(super) fn settings_path() -> io::Result<PathBuf> {
         })
 }
 
+#[cfg(target_os = "linux")]
 pub(super) fn lock(path: &Path, write: bool) -> io::Result<Option<File>> {
     let lock_path = path.with_extension("lock");
     let lock = if write {
@@ -76,16 +78,27 @@ pub(super) fn read(path: &Path) -> io::Result<SettingsState> {
 
 pub(super) fn write(path: &Path, state: &SettingsState) -> io::Result<()> {
     static ID: AtomicUsize = AtomicUsize::new(0);
+    #[cfg(target_os = "linux")]
+    let writer = std::process::id();
+    #[cfg(target_os = "wasi")]
+    let writer = {
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    };
     let (temporary, file) = loop {
         let serial = ID.fetch_add(1, Ordering::Relaxed);
-        let name = format!("settings.{}.{serial}.tmp", std::process::id());
+        let name = format!("settings.{writer}.{serial}.tmp");
         let temporary = path.with_file_name(name);
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary)
-        {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(target_os = "linux")]
+        options.mode(0o600);
+        match options.open(&temporary) {
             Ok(file) => break (temporary, file),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error),

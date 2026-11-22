@@ -919,19 +919,10 @@ pub fn string_repeat(args: &[Variant]) -> LibResult<Variant> {
 }
 
 pub fn str_reverse(args: &[Variant]) -> LibResult<Variant> {
-    // Reverse by character, keeping each surrogate pair (and any unpaired surrogate) whole.
-    let units = units_arg(need(args, 0)?)?;
-    let mut items: Vec<Vec<u16>> = char::decode_utf16(units.iter().copied())
-        .map(|item| match item {
-            Ok(c) => {
-                let mut buf = [0u16; 2];
-                c.encode_utf16(&mut buf).to_vec()
-            }
-            Err(unpaired) => vec![unpaired.unpaired_surrogate()],
-        })
-        .collect();
-    items.reverse();
-    Ok(vunits(&items.concat()))
+    // VBA reverses UTF-16 code units, including the two halves of a surrogate pair.
+    let mut units = units_arg(need(args, 0)?)?;
+    units.reverse();
+    Ok(vunits(&units))
 }
 
 /// FIDELITY: handles case modes plus the deterministic ANSI byte conversion modes

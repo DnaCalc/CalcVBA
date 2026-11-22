@@ -472,7 +472,7 @@ pub fn ucase(args: &[Variant]) -> LibResult<Variant> {
 
 pub fn split(args: &[Variant]) -> LibResult<Variant> {
     let s = units_arg(need(args, 0)?)?;
-    let delim = match arg_present(args, 1) {
+    let delim = match opt(args, 1) {
         Some(v) => units_arg(v)?,
         None => vec![u16::from(b' ')],
     };

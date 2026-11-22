@@ -4,12 +4,12 @@
 //! (the `Err` object for now; objects/COM arrive in a later phase).
 
 use calcvba_bundle::coreir::{
-    BoundWhich, CoreArg, CoreCallee, CoreConst, CoreIfArm, CorePlace, CorePtrOperand, CoreStmt,
-    CoreValue, ErrField, PtrKind,
+    BoundWhich, CoreArg, CoreBinOp, CoreCallee, CoreConst, CoreIfArm, CorePlace, CorePtrOperand,
+    CoreStmt, CoreValue, ErrField, PtrKind,
 };
 use calcvba_bundle::native::NativeImplId;
 use calcvba_bundle::{
-    AssignmentIntent, BundleImport, ExportToken, ProjectMemberKind, StringCompareMode,
+    AssignmentIntent, BundleImport, ExportToken, NumericMode, ProjectMemberKind, StringCompareMode,
 };
 use calcvba_com::{OptionalParamDefault, TypeLibMemberMetadata, TypeLibParamType, TypeLibWireType};
 use calcvba_symbol::binding::{Binding, DispatchRoute, SpecialForm};
@@ -295,6 +295,34 @@ impl<'a> ProcLower<'a> {
                         *variadic,
                     )?,
                 };
+                // Excel returns True when IsMissing receives the empty ParamArray itself
+                // (P_IsMissing.11). Its declared parameter slot identifies this use.
+                if unit.eq_ignore_ascii_case("VBA")
+                    && member.eq_ignore_ascii_case("IsMissing")
+                    && let [
+                        CoreArg::ByRef(CorePlace::Local(local))
+                        | CoreArg::ByVal(CoreValue::Load(CorePlace::Local(local))),
+                    ] = args.as_slice()
+                    && self.info.param_array == Some(*local)
+                {
+                    let bound = |which| {
+                        Box::new(CoreValue::Bound {
+                            which,
+                            array: Box::new(CoreValue::Load(CorePlace::Local(*local))),
+                            dimension: None,
+                        })
+                    };
+                    return Ok(value_bound(
+                        CoreValue::Binary {
+                            op: CoreBinOp::Lt,
+                            lhs: bound(BoundWhich::Upper),
+                            rhs: bound(BoundWhich::Lower),
+                            mode: self.info.compare_mode,
+                            num: NumericMode::Widening,
+                        },
+                        builtin(BuiltinType::Boolean),
+                    ));
+                }
                 self.inject_option_compare(member, &mut args);
                 // CByte expressions use checked Byte arithmetic (P_TypeName.49).
                 let ty = if unit.eq_ignore_ascii_case("VBA")

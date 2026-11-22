@@ -4,6 +4,7 @@
 //! Canon::Opaque alone compares only a tag and cannot establish value parity.
 
 pub mod oracle;
+pub mod parity;
 
 use calcvba_engine::{
     Engine, FinalErr, HostConfig, RuntimeProfileId, SnapshotOutcome, Vm3Snapshot,
@@ -467,11 +468,31 @@ pub fn run_project_closure(
 /// serialized handle-balance discipline as the source-backed differential
 /// helpers.
 pub fn run_ox_programs(executor: Executor, programs: &[calcvba_oxir::OxProgram]) -> RunOutcome {
+    let host = vm3_oracle_engine().host_services();
+    run_ox_programs_on_host(executor, programs, &*host, false)
+}
+
+fn run_ox_programs_on_host(
+    executor: Executor,
+    programs: &[calcvba_oxir::OxProgram],
+    host: &dyn calcvba_hal::HostServices,
+    include_entry_locals: bool,
+) -> RunOutcome {
     let _balance_guard = balance_measurement_lock()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let before = current_thread_live_handle_counts();
-    let host = vm3_oracle_engine().host_services();
+    let slots = programs.last().map_or(0, |program| {
+        let locals = if include_entry_locals {
+            program
+                .entry
+                .and_then(|entry| program.funcs.get(entry.0))
+                .map_or(0, |entry| entry.locals.len())
+        } else {
+            0
+        };
+        program.globals.len() + locals
+    });
     let outcome = match executor {
         Executor::Vm3 => {
             let refs: Vec<&calcvba_oxir::OxProgram> = programs.iter().collect();
@@ -479,16 +500,12 @@ pub fn run_ox_programs(executor: Executor, programs: &[calcvba_oxir::OxProgram])
                 .last()
                 .map(|program| program.unit_name.clone())
                 .unwrap_or_default();
-            match calcvba_vm3::Vm3::link(&refs, &*host) {
+            match calcvba_vm3::Vm3::link(&refs, host) {
                 Ok(mut vm) => match vm.run_entry() {
                     Ok(()) => {
-                        let entry_globals = programs
-                            .last()
-                            .map(|program| program.globals.len())
-                            .unwrap_or(0);
                         let err = final_err_from_vm3(&vm);
                         RunOutcome {
-                            result: Ok((0..entry_globals)
+                            result: Ok((0..slots)
                                 .map(|slot| canon(&vm.slot(slot).unwrap_or_else(Variant::empty)))
                                 .collect()),
                             err,
@@ -509,7 +526,7 @@ pub fn run_ox_programs(executor: Executor, programs: &[calcvba_oxir::OxProgram])
                                 .map(|s| s.to_string_lossy())
                                 .unwrap_or(entry_unit),
                             description: fault.message.to_string_lossy(),
-                            last_dll_error: 0,
+                            last_dll_error: vm.last_dll_error(),
                         },
                         raised: true,
                         unsupported: None,
@@ -542,7 +559,7 @@ pub fn run_ox_programs(executor: Executor, programs: &[calcvba_oxir::OxProgram])
         Executor::Jit => {
             let refs: Vec<&calcvba_oxir::OxProgram> = programs.iter().collect();
             match calcvba_jit::JitEngine.compile_image(&refs) {
-                Ok(compiled) => match compiled.run(&*host) {
+                Ok(compiled) => match compiled.run(host) {
                     Ok(mut outcome) => {
                         if outcome.raised {
                             RunOutcome {
@@ -553,11 +570,7 @@ pub fn run_ox_programs(executor: Executor, programs: &[calcvba_oxir::OxProgram])
                                 handle_balance: None,
                             }
                         } else {
-                            let entry_globals = programs
-                                .last()
-                                .map(|program| program.globals.len())
-                                .unwrap_or(0);
-                            outcome.values.truncate(entry_globals);
+                            outcome.values.truncate(slots);
                             RunOutcome {
                                 result: Ok(outcome.values.iter().map(canon).collect()),
                                 err: final_err_from_jit(outcome.err),

@@ -199,6 +199,20 @@ Office observations. VM3 is the reference interpreter for the JIT; observed
 Excel differences become regression tests. Existing engine behaviour is not a
 substitute for VBA compatibility.
 
+The source parity runner reports one JSON row per input. Use `inspect` for
+source trees, project files and workbook VBA extraction. It binds and compiles
+the inputs without executing VBA. Supply the owning project for a class or
+form. Use `compare` for explicitly reviewed source or project files with a
+parameterless entry. It compares entry globals and locals, Err and captured
+host output. The report flags opaque aggregate values whose contents are
+outside the snapshot comparison.
+
+```sh
+cargo run -p calcvba-differential --example source_parity -- inspect examples
+cargo run -p calcvba-differential --example source_parity -- compare reviewed-probe.bas
+```
+
+
 ## Office files and source folders
 
 `calcvba-office` reads VBA directly from `.xlsm`, `.xlsb`, `.xlam`, `.xls`

@@ -22,6 +22,7 @@ criterion = "0.5"
 calcvba-bind.workspace = true
 calcvba-bundle.workspace = true
 calcvba-com = { workspace = true, features = ["fixture-typelibs"] }
+calcvba-office.workspace = true
 calcvba-project.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]

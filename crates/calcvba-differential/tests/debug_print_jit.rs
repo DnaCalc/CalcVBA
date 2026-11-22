@@ -3,24 +3,43 @@
 //! declined with `RUN-E-JIT-UNSUPPORTED` (M4-4). The web-sourced repro that
 //! surfaced the gap was the Rosetta 100-doors sample (bd-ivaha.37).
 
-use calcvba_differential::{Executor, run};
+use calcvba_differential::{canon, parity::compare_entry};
+use calcvba_hal::HostOutputChannel;
+use calcvba_runtime::Variant;
+use calcvba_symbol::manifest::{
+    ModuleAttributes, ModuleKind, ModuleUnit, ProjectKind, SymbolProjectManifest,
+};
+
+fn compile(source: &str) -> calcvba_oxir::OxProgram {
+    let manifest = SymbolProjectManifest {
+        project_name: "VBAProject".into(),
+        project_kind: ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: "Probe".into(),
+            module_kind: ModuleKind::Procedural,
+            attributes: ModuleAttributes::named("Probe"),
+            source: source.into(),
+        }],
+        references: Vec::new(),
+        reference_projects: Vec::new(),
+        conditional_constants: Default::default(),
+        conditional_compilation_target: Default::default(),
+    };
+    let core = calcvba_bind::bind_program(&manifest, &calcvba_symbol::CatalogTypeLibResolver)
+        .expect("bind the fixture");
+    calcvba_oxir::elaborate::elaborate(&core).expect("elaborate the fixture")
+}
 
 fn assert_jit_matches_vm3(source: &str) {
-    let vm3 = run(Executor::Vm3, source);
+    let comparison = compare_entry(&[compile(source)]);
+    for run in [&comparison.vm3, &comparison.jit] {
+        assert!(run.outcome.result.is_ok(), "{run:?}\n{source}");
+        assert!(run.outcome.unsupported.is_none(), "{run:?}\n{source}");
+    }
     assert!(
-        vm3.unsupported.is_none(),
-        "vm3 declined: {:?}\n{source}",
-        vm3.unsupported
+        comparison.differences().is_empty(),
+        "{comparison:?}\n{source}"
     );
-    let jit = run(Executor::Jit, source);
-    assert!(
-        jit.unsupported.is_none(),
-        "jit declined: {:?}\n{source}",
-        jit.unsupported
-    );
-    assert_eq!(jit.raised, vm3.raised, "raised mismatch\n{source}");
-    assert_eq!(jit.err, vm3.err, "Err mismatch\n{source}");
-    assert_eq!(jit.result, vm3.result, "snapshot mismatch\n{source}");
 }
 
 #[test]
@@ -88,4 +107,65 @@ Sub Main()
 End Sub
 "#,
     );
+}
+
+#[test]
+fn compares_globals_locals_err_and_host_output() {
+    let programs = [compile(
+        r#"
+Public Count As Long
+Sub Main()
+    Dim current As Long
+    current = 42
+    Count = current + 1
+    Debug.Print "before fault"
+    On Error Resume Next
+    Err.Raise 9
+    Debug.Print "after fault"
+End Sub
+"#,
+    )];
+    let comparison = compare_entry(&programs);
+    for run in [&comparison.vm3, &comparison.jit] {
+        let values = run.outcome.result.as_ref().expect("successful entry");
+        assert_eq!(
+            values,
+            &[canon(&Variant::from_i32(43)), canon(&Variant::from_i32(42))]
+        );
+        assert_eq!(run.outcome.err.number, 9);
+        assert_eq!(run.outcome.err.description, "Subscript out of range");
+        assert_eq!(
+            run.output,
+            [
+                (HostOutputChannel::Host, "before fault".into()),
+                (HostOutputChannel::Host, "after fault".into()),
+            ]
+        );
+    }
+    assert!(comparison.differences().is_empty(), "{comparison:?}");
+    assert!(!comparison.has_opaque_values());
+}
+
+#[test]
+fn compares_uncaught_vba_errors_and_preserves_prior_output() {
+    let programs = [compile(
+        r#"
+Sub Main()
+    Debug.Print "about to fail"
+    Err.Raise 5, "fixture", "controlled error"
+End Sub
+"#,
+    )];
+    let comparison = compare_entry(&programs);
+    for run in [&comparison.vm3, &comparison.jit] {
+        assert!(run.outcome.raised, "{run:?}");
+        assert_eq!(run.outcome.err.number, 5);
+        assert_eq!(run.outcome.err.source, "fixture");
+        assert_eq!(run.outcome.err.description, "controlled error");
+        assert_eq!(
+            run.output,
+            [(HostOutputChannel::Host, "about to fail".into())]
+        );
+    }
+    assert!(comparison.differences().is_empty(), "{comparison:?}");
 }

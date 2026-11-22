@@ -11,6 +11,10 @@ pub trait HostCallbacks {
     fn on_msg_box(&self, prompt: &str, style: i32) -> i32;
     /// Called when VBA executes `InputBox`. Returns the user input string.
     fn on_input_box(&self, prompt: &str, default: &str) -> String;
+    /// Local date and time as a VBA serial for browser hosts.
+    fn on_local_time_serial(&self) -> Option<f64> {
+        None
+    }
     /// Called when VBA sets `Application.StatusBar`.
     fn on_status_bar(&self, text: &str);
     /// Called when VBA executes plain console `Print` on a stdio host.

@@ -10,6 +10,7 @@ description = "Host-neutral procedure metadata and generation-checked typed call
 [features]
 default = ["jit"]
 jit = ["dep:calcvba-jit"]
+browser-worker = []
 
 [dependencies]
 calcvba-host-api.workspace = true

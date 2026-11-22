@@ -37,3 +37,31 @@ fn office_default_references_use_host_services() {
             .all(|finding| finding.verdict == Support::Host)
     );
 }
+
+#[test]
+fn browser_reports_missing_modal_and_file_services() {
+    use calcvba_symbol::portability::check_source;
+    let report = check_source(
+        "M",
+        r#"
+Sub Main()
+    MsgBox "hello"
+    Dim answer As String
+    answer = InputBox("value")
+    Open "C:\probe.txt" For Input As #1
+    SaveSetting "Probe", "State", "Value", answer
+End Sub
+"#,
+        Host::Browser,
+    )
+    .unwrap();
+    for feature in ["MsgBox", "InputBox", "Open", "SaveSetting"] {
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|use_| use_.feature == feature && use_.verdict == Support::Reject),
+            "{feature}: {report:?}"
+        );
+    }
+}

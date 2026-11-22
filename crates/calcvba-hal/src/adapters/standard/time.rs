@@ -154,16 +154,28 @@ fn local_clock_components() -> ClockComponents {
     clock_components_from_vba_serial(system_time_to_local_vba_serial(std::time::SystemTime::now()))
 }
 
+impl StandardHostServices {
+    fn clock_components(&self) -> Option<ClockComponents> {
+        if self.runtime_class() == crate::model::HalRuntimeClass::WasmBrowserSandbox {
+            return self.callbacks.as_ref().and_then(|callbacks| {
+                callbacks
+                    .on_local_time_serial()
+                    .filter(|serial| serial.is_finite())
+                    .map(clock_components_from_vba_serial)
+            });
+        }
+        self.native_time_enabled().then(local_clock_components)
+    }
+}
+
 impl TimeLocaleHal for StandardHostServices {
     fn date_serial_now_variant(&self) -> HalResult<Variant> {
         let capability = CapabilityId::TimeLocale;
         if !self.supports(capability) {
             return Err(self.unsupported(capability, "date_serial_now"));
         }
-        if self.native_time_enabled() {
-            return Ok(Variant::from_date_f64(
-                local_clock_components().date_serial.floor(),
-            ));
+        if let Some(clock) = self.clock_components() {
+            return Ok(Variant::from_date_f64(clock.date_serial));
         }
         Ok(deterministic_date_variant())
     }
@@ -173,10 +185,8 @@ impl TimeLocaleHal for StandardHostServices {
         if !self.supports(capability) {
             return Err(self.unsupported(capability, "time_serial_now"));
         }
-        if self.native_time_enabled() {
-            return Ok(Variant::from_date_f64(
-                local_clock_components().seconds_today / 86_400.0,
-            ));
+        if let Some(clock) = self.clock_components() {
+            return Ok(Variant::from_date_f64(clock.seconds_today / 86_400.0));
         }
         Ok(deterministic_time_variant())
     }
@@ -186,10 +196,8 @@ impl TimeLocaleHal for StandardHostServices {
         if !self.supports(capability) {
             return Err(self.unsupported(capability, "timer_ticks"));
         }
-        if self.native_time_enabled() {
-            return Ok(Variant::from_f32(
-                local_clock_components().seconds_today as f32,
-            ));
+        if let Some(clock) = self.clock_components() {
+            return Ok(Variant::from_f32(clock.seconds_today as f32));
         }
         Ok(deterministic_timer_variant())
     }

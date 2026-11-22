@@ -1,4 +1,4 @@
-// The logarithm and arctangent kernels are adapted from AMD win-libm,
+// The exponential, logarithm and arctangent kernels are adapted from AMD win-libm,
 // commit 6121d02aef0c775947d5dc655d7fc4ccfe2144ab.
 // https://github.com/amd/win-libm/tree/6121d02aef0c775947d5dc655d7fc4ccfe2144ab
 //
@@ -79,6 +79,124 @@ pub fn atan(x: f64) -> f64 {
     let value = head - ((correction - tail) - reduced);
     if x.is_sign_negative() { -value } else { value }
 }
+
+/// Exponential with split range reduction and unfused evaluation, as measured in VBA.
+pub fn exp(x: f64) -> f64 {
+    const MAX_ARG: f64 = f64::from_bits(0x4086_2e42_fefa_39ef);
+    const ZERO_LIMIT: f64 = f64::from_bits(0xc087_4910_d52d_3051);
+    const ONE_SUBNORMAL_LIMIT: f64 = f64::from_bits(0xc087_4046_dfef_d9d0);
+    const TINY_ARG: f64 = f64::from_bits(0x3e50_0000_0000_0000);
+    const INV_LN2_TIMES_64: f64 = f64::from_bits(0x4057_1547_652b_82fe);
+    const LN2_OVER_64_HEAD: f64 = f64::from_bits(0x3f86_2e42_fefa_0000);
+    const LN2_OVER_64_TAIL: f64 = f64::from_bits(0x3d1c_f79a_bc9e_3b39);
+
+    if x.is_nan() {
+        return x;
+    }
+    if x > MAX_ARG {
+        return f64::INFINITY;
+    }
+    if x <= ZERO_LIMIT {
+        return 0.0;
+    }
+    if x < ONE_SUBNORMAL_LIMIT {
+        return f64::from_bits(1);
+    }
+    if x.abs() <= TINY_ARG {
+        return 1.0 + x;
+    }
+
+    // Write x = (64 * exponent + index) * ln(2)/64 + r.
+    let n = (x * INV_LN2_TIMES_64).round_ties_even() as i32;
+    let exponent = n >> 6;
+    let index = (n & 63) as usize;
+    let n = f64::from(n);
+    let r = (x - n * LN2_OVER_64_HEAD) - n * LN2_OVER_64_TAIL;
+
+    let r2 = r * r;
+    let low = r + r2 * (0.5 + r * (1.0 / 6.0));
+    let high = (r2 * r2) * (1.0 / 24.0 + r * (1.0 / 120.0 + r * (1.0 / 720.0)));
+    let (rounded, tail) = EXP2_SPLIT[index];
+    let head = f64::from_bits(rounded & !0x0fff_ffff);
+    let scaled = (f64::from_bits(rounded) * (low + high) + f64::from_bits(tail)) + head;
+
+    // Scale subnormals through multiplication so the hardware rounds once.
+    if exponent < -1022 || (exponent == -1022 && scaled < 1.0) {
+        scaled * f64::from_bits(1 << (exponent + 1074))
+    } else {
+        // Adjust the exponent directly, including 2^1024 times a value below 1.
+        let adjustment = (i64::from(exponent) << 52) as u64;
+        f64::from_bits(scaled.to_bits().wrapping_add(adjustment))
+    }
+}
+
+// Rounded 2^(index/64) and the low part after clearing 28 bits from its head.
+const EXP2_SPLIT: [(u64, u64); 64] = [
+    (0x3ff0_0000_0000_0000, 0x0000_0000_0000_0000),
+    (0x3ff0_2c9a_3e77_8061, 0x3e6c_ef00_c1dc_def9),
+    (0x3ff0_59b0_d315_8574, 0x3e48_ac2b_a1d7_3e2a),
+    (0x3ff0_8745_1875_9bc8, 0x3e60_eb37_9011_86be),
+    (0x3ff0_b558_6cf9_890f, 0x3e69_f312_1ec5_3172),
+    (0x3ff0_e3ec_32d3_d1a2, 0x3e46_9e8d_1010_3a17),
+    (0x3ff1_1301_d012_5b51, 0x3df2_5b50_a4eb_bf1a),
+    (0x3ff1_429a_aea9_2de0, 0x3e6d_525b_bf66_8203),
+    (0x3ff1_72b8_3c7d_517b, 0x3e68_faa2_f5b9_bef9),
+    (0x3ff1_a35b_eb6f_cb75, 0x3e66_df96_ea79_6d31),
+    (0x3ff1_d487_3168_b9aa, 0x3e36_8b9a_a780_5b80),
+    (0x3ff2_063b_8862_8cd6, 0x3e60_c519_ac77_1dd6),
+    (0x3ff2_387a_6e75_6238, 0x3e6c_eac4_70cd_83f5),
+    (0x3ff2_6b45_65e2_7cdd, 0x3e57_89f3_7495_e99c),
+    (0x3ff2_9e9d_f51f_dee1, 0x3e54_7f7b_84b0_9745),
+    (0x3ff2_d285_a6e4_030b, 0x3e5b_900c_2d00_2475),
+    (0x3ff3_06fe_0a31_b715, 0x3e64_636e_2a5b_d1ab),
+    (0x3ff3_3c08_b264_16ff, 0x3e43_20b7_fa64_e430),
+    (0x3ff3_71a7_373a_a9cb, 0x3e5c_eaa7_2a9c_5154),
+    (0x3ff3_a7db_34e5_9ff7, 0x3e53_967f_dba8_6f24),
+    (0x3ff3_dea6_4c12_3422, 0x3e68_2468_446b_6824),
+    (0x3ff4_160a_21f7_2e2a, 0x3e3f_72e2_9f84_325b),
+    (0x3ff4_4e08_6061_892d, 0x3e18_624b_40c4_dbd0),
+    (0x3ff4_86a2_b5c1_3cd0, 0x3e57_04f3_404f_068e),
+    (0x3ff4_bfda_d536_2a27, 0x3e54_d8a8_9c75_0e5e),
+    (0x3ff4_f9b2_769d_2ca7, 0x3e5a_74b2_9ab4_cf62),
+    (0x3ff5_342b_569d_4f82, 0x3e5a_753e_077c_2a0f),
+    (0x3ff5_6f47_36b5_27da, 0x3e5a_d49f_699b_b2c0),
+    (0x3ff5_ab07_dd48_5429, 0x3e6a_90a8_52b1_9260),
+    (0x3ff5_e76f_15ad_2148, 0x3e56_b485_21ba_6f93),
+    (0x3ff6_247e_b03a_5585, 0x3e0d_2ac2_58f8_7d03),
+    (0x3ff6_6238_8255_2225, 0x3e42_a911_2489_3ecf),
+    (0x3ff6_a09e_667f_3bcd, 0x3e59_fcef_3242_2cbe),
+    (0x3ff6_dfb2_3c65_1a2f, 0x3e68_ca34_5de4_41c5),
+    (0x3ff7_1f75_e8ec_5f74, 0x3e61_d8be_e7ba_46e1),
+    (0x3ff7_5feb_5642_67c9, 0x3e59_099f_22fd_ba6a),
+    (0x3ff7_a114_73eb_0187, 0x3e4f_580c_36be_a881),
+    (0x3ff7_e2f3_36cf_4e62, 0x3e5b_3d39_8841_740a),
+    (0x3ff8_2589_994c_ce13, 0x3e62_999c_2515_9f11),
+    (0x3ff8_68d9_9b44_92ed, 0x3e66_8925_d901_c83b),
+    (0x3ff8_ace5_422a_a0db, 0x3e41_5506_dadd_3e2a),
+    (0x3ff8_f1ae_9915_7736, 0x3e62_2aee_6c57_304e),
+    (0x3ff9_3737_b0cd_c5e5, 0x3e29_b8bc_9e8a_0387),
+    (0x3ff9_7d82_9fde_4e50, 0x3e6f_bc9c_9f17_3d24),
+    (0x3ff9_c491_82a3_f090, 0x3e45_1f84_80e3_e235),
+    (0x3ffa_0c66_7b5d_e565, 0x3e66_bbca_c965_35b5),
+    (0x3ffa_5503_b23e_255d, 0x3e41_f12a_e45a_1224),
+    (0x3ffa_9e6b_5579_fdbf, 0x3e55_e7f6_fd0f_ac90),
+    (0x3ffa_e89f_995a_d3ad, 0x3e62_b5a7_5abd_0e69),
+    (0x3ffb_33a2_b84f_15fb, 0x3e60_9e2b_f5ed_7fa1),
+    (0x3ffb_7f76_f2fb_5e47, 0x3e47_daf2_3755_3d84),
+    (0x3ffb_cc1e_904b_c1d2, 0x3e12_f074_891e_e83d),
+    (0x3ffc_199b_dd85_529c, 0x3e6b_0aa5_3844_4196),
+    (0x3ffc_67f1_2e57_d14b, 0x3e6c_afa2_9694_426f),
+    (0x3ffc_b720_dcef_9069, 0x3e69_df20_d22a_0797),
+    (0x3ffd_072d_4a07_897c, 0x3e64_0f12_f71a_1e45),
+    (0x3ffd_5818_dcfb_a487, 0x3e69_f749_0e4b_b40b),
+    (0x3ffd_a9e6_03db_3285, 0x3e4e_d994_2b84_600d),
+    (0x3ffd_fc97_337b_9b5f, 0x3e4b_dcda_f5cb_4656),
+    (0x3ffe_502e_e78b_3ff6, 0x3e5e_2cff_d89c_f44c),
+    (0x3ffe_a4af_a2a4_90da, 0x3e45_2486_cc2c_7b9d),
+    (0x3ffe_fa1b_ee61_5a27, 0x3e6c_c2b4_4eee_3fa4),
+    (0x3fff_5076_5b6e_4540, 0x3e66_dc8a_80ce_9f09),
+    (0x3fff_a7c1_819e_90d8, 0x3e39_e90d_82e9_0a7e),
+];
 
 /// Natural logarithm with the unfused evaluation order used by VBA.
 pub fn ln(x: f64) -> f64 {

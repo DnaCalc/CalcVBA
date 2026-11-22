@@ -1238,7 +1238,7 @@ pub fn log(args: &[Variant]) -> LibResult<Variant> {
 }
 
 pub fn exp(args: &[Variant]) -> LibResult<Variant> {
-    let value = as_f64(need(args, 0)?)?.exp();
+    let value = crate::math::exp(as_f64(need(args, 0)?)?);
     if !value.is_finite() {
         return Err(LibError::overflow("Exp overflow"));
     }

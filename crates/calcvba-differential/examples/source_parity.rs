@@ -6,8 +6,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use calcvba_differential::parity::{Observation, compare_entry};
-use calcvba_oxir::OxProgram;
+use calcvba_differential::parity::{
+    Observation, compare_entry, compare_entry_with_cells, compare_entry_with_files,
+};
+use calcvba_oxir::{FuncId, OxProgram};
 use calcvba_symbol::manifest::{
     ModuleAttributes, ModuleKind, ModuleUnit, ProjectKind, SymbolProjectManifest,
 };
@@ -107,73 +109,132 @@ fn observation(run: &Observation) -> Value {
         "output": run.output.iter().map(|(channel, text)| {
             json!({ "channel": format!("{channel:?}"), "text": text })
         }).collect::<Vec<_>>(),
+        "files": run.files.iter().map(|(path, bytes)| {
+            json!({ "path": path.to_string_lossy(), "bytes": bytes })
+        }).collect::<Vec<_>>(),
+        "cells": run.cells.iter().map(|write| {
+            json!({ "row": write.row, "column": write.column, "value": format!("{:?}", write.value) })
+        }).collect::<Vec<_>>(),
+        "denied_host_calls": run.denied_host_calls.iter().map(|cap| cap.name()).collect::<Vec<_>>(),
     })
 }
 
-fn row(path: &Path, compare: bool) -> Value {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Inspect,
+    Entry,
+    Procedures,
+    Files,
+    Cells,
+}
+
+fn rows(path: &Path, mode: Mode, report: &mut impl FnMut(Value)) {
     let reported_path = path.to_string_lossy();
     let error =
         |status, reason: String| json!({"path": reported_path, "status": status, "reason": reason});
     let closure = match load(path) {
         Ok(closure) => closure,
-        Err(reason) => return error("input", reason),
+        Err(reason) => return report(error("input", reason)),
     };
-    let programs = match compile(&closure) {
+    let mut programs = match compile(&closure) {
         Ok(programs) => programs,
-        Err(reason) => return error("compile", reason),
+        Err(reason) => return report(error("compile", reason)),
     };
-    if !compare {
+    if mode == Mode::Inspect {
         let programs: Vec<_> = programs.iter().collect();
-        return match calcvba_jit::JitEngine.compile_image(&programs) {
+        return report(match calcvba_jit::JitEngine.compile_image(&programs) {
             Ok(_) => json!({"path": reported_path, "status": "jit-admitted"}),
             Err(calcvba_jit::JitError::Unsupported(reason)) => error("jit-refused", reason),
             Err(err) => error("jit-compile", err.to_string()),
+        });
+    }
+    let Some(program) = programs.last() else {
+        return report(error("no-entry", "empty project closure".into()));
+    };
+    if mode == Mode::Entry {
+        let Some(entry) = program.entry else {
+            return report(error(
+                "no-entry",
+                "a parameterless entry point is required".into(),
+            ));
         };
+        return report(compare(&programs, entry, path, mode));
     }
-    if programs
-        .last()
-        .and_then(|program| program.entry.and_then(|id| program.funcs.get(id.0)))
-        .is_none_or(|entry| entry.param_count != 0)
-    {
-        return error("no-entry", "a parameterless entry point is required".into());
+    let procedures: Vec<_> = (0..program.funcs.len())
+        .map(FuncId)
+        .filter(|id| Some(*id) != program.global_initializer)
+        .collect();
+    if procedures.is_empty() {
+        return report(error(
+            "no-entry",
+            "the project contains no procedures".into(),
+        ));
     }
-    let comparison = compare_entry(&programs);
+    for proc in procedures {
+        programs.last_mut().expect("entry program").entry = Some(proc);
+        report(compare(&programs, proc, path, mode));
+    }
+}
+
+fn compare(programs: &[OxProgram], entry: FuncId, path: &Path, mode: Mode) -> Value {
+    let program = programs.last().expect("entry program");
+    let procedure = &program.funcs[entry.0];
+    let path = path.to_string_lossy();
+    if procedure.param_count != 0 {
+        return json!({"path": path, "procedure": procedure.name, "status": "requires-arguments"});
+    }
+    let comparison = match mode {
+        Mode::Files => match compare_entry_with_files(programs) {
+            Ok(comparison) => comparison,
+            Err(err) => {
+                return json!({"path": path, "procedure": procedure.name,
+                "status": "scratch-failed", "reason": err.to_string()});
+            }
+        },
+        Mode::Cells => compare_entry_with_cells(programs),
+        _ => compare_entry(programs),
+    };
     let vm3 = &comparison.vm3.outcome;
     let jit = &comparison.jit.outcome;
     let differences = comparison.differences();
-    let status = if vm3.unsupported.is_some() {
-        "vm3-refused"
-    } else if vm3.result.is_err() && !vm3.raised {
-        "vm3-failed"
-    } else if jit.unsupported.is_some() {
-        "jit-refused"
-    } else if jit.result.is_err() && !jit.raised {
-        "jit-failed"
-    } else if !differences.is_empty() {
-        "different"
-    } else if comparison.has_opaque_values() {
-        "matched-with-opaque-values"
-    } else {
-        "matched"
+    let failed = |run: &Observation| run.outcome.result.is_err() && !run.outcome.raised;
+    let status = match (vm3.unsupported.is_some(), jit.unsupported.is_some()) {
+        (true, true) => "both-refused",
+        (true, false) if !failed(&comparison.jit) => "vm3-refused",
+        (false, true) if !failed(&comparison.vm3) => "jit-refused",
+        _ if failed(&comparison.vm3) && failed(&comparison.jit) => "both-failed",
+        _ if failed(&comparison.vm3) => "vm3-failed",
+        _ if failed(&comparison.jit) => "jit-failed",
+        _ if !differences.is_empty() => "different",
+        _ if !comparison.vm3.denied_host_calls.is_empty() => "host-limited",
+        _ if comparison.has_opaque_values() => "matched-with-opaque-values",
+        _ => "matched",
     };
+    let return_slot = procedure
+        .return_local
+        .map(|id| program.globals.len() + id.0);
     json!({
-        "path": reported_path, "status": status, "differences": differences,
+        "path": path, "procedure": procedure.name, "status": status, "differences": differences,
+        "return_slot": return_slot,
         "vm3": observation(&comparison.vm3), "jit": observation(&comparison.jit),
     })
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let usage =
-        "usage: source_parity inspect <files or directories...> | compare <reviewed files...>";
+    let usage = "usage: source_parity inspect <files or directories...> | \
+                 {compare|procedures|files|cells} <reviewed files...>";
     let mut args = env::args_os().skip(1);
-    let compare = match args.next().as_deref().and_then(|arg| arg.to_str()) {
-        Some("inspect") => false,
-        Some("compare") => true,
+    let mode = match args.next().as_deref().and_then(|arg| arg.to_str()) {
+        Some("inspect") => Mode::Inspect,
+        Some("compare") => Mode::Entry,
+        Some("procedures") => Mode::Procedures,
+        Some("files") => Mode::Files,
+        Some("cells") => Mode::Cells,
         _ => return Err(usage.into()),
     };
     let mut inputs = BTreeSet::new();
     for path in args.map(PathBuf::from) {
-        if compare {
+        if mode != Mode::Inspect {
             if !path.is_file() || !matches!(extension(&path).as_str(), "bas" | "basproj" | "vbp") {
                 return Err(format!(
                     "compare requires an explicit reviewed source file or project: {}",
@@ -190,7 +251,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(usage.into());
     }
     for path in inputs {
-        println!("{}", row(&path, compare));
+        rows(&path, mode, &mut |row| println!("{row}"));
     }
     Ok(())
 }

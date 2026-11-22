@@ -86,6 +86,21 @@ pub enum Canon {
     },
     /// A string, compared by content.
     Str(String),
+    /// Exact BSTR payload, including embedded NULs and invalid UTF-16.
+    StringBytes(Vec<u8>),
+    Nothing,
+    Array {
+        tag: u16,
+        fixed: bool,
+        iid: Option<[u8; 16]>,
+        record_type: Option<String>,
+        bounds: Option<Vec<(i32, u32)>>,
+        elements: Vec<Canon>,
+    },
+    Record {
+        identity: Option<String>,
+        fields: Vec<Canon>,
+    },
     /// A reference/aggregate type whose payload is a heap pointer (structural
     /// comparison deferred); compared by tag only.
     Opaque {
@@ -469,7 +484,7 @@ pub fn run_project_closure(
 /// helpers.
 pub fn run_ox_programs(executor: Executor, programs: &[calcvba_oxir::OxProgram]) -> RunOutcome {
     let host = vm3_oracle_engine().host_services();
-    run_ox_programs_on_host(executor, programs, &*host, false)
+    run_ox_programs_on_host(executor, programs, &*host, false, canon, None)
 }
 
 fn run_ox_programs_on_host(
@@ -477,6 +492,8 @@ fn run_ox_programs_on_host(
     programs: &[calcvba_oxir::OxProgram],
     host: &dyn calcvba_hal::HostServices,
     include_entry_locals: bool,
+    project_value: fn(&Variant) -> Canon,
+    steps: Option<u64>,
 ) -> RunOutcome {
     let _balance_guard = balance_measurement_lock()
         .lock()
@@ -500,13 +517,15 @@ fn run_ox_programs_on_host(
                 .last()
                 .map(|program| program.unit_name.clone())
                 .unwrap_or_default();
-            match calcvba_vm3::Vm3::link(&refs, host) {
+            match calcvba_vm3::Vm3::link_with_budget(&refs, host, steps) {
                 Ok(mut vm) => match vm.run_entry() {
                     Ok(()) => {
                         let err = final_err_from_vm3(&vm);
                         RunOutcome {
                             result: Ok((0..slots)
-                                .map(|slot| canon(&vm.slot(slot).unwrap_or_else(Variant::empty)))
+                                .map(|slot| {
+                                    project_value(&vm.slot(slot).unwrap_or_else(Variant::empty))
+                                })
                                 .collect()),
                             err,
                             raised: false,
@@ -559,7 +578,7 @@ fn run_ox_programs_on_host(
         Executor::Jit => {
             let refs: Vec<&calcvba_oxir::OxProgram> = programs.iter().collect();
             match calcvba_jit::JitEngine.compile_image(&refs) {
-                Ok(compiled) => match compiled.run(host) {
+                Ok(compiled) => match compiled.run_with_budget(host, steps) {
                     Ok(mut outcome) => {
                         if outcome.raised {
                             RunOutcome {
@@ -572,7 +591,7 @@ fn run_ox_programs_on_host(
                         } else {
                             outcome.values.truncate(slots);
                             RunOutcome {
-                                result: Ok(outcome.values.iter().map(canon).collect()),
+                                result: Ok(outcome.values.iter().map(project_value).collect()),
                                 err: final_err_from_jit(outcome.err),
                                 raised: false,
                                 unsupported: None,

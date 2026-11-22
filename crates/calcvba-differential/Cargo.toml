@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Differential oracle harness: runs a program under two executors and compares values, errors and ownership."
 
 [dependencies]
+calcvba-com.workspace = true
 calcvba-engine.workspace = true
 calcvba-hal.workspace = true
 calcvba-jit.workspace = true

@@ -104,7 +104,16 @@ pub struct CompiledImage<'p> {
 
 impl<'p> CompiledImage<'p> {
     pub fn run(&self, host: &dyn HostServices) -> Result<JitOutcome, JitError> {
-        self.execute(host, None, None)
+        self.run_with_budget(host, None)
+    }
+
+    /// Run the image entry with an optional step budget for initialization and execution.
+    pub fn run_with_budget(
+        &self,
+        host: &dyn HostServices,
+        steps: Option<u64>,
+    ) -> Result<JitOutcome, JitError> {
+        self.execute(host, None, steps)
     }
 
     /// Call a standard-module function using private, already coerced values.

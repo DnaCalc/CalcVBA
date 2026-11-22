@@ -199,17 +199,25 @@ Office observations. VM3 is the reference interpreter for the JIT; observed
 Excel differences become regression tests. Existing engine behaviour is not a
 substitute for VBA compatibility.
 
-The source parity runner reports one JSON row per input. Use `inspect` for
+The source parity runner reports JSON lines. Use `inspect` for
 source trees, project files and workbook VBA extraction. It binds and compiles
 the inputs without executing VBA. Supply the owning project for a class or
 form. Use `compare` for explicitly reviewed source or project files with a
-parameterless entry. It compares entry globals and locals, Err and captured
-host output. The report flags opaque aggregate values whose contents are
-outside the snapshot comparison.
+parameterless entry. `procedures` runs each parameterless procedure in a fresh
+instance of the entry project. Rows identify the procedure and return slot and
+compare typed values, array bounds and elements, UDT fields, Err and host
+output. Argument requirements, opaque values and denied host operations are
+reported explicitly. On Linux, `files` additionally maps the C: drive to a
+private scratch folder per run and compares directories and file bytes.
+`cells` records typed writes to a portable sheet fixture exposed as
+`CalcVBA.ParitySheet` with `WriteCell` taking a Long row, Long column and value.
 
 ```sh
 cargo run -p calcvba-differential --example source_parity -- inspect examples
 cargo run -p calcvba-differential --example source_parity -- compare reviewed-probe.bas
+cargo run -p calcvba-differential --example source_parity -- procedures reviewed-project.basproj
+cargo run -p calcvba-differential --example source_parity -- files reviewed-file-probe.bas
+cargo run -p calcvba-differential --example source_parity -- cells reviewed-cell-probe.bas
 ```
 
 

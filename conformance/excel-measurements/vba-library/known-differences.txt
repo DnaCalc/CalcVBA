@@ -2,4 +2,3 @@
 # 'vm3 '/'jit ' prefix: only that executor differs. Rebuilt by make_known_differences.py.
 # A leading 'linux '/'windows '/'macos ' limits a line to that host (host libm or code page, dc-q6brh.112;
 # locale collation for vbTextCompare, dc-q6brh.6).
-P_StrConv: StrConv.44=ERR5

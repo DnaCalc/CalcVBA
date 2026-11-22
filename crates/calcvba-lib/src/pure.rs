@@ -970,6 +970,12 @@ pub fn str_conv(args: &[Variant]) -> LibResult<Variant> {
         ));
     }
 
+    if let Some(locale) = opt(args, 2)
+        && !calcvba_runtime::regional::locale_id_supported(as_i32(locale)?)
+    {
+        return Err(LibError::invalid_call("invalid StrConv locale ID"));
+    }
+
     let input = need(args, 0)?;
     let units = if mode & VB_UNICODE != 0 {
         // The string's own bytes are read as ANSI text, one wide character per byte.

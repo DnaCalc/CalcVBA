@@ -705,6 +705,7 @@ impl NativeImplId {
             StringRepeat => &["String$"],
             Oct => &["Oct$"],
             Format => &["Format$"],
+            Hex => &["Hex$"],
             ErrorText => &["Error$"],
             Command => &["Command$"],
             FileInputChars => &["Input$"],

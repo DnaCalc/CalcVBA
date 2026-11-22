@@ -107,7 +107,6 @@ P_FormatPercent: FormatPercent.28=String:[(123{160}450.0%)]
 P_FormatPercent: FormatPercent.2=String:[123{160}457%]
 P_FormatPercent: FormatPercent.3=String:[123{160}456.78000%]
 P_FormatPercent: FormatPercent.4=String:[123{160}456.78%]
-P_Hex: Hex.56=ERR94
 P_InStr: InStr.12=Long:5
 P_InStr: InStr.21=ERR5
 P_InStr: InStr.22=Long:2

@@ -255,6 +255,23 @@ impl StandardHostServices {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
+    pub(super) fn windows_path_for_host(&self, path: &Path) -> Option<String> {
+        let absolute = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        self.policy
+            .windows_drive_roots
+            .iter()
+            .filter_map(|(&drive, path)| {
+                let root = fs::canonicalize(path).ok()?;
+                let suffix = absolute.strip_prefix(&root).ok()?;
+                Some((root.components().count(), drive, suffix))
+            })
+            .max_by_key(|(depth, _, _)| *depth)
+            .map(|(_, drive, suffix)| {
+                format!("{drive}:\\{}", suffix.to_string_lossy().replace('/', "\\"))
+            })
+    }
+
     fn windows_path_error(
         &self,
         capability: CapabilityId,

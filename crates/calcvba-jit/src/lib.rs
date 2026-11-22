@@ -15,7 +15,7 @@ use calcvba_bundle::{
 use calcvba_com::TypeLibMemberInvokeKind;
 use calcvba_eval::{
     arith,
-    collection::{CollectionError, CollectionMethod, dispatch_collection},
+    collection::{CollectionMethod, dispatch_collection},
 };
 use calcvba_hal::HostServices;
 use calcvba_hal::traits::DynLinkDescriptorView;

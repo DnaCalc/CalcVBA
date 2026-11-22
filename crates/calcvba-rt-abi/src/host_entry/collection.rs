@@ -62,12 +62,5 @@ pub fn invoke(
     object
         .with_native_collection(|data| dispatch_collection(kind, data, &ordered))
         .ok_or(438)?
-        .map_err(|e| match e {
-            E::NotFound => 9,
-            E::DuplicateKey => 457,
-            E::BadArgument => 5,
-            E::TypeMismatch => 13,
-            E::ArgNotOptional => 449,
-            E::WrongArgumentCount => 450,
-        })
+        .map_err(E::vba_number)
 }

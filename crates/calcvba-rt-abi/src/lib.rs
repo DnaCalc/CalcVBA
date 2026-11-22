@@ -20,7 +20,7 @@ use calcvba_eval::arith::{self, ArithError, CmpOp as EvalCmpOp};
 use calcvba_eval::typed;
 use calcvba_hal::HostServices;
 use calcvba_lib::LibContext;
-use calcvba_oxir::value::{OxArg, OxCallArg, OxConst, OxOperand, OxPlace};
+use calcvba_oxir::value::{ErrField, OxArg, OxCallArg, OxConst, OxOperand, OxPlace};
 use calcvba_oxir::{BlockId, ErrorHandler, FuncId, OxProgram, OxTy};
 use calcvba_runtime::object_ref::{ObjectRef, RuntimeClassDescriptor};
 use calcvba_runtime::{Utf16String, VarType, Variant};
@@ -55,6 +55,11 @@ pub mod automatic_events;
 pub mod library;
 pub mod native_export;
 pub mod object_types;
+
+/// Coerce an array subscript or ReDim bound to a VBA Long.
+pub fn array_subscript(value: &Variant) -> Result<i32, ArithError> {
+    arith::int(value).and_then(typed::narrow_i64_to_i32)
+}
 
 /// Copy-out to a declared caller slot. Conversion completes before either the
 /// caller or a ParamArray element is changed, including checked narrow types.
@@ -133,6 +138,11 @@ impl Fault {
             help_file: None,
             help_context: None,
         }
+    }
+
+    /// A VBA runtime error with its standard description.
+    pub fn standard(code: i32) -> Self {
+        Self::new(code, default_error_message(code))
     }
 
     /// A fault from the shared arithmetic/coercion kernel.
@@ -2760,41 +2770,6 @@ fn coerced_string_utf16(value: &Variant) -> Result<Utf16String, Fault> {
         .unwrap_or_default())
 }
 
-fn apply_err_field_set(exec: &mut ExecState<'_>, field: u32, value: &Variant) -> Result<(), Fault> {
-    match field {
-        RT_ERR_FIELD_NUMBER => {
-            let coerced = arith::coerce_numeric(value, NumericCoerceTarget::Long)
-                .map_err(Fault::from_arith)?;
-            exec.err_engine.err.number = coerced.as_i32().unwrap_or(0);
-            Ok(())
-        }
-        RT_ERR_FIELD_HELP_CONTEXT => {
-            let coerced = arith::coerce_numeric(value, NumericCoerceTarget::Long)
-                .map_err(Fault::from_arith)?;
-            exec.err_engine.err.help_context = coerced.as_i32().unwrap_or(0);
-            exec.err_engine.err.inherit_fields = true;
-            Ok(())
-        }
-        RT_ERR_FIELD_DESCRIPTION => {
-            exec.err_engine.err.description = coerced_string_utf16(value)?;
-            exec.err_engine.err.inherit_fields = true;
-            Ok(())
-        }
-        RT_ERR_FIELD_SOURCE => {
-            exec.err_engine.err.source = coerced_string_utf16(value)?;
-            exec.err_engine.err.inherit_fields = true;
-            Ok(())
-        }
-        RT_ERR_FIELD_HELP_FILE => {
-            exec.err_engine.err.help_file = coerced_string_utf16(value)?;
-            exec.err_engine.err.inherit_fields = true;
-            Ok(())
-        }
-        RT_ERR_FIELD_LAST_DLL_ERROR => Err(Fault::new(5, "Err.LastDllError is read-only")),
-        _ => Err(Fault::new(5, "unknown Err field")),
-    }
-}
-
 /// Runtime-helper raw-pointer entry point.
 ///
 /// # Safety
@@ -2819,7 +2794,17 @@ pub unsafe extern "C" fn rt_err_set_field(
         };
         // SAFETY: null was rejected and the caller keeps the Variant live for this call.
         let value = unsafe { &*value };
-        match apply_err_field_set(exec, field, value) {
+        let field = match field {
+            RT_ERR_FIELD_NUMBER => ErrField::Number,
+            RT_ERR_FIELD_HELP_CONTEXT => ErrField::HelpContext,
+            RT_ERR_FIELD_DESCRIPTION => ErrField::Description,
+            RT_ERR_FIELD_SOURCE => ErrField::Source,
+            RT_ERR_FIELD_HELP_FILE => ErrField::HelpFile,
+            RT_ERR_FIELD_LAST_DLL_ERROR => ErrField::LastDllError,
+            // SAFETY: state is live and uniquely borrowed, and exec is unused here.
+            _ => return unsafe { seat_fault(state, Fault::new(5, "unknown Err field")) },
+        };
+        match exec.err_engine.set_field(field, value) {
             Ok(()) => ST_OK,
             // SAFETY: the exported helper contract guarantees that non-null `state` is the
             // live, uniquely borrowed execution state.
@@ -3080,7 +3065,7 @@ pub unsafe extern "C" fn rt_raise_runtime_error_number(
     number: i32,
 ) -> i32 {
     // SAFETY: the exported helper contract guarantees that non-null `state` is the live, uniquely borrowed execution state.
-    with_status(|| unsafe { seat_fault(state, Fault::new(number, default_error_message(number))) })
+    with_status(|| unsafe { seat_fault(state, Fault::standard(number)) })
 }
 
 /// Runtime-helper raw-pointer entry point.
@@ -3130,7 +3115,7 @@ pub unsafe extern "C" fn rt_raise_fixed_or_temporarily_locked_array(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rt_raise_subscript_out_of_range(state: *mut RawExecState) -> i32 {
     // SAFETY: the exported helper contract guarantees that non-null `state` is the live, uniquely borrowed execution state.
-    with_status(|| unsafe { seat_fault(state, Fault::new(9, default_error_message(9))) })
+    with_status(|| unsafe { seat_fault(state, Fault::standard(9)) })
 }
 
 /// Runtime-helper raw-pointer entry point.
@@ -3268,6 +3253,39 @@ impl ErrEngine {
     pub fn clear_err(&mut self) {
         self.err = ErrState::default();
         self.erl_line = 0;
+    }
+
+    pub fn field_value(&self, field: ErrField) -> Variant {
+        match field {
+            ErrField::Number => Variant::from_i32(self.err.number),
+            ErrField::Description => Variant::from_string(&self.err.description),
+            ErrField::Source => Variant::from_string(&self.err.source),
+            ErrField::HelpFile => Variant::from_string(&self.err.help_file),
+            ErrField::HelpContext => Variant::from_i32(self.err.help_context),
+            ErrField::LastDllError => Variant::from_i32(self.last_dll_error),
+        }
+    }
+
+    /// Apply an Err property write. Number alone leaves the other fields' inheritance intact.
+    pub fn set_field(&mut self, field: ErrField, value: &Variant) -> Result<(), Fault> {
+        let coerce_long = || {
+            arith::coerce_numeric(value, NumericCoerceTarget::Long)
+                .map(|value| value.as_i32().unwrap_or(0))
+                .map_err(Fault::from_arith)
+        };
+        match field {
+            ErrField::Number => {
+                self.err.number = coerce_long()?;
+                return Ok(());
+            }
+            ErrField::HelpContext => self.err.help_context = coerce_long()?,
+            ErrField::Description => self.err.description = coerced_string_utf16(value)?,
+            ErrField::Source => self.err.source = coerced_string_utf16(value)?,
+            ErrField::HelpFile => self.err.help_file = coerced_string_utf16(value)?,
+            ErrField::LastDllError => return Err(Fault::new(5, "Err.LastDllError is read-only")),
+        }
+        self.err.inherit_fields = true;
+        Ok(())
     }
 
     pub fn set_error_handler(&mut self, handler: &ErrorHandler) {

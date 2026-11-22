@@ -62,6 +62,25 @@ Typed arrays retain bounds and element types, including materialized UDT fields.
 `On Error`, Err and Resume are runtime semantics shared by the execution paths;
 see [the error model](OXIR_VM3_ERROR_MODEL.md).
 
+Define new VBA behavior in helpers shared by VM3 and the JIT. Reviews check both
+paths and use differential regressions for observable changes. VM3 supplies
+the reference behavior where Excel observations agree.
+
+| Area | Shared implementation | Engine-specific work |
+| --- | --- | --- |
+| Numeric conversions and Variant coercion | `calcvba-eval` implements arithmetic and conversion kernels. `coerce_declared_value` applies declared slot conversions for copy-out. | VM3 resolves object default members before value coercion. JIT lowering selects scalar instructions and helper calls. |
+| Err and Resume | `ErrEngine` owns activation policy, explicit faults, Err field writes and resume transitions. `calcvba-runtime` maps standard error numbers to descriptions, including the shared array subscript fault. | VM3 and generated JIT code transfer control to their own handlers and restore activation state. |
+| ByRef and ParamArray | OxIR identifies argument modes. Shared argument marshalling, runtime address paths and declared copy-out cover storage reads and writes. | VM3 `Loc` and JIT `SlotAlias` resolve their own frames, retain ParamArray aliases and decide when to copy out. Typed and native entries have their own physical slot layouts. |
+| Object lifetime | `object_owner` and `object_ref` own reference counts and queue final release on the owning thread. `take_termination_batch` prepares pending finalizers. | The backends run Class_Initialize and Class_Terminate through their own procedure entries. Frame cleanup and finalizer scheduling still have separate paths. |
+| Late-bound calls | Runtime member descriptors and the dispatch plan cache resolve project members. Shared COM marshalling and Collection dispatch implement host argument and member rules. | Each backend evaluates operands, resolves its frame aliases, calls project members and applies copyback. Default-member routing still has separate paths. |
+
+The JIT's typed entries and AOT both use `ScalarLayout` and `ScalarLower` to
+lower the scalar instruction subset. The general JIT path uses `lowering.rs`
+and its runtime slot helpers. AOT's `native.rs` and `native_values.rs` add
+separate admission, frame setup, calls, error transfer and owning value
+lowering for native exports. The `calcvba-aot` crate supplies the PE module
+backend used by that compiler.
+
 The typed host entries use unboxed physical storage when admitted. An owning
 frame supports objects, strings, Variants, tested aggregate/class families,
 internal calls, ByRef aliases and error handling. Unsupported signatures and

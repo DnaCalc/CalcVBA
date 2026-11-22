@@ -4669,7 +4669,7 @@ pub(crate) unsafe fn dispatch_collection_member_for_jit(
         .ok_or(ST_FAULT)?
         // SAFETY: the current compiled-run boundary owns the live unique state handle;
         // typed references and owned values remain live and nonaliasing for this call.
-        .map_err(|err| unsafe { raise_collection_error_for_jit(state, err) })
+        .map_err(|err| unsafe { rt_raise_runtime_error_number(state, err.vba_number()) })
 }
 
 pub(crate) fn collection_call_arg_values_for_jit(
@@ -4695,30 +4695,6 @@ pub(crate) fn vba_collection_native_method_for_jit(
     match lib.procedures.get(method.proc).and_then(|proc| proc.native) {
         Some(NativeBody::Method(id)) => Some(id),
         _ => None,
-    }
-}
-
-// SAFETY CONTRACT: `state` must be null or the exact live, uniquely borrowed,
-// same-thread handle produced by `exec_state_as_raw`; any additional raw pointer
-// and length arguments must identify the initialized, nonaliasing storage described
-// by their typed parameters for the complete synchronous call.
-pub(crate) unsafe fn raise_collection_error_for_jit(
-    state: *mut RawExecState,
-    err: CollectionError,
-) -> i32 {
-    match err {
-        // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
-        CollectionError::NotFound => unsafe { rt_raise_subscript_out_of_range(state) },
-        // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
-        CollectionError::DuplicateKey => unsafe { rt_raise_runtime_error_number(state, 457) },
-        // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
-        CollectionError::BadArgument => unsafe { rt_raise_runtime_error_number(state, 5) },
-        // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
-        CollectionError::TypeMismatch => unsafe { rt_raise_runtime_error_number(state, 13) },
-        // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
-        CollectionError::ArgNotOptional => unsafe { rt_raise_runtime_error_number(state, 449) },
-        // SAFETY: the active JIT entry owns the live same-thread error state.
-        CollectionError::WrongArgumentCount => unsafe { rt_raise_runtime_error_number(state, 450) },
     }
 }
 
@@ -7244,12 +7220,7 @@ pub(crate) unsafe extern "C" fn rt_jit_array_get_variant_to_slot(
         // typed references and owned values remain live and nonaliasing for this call.
         let mut indices = Vec::with_capacity(dimensions);
         for value in &values {
-            let index = match calcvba_eval::arith::int(value).and_then(|value| {
-                i32::try_from(value).map_err(|_| calcvba_eval::arith::ArithError {
-                    code: 6,
-                    message: "Overflow".into(),
-                })
-            }) {
+            let index = match calcvba_rt_abi::array_subscript(value) {
                 Ok(index) => index,
                 // SAFETY: only the active owning entry's error state is updated.
                 Err(error) => return unsafe { rt_raise_runtime_error_number(state, error.code) },
@@ -7449,12 +7420,7 @@ pub(crate) unsafe extern "C" fn rt_jit_array_set_variant_slot(
         // typed references and owned values remain live and nonaliasing for this call.
         let mut indices = Vec::with_capacity(dimensions);
         for value in &subscripts {
-            let index = match calcvba_eval::arith::int(value).and_then(|value| {
-                i32::try_from(value).map_err(|_| calcvba_eval::arith::ArithError {
-                    code: 6,
-                    message: "Overflow".into(),
-                })
-            }) {
+            let index = match calcvba_rt_abi::array_subscript(value) {
                 Ok(index) => index,
                 // SAFETY: only the owning entry's error state is updated.
                 Err(error) => return unsafe { rt_raise_runtime_error_number(state, error.code) },

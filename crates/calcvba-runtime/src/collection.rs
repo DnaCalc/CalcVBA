@@ -45,6 +45,19 @@ pub enum CollectionError {
     WrongArgumentCount,
 }
 
+impl CollectionError {
+    pub fn vba_number(self) -> i32 {
+        match self {
+            Self::NotFound => 9,
+            Self::DuplicateKey => 457,
+            Self::BadArgument => 5,
+            Self::TypeMismatch => 13,
+            Self::ArgNotOptional => 449,
+            Self::WrongArgumentCount => 450,
+        }
+    }
+}
+
 /// The case-insensitive form of a collection key: Unicode lower case, so `Ä` and `ä` are one key.
 pub fn fold_key(key: &str) -> String {
     key.chars().flat_map(char::to_lowercase).collect()

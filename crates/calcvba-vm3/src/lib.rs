@@ -30,7 +30,7 @@ use calcvba_bundle::{
 };
 use calcvba_com::{DynamicMemberSelector, TypeLibMemberInvokeKind};
 use calcvba_eval::arith::{self, ArithError};
-use calcvba_eval::collection::{CollectionError, CollectionMethod, dispatch_collection};
+use calcvba_eval::collection::{CollectionMethod, dispatch_collection};
 use calcvba_hal::HostServices;
 use calcvba_hal::traits::DynLinkDescriptorView;
 use calcvba_oxir::inst::OxAsNew;
@@ -43,9 +43,9 @@ use calcvba_oxir::{
 };
 use calcvba_rt_abi::{
     ErrorMode, EventBinding, ExecState, Fault, FaultAction, LoadedProgram, MarshalArgRef,
-    ProcInvoker, ResumePoint, ResumeTarget, SavedErrState, marshal_ox_args, marshal_ox_call_args,
-    ox_const_variant, runtime_class_descriptors_for_program, take_termination_batch,
-    variant_changed,
+    ProcInvoker, ResumePoint, ResumeTarget, SavedErrState, array_subscript, marshal_ox_args,
+    marshal_ox_call_args, ox_const_variant, runtime_class_descriptors_for_program,
+    take_termination_batch, variant_changed,
 };
 use calcvba_runtime::collection::CollectionCursor;
 use calcvba_runtime::object_ref::{
@@ -744,8 +744,7 @@ impl<'h> Vm3<'h> {
         object
             .with_native_collection(|d| dispatch_collection(method, d, &args))
             .ok_or_else(|| Vm3Error::Fault(Fault::new(424, "Object required")))?
-            .map_err(Self::collection_fault)
-            .map_err(Vm3Error::Fault)
+            .map_err(|error| Vm3Error::Fault(Fault::standard(error.vba_number())))
     }
 
     /// Register a host event sink (W7): every project `RaiseEvent` is delivered to `sink` as
@@ -1565,20 +1564,7 @@ impl<'h> Vm3<'h> {
             }
             // Read an `Err` property.
             OxInst::ErrFieldGet { dst, field } => {
-                let v = match field {
-                    ErrField::Number => Variant::from_i32(self.exec.err_engine.err.number),
-                    ErrField::Description => {
-                        Variant::from_string(&self.exec.err_engine.err.description)
-                    }
-                    ErrField::Source => Variant::from_string(&self.exec.err_engine.err.source),
-                    ErrField::HelpFile => Variant::from_string(&self.exec.err_engine.err.help_file),
-                    ErrField::HelpContext => {
-                        Variant::from_i32(self.exec.err_engine.err.help_context)
-                    }
-                    ErrField::LastDllError => {
-                        Variant::from_i32(self.exec.err_engine.last_dll_error)
-                    }
-                };
+                let v = self.exec.err_engine.field_value(*field);
                 self.store(dst, v)?;
             }
             OxInst::ErlGet { dst } => {
@@ -1588,60 +1574,13 @@ impl<'h> Vm3<'h> {
             // assignments to it should have been rejected by the binder.
             OxInst::ErrFieldSet { field, src } => {
                 let value = self.operand(src)?;
-                match field {
-                    ErrField::Number => {
-                        let coerced = arith::coerce_numeric(
-                            &value,
-                            calcvba_bundle::NumericCoerceTarget::Long,
-                        )
-                        .map_err(Fault::from_arith)
-                        .map_err(Vm3Error::Fault)?;
-                        self.exec.err_engine.err.number = coerced.as_i32().unwrap_or(0);
-                    }
-                    ErrField::Description => {
-                        let coerced = arith::coerce_string(&value)
-                            .map_err(Fault::from_arith)
-                            .map_err(Vm3Error::Fault)?;
-                        self.exec.err_engine.err.description = coerced
-                            .as_bstr()
-                            .map(|b| calcvba_runtime::Utf16String::from_bstr(&b))
-                            .unwrap_or_default();
-                        self.exec.err_engine.err.inherit_fields = true;
-                    }
-                    ErrField::Source => {
-                        let coerced = arith::coerce_string(&value)
-                            .map_err(Fault::from_arith)
-                            .map_err(Vm3Error::Fault)?;
-                        self.exec.err_engine.err.source = coerced
-                            .as_bstr()
-                            .map(|b| calcvba_runtime::Utf16String::from_bstr(&b))
-                            .unwrap_or_default();
-                        self.exec.err_engine.err.inherit_fields = true;
-                    }
-                    ErrField::HelpFile => {
-                        let coerced = arith::coerce_string(&value)
-                            .map_err(Fault::from_arith)
-                            .map_err(Vm3Error::Fault)?;
-                        self.exec.err_engine.err.help_file = coerced
-                            .as_bstr()
-                            .map(|b| calcvba_runtime::Utf16String::from_bstr(&b))
-                            .unwrap_or_default();
-                        self.exec.err_engine.err.inherit_fields = true;
-                    }
-                    ErrField::HelpContext => {
-                        let coerced = arith::coerce_numeric(
-                            &value,
-                            calcvba_bundle::NumericCoerceTarget::Long,
-                        )
-                        .map_err(Fault::from_arith)
-                        .map_err(Vm3Error::Fault)?;
-                        self.exec.err_engine.err.help_context = coerced.as_i32().unwrap_or(0);
-                        self.exec.err_engine.err.inherit_fields = true;
-                    }
-                    ErrField::LastDllError => {
-                        return Err(Vm3Error::Malformed("Err.LastDllError is read-only".into()));
-                    }
+                if *field == ErrField::LastDllError {
+                    return Err(Vm3Error::Malformed("Err.LastDllError is read-only".into()));
                 }
+                self.exec
+                    .err_engine
+                    .set_field(*field, &value)
+                    .map_err(Vm3Error::Fault)?;
             }
             // `Err.Clear` → reset the `Err` object.
             OxInst::ClearErr => self.exec.err_engine.clear_err(),
@@ -2872,14 +2811,14 @@ impl<'h> Vm3<'h> {
         for (i, upper_op) in upper_bounds.iter().enumerate() {
             let lower = if let Some(lower_op) = lower_bounds.get(i) {
                 let lower_v = self.operand(lower_op)?;
-                subscript_to_long(arith::int(&lower_v).map_err(arith_fault)?)?
+                array_subscript(&lower_v).map_err(arith_fault)?
             } else {
                 0
             };
             let upper_v = self.operand(upper_op)?;
-            let upper = subscript_to_long(arith::int(&upper_v).map_err(arith_fault)?)?;
+            let upper = array_subscript(&upper_v).map_err(arith_fault)?;
             if upper < lower {
-                return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
+                return Err(Vm3Error::Fault(Fault::standard(9)));
             }
             let span = i64::from(upper) - i64::from(lower) + 1;
             if span > i64::from(u32::MAX) {
@@ -2905,17 +2844,14 @@ impl<'h> Vm3<'h> {
         bounds: &[SafeArrayBound],
     ) -> Result<usize, Vm3Error> {
         if indices.len() != bounds.len() {
-            return Err(Vm3Error::Fault(Fault::new(
-                9,
-                "wrong number of array subscripts",
-            )));
+            return Err(Vm3Error::Fault(Fault::standard(9)));
         }
         if let ([index_op], [bound]) = (indices, bounds) {
             let index_v = self.operand(index_op)?;
-            let raw = subscript_to_long(arith::int(&index_v).map_err(arith_fault)?)?;
+            let raw = array_subscript(&index_v).map_err(arith_fault)?;
             let offset = i64::from(raw) - i64::from(bound.lower);
             if offset < 0 || offset >= i64::from(bound.count) {
-                return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
+                return Err(Vm3Error::Fault(Fault::standard(9)));
             }
             return Ok(offset as usize);
         }
@@ -2923,10 +2859,10 @@ impl<'h> Vm3<'h> {
         let mut stride = 1usize;
         for (index_op, bound) in indices.iter().zip(bounds) {
             let index_v = self.operand(index_op)?;
-            let raw = subscript_to_long(arith::int(&index_v).map_err(arith_fault)?)?;
+            let raw = array_subscript(&index_v).map_err(arith_fault)?;
             let offset = i64::from(raw) - i64::from(bound.lower);
             if offset < 0 || offset >= i64::from(bound.count) {
-                return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
+                return Err(Vm3Error::Fault(Fault::standard(9)));
             }
             flat += offset as usize * stride;
             stride *= bound.count as usize;
@@ -2958,7 +2894,7 @@ impl<'h> Vm3<'h> {
         };
         let flat = self.flat_index(indices, &bounds)?;
         if flat >= len {
-            return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
+            return Err(Vm3Error::Fault(Fault::standard(9)));
         }
         let Some(arr) = self.read_loc_ref(loc)? else {
             return Ok(None);
@@ -3000,7 +2936,7 @@ impl<'h> Vm3<'h> {
         };
         let flat = self.flat_index(indices, &bounds)?;
         if flat >= len {
-            return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
+            return Err(Vm3Error::Fault(Fault::standard(9)));
         }
         if self.mirror_param_array_element_write(loc, flat, value)? {
             return Ok(true);
@@ -3111,7 +3047,7 @@ impl<'h> Vm3<'h> {
         };
         let flat = self.flat_index(indices, &bounds)?;
         if flat >= len {
-            return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
+            return Err(Vm3Error::Fault(Fault::standard(9)));
         }
         let Some(record) = self.read_loc_ref(loc)? else {
             return Err(Vm3Error::Fault(Fault::new(13, "expected Record Variant")));
@@ -3141,7 +3077,7 @@ impl<'h> Vm3<'h> {
         };
         let flat = self.flat_index(indices, &bounds)?;
         if flat >= len {
-            return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
+            return Err(Vm3Error::Fault(Fault::standard(9)));
         }
         let record = self
             .read_loc_mut(loc)?
@@ -3203,7 +3139,7 @@ impl<'h> Vm3<'h> {
             .ok_or_else(|| Vm3Error::Fault(Fault::new(9, "array has no bounds")))?;
         let flat = self.flat_index(indices, &bounds)?;
         if flat >= arr.len() {
-            return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
+            return Err(Vm3Error::Fault(Fault::standard(9)));
         }
         if let Some(result) = recv.safearray_i32_element(flat) {
             match result {
@@ -3257,7 +3193,7 @@ impl<'h> Vm3<'h> {
             .ok_or_else(|| Vm3Error::Fault(Fault::new(9, "array has no bounds")))?;
         let flat = self.flat_index(indices, &bounds)?;
         if flat >= arr.len() {
-            return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
+            return Err(Vm3Error::Fault(Fault::standard(9)));
         }
         if let Some(value_i32) = value.as_i32()
             && let Some(result) = recv.set_safearray_i32_element(flat, value_i32)
@@ -3288,11 +3224,11 @@ impl<'h> Vm3<'h> {
             None => 1,
         };
         if dim < 1 {
-            return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
+            return Err(Vm3Error::Fault(Fault::standard(9)));
         }
         let index = (dim - 1) as usize;
         if index >= bounds.len() {
-            return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
+            return Err(Vm3Error::Fault(Fault::standard(9)));
         }
         Ok(index)
     }
@@ -3417,7 +3353,7 @@ impl<'h> Vm3<'h> {
                             _ => false,
                         };
                     if illegal {
-                        return Err(Vm3Error::Fault(Fault::new(9, default_error_message(9))));
+                        return Err(Vm3Error::Fault(Fault::standard(9)));
                     }
                     let mut out = build_defaults(count)?;
                     for (old_flat, value) in old_elems.into_iter().enumerate() {
@@ -4634,8 +4570,7 @@ impl<'h> Vm3<'h> {
         object
             .with_native_collection(|data| dispatch_collection(method, data, &argv))
             .ok_or_else(|| Vm3Error::Fault(Fault::new(424, "Object required")))?
-            .map_err(Self::collection_fault)
-            .map_err(Vm3Error::Fault)
+            .map_err(|error| Vm3Error::Fault(Fault::standard(error.vba_number())))
     }
 
     fn dispatch_library_object(
@@ -4800,22 +4735,6 @@ impl<'h> Vm3<'h> {
             }
         };
         self.foreach_elements(result, depth)
-    }
-
-    /// Map a shared `CollectionError` onto its VBA run-time error number (9 / 457 / 5 / 449) —
-    /// the vm3 twin of vm2's `collection_fault`.
-    fn collection_fault(err: CollectionError) -> Fault {
-        match err {
-            CollectionError::NotFound => Fault::new(9, "Subscript out of range"),
-            CollectionError::DuplicateKey => Fault::new(
-                457,
-                "This key is already associated with an element of this collection",
-            ),
-            CollectionError::BadArgument => Fault::new(5, "Invalid procedure call or argument"),
-            CollectionError::TypeMismatch => Fault::new(13, "Type mismatch"),
-            CollectionError::ArgNotOptional => Fault::new(449, "Argument not optional"),
-            CollectionError::WrongArgumentCount => Fault::new(450, default_error_message(450)),
-        }
     }
 
     /// Resolve an arithmetic value while retaining the caller's owning object.
@@ -5756,8 +5675,7 @@ impl<'h> Vm3<'h> {
                     let mut subscripts = Vec::with_capacity(indices.len());
                     for index in indices {
                         let value = self.operand(index)?;
-                        let subscript =
-                            subscript_to_long(arith::int(&value).map_err(arith_fault)?)?;
+                        let subscript = array_subscript(&value).map_err(arith_fault)?;
                         subscripts.push(i64::from(subscript));
                     }
                     AddressStep::Index(subscripts)
@@ -6186,15 +6104,6 @@ fn arith_fault(e: ArithError) -> Vm3Error {
     Vm3Error::Fault(Fault::from_arith(e))
 }
 
-/// Narrow an evaluated array subscript/bound to a VBA `Long` (i32). VBA array
-/// subscripts and `ReDim` bounds are `Long`, so a value outside `Long` range
-/// raises Overflow (6) — the arithmetic layer yields the exact `i64`, and a
-/// bare `as i32` would silently wrap it (e.g. `a(4294967296#)` reading `a(0)`
-/// or `ReDim a(4294967296)` allocating a single element).
-fn subscript_to_long(v: i64) -> Result<i32, Vm3Error> {
-    i32::try_from(v).map_err(|_| arith_fault(ArithError::overflow()))
-}
-
 /// Backing-store ceiling for an element-wise (Variant/String/Object/record)
 /// array. Each such element is a `Variant` slot built individually, so a
 /// Long-range element count can demand tens of gigabytes and either abort the
@@ -6513,9 +6422,15 @@ mod tests {
     #[test]
     fn subscript_to_long_overflows_beyond_long_range() {
         // In-range Long values pass through unchanged.
-        assert_eq!(subscript_to_long(0).unwrap(), 0);
-        assert_eq!(subscript_to_long(i64::from(i32::MAX)).unwrap(), i32::MAX);
-        assert_eq!(subscript_to_long(i64::from(i32::MIN)).unwrap(), i32::MIN);
+        assert_eq!(array_subscript(&Variant::from_i64(0)).unwrap(), 0);
+        assert_eq!(
+            array_subscript(&Variant::from_i64(i64::from(i32::MAX))).unwrap(),
+            i32::MAX
+        );
+        assert_eq!(
+            array_subscript(&Variant::from_i64(i64::from(i32::MIN))).unwrap(),
+            i32::MIN
+        );
         // Anything outside Long range is Overflow (6), never a silent wrap.
         for v in [
             i64::from(i32::MAX) + 1,
@@ -6525,8 +6440,8 @@ mod tests {
             i64::MAX,
             i64::MIN,
         ] {
-            match subscript_to_long(v) {
-                Err(Vm3Error::Fault(f)) => assert_eq!(f.code, 6, "value {v} should overflow"),
+            match array_subscript(&Variant::from_i64(v)) {
+                Err(e) => assert_eq!(e.code, 6, "value {v} should overflow"),
                 other => panic!("expected Overflow(6) for {v}, got {other:?}"),
             }
         }

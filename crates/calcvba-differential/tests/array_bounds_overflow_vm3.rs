@@ -72,6 +72,20 @@ fn in_range_out_of_bounds_subscript_still_raises_9() {
 }
 
 #[test]
+fn variant_array_wrong_rank_uses_standard_subscript_error() {
+    let source = "Public r As Variant\nSub Main()\n    Dim a As Variant\n    a = Array(42)\n    r = a(0, 0)\nEnd Sub\n";
+    for executor in [Executor::Vm3, Executor::Jit] {
+        let outcome = run(executor, source);
+        assert!(outcome.raised, "{executor:?}: {outcome:?}");
+        assert_eq!(outcome.err.number, 9, "{executor:?}");
+        assert_eq!(
+            outcome.err.description, "Subscript out of range",
+            "{executor:?}"
+        );
+    }
+}
+
+#[test]
 fn ordinary_arrays_still_work() {
     // Regression guard: valid bounds/subscripts are unaffected.
     assert_eq!(

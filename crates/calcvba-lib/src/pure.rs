@@ -3910,19 +3910,15 @@ fn type_name_for_vartype(vartype: u16) -> &'static str {
 
 pub fn is_numeric(args: &[Variant]) -> LibResult<Variant> {
     let v = need(args, 0)?;
-    // A *String* is numeric iff its text represents a VBA number — `coerce_to(..,
-    // Double)` does not parse strings, so a numeric string like "42" needs the
-    // dedicated grammar check. Every other subtype is judged by its `VarType`:
-    // VBA's `IsNumeric` is True only for the genuine numeric subtypes and `Empty`,
-    // and False for `Boolean`/`Date`/`Null`/`Object`/`Error`/arrays/`Nothing`
-    // (`coerce_to(.., Double)` would wrongly accept Boolean and Date).
+    // Strings use the complete VBA numeric conversion grammar. Other values
+    // are tested by subtype, including Boolean and Empty (P_IsNumeric).
     let result = match v.vtype() {
         VarType::ByRef => {
             // Cloning a reference reads its target (VBA's `VariantCopyInd`).
             let target = v.clone();
             return is_numeric(std::slice::from_ref(&target));
         }
-        VarType::String => is_numeric_string(&as_str(v)?),
+        VarType::String => conv_f64(v).is_ok(),
         VarType::Empty
         | VarType::Boolean
         | VarType::Integer
@@ -3948,18 +3944,6 @@ pub fn is_numeric(args: &[Variant]) -> LibResult<Variant> {
         | VarType::ArrayVariant => false,
     };
     Ok(vbool(result))
-}
-
-/// True when `s` represents a VBA number (the `IsNumeric` string grammar). VBA
-/// recognises a decimal/sign/exponent literal (optionally surrounded by
-/// whitespace) and `&H`/`&O` (or bare `&`) integer literals; it does NOT accept
-/// thousands separators, currency symbols (locale-dependent — out of scope), or
-/// Rust's `inf`/`nan` spellings.
-///
-/// This needs a FULL-parse check, not Val's leading-prefix parse: `IsNumeric("12a")`
-/// must be False.
-fn is_numeric_string(s: &str) -> bool {
-    parse_vba_numeric_string(s).is_some()
 }
 
 fn parse_vba_numeric_string(s: &str) -> Option<f64> {

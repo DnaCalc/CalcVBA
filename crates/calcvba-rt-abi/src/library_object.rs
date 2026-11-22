@@ -1,6 +1,7 @@
 //! Calls on the owning runtime's ErrObject, shared by VM3 and compiled code.
 use crate::{ExecState, Fault, RaiseFields, arith};
 use calcvba_bundle::{NumericCoerceTarget, ProjectMemberKind};
+use calcvba_oxir::value::ErrField;
 use calcvba_runtime::{ObjectRef, Utf16String, Variant, variant::VarType};
 
 /// Built-in object dispatch. This uses the active runtime's error state directly;
@@ -23,15 +24,15 @@ pub fn invoke_library_object(
         name.to_ascii_lowercase()
     };
     let field = match name.as_str() {
-        "number" => Some(crate::RT_ERR_FIELD_NUMBER),
-        "description" => Some(crate::RT_ERR_FIELD_DESCRIPTION),
-        "source" => Some(crate::RT_ERR_FIELD_SOURCE),
-        "helpfile" => Some(crate::RT_ERR_FIELD_HELP_FILE),
-        "helpcontext" => Some(crate::RT_ERR_FIELD_HELP_CONTEXT),
-        "lastdllerror" => Some(crate::RT_ERR_FIELD_LAST_DLL_ERROR),
+        "number" => Some(ErrField::Number),
+        "description" => Some(ErrField::Description),
+        "source" => Some(ErrField::Source),
+        "helpfile" => Some(ErrField::HelpFile),
+        "helpcontext" => Some(ErrField::HelpContext),
+        "lastdllerror" => Some(ErrField::LastDllError),
         _ => None,
     };
-    let error = |number| Fault::new(number, crate::default_error_message(number));
+    let error = Fault::standard;
     if let Some(field) = field {
         if matches!(
             kind,
@@ -40,27 +41,16 @@ pub fn invoke_library_object(
             if args.len() != 1 {
                 return Err(error(450));
             }
-            if kind == ProjectMemberKind::PropertySet || field == crate::RT_ERR_FIELD_LAST_DLL_ERROR
-            {
+            if kind == ProjectMemberKind::PropertySet || field == ErrField::LastDllError {
                 return Err(error(438));
             }
-            crate::apply_err_field_set(exec, field, &args[0])?;
+            exec.err_engine.set_field(field, &args[0])?;
             return Ok(Variant::empty());
         }
         if !args.is_empty() {
             return Err(error(450));
         }
-        return Ok(match field {
-            crate::RT_ERR_FIELD_NUMBER => Variant::from_i32(exec.err_engine.err.number),
-            crate::RT_ERR_FIELD_DESCRIPTION => {
-                Variant::from_string(&exec.err_engine.err.description)
-            }
-            crate::RT_ERR_FIELD_SOURCE => Variant::from_string(&exec.err_engine.err.source),
-            crate::RT_ERR_FIELD_HELP_FILE => Variant::from_string(&exec.err_engine.err.help_file),
-            crate::RT_ERR_FIELD_HELP_CONTEXT => Variant::from_i32(exec.err_engine.err.help_context),
-            crate::RT_ERR_FIELD_LAST_DLL_ERROR => Variant::from_i32(exec.err_engine.last_dll_error),
-            _ => unreachable!(),
-        });
+        return Ok(exec.err_engine.field_value(field));
     }
     if kind != ProjectMemberKind::Method {
         return Err(error(438));

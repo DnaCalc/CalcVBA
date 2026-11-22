@@ -12,6 +12,8 @@
 //! Both executors run in ordinary workspace checks. For a selected module use
 //! `VBA_LIBRARY_ONLY=P_Left cargo test -p calcvba-differential --test vba_library_excel matches_excel`.
 //! The cases are still isolated if a module cannot bind or run as a whole.
+//! Set `VBA_LIBRARY_USE_HOST_LOCALE=1` when comparing answers freshly captured
+//! with the host's current regional settings.
 
 use calcvba_differential::{Canon, Executor, run_modules};
 use calcvba_symbol::manifest::ModuleKind::Procedural;
@@ -417,7 +419,18 @@ fn compare(executor: Executor) -> (Vec<String>, Vec<String>, Vec<String>) {
 }
 
 fn check(executor: Executor) {
-    let (wrong, fixed, report) = compare(executor);
+    // The recorded Excel answers use the South African regional profile.
+    use calcvba_runtime::regional::{RegionalSettings, with_settings};
+    let mut profile = RegionalSettings::en_za();
+    // DateSerial.9 and .10 put years 29 and 30 in the 2000s. The capture
+    // establishes 2030 as the earliest cutoff consistent with these rows.
+    profile.two_digit_year_max = 2030;
+    let (wrong, fixed, report) =
+        if std::env::var("VBA_LIBRARY_USE_HOST_LOCALE").as_deref() == Ok("1") {
+            compare(executor)
+        } else {
+            with_settings(profile, || compare(executor))
+        };
     if let Some(path) = std::env::var_os("VBA_LIBRARY_REPORT") {
         let mut path = PathBuf::from(path);
         path.set_extension(format!("{executor:?}.tsv").to_lowercase());

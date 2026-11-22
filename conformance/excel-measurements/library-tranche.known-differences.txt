@@ -1,13 +1,1 @@
 # Library tranche cases the engines still answer differently from Excel (Vm3). Fix, then delete the line.
-Vm3	FormatP.12
-Vm3	FormatP.13
-Vm3	FormatP.14
-Vm3	FormatP.15
-Vm3	FormatP.16
-Vm3	FormatP.17
-Jit	FormatP.12
-Jit	FormatP.13
-Jit	FormatP.14
-Jit	FormatP.15
-Jit	FormatP.16
-Jit	FormatP.17

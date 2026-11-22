@@ -7,10 +7,11 @@
 
 use calcvba_differential::{Canon, Executor, canon, run};
 use calcvba_runtime::Variant;
+use calcvba_runtime::regional::{RegionalSettings, with_settings};
 
 fn eval_str(expr: &str) -> Canon {
     let source = format!("Public r As String\nSub Main()\n    r = {expr}\nEnd Sub\n");
-    let outcome = run(Executor::Vm3, &source);
+    let outcome = with_settings(RegionalSettings::en_us(), || run(Executor::Vm3, &source));
     assert!(
         outcome.unsupported.is_none(),
         "unsupported: {:?}",

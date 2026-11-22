@@ -7,10 +7,11 @@
 
 use calcvba_differential::{Canon, Executor, RunOutcome, canon, run};
 use calcvba_runtime::Variant;
+use calcvba_runtime::regional::{RegionalSettings, with_settings};
 
 fn run_main(decls: &str, body: &str) -> RunOutcome {
     let source = format!("{decls}Sub Main()\n{body}End Sub\n");
-    run(Executor::Vm3, &source)
+    with_settings(RegionalSettings::en_us(), || run(Executor::Vm3, &source))
 }
 
 fn snapshot(decls: &str, body: &str) -> Vec<Canon> {

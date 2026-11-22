@@ -70,7 +70,7 @@ pub fn days_in_month(y: i64, m: i64) -> i64 {
     }
 }
 
-fn serial_day_and_seconds(serial: f64) -> (i64, i64) {
+pub(crate) fn serial_day_and_seconds(serial: f64) -> (i64, i64) {
     let mut day = serial.trunc() as i64;
     let frac = (serial - serial.trunc()).abs();
     let mut total = (frac * 86_400.0).round() as i64;
@@ -93,32 +93,9 @@ pub fn serial_to_hms(serial: f64) -> (i64, i64, i64) {
     (total / 3600, (total % 3600) / 60, total % 60)
 }
 
-/// VBA's long-time display: `h:mm:ss AM/PM` (12-hour, no leading zero on the hour).
-fn format_long_time(h: i64, mi: i64, s: i64) -> String {
-    let (h12, ampm) = match h {
-        0 => (12, "AM"),
-        1..=11 => (h, "AM"),
-        12 => (12, "PM"),
-        _ => (h - 12, "PM"),
-    };
-    format!("{h12}:{mi:02}:{s:02} {ampm}")
-}
-
-/// VBA's "General Date" display (en-US): a value with a real date and a time renders as
-/// `M/D/YYYY h:mm:ss AM/PM`; a date with no time renders as `M/D/YYYY`; a value whose date part
-/// is the epoch (1899-12-30, integer part 0) renders as the time only, `h:mm:ss AM/PM`.
+/// VBA's General Date text uses the host's short date and long time formats.
 pub fn format_general_date(serial: f64) -> String {
-    let (y, m, d) = serial_to_ymd(serial);
-    let (h, mi, s) = serial_to_hms(serial);
-    let has_date = serial.trunc() != 0.0;
-    let has_time = (h, mi, s) != (0, 0, 0);
-    let date = format!("{m}/{d}/{y}");
-    let time = format_long_time(h, mi, s);
-    match (has_date, has_time) {
-        (true, true) => format!("{date} {time}"),
-        (true, false) => date,
-        (false, _) => time,
-    }
+    crate::regional::current().format_general_date(serial)
 }
 
 /// VBA `Write #` date literal: `#YYYY-MM-DD HH:MM:SS#` (or `#YYYY-MM-DD#` at midnight) — the
@@ -136,6 +113,11 @@ pub fn format_write_date(serial: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::regional::{RegionalSettings, with_settings};
+
+    fn format_us_date(serial: f64) -> String {
+        with_settings(RegionalSettings::en_us(), || format_general_date(serial))
+    }
 
     #[test]
     fn civil_calendar_round_trips_extreme_day_counts() {
@@ -182,33 +164,33 @@ mod tests {
     fn general_date_date_only() {
         // 2020-01-15 (no time).
         let serial = ymd_to_serial(2020, 1, 15);
-        assert_eq!(format_general_date(serial), "1/15/2020");
+        assert_eq!(format_us_date(serial), "1/15/2020");
     }
 
     #[test]
     fn general_date_with_time() {
         // 2020-01-15 13:30:00 → 1:30:00 PM.
         let serial = ymd_to_serial(2020, 1, 15) + (13.0 * 3600.0 + 30.0 * 60.0) / 86_400.0;
-        assert_eq!(format_general_date(serial), "1/15/2020 1:30:00 PM");
+        assert_eq!(format_us_date(serial), "1/15/2020 1:30:00 PM");
     }
 
     #[test]
     fn general_date_time_only_and_midnight() {
         // Epoch-date noon → time only.
-        assert_eq!(format_general_date(0.5), "12:00:00 PM");
+        assert_eq!(format_us_date(0.5), "12:00:00 PM");
         // Exactly 0 (epoch midnight) → time only, 12:00:00 AM.
-        assert_eq!(format_general_date(0.0), "12:00:00 AM");
+        assert_eq!(format_us_date(0.0), "12:00:00 AM");
     }
 
     #[test]
     fn negative_serial_uses_whole_number_date_part() {
-        assert_eq!(format_general_date(-1.25), "12/29/1899 6:00:00 AM");
+        assert_eq!(format_us_date(-1.25), "12/29/1899 6:00:00 AM");
     }
 
     #[test]
     fn rounded_time_can_carry_to_next_date() {
         let almost_next_day = ymd_to_serial(2020, 1, 15) + 86_399.6 / 86_400.0;
-        assert_eq!(format_general_date(almost_next_day), "1/16/2020");
+        assert_eq!(format_us_date(almost_next_day), "1/16/2020");
     }
 
     #[test]

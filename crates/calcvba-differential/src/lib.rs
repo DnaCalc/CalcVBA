@@ -649,6 +649,12 @@ pub fn run_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use calcvba_runtime::regional::{RegionalSettings, with_settings};
+
+    // The VM3 and JIT snapshots use the same en-US date and number strings.
+    fn run(executor: Executor, source: &str) -> RunOutcome {
+        with_settings(RegionalSettings::en_us(), || super::run(executor, source))
+    }
 
     #[test]
     fn execution_timeout_excludes_fixture_lock_queueing() {

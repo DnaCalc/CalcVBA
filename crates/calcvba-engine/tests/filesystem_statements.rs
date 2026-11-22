@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use calcvba_engine::{Engine, HostConfig};
 use calcvba_hal::model::HostPolicy;
+use calcvba_runtime::regional::{RegionalSettings, with_settings};
 
 fn run_clean(source: &str) -> Result<(), String> {
     let mut engine = Engine::new(HostConfig::vm3());
@@ -200,7 +201,9 @@ fn binary_seek_and_loc_are_one_based() {
     );
     let mut engine = Engine::new(HostConfig::vm3());
     engine.set_host_policy(HostPolicy::native());
-    let snap = engine.execute_source_with_variant_snapshot_clean(&source);
+    let snap = with_settings(RegionalSettings::en_us(), || {
+        engine.execute_source_with_variant_snapshot_clean(&source)
+    });
     let _ = std::fs::remove_dir_all(&dir);
     let snap = snap.unwrap_or_else(|d| panic!("{:?}: {}", d.phase(), d.message()));
     assert_eq!(

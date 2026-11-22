@@ -10,44 +10,17 @@
 //!   widths), `AM/PM`, with the VBA rule that `m`/`mm` after an hour token means
 //!   minutes.
 //!
-//! FIDELITY: string-format characters (`@ & < >`), quoted literal runs in masks,
-//! and locale-specific currency symbols / separators are first-cut. Numeric
-//! masks and fixed formats round their decimal digits half up.
+//! Numeric masks and fixed formats use regional separators and round decimal
+//! digits half up. String masks, quoted literals and regional grouping layouts
+//! have partial coverage.
 
 use calcvba_runtime::coerce::{coerce_to, parse_vba_numeric_string};
 use calcvba_runtime::date::parse_date_text_serial_bits;
+use calcvba_runtime::regional;
 use calcvba_runtime::variant::VarType;
 use calcvba_runtime::{Decimal96, Variant, variant_to_vba_string};
 
 use crate::pure::{day_of_week, days_from_civil, serial_to_ymd, week_of_year};
-
-const MONTHS: [&str; 12] = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-];
-const MONTHS_ABBR: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
-const WEEKDAYS: [&str; 7] = [
-    "Sunday",
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-];
-const WEEKDAYS_ABBR: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 #[cfg(test)]
 fn apply(value: &Variant, mask: &str) -> String {
@@ -312,7 +285,7 @@ fn num(value: &Variant) -> f64 {
 pub fn is_date_or_number_text(value: &Variant) -> bool {
     value.as_bstr().is_some_and(|b| {
         let t = b.as_str();
-        parse_vba_numeric_string(&t).is_some() || parse_date_text_serial_bits(&t).is_some()
+        parse_vba_numeric_string(&t).is_some() || crate::pure::date_time_text_serial(&t).is_ok()
     })
 }
 
@@ -322,11 +295,10 @@ fn serial_of(value: &Variant) -> f64 {
     }
     // A date-like String under a date mask (Format("2020-05-01", "yyyy")) parses
     // to a serial; a numeric string falls through to `num`.
-    if value.vtype() == VarType::String
-        && let Some(b) = value.as_bstr()
-        && let Some(bits) = parse_date_text_serial_bits(&b.as_str())
+    if let Some(text) = value.as_bstr()
+        && let Ok(serial) = crate::pure::date_time_text_serial(&text.as_str())
     {
-        return f64::from_bits(bits);
+        return serial;
     }
     num(value)
 }
@@ -336,7 +308,15 @@ fn serial_of(value: &Variant) -> f64 {
 fn named(value: &Variant, mask: &str) -> Option<String> {
     match mask.to_ascii_lowercase().as_str() {
         "general number" => Some(general_number(num(value))),
-        "currency" => Some(format_numeric(value, "$#,##0.00")),
+        "currency" => {
+            let region = regional::current();
+            let symbol = &region.currency_symbol;
+            let number = format_numeric(value, "#,##0.00");
+            Some(match number.strip_prefix('-') {
+                Some(magnitude) => format!("-{symbol}{magnitude}"),
+                None => format!("{symbol}{number}"),
+            })
+        }
         "fixed" => Some(format_numeric(value, "0.00")),
         "standard" => Some(format_numeric(value, "#,##0.00")),
         "percent" => Some(format_numeric(value, "0.00%")),
@@ -344,13 +324,16 @@ fn named(value: &Variant, mask: &str) -> Option<String> {
         "yes/no" => Some(bool_word(value, "Yes", "No")),
         "true/false" => Some(bool_word(value, "True", "False")),
         "on/off" => Some(bool_word(value, "On", "Off")),
-        "general date" => Some(format_date(value, "general date", Weeks::DEFAULT)),
-        "long date" => Some(format_date(value, "dddd, mmmm d, yyyy", Weeks::DEFAULT)),
+        "general date" => format_date_time(value, 0),
+        "long date" => format_date_time(value, 1),
         "medium date" => Some(format_date(value, "dd-mmm-yy", Weeks::DEFAULT)),
-        "short date" => Some(format_date(value, "m/d/yyyy", Weeks::DEFAULT)),
-        "long time" => Some(format_date(value, "h:nn:ss AM/PM", Weeks::DEFAULT)),
-        "medium time" => Some(format_date(value, "h:nn AM/PM", Weeks::DEFAULT)),
-        "short time" => Some(format_date(value, "hh:nn", Weeks::DEFAULT)),
+        "short date" => format_date_time(value, 2),
+        "long time" => format_date_time(value, 3),
+        "medium time" => {
+            let region = regional::current();
+            Some(region.format_date_pattern(serial_of(value), &region.medium_time, true))
+        }
+        "short time" => format_date_time(value, 4),
         _ => None,
     }
 }
@@ -359,8 +342,7 @@ fn bool_word(value: &Variant, yes: &str, no: &str) -> String {
     if num(value) != 0.0 { yes } else { no }.to_string()
 }
 
-/// Deterministic `FormatNumber` helper. VBA delegates omitted/default settings to
-/// regional options; vm3 uses this module's invariant separators instead.
+/// Format a number with the current regional separators and the supplied options.
 pub fn format_number(
     value: &Variant,
     decimals: usize,
@@ -394,7 +376,7 @@ pub fn format_currency(
         include_leading_digit,
         parens_for_negative,
         group_digits,
-        "$",
+        &regional::current().currency_symbol,
         "",
     )
 }
@@ -422,12 +404,15 @@ pub fn format_percent(
 /// `vbGeneralDate`/`vbLongDate`/`vbShortDate`/`vbLongTime`/`vbShortTime`
 /// constants; regional settings are bounded to this module's existing masks.
 pub fn format_date_time(value: &Variant, named_format: i32) -> Option<String> {
+    let region = regional::current();
+    let serial = serial_of(value);
+    let pattern = |mask| region.format_date_pattern(serial, mask, true);
     Some(match named_format {
-        0 => format_date(value, "general date", Weeks::DEFAULT),
-        1 => format_date(value, "dddd, mmmm d, yyyy", Weeks::DEFAULT),
-        2 => format_date(value, "m/d/yyyy", Weeks::DEFAULT),
-        3 => format_date(value, "h:nn:ss AM/PM", Weeks::DEFAULT),
-        4 => format_date(value, "hh:nn", Weeks::DEFAULT),
+        0 => region.format_general_date(serial),
+        1 => pattern(&region.long_date),
+        2 => pattern(&region.short_date),
+        3 => pattern(&region.long_time),
+        4 => pattern("HH:mm"),
         _ => return None,
     })
 }
@@ -476,7 +461,7 @@ fn format_fixed_abs(
         int_s = group_thousands(&int_s);
     }
     if decimals > 0 {
-        int_s.push('.');
+        int_s.push_str(&regional::current().decimal_separator);
         int_s.extend(fraction.into_iter().map(digit_char));
     }
     int_s
@@ -530,6 +515,9 @@ fn general_number(n: f64) -> String {
 
 /// True when the mask holds a date/time token outside quotes, escapes and `[...]`.
 fn is_date_mask(mask: &str) -> bool {
+    if mask.eq_ignore_ascii_case("c") || mask.eq_ignore_ascii_case("ttttt") {
+        return true;
+    }
     let chars: Vec<char> = mask.chars().collect();
     let mut i = 0;
     while i < chars.len() {
@@ -801,12 +789,13 @@ fn layout_number(
     has_dot: bool,
     grouping: bool,
 ) -> String {
+    let region = regional::current();
     let leftmost = before.iter().position(|t| matches!(t, Tok::Digit(_)));
     let mut rev: Vec<String> = Vec::new();
     let mut pos = 0usize;
     let push_digit = |rev: &mut Vec<String>, ch: char, pos: usize| {
         if grouping && pos > 0 && pos.is_multiple_of(3) {
-            rev.push(GROUP_SEP.to_string());
+            rev.push(region.group_separator.clone());
         }
         rev.push(ch.to_string());
     };
@@ -843,7 +832,7 @@ fn layout_number(
         out = d.iter().map(|x| digit_char(*x)).collect::<String>() + &out;
     }
     if has_dot {
-        out.push('.');
+        out.push_str(&region.decimal_separator);
     }
     let slots: Vec<usize> = after
         .iter()
@@ -976,14 +965,13 @@ fn render_section(section: &str, mut dec: Dec) -> Rendered {
 }
 
 /// The separator between digit groups.
-const GROUP_SEP: char = ',';
-
 fn group_thousands(digits: &str) -> String {
+    let region = regional::current();
     let n = digits.len();
     let mut out = String::with_capacity(n + n / 3);
     for (i, ch) in digits.chars().enumerate() {
         if i > 0 && (n - i).is_multiple_of(3) {
-            out.push(GROUP_SEP);
+            out.push_str(&region.group_separator);
         }
         out.push(ch);
     }
@@ -1002,8 +990,7 @@ struct DateParts {
     dow: usize, // 0 = Sunday … 6 = Saturday
 }
 
-fn decompose(value: &Variant) -> DateParts {
-    let serial = serial_of(value);
+fn decompose(serial: f64) -> DateParts {
     let (year, month, day) = serial_to_ymd(serial);
     let frac = serial - serial.floor();
     let total = ((frac * 86_400.0).round() as i64).rem_euclid(86_400);
@@ -1020,24 +1007,10 @@ fn decompose(value: &Variant) -> DateParts {
 }
 
 fn format_date(value: &Variant, mask: &str, weeks: Weeks) -> String {
-    let p = decompose(value);
-    // "General Date" routes here with a non-token mask; render date + present
-    // time components like VBA's default.
-    if mask.eq_ignore_ascii_case("general date") {
-        let serial = serial_of(value);
-        let has_time = serial.fract() != 0.0;
-        let has_date = serial.trunc() != 0.0;
-        return match (has_date, has_time) {
-            (true, true) => format!(
-                "{} {}",
-                format_date(value, "m/d/yyyy", weeks),
-                format_date(value, "h:nn:ss AM/PM", weeks)
-            ),
-            (false, true) => format_date(value, "h:nn:ss AM/PM", weeks),
-            _ => format_date(value, "m/d/yyyy", weeks),
-        };
-    }
-
+    let serial = serial_of(value);
+    let p = decompose(serial);
+    let region = regional::current();
+    let month = (p.month.clamp(1, 12) - 1) as usize;
     let lower = mask.to_ascii_lowercase();
     let use_12h = lower.contains("am/pm") || lower.contains("ampm") || lower.contains("a/p");
     let chars: Vec<char> = mask.chars().collect();
@@ -1092,19 +1065,33 @@ fn format_date(value: &Variant, mask: &str, weeks: Weeks) -> String {
         } else if starts_ci(rest, "q") {
             (((p.month - 1) / 3 + 1).to_string(), 1, false, true)
         } else if starts_ci(rest, "mmmm") {
-            (month_name(p.month, false), 4, false, true)
+            (region.months[month].clone(), 4, false, true)
         } else if starts_ci(rest, "mmm") {
-            (month_name(p.month, true), 3, false, true)
+            (region.abbreviated_months[month].clone(), 3, false, true)
         } else if starts_ci(rest, "mm") {
             let v = if after_hour { p.minute } else { p.month };
             (format!("{v:02}"), 2, false, true)
         } else if starts_ci(rest, "m") {
             let v = if after_hour { p.minute } else { p.month };
             (v.to_string(), 1, false, true)
+        } else if starts_ci(rest, "dddddd") {
+            (
+                region.format_date_pattern(serial, &region.long_date, true),
+                6,
+                false,
+                true,
+            )
+        } else if starts_ci(rest, "ddddd") {
+            (
+                region.format_date_pattern(serial, &region.short_date, true),
+                5,
+                false,
+                true,
+            )
         } else if starts_ci(rest, "dddd") {
-            (WEEKDAYS[p.dow].to_string(), 4, false, true)
+            (region.weekdays[p.dow].clone(), 4, false, true)
         } else if starts_ci(rest, "ddd") {
-            (WEEKDAYS_ABBR[p.dow].to_string(), 3, false, true)
+            (region.abbreviated_weekdays[p.dow].clone(), 3, false, true)
         } else if starts_ci(rest, "dd") {
             (format!("{:02}", p.day), 2, false, true)
         } else if starts_ci(rest, "d") {
@@ -1134,12 +1121,7 @@ fn format_date(value: &Variant, mask: &str, weeks: Weeks) -> String {
                 true,
             )
         } else if starts_ci(rest, "ampm") {
-            (
-                if p.hour < 12 { "AM" } else { "PM" }.to_string(),
-                4,
-                false,
-                true,
-            )
+            (region.designator(p.hour).to_owned(), 4, false, true)
         } else if starts_ci(rest, "a/p") {
             (
                 if p.hour < 12 { "A" } else { "P" }.to_string(),
@@ -1147,6 +1129,15 @@ fn format_date(value: &Variant, mask: &str, weeks: Weeks) -> String {
                 false,
                 true,
             )
+        } else if starts_ci(rest, "ttttt") {
+            (
+                region.format_date_pattern(serial, &region.long_time, true),
+                5,
+                false,
+                true,
+            )
+        } else if starts_ci(rest, "c") {
+            (region.format_general_date(serial), 1, false, true)
         } else {
             (chars[i].to_string(), 1, false, false)
         };
@@ -1163,11 +1154,6 @@ fn format_date(value: &Variant, mask: &str, weeks: Weeks) -> String {
         // minutes.
     }
     out
-}
-
-fn month_name(month: i64, abbr: bool) -> String {
-    let idx = (month.clamp(1, 12) - 1) as usize;
-    if abbr { MONTHS_ABBR[idx] } else { MONTHS[idx] }.to_string()
 }
 
 fn hour_display(hour24: i64, use_12h: bool) -> i64 {
@@ -1223,7 +1209,7 @@ mod tests {
         ));
         let expected =
             "79\u{a0}228\u{a0}162\u{a0}514\u{a0}264\u{a0}337\u{a0}593\u{a0}543\u{a0}950\u{a0}335"
-                .replace('\u{a0}', &GROUP_SEP.to_string());
+                .replace('\u{a0}', &regional::current().group_separator);
         assert_eq!(apply(&value, "#,##0"), expected);
     }
 

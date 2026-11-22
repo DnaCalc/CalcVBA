@@ -1581,8 +1581,7 @@ pub fn date_serial(args: &[Variant]) -> LibResult<Variant> {
     // Positive two-digit years use the current default window; host cutoff remains separate.
     let y = match y {
         ..=-1 => y + 2000,
-        0..=29 => y + 2000,
-        30..=99 => y + 1900,
+        0..=99 => calcvba_runtime::regional::current().expand_year(y),
         100..=9999 => y,
         _ => return Err(LibError::invalid_call("DateSerial year out of range")),
     };
@@ -1746,18 +1745,14 @@ fn parse_time_only(s: &str) -> Option<f64> {
 }
 
 fn parse_date_raw(s: &str) -> Option<(i64, i64, i64)> {
-    // Two-digit years use VBA's window: 0-29 -> 2000s, 30-99 -> 1900s.
-    fn window(year: i64) -> i64 {
-        match year {
-            0..=29 => year + 2000,
-            30..=99 => year + 1900,
-            other => other,
-        }
-    }
+    use calcvba_runtime::regional::DateOrder;
+    let region = calcvba_runtime::regional::current();
+    let window = |year| region.expand_year(year);
     let s = s.trim();
     let mut month = None;
     let mut nums: Vec<i64> = Vec::new();
     let mut first_token_len = 0;
+    let mut last_token_len = 0;
     for tok in s
         .split([' ', ',', '\t', '/', '-'])
         .filter(|t| !t.is_empty())
@@ -1770,6 +1765,7 @@ fn parse_date_raw(s: &str) -> Option<(i64, i64, i64)> {
             if nums.is_empty() && month.is_none() {
                 first_token_len = tok.len();
             }
+            last_token_len = tok.len();
             nums.push(tok.parse::<i64>().ok()?);
         } else {
             return None;
@@ -1784,16 +1780,33 @@ fn parse_date_raw(s: &str) -> Option<(i64, i64, i64)> {
         // Month name and one number: a day of this year (`Dec 30`) or a year (`Jan 2000`).
         (Some(m), [n]) if *n > 31 => Some((window(*n), m, 1)),
         (Some(m), [n]) => Some((current_year(), m, *n)),
-        // All numeric: `y-m-d` when the first part is a year, otherwise US `m/d/y`.
+        // A full year at the front establishes the ISO order independently of locale.
         (None, [a, b, c]) => {
-            if first_token_len >= 3 || *a > 31 {
-                Some((*a, *b, *c))
+            if first_token_len >= 3 || (*a > 31 && region.date_order != DateOrder::YearMonthDay) {
+                return Some((*a, *b, *c));
+            }
+            if region.date_order == DateOrder::YearMonthDay && last_token_len <= 2 {
+                let year = window(*a);
+                if ymd_is_valid(year, *b, *c) {
+                    return Some((year, *b, *c));
+                }
+            }
+            let year = window(*c);
+            let (month, day) = match region.date_order {
+                DateOrder::DayMonthYear => (*b, *a),
+                _ => (*a, *b),
+            };
+            if ymd_is_valid(year, month, day) || region.date_order == DateOrder::MonthDayYear {
+                Some((year, month, day))
             } else {
-                Some((window(*c), *a, *b))
+                Some((year, day, month))
             }
         }
-        // `m/d`: the day of this year.
-        (None, [a, b]) => Some((current_year(), *a, *b)),
+        // A numeric month and day without a year use this calendar year.
+        (None, [a, b]) => match region.date_order {
+            DateOrder::DayMonthYear => Some((current_year(), *b, *a)),
+            _ => Some((current_year(), *a, *b)),
+        },
         _ => None,
     }
 }
@@ -2039,25 +2052,17 @@ fn weekday_number(year: i32, month: u32, day: u32, first: i32) -> i32 {
 }
 
 pub fn month_name(args: &[Variant]) -> LibResult<Variant> {
-    const NAMES: [&str; 12] = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ];
     let n = as_usize(need(args, 0)?)?;
     let abbreviate = abbreviate_name(args)?;
-    NAMES
+    let region = calcvba_runtime::regional::current();
+    let names = if abbreviate {
+        &region.abbreviated_months
+    } else {
+        &region.months
+    };
+    names
         .get(n.wrapping_sub(1))
-        .map(|s| vstr(if abbreviate { &s[..3] } else { s }))
+        .map(vstr)
         .ok_or_else(|| LibError::invalid_call("MonthName index out of range"))
 }
 
@@ -2242,7 +2247,7 @@ pub fn cstr(args: &[Variant]) -> LibResult<Variant> {
 }
 pub fn str_fn(args: &[Variant]) -> LibResult<Variant> {
     let value = need(args, 0)?;
-    if value.vtype() == VarType::Boolean {
+    if matches!(value.vtype(), VarType::Boolean | VarType::Date) {
         return as_str(value).map(vstr);
     }
     // A numeric string is converted to its number first; `Empty` is 0.
@@ -2423,7 +2428,7 @@ fn cdate_from_string(s: &str) -> LibResult<Variant> {
 }
 
 /// Date/time recognition does not include CDate's numeric-string fallback (IsDate).
-fn date_time_text_serial(s: &str) -> LibResult<f64> {
+pub(crate) fn date_time_text_serial(s: &str) -> LibResult<f64> {
     let s = s.trim();
     if let Some(time) = parse_time_only(s) {
         return Ok(time);
@@ -2465,16 +2470,19 @@ fn conv_f64(value: &Variant) -> LibResult<f64> {
         return Ok(f64::from(code));
     }
     if value.vtype() == VarType::String {
-        let text = as_str(value)?;
-        let exponent = text.find(['e', 'E', 'd', 'D']).unwrap_or(text.len());
-        let (mantissa, exponent) = text.split_at(exponent);
-        // Excel ignores spaces and nonbreaking spaces in the mantissa, but not
-        // tabs or spaces inside the exponent ("1 000" works; "1e3 0" fails).
-        let text = mantissa.replace([' ', '\u{a0}'], "") + exponent;
-        return calcvba_runtime::coerce::parse_vba_number(&text)
-            .map_err(|error| LibError::new(error.code(), default_error_message(error.code())));
+        return conv_number_text(&as_str(value)?);
     }
     as_f64(value)
+}
+
+fn conv_number_text(text: &str) -> LibResult<f64> {
+    let exponent = text.find(['e', 'E', 'd', 'D']).unwrap_or(text.len());
+    let (mantissa, exponent) = text.split_at(exponent);
+    // Excel ignores spaces and nonbreaking spaces in the mantissa, but not
+    // tabs or spaces inside the exponent ("1 000" works; "1e3 0" fails).
+    let text = mantissa.replace([' ', '\u{a0}'], "") + exponent;
+    calcvba_runtime::coerce::parse_vba_number(&text)
+        .map_err(|error| LibError::new(error.code(), default_error_message(error.code())))
 }
 /// Read a conversion argument as `i64` with VBA banker's rounding, parsing a numeric
 /// string first. A non-string numeric keeps its exact value via `as_i64`.
@@ -3938,7 +3946,15 @@ pub fn is_numeric(args: &[Variant]) -> LibResult<Variant> {
             let target = v.clone();
             return is_numeric(std::slice::from_ref(&target));
         }
-        VarType::String => conv_f64(v).is_ok(),
+        VarType::String => {
+            let text = as_str(v)?;
+            let region = calcvba_runtime::regional::current();
+            conv_number_text(&text).is_ok()
+                || text
+                    .trim()
+                    .strip_prefix(region.currency_symbol.as_str())
+                    .is_some_and(|amount| conv_number_text(amount).is_ok())
+        }
         VarType::Empty
         | VarType::Boolean
         | VarType::Integer

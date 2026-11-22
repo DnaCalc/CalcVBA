@@ -2,6 +2,7 @@
 //! neighbours the probes do not cover. Each case runs on VM3 and on the JIT.
 
 use calcvba_differential::{Canon, Executor, run};
+use calcvba_runtime::regional::{RegionalSettings, with_settings};
 
 /// `result = <expr>` as a String, on both executors.
 fn eval(expr: &str) -> Vec<String> {
@@ -9,7 +10,7 @@ fn eval(expr: &str) -> Vec<String> {
     [Executor::Vm3, Executor::Jit]
         .into_iter()
         .map(|executor| {
-            let outcome = run(executor, &source);
+            let outcome = with_settings(RegionalSettings::en_us(), || run(executor, &source));
             assert!(
                 outcome.unsupported.is_none(),
                 "{executor:?} declined {expr}: {:?}",

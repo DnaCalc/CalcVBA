@@ -24,6 +24,7 @@ pub mod object_owner;
 pub mod object_ref;
 pub use calcvba_automation::oleaut;
 pub mod pointer_helpers;
+pub mod regional;
 pub use calcvba_automation::safe_array;
 pub mod string_compare;
 pub use calcvba_automation::value_types;

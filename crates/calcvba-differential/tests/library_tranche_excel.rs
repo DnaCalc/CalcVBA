@@ -7,6 +7,7 @@
 //! fails on any new difference and on any listed difference that is now fixed.
 
 use calcvba_differential::{Canon, Executor, run};
+use calcvba_runtime::regional::{RegionalSettings, with_settings};
 use std::collections::{BTreeMap, BTreeSet};
 
 const MODULE: &str = include_str!("../../../conformance/excel-measurements/library-tranche.vba");
@@ -77,7 +78,8 @@ fn known(executor: Executor) -> BTreeSet<String> {
 }
 
 fn check(executor: Executor) {
-    let Some(diffs) = differences(executor) else {
+    // The captured FormatP rows use the en-ZA group separator.
+    let Some(diffs) = with_settings(RegionalSettings::en_za(), || differences(executor)) else {
         return;
     };
     if let Ok(path) = std::env::var("LIBRARY_TRANCHE_DUMP") {

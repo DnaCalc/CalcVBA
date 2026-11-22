@@ -704,6 +704,7 @@ impl NativeImplId {
             Space => &["Space$"],
             StringRepeat => &["String$"],
             Oct => &["Oct$"],
+            Str => &["Str$"],
             Format => &["Format$"],
             Hex => &["Hex$"],
             ErrorText => &["Error$"],

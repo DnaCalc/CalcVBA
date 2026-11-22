@@ -60,6 +60,13 @@ pub(super) fn lock(path: &Path, write: bool) -> io::Result<Option<File>> {
 
 type Row = ((String, String, String), SettingEntry);
 
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum StoredSettings {
+    Tree(SettingsState),
+    Flat(Vec<Row>),
+}
+
 pub(super) fn read(path: &Path) -> io::Result<SettingsState> {
     let file = match File::open(path) {
         Ok(file) => file,
@@ -68,12 +75,18 @@ pub(super) fn read(path: &Path) -> io::Result<SettingsState> {
         }
         Err(error) => return Err(error),
     };
-    let rows: Vec<Row> = serde_json::from_reader(std::io::BufReader::new(file))?;
-    let next_seq = rows.iter().map(|(_, entry)| entry.seq).max().unwrap_or(0);
-    Ok(SettingsState {
-        next_seq,
-        values: rows.into_iter().collect(),
-    })
+    let stored = serde_json::from_reader(std::io::BufReader::new(file))?;
+    match stored {
+        StoredSettings::Tree(state) => Ok(state),
+        StoredSettings::Flat(rows) => {
+            let mut state = SettingsState::default();
+            for ((app, section, name), entry) in rows {
+                state.next_seq = state.next_seq.max(entry.seq);
+                state.create_section(app, &section).insert(name, entry);
+            }
+            Ok(state)
+        }
+    }
 }
 
 pub(super) fn write(path: &Path, state: &SettingsState) -> io::Result<()> {
@@ -105,8 +118,7 @@ pub(super) fn write(path: &Path, state: &SettingsState) -> io::Result<()> {
         }
     };
     let result = (|| {
-        let rows: Vec<_> = state.values.iter().collect();
-        serde_json::to_writer(&file, &rows)?;
+        serde_json::to_writer(&file, state)?;
         file.sync_all()?;
         fs::rename(&temporary, path)
     })();

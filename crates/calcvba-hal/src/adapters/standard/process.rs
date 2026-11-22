@@ -35,10 +35,33 @@ pub(super) struct SettingEntry {
     pub(super) seq: u64,
 }
 
+type SectionValues = BTreeMap<String, SettingEntry>;
+
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(
+    any(target_os = "linux", target_os = "wasi"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub(super) struct SettingsState {
-    pub(super) values: BTreeMap<(String, String, String), SettingEntry>,
+    apps: BTreeMap<String, BTreeMap<String, SectionValues>>,
     pub(super) next_seq: u64,
+}
+
+impl SettingsState {
+    pub(super) fn create_section(&mut self, app: String, section: &str) -> &mut SectionValues {
+        let sections = self.apps.entry(app).or_default();
+        // Persist parent sections even when they have no values of their own.
+        for (end, _) in section.match_indices('\\') {
+            sections.entry(section[..end].to_owned()).or_default();
+        }
+        sections.entry(section.to_owned()).or_default()
+    }
+
+    fn section(&self, app: &str, section: &str) -> Option<&SectionValues> {
+        self.apps
+            .get(&normalize_setting_name(app))?
+            .get(&normalize_setting_name(section))
+    }
 }
 
 /// The executable portion of a command line, without launching it.
@@ -212,8 +235,8 @@ impl ProcessEnvHal for StandardHostServices {
         }
         let value = self.with_settings(op, false, |state| {
             Ok(state
-                .values
-                .get(&settings_key(&appname, &section, &key))
+                .section(&appname, &section)
+                .and_then(|values| values.get(&normalize_setting_name(&key)))
                 .map_or(default, |entry| entry.value.clone()))
         })?;
         Ok(Variant::from_string(value))
@@ -227,10 +250,6 @@ impl ProcessEnvHal for StandardHostServices {
         }
         let appname = self.setting_text(&appname, capability, op, "appname")?;
         let section = self.setting_text(&section, capability, op, "section")?;
-        let prefix = (
-            normalize_setting_name(&appname),
-            normalize_setting_name(&section),
-        );
         if section.is_empty() {
             return Err(settings_missing_fault(
                 self.profile,
@@ -247,11 +266,9 @@ impl ProcessEnvHal for StandardHostServices {
         }
         let mut entries: Vec<SettingEntry> = self.with_settings(op, false, |state| {
             Ok(state
-                .values
-                .iter()
-                .filter(|((app, sec, _), _)| app == &prefix.0 && sec == &prefix.1)
-                .map(|(_, entry)| entry.clone())
-                .collect())
+                .section(&appname, &section)
+                .map(|values| values.values().cloned().collect())
+                .unwrap_or_default())
         })?;
         entries.sort_by_key(|entry| entry.seq);
         self.settings_array(entries.into_iter().map(|e| (e.key_name, e.value)).collect())
@@ -280,22 +297,26 @@ impl ProcessEnvHal for StandardHostServices {
             return Ok(Variant::empty());
         }
         self.with_settings(op, true, |state| {
-            let slot = settings_key(&appname, &section, &key_name);
-            let seq = match state.values.get(&slot) {
-                Some(existing) => existing.seq,
-                None => {
-                    state.next_seq += 1;
-                    state.next_seq
-                }
-            };
-            state.values.insert(
-                slot,
-                SettingEntry {
-                    key_name,
-                    value,
-                    seq,
-                },
+            let mut next_seq = state.next_seq;
+            let values = state.create_section(
+                normalize_setting_name(&appname),
+                &normalize_setting_name(&section),
             );
+            let name = normalize_setting_name(&key_name);
+            if let Some(entry) = values.get_mut(&name) {
+                entry.value = value;
+            } else {
+                next_seq += 1;
+                values.insert(
+                    name,
+                    SettingEntry {
+                        key_name,
+                        value,
+                        seq: next_seq,
+                    },
+                );
+                state.next_seq = next_seq;
+            }
             Ok(Variant::empty())
         })
     }
@@ -325,55 +346,64 @@ impl ProcessEnvHal for StandardHostServices {
                 .map_err(|error| self.registry_fault(op, error))?;
             return Ok(Variant::empty());
         }
-        self.with_settings(op, true, |state| {
-            if section.vtype() == VarType::Empty {
-                // `DeleteSetting App` removes the whole application; a key needs a section.
-                let missing =
-                    |message| settings_missing_fault(self.profile, capability, op, message);
-                if key.vtype() != VarType::Empty {
-                    return Err(missing("a key needs a section"));
-                }
-                let app = normalize_setting_name(&appname);
-                let before = state.values.len();
-                state.values.retain(|(a, _, _), _| a != &app);
-                if state.values.len() == before {
-                    return Err(missing("setting application does not exist"));
-                }
-                return Ok(Variant::empty());
+        let missing = |message| settings_missing_fault(self.profile, capability, op, message);
+        let app = normalize_setting_name(&appname);
+        if section.vtype() == VarType::Empty {
+            if key.vtype() != VarType::Empty {
+                return Err(missing("a key needs a section"));
             }
-            let section = self.setting_text(&section, capability, op, "section")?;
-            if key.vtype() == VarType::Empty {
-                let prefix = (
-                    normalize_setting_name(&appname),
-                    normalize_setting_name(&section),
-                );
-                let before = state.values.len();
-                state
-                    .values
-                    .retain(|(app, sec, _), _| !(app == &prefix.0 && sec == &prefix.1));
-                if state.values.len() == before {
-                    return Err(settings_missing_fault(
-                        self.profile,
-                        capability,
-                        op,
-                        "setting section does not exist",
-                    ));
+            let blocked = self.with_settings(op, true, |state| {
+                let sections = state
+                    .apps
+                    .get_mut(&app)
+                    .ok_or_else(|| missing("setting application does not exist"))?;
+                let first_parent = sections
+                    .keys()
+                    .filter_map(|path| path.split_once('\\').map(|(parent, _)| parent))
+                    .min()
+                    .map(str::to_owned);
+                if let Some(parent) = first_parent {
+                    sections.retain(|name, _| name >= &parent);
+                    return Ok(true);
                 }
-                return Ok(Variant::empty());
-            }
+                state.apps.remove(&app);
+                Ok(false)
+            })?;
+            // The preceding section deletions persist when Excel reports error 5.
+            return if blocked {
+                Err(missing("setting section has subkeys"))
+            } else {
+                Ok(Variant::empty())
+            };
+        }
 
+        let section = self.setting_text(&section, capability, op, "section")?;
+        let section = normalize_setting_name(&section);
+        self.with_settings(op, true, |state| {
+            if key.vtype() == VarType::Empty {
+                let section_missing = || missing("setting section does not exist");
+                let sections = state.apps.get_mut(&app).ok_or_else(section_missing)?;
+                let prefix = format!("{section}\\");
+                if sections.keys().any(|name| name.starts_with(&prefix)) {
+                    let values = sections.get_mut(&section).ok_or_else(section_missing)?;
+                    if values.is_empty() {
+                        return Err(section_missing());
+                    }
+                    values.clear();
+                } else if sections.remove(&section).is_none() {
+                    return Err(section_missing());
+                }
+                return Ok(Variant::empty());
+            }
             let key = self.setting_text(&key, capability, op, "key")?;
             if state
-                .values
-                .remove(&settings_key(&appname, &section, &key))
+                .apps
+                .get_mut(&app)
+                .and_then(|sections| sections.get_mut(&section))
+                .and_then(|values| values.remove(&normalize_setting_name(&key)))
                 .is_none()
             {
-                return Err(settings_missing_fault(
-                    self.profile,
-                    capability,
-                    op,
-                    "setting key does not exist",
-                ));
+                return Err(missing("setting key does not exist"));
             }
             Ok(Variant::empty())
         })
@@ -778,14 +808,6 @@ impl StandardHostServices {
 
 fn normalize_setting_name(value: &str) -> String {
     value.to_ascii_lowercase()
-}
-
-fn settings_key(appname: &str, section: &str, key: &str) -> (String, String, String) {
-    (
-        normalize_setting_name(appname),
-        normalize_setting_name(section),
-        normalize_setting_name(key),
-    )
 }
 
 fn settings_missing_fault(

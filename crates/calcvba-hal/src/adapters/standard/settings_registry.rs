@@ -6,9 +6,10 @@ use windows_sys::Win32::{
         ERROR_SUCCESS,
     },
     System::Registry::{
-        HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ,
-        RRF_RT_REG_SZ, RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegDeleteValueW,
-        RegEnumValueW, RegGetValueW, RegOpenKeyExW, RegSetValueExW,
+        HKEY, HKEY_CURRENT_USER, KEY_ENUMERATE_SUB_KEYS, KEY_QUERY_VALUE, KEY_SET_VALUE,
+        REG_OPTION_NON_VOLATILE, REG_SZ, RRF_RT_REG_SZ, RegCloseKey, RegCreateKeyExW,
+        RegDeleteKeyW, RegDeleteTreeW, RegDeleteValueW, RegEnumKeyExW, RegEnumValueW, RegGetValueW,
+        RegOpenKeyExW, RegSetValueExW,
     },
 };
 
@@ -49,8 +50,7 @@ fn status(status: u32) -> io::Result<()> {
     }
 }
 
-fn open(app: &str, section: &str, access: u32) -> io::Result<Option<Key>> {
-    let path = setting_path(app, Some(section))?;
+fn open(path: &[u16], access: u32) -> io::Result<Option<Key>> {
     let mut key = ptr::null_mut();
     // SAFETY: the subkey is terminated and Windows writes the handle into `key`.
     let result = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, path.as_ptr(), 0, access, &mut key) };
@@ -99,14 +99,14 @@ fn read_value(key: &Key, name: &[u16]) -> io::Result<Option<String>> {
 }
 
 pub(super) fn get(app: &str, section: &str, name: &str) -> io::Result<Option<String>> {
-    let Some(key) = open(app, section, KEY_QUERY_VALUE)? else {
+    let Some(key) = open(&setting_path(app, Some(section))?, KEY_QUERY_VALUE)? else {
         return Ok(None);
     };
     read_value(&key, &wide(name))
 }
 
 pub(super) fn all(app: &str, section: &str) -> io::Result<Vec<(String, String)>> {
-    let Some(key) = open(app, section, KEY_QUERY_VALUE)? else {
+    let Some(key) = open(&setting_path(app, Some(section))?, KEY_QUERY_VALUE)? else {
         return Ok(Vec::new());
     };
     let mut entries = Vec::new();
@@ -170,16 +170,54 @@ pub(super) fn save(app: &str, section: &str, name: &str, value: &str) -> io::Res
 }
 
 pub(super) fn delete(app: &str, section: Option<&str>, value: Option<&str>) -> io::Result<()> {
+    let path = setting_path(app, section)?;
     if let Some(value) = value {
-        let section = section.ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
-        let key = open(app, section, KEY_SET_VALUE)?
-            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+        if section.is_none() {
+            return Err(io::Error::from(io::ErrorKind::InvalidInput));
+        }
+        let key =
+            open(&path, KEY_SET_VALUE)?.ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         let value = wide(value);
         // SAFETY: the value name is terminated and the owning section key is live.
         status(unsafe { RegDeleteValueW(key.0, value.as_ptr()) })
-    } else {
-        let path = setting_path(app, section)?;
+    } else if section.is_some() {
         // SAFETY: the path is a nonempty owned string below the VBA settings key.
         status(unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, path.as_ptr()) })
+    } else {
+        delete_app(&path)
     }
+}
+
+fn delete_app(path: &[u16]) -> io::Result<()> {
+    let app = open(path, KEY_ENUMERATE_SUB_KEYS)?
+        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+    // A registry key name is at most 255 UTF-16 units, plus the terminator.
+    let mut name = [0u16; 256];
+    loop {
+        let mut len = name.len() as u32;
+        // SAFETY: the app handle and writable name and length buffers are live.
+        let result = unsafe {
+            RegEnumKeyExW(
+                app.0,
+                0,
+                name.as_mut_ptr(),
+                &mut len,
+                ptr::null(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        };
+        if result == ERROR_NO_MORE_ITEMS {
+            break;
+        }
+        status(result)?;
+        // Excel stops at a section with subkeys after deleting the preceding sections.
+        // RegDeleteKeyW deletes one leaf, so the next section will be at index zero.
+        // SAFETY: the app is live and the successful enumeration returned a terminated name.
+        status(unsafe { RegDeleteKeyW(app.0, name.as_ptr()) })?;
+    }
+    drop(app);
+    // SAFETY: path is terminated and identifies the now-empty application under HKCU.
+    status(unsafe { RegDeleteKeyW(HKEY_CURRENT_USER, path.as_ptr()) })
 }

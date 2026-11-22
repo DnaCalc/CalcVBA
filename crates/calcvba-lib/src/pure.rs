@@ -3177,7 +3177,11 @@ pub fn sln(args: &[Variant]) -> LibResult<Variant> {
     if life == 0.0 {
         return Err(LibError::invalid_call("SLN requires life <> 0"));
     }
-    finite_result((cost - salvage) / life)
+    let depreciation = (cost - salvage) / life;
+    if depreciation.is_infinite() {
+        return Err(LibError::overflow("SLN"));
+    }
+    finite_result(depreciation)
 }
 
 pub fn syd(args: &[Variant]) -> LibResult<Variant> {

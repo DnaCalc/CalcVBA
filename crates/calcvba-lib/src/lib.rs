@@ -212,6 +212,11 @@ pub(crate) fn as_i64(value: &Variant) -> LibResult<i64> {
     Ok(d.round_ties_even() as i64)
 }
 
+pub(crate) fn as_i16(value: &Variant) -> LibResult<i16> {
+    let v = as_i64(value)?;
+    i16::try_from(v).map_err(|_| LibError::overflow("value does not fit in Integer"))
+}
+
 pub(crate) fn as_i32(value: &Variant) -> LibResult<i32> {
     let v = as_i64(value)?;
     i32::try_from(v).map_err(|_| LibError::overflow("value does not fit in Long"))

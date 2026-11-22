@@ -645,6 +645,7 @@ mod dispatch_policy_tests {
                 Some("cos") => NativeImplId::Cos,
                 Some("tan") => NativeImplId::Tan,
                 Some("atn") => NativeImplId::Atn,
+                Some("exp") => NativeImplId::Exp,
                 Some("log") => NativeImplId::Log,
                 _ => continue,
             };

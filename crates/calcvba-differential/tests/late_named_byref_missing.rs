@@ -9,12 +9,17 @@ const K: &str = "Option Explicit\n\
 Public Sub Bump(n As Long)\n    n = n + 1\nEnd Sub\n\
 Public Property Get Number() As Variant\n    Number = 41\nEnd Property\n\
 Public Sub Bump2(a As Long, b As Variant)\n    a = a + 10\n    b = b & \"!\"\nEnd Sub\n";
+const COPY: &str = "Public Sub Change(ByVal n As Long)\n    n = n + 1\nEnd Sub\n";
 
 fn result(executor: Executor, body: &str) -> String {
     let main = format!("Option Explicit\nPublic result As String\n{body}");
     let outcome = run_modules(
         executor,
-        &[("Main", Procedural, main.as_str()), ("K", Class, K)],
+        &[
+            ("Main", Procedural, main.as_str()),
+            ("K", Class, K),
+            ("CopyOnly", Class, COPY),
+        ],
         "VBAProject",
     );
     assert!(
@@ -65,6 +70,37 @@ fn late_bound_named_argument_expression_is_byval() {
          o.Bump n:=(lk)\n    result = CStr(lk)\nEnd Sub\n",
         "1",
     );
+}
+
+#[test]
+fn unknown_late_bound_named_argument_keeps_caller_value() {
+    for executor in [Executor::Jit, Executor::Vm3] {
+        assert_eq!(
+            result(
+                executor,
+                "Sub Main()\n    Dim o As Object, lk As Long\n    Set o = New K\n    lk = 1\n    \
+                 On Error Resume Next\n    o.Bump unknown:=lk\n    \
+                 result = lk & \"|\" & Err.Number & \"|\" & Err.Description\nEnd Sub\n",
+            ),
+            "1|448|Named argument not found",
+            "{executor:?}",
+        );
+    }
+}
+
+#[test]
+fn late_bound_variable_to_byval_parameter_is_a_private_copy() {
+    for executor in [Executor::Jit, Executor::Vm3] {
+        assert_eq!(
+            result(
+                executor,
+                "Sub Main()\n    Dim o As Object, lk As Long\n    Set o = New CopyOnly\n    lk = 1\n    \
+                 o.Change n:=lk\n    result = CStr(lk)\nEnd Sub\n",
+            ),
+            "1",
+            "{executor:?}",
+        );
+    }
 }
 
 #[test]

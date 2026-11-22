@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use calcvba_differential::{Executor, RunOutcome, canon, run_modules, run_project_closure};
+use calcvba_differential::{Canon, Executor, RunOutcome, canon, run_modules, run_project_closure};
 use calcvba_runtime::Variant;
 use calcvba_symbol::manifest::ModuleKind::{Class, Procedural};
 use calcvba_symbol::manifest::{
@@ -702,6 +702,31 @@ fn untyped_project_default_arithmetic_preserves_identity_and_caller_frame() {
             "project default arithmetic",
             run_modules(executor, &modules, "VBAProject"),
             42,
+        );
+    }
+}
+
+#[test]
+fn cyclic_project_default_arithmetic_reports_standard_error() {
+    let modules = [
+        (
+            "Main",
+            Procedural,
+            "Public result As String\nSub Main()\nDim x As Variant, n As Long\nSet x = New Widget\nOn Error Resume Next\nn = x + 1\nresult = Err.Number & \"|\" & Err.Description\nEnd Sub\n",
+        ),
+        (
+            "Widget",
+            Class,
+            "Public Property Get Value() As Variant\nSet Value = Me\nEnd Property\nAttribute Value.VB_UserMemId = 0\n",
+        ),
+    ];
+    for executor in [Executor::Jit, Executor::Vm3] {
+        let outcome = run_modules(executor, &modules, "VBAProject");
+        assert!(outcome.unsupported.is_none(), "{executor:?}: {outcome:?}");
+        assert_eq!(
+            outcome.result.unwrap().first(),
+            Some(&Canon::Str("28|Out of stack space".into())),
+            "{executor:?}",
         );
     }
 }

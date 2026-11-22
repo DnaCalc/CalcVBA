@@ -194,18 +194,14 @@ pub fn builtin_dictionary_class(
 pub fn has_parameterless_default_get_descriptor(
     descriptor: &calcvba_runtime::RuntimeClassDescriptor,
 ) -> bool {
-    let Some(member) = descriptor.resolve_member_by_dispid(
-        0,
-        calcvba_runtime::RuntimeMemberInvokeKind::PropertyGet,
-        true,
-        false,
-    ) else {
-        return false;
-    };
-    member
-        .params
-        .iter()
-        .all(|param| param.optional || param.param_array)
+    descriptor
+        .resolve_member_by_dispid(
+            0,
+            calcvba_runtime::RuntimeMemberInvokeKind::PropertyGet,
+            true,
+            false,
+        )
+        .is_some_and(crate::default_member::takes_no_arguments)
 }
 
 /// A zero-argument value read may use only a default getter whose parameters are optional.

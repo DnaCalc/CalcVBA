@@ -38,7 +38,7 @@ pub(crate) const JIT_PROC_REF_RET_EXACT_DOUBLE: i32 = 103;
 pub(crate) const JIT_PROC_REF_RET_EXACT_DATE: i32 = 104;
 pub(crate) const JIT_PROC_REF_RET_EXACT_BYTE: i32 = 105;
 pub(crate) const JIT_PROC_REF_RET_EXACT_INTEGER: i32 = 106;
-pub(crate) const VBA_COLLECTION_ROUTE_KEY: i32 = i32::MIN;
+pub(crate) use calcvba_rt_abi::VBA_COLLECTION_ROUTE_KEY;
 
 pub(crate) static VBA_COLLECTION_DESCRIPTOR: RuntimeClassDescriptor = RuntimeClassDescriptor {
     name: "Collection",

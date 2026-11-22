@@ -84,6 +84,35 @@ pub fn resolve_project_member_for_call(
     invoke_kind: RuntimeMemberInvokeKind,
     args_empty: bool,
     public_only: bool,
+) -> Result<&'static RuntimeMemberDescriptor, crate::Fault> {
+    if early_member.is_none() && name.is_empty() {
+        return crate::resolve_project_default_member(
+            descriptor,
+            invoke_kind,
+            args_empty,
+            public_only,
+        );
+    }
+    resolve_named_project_member(
+        cache,
+        descriptor,
+        early_member,
+        name,
+        invoke_kind,
+        args_empty,
+        public_only,
+    )
+    .ok_or_else(|| crate::Fault::standard(438))
+}
+
+fn resolve_named_project_member(
+    cache: &mut RuntimeDispatchPlanCache,
+    descriptor: &'static RuntimeClassDescriptor,
+    early_member: Option<&TypeLibMemberMetadata>,
+    name: &str,
+    invoke_kind: RuntimeMemberInvokeKind,
+    args_empty: bool,
+    public_only: bool,
 ) -> Option<&'static RuntimeMemberDescriptor> {
     if let Some(meta) = early_member {
         if let Some(iid) = meta.interface_iid {
@@ -136,10 +165,6 @@ pub fn resolve_project_member_for_call(
             public_only,
         )?;
         return dispatch.member_at(plan.member_index);
-    }
-
-    if name.is_empty() {
-        return descriptor.resolve_member_by_dispid(0, invoke_kind, args_empty, public_only);
     }
 
     let dispatch = descriptor.dispatch_interface()?;
@@ -694,7 +719,7 @@ fn runtime_member_invoke_kind(kind: ProjectMemberKind) -> RuntimeMemberInvokeKin
     }
 }
 
-pub(crate) fn hidden_me_receiver_param_count(func: &calcvba_oxir::OxFunc) -> usize {
+pub fn hidden_me_receiver_param_count(func: &calcvba_oxir::OxFunc) -> usize {
     usize::from(
         func.param_count > 0
             && func.locals.first().is_some_and(|local| {

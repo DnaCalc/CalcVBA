@@ -1282,18 +1282,9 @@ pub(crate) fn byref_variant_reference(
         }
         _ => return None,
     };
-    if !declared.is_byref_variant_reference() {
-        return None;
-    }
     let cell = slot_alias_mut(run, alias)?;
-    // A slot that already holds a reference (an element passed ByRef) is passed on as it is.
-    if cell.byref_target().is_some() {
-        return None;
-    }
-    let vt = cell.core().raw_vt();
-    // SAFETY: the caller's slot is stable storage that outlives the callee's activation, and
-    // a typed variable's cell keeps its declared type `vt`.
-    Some(unsafe { Variant::by_ref(vt, Variant::payload_ptr(cell)) })
+    // SAFETY: the caller's slot outlives the callee and keeps its declared type.
+    unsafe { calcvba_rt_abi::byref_variant_payload(param_ty, &declared, cell) }
 }
 
 pub(crate) fn slot_mut(run: &mut JitRun, area: u32, index: u32) -> Option<&mut Variant> {
@@ -1479,34 +1470,22 @@ pub(crate) unsafe fn mirror_param_array_element_write(
     }
     .ok_or(ST_FAULT)?;
     // SAFETY: the current compiled call owns the live error state.
-    let converted = unsafe { coerce_call_arg_for_param(state, ty, value) }?;
-    let element = if matches!(ty, OxTy::FixedStr(_)) {
+    let (converted, element) = calcvba_rt_abi::param_array_write_values(value, ty)
         // SAFETY: the current compiled call owns the live error state.
-        unsafe { coerce_string_call_arg(state, value) }?
-    } else {
-        converted.clone()
-    };
+        .map_err(|error| unsafe { calcvba_rt_abi::seat_fault(state, Fault::from_arith(error)) })?;
     let Some(slot) = slot_alias_mut(run, target) else {
         return Err(ST_FAULT);
     };
-    // An argument that is an element or field is a reference: the write reaches it.
     let status = crate::helpers::store_slot(state, slot, converted);
     if status != ST_OK {
         return Err(status);
     }
-
-    for (index, alias) in aliases.iter().enumerate() {
-        if *alias != Some(target) {
-            continue;
-        }
-        let Some(array) = slot_alias_mut(run, array_alias) else {
-            return Err(ST_FAULT);
-        };
-        array
-            .set_safearray_element(index, &element)
-            // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
-            .map_err(|_| unsafe { rt_raise_type_mismatch(state) })?;
-    }
+    let Some(array) = slot_alias_mut(run, array_alias) else {
+        return Err(ST_FAULT);
+    };
+    calcvba_rt_abi::write_param_array_aliases(array, &aliases, target, &element)
+        // SAFETY: the current compiled call owns the live error state.
+        .map_err(|fault| unsafe { calcvba_rt_abi::seat_fault(state, fault) })?;
     Ok(true)
 }
 
@@ -1857,78 +1836,20 @@ pub(crate) unsafe fn coerce_string_call_arg(
     }
 }
 
-// SAFETY CONTRACT: `state` must be null or the exact live, uniquely borrowed,
-// same-thread handle produced by `exec_state_as_raw`; any additional raw pointer
-// and length arguments must identify the initialized, nonaliasing storage described
-// by their typed parameters for the complete synchronous call.
-pub(crate) unsafe fn coerce_fixed_string_call_arg(
-    state: *mut RawExecState,
-    len: u32,
-    value: &Variant,
-) -> Result<Variant, i32> {
-    let mut coerced = Variant::empty();
-    // SAFETY: the enclosing JIT boundary validated the live state and all Variant input/output pointers are initialized, live, and nonaliasing.
-    let status = unsafe { rt_coerce_fixed_string_v(state, len, value, &mut coerced) };
-    if status == ST_OK {
-        Ok(coerced)
-    } else {
-        Err(status)
-    }
-}
-
-// SAFETY CONTRACT: `state` must be null or the exact live, uniquely borrowed,
-// same-thread handle produced by `exec_state_as_raw`; any additional raw pointer
-// and length arguments must identify the initialized, nonaliasing storage described
-// by their typed parameters for the complete synchronous call.
+// SAFETY CONTRACT: `state` is the live same-thread execution-state handle.
 pub(crate) unsafe fn coerce_call_arg_for_param(
     state: *mut RawExecState,
     param_ty: &OxTy,
     value: &Variant,
 ) -> Result<Variant, i32> {
-    if let Some(target) = numeric_call_target(param_ty) {
-        let mut result = Variant::empty();
-        // SAFETY: the live call owns the source clone and private result.
-        let status = unsafe { rt_coerce_numeric_v(state, target, value, &mut result) };
-        return if status == ST_OK {
-            Ok(result)
-        } else {
-            Err(status)
-        };
-    }
-    match param_ty {
-        // SAFETY: the current compiled-run boundary owns the live unique state handle;
-        // typed references and owned values remain live and nonaliasing for this call.
-        OxTy::Str => unsafe { coerce_string_call_arg(state, value) },
-        // SAFETY: the current compiled-run boundary owns the live unique state handle;
-        // typed references and owned values remain live and nonaliasing for this call.
-        OxTy::FixedStr(len) => unsafe { coerce_fixed_string_call_arg(state, *len, value) },
-        _ => Ok(value.clone()),
-    }
+    calcvba_rt_abi::coerce_declared_value(value, param_ty)
+        // SAFETY: the enclosing call owns the live same-thread error state.
+        .map_err(|error| unsafe { calcvba_rt_abi::seat_fault(state, Fault::from_arith(error)) })
 }
 
-pub(crate) fn numeric_call_target(ty: &OxTy) -> Option<u32> {
-    Some(match ty {
-        OxTy::Byte => RT_NUMERIC_CHECKED_BYTE,
-        OxTy::Integer => RT_NUMERIC_CHECKED_INTEGER,
-        OxTy::Long => RT_NUMERIC_CHECKED_LONG,
-        OxTy::LongLong => RT_NUMERIC_CHECKED_LONGLONG,
-        OxTy::Single => RT_NUMERIC_CHECKED_SINGLE,
-        OxTy::Double => RT_NUMERIC_CHECKED_DOUBLE,
-        OxTy::Currency => RT_NUMERIC_CHECKED_CURRENCY,
-        OxTy::Date => RT_NUMERIC_CHECKED_DATE,
-        OxTy::Bool => RT_NUMERIC_CHECKED_BOOLEAN,
-        _ => return None,
-    })
-}
-
-pub(crate) fn hidden_me_receiver_param_count(func: &OxFunc) -> usize {
-    usize::from(
-        func.param_count > 0
-            && func.locals.first().is_some_and(|local| {
-                local.param.is_some() && local.name.eq_ignore_ascii_case("Me")
-            }),
-    )
-}
+pub(crate) use calcvba_rt_abi::{
+    declared_numeric_target as numeric_call_target, hidden_me_receiver_param_count,
+};
 
 pub(crate) fn omitted_call_arg_desc() -> JitCallArgDesc {
     JitCallArgDesc {
@@ -1938,27 +1859,6 @@ pub(crate) fn omitted_call_arg_desc() -> JitCallArgDesc {
         area: 0,
         index: 0,
     }
-}
-
-// SAFETY CONTRACT: for nonnegative lengths, the integer-carried pointer identifies
-// `len` readable UTF-8 bytes for this call (unless `len == 0`).
-pub(crate) unsafe fn call_arg_name(name: JitCallArgNameDesc) -> Result<Option<String>, i32> {
-    if name.len < 0 {
-        return Ok(None);
-    }
-    let len = usize::try_from(name.len).map_err(|_| ST_FAULT)?;
-    let ptr = usize::try_from(name.ptr).map_err(|_| ST_FAULT)? as *const u8;
-    let bytes = if len == 0 {
-        &[]
-    } else {
-        if ptr.is_null() {
-            return Err(ST_FAULT);
-        }
-        // SAFETY: upheld by this private decoder's descriptor contract.
-        unsafe { std::slice::from_raw_parts(ptr, len) }
-    };
-    let name = std::str::from_utf8(bytes).map_err(|_| ST_FAULT)?;
-    Ok(Some(name.to_ascii_lowercase()))
 }
 
 // SAFETY CONTRACT: for nonnegative lengths, the integer-carried pointer identifies
@@ -2001,42 +1901,15 @@ pub(crate) unsafe fn order_project_member_call_args(
     if hidden != 1 {
         return Err(ST_FAULT);
     }
-    let param_names: Vec<String> = func
-        .locals
+    let names = names
         .iter()
-        .take(func.param_count)
-        .skip(hidden)
-        .map(|local| local.name.to_ascii_lowercase())
-        .collect();
-    let mut ordered: Vec<Option<JitCallArgDesc>> = Vec::new();
-    let mut next_positional = 0usize;
-    for (arg, name) in args.iter().copied().zip(names.iter().copied()) {
-        // SAFETY: names are compiled descriptors backed by the live OxProgram.
-        if let Some(name) = unsafe { call_arg_name(name) }? {
-            let Some(index) = param_names.iter().position(|param| param == &name) else {
-                // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
-                return Err(unsafe { rt_raise_runtime_error_number(state, 448) });
-            };
-            if ordered.len() <= index {
-                ordered.resize_with(index + 1, || None);
-            }
-            if ordered[index].is_some() {
-                // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
-                return Err(unsafe { rt_raise_runtime_error_number(state, 448) });
-            }
-            ordered[index] = Some(arg);
-        } else {
-            while ordered.get(next_positional).is_some_and(Option::is_some) {
-                next_positional += 1;
-            }
-            if ordered.len() <= next_positional {
-                ordered.resize_with(next_positional + 1, || None);
-            }
-            ordered[next_positional] = Some(arg);
-            next_positional += 1;
-        }
-    }
-    Ok(ordered
+        // SAFETY: the compiled descriptors retain their names for the call.
+        .map(|name| unsafe { call_arg_name_preserved(*name) })
+        .collect::<Result<Vec<_>, _>>()?;
+    let actuals = args.iter().copied().zip(names.iter().map(Option::as_deref));
+    Ok(calcvba_rt_abi::order_project_arguments(func, actuals)
+        // SAFETY: the enclosing call owns the live same-thread error state.
+        .map_err(|fault| unsafe { calcvba_rt_abi::seat_fault(state, fault) })?
         .into_iter()
         .map(|arg| arg.unwrap_or_else(omitted_call_arg_desc))
         .collect())
@@ -2105,21 +1978,15 @@ pub(crate) unsafe fn seed_jit_member_frame_args(
                 if param_info.variadic && value.safearray_bounds_len().is_none() {
                     return ST_FAULT;
                 }
-                // A late-bound call passing Null to a ByVal scalar parameter is a Type mismatch
-                // (error 13) in Office; early-bound calls report 94 at the call site.
-                if value.vtype() == VarType::Null
-                    && (numeric_call_target(&param.ty).is_some()
-                        || matches!(param.ty, OxTy::Str | OxTy::FixedStr(_)))
-                {
-                    // SAFETY: the live state handle is valid for this call.
-                    return unsafe { rt_raise_type_mismatch(state) };
-                }
                 frame.locals[param_index] =
-                    // SAFETY: the current compiled-run boundary owns the live unique state handle;
-                    // typed references and owned values remain live and nonaliasing for this call.
-                    match unsafe { coerce_call_arg_for_param(state, &param.ty, &value) } {
+                    match calcvba_rt_abi::coerce_project_argument(&value, param) {
                         Ok(value) => value,
-                        Err(status) => return status,
+                        Err(error) => {
+                            // SAFETY: the enclosing call owns the live same-thread error state.
+                            return unsafe {
+                                calcvba_rt_abi::seat_fault(state, Fault::from_arith(error))
+                            };
+                        }
                     };
                 if let Some(aliases) = param_array_aliases {
                     pending_param_array_aliases.push((param_index, aliases));
@@ -2131,18 +1998,6 @@ pub(crate) unsafe fn seed_jit_member_frame_args(
                 if status != ST_OK {
                     return status;
                 }
-            }
-            // A Null variable passed to a ByVal scalar parameter of a late-bound call.
-            JIT_CALL_ARG_BYREF_ALIAS | JIT_CALL_ARG_BYREF_COPY
-                if !param_info.by_ref
-                    && !param_info.variadic
-                    && (numeric_call_target(&param.ty).is_some()
-                        || matches!(param.ty, OxTy::Str | OxTy::FixedStr(_)))
-                    && call_arg_variant_value(run, arg)
-                        .is_some_and(|value| value.vtype() == VarType::Null) =>
-            {
-                // SAFETY: the live state handle is valid for this call.
-                return unsafe { rt_raise_type_mismatch(state) };
             }
             // A literal or computed operand passed to a ByRef parameter is a private copy (no
             // caller place to alias), as for an explicit ByRef copy argument: `o.Bump (lk)` or

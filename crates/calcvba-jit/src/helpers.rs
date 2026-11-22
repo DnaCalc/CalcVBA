@@ -3175,15 +3175,9 @@ pub(crate) unsafe fn variant_to_project_object_for_jit(
     state: *mut RawExecState,
     value: &Variant,
 ) -> Result<calcvba_runtime::object_ref::ObjectRef, i32> {
-    if let Some(object) = value.as_object_ref() {
-        return Ok(object);
-    }
-    if value.vtype() == VarType::Object {
-        // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
-        return Err(unsafe { rt_raise_runtime_error_number(state, 91) });
-    }
-    // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
-    Err(unsafe { rt_raise_runtime_error_number(state, 424) })
+    calcvba_rt_abi::object_receiver(value)
+        // SAFETY: the enclosing JIT boundary owns the live same-thread error state.
+        .map_err(|fault| unsafe { calcvba_rt_abi::seat_fault(state, fault) })
 }
 
 /// Reconstitutes the execution state behind the opaque runtime ABI handle.
@@ -4107,17 +4101,6 @@ pub(crate) unsafe fn invoke_project_member_with_me(
 // same-thread handle produced by `exec_state_as_raw`; any additional raw pointer
 // and length arguments must identify the initialized, nonaliasing storage described
 // by their typed parameters for the complete synchronous call.
-/// Whether a project instance's class has a default member a value read can call (`VarType`
-/// of such an object is its default's type; of one without, `vbObject`).
-fn project_has_default_get(_run: *mut JitRun, value: &Variant) -> bool {
-    let Some(object) = value.as_object_ref().filter(|o| o.is_project_instance()) else {
-        return false;
-    };
-    calcvba_rt_abi::object_types::has_parameterless_default_get_descriptor(
-        object.class_descriptor(),
-    )
-}
-
 pub(crate) unsafe fn invoke_project_default_member_values(
     run: *mut JitRun,
     state: *mut RawExecState,
@@ -4314,7 +4297,9 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
         Ok(object) => object,
         Err(status) => return status,
     };
-    if !object.is_project_instance() {
+    use calcvba_rt_abi::ObjectMemberRoute;
+    let route = calcvba_rt_abi::object_member_route(&object);
+    if route == ObjectMemberRoute::Foreign {
         // SAFETY: this helper inherits the live unique state handle; all other
         // inputs are owned values or live typed references for this call.
         return unsafe {
@@ -4334,7 +4319,7 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
             )
         };
     }
-    if calcvba_lib::objects::is_object(&object) {
+    if route == ObjectMemberRoute::Library {
         // SAFETY: this short read only borrow ends before storing the result.
         let argv = match collection_call_arg_values_for_jit(unsafe { &*run }, args) {
             Ok(args) => args,
@@ -4374,10 +4359,14 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
         }
         return ST_OK;
     }
-    if object.route_key() == VBA_COLLECTION_ROUTE_KEY {
-        let is_new_enum =
-            vba_collection_native_method_for_jit(if name.is_empty() { "Item" } else { name })
-                == Some(calcvba_bundle::NativeMethodId::CollectionNewEnum);
+    if route == ObjectMemberRoute::Collection {
+        let name = match calcvba_rt_abi::collection_member_name(name, args.is_empty()) {
+            Ok(name) => name,
+            // SAFETY: the active JIT entry owns the live same-thread error state.
+            Err(fault) => return unsafe { calcvba_rt_abi::seat_fault(state, fault) },
+        };
+        let is_new_enum = vba_collection_native_method_for_jit(name)
+            == Some(calcvba_bundle::NativeMethodId::CollectionNewEnum);
         if is_new_enum {
             // The enumerator is a snapshot of the collection, as in VM3.
             let Some(snapshot) = object.with_native_collection(|data| data.clone()) else {
@@ -4404,22 +4393,10 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
             }
             return ST_OK;
         }
-        // A Collection's value with no index (`v = c`): VBA reports 450, as VM3 does.
-        if name.is_empty() && args.is_empty() {
-            // SAFETY: the active JIT entry owns this same-thread error state.
-            return unsafe { rt_raise_runtime_error_number(state, 450) };
-        }
         // SAFETY: the current compiled-run boundary owns the live unique state handle;
         // typed references and owned values remain live and nonaliasing for this call.
         let value = match unsafe {
-            dispatch_collection_member_for_jit(
-                state,
-                &*run,
-                &object,
-                if name.is_empty() { "Item" } else { name },
-                args,
-                names,
-            )
+            dispatch_collection_member_for_jit(state, &*run, &object, name, args, names)
         } {
             Ok(value) => value,
             Err(status) => return status,
@@ -4464,22 +4441,11 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
             effective_public_only,
         )
     };
-    let Some(member) = member else {
-        // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
-        return unsafe { rt_raise_runtime_error_number(state, 438) };
+    let member = match member {
+        Ok(member) => member,
+        // SAFETY: the active JIT entry owns the live same-thread error state.
+        Err(fault) => return unsafe { calcvba_rt_abi::seat_fault(state, fault) },
     };
-    if name.is_empty()
-        && early_member.is_none()
-        && args.is_empty()
-        && kind == ProjectMemberKind::PropertyGet
-        && member
-            .params
-            .iter()
-            .any(|param| !param.optional && !param.param_array)
-    {
-        // SAFETY: the active JIT entry owns this same-thread error state.
-        return unsafe { rt_raise_runtime_error_number(state, 449) };
-    }
     let value = match member.backing {
         calcvba_runtime::RuntimeMemberBacking::Proc(proc) => {
             // SAFETY: this helper inherits the live unique state handle; `run`, argument
@@ -7949,29 +7915,27 @@ pub(crate) unsafe extern "C" fn rt_jit_unbox_to_slot(
 unsafe fn arithmetic_value_for_jit(
     state: *mut RawExecState,
     run: *mut JitRun,
-    mut value: Variant,
+    value: Variant,
 ) -> Result<Variant, i32> {
-    for _ in 0..64 {
-        if value.vtype() != VarType::Object {
-            return Ok(value);
-        }
-        let Some(object) = value.as_object_ref() else {
-            // SAFETY: inherited live state contract; no state borrow is retained.
-            return Err(unsafe { rt_raise_runtime_error_number(state, 91) });
-        };
-        value = if object.is_project_instance() {
-            // SAFETY: owning value and live roots span the synchronous call;
-            // no run/frame/state borrow crosses project member entry.
-            unsafe {
-                invoke_project_default_member_values(
-                    run,
-                    state,
-                    value,
-                    ProjectMemberKind::PropertyGet,
-                    &[],
-                )
-            }?
-        } else {
+    calcvba_rt_abi::read_default_value(
+        value,
+        |value| {
+            // SAFETY: the current compiled call owns the live state.
+            let object = unsafe { variant_to_project_object_for_jit(state, &value) }?;
+            if calcvba_rt_abi::object_member_route(&object)
+                != calcvba_rt_abi::ObjectMemberRoute::Foreign
+            {
+                // SAFETY: the owning value and live roots span the synchronous call.
+                return unsafe {
+                    invoke_project_default_member_values(
+                        run,
+                        state,
+                        value,
+                        ProjectMemberKind::PropertyGet,
+                        &[],
+                    )
+                };
+            }
             let host = {
                 // SAFETY: bounded state borrow ends before host member entry.
                 let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
@@ -7979,32 +7943,29 @@ unsafe fn arithmetic_value_for_jit(
                 };
                 exec.host
             };
-            let value = host.com().invoke_object(
+            let result = host.com().invoke_object(
                 &object,
                 calcvba_com::call::ComMember::Id(0),
                 calcvba_com::call::ComCallKind::Get,
                 &[],
             );
-            // SAFETY: the host call returned; the state is not borrowed.
+            // SAFETY: the host call returned and the state is not borrowed.
             if let Some(status) = unsafe { crate::events::event_abort_status(state) } {
                 return Err(status);
             }
-            match value {
-                Ok(result) => result,
-                Err(error) => {
-                    // SAFETY: host callback returned; reacquire state only now.
-                    let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
-                        return Err(ST_FAULT);
-                    };
-                    exec.err_engine
-                        .raise(Fault::from_hal(error), current_unit_source(run));
-                    return Err(ST_FAULT);
-                }
-            }
-        };
-    }
-    // SAFETY: inherited live root contract and no outstanding typed borrow.
-    Err(unsafe { rt_raise_runtime_error_number(state, 28) })
+            result.map_err(|error| {
+                // SAFETY: host callback returned and no state borrow is live.
+                let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
+                    return ST_FAULT;
+                };
+                exec.err_engine
+                    .raise(Fault::from_hal(error), current_unit_source(run));
+                ST_FAULT
+            })
+        },
+        // SAFETY: no run or state borrow survives a dispatch.
+        |fault| unsafe { calcvba_rt_abi::seat_fault(state, fault) },
+    )
 }
 
 pub(crate) unsafe extern "C" fn rt_jit_arith_v_to_slot(
@@ -10236,11 +10197,7 @@ pub(crate) unsafe extern "C" fn rt_jit_lib_invoke_to_slot(
                     // `VarType` reads only a VBA class object's default Property Get, as VM3; any
                     // other object is vbObject (a Scripting.Dictionary's default `Item(Key)`
                     // needs an argument: Excel answers 9, examples/native/breadth).
-                    if var_type
-                        && !arg.as_object_ref().is_some_and(|o| {
-                            o.is_project_instance() && project_has_default_get(run, arg)
-                        })
-                    {
+                    if var_type && !calcvba_rt_abi::project_has_default_get(arg) {
                         continue;
                     }
                     // SAFETY: the operand-read borrow ended above; no run borrow is held.

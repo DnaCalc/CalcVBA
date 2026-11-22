@@ -4,16 +4,27 @@
 //! the VM-agnostic cells and helper decisions that both engines must share.
 
 use calcvba_runtime::ObjectRefExt;
+mod call_policy;
 mod class_descriptor;
+mod default_member;
 mod library_object;
-pub(crate) use class_descriptor::hidden_me_receiver_param_count;
+mod termination;
+pub use call_policy::{
+    byref_variant_payload, coerce_project_argument, order_project_arguments,
+    param_array_write_values, validate_project_argument, write_param_array_aliases,
+};
 pub use class_descriptor::{
     coerce_value_for_runtime_type, decode_native_class_metadata, encode_native_class_metadata,
-    resolve_project_member_for_call, runtime_class_descriptors_for_program,
-    runtime_class_spec_for_program, runtime_invoke_kind, runtime_invoke_kind_from_typelib,
-    runtime_member_params, vba_record_layout_for_program_record,
+    hidden_me_receiver_param_count, resolve_project_member_for_call,
+    runtime_class_descriptors_for_program, runtime_class_spec_for_program, runtime_invoke_kind,
+    runtime_invoke_kind_from_typelib, runtime_member_params, vba_record_layout_for_program_record,
+};
+pub use default_member::{
+    ObjectMemberRoute, VBA_COLLECTION_ROUTE_KEY, collection_member_name, object_member_route,
+    object_receiver, project_has_default_get, read_default_value, resolve_project_default_member,
 };
 pub use library_object::invoke_library_object;
+pub use termination::drain_terminations;
 
 use calcvba_bundle::{NativeImplId, NumericCoerceTarget, NumericMode, StringCompareMode};
 use calcvba_eval::arith::{self, ArithError, CmpOp as EvalCmpOp};
@@ -64,19 +75,7 @@ pub fn array_subscript(value: &Variant) -> Result<i32, ArithError> {
 /// Copy-out to a declared caller slot. Conversion completes before either the
 /// caller or a ParamArray element is changed, including checked narrow types.
 pub fn coerce_declared_value(value: &Variant, ty: &OxTy) -> Result<Variant, ArithError> {
-    let numeric = match ty {
-        OxTy::Byte => Some(NumericCoerceTarget::Byte),
-        OxTy::Integer => Some(NumericCoerceTarget::Integer),
-        OxTy::Long => Some(NumericCoerceTarget::Long),
-        OxTy::LongLong => Some(NumericCoerceTarget::LongLong),
-        OxTy::Single => Some(NumericCoerceTarget::Single),
-        OxTy::Double => Some(NumericCoerceTarget::Double),
-        OxTy::Currency => Some(NumericCoerceTarget::Currency),
-        OxTy::Date => Some(NumericCoerceTarget::Date),
-        OxTy::Bool => Some(NumericCoerceTarget::Boolean),
-        _ => None,
-    };
-    if let Some(target) = numeric {
+    if let Some(target) = declared_numeric_target(ty) {
         return arith::coerce_numeric(value, target);
     }
     match ty {
@@ -84,6 +83,21 @@ pub fn coerce_declared_value(value: &Variant, ty: &OxTy) -> Result<Variant, Arit
         OxTy::FixedStr(len) => arith::coerce_fixed_string(value, *len as usize),
         _ => Ok(value.clone()),
     }
+}
+
+pub fn declared_numeric_target(ty: &OxTy) -> Option<NumericCoerceTarget> {
+    Some(match ty {
+        OxTy::Byte => NumericCoerceTarget::Byte,
+        OxTy::Integer => NumericCoerceTarget::Integer,
+        OxTy::Long => NumericCoerceTarget::Long,
+        OxTy::LongLong => NumericCoerceTarget::LongLong,
+        OxTy::Single => NumericCoerceTarget::Single,
+        OxTy::Double => NumericCoerceTarget::Double,
+        OxTy::Currency => NumericCoerceTarget::Currency,
+        OxTy::Date => NumericCoerceTarget::Date,
+        OxTy::Bool => NumericCoerceTarget::Boolean,
+        _ => return None,
+    })
 }
 
 /// ObjPtr borrows the object's actual native Automation face when it has one.
@@ -675,150 +689,6 @@ pub fn marshal_ox_call_args<E>(
         .collect()
 }
 
-/// One pending `Class_Terminate` callback resolved against the shared loaded-image tables.
-pub struct TerminationWork {
-    pub instance_id: i32,
-    pub bundle: usize,
-    pub terminate: Option<FuncId>,
-    pub object: Option<Variant>,
-}
-
-/// Take the current pending-termination batch and resolve each item to its owning proc/object.
-pub fn take_termination_batch(exec: &ExecState<'_>) -> Vec<TerminationWork> {
-    calcvba_runtime::take_pending_terminations()
-        .into_iter()
-        .map(|(instance_id, bundle_id, route_key)| {
-            let bundle = bundle_id as usize;
-            let terminate = exec
-                .programs
-                .get(bundle)
-                .and_then(|lp| lp.program.classes.get(route_key as usize))
-                .and_then(|class| class.terminate);
-            let object = calcvba_runtime::retained_parked_termination_object(instance_id)
-                .map(Variant::from_object_ref);
-            TerminationWork {
-                instance_id,
-                bundle,
-                terminate,
-                object,
-            }
-        })
-        .collect()
-}
-
-fn withevents_owner_raw(key: i64) -> i32 {
-    (key >> 32) as i32
-}
-
-// SAFETY CONTRACT: `state` is the live same-thread execution-state root. Owned
-// work is extracted before every host call and state is reborrowed afterwards.
-unsafe fn cleanup_terminated_owner(state: *mut RawExecState, owner_raw: i32) -> Result<(), Fault> {
-    // The owner's WithEvents sinks are unadvised with no borrow of the state held (Unadvise may
-    // deliver events, and a handler running then may advise again): repeat until none is left.
-    loop {
-        let connections = {
-            // SAFETY: upheld by the private raw-state contract. The borrow ends before the
-            // connections are dropped.
-            let Some(exec) = (unsafe { state_from_raw(state) }) else {
-                return Err(Fault::new(5, "runtime ABI state pointer is null"));
-            };
-            exec.take_com_connections(|key| withevents_owner_raw(key) == owner_raw)
-        };
-        if connections.is_empty() {
-            break;
-        }
-        drop(connections);
-    }
-    // SAFETY: the unadvise calls have returned and no typed borrow is live.
-    let Some(exec) = (unsafe { state_from_raw(state) }) else {
-        return Err(Fault::new(5, "runtime ABI state pointer is null"));
-    };
-    exec.events
-        .withevents
-        .retain(|key, _| withevents_owner_raw(*key) != owner_raw);
-    Ok(())
-}
-
-struct DrainGuard {
-    state: *mut RawExecState,
-}
-
-impl Drop for DrainGuard {
-    fn drop(&mut self) {
-        // SAFETY: the guard is created only after validating the live state and is
-        // dropped before the synchronous raw-state boundary returns.
-        if let Some(exec) = unsafe { state_from_raw(self.state) } {
-            exec.draining = false;
-        }
-    }
-}
-
-// SAFETY CONTRACT: `state` is the live same-thread execution-state handle for the
-// complete synchronous drain. No typed borrow of it is retained across callbacks.
-unsafe fn maybe_drain_with_bridge(state: *mut RawExecState) -> Result<(), Fault> {
-    // SAFETY: take only an owned token; no state borrow spans finalizer callbacks.
-    let owner = unsafe { state_from_raw(state) }
-        .ok_or_else(|| Fault::new(5, "runtime ABI state pointer is null"))?
-        .object_owner
-        .clone();
-    let _owner_scope = owner.enter();
-    let bridge = {
-        // SAFETY: upheld by this private raw-state orchestrator's contract.
-        let Some(exec) = (unsafe { state_from_raw(state) }) else {
-            return Err(Fault::new(5, "runtime ABI state pointer is null"));
-        };
-        if exec.draining {
-            return Ok(());
-        }
-        let Some(bridge) = exec.proc_invoker else {
-            if calcvba_runtime::has_pending_terminations() {
-                return Err(Fault::new(
-                    5,
-                    "rt_maybe_drain requires an installed ProcInvoker",
-                ));
-            }
-            return Ok(());
-        };
-        exec.draining = true;
-        bridge
-    };
-    let _drain_guard = DrainGuard { state };
-    while calcvba_runtime::has_pending_terminations() {
-        let batch = {
-            // SAFETY: no other typed state borrow is live at this point.
-            let Some(exec) = (unsafe { state_from_raw(state) }) else {
-                return Err(Fault::new(5, "runtime ABI state pointer is null"));
-            };
-            take_termination_batch(exec)
-        };
-        for work in batch {
-            if let (Some(proc), Some(object)) = (work.terminate, work.object) {
-                let saved_err_engine = {
-                    // SAFETY: no other typed state borrow is live at this point.
-                    let Some(exec) = (unsafe { state_from_raw(state) }) else {
-                        return Err(Fault::new(5, "runtime ABI state pointer is null"));
-                    };
-                    exec.err_engine.clone()
-                };
-                // SAFETY: the bridge was installed through the checked raw boundary;
-                // the owned Variant is borrowed only for this synchronous callback.
-                // No typed execution-state borrow is live while it may re-enter.
-                let _ = unsafe { (bridge.invoke)(bridge.ctx, work.bundle, proc.0, &object, 1) };
-                // SAFETY: the callback has returned and no other typed state borrow is live.
-                let Some(exec) = (unsafe { state_from_raw(state) }) else {
-                    return Err(Fault::new(5, "runtime ABI state pointer is null"));
-                };
-                exec.err_engine = saved_err_engine;
-            }
-            calcvba_runtime::finish_pending_termination(work.instance_id);
-            // SAFETY: the callback has returned and the cleanup core owns only the
-            // raw state root across any host unsubscribe re-entry.
-            unsafe { cleanup_terminated_owner(state, work.instance_id) }?;
-        }
-    }
-    Ok(())
-}
-
 /// VM-agnostic observable execution state shared by vm3 and the JIT.
 ///
 /// This is deliberately not an interpreter frame. Stack slots, instruction pointers,
@@ -1065,8 +935,9 @@ pub unsafe extern "C" fn rt_execution_step(state: *mut RawExecState) -> i32 {
 /// Records `fault` in an ABI execution state and returns `ST_FAULT`.
 ///
 /// # Safety
-/// `state` must be null or satisfy [`state_from_raw`]'s complete execution-state contract.
-unsafe fn seat_fault(state: *mut RawExecState, fault: Fault) -> i32 {
+/// `state` must be null or be the live same-thread handle from [`exec_state_as_raw`]
+/// with exclusive access to the execution state during this call.
+pub unsafe fn seat_fault(state: *mut RawExecState, fault: Fault) -> i32 {
     // SAFETY: the caller upholds `state_from_raw`'s contract; that function performs
     // only the null check and pointer conversion, not runtime pointer validation.
     if let Some(state) = unsafe { state_from_raw(state) } {
@@ -2300,7 +2171,7 @@ pub unsafe extern "C" fn rt_maybe_drain(state: *mut RawExecState) -> i32 {
     with_status(|| {
         // SAFETY: the exported helper contract supplies the live same-thread state;
         // the private orchestrator ensures no typed borrow survives a callback.
-        unsafe { maybe_drain_with_bridge(state) }
+        unsafe { termination::maybe_drain_with_bridge(state) }
             .map(|_| ST_OK)
             // SAFETY: the exported helper contract guarantees that non-null `state` is the live, uniquely borrowed execution state.
             .unwrap_or_else(|fault| unsafe { seat_fault(state, fault) })
@@ -4563,7 +4434,7 @@ mod tests {
                             id: 42,
                             host: self.host,
                         }),
-                        owner: Variant::from_i32(withevents_owner_raw(self.host.owner_key)),
+                        owner: Variant::from_i32((self.host.owner_key >> 32) as i32),
                         program: 0,
                         binding: 9,
                     },
@@ -4599,10 +4470,14 @@ mod tests {
                     order: 0,
                 },
             );
-            let raw_state = exec_state_as_raw(&mut state);
+            let mut raw_state = exec_state_as_raw(&mut state);
             host.state.store(raw_state, Ordering::SeqCst);
 
-            cleanup_terminated_owner(raw_state, owner_raw).expect("termination cleanup");
+            termination::cleanup_terminated_owner(
+                &mut raw_state,
+                |raw| state_from_raw(*raw).expect("live cleanup state"),
+                owner_raw,
+            );
 
             assert_eq!(
                 *host.calls.lock().expect("unadvise calls lock"),

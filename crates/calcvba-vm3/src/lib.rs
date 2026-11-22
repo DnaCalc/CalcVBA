@@ -43,9 +43,11 @@ use calcvba_oxir::{
 };
 use calcvba_rt_abi::{
     ErrorMode, EventBinding, ExecState, Fault, FaultAction, LoadedProgram, MarshalArgRef,
-    ProcInvoker, ResumePoint, ResumeTarget, SavedErrState, array_subscript, marshal_ox_args,
-    marshal_ox_call_args, ox_const_variant, runtime_class_descriptors_for_program,
-    take_termination_batch, variant_changed,
+    ObjectMemberRoute, ProcInvoker, ResumePoint, ResumeTarget, SavedErrState,
+    VBA_COLLECTION_ROUTE_KEY, array_subscript, collection_member_name, marshal_ox_args,
+    marshal_ox_call_args, object_member_route, object_receiver, ox_const_variant,
+    project_has_default_get, read_default_value, resolve_project_default_member,
+    runtime_class_descriptors_for_program, variant_changed,
 };
 use calcvba_runtime::collection::CollectionCursor;
 use calcvba_runtime::object_ref::{
@@ -67,12 +69,6 @@ use calcvba_runtime::{
 /// callee slot, so `IsMissing`/`IsError` observe it exactly as vm2 does.
 const MISSING_ARG: i32 = 0x8002_0004u32 as i32;
 
-/// The reserved `route_key` stamped on a built-in `Collection` instance (W3). Distinct from
-/// every real project class index (those are small non-negative) so dispatch recognises a
-/// Collection receiver BEFORE the `program.classes` lookup, and distinct from any instance id
-/// so `is_project_instance()` (compat_identity != route_key) still holds.
-const VBA_COLLECTION_ROUTE_KEY: i32 = i32::MIN;
-
 /// The runtime QI descriptor for a built-in `Collection` (name + IUnknown). Fully `'static`,
 /// so `New Collection` needs no per-instance descriptor leak.
 static VBA_COLLECTION_DESCRIPTOR: RuntimeClassDescriptor = RuntimeClassDescriptor {
@@ -91,15 +87,6 @@ static VBA_COLLECTION_DESCRIPTOR: RuntimeClassDescriptor = RuntimeClassDescripto
     interfaces: &[RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR],
     events: &[],
 };
-
-fn hidden_me_receiver_param_count(func: &calcvba_oxir::OxFunc) -> usize {
-    usize::from(
-        func.param_count > 0
-            && func.locals.first().is_some_and(|local| {
-                local.param.is_some() && local.name.eq_ignore_ascii_case("Me")
-            }),
-    )
-}
 
 /// A failure to execute an OxIR program on vm3.
 #[derive(Debug, Clone)]
@@ -2345,7 +2332,7 @@ impl<'h> Vm3<'h> {
                 }
                 targets.sort_by_key(|(order, ..)| *order);
                 for (_, sink, handler, owner_bundle) in targets {
-                    self.run_proc_with_me(owner_bundle, FuncId(handler), sink, args, false)?;
+                    self.run_proc_with_me(owner_bundle, FuncId(handler), sink, args)?;
                 }
                 // After internal WithEvents fan-out, deliver to advised COM connection-point
                 // sinks directly on the source object (dc-yqq0.27), keeping `self.event_scope()`
@@ -2961,21 +2948,13 @@ impl<'h> Vm3<'h> {
                 self.exec.programs[frame.prog].program.funcs[frame.func.0].temps[t].clone()
             }
         };
-        let converted = calcvba_rt_abi::coerce_declared_value(value, &ty).map_err(arith_fault)?;
-        let element = if matches!(ty, OxTy::FixedStr(_)) {
-            arith::coerce_string(value).map_err(arith_fault)?
-        } else {
-            converted.clone()
-        };
+        let (converted, element) =
+            calcvba_rt_abi::param_array_write_values(value, &ty).map_err(arith_fault)?;
         self.write_loc(target, converted)?;
 
-        if let Some(arr) = self.read_loc_mut(array_loc)? {
-            for (idx, alias) in aliases.iter().enumerate() {
-                if *alias == Some(target) {
-                    arr.set_safearray_element(idx, &element)
-                        .map_err(|e| Vm3Error::Fault(Fault::new(13, e)))?;
-                }
-            }
+        if let Some(array) = self.read_loc_mut(array_loc)? {
+            calcvba_rt_abi::write_param_array_aliases(array, &aliases, target, &element)
+                .map_err(Vm3Error::Fault)?;
         }
         Ok(true)
     }
@@ -3521,7 +3500,6 @@ impl<'h> Vm3<'h> {
                 init,
                 Variant::from_object_ref(object.clone()),
                 &[],
-                false,
             );
             if result.is_err() {
                 object.mark_initialization_failed();
@@ -3568,7 +3546,7 @@ impl<'h> Vm3<'h> {
             .predeclared_singletons
             .insert(class_idx, value.clone());
         if let Some(init) = initialize
-            && let Err(err) = self.run_proc_with_me(self.cur, init, value.clone(), &[], false)
+            && let Err(err) = self.run_proc_with_me(self.cur, init, value.clone(), &[])
         {
             if let Some(object) = value.as_object_ref() {
                 object.mark_initialization_failed();
@@ -3616,43 +3594,12 @@ impl<'h> Vm3<'h> {
     /// `frames.len() == base + 1` on a normal `Return` *without* popping, and leaves the
     /// faulting frame in place on an uncaught fault — so afterwards we restore the caller's
     /// error state (saved on the frame we pushed) and truncate back to `base` either way.
-    /// `suppress` (used for `Class_Terminate`) swallows a raised VBA fault; a structural
-    /// `Malformed` always propagates.
-    /// Is local `li` of `proc` a ByVal parameter of a scalar (non-Variant, non-Object) type?
-    fn byval_scalar_param(&self, target_prog: usize, proc: FuncId, li: usize) -> bool {
-        self.exec
-            .programs
-            .get(target_prog)
-            .and_then(|lp| lp.program.funcs.get(proc.0))
-            .and_then(|f| f.locals.get(li))
-            .is_some_and(|local| {
-                local
-                    .param
-                    .as_ref()
-                    .is_some_and(|p| !p.by_ref && !p.variadic)
-                    && matches!(
-                        local.ty,
-                        OxTy::Str
-                            | OxTy::Bool
-                            | OxTy::Byte
-                            | OxTy::Integer
-                            | OxTy::Long
-                            | OxTy::LongLong
-                            | OxTy::Single
-                            | OxTy::Double
-                            | OxTy::Currency
-                            | OxTy::Date
-                    )
-            })
-    }
-
     fn run_proc_with_me(
         &mut self,
         target_prog: usize,
         proc: FuncId,
         me: Variant,
         args: &[OxArg],
-        suppress: bool,
     ) -> Result<Variant, Vm3Error> {
         self.guard_call_depth()?;
         // Preserve the caller's program across the nested run_loop: it leaves `cur` at the
@@ -3660,64 +3607,55 @@ impl<'h> Vm3<'h> {
         // resolves (store dst / extern_args) would otherwise use the wrong program. The caller
         // sets `cur` to the receiver's program (object dispatch / terminate) before calling.
         let saved_cur = self.cur;
-        // Suppressed finalizers/callbacks must not overwrite the caller-visible Err object.
-        let suppressed_err_engine = suppress.then(|| self.exec.err_engine.clone());
         let base = self.frames.len();
         let mut frame = self.new_frame_in(target_prog, proc)?;
         if let Some(slot) = frame.locals.get_mut(0) {
             *slot = me;
         }
         let mut pending_param_array_aliases = Vec::new();
-        // Event-handler args follow `me` at locals 1.. (vm2's `run_proc_core` layout),
-        // resolved against the CALLER (the still-current top frame) before the push.
+        let program = self.exec.programs[target_prog].program;
+        let callee = &program.funcs[proc.0];
+        // Actuals are evaluated against the caller before the new frame is pushed.
         for (i, arg) in args.iter().enumerate() {
             let li = i + 1;
-            match arg {
-                OxArg::ByVal(op) => {
-                    let param_array_aliases = self.param_array_aliases_for_operand(op);
-                    let v = self.operand(op)?;
-                    // A late-bound call passing Null to a ByVal scalar parameter is a Type
-                    // mismatch (error 13) in Office; early-bound calls report 94 in the binder.
-                    if v.vtype() == VarType::Null && self.byval_scalar_param(target_prog, proc, li)
-                    {
-                        return Err(Vm3Error::Fault(Fault::new(13, "Type mismatch")));
-                    }
-                    if let Some(slot) = frame.locals.get_mut(li) {
-                        *slot = v;
-                    }
-                    if let Some(param_array_aliases) = param_array_aliases {
-                        pending_param_array_aliases
-                            .push((Loc::Local(base, li), param_array_aliases));
-                    }
+            let formal = callee.locals.get(li);
+            let place_value;
+            let actual = match arg {
+                OxArg::ByVal(op) => op,
+                OxArg::ByRef(place)
+                    if formal
+                        .and_then(|local| local.param.as_ref())
+                        .is_some_and(|p| !p.by_ref) =>
+                {
+                    place_value = OxOperand::Use(*place);
+                    &place_value
                 }
                 OxArg::ByRef(place) => {
                     let loc = self.resolve(place);
-                    if self.byval_scalar_param(target_prog, proc, li)
-                        && self.read_loc(loc).is_ok_and(|v| v.vtype() == VarType::Null)
-                    {
-                        return Err(Vm3Error::Fault(Fault::new(13, "Type mismatch")));
-                    }
-                    let param_ty = self.exec.programs[target_prog].program.funcs[proc.0]
-                        .locals
-                        .get(li)
-                        .map(|local| local.ty.clone());
-                    match self.byref_reference(place, param_ty.as_ref())? {
+                    match self.byref_reference(place, formal.map(|local| &local.ty))? {
                         Some(reference) => frame.locals[li] = reference,
                         None => {
                             frame.aliases.insert(li, loc);
                         }
                     }
+                    continue;
                 }
                 OxArg::Omitted => {
-                    let seeded = self.exec.programs[target_prog].program.funcs[proc.0]
-                        .locals
-                        .get(li)
-                        .and_then(omitted_param_value)
-                        .transpose()?;
+                    let seeded = formal.and_then(omitted_param_value).transpose()?;
                     if let Some(slot) = frame.locals.get_mut(li) {
                         *slot = seeded.unwrap_or_else(|| Variant::from_error_code(MISSING_ARG));
                     }
+                    continue;
                 }
+            };
+            let aliases = self.param_array_aliases_for_operand(actual);
+            let value = self.operand(actual)?;
+            if let (Some(slot), Some(formal)) = (frame.locals.get_mut(li), formal) {
+                *slot =
+                    calcvba_rt_abi::coerce_project_argument(&value, formal).map_err(arith_fault)?;
+            }
+            if let Some(aliases) = aliases {
+                pending_param_array_aliases.push((Loc::Local(base, li), aliases));
             }
         }
         let saved_err = self.exec.err_engine.enter_activation();
@@ -3745,18 +3683,8 @@ impl<'h> Vm3<'h> {
         self.truncate_frames_with_withevents_cleanup(base);
         self.prune_param_array_aliases_from_depth(self.frames.len());
         self.cur = saved_cur;
-        // Truncating released the lifecycle frame's object locals (and any an uncaught fault
-        // left parked as it unwound) — run their `Class_Terminate`s now, the nested-epilogue /
-        // fault-path drain that mirrors vm2 (re-entrant drains fold via the `draining` guard).
         self.maybe_drain();
-        if let Some(saved) = suppressed_err_engine {
-            self.exec.err_engine = saved;
-        }
-        match result {
-            Ok(()) => Ok(ret),
-            Err(Vm3Error::Fault(_)) if suppress => Ok(Variant::empty()),
-            Err(e) => Err(e),
-        }
+        result.map(|()| ret)
     }
 
     /// Like [`Vm3::run_proc_with_me`] but seeds the arguments as already-evaluated **values**
@@ -3804,8 +3732,11 @@ impl<'h> Vm3<'h> {
         // Host args follow `me` at locals 1.. as direct values — no caller-operand resolution,
         // no ByRef aliasing (the host marshals by value).
         for (i, mut v) in args.into_iter().enumerate() {
-            if v.vtype() == VarType::Null && self.byval_scalar_param(target_prog, proc, i + 1) {
-                return Err(Vm3Error::Fault(Fault::new(13, "Type mismatch")));
+            if let Some(formal) = self.exec.programs[target_prog].program.funcs[proc.0]
+                .locals
+                .get(i + 1)
+            {
+                calcvba_rt_abi::validate_project_argument(&v, formal).map_err(arith_fault)?;
             }
             // A host passes an omitted argument as Missing; an Optional parameter then starts
             // as a call that leaves it out starts it (its default, Missing, or its type's zero).
@@ -3896,40 +3827,14 @@ impl<'h> Vm3<'h> {
         }
     }
 
-    /// Run any parked `Class_Terminate`s to a fixpoint. `Release` (an object's last reference
-    /// dropping — a frame pop or a slot overwrite) parks a `has_terminate` instance on the
-    /// shared `calcvba_runtime` termination queue; this dequeues and runs each `Class_Terminate`
-    /// (with errors suppressed), pinned to statement boundaries / proc epilogue — exactly
-    /// vm2's `maybe_drain`. The `draining` guard makes a re-entrant release (a Terminate that
-    /// drops another object) fold into the same loop rather than nest.
     fn maybe_drain(&mut self) {
-        let _owner = self.exec.object_owner.enter();
-        if self.exec.draining {
-            return;
-        }
-        self.exec.draining = true;
-        while calcvba_runtime::has_pending_terminations() {
-            for work in take_termination_batch(&self.exec) {
-                // A terminating object's `Class_Terminate` lives in ITS OWN program (the one that
-                // minted it), not necessarily the executing `cur`.
-                if let (Some(proc), Some(object)) = (work.terminate, work.object) {
-                    // Run the finalizer in the object's program (target_prog = bundle), so its
-                    // globals/funcs resolve there. A fault in `Class_Terminate` is swallowed
-                    // (suppress); a `Malformed` defect would still surface — drop it to match
-                    // vm2's `let _ = …`.
-                    let _ = self.run_proc_with_me(work.bundle, proc, object, &[], true);
-                }
-                calcvba_runtime::finish_pending_termination(work.instance_id);
-                // Drop any `WithEvents` bindings + host (COM) subscriptions the terminated
-                // instance owned (it can no longer sink events) — mirrors vm2's teardown.
-                self.unsubscribe_com_owner(work.instance_id);
-                self.exec
-                    .events
-                    .withevents
-                    .retain(|key, _| withevents_owner_raw(*key) != work.instance_id);
-            }
-        }
-        self.exec.draining = false;
+        calcvba_rt_abi::drain_terminations(
+            self,
+            |vm| &mut vm.exec,
+            |vm, bundle, proc, me| {
+                let _ = vm.run_proc_with_me(bundle, proc, me, &[]);
+            },
+        );
     }
 
     /// Advises one sink for a WithEvents variable on a COM source (design doc, step 8c). An
@@ -4046,88 +3951,37 @@ impl<'h> Vm3<'h> {
             .get(target_prog)
             .and_then(|lp| lp.program.funcs.get(proc.0))
             .ok_or_else(|| Vm3Error::Malformed(format!("call to unknown proc {}", proc.0)))?;
-        let param_names: Vec<String> = callee
-            .locals
+        let actuals = args
             .iter()
-            .take(callee.param_count)
-            .skip(hidden_me_receiver_param_count(callee))
-            .map(|local| local.name.to_ascii_lowercase())
-            .collect();
-        let mut ordered: Vec<Option<OxArg>> = Vec::new();
-        let mut next_positional = 0usize;
-        for arg in args {
-            let lowered = match arg {
-                OxCallArg::ByRef(place)
-                | OxCallArg::Named {
-                    by_ref: Some(place),
-                    ..
-                } => OxArg::ByRef(*place),
-                OxCallArg::Operand(op) => OxArg::ByVal(op.clone()),
-                OxCallArg::Named { value, .. } => OxArg::ByVal(value.clone()),
-                OxCallArg::Omitted => OxArg::Omitted,
-                OxCallArg::Const(_) => {
-                    return Err(Vm3Error::Malformed(
-                        "a Const argument in a project method call".into(),
-                    ));
-                }
-            };
-            if let OxCallArg::Named { name, .. } = arg {
-                let folded = name.to_ascii_lowercase();
-                let Some(index) = param_names.iter().position(|param| param == &folded) else {
-                    return Err(Vm3Error::Fault(Fault::new(
-                        448,
-                        format!("Named argument not found: {name}"),
-                    )));
+            .map(|arg| {
+                let lowered = match arg {
+                    OxCallArg::ByRef(place)
+                    | OxCallArg::Named {
+                        by_ref: Some(place),
+                        ..
+                    } => OxArg::ByRef(*place),
+                    OxCallArg::Operand(op) | OxCallArg::Named { value: op, .. } => {
+                        OxArg::ByVal(op.clone())
+                    }
+                    OxCallArg::Omitted => OxArg::Omitted,
+                    OxCallArg::Const(_) => {
+                        return Err(Vm3Error::Malformed(
+                            "a Const argument in a project method call".into(),
+                        ));
+                    }
                 };
-                if ordered.len() <= index {
-                    ordered.resize_with(index + 1, || None);
-                }
-                if ordered[index].is_some() {
-                    return Err(Vm3Error::Fault(Fault::new(
-                        448,
-                        format!("Named argument not found: {name}"),
-                    )));
-                }
-                ordered[index] = Some(lowered);
-            } else {
-                while ordered.get(next_positional).is_some_and(Option::is_some) {
-                    next_positional += 1;
-                }
-                if ordered.len() <= next_positional {
-                    ordered.resize_with(next_positional + 1, || None);
-                }
-                ordered[next_positional] = Some(lowered);
-                next_positional += 1;
-            }
-        }
-        Ok(ordered
+                let name = match arg {
+                    OxCallArg::Named { name, .. } => Some(name.as_str()),
+                    _ => None,
+                };
+                Ok((lowered, name))
+            })
+            .collect::<Result<Vec<_>, Vm3Error>>()?;
+        Ok(calcvba_rt_abi::order_project_arguments(callee, actuals)
+            .map_err(Vm3Error::Fault)?
             .into_iter()
-            .map(|slot| slot.unwrap_or(OxArg::Omitted))
+            .map(|arg| arg.unwrap_or(OxArg::Omitted))
             .collect())
-    }
-
-    fn project_default_member(
-        &self,
-        object: &ObjectRef,
-        kind: calcvba_runtime::RuntimeMemberInvokeKind,
-        args_empty: bool,
-    ) -> Result<&'static calcvba_runtime::RuntimeMemberDescriptor, Vm3Error> {
-        let obj_bundle = object.bundle_id() as usize;
-        let public_only = obj_bundle != self.cur;
-        let member = object
-            .class_descriptor()
-            .resolve_member_by_dispid(0, kind, args_empty, public_only)
-            .ok_or_else(|| Vm3Error::Fault(Fault::new(438, default_error_message(438))))?;
-        if args_empty
-            && kind == calcvba_runtime::RuntimeMemberInvokeKind::PropertyGet
-            && member
-                .params
-                .iter()
-                .any(|param| !param.optional && !param.param_array)
-        {
-            return Err(Vm3Error::Fault(Fault::new(449, default_error_message(449))));
-        }
-        Ok(member)
     }
 
     fn dispatch_project_default_member(
@@ -4139,7 +3993,13 @@ impl<'h> Vm3<'h> {
     ) -> Result<Variant, Vm3Error> {
         let runtime_kind = calcvba_rt_abi::runtime_invoke_kind_from_typelib(invoke_kind);
         let obj_bundle = object.bundle_id() as usize;
-        let member = self.project_default_member(&object, runtime_kind, args.is_empty())?;
+        let member = resolve_project_default_member(
+            object.class_descriptor(),
+            runtime_kind,
+            args.is_empty(),
+            obj_bundle != self.cur,
+        )
+        .map_err(Vm3Error::Fault)?;
         self.dispatch_resolved_project_member(object, me, obj_bundle, member, runtime_kind, args)
     }
 
@@ -4152,7 +4012,13 @@ impl<'h> Vm3<'h> {
     ) -> Result<Variant, Vm3Error> {
         let runtime_kind = calcvba_rt_abi::runtime_invoke_kind_from_typelib(invoke_kind);
         let obj_bundle = object.bundle_id() as usize;
-        let member = self.project_default_member(&object, runtime_kind, args.is_empty())?;
+        let member = resolve_project_default_member(
+            object.class_descriptor(),
+            runtime_kind,
+            args.is_empty(),
+            obj_bundle != self.cur,
+        )
+        .map_err(Vm3Error::Fault)?;
         match member.backing {
             calcvba_runtime::RuntimeMemberBacking::Proc(proc) => {
                 self.run_proc_with_values(obj_bundle, FuncId(proc), me, args, false)
@@ -4231,7 +4097,7 @@ impl<'h> Vm3<'h> {
             args.is_empty(),
             effective_public_only,
         )
-        .ok_or_else(|| Vm3Error::Fault(Fault::new(438, default_error_message(438))))?;
+        .map_err(Vm3Error::Fault)?;
         self.dispatch_resolved_project_member(object, me, obj_bundle, member, runtime_kind, args)
     }
 
@@ -4251,7 +4117,7 @@ impl<'h> Vm3<'h> {
                 // the callee parameter names before the frame is seeded.
                 let proc_args = self.project_call_args(obj_bundle, proc, args)?;
                 // Run the method body in the object's program (target_prog = obj_bundle).
-                self.run_proc_with_me(obj_bundle, proc, me, &proc_args, false)
+                self.run_proc_with_me(obj_bundle, proc, me, &proc_args)
             }
             calcvba_runtime::RuntimeMemberBacking::Field(field_token) => self
                 .dispatch_project_field_member(&object, member, field_token, requested_kind, args),
@@ -4696,7 +4562,6 @@ impl<'h> Vm3<'h> {
                 FuncId(proc),
                 Variant::from_object_ref(object),
                 &[],
-                false,
             )?,
             calcvba_runtime::RuntimeMemberBacking::Field(field_token) => self
                 .dispatch_project_field_member_values(
@@ -4726,27 +4591,20 @@ impl<'h> Vm3<'h> {
         self.arithmetic_value(value)
     }
 
-    fn arithmetic_value(&mut self, mut value: Variant) -> Result<Variant, Vm3Error> {
-        // Resolve a value-context default without replacing the owning object
-        // stored in the caller's argument/local. Project and foreign objects
-        // use exactly the normal default-member dispatch routes.
-        for _ in 0..64 {
-            if value.vtype() != VarType::Object {
-                return Ok(value);
-            }
-            value = self.dispatch_default_member_values(
-                value,
-                TypeLibMemberInvokeKind::PropertyGet,
-                Vec::new(),
-            )?;
-        }
-        Err(Vm3Error::Fault(Fault::new(
-            28,
-            "Out of stack space resolving object default value",
-        )))
+    fn arithmetic_value(&mut self, value: Variant) -> Result<Variant, Vm3Error> {
+        read_default_value(
+            value,
+            |value| {
+                self.dispatch_default_member_values(
+                    value,
+                    TypeLibMemberInvokeKind::PropertyGet,
+                    Vec::new(),
+                )
+            },
+            Vm3Error::Fault,
+        )
     }
 
-    /// Dispatch the default member through the ordinary project/foreign routes.
     fn dispatch_default_member(
         &mut self,
         recv_v: Variant,
@@ -4754,31 +4612,23 @@ impl<'h> Vm3<'h> {
         args: &[OxCallArg],
     ) -> Result<Variant, Vm3Error> {
         let object = variant_to_object(&recv_v)?;
-        if calcvba_lib::objects::is_object(&object) {
-            return self.dispatch_library_object(
-                &object,
-                "",
-                project_member_kind(invoke_kind),
-                args,
-            );
-        }
-        if object.route_key() == VBA_COLLECTION_ROUTE_KEY {
-            // A Collection's value with no index (`v = c`): its default `Item` gets no
-            // argument, which VBA reports as 450 (probe let12).
-            if args.is_empty() {
-                return Err(Vm3Error::Fault(Fault::new(450, default_error_message(450))));
+        match object_member_route(&object) {
+            ObjectMemberRoute::Library => {
+                self.dispatch_library_object(&object, "", project_member_kind(invoke_kind), args)
             }
-            return self.dispatch_collection_method(&object, "Item", args);
-        }
-        if object.is_project_instance() {
-            self.dispatch_project_default_member(object, recv_v, invoke_kind, args)
-        } else {
-            self.dispatch_com_method(
+            ObjectMemberRoute::Collection => {
+                let name = collection_member_name("", args.is_empty()).map_err(Vm3Error::Fault)?;
+                self.dispatch_collection_method(&object, name, args)
+            }
+            ObjectMemberRoute::Project => {
+                self.dispatch_project_default_member(object, recv_v, invoke_kind, args)
+            }
+            ObjectMemberRoute::Foreign => self.dispatch_com_method(
                 object,
                 DynamicMemberSelector::DefaultMember,
                 invoke_kind,
                 args,
-            )
+            ),
         }
     }
 
@@ -4789,8 +4639,8 @@ impl<'h> Vm3<'h> {
         args: Vec<Variant>,
     ) -> Result<Variant, Vm3Error> {
         let object = variant_to_object(&recv_v)?;
-        if calcvba_lib::objects::is_object(&object) {
-            return calcvba_rt_abi::invoke_library_object(
+        match object_member_route(&object) {
+            ObjectMemberRoute::Library => calcvba_rt_abi::invoke_library_object(
                 &mut self.exec,
                 &object,
                 "",
@@ -4798,23 +4648,20 @@ impl<'h> Vm3<'h> {
                 &args,
                 &[],
             )
-            .map_err(Vm3Error::Fault);
-        }
-        if object.route_key() == VBA_COLLECTION_ROUTE_KEY {
-            if args.is_empty() {
-                return Err(Vm3Error::Fault(Fault::new(450, default_error_message(450))));
+            .map_err(Vm3Error::Fault),
+            ObjectMemberRoute::Collection => {
+                let name = collection_member_name("", args.is_empty()).map_err(Vm3Error::Fault)?;
+                self.dispatch_collection_values(&object, name, args)
             }
-            return self.dispatch_collection_values(&object, "Item", args);
-        }
-        if object.is_project_instance() {
-            self.dispatch_project_default_member_values(object, recv_v, invoke_kind, args)
-        } else {
-            self.dispatch_com_method_values(
+            ObjectMemberRoute::Project => {
+                self.dispatch_project_default_member_values(object, recv_v, invoke_kind, args)
+            }
+            ObjectMemberRoute::Foreign => self.dispatch_com_method_values(
                 object,
                 DynamicMemberSelector::DefaultMember,
                 invoke_kind,
                 args,
-            )
+            ),
         }
     }
 
@@ -5110,23 +4957,12 @@ impl<'h> Vm3<'h> {
                 }
                 return Err(Vm3Error::Fault(Fault::new(91, default_error_message(91))));
             }
-            if var_type && !self.project_has_default_get(arg) {
+            if var_type && !project_has_default_get(arg) {
                 continue;
             }
             *arg = self.arithmetic_value(arg.clone())?;
         }
         Ok(())
-    }
-
-    /// Whether `value` is a project instance whose class has a default member a value read can
-    /// call. (`VarType` of a COM object is the library's: `object_default_value`.)
-    fn project_has_default_get(&self, value: &Variant) -> bool {
-        let Some(object) = value.as_object_ref().filter(|o| o.is_project_instance()) else {
-            return false;
-        };
-        calcvba_rt_abi::object_types::has_parameterless_default_get_descriptor(
-            object.class_descriptor(),
-        )
     }
 
     fn native_args(&mut self, args: &[OxCallArg]) -> Result<Vec<Variant>, Vm3Error> {
@@ -5792,27 +5628,20 @@ impl<'h> Vm3<'h> {
         place: &OxPlace,
         param_ty: Option<&OxTy>,
     ) -> Result<Option<Variant>, Vm3Error> {
-        if param_ty != Some(&OxTy::Variant) || !self.place_ty(place).is_byref_variant_reference() {
+        let declared = self.place_ty(place);
+        if param_ty != Some(&OxTy::Variant) || !declared.is_byref_variant_reference() {
             return Ok(None);
         }
         let loc = self.resolve(place);
-        // An `As New` variable is created when it is referenced, as the JIT reads it.
+        // As New must be resolved before exposing the typed variable's payload.
         if self.as_new_slots.contains_key(&loc) {
             self.read_loc_as_new(loc)?;
         }
         let Some(cell) = self.read_loc_mut(loc)? else {
             return Ok(None);
         };
-        // A slot that already holds a reference (an element passed ByRef) is passed on as
-        // it is: the parameter aliases it, as VBA passes the same cell to a nested call.
-        if cell.byref_target().is_some() {
-            return Ok(None);
-        }
-        let vt = cell.core().raw_vt();
-        let target = Variant::payload_ptr(cell);
-        // SAFETY: the caller's cell is stable storage (a frame slot or a global) that outlives
-        // the callee's activation; the typed variable's cell keeps its declared type `vt`.
-        Ok(Some(unsafe { Variant::by_ref(vt, target) }))
+        // SAFETY: the caller's frame or global slot outlives the callee and keeps its type.
+        Ok(unsafe { calcvba_rt_abi::byref_variant_payload(&OxTy::Variant, &declared, cell) })
     }
 
     /// The declared type of `place` in the current frame.
@@ -6229,21 +6058,8 @@ fn com_call_args<'a>(
         .collect()
 }
 
-/// Coerce a value to an object reference (mirrors vm2's `variant_to_object`): an unset object
-/// reference (`Object` with no instance) is "Object variable not set" (91),
-/// distinct from a non-object value (424); a bare integer is a legacy compat-identity handle.
 fn variant_to_object(value: &Variant) -> Result<ObjectRef, Vm3Error> {
-    if let Some(object) = value.as_object_ref() {
-        return Ok(object);
-    }
-    if value.vtype() == VarType::Object {
-        return Err(Vm3Error::Fault(Fault::new(
-            91,
-            "Object variable or With block variable not set",
-        )));
-    }
-    // A number is not an object (`vv = 5: vv.Foo` is 424, as in Excel).
-    Err(Vm3Error::Fault(Fault::new(424, "Object required")))
+    object_receiver(value).map_err(Vm3Error::Fault)
 }
 
 /// The value an `Optional` parameter a call leaves out starts with: its declared default, else

@@ -2229,10 +2229,10 @@ pub unsafe extern "C" fn rt_lib_invoke_with_policy(
         // Format$ accepts a Null value (captured empty result); other $ aliases reject Null.
         if string_typed_alias != 0
             && id != NativeImplId::Format
-            && argv.iter().any(|arg| arg.vtype() == VarType::Null)
+            && let Err(err) = calcvba_lib::validate_string_alias_args(id, argv)
         {
             // SAFETY: the exported helper contract guarantees that non-null `state` is the live, uniquely borrowed execution state.
-            return unsafe { seat_fault(state, Fault::new(94, "invalid use of Null")) };
+            return unsafe { seat_fault(state, Fault::from_lib(err)) };
         }
         // `Error()` with no argument is the text of the last error (`Err.Description`).
         if id == NativeImplId::ErrorText && argv.is_empty() {

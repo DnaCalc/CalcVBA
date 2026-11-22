@@ -841,11 +841,9 @@ impl TypedStack {
                                 if let calcvba_bundle::ExportToken::ModuleFunc { member, .. } =
                                     &program.imports[import.0].token
                                     && native.is_string_typed_library_alias(member)
-                                    && values
-                                        .iter()
-                                        .any(|v| v.vtype() == calcvba_runtime::VarType::Null)
                                 {
-                                    return Err(94);
+                                    calcvba_lib::validate_string_alias_args(native, &values)
+                                        .map_err(|err| err.code)?;
                                 }
                                 let result = self.invoke_builtin(
                                     native,

@@ -281,11 +281,24 @@ pub(crate) fn vunit() -> Variant {
     Variant::empty()
 }
 
+/// Validate arguments to a string-typed library alias that rejects Null.
+pub fn validate_string_alias_args(id: NativeImplId, args: &[Variant]) -> LibResult<()> {
+    if args.iter().any(|arg| arg.vtype() == Vt::Null) {
+        // String$ validates its count before rejecting a Null character.
+        if id == NativeImplId::StringRepeat
+            && let Some(count) = args.first().filter(|arg| arg.vtype() != Vt::Null)
+        {
+            alloc_count(count)?;
+        }
+        return Err(LibError::invalid_use_of_null());
+    }
+    Ok(())
+}
+
 /// Whether a `Null` argument makes the built-in's result `Null`. Only the argument that
 /// carries the text or date propagates: a `Null` in a numeric or option argument raises
 /// "Invalid use of Null" (94) from the coercion. `String` handles a Null character
-/// after checking its count. The string-typed `$` aliases are
-/// distinguished by the VM's library import metadata and raise 94 before reaching this body.
+/// before checking its count. String-typed `$` aliases are validated separately.
 fn null_propagates(id: NativeImplId, args: &[Variant]) -> bool {
     use NativeImplId::*;
     let is_null = |i: usize| args.get(i).is_some_and(|a| a.vtype() == Vt::Null);

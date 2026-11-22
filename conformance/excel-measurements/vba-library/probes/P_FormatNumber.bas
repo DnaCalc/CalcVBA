@@ -1,7 +1,7 @@
 Attribute VB_Name = "P_FormatNumber"
 Option Explicit
 ' FormatNumber (Strings; MS-VBAL 6.1.2.11.1.x). All results depend on regional settings: locale.
-Private Const N As Long = 30
+Private Const N As Long = 36
 
 Private Function T(ByVal k As Long) As String
     Dim v As Variant, s As String
@@ -35,8 +35,14 @@ Private Function T(ByVal k As Long) As String
         Case 26: v = FormatNumber(1E+20, 2)                          ' locale: large
         Case 27: v = FormatNumber(0, 2, vbFalse)                     ' locale: zero
         Case 28: v = FormatNumber(Expression:=-1234.5, NumDigitsAfterDecimal:=1, IncludeLeadingDigit:=vbTrue, UseParensForNegativeNumbers:=vbTrue, GroupDigits:=vbTrue)  ' locale: named
-        Case 29: v = FormatNumber(5, 100)                            ' error 5: digits out of range
+        Case 29: v = FormatNumber(5, 100)                            ' 100 fractional digits
         Case 30: v = FormatNumber(5, -2)                             ' error 5
+        Case 31: v = FormatNumber(5, 101)
+        Case 32: v = FormatNumber(5, 127)
+        Case 33: v = FormatNumber(5, 128)
+        Case 34: v = FormatNumber(5, 255)
+        Case 35: v = FormatNumber(5, 256)
+        Case 36: v = FormatNumber(Empty, 256, 2)
     End Select
     T = "FormatNumber." & k & "=" & Sh(v)
     Exit Function

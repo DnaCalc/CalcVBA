@@ -303,14 +303,7 @@ fn one_based_mid_start(value: &Variant) -> LibResult<usize> {
 }
 
 /// `InStr([start], string1, string2, [compare])` and
-/// `InStrRev(string1, string2, [compare])`.
-///
-/// For `InStr`, an optional leading numeric-typed `start` (1-based) is detected
-/// by argument type — the legacy 2-operand form passes a string-typed
-/// `string1`, so this is unambiguous. The trailing compare mode (0 = binary,
-/// 1 = text → ASCII case-insensitive) is supplied by the lowering from the
-/// source's `Option Compare`. (`InStrRev`'s own `start` argument awaits the
-/// canonical arg layout.)
+/// `InStrRev(string1, string2, [start], [compare])`.
 pub fn instr(args: &[Variant], rev: bool) -> LibResult<Variant> {
     if rev {
         return instr_rev(args);
@@ -326,17 +319,15 @@ pub fn instr(args: &[Variant], rev: bool) -> LibResult<Variant> {
     } else {
         1
     };
-    if start == i32::MAX {
-        return Err(LibError::invalid_call("invalid InStr start position"));
-    }
-    let text = instr_text_compare(args, base + 2)?;
+    let text = instr_text_compare(args, base + 2, false)?;
     let hay = compare_fold_units(&units_arg(need(args, base)?)?, text);
     let needle = compare_fold_units(&units_arg(need(args, base + 1)?)?, text);
     // An empty needle in a nonempty string preserves even a nonpositive start.
     if needle.is_empty() && !hay.is_empty() {
         return Ok(vi32(start));
     }
-    if start < 1 {
+    // A nonempty search uses a signed byte offset into the UTF-16 string.
+    if !(1..=i32::MAX / 2 + 1).contains(&start) {
         return Err(LibError::invalid_call("invalid InStr start position"));
     }
     if hay.is_empty() {
@@ -348,15 +339,19 @@ pub fn instr(args: &[Variant], rev: bool) -> LibResult<Variant> {
     ))
 }
 
-fn instr_text_compare(args: &[Variant], index: usize) -> LibResult<bool> {
+fn instr_text_compare(args: &[Variant], index: usize, rev: bool) -> LibResult<bool> {
     let mode = arg_present(args, index)
         .map(as_i32)
         .transpose()?
         .unwrap_or_default();
     match mode {
-        -1 | 2 => Err(LibError::invalid_call("invalid string search comparison")),
-        1 | 3 => Ok(true),
-        _ => Ok(false),
+        // Excel accepts compare 2 for InStrRev.
+        n if n < 0 || (n == 2 && !rev) => {
+            Err(LibError::invalid_call("invalid string search comparison"))
+        }
+        0 => Ok(false),
+        1..=4 => Ok(true),
+        locale => Ok(calcvba_runtime::regional::locale_id_supported(locale)),
     }
 }
 
@@ -366,7 +361,7 @@ fn instr_text_compare(args: &[Variant], index: usize) -> LibResult<bool> {
 /// `start` is the 3rd arg and `compare` the 4th (the old code ignored `start` and misread
 /// arg 2 as the compare mode).
 fn instr_rev(args: &[Variant]) -> LibResult<Variant> {
-    let text = instr_text_compare(args, 3)?;
+    let text = instr_text_compare(args, 3, true)?;
     let hay = compare_fold_units(&units_arg(need(args, 0)?)?, text);
     let needle = compare_fold_units(&units_arg(need(args, 1)?)?, text);
     let start = match arg_present(args, 2) {
@@ -1092,10 +1087,11 @@ pub fn format(args: &[Variant], calendar: Calendar) -> LibResult<Variant> {
 
 pub fn format_number(args: &[Variant]) -> LibResult<Variant> {
     let value = need(args, 0)?;
-    if let Some(early) = fixed_format_guard(value)? {
+    let early = fixed_format_guard(value)?;
+    let options = fixed_format_options(args, 256)?;
+    if let Some(early) = early {
         return Ok(early);
     }
-    let options = fixed_format_options(args)?;
     Ok(vstr(crate::format::format_number(
         value,
         options.decimals,
@@ -1107,10 +1103,11 @@ pub fn format_number(args: &[Variant]) -> LibResult<Variant> {
 
 pub fn format_currency(args: &[Variant]) -> LibResult<Variant> {
     let value = need(args, 0)?;
-    if let Some(early) = fixed_format_guard(value)? {
+    let early = fixed_format_guard(value)?;
+    let options = fixed_format_options(args, 255)?;
+    if let Some(early) = early {
         return Ok(early);
     }
-    let options = fixed_format_options(args)?;
     Ok(vstr(crate::format::format_currency(
         value,
         options.decimals,
@@ -1122,10 +1119,11 @@ pub fn format_currency(args: &[Variant]) -> LibResult<Variant> {
 
 pub fn format_percent(args: &[Variant]) -> LibResult<Variant> {
     let value = need(args, 0)?;
-    if let Some(early) = fixed_format_guard(value)? {
+    let early = fixed_format_guard(value)?;
+    let options = fixed_format_options(args, 256)?;
+    if let Some(early) = early {
         return Ok(early);
     }
-    let options = fixed_format_options(args)?;
     Ok(vstr(crate::format::format_percent(
         value,
         options.decimals,
@@ -1174,26 +1172,26 @@ fn fixed_format_guard(value: &Variant) -> LibResult<Option<Variant>> {
     }
 }
 
-fn fixed_format_options(args: &[Variant]) -> LibResult<FixedFormatOptions> {
+fn fixed_format_options(args: &[Variant], max_decimals: i32) -> LibResult<FixedFormatOptions> {
     Ok(FixedFormatOptions {
-        decimals: fixed_decimals(args)?,
+        decimals: fixed_decimals(args, max_decimals)?,
         include_leading_digit: tri_state_arg(args, 2, true)?,
         parens_for_negative: tri_state_arg(args, 3, false)?,
         group_digits: tri_state_arg(args, 4, true)?,
     })
 }
 
-fn fixed_decimals(args: &[Variant]) -> LibResult<usize> {
+fn fixed_decimals(args: &[Variant], max_decimals: i32) -> LibResult<usize> {
     let value = match opt(args, 1) {
         Some(value) if !matches!(value.vtype(), VarType::Empty) => as_i32(value)?,
         _ => -1,
     };
     match value {
         -1 => Ok(2),
-        0..=100 => Ok(value as usize),
-        _ => Err(LibError::invalid_call(
-            "NumDigitsAfterDecimal must be -1 or 0 to 100",
-        )),
+        value if (0..=max_decimals).contains(&value) => Ok(value as usize),
+        _ => Err(LibError::invalid_call(format!(
+            "NumDigitsAfterDecimal must be -1 or 0 to {max_decimals}",
+        ))),
     }
 }
 

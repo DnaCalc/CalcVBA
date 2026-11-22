@@ -1,7 +1,7 @@
 Attribute VB_Name = "P_String"
 Option Explicit
 ' String / String$ (Strings): repeat a character.
-Private Const N As Long = 31
+Private Const N As Long = 32
 
 Private Function T(ByVal k As Long) As String
     Dim v As Variant, s As String
@@ -38,6 +38,7 @@ Private Function T(ByVal k As Long) As String
         Case 29: v = String$(2, 65535&)
         Case 30: v = String(2, -32768.5#)
         Case 31: v = String(-1, Null)
+        Case 32: v = String$(-1, Null)
     End Select
     T = "String." & k & "=" & Sh(v)
     Exit Function

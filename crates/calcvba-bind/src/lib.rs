@@ -1333,6 +1333,7 @@ struct LowerContext {
     proc_scope: ScopeId,
     local_of: HashMap<SymbolId, LocalId>,
     param_count: usize,
+    param_array: Option<LocalId>,
     return_local: Option<LocalId>,
     return_type: VarTypeRef,
     class_name: Option<String>,
@@ -1350,6 +1351,11 @@ impl LowerContext {
             proc_scope: info.proc_scope,
             local_of: info.local_of.clone(),
             param_count: info.params.len(),
+            param_array: info
+                .params
+                .iter()
+                .position(|param| param.variadic)
+                .map(LocalId),
             return_local: info.return_local,
             return_type: info.return_type.clone(),
             class_name: info.class_name.clone(),
@@ -1372,6 +1378,7 @@ impl LowerContext {
             proc_scope: module_scope,
             local_of: HashMap::new(),
             param_count: 0,
+            param_array: None,
             return_local: None,
             return_type: VarTypeRef::Variant,
             class_name: None,

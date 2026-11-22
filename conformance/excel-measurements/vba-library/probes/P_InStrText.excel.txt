@@ -1,0 +1,12 @@
+InStrText.1=ERR5
+InStrText.2=ERR5
+InStrText.3=Long:2147483647
+InStrText.4=ERR5
+InStrText.5=Long:2
+InStrText.6=Long:2
+InStrText.7=Long:2
+InStrText.8=ERR5
+InStrText.9=Long:2
+InStrText.10=Long:2
+InStrText.11=Long:2
+InStrText.12=Long:2

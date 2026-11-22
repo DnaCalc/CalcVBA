@@ -5018,11 +5018,9 @@ impl<'h> Vm3<'h> {
         string_typed_alias: bool,
     ) -> Result<Variant, Vm3Error> {
         // Format$ accepts a Null value (captured empty result); other $ aliases reject Null.
-        if string_typed_alias
-            && id != NativeImplId::Format
-            && argv.iter().any(|arg| arg.vtype() == VarType::Null)
-        {
-            return Err(Vm3Error::Fault(Fault::new(94, "invalid use of Null")));
+        if string_typed_alias && id != NativeImplId::Format {
+            calcvba_lib::validate_string_alias_args(id, argv)
+                .map_err(|err| Vm3Error::Fault(Fault::from_lib(err)))?;
         }
         if id == NativeImplId::ErrorText && argv.is_empty() {
             return Ok(Variant::from_string(&self.exec.err_engine.err.description));

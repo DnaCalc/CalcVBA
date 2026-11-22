@@ -1,7 +1,7 @@
 Attribute VB_Name = "P_FormatCurrency"
 Option Explicit
 ' FormatCurrency (Strings; MS-VBAL 6.1.2.11.1.x). All results depend on regional settings: locale.
-Private Const N As Long = 30
+Private Const N As Long = 35
 
 Private Function T(ByVal k As Long) As String
     Dim v As Variant, s As String
@@ -35,8 +35,13 @@ Private Function T(ByVal k As Long) As String
         Case 26: v = FormatCurrency(1E+20, 2)                          ' locale: large
         Case 27: v = FormatCurrency(0, 2, vbFalse)                     ' locale: zero
         Case 28: v = FormatCurrency(Expression:=-1234.5, NumDigitsAfterDecimal:=1, IncludeLeadingDigit:=vbTrue, UseParensForNegativeNumbers:=vbTrue, GroupDigits:=vbTrue)  ' locale: named
-        Case 29: v = FormatCurrency(5, 100)                            ' error 5: digits out of range
+        Case 29: v = FormatCurrency(5, 100)                            ' 100 fractional digits
         Case 30: v = FormatCurrency(5, -2)                             ' error 5
+        Case 31: v = FormatCurrency(5, 101)
+        Case 32: v = FormatCurrency(5, 127)
+        Case 33: v = FormatCurrency(5, 128)
+        Case 34: v = FormatCurrency(5, 255)
+        Case 35: v = FormatCurrency(Empty, 256, 2)
     End Select
     T = "FormatCurrency." & k & "=" & Sh(v)
     Exit Function

@@ -211,6 +211,8 @@ reported explicitly. On Linux, `files` additionally maps the C: drive to a
 private scratch folder per run and compares directories and file bytes.
 `cells` records typed writes to a portable sheet fixture exposed as
 `CalcVBA.ParitySheet` with `WriteCell` taking a Long row, Long column and value.
+`excel` binds against a portable in-memory Excel host stub (`ThisWorkbook`,
+`Application`, `Worksheet`, `Range`, `WorksheetFunction`) per backend run.
 
 ```sh
 cargo run -p calcvba-differential --example source_parity -- inspect examples
@@ -218,6 +220,7 @@ cargo run -p calcvba-differential --example source_parity -- compare reviewed-pr
 cargo run -p calcvba-differential --example source_parity -- procedures reviewed-project.basproj
 cargo run -p calcvba-differential --example source_parity -- files reviewed-file-probe.bas
 cargo run -p calcvba-differential --example source_parity -- cells reviewed-cell-probe.bas
+cargo run -p calcvba-differential --example source_parity -- excel reviewed-excel-probe.bas
 ```
 
 

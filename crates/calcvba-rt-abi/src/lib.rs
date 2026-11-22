@@ -774,6 +774,7 @@ impl<'h> ExecState<'h> {
 
     /// Charge one bounded execution checkpoint. Exhaustion is a host abort,
     /// never a catchable VBA error, so On Error cannot defeat a host budget.
+    #[inline]
     pub fn consume_execution_step(&mut self) -> bool {
         match &mut self.remaining_steps {
             None => true,
@@ -781,6 +782,23 @@ impl<'h> ExecState<'h> {
             Some(remaining) => {
                 *remaining -= 1;
                 true
+            }
+        }
+    }
+
+    /// Charge `steps` bounded execution checkpoints in one check (used when fused
+    /// bytecode hops over empty jump blocks or a loop header chain).
+    #[inline]
+    pub fn consume_execution_steps(&mut self, steps: u64) -> bool {
+        match &mut self.remaining_steps {
+            None => true,
+            Some(remaining) if *remaining >= steps => {
+                *remaining -= steps;
+                true
+            }
+            Some(remaining) => {
+                *remaining = 0;
+                false
             }
         }
     }

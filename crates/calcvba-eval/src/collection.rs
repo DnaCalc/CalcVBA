@@ -103,11 +103,24 @@ fn is_missing_arg(v: &Variant) -> bool {
     v.as_error_code() == Some(MISSING_ARG)
 }
 
+fn fold_string_variant(v: &Variant) -> Option<String> {
+    let units = v.borrowed_string_units()?;
+    if units.iter().all(|&u| u < 0x80) {
+        let mut folded = String::with_capacity(units.len());
+        for &u in units {
+            folded.push((u as u8).to_ascii_lowercase() as char);
+        }
+        Some(folded)
+    } else {
+        Some(fold_key(&String::from_utf16_lossy(units)))
+    }
+}
+
 /// A selector from a Variant: a string is a (folded) key, anything else a 1-based index
 /// (lenient numeric coercion; a non-numeric, non-string value yields index 0 → out of range).
 fn variant_selector(v: &Variant) -> Selector {
-    if let Some(s) = v.as_bstr() {
-        Selector::Key(fold_key(&s.as_str()))
+    if let Some(folded) = fold_string_variant(v) {
+        Selector::Key(folded)
     } else {
         // Any numeric subtype is a 1-based Long index. Coerce through the shared
         // integer conversion (VBA banker's rounding) rather than a hand-rolled
@@ -127,8 +140,8 @@ fn optional_key(arg: Option<&Variant>) -> Result<Option<String>, CollectionError
     let Some(v) = arg.filter(|v| !is_missing_arg(v)) else {
         return Ok(None);
     };
-    match v.as_bstr() {
-        Some(s) => Ok(Some(fold_key(&s.as_str()))),
+    match fold_string_variant(v) {
+        Some(folded) => Ok(Some(folded)),
         None => Err(CollectionError::TypeMismatch),
     }
 }

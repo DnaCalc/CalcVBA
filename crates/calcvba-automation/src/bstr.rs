@@ -114,6 +114,12 @@ impl BStr {
         })
     }
 
+    pub fn from_utf16_concat(a: &[u16], b: &[u16]) -> Result<Self, String> {
+        Ok(Self {
+            raw: NonNull::new(alloc_raw_bstr_from_units_pair(a, b)?),
+        })
+    }
+
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
         Ok(Self {
             raw: NonNull::new(alloc_raw_bstr_from_bytes(bytes)?),
@@ -553,6 +559,93 @@ fn alloc_raw_bstr_from_bytes(bytes: &[u8]) -> Result<*mut u16, String> {
             Ok(payload.cast::<u16>())
         }
     }
+}
+
+fn alloc_raw_bstr_from_units_pair(a: &[u16], b: &[u16]) -> Result<*mut u16, String> {
+    let total_units = a
+        .len()
+        .checked_add(b.len())
+        .ok_or_else(|| "BSTR payload size overflow".to_string())?;
+    #[cfg(all(target_os = "windows", not(miri)))]
+    {
+        let len = u32::try_from(total_units)
+            .map_err(|_| "BSTR payload length should fit in u32 code-unit count".to_string())?;
+        // SAFETY: `SysAllocStringLen(null, len)` allocates an uninitialized BSTR of `len` UTF-16
+        // code units plus a terminating NUL, which we initialize completely before returning.
+        let raw = unsafe { SysAllocStringLen(core::ptr::null(), len) };
+        if raw.is_null() {
+            return Err("failed to allocate BSTR payload".to_string());
+        }
+        crate::live_counters::bstr_allocated();
+        // SAFETY: `raw` is non-null with capacity for `a.len() + b.len()` u16 units.
+        unsafe {
+            core::ptr::copy_nonoverlapping(a.as_ptr(), raw, a.len());
+            core::ptr::copy_nonoverlapping(b.as_ptr(), raw.add(a.len()), b.len());
+        }
+        Ok(raw.cast_mut())
+    }
+    #[cfg(any(not(target_os = "windows"), miri))]
+    {
+        let total_bytes = total_units
+            .checked_mul(BSTR_UNIT_BYTES)
+            .ok_or_else(|| "BSTR payload size overflow".to_string())?;
+        let len_bytes = u32::try_from(total_bytes)
+            .map_err(|_| "BSTR payload length should fit in u32 byte count".to_string())?;
+        let layout = raw_bstr_layout_bytes(total_bytes)?;
+        // SAFETY: `layout` has non-zero size (prefix + payload + NUL).
+        let raw = unsafe { std::alloc::alloc(layout) };
+        if raw.is_null() {
+            return Err("failed to allocate BSTR payload".to_string());
+        }
+        crate::live_counters::bstr_allocated();
+        // SAFETY: `raw` is sized for the 4-byte prefix, `total_bytes` payload, and 2 NUL bytes.
+        unsafe {
+            raw.cast::<u32>().write(len_bytes);
+            let payload = raw.add(BSTR_PREFIX_BYTES);
+            let a_bytes = a.len() * BSTR_UNIT_BYTES;
+            let b_bytes = b.len() * BSTR_UNIT_BYTES;
+            core::ptr::copy_nonoverlapping(a.as_ptr().cast::<u8>(), payload, a_bytes);
+            core::ptr::copy_nonoverlapping(b.as_ptr().cast::<u8>(), payload.add(a_bytes), b_bytes);
+            payload.add(total_bytes).write(0);
+            payload.add(total_bytes + 1).write(0);
+            Ok(payload.cast::<u16>())
+        }
+    }
+}
+
+/// # Safety
+/// `raw` must be null or a live BSTR allocation that outlives `'a`.
+#[inline]
+pub(crate) unsafe fn raw_bstr_payload_units<'a>(raw: *mut u16) -> &'a [u16] {
+    if raw.is_null() {
+        return &[];
+    }
+    // SAFETY: forwarded from caller contract; length prefix holds the allocated unit count.
+    unsafe { core::slice::from_raw_parts(raw.cast_const(), raw_bstr_len_units(raw)) }
+}
+
+/// # Safety
+/// `raw` must be null or a live BSTR allocation that outlives `'a`.
+#[inline]
+pub(crate) unsafe fn raw_bstr_payload_bytes<'a>(raw: *mut u16) -> &'a [u8] {
+    if raw.is_null() {
+        return &[];
+    }
+    // SAFETY: forwarded from caller contract; length prefix holds the allocated byte count.
+    unsafe {
+        core::slice::from_raw_parts(
+            raw.cast_const().cast::<u8>(),
+            usize::try_from(raw_bstr_len_bytes(raw)).unwrap_or(0),
+        )
+    }
+}
+
+/// # Safety
+/// `raw` must be null or a live BSTR allocation.
+#[inline]
+pub(crate) unsafe fn raw_bstr_byte_len(raw: *mut u16) -> u32 {
+    // SAFETY: forwarded from caller contract.
+    unsafe { raw_bstr_len_bytes(raw) }
 }
 
 unsafe fn raw_bstr_len_bytes(ptr: *mut u16) -> u32 {

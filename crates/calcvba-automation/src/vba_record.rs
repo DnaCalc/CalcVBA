@@ -1000,19 +1000,26 @@ impl VbaRecord {
     }
 
     pub fn read_field_variant(&self, index: usize) -> Result<Variant, String> {
-        let field = self.checked_field_by_index(index)?;
+        let field = self
+            .layout
+            .fields
+            .get(index)
+            .ok_or_else(|| format!("record field {index} out of range"))?;
+        let ptr = self.field_ptr_by_index(index)?;
         // SAFETY: the field pointer is in range and aligned for `field.kind`.
-        unsafe { read_field_variant_at(self.field_ptr_by_index(index)?, &field.kind) }
+        unsafe { read_field_variant_at(ptr, &field.kind) }
     }
 
     pub fn write_field_variant(&mut self, index: usize, value: &Variant) -> Result<(), String> {
-        let layout = Arc::clone(&self.layout);
-        let field = layout
-            .fields()
+        let ptr = self.field_mut_ptr_by_index(index)?;
+        let field = self
+            .layout
+            .fields
             .get(index)
             .ok_or_else(|| format!("record field {index} out of range"))?;
-        // SAFETY: the field pointer is in range and aligned for `field.kind`.
-        unsafe { write_field_variant_at(self.field_mut_ptr_by_index(index)?, &field.kind, value) }
+        // SAFETY: the field pointer is in range and aligned for `field.kind`, and
+        // `self.layout` is immutable while `ptr` targets `self.data`.
+        unsafe { write_field_variant_at(ptr, &field.kind, value) }
     }
 
     fn ensure_handle_belongs(&self, field: &VbaRecordFieldHandle) -> Result<(), String> {
@@ -1680,7 +1687,7 @@ unsafe fn drop_field_at(ptr: *mut u8, kind: &VbaRecordFieldKind) {
 
 /// # Safety
 /// `ptr` must reference a live field initialized for and aligned to `kind`.
-unsafe fn read_field_variant_at(
+pub(crate) unsafe fn read_field_variant_at(
     ptr: *const u8,
     kind: &VbaRecordFieldKind,
 ) -> Result<Variant, String> {
@@ -1801,7 +1808,7 @@ fn materialize_fixed_array(
 /// # Safety
 /// `ptr` must reference a field slot sized and aligned for `kind` that is already
 /// initialized for that `kind` (so owning slots can be dropped before overwrite).
-unsafe fn write_field_variant_at(
+pub(crate) unsafe fn write_field_variant_at(
     ptr: *mut u8,
     kind: &VbaRecordFieldKind,
     value: &Variant,

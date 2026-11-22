@@ -179,6 +179,7 @@ impl VariantData {
     /// tail is zero. The bytes are not validated and own nothing; an integer stored here is not
     /// a pointer (it has no provenance), which is why only the unsafe trusted decoders turn
     /// such bytes into owned values.
+    #[inline]
     pub const fn from_bytes(bytes: [u8; 8]) -> Self {
         let mut all = [0u8; crate::abi::PAYLOAD_SIZE];
         let mut index = 0;
@@ -247,6 +248,7 @@ impl VariantData {
         (record.record, record.record_info)
     }
 
+    #[inline]
     fn all_bytes(self) -> [u8; crate::abi::PAYLOAD_SIZE] {
         // SAFETY: every union byte is initialised; reading pointer bytes as integers is a
         // pointer-to-integer transmute, which keeps only the address.
@@ -254,6 +256,7 @@ impl VariantData {
     }
 
     /// The first eight union bytes, little-endian (a pointer as its address).
+    #[inline]
     pub fn bytes(self) -> [u8; 8] {
         let mut out = [0u8; 8];
         out.copy_from_slice(&self.all_bytes()[..8]);
@@ -415,6 +418,7 @@ impl VariantCore {
         }
     }
 
+    #[inline]
     pub const fn vtype(&self) -> VarType {
         match VarType::from_u16(self.vt) {
             Some(vtype) => vtype,
@@ -423,6 +427,7 @@ impl VariantCore {
     }
 
     /// The raw `VARTYPE`, including `VT_ARRAY`'s element type.
+    #[inline]
     pub const fn raw_vt(&self) -> u16 {
         self.vt
     }
@@ -559,6 +564,7 @@ impl VariantCore {
         self.reserved3
     }
 
+    #[inline]
     pub fn data_bytes(&self) -> [u8; 8] {
         self.data.bytes()
     }
@@ -681,10 +687,142 @@ pub struct Variant {
 }
 
 impl Variant {
+    #[inline]
     fn from_core(core: VariantCore) -> Self {
         #[cfg(any(test, feature = "live-counters"))]
         crate::live_counters::variant_constructed();
         Self { core }
+    }
+
+    /// Whether a raw VARTYPE owns a heap resource that requires Drop cleanup.
+    #[inline]
+    pub const fn raw_vt_needs_drop(vt: u16) -> bool {
+        vt >= 0x0008 && (matches!(vt, 0x0008 | 0x0009 | 0x000D | 0x0024) || (vt & 0xF000 == 0x2000))
+    }
+
+    /// Whether a raw VARTYPE can be cloned by a plain bitwise copy of `VariantCore`
+    /// (no heap allocation, refcount bump, or `VT_BYREF` dereference).
+    #[inline]
+    pub const fn raw_vt_is_trivial_copy(vt: u16) -> bool {
+        vt <= 0x0007 || (vt >= 0x000A && vt <= 0x0017 && vt != 0x000D) || vt == 0xFFF0
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn drop_replaced_core(core: VariantCore) {
+        drop(Self { core });
+    }
+
+    /// Overwrite this slot with a scalar `VariantCore` in place, running Drop only
+    /// when the previous payload owned a heap resource.
+    #[inline]
+    fn overwrite_scalar_core(&mut self, core: VariantCore) {
+        let old_vt = self.core.raw_vt();
+        if old_vt < 8 || old_vt == 11 {
+            self.core = core;
+        } else if Self::raw_vt_needs_drop(old_vt) {
+            Self::drop_replaced_core(core::mem::replace(&mut self.core, core));
+        } else {
+            self.core = core;
+        }
+    }
+
+    /// Overwrite a known-non-owning scalar slot with `Empty` in place.
+    #[inline]
+    pub fn set_empty_over_scalar(&mut self) {
+        debug_assert!(!Self::raw_vt_needs_drop(self.core.raw_vt()));
+        self.core = VariantCore::from_bytes(VarType::Empty, [0; 8]);
+    }
+
+    /// Overwrite a known-non-owning scalar slot with a `Long` (`i32`) in place.
+    #[inline]
+    pub fn set_i32_over_scalar(&mut self, value: i32) {
+        debug_assert!(!Self::raw_vt_needs_drop(self.core.raw_vt()));
+        let b = value.to_le_bytes();
+        self.core = VariantCore::from_bytes(VarType::Long, [b[0], b[1], b[2], b[3], 0, 0, 0, 0]);
+    }
+
+    /// Overwrite a known-non-owning scalar slot with a `Double` (`f64`) in place.
+    #[inline]
+    pub fn set_f64_over_scalar(&mut self, value: f64) {
+        debug_assert!(!Self::raw_vt_needs_drop(self.core.raw_vt()));
+        self.core = VariantCore::from_bytes(VarType::Double, value.to_le_bytes());
+    }
+
+    /// Overwrite a known-non-owning scalar slot with a `Boolean` in place.
+    #[inline]
+    pub fn set_bool_over_scalar(&mut self, value: bool) {
+        debug_assert!(!Self::raw_vt_needs_drop(self.core.raw_vt()));
+        let vb_bool: i16 = if value { -1 } else { 0 };
+        let b = vb_bool.to_le_bytes();
+        self.core = VariantCore::from_bytes(VarType::Boolean, [b[0], b[1], 0, 0, 0, 0, 0, 0]);
+    }
+
+    /// Overwrite this slot with `Empty` in place.
+    #[inline]
+    pub fn set_empty(&mut self) {
+        self.overwrite_scalar_core(VariantCore::from_bytes(VarType::Empty, [0; 8]));
+    }
+
+    /// Overwrite this slot with a `Long` (`i32`) in place.
+    #[inline]
+    pub fn set_i32(&mut self, value: i32) {
+        let b = value.to_le_bytes();
+        self.overwrite_scalar_core(VariantCore::from_bytes(
+            VarType::Long,
+            [b[0], b[1], b[2], b[3], 0, 0, 0, 0],
+        ));
+    }
+
+    /// Overwrite this slot with a `Double` (`f64`) in place.
+    #[inline]
+    pub fn set_f64(&mut self, value: f64) {
+        self.overwrite_scalar_core(VariantCore::from_bytes(
+            VarType::Double,
+            value.to_le_bytes(),
+        ));
+    }
+
+    /// Overwrite this slot with a `Boolean` in place.
+    #[inline]
+    pub fn set_bool(&mut self, value: bool) {
+        let vb_bool: i16 = if value { -1 } else { 0 };
+        let b = vb_bool.to_le_bytes();
+        self.overwrite_scalar_core(VariantCore::from_bytes(
+            VarType::Boolean,
+            [b[0], b[1], 0, 0, 0, 0, 0, 0],
+        ));
+    }
+
+    /// Overwrite this slot with a `Date` (`f64` serial) in place.
+    #[inline]
+    pub fn set_date_f64(&mut self, value: f64) {
+        self.overwrite_scalar_core(VariantCore::from_bytes(VarType::Date, value.to_le_bytes()));
+    }
+
+    /// Overwrite this slot in place with a non-owning scalar `VariantCore`.
+    /// Returns `false` (leaving `self` untouched) if `core` is not a trivially copyable scalar.
+    #[inline]
+    pub fn overwrite_trivial_core(&mut self, core: VariantCore) -> bool {
+        if Self::raw_vt_is_trivial_copy(core.raw_vt()) {
+            self.overwrite_scalar_core(core);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Copy a trivially copyable scalar from `src` into `self` in place (avoiding
+    /// `Variant::clone` and intermediate `Variant` construction).
+    #[inline]
+    pub fn copy_trivial_from(&mut self, src: &Variant) -> bool {
+        self.overwrite_trivial_core(src.core)
+    }
+
+    /// The raw `VARTYPE` tag without decoding into `VarType`.
+    #[inline]
+    pub const fn raw_vt(&self) -> u16 {
+        self.core.raw_vt()
     }
 
     pub fn zeroed(vtype: VarType) -> Self {
@@ -742,10 +880,12 @@ impl Variant {
         ))
     }
 
+    #[inline]
     pub fn vtype(&self) -> VarType {
         self.core.vtype()
     }
 
+    #[inline]
     pub fn core(&self) -> VariantCore {
         self.core
     }
@@ -762,6 +902,7 @@ impl Variant {
         self.core.reserved3()
     }
 
+    #[inline]
     pub fn data_bytes(&self) -> [u8; 8] {
         self.core.data_bytes()
     }
@@ -948,49 +1089,64 @@ impl Variant {
         }
     }
 
+    #[inline]
     pub fn empty() -> Self {
         Self::from_core(VariantCore::from_bytes(VarType::Empty, [0; 8]))
     }
 
+    #[inline]
     pub fn null() -> Self {
         Self::from_core(VariantCore::from_bytes(VarType::Null, [0; 8]))
     }
 
+    #[inline]
     pub fn from_i16(value: i16) -> Self {
-        let mut bytes = [0u8; 8];
-        bytes[0..2].copy_from_slice(&value.to_le_bytes());
-        Self::from_core(VariantCore::from_bytes(VarType::Integer, bytes))
+        let b = value.to_le_bytes();
+        Self::from_core(VariantCore::from_bytes(
+            VarType::Integer,
+            [b[0], b[1], 0, 0, 0, 0, 0, 0],
+        ))
     }
 
+    #[inline]
     pub fn as_i16(&self) -> Option<i16> {
-        if self.vtype() != VarType::Integer {
+        if self.core.raw_vt() != VarType::Integer as u16 {
             return None;
         }
         let bytes = self.data_bytes();
         Some(i16::from_le_bytes([bytes[0], bytes[1]]))
     }
 
+    #[inline]
     pub fn from_i32(value: i32) -> Self {
-        let mut bytes = [0u8; 8];
-        bytes[0..4].copy_from_slice(&value.to_le_bytes());
-        Self::from_core(VariantCore::from_bytes(VarType::Long, bytes))
+        let b = value.to_le_bytes();
+        Self::from_core(VariantCore::from_bytes(
+            VarType::Long,
+            [b[0], b[1], b[2], b[3], 0, 0, 0, 0],
+        ))
     }
 
     /// A `VT_INT` value (VarType 22), as a COM server returns a machine int.
+    #[inline]
     pub fn from_int(value: i32) -> Self {
-        let mut bytes = [0u8; 8];
-        bytes[0..4].copy_from_slice(&value.to_le_bytes());
-        Self::from_core(VariantCore::from_bytes(VarType::Int, bytes))
+        let b = value.to_le_bytes();
+        Self::from_core(VariantCore::from_bytes(
+            VarType::Int,
+            [b[0], b[1], b[2], b[3], 0, 0, 0, 0],
+        ))
     }
 
+    #[inline]
     pub fn as_i32(&self) -> Option<i32> {
-        if self.vtype() != VarType::Long && self.vtype() != VarType::Int {
+        let vt = self.core.raw_vt();
+        if vt != VarType::Long as u16 && vt != VarType::Int as u16 {
             return None;
         }
         let bytes = self.data_bytes();
         Some(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
+    #[inline]
     pub fn from_i64(value: i64) -> Self {
         Self::from_core(VariantCore::from_bytes(
             VarType::LongLong,
@@ -998,13 +1154,15 @@ impl Variant {
         ))
     }
 
+    #[inline]
     pub fn as_i64(&self) -> Option<i64> {
-        if self.vtype() != VarType::LongLong {
+        if self.core.raw_vt() != VarType::LongLong as u16 {
             return None;
         }
         Some(i64::from_le_bytes(self.data_bytes()))
     }
 
+    #[inline]
     pub fn from_proc_ref(proc: usize) -> Self {
         Self::from_core(VariantCore::from_bytes(
             VarType::ProcRef,
@@ -1012,27 +1170,33 @@ impl Variant {
         ))
     }
 
+    #[inline]
     pub fn as_proc_ref(&self) -> Option<usize> {
-        if self.vtype() != VarType::ProcRef {
+        if self.core.raw_vt() != VarType::ProcRef as u16 {
             return None;
         }
         usize::try_from(u64::from_le_bytes(self.data_bytes())).ok()
     }
 
+    #[inline]
     pub fn from_f32(value: f32) -> Self {
-        let mut bytes = [0u8; 8];
-        bytes[0..4].copy_from_slice(&value.to_le_bytes());
-        Self::from_core(VariantCore::from_bytes(VarType::Single, bytes))
+        let b = value.to_le_bytes();
+        Self::from_core(VariantCore::from_bytes(
+            VarType::Single,
+            [b[0], b[1], b[2], b[3], 0, 0, 0, 0],
+        ))
     }
 
+    #[inline]
     pub fn as_f32(&self) -> Option<f32> {
-        if self.vtype() != VarType::Single {
+        if self.core.raw_vt() != VarType::Single as u16 {
             return None;
         }
         let bytes = self.data_bytes();
         Some(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
+    #[inline]
     pub fn from_f64(value: f64) -> Self {
         Self::from_core(VariantCore::from_bytes(
             VarType::Double,
@@ -1040,13 +1204,15 @@ impl Variant {
         ))
     }
 
+    #[inline]
     pub fn as_f64(&self) -> Option<f64> {
-        if self.vtype() != VarType::Double {
+        if self.core.raw_vt() != VarType::Double as u16 {
             return None;
         }
         Some(f64::from_le_bytes(self.data_bytes()))
     }
 
+    #[inline]
     pub fn from_currency_scaled_i64(value: i64) -> Self {
         Self::from_core(VariantCore::from_bytes(
             VarType::Currency,
@@ -1054,8 +1220,9 @@ impl Variant {
         ))
     }
 
+    #[inline]
     pub fn as_currency_scaled_i64(&self) -> Option<i64> {
-        if self.vtype() != VarType::Currency {
+        if self.core.raw_vt() != VarType::Currency as u16 {
             return None;
         }
         Some(i64::from_le_bytes(self.data_bytes()))
@@ -1085,26 +1252,32 @@ impl Variant {
         Some(Decimal96::from_scale_sign(lo, mid, hi, self.reserved1()))
     }
 
+    #[inline]
     pub fn from_date_f64(value: f64) -> Self {
         Self::from_core(VariantCore::from_bytes(VarType::Date, value.to_le_bytes()))
     }
 
+    #[inline]
     pub fn as_date_f64(&self) -> Option<f64> {
-        if self.vtype() != VarType::Date {
+        if self.core.raw_vt() != VarType::Date as u16 {
             return None;
         }
         Some(f64::from_le_bytes(self.data_bytes()))
     }
 
+    #[inline]
     pub fn from_bool(value: bool) -> Self {
-        let mut bytes = [0u8; 8];
         let vb_bool: i16 = if value { -1 } else { 0 };
-        bytes[0..2].copy_from_slice(&vb_bool.to_le_bytes());
-        Self::from_core(VariantCore::from_bytes(VarType::Boolean, bytes))
+        let b = vb_bool.to_le_bytes();
+        Self::from_core(VariantCore::from_bytes(
+            VarType::Boolean,
+            [b[0], b[1], 0, 0, 0, 0, 0, 0],
+        ))
     }
 
+    #[inline]
     pub fn as_bool(&self) -> Option<bool> {
-        if self.vtype() != VarType::Boolean {
+        if self.core.raw_vt() != VarType::Boolean as u16 {
             return None;
         }
         let bytes = self.data_bytes();
@@ -1241,22 +1414,51 @@ impl Variant {
         Self::from_string(BStr::from_utf16_units(units).expect("BSTR allocation should succeed"))
     }
 
+    pub fn from_utf16_concat(a: &[u16], b: &[u16]) -> Self {
+        Self::from_string(BStr::from_utf16_concat(a, b).expect("BSTR allocation should succeed"))
+    }
+
     pub fn from_bstr_bytes(bytes: &[u8]) -> Self {
         Self::from_string(BStr::from_bytes(bytes).expect("BSTR allocation should succeed"))
+    }
+
+    /// Borrow a String Variant's UTF-16 code units directly without cloning its BSTR.
+    #[inline]
+    pub fn borrowed_string_units(&self) -> Option<&[u16]> {
+        if self.core.raw_vt() != VarType::String as u16 {
+            return None;
+        }
+        // SAFETY: `self` owns its live BSTR (or null) for the lifetime of `&self`.
+        Some(unsafe { crate::bstr::raw_bstr_payload_units(self.core.pointer().cast::<u16>()) })
+    }
+
+    /// Borrow a String Variant's raw BSTR bytes directly without cloning its BSTR.
+    #[inline]
+    pub fn borrowed_string_bytes(&self) -> Option<&[u8]> {
+        if self.core.raw_vt() != VarType::String as u16 {
+            return None;
+        }
+        // SAFETY: `self` owns its live BSTR (or null) for the lifetime of `&self`.
+        Some(unsafe { crate::bstr::raw_bstr_payload_bytes(self.core.pointer().cast::<u16>()) })
     }
 
     /// The String Variant's raw UTF-16 code units (none for a non-string), preserving
     /// surrogate halves verbatim — the faithful counterpart to a lossy `as_str`.
     pub fn string_units(&self) -> Option<Vec<u16>> {
-        self.string_core().map(|core| core.payload_units().to_vec())
+        self.borrowed_string_units().map(<[u16]>::to_vec)
     }
 
     pub fn string_bytes(&self) -> Option<Vec<u8>> {
-        self.as_bstr().map(|text| text.payload_bytes().to_vec())
+        self.borrowed_string_bytes().map(<[u8]>::to_vec)
     }
 
+    #[inline]
     pub fn string_byte_len(&self) -> Option<u32> {
-        self.as_bstr().map(|text| text.byte_len())
+        if self.core.raw_vt() != VarType::String as u16 {
+            return None;
+        }
+        // SAFETY: `self` owns its live BSTR (or null) for the lifetime of `&self`.
+        Some(unsafe { crate::bstr::raw_bstr_byte_len(self.core.pointer().cast::<u16>()) })
     }
 
     pub fn as_bstr(&self) -> Option<BStr> {
@@ -1289,8 +1491,10 @@ impl Variant {
         Self::from_core(VariantCore::from_bytes(VarType::Object, [0; 8]))
     }
 
+    #[inline]
     pub fn as_object_ref(&self) -> Option<ObjectRef> {
-        if self.vtype() != VarType::Object {
+        let vt = self.core.raw_vt();
+        if vt != VarType::Object as u16 && vt != 0x000D {
             return None;
         }
         // SAFETY: vtype was checked to be Object above, so the payload is null or the
@@ -1336,11 +1540,14 @@ impl Variant {
 
     /// The target type (`vt` without `VT_BYREF`, `VT_ARRAY` kept) and address of a `VT_BYREF`
     /// cell.
+    #[inline]
     pub fn byref_target(&self) -> Option<(u16, *mut u8)> {
-        if self.vtype() != VarType::ByRef {
+        let vt = self.core.raw_vt();
+        let hi = vt & 0xF000;
+        if hi != 0x4000 && hi != 0x6000 {
             return None;
         }
-        Some((self.core.raw_vt() & !0x4000, self.core.pointer().cast()))
+        Some((vt & !0x4000, self.core.pointer().cast()))
     }
 
     /// The value a `VT_BYREF` cell refers to (VBA's `VariantCopyInd`).
@@ -1627,7 +1834,18 @@ impl Variant {
 
     /// Whether this holds, or refers to, an array that is locked (an element of it is out as a
     /// ByRef argument): replacing it raises error 10 in VBA.
+    #[inline]
     pub fn holds_locked_array(&self) -> bool {
+        let hi = self.core.raw_vt() & 0xF000;
+        if hi != 0x2000 && hi != 0x4000 && hi != 0x6000 {
+            return false;
+        }
+        self.holds_locked_array_slow()
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn holds_locked_array_slow(&self) -> bool {
         let cell = match self.byref_target() {
             // SAFETY: a `VT_BYREF | VT_VARIANT` reference targets a live engine cell.
             Some((0x0C, target)) => unsafe { &*target.cast::<Variant>() },
@@ -1726,6 +1944,246 @@ impl Variant {
         // SAFETY: as in `safearray_element` — borrow the owned descriptor without
         // taking ownership.
         unsafe { SafeArray::raw_safearray_bounds_len(raw) }
+    }
+
+    /// Reads one element of a 1D array without allocating a bounds `Vec`.
+    /// Returns `None` if this Variant is not an allocated 1D array.
+    #[inline]
+    pub fn safearray_1d_read(&self, subscript: i32) -> Option<Result<Variant, (i32, String)>> {
+        let raw = self.array_descriptor()?;
+        let layout = self.record_array_layout_ptr();
+        if (self.core.raw_vt() & 0x0FFF) == 0x0024 && layout.is_null() {
+            return None;
+        }
+        // SAFETY: `self` owns the live descriptor (and record layout if `VT_ARRAY | VT_RECORD`).
+        unsafe { SafeArray::raw_safearray_1d_read(raw, layout, subscript) }
+    }
+
+    /// Writes one element of a 1D array in place without allocating a bounds `Vec`.
+    /// Returns `None` if this Variant is not an allocated 1D array.
+    #[inline]
+    pub fn safearray_1d_write(
+        &mut self,
+        subscript: i32,
+        value: &Variant,
+    ) -> Option<Result<(), (i32, String)>> {
+        let raw = self.array_descriptor()?;
+        let layout = self.record_array_layout_ptr();
+        if (self.core.raw_vt() & 0x0FFF) == 0x0024 && layout.is_null() {
+            return None;
+        }
+        // SAFETY: `&mut self` grants exclusive access to the owned descriptor and layout.
+        unsafe { SafeArray::raw_safearray_1d_write(raw, layout, subscript, value) }
+    }
+
+    /// Reads a single field of an element in a 1D UDT array in place, with zero record cloning.
+    /// Returns `None` if this Variant is not an allocated 1D UDT (`VT_ARRAY | VT_RECORD`) array.
+    #[inline]
+    pub fn safearray_1d_record_field_read(
+        &self,
+        subscript: i32,
+        field_index: usize,
+    ) -> Option<Result<Variant, (i32, String)>> {
+        if self.core.raw_vt() != VT_ARRAY_OF_RECORDS {
+            return None;
+        }
+        let (raw, layout_raw) = self.core.record_pointers();
+        if raw.is_null() || layout_raw.is_null() {
+            return None;
+        }
+        // SAFETY: `VT_ARRAY_OF_RECORDS` owns its live SAFEARRAY and `Arc<VbaRecordLayout>`.
+        let layout = unsafe { &*layout_raw.cast::<VbaRecordLayout>() };
+        // SAFETY: `self` grants shared access to the live record array and its layout.
+        unsafe {
+            SafeArray::raw_safearray_1d_record_field_read(raw, layout, subscript, field_index)
+        }
+    }
+
+    /// Writes a single field of an element in a 1D UDT array in place, with zero record cloning.
+    /// Returns `None` if this Variant is not an allocated 1D UDT (`VT_ARRAY | VT_RECORD`) array.
+    #[inline]
+    pub fn safearray_1d_record_field_write(
+        &mut self,
+        subscript: i32,
+        field_index: usize,
+        value: &Variant,
+    ) -> Option<Result<(), (i32, String)>> {
+        if self.core.raw_vt() != VT_ARRAY_OF_RECORDS {
+            return None;
+        }
+        let (raw, layout_raw) = self.core.record_pointers();
+        if raw.is_null() || layout_raw.is_null() {
+            return None;
+        }
+        // SAFETY: `VT_ARRAY_OF_RECORDS` owns its live SAFEARRAY and `Arc<VbaRecordLayout>`.
+        let layout = unsafe { &*layout_raw.cast::<VbaRecordLayout>() };
+        // SAFETY: `&mut self` grants exclusive access to the live record array and its layout.
+        unsafe {
+            SafeArray::raw_safearray_1d_record_field_write(
+                raw,
+                layout,
+                subscript,
+                field_index,
+                value,
+            )
+        }
+    }
+
+    /// Reads an element of a 1D array directly into `dst`, avoiding temporary `Variant`
+    /// construction for `Long` and `Double` arrays.
+    #[inline]
+    pub fn safearray_1d_read_into(
+        &self,
+        subscript: i32,
+        dst: &mut Variant,
+    ) -> Option<Result<(), (i32, String)>> {
+        let vt = self.core.raw_vt();
+        if vt == 0x2003 {
+            let raw = self.core.pointer();
+            // SAFETY: `VT_ARRAY | VT_I4` owns its live descriptor (or null) for `&self`.
+            return unsafe { SafeArray::raw_safearray_1d_read_i32_into(raw, subscript, dst) };
+        }
+        if vt == 0x2005 {
+            let raw = self.core.pointer();
+            // SAFETY: `VT_ARRAY | VT_R8` owns its live descriptor (or null) for `&self`.
+            return unsafe { SafeArray::raw_safearray_1d_read_f64_into(raw, subscript, dst) };
+        }
+        let raw = self.array_descriptor()?;
+        let layout = self.record_array_layout_ptr();
+        if (vt & 0x0FFF) == 0x0024 && layout.is_null() {
+            return None;
+        }
+        // SAFETY: `self` owns its descriptor and layout for the borrow.
+        unsafe { SafeArray::raw_safearray_1d_read_into(raw, layout, subscript, dst) }
+    }
+
+    /// Writes an `i32` into a 1D non-record array without temporary `Variant` construction.
+    #[inline]
+    pub fn safearray_1d_write_i32(
+        &mut self,
+        subscript: i32,
+        value: i32,
+    ) -> Option<Result<(), (i32, String)>> {
+        let vt = self.core.raw_vt();
+        if vt == 0x2003 {
+            let raw = self.core.pointer();
+            // SAFETY: `&mut self` grants exclusive access to the `VT_I4` descriptor (or null).
+            return unsafe { SafeArray::raw_safearray_1d_write_i32_typed(raw, subscript, value) };
+        }
+        if (vt & 0x0FFF) == 0x0024 {
+            return None;
+        }
+        let raw = self.array_descriptor()?;
+        // SAFETY: `&mut self` grants exclusive access to the non-record descriptor.
+        unsafe { SafeArray::raw_safearray_1d_write_i32(raw, subscript, value) }
+    }
+
+    /// Writes an `f64` into a 1D non-record array without temporary `Variant` construction.
+    #[inline]
+    pub fn safearray_1d_write_f64(
+        &mut self,
+        subscript: i32,
+        value: f64,
+    ) -> Option<Result<(), (i32, String)>> {
+        let vt = self.core.raw_vt();
+        if vt == 0x2005 {
+            let raw = self.core.pointer();
+            // SAFETY: `&mut self` grants exclusive access to the `VT_R8` descriptor (or null).
+            return unsafe { SafeArray::raw_safearray_1d_write_f64_typed(raw, subscript, value) };
+        }
+        if (vt & 0x0FFF) == 0x0024 {
+            return None;
+        }
+        let raw = self.array_descriptor()?;
+        // SAFETY: `&mut self` grants exclusive access to the non-record descriptor.
+        unsafe { SafeArray::raw_safearray_1d_write_f64(raw, subscript, value) }
+    }
+
+    /// Reads a single field of a 1D UDT array element directly into `dst`.
+    #[inline]
+    pub fn safearray_1d_record_field_read_into(
+        &self,
+        subscript: i32,
+        field_index: usize,
+        dst: &mut Variant,
+    ) -> Option<Result<(), (i32, String)>> {
+        if self.core.raw_vt() != VT_ARRAY_OF_RECORDS {
+            return None;
+        }
+        let (raw, layout_raw) = self.core.record_pointers();
+        if raw.is_null() || layout_raw.is_null() {
+            return None;
+        }
+        // SAFETY: `VT_ARRAY_OF_RECORDS` owns its live SAFEARRAY and `Arc<VbaRecordLayout>`.
+        let layout = unsafe { &*layout_raw.cast::<VbaRecordLayout>() };
+        // SAFETY: `self` grants shared access to the live record array and its layout.
+        unsafe {
+            SafeArray::raw_safearray_1d_record_field_read_into(
+                raw,
+                layout,
+                subscript,
+                field_index,
+                dst,
+            )
+        }
+    }
+
+    /// Writes an `f64` directly into a `Double` field of a 1D UDT array element.
+    #[inline]
+    pub fn safearray_1d_record_field_write_f64(
+        &mut self,
+        subscript: i32,
+        field_index: usize,
+        value: f64,
+    ) -> Option<Result<(), (i32, String)>> {
+        if self.core.raw_vt() != VT_ARRAY_OF_RECORDS {
+            return None;
+        }
+        let (raw, layout_raw) = self.core.record_pointers();
+        if raw.is_null() || layout_raw.is_null() {
+            return None;
+        }
+        // SAFETY: `VT_ARRAY_OF_RECORDS` owns its live SAFEARRAY and `Arc<VbaRecordLayout>`.
+        let layout = unsafe { &*layout_raw.cast::<VbaRecordLayout>() };
+        // SAFETY: `&mut self` grants exclusive access to the live record array and its layout.
+        unsafe {
+            SafeArray::raw_safearray_1d_record_field_write_f64(
+                raw,
+                layout,
+                subscript,
+                field_index,
+                value,
+            )
+        }
+    }
+
+    /// Writes an `i32` directly into a `Long` or `Double` field of a 1D UDT array element.
+    #[inline]
+    pub fn safearray_1d_record_field_write_i32(
+        &mut self,
+        subscript: i32,
+        field_index: usize,
+        value: i32,
+    ) -> Option<Result<(), (i32, String)>> {
+        if self.core.raw_vt() != VT_ARRAY_OF_RECORDS {
+            return None;
+        }
+        let (raw, layout_raw) = self.core.record_pointers();
+        if raw.is_null() || layout_raw.is_null() {
+            return None;
+        }
+        // SAFETY: `VT_ARRAY_OF_RECORDS` owns its live SAFEARRAY and `Arc<VbaRecordLayout>`.
+        let layout = unsafe { &*layout_raw.cast::<VbaRecordLayout>() };
+        // SAFETY: `&mut self` grants exclusive access to the live record array and its layout.
+        unsafe {
+            SafeArray::raw_safearray_1d_record_field_write_i32(
+                raw,
+                layout,
+                subscript,
+                field_index,
+                value,
+            )
+        }
     }
 
     /// Read the next VBA For Each element without cloning the array payload; `For Each`
@@ -1936,17 +2394,16 @@ impl Variant {
             _ => Ok(Self::from_core(self.core)),
         }
     }
-}
-
-impl Clone for Variant {
-    fn clone(&self) -> Self {
+    #[cold]
+    #[inline(never)]
+    fn clone_slow(&self) -> Self {
         self.try_clone()
             .expect("Variant clone should deep-copy owning payload")
     }
-}
 
-impl Drop for Variant {
-    fn drop(&mut self) {
+    #[cold]
+    #[inline(never)]
+    fn drop_slow(&mut self) {
         match self.vtype() {
             // SAFETY: a String Variant owns its BSTR payload until drop (VARIANT owns its
             // BSTR until cleared), so reconstituting the `BStr` here takes that ownership
@@ -1990,6 +2447,26 @@ impl Drop for Variant {
                 }
             }
             _ => {}
+        }
+    }
+}
+
+impl Clone for Variant {
+    #[inline]
+    fn clone(&self) -> Self {
+        if Self::raw_vt_is_trivial_copy(self.core.raw_vt()) {
+            Self::from_core(self.core)
+        } else {
+            self.clone_slow()
+        }
+    }
+}
+
+impl Drop for Variant {
+    #[inline]
+    fn drop(&mut self) {
+        if Self::raw_vt_needs_drop(self.core.raw_vt()) {
+            self.drop_slow();
         }
     }
 }

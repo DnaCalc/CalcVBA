@@ -62,6 +62,7 @@ mod imp {
         };
     }
     #[doc(hidden)]
+    #[inline]
     pub fn variant_constructed() {
         let _ = VARIANT_CONSTRUCTIONS.try_with(|n| n.set(n.get().saturating_add(1)));
     }

@@ -23,24 +23,31 @@ use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
+mod bytecode;
+use crate::bytecode::{
+    CompiledFunc, FastArg, FastCallArg, FastConst, InstRef, LocalSlotInit, PackedOp, PackedPlace,
+    TAG_CONST, TAG_GLOBAL, TAG_LOCAL, TAG_TEMP, VmOp,
+};
+
 use calcvba_bundle::{
-    ArrayElementType, AssignmentIntent, AssignmentTargetKind, NativeImplId, ProjectMemberKind,
-    array_element_type_for_vartype, default_array_element, redim_safearray_from_elements,
-    safearray_vartype_for_element, vba_record_layout_for_fields,
+    ArrayElementType, AssignmentIntent, AssignmentTargetKind, ComparisonCoercion, NativeImplId,
+    NumericCoerceTarget, NumericMode, ProjectMemberKind, array_element_type_for_vartype,
+    default_array_element, redim_safearray_from_elements, safearray_vartype_for_element,
+    vba_record_layout_for_fields,
 };
 use calcvba_com::{DynamicMemberSelector, TypeLibMemberInvokeKind};
 use calcvba_eval::arith::{self, ArithError};
 use calcvba_eval::collection::{CollectionMethod, dispatch_collection};
 use calcvba_hal::HostServices;
 use calcvba_hal::traits::DynLinkDescriptorView;
+#[cfg(test)]
+use calcvba_oxir::OxBlock;
 use calcvba_oxir::inst::OxAsNew;
 use calcvba_oxir::value::{
     ArithOp, BoundWhich, CmpOp, ErrField, LogicalOp, OxAddrBase, OxAddrStep, OxArg, OxCallArg,
     OxCoerceTarget, OxConst, OxNativeCallee, OxOperand, OxPlace, PtrKind,
 };
-use calcvba_oxir::{
-    BlockId, FuncId, ImportId, LocalId, OxBlock, OxInst, OxProgram, OxTerminator, OxTy,
-};
+use calcvba_oxir::{BlockId, FuncId, ImportId, LocalId, OxInst, OxProgram, OxTerminator, OxTy};
 use calcvba_rt_abi::{
     ErrorMode, EventBinding, ExecState, Fault, FaultAction, LoadedProgram, MarshalArgRef,
     ObjectMemberRoute, ProcInvoker, ResumePoint, ResumeTarget, SavedErrState,
@@ -52,7 +59,8 @@ use calcvba_rt_abi::{
 use calcvba_runtime::collection::CollectionCursor;
 use calcvba_runtime::object_ref::{
     ObjectRef, RUNTIME_CLASS_LIFECYCLE_NONE, RUNTIME_IUNKNOWN_INTERFACE_DESCRIPTOR,
-    RuntimeClassDescriptor,
+    RuntimeClassDescriptor, borrow_project_field_get_into, borrow_project_field_set,
+    borrow_project_field_set_trivial, borrow_project_instance_info, borrow_with_native_collection,
 };
 #[cfg(test)]
 use calcvba_runtime::object_ref::{
@@ -161,13 +169,16 @@ struct ForEachState {
     array_source: Option<Loc>,
     elements: Vec<Variant>,
     position: usize,
-    /// A live Collection or COM enumerator, asked for one item at a time.
+    /// Direct built-in `VBA.Collection` cursor (no trait-object boxing or event scope).
+    collection_cursor: Option<CollectionCursor>,
+    /// A live foreign COM enumerator, asked for one item at a time.
     enumerator: Option<Box<dyn calcvba_com::call::ComEnumerator>>,
 }
 
 /// A materialized sequence or live object enumerator for `For Each`.
 enum ForEachItems {
     Snapshot(Vec<Variant>),
+    CollectionCursor(CollectionCursor),
     Enumerator(Box<dyn calcvba_com::call::ComEnumerator>),
 }
 
@@ -182,15 +193,18 @@ struct Frame {
     prog: usize,
     /// The function this frame is executing.
     func: FuncId,
-    /// The current block and the index of the *next* instruction within it.
+    /// The current block, bytecode PC inside `CompiledFunc::ops`, and block-entry flag.
     block: BlockId,
-    ip: usize,
-    /// Frame locals (parameters first, then declared locals), indexed by `LocalId`.
-    locals: Vec<Variant>,
-    /// Temporaries, indexed by `TempId`, sized from the function's temp table so a cell
-    /// never moves (`VarPtr` of an r-value is a temporary's address). Statement temporaries
-    /// are reset to Empty at each statement boundary.
-    temps: Vec<Variant>,
+    pc: usize,
+    at_block_start: bool,
+    /// Unified frame slot storage: `[0..num_locals]` are locals (parameters first, then
+    /// declared locals) and `[num_locals..]` are temporaries. Sized once from the function's
+    /// local + temp tables so a live cell never moves (`VarPtr` / `VT_BYREF` pointer stability).
+    slots: Vec<Variant>,
+    num_locals: usize,
+    /// High-water mark of temp slots written since the last `StmtBoundary`, as a flat index
+    /// in `num_locals..=slots.len()`, so statement temp clearing only scans dirty temps.
+    temp_hwm: usize,
     /// Strings `StrPtr` converted from non-String operands, kept for the statement (VBA's
     /// conversion temporaries).
     pointer_strings: Vec<Variant>,
@@ -203,13 +217,21 @@ struct Frame {
     loop_locks: Vec<(usize, calcvba_runtime::safe_array::ArrayLock)>,
     /// ByRef parameters: a parameter's frame-local index → the caller location it
     /// aliases, resolved to its ultimate backing at call time (so aliases never chain).
-    /// Writes through such a parameter hit the backing live — vm2's true aliasing.
-    aliases: HashMap<usize, Loc>,
+    /// Stored as a tiny `Vec` (zero allocation when empty, linear scan outperforms hashing
+    /// for 1-4 ByRef params).
+    aliases: Vec<(usize, Loc)>,
+    /// Bitmask of aliased local indices `0..64` (`u64::MAX` if any local `>= 64` is aliased)
+    /// so non-aliased locals skip scanning `aliases` even when another parameter is `ByRef`.
+    local_alias_mask: u64,
     /// Where this call's return value is written (resolved in the caller at call time);
     /// `None` for a statement call or the entry/initializer frame.
     dst: Option<Loc>,
     /// The local holding this function's result (`None` for a `Sub`).
     return_local: Option<LocalId>,
+    /// Whether an unhandled fault unwinding this frame should drain terminations (true for
+    /// project methods pushed directly by `CallComEarly`/`CallComLate`, matching
+    /// `run_proc_with_me`'s epilogue drain timing).
+    drain_on_fault: bool,
     /// The most recent numeric line label executed in this procedure activation.
     /// This is copied to the VM's public `Erl` value only when an error is caught.
     current_line: i32,
@@ -225,13 +247,129 @@ struct Frame {
     gosub_stack: Vec<BlockId>,
 }
 
+impl Frame {
+    #[inline]
+    fn local(&self, i: usize) -> Option<&Variant> {
+        (i < self.num_locals).then(|| &self.slots[i])
+    }
+
+    #[inline]
+    fn local_mut(&mut self, i: usize) -> Option<&mut Variant> {
+        (i < self.num_locals).then(|| &mut self.slots[i])
+    }
+
+    #[inline]
+    fn temp(&self, i: usize) -> Option<&Variant> {
+        self.slots.get(self.num_locals + i)
+    }
+
+    #[inline]
+    fn temp_mut(&mut self, i: usize) -> Option<&mut Variant> {
+        let idx = self.num_locals + i;
+        if idx < self.slots.len() {
+            if idx + 1 > self.temp_hwm {
+                self.temp_hwm = idx + 1;
+            }
+            Some(&mut self.slots[idx])
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    fn alias_of(&self, local: usize) -> Option<Loc> {
+        let mask = self.local_alias_mask;
+        if mask == 0 {
+            return None;
+        }
+        if local < 64 && (mask & (1u64 << local)) == 0 {
+            return None;
+        }
+        for &(li, loc) in &self.aliases {
+            if li == local {
+                return Some(loc);
+            }
+        }
+        None
+    }
+
+    #[inline]
+    fn set_alias(&mut self, local: usize, loc: Loc) {
+        if local < 64 {
+            self.local_alias_mask |= 1u64 << local;
+        } else {
+            self.local_alias_mask = u64::MAX;
+        }
+        for entry in &mut self.aliases {
+            if entry.0 == local {
+                entry.1 = loc;
+                return;
+            }
+        }
+        self.aliases.push((local, loc));
+    }
+}
+
+/// Zero-allocation stack buffer for small `Variant` argument lists without pre-constructing
+/// unused `Variant::empty()` entries.
+struct StackVariantBuf<const N: usize> {
+    slots: [std::mem::MaybeUninit<Variant>; N],
+    len: usize,
+}
+
+impl<const N: usize> StackVariantBuf<N> {
+    #[inline]
+    fn new() -> Self {
+        Self {
+            slots: [const { std::mem::MaybeUninit::uninit() }; N],
+            len: 0,
+        }
+    }
+
+    #[inline]
+    fn push(&mut self, value: Variant) {
+        debug_assert!(self.len < N);
+        self.slots[self.len].write(value);
+        self.len += 1;
+    }
+
+    #[inline]
+    fn as_mut_slice(&mut self) -> &mut [Variant] {
+        // SAFETY: `0..self.len` were initialized via `push` and have not been dropped.
+        unsafe {
+            std::slice::from_raw_parts_mut(self.slots.as_mut_ptr().cast::<Variant>(), self.len)
+        }
+    }
+}
+
+impl<const N: usize> Drop for StackVariantBuf<N> {
+    #[inline]
+    fn drop(&mut self) {
+        for i in 0..self.len {
+            // SAFETY: `0..self.len` are initialized and dropped once here.
+            unsafe { self.slots[i].assume_init_drop() };
+        }
+    }
+}
+
 type ReentrantProjectEventSink<'h> =
     Rc<dyn Fn(Vm3<'h>, ObjectRef, i32, Vec<Variant>) -> (Vm3<'h>, Result<(), String>) + 'h>;
+
+/// Out-of-line per-VM bytecode cache, typed-entry table, and frame pool
+/// (kept boxed so `Vm3` stays compact on the stack and in host enums).
+struct Vm3Cache<'h> {
+    typed_entries: Vec<Vec<Option<typed::TypedInterpreter<'h>>>>,
+    /// Lazily compiled compact bytecode per `(program, func)` pair.
+    compiled: Vec<Vec<Option<Rc<CompiledFunc>>>>,
+    /// Reusable pooled frames whose `slots` stay filled with `Empty` `Variant`s across calls.
+    frame_pool: Vec<Frame>,
+}
 
 /// The vm3 interpreter over one or more typed OxIR programs.
 pub struct Vm3<'h> {
     reentrant_project_event_sink: Option<ReentrantProjectEventSink<'h>>,
-    typed_entries: Vec<Vec<Option<typed::TypedInterpreter<'h>>>>,
+    has_typed_entries: bool,
+    cache: Box<Vm3Cache<'h>>,
     /// Index into `programs` of the executing program (`0` for single-project activation).
     cur: usize,
     /// Shared runtime state below vm3 and the JIT.
@@ -258,7 +396,12 @@ impl<'h> Vm3<'h> {
     fn idle(host: &'h dyn HostServices) -> Self {
         Self {
             reentrant_project_event_sink: None,
-            typed_entries: Vec::new(),
+            has_typed_entries: false,
+            cache: Box::new(Vm3Cache {
+                typed_entries: Vec::new(),
+                compiled: Vec::new(),
+                frame_pool: Vec::new(),
+            }),
             cur: 0,
             exec: ExecState::new(host),
             frames: Vec::new(),
@@ -479,7 +622,7 @@ impl<'h> Vm3<'h> {
         let allow_typed = programs
             .iter()
             .all(|p| p.classes.is_empty() && p.record_layouts.is_empty());
-        let typed_entries = programs
+        let typed_entries: Vec<Vec<_>> = programs
             .iter()
             .map(|p| {
                 p.funcs
@@ -498,9 +641,18 @@ impl<'h> Vm3<'h> {
             .iter()
             .map(|p| Self::build_loaded(p))
             .collect::<Result<_, _>>()?;
+        let compiled = programs.iter().map(|p| vec![None; p.funcs.len()]).collect();
+        let has_typed_entries = typed_entries
+            .iter()
+            .any(|prog| prog.iter().any(Option::is_some));
         let mut vm = Vm3 {
             reentrant_project_event_sink: None,
-            typed_entries,
+            has_typed_entries,
+            cache: Box::new(Vm3Cache {
+                typed_entries,
+                compiled,
+                frame_pool: Vec::new(),
+            }),
             cur: entry,
             exec,
             frames: Vec::new(),
@@ -521,8 +673,7 @@ impl<'h> Vm3<'h> {
                 let r = vm.run_loop(0);
                 // The initializer writes module globals; its own frame is discarded.
                 if let Some(frame) = vm.frames.pop() {
-                    vm.clear_withevents_owners_in_frame_before_drop(&frame);
-                    drop(frame);
+                    vm.recycle_frame(frame);
                 }
                 vm.prune_param_array_aliases_from_depth(vm.frames.len());
                 r?;
@@ -863,8 +1014,10 @@ impl<'h> Vm3<'h> {
         }
         let base = self.frames.len();
         let mut frame = self.new_frame(func)?;
-        for (slot, value) in frame.locals.iter_mut().zip(args) {
-            *slot = value;
+        for (i, value) in args.into_iter().enumerate() {
+            if let Some(slot) = frame.local_mut(i) {
+                *slot = value;
+            }
         }
         let saved = self.exec.err_engine.enter_activation();
         frame.saved_error_mode = saved.error_mode;
@@ -874,11 +1027,7 @@ impl<'h> Vm3<'h> {
         let value = self
             .frames
             .get(base)
-            .and_then(|frame| {
-                frame
-                    .return_local
-                    .and_then(|id| frame.locals.get(id.0).cloned())
-            })
+            .and_then(|frame| frame.return_local.and_then(|id| frame.local(id.0).cloned()))
             .unwrap_or_else(Variant::empty);
         self.exec.err_engine.restore(saved);
         self.truncate_frames_with_withevents_cleanup(base);
@@ -896,7 +1045,12 @@ impl<'h> Vm3<'h> {
         args: &[Variant],
     ) -> Option<Result<Variant, Vm3Error>> {
         use calcvba_rt_abi::host_entry::{MAX_TYPED_ARGS, ScalarBits, ScalarType, TypedContext};
-        let entry = self.typed_entries.get(program)?.get(func.0)?.as_ref()?;
+        let entry = self
+            .cache
+            .typed_entries
+            .get(program)?
+            .get(func.0)?
+            .as_ref()?;
         if args.len() != entry.layout().parameters.len() {
             return None;
         }
@@ -945,7 +1099,7 @@ impl<'h> Vm3<'h> {
             self.exec.programs[self.cur].globals.get(i).cloned()
         } else {
             let rel = i - global_count;
-            self.frames.first()?.locals.get(rel).cloned()
+            self.frames.first()?.local(rel).cloned()
         }
     }
 
@@ -968,7 +1122,63 @@ impl<'h> Vm3<'h> {
         self.exec.err_engine.last_dll_error
     }
 
-    fn new_frame(&self, func: FuncId) -> Result<Frame, Vm3Error> {
+    #[inline]
+    fn get_or_compile(&mut self, prog: usize, func: FuncId) -> Rc<CompiledFunc> {
+        if let Some(code) = &self.cache.compiled[prog][func.0] {
+            return Rc::clone(code);
+        }
+        self.compile_func_cold(prog, func)
+    }
+
+    #[inline]
+    fn ensure_compiled(&mut self, prog: usize, func: FuncId) {
+        if self.cache.compiled[prog][func.0].is_none() {
+            let _ = self.compile_func_cold(prog, func);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn compile_func_cold(&mut self, prog: usize, func: FuncId) -> Rc<CompiledFunc> {
+        let program = self.exec.programs[prog].program;
+        let code = Rc::new(CompiledFunc::compile(program, &program.funcs[func.0]));
+        self.cache.compiled[prog][func.0] = Some(Rc::clone(&code));
+        code
+    }
+
+    fn recycle_frame(&mut self, mut frame: Frame) {
+        if !self.exec.events.withevents.is_empty() {
+            self.clear_withevents_owners_in_frame_before_drop(&frame);
+        }
+        let reset_end = frame.temp_hwm.max(frame.num_locals).min(frame.slots.len());
+        for slot in &mut frame.slots[..reset_end] {
+            if slot.raw_vt() != 0 {
+                slot.set_empty();
+            }
+        }
+        if self.cache.frame_pool.len() < 64 && frame.slots.capacity() <= 256 {
+            if !frame.pointer_strings.is_empty() {
+                frame.pointer_strings.clear();
+            }
+            if !frame.ref_locks.is_empty() {
+                frame.ref_locks.clear();
+            }
+            if !frame.loop_locks.is_empty() {
+                frame.loop_locks.clear();
+            }
+            if !frame.aliases.is_empty() {
+                frame.aliases.clear();
+            }
+            frame.local_alias_mask = 0;
+            if !frame.gosub_stack.is_empty() {
+                frame.gosub_stack.clear();
+            }
+            frame.saved_active_error = None;
+            self.cache.frame_pool.push(frame);
+        }
+    }
+
+    fn new_frame(&mut self, func: FuncId) -> Result<Frame, Vm3Error> {
         self.new_frame_in(self.cur, func)
     }
 
@@ -977,46 +1187,102 @@ impl<'h> Vm3<'h> {
     /// globals/code regardless of the resolving `cur`. Used to run a cross-project callee (an
     /// object method, or a referenced project's proc) whose ARGUMENTS are resolved in the
     /// caller's program (`cur`) BEFORE this frame runs — matching vm2's resolve-then-switch.
-    fn new_frame_in(&self, prog: usize, func: FuncId) -> Result<Frame, Vm3Error> {
-        let f = &self.exec.programs[prog].program.funcs[func.0];
-        Ok(Frame {
-            prog,
-            func,
-            block: f.entry,
-            ip: 0,
-            // An `Optional` parameter starts as the value a call that leaves it out passes
-            // (`o.Item` with no argument list, `CallByName`): its declared default, else Missing
-            // for a Variant, else its type's zero. The arguments a call does pass are seeded
-            // over these.
-            locals: f
+    fn new_frame_in(&mut self, prog: usize, func: FuncId) -> Result<Frame, Vm3Error> {
+        self.new_frame_pooled(prog, func, 0, None, false)
+    }
+
+    fn new_frame_pooled(
+        &mut self,
+        prog: usize,
+        func: FuncId,
+        skip_optional_below: usize,
+        dst: Option<Loc>,
+        drain_on_fault: bool,
+    ) -> Result<Frame, Vm3Error> {
+        self.ensure_compiled(prog, func);
+        let program = self.exec.programs[prog].program;
+        let f = &program.funcs[func.0];
+        let code = self.cache.compiled[prog][func.0]
+            .as_deref()
+            .expect("compiled above");
+        let num_slots = code.num_slots;
+        let num_locals = code.num_locals;
+        let pc = code.block_start_pc.get(f.entry.0).copied().unwrap_or(0) as usize;
+        let mut frame = if let Some(mut pooled) = self.cache.frame_pool.pop() {
+            if pooled.slots.len() < num_slots {
+                pooled.slots.resize_with(num_slots, Variant::empty);
+            } else if pooled.slots.len() > num_slots {
+                pooled.slots.truncate(num_slots);
+            }
+            pooled.prog = prog;
+            pooled.func = func;
+            pooled.block = f.entry;
+            pooled.pc = pc;
+            pooled.at_block_start = true;
+            pooled.num_locals = num_locals;
+            pooled.temp_hwm = num_locals;
+            pooled.dst = dst;
+            pooled.return_local = f.return_local;
+            pooled.drain_on_fault = drain_on_fault;
+            pooled.current_line = 0;
+            pooled.saved_error_mode = ErrorMode::None;
+            pooled.saved_active_error = None;
+            pooled
+        } else {
+            Frame {
+                prog,
+                func,
+                block: f.entry,
+                pc,
+                at_block_start: true,
+                slots: vec![Variant::empty(); num_slots],
+                num_locals,
+                temp_hwm: num_locals,
+                pointer_strings: Vec::new(),
+                ref_locks: Vec::new(),
+                loop_locks: Vec::new(),
+                aliases: Vec::new(),
+                local_alias_mask: 0,
+                dst,
+                return_local: f.return_local,
+                drain_on_fault,
+                current_line: 0,
+                saved_error_mode: ErrorMode::None,
+                saved_active_error: None,
+                gosub_stack: Vec::new(),
+            }
+        };
+        if !code.non_empty_locals.is_empty() {
+            for init in &code.non_empty_locals {
+                match *init {
+                    LocalSlotInit::Object(idx) => {
+                        frame.slots[idx] = Variant::nothing();
+                    }
+                    LocalSlotInit::Array(idx) => {
+                        let local = &f.locals[idx];
+                        frame.slots[idx] = Self::initial_value_for_slot(
+                            program,
+                            &local.ty,
+                            local.array_element.as_ref(),
+                        )?;
+                    }
+                }
+            }
+        }
+        if code.has_optional_params {
+            for (index, local) in f
                 .locals
                 .iter()
+                .take(f.param_count)
                 .enumerate()
-                .map(|(index, local)| {
-                    if index < f.param_count
-                        && let Some(value) = omitted_param_value(local)
-                    {
-                        return value;
-                    }
-                    Self::initial_value_for_slot(
-                        self.exec.programs[prog].program,
-                        &local.ty,
-                        local.array_element.as_ref(),
-                    )
-                })
-                .collect::<Result<_, _>>()?,
-            temps: vec![Variant::empty(); f.temps.len()],
-            pointer_strings: Vec::new(),
-            ref_locks: Vec::new(),
-            loop_locks: Vec::new(),
-            aliases: HashMap::new(),
-            dst: None,
-            return_local: f.return_local,
-            current_line: 0,
-            saved_error_mode: ErrorMode::None,
-            saved_active_error: None,
-            gosub_stack: Vec::new(),
-        })
+                .skip(skip_optional_below)
+            {
+                if let Some(value) = omitted_param_value(local) {
+                    frame.slots[index] = value?;
+                }
+            }
+        }
+        Ok(frame)
     }
 
     /// The block-threaded dispatch loop: run the top frame until the frame at depth
@@ -1056,169 +1322,2909 @@ impl<'h> Vm3<'h> {
 
     fn run_loop_body(&mut self, base: usize) -> Result<(), Vm3Error> {
         let _policy = self.exec.host.enter_com_policy();
-        while self.frames.len() > base {
+        'dispatch: while self.frames.len() > base {
             let top = self.frames.len() - 1;
-            // Re-target `cur` to the executing frame's program each iteration: a cross-program
-            // call pushed a frame with a different `prog`, and a return pops back to the caller's,
-            // so globals (`programs[cur]`) and instruction fetch follow control flow with no
-            // explicit save/restore. `program` is a `'h` copy, independent of the exec borrows.
-            self.cur = self.frames[top].prog;
-            let program = self.cur_program();
-            let (func, block, ip) = {
-                let fr = &self.frames[top];
-                (fr.func, fr.block, fr.ip)
-            };
-            if ip == 0 && !self.exec.consume_execution_step() {
-                return Err(Vm3Error::BudgetExceeded);
+            let cur_prog = self.frames[top].prog;
+            let cur_func = self.frames[top].func;
+            self.cur = cur_prog;
+            let code = self.get_or_compile(cur_prog, cur_func);
+            let mut cur_block = self.frames[top].block.0 as u32;
+            let mut pc = self.frames[top].pc;
+            if self.frames[top].at_block_start {
+                self.frames[top].at_block_start = false;
+                if !self.exec.consume_execution_step() {
+                    return Err(Vm3Error::BudgetExceeded);
+                }
             }
-            let blk: &OxBlock = program.funcs[func.0]
-                .blocks
-                .get(block.0)
-                .ok_or_else(|| Vm3Error::Malformed(format!("block {} out of range", block.0)))?;
+            if (cur_block as usize) >= code.block_start_pc.len() {
+                return Err(Vm3Error::Malformed(format!(
+                    "block {cur_block} out of range"
+                )));
+            }
+            let ops = code.ops.as_slice();
+            let mut fast_frame = self.as_new_slots.is_empty()
+                && self.param_array_aliases.is_empty()
+                && self.exec.events.withevents.is_empty()
+                && self.frames[top].local_alias_mask == 0;
 
-            if ip < blk.instrs.len() {
-                // Advance past this instruction first, so a `CallProc` it performs
-                // resumes the caller at the *next* instruction when the callee returns.
-                self.frames[top].ip = ip + 1;
-                if let Err(e) = self.exec(&blk.instrs[ip]) {
-                    match e {
-                        Vm3Error::Fault(fault) => self.route_fault(fault)?,
-                        other => return Err(other),
+            macro_rules! try_vm {
+                ($expr:expr) => {
+                    match $expr {
+                        Ok(val) => val,
+                        Err(Vm3Error::Fault(fault)) => {
+                            let fr = &mut self.frames[top];
+                            fr.block = BlockId(cur_block as usize);
+                            fr.pc = pc;
+                            fr.at_block_start = false;
+                            self.route_fault(fault)?;
+                            continue 'dispatch;
+                        }
+                        Err(other) => return Err(other),
                     }
-                }
-                continue;
+                };
             }
 
-            match &blk.terminator {
-                OxTerminator::Jump(b) => self.goto(top, *b),
-                OxTerminator::Branch {
-                    cond,
-                    then_blk,
-                    else_blk,
-                } => {
-                    // `cond` is a pre-computed Boolean: the elaboration emits a `Truthy`
-                    // before *every* conditional Branch (a statically-Bool operand is not
-                    // a guaranteed runtime Boolean — an unassigned `Dim b As Boolean` is
-                    // Empty, `Not b` of an Empty Bool is a Long, a Variant compare is
-                    // Null), so the terminator is a pure transfer and any truthiness fault
-                    // already routed through the pad at the `Truthy`.
-                    let v = self.operand(cond)?;
-                    let taken = v.as_bool().ok_or_else(|| {
-                        Vm3Error::Malformed("Branch condition is not a pre-computed Boolean".into())
-                    })?;
-                    self.goto(top, if taken { *then_blk } else { *else_blk });
-                }
-                OxTerminator::Return => {
-                    if self.frames.len() == base + 1 {
-                        // The base frame returned — leave it on the stack (the entry frame
-                        // backs the result snapshot) and end this run.
-                        break;
+            loop {
+                let op = ops[pc];
+                pc += 1;
+                match op {
+                    VmOp::LoadI32 { dst, val } => {
+                        if fast_frame && dst.tag() <= TAG_LOCAL {
+                            let fr = &mut self.frames[top];
+                            let di = dst.index();
+                            let slot = &mut fr.slots[di];
+                            if slot.raw_vt() < 8 {
+                                slot.set_i32_over_scalar(val);
+                                if dst.tag() == TAG_TEMP && di + 1 > fr.temp_hwm {
+                                    fr.temp_hwm = di + 1;
+                                }
+                                continue;
+                            }
+                        }
+                        try_vm!(self.write_packed_i32(top, cur_prog, dst, val));
                     }
-                    self.do_return()?;
-                }
-                // VBA `End`: stop the *entire* program immediately at any call depth. In a
-                // nested activation it unwinds to the outermost loop, which ends the run.
-                OxTerminator::Halt => {
-                    if self.run_depth > 1 {
-                        return Err(Vm3Error::Halted);
+                    VmOp::LoadF64 {
+                        dst,
+                        bits_lo,
+                        bits_hi,
+                    } => {
+                        let val = f64::from_bits(u64::from(bits_lo) | (u64::from(bits_hi) << 32));
+                        if fast_frame && dst.tag() <= TAG_LOCAL {
+                            let fr = &mut self.frames[top];
+                            let di = dst.index();
+                            let slot = &mut fr.slots[di];
+                            if slot.raw_vt() < 8 {
+                                slot.set_f64_over_scalar(val);
+                                if dst.tag() == TAG_TEMP && di + 1 > fr.temp_hwm {
+                                    fr.temp_hwm = di + 1;
+                                }
+                                continue;
+                            }
+                        }
+                        try_vm!(self.write_packed_f64(top, cur_prog, dst, val));
                     }
-                    self.halt_to(base);
-                    break;
-                }
-                // The landing pad: dispatch the in-flight fault on the activation's
-                // handler policy (MS-VBAL §5.4.4; doc rules R4/R9).
-                OxTerminator::FaultDispatch {
-                    resume,
-                    resume_next,
-                } => match self
-                    .exec
-                    .err_engine
-                    .dispatch_fault(*resume, *resume_next, self.frames[top].current_line)
-                    .map_err(|msg| Vm3Error::Malformed(msg.into()))?
-                {
-                    FaultAction::Propagate(fault) => self.propagate_fault(fault, base)?,
-                    FaultAction::ResumeNext(block) | FaultAction::Handle(block) => {
-                        self.goto(top, block);
+                    VmOp::LoadBool { dst, val } => {
+                        if fast_frame && dst.tag() <= TAG_LOCAL {
+                            let fr = &mut self.frames[top];
+                            let di = dst.index();
+                            let slot = &mut fr.slots[di];
+                            if slot.raw_vt() < 8 || slot.raw_vt() == 11 {
+                                slot.set_bool_over_scalar(val);
+                                if dst.tag() == TAG_TEMP && di + 1 > fr.temp_hwm {
+                                    fr.temp_hwm = di + 1;
+                                }
+                                continue;
+                            }
+                        }
+                        try_vm!(self.write_packed_bool(top, cur_prog, dst, val));
                     }
-                },
-                // The three `Resume` forms (R6/R7/R8): with no active error, raise error 20
-                // ("Resume without error"); otherwise reset `Err`, clear the latch, RE-ARM
-                // the handler that caught the error (so a fault after the resume is caught
-                // again), and transfer.
-                OxTerminator::Resume => match self.exec.err_engine.resume(ResumeTarget::Same) {
-                    Ok(block) => self.goto(top, block),
-                    Err(fault) => self.route_fault(fault)?,
-                },
-                OxTerminator::ResumeNext => match self.exec.err_engine.resume(ResumeTarget::Next) {
-                    Ok(block) => self.goto(top, block),
-                    Err(fault) => self.route_fault(fault)?,
-                },
-                OxTerminator::ResumeLabel(b) => {
-                    match self.exec.err_engine.resume(ResumeTarget::Label(*b)) {
-                        Ok(block) => self.goto(top, block),
-                        Err(fault) => self.route_fault(fault)?,
+                    VmOp::Assign { dst, src } => {
+                        if fast_frame && dst.tag() <= TAG_LOCAL && src.tag() <= TAG_LOCAL {
+                            let fr = &mut self.frames[top];
+                            let sv = &fr.slots[src.index()];
+                            if Variant::raw_vt_is_trivial_copy(sv.raw_vt()) {
+                                let core = sv.core();
+                                let di = dst.index();
+                                let slot = &mut fr.slots[di];
+                                let old_vt = slot.raw_vt();
+                                if old_vt < 8 || old_vt == 11 {
+                                    slot.overwrite_trivial_core(core);
+                                    if dst.tag() == TAG_TEMP && di + 1 > fr.temp_hwm {
+                                        fr.temp_hwm = di + 1;
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                        let trivial =
+                            self.borrow_packed_op(top, cur_prog, &code, src)
+                                .and_then(|v| {
+                                    Variant::raw_vt_is_trivial_copy(v.raw_vt()).then(|| v.core())
+                                });
+                        if let Some(core) = trivial
+                            && let Some(slot) = self.fast_dst_slot_mut(top, cur_prog, dst)
+                        {
+                            slot.overwrite_trivial_core(core);
+                        } else {
+                            let v = try_vm!(self.eval_packed_op(top, cur_prog, &code, src));
+                            try_vm!(self.write_packed_assigned(top, cur_prog, dst, v));
+                        }
                     }
-                }
-                // `Err.Raise Number[, Source][, Description]` / `Error n`: build the `Err`
-                // state from the number plus any explicit Source/Description, then route
-                // through the statement pad so an active `On Error` can catch it (R11).
-                //
-                // MS-VBAL §9071 (oracle-confirmed): an omitted argument inherits the
-                // current `Err` field when the Err fields are inheritable. Actual errors
-                // make them inheritable; `Err.Clear` clears that state. Direct
-                // `Err.Number = ...` writes do not make the text/help fields inheritable,
-                // but writing Description, Source, HelpFile, or HelpContext does, even
-                // when `Err.Number` is 0. System faults never inherit — that path is
-                // `from_arith`/`route_fault`, which always builds fresh fields.
-                OxTerminator::Raise {
-                    number,
-                    source,
-                    description,
-                    help_file,
-                    help_context,
-                    inherit,
-                } => {
-                    let number = self.operand(number)?;
-                    let mut value = |operand: &Option<OxOperand>| {
-                        operand.as_ref().map(|op| self.operand(op)).transpose()
-                    };
-                    let args = [
-                        Some(number),
-                        value(source)?,
-                        value(description)?,
-                        value(help_file)?,
-                        value(help_context)?,
-                    ];
-                    let fault = self
-                        .exec
-                        .err_engine
-                        .fault_from_raise_args(args.each_ref().map(Option::as_ref), *inherit);
-                    self.route_fault(fault)?;
-                }
-                // GoSub / Return: a per-activation LIFO resumption list (R12).
-                OxTerminator::GoSub { target, ret } => {
-                    self.frames[top].gosub_stack.push(*ret);
-                    self.goto(top, *target);
-                }
-                OxTerminator::GoSubReturn => match self.frames[top].gosub_stack.pop() {
-                    Some(ret) => self.goto(top, ret),
-                    None => self.raise_runtime_error(3)?, // Return without GoSub
-                },
-                OxTerminator::Unreachable => {
-                    return Err(Vm3Error::Malformed(
-                        "reached an Unreachable terminator".into(),
-                    ));
+                    VmOp::ArithLongImm { dst, lhs, imm, op } => {
+                        if fast_frame && lhs.tag() <= TAG_LOCAL && dst.tag() <= TAG_LOCAL {
+                            let fr = &mut self.frames[top];
+                            let lv = &fr.slots[lhs.index()];
+                            if lv.raw_vt() == 3 {
+                                let a = lv.as_i32().unwrap();
+                                let res = try_vm!(fast_i32_binop(a, imm, op));
+                                let di = dst.index();
+                                let slot = &mut fr.slots[di];
+                                if slot.raw_vt() < 8 {
+                                    slot.set_i32_over_scalar(res);
+                                    if dst.tag() == TAG_TEMP && di + 1 > fr.temp_hwm {
+                                        fr.temp_hwm = di + 1;
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                        let fast = self
+                            .borrow_packed_op(top, cur_prog, &code, lhs)
+                            .and_then(try_fast_i32);
+                        if let Some(a) = fast {
+                            let res = try_vm!(fast_i32_binop(a, imm, op));
+                            try_vm!(self.write_packed_i32(top, cur_prog, dst, res));
+                        } else {
+                            let l =
+                                try_vm!(self.eval_packed_arith_operand(top, cur_prog, &code, lhs));
+                            let r = Variant::from_i32(imm);
+                            let out = eval_arith_op(
+                                &l,
+                                &r,
+                                op,
+                                NumericMode::Checked(NumericCoerceTarget::Long),
+                            );
+                            try_vm!(self.store_packed_arith(top, cur_prog, dst, out));
+                        }
+                    }
+                    VmOp::ArithLong { dst, lhs, rhs, op } => {
+                        if fast_frame
+                            && lhs.tag() <= TAG_LOCAL
+                            && rhs.tag() <= TAG_LOCAL
+                            && dst.tag() <= TAG_LOCAL
+                        {
+                            let fr = &mut self.frames[top];
+                            let lv = &fr.slots[lhs.index()];
+                            let rv = &fr.slots[rhs.index()];
+                            if lv.raw_vt() == 3 && rv.raw_vt() == 3 {
+                                let a = lv.as_i32().unwrap();
+                                let b = rv.as_i32().unwrap();
+                                let res = try_vm!(fast_i32_binop(a, b, op));
+                                let di = dst.index();
+                                let slot = &mut fr.slots[di];
+                                if slot.raw_vt() < 8 {
+                                    slot.set_i32_over_scalar(res);
+                                    if dst.tag() == TAG_TEMP && di + 1 > fr.temp_hwm {
+                                        fr.temp_hwm = di + 1;
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                        let fast = match (
+                            self.borrow_packed_op(top, cur_prog, &code, lhs)
+                                .and_then(try_fast_i32),
+                            self.borrow_packed_op(top, cur_prog, &code, rhs)
+                                .and_then(try_fast_i32),
+                        ) {
+                            (Some(a), Some(b)) => Some((a, b)),
+                            _ => None,
+                        };
+                        if let Some((a, b)) = fast {
+                            let res = try_vm!(fast_i32_binop(a, b, op));
+                            try_vm!(self.write_packed_i32(top, cur_prog, dst, res));
+                        } else {
+                            let l =
+                                try_vm!(self.eval_packed_arith_operand(top, cur_prog, &code, lhs));
+                            let r =
+                                try_vm!(self.eval_packed_arith_operand(top, cur_prog, &code, rhs));
+                            let out = eval_arith_op(
+                                &l,
+                                &r,
+                                op,
+                                NumericMode::Checked(NumericCoerceTarget::Long),
+                            );
+                            try_vm!(self.store_packed_arith(top, cur_prog, dst, out));
+                        }
+                    }
+                    VmOp::ArithDouble { dst, lhs, rhs, op } => {
+                        if fast_frame
+                            && lhs.tag() <= TAG_LOCAL
+                            && rhs.tag() <= TAG_LOCAL
+                            && dst.tag() <= TAG_LOCAL
+                        {
+                            let fr = &mut self.frames[top];
+                            let lv = &fr.slots[lhs.index()];
+                            let rv = &fr.slots[rhs.index()];
+                            if let (Some(a), Some(b)) = (try_fast_f64(lv), try_fast_f64(rv)) {
+                                let res = match op {
+                                    ArithOp::Add => Some(a + b),
+                                    ArithOp::Sub => Some(a - b),
+                                    ArithOp::Mul => Some(a * b),
+                                    _ => None,
+                                }
+                                .filter(|r| r.is_finite());
+                                if let Some(val) = res {
+                                    let di = dst.index();
+                                    let slot = &mut fr.slots[di];
+                                    if slot.raw_vt() < 8 {
+                                        slot.set_f64_over_scalar(val);
+                                        if dst.tag() == TAG_TEMP && di + 1 > fr.temp_hwm {
+                                            fr.temp_hwm = di + 1;
+                                        }
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                        let fast = match (
+                            self.borrow_packed_op(top, cur_prog, &code, lhs)
+                                .and_then(try_fast_f64),
+                            self.borrow_packed_op(top, cur_prog, &code, rhs)
+                                .and_then(try_fast_f64),
+                        ) {
+                            (Some(a), Some(b)) => match op {
+                                ArithOp::Add => Some(a + b),
+                                ArithOp::Sub => Some(a - b),
+                                ArithOp::Mul => Some(a * b),
+                                _ => None,
+                            }
+                            .filter(|r| r.is_finite()),
+                            _ => None,
+                        };
+                        if let Some(res) = fast {
+                            try_vm!(self.write_packed_f64(top, cur_prog, dst, res));
+                        } else {
+                            let l =
+                                try_vm!(self.eval_packed_arith_operand(top, cur_prog, &code, lhs));
+                            let r =
+                                try_vm!(self.eval_packed_arith_operand(top, cur_prog, &code, rhs));
+                            let out = eval_arith_op(
+                                &l,
+                                &r,
+                                op,
+                                NumericMode::Checked(NumericCoerceTarget::Double),
+                            );
+                            try_vm!(self.store_packed_arith(top, cur_prog, dst, out));
+                        }
+                    }
+                    VmOp::DivDouble { dst, lhs, rhs } => {
+                        let fast = match (
+                            self.borrow_packed_op(top, cur_prog, &code, lhs)
+                                .and_then(try_fast_f64),
+                            self.borrow_packed_op(top, cur_prog, &code, rhs)
+                                .and_then(try_fast_f64),
+                        ) {
+                            (Some(a), Some(b)) if b != 0.0 => {
+                                let q = a / b;
+                                q.is_finite().then_some(q)
+                            }
+                            _ => None,
+                        };
+                        if let Some(res) = fast {
+                            try_vm!(self.write_packed_f64(top, cur_prog, dst, res));
+                        } else {
+                            let l =
+                                try_vm!(self.eval_packed_arith_operand(top, cur_prog, &code, lhs));
+                            let r =
+                                try_vm!(self.eval_packed_arith_operand(top, cur_prog, &code, rhs));
+                            try_vm!(self.store_packed_arith(
+                                top,
+                                cur_prog,
+                                dst,
+                                arith::div(&l, &r)
+                            ));
+                        }
+                    }
+                    VmOp::ArithWidening { dst, lhs, rhs, op } => {
+                        enum FastWide {
+                            I32(i32),
+                            F64(f64),
+                        }
+                        let fast = match (
+                            self.borrow_packed_op(top, cur_prog, &code, lhs),
+                            self.borrow_packed_op(top, cur_prog, &code, rhs),
+                        ) {
+                            (Some(lv), Some(rv)) => {
+                                let lvt = lv.raw_vt();
+                                let rvt = rv.raw_vt();
+                                if lvt == 3 && rvt == 3 {
+                                    let a = lv.as_i32().unwrap();
+                                    let b = rv.as_i32().unwrap();
+                                    match op {
+                                        ArithOp::Add => a.checked_add(b).map(FastWide::I32),
+                                        ArithOp::Sub => a.checked_sub(b).map(FastWide::I32),
+                                        ArithOp::Mul => a.checked_mul(b).map(FastWide::I32),
+                                        ArithOp::IntDiv if b != 0 => {
+                                            a.checked_div(b).map(FastWide::I32)
+                                        }
+                                        ArithOp::Mod if b != 0 => {
+                                            Some(FastWide::I32(if a == i32::MIN && b == -1 {
+                                                0
+                                            } else {
+                                                a % b
+                                            }))
+                                        }
+                                        _ => None,
+                                    }
+                                } else if (lvt == 5 || rvt == 5)
+                                    && matches!(op, ArithOp::Add | ArithOp::Sub | ArithOp::Mul)
+                                    && let (Some(a), Some(b)) = (try_fast_f64(lv), try_fast_f64(rv))
+                                {
+                                    let res = match op {
+                                        ArithOp::Add => a + b,
+                                        ArithOp::Sub => a - b,
+                                        ArithOp::Mul => a * b,
+                                        _ => unreachable!(),
+                                    };
+                                    res.is_finite().then_some(FastWide::F64(res))
+                                } else if ((lvt == 3 && matches!(rvt, 0 | 2))
+                                    || (rvt == 3 && matches!(lvt, 0 | 2)))
+                                    && let (Some(a), Some(b)) = (try_fast_i32(lv), try_fast_i32(rv))
+                                {
+                                    match op {
+                                        ArithOp::Add => a.checked_add(b).map(FastWide::I32),
+                                        ArithOp::Sub => a.checked_sub(b).map(FastWide::I32),
+                                        ArithOp::Mul => a.checked_mul(b).map(FastWide::I32),
+                                        ArithOp::IntDiv if b != 0 => {
+                                            a.checked_div(b).map(FastWide::I32)
+                                        }
+                                        ArithOp::Mod if b != 0 => {
+                                            Some(FastWide::I32(if a == i32::MIN && b == -1 {
+                                                0
+                                            } else {
+                                                a % b
+                                            }))
+                                        }
+                                        _ => None,
+                                    }
+                                } else if matches!(op, ArithOp::Add | ArithOp::Sub | ArithOp::Mul)
+                                    && ((matches!(lvt, 2 | 3 | 5) && rvt == 8)
+                                        || (lvt == 8 && matches!(rvt, 2 | 3 | 5)))
+                                    && let (Some(a), Some(b)) = (
+                                        if lvt == 8 {
+                                            lv.borrowed_string_units()
+                                                .and_then(try_parse_ascii_int_f64)
+                                        } else {
+                                            try_fast_f64(lv)
+                                        },
+                                        if rvt == 8 {
+                                            rv.borrowed_string_units()
+                                                .and_then(try_parse_ascii_int_f64)
+                                        } else {
+                                            try_fast_f64(rv)
+                                        },
+                                    )
+                                {
+                                    let res = match op {
+                                        ArithOp::Add => a + b,
+                                        ArithOp::Sub => a - b,
+                                        ArithOp::Mul => a * b,
+                                        _ => unreachable!(),
+                                    };
+                                    res.is_finite().then_some(FastWide::F64(res))
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        };
+                        match fast {
+                            Some(FastWide::I32(v)) => {
+                                try_vm!(self.write_packed_i32(top, cur_prog, dst, v));
+                            }
+                            Some(FastWide::F64(v)) => {
+                                try_vm!(self.write_packed_f64(top, cur_prog, dst, v));
+                            }
+                            None => {
+                                let l = try_vm!(
+                                    self.eval_packed_arith_operand(top, cur_prog, &code, lhs)
+                                );
+                                let r = try_vm!(
+                                    self.eval_packed_arith_operand(top, cur_prog, &code, rhs)
+                                );
+                                let out = eval_arith_op(&l, &r, op, NumericMode::Widening);
+                                try_vm!(self.store_packed_arith(top, cur_prog, dst, out));
+                            }
+                        }
+                    }
+                    VmOp::Neg { dst, src, mode } => {
+                        let fast = self
+                            .borrow_packed_op(top, cur_prog, &code, src)
+                            .and_then(|v| match (mode, v.raw_vt()) {
+                                (NumericMode::Checked(NumericCoerceTarget::Long), 3) => {
+                                    v.as_i32().and_then(i32::checked_neg).map(Variant::from_i32)
+                                }
+                                (NumericMode::Checked(NumericCoerceTarget::Double), 5) => v
+                                    .as_f64()
+                                    .filter(|x| x.is_finite())
+                                    .map(|x| Variant::from_f64(-x)),
+                                _ => None,
+                            });
+                        if let Some(v) = fast {
+                            try_vm!(self.write_packed_place(top, cur_prog, dst, v));
+                        } else {
+                            let val =
+                                try_vm!(self.eval_packed_arith_value(top, cur_prog, &code, src));
+                            try_vm!(self.store_packed_arith(
+                                top,
+                                cur_prog,
+                                dst,
+                                arith::neg(&val, mode)
+                            ));
+                        }
+                    }
+                    VmOp::Concat { dst, lhs, rhs } => {
+                        let fast: Option<Variant> = {
+                            let lu = self.borrow_packed_str_units(top, cur_prog, &code, lhs);
+                            let ru = self.borrow_packed_str_units(top, cur_prog, &code, rhs);
+                            match (lu, ru) {
+                                (Some(a), Some(b)) => Some(Variant::from_utf16_concat(a, b)),
+                                (Some(a), None) => self
+                                    .borrow_packed_op(top, cur_prog, &code, rhs)
+                                    .and_then(|rv| {
+                                        (rv.raw_vt() == 3).then(|| rv.as_i32()).flatten()
+                                    })
+                                    .map(|n| {
+                                        let mut buf = [0u16; 12];
+                                        let digits = format_i32_utf16(n, &mut buf);
+                                        Variant::from_utf16_concat(a, digits)
+                                    }),
+                                _ => None,
+                            }
+                        };
+                        if let Some(res) = fast {
+                            try_vm!(self.write_packed_place(top, cur_prog, dst, res));
+                        } else {
+                            let l =
+                                try_vm!(self.eval_packed_arith_value(top, cur_prog, &code, lhs));
+                            let r =
+                                try_vm!(self.eval_packed_arith_value(top, cur_prog, &code, rhs));
+                            try_vm!(self.store_packed_arith(
+                                top,
+                                cur_prog,
+                                dst,
+                                arith::concat(&l, &r)
+                            ));
+                        }
+                    }
+                    VmOp::Compare {
+                        dst,
+                        lhs,
+                        rhs,
+                        op,
+                        mode,
+                        coercion,
+                    } => {
+                        let fast = if coercion != ComparisonCoercion::String {
+                            match (
+                                self.borrow_packed_op(top, cur_prog, &code, lhs),
+                                self.borrow_packed_op(top, cur_prog, &code, rhs),
+                            ) {
+                                (Some(lv), Some(rv)) => try_fast_cmp(lv, rv, op),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
+                        if let Some(b) = fast {
+                            try_vm!(self.write_packed_bool(top, cur_prog, dst, b));
+                        } else {
+                            let l =
+                                try_vm!(self.eval_packed_arith_value(top, cur_prog, &code, lhs));
+                            let r =
+                                try_vm!(self.eval_packed_arith_value(top, cur_prog, &code, rhs));
+                            let out = arith::compare_declared(&l, &r, mode, cmp_op(op), coercion);
+                            try_vm!(self.store_packed_arith(top, cur_prog, dst, out));
+                        }
+                    }
+                    VmOp::CmpBranch(idx) => {
+                        let data = &code.cmp_branches[idx as usize];
+                        let fast = if data.coercion != ComparisonCoercion::String {
+                            match (
+                                self.borrow_packed_op(top, cur_prog, &code, data.lhs),
+                                self.borrow_packed_op(top, cur_prog, &code, data.rhs),
+                            ) {
+                                (Some(lv), Some(rv)) => try_fast_cmp(lv, rv, data.op),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
+                        let taken = match fast {
+                            Some(b) => b,
+                            None => {
+                                let l = try_vm!(
+                                    self.eval_packed_arith_value(top, cur_prog, &code, data.lhs)
+                                );
+                                let r = try_vm!(
+                                    self.eval_packed_arith_value(top, cur_prog, &code, data.rhs)
+                                );
+                                let cmp_val = try_vm!(
+                                    arith::compare_declared(
+                                        &l,
+                                        &r,
+                                        data.mode,
+                                        cmp_op(data.op),
+                                        data.coercion,
+                                    )
+                                    .map_err(arith_fault)
+                                );
+                                try_vm!(arith::is_truthy(&cmp_val).map_err(arith_fault))
+                            }
+                        };
+                        let steps = if taken {
+                            cur_block = data.then_block;
+                            pc = data.then_pc as usize;
+                            u64::from(data.then_steps)
+                        } else {
+                            cur_block = data.else_block;
+                            pc = data.else_pc as usize;
+                            u64::from(data.else_steps)
+                        };
+                        if !self.exec.consume_execution_steps(steps) {
+                            return Err(Vm3Error::BudgetExceeded);
+                        }
+                    }
+                    VmOp::ForCheck(idx) => {
+                        let data = &code.for_checks[idx as usize];
+                        let max_steps = u64::from(data.body_steps.max(data.after_steps));
+                        if self.exec.remaining_steps.is_none_or(|r| r >= max_steps)
+                            && let Some(nn_v) =
+                                self.borrow_packed_op(top, cur_prog, &code, data.nonneg)
+                            && nn_v.raw_vt() == 11
+                            && let Some(nn) = nn_v.as_bool()
+                            && let Some(var_v) = self.borrow_packed_op(
+                                top,
+                                cur_prog,
+                                &code,
+                                PackedOp::from_place(data.var),
+                            )
+                            && let Some(lim_v) =
+                                self.borrow_packed_op(top, cur_prog, &code, data.limit)
+                        {
+                            let take_body = if let (Some(v), Some(l)) =
+                                (try_fast_i32(var_v), try_fast_i32(lim_v))
+                            {
+                                Some(if nn { v <= l } else { v >= l })
+                            } else if let (Some(v), Some(l)) =
+                                (try_fast_f64(var_v), try_fast_f64(lim_v))
+                            {
+                                (!v.is_nan() && !l.is_nan()).then_some(if nn {
+                                    v <= l
+                                } else {
+                                    v >= l
+                                })
+                            } else {
+                                None
+                            };
+                            if let Some(cont) = take_body {
+                                let steps = if cont {
+                                    cur_block = data.body_block;
+                                    pc = data.body_pc as usize;
+                                    u64::from(data.body_steps)
+                                } else {
+                                    cur_block = data.after_block;
+                                    pc = data.after_pc as usize;
+                                    u64::from(data.after_steps)
+                                };
+                                let _ = self.exec.consume_execution_steps(steps);
+                            }
+                        }
+                    }
+                    VmOp::ForStepCheck(idx) => {
+                        let data = &code.for_step_checks[idx as usize];
+                        let max_steps = u64::from(data.cont_steps.max(data.exit_steps));
+                        // Ultra-fast direct-slot path for local `Long` For counters (step/limit may be I16 or I32).
+                        if data.var.tag() == TAG_LOCAL
+                            && data.step.tag() == TAG_TEMP
+                            && data.limit.tag() == TAG_TEMP
+                            && data.nonneg.tag() == TAG_TEMP
+                            && fast_frame
+                            && self.exec.remaining_steps.is_none_or(|r| r >= max_steps)
+                        {
+                            let fr = &mut self.frames[top];
+                            let vi = data.var.index();
+                            let slots = fr.slots.as_mut_slice();
+                            let var_s = &slots[vi];
+                            let step_s = &slots[data.step.index()];
+                            let lim_s = &slots[data.limit.index()];
+                            let nn_s = &slots[data.nonneg.index()];
+                            if var_s.raw_vt() == 3
+                                && nn_s.raw_vt() == 11
+                                && let Some(s) = try_fast_i32(step_s)
+                                && let Some(lim) = try_fast_i32(lim_s)
+                            {
+                                let v = var_s.as_i32().unwrap();
+                                let nn = nn_s.as_bool().unwrap();
+                                if let Some(next_v) = v.checked_add(s) {
+                                    slots[vi].set_i32_over_scalar(next_v);
+                                    let cont = if nn { next_v <= lim } else { next_v >= lim };
+                                    let steps = if cont {
+                                        cur_block = data.body_block;
+                                        pc = data.body_pc as usize;
+                                        u64::from(data.cont_steps)
+                                    } else {
+                                        cur_block = data.after_block;
+                                        pc = data.after_pc as usize;
+                                        u64::from(data.exit_steps)
+                                    };
+                                    let _ = self.exec.consume_execution_steps(steps);
+                                    continue;
+                                }
+                                if data.to_step_steps > 0
+                                    && !self
+                                        .exec
+                                        .consume_execution_steps(u64::from(data.to_step_steps))
+                                {
+                                    return Err(Vm3Error::BudgetExceeded);
+                                }
+                                cur_block = data.step_block;
+                                pc = data.slow_pc as usize;
+                                try_vm!(Err(arith_fault(ArithError::overflow())));
+                            }
+                        }
+                        if self.exec.remaining_steps.is_none_or(|r| r >= max_steps)
+                            && let Some(nn_v) =
+                                self.borrow_packed_op(top, cur_prog, &code, data.nonneg)
+                            && nn_v.raw_vt() == 11
+                            && let Some(nn) = nn_v.as_bool()
+                            && let Some(s) = self
+                                .borrow_packed_op(top, cur_prog, &code, data.step)
+                                .and_then(try_fast_i32)
+                            && let Some(lim) = self
+                                .borrow_packed_op(top, cur_prog, &code, data.limit)
+                                .and_then(try_fast_i32)
+                            && let Some(v) = self
+                                .borrow_packed_op(
+                                    top,
+                                    cur_prog,
+                                    &code,
+                                    PackedOp::from_place(data.var),
+                                )
+                                .and_then(try_fast_i32)
+                        {
+                            if let Some(next_v) = v.checked_add(s) {
+                                if let Some(slot) = self.fast_dst_slot_mut(top, cur_prog, data.var)
+                                {
+                                    slot.set_i32(next_v);
+                                    let cont = if nn { next_v <= lim } else { next_v >= lim };
+                                    let steps = if cont {
+                                        cur_block = data.body_block;
+                                        pc = data.body_pc as usize;
+                                        u64::from(data.cont_steps)
+                                    } else {
+                                        cur_block = data.after_block;
+                                        pc = data.after_pc as usize;
+                                        u64::from(data.exit_steps)
+                                    };
+                                    let _ = self.exec.consume_execution_steps(steps);
+                                    continue;
+                                }
+                            } else {
+                                if data.to_step_steps > 0
+                                    && !self
+                                        .exec
+                                        .consume_execution_steps(u64::from(data.to_step_steps))
+                                {
+                                    return Err(Vm3Error::BudgetExceeded);
+                                }
+                                cur_block = data.step_block;
+                                pc = data.slow_pc as usize;
+                                try_vm!(Err(arith_fault(ArithError::overflow())));
+                            }
+                        }
+                        if data.to_step_steps > 0 {
+                            if !self
+                                .exec
+                                .consume_execution_steps(u64::from(data.to_step_steps))
+                            {
+                                return Err(Vm3Error::BudgetExceeded);
+                            }
+                            cur_block = data.step_block;
+                            pc = data.slow_pc as usize;
+                        }
+                    }
+                    VmOp::Truthy { dst, src } => {
+                        let fast = self
+                            .borrow_packed_op(top, cur_prog, &code, src)
+                            .and_then(|v| match v.raw_vt() {
+                                11 => v.as_bool(),
+                                3 => v.as_i32().map(|n| n != 0),
+                                2 => v.as_i16().map(|n| n != 0),
+                                0 | 1 => Some(false),
+                                _ => None,
+                            });
+                        if let Some(b) = fast {
+                            try_vm!(self.write_packed_bool(top, cur_prog, dst, b));
+                        } else {
+                            let val =
+                                try_vm!(self.eval_packed_arith_value(top, cur_prog, &code, src));
+                            let out = arith::is_truthy(&val).map(Variant::from_bool);
+                            try_vm!(self.store_packed_arith(top, cur_prog, dst, out));
+                        }
+                    }
+                    VmOp::CoerceNum { dst, src, target } => {
+                        enum FastNum {
+                            I32(i32),
+                            F64(f64),
+                            Bool(bool),
+                            Other(Variant),
+                        }
+                        let fast = self
+                            .borrow_packed_op(top, cur_prog, &code, src)
+                            .and_then(|v| match (target, v.raw_vt()) {
+                                (NumericCoerceTarget::Long, 3) => v.as_i32().map(FastNum::I32),
+                                (NumericCoerceTarget::Long, 2) => {
+                                    v.as_i16().map(|n| FastNum::I32(i32::from(n)))
+                                }
+                                (NumericCoerceTarget::Long, 0) => Some(FastNum::I32(0)),
+                                (NumericCoerceTarget::Double, 5) => {
+                                    v.as_f64().filter(|x| x.is_finite()).map(FastNum::F64)
+                                }
+                                (NumericCoerceTarget::Double, 3) => {
+                                    v.as_i32().map(|n| FastNum::F64(f64::from(n)))
+                                }
+                                (NumericCoerceTarget::Double, 2) => {
+                                    v.as_i16().map(|n| FastNum::F64(f64::from(n)))
+                                }
+                                (NumericCoerceTarget::Double, 0) => Some(FastNum::F64(0.0)),
+                                (NumericCoerceTarget::Integer, 2) => {
+                                    v.as_i16().map(|n| FastNum::Other(Variant::from_i16(n)))
+                                }
+                                (NumericCoerceTarget::Integer, 3) => v
+                                    .as_i32()
+                                    .and_then(|n| i16::try_from(n).ok())
+                                    .map(|n| FastNum::Other(Variant::from_i16(n))),
+                                (NumericCoerceTarget::Integer, 0) => {
+                                    Some(FastNum::Other(Variant::from_i16(0)))
+                                }
+                                (NumericCoerceTarget::Boolean, 11) => {
+                                    v.as_bool().map(FastNum::Bool)
+                                }
+                                (NumericCoerceTarget::Boolean, 3) => {
+                                    v.as_i32().map(|n| FastNum::Bool(n != 0))
+                                }
+                                (NumericCoerceTarget::Boolean, 0) => Some(FastNum::Bool(false)),
+                                _ => None,
+                            });
+                        match fast {
+                            Some(FastNum::I32(v)) => {
+                                try_vm!(self.write_packed_i32(top, cur_prog, dst, v));
+                            }
+                            Some(FastNum::F64(v)) => {
+                                try_vm!(self.write_packed_f64(top, cur_prog, dst, v));
+                            }
+                            Some(FastNum::Bool(v)) => {
+                                try_vm!(self.write_packed_bool(top, cur_prog, dst, v));
+                            }
+                            Some(FastNum::Other(v)) => {
+                                try_vm!(self.write_packed_place(top, cur_prog, dst, v));
+                            }
+                            None => {
+                                let val = try_vm!(
+                                    self.eval_packed_arith_value(top, cur_prog, &code, src)
+                                );
+                                let out = arith::coerce_numeric(&val, target);
+                                try_vm!(self.store_packed_arith(top, cur_prog, dst, out));
+                            }
+                        }
+                    }
+                    VmOp::CoerceStr { dst, src } => {
+                        let fast = if src.tag() == TAG_CONST {
+                            match &code.consts[src.index()] {
+                                FastConst::Str(units) => Some(Variant::from_utf16_units(units)),
+                                FastConst::NullStr => Some(Variant::null_string()),
+                                _ => None,
+                            }
+                        } else {
+                            self.borrow_packed_op(top, cur_prog, &code, src)
+                                .filter(|v| v.raw_vt() == 8)
+                                .cloned()
+                        };
+                        if let Some(v) = fast {
+                            try_vm!(self.write_packed_place(top, cur_prog, dst, v));
+                        } else {
+                            let val =
+                                try_vm!(self.eval_packed_arith_value(top, cur_prog, &code, src));
+                            let out = arith::coerce_string(&val);
+                            try_vm!(self.store_packed_arith(top, cur_prog, dst, out));
+                        }
+                    }
+                    VmOp::Not { dst, src } => {
+                        let fast = self
+                            .borrow_packed_op(top, cur_prog, &code, src)
+                            .and_then(|v| match v.raw_vt() {
+                                11 => v.as_bool().map(|b| Variant::from_bool(!b)),
+                                3 => v.as_i32().map(|n| Variant::from_i32(!n)),
+                                _ => None,
+                            });
+                        if let Some(v) = fast {
+                            try_vm!(self.write_packed_place(top, cur_prog, dst, v));
+                        } else {
+                            let val =
+                                try_vm!(self.eval_packed_arith_value(top, cur_prog, &code, src));
+                            try_vm!(self.store_packed_arith(top, cur_prog, dst, arith::not(&val)));
+                        }
+                    }
+                    VmOp::Logical { dst, lhs, rhs, op } => {
+                        let fast = match (
+                            self.borrow_packed_op(top, cur_prog, &code, lhs),
+                            self.borrow_packed_op(top, cur_prog, &code, rhs),
+                        ) {
+                            (Some(lv), Some(rv)) if lv.raw_vt() == 11 && rv.raw_vt() == 11 => {
+                                let a = lv.as_bool().unwrap();
+                                let b = rv.as_bool().unwrap();
+                                Some(Variant::from_bool(match op {
+                                    LogicalOp::And => a && b,
+                                    LogicalOp::Or => a || b,
+                                    LogicalOp::Xor => a ^ b,
+                                    LogicalOp::Eqv => a == b,
+                                    LogicalOp::Imp => !a || b,
+                                }))
+                            }
+                            (Some(lv), Some(rv)) if lv.raw_vt() == 3 && rv.raw_vt() == 3 => {
+                                let a = lv.as_i32().unwrap();
+                                let b = rv.as_i32().unwrap();
+                                Some(Variant::from_i32(match op {
+                                    LogicalOp::And => a & b,
+                                    LogicalOp::Or => a | b,
+                                    LogicalOp::Xor => a ^ b,
+                                    LogicalOp::Eqv => !(a ^ b),
+                                    LogicalOp::Imp => (!a) | b,
+                                }))
+                            }
+                            _ => None,
+                        };
+                        if let Some(v) = fast {
+                            try_vm!(self.write_packed_place(top, cur_prog, dst, v));
+                        } else {
+                            let l =
+                                try_vm!(self.eval_packed_arith_value(top, cur_prog, &code, lhs));
+                            let r =
+                                try_vm!(self.eval_packed_arith_value(top, cur_prog, &code, rhs));
+                            let out = match op {
+                                LogicalOp::And => arith::and(&l, &r),
+                                LogicalOp::Or => arith::or(&l, &r),
+                                LogicalOp::Xor => arith::xor(&l, &r),
+                                LogicalOp::Eqv => arith::eqv(&l, &r),
+                                LogicalOp::Imp => arith::imp(&l, &r),
+                            };
+                            try_vm!(self.store_packed_arith(top, cur_prog, dst, out));
+                        }
+                    }
+                    VmOp::ArrayGet1D { dst, array, index } => {
+                        let arr_loc = self.resolve_packed(top, cur_prog, array);
+                        let is_arr = self
+                            .read_loc_ref_fast(arr_loc)
+                            .is_some_and(|v| matches!(v.raw_vt() & 0xF000, 0x2000 | 0x6000));
+                        if is_arr {
+                            let sub =
+                                try_vm!(self.eval_fast_subscript(top, cur_prog, &code, index));
+                            if let Some((arr_ref, dst_slot)) =
+                                self.borrow_loc_and_fast_dst_mut(top, cur_prog, arr_loc, dst)
+                                && let Some(res) = arr_ref.safearray_1d_read_into(sub, dst_slot)
+                            {
+                                match res {
+                                    Ok(()) => continue,
+                                    Err((num, msg)) => {
+                                        try_vm!(Err(Vm3Error::Fault(Fault::new(num, msg))));
+                                    }
+                                }
+                            }
+                            let fast = self
+                                .read_loc_ref_fast(arr_loc)
+                                .and_then(|arr| arr.safearray_1d_read(sub));
+                            match fast {
+                                Some(Ok(val)) => {
+                                    try_vm!(self.write_packed_place(top, cur_prog, dst, val));
+                                    continue;
+                                }
+                                Some(Err((num, msg))) => {
+                                    try_vm!(Err(Vm3Error::Fault(Fault::new(num, msg))));
+                                }
+                                None => {}
+                            }
+                        }
+                        let (iref, count) = code.fallback_inst_for_pc((pc - 1) as u32);
+                        let switched = try_vm!(self.exec_slow_inst_range(
+                            top, cur_prog, cur_func, cur_block, pc, iref, count
+                        ));
+                        if switched {
+                            continue 'dispatch;
+                        }
+                    }
+                    VmOp::ArraySet1D {
+                        array,
+                        index,
+                        value,
+                    } => {
+                        if self.param_array_aliases.is_empty() {
+                            let arr_loc = self.resolve_packed(top, cur_prog, array);
+                            let is_arr = self
+                                .read_loc_ref_fast(arr_loc)
+                                .is_some_and(|v| matches!(v.raw_vt() & 0xF000, 0x2000 | 0x6000));
+                            if is_arr {
+                                let scalar_val = self
+                                    .borrow_packed_op(top, cur_prog, &code, value)
+                                    .and_then(|v| match v.raw_vt() {
+                                        3 => v.as_i32().map(FastArrScalar::I32),
+                                        5 => v.as_f64().map(FastArrScalar::F64),
+                                        _ => None,
+                                    });
+                                if let Some(sv) = scalar_val {
+                                    let sub = try_vm!(
+                                        self.eval_fast_subscript(top, cur_prog, &code, index)
+                                    );
+                                    let fast =
+                                        self.read_loc_mut_fast(arr_loc).and_then(|arr| match sv {
+                                            FastArrScalar::I32(n) => {
+                                                arr.safearray_1d_write_i32(sub, n)
+                                            }
+                                            FastArrScalar::F64(f) => {
+                                                arr.safearray_1d_write_f64(sub, f)
+                                            }
+                                        });
+                                    match fast {
+                                        Some(Ok(())) => continue,
+                                        Some(Err((num, msg))) => {
+                                            try_vm!(Err(Vm3Error::Fault(Fault::new(num, msg))));
+                                        }
+                                        None => {}
+                                    }
+                                }
+                                let val = try_vm!(self.eval_packed_op(top, cur_prog, &code, value));
+                                let sub =
+                                    try_vm!(self.eval_fast_subscript(top, cur_prog, &code, index));
+                                let fast = self
+                                    .read_loc_mut_fast(arr_loc)
+                                    .and_then(|arr| arr.safearray_1d_write(sub, &val));
+                                match fast {
+                                    Some(Ok(())) => continue,
+                                    Some(Err((num, msg))) => {
+                                        try_vm!(Err(Vm3Error::Fault(Fault::new(num, msg))));
+                                    }
+                                    None => {}
+                                }
+                            }
+                        }
+                        let (iref, count) = code.fallback_inst_for_pc((pc - 1) as u32);
+                        let switched = try_vm!(self.exec_slow_inst_range(
+                            top, cur_prog, cur_func, cur_block, pc, iref, count
+                        ));
+                        if switched {
+                            continue 'dispatch;
+                        }
+                    }
+                    VmOp::RecordGet { dst, record, field } => {
+                        let loc = self.resolve_packed(top, cur_prog, record);
+                        if let Some(rec) = self.read_loc_ref_fast(loc)
+                            && rec.raw_vt() == VarType::Record as u16
+                        {
+                            let val = try_vm!(
+                                rec.read_record_field_variant(field as usize)
+                                    .map_err(|e| Vm3Error::Fault(Fault::new(13, e)))
+                            );
+                            try_vm!(self.write_packed_place(top, cur_prog, dst, val));
+                            continue;
+                        }
+                        let (iref, count) = code.fallback_inst_for_pc((pc - 1) as u32);
+                        let switched = try_vm!(self.exec_slow_inst_range(
+                            top, cur_prog, cur_func, cur_block, pc, iref, count
+                        ));
+                        if switched {
+                            continue 'dispatch;
+                        }
+                    }
+                    VmOp::RecordSet {
+                        record,
+                        field,
+                        value,
+                    } => {
+                        let loc = self.resolve_packed(top, cur_prog, record);
+                        if self
+                            .read_loc_ref_fast(loc)
+                            .is_some_and(|r| r.raw_vt() == VarType::Record as u16)
+                        {
+                            let val = try_vm!(self.eval_packed_op(top, cur_prog, &code, value));
+                            if let Some(rec) = self.read_loc_mut_fast(loc)
+                                && rec.raw_vt() == VarType::Record as u16
+                            {
+                                try_vm!(
+                                    rec.write_record_field_variant(field as usize, &val)
+                                        .map_err(|e| Vm3Error::Fault(Fault::new(13, e)))
+                                );
+                                continue;
+                            }
+                        }
+                        let (iref, count) = code.fallback_inst_for_pc((pc - 1) as u32);
+                        let switched = try_vm!(self.exec_slow_inst_range(
+                            top, cur_prog, cur_func, cur_block, pc, iref, count
+                        ));
+                        if switched {
+                            continue 'dispatch;
+                        }
+                    }
+                    VmOp::ArrayRecordFieldGet1D(data_idx) => {
+                        let data = &code.arr_rec_gets[data_idx as usize];
+                        let arr_loc = self.resolve_packed(top, cur_prog, data.array);
+                        if self
+                            .read_loc_ref_fast(arr_loc)
+                            .is_some_and(|v| v.raw_vt() == 0x2024)
+                        {
+                            let sub =
+                                try_vm!(self.eval_fast_subscript(top, cur_prog, &code, data.index));
+                            if let Some((arr_ref, dst_slot)) =
+                                self.borrow_loc_and_fast_dst_mut(top, cur_prog, arr_loc, data.dst)
+                                && let Some(res) = arr_ref.safearray_1d_record_field_read_into(
+                                    sub,
+                                    data.field as usize,
+                                    dst_slot,
+                                )
+                            {
+                                match res {
+                                    Ok(()) => continue,
+                                    Err((num, msg)) => {
+                                        try_vm!(Err(Vm3Error::Fault(Fault::new(num, msg))));
+                                    }
+                                }
+                            }
+                            let fast = self.read_loc_ref_fast(arr_loc).and_then(|arr| {
+                                arr.safearray_1d_record_field_read(sub, data.field as usize)
+                            });
+                            match fast {
+                                Some(Ok(val)) => {
+                                    try_vm!(self.write_packed_place(top, cur_prog, data.dst, val));
+                                    continue;
+                                }
+                                Some(Err((num, msg))) => {
+                                    try_vm!(Err(Vm3Error::Fault(Fault::new(num, msg))));
+                                }
+                                None => {}
+                            }
+                        }
+                        let switched = try_vm!(self.exec_slow_inst_range(
+                            top,
+                            cur_prog,
+                            cur_func,
+                            cur_block,
+                            pc,
+                            data.first_inst,
+                            data.orig_count as usize
+                        ));
+                        if switched {
+                            continue 'dispatch;
+                        }
+                    }
+                    VmOp::ArrayRecordFieldSet1D(data_idx) => {
+                        let data = &code.arr_rec_sets[data_idx as usize];
+                        let arr_loc = self.resolve_packed(top, cur_prog, data.array);
+                        if self.param_array_aliases.is_empty()
+                            && self
+                                .read_loc_ref_fast(arr_loc)
+                                .is_some_and(|v| v.raw_vt() == 0x2024)
+                        {
+                            let scalar_val = self
+                                .borrow_packed_op(top, cur_prog, &code, data.value)
+                                .and_then(|v| match v.raw_vt() {
+                                    5 => v.as_f64().map(FastArrScalar::F64),
+                                    3 => v.as_i32().map(FastArrScalar::I32),
+                                    _ => None,
+                                });
+                            if let Some(sv) = scalar_val {
+                                let sub = try_vm!(
+                                    self.eval_fast_subscript(top, cur_prog, &code, data.index)
+                                );
+                                let fast =
+                                    self.read_loc_mut_fast(arr_loc).and_then(|arr| match sv {
+                                        FastArrScalar::F64(f) => arr
+                                            .safearray_1d_record_field_write_f64(
+                                                sub,
+                                                data.field as usize,
+                                                f,
+                                            ),
+                                        FastArrScalar::I32(n) => arr
+                                            .safearray_1d_record_field_write_i32(
+                                                sub,
+                                                data.field as usize,
+                                                n,
+                                            ),
+                                    });
+                                match fast {
+                                    Some(Ok(())) => continue,
+                                    Some(Err((num, msg))) => {
+                                        try_vm!(Err(Vm3Error::Fault(Fault::new(num, msg))));
+                                    }
+                                    None => {}
+                                }
+                            }
+                            let val =
+                                try_vm!(self.eval_packed_op(top, cur_prog, &code, data.value));
+                            let sub =
+                                try_vm!(self.eval_fast_subscript(top, cur_prog, &code, data.index));
+                            let fast = self.read_loc_mut_fast(arr_loc).and_then(|arr| {
+                                arr.safearray_1d_record_field_write(sub, data.field as usize, &val)
+                            });
+                            match fast {
+                                Some(Ok(())) => continue,
+                                Some(Err((num, msg))) => {
+                                    try_vm!(Err(Vm3Error::Fault(Fault::new(num, msg))));
+                                }
+                                None => {}
+                            }
+                        }
+                        let switched = try_vm!(self.exec_slow_inst_range(
+                            top,
+                            cur_prog,
+                            cur_func,
+                            cur_block,
+                            pc,
+                            data.first_inst,
+                            data.orig_count as usize
+                        ));
+                        if switched {
+                            continue 'dispatch;
+                        }
+                    }
+                    VmOp::FieldGet { dst, object, field } => {
+                        let done = if let Some(obj_place) = object.as_place()
+                            && self.as_new_slots.is_empty()
+                        {
+                            let obj_loc = self.resolve_packed(top, cur_prog, obj_place);
+                            self.borrow_loc_and_fast_dst_mut(top, cur_prog, obj_loc, dst)
+                                .is_some_and(|(obj_ref, dst_slot)| {
+                                    obj_ref.byref_target().is_none()
+                                        && borrow_project_field_get_into(obj_ref, field, dst_slot)
+                                })
+                        } else {
+                            false
+                        };
+                        if !done {
+                            let recv = try_vm!(self.eval_packed_op(top, cur_prog, &code, object));
+                            let instance = try_vm!(variant_to_object(&recv));
+                            let val = try_vm!(self.read_project_field_as_new(&instance, field));
+                            try_vm!(self.write_packed_place(top, cur_prog, dst, val));
+                        }
+                    }
+                    VmOp::FieldSet {
+                        object,
+                        field,
+                        value,
+                    } => {
+                        let done = if let (Some(obj_ref), Some(val_ref)) = (
+                            self.borrow_packed_op(top, cur_prog, &code, object),
+                            self.borrow_packed_op(top, cur_prog, &code, value),
+                        ) {
+                            borrow_project_field_set_trivial(obj_ref, field, val_ref)
+                        } else {
+                            false
+                        };
+                        if !done {
+                            let v = try_vm!(self.eval_packed_op(top, cur_prog, &code, value));
+                            let can_borrow = self
+                                .borrow_packed_op(top, cur_prog, &code, object)
+                                .and_then(borrow_project_instance_info)
+                                .is_some();
+                            if can_borrow {
+                                let obj = self
+                                    .borrow_packed_op(top, cur_prog, &code, object)
+                                    .expect("verified project instance above");
+                                borrow_project_field_set(obj, field, v);
+                            } else {
+                                let recv =
+                                    try_vm!(self.eval_packed_op(top, cur_prog, &code, object));
+                                let instance = try_vm!(variant_to_object(&recv));
+                                instance.project_field_set(field, v);
+                            }
+                        }
+                    }
+                    VmOp::CallProcFast(idx) => {
+                        let fr = &mut self.frames[top];
+                        fr.block = BlockId(cur_block as usize);
+                        fr.pc = pc;
+                        fr.at_block_start = false;
+                        let pushed = try_vm!(self.exec_call_proc_fast(top, cur_prog, &code, idx));
+                        if pushed {
+                            continue 'dispatch;
+                        }
+                        fast_frame = self.as_new_slots.is_empty()
+                            && self.param_array_aliases.is_empty()
+                            && self.exec.events.withevents.is_empty()
+                            && self.frames[top].local_alias_mask == 0;
+                    }
+                    VmOp::CallExternLib(idx) => {
+                        let fr = &mut self.frames[top];
+                        fr.block = BlockId(cur_block as usize);
+                        fr.pc = pc;
+                        fr.at_block_start = false;
+                        try_vm!(self.exec_call_extern_lib(top, cur_prog, &code, idx));
+                        if !code.lib_calls[idx as usize].pure_no_events {
+                            fast_frame = self.as_new_slots.is_empty()
+                                && self.param_array_aliases.is_empty()
+                                && self.exec.events.withevents.is_empty()
+                                && self.frames[top].local_alias_mask == 0;
+                        }
+                    }
+                    VmOp::CallComEarly(idx) => {
+                        let fr = &mut self.frames[top];
+                        fr.block = BlockId(cur_block as usize);
+                        fr.pc = pc;
+                        fr.at_block_start = false;
+                        let pushed =
+                            try_vm!(self.exec_call_com_early(top, cur_prog, cur_func, &code, idx));
+                        if pushed {
+                            continue 'dispatch;
+                        }
+                        fast_frame = self.as_new_slots.is_empty()
+                            && self.param_array_aliases.is_empty()
+                            && self.exec.events.withevents.is_empty()
+                            && self.frames[top].local_alias_mask == 0;
+                    }
+                    VmOp::CallComLate(idx) => {
+                        let fr = &mut self.frames[top];
+                        fr.block = BlockId(cur_block as usize);
+                        fr.pc = pc;
+                        fr.at_block_start = false;
+                        let pushed =
+                            try_vm!(self.exec_call_com_late(top, cur_prog, cur_func, &code, idx));
+                        if pushed {
+                            continue 'dispatch;
+                        }
+                        fast_frame = self.as_new_slots.is_empty()
+                            && self.param_array_aliases.is_empty()
+                            && self.exec.events.withevents.is_empty()
+                            && self.frames[top].local_alias_mask == 0;
+                    }
+                    VmOp::StmtBoundary { clear_temps_from } => {
+                        let fr = &mut self.frames[top];
+                        let first_temp = clear_temps_from as usize;
+                        let first_slot = fr.num_locals + first_temp;
+                        if first_slot < fr.temp_hwm {
+                            let end = fr.temp_hwm.min(fr.slots.len());
+                            for slot in &mut fr.slots[first_slot..end] {
+                                let vt = slot.raw_vt();
+                                if vt != 0 {
+                                    if vt < 8 || vt == 11 {
+                                        slot.set_empty_over_scalar();
+                                    } else {
+                                        slot.set_empty();
+                                    }
+                                }
+                            }
+                            fr.temp_hwm = first_slot;
+                        }
+                        if !fr.pointer_strings.is_empty()
+                            || !fr.ref_locks.is_empty()
+                            || !self.for_each.is_empty()
+                            || !self.param_array_aliases.is_empty()
+                        {
+                            self.clear_statement_temps(first_temp);
+                        }
+                        if self.exec.object_owner.has_pending() {
+                            let fr = &mut self.frames[top];
+                            fr.block = BlockId(cur_block as usize);
+                            fr.pc = pc;
+                            fr.at_block_start = false;
+                            self.maybe_drain();
+                            fast_frame = self.as_new_slots.is_empty()
+                                && self.param_array_aliases.is_empty()
+                                && self.exec.events.withevents.is_empty()
+                                && self.frames[top].local_alias_mask == 0;
+                        }
+                    }
+                    VmOp::Jump {
+                        pc: target_pc,
+                        block: target_block,
+                        steps,
+                    } => {
+                        cur_block = target_block;
+                        pc = target_pc as usize;
+                        if !self.exec.consume_execution_steps(u64::from(steps)) {
+                            return Err(Vm3Error::BudgetExceeded);
+                        }
+                    }
+                    VmOp::Branch(idx) => {
+                        let data = &code.branches[idx as usize];
+                        let taken = match self
+                            .borrow_packed_op(top, cur_prog, &code, data.cond)
+                            .and_then(Variant::as_bool)
+                        {
+                            Some(b) => b,
+                            None => {
+                                let v =
+                                    try_vm!(self.eval_packed_op(top, cur_prog, &code, data.cond));
+                                v.as_bool().ok_or_else(|| {
+                                    Vm3Error::Malformed(
+                                        "Branch condition is not a pre-computed Boolean".into(),
+                                    )
+                                })?
+                            }
+                        };
+                        let steps = if taken {
+                            cur_block = data.then_block;
+                            pc = data.then_pc as usize;
+                            u64::from(data.then_steps)
+                        } else {
+                            cur_block = data.else_block;
+                            pc = data.else_pc as usize;
+                            u64::from(data.else_steps)
+                        };
+                        if !self.exec.consume_execution_steps(steps) {
+                            return Err(Vm3Error::BudgetExceeded);
+                        }
+                    }
+                    VmOp::Return => {
+                        if self.frames.len() == base + 1 {
+                            break 'dispatch;
+                        }
+                        self.do_return()?;
+                        continue 'dispatch;
+                    }
+                    VmOp::SlowInst(iref) => {
+                        let switched = try_vm!(
+                            self.exec_slow_inst(top, cur_prog, cur_func, cur_block, pc, iref)
+                        );
+                        if switched {
+                            continue 'dispatch;
+                        }
+                        fast_frame = self.as_new_slots.is_empty()
+                            && self.param_array_aliases.is_empty()
+                            && self.exec.events.withevents.is_empty()
+                            && self.frames[top].local_alias_mask == 0;
+                    }
+                    VmOp::SlowTerm(blk_idx) => {
+                        let fr = &mut self.frames[top];
+                        fr.block = BlockId(cur_block as usize);
+                        fr.pc = pc;
+                        fr.at_block_start = false;
+                        if self.exec_slow_term(base, top, cur_prog, cur_func, blk_idx)? {
+                            break 'dispatch;
+                        }
+                        continue 'dispatch;
+                    }
                 }
             }
         }
         Ok(())
     }
 
+    #[inline]
+    fn resolve_packed(&self, top: usize, cur_prog: usize, p: PackedPlace) -> Loc {
+        match p.tag() {
+            TAG_TEMP => Loc::Temp(top, p.index() - self.frames[top].num_locals),
+            TAG_LOCAL => self.frames[top]
+                .alias_of(p.index())
+                .unwrap_or(Loc::Local(top, p.index())),
+            _ => Loc::Global(cur_prog, p.index()),
+        }
+    }
+
+    #[inline]
+    fn read_loc_ref_fast(&self, loc: Loc) -> Option<&Variant> {
+        match loc {
+            Loc::Global(p, g) => self.exec.programs[p].globals.get(g),
+            Loc::Local(fi, li) => self.frames.get(fi).and_then(|f| f.local(li)),
+            Loc::Temp(fi, ti) => self.frames.get(fi).and_then(|f| f.temp(ti)),
+        }
+    }
+
+    #[inline]
+    fn read_loc_mut_fast(&mut self, loc: Loc) -> Option<&mut Variant> {
+        match loc {
+            Loc::Global(p, g) => self.exec.programs[p].globals.get_mut(g),
+            Loc::Local(fi, li) => self.frames.get_mut(fi).and_then(|f| f.local_mut(li)),
+            Loc::Temp(fi, ti) => self.frames.get_mut(fi).and_then(|f| f.temp_mut(ti)),
+        }
+    }
+
+    #[inline]
+    fn borrow_packed_op<'a>(
+        &'a self,
+        top: usize,
+        cur_prog: usize,
+        code: &'a CompiledFunc,
+        op: PackedOp,
+    ) -> Option<&'a Variant> {
+        let slot = match op.tag() {
+            TAG_TEMP => &self.frames[top].slots[op.index()],
+            TAG_LOCAL => {
+                let fr = &self.frames[top];
+                if let Some(loc) = fr.alias_of(op.index()) {
+                    self.read_loc_ref_fast(loc)?
+                } else {
+                    &fr.slots[op.index()]
+                }
+            }
+            TAG_GLOBAL => &self.exec.programs[cur_prog].globals[op.index()],
+            _ => {
+                return match &code.consts[op.index()] {
+                    FastConst::Scalar(v) => Some(v),
+                    FastConst::Str(_) | FastConst::NullStr => None,
+                };
+            }
+        };
+        if slot.byref_target().is_some() {
+            return None;
+        }
+        if !self.as_new_slots.is_empty() && is_possibly_nothing_for_as_new(slot) {
+            return None;
+        }
+        Some(slot)
+    }
+
+    #[inline]
+    fn borrow_packed_str_units<'a>(
+        &'a self,
+        top: usize,
+        cur_prog: usize,
+        code: &'a CompiledFunc,
+        op: PackedOp,
+    ) -> Option<&'a [u16]> {
+        if op.tag() == TAG_CONST {
+            return match &code.consts[op.index()] {
+                FastConst::Str(units) => Some(units),
+                FastConst::NullStr => Some(&[]),
+                FastConst::Scalar(v) if v.raw_vt() == 0 => Some(&[]),
+                FastConst::Scalar(_) => None,
+            };
+        }
+        let v = self.borrow_packed_op(top, cur_prog, code, op)?;
+        match v.raw_vt() {
+            8 if v.string_byte_len().is_some_and(|n| n % 2 == 0) => v.borrowed_string_units(),
+            0 => Some(&[]),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn eval_packed_op(
+        &mut self,
+        top: usize,
+        cur_prog: usize,
+        code: &CompiledFunc,
+        op: PackedOp,
+    ) -> Result<Variant, Vm3Error> {
+        if op.tag() == TAG_CONST {
+            return Ok(match &code.consts[op.index()] {
+                FastConst::Scalar(v) => v.clone(),
+                FastConst::Str(units) => Variant::from_utf16_units(units),
+                FastConst::NullStr => Variant::null_string(),
+            });
+        }
+        if let Some(v) = self.borrow_packed_op(top, cur_prog, code, op) {
+            return Ok(v.clone());
+        }
+        let place = op.as_place().expect("non-const PackedOp");
+        let loc = self.resolve_packed(top, cur_prog, place);
+        self.read_loc_as_new(loc)
+    }
+
+    #[inline]
+    fn eval_packed_place(
+        &mut self,
+        top: usize,
+        cur_prog: usize,
+        place: PackedPlace,
+    ) -> Result<Variant, Vm3Error> {
+        let loc = self.resolve_packed(top, cur_prog, place);
+        self.read_loc_as_new(loc)
+    }
+
+    #[inline]
+    fn eval_packed_arith_operand(
+        &mut self,
+        top: usize,
+        cur_prog: usize,
+        code: &CompiledFunc,
+        op: PackedOp,
+    ) -> Result<Variant, Vm3Error> {
+        let v = self.eval_packed_op(top, cur_prog, code, op)?;
+        if v.raw_vt() == 9 || v.raw_vt() == 13 {
+            self.arithmetic_operand(v)
+        } else {
+            Ok(v)
+        }
+    }
+
+    #[inline]
+    fn eval_packed_arith_value(
+        &mut self,
+        top: usize,
+        cur_prog: usize,
+        code: &CompiledFunc,
+        op: PackedOp,
+    ) -> Result<Variant, Vm3Error> {
+        let v = self.eval_packed_op(top, cur_prog, code, op)?;
+        if v.raw_vt() == 9 || v.raw_vt() == 13 {
+            self.arithmetic_value(v)
+        } else {
+            Ok(v)
+        }
+    }
+
+    #[inline]
+    fn eval_fast_subscript(
+        &mut self,
+        top: usize,
+        cur_prog: usize,
+        code: &CompiledFunc,
+        op: PackedOp,
+    ) -> Result<i32, Vm3Error> {
+        if let Some(n) = self
+            .borrow_packed_op(top, cur_prog, code, op)
+            .and_then(try_fast_i32)
+        {
+            return Ok(n);
+        }
+        let v = self.eval_packed_op(top, cur_prog, code, op)?;
+        array_subscript(&v).map_err(arith_fault)
+    }
+
+    #[inline]
+    fn fast_dst_slot_mut(
+        &mut self,
+        top: usize,
+        cur_prog: usize,
+        dst: PackedPlace,
+    ) -> Option<&mut Variant> {
+        if !self.param_array_aliases.is_empty() {
+            return None;
+        }
+        let has_withevents = !self.exec.events.withevents.is_empty();
+        let slot = match dst.tag() {
+            TAG_TEMP => {
+                let fr = &mut self.frames[top];
+                let idx = dst.index();
+                if idx + 1 > fr.temp_hwm {
+                    fr.temp_hwm = idx + 1;
+                }
+                &mut fr.slots[idx]
+            }
+            TAG_LOCAL => {
+                let idx = dst.index();
+                let alias = {
+                    let fr = &self.frames[top];
+                    if fr.local_alias_mask == 0
+                        || (idx < 64 && (fr.local_alias_mask & (1u64 << idx)) == 0)
+                    {
+                        None
+                    } else {
+                        fr.alias_of(idx)
+                    }
+                };
+                if let Some(loc) = alias {
+                    self.read_loc_mut_fast(loc)?
+                } else {
+                    &mut self.frames[top].slots[idx]
+                }
+            }
+            _ => &mut self.exec.programs[cur_prog].globals[dst.index()],
+        };
+        let old_vt = slot.raw_vt();
+        if old_vt < 8 || old_vt == 11 {
+            return Some(slot);
+        }
+        let hi = old_vt & 0xF000;
+        if hi == 0x2000 || hi == 0x4000 || hi == 0x6000 {
+            return None;
+        }
+        if has_withevents && (old_vt == 9 || old_vt == 13) {
+            return None;
+        }
+        Some(slot)
+    }
+
+    /// Borrow a source storage cell (`src_loc`) immutably and a distinct fast-writable
+    /// destination slot (`dst`) mutably at the same time, enabling in-place reads from
+    /// 1D arrays, UDT array fields, and project object fields with zero intermediate `Variant`s.
+    #[inline]
+    fn borrow_loc_and_fast_dst_mut(
+        &mut self,
+        top: usize,
+        cur_prog: usize,
+        src_loc: Loc,
+        dst: PackedPlace,
+    ) -> Option<(&Variant, &mut Variant)> {
+        if !self.param_array_aliases.is_empty() {
+            return None;
+        }
+        let has_withevents = !self.exec.events.withevents.is_empty();
+        let (dst_tag, dst_idx) = (dst.tag(), dst.index());
+        // Resolve dst into a top-frame flat slot index (handles non-aliased locals and all temps).
+        let dst_top_slot = match dst_tag {
+            TAG_TEMP => Some(dst_idx),
+            TAG_LOCAL => {
+                let fr = &self.frames[top];
+                if fr.local_alias_mask == 0
+                    || (dst_idx < 64 && (fr.local_alias_mask & (1u64 << dst_idx)) == 0)
+                {
+                    Some(dst_idx)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        let (src_ref, dst_slot): (&Variant, &mut Variant) = match (src_loc, dst_top_slot) {
+            (Loc::Local(fi, li), Some(di)) if fi == top => {
+                if li == di {
+                    return None;
+                }
+                let fr = &mut self.frames[top];
+                if dst_tag == TAG_TEMP && di + 1 > fr.temp_hwm {
+                    fr.temp_hwm = di + 1;
+                }
+                let slots = fr.slots.as_mut_slice();
+                if li < di {
+                    let (left, right) = slots.split_at_mut(di);
+                    (&left[li], &mut right[0])
+                } else {
+                    let (left, right) = slots.split_at_mut(li);
+                    (&right[0], &mut left[di])
+                }
+            }
+            (Loc::Temp(fi, ti), Some(di)) if fi == top => {
+                let si = self.frames[top].num_locals + ti;
+                if si == di {
+                    return None;
+                }
+                let fr = &mut self.frames[top];
+                if dst_tag == TAG_TEMP && di + 1 > fr.temp_hwm {
+                    fr.temp_hwm = di + 1;
+                }
+                let slots = fr.slots.as_mut_slice();
+                if si < di {
+                    let (left, right) = slots.split_at_mut(di);
+                    (&left[si], &mut right[0])
+                } else {
+                    let (left, right) = slots.split_at_mut(si);
+                    (&right[0], &mut left[di])
+                }
+            }
+            (Loc::Local(fi, li), Some(di)) if fi < top => {
+                let (lower, upper) = self.frames.split_at_mut(top);
+                let src = lower[fi].local(li)?;
+                let fr = &mut upper[0];
+                if dst_tag == TAG_TEMP && di + 1 > fr.temp_hwm {
+                    fr.temp_hwm = di + 1;
+                }
+                (src, &mut fr.slots[di])
+            }
+            (Loc::Temp(fi, ti), Some(di)) if fi < top => {
+                let (lower, upper) = self.frames.split_at_mut(top);
+                let src = lower[fi].temp(ti)?;
+                let fr = &mut upper[0];
+                if dst_tag == TAG_TEMP && di + 1 > fr.temp_hwm {
+                    fr.temp_hwm = di + 1;
+                }
+                (src, &mut fr.slots[di])
+            }
+            (Loc::Global(p, g), Some(di)) => {
+                let src = self.exec.programs[p].globals.get(g)?;
+                let fr = &mut self.frames[top];
+                if dst_tag == TAG_TEMP && di + 1 > fr.temp_hwm {
+                    fr.temp_hwm = di + 1;
+                }
+                (src, &mut fr.slots[di])
+            }
+            (Loc::Local(fi, li), None) if dst_tag == TAG_GLOBAL => {
+                let src = self.frames.get(fi)?.local(li)?;
+                let dst_slot = self.exec.programs[cur_prog].globals.get_mut(dst_idx)?;
+                (src, dst_slot)
+            }
+            (Loc::Temp(fi, ti), None) if dst_tag == TAG_GLOBAL => {
+                let src = self.frames.get(fi)?.temp(ti)?;
+                let dst_slot = self.exec.programs[cur_prog].globals.get_mut(dst_idx)?;
+                (src, dst_slot)
+            }
+            _ => return None,
+        };
+        let old_vt = dst_slot.raw_vt();
+        if old_vt < 8 || old_vt == 11 {
+            return Some((src_ref, dst_slot));
+        }
+        let hi = old_vt & 0xF000;
+        if hi == 0x2000 || hi == 0x4000 || hi == 0x6000 {
+            return None;
+        }
+        if has_withevents && (old_vt == 9 || old_vt == 13) {
+            return None;
+        }
+        Some((src_ref, dst_slot))
+    }
+
+    #[inline]
+    fn write_packed_date_f64(
+        &mut self,
+        top: usize,
+        cur_prog: usize,
+        dst: PackedPlace,
+        val: f64,
+    ) -> Result<(), Vm3Error> {
+        if let Some(slot) = self.fast_dst_slot_mut(top, cur_prog, dst) {
+            slot.set_date_f64(val);
+            return Ok(());
+        }
+        let loc = self.resolve_packed(top, cur_prog, dst);
+        self.write_loc(loc, Variant::from_date_f64(val))
+    }
+
+    #[inline]
+    fn write_packed_i32(
+        &mut self,
+        top: usize,
+        cur_prog: usize,
+        dst: PackedPlace,
+        val: i32,
+    ) -> Result<(), Vm3Error> {
+        if let Some(slot) = self.fast_dst_slot_mut(top, cur_prog, dst) {
+            slot.set_i32(val);
+            return Ok(());
+        }
+        let loc = self.resolve_packed(top, cur_prog, dst);
+        self.write_loc(loc, Variant::from_i32(val))
+    }
+
+    #[inline]
+    fn write_packed_f64(
+        &mut self,
+        top: usize,
+        cur_prog: usize,
+        dst: PackedPlace,
+        val: f64,
+    ) -> Result<(), Vm3Error> {
+        if let Some(slot) = self.fast_dst_slot_mut(top, cur_prog, dst) {
+            slot.set_f64(val);
+            return Ok(());
+        }
+        let loc = self.resolve_packed(top, cur_prog, dst);
+        self.write_loc(loc, Variant::from_f64(val))
+    }
+
+    #[inline]
+    fn write_packed_bool(
+        &mut self,
+        top: usize,
+        cur_prog: usize,
+        dst: PackedPlace,
+        val: bool,
+    ) -> Result<(), Vm3Error> {
+        if let Some(slot) = self.fast_dst_slot_mut(top, cur_prog, dst) {
+            slot.set_bool(val);
+            return Ok(());
+        }
+        let loc = self.resolve_packed(top, cur_prog, dst);
+        self.write_loc(loc, Variant::from_bool(val))
+    }
+
+    #[inline]
+    fn write_packed_place(
+        &mut self,
+        top: usize,
+        cur_prog: usize,
+        dst: PackedPlace,
+        val: Variant,
+    ) -> Result<(), Vm3Error> {
+        if let Some(slot) = self.fast_dst_slot_mut(top, cur_prog, dst) {
+            *slot = val;
+            return Ok(());
+        }
+        let loc = self.resolve_packed(top, cur_prog, dst);
+        self.write_loc(loc, val)
+    }
+
+    #[inline]
+    fn write_packed_assigned(
+        &mut self,
+        top: usize,
+        cur_prog: usize,
+        dst: PackedPlace,
+        mut val: Variant,
+    ) -> Result<(), Vm3Error> {
+        if (val.raw_vt() & 0xF000) == 0x2000 && dst.tag() != TAG_TEMP {
+            let loc = self.resolve_packed(top, cur_prog, dst);
+            if !matches!(loc, Loc::Temp(..))
+                && let Some(target) = self.read_loc_ref_fast(loc)
+            {
+                val.adopt_assignment_target_fixedness(target);
+            }
+            return self.write_loc(loc, val);
+        }
+        self.write_packed_place(top, cur_prog, dst, val)
+    }
+
+    #[inline]
+    fn store_packed_arith(
+        &mut self,
+        top: usize,
+        cur_prog: usize,
+        dst: PackedPlace,
+        out: Result<Variant, ArithError>,
+    ) -> Result<(), Vm3Error> {
+        let v = out.map_err(|e| Vm3Error::Fault(Fault::from_arith(e)))?;
+        let non_finite_double = v.raw_vt() == 5 && v.as_f64().is_some_and(|f| !f.is_finite());
+        self.write_packed_place(top, cur_prog, dst, v)?;
+        if non_finite_double {
+            return Err(Vm3Error::Fault(Fault::from_arith(ArithError::overflow())));
+        }
+        Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn exec_slow_inst(
+        &mut self,
+        top: usize,
+        cur_prog: usize,
+        cur_func: FuncId,
+        cur_block: u32,
+        pc: usize,
+        iref: InstRef,
+    ) -> Result<bool, Vm3Error> {
+        let fr = &mut self.frames[top];
+        fr.block = BlockId(cur_block as usize);
+        fr.pc = pc;
+        fr.at_block_start = false;
+        let inst = &self.exec.programs[cur_prog].program.funcs[cur_func.0].blocks
+            [iref.block as usize]
+            .instrs[iref.inst as usize];
+        self.exec(inst)?;
+        Ok(self.frames.len() - 1 != top)
+    }
+
+    #[cold]
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn exec_slow_inst_range(
+        &mut self,
+        top: usize,
+        cur_prog: usize,
+        cur_func: FuncId,
+        cur_block: u32,
+        pc: usize,
+        first_inst: InstRef,
+        count: usize,
+    ) -> Result<bool, Vm3Error> {
+        let fr = &mut self.frames[top];
+        fr.block = BlockId(cur_block as usize);
+        fr.pc = pc;
+        fr.at_block_start = false;
+        let instrs = &self.exec.programs[cur_prog].program.funcs[cur_func.0].blocks
+            [first_inst.block as usize]
+            .instrs;
+        let start = first_inst.inst as usize;
+        for inst in &instrs[start..start + count] {
+            self.exec(inst)?;
+        }
+        Ok(self.frames.len() - 1 != top)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn exec_slow_term(
+        &mut self,
+        base: usize,
+        top: usize,
+        cur_prog: usize,
+        cur_func: FuncId,
+        blk_idx: u32,
+    ) -> Result<bool, Vm3Error> {
+        let term = &self.exec.programs[cur_prog].program.funcs[cur_func.0].blocks[blk_idx as usize]
+            .terminator;
+        match term {
+            OxTerminator::Jump(b) => self.goto(top, *b),
+            OxTerminator::Branch {
+                cond,
+                then_blk,
+                else_blk,
+            } => {
+                let v = self.operand(cond)?;
+                let taken = v.as_bool().ok_or_else(|| {
+                    Vm3Error::Malformed("Branch condition is not a pre-computed Boolean".into())
+                })?;
+                self.goto(top, if taken { *then_blk } else { *else_blk });
+            }
+            OxTerminator::Return => {
+                if self.frames.len() == base + 1 {
+                    return Ok(true);
+                }
+                self.do_return()?;
+            }
+            OxTerminator::Halt => {
+                if self.run_depth > 1 {
+                    return Err(Vm3Error::Halted);
+                }
+                self.halt_to(base);
+                return Ok(true);
+            }
+            OxTerminator::FaultDispatch {
+                resume,
+                resume_next,
+            } => match self
+                .exec
+                .err_engine
+                .dispatch_fault(*resume, *resume_next, self.frames[top].current_line)
+                .map_err(|msg| Vm3Error::Malformed(msg.into()))?
+            {
+                FaultAction::Propagate(fault) => self.propagate_fault(fault, base)?,
+                FaultAction::ResumeNext(block) | FaultAction::Handle(block) => {
+                    self.goto(top, block);
+                }
+            },
+            OxTerminator::Resume => match self.exec.err_engine.resume(ResumeTarget::Same) {
+                Ok(block) => self.goto(top, block),
+                Err(fault) => self.route_fault(fault)?,
+            },
+            OxTerminator::ResumeNext => match self.exec.err_engine.resume(ResumeTarget::Next) {
+                Ok(block) => self.goto(top, block),
+                Err(fault) => self.route_fault(fault)?,
+            },
+            OxTerminator::ResumeLabel(b) => {
+                match self.exec.err_engine.resume(ResumeTarget::Label(*b)) {
+                    Ok(block) => self.goto(top, block),
+                    Err(fault) => self.route_fault(fault)?,
+                }
+            }
+            OxTerminator::Raise {
+                number,
+                source,
+                description,
+                help_file,
+                help_context,
+                inherit,
+            } => {
+                let number = self.operand(number)?;
+                let mut value = |operand: &Option<OxOperand>| {
+                    operand.as_ref().map(|op| self.operand(op)).transpose()
+                };
+                let args = [
+                    Some(number),
+                    value(source)?,
+                    value(description)?,
+                    value(help_file)?,
+                    value(help_context)?,
+                ];
+                let fault = self
+                    .exec
+                    .err_engine
+                    .fault_from_raise_args(args.each_ref().map(Option::as_ref), *inherit);
+                self.route_fault(fault)?;
+            }
+            OxTerminator::GoSub { target, ret } => {
+                self.frames[top].gosub_stack.push(*ret);
+                self.goto(top, *target);
+            }
+            OxTerminator::GoSubReturn => match self.frames[top].gosub_stack.pop() {
+                Some(ret) => self.goto(top, ret),
+                None => self.raise_runtime_error(3)?,
+            },
+            OxTerminator::Unreachable => {
+                return Err(Vm3Error::Malformed(
+                    "reached an Unreachable terminator".into(),
+                ));
+            }
+        }
+        Ok(false)
+    }
+
+    fn exec_call_proc_fast(
+        &mut self,
+        top: usize,
+        cur_prog: usize,
+        code: &CompiledFunc,
+        call_idx: u32,
+    ) -> Result<bool, Vm3Error> {
+        let call = &code.proc_calls[call_idx as usize];
+        let program = self.exec.programs[cur_prog].program;
+        let callee = program
+            .funcs
+            .get(call.proc.0)
+            .ok_or_else(|| Vm3Error::Malformed(format!("call to unknown proc {}", call.proc.0)))?;
+        let dst_loc = call.dst.map(|p| self.resolve_packed(top, cur_prog, p));
+        if self.has_typed_entries
+            && call.all_byval
+            && self.cache.typed_entries[cur_prog][call.proc.0].is_some()
+            && call.args.len() == callee.param_count
+        {
+            self.guard_call_depth()?;
+            let mut values =
+                std::array::from_fn::<_, { calcvba_rt_abi::host_entry::MAX_TYPED_ARGS }, _>(|_| {
+                    Variant::empty()
+                });
+            for (i, arg) in call.args.iter().enumerate() {
+                let FastArg::ByVal(op) = *arg else {
+                    unreachable!("checked all_byval")
+                };
+                values[i] = self.eval_packed_op(top, cur_prog, code, op)?;
+            }
+            if let Some(result) =
+                self.invoke_scalar_values(cur_prog, call.proc, &values[..call.args.len()])
+            {
+                let value = result?;
+                if let Some(dst) = dst_loc {
+                    self.write_loc(dst, value)?;
+                }
+                return Ok(false);
+            }
+        }
+        self.guard_call_depth()?;
+        let mut frame =
+            self.new_frame_pooled(cur_prog, call.proc, call.args.len(), dst_loc, false)?;
+        let frame_index = self.frames.len();
+        let mut pending_param_array_aliases: Vec<(Loc, Vec<Option<Loc>>)> = Vec::new();
+        for (i, arg) in call.args.iter().enumerate() {
+            let step: Result<(), Vm3Error> = match *arg {
+                FastArg::ByVal(op) => {
+                    if self.param_array_aliases.is_empty()
+                        && let Some(src_ref) = self.borrow_packed_op(top, cur_prog, code, op)
+                        && Variant::raw_vt_is_trivial_copy(src_ref.raw_vt())
+                    {
+                        let core = src_ref.core();
+                        if let Some(slot) = frame.local_mut(i) {
+                            slot.overwrite_trivial_core(core);
+                        }
+                        Ok(())
+                    } else {
+                        let pa = if !self.param_array_aliases.is_empty()
+                            && let Some(place) = op.as_place()
+                        {
+                            self.param_array_aliases
+                                .get(&self.resolve_packed(top, cur_prog, place))
+                                .cloned()
+                        } else {
+                            None
+                        };
+                        match self.eval_packed_op(top, cur_prog, code, op) {
+                            Ok(v) => {
+                                if let Some(slot) = frame.local_mut(i) {
+                                    *slot = v;
+                                }
+                                if let Some(aliases) = pa {
+                                    pending_param_array_aliases
+                                        .push((Loc::Local(frame_index, i), aliases));
+                                }
+                                Ok(())
+                            }
+                            Err(e) => Err(e),
+                        }
+                    }
+                }
+                FastArg::ByRef(place) => {
+                    let param_ty = callee.locals.get(i).map(|local| &local.ty);
+                    let ox_place = place.to_ox(code.num_locals);
+                    match self.byref_reference(&ox_place, param_ty) {
+                        Ok(Some(reference)) => {
+                            frame.slots[i] = reference;
+                            Ok(())
+                        }
+                        Ok(None) => {
+                            frame.set_alias(i, self.resolve_packed(top, cur_prog, place));
+                            Ok(())
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+                FastArg::Omitted => {
+                    if let Some(slot) = frame.local_mut(i) {
+                        match callee.locals.get(i).and_then(omitted_param_value) {
+                            Some(Ok(v)) => {
+                                *slot = v;
+                                Ok(())
+                            }
+                            Some(Err(e)) => Err(e),
+                            None => {
+                                *slot = Variant::from_error_code(MISSING_ARG);
+                                Ok(())
+                            }
+                        }
+                    } else {
+                        Ok(())
+                    }
+                }
+            };
+            if let Err(e) = step {
+                self.recycle_frame(frame);
+                return Err(e);
+            }
+        }
+        let saved_err = self.exec.err_engine.enter_activation();
+        frame.saved_error_mode = saved_err.error_mode;
+        frame.saved_active_error = saved_err.active_error;
+        self.frames.push(frame);
+        for (loc, aliases) in pending_param_array_aliases {
+            self.param_array_aliases.insert(loc, aliases);
+        }
+        Ok(true)
+    }
+
+    fn exec_call_extern_lib(
+        &mut self,
+        top: usize,
+        cur_prog: usize,
+        code: &CompiledFunc,
+        call_idx: u32,
+    ) -> Result<(), Vm3Error> {
+        let call = &code.lib_calls[call_idx as usize];
+        // Ultra-hot pure builtins inlined directly over borrowed operands (zero BSTR cloning
+        // for variables and zero BSTR allocation for string literals).
+        match call.id {
+            NativeImplId::Sqr
+            | NativeImplId::Chr
+            | NativeImplId::Len
+            | NativeImplId::CDbl
+            | NativeImplId::CLng
+            | NativeImplId::UCase
+            | NativeImplId::Trim
+            | NativeImplId::LTrim
+            | NativeImplId::RTrim
+            | NativeImplId::Asc
+                if call.args.len() == 1
+                    && let FastArg::ByVal(arg_op) = call.args[0] =>
+            {
+                match call.id {
+                    NativeImplId::Sqr => {
+                        if let Some(x) = self
+                            .borrow_packed_op(top, cur_prog, code, arg_op)
+                            .and_then(try_fast_f64)
+                            && x >= 0.0
+                        {
+                            if let Some(dst) = call.dst {
+                                self.write_packed_f64(top, cur_prog, dst, x.sqrt())?;
+                            }
+                            return Ok(());
+                        }
+                    }
+                    NativeImplId::Chr => {
+                        if let Some(n) = self
+                            .borrow_packed_op(top, cur_prog, code, arg_op)
+                            .and_then(try_fast_i32)
+                            && (0..=127).contains(&n)
+                        {
+                            if let Some(dst) = call.dst {
+                                let u = [n as u16];
+                                self.write_packed_place(
+                                    top,
+                                    cur_prog,
+                                    dst,
+                                    Variant::from_utf16_units(&u),
+                                )?;
+                            }
+                            return Ok(());
+                        }
+                    }
+                    NativeImplId::Len => {
+                        if let Some(units) = self
+                            .borrow_packed_op(top, cur_prog, code, arg_op)
+                            .and_then(Variant::borrowed_string_units)
+                        {
+                            if let Some(dst) = call.dst {
+                                self.write_packed_i32(top, cur_prog, dst, units.len() as i32)?;
+                            }
+                            return Ok(());
+                        }
+                    }
+                    NativeImplId::CDbl => {
+                        if let Some(x) = self
+                            .borrow_packed_op(top, cur_prog, code, arg_op)
+                            .and_then(try_fast_f64)
+                            && x.is_finite()
+                        {
+                            if let Some(dst) = call.dst {
+                                self.write_packed_f64(top, cur_prog, dst, x)?;
+                            }
+                            return Ok(());
+                        }
+                    }
+                    NativeImplId::CLng => {
+                        if let Some(n) = self
+                            .borrow_packed_op(top, cur_prog, code, arg_op)
+                            .and_then(try_fast_i32)
+                        {
+                            if let Some(dst) = call.dst {
+                                self.write_packed_i32(top, cur_prog, dst, n)?;
+                            }
+                            return Ok(());
+                        }
+                    }
+                    NativeImplId::UCase => {
+                        if let Some(units) =
+                            self.borrow_packed_str_units(top, cur_prog, code, arg_op)
+                        {
+                            let res = calcvba_lib::ucase_units(units);
+                            if let Some(dst) = call.dst {
+                                self.write_packed_place(top, cur_prog, dst, res)?;
+                            }
+                            return Ok(());
+                        }
+                    }
+                    NativeImplId::Trim | NativeImplId::LTrim | NativeImplId::RTrim => {
+                        if let Some(units) =
+                            self.borrow_packed_str_units(top, cur_prog, code, arg_op)
+                        {
+                            let (left, right) = match call.id {
+                                NativeImplId::Trim => (true, true),
+                                NativeImplId::LTrim => (true, false),
+                                _ => (false, true),
+                            };
+                            let res = calcvba_lib::trim_units(units, left, right);
+                            if let Some(dst) = call.dst {
+                                self.write_packed_place(top, cur_prog, dst, res)?;
+                            }
+                            return Ok(());
+                        }
+                    }
+                    NativeImplId::Asc => {
+                        if let Some(units) =
+                            self.borrow_packed_str_units(top, cur_prog, code, arg_op)
+                            && let Some(&first) = units.first()
+                            && first < 0x80
+                        {
+                            if let Some(dst) = call.dst {
+                                self.write_packed_place(
+                                    top,
+                                    cur_prog,
+                                    dst,
+                                    Variant::from_i16(first as i16),
+                                )?;
+                            }
+                            return Ok(());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            NativeImplId::Mid if matches!(call.args.len(), 2 | 3) => {
+                if let FastArg::ByVal(s_op) = call.args[0]
+                    && let FastArg::ByVal(start_op) = call.args[1]
+                    && let Some(units) = self.borrow_packed_str_units(top, cur_prog, code, s_op)
+                    && let Some(start) = self
+                        .borrow_packed_op(top, cur_prog, code, start_op)
+                        .and_then(try_fast_i32)
+                {
+                    let take = match call.args.get(2) {
+                        None | Some(FastArg::Omitted) => Some(None),
+                        Some(FastArg::ByVal(len_op)) => self
+                            .borrow_packed_op(top, cur_prog, code, *len_op)
+                            .and_then(try_fast_i32)
+                            .map(Some),
+                        Some(FastArg::ByRef(_)) => None,
+                    };
+                    if let Some(take_opt) = take {
+                        let res = calcvba_lib::mid_units(units, start, take_opt)
+                            .map_err(|e| Vm3Error::Fault(Fault::from_lib(e)))?;
+                        if let Some(dst) = call.dst {
+                            self.write_packed_place(top, cur_prog, dst, res)?;
+                        }
+                        return Ok(());
+                    }
+                }
+            }
+            NativeImplId::InStr if matches!(call.args.len(), 2..=4) => {
+                let has_start = call.args.len() >= 3;
+                let base = usize::from(has_start);
+                let start_ok = if has_start {
+                    match call.args[0] {
+                        FastArg::ByVal(op) => self
+                            .borrow_packed_op(top, cur_prog, code, op)
+                            .and_then(try_fast_i32),
+                        _ => None,
+                    }
+                } else {
+                    Some(1)
+                };
+                let binary_ok = match call.args.get(base + 2) {
+                    None | Some(FastArg::Omitted) => true,
+                    Some(FastArg::ByVal(op)) => {
+                        self.borrow_packed_op(top, cur_prog, code, *op)
+                            .and_then(try_fast_i32)
+                            == Some(0)
+                    }
+                    Some(FastArg::ByRef(_)) => false,
+                };
+                if binary_ok
+                    && let Some(start) = start_ok
+                    && let FastArg::ByVal(hay_op) = call.args[base]
+                    && let FastArg::ByVal(ndl_op) = call.args[base + 1]
+                    && let (Some(hay), Some(needle)) = (
+                        self.borrow_packed_str_units(top, cur_prog, code, hay_op),
+                        self.borrow_packed_str_units(top, cur_prog, code, ndl_op),
+                    )
+                {
+                    let pos = calcvba_lib::instr_binary_units(start, hay, needle)
+                        .map_err(|e| Vm3Error::Fault(Fault::from_lib(e)))?;
+                    if let Some(dst) = call.dst {
+                        self.write_packed_i32(top, cur_prog, dst, pos)?;
+                    }
+                    return Ok(());
+                }
+            }
+            NativeImplId::Replace if matches!(call.args.len(), 3..=6) => {
+                let start_ok = match call.args.get(3) {
+                    None | Some(FastArg::Omitted) => Some(1),
+                    Some(FastArg::ByVal(op)) => self
+                        .borrow_packed_op(top, cur_prog, code, *op)
+                        .and_then(try_fast_i32),
+                    Some(FastArg::ByRef(_)) => None,
+                };
+                let count_ok = match call.args.get(4) {
+                    None | Some(FastArg::Omitted) => Some(-1),
+                    Some(FastArg::ByVal(op)) => self
+                        .borrow_packed_op(top, cur_prog, code, *op)
+                        .and_then(try_fast_i32),
+                    Some(FastArg::ByRef(_)) => None,
+                };
+                let binary_ok = match call.args.get(5) {
+                    None | Some(FastArg::Omitted) => true,
+                    Some(FastArg::ByVal(op)) => {
+                        self.borrow_packed_op(top, cur_prog, code, *op)
+                            .and_then(try_fast_i32)
+                            == Some(0)
+                    }
+                    Some(FastArg::ByRef(_)) => false,
+                };
+                if binary_ok
+                    && let (Some(start), Some(count)) = (start_ok, count_ok)
+                    && let FastArg::ByVal(s_op) = call.args[0]
+                    && let FastArg::ByVal(f_op) = call.args[1]
+                    && let FastArg::ByVal(w_op) = call.args[2]
+                    && let (Some(s), Some(find), Some(with)) = (
+                        self.borrow_packed_str_units(top, cur_prog, code, s_op),
+                        self.borrow_packed_str_units(top, cur_prog, code, f_op),
+                        self.borrow_packed_str_units(top, cur_prog, code, w_op),
+                    )
+                {
+                    let res = calcvba_lib::replace_binary_units(s, find, with, start, count)
+                        .map_err(|e| Vm3Error::Fault(Fault::from_lib(e)))?;
+                    if let Some(dst) = call.dst {
+                        self.write_packed_place(top, cur_prog, dst, res)?;
+                    }
+                    return Ok(());
+                }
+            }
+            NativeImplId::Round if matches!(call.args.len(), 1 | 2) => {
+                if let FastArg::ByVal(v_op) = call.args[0]
+                    && let Some(v_ref) = self.borrow_packed_op(top, cur_prog, code, v_op)
+                    && v_ref.raw_vt() == 5
+                    && let Some(x) = v_ref.as_f64()
+                {
+                    let digits_opt = match call.args.get(1) {
+                        None | Some(FastArg::Omitted) => Some(0),
+                        Some(FastArg::ByVal(d_op)) => self
+                            .borrow_packed_op(top, cur_prog, code, *d_op)
+                            .and_then(try_fast_i32),
+                        Some(FastArg::ByRef(_)) => None,
+                    };
+                    if let Some(digits) = digits_opt {
+                        let r = calcvba_lib::round_f64_digits(x, digits)
+                            .map_err(|e| Vm3Error::Fault(Fault::from_lib(e)))?;
+                        if let Some(dst) = call.dst {
+                            self.write_packed_f64(top, cur_prog, dst, r)?;
+                        }
+                        return Ok(());
+                    }
+                }
+            }
+            NativeImplId::DateAdd if call.args.len() == 3 && self.exec.lib.calendar == 0 => {
+                if let FastArg::ByVal(i_op) = call.args[0]
+                    && let FastArg::ByVal(n_op) = call.args[1]
+                    && let FastArg::ByVal(d_op) = call.args[2]
+                    && let Some(interval_units) =
+                        self.borrow_packed_str_units(top, cur_prog, code, i_op)
+                    && let Some(num) = self
+                        .borrow_packed_op(top, cur_prog, code, n_op)
+                        .and_then(try_fast_f64)
+                    && let Some(d_ref) = self.borrow_packed_op(top, cur_prog, code, d_op)
+                    && d_ref.raw_vt() == 7
+                    && let Some(serial) = d_ref.as_date_f64()
+                {
+                    let out = calcvba_lib::date_add_gregorian_units(interval_units, num, serial)
+                        .map_err(|e| Vm3Error::Fault(Fault::from_lib(e)))?;
+                    if let Some(dst) = call.dst {
+                        self.write_packed_date_f64(top, cur_prog, dst, out)?;
+                    }
+                    return Ok(());
+                }
+            }
+            _ => {}
+        }
+
+        let mut stack_buf: StackVariantBuf<8> = StackVariantBuf::new();
+        let mut heap_buf: Vec<Variant> = Vec::new();
+        let mut any_object = false;
+        let argc = call.args.len();
+        let argv: &mut [Variant] = if argc <= 8 {
+            for arg in &call.args {
+                let v = match *arg {
+                    FastArg::ByVal(op) => self.eval_packed_op(top, cur_prog, code, op)?,
+                    FastArg::ByRef(place) => self.eval_packed_place(top, cur_prog, place)?,
+                    FastArg::Omitted => Variant::empty(),
+                };
+                if v.raw_vt() == 9 || v.raw_vt() == 13 {
+                    any_object = true;
+                }
+                stack_buf.push(v);
+            }
+            stack_buf.as_mut_slice()
+        } else {
+            heap_buf.reserve_exact(argc);
+            for arg in &call.args {
+                let v = match *arg {
+                    FastArg::ByVal(op) => self.eval_packed_op(top, cur_prog, code, op)?,
+                    FastArg::ByRef(place) => self.eval_packed_place(top, cur_prog, place)?,
+                    FastArg::Omitted => Variant::empty(),
+                };
+                if v.raw_vt() == 9 || v.raw_vt() == 13 {
+                    any_object = true;
+                }
+                heap_buf.push(v);
+            }
+            heap_buf.as_mut_slice()
+        };
+
+        let result = if any_object && let Some(value) = self.vba_object_len(call.id, argv)? {
+            value
+        } else {
+            if any_object {
+                self.native_object_values(call.id, argv)?;
+            }
+            if call.pure_no_events {
+                if call.string_typed_alias && call.id != NativeImplId::Format {
+                    calcvba_lib::validate_string_alias_args(call.id, argv)
+                        .map_err(|err| Vm3Error::Fault(Fault::from_lib(err)))?;
+                }
+                match calcvba_lib::invoke_context_free(call.id, argv, self.exec.host) {
+                    Ok(v) => v,
+                    Err(calcvba_lib::ContextFreeInvokeError::Library(err)) => {
+                        return Err(Vm3Error::Fault(Fault::from_lib(err)));
+                    }
+                    Err(calcvba_lib::ContextFreeInvokeError::ContextRequired) => {
+                        return Err(Vm3Error::Malformed(format!(
+                            "contextual built-in {:?} escaped VM3 dispatch classification",
+                            call.id
+                        )));
+                    }
+                }
+            } else {
+                self.invoke_native_lib_with_policy(call.id, argv, call.string_typed_alias)?
+            }
+        };
+        if let Some(dst) = call.dst {
+            self.write_packed_place(top, cur_prog, dst, result)?;
+        }
+        Ok(())
+    }
+
+    fn exec_call_com_early(
+        &mut self,
+        top: usize,
+        cur_prog: usize,
+        cur_func: FuncId,
+        code: &CompiledFunc,
+        call_idx: u32,
+    ) -> Result<bool, Vm3Error> {
+        let call = &code.com_early_calls[call_idx as usize];
+        let borrowed_info = self
+            .borrow_packed_op(top, cur_prog, code, call.recv)
+            .and_then(borrow_project_instance_info);
+        if let Some((obj_bundle, route_key, descriptor)) = borrowed_info {
+            if route_key == VBA_COLLECTION_ROUTE_KEY
+                && let Some(pargs) = call.positional_args.as_deref()
+                && pargs.len() <= 4
+                && let Some(meta) = self.exec.programs[cur_prog].program.com_method(call.method)
+                && let Some(method) = Self::vba_collection_fast_method(&meta.name)
+            {
+                return self
+                    .exec_collection_fast_borrowed(
+                        top, cur_prog, code, call.recv, call.dst, method, pargs,
+                    )
+                    .map(|()| false);
+            }
+            if route_key >= 0
+                && descriptor.project_identity.is_some()
+                && let Some(pargs) = call.positional_args.as_deref()
+            {
+                let desc_ptr = descriptor as *const RuntimeClassDescriptor as usize;
+                let member = if call.ic_descriptor.get() == desc_ptr
+                    && let Some(m) = call.ic_member.get()
+                {
+                    m
+                } else {
+                    let meta = self.exec.programs[cur_prog]
+                        .program
+                        .com_method(call.method)
+                        .ok_or_else(|| {
+                            Vm3Error::Malformed(format!(
+                                "ComCallEarly: unresolved method ref {:?}",
+                                call.method
+                            ))
+                        })?;
+                    let runtime_kind =
+                        calcvba_rt_abi::runtime_invoke_kind_from_typelib(call.invoke_kind);
+                    let m = calcvba_rt_abi::resolve_project_member_for_call(
+                        &mut self.exec.dispatch_plan_cache,
+                        descriptor,
+                        Some(meta),
+                        &meta.name,
+                        runtime_kind,
+                        pargs.is_empty(),
+                        obj_bundle != cur_prog,
+                    )
+                    .map_err(Vm3Error::Fault)?;
+                    call.ic_descriptor.set(desc_ptr);
+                    call.ic_member.set(Some(m));
+                    m
+                };
+                if let calcvba_runtime::RuntimeMemberBacking::Proc(proc_idx) = member.backing
+                    && let Some(pushed) = self.try_push_project_proc_fast(
+                        top,
+                        cur_prog,
+                        code,
+                        call.recv,
+                        call.dst,
+                        obj_bundle,
+                        FuncId(proc_idx),
+                        pargs,
+                    )?
+                {
+                    return Ok(pushed);
+                }
+            }
+        }
+        let inst = &self.exec.programs[cur_prog].program.funcs[cur_func.0].blocks
+            [call.inst.block as usize]
+            .instrs[call.inst.inst as usize];
+        self.exec(inst)?;
+        Ok(self.frames.len() - 1 != top)
+    }
+
+    fn exec_call_com_late(
+        &mut self,
+        top: usize,
+        cur_prog: usize,
+        cur_func: FuncId,
+        code: &CompiledFunc,
+        call_idx: u32,
+    ) -> Result<bool, Vm3Error> {
+        let call = &code.com_late_calls[call_idx as usize];
+        let borrowed_info = self
+            .borrow_packed_op(top, cur_prog, code, call.recv)
+            .and_then(borrow_project_instance_info);
+        if let Some((obj_bundle, route_key, descriptor)) = borrowed_info {
+            if route_key == VBA_COLLECTION_ROUTE_KEY
+                && let Some(pargs) = call.positional_args.as_deref()
+                && pargs.len() <= 4
+            {
+                let method = if call.default_member {
+                    (!pargs.is_empty()).then_some(CollectionMethod::Item)
+                } else {
+                    Self::vba_collection_fast_method(&call.name)
+                };
+                if let Some(method) = method {
+                    return self
+                        .exec_collection_fast_borrowed(
+                            top, cur_prog, code, call.recv, call.dst, method, pargs,
+                        )
+                        .map(|()| false);
+                }
+            }
+            if route_key >= 0
+                && descriptor.project_identity.is_some()
+                && let Some(pargs) = call.positional_args.as_deref()
+            {
+                let desc_ptr = descriptor as *const RuntimeClassDescriptor as usize;
+                let member = if call.ic_descriptor.get() == desc_ptr
+                    && let Some(m) = call.ic_member.get()
+                {
+                    m
+                } else {
+                    let runtime_kind =
+                        calcvba_rt_abi::runtime_invoke_kind_from_typelib(call.invoke_kind);
+                    let m = if call.default_member {
+                        resolve_project_default_member(
+                            descriptor,
+                            runtime_kind,
+                            pargs.is_empty(),
+                            obj_bundle != cur_prog,
+                        )
+                        .map_err(Vm3Error::Fault)?
+                    } else {
+                        let effective_public_only = call.public_only || obj_bundle != cur_prog;
+                        calcvba_rt_abi::resolve_project_member_for_call(
+                            &mut self.exec.dispatch_plan_cache,
+                            descriptor,
+                            None,
+                            &call.name,
+                            runtime_kind,
+                            pargs.is_empty(),
+                            effective_public_only,
+                        )
+                        .map_err(Vm3Error::Fault)?
+                    };
+                    call.ic_descriptor.set(desc_ptr);
+                    call.ic_member.set(Some(m));
+                    m
+                };
+                if let calcvba_runtime::RuntimeMemberBacking::Proc(proc_idx) = member.backing
+                    && let Some(pushed) = self.try_push_project_proc_fast(
+                        top,
+                        cur_prog,
+                        code,
+                        call.recv,
+                        call.dst,
+                        obj_bundle,
+                        FuncId(proc_idx),
+                        pargs,
+                    )?
+                {
+                    return Ok(pushed);
+                }
+            }
+        }
+        let inst = &self.exec.programs[cur_prog].program.funcs[cur_func.0].blocks
+            [call.inst.block as usize]
+            .instrs[call.inst.inst as usize];
+        self.exec(inst)?;
+        Ok(self.frames.len() - 1 != top)
+    }
+
+    #[inline]
+    fn vba_collection_fast_method(name: &str) -> Option<CollectionMethod> {
+        let member = name.trim().trim_start_matches('[').trim_end_matches(']');
+        if member.eq_ignore_ascii_case("Add") {
+            Some(CollectionMethod::Add)
+        } else if member.eq_ignore_ascii_case("Item") {
+            Some(CollectionMethod::Item)
+        } else if member.eq_ignore_ascii_case("Count") {
+            Some(CollectionMethod::Count)
+        } else if member.eq_ignore_ascii_case("Remove") {
+            Some(CollectionMethod::Remove)
+        } else {
+            None
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn exec_collection_fast_borrowed(
+        &mut self,
+        top: usize,
+        cur_prog: usize,
+        code: &CompiledFunc,
+        recv: PackedOp,
+        dst: Option<PackedPlace>,
+        method: CollectionMethod,
+        pargs: &[FastCallArg],
+    ) -> Result<(), Vm3Error> {
+        // Zero-clone fast path for `c.Count` and `c(key)` / `c.Item(key)` / `c.Remove(key)`.
+        if pargs.is_empty()
+            && let Some(recv_ref) = self.borrow_packed_op(top, cur_prog, code, recv)
+        {
+            let ret = borrow_with_native_collection(recv_ref, |data| {
+                dispatch_collection(method, data, &[])
+            })
+            .ok_or_else(|| Vm3Error::Fault(Fault::new(424, "Object required")))?
+            .map_err(|error| Vm3Error::Fault(Fault::standard(error.vba_number())))?;
+            if let Some(dst) = dst {
+                self.write_packed_place(top, cur_prog, dst, ret)?;
+            }
+            return Ok(());
+        }
+        if pargs.len() == 1
+            && matches!(method, CollectionMethod::Item | CollectionMethod::Remove)
+            && let FastCallArg::Operand(arg_op) = pargs[0]
+            && let (Some(recv_ref), Some(arg_ref)) = (
+                self.borrow_packed_op(top, cur_prog, code, recv),
+                self.borrow_packed_op(top, cur_prog, code, arg_op),
+            )
+        {
+            let ret = borrow_with_native_collection(recv_ref, |data| {
+                dispatch_collection(method, data, std::slice::from_ref(arg_ref))
+            })
+            .ok_or_else(|| Vm3Error::Fault(Fault::new(424, "Object required")))?
+            .map_err(|error| Vm3Error::Fault(Fault::standard(error.vba_number())))?;
+            if let Some(dst) = dst {
+                self.write_packed_place(top, cur_prog, dst, ret)?;
+            }
+            return Ok(());
+        }
+        let mut argv: StackVariantBuf<4> = StackVariantBuf::new();
+        for arg in pargs {
+            let v = match *arg {
+                FastCallArg::Operand(op) => self.eval_packed_op(top, cur_prog, code, op)?,
+                FastCallArg::ByRef(place) => self.eval_packed_place(top, cur_prog, place)?,
+                FastCallArg::Omitted => Variant::from_error_code(MISSING_ARG),
+                FastCallArg::Const => {
+                    return Err(Vm3Error::Malformed(
+                        "a Const argument in a Collection method call".into(),
+                    ));
+                }
+            };
+            argv.push(v);
+        }
+        let recv_ref = self
+            .borrow_packed_op(top, cur_prog, code, recv)
+            .ok_or_else(|| Vm3Error::Fault(Fault::new(424, "Object required")))?;
+        let ret = borrow_with_native_collection(recv_ref, |data| {
+            dispatch_collection(method, data, argv.as_mut_slice())
+        })
+        .ok_or_else(|| Vm3Error::Fault(Fault::new(424, "Object required")))?
+        .map_err(|error| Vm3Error::Fault(Fault::standard(error.vba_number())))?;
+        if let Some(dst) = dst {
+            self.write_packed_place(top, cur_prog, dst, ret)?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn try_push_project_proc_fast(
+        &mut self,
+        top: usize,
+        cur_prog: usize,
+        code: &CompiledFunc,
+        recv: PackedOp,
+        dst: Option<PackedPlace>,
+        target_prog: usize,
+        proc: FuncId,
+        pargs: &[FastCallArg],
+    ) -> Result<Option<bool>, Vm3Error> {
+        let callee_prog = self.exec.programs[target_prog].program;
+        let Some(callee) = callee_prog.funcs.get(proc.0) else {
+            return Ok(None);
+        };
+        if pargs.len() + 1 > callee.param_count {
+            return Ok(None);
+        }
+        if callee
+            .locals
+            .get(callee.param_count.saturating_sub(1))
+            .and_then(|l| l.param.as_ref())
+            .is_some_and(|p| p.variadic)
+        {
+            return Ok(None);
+        }
+        if pargs.iter().any(|a| matches!(a, FastCallArg::Const)) {
+            return Ok(None);
+        }
+        self.guard_call_depth()?;
+        let dst_loc = dst.map(|p| self.resolve_packed(top, cur_prog, p));
+        let me = self.eval_packed_op(top, cur_prog, code, recv)?;
+        let base = self.frames.len();
+        let mut frame = self.new_frame_pooled(target_prog, proc, pargs.len() + 1, dst_loc, true)?;
+        if let Some(slot) = frame.local_mut(0) {
+            *slot = me;
+        }
+        let mut pending_param_array_aliases: Vec<(Loc, Vec<Option<Loc>>)> = Vec::new();
+        for (i, arg) in pargs.iter().enumerate() {
+            let li = i + 1;
+            let formal = &callee.locals[li];
+            let step: Result<(), Vm3Error> = match *arg {
+                FastCallArg::Operand(op) => {
+                    if self.param_array_aliases.is_empty()
+                        && let Some(src_ref) = self.borrow_packed_op(top, cur_prog, code, op)
+                        && write_fast_coerced_project_scalar(src_ref, formal, &mut frame.slots[li])
+                    {
+                        Ok(())
+                    } else {
+                        let pa = if !self.param_array_aliases.is_empty()
+                            && let Some(place) = op.as_place()
+                        {
+                            self.param_array_aliases
+                                .get(&self.resolve_packed(top, cur_prog, place))
+                                .cloned()
+                        } else {
+                            None
+                        };
+                        match self.eval_packed_op(top, cur_prog, code, op) {
+                            Ok(value) => match fast_coerce_project_arg(value, formal) {
+                                Ok(coerced) => {
+                                    frame.slots[li] = coerced;
+                                    if let Some(aliases) = pa {
+                                        pending_param_array_aliases
+                                            .push((Loc::Local(base, li), aliases));
+                                    }
+                                    Ok(())
+                                }
+                                Err(e) => Err(e),
+                            },
+                            Err(e) => Err(e),
+                        }
+                    }
+                }
+                FastCallArg::ByRef(place) if formal.param.as_ref().is_some_and(|p| !p.by_ref) => {
+                    if self.param_array_aliases.is_empty()
+                        && let Some(src_ref) =
+                            self.borrow_packed_op(top, cur_prog, code, PackedOp::from_place(place))
+                        && write_fast_coerced_project_scalar(src_ref, formal, &mut frame.slots[li])
+                    {
+                        Ok(())
+                    } else {
+                        let pa = if !self.param_array_aliases.is_empty() {
+                            self.param_array_aliases
+                                .get(&self.resolve_packed(top, cur_prog, place))
+                                .cloned()
+                        } else {
+                            None
+                        };
+                        match self.eval_packed_place(top, cur_prog, place) {
+                            Ok(value) => match fast_coerce_project_arg(value, formal) {
+                                Ok(coerced) => {
+                                    frame.slots[li] = coerced;
+                                    if let Some(aliases) = pa {
+                                        pending_param_array_aliases
+                                            .push((Loc::Local(base, li), aliases));
+                                    }
+                                    Ok(())
+                                }
+                                Err(e) => Err(e),
+                            },
+                            Err(e) => Err(e),
+                        }
+                    }
+                }
+                FastCallArg::ByRef(place) => {
+                    let loc = self.resolve_packed(top, cur_prog, place);
+                    let ox_place = place.to_ox(code.num_locals);
+                    match self.byref_reference(&ox_place, Some(&formal.ty)) {
+                        Ok(Some(reference)) => {
+                            frame.slots[li] = reference;
+                            Ok(())
+                        }
+                        Ok(None) => {
+                            frame.set_alias(li, loc);
+                            Ok(())
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+                FastCallArg::Omitted => match omitted_param_value(formal) {
+                    Some(Ok(v)) => {
+                        frame.slots[li] = v;
+                        Ok(())
+                    }
+                    Some(Err(e)) => Err(e),
+                    None => {
+                        frame.slots[li] = Variant::from_error_code(MISSING_ARG);
+                        Ok(())
+                    }
+                },
+                FastCallArg::Const => unreachable!("checked above"),
+            };
+            if let Err(e) = step {
+                self.recycle_frame(frame);
+                return Err(e);
+            }
+        }
+        let saved_err = self.exec.err_engine.enter_activation();
+        frame.saved_error_mode = saved_err.error_mode;
+        frame.saved_active_error = saved_err.active_error;
+        self.frames.push(frame);
+        for (loc, aliases) in pending_param_array_aliases {
+            self.param_array_aliases.insert(loc, aliases);
+        }
+        Ok(Some(true))
+    }
+
     /// Jump frame `top` to the start of `block`.
     fn goto(&mut self, top: usize, block: BlockId) {
+        let (prog, func) = {
+            let fr = &self.frames[top];
+            (fr.prog, fr.func)
+        };
+        let code = self.get_or_compile(prog, func);
+        let pc = code.block_start_pc.get(block.0).copied().unwrap_or(0) as usize;
         let fr = &mut self.frames[top];
         fr.block = block;
-        fr.ip = 0;
+        fr.pc = pc;
+        fr.at_block_start = true;
     }
 
     /// Route an in-flight fault to the current frame's block fault pad (intra-frame);
@@ -1248,10 +4254,13 @@ impl<'h> Vm3<'h> {
             return Err(Vm3Error::Fault(fault));
         }
         let callee = self.frames.pop().expect("frame to unwind");
+        let drain_on_fault = callee.drain_on_fault;
         self.restore_err_from_frame(&callee);
-        self.clear_withevents_owners_in_frame_before_drop(&callee);
-        drop(callee);
+        self.recycle_frame(callee);
         self.prune_param_array_aliases_from_depth(self.frames.len());
+        if drain_on_fault {
+            self.maybe_drain();
+        }
         // The caller's `CallProc` faulted: route to *its* block's fault pad.
         self.route_fault(fault)
     }
@@ -1259,20 +4268,45 @@ impl<'h> Vm3<'h> {
     /// Pop a returning callee: restore the caller's error mode and copy out the
     /// function's return value (true aliasing already propagated ByRef writes live).
     fn do_return(&mut self) -> Result<(), Vm3Error> {
-        let callee = self.frames.pop().expect("returning frame");
+        let mut callee = self.frames.pop().expect("returning frame");
         self.restore_err_from_frame(&callee);
-        if let (Some(loc), Some(rl)) = (callee.dst, callee.return_local)
-            && let Some(v) = callee.locals.get(rl.0).cloned()
-        {
-            self.write_loc(loc, v)?;
-        }
-        // Proc epilogue: drop the callee frame (releasing the objects its locals held) and then
+        let write_res = if let Some(loc) = callee.dst {
+            if let Some(rl) = callee.return_local
+                && rl.0 < callee.num_locals
+            {
+                let ret_slot = &mut callee.slots[rl.0];
+                if self.param_array_aliases.is_empty()
+                    && Variant::raw_vt_is_trivial_copy(ret_slot.raw_vt())
+                    && let Some(dst_slot) = self.read_loc_mut_fast(loc)
+                    && {
+                        let old_vt = dst_slot.raw_vt();
+                        old_vt < 8 || old_vt == 11
+                    }
+                {
+                    dst_slot.copy_trivial_from(ret_slot);
+                    Ok(())
+                } else {
+                    let v = std::mem::replace(ret_slot, Variant::empty());
+                    self.write_loc(loc, v)
+                }
+            } else if callee.drain_on_fault {
+                self.write_loc(loc, Variant::empty())
+            } else {
+                Ok(())
+            }
+        } else {
+            Ok(())
+        };
+        // Proc epilogue: release the callee frame (and its held objects) and then
         // run any parked `Class_Terminate`s — vm2's epilogue drain timing.
-        self.clear_withevents_owners_in_frame_before_drop(&callee);
-        drop(callee);
-        self.prune_param_array_aliases_from_depth(self.frames.len());
-        self.maybe_drain();
-        Ok(())
+        self.recycle_frame(callee);
+        if !self.param_array_aliases.is_empty() || !self.as_new_slots.is_empty() {
+            self.prune_param_array_aliases_from_depth(self.frames.len());
+        }
+        if self.exec.object_owner.has_pending() {
+            self.maybe_drain();
+        }
+        write_res
     }
 
     fn restore_err_from_frame(&mut self, frame: &Frame) {
@@ -1976,9 +5010,12 @@ impl<'h> Vm3<'h> {
                     let frame = self.frames.last_mut().expect("executing frame");
                     frame.loop_locks.push((iter_temp.0, lock));
                 }
-                let (elements, enumerator) = match self.foreach_elements(src, 0)? {
-                    ForEachItems::Snapshot(elements) => (elements, None),
-                    ForEachItems::Enumerator(enumerator) => (Vec::new(), Some(enumerator)),
+                let (elements, collection_cursor, enumerator) = match self
+                    .foreach_elements(src, 0)?
+                {
+                    ForEachItems::Snapshot(elements) => (elements, None, None),
+                    ForEachItems::CollectionCursor(cursor) => (Vec::new(), Some(cursor), None),
+                    ForEachItems::Enumerator(enumerator) => (Vec::new(), None, Some(enumerator)),
                 };
                 let key = self.resolve(iter);
                 self.for_each.insert(
@@ -1987,6 +5024,7 @@ impl<'h> Vm3<'h> {
                         array_source,
                         elements,
                         position: 0,
+                        collection_cursor,
                         enumerator,
                     },
                 );
@@ -1997,45 +5035,59 @@ impl<'h> Vm3<'h> {
                 has_value,
             } => {
                 let key = self.resolve(iter);
-                // The enumerator leaves the iterator table for the call: an event handler running
-                // inside it may start its own loops.
-                let enumerator = self
-                    .for_each
-                    .get_mut(&key)
-                    .and_then(|state| state.enumerator.take());
-                let next = if let Some(mut enumerator) = enumerator {
-                    let next = {
-                        let _events = self.event_scope();
-                        enumerator.next_item()
-                    };
-                    if let Some(state) = self.for_each.get_mut(&key) {
-                        state.enumerator = Some(enumerator);
-                    }
-                    self.take_event_abort()?;
-                    next.map_err(|fault| {
-                        Vm3Error::Fault(Fault {
-                            code: fault.number,
-                            message: fault
-                                .description
-                                .unwrap_or_else(|| default_error_message(fault.number).into()),
-                            source: fault.source,
-                            help_file: fault.help_file,
-                            help_context: fault.help_context.map(|v| v as i32),
-                        })
-                    })?
-                } else if let Some(state) = self.for_each.get(&key) {
-                    if state.position >= state.elements.len() {
-                        None
-                    } else if let Some(source) = state.array_source {
-                        self.read_loc_ref(source)?
-                            .and_then(|array| array.safearray_enumeration_element(state.position))
-                            .transpose()
-                            .map_err(|error| Vm3Error::Fault(Fault::new(9, error)))?
-                    } else {
-                        state.elements.get(state.position).cloned()
-                    }
+                // Built-in `VBA.Collection` cursor: direct in-process read with no COM
+                // event scope or trait-object boxing.
+                let coll_next = self.for_each.get(&key).and_then(|state| {
+                    state
+                        .collection_cursor
+                        .as_ref()
+                        .map(CollectionCursor::next_item)
+                });
+                let next = if let Some(item_opt) = coll_next {
+                    item_opt
                 } else {
-                    None
+                    // The enumerator leaves the iterator table for the call: an event handler running
+                    // inside it may start its own loops.
+                    let enumerator = self
+                        .for_each
+                        .get_mut(&key)
+                        .and_then(|state| state.enumerator.take());
+                    if let Some(mut enumerator) = enumerator {
+                        let next = {
+                            let _events = self.event_scope();
+                            enumerator.next_item()
+                        };
+                        if let Some(state) = self.for_each.get_mut(&key) {
+                            state.enumerator = Some(enumerator);
+                        }
+                        self.take_event_abort()?;
+                        next.map_err(|fault| {
+                            Vm3Error::Fault(Fault {
+                                code: fault.number,
+                                message: fault
+                                    .description
+                                    .unwrap_or_else(|| default_error_message(fault.number).into()),
+                                source: fault.source,
+                                help_file: fault.help_file,
+                                help_context: fault.help_context.map(|v| v as i32),
+                            })
+                        })?
+                    } else if let Some(state) = self.for_each.get(&key) {
+                        if state.position >= state.elements.len() {
+                            None
+                        } else if let Some(source) = state.array_source {
+                            self.read_loc_ref(source)?
+                                .and_then(|array| {
+                                    array.safearray_enumeration_element(state.position)
+                                })
+                                .transpose()
+                                .map_err(|error| Vm3Error::Fault(Fault::new(9, error)))?
+                        } else {
+                            state.elements.get(state.position).cloned()
+                        }
+                    } else {
+                        None
+                    }
                 };
                 if next.is_some() {
                     self.for_each
@@ -2081,10 +5133,27 @@ impl<'h> Vm3<'h> {
                 self.store(dst, Variant::from_vba_record(record))?;
             }
             OxInst::RecordGet { dst, record, index } => {
-                let source = self.operand(record)?;
-                let value = source
-                    .read_record_field_variant(*index)
-                    .map_err(|e| Vm3Error::Fault(Fault::new(13, e)))?;
+                let value = if let OxOperand::Use(place) = record {
+                    let loc = self.resolve(place);
+                    if (self.as_new_slots.is_empty() || !self.as_new_slots.contains_key(&loc))
+                        && let Some(source) = self.read_loc_ref(loc)?
+                        && source.raw_vt() == VarType::Record as u16
+                    {
+                        source
+                            .read_record_field_variant(*index)
+                            .map_err(|e| Vm3Error::Fault(Fault::new(13, e)))?
+                    } else {
+                        let source = self.operand(record)?;
+                        source
+                            .read_record_field_variant(*index)
+                            .map_err(|e| Vm3Error::Fault(Fault::new(13, e)))?
+                    }
+                } else {
+                    let source = self.operand(record)?;
+                    source
+                        .read_record_field_variant(*index)
+                        .map_err(|e| Vm3Error::Fault(Fault::new(13, e)))?
+                };
                 self.store(dst, value)?;
             }
             OxInst::RecordArrayGet {
@@ -2102,14 +5171,20 @@ impl<'h> Vm3<'h> {
                 value,
             } => {
                 let v = self.operand(value)?;
-                // Read the (alias-resolved) record, write the field, store it back — value
-                // semantics: the record's data is owned, so a ByRef-aliased record's backing
-                // receives the write (equivalent to vm2's in-place `read_place_mut`).
-                let mut target = self.read(record)?;
-                target
-                    .write_record_field_variant(*index, &v)
-                    .map_err(|e| Vm3Error::Fault(Fault::new(13, e)))?;
-                self.store(record, target)?;
+                let loc = self.resolve(record);
+                if let Some(target) = self.read_loc_mut(loc)?
+                    && target.raw_vt() == VarType::Record as u16
+                {
+                    target
+                        .write_record_field_variant(*index, &v)
+                        .map_err(|e| Vm3Error::Fault(Fault::new(13, e)))?;
+                } else {
+                    let mut target = self.read(record)?;
+                    target
+                        .write_record_field_variant(*index, &v)
+                        .map_err(|e| Vm3Error::Fault(Fault::new(13, e)))?;
+                    self.store(record, target)?;
+                }
             }
             OxInst::RecordLSet { record, value } => {
                 let source = self.operand(value)?;
@@ -2393,14 +5468,12 @@ impl<'h> Vm3<'h> {
                 let descriptor = self.cur_program().com_method(*method).ok_or_else(|| {
                     Vm3Error::Malformed(format!("ComCallEarly: unresolved method ref {method:?}"))
                 })?;
-                let descriptor = descriptor.clone();
-                let member_name = descriptor.name.clone();
                 let ret = if object.is_project_instance() {
                     self.dispatch_project_method_resolved(
                         object,
                         recv_v,
-                        Some(&descriptor),
-                        &member_name,
+                        Some(descriptor),
+                        &descriptor.name,
                         *invoke_kind,
                         args,
                         false,
@@ -2409,7 +5482,7 @@ impl<'h> Vm3<'h> {
                     if descriptor.invoke_kind != *invoke_kind {
                         return Err(Vm3Error::Malformed("early COM accessor mismatch".into()));
                     }
-                    self.dispatch_early_com_method(object, &descriptor, args)?
+                    self.dispatch_early_com_method(object, descriptor, args)?
                 };
                 if let Some(dst) = dst {
                     self.store(dst, ret)?;
@@ -2529,7 +5602,7 @@ impl<'h> Vm3<'h> {
             .ok_or_else(|| Vm3Error::Malformed(format!("call to unknown proc {}", proc.0)))?;
         // Resolve the destination + ByRef backings in the caller, before pushing.
         let dst_loc = dst.map(|p| self.resolve(&p));
-        if self.typed_entries[target_prog][proc.0].is_some()
+        if self.cache.typed_entries[target_prog][proc.0].is_some()
             && args.len() == callee.param_count
             && args.iter().all(|arg| matches!(arg, OxArg::ByVal(_)))
         {
@@ -2554,14 +5627,7 @@ impl<'h> Vm3<'h> {
                 return Ok(());
             }
         }
-        let mut locals: Vec<Variant> = callee
-            .locals
-            .iter()
-            .map(|local| {
-                Self::initial_value_for_slot(program, &local.ty, local.array_element.as_ref())
-            })
-            .collect::<Result<_, _>>()?;
-        let mut aliases = HashMap::new();
+        let mut frame = self.new_frame_pooled(target_prog, proc, args.len(), dst_loc, false)?;
         let frame_index = self.frames.len();
         let mut pending_param_array_aliases = Vec::new();
         for (i, arg) in args.iter().enumerate() {
@@ -2569,7 +5635,7 @@ impl<'h> Vm3<'h> {
                 OxArg::ByVal(op) => {
                     let param_array_aliases = self.param_array_aliases_for_operand(op);
                     let v = self.operand(op)?;
-                    if let Some(slot) = locals.get_mut(i) {
+                    if let Some(slot) = frame.local_mut(i) {
                         *slot = v;
                     }
                     if let Some(param_array_aliases) = param_array_aliases {
@@ -2580,14 +5646,14 @@ impl<'h> Vm3<'h> {
                 OxArg::ByRef(place) => {
                     let param_ty = callee.locals.get(i).map(|local| &local.ty);
                     match self.byref_reference(place, param_ty)? {
-                        Some(reference) => locals[i] = reference,
+                        Some(reference) => frame.slots[i] = reference,
                         None => {
-                            aliases.insert(i, self.resolve(place));
+                            frame.set_alias(i, self.resolve(place));
                         }
                     }
                 }
                 OxArg::Omitted => {
-                    if let Some(slot) = locals.get_mut(i) {
+                    if let Some(slot) = frame.local_mut(i) {
                         *slot = match callee.locals.get(i).and_then(omitted_param_value) {
                             Some(value) => value?,
                             None => Variant::from_error_code(MISSING_ARG),
@@ -2596,19 +5662,6 @@ impl<'h> Vm3<'h> {
                 }
             }
         }
-        for (i, parameter) in callee
-            .locals
-            .iter()
-            .take(callee.param_count)
-            .enumerate()
-            .skip(args.len())
-        {
-            if let Some(value) = omitted_param_value(parameter) {
-                locals[i] = value?;
-            }
-        }
-        let return_local = callee.return_local;
-        let entry = callee.entry;
 
         self.guard_call_depth()?;
         // Push the callee and hand control to it; each procedure starts with no active
@@ -2616,24 +5669,9 @@ impl<'h> Vm3<'h> {
         // dispatch loop runs the callee and `do_return`/`propagate_fault` pops it — there
         // is no native recursion here, so the call depth is heap-bounded.
         let saved_err = self.exec.err_engine.enter_activation();
-        self.frames.push(Frame {
-            prog: target_prog,
-            func: proc,
-            block: entry,
-            ip: 0,
-            locals,
-            temps: vec![Variant::empty(); callee.temps.len()],
-            pointer_strings: Vec::new(),
-            ref_locks: Vec::new(),
-            loop_locks: Vec::new(),
-            aliases,
-            dst: dst_loc,
-            return_local,
-            current_line: 0,
-            saved_error_mode: saved_err.error_mode,
-            saved_active_error: saved_err.active_error,
-            gosub_stack: Vec::new(),
-        });
+        frame.saved_error_mode = saved_err.error_mode;
+        frame.saved_active_error = saved_err.active_error;
+        self.frames.push(frame);
         for (loc, aliases) in pending_param_array_aliases {
             self.param_array_aliases.insert(loc, aliases);
         }
@@ -2971,15 +6009,19 @@ impl<'h> Vm3<'h> {
     }
 
     fn prune_param_array_aliases_from_depth(&mut self, depth: usize) {
-        self.param_array_aliases.retain(|loc, aliases| {
-            loc.frame_index().is_none_or(|frame| frame < depth)
-                && aliases
-                    .iter()
-                    .flatten()
-                    .all(|alias| alias.frame_index().is_none_or(|frame| frame < depth))
-        });
-        self.as_new_slots
-            .retain(|loc, _| loc.frame_index().is_none_or(|frame| frame < depth));
+        if !self.param_array_aliases.is_empty() {
+            self.param_array_aliases.retain(|loc, aliases| {
+                loc.frame_index().is_none_or(|frame| frame < depth)
+                    && aliases
+                        .iter()
+                        .flatten()
+                        .all(|alias| alias.frame_index().is_none_or(|frame| frame < depth))
+            });
+        }
+        if !self.as_new_slots.is_empty() {
+            self.as_new_slots
+                .retain(|loc, _| loc.frame_index().is_none_or(|frame| frame < depth));
+        }
     }
 
     fn record_array_get(
@@ -3620,7 +6662,7 @@ impl<'h> Vm3<'h> {
         let saved_cur = self.cur;
         let base = self.frames.len();
         let mut frame = self.new_frame_in(target_prog, proc)?;
-        if let Some(slot) = frame.locals.get_mut(0) {
+        if let Some(slot) = frame.local_mut(0) {
             *slot = me;
         }
         let mut pending_param_array_aliases = Vec::new();
@@ -3644,16 +6686,16 @@ impl<'h> Vm3<'h> {
                 OxArg::ByRef(place) => {
                     let loc = self.resolve(place);
                     match self.byref_reference(place, formal.map(|local| &local.ty))? {
-                        Some(reference) => frame.locals[li] = reference,
+                        Some(reference) => frame.slots[li] = reference,
                         None => {
-                            frame.aliases.insert(li, loc);
+                            frame.set_alias(li, loc);
                         }
                     }
                     continue;
                 }
                 OxArg::Omitted => {
                     let seeded = formal.and_then(omitted_param_value).transpose()?;
-                    if let Some(slot) = frame.locals.get_mut(li) {
+                    if let Some(slot) = frame.local_mut(li) {
                         *slot = seeded.unwrap_or_else(|| Variant::from_error_code(MISSING_ARG));
                     }
                     continue;
@@ -3661,7 +6703,7 @@ impl<'h> Vm3<'h> {
             };
             let aliases = self.param_array_aliases_for_operand(actual);
             let value = self.operand(actual)?;
-            if let (Some(slot), Some(formal)) = (frame.locals.get_mut(li), formal) {
+            if let (Some(slot), Some(formal)) = (frame.local_mut(li), formal) {
                 *slot =
                     calcvba_rt_abi::coerce_project_argument(&value, formal).map_err(arith_fault)?;
             }
@@ -3682,7 +6724,7 @@ impl<'h> Vm3<'h> {
         let ret = self
             .frames
             .get(base)
-            .and_then(|fr| fr.return_local.and_then(|rl| fr.locals.get(rl.0).cloned()))
+            .and_then(|fr| fr.return_local.and_then(|rl| fr.local(rl.0).cloned()))
             .unwrap_or_else(Variant::empty);
         let saved_err = self.frames.get(base).map(|fr| SavedErrState {
             error_mode: fr.saved_error_mode,
@@ -3737,7 +6779,7 @@ impl<'h> Vm3<'h> {
         let suppressed_err_engine = suppress.then(|| self.exec.err_engine.clone());
         let base = self.frames.len();
         let mut frame = self.new_frame_in(target_prog, proc)?;
-        if let Some(slot) = frame.locals.get_mut(0) {
+        if let Some(slot) = frame.local_mut(0) {
             *slot = me;
         }
         // Host args follow `me` at locals 1.. as direct values — no caller-operand resolution,
@@ -3760,7 +6802,7 @@ impl<'h> Vm3<'h> {
             {
                 v = omitted?;
             }
-            if let Some(slot) = frame.locals.get_mut(i + 1) {
+            if let Some(slot) = frame.local_mut(i + 1) {
                 *slot = v;
             }
         }
@@ -3782,7 +6824,7 @@ impl<'h> Vm3<'h> {
                     if func.locals[index + 1].ty != func.locals[first + 1].ty {
                         return Err(Vm3Error::Malformed("host alias types differ".into()));
                     }
-                    frame.aliases.insert(index + 1, Loc::Local(base, first + 1));
+                    frame.set_alias(index + 1, Loc::Local(base, first + 1));
                 }
             }
         }
@@ -3797,7 +6839,7 @@ impl<'h> Vm3<'h> {
         let ret = self
             .frames
             .get(base)
-            .and_then(|fr| fr.return_local.and_then(|rl| fr.locals.get(rl.0).cloned()))
+            .and_then(|fr| fr.return_local.and_then(|rl| fr.local(rl.0).cloned()))
             .unwrap_or_else(Variant::empty);
         if let Some((values, _)) = capture
             && let Some(frame) = self.frames.get(base)
@@ -3808,11 +6850,11 @@ impl<'h> Vm3<'h> {
                 if !formal.param.as_ref().is_some_and(|param| param.by_ref) {
                     continue;
                 }
-                let slot = match frame.aliases.get(&(index + 1)) {
-                    Some(Loc::Local(_, slot)) => *slot,
+                let slot = match frame.alias_of(index + 1) {
+                    Some(Loc::Local(_, slot)) => slot,
                     _ => index + 1,
                 };
-                if let Some(updated) = frame.locals.get(slot) {
+                if let Some(updated) = frame.local(slot) {
                     *value = updated.clone();
                 }
             }
@@ -4413,6 +7455,34 @@ impl<'h> Vm3<'h> {
                 return self.collection_new_enum_object(object);
             }
         };
+        let has_named = args.iter().any(|a| matches!(a, OxCallArg::Named { .. }));
+        if !has_named && args.len() <= 4 {
+            let mut argv = [
+                Variant::empty(),
+                Variant::empty(),
+                Variant::empty(),
+                Variant::empty(),
+            ];
+            for (dst, a) in argv.iter_mut().zip(args.iter()) {
+                *dst = match a {
+                    OxCallArg::Operand(op) => self.operand(op)?,
+                    OxCallArg::ByRef(place) => self.read(place)?,
+                    OxCallArg::Omitted => Variant::from_error_code(MISSING_ARG),
+                    OxCallArg::Named { value, .. } => self.operand(value)?,
+                    OxCallArg::Const(_) => {
+                        return Err(Vm3Error::Malformed(
+                            "a Const argument in a Collection method call".into(),
+                        ));
+                    }
+                };
+            }
+            return object
+                .with_native_collection(|data| {
+                    dispatch_collection(method, data, &argv[..args.len()])
+                })
+                .ok_or_else(|| Vm3Error::Fault(Fault::new(424, "Object required")))?
+                .map_err(|error| Vm3Error::Fault(Fault::standard(error.vba_number())));
+        }
         let names: Vec<_> = args
             .iter()
             .map(|arg| match arg {
@@ -4474,19 +7544,22 @@ impl<'h> Vm3<'h> {
         ops.iter().map(|op| self.operand(op)).collect()
     }
 
-    /// Resolve a `Collection` member name to its `NativeMethodId` via the VBA library bundle's
-    /// Collection class — the single source of truth for the member set.
+    /// Resolve a `Collection` member name to its `NativeMethodId` (direct case-insensitive
+    /// match for the five fixed `VBA.Collection` members).
     fn vba_collection_native_method(member: &str) -> Option<calcvba_bundle::NativeMethodId> {
         let member = member.trim().trim_start_matches('[').trim_end_matches(']');
-        let lib = calcvba_bundle::vba_library_bundle();
-        let class = lib.classes.first()?;
-        let m = class
-            .methods
-            .iter()
-            .find(|m| m.name.eq_ignore_ascii_case(member))?;
-        match lib.procedures.get(m.proc).and_then(|p| p.native) {
-            Some(calcvba_bundle::NativeBody::Method(id)) => Some(id),
-            _ => None,
+        if member.eq_ignore_ascii_case("Add") {
+            Some(calcvba_bundle::NativeMethodId::CollectionAdd)
+        } else if member.eq_ignore_ascii_case("Item") {
+            Some(calcvba_bundle::NativeMethodId::CollectionItem)
+        } else if member.eq_ignore_ascii_case("Count") {
+            Some(calcvba_bundle::NativeMethodId::CollectionCount)
+        } else if member.eq_ignore_ascii_case("Remove") {
+            Some(calcvba_bundle::NativeMethodId::CollectionRemove)
+        } else if member.eq_ignore_ascii_case("_NewEnum") {
+            Some(calcvba_bundle::NativeMethodId::CollectionNewEnum)
+        } else {
+            None
         }
     }
 
@@ -4529,7 +7602,7 @@ impl<'h> Vm3<'h> {
             && obj.route_key() == VBA_COLLECTION_ROUTE_KEY
             && let Some(cursor) = CollectionCursor::new(&obj)
         {
-            return Ok(ForEachItems::Enumerator(Box::new(cursor)));
+            return Ok(ForEachItems::CollectionCursor(cursor));
         }
         if let Some(values) = obj.native_collection_snapshot() {
             return Ok(ForEachItems::Snapshot(values));
@@ -5210,7 +8283,7 @@ impl<'h> Vm3<'h> {
         let base = self.frames.len();
         let mut frame = self.new_frame_in(target_prog, proc)?;
         for (i, v) in args.into_iter().enumerate() {
-            if let Some(slot) = frame.locals.get_mut(i) {
+            if let Some(slot) = frame.local_mut(i) {
                 *slot = v;
             }
         }
@@ -5222,7 +8295,7 @@ impl<'h> Vm3<'h> {
         let ret = self
             .frames
             .get(base)
-            .and_then(|fr| fr.return_local.and_then(|rl| fr.locals.get(rl.0).cloned()))
+            .and_then(|fr| fr.return_local.and_then(|rl| fr.local(rl.0).cloned()))
             .unwrap_or_else(Variant::empty);
         let saved_err = self.frames.get(base).map(|fr| SavedErrState {
             error_mode: fr.saved_error_mode,
@@ -5262,26 +8335,42 @@ impl<'h> Vm3<'h> {
         Ok(())
     }
 
+    #[inline]
     fn clear_statement_temps(&mut self, first_temp: usize) {
         let Some(frame_index) = self.frames.len().checked_sub(1) else {
             return;
         };
         if let Some(frame) = self.frames.get_mut(frame_index) {
-            for temp in frame.temps.iter_mut().skip(first_temp) {
-                *temp = Variant::empty();
+            let first_slot = frame.num_locals + first_temp;
+            if first_slot < frame.temp_hwm {
+                let end = frame.temp_hwm.min(frame.slots.len());
+                for slot in &mut frame.slots[first_slot..end] {
+                    if slot.raw_vt() != 0 {
+                        slot.set_empty();
+                    }
+                }
+                frame.temp_hwm = first_slot;
             }
-            frame.pointer_strings.clear();
-            frame.ref_locks.retain(|(temp, _)| *temp < first_temp);
+            if !frame.pointer_strings.is_empty() {
+                frame.pointer_strings.clear();
+            }
+            if !frame.ref_locks.is_empty() {
+                frame.ref_locks.retain(|(temp, _)| *temp < first_temp);
+            }
         }
-        self.for_each
-            .retain(|loc, _| !is_cleared_temp(*loc, frame_index, first_temp));
-        self.param_array_aliases.retain(|loc, aliases| {
-            !is_cleared_temp(*loc, frame_index, first_temp)
-                && aliases
-                    .iter()
-                    .flatten()
-                    .all(|alias| !is_cleared_temp(*alias, frame_index, first_temp))
-        });
+        if !self.for_each.is_empty() {
+            self.for_each
+                .retain(|loc, _| !is_cleared_temp(*loc, frame_index, first_temp));
+        }
+        if !self.param_array_aliases.is_empty() {
+            self.param_array_aliases.retain(|loc, aliases| {
+                !is_cleared_temp(*loc, frame_index, first_temp)
+                    && aliases
+                        .iter()
+                        .flatten()
+                        .all(|alias| !is_cleared_temp(*alias, frame_index, first_temp))
+            });
+        }
     }
 
     /// Store the result of a fallible kernel op, raising its fault on error.
@@ -5302,14 +8391,13 @@ impl<'h> Vm3<'h> {
 
     /// Resolve an [`OxPlace`] against the top frame to a concrete frame-stack [`Loc`],
     /// following a ByRef parameter's alias to its caller-side backing.
+    #[inline]
     fn resolve(&self, place: &OxPlace) -> Loc {
         let top = self.frames.len() - 1;
         match place {
             OxPlace::Global(g) => Loc::Global(self.cur, g.0),
             OxPlace::Local(l) => self.frames[top]
-                .aliases
-                .get(&l.0)
-                .copied()
+                .alias_of(l.0)
                 .unwrap_or(Loc::Local(top, l.0)),
             OxPlace::Temp(t) => Loc::Temp(top, t.0),
         }
@@ -5318,6 +8406,7 @@ impl<'h> Vm3<'h> {
     /// Read a resolved location. Local/Global are dense, program-sized tables, so an
     /// out-of-range index is a structural defect (`Malformed`), never a silent default;
     /// `Temp` absence is the SSA write-before-read contract (sparse map → `Empty`).
+    #[inline]
     fn read_loc(&self, loc: Loc) -> Result<Variant, Vm3Error> {
         match loc {
             Loc::Global(p, g) => self.exec.programs[p]
@@ -5328,86 +8417,80 @@ impl<'h> Vm3<'h> {
             Loc::Local(fi, li) => self
                 .frames
                 .get(fi)
-                .and_then(|f| f.locals.get(li))
+                .and_then(|f| f.local(li))
                 .cloned()
                 .ok_or_else(|| Vm3Error::Malformed(format!("local [{fi}][{li}] out of range"))),
             Loc::Temp(fi, ti) => Ok(self
                 .frames
                 .get(fi)
-                .and_then(|f| f.temps.get(ti))
+                .and_then(|f| f.temp(ti))
                 .cloned()
                 .unwrap_or_else(Variant::empty)),
         }
     }
 
     /// Write a resolved location (same dense/sparse contract as [`Self::read_loc`]).
+    #[inline]
     fn write_loc(&mut self, loc: Loc, v: Variant) -> Result<(), Vm3Error> {
-        // A locked array (an element of it out as a ByRef argument, or a `For Each` walking
-        // it) cannot be replaced: VBA error 10.
-        if self
-            .read_loc_ref(loc)?
-            .is_some_and(Variant::holds_locked_array)
-        {
-            return Err(Vm3Error::Fault(Fault::new(
-                10,
-                calcvba_rt_abi::default_error_message(10),
-            )));
-        }
-        self.param_array_aliases.remove(&loc);
-        // A ByRef Variant parameter bound to a typed variable stores into that variable,
-        // coerced to its type (Excel: `"12"` into a Long is 12, `"abc"` raises 13).
-        if let Some(cell) = self.read_loc_ref(loc)?
-            && let Some((vt, _)) = cell.byref_target()
-        {
-            let coerced = arith::coerce_for_byref_target(&v, vt).map_err(arith_fault)?;
-            // SAFETY: a reference cell's target is the caller's live variable, not borrowed here.
-            return unsafe { cell.write_through(coerced) }
-                .map_err(|e| Vm3Error::Fault(Fault::new(13, e)));
-        }
-        let old = match loc {
-            Loc::Global(p, g) => {
-                let slot = self.exec.programs[p].globals.get_mut(g).ok_or_else(|| {
-                    Vm3Error::Malformed(format!("global [{p}][{g}] out of range"))
-                })?;
-                std::mem::replace(slot, v)
-            }
-            Loc::Local(fi, li) => {
-                let slot = self
-                    .frames
-                    .get_mut(fi)
-                    .and_then(|f| f.locals.get_mut(li))
-                    .ok_or_else(|| {
-                        Vm3Error::Malformed(format!("local [{fi}][{li}] out of range"))
-                    })?;
-                std::mem::replace(slot, v)
-            }
-            Loc::Temp(fi, ti) => {
-                let slot = self
-                    .frames
-                    .get_mut(fi)
-                    .and_then(|f| f.temps.get_mut(ti))
-                    .ok_or_else(|| {
-                        Vm3Error::Malformed(format!("temp [{fi}][{ti}] out of range"))
-                    })?;
-                std::mem::replace(slot, v)
-            }
+        let slot = match loc {
+            Loc::Global(p, g) => self.exec.programs[p]
+                .globals
+                .get_mut(g)
+                .ok_or_else(|| Vm3Error::Malformed(format!("global [{p}][{g}] out of range")))?,
+            Loc::Local(fi, li) => self
+                .frames
+                .get_mut(fi)
+                .and_then(|f| f.local_mut(li))
+                .ok_or_else(|| Vm3Error::Malformed(format!("local [{fi}][{li}] out of range")))?,
+            Loc::Temp(fi, ti) => self
+                .frames
+                .get_mut(fi)
+                .and_then(|f| f.temp_mut(ti))
+                .ok_or_else(|| Vm3Error::Malformed(format!("temp [{fi}][{ti}] out of range")))?,
         };
-        self.clear_withevents_owners_before_releasing_values(std::iter::once(&old));
+        let old_vt = slot.raw_vt();
+        let hi = old_vt & 0xF000;
+        if hi == 0x2000 || hi == 0x4000 || hi == 0x6000 {
+            if slot.holds_locked_array() {
+                return Err(Vm3Error::Fault(Fault::new(
+                    10,
+                    calcvba_rt_abi::default_error_message(10),
+                )));
+            }
+            if let Some((vt, _)) = slot.byref_target() {
+                let coerced = arith::coerce_for_byref_target(&v, vt).map_err(arith_fault)?;
+                let cell = self.read_loc_ref(loc)?.expect("slot existed above");
+                // SAFETY: a reference cell's target is the caller's live variable, not borrowed here.
+                let res = unsafe { cell.write_through(coerced) }
+                    .map_err(|e| Vm3Error::Fault(Fault::new(13, e)));
+                if !self.param_array_aliases.is_empty() {
+                    self.param_array_aliases.remove(&loc);
+                }
+                return res;
+            }
+        }
+        let old = std::mem::replace(slot, v);
+        if !self.param_array_aliases.is_empty() {
+            self.param_array_aliases.remove(&loc);
+        }
+        if !self.exec.events.withevents.is_empty() && (old_vt == 9 || old_vt == 13) {
+            self.clear_withevents_owners_before_releasing_values(std::iter::once(&old));
+        }
         drop(old);
         Ok(())
     }
 
     fn clear_withevents_owners_in_frame_before_drop(&mut self, frame: &Frame) {
-        self.clear_withevents_owners_before_releasing_values(
-            frame.locals.iter().chain(frame.temps.iter()),
-        );
+        if self.exec.events.withevents.is_empty() {
+            return;
+        }
+        self.clear_withevents_owners_before_releasing_values(frame.slots.iter());
     }
 
     fn truncate_frames_with_withevents_cleanup(&mut self, len: usize) {
         while self.frames.len() > len {
             let frame = self.frames.pop().expect("frame length checked before pop");
-            self.clear_withevents_owners_in_frame_before_drop(&frame);
-            drop(frame);
+            self.recycle_frame(frame);
         }
     }
 
@@ -5415,6 +8498,9 @@ impl<'h> Vm3<'h> {
         &mut self,
         values: impl IntoIterator<Item = &'a Variant>,
     ) {
+        if self.exec.events.withevents.is_empty() {
+            return;
+        }
         let mut candidates: HashMap<i32, (ObjectRef, u32)> = HashMap::new();
         for value in values {
             let Some(owner) = value.as_object_ref() else {
@@ -5592,6 +8678,7 @@ impl<'h> Vm3<'h> {
     /// element without deep-cloning the whole backing store. A `Temp` that has not
     /// been written (SSA write-before-read) has no stable slot to borrow and yields
     /// `None`, so the caller falls back to the cloning path.
+    #[inline]
     fn read_loc_ref(&self, loc: Loc) -> Result<Option<&Variant>, Vm3Error> {
         match loc {
             Loc::Global(p, g) => self.exec.programs[p]
@@ -5602,10 +8689,10 @@ impl<'h> Vm3<'h> {
             Loc::Local(fi, li) => self
                 .frames
                 .get(fi)
-                .and_then(|f| f.locals.get(li))
+                .and_then(|f| f.local(li))
                 .map(Some)
                 .ok_or_else(|| Vm3Error::Malformed(format!("local [{fi}][{li}] out of range"))),
-            Loc::Temp(fi, ti) => Ok(self.frames.get(fi).and_then(|f| f.temps.get(ti))),
+            Loc::Temp(fi, ti) => Ok(self.frames.get(fi).and_then(|f| f.temp(ti))),
         }
     }
 
@@ -5613,6 +8700,7 @@ impl<'h> Vm3<'h> {
     /// — the constant-time counterpart to [`Self::write_loc`], used by the array
     /// write fast path to mutate one element through the SAFEARRAY descriptor. A
     /// `Temp` absent from the sparse map yields `None` (caller falls back).
+    #[inline]
     fn read_loc_mut(&mut self, loc: Loc) -> Result<Option<&mut Variant>, Vm3Error> {
         match loc {
             Loc::Global(p, g) => self.exec.programs[p]
@@ -5623,10 +8711,10 @@ impl<'h> Vm3<'h> {
             Loc::Local(fi, li) => self
                 .frames
                 .get_mut(fi)
-                .and_then(|f| f.locals.get_mut(li))
+                .and_then(|f| f.local_mut(li))
                 .map(Some)
                 .ok_or_else(|| Vm3Error::Malformed(format!("local [{fi}][{li}] out of range"))),
-            Loc::Temp(fi, ti) => Ok(self.frames.get_mut(fi).and_then(|f| f.temps.get_mut(ti))),
+            Loc::Temp(fi, ti) => Ok(self.frames.get_mut(fi).and_then(|f| f.temp_mut(ti))),
         }
     }
 
@@ -5671,10 +8759,10 @@ impl<'h> Vm3<'h> {
     /// kind (`Variant::adopt_assignment_target_fixedness`), as the JIT's `rt_jit_store_variant`.
     fn store_assigned(&mut self, place: &OxPlace, mut v: Variant) -> Result<(), Vm3Error> {
         let loc = self.resolve(place);
-        if v.vtype() == VarType::ArrayVariant && !matches!(loc, Loc::Temp(..)) {
+        if (v.raw_vt() & 0xF000) == 0x2000 && !matches!(loc, Loc::Temp(..)) {
             let target = match loc {
                 Loc::Global(p, g) => self.exec.programs.get(p).and_then(|p| p.globals.get(g)),
-                Loc::Local(fi, li) => self.frames.get(fi).and_then(|f| f.locals.get(li)),
+                Loc::Local(fi, li) => self.frames.get(fi).and_then(|f| f.local(li)),
                 Loc::Temp(..) => None,
             };
             if let Some(target) = target {
@@ -5684,18 +8772,24 @@ impl<'h> Vm3<'h> {
         self.write_loc(loc, v)
     }
 
+    #[inline]
     fn store(&mut self, place: &OxPlace, v: Variant) -> Result<(), Vm3Error> {
         let loc = self.resolve(place);
         self.write_loc(loc, v)
     }
 
+    #[inline]
     fn read(&mut self, place: &OxPlace) -> Result<Variant, Vm3Error> {
         let loc = self.resolve(place);
         self.read_loc_as_new(loc)
     }
 
+    #[inline]
     fn read_loc_as_new(&mut self, loc: Loc) -> Result<Variant, Vm3Error> {
         let value = self.read_loc(loc)?;
+        if self.as_new_slots.is_empty() {
+            return Ok(value);
+        }
         let Some(binding) = self.as_new_slots.get(&loc).cloned() else {
             return Ok(value);
         };
@@ -5919,6 +9013,223 @@ fn cmp_op(op: CmpOp) -> arith::CmpOp {
 /// Wrap an `arith` coercion error as a routed vm3 fault (it carries its own VBA code).
 fn arith_fault(e: ArithError) -> Vm3Error {
     Vm3Error::Fault(Fault::from_arith(e))
+}
+
+#[inline]
+fn try_fast_i32(v: &Variant) -> Option<i32> {
+    match v.raw_vt() {
+        3 => v.as_i32(),
+        2 => v.as_i16().map(i32::from),
+        0 => Some(0),
+        _ => None,
+    }
+}
+
+#[inline]
+fn try_fast_f64(v: &Variant) -> Option<f64> {
+    match v.raw_vt() {
+        5 => v.as_f64(),
+        3 => v.as_i32().map(f64::from),
+        2 => v.as_i16().map(f64::from),
+        0 => Some(0.0),
+        _ => None,
+    }
+}
+
+#[inline]
+fn fast_i32_binop(a: i32, b: i32, op: ArithOp) -> Result<i32, Vm3Error> {
+    match op {
+        ArithOp::Add => a
+            .checked_add(b)
+            .ok_or_else(|| arith_fault(ArithError::overflow())),
+        ArithOp::Sub => a
+            .checked_sub(b)
+            .ok_or_else(|| arith_fault(ArithError::overflow())),
+        ArithOp::Mul => a
+            .checked_mul(b)
+            .ok_or_else(|| arith_fault(ArithError::overflow())),
+        ArithOp::IntDiv => {
+            if b == 0 {
+                return Err(arith_fault(ArithError::div_by_zero()));
+            }
+            a.checked_div(b)
+                .ok_or_else(|| arith_fault(ArithError::overflow()))
+        }
+        ArithOp::Mod => {
+            if b > 0 {
+                Ok(a % b)
+            } else if b == 0 {
+                Err(arith_fault(ArithError::div_by_zero()))
+            } else {
+                Ok(if a == i32::MIN && b == -1 { 0 } else { a % b })
+            }
+        }
+    }
+}
+
+#[inline]
+fn eval_arith_op(
+    l: &Variant,
+    r: &Variant,
+    op: ArithOp,
+    mode: NumericMode,
+) -> Result<Variant, ArithError> {
+    match op {
+        ArithOp::Add => arith::add(l, r, mode),
+        ArithOp::Sub => arith::sub(l, r, mode),
+        ArithOp::Mul => arith::mul(l, r, mode),
+        ArithOp::IntDiv => arith::int_div(l, r, mode),
+        ArithOp::Mod => arith::modulo(l, r, mode),
+    }
+}
+
+#[inline]
+fn try_fast_cmp(lv: &Variant, rv: &Variant, op: CmpOp) -> Option<bool> {
+    let lvt = lv.raw_vt();
+    let rvt = rv.raw_vt();
+    if matches!(lvt, 0 | 2 | 3) && matches!(rvt, 0 | 2 | 3) {
+        let a = try_fast_i32(lv)?;
+        let b = try_fast_i32(rv)?;
+        return Some(match op {
+            CmpOp::Eq => a == b,
+            CmpOp::Ne => a != b,
+            CmpOp::Lt => a < b,
+            CmpOp::Le => a <= b,
+            CmpOp::Gt => a > b,
+            CmpOp::Ge => a >= b,
+        });
+    }
+    if matches!(lvt, 0 | 2 | 3 | 5) && matches!(rvt, 0 | 2 | 3 | 5) {
+        let a = try_fast_f64(lv)?;
+        let b = try_fast_f64(rv)?;
+        if a.is_nan() || b.is_nan() {
+            return None;
+        }
+        return Some(match op {
+            CmpOp::Eq => a == b,
+            CmpOp::Ne => a != b,
+            CmpOp::Lt => a < b,
+            CmpOp::Le => a <= b,
+            CmpOp::Gt => a > b,
+            CmpOp::Ge => a >= b,
+        });
+    }
+    None
+}
+
+#[inline]
+fn is_possibly_nothing_for_as_new(v: &Variant) -> bool {
+    match v.raw_vt() {
+        0 | 1 => true,
+        9 | 13 => borrow_project_instance_info(v).is_none(),
+        2 => v.as_i16() == Some(0),
+        3 => v.as_i32() == Some(0),
+        _ => false,
+    }
+}
+
+#[inline]
+fn format_i32_utf16(n: i32, buf: &mut [u16; 12]) -> &[u16] {
+    let neg = n < 0;
+    let mut mag = n.unsigned_abs();
+    let mut pos = buf.len();
+    loop {
+        pos -= 1;
+        buf[pos] = u16::from(b'0' + (mag % 10) as u8);
+        mag /= 10;
+        if mag == 0 {
+            break;
+        }
+    }
+    if neg {
+        pos -= 1;
+        buf[pos] = u16::from(b'-');
+    }
+    &buf[pos..]
+}
+
+enum FastArrScalar {
+    I32(i32),
+    F64(f64),
+}
+
+/// Fast-path parser for plain ASCII signed integer strings (`^[+-]?[0-9]{1,15}$`)
+/// into exact IEEE-754 `f64` (used by `ArithWidening` for cases like `v * "2"`).
+#[inline]
+fn try_parse_ascii_int_f64(units: &[u16]) -> Option<f64> {
+    if units.is_empty() || units.len() > 16 {
+        return None;
+    }
+    let (neg, digits) = match units[0] {
+        0x002D => (true, &units[1..]),
+        0x002B => (false, &units[1..]),
+        _ => (false, units),
+    };
+    if digits.is_empty() || digits.len() > 15 {
+        return None;
+    }
+    let mut acc: i64 = 0;
+    for &u in digits {
+        if !(0x0030..=0x0039).contains(&u) {
+            return None;
+        }
+        acc = acc * 10 + i64::from(u - 0x0030);
+    }
+    let signed = if neg { -acc } else { acc };
+    Some(signed as f64)
+}
+
+#[inline]
+fn write_fast_coerced_project_scalar(
+    src: &Variant,
+    formal: &calcvba_oxir::OxLocal,
+    dst: &mut Variant,
+) -> bool {
+    let vt = src.raw_vt();
+    match (&formal.ty, vt) {
+        (OxTy::Variant, _) if Variant::raw_vt_is_trivial_copy(vt) => dst.copy_trivial_from(src),
+        (OxTy::Long, 3) => {
+            dst.set_i32(src.as_i32().unwrap());
+            true
+        }
+        (OxTy::Double, 5) if src.as_f64().is_some_and(f64::is_finite) => {
+            dst.set_f64(src.as_f64().unwrap());
+            true
+        }
+        (OxTy::Double, 3) => {
+            dst.set_f64(f64::from(src.as_i32().unwrap()));
+            true
+        }
+        (OxTy::Double, 2) => {
+            dst.set_f64(f64::from(src.as_i16().unwrap()));
+            true
+        }
+        (OxTy::Bool, 11) => {
+            dst.set_bool(src.as_bool().unwrap());
+            true
+        }
+        (OxTy::Integer, 2) => dst.copy_trivial_from(src),
+        _ => false,
+    }
+}
+
+#[inline]
+fn fast_coerce_project_arg(
+    value: Variant,
+    formal: &calcvba_oxir::OxLocal,
+) -> Result<Variant, Vm3Error> {
+    let vt = value.raw_vt();
+    match (&formal.ty, vt) {
+        (OxTy::Variant, _) => Ok(value),
+        (OxTy::Long, 3) => Ok(value),
+        (OxTy::Double, 5) if value.as_f64().is_some_and(f64::is_finite) => Ok(value),
+        (OxTy::Double, 3) => Ok(Variant::from_f64(f64::from(value.as_i32().unwrap()))),
+        (OxTy::Double, 2) => Ok(Variant::from_f64(f64::from(value.as_i16().unwrap()))),
+        (OxTy::Str, 8) => Ok(value),
+        (OxTy::Bool, 11) => Ok(value),
+        (OxTy::Integer, 2) => Ok(value),
+        _ => calcvba_rt_abi::coerce_project_argument(&value, formal).map_err(arith_fault),
+    }
 }
 
 /// Backing-store ceiling for an element-wise (Variant/String/Object/record)

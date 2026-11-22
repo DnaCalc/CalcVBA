@@ -679,11 +679,32 @@ struct RuntimeProjectDispatchKey {
     host_fallback: bool,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
+struct FastProjectDispatchEntry {
+    interface_descriptor: usize,
+    member_name: &'static str,
+    invoke_kind: Option<RuntimeMemberInvokeKind>,
+    args_empty: bool,
+    public_only: bool,
+    host_fallback: bool,
+    plan: RuntimeDispatchPlan,
+}
+
+#[derive(Debug, Default, Clone)]
 pub struct RuntimeDispatchPlanCache {
     entries: BTreeMap<RuntimeDispatchCacheKey, RuntimeDispatchPlan>,
     project_entries: BTreeMap<RuntimeProjectDispatchKey, RuntimeDispatchPlan>,
+    /// Small MRU cache for zero-allocation late-bound project member lookup.
+    fast_project: Vec<FastProjectDispatchEntry>,
 }
+
+impl PartialEq for RuntimeDispatchPlanCache {
+    fn eq(&self, other: &Self) -> bool {
+        self.entries == other.entries && self.project_entries == other.project_entries
+    }
+}
+
+impl Eq for RuntimeDispatchPlanCache {}
 
 impl RuntimeDispatchPlanCache {
     pub fn new() -> Self {
@@ -714,8 +735,21 @@ impl RuntimeDispatchPlanCache {
         args_empty: bool,
         public_only: bool,
     ) -> Option<RuntimeDispatchPlan> {
+        let iface_key = runtime_interface_descriptor_key(interface);
+        let trimmed = member_name.trim();
+        for entry in &self.fast_project {
+            if entry.interface_descriptor == iface_key
+                && !entry.host_fallback
+                && entry.invoke_kind == Some(invoke_kind)
+                && entry.args_empty == args_empty
+                && entry.public_only == public_only
+                && entry.member_name.eq_ignore_ascii_case(trimmed)
+            {
+                return Some(entry.plan);
+            }
+        }
         let key = RuntimeProjectDispatchKey {
-            interface_descriptor: runtime_interface_descriptor_key(interface),
+            interface_descriptor: iface_key,
             normalized_member_name: normalize_runtime_member_name(member_name),
             invoke_kind: Some(invoke_kind),
             args_empty,
@@ -726,26 +760,26 @@ impl RuntimeDispatchPlanCache {
             return Some(plan);
         }
         let exact = interface.members.iter().enumerate().find(|(_, candidate)| {
-            candidate.name.eq_ignore_ascii_case(member_name.trim())
+            candidate.name.eq_ignore_ascii_case(trimmed)
                 && candidate.invoke_kind == invoke_kind
                 && !is_restricted_object_field_let(candidate)
         });
         let matched = exact.or_else(|| match invoke_kind {
             RuntimeMemberInvokeKind::PropertyGet if args_empty => {
                 interface.members.iter().enumerate().find(|(_, candidate)| {
-                    candidate.name.eq_ignore_ascii_case(member_name.trim())
+                    candidate.name.eq_ignore_ascii_case(trimmed)
                         && candidate.invoke_kind == RuntimeMemberInvokeKind::Method
                 })
             }
             RuntimeMemberInvokeKind::Method => {
                 interface.members.iter().enumerate().find(|(_, candidate)| {
-                    candidate.name.eq_ignore_ascii_case(member_name.trim())
+                    candidate.name.eq_ignore_ascii_case(trimmed)
                         && candidate.invoke_kind == RuntimeMemberInvokeKind::PropertyGet
                 })
             }
             RuntimeMemberInvokeKind::PropertySet => {
                 interface.members.iter().enumerate().find(|(_, candidate)| {
-                    candidate.name.eq_ignore_ascii_case(member_name.trim())
+                    candidate.name.eq_ignore_ascii_case(trimmed)
                         && is_variant_field_setter(candidate)
                 })
             }
@@ -762,6 +796,17 @@ impl RuntimeDispatchPlanCache {
             is_default_member: member.is_default_member,
         };
         self.project_entries.insert(key, plan);
+        if self.fast_project.len() < 16 {
+            self.fast_project.push(FastProjectDispatchEntry {
+                interface_descriptor: iface_key,
+                member_name: member.name,
+                invoke_kind: Some(invoke_kind),
+                args_empty,
+                public_only,
+                host_fallback: false,
+                plan,
+            });
+        }
         Some(plan)
     }
 
@@ -985,6 +1030,92 @@ enum NativeObjectState {
     Local(Rc<dyn Any>),
 }
 
+const DENSE_FIELD_LIMIT: usize = 64;
+
+/// Per-instance class field store. Each field stays in its own `Box<Variant>` so
+/// `VarPtr` addresses never move even when the dense table grows; small non-negative
+/// field tokens (`0..64`) index directly in O(1) without tree traversal.
+#[derive(Default)]
+pub(crate) struct ProjectFieldStore {
+    dense: Vec<Option<Box<Variant>>>,
+    overflow: BTreeMap<i32, Box<Variant>>,
+}
+
+impl ProjectFieldStore {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn clear(&mut self) {
+        self.dense.clear();
+        self.overflow.clear();
+    }
+
+    #[inline]
+    fn get(&self, token: i32) -> Option<&Variant> {
+        if let Ok(index) = usize::try_from(token)
+            && index < DENSE_FIELD_LIMIT
+        {
+            return self.dense.get(index).and_then(Option::as_deref);
+        }
+        self.overflow.get(&token).map(Box::as_ref)
+    }
+
+    #[inline]
+    fn get_mut(&mut self, token: i32) -> Option<&mut Variant> {
+        if let Ok(index) = usize::try_from(token)
+            && index < DENSE_FIELD_LIMIT
+        {
+            return self.dense.get_mut(index).and_then(Option::as_deref_mut);
+        }
+        self.overflow.get_mut(&token).map(Box::as_mut)
+    }
+
+    #[inline]
+    fn set(&mut self, token: i32, value: Variant) {
+        if let Ok(index) = usize::try_from(token)
+            && index < DENSE_FIELD_LIMIT
+        {
+            if let Some(Some(cell)) = self.dense.get_mut(index) {
+                **cell = value;
+                return;
+            }
+            if matches!(value.vtype(), crate::VarType::Empty) {
+                return;
+            }
+            if self.dense.len() <= index {
+                self.dense.resize_with(index + 1, || None);
+            }
+            self.dense[index] = Some(Box::new(value));
+            return;
+        }
+        match self.overflow.get_mut(&token) {
+            Some(cell) => **cell = value,
+            None if matches!(value.vtype(), crate::VarType::Empty) => {}
+            None => {
+                self.overflow.insert(token, Box::new(value));
+            }
+        }
+    }
+
+    fn cell_ptr(&mut self, token: i32, default: impl FnOnce() -> Variant) -> *mut Variant {
+        if let Ok(index) = usize::try_from(token)
+            && index < DENSE_FIELD_LIMIT
+        {
+            if self.dense.len() <= index {
+                self.dense.resize_with(index + 1, || None);
+            }
+            let cell = self.dense[index].get_or_insert_with(|| Box::new(default()));
+            return &mut **cell as *mut Variant;
+        }
+        let cell = self
+            .overflow
+            .entry(token)
+            .or_insert_with(|| Box::new(default()));
+        &mut **cell as *mut Variant
+    }
+}
+
 #[repr(C)]
 pub(crate) struct CompatObjectBase {
     pub(crate) unknown: RawRuntimeIUnknown,
@@ -999,7 +1130,7 @@ pub(crate) struct CompatObjectBase {
     pub(crate) invoker: RefCell<Option<std::rc::Weak<RefCell<dyn crate::events::MemberInvoker>>>>,
     // Each field is boxed and kept once created, so its cell has a stable address for
     // `VarPtr` (as a VBA instance's fields live in its memory until it is freed).
-    pub(crate) fields: RefCell<BTreeMap<i32, Box<Variant>>>,
+    pub(crate) fields: RefCell<ProjectFieldStore>,
     /// Native state is carried by the owning object box and released on the VBA thread.
     native_state: RefCell<Option<NativeObjectState>>,
     /// Embedded `ISupportErrorInfo` COM face on this object's single COM identity.
@@ -1394,32 +1525,156 @@ pub(crate) unsafe extern "system" fn compat_release(this: *mut c_void) -> u32 {
 }
 
 fn compat_field_get(owner: *mut CompatObjectBase, token: i32) -> Option<Variant> {
-    // SAFETY: the only caller (`ObjectRef::project_field_get`) guards with
-    // `is_project_instance()` (a vtbl-identity check), so `owner` is a live `CompatObjectBase`
-    // kept alive by that caller's retained `ObjectRef` for the duration of the borrow.
+    // SAFETY: the only caller (`ObjectRef::project_field_get` or borrowed field helper) guards
+    // with `is_project_instance()` (a vtbl-identity check), so `owner` is a live `CompatObjectBase`
+    // kept alive for the duration of the borrow.
     unsafe {
         (*owner)
             .fields
             .borrow()
-            .get(&token)
-            .map(|cell| (**cell).clone())
+            .get(token)
+            .cloned()
             .or_else(|| compat_field_default(owner, token))
     }
 }
 
 fn compat_field_set(owner: *mut CompatObjectBase, token: i32, value: Variant) {
-    // SAFETY: as in `compat_field_get`, the sole caller (`ObjectRef::project_field_set`)
-    // verified via `is_project_instance()` that `owner` is a live `CompatObjectBase` kept
-    // alive by the caller's retained `ObjectRef`.
+    // SAFETY: caller verified `owner` is a live `CompatObjectBase`.
     unsafe {
-        let mut fields = (*owner).fields.borrow_mut();
-        match fields.get_mut(&token) {
-            // Replace in place: the cell keeps its address.
-            Some(cell) => **cell = value,
-            None if matches!(value.vtype(), crate::VarType::Empty) => {}
-            None => {
-                fields.insert(token, Box::new(value));
-            }
+        (*owner).fields.borrow_mut().set(token, value);
+    }
+}
+
+/// Borrow a project instance directly from a `Variant` without bumping its refcount.
+#[inline]
+fn borrowed_project_owner(value: &Variant) -> Option<*mut CompatObjectBase> {
+    let vt = value.raw_vt();
+    if vt != crate::VarType::Object as u16 && vt != 0x000D {
+        return None;
+    }
+    let raw = value.core().pointer().cast::<RawRuntimeIUnknown>();
+    if raw.is_null() {
+        return None;
+    }
+    // SAFETY: `value` owns a live `IUnknown` reference for `&Variant`'s borrow.
+    let owner = unsafe { try_compat_owner_from_iunknown(raw) }?;
+    // SAFETY: `owner` is a live `CompatObjectBase` retained by `value`.
+    if unsafe { (*owner).project_instance } {
+        Some(owner)
+    } else {
+        None
+    }
+}
+
+/// Read a project instance field directly from a borrowed `Variant` (no AddRef/Release)
+/// when the class has no `As New` fields; returns `None` to fall back to the general path.
+#[inline]
+pub fn borrow_project_field_get_plain(value: &Variant, token: i32) -> Option<Variant> {
+    let owner = borrowed_project_owner(value)?;
+    // SAFETY: `owner` is live for `&Variant`'s borrow.
+    let desc = unsafe { (*owner).class_descriptor };
+    if !desc.as_new_fields.is_empty() {
+        return None;
+    }
+    Some(compat_field_get(owner, token).unwrap_or_else(Variant::empty))
+}
+
+/// Read a project instance field directly into `dst` (no AddRef/Release, no temporary `Variant`
+/// construction for scalar fields) when the class has no `As New` fields.
+#[inline]
+pub fn borrow_project_field_get_into(value: &Variant, token: i32, dst: &mut Variant) -> bool {
+    let Some(owner) = borrowed_project_owner(value) else {
+        return false;
+    };
+    // SAFETY: `owner` is live for `&Variant`'s borrow.
+    let desc = unsafe { (*owner).class_descriptor };
+    if !desc.as_new_fields.is_empty() {
+        return false;
+    }
+    // SAFETY: `owner` is a live `CompatObjectBase` retained by `value`.
+    let fields = unsafe { (*owner).fields.borrow() };
+    if let Some(src) = fields.get(token) {
+        if !dst.copy_trivial_from(src) {
+            *dst = src.clone();
+        }
+    } else {
+        drop(fields);
+        // SAFETY: `owner` is live.
+        if let Some(def) = unsafe { compat_field_default(owner, token) } {
+            *dst = def;
+        } else {
+            dst.set_empty();
+        }
+    }
+    true
+}
+
+/// Write a project instance field directly on a borrowed `Variant` (no AddRef/Release);
+/// returns `false` if `value` is not a non-null project instance (caller raises 91/424).
+#[inline]
+pub fn borrow_project_field_set(value: &Variant, token: i32, field_value: Variant) -> bool {
+    let Some(owner) = borrowed_project_owner(value) else {
+        return false;
+    };
+    compat_field_set(owner, token, field_value);
+    true
+}
+
+/// Write a trivially copyable scalar field directly on a borrowed project instance without
+/// cloning or constructing a temporary `Variant`. Returns `false` if `value` is not a non-null
+/// project instance or `src` is not trivially copyable.
+#[inline]
+pub fn borrow_project_field_set_trivial(value: &Variant, token: i32, src: &Variant) -> bool {
+    if !Variant::raw_vt_is_trivial_copy(src.raw_vt()) {
+        return false;
+    }
+    let Some(owner) = borrowed_project_owner(value) else {
+        return false;
+    };
+    // SAFETY: `owner` is a live `CompatObjectBase` retained by `value`.
+    let mut fields = unsafe { (*owner).fields.borrow_mut() };
+    if let Some(cell) = fields.get_mut(token) {
+        cell.copy_trivial_from(src);
+        return true;
+    }
+    if src.raw_vt() == 0 {
+        return true;
+    }
+    fields.set(token, src.clone());
+    true
+}
+
+/// Inspect a borrowed `Variant` for a non-null project instance without AddRef/Release,
+/// returning `(bundle_id, route_key, class_descriptor)`.
+#[inline]
+pub fn borrow_project_instance_info(
+    value: &Variant,
+) -> Option<(usize, i32, &'static RuntimeClassDescriptor)> {
+    let owner = borrowed_project_owner(value)?;
+    // SAFETY: `owner` is a live `CompatObjectBase` retained by `value`.
+    unsafe {
+        Some((
+            (*owner).identity.bundle_id as usize,
+            (*owner).identity.route_key,
+            (*owner).class_descriptor,
+        ))
+    }
+}
+
+/// Run `f` against a borrowed `Variant`'s native `VBA.Collection` data without AddRef/Release.
+#[inline]
+pub fn borrow_with_native_collection<R>(
+    value: &Variant,
+    f: impl FnOnce(&mut crate::collection::CollectionData) -> R,
+) -> Option<R> {
+    let owner = borrowed_project_owner(value)?;
+    // SAFETY: `owner` is a live `CompatObjectBase` retained by `value` on this single thread.
+    unsafe {
+        let mut guard = (*owner).native_state.borrow_mut();
+        let state = guard.get_or_insert_with(|| NativeObjectState::Collection(Default::default()));
+        match state {
+            NativeObjectState::Collection(data) => Some(f(data)),
+            NativeObjectState::Local(_) => None,
         }
     }
 }
@@ -1957,7 +2212,7 @@ impl ObjectRefExt for ObjectRef {
         // `RefCell` borrow is single-threaded (`ObjectRef` is neither `Send` nor `Sync`).
         unsafe {
             let guard = (*owner).fields.borrow();
-            Some(f(guard.get(&token).map(|cell| &**cell)))
+            Some(f(guard.get(token)))
         }
     }
 
@@ -1970,15 +2225,9 @@ impl ObjectRefExt for ObjectRef {
             return None;
         }
         let owner = compat_owner_from_unknown(self.raw_iunknown());
-        // SAFETY: as in `with_project_field` â€” `owner` is a live `CompatObjectBase` held
+        // SAFETY: as in `with_project_field` — `owner` is a live `CompatObjectBase` held
         // alive by this `ObjectRef`; the exclusive `RefCell` borrow is single-threaded.
-        unsafe {
-            (*owner)
-                .fields
-                .borrow_mut()
-                .get_mut(&token)
-                .map(|cell| f(cell))
-        }
+        unsafe { (*owner).fields.borrow_mut().get_mut(token).map(f) }
     }
 
     fn project_field_cell(&self, token: i32) -> Option<*mut Variant> {
@@ -1987,12 +2236,12 @@ impl ObjectRefExt for ObjectRef {
         }
         let owner = compat_owner_from_unknown(self.raw_iunknown());
         // SAFETY: as in `with_project_field_mut`; the returned pointer addresses the boxed
-        // cell, not the map, so later inserts do not move it.
+        // cell, not the store, so later inserts do not move it.
         unsafe {
-            let default = compat_field_default(owner, token).unwrap_or_else(Variant::empty);
             let mut fields = (*owner).fields.borrow_mut();
-            let cell = fields.entry(token).or_insert_with(|| Box::new(default));
-            Some(&mut **cell as *mut Variant)
+            Some(fields.cell_ptr(token, || {
+                compat_field_default(owner, token).unwrap_or_else(Variant::empty)
+            }))
         }
     }
 
@@ -2180,7 +2429,7 @@ fn from_compat_object(
         },
         class_descriptor,
         invoker: RefCell::new(default_invoker),
-        fields: RefCell::new(BTreeMap::new()),
+        fields: RefCell::new(ProjectFieldStore::new()),
         native_state: RefCell::new(None),
         error_info: crate::class_dispatch::SupportErrorInfoFace::new_unlinked(),
         cpc: crate::class_dispatch::ConnectionPointContainerFace::new_unlinked(),

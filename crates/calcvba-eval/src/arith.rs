@@ -159,6 +159,33 @@ fn read_f64(v: &Variant) -> Result<f64, ArithError> {
         .ok_or_else(ArithError::type_mismatch)
 }
 
+/// Decode a short ASCII String Variant into a stack buffer with zero heap allocations,
+/// falling back to `as_string` for non-ASCII or >64-unit strings.
+#[inline]
+fn with_string_text<R>(v: &Variant, f: impl FnOnce(&str) -> R) -> R {
+    if let Some(units) = v.borrowed_string_units()
+        && units.len() <= 64
+    {
+        let mut buf = [0u8; 64];
+        let mut ascii = true;
+        for (dst, &u) in buf.iter_mut().zip(units.iter()) {
+            if u < 0x80 {
+                *dst = u as u8;
+            } else {
+                ascii = false;
+                break;
+            }
+        }
+        if ascii {
+            // SAFETY: every byte in `buf[..units.len()]` is `< 0x80`, hence valid UTF-8.
+            let text = unsafe { std::str::from_utf8_unchecked(&buf[..units.len()]) };
+            return f(text);
+        }
+    }
+    let owned = as_string(v);
+    f(&owned)
+}
+
 /// Numeric value for arithmetic: `Empty`→0, `Boolean`→0/-1, numeric strings
 /// parsed. `Null` is the caller's responsibility.
 pub fn num(v: &Variant) -> Result<f64, ArithError> {
@@ -171,7 +198,7 @@ pub fn num(v: &Variant) -> Result<f64, ArithError> {
         } else {
             0.0
         }),
-        VarType::String => parse_vba_number(&as_string(v)).map_err(|e| {
+        VarType::String => with_string_text(v, parse_vba_number).map_err(|e| {
             if e.code() == 6 {
                 ArithError::overflow()
             } else {
@@ -201,7 +228,7 @@ pub fn int(v: &Variant) -> Result<i64, ArithError> {
             .ok_or_else(ArithError::overflow);
     }
     if v.vtype() == VarType::String
-        && let Some(n) = parse_vba_integer_text(&as_string(v))
+        && let Some(n) = with_string_text(v, parse_vba_integer_text)
     {
         return Ok(n);
     }
@@ -580,9 +607,9 @@ fn widening_add(l: &Variant, r: &Variant) -> R {
     if l.vtype() == VarType::String && r.vtype() == VarType::String {
         // Code-unit concatenation (see `concat_units`) so a `+` over two strings
         // preserves surrogate halves exactly, matching `&`.
-        let mut units = concat_units(l);
-        units.extend(concat_units(r));
-        return Ok(Variant::from_utf16_units(&units));
+        let lu = concat_units(l);
+        let ru = concat_units(r);
+        return Ok(Variant::from_utf16_concat(&lu, &ru));
     }
     if l.vtype() == VarType::Empty || r.vtype() == VarType::Empty {
         // `Empty + "5"` is the String "5" (and `Empty + "a"` the String "a").
@@ -717,13 +744,19 @@ pub fn pow(l: &Variant, r: &Variant) -> R {
 }
 
 /// The operand's UTF-16 code units for concatenation: a String Variant's units are
-/// read VERBATIM off its BSTR (preserving lone/paired surrogate halves), while a
-/// non-string coerces through its VBA string form (which carries no surrogates).
+/// borrowed VERBATIM off its BSTR (preserving lone/paired surrogate halves) with zero copies,
+/// while a non-string coerces through its VBA string form (which carries no surrogates).
 /// Concatenating at the code-unit level is what lets `ChrW(&HD83D) & ChrW(&HDE00)`
 /// form a real astral pair — a Rust-`String` round-trip would fold each half to U+FFFD.
-fn concat_units(v: &Variant) -> Vec<u16> {
-    v.string_units()
-        .unwrap_or_else(|| as_string(v).encode_utf16().collect())
+fn concat_units(v: &Variant) -> std::borrow::Cow<'_, [u16]> {
+    if is_null(v) {
+        return std::borrow::Cow::Borrowed(&[]);
+    }
+    if let Some(units) = v.borrowed_string_units() {
+        std::borrow::Cow::Borrowed(units)
+    } else {
+        std::borrow::Cow::Owned(as_string(v).encode_utf16().collect())
+    }
 }
 
 /// VBA `&`: `Null & Null` is `Null`; otherwise `Null` acts as `""`.
@@ -740,30 +773,30 @@ pub fn concat(l: &Variant, r: &Variant) -> R {
     // by bytes so `ChrB(65) & ChrB(66)` stays a two-byte string.
     let odd = |v: &Variant| v.string_byte_len().is_some_and(|n| n % 2 == 1);
     if odd(l) || odd(r) {
-        let bytes_of = |v: &Variant| -> Vec<u8> {
+        fn bytes_of(v: &Variant) -> std::borrow::Cow<'_, [u8]> {
             if is_null(v) {
-                Vec::new()
+                std::borrow::Cow::Borrowed(&[])
+            } else if let Some(bytes) = v.borrowed_string_bytes() {
+                std::borrow::Cow::Borrowed(bytes)
             } else {
-                v.string_bytes().unwrap_or_else(|| {
+                std::borrow::Cow::Owned(
                     as_string(v)
                         .encode_utf16()
                         .flat_map(u16::to_le_bytes)
-                        .collect()
-                })
+                        .collect(),
+                )
             }
-        };
-        let mut bytes = bytes_of(l);
-        bytes.extend(bytes_of(r));
+        }
+        let lb = bytes_of(l);
+        let rb = bytes_of(r);
+        let mut bytes = Vec::with_capacity(lb.len() + rb.len());
+        bytes.extend_from_slice(&lb);
+        bytes.extend_from_slice(&rb);
         return Ok(Variant::from_bstr_bytes(&bytes));
     }
-    let mut units = Vec::new();
-    if !is_null(l) {
-        units.extend(concat_units(l));
-    }
-    if !is_null(r) {
-        units.extend(concat_units(r));
-    }
-    Ok(Variant::from_utf16_units(&units))
+    let lu = concat_units(l);
+    let ru = concat_units(r);
+    Ok(Variant::from_utf16_concat(&lu, &ru))
 }
 
 // ── Comparison ────────────────────────────────────────────────────────────────
@@ -831,13 +864,12 @@ fn cmp_order(
     let both_string = l.vtype() == VarType::String && r.vtype() == VarType::String;
     if both_string {
         // Compare at the UTF-16 code-unit level (faithful to lone surrogate halves)
-        // rather than via the lossy `as_string`. Both are String Variants here, so
-        // `string_units` is `Some`.
-        let lu = l.string_units().unwrap_or_default();
-        let ru = r.string_units().unwrap_or_default();
+        // directly from the borrowed BSTR payloads (zero clones, zero allocations).
+        let lu = l.borrowed_string_units().unwrap_or(&[]);
+        let ru = r.borrowed_string_units().unwrap_or(&[]);
         return Ok(calcvba_runtime::string_compare::compare_utf16(
-            &lu,
-            &ru,
+            lu,
+            ru,
             mode == StringCompareMode::Text,
         ));
     }

@@ -2334,6 +2334,774 @@ impl SafeArray {
         }
     }
 
+    /// Reads one element of a 1D raw SAFEARRAY descriptor without allocating a bounds `Vec`.
+    /// Returns `None` if `raw` is null or not 1-dimensional (caller falls back to general path).
+    ///
+    /// # Safety
+    /// `raw` must be null or a live descriptor with shared access, and `record_layout` must be
+    /// null or point to its live `VbaRecordLayout` (held by an `Arc`).
+    pub unsafe fn raw_safearray_1d_read(
+        raw: *mut core::ffi::c_void,
+        record_layout: *const VbaRecordLayout,
+        subscript: i32,
+    ) -> Option<Result<Variant, (i32, String)>> {
+        if raw.is_null() {
+            return None;
+        }
+        let header = raw.cast::<RawSafeArray>();
+        // SAFETY: `raw` is non-null and live per caller contract.
+        let c_dims = unsafe { (*header).c_dims };
+        if c_dims != 1 {
+            return None;
+        }
+        // SAFETY: `c_dims == 1`, so `rgsabound[0]` holds the sole dimension's bound.
+        let bound = unsafe { (*header).rgsabound[0] };
+        let offset = i64::from(subscript) - i64::from(bound.lower);
+        if offset < 0 || offset >= i64::from(bound.count) {
+            return Some(Err((9, "Subscript out of range".to_string())));
+        }
+        let index = offset as usize;
+        // SAFETY: `header` is live.
+        let data = unsafe { (*header).pv_data.cast::<u8>() };
+        if data.is_null() {
+            return Some(Err((
+                13,
+                "SAFEARRAY has no materialized element payload".to_string(),
+            )));
+        }
+        if !record_layout.is_null() {
+            // SAFETY: caller guarantees `record_layout` points to the live `Arc`-owned layout.
+            let layout = unsafe {
+                Arc::increment_strong_count(record_layout);
+                Arc::from_raw(record_layout)
+            };
+            // SAFETY: `index < bound.count` and `data` is strided by `layout.size()`.
+            let ptr = unsafe { data.add(record_payload_offset(&layout, index)) };
+            return Some(
+                // SAFETY: `ptr` addresses an initialized `layout` record inside the live array.
+                unsafe { VbaRecord::clone_from_raw(ptr, layout) }
+                    .map(Variant::from_vba_record)
+                    .map_err(|e| (13, e)),
+            );
+        }
+        // SAFETY: `header` is live.
+        let Some(vt) = (unsafe { descriptor_vartype(header) }) else {
+            return Some(Err((13, "unsupported SAFEARRAY element type".to_string())));
+        };
+        match vt {
+            VT_I4_VALUE | VT_INT_VALUE => {
+                // SAFETY: `index < bound.count` and element type is 4-byte aligned `i32`.
+                Some(Ok(Variant::from_i32(unsafe {
+                    *data.cast::<i32>().add(index)
+                })))
+            }
+            VT_R8_VALUE => {
+                // SAFETY: `index < bound.count` and element type is 8-byte aligned `f64`.
+                Some(Ok(Variant::from_f64(unsafe {
+                    *data.cast::<f64>().add(index)
+                })))
+            }
+            VT_VARIANT_VALUE => {
+                // SAFETY: `index < bound.count` and element type is `Variant`.
+                Some(
+                    unsafe { &*data.cast::<Variant>().add(index) }
+                        .try_clone()
+                        .map_err(|e| (13, e)),
+                )
+            }
+            _ => {
+                let Some(kind) = SafeArrayElementKind::from_vartype(vt) else {
+                    return Some(Err((13, "unsupported SAFEARRAY element type".to_string())));
+                };
+                // SAFETY: `data` has `bound.count` elements of `kind` and `index < bound.count`.
+                Some(unsafe { decode_element_variant(kind, data, index) }.map_err(|e| (13, e)))
+            }
+        }
+    }
+
+    /// Writes one element of a 1D raw SAFEARRAY descriptor without allocating a bounds `Vec`.
+    /// Returns `None` if `raw` is null or not 1-dimensional (caller falls back to general path).
+    ///
+    /// # Safety
+    /// `raw` must be null or a live descriptor with exclusive access, and `record_layout` must be
+    /// null or point to its live `VbaRecordLayout`.
+    pub unsafe fn raw_safearray_1d_write(
+        raw: *mut core::ffi::c_void,
+        record_layout: *const VbaRecordLayout,
+        subscript: i32,
+        value: &Variant,
+    ) -> Option<Result<(), (i32, String)>> {
+        if raw.is_null() {
+            return None;
+        }
+        let header = raw.cast::<RawSafeArray>();
+        // SAFETY: `raw` is non-null and live per caller contract.
+        let c_dims = unsafe { (*header).c_dims };
+        if c_dims != 1 {
+            return None;
+        }
+        // SAFETY: `c_dims == 1`, so `rgsabound[0]` holds the sole dimension's bound.
+        let bound = unsafe { (*header).rgsabound[0] };
+        let offset = i64::from(subscript) - i64::from(bound.lower);
+        if offset < 0 || offset >= i64::from(bound.count) {
+            return Some(Err((9, "Subscript out of range".to_string())));
+        }
+        let index = offset as usize;
+        // SAFETY: `header` is live.
+        let data = unsafe { (*header).pv_data.cast::<u8>() };
+        if data.is_null() {
+            return Some(Err((
+                13,
+                "SAFEARRAY has no materialized element payload".to_string(),
+            )));
+        }
+        if !record_layout.is_null() {
+            // SAFETY: caller guarantees `record_layout` points to the live layout.
+            let layout = unsafe { &*record_layout };
+            let Some(source) = value.vba_record_ref() else {
+                return Some(Err((
+                    13,
+                    format!(
+                        "expected VBA record SAFEARRAY element, got {:?}",
+                        value.vtype()
+                    ),
+                )));
+            };
+            if !source.layout().matches_nominal(layout) {
+                return Some(Err((
+                    13,
+                    "VBA record SAFEARRAY element layout mismatch".to_string(),
+                )));
+            }
+            let mut replacement = match source.try_clone() {
+                Ok(r) => r,
+                Err(e) => return Some(Err((13, e))),
+            };
+            // SAFETY: `index < bound.count` and `data` is strided by `layout.size()`.
+            let ptr = unsafe { data.add(record_payload_offset(layout, index)) };
+            // SAFETY: exclusive access to the `index`-th record; swap then drop prior element.
+            unsafe { replacement.swap_with_raw(ptr) };
+            return Some(Ok(()));
+        }
+        // SAFETY: `header` is live.
+        let Some(vt) = (unsafe { descriptor_vartype(header) }) else {
+            return Some(Err((13, "unsupported SAFEARRAY element type".to_string())));
+        };
+        match vt {
+            VT_I4_VALUE | VT_INT_VALUE => {
+                if let Some(v) = value.as_i32() {
+                    // SAFETY: exclusive access to in-bounds aligned `i32` slot.
+                    unsafe { *data.cast::<i32>().add(index) = v };
+                    return Some(Ok(()));
+                }
+            }
+            VT_R8_VALUE => {
+                if let Some(v) = value.as_f64() {
+                    // SAFETY: exclusive access to in-bounds aligned `f64` slot.
+                    unsafe { *data.cast::<f64>().add(index) = v };
+                    return Some(Ok(()));
+                }
+                if let Some(v) = value.as_i32() {
+                    // SAFETY: exclusive access to in-bounds aligned `f64` slot.
+                    unsafe { *data.cast::<f64>().add(index) = f64::from(v) };
+                    return Some(Ok(()));
+                }
+            }
+            VT_VARIANT_VALUE => {
+                let replacement = match value.try_clone() {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err((13, e))),
+                };
+                // SAFETY: exclusive access to in-bounds `Variant` slot.
+                let previous = unsafe { data.cast::<Variant>().add(index).replace(replacement) };
+                drop(previous);
+                return Some(Ok(()));
+            }
+            _ => {}
+        }
+        let Some(kind) = SafeArrayElementKind::from_vartype(vt) else {
+            return Some(Err((13, "unsupported SAFEARRAY element type".to_string())));
+        };
+        // SAFETY: exclusive access to in-bounds slot of `kind`.
+        Some(unsafe { replace_element_variant(kind, data, index, value) }.map_err(|e| (13, e)))
+    }
+
+    /// Reads a single field of an element inside a 1D UDT `SAFEARRAY` in place, without
+    /// cloning the record or any sibling owning fields (BSTRs, arrays, Variants).
+    ///
+    /// # Safety
+    /// `raw` must be null or a live record SAFEARRAY descriptor with shared access, and
+    /// `layout` must be its exact `VbaRecordLayout`.
+    pub unsafe fn raw_safearray_1d_record_field_read(
+        raw: *mut core::ffi::c_void,
+        layout: &VbaRecordLayout,
+        subscript: i32,
+        field_index: usize,
+    ) -> Option<Result<Variant, (i32, String)>> {
+        if raw.is_null() {
+            return None;
+        }
+        let header = raw.cast::<RawSafeArray>();
+        // SAFETY: `raw` is non-null and live per caller contract.
+        if unsafe { (*header).c_dims } != 1 {
+            return None;
+        }
+        // SAFETY: `c_dims == 1`, so `rgsabound[0]` holds the sole dimension's bound.
+        let bound = unsafe { (*header).rgsabound[0] };
+        let offset = i64::from(subscript) - i64::from(bound.lower);
+        if offset < 0 || offset >= i64::from(bound.count) {
+            return Some(Err((9, "Subscript out of range".to_string())));
+        }
+        let index = offset as usize;
+        // SAFETY: `header` is live.
+        let data = unsafe { (*header).pv_data.cast::<u8>() };
+        if data.is_null() {
+            return Some(Err((
+                13,
+                "SAFEARRAY has no materialized element payload".to_string(),
+            )));
+        }
+        let Some(field) = layout.fields().get(field_index) else {
+            return Some(Err((
+                13,
+                format!("record field {field_index} out of range"),
+            )));
+        };
+        // SAFETY: `index < bound.count` and `field.offset() + field.size() <= layout.size()`
+        // (validated by `VbaRecordLayout::new`).
+        let field_ptr = unsafe { data.add(record_payload_offset(layout, index) + field.offset()) };
+        // SAFETY: `field_ptr` points to the live, aligned field of `field.kind()`.
+        Some(
+            unsafe { crate::vba_record::read_field_variant_at(field_ptr, field.kind()) }
+                .map_err(|e| (13, e)),
+        )
+    }
+
+    /// Writes a single field of an element inside a 1D UDT `SAFEARRAY` in place, without
+    /// cloning the record or reallocating sibling owning fields.
+    ///
+    /// # Safety
+    /// `raw` must be null or a live record SAFEARRAY descriptor with exclusive access, and
+    /// `layout` must be its exact `VbaRecordLayout`.
+    pub unsafe fn raw_safearray_1d_record_field_write(
+        raw: *mut core::ffi::c_void,
+        layout: &VbaRecordLayout,
+        subscript: i32,
+        field_index: usize,
+        value: &Variant,
+    ) -> Option<Result<(), (i32, String)>> {
+        if raw.is_null() {
+            return None;
+        }
+        let header = raw.cast::<RawSafeArray>();
+        // SAFETY: `raw` is non-null and live per caller contract.
+        if unsafe { (*header).c_dims } != 1 {
+            return None;
+        }
+        // SAFETY: `c_dims == 1`, so `rgsabound[0]` holds the sole dimension's bound.
+        let bound = unsafe { (*header).rgsabound[0] };
+        let offset = i64::from(subscript) - i64::from(bound.lower);
+        if offset < 0 || offset >= i64::from(bound.count) {
+            return Some(Err((9, "Subscript out of range".to_string())));
+        }
+        let index = offset as usize;
+        // SAFETY: `header` is live.
+        let data = unsafe { (*header).pv_data.cast::<u8>() };
+        if data.is_null() {
+            return Some(Err((
+                13,
+                "SAFEARRAY has no materialized element payload".to_string(),
+            )));
+        }
+        let Some(field) = layout.fields().get(field_index) else {
+            return Some(Err((
+                13,
+                format!("record field {field_index} out of range"),
+            )));
+        };
+        // SAFETY: `index < bound.count` and `field.offset() + field.size() <= layout.size()`.
+        let field_ptr = unsafe { data.add(record_payload_offset(layout, index) + field.offset()) };
+        // SAFETY: exclusive access to the live, aligned field of `field.kind()`.
+        Some(
+            unsafe { crate::vba_record::write_field_variant_at(field_ptr, field.kind(), value) }
+                .map_err(|e| (13, e)),
+        )
+    }
+
+    /// Reads an `i32` from a known `VT_ARRAY | VT_I4` 1D descriptor directly into `dst`.
+    ///
+    /// # Safety
+    /// `raw` must be null or a live `VT_I4` descriptor with shared access.
+    #[inline]
+    pub unsafe fn raw_safearray_1d_read_i32_into(
+        raw: *mut core::ffi::c_void,
+        subscript: i32,
+        dst: &mut Variant,
+    ) -> Option<Result<(), (i32, String)>> {
+        if raw.is_null() {
+            return None;
+        }
+        let header = raw.cast::<RawSafeArray>();
+        // SAFETY: `raw` is non-null and live per caller contract.
+        if unsafe { (*header).c_dims } != 1 {
+            return None;
+        }
+        // SAFETY: `c_dims == 1`, so `rgsabound[0]` holds the sole dimension's bound.
+        let bound = unsafe { (*header).rgsabound[0] };
+        let offset = i64::from(subscript) - i64::from(bound.lower);
+        if offset < 0 || offset >= i64::from(bound.count) {
+            return Some(Err((9, "Subscript out of range".to_string())));
+        }
+        // SAFETY: `header` is live.
+        let data = unsafe { (*header).pv_data.cast::<i32>() };
+        if data.is_null() {
+            return None;
+        }
+        // SAFETY: `offset < bound.count` and element type is aligned `i32`.
+        dst.set_i32(unsafe { *data.add(offset as usize) });
+        Some(Ok(()))
+    }
+
+    /// Reads an `f64` from a known `VT_ARRAY | VT_R8` 1D descriptor directly into `dst`.
+    ///
+    /// # Safety
+    /// `raw` must be null or a live `VT_R8` descriptor with shared access.
+    #[inline]
+    pub unsafe fn raw_safearray_1d_read_f64_into(
+        raw: *mut core::ffi::c_void,
+        subscript: i32,
+        dst: &mut Variant,
+    ) -> Option<Result<(), (i32, String)>> {
+        if raw.is_null() {
+            return None;
+        }
+        let header = raw.cast::<RawSafeArray>();
+        // SAFETY: `raw` is non-null and live per caller contract.
+        if unsafe { (*header).c_dims } != 1 {
+            return None;
+        }
+        // SAFETY: `c_dims == 1`, so `rgsabound[0]` holds the sole dimension's bound.
+        let bound = unsafe { (*header).rgsabound[0] };
+        let offset = i64::from(subscript) - i64::from(bound.lower);
+        if offset < 0 || offset >= i64::from(bound.count) {
+            return Some(Err((9, "Subscript out of range".to_string())));
+        }
+        // SAFETY: `header` is live.
+        let data = unsafe { (*header).pv_data.cast::<f64>() };
+        if data.is_null() {
+            return None;
+        }
+        // SAFETY: `offset < bound.count` and element type is aligned `f64`.
+        dst.set_f64(unsafe { *data.add(offset as usize) });
+        Some(Ok(()))
+    }
+
+    /// Writes an `i32` into a known `VT_ARRAY | VT_I4` 1D descriptor.
+    ///
+    /// # Safety
+    /// `raw` must be null or a live `VT_I4` descriptor with exclusive access.
+    #[inline]
+    pub unsafe fn raw_safearray_1d_write_i32_typed(
+        raw: *mut core::ffi::c_void,
+        subscript: i32,
+        value: i32,
+    ) -> Option<Result<(), (i32, String)>> {
+        if raw.is_null() {
+            return None;
+        }
+        let header = raw.cast::<RawSafeArray>();
+        // SAFETY: `raw` is non-null and live per caller contract.
+        if unsafe { (*header).c_dims } != 1 {
+            return None;
+        }
+        // SAFETY: `c_dims == 1`, so `rgsabound[0]` holds the sole dimension's bound.
+        let bound = unsafe { (*header).rgsabound[0] };
+        let offset = i64::from(subscript) - i64::from(bound.lower);
+        if offset < 0 || offset >= i64::from(bound.count) {
+            return Some(Err((9, "Subscript out of range".to_string())));
+        }
+        // SAFETY: `header` is live.
+        let data = unsafe { (*header).pv_data.cast::<i32>() };
+        if data.is_null() {
+            return None;
+        }
+        // SAFETY: exclusive access to in-bounds aligned `i32` slot.
+        unsafe { *data.add(offset as usize) = value };
+        Some(Ok(()))
+    }
+
+    /// Writes an `f64` into a known `VT_ARRAY | VT_R8` 1D descriptor.
+    ///
+    /// # Safety
+    /// `raw` must be null or a live `VT_R8` descriptor with exclusive access.
+    #[inline]
+    pub unsafe fn raw_safearray_1d_write_f64_typed(
+        raw: *mut core::ffi::c_void,
+        subscript: i32,
+        value: f64,
+    ) -> Option<Result<(), (i32, String)>> {
+        if raw.is_null() {
+            return None;
+        }
+        let header = raw.cast::<RawSafeArray>();
+        // SAFETY: `raw` is non-null and live per caller contract.
+        if unsafe { (*header).c_dims } != 1 {
+            return None;
+        }
+        // SAFETY: `c_dims == 1`, so `rgsabound[0]` holds the sole dimension's bound.
+        let bound = unsafe { (*header).rgsabound[0] };
+        let offset = i64::from(subscript) - i64::from(bound.lower);
+        if offset < 0 || offset >= i64::from(bound.count) {
+            return Some(Err((9, "Subscript out of range".to_string())));
+        }
+        // SAFETY: `header` is live.
+        let data = unsafe { (*header).pv_data.cast::<f64>() };
+        if data.is_null() {
+            return None;
+        }
+        // SAFETY: exclusive access to in-bounds aligned `f64` slot.
+        unsafe { *data.add(offset as usize) = value };
+        Some(Ok(()))
+    }
+
+    /// Reads a 1D element directly into `dst`, avoiding temporary `Variant` construction for
+    /// `VT_I4` and `VT_R8` arrays.
+    ///
+    /// # Safety
+    /// Same safety contract as [`Self::raw_safearray_1d_read`].
+    pub unsafe fn raw_safearray_1d_read_into(
+        raw: *mut core::ffi::c_void,
+        record_layout: *const VbaRecordLayout,
+        subscript: i32,
+        dst: &mut Variant,
+    ) -> Option<Result<(), (i32, String)>> {
+        if raw.is_null() {
+            return None;
+        }
+        let header = raw.cast::<RawSafeArray>();
+        // SAFETY: `raw` is non-null and live per caller contract.
+        if unsafe { (*header).c_dims } != 1 {
+            return None;
+        }
+        // SAFETY: `c_dims == 1`, so `rgsabound[0]` holds the sole dimension's bound.
+        let bound = unsafe { (*header).rgsabound[0] };
+        let offset = i64::from(subscript) - i64::from(bound.lower);
+        if offset < 0 || offset >= i64::from(bound.count) {
+            return Some(Err((9, "Subscript out of range".to_string())));
+        }
+        let index = offset as usize;
+        // SAFETY: `header` is live.
+        let data = unsafe { (*header).pv_data.cast::<u8>() };
+        if data.is_null() {
+            return Some(Err((
+                13,
+                "SAFEARRAY has no materialized element payload".to_string(),
+            )));
+        }
+        if record_layout.is_null() {
+            // SAFETY: `header` is live.
+            let Some(vt) = (unsafe { descriptor_vartype(header) }) else {
+                return Some(Err((13, "unsupported SAFEARRAY element type".to_string())));
+            };
+            match vt {
+                VT_I4_VALUE | VT_INT_VALUE => {
+                    // SAFETY: `index < bound.count` and element type is 4-byte aligned `i32`.
+                    dst.set_i32(unsafe { *data.cast::<i32>().add(index) });
+                    return Some(Ok(()));
+                }
+                VT_R8_VALUE => {
+                    // SAFETY: `index < bound.count` and element type is 8-byte aligned `f64`.
+                    dst.set_f64(unsafe { *data.cast::<f64>().add(index) });
+                    return Some(Ok(()));
+                }
+                VT_VARIANT_VALUE => {
+                    // SAFETY: `index < bound.count` and element type is `Variant`.
+                    let src = unsafe { &*data.cast::<Variant>().add(index) };
+                    if dst.copy_trivial_from(src) {
+                        return Some(Ok(()));
+                    }
+                    return Some(match src.try_clone() {
+                        Ok(v) => {
+                            *dst = v;
+                            Ok(())
+                        }
+                        Err(e) => Err((13, e)),
+                    });
+                }
+                _ => {}
+            }
+        }
+        // SAFETY: forwards this function's raw descriptor contract.
+        match unsafe { Self::raw_safearray_1d_read(raw, record_layout, subscript) }? {
+            Ok(v) => {
+                *dst = v;
+                Some(Ok(()))
+            }
+            Err(e) => Some(Err(e)),
+        }
+    }
+
+    /// Writes an `i32` into a 1D `VT_I4`/`VT_R8`/`VT_VARIANT` array without temporary `Variant`
+    /// construction. Returns `None` to fall back to the general path for other element types.
+    ///
+    /// # Safety
+    /// `raw` must be null or a live non-record descriptor with exclusive access.
+    pub unsafe fn raw_safearray_1d_write_i32(
+        raw: *mut core::ffi::c_void,
+        subscript: i32,
+        value: i32,
+    ) -> Option<Result<(), (i32, String)>> {
+        if raw.is_null() {
+            return None;
+        }
+        let header = raw.cast::<RawSafeArray>();
+        // SAFETY: `raw` is non-null and live per caller contract.
+        if unsafe { (*header).c_dims } != 1 {
+            return None;
+        }
+        // SAFETY: `c_dims == 1`, so `rgsabound[0]` holds the sole dimension's bound.
+        let bound = unsafe { (*header).rgsabound[0] };
+        let offset = i64::from(subscript) - i64::from(bound.lower);
+        if offset < 0 || offset >= i64::from(bound.count) {
+            return Some(Err((9, "Subscript out of range".to_string())));
+        }
+        let index = offset as usize;
+        // SAFETY: `header` is live.
+        let data = unsafe { (*header).pv_data.cast::<u8>() };
+        if data.is_null() {
+            return None;
+        }
+        // SAFETY: `header` is live.
+        let vt = unsafe { descriptor_vartype(header) }?;
+        match vt {
+            VT_I4_VALUE | VT_INT_VALUE => {
+                // SAFETY: exclusive access to in-bounds aligned `i32` slot.
+                unsafe { *data.cast::<i32>().add(index) = value };
+                Some(Ok(()))
+            }
+            VT_R8_VALUE => {
+                // SAFETY: exclusive access to in-bounds aligned `f64` slot.
+                unsafe { *data.cast::<f64>().add(index) = f64::from(value) };
+                Some(Ok(()))
+            }
+            VT_VARIANT_VALUE => {
+                // SAFETY: exclusive access to in-bounds `Variant` slot.
+                unsafe { (&mut *data.cast::<Variant>().add(index)).set_i32(value) };
+                Some(Ok(()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Writes an `f64` into a 1D `VT_R8`/`VT_VARIANT` array without temporary `Variant`
+    /// construction. Returns `None` to fall back to the general path for other element types.
+    ///
+    /// # Safety
+    /// `raw` must be null or a live non-record descriptor with exclusive access.
+    pub unsafe fn raw_safearray_1d_write_f64(
+        raw: *mut core::ffi::c_void,
+        subscript: i32,
+        value: f64,
+    ) -> Option<Result<(), (i32, String)>> {
+        if raw.is_null() {
+            return None;
+        }
+        let header = raw.cast::<RawSafeArray>();
+        // SAFETY: `raw` is non-null and live per caller contract.
+        if unsafe { (*header).c_dims } != 1 {
+            return None;
+        }
+        // SAFETY: `c_dims == 1`, so `rgsabound[0]` holds the sole dimension's bound.
+        let bound = unsafe { (*header).rgsabound[0] };
+        let offset = i64::from(subscript) - i64::from(bound.lower);
+        if offset < 0 || offset >= i64::from(bound.count) {
+            return Some(Err((9, "Subscript out of range".to_string())));
+        }
+        let index = offset as usize;
+        // SAFETY: `header` is live.
+        let data = unsafe { (*header).pv_data.cast::<u8>() };
+        if data.is_null() {
+            return None;
+        }
+        // SAFETY: `header` is live.
+        let vt = unsafe { descriptor_vartype(header) }?;
+        match vt {
+            VT_R8_VALUE => {
+                // SAFETY: exclusive access to in-bounds aligned `f64` slot.
+                unsafe { *data.cast::<f64>().add(index) = value };
+                Some(Ok(()))
+            }
+            VT_VARIANT_VALUE => {
+                // SAFETY: exclusive access to in-bounds `Variant` slot.
+                unsafe { (&mut *data.cast::<Variant>().add(index)).set_f64(value) };
+                Some(Ok(()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Reads a single field of an element inside a 1D UDT `SAFEARRAY` directly into `dst`,
+    /// avoiding temporary `Variant` construction for `Long` and `Double` fields.
+    ///
+    /// # Safety
+    /// Same safety contract as [`Self::raw_safearray_1d_record_field_read`].
+    pub unsafe fn raw_safearray_1d_record_field_read_into(
+        raw: *mut core::ffi::c_void,
+        layout: &VbaRecordLayout,
+        subscript: i32,
+        field_index: usize,
+        dst: &mut Variant,
+    ) -> Option<Result<(), (i32, String)>> {
+        if raw.is_null() {
+            return None;
+        }
+        let header = raw.cast::<RawSafeArray>();
+        // SAFETY: `raw` is non-null and live per caller contract.
+        if unsafe { (*header).c_dims } != 1 {
+            return None;
+        }
+        // SAFETY: `c_dims == 1`, so `rgsabound[0]` holds the sole dimension's bound.
+        let bound = unsafe { (*header).rgsabound[0] };
+        let offset = i64::from(subscript) - i64::from(bound.lower);
+        if offset < 0 || offset >= i64::from(bound.count) {
+            return Some(Err((9, "Subscript out of range".to_string())));
+        }
+        let index = offset as usize;
+        // SAFETY: `header` is live.
+        let data = unsafe { (*header).pv_data.cast::<u8>() };
+        if data.is_null() {
+            return Some(Err((
+                13,
+                "SAFEARRAY has no materialized element payload".to_string(),
+            )));
+        }
+        let Some(field) = layout.fields().get(field_index) else {
+            return Some(Err((
+                13,
+                format!("record field {field_index} out of range"),
+            )));
+        };
+        // SAFETY: `index < bound.count` and `field.offset() + field.size() <= layout.size()`.
+        let field_ptr = unsafe { data.add(record_payload_offset(layout, index) + field.offset()) };
+        match field.kind() {
+            crate::vba_record::VbaRecordFieldKind::Double => {
+                // SAFETY: `field_ptr` points to a live, aligned `f64` field.
+                dst.set_f64(unsafe { *field_ptr.cast::<f64>() });
+                Some(Ok(()))
+            }
+            crate::vba_record::VbaRecordFieldKind::Long => {
+                // SAFETY: `field_ptr` points to a live, aligned `i32` field.
+                dst.set_i32(unsafe { *field_ptr.cast::<i32>() });
+                Some(Ok(()))
+            }
+            kind => {
+                // SAFETY: `field_ptr` points to a live, aligned field of `kind`.
+                match unsafe { crate::vba_record::read_field_variant_at(field_ptr, kind) } {
+                    Ok(v) => {
+                        *dst = v;
+                        Some(Ok(()))
+                    }
+                    Err(e) => Some(Err((13, e))),
+                }
+            }
+        }
+    }
+
+    /// Writes an `f64` directly into a `Double` field of a 1D UDT `SAFEARRAY` element.
+    /// Returns `None` if the target field is not `Double` (caller falls back to general write).
+    ///
+    /// # Safety
+    /// Same safety contract as [`Self::raw_safearray_1d_record_field_write`].
+    pub unsafe fn raw_safearray_1d_record_field_write_f64(
+        raw: *mut core::ffi::c_void,
+        layout: &VbaRecordLayout,
+        subscript: i32,
+        field_index: usize,
+        value: f64,
+    ) -> Option<Result<(), (i32, String)>> {
+        if raw.is_null() {
+            return None;
+        }
+        let header = raw.cast::<RawSafeArray>();
+        // SAFETY: `raw` is non-null and live per caller contract.
+        if unsafe { (*header).c_dims } != 1 {
+            return None;
+        }
+        // SAFETY: `c_dims == 1`, so `rgsabound[0]` holds the sole dimension's bound.
+        let bound = unsafe { (*header).rgsabound[0] };
+        let offset = i64::from(subscript) - i64::from(bound.lower);
+        if offset < 0 || offset >= i64::from(bound.count) {
+            return Some(Err((9, "Subscript out of range".to_string())));
+        }
+        let index = offset as usize;
+        // SAFETY: `header` is live.
+        let data = unsafe { (*header).pv_data.cast::<u8>() };
+        if data.is_null() {
+            return None;
+        }
+        let field = layout.fields().get(field_index)?;
+        if !matches!(field.kind(), crate::vba_record::VbaRecordFieldKind::Double) {
+            return None;
+        }
+        // SAFETY: `index < bound.count`, exclusive access, aligned `f64` field.
+        unsafe {
+            *data
+                .add(record_payload_offset(layout, index) + field.offset())
+                .cast::<f64>() = value;
+        }
+        Some(Ok(()))
+    }
+
+    /// Writes an `i32` directly into a `Long` or `Double` field of a 1D UDT `SAFEARRAY` element.
+    /// Returns `None` if the target field is neither `Long` nor `Double`.
+    ///
+    /// # Safety
+    /// Same safety contract as [`Self::raw_safearray_1d_record_field_write`].
+    pub unsafe fn raw_safearray_1d_record_field_write_i32(
+        raw: *mut core::ffi::c_void,
+        layout: &VbaRecordLayout,
+        subscript: i32,
+        field_index: usize,
+        value: i32,
+    ) -> Option<Result<(), (i32, String)>> {
+        if raw.is_null() {
+            return None;
+        }
+        let header = raw.cast::<RawSafeArray>();
+        // SAFETY: `raw` is non-null and live per caller contract.
+        if unsafe { (*header).c_dims } != 1 {
+            return None;
+        }
+        // SAFETY: `c_dims == 1`, so `rgsabound[0]` holds the sole dimension's bound.
+        let bound = unsafe { (*header).rgsabound[0] };
+        let offset = i64::from(subscript) - i64::from(bound.lower);
+        if offset < 0 || offset >= i64::from(bound.count) {
+            return Some(Err((9, "Subscript out of range".to_string())));
+        }
+        let index = offset as usize;
+        // SAFETY: `header` is live.
+        let data = unsafe { (*header).pv_data.cast::<u8>() };
+        if data.is_null() {
+            return None;
+        }
+        let field = layout.fields().get(field_index)?;
+        // SAFETY: `index < bound.count`, exclusive access, aligned scalar field.
+        let field_ptr = unsafe { data.add(record_payload_offset(layout, index) + field.offset()) };
+        match field.kind() {
+            crate::vba_record::VbaRecordFieldKind::Long => {
+                // SAFETY: aligned `i32` field.
+                unsafe { *field_ptr.cast::<i32>() = value };
+                Some(Ok(()))
+            }
+            crate::vba_record::VbaRecordFieldKind::Double => {
+                // SAFETY: aligned `f64` field.
+                unsafe { *field_ptr.cast::<f64>() = f64::from(value) };
+                Some(Ok(()))
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn try_clone(&self) -> Result<Self, String> {
         let bounds = self.raw_bounds();
         let data = self.data();

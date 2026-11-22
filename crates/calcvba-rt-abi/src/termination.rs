@@ -13,7 +13,7 @@ pub fn drain_terminations<'h, T>(
     mut invoke: impl FnMut(&mut T, usize, FuncId, Variant),
 ) {
     let exec = state(context);
-    if exec.draining {
+    if exec.draining || !exec.object_owner.has_pending() {
         return;
     }
     let _owner = exec.object_owner.enter();
@@ -119,7 +119,7 @@ pub(super) unsafe fn maybe_drain_with_bridge(state: *mut RawExecState) -> Result
             .ok_or_else(|| Fault::new(5, "runtime ABI state pointer is null"))?,
     );
     let exec = state.exec();
-    if exec.draining {
+    if exec.draining || !exec.object_owner.has_pending() {
         return Ok(());
     }
     let Some(ProcInvokeBridge { ctx, invoke }) = exec.proc_invoker else {

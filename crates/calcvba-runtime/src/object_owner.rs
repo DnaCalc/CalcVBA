@@ -163,6 +163,13 @@ impl RuntimeObjectOwner {
         &self.channel
     }
 
+    /// Lock-free check for queued `Class_Terminate` callbacks or deferred foreign-thread
+    /// drops on this owner's channel, without touching thread-local owner scopes.
+    #[inline]
+    pub fn has_pending(&self) -> bool {
+        self.channel.has_pending.load(Ordering::Acquire)
+    }
+
     pub fn enter(&self) -> ObjectOwnerScope {
         let previous = CURRENT_OWNER.with(|owner| owner.borrow_mut().replace(self.clone()));
         ObjectOwnerScope {

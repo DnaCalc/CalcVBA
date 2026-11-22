@@ -35,10 +35,10 @@ pub fn len(args: &[Variant]) -> LibResult<Variant> {
     if value.vtype() == VarType::Error {
         return Err(LibError::type_mismatch("Len of an error value"));
     }
-    // Count UTF-16 CODE UNITS (VBA's string length): read them directly off a String
-    // Variant's BSTR so a lone/paired surrogate half counts as one unit each (a UTF-8
-    // round-trip via `as_str` would fold a lone surrogate to U+FFFD). Non-strings coerce.
-    let units = match value.string_units() {
+    // Count UTF-16 CODE UNITS (VBA's string length): borrow directly off a String
+    // Variant's BSTR so a lone/paired surrogate half counts as one unit each with zero
+    // copies or allocations. Non-strings coerce.
+    let units = match value.borrowed_string_units() {
         Some(units) => units.len(),
         None => as_str(value)?.encode_utf16().count(),
     };
@@ -77,23 +77,34 @@ fn arg_present(args: &[Variant], index: usize) -> Option<&Variant> {
 /// (which carries no surrogates). Mirrors the VM operator path (`arith::cmp_order`) so
 /// `StrComp` distinguishes distinct lone surrogate halves instead of folding both to U+FFFD
 /// via a lossy `as_str` round-trip — VBA strings are binary UTF-16 code-unit sequences.
-fn compare_units(value: &Variant) -> LibResult<Vec<u16>> {
-    match value.string_units() {
-        Some(units) => Ok(units),
-        None => Ok(as_str(value)?.encode_utf16().collect()),
+fn compare_units(value: &Variant) -> LibResult<std::borrow::Cow<'_, [u16]>> {
+    match value.borrowed_string_units() {
+        Some(units) => Ok(std::borrow::Cow::Borrowed(units)),
+        None => Ok(std::borrow::Cow::Owned(
+            as_str(value)?.encode_utf16().collect(),
+        )),
+    }
+}
+
+fn borrowed_string_units(value: &Variant) -> LibResult<std::borrow::Cow<'_, [u16]>> {
+    match value.borrowed_string_units() {
+        Some(units) => Ok(std::borrow::Cow::Borrowed(units)),
+        None => Ok(std::borrow::Cow::Owned(
+            as_str(value)?.encode_utf16().collect(),
+        )),
     }
 }
 
 fn string_units(value: &Variant) -> LibResult<Vec<u16>> {
-    match value.string_units() {
-        Some(units) => Ok(units),
+    match value.borrowed_string_units() {
+        Some(units) => Ok(units.to_vec()),
         None => Ok(as_str(value)?.encode_utf16().collect()),
     }
 }
 
 fn string_bytes(value: &Variant) -> LibResult<Vec<u8>> {
-    match value.string_bytes() {
-        Some(bytes) => Ok(bytes),
+    match value.borrowed_string_bytes() {
+        Some(bytes) => Ok(bytes.to_vec()),
         None => Ok(as_str(value)?
             .encode_utf16()
             .flat_map(u16::to_le_bytes)
@@ -111,7 +122,7 @@ fn string_slice_length(value: &Variant) -> LibResult<usize> {
 }
 
 pub fn left(args: &[Variant]) -> LibResult<Variant> {
-    let units = string_units(need(args, 0)?)?;
+    let units = borrowed_string_units(need(args, 0)?)?;
     let n = string_slice_length(need(args, 1)?)?;
     Ok(Variant::from_utf16_units(&units[..n.min(units.len())]))
 }
@@ -181,7 +192,7 @@ pub fn instr_b(args: &[Variant]) -> LibResult<Variant> {
 }
 
 pub fn right(args: &[Variant]) -> LibResult<Variant> {
-    let units = string_units(need(args, 0)?)?;
+    let units = borrowed_string_units(need(args, 0)?)?;
     let n = string_slice_length(need(args, 1)?)?.min(units.len());
     Ok(Variant::from_utf16_units(&units[units.len() - n..]))
 }
@@ -192,8 +203,30 @@ pub fn right_b(args: &[Variant]) -> LibResult<Variant> {
     Ok(Variant::from_bstr_bytes(&bytes[bytes.len() - n..]))
 }
 
+pub fn mid_units(units: &[u16], start: i32, take: Option<i32>) -> LibResult<Variant> {
+    if start < 1 {
+        return Err(LibError::invalid_call(
+            "Mid start must be greater than or equal to 1",
+        ));
+    }
+    // VBA rejects the maximum Long start before checking the string length (P_Mid.23).
+    if start == i32::MAX {
+        return Err(LibError::invalid_call(default_error_message(5)));
+    }
+    let from = ((start as usize) - 1).min(units.len());
+    let len = match take {
+        Some(n) if n < 0 => {
+            return Err(LibError::invalid_call("expected a non-negative count"));
+        }
+        Some(n) => n as usize,
+        None => units.len() - from,
+    };
+    let to = from.saturating_add(len).min(units.len());
+    Ok(Variant::from_utf16_units(&units[from..to]))
+}
+
 pub fn mid(args: &[Variant]) -> LibResult<Variant> {
-    let units = string_units(need(args, 0)?)?;
+    let units = borrowed_string_units(need(args, 0)?)?;
     let start = one_based_mid_start(need(args, 1)?)?;
     // VBA rejects the maximum Long start before checking the string length (P_Mid.23).
     if start == i32::MAX as usize {
@@ -302,6 +335,20 @@ fn one_based_mid_start(value: &Variant) -> LibResult<usize> {
     usize::try_from(start).map_err(|_| LibError::overflow("Mid start overflow"))
 }
 
+pub fn instr_binary_units(start: i32, hay: &[u16], needle: &[u16]) -> LibResult<i32> {
+    if hay.is_empty() {
+        return Ok(0);
+    }
+    if needle.is_empty() {
+        return Ok(start);
+    }
+    if !(1..=i32::MAX / 2 + 1).contains(&start) {
+        return Err(LibError::invalid_call("invalid InStr start position"));
+    }
+    let from = start as usize - 1;
+    Ok(find_units(hay, needle, from).map_or(0, |at| at as i32 + 1))
+}
+
 /// `InStr([start], string1, string2, [compare])` and
 /// `InStrRev(string1, string2, [start], [compare])`.
 pub fn instr(args: &[Variant], rev: bool) -> LibResult<Variant> {
@@ -367,8 +414,10 @@ fn instr_text_compare(mode: i32, rev: bool) -> LibResult<bool> {
 /// arg 2 as the compare mode).
 fn instr_rev(args: &[Variant]) -> LibResult<Variant> {
     let text = instr_text_compare(instr_compare_mode(args, 3)?, true)?;
-    let hay = compare_fold_units(&units_arg(need(args, 0)?)?, text);
-    let needle = compare_fold_units(&units_arg(need(args, 1)?)?, text);
+    let hay_raw = units_arg(need(args, 0)?)?;
+    let needle_raw = units_arg(need(args, 1)?)?;
+    let hay = compare_fold_units(&hay_raw, text);
+    let needle = compare_fold_units(&needle_raw, text);
     let start = match arg_present(args, 2) {
         Some(v) => as_i32(v)?,
         None => -1,
@@ -401,11 +450,17 @@ fn instr_rev(args: &[Variant]) -> LibResult<Variant> {
 
 /// A string argument as its UTF-16 code units, unpaired surrogates included (VBA strings are
 /// code-unit sequences; a Rust `String` would replace a lone surrogate with U+FFFD).
-fn units_arg(value: &Variant) -> LibResult<Vec<u16>> {
+/// Borrows directly from a String Variant's BSTR with zero allocations.
+fn units_arg(value: &Variant) -> LibResult<std::borrow::Cow<'_, [u16]>> {
     if value.vtype() == VarType::Null {
         return Err(LibError::invalid_use_of_null());
     }
-    Ok(variant_to_vba_string(value)?.payload_units().to_vec())
+    if let Some(units) = value.borrowed_string_units() {
+        return Ok(std::borrow::Cow::Borrowed(units));
+    }
+    Ok(std::borrow::Cow::Owned(
+        variant_to_vba_string(value)?.payload_units().to_vec(),
+    ))
 }
 
 fn vunits(units: &[u16]) -> Variant {
@@ -426,11 +481,11 @@ fn map_case_units(units: &[u16], map: impl Fn(char) -> char) -> Vec<u16> {
 }
 
 /// The units a text comparison matches on: each code unit case-folded on its own.
-fn compare_fold_units(units: &[u16], text: bool) -> Vec<u16> {
+fn compare_fold_units(units: &[u16], text: bool) -> std::borrow::Cow<'_, [u16]> {
     if text {
-        map_case_units(units, |c| simple_case(c, c.to_lowercase()))
+        std::borrow::Cow::Owned(map_case_units(units, |c| simple_case(c, c.to_lowercase())))
     } else {
-        units.to_vec()
+        std::borrow::Cow::Borrowed(units)
     }
 }
 
@@ -438,31 +493,90 @@ fn find_units(hay: &[u16], needle: &[u16], from: usize) -> Option<usize> {
     if needle.is_empty() || from > hay.len() || needle.len() > hay.len() - from {
         return None;
     }
+    if needle.len() == 1 {
+        let target = needle[0];
+        return hay[from..]
+            .iter()
+            .position(|&u| u == target)
+            .map(|p| from + p);
+    }
     (from..=hay.len() - needle.len()).find(|&i| hay[i..i + needle.len()] == *needle)
 }
 
 pub fn lcase(args: &[Variant]) -> LibResult<Variant> {
     let units = units_arg(need(args, 0)?)?;
+    if units.iter().all(|&u| u < 0x80) {
+        if units.len() <= 64 {
+            let mut buf = [0u16; 64];
+            for (dst, &u) in buf.iter_mut().zip(units.iter()) {
+                *dst = if (b'A' as u16..=b'Z' as u16).contains(&u) {
+                    u + 32
+                } else {
+                    u
+                };
+            }
+            return Ok(vunits(&buf[..units.len()]));
+        }
+        let mapped: Vec<u16> = units
+            .iter()
+            .map(|&u| {
+                if (b'A' as u16..=b'Z' as u16).contains(&u) {
+                    u + 32
+                } else {
+                    u
+                }
+            })
+            .collect();
+        return Ok(vunits(&mapped));
+    }
     Ok(vunits(&map_case_units(&units, |c| match c {
         // Excel preserves capital sharp s and the ohm sign (P_LCase.9/.12).
         '\u{1e9e}' | '\u{2126}' => c,
         _ => simple_case(c, c.to_lowercase()),
     })))
 }
-pub fn ucase(args: &[Variant]) -> LibResult<Variant> {
-    let units = units_arg(need(args, 0)?)?;
-    Ok(vunits(&map_case_units(&units, |c| match c {
+pub fn ucase_units(units: &[u16]) -> Variant {
+    if units.iter().all(|&u| u < 0x80) {
+        if units.len() <= 64 {
+            let mut buf = [0u16; 64];
+            for (dst, &u) in buf.iter_mut().zip(units.iter()) {
+                *dst = if (b'a' as u16..=b'z' as u16).contains(&u) {
+                    u - 32
+                } else {
+                    u
+                };
+            }
+            return vunits(&buf[..units.len()]);
+        }
+        let mapped: Vec<u16> = units
+            .iter()
+            .map(|&u| {
+                if (b'a' as u16..=b'z' as u16).contains(&u) {
+                    u - 32
+                } else {
+                    u
+                }
+            })
+            .collect();
+        return vunits(&mapped);
+    }
+    vunits(&map_case_units(units, |c| match c {
         // Excel preserves dotless i and Greek final sigma (P_UCase.10/.12).
         '\u{0131}' | '\u{03c2}' => c,
         _ => simple_case(c, c.to_uppercase()),
-    })))
+    }))
+}
+
+pub fn ucase(args: &[Variant]) -> LibResult<Variant> {
+    let units = units_arg(need(args, 0)?)?;
+    Ok(ucase_units(&units))
 }
 
 pub fn split(args: &[Variant]) -> LibResult<Variant> {
     let s = units_arg(need(args, 0)?)?;
     let delim = match opt(args, 1) {
         Some(v) => units_arg(v)?,
-        None => vec![u16::from(b' ')],
+        None => std::borrow::Cow::Borrowed(&[u16::from(b' ')][..]),
     };
     let limit = match arg_present(args, 2) {
         Some(v) => as_i32(v)?,
@@ -657,6 +771,29 @@ pub fn replace(args: &[Variant]) -> LibResult<Variant> {
     } else {
         count as usize
     };
+    if needle.len() == 1 {
+        let target = needle[0];
+        if !hay_cmp.contains(&target) {
+            return Ok(vunits(hay));
+        }
+        let max_len = hay.len().saturating_mul(with.len().max(1));
+        if max_len <= 64 {
+            let mut buf = [0u16; 64];
+            let mut out_len = 0usize;
+            let mut done = 0usize;
+            for i in 0..hay.len() {
+                if done < limit && hay_cmp[i] == target {
+                    buf[out_len..out_len + with.len()].copy_from_slice(&with);
+                    out_len += with.len();
+                    done += 1;
+                } else {
+                    buf[out_len] = hay[i];
+                    out_len += 1;
+                }
+            }
+            return Ok(vunits(&buf[..out_len]));
+        }
+    }
     let mut out = Vec::with_capacity(hay.len());
     let mut i = 0usize;
     let mut done = 0usize;
@@ -673,8 +810,69 @@ pub fn replace(args: &[Variant]) -> LibResult<Variant> {
     Ok(vunits(&out))
 }
 
-pub fn trim(args: &[Variant], left: bool, right: bool) -> LibResult<Variant> {
-    let s = units_arg(need(args, 0)?)?;
+pub fn replace_binary_units(
+    s: &[u16],
+    find: &[u16],
+    with: &[u16],
+    start: i32,
+    count: i32,
+) -> LibResult<Variant> {
+    if start < 1 || count < -1 {
+        return Err(LibError::invalid_call("Replace start/count out of range"));
+    }
+    let from = (start - 1) as usize;
+    if from >= s.len() {
+        return Ok(vunits(&[]));
+    }
+    let hay = &s[from..];
+    if find.is_empty() || count == 0 {
+        return Ok(vunits(hay));
+    }
+    let limit = if count < 0 {
+        usize::MAX
+    } else {
+        count as usize
+    };
+    if find.len() == 1 {
+        let target = find[0];
+        if !hay.contains(&target) {
+            return Ok(vunits(hay));
+        }
+        let max_len = hay.len().saturating_mul(with.len().max(1));
+        if max_len <= 64 {
+            let mut buf = [0u16; 64];
+            let mut out_len = 0usize;
+            let mut done = 0usize;
+            for &unit in hay {
+                if done < limit && unit == target {
+                    buf[out_len..out_len + with.len()].copy_from_slice(with);
+                    out_len += with.len();
+                    done += 1;
+                } else {
+                    buf[out_len] = unit;
+                    out_len += 1;
+                }
+            }
+            return Ok(vunits(&buf[..out_len]));
+        }
+    }
+    let mut out = Vec::with_capacity(hay.len());
+    let mut i = 0usize;
+    let mut done = 0usize;
+    while i < hay.len() {
+        if done < limit && hay[i..].starts_with(find) {
+            out.extend_from_slice(with);
+            i += find.len();
+            done += 1;
+        } else {
+            out.push(hay[i]);
+            i += 1;
+        }
+    }
+    Ok(vunits(&out))
+}
+
+pub fn trim_units(s: &[u16], left: bool, right: bool) -> Variant {
     // Excel trims ASCII and ideographic spaces (P_Trim.10–.13).
     let is_space = |unit| matches!(unit, 0x0020 | 0x3000);
     let mut from = 0;
@@ -689,7 +887,12 @@ pub fn trim(args: &[Variant], left: bool, right: bool) -> LibResult<Variant> {
             to -= 1;
         }
     }
-    Ok(vunits(&s[from..to]))
+    vunits(&s[from..to])
+}
+
+pub fn trim(args: &[Variant], left: bool, right: bool) -> LibResult<Variant> {
+    let s = units_arg(need(args, 0)?)?;
+    Ok(trim_units(&s, left, right))
 }
 
 /// `StrComp(s1, s2, [compare])` — optional trailing compare mode (0=binary, 1=text).
@@ -859,7 +1062,7 @@ pub fn asc_w(args: &[Variant]) -> LibResult<Variant> {
     // Read the first UTF-16 CODE UNIT directly (so `AscW(ChrW(n))` round-trips ANY
     // 0..=65535, including a lone surrogate half a `char`-based read could not carry).
     // The i16 wrap matches VBA: code points > 32767 come back negative.
-    let unit = match value.string_units() {
+    let unit = match value.borrowed_string_units() {
         Some(units) => units.first().copied(),
         None => as_str(value)?.encode_utf16().next(),
     }
@@ -874,7 +1077,16 @@ pub fn asc_w(args: &[Variant]) -> LibResult<Variant> {
 /// 2-byte `Asc` on a multibyte ACP is an accepted documented edge: we return the
 /// first byte only.)
 pub fn asc(args: &[Variant]) -> LibResult<Variant> {
-    let s = as_str(need(args, 0)?)?;
+    let arg = need(args, 0)?;
+    if let Some(units) = arg.borrowed_string_units() {
+        let Some(&first) = units.first() else {
+            return Err(LibError::invalid_call("Asc of empty string"));
+        };
+        if first < 0x80 {
+            return Ok(Variant::from_i16(first as i16));
+        }
+    }
+    let s = as_str(arg)?;
     let ch = s
         .chars()
         .next()
@@ -915,7 +1127,7 @@ pub fn string_repeat(args: &[Variant]) -> LibResult<Variant> {
 
 pub fn str_reverse(args: &[Variant]) -> LibResult<Variant> {
     // VBA reverses UTF-16 code units, including the two halves of a surrogate pair.
-    let mut units = units_arg(need(args, 0)?)?;
+    let mut units = units_arg(need(args, 0)?)?.into_owned();
     units.reverse();
     Ok(vunits(&units))
 }
@@ -998,9 +1210,9 @@ pub fn str_conv(args: &[Variant]) -> LibResult<Variant> {
     } else if let Some(array) = input.as_safearray() {
         // A Byte() used as a String supplies UTF16LE bytes. vbUnicode above
         // instead decodes each source byte using the ANSI code page.
-        units_arg(&Variant::from_bstr_bytes(&array_bytes(&array)?))?
+        units_arg(&Variant::from_bstr_bytes(&array_bytes(&array)?))?.into_owned()
     } else {
-        units_arg(input)?
+        units_arg(input)?.into_owned()
     };
 
     let casing = mode & VB_PROPER_CASE;
@@ -1529,6 +1741,15 @@ pub fn round(args: &[Variant]) -> LibResult<Variant> {
     }
 }
 
+pub fn round_f64_digits(x: f64, digits: i32) -> LibResult<f64> {
+    if !(0..=22).contains(&digits) {
+        return Err(LibError::invalid_call(
+            "Round numdecimalplaces must be between 0 and 22",
+        ));
+    }
+    Ok(round_float(x, digits as u32))
+}
+
 fn round_float(x: f64, digits: u32) -> f64 {
     let factor = 10f64.powi(digits as i32);
     let scaled = x * factor;
@@ -1889,19 +2110,88 @@ fn month_from_name(tok: &str) -> Option<i64> {
         .map(|i| i as i64 + 1)
 }
 
+pub fn date_add_gregorian_units(
+    interval_units: &[u16],
+    number_raw: f64,
+    serial: f64,
+) -> LibResult<f64> {
+    let mut stack_buf = [0u8; 4];
+    if interval_units.len() > 4 || !interval_units.iter().all(|&u| u < 0x80) {
+        return Err(LibError::invalid_call("unknown DateAdd interval"));
+    }
+    for (dst, &u) in stack_buf.iter_mut().zip(interval_units.iter()) {
+        *dst = (u as u8).to_ascii_lowercase();
+    }
+    // SAFETY: every byte in `stack_buf[..interval_units.len()]` is ASCII (`< 0x80`).
+    let interval = unsafe { std::str::from_utf8_unchecked(&stack_buf[..interval_units.len()]) };
+    let number = number_raw.trunc();
+    if !number.is_finite() || number.abs() > f64::from(i32::MAX) {
+        return Err(LibError::overflow("DateAdd number out of range"));
+    }
+    let calendar = Calendar::Gregorian;
+    let result = match interval {
+        "yyyy" | "m" | "q" => {
+            let (y, m, d) = calendar.parts(serial);
+            let months = m - 1
+                + match interval {
+                    "yyyy" => number as i64 * 12,
+                    "q" => number as i64 * 3,
+                    _ => number as i64,
+                };
+            let ny = y + months.div_euclid(12);
+            let nm = months.rem_euclid(12) + 1;
+            let clamped_day = d.min(calendar.month_days(ny, nm));
+            let (h, mi, s) = serial_to_hms(serial);
+            let time_frac = (h * 3600 + mi * 60 + s) as f64 / 86_400.0;
+            let date_serial = calendar.serial(ny, nm, clamped_day);
+            if date_serial < 0.0 {
+                date_serial - time_frac
+            } else {
+                date_serial + time_frac
+            }
+        }
+        "d" | "y" | "w" => real_to_serial(serial_to_real(serial) + number),
+        "ww" => real_to_serial(serial_to_real(serial) + number * 7.0),
+        "h" => real_to_serial(serial_to_real(serial) + number / 24.0),
+        "n" => real_to_serial(serial_to_real(serial) + number / 1440.0),
+        "s" => real_to_serial(serial_to_real(serial) + number / 86400.0),
+        _ => {
+            return Err(LibError::invalid_call(format!(
+                "unknown DateAdd interval `{interval}`"
+            )));
+        }
+    };
+    validate_vba_date_serial(result)
+}
+
 pub fn date_add(args: &[Variant], calendar: Calendar) -> LibResult<Variant> {
-    let interval = as_str(need(args, 0)?)?.to_ascii_lowercase();
+    let interval_arg_val = need(args, 0)?;
+    let mut stack_buf = [0u8; 4];
+    let owned_interval: String;
+    let interval: &str = if let Some(units) = interval_arg_val.borrowed_string_units()
+        && units.len() <= 4
+        && units.iter().all(|&u| u < 0x80)
+    {
+        for (dst, &u) in stack_buf.iter_mut().zip(units.iter()) {
+            *dst = (u as u8).to_ascii_lowercase();
+        }
+        // SAFETY: every byte in `stack_buf[..units.len()]` is ASCII (`< 0x80`).
+        unsafe { std::str::from_utf8_unchecked(&stack_buf[..units.len()]) }
+    } else {
+        owned_interval = as_str(interval_arg_val)?.to_ascii_lowercase();
+        owned_interval.as_str()
+    };
     // The count is a `Long`; Excel drops its fraction (`DateAdd("d", 1.5, ...)` adds one day).
     let number = as_f64(need(args, 1)?)?.trunc();
     if !number.is_finite() || number.abs() > f64::from(i32::MAX) {
         return Err(LibError::overflow("DateAdd number out of range"));
     }
     let serial = date_arg(need(args, 2)?, calendar)?;
-    let result = match interval.as_str() {
+    let result = match interval {
         "yyyy" | "m" | "q" => {
             let (y, m, d) = calendar.parts(serial);
             let months = m - 1
-                + match interval.as_str() {
+                + match interval {
                     "yyyy" => number as i64 * 12,
                     "q" => number as i64 * 3,
                     _ => number as i64,

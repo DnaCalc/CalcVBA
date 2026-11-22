@@ -17,6 +17,7 @@
 
 use crate::{ObjectRef, ObjectRefExt, Variant};
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 /// Selects an existing element (for `Item`/`Remove`) or an insertion anchor (for
@@ -60,13 +61,19 @@ impl CollectionError {
 
 /// The case-insensitive form of a collection key: Unicode lower case, so `Ä` and `ä` are one key.
 pub fn fold_key(key: &str) -> String {
-    key.chars().flat_map(char::to_lowercase).collect()
+    if key.is_ascii() {
+        key.to_ascii_lowercase()
+    } else {
+        key.chars().flat_map(char::to_lowercase).collect()
+    }
 }
 
 /// A VBA `Collection`'s ordered contents. Indices are 1-based at the VBA surface.
 #[derive(Debug, Default)]
 pub struct CollectionData {
     entries: Vec<Entry>,
+    /// Case-folded key → 0-based index into `entries` for O(1) keyed lookup and duplicate check.
+    key_index: HashMap<String, usize>,
     cursors: Vec<Weak<Cell<usize>>>,
 }
 
@@ -74,6 +81,7 @@ impl Clone for CollectionData {
     fn clone(&self) -> Self {
         Self {
             entries: self.entries.clone(),
+            key_index: self.key_index.clone(),
             cursors: Vec::new(),
         }
     }
@@ -151,6 +159,14 @@ impl CollectionData {
         if at < self.entries.len() {
             // An insertion before the pending item does not replace it.
             self.adjust_cursors(at, |next| next + 1);
+            for idx in self.key_index.values_mut() {
+                if *idx >= at {
+                    *idx += 1;
+                }
+            }
+        }
+        if let Some(ref k) = key {
+            self.key_index.insert(k.clone(), at);
         }
         self.entries.insert(at, Entry { key, value });
         Ok(())
@@ -166,6 +182,16 @@ impl CollectionData {
     pub fn remove(&mut self, sel: &Selector) -> Result<(), CollectionError> {
         let i = self.resolve_index(sel)?;
         let removed = self.entries.remove(i);
+        if let Some(ref k) = removed.key {
+            self.key_index.remove(k);
+        }
+        if i < self.entries.len() {
+            for idx in self.key_index.values_mut() {
+                if *idx > i {
+                    *idx -= 1;
+                }
+            }
+        }
         // The item after the removed one now occupies its position.
         self.adjust_cursors(i + 1, |next| next - 1);
         drop(removed);
@@ -206,9 +232,7 @@ impl CollectionData {
     }
 
     fn position_of_key(&self, folded: &str) -> Option<usize> {
-        self.entries
-            .iter()
-            .position(|e| e.key.as_deref() == Some(folded))
+        self.key_index.get(folded).copied()
     }
 }
 

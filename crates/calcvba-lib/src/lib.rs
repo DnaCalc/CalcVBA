@@ -30,6 +30,11 @@ mod trig;
 pub use pure::{abs_f64, sqr_f64};
 /// Host-independent value operations shared with owning typed execution.
 pub use pure::{cstr as convert_to_string, var_type as variant_type_code};
+/// Borrowed UTF-16 slice and scalar fast paths shared with VM3.
+pub use pure::{
+    date_add_gregorian_units, instr_binary_units, mid_units, replace_binary_units,
+    round_f64_digits, trim_units, ucase_units,
+};
 
 use crate::calendar::Calendar as CalendarMode;
 use calcvba_bundle::NativeImplId;
@@ -190,6 +195,12 @@ pub(crate) fn as_f64(value: &Variant) -> LibResult<f64> {
     if let Some(v) = value.as_f64() {
         return Ok(v); // Double
     }
+    if let Some(v) = value.as_i32() {
+        return Ok(f64::from(v)); // Long
+    }
+    if let Some(v) = value.as_i16() {
+        return Ok(f64::from(v)); // Integer
+    }
     if let Some(v) = value.as_f32() {
         return Ok(v as f64); // Single
     }
@@ -199,6 +210,9 @@ pub(crate) fn as_f64(value: &Variant) -> LibResult<f64> {
     if let Some(v) = value.as_currency_scaled_i64() {
         return Ok(v as f64 / 10_000.0); // Currency (fixed 4-dp scale)
     }
+    if value.raw_vt() == 0 {
+        return Ok(0.0); // Empty
+    }
     coerce_to(value, VarType::Double)?
         .as_f64()
         .ok_or_else(|| LibError::type_mismatch("expected a numeric value"))
@@ -207,11 +221,17 @@ pub(crate) fn as_f64(value: &Variant) -> LibResult<f64> {
 /// Read any numeric Variant as `i64`, using VBA's banker's rounding for
 /// fractional values. (`coerce_to` has no `LongLong`/`Double→Long` path.)
 pub(crate) fn as_i64(value: &Variant) -> LibResult<i64> {
+    if let Some(v) = value.as_i32() {
+        return Ok(i64::from(v)); // Long
+    }
+    if let Some(v) = value.as_i16() {
+        return Ok(i64::from(v)); // Integer
+    }
     if let Some(v) = value.as_i64() {
         return Ok(v); // LongLong
     }
-    if let Some(v) = value.as_i32() {
-        return Ok(i64::from(v)); // Long
+    if value.raw_vt() == 0 {
+        return Ok(0); // Empty
     }
     let d = as_f64(value)?;
     if !d.is_finite() || d.abs() >= 9.223_372_036_854_775e18 {

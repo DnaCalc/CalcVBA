@@ -96,6 +96,129 @@ End Sub
 }
 
 #[test]
+fn power_operator_chains_match_excel_vba_across_const_and_runtime() {
+    let programs = [compile_plain(
+        r#"
+#Const CC_POW = 2 ^ 3 ^ 2
+#If CC_POW = 64 And 2 ^ 2 ^ 10 = 1048576 Then
+Public CondCompOk As Double
+#End If
+
+Public Const CONST_CHAIN = 2 ^ 3 ^ 2
+Public Const CONST_FOUR = 2 ^ 3 ^ 2 ^ 2
+Public Const CONST_NO_OVERFLOW = 2 ^ 2 ^ 10
+Public Const CONST_NEG_BASE_SQRT = (-4) ^ 2 ^ 0.5
+Public Const CONST_NEG_LEADING = -2 ^ 3 ^ 2
+Public Const CONST_NEG_TRAILING = 2 ^ 3 ^ -2
+Public Const CONST_PAREN = 2 ^ (3 ^ 2)
+
+Public Enum PowEnum
+    EnumChain = 2 ^ 3 ^ 2
+End Enum
+
+Public LitFour As Double
+Public LitNoOverflow As Double
+Public LitNegBaseSqrt As Double
+Public LitNegBase As Double
+Public LitNegLeading As Double
+Public LitNegTrailing As Double
+Public LitParen As Double
+Public TypedVars As Double
+Public VariantVars As Double
+Public IdentNoSpace As Double
+Public ConstSum As Double
+Public EnumVal As Double
+Public OptDefault As Double
+Public ArrayUpper As Double
+Public SideEffectVal As Double
+Public SideEffectLog As String
+Public NullPropagates As Boolean
+
+Private Function StepVal(ByVal tag As String, ByVal v As Double) As Double
+    SideEffectLog = SideEffectLog & tag
+    StepVal = v
+End Function
+
+Private Function WithOpt(Optional ByVal x As Double = 2 ^ 3 ^ 2) As Double
+    WithOpt = x
+End Function
+
+Sub Main()
+    Dim a As Long, b As Long, c As Long
+    Dim v1 As Variant, v2 As Variant, v3 As Variant, vn As Variant
+    Dim y As Long, z As Long, w As Long
+    Dim arr(1 To 2 ^ 3 ^ 2) As Long
+
+    CondCompOk = 1
+    LitFour = 2 ^ 3 ^ 2 ^ 2
+    LitNoOverflow = 2 ^ 2 ^ 10
+    LitNegBaseSqrt = (-4) ^ 2 ^ 0.5
+    LitNegBase = (-2) ^ 3 ^ 2
+    LitNegLeading = -2 ^ 3 ^ 2
+    LitNegTrailing = 2 ^ 3 ^ -2
+    LitParen = 2 ^ (3 ^ 2)
+
+    a = 2: b = 3: c = 2
+    TypedVars = a ^ b ^ c
+
+    v1 = 2: v2 = 3: v3 = 2
+    VariantVars = v1 ^ v2 ^ v3
+
+    y = 2: z = 3: w = 2
+    IdentNoSpace = y^z^w
+
+    ConstSum = CONST_CHAIN + CONST_FOUR + CONST_NO_OVERFLOW + CONST_NEG_BASE_SQRT + CONST_NEG_LEADING + CONST_NEG_TRAILING + CONST_PAREN
+    EnumVal = EnumChain
+    OptDefault = WithOpt()
+    ArrayUpper = UBound(arr)
+
+    SideEffectLog = ""
+    SideEffectVal = StepVal("a", 2) ^ StepVal("b", 3) ^ StepVal("c", 2)
+
+    vn = 2 ^ Null ^ 2
+    NullPropagates = IsNull(vn)
+End Sub
+"#,
+    )];
+    let comparison = compare_entry(&programs);
+    assert!(comparison.differences().is_empty(), "{comparison:?}");
+    let f64_canon = |v: f64| Canon::Raw {
+        tag: 5,
+        bytes: v.to_ne_bytes(),
+        reserved: [0, 0, 0],
+    };
+    let expected_const_sum = 64.0 + 4096.0 + 1_048_576.0 + 4.0 - 64.0 + 0.015625 + 512.0;
+    let expected = [
+        f64_canon(1.0),
+        f64_canon(4096.0),
+        f64_canon(1_048_576.0),
+        f64_canon(4.0),
+        f64_canon(64.0),
+        f64_canon(-64.0),
+        f64_canon(0.015625),
+        f64_canon(512.0),
+        f64_canon(64.0),
+        f64_canon(64.0),
+        f64_canon(64.0),
+        f64_canon(expected_const_sum),
+        f64_canon(64.0),
+        f64_canon(64.0),
+        f64_canon(64.0),
+        f64_canon(64.0),
+        Canon::StringBytes("abc".encode_utf16().flat_map(u16::to_le_bytes).collect()),
+        Canon::Raw {
+            tag: 11,
+            bytes: [255, 255, 0, 0, 0, 0, 0, 0],
+            reserved: [0, 0, 0],
+        },
+    ];
+    for run in [&comparison.vm3, &comparison.jit] {
+        let values = run.outcome.result.as_ref().expect("completed run");
+        assert_eq!(&values[..expected.len()], &expected, "{run:?}");
+    }
+}
+
+#[test]
 fn excel_stub_compares_range_worksheet_and_worksheetfunction_on_vm3_and_jit() {
     let programs = [compile_excel(
         r#"

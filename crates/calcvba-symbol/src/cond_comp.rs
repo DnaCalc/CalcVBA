@@ -644,4 +644,18 @@ mod tests {
         );
         assert!(out.contains("yes") && out.contains("six"), "{out:?}");
     }
+
+    #[test]
+    fn exponentiation_chains_are_left_associative_in_cond_comp() {
+        let out = run("#Const P = 2 ^ 3 ^ 2\n\
+             #If P = 64 And 2 ^ 3 ^ 2 ^ 2 = 4096 And 2 ^ 2 ^ 10 = 1048576 And (-4) ^ 2 ^ 0.5 = 4 And -2 ^ 3 ^ 2 = -64 And 2 ^ (3 ^ 2) = 512 Then\n\
+             left_assoc\n\
+             #Else\n\
+             wrong_assoc\n\
+             #End If\n");
+        assert!(
+            out.contains("left_assoc") && !out.contains("wrong_assoc"),
+            "{out:?}"
+        );
+    }
 }

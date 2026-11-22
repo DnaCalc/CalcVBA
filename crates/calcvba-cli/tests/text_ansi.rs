@@ -10,16 +10,16 @@ fn sequential_vba_files_use_ansi_bytes_for_print_write_and_input() {
         &source,
         r#"
 Sub Main()
-Dim printed As String, written As String
+Dim printed As String, first As String, second As String
 Open "out.txt" For Output As #1
 Print #1, "é€"
 Write #1, "£€""é"
 Close #1
 Open "out.txt" For Input As #1
 Line Input #1, printed
-Input #1, written
+Input #1, first, second
 Close #1
-Debug.Print printed, written
+Debug.Print printed, first, second
 End Sub
 "#,
     )
@@ -46,7 +46,7 @@ End Sub
             String::from_utf8_lossy(&output.stderr)
                 .split_whitespace()
                 .collect::<Vec<_>>(),
-            ["é€", "£€\"é"]
+            ["é€", "£€", "é"]
         );
     }
 }

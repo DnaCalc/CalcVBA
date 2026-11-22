@@ -467,12 +467,10 @@ function Set-GuardianControl {
         allow_dismiss = $AllowDismiss
         written_utc = [DateTime]::UtcNow.ToString("o")
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $temporary -Encoding utf8NoBOM
-    # The guardian reads this file while it is replaced; a read in progress makes Replace fail
-    # ("Unable to remove the file to be replaced"), so retry for a short while.
+    # Rename within the same directory so the guardian always sees an entire control file.
     for ($attempt = 1; ; $attempt++) {
         try {
-            if ([IO.File]::Exists($Path)) { [IO.File]::Replace($temporary, $Path, [NullString]::Value) }
-            else { [IO.File]::Move($temporary, $Path) }
+            [IO.File]::Move($temporary, $Path, $true)
             break
         } catch [System.IO.IOException] {
             if ($attempt -ge 50) { throw }

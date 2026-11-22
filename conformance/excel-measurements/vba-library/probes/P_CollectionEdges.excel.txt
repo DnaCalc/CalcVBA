@@ -1,5 +1,12 @@
+CollectionEdges.1=ERR5
+CollectionEdges.2=ERR5
 CollectionEdges.3=ERR5
+CollectionEdges.4=ERR5
+CollectionEdges.5=ERR5
 CollectionEdges.6=ERR13
 CollectionEdges.7=ERR13
 CollectionEdges.8=ERR13
+CollectionEdges.9=String:[Integer:1;Integer:2;Integer:3;count=4]
 CollectionEdges.10=String:[Integer:1;Integer:2;Integer:3;count=4]
+CollectionEdges.11=String:[Integer:1;Integer:2;Integer:3;Integer:99;count=3]
+CollectionEdges.12=String:[Integer:1;Integer:3;count=2]

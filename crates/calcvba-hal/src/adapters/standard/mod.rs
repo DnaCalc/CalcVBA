@@ -2498,6 +2498,8 @@ mod tests {
             Variant::from_i32(42),
         )
         .expect("variant write input");
+        host.write_bytes_variant(input_handle.clone(), Variant::from_string("a\"b"))
+            .expect("write a string containing a quote");
         host.seek_variant(Variant::from_i32(input_handle.as_i32().unwrap()), rv(1))
             .expect("seek input");
         let field = crate::traits::FileSystemHal::input_fields_variant(
@@ -2507,7 +2509,32 @@ mod tests {
         )
         .expect("variant input field");
         assert_eq!(field, Variant::from_i32(42));
+        for expected in ["a", "b"] {
+            let field = crate::traits::FileSystemHal::input_fields_variant(
+                &host,
+                input_handle.clone(),
+                Variant::from_i32(1),
+            )
+            .expect("quoted input field");
+            assert_eq!(field.as_bstr(), Some(BStr::from(expected)));
+        }
         crate::traits::FileSystemHal::close_variant(&host, input_handle).expect("close input");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn chdrive_reports_device_unavailable_for_an_unassigned_drive() {
+        // SAFETY: this function reads the process's drive mask and takes no pointers.
+        let assigned = unsafe { windows_sys::Win32::Storage::FileSystem::GetLogicalDrives() };
+        assert_ne!(assigned, 0);
+        if let Some(unassigned) = (3..26).rev().find(|index| assigned & (1 << index) == 0) {
+            let letter = char::from(b'A' + unassigned);
+            let host = StandardHostServices::new(HalProfileId::Windows, HostPolicy::native());
+            let error = host
+                .ch_drive_variant(Variant::from_string(letter.to_string()))
+                .expect_err("unassigned drive");
+            assert_eq!(error.host_error_code, Some(68));
+        }
     }
 
     #[test]

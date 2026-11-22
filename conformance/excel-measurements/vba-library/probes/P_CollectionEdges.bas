@@ -1,6 +1,6 @@
 Attribute VB_Name = "P_CollectionEdges"
 Option Explicit
-' Selector coercion and mutation order captured in Excel 16.0.20527.
+' Selector coercion and mutation during enumeration.
 Private Const N As Long = 12
 Private Function E(ByVal mode As Long) As String
     Dim c As New Collection, x As Variant, n As Long, s As String

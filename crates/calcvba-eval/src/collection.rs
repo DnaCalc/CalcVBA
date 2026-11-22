@@ -88,15 +88,11 @@ pub fn dispatch_collection(
             Ok(Variant::empty())
         }
         CollectionMethod::Item => {
-            let sel = required_selector(args.first())?;
+            let sel = required_selector(data, args.first())?;
             data.item(&sel)
         }
         CollectionMethod::Remove => {
-            // Removing from an empty collection takes precedence over a Null selector.
-            if data.count() == 0 && args.first().is_some_and(|v| v.vtype() == VarType::Null) {
-                return Err(CollectionError::BadArgument);
-            }
-            let sel = required_selector(args.first())?;
+            let sel = required_selector(data, args.first())?;
             data.remove(&sel)?;
             Ok(Variant::empty())
         }
@@ -144,16 +140,23 @@ fn optional_selector(arg: Option<&Variant>) -> Option<Selector> {
 }
 
 /// A required `Item`/`Remove` selector. Omitted → [`CollectionError::ArgNotOptional`] (449).
-fn required_selector(arg: Option<&Variant>) -> Result<Selector, CollectionError> {
-    let v = arg
-        .filter(|v| !is_missing_arg(v))
+fn required_selector(
+    data: &CollectionData,
+    arg: Option<&Variant>,
+) -> Result<Selector, CollectionError> {
+    let value = arg
+        .filter(|value| !is_missing_arg(value))
         .ok_or(CollectionError::ArgNotOptional)?;
-    match v.vtype() {
-        VarType::Null | VarType::Error | VarType::ArrayVariant | VarType::Object => {
-            Err(CollectionError::TypeMismatch)
-        }
-        _ => Ok(variant_selector(v)),
+    if data.count() == 0 {
+        return Err(CollectionError::BadArgument);
     }
+    if matches!(
+        value.vtype(),
+        VarType::Null | VarType::Error | VarType::ArrayVariant | VarType::Object
+    ) {
+        return Err(CollectionError::TypeMismatch);
+    }
+    Ok(variant_selector(value))
 }
 
 #[cfg(test)]

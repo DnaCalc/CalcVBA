@@ -320,6 +320,17 @@ fn apply_property(
         "DefaultRuntimeProfile" => props.default_runtime_profile = Some(value.to_string()),
         "DefaultRootObject" => props.default_root_object = Some(value.to_string()),
         "DefineConstants" => props.define_constants = Some(value.to_string()),
+        "Dialect" => {
+            props.dialect = Some(match value {
+                "windows" => Dialect::Windows,
+                "mac" => Dialect::Mac,
+                _ => {
+                    return Err(BasProjError::XmlParse(format!(
+                        "unknown Dialect `{value}`; expected windows or mac"
+                    )));
+                }
+            });
+        }
         _ => {} // Unknown properties are silently ignored
     }
     Ok(())

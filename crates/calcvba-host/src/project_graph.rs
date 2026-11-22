@@ -74,6 +74,7 @@ pub(super) fn manifests(
         .iter()
         .map(|node| sym::ReferencedProjectManifest {
             project_name: node.project.name.clone(),
+            conditional_compilation_target: None,
             project_kind: sym::ProjectKind::Library,
             modules: node
                 .project

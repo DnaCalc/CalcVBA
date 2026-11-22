@@ -117,4 +117,6 @@ pub struct ReferencedProjectManifest {
     pub project_name: String,
     pub project_kind: ProjectKind,
     pub modules: Vec<ModuleUnit>,
+    /// The reference inherits the active target when the caller supplies no target.
+    pub conditional_compilation_target: Option<crate::cond_comp::ConditionalCompilationTarget>,
 }

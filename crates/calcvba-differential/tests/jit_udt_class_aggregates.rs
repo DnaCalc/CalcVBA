@@ -31,6 +31,7 @@ fn exposed_class_module(name: &str, src: &str) -> ModuleUnit {
 fn referenced(project_name: &str, modules: Vec<ModuleUnit>) -> ReferencedProjectManifest {
     ReferencedProjectManifest {
         project_name: project_name.to_string(),
+        conditional_compilation_target: None,
         project_kind: ProjectKind::Library,
         modules,
     }

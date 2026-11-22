@@ -1113,7 +1113,11 @@ impl Engine {
         &self,
         manifest: &calcvba_symbol::manifest::SymbolProjectManifest,
     ) -> calcvba_symbol::manifest::SymbolProjectManifest {
+        use calcvba_symbol::cond_comp::ConditionalCompilationHost;
         let mut manifest = manifest.clone();
+        if manifest.conditional_compilation_target.host != ConditionalCompilationHost::Unspecified {
+            return manifest;
+        }
         use calcvba_symbol::portability::Mode;
         let mode = self
             .portability_mode
@@ -1479,7 +1483,7 @@ impl Engine {
             references,
             reference_projects: Vec::new(),
             conditional_constants: std::collections::BTreeMap::new(),
-            conditional_compilation_target: self.conditional_compilation_target(),
+            conditional_compilation_target: Default::default(),
         };
         self.execute_manifest_with_variant_snapshot(&manifest)
     }
@@ -1552,7 +1556,7 @@ impl Engine {
             references: Vec::new(),
             reference_projects: Vec::new(),
             conditional_constants: std::collections::BTreeMap::new(),
-            conditional_compilation_target: self.conditional_compilation_target(),
+            conditional_compilation_target: Default::default(),
         };
         self.execute_manifest_with_variant_snapshot_vm3(&manifest)
     }

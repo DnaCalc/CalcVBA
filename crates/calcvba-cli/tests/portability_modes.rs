@@ -204,3 +204,83 @@ End Sub
     assert!(output.status.success(), "{text}");
     assert_eq!(text.trim(), "Dictionary");
 }
+
+#[test]
+#[cfg(target_os = "linux")]
+fn basproj_dialect_selects_conditional_constants_on_both_backends() {
+    let root = std::env::temp_dir().join(format!("calcvba-dialect-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("Entry.bas"),
+        r#"Public Sub Main()
+#If Mac And VBA7 And Not (Win32 Or Win64) Then
+    Debug.Print "mac"
+#ElseIf Not Mac And Win32 And Win64 And VBA7 Then
+    Debug.Print "windows"
+#Else
+    Debug.Print "unexpected constants"
+#End If
+    Debug.Print MacLibraryValue()
+End Sub
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("Library.bas"),
+        "#If Mac Then\nPublic Function MacLibraryValue() As Long\n\
+         MacLibraryValue = 42\nEnd Function\n#End If\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("Library.basproj"),
+        r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
+<PropertyGroup>
+  <ProjectName>Library</ProjectName><OutputType>Library</OutputType><Dialect>mac</Dialect>
+</PropertyGroup>
+<ItemGroup><Module Include="Library.bas" /></ItemGroup>
+</Project>"#,
+    )
+    .unwrap();
+    let mut results = Vec::new();
+    for (property, expected) in [
+        ("<Dialect>mac</Dialect>", "mac"),
+        ("<Dialect>windows</Dialect>", "windows"),
+        ("", "windows"),
+    ] {
+        let project = root.join("Probe.basproj");
+        fs::write(
+            &project,
+            format!(
+                r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
+<PropertyGroup><ProjectName>Probe</ProjectName><OutputType>Exe</OutputType>{property}</PropertyGroup>
+<ItemGroup>
+  <Module Include="Entry.bas" />
+  <ProjectReference Include="Library.basproj" />
+</ItemGroup>
+</Project>"#
+            ),
+        )
+        .unwrap();
+        for backend in ["vm3", "jit"] {
+            let output = Command::new(env!("CARGO_BIN_EXE_calcvba-cli"))
+                .args([
+                    "run-project",
+                    "--backend",
+                    backend,
+                    "--profile",
+                    "linux-stdio",
+                ])
+                .arg(&project)
+                .output()
+                .unwrap();
+            results.push((backend, expected, output));
+        }
+    }
+    fs::remove_dir_all(root).unwrap();
+    for (backend, expected, output) in results {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{backend}: {stderr}");
+        let lines: Vec<_> = stderr.lines().map(str::trim).collect();
+        assert_eq!(lines, [expected, "42"], "{backend}");
+    }
+}

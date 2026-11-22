@@ -22,6 +22,7 @@ pub struct LoadedProject {
     pub build_target: BuildTarget,
     pub runtime_flavor: RuntimeFlavor,
     pub default_runtime_profile: Option<String>,
+    pub conditional_compilation_target: cond_comp::ConditionalCompilationTarget,
     pub default_root_object: String,
     pub entry_point: Option<String>,
     /// Per-class metadata keyed by module name (instancing, prog_id, description).
@@ -273,6 +274,7 @@ pub(crate) fn build_loaded_project(
         }),
         runtime_flavor: props.runtime_flavor.unwrap_or(RuntimeFlavor::Lite),
         default_runtime_profile: props.default_runtime_profile.clone(),
+        conditional_compilation_target: cc_target,
         default_root_object: props
             .default_root_object
             .clone()
@@ -285,29 +287,17 @@ pub(crate) fn build_loaded_project(
 fn load_time_conditional_compilation_target(
     props: &BasProjProperties,
 ) -> cond_comp::ConditionalCompilationTarget {
-    use cond_comp::{
-        ConditionalCompilationHost, ConditionalCompilationPointerWidth,
-        ConditionalCompilationTarget,
-    };
-    let pointer_width = if cfg!(target_pointer_width = "64") {
-        ConditionalCompilationPointerWidth::Bits64
-    } else {
-        ConditionalCompilationPointerWidth::Bits32
-    };
-    let host = match props
+    use cond_comp::ConditionalCompilationTarget;
+    let legacy_mac_profile = props
         .default_runtime_profile
         .as_deref()
-        .map(str::trim)
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        Some("macos-headless") => ConditionalCompilationHost::Mac,
-        _ => ConditionalCompilationHost::Windows,
-    };
-    ConditionalCompilationTarget {
-        host,
-        pointer_width,
-        vba7: true,
+        .is_some_and(|profile| profile.trim().eq_ignore_ascii_case("macos-headless"));
+    if props.dialect == Some(Dialect::Mac) || (props.dialect.is_none() && legacy_mac_profile) {
+        ConditionalCompilationTarget::mac_64_vba7()
+    } else if cfg!(all(windows, target_pointer_width = "32")) {
+        ConditionalCompilationTarget::windows_32_vba7()
+    } else {
+        ConditionalCompilationTarget::windows_64_vba7()
     }
 }
 

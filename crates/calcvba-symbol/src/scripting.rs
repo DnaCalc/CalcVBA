@@ -43,9 +43,16 @@ Private pKeys() As Variant
 Private pItems() As Variant
 Private pCount As Long
 Private pMode As Long
+Private pCapacity As Long
+Private pBuckets() As Long
+Private pBucketMask As Long
+Private pIndexed As Long
+Private pHasOtherKeys As Boolean
+Private pIndexPaused As Boolean
 
 Private Sub Class_Initialize()
     ReDim pKeys(0 To 7)
+    pCapacity = 7
     ReDim pItems(0 To 7)
 End Sub
 
@@ -103,6 +110,12 @@ Public Property Let Key(ByVal OldKey As Variant, ByVal NewKey As Variant)
     i = FindKey(OldKey)
     If i < 0 Then Err.Raise 32811, "Scripting.Dictionary", "Application-defined or object-defined error"
     If FindKey(NewKey) >= 0 Then Err.Raise 457, "Scripting.Dictionary", "This key is already associated with an element of this collection"
+    pBucketMask = 0
+    If VBA.IsObject(NewKey) Then
+        pHasOtherKeys = True
+    ElseIf VBA.VarType(NewKey) <> VBA.vbString Then
+        pHasOtherKeys = True
+    End If
     pKeys(i) = NewKey
 End Property
 
@@ -154,9 +167,13 @@ Public Function Items() As Variant
 End Function
 
 Public Sub Remove(ByVal Key As Variant)
-    Dim i As Long, last As Long
+    Dim i As Long, last As Long, wasPaused As Boolean
     i = FindKey(Key)
     If i < 0 Then Err.Raise 32811, "Scripting.Dictionary", "Application-defined or object-defined error"
+    ' Releasing an item can reenter the dictionary while its keys are being shifted.
+    wasPaused = pIndexPaused
+    pIndexPaused = True
+    pBucketMask = 0
     last = pCount - 1
     Do While i < last
         pKeys(i) = pKeys(i + 1)
@@ -170,12 +187,21 @@ Public Sub Remove(ByVal Key As Variant)
     pKeys(last) = Empty
     pItems(last) = Empty
     pCount = last
+    pIndexPaused = wasPaused
 End Sub
 
 Public Sub RemoveAll()
+    Dim wasPaused As Boolean
+    wasPaused = pIndexPaused
+    pIndexPaused = True
+    pBucketMask = 0
     ReDim pKeys(0 To 7)
+    pCapacity = 7
     ReDim pItems(0 To 7)
     pCount = 0
+    ReDim pBuckets(0 To 0)
+    pHasOtherKeys = False
+    pIndexPaused = wasPaused
 End Sub
 
 Public Function HashVal(ByVal Key As Variant) As Variant
@@ -196,15 +222,17 @@ End Property
 Private Sub Insert(ByVal Key As Variant, ByVal Value As Variant)
     Dim n As Long, cap As Long
     n = pCount
-    cap = UBound(pKeys)
-    If n > cap Then
+    If n > pCapacity Then
         cap = n * 2 + 7
         ReDim Preserve pKeys(0 To cap)
+        pCapacity = cap
         ReDim Preserve pItems(0 To cap)
     End If
-    If IsObject(Key) Then
+    If VBA.IsObject(Key) Then
+        pHasOtherKeys = True
         Set pKeys(n) = Key
     Else
+        If VBA.VarType(Key) <> VBA.vbString Then pHasOtherKeys = True
         pKeys(n) = Key
     End If
     If IsObject(Value) Then
@@ -217,6 +245,15 @@ End Sub
 
 Private Function FindKey(ByVal Key As Variant) As Long
     Dim i As Long
+    ' Mixed keys keep the original scan, whose VarType may call an object's default member.
+    If pCount >= 16 And pMode = 0 And Not pHasOtherKeys And Not pIndexPaused Then
+        If Not VBA.IsObject(Key) Then
+            If VBA.VarType(Key) = VBA.vbString Then
+                FindKey = FindBinaryString(Key)
+                Exit Function
+            End If
+        End If
+    End If
     For i = 0 To pCount - 1
         If SameKey(pKeys(i), Key) Then
             FindKey = i
@@ -226,16 +263,65 @@ Private Function FindKey(ByVal Key As Variant) As Long
     FindKey = -1
 End Function
 
+Private Function FindBinaryString(ByVal Key As String) As Long
+    Dim size As Long, bucket As Long, entry As Long, indexed As Long
+    If pBucketMask = 0 Or pCount > pBucketMask \ 2 Then
+        ' Keep the table below half full. Zero denotes an empty bucket.
+        size = 32
+        Do While size \ 2 <= pCount
+            size = size * 2
+        Loop
+        pBucketMask = 0
+        ReDim pBuckets(0 To size - 1)
+        pIndexed = 0
+        pBucketMask = size - 1
+    End If
+    indexed = pIndexed
+    Do While indexed < pCount
+        entry = indexed + 1
+        bucket = StringHash(pKeys(indexed)) And pBucketMask
+        Do While pBuckets(bucket) <> 0 And pBuckets(bucket) <> entry
+            bucket = (bucket + 1) And pBucketMask
+        Loop
+        pBuckets(bucket) = entry
+        pIndexed = entry
+        indexed = entry
+    Loop
+
+    bucket = StringHash(Key) And pBucketMask
+    Do
+        entry = pBuckets(bucket)
+        If entry = 0 Then Exit Do
+        entry = entry - 1
+        If VBA.StrComp(pKeys(entry), Key, VBA.vbBinaryCompare) = 0 Then
+            FindBinaryString = entry
+            Exit Function
+        End If
+        bucket = (bucket + 1) And pBucketMask
+    Loop
+    FindBinaryString = -1
+End Function
+
+Private Function StringHash(ByVal Key As String) As Long
+    Dim i As Long, hash As Long, unit As Long
+    For i = 1 To VBA.Len(Key)
+        unit = VBA.CLng(VBA.AscW(VBA.Mid$(Key, i, 1))) And &HFFFF&
+        ' Bound the accumulator before the next multiplication to avoid Long overflow.
+        hash = (hash * 31 + unit) And &H1FFFFFF
+    Next i
+    StringHash = hash
+End Function
+
 Private Function SameKey(ByVal A As Variant, ByVal B As Variant) As Boolean
     Dim ta As Long, tb As Long
-    ta = VarType(A)
-    tb = VarType(B)
-    If ta = vbString Or tb = vbString Then
-        If ta = vbString And tb = vbString Then
+    ta = VBA.VarType(A)
+    tb = VBA.VarType(B)
+    If ta = VBA.vbString Or tb = VBA.vbString Then
+        If ta = VBA.vbString And tb = VBA.vbString Then
             If pMode = 0 Then
-                SameKey = (StrComp(A, B, vbBinaryCompare) = 0)
+                SameKey = (VBA.StrComp(A, B, VBA.vbBinaryCompare) = 0)
             Else
-                SameKey = (StrComp(A, B, vbTextCompare) = 0)
+                SameKey = (VBA.StrComp(A, B, VBA.vbTextCompare) = 0)
             End If
         End If
     ElseIf IsObject(A) Or IsObject(B) Then

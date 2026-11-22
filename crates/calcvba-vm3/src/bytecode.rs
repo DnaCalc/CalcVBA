@@ -311,6 +311,7 @@ pub(crate) enum VmOp {
         dst: PackedPlace,
         lhs: PackedOp,
         rhs: PackedOp,
+        coerce_to_string: bool,
     },
     Compare {
         dst: PackedPlace,
@@ -1637,6 +1638,44 @@ impl CompiledFunc {
                     }
                 }
 
+                // A typed String assignment coerces the result of `&` before copying it.
+                // Carry the coercion on the concat and write the owned BSTR once.
+                if i + 2 < emit_end
+                    && let OxInst::Concat {
+                        dst: OxPlace::Temp(joined),
+                        lhs,
+                        rhs,
+                    } = &instrs[i]
+                    && let OxInst::Coerce {
+                        dst: OxPlace::Temp(converted),
+                        src: OxOperand::Use(OxPlace::Temp(input)),
+                        target: OxCoerceTarget::Str,
+                    } = &instrs[i + 1]
+                    && input == joined
+                    && usage.is_single_use(joined.0)
+                    && let OxInst::Assign {
+                        dst,
+                        value: OxOperand::Use(OxPlace::Temp(output)),
+                    } = &instrs[i + 2]
+                    && output == converted
+                    && usage.is_single_use(converted.0)
+                    && is_plain_scalar_or_str_place(program, func, *dst)
+                    && let (Some(dst), Some(lhs), Some(rhs)) = (
+                        PackedPlace::from_ox(*dst, num_locals),
+                        out.pack_op(lhs),
+                        out.pack_op(rhs),
+                    )
+                {
+                    out.ops.push(VmOp::Concat {
+                        dst,
+                        lhs,
+                        rhs,
+                        coerce_to_string: true,
+                    });
+                    i += 3;
+                    continue;
+                }
+
                 // Pattern 3: Single-use temporary destination forwarding:
                 //   op(dst = Temp(t), ...); Assign(dst = local/global, src = Temp(t))
                 //   -> op(dst = local/global, ...)
@@ -2025,6 +2064,7 @@ impl CompiledFunc {
                             dst: p_dst,
                             lhs: l,
                             rhs: r,
+                            coerce_to_string: false,
                         },
                         consumed_if_fwd,
                     )

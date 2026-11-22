@@ -11,6 +11,34 @@ fn backends() -> Vec<Backend> {
 const ADD: &str = "Public Function Add2(ByVal x As Double, ByVal y As Double) As Double\nAdd2 = x + y\nEnd Function\n";
 
 #[test]
+#[cfg(not(windows))]
+fn portable_dictionary_binary_string_lookup_fits_execution_budget() {
+    let source = r#"
+Public Function Probe() As Long
+    Dim d As New Scripting.Dictionary, i As Long
+    For i = 1 To 512
+        d("k" & i) = i
+    Next i
+    For i = 512 To 1 Step -1
+        If d.Exists("k" & i) Then Probe = Probe + d("k" & i)
+    Next i
+    Probe = Probe + d.Count
+End Function
+"#;
+    let module = Module::load("Api", source).unwrap();
+    for backend in backends() {
+        let session = module.prepare(backend).unwrap();
+        let probe = session
+            .bind("Api", "Probe", ProcedureKind::Function)
+            .unwrap();
+        let result = session
+            .call_bound(&probe, &[], 600_000)
+            .unwrap_or_else(|err| panic!("{backend:?}: {err}"));
+        assert_eq!(result.as_i32(), Some(131_840), "{backend:?}");
+    }
+}
+
+#[test]
 fn dynamic_raise_preserves_runtime_number_and_explicit_text_and_help_fields() {
     let source = r#"
 Public Function DescribeFault(ByVal code As Long) As String

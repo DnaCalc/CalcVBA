@@ -77,14 +77,7 @@ pub fn dispatch_collection(
     match method {
         CollectionMethod::Count => Ok(Variant::from_i32(data.count())),
         CollectionMethod::Add => {
-            let value = args
-                .first()
-                .filter(|value| !is_missing_arg(value))
-                .ok_or(CollectionError::WrongArgumentCount)?;
-            let key = optional_key(args.get(1))?;
-            let before = optional_selector(args.get(2));
-            let after = optional_selector(args.get(3));
-            data.add(value.clone(), key, before, after)?;
+            add_collection_item(data, args.first(), args.get(1), args.get(2), args.get(3))?;
             Ok(Variant::empty())
         }
         CollectionMethod::Item => {
@@ -97,6 +90,23 @@ pub fn dispatch_collection(
             Ok(Variant::empty())
         }
     }
+}
+
+/// Add from borrowed positional arguments, cloning only the item retained by the collection.
+pub fn add_collection_item(
+    data: &mut CollectionData,
+    item: Option<&Variant>,
+    key: Option<&Variant>,
+    before: Option<&Variant>,
+    after: Option<&Variant>,
+) -> Result<(), CollectionError> {
+    let item = item
+        .filter(|value| !is_missing_arg(value))
+        .ok_or(CollectionError::WrongArgumentCount)?;
+    let key = optional_key(key)?;
+    let before = optional_selector(before);
+    let after = optional_selector(after);
+    data.add(item.clone(), key, before, after)
 }
 
 fn is_missing_arg(v: &Variant) -> bool {

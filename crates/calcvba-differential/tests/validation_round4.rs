@@ -65,6 +65,41 @@ End Sub
 }
 
 #[test]
+fn dictionary_binary_index_preserves_utf16_keys_collisions_and_order() {
+    both(
+        r#"Public r As Variant
+Sub Main()
+    Dim d As Object, i As Long, keys As Variant
+    Set d = CreateObject("Scripting.Dictionary")
+    For i = 1 To 40
+        d.Add "k" & i, i
+    Next i
+    d.Add "Aa", 1
+    d.Add "BB", 2
+    d.Add "aa", 3
+    d.Add ChrW(&HD800), 4
+    d.Add ChrW(&HD801), 5
+    d.Add "a" & ChrW(0), 6
+    r = d("Aa") & d("BB") & d("aa") & d(ChrW(&HD800)) & d(ChrW(&HD801)) & d("a" & ChrW(0))
+    d.Key("Aa") = "new"
+    d.Remove "k1"
+    keys = d.Keys
+    r = r & d.Exists("Aa") & d("new") & keys(0) & keys(39) & d.HashVal("BB")
+    d.RemoveAll
+    d.CompareMode = 1
+    d.Add "Key", 7
+    r = r & d("KEY")
+End Sub
+
+Public Function AscW(ByVal value As String) As Long
+    Err.Raise 5
+End Function
+"#,
+        &Canon::Str("123456False1k2new407".into()),
+    );
+}
+
+#[test]
 fn dictionary_early_bound_text_compare_and_missing_item() {
     both(
         "Public r As Variant

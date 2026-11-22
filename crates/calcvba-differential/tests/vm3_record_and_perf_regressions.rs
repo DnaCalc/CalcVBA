@@ -50,6 +50,31 @@ fn assert_vm3_jit_match_modules(label: &str, modules: &[(&str, ModuleKind, &str)
     }
 }
 
+#[test]
+fn append_preserves_utf16_units_and_handles_self_concatenation() {
+    assert_vm3_jit_match(
+        "append UTF-16",
+        r#"
+Public result As String
+Sub Main()
+    Dim text As String, suffix As String, i As Long, v As Variant, odd As String
+    text = String$(260, "x")
+    suffix = ChrW(0) & ChrW(&HD800)
+    For i = 1 To 64
+        text = text & suffix
+        text = text & "y"
+    Next i
+    text = text & text
+    odd = ChrB(65) & ChrB(66)
+    v = Null
+    On Error Resume Next
+    text = v & v
+    result = CStr(Err.Number) & ":" & CStr(AscW(odd)) & ":" & CStr(AscW(Mid$(text, 262, 1))) & ":" & text
+End Sub
+"#,
+    );
+}
+
 /// Updating a scalar field of a UDT or a UDT-array element must mutate the
 /// record in place without deep-cloning the record or reallocating sibling
 /// BSTR string fields (matches Excel VBA storage stability and eliminates

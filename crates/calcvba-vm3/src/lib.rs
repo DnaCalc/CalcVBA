@@ -37,7 +37,7 @@ use calcvba_bundle::{
 };
 use calcvba_com::{DynamicMemberSelector, TypeLibMemberInvokeKind};
 use calcvba_eval::arith::{self, ArithError};
-use calcvba_eval::collection::{CollectionMethod, dispatch_collection};
+use calcvba_eval::collection::{CollectionMethod, add_collection_item, dispatch_collection};
 use calcvba_hal::HostServices;
 use calcvba_hal::traits::DynLinkDescriptorView;
 #[cfg(test)]
@@ -1188,7 +1188,7 @@ impl<'h> Vm3<'h> {
     /// object method, or a referenced project's proc) whose ARGUMENTS are resolved in the
     /// caller's program (`cur`) BEFORE this frame runs — matching vm2's resolve-then-switch.
     fn new_frame_in(&mut self, prog: usize, func: FuncId) -> Result<Frame, Vm3Error> {
-        self.new_frame_pooled(prog, func, 0, None, false)
+        self.new_frame_pooled(prog, func, 0, None, None)
     }
 
     fn new_frame_pooled(
@@ -1197,8 +1197,9 @@ impl<'h> Vm3<'h> {
         func: FuncId,
         skip_optional_below: usize,
         dst: Option<Loc>,
-        drain_on_fault: bool,
+        receiver: Option<Variant>,
     ) -> Result<Frame, Vm3Error> {
+        let drain_on_fault = receiver.is_some();
         self.ensure_compiled(prog, func);
         let program = self.exec.programs[prog].program;
         let f = &program.funcs[func.0];
@@ -1256,7 +1257,9 @@ impl<'h> Vm3<'h> {
             for init in &code.non_empty_locals {
                 match *init {
                     LocalSlotInit::Object(idx) => {
-                        frame.slots[idx] = Variant::nothing();
+                        if idx != 0 || !drain_on_fault {
+                            frame.slots[idx] = Variant::nothing();
+                        }
                     }
                     LocalSlotInit::Array(idx) => {
                         let local = &f.locals[idx];
@@ -1281,6 +1284,9 @@ impl<'h> Vm3<'h> {
                     frame.slots[index] = value?;
                 }
             }
+        }
+        if let Some(receiver) = receiver {
+            frame.slots[0] = receiver;
         }
         Ok(frame)
     }
@@ -1764,7 +1770,12 @@ impl<'h> Vm3<'h> {
                             ));
                         }
                     }
-                    VmOp::Concat { dst, lhs, rhs } => {
+                    VmOp::Concat {
+                        dst,
+                        lhs,
+                        rhs,
+                        coerce_to_string,
+                    } => {
                         let fast: Option<Variant> = {
                             let lu = self.borrow_packed_str_units(top, cur_prog, &code, lhs);
                             let ru = self.borrow_packed_str_units(top, cur_prog, &code, rhs);
@@ -1790,12 +1801,14 @@ impl<'h> Vm3<'h> {
                                 try_vm!(self.eval_packed_arith_value(top, cur_prog, &code, lhs));
                             let r =
                                 try_vm!(self.eval_packed_arith_value(top, cur_prog, &code, rhs));
-                            try_vm!(self.store_packed_arith(
-                                top,
-                                cur_prog,
-                                dst,
-                                arith::concat(&l, &r)
-                            ));
+                            let result = arith::concat(&l, &r).and_then(|value| {
+                                if coerce_to_string && value.vtype() != VarType::String {
+                                    arith::coerce_string(&value)
+                                } else {
+                                    Ok(value)
+                                }
+                            });
+                            try_vm!(self.store_packed_arith(top, cur_prog, dst, result));
                         }
                     }
                     VmOp::Compare {
@@ -3359,7 +3372,7 @@ impl<'h> Vm3<'h> {
         }
         self.guard_call_depth()?;
         let mut frame =
-            self.new_frame_pooled(cur_prog, call.proc, call.args.len(), dst_loc, false)?;
+            self.new_frame_pooled(cur_prog, call.proc, call.args.len(), dst_loc, None)?;
         let frame_index = self.frames.len();
         let mut pending_param_array_aliases: Vec<(Loc, Vec<Option<Loc>>)> = Vec::new();
         for (i, arg) in call.args.iter().enumerate() {
@@ -4004,6 +4017,29 @@ impl<'h> Vm3<'h> {
         method: CollectionMethod,
         pargs: &[FastCallArg],
     ) -> Result<(), Vm3Error> {
+        if method == CollectionMethod::Add
+            && let [
+                FastCallArg::Operand(item),
+                FastCallArg::Operand(key),
+                tail @ ..,
+            ] = pargs
+            && tail.iter().all(|arg| matches!(arg, FastCallArg::Omitted))
+            && let (Some(recv), Some(item), Some(key)) = (
+                self.borrow_packed_op(top, cur_prog, code, recv),
+                self.borrow_packed_op(top, cur_prog, code, *item),
+                self.borrow_packed_op(top, cur_prog, code, *key),
+            )
+        {
+            borrow_with_native_collection(recv, |data| {
+                add_collection_item(data, Some(item), Some(key), None, None)
+            })
+            .ok_or_else(|| Vm3Error::Fault(Fault::new(424, "Object required")))?
+            .map_err(|error| Vm3Error::Fault(Fault::standard(error.vba_number())))?;
+            if let Some(dst) = dst {
+                self.write_packed_place(top, cur_prog, dst, Variant::empty())?;
+            }
+            return Ok(());
+        }
         // Zero-clone fast path for `c.Count` and `c(key)` / `c.Item(key)` / `c.Remove(key)`.
         if pargs.is_empty()
             && let Some(recv_ref) = self.borrow_packed_op(top, cur_prog, code, recv)
@@ -4098,10 +4134,8 @@ impl<'h> Vm3<'h> {
         let dst_loc = dst.map(|p| self.resolve_packed(top, cur_prog, p));
         let me = self.eval_packed_op(top, cur_prog, code, recv)?;
         let base = self.frames.len();
-        let mut frame = self.new_frame_pooled(target_prog, proc, pargs.len() + 1, dst_loc, true)?;
-        if let Some(slot) = frame.local_mut(0) {
-            *slot = me;
-        }
+        let mut frame =
+            self.new_frame_pooled(target_prog, proc, pargs.len() + 1, dst_loc, Some(me))?;
         let mut pending_param_array_aliases: Vec<(Loc, Vec<Option<Loc>>)> = Vec::new();
         for (i, arg) in pargs.iter().enumerate() {
             let li = i + 1;
@@ -5627,7 +5661,7 @@ impl<'h> Vm3<'h> {
                 return Ok(());
             }
         }
-        let mut frame = self.new_frame_pooled(target_prog, proc, args.len(), dst_loc, false)?;
+        let mut frame = self.new_frame_pooled(target_prog, proc, args.len(), dst_loc, None)?;
         let frame_index = self.frames.len();
         let mut pending_param_array_aliases = Vec::new();
         for (i, arg) in args.iter().enumerate() {
@@ -7709,7 +7743,7 @@ impl<'h> Vm3<'h> {
             }
             ObjectMemberRoute::Foreign => self.dispatch_com_method(
                 object,
-                DynamicMemberSelector::DefaultMember,
+                calcvba_com::call::ComMember::Id(0),
                 invoke_kind,
                 args,
             ),
@@ -7785,16 +7819,15 @@ impl<'h> Vm3<'h> {
         } else {
             self.dispatch_com_method(
                 object,
-                DynamicMemberSelector::Name(name.to_string()),
+                calcvba_com::call::ComMember::Name(name),
                 invoke_kind,
                 args,
             )
         }
     }
 
-    /// COM dispatch on a genuine COM/foreign receiver: build a dynamic call request (the
-    /// `member` selector is `Name` for late-bound and `TokenNamed{dispid,name}` for
-    /// early-bound), route it through the host's COM facet (the identical
+    /// COM dispatch on a genuine COM/foreign receiver: route the name or default
+    /// member through the host's COM facet (the identical
     /// `dispatch_invoke_dynamic_variant_with_writebacks` contract vm2 drives — the host's
     /// `PreferVtable` strategy picks the transport, the same way for both VMs), and copy any
     /// `[out]`/`[in,out]` write-back to its ByRef call-site place. A dispatch fault carries
@@ -7803,7 +7836,7 @@ impl<'h> Vm3<'h> {
     fn dispatch_com_method(
         &mut self,
         object: ObjectRef,
-        member: DynamicMemberSelector,
+        member: calcvba_com::call::ComMember<'_>,
         invoke_kind: TypeLibMemberInvokeKind,
         args: &[OxCallArg],
     ) -> Result<Variant, Vm3Error> {
@@ -7827,12 +7860,8 @@ impl<'h> Vm3<'h> {
         let host = self.exec.host;
         let result = {
             let _events = self.event_scope();
-            host.com().invoke_object(
-                &object,
-                com_member(&member),
-                com_call_kind(invoke_kind),
-                &call_args,
-            )
+            host.com()
+                .invoke_object(&object, member, com_call_kind(invoke_kind), &call_args)
         };
         self.take_event_abort()?;
         result.map_err(|e| Vm3Error::Fault(Fault::from_hal(e)))

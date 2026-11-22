@@ -204,6 +204,14 @@ End Sub
         if matches!(elements.first(), Some(Canon::Array { elements, .. })
             if elements == &[canon(&Variant::from_i32(42))])));
     assert!(!comparison.has_opaque_values());
+    assert!(matches!(
+        &values[0][0],
+        Canon::Record {
+            identity: Some(_),
+            ..
+        }
+    ));
+    assert!(comparison.differences().is_empty(), "{comparison:?}");
 }
 
 #[cfg(target_os = "linux")]

@@ -5675,9 +5675,29 @@ pub(crate) unsafe extern "C" fn rt_jit_new_record_to_slot(
             // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
             Err(_) => return unsafe { rt_raise_type_mismatch(state) },
         };
-        // SAFETY: `run` is live; preserve the slot's nominal `VbaRecordIdentity` if already seeded.
-        let layout = slot_ref(unsafe { &*run }, dst_area, dst_index)
-            .and_then(|existing| existing.vba_record_layout().cloned())
+        // SAFETY: the current frame and its metadata are live for this helper call.
+        let run_ref = unsafe { &*run };
+        let declared_layout = current_program_image(run_ref).and_then(|(_, image)| {
+            // SAFETY: the linked image retains its program for the life of the run.
+            let program = unsafe { image.program.as_ref() }?;
+            let frame = run_ref.frames.last()?;
+            let index = dst_index as usize;
+            let ty = match dst_area {
+                AREA_GLOBAL => &program.globals.get(index)?.ty,
+                AREA_LOCAL => frame.local_types.get(index)?,
+                AREA_TEMP => frame.temp_types.get(index)?,
+                _ => return None,
+            };
+            let OxTy::Record(id) = ty else {
+                return None;
+            };
+            calcvba_rt_abi::vba_record_layout_for_program_record(program, *id).ok()
+        });
+        let layout = declared_layout
+            .or_else(|| {
+                slot_ref(run_ref, dst_area, dst_index)
+                    .and_then(|existing| existing.vba_record_layout().cloned())
+            })
             .filter(|existing| {
                 existing.identity().is_some() && existing.matches_structural(&anon_layout)
             })

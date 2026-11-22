@@ -18,7 +18,7 @@
 use calcvba_runtime::coerce::{coerce_to, parse_vba_numeric_string};
 use calcvba_runtime::date::parse_date_text_serial_bits;
 use calcvba_runtime::variant::VarType;
-use calcvba_runtime::{Variant, variant_to_vba_string};
+use calcvba_runtime::{Decimal96, Variant, variant_to_vba_string};
 
 use crate::pure::{day_of_week, days_from_civil, serial_to_ymd, week_of_year};
 
@@ -593,6 +593,21 @@ struct Dec {
 }
 
 impl Dec {
+    fn from_decimal(value: Decimal96) -> Self {
+        let magnitude = value.magnitude_u128();
+        let digits: Vec<_> = magnitude
+            .to_string()
+            .bytes()
+            .map(|digit| digit - b'0')
+            .collect();
+        let exp10 = if magnitude == 0 {
+            0
+        } else {
+            digits.len() as i32 - 1 - i32::from(value.scale())
+        };
+        Self { digits, exp10 }
+    }
+
     fn from_f64(v: f64) -> Dec {
         if v == 0.0 || !v.is_finite() {
             return Dec {
@@ -738,20 +753,29 @@ struct Rendered {
 }
 
 fn format_numeric(value: &Variant, mask: &str) -> String {
-    let n = num(value);
+    let (decimal, negative, zero) = if let Some(value) = value.as_decimal96()
+        && value.scale() <= 28
+    {
+        let decimal = Dec::from_decimal(value);
+        let zero = decimal.digits == [0];
+        (decimal, value.is_negative() && !zero, zero)
+    } else {
+        let n = num(value);
+        (Dec::from_f64(n), n < 0.0, n == 0.0)
+    };
     let sections = split_sections(mask);
-    let (section, force_minus) = if n < 0.0 {
+    let (section, force_minus) = if negative {
         if sections.len() >= 2 && !sections[1].is_empty() {
             (sections[1], false) // the negative section carries its own sign
         } else {
             (sections[0], true)
         }
-    } else if n == 0.0 && sections.len() >= 3 {
+    } else if zero && sections.len() >= 3 {
         (sections[2], false)
     } else {
         (sections[0], false)
     };
-    let r = render_section(section, n.abs());
+    let r = render_section(section, decimal);
     if force_minus && !r.zero {
         format!("-{}", r.text)
     } else {
@@ -854,7 +878,7 @@ fn main_bounds(toks: &[Tok]) -> (Option<usize>, usize, Option<usize>) {
     (exp_at, main_end, dot_at)
 }
 
-fn render_section(section: &str, value: f64) -> Rendered {
+fn render_section(section: &str, mut dec: Dec) -> Rendered {
     let mut toks = tokenize(section);
     let Some(first_digit) = toks.iter().position(|t| matches!(t, Tok::Digit(_))) else {
         return Rendered {
@@ -893,7 +917,6 @@ fn render_section(section: &str, value: f64) -> Rendered {
     };
     let frac_places = after.iter().filter(|t| matches!(t, Tok::Digit(_))).count();
 
-    let mut dec = Dec::from_f64(value);
     let is_zero_value = dec.digits.iter().all(|d| *d == 0);
     if !is_zero_value {
         dec.exp10 += shift;
@@ -1181,6 +1204,23 @@ mod tests {
         assert_eq!(fmt(0.5, "0%"), "50%");
         assert_eq!(fmt(0.5, "0.0%"), "50.0%");
         assert_eq!(fmt(12345.0, "0.00E+00"), "1.23E+04");
+    }
+
+    #[test]
+    fn numeric_mask_preserves_decimal96_digits() {
+        // Excel's Format3.37 capture uses nonbreaking spaces for grouping.
+        // Use the current format profile's separator to check the same digits.
+        let value = Variant::from_decimal96(calcvba_runtime::Decimal96::from_parts(
+            u32::MAX,
+            u32::MAX,
+            u32::MAX,
+            0,
+            false,
+        ));
+        let expected =
+            "79\u{a0}228\u{a0}162\u{a0}514\u{a0}264\u{a0}337\u{a0}593\u{a0}543\u{a0}950\u{a0}335"
+                .replace('\u{a0}', &GROUP_SEP.to_string());
+        assert_eq!(apply(&value, "#,##0"), expected);
     }
 
     #[test]

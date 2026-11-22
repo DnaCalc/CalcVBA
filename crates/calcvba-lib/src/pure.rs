@@ -338,26 +338,38 @@ pub fn instr(args: &[Variant], rev: bool) -> LibResult<Variant> {
     } else {
         1
     };
-    if start < 1 {
-        return Err(LibError::invalid_call("InStr start must be >= 1"));
+    if start == i32::MAX {
+        return Err(LibError::invalid_call("invalid InStr start position"));
     }
-    let text = text_compare(args, base + 2)?;
+    let text = instr_text_compare(args, base + 2)?;
     let hay = compare_fold_units(&units_arg(need(args, base)?)?, text);
     let needle = compare_fold_units(&units_arg(need(args, base + 1)?)?, text);
-    // Nothing is found in an empty string, whatever the search text.
+    // An empty needle in a nonempty string preserves even a nonpositive start.
+    if needle.is_empty() && !hay.is_empty() {
+        return Ok(vi32(start));
+    }
+    if start < 1 {
+        return Err(LibError::invalid_call("invalid InStr start position"));
+    }
     if hay.is_empty() {
         return Ok(vi32(0));
     }
     let from = start as usize - 1;
-    if from > hay.len() {
-        return Ok(vi32(0));
-    }
-    if needle.is_empty() {
-        return Ok(vi32(start));
-    }
     Ok(vi32(
         find_units(&hay, &needle, from).map_or(0, |at| at as i32 + 1),
     ))
+}
+
+fn instr_text_compare(args: &[Variant], index: usize) -> LibResult<bool> {
+    let mode = arg_present(args, index)
+        .map(as_i32)
+        .transpose()?
+        .unwrap_or_default();
+    match mode {
+        -1 | 2 => Err(LibError::invalid_call("invalid string search comparison")),
+        1 | 3 => Ok(true),
+        _ => Ok(false),
+    }
 }
 
 /// `InStrRev(stringcheck, stringmatch, [start = -1], [compare])` — the position (1-based, from

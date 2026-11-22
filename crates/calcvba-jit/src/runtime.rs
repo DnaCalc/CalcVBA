@@ -2107,10 +2107,13 @@ pub(crate) unsafe fn seed_omitted_argument(
         // SAFETY: forwarded from this function's contract.
         return unsafe { seed_omitted_param_default(state, frame, index, param) };
     }
-    if param.ty != OxTy::Variant {
+    if !is_m4_4_call_scalar_ty(&param.ty) {
         return ST_FAULT;
     }
-    frame.locals[index] = Variant::from_error_code(MISSING_ARG);
+    // The private local already has its declared type's initial value.
+    if param.ty == OxTy::Variant {
+        frame.locals[index] = Variant::from_error_code(MISSING_ARG);
+    }
     ST_OK
 }
 

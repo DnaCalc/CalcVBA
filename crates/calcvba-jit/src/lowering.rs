@@ -2,6 +2,7 @@
 
 use super::*;
 use calcvba_rt_abi::host_entry::ScalarType;
+use cranelift_frontend::Switch;
 
 pub(crate) struct Compiler<'p> {
     pub(crate) module: UnpublishedModule,
@@ -253,6 +254,7 @@ impl<'p> Compiler<'p> {
                 run,
                 state,
                 current_fault_target: None,
+                runtime_dispatch: None,
             };
             let slot = builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
@@ -377,6 +379,7 @@ impl<'p> Compiler<'p> {
                 run,
                 state,
                 current_fault_target: None,
+                runtime_dispatch: None,
             };
             lower.define_blocks(&mut builder, &mut *self.module)?;
             builder.seal_all_blocks();
@@ -402,6 +405,7 @@ pub(crate) struct LowerFunc<'a> {
     pub(crate) run: Value,
     pub(crate) state: Value,
     pub(crate) current_fault_target: Option<ir::Block>,
+    runtime_dispatch: Option<ir::Block>,
 }
 
 #[derive(Clone, Copy)]
@@ -545,6 +549,19 @@ impl<'a> LowerFunc<'a> {
             self.lower_terminator(builder, module, &block.terminator)?;
         }
         self.current_fault_target = None;
+        if let Some(dispatch) = self.runtime_dispatch {
+            builder.switch_to_block(dispatch);
+            let target = builder.block_params(dispatch)[0];
+            let invalid_target = builder.create_block();
+            let mut targets = Switch::new();
+            for block in &self.func.blocks {
+                targets.set_entry(block.id.0 as u128, self.clif_block(block.id)?);
+            }
+            targets.emit(builder, target, invalid_target);
+            builder.switch_to_block(invalid_target);
+            let fault = builder.ins().iconst(types::I32, i64::from(ST_FAULT));
+            builder.ins().return_(&[fault]);
+        }
         Ok(())
     }
 
@@ -8593,7 +8610,7 @@ impl<'a> LowerFunc<'a> {
     }
 
     fn lower_terminator(
-        &self,
+        &mut self,
         builder: &mut FunctionBuilder<'_>,
         module: &mut impl Module,
         term: &OxTerminator,
@@ -8751,7 +8768,8 @@ impl<'a> LowerFunc<'a> {
 
                 builder.switch_to_block(routed_block);
                 let block = builder.ins().stack_load(types::I32, block_slot, 0);
-                self.emit_jump_to_runtime_block(builder, block)
+                self.jump_to_runtime_block(builder, block);
+                Ok(())
             }
             OxTerminator::Resume => self.emit_resume(builder, module, RT_RESUME_SAME, 0),
             OxTerminator::ResumeNext => self.emit_resume(builder, module, RT_RESUME_NEXT, 0),
@@ -8824,7 +8842,7 @@ impl<'a> LowerFunc<'a> {
     }
 
     fn emit_resume(
-        &self,
+        &mut self,
         builder: &mut FunctionBuilder<'_>,
         module: &mut impl Module,
         target_kind: u32,
@@ -8843,11 +8861,12 @@ impl<'a> LowerFunc<'a> {
         let status = builder.inst_results(call)[0];
         self.return_if_not_ok(builder, status);
         let block = builder.ins().stack_load(types::I32, block_slot, 0);
-        self.emit_jump_to_runtime_block(builder, block)
+        self.jump_to_runtime_block(builder, block);
+        Ok(())
     }
 
     fn emit_gosub_return(
-        &self,
+        &mut self,
         builder: &mut FunctionBuilder<'_>,
         module: &mut impl Module,
     ) -> Result<(), JitError> {
@@ -8862,27 +8881,18 @@ impl<'a> LowerFunc<'a> {
         let status = builder.inst_results(call)[0];
         self.return_if_not_ok(builder, status);
         let block = builder.ins().stack_load(types::I32, block_slot, 0);
-        self.emit_jump_to_runtime_block(builder, block)
+        self.jump_to_runtime_block(builder, block);
+        Ok(())
     }
 
-    fn emit_jump_to_runtime_block(
-        &self,
-        builder: &mut FunctionBuilder<'_>,
-        block: Value,
-    ) -> Result<(), JitError> {
-        for idx in 0..self.func.blocks.len() {
-            let is_target = builder
-                .ins()
-                .icmp_imm(ir::condcodes::IntCC::Equal, block, idx as i64);
-            let next = builder.create_block();
-            builder
-                .ins()
-                .brif(is_target, self.clif_block(BlockId(idx))?, &[], next, &[]);
-            builder.switch_to_block(next);
-        }
-        let fault = builder.ins().iconst(types::I32, i64::from(ST_FAULT));
-        builder.ins().return_(&[fault]);
-        Ok(())
+    fn jump_to_runtime_block(&mut self, builder: &mut FunctionBuilder<'_>, target: Value) {
+        // Fault dispatch, Resume and Return use the same table of procedure blocks.
+        let dispatch = *self.runtime_dispatch.get_or_insert_with(|| {
+            let dispatch = builder.create_block();
+            builder.append_block_param(dispatch, types::I32);
+            dispatch
+        });
+        builder.ins().jump(dispatch, &[target.into()]);
     }
 
     fn lower_operand_i32(

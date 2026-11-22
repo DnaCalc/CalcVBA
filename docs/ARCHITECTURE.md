@@ -108,7 +108,7 @@ conventions.
 | Frame, global, parameter and result carriers | A declared array with an array or procedure-reference element type has no JIT SAFEARRAY carrier. Variant elements can hold arrays. Record operations need a retained layout. The destination of a compiled procedure call must have the return type or be a Variant. |
 | Arrays, UDTs and compound places | Array get/set and ReDim require a supported element carrier or a Variant and a shape consistent with the instruction. Typed element operations use an exact destination carrier or a Variant. The helper ABI bounds dimensions, index counts and field indices. |
 | Numeric, logical, comparison and string instructions | The scalar paths admit specific operand and result lanes. Variant paths require operands that can be represented by the runtime helper descriptors. The lowering reports refused coercion, boxing, unboxing and operator shapes at the instruction. |
-| Direct and linked procedure calls | Static calls need argument metadata, the formal argument count and exact ByRef aliases. A raw omitted operand uses the declared Optional default, or Missing for an Optional Variant without a default. A ParamArray must be last and use a ByVal Variant or dynamic Variant-array pack. Linked calls need the referenced unit and matching procedure export. |
+| Direct and linked procedure calls | Static calls need argument metadata, the formal argument count and exact ByRef aliases. A raw omitted operand uses the declared Optional default, Missing for an Optional Variant without a default, or the initialized value for an Optional numeric, Boolean, Date or String parameter. Other parameter types require a declared default for a raw omission. A ParamArray must be last and use a ByVal Variant or dynamic Variant-array pack. Linked calls need the referenced unit and matching procedure export. |
 | Indirect procedure calls | The target must be a procedure-reference place. A statically known signature uses the supported direct-call carriers. The unknown-signature lowering has narrower Long and String call paths and limited result carriers. It needs an admitted signature candidate for other shapes. |
 | Classes, object tests and dispatch | Project class imports need a linked class export. The VBA-library `NewExtern` path has a Collection case. Other classes need a supported constructor instruction. A single-project `TypeOf` on an untyped receiver can be refused if the class or interface identity is unavailable. Project and COM calls have to fit the argument descriptors, which currently refuse an OxIR `Const` call argument on that path. |
 | VBA library imports | Legacy VBA `CallExtern` accepts the explicit library argument and result shapes in the lowering. `CallNative` built-ins use the shared runtime library. |
@@ -122,8 +122,10 @@ See [procedure admission](../crates/calcvba-jit/src/admission.rs) and
 [general JIT lowering](../crates/calcvba-jit/src/lowering.rs).
 
 The package round-trip regression exercises `Omitted` for a typed optional
-Long with a declared default of 7 through ByVal and ByRef calls on both
-engines. Ordinary source calls get a materialized default from the binder.
+Long through ByVal and ByRef calls on both engines, with a declared default
+of 7 and with the implicit zero. The binder materializes defaults for
+ordinary statically resolved source calls. Late-bound project calls can
+carry an explicit omission to the callee and use the same JIT frame setup.
 
 
 ## Embedding and project state

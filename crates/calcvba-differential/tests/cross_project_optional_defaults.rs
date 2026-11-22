@@ -33,6 +33,10 @@ Public Function TypedDefault(Optional ByVal n As Long = 5) As Variant\n\
 End Function\n\
 Public Function Pair(Optional ByVal a As Long = 1, Optional ByVal b As String = \"b\") As Variant\n\
     Pair = CStr(a) & \"/\" & b\n\
+End Function\n\
+Public Function ImplicitPair(Optional ByRef a As Long, Optional ByVal b As String, Optional ByVal suffix As String = \"\") As String\n\
+    ImplicitPair = TypeName(a) & \" \" & CStr(a) & \"/\" & b & suffix\n\
+    a = 99\n\
 End Function\n";
 
 const MAIN: &str = "Public result As String\n\
@@ -57,6 +61,8 @@ Sub Main()\n\
     result = result & \"late_named=\" & o.Pair(b:=\"y\") & vbLf\n\
     result = result & \"early_named=\" & e.Pair(b:=\"y\") & vbLf\n\
     result = result & \"early_named_reordered=\" & e.Pair(b:=\"y\", a:=7) & vbLf\n\
+    result = result & \"late_implicit_long=\" & o.ImplicitPair(, \"x\") & vbLf\n\
+    result = result & \"late_implicit_string=\" & o.ImplicitPair(4, , \"!\") & vbLf\n\
 End Sub\n";
 
 const EXPECTED: &[&str] = &[
@@ -78,6 +84,8 @@ const EXPECTED: &[&str] = &[
     "late_named=1/y",
     "early_named=1/y",
     "early_named_reordered=7/y",
+    "late_implicit_long=Long 0/x",
+    "late_implicit_string=Long 4/!",
 ];
 
 fn module(name: &str, kind: ModuleKind, source: &str) -> ModuleUnit {
@@ -219,13 +227,18 @@ fn compiled_reference_defaults_on_the_jit() {
 fn packaged_raw_typed_omission_uses_its_default() {
     use calcvba_oxir::{OxArg, OxInst};
 
-    for passing_mode in ["ByVal", "ByRef"] {
+    for (passing_mode, default, expected) in [
+        ("ByVal", " = 7", 7),
+        ("ByRef", " = 7", 7),
+        ("ByVal", "", 0),
+        ("ByRef", "", 0),
+    ] {
         let source = format!(
             "Public Result As Long\n\
              Sub Main()\n\
                  Result = UseDefault()\n\
              End Sub\n\
-             Private Function UseDefault(Optional {passing_mode} n As Long = 7) As Long\n\
+             Private Function UseDefault(Optional {passing_mode} n As Long{default}) As Long\n\
                  UseDefault = n\n\
                  n = 99\n\
              End Function\n"
@@ -253,7 +266,7 @@ fn packaged_raw_typed_omission_uses_its_default() {
 
         let bytes = OxImage::new(vec![program]).to_bytes().unwrap();
         let image = OxImage::from_bytes(&bytes).unwrap();
-        let expected = calcvba_differential::canon(&calcvba_runtime::Variant::from_i32(7));
+        let expected = calcvba_differential::canon(&calcvba_runtime::Variant::from_i32(expected));
         for executor in [Executor::Vm3, Executor::Jit] {
             let run = run_ox_programs(executor, &image.programs);
             assert!(

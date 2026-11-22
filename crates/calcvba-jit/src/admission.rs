@@ -126,12 +126,12 @@ pub(crate) fn validate_scalar_call_arg_against_param(
         ))),
         (OxArg::Omitted, _)
             if param_info.optional
-                && (param_info.has_default() || matches!(param.ty, OxTy::Variant)) =>
+                && (param_info.has_default() || is_m4_4_call_scalar_ty(&param.ty)) =>
         {
             Ok(())
         }
         (OxArg::Omitted, _) => Err(JitError::unsupported(format!(
-            "omitted arguments require Optional Variant or an Optional parameter with a default, got {}.{}",
+            "omitted arguments require an Optional scalar or Variant parameter or an Optional parameter with a default, got {}.{}",
             callee_name, param.name
         ))),
     }

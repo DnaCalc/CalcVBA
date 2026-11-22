@@ -2251,6 +2251,9 @@ pub fn cstr(args: &[Variant]) -> LibResult<Variant> {
 }
 pub fn str_fn(args: &[Variant]) -> LibResult<Variant> {
     let value = need(args, 0)?;
+    if value.vtype() == VarType::Boolean {
+        return as_str(value).map(vstr);
+    }
     // A numeric string is converted to its number first; `Empty` is 0.
     let number = match value.vtype() {
         VarType::String => vf64(as_f64(value)?),

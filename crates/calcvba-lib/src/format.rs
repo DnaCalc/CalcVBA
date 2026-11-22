@@ -11,9 +11,8 @@
 //!   minutes.
 //!
 //! FIDELITY: string-format characters (`@ & < >`), quoted literal runs in masks,
-//! and locale-specific currency symbols / separators are first-cut. Rounding
-//! follows Rust's formatter (round-half-to-even), matching VBA's bankers' rule
-//! for the common cases.
+//! and locale-specific currency symbols / separators are first-cut. Numeric
+//! masks and fixed formats round their decimal digits half up.
 
 use calcvba_runtime::coerce::{coerce_to, parse_vba_numeric_string};
 use calcvba_runtime::date::parse_date_text_serial_bits;
@@ -462,20 +461,25 @@ fn format_fixed_abs(
     include_leading_digit: bool,
     group_digits: bool,
 ) -> String {
-    let rendered = format!("{value:.decimals$}");
-    let (mut int_s, frac_s) = match rendered.split_once('.') {
-        Some((i, f)) => (i.to_string(), Some(f)),
-        None => (rendered, None),
+    if !value.is_finite() {
+        return value.to_string();
+    }
+    let (integer, fraction) = Dec::from_f64(value).to_fixed(decimals);
+    let mut int_s = if integer.is_empty() {
+        "0".to_string()
+    } else {
+        integer.into_iter().map(digit_char).collect()
     };
     if !include_leading_digit && decimals > 0 && int_s == "0" {
         int_s.clear();
     } else if group_digits {
         int_s = group_thousands(&int_s);
     }
-    match frac_s {
-        Some(frac_s) => format!("{int_s}.{frac_s}"),
-        None => int_s,
+    if decimals > 0 {
+        int_s.push('.');
+        int_s.extend(fraction.into_iter().map(digit_char));
     }
+    int_s
 }
 
 /// VBA "General Number": up to 15 significant digits, no grouping, trailing zeros trimmed,

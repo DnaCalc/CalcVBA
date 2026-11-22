@@ -701,7 +701,7 @@ impl Writer {
             .and_then(|base| base.checked_add_signed(read_i32(original, 4).ok()?))
             .ok_or_else(|| error("invalid .eh_frame pointer"))?;
         let mut entries = Vec::with_capacity(count);
-        for pair in original[12..].chunks_exact(8) {
+        for pair in original[12..].as_chunks::<8>().0 {
             let address = |offset| -> Result<u32> {
                 old_addr
                     .checked_add_signed(read_i32(pair, offset)?)
@@ -798,11 +798,11 @@ impl Writer {
         if data.len() != 28 || &data[..16] != ENTRIES || data[16..] != [0; 12] {
             return Err(error("invalid executable startup record"));
         }
-        for (cell, name) in
-            data[16..]
-                .chunks_exact_mut(4)
-                .zip([startup, "CalcVbaShutdown", "CalcVbaGetLastError"])
-        {
+        for (cell, name) in data[16..].as_chunks_mut::<4>().0.iter_mut().zip([
+            startup,
+            "CalcVbaShutdown",
+            "CalcVbaGetLastError",
+        ]) {
             let (_, _, target) = map
                 .iter()
                 .find(|(export, _, _)| export == name)

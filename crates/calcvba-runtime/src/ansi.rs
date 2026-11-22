@@ -263,7 +263,12 @@ mod cp1252 {
         } else if let Some(i) = HIGH.iter().position(|&h| h == c) {
             0x80 + i as u8
         } else {
-            b'?'
+            // https://www.unicode.org/Public/MAPPINGS/VENDORS/MICSFT/WindowsBestFit/bestfit1252.txt
+            match c {
+                '\u{0130}' => b'I',
+                '\u{3000}' => b' ',
+                _ => b'?',
+            }
         }
     }
 

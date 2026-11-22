@@ -900,12 +900,16 @@ pub fn compile_native_scalars(
                         let signature = &plan.layout.extern_calls[import].signature;
                         let specialized = matches!(args.as_slice(), [OxArg::ByVal(operand)] if plan.layout.operand_type(operand).is_ok_and(numeric) && (conversion_target(resolved.implementation).is_some() || library_helpers.contains_key(&resolved.implementation) && signature.parameters == [ScalarType::Double]));
                         if !specialized {
+                            let args = calcvba_rt_abi::library::public_arguments(
+                                resolved.implementation,
+                                args,
+                            );
                             values.library_call(
                                 module,
                                 &mut b,
                                 resolved.index,
                                 resolved.string_typed_alias,
-                                args,
+                                &args,
                                 *dst,
                             );
                             continue;

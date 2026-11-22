@@ -1,6 +1,6 @@
 Attribute VB_Name = "P_StrConvEdges"
 Option Explicit
-' UNMEASURED combinations, Byte() source coercion, LCID validation and casing.
+' Combinations, Byte() source coercion, LCID validation and casing captured on ACP 1252.
 Private Const N As Long = 18
 Private Function T(ByVal k As Long) As String
     Dim v As Variant, b(0 To 3) As Byte

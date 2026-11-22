@@ -1,0 +1,11 @@
+StrConvEdges.4=ERR5
+StrConvEdges.5=ERR5
+StrConvEdges.6=ERR5
+StrConvEdges.7=ERR5
+StrConvEdges.9=ERR5
+StrConvEdges.11=String:[?C]
+StrConvEdges.12=String:[?c]
+StrConvEdges.14=String:[A B]
+StrConvEdges.15=String:[i]
+StrConvEdges.16=String:[?]
+StrConvEdges.17=ERR94

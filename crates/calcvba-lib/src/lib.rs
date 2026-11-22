@@ -291,8 +291,8 @@ fn null_propagates(id: NativeImplId, args: &[Variant]) -> bool {
     let is_null = |i: usize| args.get(i).is_some_and(|a| a.vtype() == Vt::Null);
     match id {
         Len | LenB | Left | LeftB | Right | RightB | Mid | MidB | LCase | UCase | Trim | LTrim
-        | RTrim | StrConv | Hex | Oct | Str | Round | Year | Month | Day | Weekday | Hour
-        | Minute | Second => is_null(0),
+        | RTrim | Hex | Oct | Str | Round | Year | Month | Day | Weekday | Hour | Minute
+        | Second => is_null(0),
         StrComp | Like => is_null(0) || is_null(1),
         InStr | InStrB => {
             let base = usize::from(args.len() >= 3);

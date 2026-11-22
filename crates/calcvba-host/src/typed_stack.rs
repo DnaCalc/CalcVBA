@@ -823,8 +823,9 @@ impl TypedStack {
                             let parent = entries[current][procedure.0].as_ref().map_err(|_| 5)?;
                             let target = parent.layout().extern_calls.get(import).ok_or(5)?;
                             if let LinkedTarget::Builtin(native) = target.target {
+                                let args = calcvba_rt_abi::library::public_arguments(native, args);
                                 let mut values = Vec::with_capacity(args.len());
-                                for arg in args {
+                                for arg in args.iter() {
                                     values.push(match arg {
                                         calcvba_oxir::OxArg::ByVal(op) => self.operand(op)?,
                                         calcvba_oxir::OxArg::ByRef(p) => {

@@ -10105,7 +10105,7 @@ pub(crate) unsafe extern "C" fn rt_jit_lib_invoke_to_slot(
     state: *mut RawExecState,
     run: *mut JitRun,
     native_id: u32,
-    string_typed_alias: i32,
+    library_flags: i32,
     operands: *const JitVariantOperandDesc,
     argc: i32,
     dst_area: i32,
@@ -10150,6 +10150,14 @@ pub(crate) unsafe extern "C" fn rt_jit_lib_invoke_to_slot(
         // A library function reads an object argument's default member, except those that
         // take the object itself; `VarType` keeps an object without one (vbObject), as VM3.
         let mut argv = argv;
+        if library_flags & JIT_LIBRARY_PUBLIC_STRCONV != 0
+            && argv.len() < calcvba_bundle::native::STRCONV_LIBRARY_ARGUMENTS
+        {
+            argv.resize_with(
+                calcvba_bundle::native::STRCONV_LIBRARY_ARGUMENTS,
+                Variant::empty,
+            );
+        }
         let mut answer = None;
         if let Some(id) = calcvba_bundle::NativeImplId::ALL
             .get(native_id as usize)
@@ -10238,7 +10246,7 @@ pub(crate) unsafe extern "C" fn rt_jit_lib_invoke_to_slot(
                     native_id,
                     argv.as_ptr(),
                     argv.len(),
-                    string_typed_alias,
+                    library_flags & JIT_LIBRARY_STRING_ALIAS,
                     &mut out,
                 )
             };

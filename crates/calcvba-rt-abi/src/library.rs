@@ -1,6 +1,19 @@
 //! Library identity shared by the JIT and direct native compiler.
+use calcvba_bundle::native::STRCONV_LIBRARY_ARGUMENTS;
 use calcvba_bundle::{ExportTarget, NativeBody, NativeImplId, vba_library_bundle};
-use calcvba_oxir::{ImportId, OxProgram};
+use calcvba_oxir::{ImportId, OxArg, OxProgram};
+use std::borrow::Cow;
+
+/// Mark exported StrConv calls without changing the encoding of existing Byte() assignments.
+pub fn public_arguments(implementation: NativeImplId, args: &[OxArg]) -> Cow<'_, [OxArg]> {
+    if implementation == NativeImplId::StrConv && args.len() < STRCONV_LIBRARY_ARGUMENTS {
+        let mut args = args.to_vec();
+        args.resize(STRCONV_LIBRARY_ARGUMENTS, OxArg::Omitted);
+        Cow::Owned(args)
+    } else {
+        Cow::Borrowed(args)
+    }
+}
 
 pub struct Import {
     pub index: u32,

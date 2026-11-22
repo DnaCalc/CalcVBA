@@ -6912,10 +6912,15 @@ impl<'a> LowerFunc<'a> {
             )
         };
         let native_id = builder.ins().iconst(types::I32, i64::from(native_id));
-        let string_typed_alias = builder.ins().iconst(
-            types::I32,
-            i64::from(if string_typed_alias { 1 } else { 0 }),
-        );
+        let mut library_flags = if string_typed_alias {
+            JIT_LIBRARY_STRING_ALIAS
+        } else {
+            0
+        };
+        if native_impl == NativeImplId::StrConv {
+            library_flags |= JIT_LIBRARY_PUBLIC_STRCONV;
+        }
+        let library_flags = builder.ins().iconst(types::I32, i64::from(library_flags));
         let argc = builder.ins().iconst(types::I32, i64::from(argc));
         let callee = self.import(builder, module, self.imports.lib_invoke_slot);
         let call = builder.ins().call(
@@ -6924,7 +6929,7 @@ impl<'a> LowerFunc<'a> {
                 self.state,
                 self.run,
                 native_id,
-                string_typed_alias,
+                library_flags,
                 args_ptr,
                 argc,
                 dst_area,

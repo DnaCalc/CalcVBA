@@ -921,10 +921,13 @@ pub fn str_reverse(args: &[Variant]) -> LibResult<Variant> {
 }
 
 /// FIDELITY: handles case modes plus the deterministic ANSI byte conversion modes
-/// through the shared runtime ANSI codec. East Asian width/kana modes still pass
-/// through outside relevant locales.
+/// through the shared runtime ANSI codec. East Asian width and kana conversion remains unsupported.
 pub fn str_conv(args: &[Variant]) -> LibResult<Variant> {
     let mode = as_i32(need(args, 1)?)?;
+    let input = need(args, 0)?;
+    if input.vtype() == VarType::Null {
+        return Ok(Variant::null());
+    }
     const VB_UPPER_CASE: i32 = 1;
     const VB_LOWER_CASE: i32 = 2;
     const VB_PROPER_CASE: i32 = 3;
@@ -934,13 +937,14 @@ pub fn str_conv(args: &[Variant]) -> LibResult<Variant> {
     const VB_EAST_ASIAN: i32 = 4 | 8 | 16 | 32;
 
     // Internal mode of the binder's `Byte() = String` store: the UTF-16LE bytes of the text.
-    if mode == calcvba_bundle::STRCONV_UTF16_BYTES {
-        // From a Variant source, anything but a String (an array) is stored as it is, and the
-        // store checks its type.
-        if need(args, 0)?.vtype() != VarType::String {
-            return Ok(need(args, 0)?.clone());
+    if mode == calcvba_bundle::STRCONV_UTF16_BYTES
+        && args.len() < calcvba_bundle::native::STRCONV_LIBRARY_ARGUMENTS
+    {
+        // A Byte() Variant passes through to the typed store.
+        if input.vtype() != VarType::String {
+            return Ok(input.clone());
         }
-        let bytes = string_bytes(need(args, 0)?)?
+        let bytes = string_bytes(input)?
             .into_iter()
             .map(Variant::from_u8)
             .collect();
@@ -949,14 +953,11 @@ pub fn str_conv(args: &[Variant]) -> LibResult<Variant> {
         return Ok(Variant::from_safearray(array));
     }
 
-    if !(0..=255).contains(&mode) || (mode & VB_UNICODE != 0 && mode != VB_UNICODE) {
+    if !(0..=255).contains(&mode)
+        || (mode & (VB_UNICODE | VB_FROM_UNICODE) != 0
+            && !matches!(mode, VB_UNICODE | VB_FROM_UNICODE))
+    {
         return Err(LibError::invalid_call("invalid StrConv conversion flags"));
-    }
-
-    if mode & VB_UNICODE != 0 && mode & VB_FROM_UNICODE != 0 {
-        return Err(LibError::invalid_call(
-            "vbUnicode and vbFromUnicode are mutually exclusive",
-        ));
     }
 
     if mode & VB_EAST_ASIAN != 0 {
@@ -971,7 +972,6 @@ pub fn str_conv(args: &[Variant]) -> LibResult<Variant> {
         return Err(LibError::invalid_call("invalid StrConv locale ID"));
     }
 
-    let input = need(args, 0)?;
     let units = if mode & VB_UNICODE != 0 {
         // The string's own bytes are read as ANSI text, one wide character per byte.
         if let Some(array) = input.as_safearray() {
@@ -987,7 +987,15 @@ pub fn str_conv(args: &[Variant]) -> LibResult<Variant> {
         units_arg(input)?
     };
 
-    let units = match mode & VB_PROPER_CASE {
+    let casing = mode & VB_PROPER_CASE;
+    // In Excel on ACP 1252, best-fit conversion precedes casing and word breaks.
+    let units = if casing == 0 {
+        units
+    } else {
+        use calcvba_runtime::ansi::{ansi_decode_units, ansi_encode_units};
+        ansi_decode_units(&ansi_encode_units(&units))
+    };
+    let units = match casing {
         VB_UPPER_CASE => case_units(&units, |c| simple_case(c, c.to_uppercase())),
         VB_LOWER_CASE => case_units(&units, |c| simple_case(c, c.to_lowercase())),
         VB_PROPER_CASE => proper_case_units(&units),

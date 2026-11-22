@@ -2685,7 +2685,8 @@ impl<'h> Vm3<'h> {
             return self.call_proc_in(b, dst, FuncId(proc), args);
         }
         let (id, string_typed_alias) = self.resolve_library_import(import)?;
-        let mut argv = self.extern_args(args)?;
+        let args = calcvba_rt_abi::library::public_arguments(id, args);
+        let mut argv = self.extern_args(&args)?;
         let result = match self.vba_object_len(id, &argv)? {
             Some(value) => value,
             None => {

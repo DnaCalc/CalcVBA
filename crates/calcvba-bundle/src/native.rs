@@ -962,3 +962,7 @@ pub enum NativeMethodId {
 /// Internal `StrConv` mode the binder uses for a `Byte() = String` store: the text's UTF-16LE
 /// bytes. Outside the range of VBA's documented `vbStrConv` bits.
 pub const STRCONV_UTF16_BYTES: i32 = 0x4000_0000;
+
+/// Arguments at the runtime entry for the exported StrConv function. The extra slot
+/// distinguishes it from older compiled Byte() assignments that use the internal mode.
+pub const STRCONV_LIBRARY_ARGUMENTS: usize = 4;

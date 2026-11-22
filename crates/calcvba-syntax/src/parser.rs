@@ -4212,6 +4212,69 @@ End Property
     }
 
     #[test]
+    fn expr_left_assoc_power_chains_and_unary() {
+        // 4-term chain: (((2 ^ 3) ^ 2) ^ 2)
+        let src = "Sub T()\n    x = 2 ^ 3 ^ 2 ^ 2\nEnd Sub\n";
+        let p = parse(src);
+        assert_eq!(p.syntax().text(), src);
+        let binaries: Vec<String> = collect_nodes(&p.syntax(), SyntaxKind::BinaryExpr)
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .collect();
+        assert_eq!(binaries, vec!["2 ^ 3 ^ 2 ^ 2", "2 ^ 3 ^ 2", "2 ^ 3"]);
+
+        // Leading unary minus applies after the full left-associative chain: -((2 ^ 3) ^ 2)
+        let src = "Sub T()\n    x = -2 ^ 3 ^ 2\nEnd Sub\n";
+        let p = parse(src);
+        assert_eq!(p.syntax().text(), src);
+        let unaries: Vec<String> = collect_nodes(&p.syntax(), SyntaxKind::UnaryExpr)
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .collect();
+        let binaries: Vec<String> = collect_nodes(&p.syntax(), SyntaxKind::BinaryExpr)
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .collect();
+        assert_eq!(unaries, vec!["-2 ^ 3 ^ 2"]);
+        assert_eq!(binaries, vec!["2 ^ 3 ^ 2", "2 ^ 3"]);
+
+        // Trailing unary minus binds to the final exponent: (2 ^ 3) ^ (-2)
+        let src = "Sub T()\n    x = 2 ^ 3 ^ -2\nEnd Sub\n";
+        let p = parse(src);
+        assert_eq!(p.syntax().text(), src);
+        let unaries: Vec<String> = collect_nodes(&p.syntax(), SyntaxKind::UnaryExpr)
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .collect();
+        let binaries: Vec<String> = collect_nodes(&p.syntax(), SyntaxKind::BinaryExpr)
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .collect();
+        assert_eq!(unaries, vec!["-2"]);
+        assert_eq!(binaries, vec!["2 ^ 3 ^ -2", "2 ^ 3"]);
+
+        // Parentheses override left-associativity: 2 ^ (3 ^ 2)
+        let src = "Sub T()\n    x = 2 ^ (3 ^ 2)\nEnd Sub\n";
+        let p = parse(src);
+        assert_eq!(p.syntax().text(), src);
+        let binaries: Vec<String> = collect_nodes(&p.syntax(), SyntaxKind::BinaryExpr)
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .collect();
+        assert_eq!(binaries, vec!["2 ^ (3 ^ 2)", "3 ^ 2"]);
+
+        // Identifier chain without spaces: ((y ^ z) ^ w)
+        let src = "Sub T()\n    x = y^z^w\nEnd Sub\n";
+        let p = parse(src);
+        assert_eq!(p.syntax().text(), src);
+        let binaries: Vec<String> = collect_nodes(&p.syntax(), SyntaxKind::BinaryExpr)
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .collect();
+        assert_eq!(binaries, vec!["y^z^w", "y^z"]);
+    }
+
+    #[test]
     fn expr_unary_not() {
         let src = "Sub T()\nIf Not x And y Then\nEnd If\nEnd Sub\n";
         let p = parse(src);

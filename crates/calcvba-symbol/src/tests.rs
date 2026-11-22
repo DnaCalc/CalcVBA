@@ -743,6 +743,45 @@ fn longlong_const_comparisons_preserve_integer_precision() {
 }
 
 #[test]
+fn const_and_enum_exponentiation_chains_are_left_associative() {
+    let m = manifest(
+        "Proj",
+        vec![module(
+            "Mod1",
+            "Public Const C232 = 2 ^ 3 ^ 2\n\
+             Public Const C2322 = 2 ^ 3 ^ 2 ^ 2\n\
+             Public Const C432 = 4 ^ 3 ^ 2\n\
+             Public Const CNoOverflow = 2 ^ 2 ^ 10\n\
+             Public Const CNegBaseSquareSqrt = (-4) ^ 2 ^ 0.5\n\
+             Public Const CNegBase = (-2) ^ 3 ^ 2\n\
+             Public Const CLeadingNeg = -2 ^ 3 ^ 2\n\
+             Public Const CTrailingNeg = 2 ^ 3 ^ -2\n\
+             Public Const CParenRight = 2 ^ (3 ^ 2)\n\
+             Public Enum PowEnum\n\
+                 ChainVal = 2 ^ 3 ^ 2\n\
+             End Enum\n",
+        )],
+    );
+    let env = build_resolution_environment(&m, &NullTypeLibs).unwrap();
+    let scope = env.module_scope("Mod1").unwrap();
+    let val = |name: &str| -> Option<CoreConst> {
+        let b = env.resolve(&ResolutionContext::at(scope), name)?;
+        env.const_value(b.symbol?).cloned()
+    };
+    let f = |v: f64| Some(CoreConst::F64(v.to_bits()));
+    assert_eq!(val("C232"), f(64.0));
+    assert_eq!(val("C2322"), f(4096.0));
+    assert_eq!(val("C432"), f(4096.0));
+    assert_eq!(val("CNoOverflow"), f(1_048_576.0));
+    assert_eq!(val("CNegBaseSquareSqrt"), f(4.0));
+    assert_eq!(val("CNegBase"), f(64.0));
+    assert_eq!(val("CLeadingNeg"), f(-64.0));
+    assert_eq!(val("CTrailingNeg"), f(0.015625));
+    assert_eq!(val("CParenRight"), f(512.0));
+    assert_eq!(val("ChainVal"), Some(CoreConst::I32(64)));
+}
+
+#[test]
 fn mixed_string_scalar_relational_consts_use_effective_type_coercion() {
     let m = manifest(
         "Proj",

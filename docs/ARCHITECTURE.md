@@ -87,6 +87,8 @@ internal calls, ByRef aliases and error handling. Unsupported signatures and
 bodies return explicit errors. The ordinary Variant entry remains available.
 The source compiler is also the foundation for code transformation tools;
 there is currently no language-service/LSP or debugger crate in the workspace.
+The [VM3 debugger design](design/vm3-debugger.md) describes the source and
+runtime hooks needed by DNA Calc and Formula Explorer.
 
 `tools/calcvba-udf` reads bound signatures and generates ordinary VBA XLL shims
 and native export declarations. It uses the existing native builder; Excel's

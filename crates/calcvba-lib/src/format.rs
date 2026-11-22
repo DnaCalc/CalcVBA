@@ -472,9 +472,9 @@ fn format_fixed_abs(
     if !value.is_finite() {
         return value.to_string();
     }
-    // FormatNumber and FormatPercent keep the separator at precision 256
-    // and render zero fractional digits.
-    let fractional_digits = if decimals == 256 { 0 } else { decimals };
+    // FormatNumber and FormatPercent keep the decimal separator for any positive
+    // precision while wrapping the rendered fractional digit count modulo 256.
+    let fractional_digits = decimals & 0xFF;
     let (integer, fraction) = Dec::from_f64(value).to_fixed(fractional_digits);
     let mut int_s = if integer.is_empty() {
         "0".to_string()

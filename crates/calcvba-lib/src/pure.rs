@@ -1093,7 +1093,7 @@ pub fn format(args: &[Variant], calendar: Calendar) -> LibResult<Variant> {
 pub fn format_number(args: &[Variant]) -> LibResult<Variant> {
     let value = need(args, 0)?;
     let early = fixed_format_guard(value)?;
-    let options = fixed_format_options(args, 256)?;
+    let options = fixed_format_options(args, i32::MAX)?;
     if let Some(early) = early {
         return Ok(early);
     }
@@ -1125,7 +1125,7 @@ pub fn format_currency(args: &[Variant]) -> LibResult<Variant> {
 pub fn format_percent(args: &[Variant]) -> LibResult<Variant> {
     let value = need(args, 0)?;
     let early = fixed_format_guard(value)?;
-    let options = fixed_format_options(args, 256)?;
+    let options = fixed_format_options(args, i32::MAX)?;
     if let Some(early) = early {
         return Ok(early);
     }

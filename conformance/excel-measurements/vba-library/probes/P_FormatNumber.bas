@@ -1,7 +1,7 @@
 Attribute VB_Name = "P_FormatNumber"
 Option Explicit
 ' FormatNumber (Strings; MS-VBAL 6.1.2.11.1.x). All results depend on regional settings: locale.
-Private Const N As Long = 36
+Private Const N As Long = 43
 
 Private Function T(ByVal k As Long) As String
     Dim v As Variant, s As String
@@ -43,6 +43,13 @@ Private Function T(ByVal k As Long) As String
         Case 34: v = FormatNumber(5, 255)
         Case 35: v = FormatNumber(5, 256)
         Case 36: v = FormatNumber(Empty, 256, 2)
+        Case 37: v = FormatNumber(0.5, 256)
+        Case 38: v = FormatNumber(5, 257)
+        Case 39: v = FormatNumber(0.5, 257)
+        Case 40: v = FormatNumber(5, 511)
+        Case 41: v = FormatNumber(0.5, 511)
+        Case 42: v = FormatNumber(5, 512)
+        Case 43: v = FormatNumber(0.5, 512)
     End Select
     T = "FormatNumber." & k & "=" & Sh(v)
     Exit Function

@@ -1,7 +1,7 @@
 Attribute VB_Name = "P_FormatPercent"
 Option Explicit
 ' FormatPercent (Strings; MS-VBAL 6.1.2.11.1.x). All results depend on regional settings: locale.
-Private Const N As Long = 36
+Private Const N As Long = 43
 
 Private Function T(ByVal k As Long) As String
     Dim v As Variant, s As String
@@ -43,6 +43,13 @@ Private Function T(ByVal k As Long) As String
         Case 34: v = FormatPercent(5, 255)
         Case 35: v = FormatPercent(5, 256)
         Case 36: v = FormatPercent(Empty, 256, 2)
+        Case 37: v = FormatPercent(0.005, 256)
+        Case 38: v = FormatPercent(5, 257)
+        Case 39: v = FormatPercent(0.005, 257)
+        Case 40: v = FormatPercent(5, 511)
+        Case 41: v = FormatPercent(0.005, 511)
+        Case 42: v = FormatPercent(5, 512)
+        Case 43: v = FormatPercent(0.005, 512)
     End Select
     T = "FormatPercent." & k & "=" & Sh(v)
     Exit Function

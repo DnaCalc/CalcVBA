@@ -9,6 +9,29 @@ use calcvba_runtime::Variant;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+/// ProgIDs with a built-in portable implementation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BuiltinProgId {
+    Dictionary,
+    RegExp,
+    FileSystemObject,
+    XmlDocument,
+}
+
+impl BuiltinProgId {
+    pub fn resolve(name: &str) -> Option<Self> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "scripting.dictionary" => Self::Dictionary,
+            "vbscript.regexp" => Self::RegExp,
+            "scripting.filesystemobject" => Self::FileSystemObject,
+            "msxml2.domdocument" | "msxml2.domdocument.3.0" | "msxml2.domdocument.6.0" => {
+                Self::XmlDocument
+            }
+            _ => return None,
+        })
+    }
+}
+
 /// Factory for creating portable dispatch objects.
 pub trait PortableObjectFactory: Send + Sync {
     fn create(&self) -> Box<dyn PortableDispatch>;

@@ -1,8 +1,10 @@
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::any::Any;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hash;
+use std::rc::Rc;
 
 use crate::Variant;
 pub use calcvba_automation::object_ref::{ObjectRef, RawRuntimeIUnknown};
@@ -978,6 +980,11 @@ fn runtime_interface_descriptor_key(interface: &RuntimeInterfaceDescriptor) -> u
     interface as *const RuntimeInterfaceDescriptor as usize
 }
 
+enum NativeObjectState {
+    Collection(crate::collection::CollectionData),
+    Local(Rc<dyn Any>),
+}
+
 #[repr(C)]
 pub(crate) struct CompatObjectBase {
     pub(crate) unknown: RawRuntimeIUnknown,
@@ -993,11 +1000,8 @@ pub(crate) struct CompatObjectBase {
     // Each field is boxed and kept once created, so its cell has a stable address for
     // `VarPtr` (as a VBA instance's fields live in its memory until it is freed).
     pub(crate) fields: RefCell<BTreeMap<i32, Box<Variant>>>,
-    /// Built-in native-object state carried on the box itself (currently a `VBA.Collection`'s
-    /// contents). Lazily created on first use via [`ObjectRef::with_native_collection`]; freed
-    /// with the box, so there is no VM-side store and no leak. `None` for ordinary project
-    /// instances that hold no native collection.
-    pub(crate) native_state: RefCell<Option<crate::collection::CollectionData>>,
+    /// Native state is carried by the owning object box and released on the VBA thread.
+    native_state: RefCell<Option<NativeObjectState>>,
     /// Embedded `ISupportErrorInfo` COM face on this object's single COM identity.
     pub(crate) error_info: crate::class_dispatch::SupportErrorInfoFace,
     /// Embedded `IConnectionPointContainer` COM face on this object's single COM identity.
@@ -1617,6 +1621,12 @@ pub trait ObjectRefExt: Sized {
     /// this is not a project instance.
     fn project_field_cell(&self, token: i32) -> Option<*mut Variant>;
 
+    /// Create a compatible host object whose state is owned by its last VBA reference.
+    fn from_compat_identity_with_local_state<T: Any>(identity: i32, state: Rc<T>) -> Self;
+
+    /// Access local state for a compatible host object on the owning thread.
+    fn local_state<T: Any>(&self) -> Option<Rc<T>>;
+
     /// Run `f` against this instance's built-in native-`Collection` state, lazily creating an
     /// empty [`crate::collection::CollectionData`] on first use. Returns `None` if this
     /// `ObjectRef` is not one of our compat boxes (a foreign COM object has no native state).
@@ -1986,6 +1996,33 @@ impl ObjectRefExt for ObjectRef {
         }
     }
 
+    fn from_compat_identity_with_local_state<T: Any>(identity: i32, state: Rc<T>) -> Self {
+        let object = Self::from_compat_identity(identity);
+        let owner = compat_owner_from_unknown(object.raw_iunknown());
+        // SAFETY: the object was created here, has the compat vtable, and owner is live
+        // on this thread for the duration of object.
+        unsafe { *(*owner).native_state.borrow_mut() = Some(NativeObjectState::Local(state)) };
+        object
+    }
+
+    fn local_state<T: Any>(&self) -> Option<Rc<T>> {
+        if !self.is_compat_object() {
+            return None;
+        }
+        let owner = compat_owner_from_unknown(self.raw_iunknown());
+        // SAFETY: the compat vtable check and this retained reference keep the owner's
+        // immutable thread ID live.
+        if unsafe { (*owner).owner_thread } != crate::class_dispatch::current_thread_id() {
+            return None;
+        }
+        // SAFETY: the same check keeps owner live, and this is its owning thread.
+        let guard = unsafe { (*owner).native_state.borrow() };
+        match guard.as_ref()? {
+            NativeObjectState::Local(state) => Rc::clone(state).downcast().ok(),
+            NativeObjectState::Collection(_) => None,
+        }
+    }
+
     fn with_native_collection<R>(
         &self,
         f: impl FnOnce(&mut crate::collection::CollectionData) -> R,
@@ -1999,8 +2036,12 @@ impl ObjectRefExt for ObjectRef {
         // borrow is single-threaded (`ObjectRef` is neither `Send` nor `Sync`).
         unsafe {
             let mut guard = (*owner).native_state.borrow_mut();
-            let data = guard.get_or_insert_with(crate::collection::CollectionData::default);
-            Some(f(data))
+            let state =
+                guard.get_or_insert_with(|| NativeObjectState::Collection(Default::default()));
+            match state {
+                NativeObjectState::Collection(data) => Some(f(data)),
+                NativeObjectState::Local(_) => None,
+            }
         }
     }
 
@@ -2012,7 +2053,11 @@ impl ObjectRefExt for ObjectRef {
         // SAFETY: guarded by `is_compat_object()` (vtbl identity), so `owner` is the live
         // `CompatObjectBase` kept alive by this `ObjectRef`'s retained reference; the borrow is
         // single-threaded (`ObjectRef` is neither `Send` nor `Sync`).
-        unsafe { (*owner).native_state.borrow().as_ref().map(|c| c.values()) }
+        let guard = unsafe { (*owner).native_state.borrow() };
+        match guard.as_ref()? {
+            NativeObjectState::Collection(data) => Some(data.values()),
+            NativeObjectState::Local(_) => None,
+        }
     }
 
     fn query_interface_descriptor(

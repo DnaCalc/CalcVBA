@@ -5,6 +5,7 @@ mod matrix;
 
 use crate::cond_comp::{base_cc_constants_for_target, preprocess};
 use crate::manifest::{ModuleKind, ModuleUnit, ProjectReference, SymbolProjectManifest};
+use calcvba_com::platform::portable::BuiltinProgId;
 use calcvba_syntax::lexer::tokenize;
 use calcvba_syntax::{SyntaxKind as K, SyntaxNode, SyntaxToken, parse};
 use serde::Serialize;
@@ -673,12 +674,15 @@ impl<'a> Scanner<'a> {
             let prog_id = string_argument(&args, usize::from(row.name == "GetObject"), "Class");
             let can_activate = row.name == "CreateObject"
                 || string_argument(&args, 0, "PathName").as_deref() == Some("");
-            if support == Support::Replace
-                && !(can_activate
-                    && prog_id
-                        .as_deref()
-                        .is_some_and(|id| id.eq_ignore_ascii_case("Scripting.Dictionary")))
-            {
+            let portable = match prog_id.as_deref().and_then(BuiltinProgId::resolve) {
+                Some(BuiltinProgId::Dictionary) => true,
+                Some(BuiltinProgId::RegExp) => row.name == "CreateObject",
+                Some(BuiltinProgId::FileSystemObject | BuiltinProgId::XmlDocument) => {
+                    self.report.host != Host::Browser
+                }
+                None => false,
+            };
+            if support == Support::Replace && !(can_activate && portable) {
                 support = Support::Reject;
             }
             detail = Some(prog_id.unwrap_or_else(|| "dynamic or omitted ProgID".into()));

@@ -1,6 +1,6 @@
 Attribute VB_Name = "P_ErrAliases"
 Option Explicit
-' UNMEASURED alias/identity coverage beyond the eleven captured Err-value cases.
+' Excel 16.0.20527.20196 ErrObject alias/identity coverage.
 Private Const N As Long = 15
 Private Function T(ByVal k As Long) As String
     Dim e As ErrObject, o As Object, boxed As Variant, v As Variant

@@ -3948,6 +3948,7 @@ pub(crate) fn project_member_kind_from_raw(raw: i32) -> Option<ProjectMemberKind
 
 pub(crate) struct ProjectMemberInvocation<'a> {
     pub(crate) public_only: bool,
+    pub(crate) from_call_by_name: bool,
     pub(crate) name: &'a str,
     pub(crate) early_member: Option<&'a calcvba_com::TypeLibMemberMetadata>,
     pub(crate) kind: ProjectMemberKind,
@@ -4158,6 +4159,7 @@ pub(crate) unsafe fn invoke_project_default_member_values(
             recv_value,
             ProjectMemberInvocation {
                 public_only: true,
+                from_call_by_name: false,
                 name: "",
                 early_member: None,
                 kind,
@@ -4256,6 +4258,7 @@ pub(crate) unsafe extern "C" fn rt_jit_project_member_get_to_slot(
                 recv_value,
                 ProjectMemberInvocation {
                     public_only: invoke_kind & 0x100 == 0,
+                    from_call_by_name: false,
                     name,
                     // SAFETY: compiled metadata is immutable and retained by the live CompiledImage.
                     early_member: early_member.as_ref(),
@@ -4281,6 +4284,7 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
 ) -> i32 {
     let ProjectMemberInvocation {
         public_only,
+        from_call_by_name,
         name,
         early_member,
         kind,
@@ -4309,6 +4313,7 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
                 object,
                 ProjectMemberInvocation {
                     public_only,
+                    from_call_by_name,
                     name,
                     early_member,
                     kind,
@@ -4342,6 +4347,11 @@ pub(crate) unsafe fn invoke_project_member_to_slot_for_jit(
         ) {
             Ok(value) => value,
             Err(error) => {
+                let error = if from_call_by_name {
+                    calcvba_rt_abi::normalize_call_by_name_err_fault(&object, name, error)
+                } else {
+                    error
+                };
                 // SAFETY: the active JIT entry owns the live same-thread error state.
                 let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
                     return ST_FAULT;
@@ -4782,6 +4792,7 @@ pub(crate) unsafe fn invoke_foreign_member_to_slot_for_jit(
 ) -> i32 {
     let ProjectMemberInvocation {
         public_only: _,
+        from_call_by_name: _,
         name,
         early_member,
         kind,
@@ -5538,6 +5549,7 @@ pub(crate) unsafe extern "C" fn rt_jit_call_by_name_to_slot(
                 object,
                 ProjectMemberInvocation {
                     public_only: true,
+                    from_call_by_name: true,
                     name: &member_name,
                     early_member: None,
                     kind,

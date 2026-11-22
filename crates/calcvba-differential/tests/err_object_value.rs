@@ -38,7 +38,7 @@ End Sub
             .unwrap_or_else(|e| panic!("{executor:?}: {e}"));
         assert!(
             values.contains(&Canon::Str(
-                "ErrObject,True,3;23,23,23,23;True,True;alias;5,AliasSource,Raised;0,;11,named"
+                "ErrObject,True,3;23,23,23,23;True,True;alias;5,Main,Invalid procedure call or argument;0,;11,named"
                     .into()
             )),
             "{executor:?}: {values:?}"
@@ -91,11 +91,11 @@ Sub Main()
     Err.Raise 1001
     inheritedCodes = CStr(Err.Number) & "|" & UnitsOf(Err.Source) & "|" & UnitsOf(Err.Description) & "|" & UnitsOf(Err.HelpFile)
 
-    ' 3. Late-bound ErrObject / CallByName path (rt-abi library_object)
+    ' 3. ErrObject alias Raise path (rt-abi library_object)
     Dim e As ErrObject
     Set e = Err
     e.Clear
-    CallByName e, "Raise", vbMethod, 1003, src, desc, hlp
+    e.Raise 1003, src, desc, hlp
     aliasCodes = CStr(e.Number) & "|" & UnitsOf(e.Source) & "|" & UnitsOf(e.Description) & "|" & UnitsOf(e.HelpFile)
 
     ' 4. Cross-procedure propagation caught by On Error GoTo

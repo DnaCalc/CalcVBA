@@ -91,3 +91,18 @@ pub fn invoke_library_object(
         _ => Err(error(438)),
     }
 }
+
+/// Normalize a fault raised by `CallByName` on `ErrObject.Raise`: Excel's
+/// `CallByName` does not preserve custom `Source`/`Description`/help fields
+/// from `ErrObject.Raise` and surfaces the standard default error for `code`.
+pub fn normalize_call_by_name_err_fault(
+    object: &ObjectRef,
+    member_name: &str,
+    fault: Fault,
+) -> Fault {
+    if calcvba_lib::objects::is_err(object) && member_name.eq_ignore_ascii_case("raise") {
+        Fault::standard(fault.code)
+    } else {
+        fault
+    }
+}

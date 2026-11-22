@@ -2478,8 +2478,19 @@ impl<'h> Vm3<'h> {
                         "Object doesn't support this property or method",
                     )));
                 }
-                let ret =
-                    self.dispatch_member_by_name(recv_v, &member_name, invoke_kind, args, true)?;
+                let err_object = recv_v.as_object_ref();
+                let ret = self
+                    .dispatch_member_by_name(recv_v, &member_name, invoke_kind, args, true)
+                    .map_err(|err| match (err, err_object.as_ref()) {
+                        (Vm3Error::Fault(fault), Some(obj)) => {
+                            Vm3Error::Fault(calcvba_rt_abi::normalize_call_by_name_err_fault(
+                                obj,
+                                &member_name,
+                                fault,
+                            ))
+                        }
+                        (err, _) => err,
+                    })?;
                 if let Some(dst) = dst {
                     self.store(dst, ret)?;
                 }

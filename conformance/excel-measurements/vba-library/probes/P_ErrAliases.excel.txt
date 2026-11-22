@@ -1,0 +1,15 @@
+ErrAliases.1=Boolean:True
+ErrAliases.2=Boolean:True
+ErrAliases.3=String:[ErrObject,ErrObject,ErrObject]
+ErrAliases.4=String:[23,23,23]
+ErrAliases.5=Long:23
+ErrAliases.6=String:[3,3,True]
+ErrAliases.7=String:[alias]
+ErrAliases.8=String:[AliasSource]
+ErrAliases.9=String:[alias.hlp,77]
+ErrAliases.10=String:[0,]
+ErrAliases.11=Long:0
+ErrAliases.12=String:[late alias]
+ErrAliases.13=ERR5:VBAProject:Invalid procedure call or argument
+ErrAliases.14=ERR11:VBAProject:named
+ErrAliases.15=Boolean:True

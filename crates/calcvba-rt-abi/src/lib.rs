@@ -23,7 +23,7 @@ pub use default_member::{
     ObjectMemberRoute, VBA_COLLECTION_ROUTE_KEY, collection_member_name, object_member_route,
     object_receiver, project_has_default_get, read_default_value, resolve_project_default_member,
 };
-pub use library_object::invoke_library_object;
+pub use library_object::{invoke_library_object, normalize_call_by_name_err_fault};
 pub use termination::drain_terminations;
 
 use calcvba_bundle::{NativeImplId, NumericCoerceTarget, NumericMode, StringCompareMode};

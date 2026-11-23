@@ -23,6 +23,7 @@ pub struct LoadedProject {
     pub runtime_flavor: RuntimeFlavor,
     pub default_runtime_profile: Option<String>,
     pub conditional_compilation_target: cond_comp::ConditionalCompilationTarget,
+    pub codepage: Option<u16>,
     pub default_root_object: String,
     pub entry_point: Option<String>,
     /// Per-class metadata keyed by module name (instancing, prog_id, description).
@@ -275,6 +276,7 @@ pub(crate) fn build_loaded_project(
         runtime_flavor: props.runtime_flavor.unwrap_or(RuntimeFlavor::Lite),
         default_runtime_profile: props.default_runtime_profile.clone(),
         conditional_compilation_target: cc_target,
+        codepage: props.codepage,
         default_root_object: props
             .default_root_object
             .clone()

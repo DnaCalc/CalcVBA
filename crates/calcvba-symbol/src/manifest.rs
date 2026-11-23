@@ -21,6 +21,8 @@ pub struct SymbolProjectManifest {
     /// `#If`/`#Const` conditional-compilation constants.
     pub conditional_constants: BTreeMap<String, i32>,
     pub conditional_compilation_target: crate::cond_comp::ConditionalCompilationTarget,
+    /// Optional project ANSI code page (e.g. 1252, 1251, 932).
+    pub codepage: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

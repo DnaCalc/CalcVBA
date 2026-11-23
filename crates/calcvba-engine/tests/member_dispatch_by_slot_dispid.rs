@@ -171,6 +171,7 @@ fn manifest() -> SymbolProjectManifest {
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     }
 }
 
@@ -218,6 +219,7 @@ fn session_invoke_member_dispatches_methods_and_public_fields_on_vm3_and_jit() {
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let typelibs = calcvba_symbol::CatalogTypeLibResolver;
     let program = calcvba_bind::bind_program(&project, &typelibs).expect("bind project");

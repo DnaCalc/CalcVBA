@@ -36,6 +36,7 @@ pub struct BasProjProperties {
     pub default_root_object: Option<String>,
     pub define_constants: Option<String>,
     pub dialect: Option<Dialect>,
+    pub codepage: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

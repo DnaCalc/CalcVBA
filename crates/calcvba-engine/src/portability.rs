@@ -998,6 +998,7 @@ mod tests {
             reference_projects: Vec::new(),
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
+            codepage: None,
         };
         let core =
             calcvba_bind::bind_program(&manifest, &calcvba_symbol::CatalogTypeLibResolver).unwrap();

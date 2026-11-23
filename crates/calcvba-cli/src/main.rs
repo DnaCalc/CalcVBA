@@ -30,6 +30,7 @@ use calcvba_runtime::{VarType, Variant};
 static POLICY_MODE: std::sync::OnceLock<calcvba_hal::PolicyMode> = std::sync::OnceLock::new();
 static PORTABILITY_MODE: std::sync::OnceLock<calcvba_symbol::portability::Mode> =
     std::sync::OnceLock::new();
+static CODEPAGE: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
 
 fn extract_host_flags(args: Vec<String>) -> Vec<String> {
     let mut out = Vec::with_capacity(args.len());
@@ -55,6 +56,17 @@ fn extract_host_flags(args: Vec<String>) -> Vec<String> {
                 std::process::exit(2);
             };
             let _ = PORTABILITY_MODE.set(mode);
+        } else if arg == "--codepage" {
+            let value = iter.next().unwrap_or_default();
+            let Ok(cp) = value.parse::<u16>() else {
+                eprintln!("calcvba-cli: --codepage takes a numeric Windows/ANSI code page");
+                std::process::exit(2);
+            };
+            if !calcvba_runtime::ansi::is_supported_codepage(cp) {
+                eprintln!("calcvba-cli: unsupported --codepage `{cp}`");
+                std::process::exit(2);
+            }
+            let _ = CODEPAGE.set(cp);
         } else {
             out.push(arg);
         }
@@ -88,6 +100,9 @@ fn apply_policy(engine: &mut Engine, project_root: Option<&Path>, workbook_proje
                 .clone()
                 .with_windows_drive_root('C', root),
         );
+    }
+    if let Some(cp) = CODEPAGE.get().copied() {
+        engine.set_host_policy(engine.host_policy().clone().with_codepage(cp));
     }
     if let Some(mode) = POLICY_MODE.get().copied() {
         engine.wrap_host_services(|inner| {

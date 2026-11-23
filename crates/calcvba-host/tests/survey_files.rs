@@ -43,6 +43,7 @@ fn survey_project_from_files() {
         reference_projects: vec![],
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     match Module::load_project(&manifest, &CatalogTypeLibResolver) {
         Ok(_) => println!("SURVEY loaded"),

@@ -21,6 +21,7 @@ fn compile(body: &str, declarations: &str) -> Result<(), BindError> {
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     bind_program(&manifest, &CatalogTypeLibResolver).map(|_| ())
 }

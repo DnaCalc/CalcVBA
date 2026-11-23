@@ -343,6 +343,7 @@ fn manifest(source: String) -> SymbolProjectManifest {
         reference_projects: vec![],
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     }
 }
 

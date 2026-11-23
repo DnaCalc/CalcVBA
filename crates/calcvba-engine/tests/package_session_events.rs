@@ -34,6 +34,7 @@ fn package_session_for(modules: Vec<ModuleUnit>) -> ProjectRuntimeSession {
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let typelibs = calcvba_symbol::CatalogTypeLibResolver;
     let program = calcvba_bind::bind_program(&manifest, &typelibs).expect("bind package");

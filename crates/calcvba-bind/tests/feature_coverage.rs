@@ -50,6 +50,7 @@ fn manifest_with_target(
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: target,
+        codepage: None,
     }
 }
 

@@ -123,6 +123,7 @@ fn manifest(
         reference_projects,
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     }
 }
 

@@ -19,6 +19,7 @@ fn run_with(config: HostConfig, main_src: &str) -> Result<Vec<calcvba_runtime::V
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     Engine::new(config)
         .execute_manifest_with_variant_snapshot(&manifest)
@@ -104,6 +105,7 @@ fn survey_project_from_files() {
             reference_projects: Vec::new(),
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
+            codepage: None,
         };
         let out = Engine::new(config).execute_manifest_with_variant_snapshot(&manifest);
         match out {
@@ -223,6 +225,7 @@ fn property_let_with_an_optional_middle_parameter() {
             reference_projects: Vec::new(),
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
+            codepage: None,
         };
         let v = Engine::new(config)
             .execute_manifest_with_variant_snapshot(&manifest)
@@ -260,6 +263,7 @@ fn run_two(main_src: &str, class_src: &str) -> Result<Vec<calcvba_runtime::Varia
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     Engine::new(HostConfig::vm3())
         .execute_manifest_with_variant_snapshot(&manifest)
@@ -335,6 +339,7 @@ fn run_modules(modules: &[(&str, &str)]) -> Result<Vec<calcvba_runtime::Variant>
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     Engine::new(HostConfig::vm3())
         .execute_manifest_with_variant_snapshot(&manifest)

@@ -18,6 +18,7 @@ fn manifest(source: &str) -> SymbolProjectManifest {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     }
 }
 

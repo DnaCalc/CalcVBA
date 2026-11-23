@@ -550,6 +550,7 @@ pub fn check_source(name: &str, source: &str, host: Host) -> Result<Report, Stri
             reference_projects: Vec::new(),
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
+            codepage: None,
         }],
         host,
     )

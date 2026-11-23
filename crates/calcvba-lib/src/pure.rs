@@ -1091,11 +1091,15 @@ pub fn asc(args: &[Variant]) -> LibResult<Variant> {
         .chars()
         .next()
         .ok_or_else(|| LibError::invalid_call("Asc of empty string"))?;
-    let byte = calcvba_runtime::ansi::ansi_encode(&ch.to_string())
-        .first()
-        .copied()
-        .unwrap_or(b'?');
-    Ok(Variant::from_i16(i16::from(byte)))
+    let encoded = calcvba_runtime::ansi::ansi_encode(&ch.to_string());
+    let code = match encoded.as_slice() {
+        [hi, lo, ..] if calcvba_runtime::ansi::is_dbcs_lead_byte(*hi) => {
+            u16::from_be_bytes([*hi, *lo]) as i16
+        }
+        [byte, ..] => i16::from(*byte),
+        [] => i16::from(b'?'),
+    };
+    Ok(Variant::from_i16(code))
 }
 
 pub fn space(args: &[Variant]) -> LibResult<Variant> {

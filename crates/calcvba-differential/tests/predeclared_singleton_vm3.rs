@@ -61,6 +61,7 @@ fn project(
         reference_projects: refs,
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     }
 }
 

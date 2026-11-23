@@ -25,6 +25,7 @@ fn run_native(executor: Executor, modules: &[(&str, &str)]) -> Result<Vec<Canon>
         reference_projects: Vec::new(),
         conditional_constants: std::collections::BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let config = match executor {
         Executor::Vm3 => HostConfig::vm3(),

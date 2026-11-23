@@ -204,6 +204,7 @@ pub fn run_clean_vm3_with_references_prefer_vtable(
         reference_projects: Vec::new(),
         conditional_constants: std::collections::BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let mut policy = HostPolicy::native();
     policy.com_invocation_strategy = ComInvocationStrategy::PreferVtable;
@@ -391,6 +392,7 @@ pub fn run_manifest(
         reference_projects: Vec::new(),
         conditional_constants: std::collections::BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let mut engine = Engine::new(HostConfig::vm3());
     engine.set_host_policy(HostPolicy::native());

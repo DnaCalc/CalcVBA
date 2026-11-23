@@ -33,6 +33,7 @@ fn project(name: &str, modules: Vec<ModuleUnit>) -> SymbolProjectManifest {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     }
 }
 
@@ -49,6 +50,7 @@ fn app_project(source: &str) -> SymbolProjectManifest {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     }
 }
 

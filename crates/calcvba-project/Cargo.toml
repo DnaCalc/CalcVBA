@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 calcvba-diagnostics.workspace = true
+calcvba-runtime.workspace = true
 calcvba-symbol.workspace = true
 quick-xml.workspace = true
 thiserror.workspace = true

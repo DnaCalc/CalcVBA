@@ -1309,6 +1309,7 @@ mod tests {
             reference_projects: Vec::new(),
             conditional_constants: BTreeMap::new(),
             conditional_compilation_target: Default::default(),
+            codepage: None,
         }
     }
 
@@ -1336,6 +1337,7 @@ mod tests {
             reference_projects: Vec::new(),
             conditional_constants: BTreeMap::new(),
             conditional_compilation_target: Default::default(),
+            codepage: None,
         }
     }
 
@@ -1448,6 +1450,7 @@ mod tests {
             reference_projects: Vec::new(),
             conditional_constants: BTreeMap::new(),
             conditional_compilation_target: Default::default(),
+            codepage: None,
         };
         let env = build_resolution_environment(&manifest, &NullTypeLibs).unwrap();
         let alloc = IdAllocator::build(&env, &manifest).unwrap();

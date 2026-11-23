@@ -284,6 +284,7 @@ fn run_with_project_locked(executor: Executor, source: &str, project_name: &str)
         reference_projects: Vec::new(),
         conditional_constants: std::collections::BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let before = current_thread_live_handle_counts();
     let engine = vm3_oracle_engine();
@@ -320,6 +321,7 @@ pub fn run_with_engine_setup(
         reference_projects: Vec::new(),
         conditional_constants: std::collections::BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let _balance_guard = balance_measurement_lock()
         .lock()
@@ -367,6 +369,7 @@ pub fn run_modules(
         reference_projects: Vec::new(),
         conditional_constants: std::collections::BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let _balance_guard = balance_measurement_lock()
         .lock()

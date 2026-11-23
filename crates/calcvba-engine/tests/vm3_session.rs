@@ -41,6 +41,7 @@ fn session_for(
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let typelibs = calcvba_symbol::CatalogTypeLibResolver;
     let program = calcvba_bind::bind_program(&manifest, &typelibs).expect("bind project");

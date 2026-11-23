@@ -128,6 +128,7 @@ pub(super) fn manifests(
                 .collect(),
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
+            codepage: None,
         })
         .collect())
 }

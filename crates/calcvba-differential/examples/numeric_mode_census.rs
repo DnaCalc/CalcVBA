@@ -89,6 +89,7 @@ fn manifest_for_source(path: &Path, source: String) -> sym::SymbolProjectManifes
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     }
 }
 

@@ -71,6 +71,7 @@ fn manifest_with_target(
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: target,
+        codepage: None,
     }
 }
 
@@ -332,6 +333,7 @@ fn referenced_project_resolves_through_its_export_surface() {
         reference_projects: vec![lib],
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
 
     let env = build_resolution_environment(&m, &NullTypeLibs).unwrap();
@@ -610,6 +612,7 @@ fn referenced_project_enum_member_consts_fold_through_export_surface() {
         reference_projects: vec![lib],
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
 
     let env = build_resolution_environment(&m, &NullTypeLibs).unwrap();
@@ -669,6 +672,7 @@ fn referenced_option_private_enum_member_consts_do_not_leak() {
         reference_projects: vec![lib],
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
 
     let env = build_resolution_environment(&m, &NullTypeLibs).unwrap();
@@ -2790,6 +2794,7 @@ fn optional_defaults_fold_referenced_project_consts() {
         reference_projects: vec![lib],
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let env = build_resolution_environment(&m, &NullTypeLibs).expect("env");
     let scope = env.module_scope("Main").expect("module scope");
@@ -3952,6 +3957,7 @@ fn enum_initializers_fold_referenced_project_constants() {
         reference_projects: vec![lib],
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let env = build_resolution_environment(&m, &NullTypeLibs).expect("env");
     let scope = env.module_scope("Main").expect("module scope");

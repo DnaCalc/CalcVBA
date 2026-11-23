@@ -232,6 +232,7 @@ pub fn elaborate_with(program: &CoreProgram, options: &ElaborateOptions) -> Resu
         com_class_exports: program.com_class_exports.clone(),
         exports: program.exports.clone(),
         imports: program.imports.clone(),
+        codepage: None,
     };
     retype_compound_byref_temps(&mut ox_program);
     normalize_assigns(&mut ox_program);

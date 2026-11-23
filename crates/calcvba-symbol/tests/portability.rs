@@ -26,6 +26,7 @@ fn office_default_references_use_host_services() {
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let report = check_project(&[project], Host::Linux).unwrap();
     assert_eq!(report.verdict, Verdict::HostDependentValues);
@@ -101,6 +102,7 @@ fn shadowing_across_modules_enums_projects_and_qualifiers_suppresses_false_libra
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
 
     let main_project = SymbolProjectManifest {
@@ -146,6 +148,7 @@ fn shadowing_across_modules_enums_projects_and_qualifiers_suppresses_false_libra
         }],
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
 
     let report = check_project(&[helper_project, main_project], Host::Linux).unwrap();
@@ -243,6 +246,7 @@ fn early_bound_scripting_reference_distinguishes_portable_dictionary_from_other_
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
 
     let dict_only = check_project(

@@ -50,6 +50,7 @@ fn run_referenced(source: &str, jit: bool, references: Vec<sym::ProjectReference
             reference_projects: vec![],
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
+            codepage: None,
         };
         let outcome = if jit {
             engine.execute_manifest_snapshot_with_err_jit(&manifest)

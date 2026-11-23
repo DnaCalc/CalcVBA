@@ -74,6 +74,7 @@ pub fn load_project_closure_with_entry(
             reference_projects,
             conditional_constants: node.conditional_constants.clone(),
             conditional_compilation_target: node.conditional_compilation_target,
+            codepage: node.codepage,
         });
     }
     Ok(manifests)
@@ -88,6 +89,7 @@ struct ProjectNode {
     references: Vec<sym::ProjectReference>,
     conditional_constants: BTreeMap<String, i32>,
     conditional_compilation_target: calcvba_symbol::cond_comp::ConditionalCompilationTarget,
+    codepage: Option<u16>,
     direct_refs: Vec<PathBuf>,
 }
 
@@ -196,6 +198,7 @@ fn build_node(
         references,
         conditional_constants: loaded.manifest.conditional_constants,
         conditional_compilation_target: loaded.conditional_compilation_target,
+        codepage: loaded.codepage,
         direct_refs,
     })
 }

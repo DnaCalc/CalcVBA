@@ -234,6 +234,9 @@ pub struct OxProgram {
     pub exports: Vec<BundleExport>,
     /// Cross-bundle references this unit makes, indexed by [`crate::ids::ImportId`].
     pub imports: Vec<BundleImport>,
+    /// Optional project ANSI code page (e.g. 1252, 1251, 932).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codepage: Option<u16>,
 }
 
 impl OxProgram {

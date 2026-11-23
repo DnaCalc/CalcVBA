@@ -73,6 +73,7 @@ fn manifest(source: &str) -> SymbolProjectManifest {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     }
 }
 
@@ -93,6 +94,7 @@ fn manifest_modules(modules: &[(&str, ModuleKind, &str)]) -> SymbolProjectManife
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     }
 }
 
@@ -1708,6 +1710,7 @@ fn public_object_member_private_class_type_is_bind_error() {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let err = format!(
         "{:?}",
@@ -1753,6 +1756,7 @@ fn public_object_signature_private_class_type_is_bind_error() {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let err = format!(
         "{:?}",
@@ -2201,6 +2205,7 @@ fn class_manifest(main_src: &str, class_name: &str, class_src: &str) -> SymbolPr
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     }
 }
 
@@ -3481,6 +3486,7 @@ fn new_com_coclass_lowers_to_create_object() {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let program = bind_program(&manifest, &WidgetTypeLibs).expect("bind_program");
     // `New Widget` resolves the coclass to its ProgID and lowers to CreateObject.
@@ -3563,6 +3569,7 @@ fn multi_manifest(modules: &[(&str, ModuleKind, &str)]) -> SymbolProjectManifest
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     }
 }
 
@@ -4117,6 +4124,7 @@ fn withevents_com_source_emits_event_route() {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let env = calcvba_symbol::build_resolution_environment(&manifest, &EventServerTypeLibs)
         .expect("resolution environment");
@@ -4178,6 +4186,7 @@ fn withevents_com_source_without_handler_emits_no_route() {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let program = bind_program(&manifest, &EventServerTypeLibs).expect("bind_program");
     assert!(
@@ -4256,6 +4265,7 @@ fn withevents_com_source_ignores_events_from_other_coclasses() {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let program = bind_program(&manifest, &ScopedEventTypeLibs).expect("bind_program");
 
@@ -4341,6 +4351,7 @@ fn withevents_com_source_uses_later_scoped_provider_after_empty_library_provider
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let program = bind_program(&manifest, &ScopedWorkbookEventTypeLibs).expect("bind_program");
 
@@ -4389,6 +4400,7 @@ fn typed_com_receiver_member_call_lowers_to_early_com() {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let program = bind_program(&manifest, &EventServerTypeLibs).expect("bind_program");
 
@@ -4436,6 +4448,7 @@ fn typed_com_byref_method_lowers_lvalue_arg_to_byref() {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let env = calcvba_symbol::build_resolution_environment(&manifest, &EventServerTypeLibs)
         .expect("resolution environment");
@@ -4508,6 +4521,7 @@ fn typed_com_paramarray_method_boxes_tail_to_zero_based_array() {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let program = bind_program(&manifest, &EventServerTypeLibs).expect("bind_program");
     let Some((_, args)) = top_level_calls(&program).into_iter().find(
@@ -4932,6 +4946,7 @@ fn typed_com_default_member_bare_let_get_lowers_to_early_com() {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let program = bind_program(&manifest, &DefaultValueTypeLibs).expect("bind_program");
     let callees = top_level_callees(&program);
@@ -4993,6 +5008,7 @@ fn typed_com_default_member_put_before_get_preserves_accessor_descriptors() {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let program = bind_program(&manifest, &DefaultValuePutFirstTypeLibs).expect("bind_program");
     let callees = top_level_callees(&program);
@@ -5053,6 +5069,7 @@ fn typed_com_default_member_binary_expression_lowers_operands_to_early_com() {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let program = bind_program(&manifest, &DefaultValueTypeLibs).expect("bind_program");
     let callees = all_value_callees(&program);
@@ -5094,6 +5111,7 @@ fn host_injected_default_member_binary_expression_lowers_operands_to_early_com()
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let program = bind_program(&manifest, &DefaultValueTypeLibs).expect("bind_program");
     let callees = all_value_callees(&program);
@@ -5135,6 +5153,7 @@ fn host_injected_default_member_bare_let_get_lowers_to_early_com() {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let program = bind_program(&manifest, &DefaultValueTypeLibs).expect("bind_program");
     let callees = top_level_callees(&program);
@@ -5190,6 +5209,7 @@ fn host_injected_root_object_member_lowers_through_com_metadata() {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let program = bind_program(&manifest, &DefaultValueTypeLibs).expect("bind_program");
     let callees = top_level_callees(&program);
@@ -5224,6 +5244,7 @@ fn host_injected_application_run_and_ontime_lower_through_com_metadata() {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let program = bind_program(&manifest, &ApplicationTypeLibs).expect("bind_program");
     let callees = top_level_callees(&program);
@@ -5269,6 +5290,7 @@ fn host_injected_application_named_args_bind_to_typelib_order() {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let program = bind_program(&manifest, &ApplicationTypeLibs).expect("bind_program");
     let run_args = early_com_args(&program, 10);
@@ -5313,6 +5335,7 @@ fn typed_com_receiver_named_args_bind_to_typelib_order() {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let program = bind_program(&manifest, &ApplicationTypeLibs).expect("bind_program");
     let run_args = early_com_args(&program, 10);
@@ -5345,6 +5368,7 @@ fn typed_com_return_interface_pointer_chains_to_early_com() {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let program = bind_program(&manifest, &ChainedComTypeLibs).expect("bind_program");
     let count_args = early_com_args(&program, 21);
@@ -5371,6 +5395,7 @@ fn host_injected_com_return_interface_pointer_chains_to_early_com() {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let program = bind_program(&manifest, &ChainedComTypeLibs).expect("bind_program");
     let count_args = early_com_args(&program, 21);
@@ -5398,6 +5423,7 @@ fn generic_com_object_return_stays_late_bound() {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let program = bind_program(&manifest, &ChainedComTypeLibs).expect("bind_program");
     assert!(
@@ -5433,6 +5459,7 @@ fn library_wide_com_member_lookup_is_scoped_to_receiver_type() {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let err = bind_program(&manifest, &ChainedComTypeLibs)
         .expect_err("Workbook must not inherit Application.Workbooks from the flat library blob");
@@ -5459,6 +5486,7 @@ fn typed_com_named_argument_errors_are_bind_time_diagnostics() {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let unknown = "Sub Main()\n    Dim r As Variant\n    r = Application.Run(NotAParam:=\"MacroName\")\nEnd Sub\n";
     let unknown_err = bind_program(&manifest_for(unknown), &ApplicationTypeLibs)
@@ -6070,6 +6098,7 @@ End Sub\n";
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let program = bind_program(&manifest, &AppObjectTypeLibs).expect("bind_program");
     let mut callees = Vec::new();

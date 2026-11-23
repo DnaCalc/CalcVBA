@@ -60,6 +60,7 @@ fn explicit_project_constants_override_runtime_target_defaults() {
         reference_projects: Vec::new(),
         conditional_constants: constants,
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
 
     let mut engine = Engine::new(HostConfig::vm3());
@@ -98,6 +99,7 @@ fn referenced_project_uses_runtime_target_predefines_without_active_project_cons
         reference_projects: Vec::new(),
         conditional_constants: std::collections::BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
 
     let manifest = sym::SymbolProjectManifest {
@@ -129,6 +131,7 @@ fn referenced_project_uses_runtime_target_predefines_without_active_project_cons
             constants
         },
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
 
     let mut engine = Engine::new(HostConfig::vm3());

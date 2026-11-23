@@ -171,6 +171,7 @@ fn manifest_with(main: &str, app_type: &str) -> sym::SymbolProjectManifest {
         reference_projects: Vec::new(),
         conditional_constants: std::collections::BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     }
 }
 

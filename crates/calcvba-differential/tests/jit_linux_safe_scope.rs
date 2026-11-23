@@ -69,6 +69,7 @@ fn bundle_only_reference_fixture_programs() -> Vec<OxProgram> {
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let lib_core = calcvba_bind::bind_program(&lib, &calcvba_symbol::CatalogTypeLibResolver)
         .expect("bundle reference bind");
@@ -95,6 +96,7 @@ fn bundle_only_reference_fixture_programs() -> Vec<OxProgram> {
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let app_core = calcvba_bind::bind_program_with_project_surfaces(
         &app,

@@ -253,6 +253,7 @@ fn manifest_for_modules(
         reference_projects,
         conditional_constants: std::collections::BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     }
 }
 
@@ -309,6 +310,7 @@ fn library_manifest(reference: &sym::ReferencedProjectManifest) -> sym::SymbolPr
         reference_projects: Vec::new(),
         conditional_constants: std::collections::BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     }
 }
 

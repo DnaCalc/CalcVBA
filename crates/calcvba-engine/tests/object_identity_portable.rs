@@ -486,6 +486,7 @@ fn portable_identity_foreign_invoke_and_terminate_match_excel_on_vm3_and_jit() {
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
 
     for backend in BACKENDS {
@@ -541,6 +542,7 @@ End Function
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let typelibs = calcvba_symbol::CatalogTypeLibResolver;
     let program = calcvba_bind::bind_program(&manifest, &typelibs).expect("bind");
@@ -714,6 +716,7 @@ End Sub
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
 
     for backend in BACKENDS {
@@ -830,6 +833,7 @@ End Sub
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let typelibs = calcvba_symbol::CatalogTypeLibResolver;
     let program = calcvba_bind::bind_program(&manifest, &typelibs).expect("bind");
@@ -1403,6 +1407,7 @@ End Function
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let typelibs = calcvba_symbol::CatalogTypeLibResolver;
     let program = calcvba_bind::bind_program(&manifest, &typelibs).expect("bind");
@@ -1732,6 +1737,7 @@ End Sub
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     manifest.modules[0].attributes.vb_exposed = true;
     manifest.modules[1].attributes.vb_exposed = true;
@@ -2337,6 +2343,7 @@ End Sub
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let bound =
         calcvba_bind::bind_program(&manifest, &calcvba_symbol::CatalogTypeLibResolver).unwrap();

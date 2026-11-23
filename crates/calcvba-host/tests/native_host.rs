@@ -320,6 +320,7 @@ fn host_supplied_object_uses_declared_iid_and_slot_on_each_backend() {
                 modules: vec![sym::ModuleUnit { module_name: "Api".into(), module_kind: sym::ModuleKind::Procedural, attributes: sym::ModuleAttributes::named("Api"), source: "Public Function ReadCount(ByVal root As TypedHost.Calculator) As Long\nReadCount = root.Count\nEnd Function\n".into() }],
                 references: vec![sym::ProjectReference::TypeLibrary { name: "TypedHost".into(), guid: None, version_major: Some(1), version_minor: Some(0), lcid: None, import_lib: None }],
                 reference_projects: vec![], conditional_constants: Default::default(), conditional_compilation_target: Default::default(),
+ codepage: None,
             };
             let module = Module::load_project(&manifest, &HostTypes)
                 .unwrap()

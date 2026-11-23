@@ -85,6 +85,7 @@ fn enumerator_attribute_names_the_property_get_only() {
         reference_projects: vec![],
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     calcvba_host::Module::load_project(&manifest, &calcvba_symbol::CatalogTypeLibResolver)
         .expect("a class with an enumerator property pair loads");

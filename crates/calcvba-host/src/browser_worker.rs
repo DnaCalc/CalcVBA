@@ -150,6 +150,7 @@ fn execute(
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     portability::Mode::WindowsFaithful
         .check_with_browser_services(

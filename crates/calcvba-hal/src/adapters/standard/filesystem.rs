@@ -1555,16 +1555,9 @@ impl FileSystemHal for StandardHostServices {
             }
             bytes.push(byte);
             cursor += 1;
-            #[cfg(windows)]
-            {
-                // SAFETY: this OS query classifies one byte in the process ANSI
-                // code page; it receives no pointers or mutable state.
-                if unsafe { windows_sys::Win32::Globalization::IsDBCSLeadByteEx(0, byte) } != 0
-                    && cursor < entry.data.len()
-                {
-                    bytes.push(entry.data[cursor]);
-                    cursor += 1;
-                }
+            if calcvba_runtime::ansi::is_dbcs_lead_byte(byte) && cursor < entry.data.len() {
+                bytes.push(entry.data[cursor]);
+                cursor += 1;
             }
         }
         entry.position = i32::try_from(cursor).map_err(|_| error(6))?;
@@ -1590,9 +1583,7 @@ impl FileSystemHal for StandardHostServices {
         let actual = count.min(available);
         let bytes = entry.data[pos..pos + actual].to_vec();
         entry.position += actual as i32;
-        Ok(Variant::from_string(
-            String::from_utf8_lossy(&bytes).into_owned(),
-        ))
+        Ok(Variant::from_string(ansi_decode(&bytes)))
     }
 
     fn write_bytes_variant(&self, handle: Variant, data: Variant) -> HalResult<Variant> {

@@ -209,6 +209,7 @@ End Sub
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
 
     for (name, config) in [("vm3", HostConfig::vm3()), ("jit", HostConfig::jit())] {

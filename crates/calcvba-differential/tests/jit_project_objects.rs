@@ -45,6 +45,7 @@ fn project(modules: Vec<ModuleUnit>) -> SymbolProjectManifest {
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     }
 }
 
@@ -76,6 +77,7 @@ fn project_with_refs(
         reference_projects: refs,
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     }
 }
 
@@ -88,6 +90,7 @@ fn library_project(reference: &ReferencedProjectManifest) -> SymbolProjectManife
         reference_projects: Vec::new(),
         conditional_constants: BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     }
 }
 

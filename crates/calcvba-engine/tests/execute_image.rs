@@ -19,6 +19,7 @@ fn program(name: &str, source: &str) -> OxProgram {
         reference_projects: vec![],
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let core =
         calcvba_bind::bind_program(&manifest, &calcvba_symbol::CatalogTypeLibResolver).unwrap();

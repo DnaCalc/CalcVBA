@@ -124,6 +124,7 @@ fn vba_bench() {
         reference_projects: vec![],
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let start = Instant::now();
     let module = Module::load_project(&manifest, &CatalogTypeLibResolver)

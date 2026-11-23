@@ -507,6 +507,7 @@ fn module_qualified_handles_keep_compiler_ids_and_distinct_signatures() {
         }).collect(),
         references: vec![], reference_projects: vec![],
         conditional_constants: Default::default(), conditional_compilation_target: Default::default(),
+ codepage: None,
     };
     let module = Module::load_project(&manifest, &calcvba_symbol::CatalogTypeLibResolver).unwrap();
     for backend in backends() {

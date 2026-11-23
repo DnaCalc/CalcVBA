@@ -176,6 +176,7 @@ fn run(source: &str, jit: bool, fault: DescriptorFault) -> Observation {
             reference_projects: vec![],
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
+            codepage: None,
         };
         let core = calcvba_bind::bind_program(&manifest, &FixtureTypes { fault })
             .expect("bind typed host");

@@ -121,6 +121,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             reference_projects: Vec::new(),
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
+            codepage: None,
         };
         // A project's `Main` is compiled with its sibling modules and referenced projects.
         let context = project::project_context(path)?;

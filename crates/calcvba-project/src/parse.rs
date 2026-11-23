@@ -331,6 +331,19 @@ fn apply_property(
                 }
             });
         }
+        "Codepage" => {
+            let cp = value.parse::<u16>().map_err(|_| {
+                BasProjError::XmlParse(format!(
+                    "invalid Codepage `{value}`; expected a code page number"
+                ))
+            })?;
+            if !calcvba_runtime::ansi::is_supported_codepage(cp) {
+                return Err(BasProjError::XmlParse(format!(
+                    "unsupported Codepage `{cp}`"
+                )));
+            }
+            props.codepage = Some(cp);
+        }
         _ => {} // Unknown properties are silently ignored
     }
     Ok(())

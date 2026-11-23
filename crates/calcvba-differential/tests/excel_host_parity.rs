@@ -23,6 +23,7 @@ fn compile_plain(source: &str) -> calcvba_oxir::OxProgram {
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let core = calcvba_bind::bind_program(&manifest, &calcvba_symbol::CatalogTypeLibResolver)
         .expect("bind fixture");
@@ -43,6 +44,7 @@ fn compile_excel(source: &str) -> calcvba_oxir::OxProgram {
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let core =
         calcvba_bind::bind_program(&manifest, &ExcelStubTypeLibs).expect("bind excel fixture");

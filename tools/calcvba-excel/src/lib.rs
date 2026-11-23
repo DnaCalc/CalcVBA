@@ -438,6 +438,7 @@ fn run(entry: &Entry, module: &str, entry_name: &str) -> Result<Variant, (i32, S
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let outcome = if *jit {
         engine.execute_manifest_snapshot_with_err_jit(&manifest)

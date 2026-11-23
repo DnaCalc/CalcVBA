@@ -55,6 +55,7 @@ fn run(backend: ExecBackend, body: &str) -> String {
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let mut engine = Engine::new(HostConfig { backend });
     engine.set_host_policy(HostPolicy::native());
@@ -239,6 +240,7 @@ End Sub
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     for backend in BACKENDS {
         let mut engine = Engine::new(HostConfig { backend });
@@ -355,6 +357,7 @@ End Function
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let bound =
         calcvba_bind::bind_program(&manifest, &calcvba_symbol::CatalogTypeLibResolver).unwrap();
@@ -523,6 +526,7 @@ End Function
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let bound =
         calcvba_bind::bind_program(&manifest, &calcvba_symbol::CatalogTypeLibResolver).unwrap();

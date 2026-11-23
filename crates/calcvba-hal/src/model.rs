@@ -149,6 +149,8 @@ pub struct HostPolicy {
     pub windows_drive_roots: std::collections::BTreeMap<char, std::path::PathBuf>,
     /// Host roots for named UNC server/share pairs.
     pub windows_unc_roots: std::collections::BTreeMap<(String, String), std::path::PathBuf>,
+    /// Optional explicit ANSI code page override (e.g. 1252, 1251, 932).
+    pub codepage: Option<u16>,
     pub allow_dynamic_link: bool,
     pub allow_com_activation: bool,
     pub deterministic_mode: bool,
@@ -168,6 +170,7 @@ impl HostPolicy {
             allow_filesystem_mutation: true,
             windows_drive_roots: Default::default(),
             windows_unc_roots: Default::default(),
+            codepage: None,
             allow_dynamic_link: true,
             allow_com_activation: true,
             deterministic_mode: false,
@@ -218,6 +221,11 @@ impl HostPolicy {
         self.com_invocation_strategy = strategy;
         self
     }
+
+    pub fn with_codepage(mut self, codepage: u16) -> Self {
+        self.codepage = Some(codepage);
+        self
+    }
 }
 
 impl Default for HostPolicy {
@@ -229,6 +237,7 @@ impl Default for HostPolicy {
             allow_filesystem_mutation: false,
             windows_drive_roots: Default::default(),
             windows_unc_roots: Default::default(),
+            codepage: None,
             allow_dynamic_link: false,
             allow_com_activation: true,
             deterministic_mode: true,

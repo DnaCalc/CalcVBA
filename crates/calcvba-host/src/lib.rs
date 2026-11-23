@@ -101,6 +101,7 @@ pub struct Module {
     procedures: Vec<Procedure>,
     host: Arc<dyn HostServices>,
     documents: Vec<DocumentModule>,
+    codepage: Option<u16>,
 }
 #[derive(Clone, Debug)]
 struct DocumentModule {
@@ -131,6 +132,7 @@ impl Module {
             reference_projects: vec![],
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
+            codepage: None,
         };
         Self::load_project_with_portability(
             &manifest,
@@ -276,6 +278,7 @@ impl Module {
             procedures,
             host: HostBuilder::new().build(),
             documents,
+            codepage: manifest.codepage,
         })
     }
     /// Compile leaf-first units, retaining independent canonical stores.
@@ -395,6 +398,7 @@ pub struct Session<'a> {
     automatic: Rc<events::AutomaticEvents>,
 }
 struct TypedActivation<'a> {
+    _codepage: calcvba_runtime::ansi::CodepageGuard,
     _policy: calcvba_com::ComPolicyScope,
     _executing: Ref<'a, ()>,
     depth: &'a Cell<u32>,
@@ -426,6 +430,7 @@ impl<'a> Session<'a> {
     ) -> Result<Self, Error> {
         let object_owner = calcvba_runtime::object_owner::RuntimeObjectOwner::fresh()
             .ok_or_else(|| Error::Backend("object owner identity exhausted".into()))?;
+        let _codepage = calcvba_runtime::ansi::enter_codepage(module.codepage);
         let _object_scope = object_owner.enter();
         let executable = match code {
             PreparedCode::Interpreter(_) => Executable::Interpreter(RefCell::new(
@@ -515,6 +520,7 @@ impl<'a> Session<'a> {
             .map_err(|_| Error::Reentry)?;
         let next_owner = calcvba_runtime::object_owner::RuntimeObjectOwner::fresh()
             .ok_or_else(|| Error::Backend("object owner identity exhausted".into()))?;
+        let _codepage = calcvba_runtime::ansi::enter_codepage(self.module.codepage);
         let _object_scope = next_owner.enter();
         self.automatic.clear();
         match &self.executable {
@@ -728,6 +734,7 @@ impl<'a> Session<'a> {
         self.typed_context.set(pointer);
         self.typed_depth.set(self.typed_depth.get() + 1);
         Ok(TypedActivation {
+            _codepage: calcvba_runtime::ansi::enter_codepage(self.module.codepage),
             _policy: self.host.enter_com_policy(),
             _executing: executing,
             depth: &self.typed_depth,
@@ -1142,6 +1149,7 @@ impl<'a> Session<'a> {
         args: &[Variant],
         max_steps: u64,
     ) -> Result<Variant, Error> {
+        let _codepage = calcvba_runtime::ansi::enter_codepage(self.module.codepage);
         let _object_scope = self.object_owner.borrow().enter();
         self.validate(handle)?;
         if self.suspended.get() != 0 {

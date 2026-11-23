@@ -66,6 +66,7 @@ fn com_fixture_manifest() -> SymbolProjectManifest {
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     }
 }
 
@@ -106,6 +107,7 @@ fn library_project(reference: &ReferencedProjectManifest) -> SymbolProjectManife
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     }
 }
 
@@ -154,6 +156,7 @@ fn referenced_class_fixture_manifest(
         reference_projects: vec![reference],
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     }
 }
 

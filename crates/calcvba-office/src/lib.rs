@@ -414,6 +414,7 @@ impl Project {
             reference_projects: Vec::new(),
             conditional_constants: parse_constants(&self.properties.constants)?,
             conditional_compilation_target: Default::default(),
+            codepage: Some(self.properties.codepage),
         })
     }
     pub(crate) fn validate(&self) -> Result<()> {

@@ -387,6 +387,7 @@ fn application_host_manifest() -> SymbolProjectManifest {
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     }
 }
 
@@ -561,6 +562,7 @@ fn engine_executes_host_returned_com_object_chain_through_portable_projection() 
         reference_projects: Vec::new(),
         conditional_constants: Default::default(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
 
     let values = engine

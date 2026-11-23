@@ -255,6 +255,7 @@ fn run_native(executor: Executor, modules: &[(&str, &str)]) -> Result<String, St
         reference_projects: Vec::new(),
         conditional_constants: std::collections::BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     let config = match executor {
         Executor::Vm3 => HostConfig::vm3(),
@@ -532,6 +533,7 @@ fn accepted_refusals() -> (Vec<String>, Vec<String>) {
             reference_projects: Vec::new(),
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
+            codepage: None,
         };
         let refused =
             calcvba_bind::bind_program(&manifest, &calcvba_symbol::CatalogTypeLibResolver).is_err();

@@ -1034,6 +1034,10 @@ impl Engine {
         self.runtime_profile
     }
 
+    fn effective_codepage(&self, project_codepage: Option<u16>) -> Option<u16> {
+        self.host_policy().codepage.or(project_codepage)
+    }
+
     pub fn set_portability_mode(&mut self, mode: calcvba_symbol::portability::Mode) {
         self.portability_mode = Some(mode);
     }
@@ -1208,6 +1212,8 @@ impl Engine {
             .collect();
         let entry = &image.programs[image.entry];
         programs.push(entry);
+        let _codepage =
+            calcvba_runtime::ansi::enter_codepage(self.effective_codepage(entry.codepage));
         if self.config.backend.is_jit() {
             let compiled = JitEngine
                 .compile_image(&programs)
@@ -1318,6 +1324,9 @@ impl Engine {
         closure: &[calcvba_symbol::manifest::SymbolProjectManifest],
     ) -> Result<Vec<Variant>, PhaseDiagnostic> {
         self.check_portability(closure)?;
+        let _codepage = calcvba_runtime::ansi::enter_codepage(
+            self.effective_codepage(closure.last().and_then(|manifest| manifest.codepage)),
+        );
         if self.config.backend.is_jit() {
             return self.execute_project_closure_with_variant_snapshot_jit(closure);
         }
@@ -1428,6 +1437,9 @@ impl Engine {
         if self.config.backend.is_jit() {
             return Vm3Snapshot::Unsupported("JIT execution is not implemented".to_string());
         }
+        let _codepage = calcvba_runtime::ansi::enter_codepage(
+            self.effective_codepage(closure.last().and_then(|manifest| manifest.codepage)),
+        );
         let closure: Vec<_> = closure
             .iter()
             .map(|manifest| self.manifest_with_runtime_conditional_target(manifest))
@@ -1517,6 +1529,7 @@ impl Engine {
             reference_projects: Vec::new(),
             conditional_constants: std::collections::BTreeMap::new(),
             conditional_compilation_target: Default::default(),
+            codepage: None,
         };
         self.execute_manifest_with_variant_snapshot(&manifest)
     }
@@ -1536,6 +1549,8 @@ impl Engine {
         manifest: &calcvba_symbol::manifest::SymbolProjectManifest,
     ) -> Result<Vec<Variant>, PhaseDiagnostic> {
         self.check_portability(std::slice::from_ref(manifest))?;
+        let _codepage =
+            calcvba_runtime::ansi::enter_codepage(self.effective_codepage(manifest.codepage));
         if self.config.backend.is_jit() {
             return match self.execute_manifest_snapshot_with_err_jit(manifest) {
                 SnapshotOutcome::Completed { values, .. } => Ok(values),
@@ -1590,6 +1605,7 @@ impl Engine {
             reference_projects: Vec::new(),
             conditional_constants: std::collections::BTreeMap::new(),
             conditional_compilation_target: Default::default(),
+            codepage: None,
         };
         self.execute_manifest_with_variant_snapshot_vm3(&manifest)
     }
@@ -1600,6 +1616,8 @@ impl Engine {
         &self,
         manifest: &calcvba_symbol::manifest::SymbolProjectManifest,
     ) -> Vm3Snapshot {
+        let _codepage =
+            calcvba_runtime::ansi::enter_codepage(self.effective_codepage(manifest.codepage));
         let manifest = self.manifest_with_runtime_conditional_target(manifest);
         let _policy = self.host_services.enter_com_policy();
         let program = match calcvba_bind::bind_program(&manifest, &self.bind_types()) {
@@ -1896,6 +1914,7 @@ End Sub
             reference_projects: Vec::new(),
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
+            codepage: None,
         };
         let engine = Engine::new(HostConfig::vm3());
         let mut session = image_session_for(&engine, &manifest);
@@ -1957,6 +1976,7 @@ End Function
             reference_projects: Vec::new(),
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
+            codepage: None,
         };
         let engine = Engine::new(HostConfig::default());
         let mut session = image_session_for(&engine, &manifest);
@@ -1995,6 +2015,7 @@ End Function
             reference_projects: Vec::new(),
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
+            codepage: None,
         };
         let engine = Engine::new(HostConfig::default());
         let mut session = image_session_for(&engine, &manifest);
@@ -2046,6 +2067,7 @@ End Function
             reference_projects: Vec::new(),
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
+            codepage: None,
         };
         for config in [HostConfig::vm3(), HostConfig::jit()] {
             let backend = config.backend;
@@ -2142,6 +2164,7 @@ End Sub
             reference_projects: Vec::new(),
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
+            codepage: None,
         };
         let engine = Engine::new(HostConfig::default());
         let mut session = image_session_for(&engine, &manifest);

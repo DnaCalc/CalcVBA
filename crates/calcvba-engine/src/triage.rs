@@ -69,6 +69,7 @@ pub fn predict_source(source: &str) -> ClosurePrediction {
         reference_projects: Vec::new(),
         conditional_constants: std::collections::BTreeMap::new(),
         conditional_compilation_target: Default::default(),
+        codepage: None,
     };
     predict_project_closure(&[manifest])
 }

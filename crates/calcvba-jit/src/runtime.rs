@@ -1776,7 +1776,7 @@ pub(crate) fn scalar_arg_variant(ty: &OxTy, value: i64) -> Option<Variant> {
 
 pub(crate) fn call_arg_variant_value(run: &JitRun, arg: JitCallArgDesc) -> Option<Variant> {
     match arg.kind {
-        JIT_CALL_ARG_BYVAL_VARIANT | JIT_CALL_ARG_BYREF_COPY => {
+        JIT_CALL_ARG_BYVAL_VARIANT | JIT_CALL_ARG_BYREF_COPY | JIT_CALL_ARG_BYVAL_OVERRIDE => {
             variant_operand_value_from_compiled_desc!(
                 run,
                 JitVariantOperandDesc {

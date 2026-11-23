@@ -5539,7 +5539,9 @@ fn top_level_callees(program: &CoreProgram) -> Vec<&CoreCallee> {
 
 fn collect_arg_callees<'a>(arg: &'a CoreArg, out: &mut Vec<&'a CoreCallee>) {
     match arg {
-        CoreArg::ByVal(value) | CoreArg::Named { value, .. } => collect_value_callees(value, out),
+        CoreArg::ByVal(value) | CoreArg::ByValOverride(value) | CoreArg::Named { value, .. } => {
+            collect_value_callees(value, out)
+        }
         CoreArg::ByRef(_) | CoreArg::Omitted => {}
     }
 }

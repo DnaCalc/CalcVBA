@@ -596,7 +596,9 @@ unsafe fn call_vtable(
             let mut values: Vec<Variant> = Vec::new();
             for extra in std::iter::once(arg).chain(positional[count..].iter().copied()) {
                 match extra.map(|arg| arg.value) {
-                    Some(ArgValue::Value(value)) => values.push(value.clone()),
+                    Some(ArgValue::Value(value) | ArgValue::ByValOverride(value)) => {
+                        values.push(value.clone())
+                    }
                     Some(ArgValue::Reference(reference)) => values.push(reference.clone()),
                     Some(ArgValue::Missing) => {
                         values.push(Variant::from_scode(DISP_E_PARAMNOTFOUND))
@@ -631,7 +633,7 @@ unsafe fn call_vtable(
         if vt == (VT_ARRAY | VT_RECORD) {
             let typelib_ri = typelib_record_info_for_wire(&wire);
             let current = match value {
-                ArgValue::Value(v) => v.clone(),
+                ArgValue::Value(v) | ArgValue::ByValOverride(v) => v.clone(),
                 ArgValue::Reference(r) => r.clone(),
                 ArgValue::Missing => unreachable!("missing arguments were handled above"),
             };
@@ -700,7 +702,7 @@ unsafe fn call_vtable(
                 slots.push(Slot::Temp(vt, temps.len() - 1));
                 continue;
             }
-            let ArgValue::Value(value) = value else {
+            let (ArgValue::Value(value) | ArgValue::ByValOverride(value)) = value else {
                 unreachable!("missing arguments were handled above")
             };
             if vt == VT_VARIANT && super::needs_automation_staging(value) {
@@ -720,7 +722,7 @@ unsafe fn call_vtable(
         // ByVal.
         let read;
         let value: &Variant = match value {
-            ArgValue::Value(value) => value,
+            ArgValue::Value(value) | ArgValue::ByValOverride(value) => value,
             ArgValue::Reference(reference) => {
                 read = reference.clone();
                 &read

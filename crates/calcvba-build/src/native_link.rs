@@ -213,7 +213,9 @@ fn args(args: &mut [OxArg], base: usize) {
 fn call_args(args: &mut [OxCallArg], base: usize) {
     for arg in args {
         match arg {
-            OxCallArg::Operand(op) | OxCallArg::Named { value: op, .. } => operand(op, base),
+            OxCallArg::Operand(op)
+            | OxCallArg::ByValOverride(op)
+            | OxCallArg::Named { value: op, .. } => operand(op, base),
             OxCallArg::ByRef(p) => place(p, base),
             OxCallArg::Omitted | OxCallArg::Const(_) => {}
         }

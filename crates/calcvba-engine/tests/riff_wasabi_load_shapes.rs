@@ -441,3 +441,78 @@ fn fixed_array_passed_to_an_array_parameter() {
         },
     );
 }
+
+#[test]
+fn wasabi_unallocated_array_return_and_optional_byref_writeback() {
+    // Wasabi's WebSocketGetAllHandles returns an unallocated Long() array (UBound raises 9,
+    // matching Excel's #VALUE! for WsProbeHandleCount) and WebSocketConnect writes back
+    // through Optional ByRef outHandle As Long = -1.
+    both(
+        "Option Explicit\n\
+         Option Private Module\n\
+         Public Result As String\n\
+         Private Function EmptyHandles() As Long()\n\
+             Dim result() As Long\n\
+             EmptyHandles = result\n\
+         End Function\n\
+         Private Function TryConnect(ByVal url As String, Optional ByRef outHandle As Long = -1) As Boolean\n\
+             If Left$(url, 5) <> \"ws://\" Then\n\
+                 outHandle = -1\n\
+                 Exit Function\n\
+             End If\n\
+             outHandle = 4\n\
+             TryConnect = True\n\
+         End Function\n\
+         Public Sub Main()\n\
+             Dim h As Long, ok As Boolean, n As Long, errNum As Long\n\
+             h = 12345\n\
+             ok = TryConnect(\"http://example.com\", h)\n\
+             On Error Resume Next\n\
+             n = UBound(EmptyHandles()) - LBound(EmptyHandles()) + 1\n\
+             errNum = Err.Number\n\
+             Err.Clear\n\
+             On Error GoTo 0\n\
+             Result = CStr(ok) & \"|\" & CStr(h) & \"|\" & CStr(errNum)\n\
+         End Sub\n",
+        |v| {
+            v.iter()
+                .any(|v| v.as_bstr().is_some_and(|s| s.to_string() == "False|-1|9"))
+        },
+    );
+}
+
+#[test]
+fn riff_standard_module_properties_with_option_private_module() {
+    // Riff declares Option Private Module with Public Property Get/Let in a standard module.
+    both(
+        "Option Explicit\n\
+         Option Private Module\n\
+         Private mMaster As Single\n\
+         Private mBuses(0 To 7) As Single\n\
+         Public Result As String\n\
+         Public Property Get MasterVol() As Single\n\
+             MasterVol = mMaster\n\
+         End Property\n\
+         Public Property Let MasterVol(ByVal v As Single)\n\
+             mMaster = v\n\
+         End Property\n\
+         Public Property Get BusVol(ByVal id As Long) As Single\n\
+             If id < 0 Or id > 7 Then Exit Property\n\
+             BusVol = mBuses(id)\n\
+         End Property\n\
+         Public Property Let BusVol(ByVal id As Long, ByVal v As Single)\n\
+             If id < 0 Or id > 7 Then Exit Property\n\
+             mBuses(id) = v\n\
+         End Property\n\
+         Public Sub Main()\n\
+             MasterVol = 0.5!\n\
+             BusVol(3) = 0.25!\n\
+             BusVol(-1) = 0.75!\n\
+             Result = CStr(MasterVol) & \"|\" & CStr(BusVol(3)) & \"|\" & CStr(BusVol(-1))\n\
+         End Sub\n",
+        |v| {
+            v.iter()
+                .any(|v| v.as_bstr().is_some_and(|s| s.to_string() == "0.5|0.25|0"))
+        },
+    );
+}

@@ -150,7 +150,9 @@ pub fn invoke_object_by_request<H: ComHal + ?Sized>(
         .enumerate()
         .map(|(index, arg)| calcvba_com::DynamicCallArg {
             value: match arg.value {
-                ComArgValue::Value(value) => Some(DynamicValue::from_variant(value.clone())),
+                ComArgValue::Value(value) | ComArgValue::ByValOverride(value) => {
+                    Some(DynamicValue::from_variant(value.clone()))
+                }
                 // Cloning a reference reads its target.
                 ComArgValue::Reference(reference) => {
                     Some(DynamicValue::from_variant(reference.clone()))
@@ -200,7 +202,7 @@ pub fn invoke_early_bound_object_by_request<H: ComHal + ?Sized>(
         .enumerate()
         .map(|(index, arg)| calcvba_com::DynamicCallArg {
             value: match arg.value {
-                ComArgValue::Value(value) => {
+                ComArgValue::Value(value) | ComArgValue::ByValOverride(value) => {
                     Some(calcvba_com::DynamicValue::from_variant(value.clone()))
                 }
                 // Cloning a reference reads its target.
@@ -286,7 +288,7 @@ pub fn invoke_declare_by_values<H: DynamicLinkHal + ?Sized>(
         .enumerate()
         .map(|(index, arg)| RuntimeCallArgument {
             value: match arg.value {
-                ComArgValue::Value(value) => value.clone(),
+                ComArgValue::Value(value) | ComArgValue::ByValOverride(value) => value.clone(),
                 // Cloning a reference reads its target.
                 ComArgValue::Reference(reference) => reference.clone(),
                 ComArgValue::Missing => Variant::empty(),

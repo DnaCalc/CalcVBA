@@ -30,6 +30,10 @@ pub enum ComCallKind {
 pub enum ComArgValue<'a> {
     /// A ByVal argument: the cell is borrowed; the callee reads it and must not clear it.
     Value(&'a Variant),
+    /// An explicit call-site `ByVal` override on a `Declare` argument (e.g., `ByVal pMem` or
+    /// `ByVal 0&` for a `ByRef ... As Any` parameter): pass the value itself, never the address
+    /// of a temporary cell.
+    ByValOverride(&'a Variant),
     /// A ByRef argument: a `VT_BYREF` cell referring to the caller's storage (step 7).
     Reference(&'a Variant),
     /// An omitted optional argument (`VT_ERROR` with `DISP_E_PARAMNOTFOUND`).

@@ -1857,7 +1857,9 @@ fn check_call_arg(
     errors: &mut Vec<VerifyError>,
 ) {
     match arg {
-        OxCallArg::Operand(value) | OxCallArg::Named { value, .. } => {
+        OxCallArg::Operand(value)
+        | OxCallArg::ByValOverride(value)
+        | OxCallArg::Named { value, .. } => {
             check_operand(fi, bi, site, value, locals, globals, temps, errors)
         }
         OxCallArg::ByRef(place) => check_place(fi, bi, site, place, locals, globals, temps, errors),

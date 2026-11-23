@@ -286,7 +286,7 @@ impl Dispatch {
                     missing[8..12].copy_from_slice(&DISP_E_PARAMNOTFOUND.to_le_bytes());
                     missing
                 }
-                ArgValue::Value(value) => {
+                ArgValue::Value(value) | ArgValue::ByValOverride(value) => {
                     if needs_automation_staging(value) {
                         let staged = Box::new(
                             AutomationVariant::from_runtime(value)

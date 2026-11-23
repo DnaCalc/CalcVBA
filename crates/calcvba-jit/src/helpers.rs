@@ -5072,6 +5072,9 @@ pub(crate) unsafe extern "C" fn rt_jit_declare_call_to_slot(
                     Some(reference) if arg.kind == JIT_CALL_ARG_BYREF_ALIAS => {
                         calcvba_com::call::ComArgValue::Reference(reference)
                     }
+                    Some(value) if arg.kind == JIT_CALL_ARG_BYVAL_OVERRIDE => {
+                        calcvba_com::call::ComArgValue::ByValOverride(value)
+                    }
                     Some(value) => calcvba_com::call::ComArgValue::Value(value),
                     None => calcvba_com::call::ComArgValue::Missing,
                 },

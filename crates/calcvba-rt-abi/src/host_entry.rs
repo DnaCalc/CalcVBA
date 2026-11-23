@@ -2294,6 +2294,7 @@ impl ScalarLayout {
                 for arg in args {
                     match arg {
                         calcvba_oxir::OxCallArg::Operand(op)
+                        | calcvba_oxir::OxCallArg::ByValOverride(op)
                         | calcvba_oxir::OxCallArg::Named { value: op, .. } => {
                             self.operand_type(op)?;
                         }
@@ -2522,7 +2523,8 @@ impl ScalarLayout {
                         _ => *positional_ty,
                     };
                     let from = match arg {
-                        calcvba_oxir::OxCallArg::Operand(op) => self.operand_type(op)?,
+                        calcvba_oxir::OxCallArg::Operand(op)
+                        | calcvba_oxir::OxCallArg::ByValOverride(op) => self.operand_type(op)?,
                         calcvba_oxir::OxCallArg::ByRef(p) => self.slots[self.slot(*p)?],
                         calcvba_oxir::OxCallArg::Named { value, by_ref, .. }
                             if plan.native.is_some() =>

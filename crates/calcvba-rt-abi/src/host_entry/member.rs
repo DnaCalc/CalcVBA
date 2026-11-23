@@ -81,6 +81,7 @@ pub(super) unsafe fn invoke_dynamic(
         }
         let value = match arg {
             OxCallArg::Operand(op)
+            | OxCallArg::ByValOverride(op)
             | OxCallArg::Named {
                 value: op,
                 by_ref: None,
@@ -250,6 +251,7 @@ pub(super) unsafe fn invoke(
                 .is_some_and(|idx| calcvba_com::typed_slots::plan::is_by_ref(descriptor, idx));
             let value = match arg {
                 OxCallArg::Operand(op)
+                | OxCallArg::ByValOverride(op)
                 | OxCallArg::Named {
                     value: op,
                     by_ref: None,

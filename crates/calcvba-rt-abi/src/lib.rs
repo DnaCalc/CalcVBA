@@ -680,7 +680,9 @@ pub fn marshal_ox_call_args<E>(
 ) -> Result<Vec<Variant>, E> {
     args.iter()
         .map(|arg| match arg {
-            OxCallArg::Operand(op) => read(MarshalArgRef::Operand(op)),
+            OxCallArg::Operand(op) | OxCallArg::ByValOverride(op) => {
+                read(MarshalArgRef::Operand(op))
+            }
             OxCallArg::ByRef(place) => read(MarshalArgRef::ByRef(place)),
             OxCallArg::Omitted => Ok(omitted()),
             OxCallArg::Named { value, .. } => read(MarshalArgRef::Operand(value)),

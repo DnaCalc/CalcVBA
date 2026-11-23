@@ -7049,9 +7049,9 @@ impl<'h> Vm3<'h> {
                         by_ref: Some(place),
                         ..
                     } => OxArg::ByRef(*place),
-                    OxCallArg::Operand(op) | OxCallArg::Named { value: op, .. } => {
-                        OxArg::ByVal(op.clone())
-                    }
+                    OxCallArg::Operand(op)
+                    | OxCallArg::ByValOverride(op)
+                    | OxCallArg::Named { value: op, .. } => OxArg::ByVal(op.clone()),
                     OxCallArg::Omitted => OxArg::Omitted,
                     OxCallArg::Const(_) => {
                         return Err(Vm3Error::Malformed(
@@ -7330,7 +7330,9 @@ impl<'h> Vm3<'h> {
 
     fn eval_call_arg_value(&mut self, arg: &OxCallArg) -> Result<Variant, Vm3Error> {
         match arg {
-            OxCallArg::Operand(op) | OxCallArg::Named { value: op, .. } => self.operand(op),
+            OxCallArg::Operand(op)
+            | OxCallArg::ByValOverride(op)
+            | OxCallArg::Named { value: op, .. } => self.operand(op),
             OxCallArg::ByRef(place) => self.read(place),
             OxCallArg::Const(n) => Ok(Variant::from_i32(*n)),
             OxCallArg::Omitted => Err(Vm3Error::Fault(Fault::new(449, default_error_message(449)))),
@@ -7501,7 +7503,7 @@ impl<'h> Vm3<'h> {
             ];
             for (dst, a) in argv.iter_mut().zip(args.iter()) {
                 *dst = match a {
-                    OxCallArg::Operand(op) => self.operand(op)?,
+                    OxCallArg::Operand(op) | OxCallArg::ByValOverride(op) => self.operand(op)?,
                     OxCallArg::ByRef(place) => self.read(place)?,
                     OxCallArg::Omitted => Variant::from_error_code(MISSING_ARG),
                     OxCallArg::Named { value, .. } => self.operand(value)?,
@@ -7563,7 +7565,7 @@ impl<'h> Vm3<'h> {
     fn collection_args(&mut self, args: &[OxCallArg]) -> Result<Vec<Variant>, Vm3Error> {
         args.iter()
             .map(|a| match a {
-                OxCallArg::Operand(op) => self.operand(op),
+                OxCallArg::Operand(op) | OxCallArg::ByValOverride(op) => self.operand(op),
                 OxCallArg::ByRef(place) => self.read(place),
                 OxCallArg::Named { value, .. } => self.operand(value),
                 OxCallArg::Omitted => Ok(Variant::from_error_code(MISSING_ARG)),
@@ -7852,7 +7854,7 @@ impl<'h> Vm3<'h> {
                     by_ref: Some(place),
                     ..
                 } => Some(self.com_reference(place)?),
-                OxCallArg::Operand(op) => Some(self.operand(op)?),
+                OxCallArg::Operand(op) | OxCallArg::ByValOverride(op) => Some(self.operand(op)?),
                 OxCallArg::Named { value, .. } => Some(self.operand(value)?),
                 OxCallArg::Omitted => None,
                 OxCallArg::Const(n) => Some(Variant::from_i32(*n)),
@@ -7928,7 +7930,7 @@ impl<'h> Vm3<'h> {
                     by_ref: Some(place),
                     ..
                 } => Some(self.com_reference(place)?),
-                OxCallArg::Operand(op) => Some(self.operand(op)?),
+                OxCallArg::Operand(op) | OxCallArg::ByValOverride(op) => Some(self.operand(op)?),
                 OxCallArg::Named { value, .. } => Some(self.operand(value)?),
                 OxCallArg::Omitted => None,
                 OxCallArg::Const(n) => Some(Variant::from_i32(*n)),
@@ -8121,7 +8123,7 @@ impl<'h> Vm3<'h> {
                     by_ref: Some(place),
                     ..
                 } => Some(self.com_reference(place)?),
-                OxCallArg::Operand(op) => Some(self.operand(op)?),
+                OxCallArg::Operand(op) | OxCallArg::ByValOverride(op) => Some(self.operand(op)?),
                 OxCallArg::Named { value, .. } => Some(self.operand(value)?),
                 OxCallArg::Omitted => None,
                 OxCallArg::Const(n) => Some(Variant::from_i32(*n)),
@@ -9399,6 +9401,9 @@ fn com_call_args<'a>(
             value: match (arg, cell) {
                 (arg, Some(reference)) if arg_is_by_ref(arg) => {
                     calcvba_com::call::ComArgValue::Reference(reference)
+                }
+                (OxCallArg::ByValOverride(_), Some(value)) => {
+                    calcvba_com::call::ComArgValue::ByValOverride(value)
                 }
                 (_, Some(value)) => calcvba_com::call::ComArgValue::Value(value),
                 (_, None) => calcvba_com::call::ComArgValue::Missing,

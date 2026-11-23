@@ -129,6 +129,8 @@ pub enum OxArg {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum OxCallArg {
     Operand(OxOperand),
+    /// Explicit call-site `ByVal` overriding a `ByRef` `Declare` parameter.
+    ByValOverride(OxOperand),
     ByRef(OxPlace),
     Omitted,
     /// `by_ref` is the place a late-bound named argument aliases, passed ByRef like

@@ -291,7 +291,7 @@ enum Arg<'a> {
 fn call_args(args: &[OxCallArg]) -> Vec<Arg<'_>> {
     args.iter()
         .map(|arg| match arg {
-            OxCallArg::Operand(op) => Arg::Operand(op),
+            OxCallArg::Operand(op) | OxCallArg::ByValOverride(op) => Arg::Operand(op),
             OxCallArg::Const(n) => Arg::Const(*n),
             _ => Arg::Other,
         })

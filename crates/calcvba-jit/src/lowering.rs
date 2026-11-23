@@ -2690,6 +2690,21 @@ impl<'a> LowerFunc<'a> {
                     None,
                 ))
             }
+            OxCallArg::ByValOverride(operand) => {
+                let operand = self.lower_variant_operand(builder, operand)?;
+                Ok((
+                    LoweredCallArg {
+                        kind: builder
+                            .ins()
+                            .iconst(types::I32, i64::from(JIT_CALL_ARG_BYVAL_OVERRIDE)),
+                        aux: operand.kind,
+                        value: operand.value,
+                        area: operand.area,
+                        index: operand.index,
+                    },
+                    None,
+                ))
+            }
             OxCallArg::Named {
                 name,
                 by_ref: Some(place),
@@ -6724,6 +6739,7 @@ impl<'a> LowerFunc<'a> {
         let places = args.iter().filter_map(|argument| match argument {
             OxCallArg::ByRef(place)
             | OxCallArg::Operand(OxOperand::Use(place))
+            | OxCallArg::ByValOverride(OxOperand::Use(place))
             | OxCallArg::Named {
                 value: OxOperand::Use(place),
                 ..

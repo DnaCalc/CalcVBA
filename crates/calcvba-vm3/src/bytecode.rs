@@ -607,7 +607,7 @@ impl TempUsage {
 
     fn visit_call_arg(&mut self, arg: &OxCallArg) {
         match arg {
-            OxCallArg::Operand(op) => self.read_op(op),
+            OxCallArg::Operand(op) | OxCallArg::ByValOverride(op) => self.read_op(op),
             OxCallArg::ByRef(p) => self.escape_place(p),
             OxCallArg::Named { value, by_ref, .. } => {
                 self.read_op(value);
@@ -1896,7 +1896,7 @@ impl CompiledFunc {
                 }
                 OxCallArg::Omitted => packed.push(FastCallArg::Omitted),
                 OxCallArg::Const(_) => packed.push(FastCallArg::Const),
-                OxCallArg::Named { .. } => return None,
+                OxCallArg::Named { .. } | OxCallArg::ByValOverride(_) => return None,
             }
         }
         Some(packed)

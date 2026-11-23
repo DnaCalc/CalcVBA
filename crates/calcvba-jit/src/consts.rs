@@ -27,6 +27,7 @@ pub(crate) const JIT_CALL_ARG_BYREF_ALIAS: i32 = 1;
 pub(crate) const JIT_CALL_ARG_BYVAL_VARIANT: i32 = 2;
 pub(crate) const JIT_CALL_ARG_OMITTED: i32 = 3;
 pub(crate) const JIT_CALL_ARG_BYREF_COPY: i32 = 4;
+pub(crate) const JIT_CALL_ARG_BYVAL_OVERRIDE: i32 = 5;
 pub(crate) const JIT_PROC_REF_RET_NONE: i32 = 0;
 pub(crate) const JIT_PROC_REF_RET_LONG: i32 = 1;
 pub(crate) const JIT_PROC_REF_RET_STRING: i32 = 2;

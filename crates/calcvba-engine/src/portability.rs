@@ -280,10 +280,14 @@ enum CallArgView<'a> {
 fn view_call_args(args: &[OxCallArg]) -> Vec<CallArgView<'_>> {
     args.iter()
         .map(|arg| match arg {
-            OxCallArg::Operand(OxOperand::Const(OxConst::Str(text))) => {
+            OxCallArg::Operand(OxOperand::Const(OxConst::Str(text)))
+            | OxCallArg::ByValOverride(OxOperand::Const(OxConst::Str(text))) => {
                 CallArgView::ConstStr(text.as_str())
             }
-            OxCallArg::Operand(OxOperand::Const(OxConst::NullStr)) => CallArgView::ConstStr(""),
+            OxCallArg::Operand(OxOperand::Const(OxConst::NullStr))
+            | OxCallArg::ByValOverride(OxOperand::Const(OxConst::NullStr)) => {
+                CallArgView::ConstStr("")
+            }
             OxCallArg::Omitted => CallArgView::Omitted,
             OxCallArg::Named {
                 value: OxOperand::Const(OxConst::Str(text)),
@@ -919,7 +923,9 @@ fn check_inst(
         OxInst::CallNative { callee, args, .. } => {
             for arg in args {
                 match arg {
-                    OxCallArg::Operand(op) | OxCallArg::Named { value: op, .. } => {
+                    OxCallArg::Operand(op)
+                    | OxCallArg::ByValOverride(op)
+                    | OxCallArg::Named { value: op, .. } => {
                         check_operand_path(report, project, module, op, host);
                     }
                     _ => {}

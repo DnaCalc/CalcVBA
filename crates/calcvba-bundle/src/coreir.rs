@@ -792,6 +792,10 @@ pub enum CoreCallee {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CoreArg {
     ByVal(CoreValue),
+    /// Explicit call-site `ByVal expr` overriding a `ByRef` `Declare` parameter
+    /// (MS-VBAL 5.6.13.1): passes the value directly instead of taking the address
+    /// of a temporary cell.
+    ByValOverride(CoreValue),
     ByRef(CorePlace),
     Omitted,
     /// A `name := value` argument (late-bound / COM dispatch). `by_ref` is the

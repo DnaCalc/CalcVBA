@@ -536,7 +536,9 @@ impl Values<'_> {
         let mut specifications = Vec::new();
         for (index, argument) in arguments.iter().enumerate() {
             let (operand, by_ref, omitted, name) = match argument {
-                OxCallArg::Operand(operand) => (operand.clone(), false, false, None),
+                OxCallArg::Operand(operand) | OxCallArg::ByValOverride(operand) => {
+                    (operand.clone(), false, false, None)
+                }
                 OxCallArg::ByRef(place) => (OxOperand::Use(*place), true, false, None),
                 OxCallArg::Named {
                     name,
@@ -1277,13 +1279,17 @@ impl Values<'_> {
                 ));
                 for (i, arg) in args.iter().enumerate() {
                     let source = match arg {
-                        OxCallArg::Operand(op) => op.clone(),
+                        OxCallArg::Operand(op) | OxCallArg::ByValOverride(op) => op.clone(),
                         OxCallArg::ByRef(place) => OxOperand::Use(*place),
                         _ => unreachable!(),
                     };
                     let from = kind_of_operand(layout, &source);
                     let target = declare_kind(&descriptor.param_types[i]).unwrap_or(from);
-                    let by_ref = descriptor.param_by_ref[i];
+                    let by_ref = if matches!(arg, OxCallArg::ByValOverride(_)) {
+                        false
+                    } else {
+                        descriptor.param_by_ref[i]
+                    };
                     let mut cell = self.cell(module, b, &source);
                     if !by_ref && target != from {
                         let private = b.create_sized_stack_slot(StackSlotData::new(
@@ -2296,13 +2302,18 @@ pub(super) fn validate_declare(
         return Err("native Declare requires a scalar/pointer return".into());
     }
     for (i, arg) in args.iter().enumerate() {
-        let (source, alias) = match arg {
-            OxCallArg::ByRef(p) => (OxOperand::Use(*p), true),
-            OxCallArg::Operand(op) => (op.clone(), false),
+        let (source, alias, byval_override) = match arg {
+            OxCallArg::ByRef(p) => (OxOperand::Use(*p), true, false),
+            OxCallArg::Operand(op) => (op.clone(), false, false),
+            OxCallArg::ByValOverride(op) => (op.clone(), false, true),
             _ => return Err("native Declare named/omitted argument".into()),
         };
         let ty = layout.operand_type(&source)?;
-        let by_ref = descriptor.param_by_ref[i];
+        let by_ref = if byval_override {
+            false
+        } else {
+            descriptor.param_by_ref[i]
+        };
         let expected = declare_kind(&descriptor.param_types[i]);
         if by_ref && !alias {
             return Err(

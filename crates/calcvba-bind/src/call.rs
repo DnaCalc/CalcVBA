@@ -1331,12 +1331,18 @@ impl<'a> ProcLower<'a> {
                 }),
                 ArgItem::Positional(expr, passing) => {
                     // A call-site `ByVal`/`ByRef` overrides the declared direction.
+                    let declared_by_ref = param_by_ref.get(i).copied().unwrap_or(false);
                     let by_ref = match passing {
                         CallSitePassing::ByVal => false,
                         CallSitePassing::ByRef => true,
-                        CallSitePassing::Default => param_by_ref.get(i).copied().unwrap_or(false),
+                        CallSitePassing::Default => declared_by_ref,
                     };
-                    if !by_ref && param_is_string.get(i).copied().unwrap_or(false) {
+                    if passing == CallSitePassing::ByVal && declared_by_ref {
+                        // Explicit call-site `ByVal` overriding a `ByRef` Declare parameter
+                        // (e.g. `CopyMemory ByVal pMem, ...`, `DispCallFunc ..., ByVal 0&`):
+                        // pass the value directly rather than taking the address of a temporary.
+                        args.push(CoreArg::ByValOverride(self.bind_expr(expr)?.value));
+                    } else if !by_ref && param_is_string.get(i).copied().unwrap_or(false) {
                         // A call-site `ByVal` over a `ByVal As String` param suppresses
                         // the pre-sized-buffer write-back; `Default` keeps it.
                         args.push(self.bind_byval_string_arg(expr, passing)?);
@@ -4059,7 +4065,7 @@ fn zero_param_index<'t>(
 /// variants cannot occur but are mapped sensibly.
 fn paramarray_element(arg: CoreArg) -> CoreValue {
     match arg {
-        CoreArg::ByVal(v) => v,
+        CoreArg::ByVal(v) | CoreArg::ByValOverride(v) => v,
         CoreArg::Named { value, .. } => value,
         CoreArg::Omitted => CoreValue::Const(calcvba_bundle::coreir::CoreConst::Missing),
         CoreArg::ByRef(place) => CoreValue::Load(place),

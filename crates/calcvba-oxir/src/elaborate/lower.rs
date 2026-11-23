@@ -3195,7 +3195,7 @@ impl<'a> Lowerer<'a> {
                 continue;
             }
             out.push(match arg {
-                CoreArg::ByVal(v) => {
+                CoreArg::ByVal(v) | CoreArg::ByValOverride(v) => {
                     let (value, wb) = self.lower_byval_arg(v)?;
                     writebacks.extend(wb);
                     OxArg::ByVal(value)
@@ -3230,6 +3230,11 @@ impl<'a> Lowerer<'a> {
                     let (value, wb) = self.lower_byval_arg(v)?;
                     writebacks.extend(wb);
                     OxCallArg::Operand(value)
+                }
+                CoreArg::ByValOverride(v) => {
+                    let (value, wb) = self.lower_byval_arg(v)?;
+                    writebacks.extend(wb);
+                    OxCallArg::ByValOverride(value)
                 }
                 CoreArg::ByRef(place) => {
                     let (p, wb) = self.lower_byref_place(place)?;
@@ -3310,7 +3315,7 @@ impl<'a> Lowerer<'a> {
     /// calltype operands of `CallByName`).
     fn lower_arg_value(&mut self, arg: &CoreArg) -> Result<OxOperand> {
         match arg {
-            CoreArg::ByVal(v) => Ok(self.lower_value(v)?.0),
+            CoreArg::ByVal(v) | CoreArg::ByValOverride(v) => Ok(self.lower_value(v)?.0),
             CoreArg::ByRef(place) => Ok(self.lower_place_load(place)?.0),
             CoreArg::Omitted | CoreArg::Named { .. } => Err(ElaborateError::Malformed(
                 "expected a positional value operand".into(),

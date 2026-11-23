@@ -527,7 +527,7 @@ fn marshal<'a>(
     after: &mut Vec<After<'a>>,
 ) -> HalResult<MarshalledSlot> {
     let (value, reference): (Variant, Option<&'a Variant>) = match arg {
-        ComArgValue::Value(value) => (value.clone(), None),
+        ComArgValue::Value(value) | ComArgValue::ByValOverride(value) => (value.clone(), None),
         // Cloning a reference reads its target.
         ComArgValue::Reference(reference) => (reference.clone(), Some(reference)),
         // An omitted optional parameter (VBA's `Optional` in a Declare) is the type's zero.
@@ -851,7 +851,15 @@ pub(super) fn invoke(
             .param_types
             .get(index)
             .map_or("Long", String::as_str);
-        let by_ref = descriptor.param_by_ref.get(index).copied().unwrap_or(false);
+        // An explicit call-site `ByVal` overrides a `ByRef` Declare parameter (e.g. `ByRef As Any`
+        // receiving `ByVal pMem`, `ByVal 0&`, or `ByVal "abc"`). Keep `ByRef` for `Variant`
+        // because the prepared CIF slot is a pointer, not a by-value VARIANT aggregate.
+        let by_ref =
+            if matches!(arg.value, ComArgValue::ByValOverride(_)) && param_type != "Variant" {
+                false
+            } else {
+                descriptor.param_by_ref.get(index).copied().unwrap_or(false)
+            };
         if plan.runtime_storage
             && by_ref
             && let Some(word) = runtime_own_storage(arg.value)

@@ -2755,6 +2755,16 @@ impl ScalarLayout {
             {
                 Ok(())
             }
+            OxInst::Logical { dst, lhs, rhs, .. }
+                if self.owning
+                    && matches!(
+                        self.slots[self.slot(*dst)?],
+                        ScalarType::Boolean | ScalarType::Long | ScalarType::Variant
+                    ) =>
+            {
+                self.operand_type(lhs)?;
+                self.operand_type(rhs).map(|_| ())
+            }
             OxInst::Not { dst, src }
                 if self.slots[self.slot(*dst)?] == self.operand_type(src)?
                     && matches!(

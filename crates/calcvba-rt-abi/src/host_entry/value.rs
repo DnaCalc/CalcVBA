@@ -210,6 +210,7 @@ pub fn needs_helper(inst: &OxInst, layout: &ScalarLayout) -> bool {
         }),
         OxInst::Arith { dst, lhs, rhs, .. }
         | OxInst::Compare { dst, lhs, rhs, .. }
+        | OxInst::Logical { dst, lhs, rhs, .. }
         | OxInst::Div { dst, lhs, rhs } => {
             extended(lhs)
                 || extended(rhs)
@@ -434,6 +435,19 @@ pub unsafe extern "C" fn evaluate(
                 ),
                 OxInst::Not { dst, src } => {
                     (*dst, arith::not(&read_value(src)?).map_err(|e| e.code)?)
+                }
+                OxInst::Logical { dst, lhs, rhs, op } => {
+                    let lhs = read_value(lhs)?;
+                    let rhs = read_value(rhs)?;
+                    let result = match op {
+                        calcvba_oxir::LogicalOp::And => arith::and(&lhs, &rhs),
+                        calcvba_oxir::LogicalOp::Or => arith::or(&lhs, &rhs),
+                        calcvba_oxir::LogicalOp::Xor => arith::xor(&lhs, &rhs),
+                        calcvba_oxir::LogicalOp::Eqv => arith::eqv(&lhs, &rhs),
+                        calcvba_oxir::LogicalOp::Imp => arith::imp(&lhs, &rhs),
+                    }
+                    .map_err(|e| e.code)?;
+                    (*dst, result)
                 }
                 OxInst::Neg { dst, src, mode } => (
                     *dst,

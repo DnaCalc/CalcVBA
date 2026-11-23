@@ -757,6 +757,10 @@ Private Sub SheetDoc_Changed(ByVal Target As AlphaLib.Item)
     For Each eachVal In dynObj
         totalDyn = totalDyn + CLng(eachVal)
     Next eachVal
+    If Target.Place(1, 2) <> 3 Or Target.Value <> 42 Then
+        Summary = "BAD"
+        Exit Sub
+    End If
     Summary = Target.Panel.Content.Text & "|" & CStr(Me.Lookup("C1").Value) & "|" & CStr(Lookup("D1").Value) & "|" & CStr(direct) & "|" & CStr(bumped) & ":" & CStr(n) & "|" & CStr(total) & "|" & mixed & ":" & CStr(outVal) & "|" & CStr(totalDyn) & "|" & CStr(dynVal) & "|" & CStr(Target.Place(10, 20.5))
 End Sub
 "#

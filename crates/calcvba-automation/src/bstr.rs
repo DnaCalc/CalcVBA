@@ -572,7 +572,7 @@ fn alloc_raw_bstr_from_units_pair(a: &[u16], b: &[u16]) -> Result<*mut u16, Stri
             .map_err(|_| "BSTR payload length should fit in u32 code-unit count".to_string())?;
         // SAFETY: `SysAllocStringLen(null, len)` allocates an uninitialized BSTR of `len` UTF-16
         // code units plus a terminating NUL, which we initialize completely before returning.
-        let raw = unsafe { SysAllocStringLen(core::ptr::null(), len) };
+        let raw = unsafe { SysAllocStringLen(core::ptr::null(), len) }.cast_mut();
         if raw.is_null() {
             return Err("failed to allocate BSTR payload".to_string());
         }
@@ -582,7 +582,7 @@ fn alloc_raw_bstr_from_units_pair(a: &[u16], b: &[u16]) -> Result<*mut u16, Stri
             core::ptr::copy_nonoverlapping(a.as_ptr(), raw, a.len());
             core::ptr::copy_nonoverlapping(b.as_ptr(), raw.add(a.len()), b.len());
         }
-        Ok(raw.cast_mut())
+        Ok(raw)
     }
     #[cfg(any(not(target_os = "windows"), miri))]
     {
@@ -781,6 +781,19 @@ mod tests {
         let clone = value.clone();
         assert_eq!(value, clone);
         assert_ne!(value.raw_bstr(), clone.raw_bstr());
+    }
+
+    #[test]
+    fn bstr_concat_preserves_utf16_units_and_terminator() {
+        let first = [0x0041, 0x0000, 0xD83D];
+        let second = [0xDE00, 0x0042];
+        let value = BStr::from_utf16_concat(&first, &second).expect("concatenated BSTR");
+
+        assert_eq!(value.byte_len(), 10);
+        assert_eq!(
+            value.payload_units_with_nul(),
+            &[0x0041, 0x0000, 0xD83D, 0xDE00, 0x0042, 0x0000]
+        );
     }
 
     #[test]

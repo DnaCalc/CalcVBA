@@ -1621,15 +1621,18 @@ impl ScalarLayout {
         let mut assignment_classes = std::collections::HashMap::new();
         if owning {
             for inst in func.blocks.iter().flat_map(|b| &b.instrs) {
-                if let OxInst::ValidateAssignment {
-                    target_type_name,
-                    target_kind,
-                    ..
-                } = inst
-                {
-                    if *target_kind == calcvba_bundle::AssignmentTargetKind::Scalar {
-                        continue;
+                let target_type_name = match inst {
+                    OxInst::ValidateAssignment {
+                        target_type_name,
+                        target_kind,
+                        ..
+                    } if *target_kind != calcvba_bundle::AssignmentTargetKind::Scalar => {
+                        target_type_name
                     }
+                    OxInst::TypeOfIs { type_name, .. } => type_name,
+                    _ => continue,
+                };
+                {
                     let bare = target_type_name
                         .rsplit('.')
                         .next()
@@ -2742,6 +2745,16 @@ impl ScalarLayout {
                 self.operand_type(lhs)?;
                 self.operand_type(rhs)?;
                 Ok(())
+            }
+            OxInst::TypeOfIs {
+                dst,
+                object,
+                type_name,
+            } if self.owning
+                && self.slots[self.slot(*dst)?] == ScalarType::Boolean
+                && self.assignment_iids.contains_key(type_name) =>
+            {
+                self.operand_type(object).map(|_| ())
             }
             OxInst::Compare { dst, lhs, rhs, .. }
                 if self.slots[self.slot(*dst)?] == ScalarType::Boolean

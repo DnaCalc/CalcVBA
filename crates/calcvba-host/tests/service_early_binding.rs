@@ -761,6 +761,10 @@ Private Sub SheetDoc_Changed(ByVal Target As AlphaLib.Item)
         Summary = "BAD"
         Exit Sub
     End If
+    If Not (TypeOf Me Is AlphaLib.SheetDoc) Or (TypeOf Me Is AlphaLib.Item) Or Not (TypeOf Target.Panel Is BetaLib.Panel) Then
+        Summary = "BAD_TYPEOF"
+        Exit Sub
+    End If
     Summary = Target.Panel.Content.Text & "|" & CStr(Me.Lookup("C1").Value) & "|" & CStr(Lookup("D1").Value) & "|" & CStr(direct) & "|" & CStr(bumped) & ":" & CStr(n) & "|" & CStr(total) & "|" & mixed & ":" & CStr(outVal) & "|" & CStr(totalDyn) & "|" & CStr(dynVal) & "|" & CStr(Target.Place(10, 20.5))
 End Sub
 "#

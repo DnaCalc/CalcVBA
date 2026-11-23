@@ -191,6 +191,7 @@ pub fn needs_helper(inst: &OxInst, layout: &ScalarLayout) -> bool {
             .is_some_and(|p| p.native.is_some()),
         OxInst::Box { .. }
         | OxInst::CompareObjectIs { .. }
+        | OxInst::TypeOfIs { .. }
         | OxInst::Unbox { .. }
         | OxInst::Concat { .. }
         | OxInst::VariantChanged { .. } => true,
@@ -379,6 +380,38 @@ pub unsafe extern "C" fn evaluate(
                         _ => false,
                     };
                     (*dst, Variant::from_bool(same))
+                }
+                OxInst::TypeOfIs {
+                    dst,
+                    object,
+                    type_name,
+                } => {
+                    let value = read(object)?;
+                    let matched = if value.vtype() != VarType::Object {
+                        false
+                    } else if let Some(reference) = value.as_object_ref() {
+                        let bare = type_name.rsplit('.').next().unwrap_or(type_name);
+                        if bare.eq_ignore_ascii_case("Object") {
+                            true
+                        } else if type_name.eq_ignore_ascii_case("VBA.Collection")
+                            || type_name.eq_ignore_ascii_case("Collection")
+                        {
+                            calcvba_runtime::ObjectRefExt::route_key(&reference)
+                                == crate::VBA_COLLECTION_ROUTE_KEY
+                        } else if let Some(required) = layout.assignment_classes.get(type_name) {
+                            super::class_matches(&reference, required)
+                        } else if let Some(iid) =
+                            layout.assignment_iids.get(type_name).copied().flatten()
+                        {
+                            super::member::host_view(&reference)
+                                .is_some_and(|host| host.resolve_interface(iid).is_ok())
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    (*dst, Variant::from_bool(matched))
                 }
                 OxInst::Unbox {
                     dst, src, checked, ..

@@ -887,6 +887,15 @@ Private Function IndexVariant(ByVal v As Variant) As Long
     IndexVariant = total
 End Function
 
+Private Function IndexByRefVariant(ByRef v As Variant) As Long
+    Dim i As Long
+    Dim total As Long
+    For i = 1 To v.Count
+        total = total + CLng(v(i))
+    Next i
+    IndexByRefVariant = total
+End Function
+
 Public Function RunCheck() As String
     Dim arr As Variant
     arr = Array(3, 5, 7)
@@ -898,6 +907,15 @@ Public Function RunCheck() As String
     Dim colVar As Variant
     Set colVar = col
     RunCheck = CStr(SumVariant(arr)) & "|" & CStr(SumVariant(colVar)) & "|" & CStr(IndexVariant(colVar))
+End Function
+
+Public Function RunByRefCheck() As Long
+    Dim col As Collection
+    Set col = New Collection
+    col.Add 10
+    col.Add 20
+    col.Add 30
+    RunByRefCheck = IndexByRefVariant(col)
 End Function
 "#;
     let project = api::Project::module("Mod1", source);
@@ -920,12 +938,17 @@ End Function
             panic!("{backend:?}: expected String, got {value:?}");
         };
         assert_eq!(text.as_str(), "15|60|60", "{backend:?}");
-        // Also exercise the dynamic call_bound route (JIT 1D i32 fast path).
+        // Also exercise the dynamic call_bound route (JIT 1D i32 & VT_BYREF paths).
         let dyn_val = session.call_bound(&proc, &[], 100_000).unwrap();
         assert_eq!(
             dyn_val.as_bstr().map(|s| s.as_str().to_owned()).as_deref(),
             Some("15|60|60"),
             "{backend:?} dynamic"
         );
+        let byref_proc = session
+            .bind("Mod1", "RunByRefCheck", ProcedureKind::Function)
+            .unwrap();
+        let byref_val = session.call_bound(&byref_proc, &[], 100_000).unwrap();
+        assert_eq!(byref_val.as_i32(), Some(60), "{backend:?} byref");
     }
 }

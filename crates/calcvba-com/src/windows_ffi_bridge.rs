@@ -793,7 +793,7 @@ pub fn invoke_stdcall(
     // resolved by get_proc_address from a handle load_library keeps open, and all
     // pointer-bearing arguments (string buffers in `args`) outlive the call;
     // `VarPtr`/`StrPtr` addresses are the guest's own live storage
-    // (docs/spec/OXVBA_POINTER_HELPERS_CONTRACT_V1.md). The Declare
+    // (docs/spec/CALCVBA_POINTER_HELPERS_CONTRACT_V1.md). The Declare
     // signature matching the symbol's true C ABI is the guest's contract, exactly as
     // in VBA 7.1 (HAL_DECLARE_ABI_SPEC_V1).
     let result = unsafe { invoke_c_abi_raw(proc_addr, &raw_args, return_type) };

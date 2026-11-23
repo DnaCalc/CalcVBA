@@ -428,8 +428,8 @@ both use one `Variant` type, and the generic JIT stores no Variant offsets of it
    and offset tests, specs corrected. `VT_BYREF` cells moved to step 7, where ByRef binding and
    address-of change together. `VT_UNKNOWN` moved to step 8: only the COM marshaller produces and
    consumes it, and step 8 rewrites that marshaller
-   (`OXVBA_REPRESENTATION_LAYOUT_DOCTRINE_V1.md:17-20`, `VBA_TYPE_SYSTEM_V1.md`,
-   `OXVBA_POINTER_HELPERS_CONTRACT_V1.md`). VM3 hot paths move from clone to borrow as they
+   (`CALCVBA_REPRESENTATION_LAYOUT_DOCTRINE_V1.md:17-20`, `VBA_TYPE_SYSTEM_V1.md`,
+   `CALCVBA_POINTER_HELPERS_CONTRACT_V1.md`). VM3 hot paths move from clone to borrow as they
    are touched. Miri on `calcvba-runtime`, `calcvba-automation`, `calcvba-jit` and the
    `calcvba-com` mock (`scripts/run-miri.sh`).
 5. **Records** (revised, see 3.2). 5a: UDT memory in VBA's layout (pointer-sized Object and

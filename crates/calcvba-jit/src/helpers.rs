@@ -7066,12 +7066,12 @@ pub(crate) unsafe extern "C" fn rt_jit_array_get_i32_1d_to_slot(
         // SAFETY: null was rejected and the selected element is copied before the
         // destination write.
         let run_ref = unsafe { &*run };
-        let Some(array) = slot_ref(run_ref, array_area, array_index) else {
+        let Some(array) = slot_ref(run_ref, array_area, array_index).map(read_slot) else {
             return ST_FAULT;
         };
         if !array.holds_array() {
             if array.as_object_ref().is_some() {
-                let recv_value = array.clone();
+                let recv_value = array.into_owned();
                 let args = [Variant::from_i32(index)];
                 // SAFETY: the checked JIT entry owns the live unique state; `run`,
                 // the owned receiver, and `args` remain live for the call.
@@ -7099,7 +7099,7 @@ pub(crate) unsafe extern "C" fn rt_jit_array_get_i32_1d_to_slot(
         }
         // SAFETY: the current compiled-run boundary owns the live unique state handle;
         // typed references and owned values remain live and nonaliasing for this call.
-        let flat = match unsafe { jit_flat_index_1d(state, array, index) } {
+        let flat = match unsafe { jit_flat_index_1d(state, array.as_ref(), index) } {
             Ok(flat) => flat,
             Err(status) => return status,
         };
@@ -7174,14 +7174,14 @@ pub(crate) unsafe extern "C" fn rt_jit_array_get_variant_to_slot(
         let array = {
             // SAFETY: this source borrow is bounded before possible default-member entry.
             let run_ref = unsafe { &*run };
-            let Some(array) = slot_ref(run_ref, array_area, array_index) else {
+            let Some(array) = slot_ref(run_ref, array_area, array_index).map(read_slot) else {
                 return ST_FAULT;
             };
             array
         };
         if !array.holds_array() {
             if array.as_object_ref().is_some() {
-                let recv_value = array.clone();
+                let recv_value = array.into_owned();
                 let args = values;
                 // SAFETY: the checked JIT entry owns the live unique state; `run`,
                 // the owned receiver, and `args` remain live for the call.
@@ -7223,7 +7223,7 @@ pub(crate) unsafe extern "C" fn rt_jit_array_get_variant_to_slot(
             indices.push(index);
         }
         // SAFETY: the borrowed array and converted subscripts outlive this read.
-        let flat = match unsafe { jit_flat_index(state, array, &indices) } {
+        let flat = match unsafe { jit_flat_index(state, array.as_ref(), &indices) } {
             Ok(flat) => flat,
             Err(status) => return status,
         };
@@ -7280,12 +7280,12 @@ pub(crate) unsafe extern "C" fn rt_jit_array_set_i32_1d_slot(
         }
         // SAFETY: null was rejected and immutable reads finish before mutation.
         let run_ref = unsafe { &*run };
-        let Some(array) = slot_ref(run_ref, array_area, array_index) else {
+        let Some(array) = slot_ref(run_ref, array_area, array_index).map(read_slot) else {
             return ST_FAULT;
         };
         if !array.holds_array() {
             if array.as_object_ref().is_some() {
-                let recv_value = array.clone();
+                let recv_value = array.into_owned();
                 let args = [Variant::from_i32(index), Variant::from_i32(value)];
                 // SAFETY: the checked JIT entry owns the live unique state; `run`,
                 // the owned receiver, and `args` remain live for the call.
@@ -7307,7 +7307,7 @@ pub(crate) unsafe extern "C" fn rt_jit_array_set_i32_1d_slot(
         }
         // SAFETY: the current compiled-run boundary owns the live unique state handle;
         // typed references and owned values remain live and nonaliasing for this call.
-        let flat = match unsafe { jit_flat_index_1d(state, array, index) } {
+        let flat = match unsafe { jit_flat_index_1d(state, array.as_ref(), index) } {
             Ok(flat) => flat,
             Err(status) => return status,
         };
@@ -7398,14 +7398,14 @@ pub(crate) unsafe extern "C" fn rt_jit_array_set_variant_slot(
             let Some(value) = variant_operand_value_from_compiled_desc!(run_ref, value) else {
                 return ST_FAULT;
             };
-            let Some(array) = slot_ref(run_ref, array_area, array_index) else {
+            let Some(array) = slot_ref(run_ref, array_area, array_index).map(read_slot) else {
                 return ST_FAULT;
             };
             (value, array)
         };
         if !array.holds_array() {
             if array.as_object_ref().is_some() {
-                let recv_value = array.clone();
+                let recv_value = array.into_owned();
                 let mut args = subscripts;
                 args.push(value);
                 let invoke_kind = if args
@@ -7440,7 +7440,7 @@ pub(crate) unsafe extern "C" fn rt_jit_array_set_variant_slot(
             indices.push(index);
         }
         // SAFETY: the borrowed array and converted subscripts outlive this read.
-        let flat = match unsafe { jit_flat_index(state, array, &indices) } {
+        let flat = match unsafe { jit_flat_index(state, array.as_ref(), &indices) } {
             Ok(flat) => flat,
             Err(status) => return status,
         };

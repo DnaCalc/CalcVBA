@@ -194,10 +194,12 @@ pub fn needs_helper(inst: &OxInst, layout: &ScalarLayout) -> bool {
         | OxInst::Unbox { .. }
         | OxInst::Concat { .. }
         | OxInst::VariantChanged { .. } => true,
-        OxInst::Coerce { dst, src, .. } => layout.operand_type(src).is_ok_and(|from| {
+        OxInst::Coerce { dst, src, target } => layout.operand_type(src).is_ok_and(|from| {
             layout.slot(*dst).is_ok_and(|i| {
-                from != layout.slots[i]
-                    && !(from == ScalarType::Long && layout.slots[i] == ScalarType::Double)
+                (layout.slots[i] == ScalarType::Variant
+                    && matches!(target, calcvba_oxir::OxCoerceTarget::Numeric(_)))
+                    || (from != layout.slots[i]
+                        && !(from == ScalarType::Long && layout.slots[i] == ScalarType::Double))
             })
         }),
         OxInst::Assign { dst, value } => layout.operand_type(value).is_ok_and(|from| {

@@ -23,6 +23,8 @@ Private Function RunWorkload(ByVal name As String, ByVal n As Long, ByVal path A
         Case "WorksheetSum": RunWorkload = B_Work.WorksheetSum(n, functions)
         Case "FileLines": RunWorkload = B_Work.FileLines(n, path)
         Case "Recursion": RunWorkload = B_Work.Recursion(n)
+        Case "SampleInvoices": RunWorkload = B_Work.SampleInvoices(n)
+        Case "SampleLoads": RunWorkload = B_Work.SampleLoads(n)
         Case "RangeBlock": RunWorkload = B_Sheet.RangeBlock(n)
         Case "RangeCells": RunWorkload = B_Sheet.RangeCells(n)
         Case "UdfRecalculate": RunWorkload = B_Sheet.UdfRecalculate(n)

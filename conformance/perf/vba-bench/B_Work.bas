@@ -215,3 +215,23 @@ End Function
 Public Function Recursion(ByVal n As Long) As Double
     Recursion = Fib(n)
 End Function
+
+' Call the checked-in reflection-wrapper samples with deterministic inputs.
+Public Function SampleInvoices(ByVal n As Long) As Double
+    Dim i As Long, price As Double, revenue As Double
+    For i = 1 To n
+        price = 100 + i Mod 64
+        revenue = BusinessCalc.ApplyDiscount(price, 0.125)
+        SampleInvoices = SampleInvoices + revenue * BusinessCalc.GrossMargin(revenue, revenue * 0.75)
+        SampleInvoices = SampleInvoices + BusinessCalc.UnitsAfterBundle(10, i Mod 8)
+    Next i
+End Function
+
+Public Function SampleLoads(ByVal n As Long) As Double
+    Dim i As Long, scale As Long, span As Double
+    For i = 1 To n
+        scale = EngineeringMath.AddLongs(1, i Mod 64)
+        span = EngineeringMath.Hypotenuse(3# * scale, 4# * scale)
+        SampleLoads = SampleLoads + EngineeringMath.ScaleLoad(span, 1.25)
+    Next i
+End Function

@@ -17,6 +17,12 @@ UDF over 10,000 cells. `WorksheetSum` calls the real `WorksheetFunction.Sum`
 in Excel and dispatches to a minimal two-argument `Sum` host in standalone
 CalcVBA. Its ratios include different host services.
 
+The current set also includes `SampleInvoices` and `SampleLoads`. Both runners
+import the checked-in sample modules directly and supply the same deterministic
+inputs. The November 22 tables predate these two workloads.
+[BusinessCalc](../../examples/reflection_wrapper/business_calc/BusinessCalc.bas) ·
+[EngineeringMath](../../examples/reflection_wrapper/engineering_math/EngineeringMath.bas)
+
 ## Reproduce
 
 Run these commands from the repository root. Pass a new scratch directory to
@@ -68,10 +74,10 @@ LoopDouble gave 40981B23AA821252 on both engines and 40981B23AA82125B in Excel.
 
 ## Linux
 
-Release CalcVBA ran on dna-koderbot (Intel Core Processor, Haswell, no TSX).
-The Linux rows are wall-clock measurements on a different CPU. Windows
-Dictionary uses the native Scripting COM server. The Linux Dictionary runs
-the portable VBA implementation, whose FindKey scans every existing key.
+On November 22, release CalcVBA ran on dna-koderbot (Intel Core Processor,
+Haswell, no TSX). The Linux rows are wall-clock measurements on a different
+CPU. Windows Dictionary uses native Scripting COM. The Linux Dictionary used
+the portable VBA implementation before its binary string keys were indexed.
 
 | Workload | VM3 ms | JIT ms | Checksum vs. Excel |
 | --- | ---: | ---: | --- |
@@ -97,6 +103,45 @@ The [Excel TSV](../../conformance/perf/vba-bench/excel-20261122.tsv),
 [Linux TSV](../../conformance/perf/vba-bench/linux-20261122.tsv) retain
 the individual runs and checksum bits. CalcVBA also records preparation time.
 
+### dna-firehorse, November 23
+
+Release CalcVBA at `5cd28fcb` with the two sample workloads ran on the
+dna-firehorse Linux guest (AMD EPYC Processor with IBPB). Both engines
+completed all 18 standalone cases and returned identical checksum bits on
+all 18. Of the 16 workloads with prior Excel results, 15 matched exactly.
+LoopDouble retained the nine-ULP difference. The two samples matched their
+independently calculated checksums, 845207.5 and 4059500.0 respectively.
+
+| Workload | Size | VM3 ms | JIT ms | JIT / VM3 |
+| --- | ---: | ---: | ---: | ---: |
+| Dict | 2,000 | 149.300 | 551.813 | 3.70× |
+| Dict | 10,000 | 1,010.875 | 3,401.664 | 3.37× |
+| LoopLong | 500,000 | 99.428 | 319.717 | 3.22× |
+| LoopDouble | 300,000 | 75.862 | 467.573 | 6.16× |
+| VariantMix | 100,000 | 70.274 | 439.584 | 6.26× |
+| SampleInvoices | 20,000 | 45.584 | 135.840 | 2.98× |
+| SampleLoads | 20,000 | 43.267 | 154.838 | 3.58× |
+
+VM3 had a lower median than JIT for each of the 18 default workloads on this
+host. Commit `f05c81e9` indexed the portable Dictionary's binary string keys.
+Its 2,000-entry case finished on both engines here after timing out on
+November 22. Hardware and revision both changed between the two Linux runs.
+The TSV includes all timings and the 10,000-entry Dictionary replay.
+[Firehorse TSV](../../conformance/perf/vba-bench/linux-firehorse-20261123.tsv)
+
+In 20 GDB stack samples per workload, VM3's `run_loop_body` appeared
+in all 20 for both Dictionary (4,000 entries) and LoopLong (2,000,000
+iterations). Dictionary also reached the generic instruction path in six
+samples and project-field access in four. For JIT LoopDouble at its default
+size, 11 samples reached `rt_jit_arith_v_to_slot` and eight reached
+`rt_arith_v`. At its default size, JIT Dictionary reached the statement
+boundary, truthiness, and direct procedure entry helpers three times each.
+These are overlapping stack counts. GDB left generated JIT frames unnamed.
+
+Same-machine Windows and Excel measurements for the updated suite, the
+three spreadsheet-host cases, and investigation of the LoopDouble checksum
+remain with `dc-tey4.7`.
+
 ## Original high-volume cases
 
 | Workload | Size | Excel ms | VM3 ms (ratio) | JIT ms (ratio) | Checksum vs. Excel |
@@ -105,11 +150,12 @@ the individual runs and checksum bits. CalcVBA also records preparation time.
 | Dict | 100,000 | 2,271.267 | 3,268.400 (1.44×) | 2,849.222 (1.25×) | exact |
 
 The earlier benchmark ran through the deterministic differential host, which
-selects the portable Dictionary even on Windows. It searches existing keys
-linearly, so filling and probing 100,000 keys requires quadratic work. The
+selects the portable Dictionary even on Windows. At the time it scanned
+existing keys, so filling and probing 100,000 keys took quadratic work. The
 current Windows runner enables native COM and uses the same Scripting server
-as Excel. On Linux, the portable implementation returned 2,600 on both
-engines for 100 entries and reached the process limit at 2,000 entries.
+as Excel. Before the binary string index, the portable implementation returned
+2,600 on both engines for 100 entries and reached the process limit at 2,000
+entries on Linux.
 
 Before the fix, Win64 JIT ran past the 35-second process limit for the
 4,096-element sort and the 50,000-update UDT case. The generic JIT helpers

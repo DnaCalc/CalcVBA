@@ -18,6 +18,10 @@ use calcvba_symbol::{CatalogTypeLibResolver, manifest as sym};
 
 const WORK: &str = include_str!("../../../conformance/perf/vba-bench/B_Work.bas");
 const ACC: &str = include_str!("../../../conformance/perf/vba-bench/B_Acc.cls");
+const BUSINESS_CALC: &str =
+    include_str!("../../../examples/reflection_wrapper/business_calc/BusinessCalc.bas");
+const ENGINEERING_MATH: &str =
+    include_str!("../../../examples/reflection_wrapper/engineering_math/EngineeringMath.bas");
 const CASES: &str = include_str!("../../../conformance/perf/vba-bench/cases.tsv");
 const REPS: usize = 5;
 
@@ -111,6 +115,12 @@ fn vba_bench() {
         modules: [
             ("B_Work", sym::ModuleKind::Procedural, WORK),
             ("B_Acc", sym::ModuleKind::Class, ACC),
+            ("BusinessCalc", sym::ModuleKind::Procedural, BUSINESS_CALC),
+            (
+                "EngineeringMath",
+                sym::ModuleKind::Procedural,
+                ENGINEERING_MATH,
+            ),
         ]
         .into_iter()
         .map(|(name, kind, source)| sym::ModuleUnit {

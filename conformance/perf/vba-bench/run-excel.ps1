@@ -29,6 +29,8 @@ $specPath = Join-Path $run spec.json
     @{ name = 'B_Work'; kind = 1; path = (Join-Path $PSScriptRoot B_Work.bas) }
     @{ name = 'B_Acc'; kind = 2; path = (Join-Path $PSScriptRoot B_Acc.cls) }
     @{ name = 'B_Sheet'; kind = 1; path = (Join-Path $PSScriptRoot B_Sheet.bas) }
+    @{ name = 'BusinessCalc'; kind = 1; path = (Join-Path $repo 'examples/reflection_wrapper/business_calc/BusinessCalc.bas') }
+    @{ name = 'EngineeringMath'; kind = 1; path = (Join-Path $repo 'examples/reflection_wrapper/engineering_math/EngineeringMath.bas') }
     @{ name = 'ProbeFmt'; kind = 1; path = (Join-Path $repo 'conformance/excel-measurements/vba-library/probes/ProbeFmt.bas') }
     @{ name = 'BenchExcel'; kind = 1; path = $driver }
 ) }) } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $specPath -Encoding utf8NoBOM

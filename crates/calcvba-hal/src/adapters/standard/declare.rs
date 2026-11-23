@@ -29,6 +29,8 @@ use calcvba_com::windows_ffi_bridge::{
 use calcvba_runtime::ObjectRefExt;
 use calcvba_runtime::ansi::{ansi_decode_units, ansi_encode_units};
 use calcvba_runtime::bstr::BStr;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use calcvba_runtime::win32_declare::Win32Declare;
 use calcvba_runtime::{VarType, Variant};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -79,6 +81,7 @@ pub(crate) struct DeclarePlan {
     _library: Option<Arc<OwnedLibrary>>,
     runtime_storage: bool,
     capture_os_error: bool,
+    host_argument: bool,
     call: PreparedNativeCall,
     result: ResultShape,
 }
@@ -189,15 +192,21 @@ pub(super) fn plan(
     }
     // The VBA runtime's own exports are CalcVBA's (it is the runtime); the rest load the DLL.
     if let Some(address) = runtime_export(descriptor.library, descriptor.alias) {
-        let mut plan = prepare(host, descriptor, None, address)?;
+        let mut plan = prepare(host, descriptor, None, address, false)?;
         plan.runtime_storage = true;
         let plan = Rc::new(plan);
         state.declare_plans.insert(key, Rc::clone(&plan));
         return Ok(plan);
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if let Some(address) = win32_shim(descriptor) {
-        let mut plan = prepare(host, descriptor, None, address)?;
+    if let Some(shim) = win32_shim(descriptor) {
+        let mut plan = prepare(
+            host,
+            descriptor,
+            None,
+            super::win32_declare::address(shim),
+            shim == Win32Declare::GetTempPathWide,
+        )?;
         plan.capture_os_error = false;
         let plan = Rc::new(plan);
         state.declare_plans.insert(key, Rc::clone(&plan));
@@ -243,13 +252,13 @@ pub(super) fn plan(
             ),
         )
     })?;
-    let plan = Rc::new(prepare(host, descriptor, Some(library), address)?);
+    let plan = Rc::new(prepare(host, descriptor, Some(library), address, false)?);
     state.declare_plans.insert(key, Rc::clone(&plan));
     Ok(plan)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn win32_shim(descriptor: &DynLinkDescriptorView<'_>) -> Option<usize> {
+fn win32_shim(descriptor: &DynLinkDescriptorView<'_>) -> Option<Win32Declare> {
     if descriptor.ordinal_alias
         || descriptor.return_record_layout.is_some()
         || descriptor.param_types.len() != descriptor.param_count
@@ -263,13 +272,12 @@ fn win32_shim(descriptor: &DynLinkDescriptorView<'_>) -> Option<usize> {
         .map(String::as_str)
         .zip(descriptor.param_by_ref.iter().copied())
         .collect();
-    calcvba_runtime::win32_declare::Win32Declare::resolve(
+    Win32Declare::resolve(
         descriptor.library,
         descriptor.alias,
         &params,
         descriptor.return_type.as_deref(),
     )
-    .map(super::win32_declare::address)
 }
 
 /// The VBA runtime's own exports a `Declare` may name, which CalcVBA, being the runtime,
@@ -320,17 +328,21 @@ fn prepare(
     descriptor: &DynLinkDescriptorView<'_>,
     library: Option<Arc<OwnedLibrary>>,
     address: usize,
+    host_argument: bool,
 ) -> HalResult<DeclarePlan> {
-    let slots: Vec<FfiParamType> = (0..descriptor.param_count)
-        .map(|index| {
-            slot_type(
-                descriptor
-                    .param_types
-                    .get(index)
-                    .map_or("Long", String::as_str),
-                descriptor.param_by_ref.get(index).copied().unwrap_or(false),
-            )
-        })
+    let declared_slots = (0..descriptor.param_count).map(|index| {
+        slot_type(
+            descriptor
+                .param_types
+                .get(index)
+                .map_or("Long", String::as_str),
+            descriptor.param_by_ref.get(index).copied().unwrap_or(false),
+        )
+    });
+    let slots: Vec<FfiParamType> = host_argument
+        .then_some(FfiParamType::Scalar(FfiReturnType::LongPtr))
+        .into_iter()
+        .chain(declared_slots)
         .collect();
     let (call, result) = if let Some(layout) = &descriptor.return_record_layout {
         let bytes = layout
@@ -361,6 +373,7 @@ fn prepare(
         _library: library,
         runtime_storage: false,
         capture_os_error: true,
+        host_argument,
         call,
         result,
     })
@@ -825,7 +838,14 @@ pub(super) fn invoke(
     }
     let plan = plan(host, descriptor)?;
     let mut after: Vec<After<'_>> = Vec::with_capacity(args.len());
-    let mut slots: Vec<MarshalledSlot> = Vec::with_capacity(args.len());
+    let mut slots: Vec<MarshalledSlot> =
+        Vec::with_capacity(args.len() + usize::from(plan.host_argument));
+    if plan.host_argument {
+        // A host-aware shim receives the current host ahead of the VBA arguments.
+        slots.push(MarshalledSlot::Word(
+            std::ptr::from_ref(host).expose_provenance() as u64,
+        ));
+    }
     for (index, arg) in args.iter().enumerate() {
         let param_type = descriptor
             .param_types

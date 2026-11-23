@@ -268,6 +268,17 @@ impl StandardHostServices {
     }
 
     #[cfg(not(windows))]
+    pub(super) fn windows_temp_dir(&self) -> Option<String> {
+        let host_path = if cfg!(target_os = "wasi") {
+            std::env::var_os("TMPDIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from)
+        } else {
+            std::env::temp_dir()
+        };
+        self.windows_path_for_host(&host_path)
+            .or_else(|| self.fallback_windows_dir(&[&["Temp"]]))
+    }
+
+    #[cfg(not(windows))]
     pub(super) fn windows_path_for_host(&self, path: &Path) -> Option<String> {
         let absolute = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         self.policy

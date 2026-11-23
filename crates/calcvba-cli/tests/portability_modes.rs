@@ -94,6 +94,63 @@ fn faithful_mode_executes_supported_kernel32_declares() {
 
 #[test]
 #[cfg(target_os = "linux")]
+fn faithful_declare_get_temp_path_writes_the_mapped_utf16_path() {
+    let root = std::env::temp_dir().join(format!("calcvba-declare-temp-{}", std::process::id()));
+    let temp = root.join("Témp");
+    fs::create_dir_all(&temp).unwrap();
+    let source = root.join("probe.bas");
+    fs::write(
+        &source,
+        r#"
+Private Declare PtrSafe Function TempPath Lib "kernel32.dll" Alias "GetTempPathW" (ByVal capacity As Long, ByVal buffer As LongPtr) As Long
+
+Sub Main()
+    Dim buffer As String, required As Long, shortCount As Long, count As Long, filename As String
+    buffer = String$(16, "x")
+    required = TempPath(0, 0)
+    shortCount = TempPath(8, StrPtr(buffer))
+    count = TempPath(16, StrPtr(buffer))
+    Debug.Print required, shortCount, count, AscW(Mid$(buffer, count + 1, 1)), Mid$(buffer, count + 2, 1)
+    Debug.Print Left$(buffer, count)
+    filename = Left$(buffer, count) & "probe.txt"
+    Open filename For Output As #1
+    Close #1
+End Sub
+"#,
+    )
+    .unwrap();
+    let runs = ["vm3", "jit"].map(|backend| {
+        let output = Command::new(env!("CARGO_BIN_EXE_calcvba-cli"))
+            .env("TMPDIR", &temp)
+            .args([
+                "run",
+                "--backend",
+                backend,
+                "--profile",
+                "linux-stdio",
+                "--portability-mode",
+                "windows-faithful",
+            ])
+            .arg(&source)
+            .output()
+            .unwrap();
+        let probe = temp.join("probe.txt");
+        (output, fs::remove_file(probe).is_ok())
+    });
+    fs::remove_dir_all(root).unwrap();
+    for (output, created_file) in runs {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        assert_eq!(
+            stderr.split_whitespace().collect::<Vec<_>>(),
+            ["9", "9", "8", "0", "x", "C:\\Témp\\"]
+        );
+        assert!(created_file);
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
 fn faithful_mode_refuses_known_entry_with_wrong_signature() {
     let path = std::env::temp_dir().join(format!(
         "calcvba-portability-abi-{}.bas",

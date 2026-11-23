@@ -743,16 +743,9 @@ impl StandardHostServices {
     fn windows_environment(&self) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
         use std::{env, path::PathBuf};
         let mut vars: Vec<_> = env::vars_os().collect();
-        let temp_host = if cfg!(target_os = "wasi") {
-            env::var_os("TMPDIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from)
-        } else {
-            env::temp_dir()
-        };
         let username = env::var_os("USER").or_else(|| env::var_os("LOGNAME"));
         let username_str = username.as_deref().and_then(|value| value.to_str());
-        let temp = self
-            .windows_path_for_host(&temp_host)
-            .or_else(|| self.fallback_windows_dir(&[&["Temp"]]));
+        let temp = self.windows_temp_dir();
         let home = env::var_os("HOME").map(PathBuf::from);
         let config = env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)

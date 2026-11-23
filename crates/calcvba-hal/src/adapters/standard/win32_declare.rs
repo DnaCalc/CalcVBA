@@ -1,3 +1,4 @@
+use super::StandardHostServices;
 use calcvba_runtime::win32_declare::Win32Declare;
 use std::time::Duration;
 
@@ -10,6 +11,7 @@ pub(super) fn address(entry: Win32Declare) -> usize {
         Win32Declare::QueryPerformanceCounter => performance_counter as *const (),
         Win32Declare::QueryPerformanceFrequency => performance_frequency as *const (),
         Win32Declare::StringLengthWide => string_length_wide as *const (),
+        Win32Declare::GetTempPathWide => get_temp_path_wide as *const (),
         Win32Declare::MoveMemory => move_memory as *const (),
         Win32Declare::MoveMemoryLongCount => move_memory_long_count as *const (),
     };
@@ -75,6 +77,40 @@ unsafe extern "C" fn string_length_wide(text: *const u16) -> i32 {
         len += 1;
     }
     len as i32
+}
+
+unsafe extern "C" fn get_temp_path_wide(
+    host: *const StandardHostServices,
+    capacity: u32,
+    buffer: *mut u16,
+) -> u32 {
+    // SAFETY: the caller supplies the owning host for the duration of this call.
+    let host = unsafe { &*host };
+    let (mut path, separator) = match host.windows_temp_dir() {
+        Some(path) => (path, '\\'),
+        None => (std::env::temp_dir().to_string_lossy().into_owned(), '/'),
+    };
+    if !path.ends_with(separator) {
+        path.push(separator);
+    }
+    let units: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+    let Ok(required) = u32::try_from(units.len()) else {
+        return 0;
+    };
+    if required > 261 {
+        return 0;
+    }
+    if capacity < required {
+        return required;
+    }
+    if buffer.is_null() {
+        return 0;
+    }
+    for (index, unit) in units.into_iter().enumerate() {
+        // SAFETY: the Declare caller supplies storage for `capacity` UTF-16 units.
+        unsafe { buffer.add(index).write_unaligned(unit) };
+    }
+    required - 1
 }
 
 unsafe extern "C" fn move_memory(dest: *mut u8, src: *const u8, bytes: usize) {

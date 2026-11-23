@@ -9,6 +9,7 @@ pub enum Win32Declare {
     QueryPerformanceCounter,
     QueryPerformanceFrequency,
     StringLengthWide,
+    GetTempPathWide,
     MoveMemory,
     MoveMemoryLongCount,
 }
@@ -65,6 +66,9 @@ impl Win32Declare {
                 }
             }
             ("lstrlenW", [("LongPtr", false)], Some("Long")) => Some(Self::StringLengthWide),
+            ("GetTempPathW", [("Long", false), ("LongPtr", false)], Some("Long")) => {
+                Some(Self::GetTempPathWide)
+            }
             ("RtlMoveMemory", [dest, src, ("LongPtr", false)], None)
                 if pointer(*dest) && pointer(*src) =>
             {

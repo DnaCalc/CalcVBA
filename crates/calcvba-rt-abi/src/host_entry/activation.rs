@@ -1,6 +1,6 @@
 //! Owning physical storage and exact continuation position for typed execution.
 //! Global storage is the session's canonical Variant store; there is no mirror.
-use super::{MAX_TYPED_SLOTS, ScalarBits, ScalarLayout, ScalarType};
+use super::{INLINE_TYPED_SLOTS, ScalarBits, ScalarLayout, ScalarType};
 use calcvba_host_api::{HostObject, Slot, Value, ValueSlot};
 use calcvba_runtime::Variant;
 use std::{ops::Deref, rc::Rc};
@@ -11,9 +11,14 @@ pub const CONTROL: i32 = -3;
 pub const FINISHED_PC: u32 = u32::MAX;
 const SCRATCH_CAPACITY: usize = 16;
 /// Private generated-code ABI. Every nonnull object slot owns one reference.
+/// Local slots `0..INLINE_TYPED_SLOTS` stay inline (allocation-free for common
+/// procedures); larger procedures up to `MAX_TYPED_SLOTS` allocate only the
+/// overflow tail on the heap.
 #[repr(C)]
 pub struct RawActivation {
-    pub slots: [ScalarBits; MAX_TYPED_SLOTS],
+    pub slots: [ScalarBits; INLINE_TYPED_SLOTS],
+    pub overflow_slots: *mut ScalarBits,
+    pub overflow_len: usize,
     pub pc: u32,
     pub global_base: usize,
     pub remaining_operations: u64,
@@ -27,6 +32,39 @@ pub struct RawActivation {
     scratch_len: usize,
     pub(super) iterators: std::collections::HashMap<usize, calcvba_host_api::HostEnumerator>,
     pub(super) param_arrays: std::collections::HashMap<usize, Vec<Option<Alias>>>,
+}
+impl RawActivation {
+    #[inline]
+    pub(super) unsafe fn slot_ptr(raw: *mut Self, index: usize) -> Result<*mut ScalarBits, i32> {
+        if index < INLINE_TYPED_SLOTS {
+            // SAFETY: raw points to a live RawActivation; index < INLINE_TYPED_SLOTS.
+            return Ok(unsafe {
+                std::ptr::addr_of_mut!((*raw).slots)
+                    .cast::<ScalarBits>()
+                    .add(index)
+            });
+        }
+        let offset = index - INLINE_TYPED_SLOTS;
+        // SAFETY: raw points to a live RawActivation.
+        let (overflow, len) = unsafe { ((*raw).overflow_slots, (*raw).overflow_len) };
+        if offset >= len || overflow.is_null() {
+            return Err(5);
+        }
+        // SAFETY: offset < len and overflow owns an initialized slice of that length.
+        Ok(unsafe { overflow.add(offset) })
+    }
+    #[inline]
+    pub(super) unsafe fn slot(&self, index: usize) -> Result<ScalarBits, i32> {
+        if index < INLINE_TYPED_SLOTS {
+            return Ok(self.slots[index]);
+        }
+        let offset = index - INLINE_TYPED_SLOTS;
+        if offset >= self.overflow_len || self.overflow_slots.is_null() {
+            return Err(5);
+        }
+        // SAFETY: offset < overflow_len and overflow_slots owns an initialized slice.
+        Ok(unsafe { *self.overflow_slots.add(offset) })
+    }
 }
 /// A ByRef parameter's storage elsewhere: a slot of an ancestor frame, or (for a
 /// root parameter) the host's own cell. At most one of the two is set.
@@ -261,6 +299,14 @@ impl<'a> Activation<'a> {
         if layout.slots.len() - layout.global_base > global_len {
             return Err(5);
         }
+        let (overflow_slots, overflow_len) = if layout.global_base > INLINE_TYPED_SLOTS {
+            let cells =
+                vec![ScalarBits::ZERO; layout.global_base - INLINE_TYPED_SLOTS].into_boxed_slice();
+            let len = cells.len();
+            (Box::into_raw(cells).cast::<ScalarBits>(), len)
+        } else {
+            (std::ptr::null_mut(), 0)
+        };
         let (variants, variant_len) = if layout.slots.contains(&ScalarType::Variant) {
             let count = layout.slots[..layout.global_base]
                 .iter()
@@ -278,7 +324,9 @@ impl<'a> Activation<'a> {
         let layout_pointer: *const ScalarLayout = &*layout;
         let mut frame = Self {
             raw: RawActivation {
-                slots: [ScalarBits::ZERO; MAX_TYPED_SLOTS],
+                slots: [ScalarBits::ZERO; INLINE_TYPED_SLOTS],
+                overflow_slots,
+                overflow_len,
                 pc: entry_pc,
                 global_base: layout.global_base,
                 remaining_operations: 0,
@@ -299,8 +347,10 @@ impl<'a> Activation<'a> {
         for i in 0..frame.layout.global_base {
             if frame.layout.slots[i] == ScalarType::Variant {
                 // SAFETY: the frame owns initialized stable cells for every index.
-                frame.raw.slots[i] =
-                    ScalarBits::object(unsafe { variants.add(variant_index) }.cast());
+                unsafe {
+                    let ptr = RawActivation::slot_ptr(&mut frame.raw, i)?;
+                    *ptr = ScalarBits::object(variants.add(variant_index).cast());
+                }
                 variant_index += 1;
             }
         }
@@ -316,7 +366,11 @@ impl<'a> Activation<'a> {
                 let record =
                     calcvba_runtime::vba_record::VbaRecord::new_default(record_layout.clone())
                         .map_err(|_| 7)?;
-                frame.raw.slots[index] = Value::Record(record).into_owned_bits().map_err(|_| 13)?;
+                // SAFETY: index < global_base.
+                unsafe {
+                    let ptr = RawActivation::slot_ptr(&mut frame.raw, index)?;
+                    *ptr = Value::Record(record).into_owned_bits().map_err(|_| 13)?;
+                }
             }
         }
         Ok(frame)
@@ -326,6 +380,10 @@ impl<'a> Activation<'a> {
     }
     pub fn raw(&self) -> &RawActivation {
         &self.raw
+    }
+    pub fn slot_bits(&self, index: usize) -> Result<ScalarBits, i32> {
+        // SAFETY: Activation uniquely owns its initialized slot allocation of length slot_len.
+        unsafe { self.raw.slot(index) }
     }
     /// # Safety
     /// Preserve slot types and exactly one retained reference per object slot;
@@ -343,7 +401,8 @@ impl<'a> Activation<'a> {
         if !self.layout.has_result {
             return Value::Empty;
         }
-        let bits = self.raw.slots[self.layout.return_slot];
+        // SAFETY: return_slot < global_base == slot_len.
+        let bits = unsafe { self.raw.slot(self.layout.return_slot) }.expect("admitted result");
         // SAFETY: this admitted result cell retains the exact carrier.
         unsafe { calcvba_host_api::value::retain_bits(self.layout.result, bits) }
             .expect("admitted result")
@@ -355,14 +414,20 @@ impl<'a> Activation<'a> {
         let index = self.layout.return_slot;
         let ty = self.layout.result;
         if ty == ScalarType::Variant {
-            let cell = self.raw.slots[index]
+            // SAFETY: return_slot < global_base == slot_len.
+            let cell = unsafe { self.raw.slot(index) }
+                .expect("admitted result")
                 .as_object()
                 .cast_mut()
                 .cast::<Variant>();
             // SAFETY: this exact initialized cell belongs to the returning frame.
             return Value::Variant(unsafe { cell.replace(Variant::empty()) });
         }
-        let mut bits = std::mem::replace(&mut self.raw.slots[index], ScalarBits::ZERO);
+        // SAFETY: return_slot < global_base.
+        let mut bits = unsafe {
+            let ptr = RawActivation::slot_ptr(&mut self.raw, index).expect("admitted result");
+            std::ptr::replace(ptr, ScalarBits::ZERO)
+        };
         // SAFETY: the result slot transfers its exact owned native carrier.
         unsafe { calcvba_host_api::value::take_result(ty, &mut bits) }.expect("admitted result")
     }
@@ -423,7 +488,11 @@ impl<'a> Activation<'a> {
                 continue;
             }
             if self.layout.slots[index] == ScalarType::Record {
-                let bits = std::mem::replace(&mut self.raw.slots[index], ScalarBits::ZERO);
+                // SAFETY: index < global_base.
+                let bits = unsafe {
+                    let ptr = RawActivation::slot_ptr(&mut self.raw, index).expect("local slot");
+                    std::ptr::replace(ptr, ScalarBits::ZERO)
+                };
                 // SAFETY: this exact physical record slot transfers its owned box.
                 unsafe {
                     calcvba_host_api::value::release_owned_bits(ScalarType::Record, bits);
@@ -599,7 +668,8 @@ impl Drop for Activation<'_> {
     fn drop(&mut self) {
         self.clear_scratch();
         for i in 0..self.layout.global_base {
-            let bits = self.raw.slots[i];
+            // SAFETY: i < global_base.
+            let bits = unsafe { self.raw.slot(i) }.expect("local slot");
             match self.layout.slots[i] {
                 ScalarType::Record | ScalarType::Array => {
                     // SAFETY: transfer this slot's exact aggregate owner.
@@ -625,6 +695,12 @@ impl Drop for Activation<'_> {
         if !self.raw.variants.is_null() {
             let slice = std::ptr::slice_from_raw_parts_mut(self.raw.variants, self.raw.variant_len);
             // SAFETY: consume the exact boxed initialized Variant-cell allocation.
+            drop(unsafe { Box::from_raw(slice) });
+        }
+        if !self.raw.overflow_slots.is_null() {
+            let slice =
+                std::ptr::slice_from_raw_parts_mut(self.raw.overflow_slots, self.raw.overflow_len);
+            // SAFETY: consume the exact boxed initialized overflow-slot allocation.
             drop(unsafe { Box::from_raw(slice) });
         }
     }
@@ -798,11 +874,8 @@ pub(super) unsafe fn slot_identity(raw: *mut RawActivation, index: usize) -> Res
         // SAFETY: in-bounds canonical storage, used only for identity comparison.
         return Ok(unsafe { frame.globals.add(index) }.addr());
     }
-    frame
-        .slots
-        .get(index)
-        .map(|slot| std::ptr::from_ref(slot).addr())
-        .ok_or(5)
+    // SAFETY: checked slot address, used only for identity comparison.
+    Ok(unsafe { RawActivation::slot_ptr(raw, index)? }.addr())
 }
 /// # Safety
 /// raw follows Activation::new; index/ty are checked physical layout facts;
@@ -873,12 +946,11 @@ pub unsafe fn write_slot(
         let old = unsafe { std::ptr::replace(globals.add(index), value) };
         drop(old);
     } else {
-        if index >= MAX_TYPED_SLOTS {
-            return Err(5);
-        }
+        // SAFETY: checked initialized frame slot pointer; borrow ends before any release.
+        let slot_ptr = unsafe { RawActivation::slot_ptr(raw, index)? };
         if ty == ScalarType::Variant {
             // SAFETY: every Variant physical slot points into initialized owned storage.
-            let cell = unsafe { (*raw).slots[index] }
+            let cell = unsafe { *slot_ptr }
                 .as_object()
                 .cast_mut()
                 .cast::<Variant>();
@@ -916,11 +988,8 @@ pub unsafe fn write_slot(
         } else {
             bits
         };
-        let old = {
-            // SAFETY: checked initialized frame cell; borrow ends before release.
-            let frame = unsafe { &mut *raw };
-            std::mem::replace(&mut frame.slots[index], next)
-        };
+        // SAFETY: checked initialized frame cell; install before release.
+        let old = unsafe { std::ptr::replace(slot_ptr, next) };
         if ty == ScalarType::String {
             // SAFETY: the previous String cell transfers its raw BSTR allocation.
             drop(unsafe {
@@ -1021,12 +1090,11 @@ pub unsafe fn write_owned(
         drop(unsafe { globals.add(index).replace(value) });
         return Ok(());
     }
-    if index >= MAX_TYPED_SLOTS {
-        return Err(5);
-    }
+    // SAFETY: checked initialized frame slot pointer.
+    let slot_ptr = unsafe { RawActivation::slot_ptr(raw, index)? };
     if let Value::Variant(value) = value {
         // SAFETY: each Variant slot points into initialized frame-owned storage.
-        let cell = unsafe { (*raw).slots[index] }
+        let cell = unsafe { *slot_ptr }
             .as_object()
             .cast_mut()
             .cast::<Variant>();
@@ -1039,7 +1107,7 @@ pub unsafe fn write_owned(
     }
     let bits = value.into_owned_bits().map_err(|_| 13)?;
     // SAFETY: exact initialized physical slot; retain moved owner before release.
-    let old = unsafe { std::ptr::replace(std::ptr::addr_of_mut!((*raw).slots[index]), bits) };
+    let old = unsafe { std::ptr::replace(slot_ptr, bits) };
     match ty {
         ScalarType::Record | ScalarType::Array => {
             // SAFETY: transfer one replaced exact aggregate owner.
@@ -1107,11 +1175,9 @@ pub unsafe fn read_slot(
             let value = super::value::from_variant(ty, value)?;
             // SAFETY: snapshot transfers into this executing frame's scratch.
             unsafe { pin_value(raw, value) }
-        } else if index < MAX_TYPED_SLOTS {
-            // SAFETY: initialized ancestor slot with its admitted carrier.
-            Ok(unsafe { (*target).slots[index] })
         } else {
-            Err(5)
+            // SAFETY: initialized ancestor slot with its admitted carrier.
+            unsafe { (*target).slot(index) }
         };
     }
 }
@@ -1158,7 +1224,7 @@ pub(super) unsafe fn alias_value(alias: Alias) -> Result<Variant, i32> {
                 .get(index)
                 .map_or(std::ptr::null_mut(), |a| a.host);
             let bits = if host.is_null() {
-                (*raw).slots[index]
+                (*raw).slot(index)?
             } else {
                 host_bits(host)?
             };

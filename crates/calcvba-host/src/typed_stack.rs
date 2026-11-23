@@ -307,7 +307,9 @@ impl TypedStack {
     pub(crate) fn raw_result(&self) -> ScalarBits {
         let frame = &self.frames[0].activation;
         if frame.layout().has_result {
-            frame.raw().slots[frame.layout().return_slot]
+            frame
+                .slot_bits(frame.layout().return_slot)
+                .unwrap_or(ScalarBits::ZERO)
         } else {
             ScalarBits::ZERO
         }

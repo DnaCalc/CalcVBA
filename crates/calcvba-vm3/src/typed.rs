@@ -117,7 +117,7 @@ impl<'p> TypedInterpreter<'p> {
         if self.resume(&mut frame, context, u64::MAX)? != 0 {
             return Err(5);
         }
-        Ok(frame.raw().slots[self.layout.return_slot])
+        frame.slot_bits(self.layout.return_slot)
     }
     /// Execute at most operations completed physical operations. A paused PC
     /// always names the next operation, so effects before it are never repeated.

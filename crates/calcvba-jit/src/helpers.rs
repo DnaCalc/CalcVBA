@@ -7070,6 +7070,30 @@ pub(crate) unsafe extern "C" fn rt_jit_array_get_i32_1d_to_slot(
             return ST_FAULT;
         };
         if !array.holds_array() {
+            if array.as_object_ref().is_some() {
+                let recv_value = array.clone();
+                let args = [Variant::from_i32(index)];
+                // SAFETY: the checked JIT entry owns the live unique state; `run`,
+                // the owned receiver, and `args` remain live for the call.
+                let value = match unsafe {
+                    invoke_project_default_member_values(
+                        run,
+                        state,
+                        recv_value,
+                        ProjectMemberKind::PropertyGet,
+                        &args,
+                    )
+                } {
+                    Ok(value) => value,
+                    Err(status) => return status,
+                };
+                // SAFETY: default-member entry returned and no typed run borrow spans it.
+                let run = unsafe { &mut *run };
+                let Some(slot) = slot_mut(run, dst_area, dst_index) else {
+                    return ST_FAULT;
+                };
+                return store_slot(state, slot, value);
+            }
             // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
             return unsafe { rt_raise_expected_array(state) };
         }
@@ -7260,6 +7284,24 @@ pub(crate) unsafe extern "C" fn rt_jit_array_set_i32_1d_slot(
             return ST_FAULT;
         };
         if !array.holds_array() {
+            if array.as_object_ref().is_some() {
+                let recv_value = array.clone();
+                let args = [Variant::from_i32(index), Variant::from_i32(value)];
+                // SAFETY: the checked JIT entry owns the live unique state; `run`,
+                // the owned receiver, and `args` remain live for the call.
+                return match unsafe {
+                    invoke_project_default_member_values(
+                        run,
+                        state,
+                        recv_value,
+                        ProjectMemberKind::PropertyLet,
+                        &args,
+                    )
+                } {
+                    Ok(_) => ST_OK,
+                    Err(status) => status,
+                };
+            }
             // SAFETY: the enclosing JIT boundary validated `state` as the live, uniquely owned execution state.
             return unsafe { rt_raise_expected_array(state) };
         }

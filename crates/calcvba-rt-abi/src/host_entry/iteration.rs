@@ -55,12 +55,41 @@ pub(super) unsafe fn evaluate(
         OxInst::ForEachInit { iter, source } => {
             // SAFETY: read retains the actual source in frame-owned scratch.
             let value = unsafe { operand_value(raw, layout, source) }?;
-            let reference = value.as_object_ref().ok_or(424)?;
-            let object = super::member::host_view(&reference).ok_or(438)?;
             let index = layout.slot(*iter).map_err(|_| 5)?;
             // SAFETY: detach any previous iteration before starting a new one.
             drop(unsafe { (*raw).iterators.remove(&index) });
-            let iterator = object.enumerator(context)?;
+            let iterator = if let Some(arr) = value.as_safearray() {
+                let mut items = arr.enumeration_elements().unwrap_or_default().into_iter();
+                calcvba_host_api::HostEnumerator::new(move |_| Ok(items.next().map(Value::Variant)))
+            } else if let Some(reference) = value.as_object_ref() {
+                if calcvba_runtime::ObjectRefExt::is_compat_object(&reference)
+                    && calcvba_runtime::ObjectRefExt::route_key(&reference)
+                        == crate::VBA_COLLECTION_ROUTE_KEY
+                {
+                    if let Some(cursor) =
+                        calcvba_runtime::collection::CollectionCursor::new(&reference)
+                    {
+                        calcvba_host_api::HostEnumerator::new(move |_| {
+                            Ok(cursor.next_item().map(Value::Variant))
+                        })
+                    } else {
+                        let mut items =
+                            calcvba_runtime::ObjectRefExt::native_collection_snapshot(&reference)
+                                .unwrap_or_default()
+                                .into_iter();
+                        calcvba_host_api::HostEnumerator::new(move |_| {
+                            Ok(items.next().map(Value::Variant))
+                        })
+                    }
+                } else {
+                    let object = super::member::host_view(&reference).ok_or(438)?;
+                    object.enumerator(context)?
+                }
+            } else if value.vtype() == calcvba_runtime::VarType::Object {
+                return Err(91);
+            } else {
+                return Err(13);
+            };
             // SAFETY: callbacks have returned; replace only this frame's owner.
             drop(unsafe { (*raw).iterators.insert(index, iterator) });
             Ok(())
